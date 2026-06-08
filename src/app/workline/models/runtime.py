@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -458,8 +459,52 @@ class RuntimeWorklineDeviceItem(BaseModel):
     error_code: str | None = None
 
 
+class RuntimeWorklineReadiness(StrEnum):
+    READY = "READY"
+    NOT_READY = "NOT_READY"
+    UNKNOWN = "UNKNOWN"
+
+
+class RuntimeStationLease(StrEnum):
+    IDLE = "IDLE"
+    ACTIVE_RACK_BOUND = "ACTIVE_RACK_BOUND"
+    ACTIVE_DISPATCH_LEASE = "ACTIVE_DISPATCH_LEASE"
+    ACTIVE_SESSION_BOUND = "ACTIVE_SESSION_BOUND"
+    UNKNOWN = "UNKNOWN"
+
+
+class RuntimeSingleLayerRackSnapshot(StrEnum):
+    ACTIVE = "ACTIVE"
+    MISSING = "MISSING"
+    INVALID = "INVALID"
+    NON_SINGLE_LAYER_EVIDENCE = "NON_SINGLE_LAYER_EVIDENCE"
+    UNKNOWN = "UNKNOWN"
+
+
+class RuntimeRackOperationWait(StrEnum):
+    WAITING_WMS = "WAITING_WMS"
+    WMS_CALLBACK_RECEIVED = "WMS_CALLBACK_RECEIVED"
+    TIMEOUT = "TIMEOUT"
+    FAILED = "FAILED"
+    NONE = "NONE"
+    UNKNOWN = "UNKNOWN"
+
+
+class RuntimeResourceEvidenceKind(StrEnum):
+    WES_ACTIVE_SNAPSHOT = "WES_ACTIVE_SNAPSHOT"
+    WMS_CALLBACK_EVIDENCE = "WMS_CALLBACK_EVIDENCE"
+    TRACE_RESOURCE_EVIDENCE = "TRACE_RESOURCE_EVIDENCE"
+    GENERIC_EVIDENCE = "GENERIC_EVIDENCE"
+    UNKNOWN = "UNKNOWN"
+
+
 class RuntimeWorklineDetailResponse(BaseModel):
     summary: RuntimeWorklineSummary
+    workline_readiness: RuntimeWorklineReadiness = RuntimeWorklineReadiness.UNKNOWN
+    station_lease: RuntimeStationLease = RuntimeStationLease.UNKNOWN
+    single_layer_rack_snapshot: RuntimeSingleLayerRackSnapshot = RuntimeSingleLayerRackSnapshot.UNKNOWN
+    rack_operation_wait: RuntimeRackOperationWait = RuntimeRackOperationWait.NONE
+    resource_evidence_kind: RuntimeResourceEvidenceKind = RuntimeResourceEvidenceKind.UNKNOWN
     devices: list[RuntimeWorklineDeviceItem] = Field(default_factory=list)
     active_sessions: list[RuntimeTraceListItem] = Field(default_factory=list)
     recent_failed_traces: list[RuntimeTraceListItem] = Field(default_factory=list)

@@ -301,6 +301,11 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
         *   **层次归属**: `zone_code`, `work_line_code` (设备所属的区域和作业线)。
         *   **用途说明**: 设备的功能描述 (如 "用来点货，绑定栈板发运送任务")。
 
+*   **WorkLine 启动与分拣机设备边界**:
+    *   `WORKLINE_START_REQUESTED` 只表示工作线进入 READY/待机状态，可以开始接收业务需求；不表示已有货架到位，也不表示立即开始分拣。
+    *   分拣机只有 `SOURCE_ARM` 和 `TARGET_ARM` 两个机械臂，不存在 NG 专用机械臂；NG 放置动作由 `TARGET_ARM` 完成，目标设备角色仍是 `ROLE_SORTING_TARGET_ARM`。
+    *   分拣作业启动必须同时满足业务需求、WorkLine READY、Station 业务 lease 空闲、单层货架 active 执行快照或 WMS 到位/授权回调；具体设备命令下发前再按设备角色执行实时准入。
+
 **6. 任务管理 (Task Management)**
 
 *   **任务队列 (Task Queue)**:
@@ -411,6 +416,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 * **WES 核心算法 (Rolling Wave)**:
 
   1. **任务接入**: 接收 SAP 工单，根据 "开线时间 + 6小时补料间隔" 生成波次。
+     * **驱动原则**: 生产发料/出库必须由工单、波次或产线需求驱动，不由货架就绪事实自行选择业务。
   2. **任务拆解**:
      * **电子料 (Auto)**: 生成 `Auto_Pick_Task`.
      * **特殊料 (Manual)**: 生成 `Rack_Move_Task` (MSD/PCB/异形)。
@@ -680,7 +686,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * **回收流程**:
     * `ECS -> WES: Pallet_Empty(PalletID)`。
     * WES 生成 `Transport_Task(To Empty_Pallet_Zone)` 搬运需求并提交 WMS。
-    * WES 更新栈板状态: `Status = Empty, Location = Empty_Zone`。
+    * WES 记录空栈板回收执行投影与 WMS 回调证据；真实位置和占用以 WMS/RCS 为准。
+  * **统一边界**: 转运、补给、空架回流和空栈板回收均表达为 WMS 搬运需求；AGV/CTU/RCS 任务由 WMS 转发并闭环。
 
 ---
 

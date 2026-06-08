@@ -10,6 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.4.8.0] - 2026-06-08
+
+### Added
+
+- 新增 WES 单层货架执行编排边界，覆盖 Station lease、WMS 运输需求合同、插件 single-layer boundary manifest 和运行态结构化展示字段。
+- 新增单层货架编排、station lease、runtime detail、WMS transport contract、插件边界和真实 mock E2E 回归测试。
+
+### Changed
+
+- 粗分机和 SMT 分拣入库改为显式声明单层货架 boundary，并通过 Station lease 与 active rack snapshot 进入 WMS/rack operation 流程。
+- Active rack snapshot 恢复在清理旧物料派生状态时保留空格容量模板，并将空格 used depth 归零，保证分格策略可继续使用资源投影。
+
+### Fixed
+
+- 修复同一 rack operation 创建 station dispatch lease 时被当前 session 自身等待记录阻断的问题。
+- 修复 station dispatch 幂等重试被自身 active lease 阻断的问题，并在重复 station claim outbox 复用时校验 session、workline、station 与活跃状态。
+- 修复单层货架 move-out 任务未继承 `rack_code`、同一换架操作补给被旧架占用阻断，以及超过 50 个 open session 时 station 冲突漏检的问题。
+- 修复已派发 rack operation outbox 在重试时被新 payload 改写的问题，保留派发审计记录不可变。
+- 修复 SMT target active snapshot 未传入 provider、粗分机 rack operation 缺少显式 work position，以及相关 E2E 测试夹具缺少目标 station 资源投影的问题。
+
 ## [0.4.7.0] - 2026-06-06
 
 ### Added

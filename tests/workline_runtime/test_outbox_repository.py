@@ -73,6 +73,27 @@ async def test_mark_as_sent_does_not_overwrite_cancelled_outbox() -> None:
     db.flush.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_mark_as_sent_does_not_reopen_callback_finished_dispatching_outbox() -> None:
+    outbox = SimpleNamespace(
+        status=SystemOutboxStatus.DISPATCHING,
+        sent_at=None,
+        next_retry_at=object(),
+        last_error=None,
+        finished_at=timezone.now_for_db(),
+    )
+    db = _FakeDb(outbox)
+
+    updated = await SystemOutboxRepository().mark_as_sent(db, 1)  # type: ignore[arg-type]
+
+    assert updated is None
+    assert outbox.status == SystemOutboxStatus.DISPATCHING
+    assert outbox.sent_at is None
+    assert outbox.next_retry_at is not None
+    assert outbox.finished_at is not None
+    db.flush.assert_not_awaited()
+
+
 def test_repository_does_not_expose_device_busy_direct_sent_repair() -> None:
     assert not hasattr(SystemOutboxRepository(), "mark_blocked_device_busy_as_sent")
 
@@ -1190,6 +1211,21 @@ async def test_cancel_active_by_session_closes_stale_sandbox_actions(db_session)
         target_code="ARM01",
         status=SystemOutboxStatus.SENT,
     )
+    station_lease_outbox = SystemOutbox(
+        session_id=session.id,
+        workline_id=45,
+        operation_domain="RACK",
+        operation_key="op-station-lease",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="rack-operation:op-station-lease:1:ALLOCATE_AND_MOVE_RACK",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        target_code="WMS_RCS_RACK_OPERATION",
+        payload_json={
+            "station": {"position_code": "SINGLE_LAYER_A"},
+            "target_position_code": "SINGLE_LAYER_A",
+        },
+        status=SystemOutboxStatus.NEW,
+    )
     terminal_outbox = SystemOutbox(
         session_id=session.id,
         workline_id=45,
@@ -1199,7 +1235,22 @@ async def test_cancel_active_by_session_closes_stale_sandbox_actions(db_session)
         target_code="ARM02",
         status=SystemOutboxStatus.FAILED,
     )
-    db_session.add_all([active_outbox, terminal_outbox])
+    ownerless_station_lease = SystemOutbox(
+        session_id=None,
+        workline_id=45,
+        operation_domain="RACK",
+        operation_key="op-ownerless-station-lease",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="rack-operation:op-ownerless-station-lease:1:ALLOCATE_AND_MOVE_RACK",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        target_code="WMS_RCS_RACK_OPERATION",
+        payload_json={
+            "station": {"position_code": "SINGLE_LAYER_A"},
+            "target_position_code": "SINGLE_LAYER_A",
+        },
+        status=SystemOutboxStatus.NEW,
+    )
+    db_session.add_all([active_outbox, station_lease_outbox, terminal_outbox, ownerless_station_lease])
     await db_session.flush()
 
     closed = await SystemOutboxRepository().cancel_active_by_session(
@@ -1208,11 +1259,200 @@ async def test_cancel_active_by_session_closes_stale_sandbox_actions(db_session)
         reason="DEVICE_TIMEOUT",
     )
 
-    assert closed == 1
+    assert closed == 2
     assert active_outbox.status == SystemOutboxStatus.CANCELLED
     assert active_outbox.last_error == "DEVICE_TIMEOUT"
     assert active_outbox.finished_at is not None
+    assert station_lease_outbox.status == SystemOutboxStatus.CANCELLED
+    assert station_lease_outbox.last_error == "DEVICE_TIMEOUT"
+    assert station_lease_outbox.finished_at is not None
     assert terminal_outbox.status == SystemOutboxStatus.FAILED
+    assert ownerless_station_lease.status == SystemOutboxStatus.NEW
+
+
+@pytest.mark.asyncio
+async def test_get_active_external_station_dispatch_keeps_finished_blocked_resource_lease(db_session) -> None:
+    blocked_station_lease = SystemOutbox(
+        session_id=601,
+        workline_id=45,
+        operation_domain="RACK",
+        operation_key="op-blocked-station-lease",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="rack-operation:op-blocked-station-lease:1:ALLOCATE_AND_MOVE_RACK",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        target_code="WMS_RCS_RACK_OPERATION",
+        payload_json={
+            "station": {"position_code": "SINGLE_LAYER_A"},
+            "target_position_code": "SINGLE_LAYER_A",
+        },
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        blocked_reason="DEVICE_BUSY",
+        finished_at=timezone.now_for_db(),
+    )
+    db_session.add(blocked_station_lease)
+    await db_session.flush()
+
+    active = await SystemOutboxRepository().get_active_external_station_dispatch(
+        db_session,
+        workline_id=45,
+        position_code="SINGLE_LAYER_A",
+    )
+
+    assert active is not None
+    assert active.dispatch_key == blocked_station_lease.dispatch_key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [SystemOutboxStatus.FAILED, SystemOutboxStatus.CANCELLED])
+async def test_get_active_external_station_dispatch_ignores_terminal_unfinished_lease(
+    db_session,
+    status: SystemOutboxStatus,
+) -> None:
+    terminal_station_lease = SystemOutbox(
+        session_id=601,
+        workline_id=45,
+        operation_domain="RACK",
+        operation_key=f"op-terminal-station-lease-{status.value.lower()}",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key=f"rack-operation:op-terminal-station-lease:1:{status.value}",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        target_code="WMS_RCS_RACK_OPERATION",
+        payload_json={
+            "station": {"position_code": "SINGLE_LAYER_A"},
+            "target_position_code": "SINGLE_LAYER_A",
+        },
+        status=status,
+        finished_at=None,
+    )
+    db_session.add(terminal_station_lease)
+    await db_session.flush()
+
+    active = await SystemOutboxRepository().get_active_external_station_dispatch(
+        db_session,
+        workline_id=45,
+        position_code="SINGLE_LAYER_A",
+    )
+
+    assert active is None
+
+
+@pytest.mark.asyncio
+async def test_get_active_external_station_dispatch_detects_move_out_source_station(db_session) -> None:
+    move_out_station_lease = SystemOutbox(
+        session_id=601,
+        workline_id=45,
+        operation_domain="RACK",
+        operation_key="op-move-out-source-station",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="rack-operation:op-move-out-source-station:1:MOVE_RACK",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        target_code="WMS_RCS_RACK_OPERATION",
+        payload_json={
+            "task_type": "MOVE_RACK",
+            "source_position_code": "SINGLE_LAYER_A",
+            "source": {"position_code": "SINGLE_LAYER_A"},
+            "target_position_code": None,
+            "target": {"position_code": None, "position_role": "SMT_EMPTY_RACK_AREA"},
+        },
+        status=SystemOutboxStatus.NEW,
+    )
+    db_session.add(move_out_station_lease)
+    await db_session.flush()
+
+    active = await SystemOutboxRepository().get_active_external_station_dispatch(
+        db_session,
+        workline_id=45,
+        position_code="SINGLE_LAYER_A",
+    )
+
+    assert active is not None
+    assert active.dispatch_key == move_out_station_lease.dispatch_key
+
+
+@pytest.mark.asyncio
+async def test_finish_sent_external_by_dispatch_key_releases_station_dispatch_lease(db_session) -> None:
+    sent_station_lease = SystemOutbox(
+        session_id=601,
+        workline_id=45,
+        operation_domain="RACK",
+        operation_key="op-sent-station-lease",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="rack-operation:op-sent-station-lease:1:ALLOCATE_AND_MOVE_RACK",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        target_code="WMS_RCS_RACK_OPERATION",
+        payload_json={
+            "station": {"position_code": "SINGLE_LAYER_A"},
+            "target_position_code": "SINGLE_LAYER_A",
+        },
+        status=SystemOutboxStatus.SENT,
+        finished_at=None,
+    )
+    db_session.add(sent_station_lease)
+    await db_session.flush()
+
+    active_before = await SystemOutboxRepository().get_active_external_station_dispatch(
+        db_session,
+        workline_id=45,
+        position_code="SINGLE_LAYER_A",
+    )
+    finished = await SystemOutboxRepository().finish_sent_external_by_dispatch_key(
+        db_session,
+        sent_station_lease.dispatch_key,
+    )
+    active_after = await SystemOutboxRepository().get_active_external_station_dispatch(
+        db_session,
+        workline_id=45,
+        position_code="SINGLE_LAYER_A",
+    )
+
+    assert active_before is not None
+    assert active_before.dispatch_key == sent_station_lease.dispatch_key
+    assert finished is sent_station_lease
+    assert sent_station_lease.status == SystemOutboxStatus.SENT
+    assert sent_station_lease.finished_at is not None
+    assert active_after is None
+
+
+@pytest.mark.asyncio
+async def test_finish_external_by_dispatch_key_handles_callback_before_sent(db_session) -> None:
+    early_callback_station_lease = SystemOutbox(
+        session_id=601,
+        workline_id=45,
+        operation_domain="RACK",
+        operation_key="op-early-callback-station-lease",
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="rack-operation:op-early-callback-station-lease:1:ALLOCATE_AND_MOVE_RACK",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        target_code="WMS_RCS_RACK_OPERATION",
+        payload_json={
+            "station": {"position_code": "SINGLE_LAYER_A"},
+            "target_position_code": "SINGLE_LAYER_A",
+        },
+        status=SystemOutboxStatus.DISPATCHING,
+        finished_at=None,
+    )
+    db_session.add(early_callback_station_lease)
+    await db_session.flush()
+
+    finished = await SystemOutboxRepository().finish_sent_external_by_dispatch_key(
+        db_session,
+        early_callback_station_lease.dispatch_key,
+    )
+    sent_after_callback = await SystemOutboxRepository().mark_as_sent(
+        db_session,
+        early_callback_station_lease.id,
+    )
+    active_after = await SystemOutboxRepository().get_active_external_station_dispatch(
+        db_session,
+        workline_id=45,
+        position_code="SINGLE_LAYER_A",
+    )
+
+    assert finished is early_callback_station_lease
+    assert early_callback_station_lease.status == SystemOutboxStatus.SENT
+    assert early_callback_station_lease.finished_at is not None
+    assert sent_after_callback is None
+    assert active_after is None
 
 
 @pytest.mark.asyncio

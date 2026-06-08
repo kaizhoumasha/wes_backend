@@ -742,6 +742,12 @@ class SmtRackBinSchedulingService:
 
         operation_key = self._operation_key(context=context, material=material, active_rack=active_rack)
         work_position_code = self._work_position_code(context)
+        if work_position_code is None:
+            return SmtRackBinSchedulingDecision(
+                kind="BLOCKED",
+                reason_code="RACK_OPERATION_WORK_POSITION_MISSING",
+                message="SMT 货架 operation 请求缺少 work_position_code",
+            )
         operation_material = dict(material)
         reel_diameter = self._text_or_none(
             context.get("reel_diameter") or context.get("reel_size") or context.get("diameter")
@@ -1070,7 +1076,7 @@ class SmtRackBinSchedulingService:
             else None
         )
 
-    def _work_position_code(self, context: Mapping[str, Any]) -> str:
+    def _work_position_code(self, context: Mapping[str, Any]) -> str | None:
         rack_operation = context.get("rack_operation")
         if isinstance(rack_operation, Mapping):
             value = self._first_text(
@@ -1080,9 +1086,7 @@ class SmtRackBinSchedulingService:
             if value is not None:
                 return value
 
-        return self._first_text(context, ("work_position_code", "target_position_code", "position_code")) or (
-            self.DEFAULT_WORK_POSITION_CODE
-        )
+        return self._first_text(context, ("work_position_code", "target_position_code", "position_code"))
 
     def _new_rack_kind(self, context: Mapping[str, Any]) -> str:
         return self._first_text(context, ("new_rack_kind", "rack_kind")) or self.DEFAULT_NEW_RACK_KIND

@@ -205,7 +205,7 @@ Nullable / missing 规则：
 - Inspect: `git status --short`
 - Inspect: GitNexus impact analysis
 
-- [ ] **Step 1: 确认当前工作区**
+- [x] **Step 1: 确认当前工作区**
 
   Run:
 
@@ -215,7 +215,7 @@ Nullable / missing 规则：
 
   Expected: 至少能看到本 SPEC 和 SRS 的既有变更；记录其它用户变更，后续任务不得回滚。
 
-- [ ] **Step 2: 检查 GitNexus 索引状态**
+- [x] **Step 2: 检查 GitNexus 索引状态**
 
   Run:
 
@@ -225,7 +225,7 @@ Nullable / missing 规则：
 
   Expected: repo `wes_backend` 已索引。若提示 stale，先运行 `npx gitnexus analyze`。
 
-- [ ] **Step 3: 对计划会修改的符号运行 impact analysis**
+- [x] **Step 3: 对计划会修改的符号运行 impact analysis**
 
   Use GitNexus MCP before editing each existing function/class/method. The list below is the minimum known set; each later task must extend it for any additional existing symbol it touches:
 
@@ -248,7 +248,7 @@ Nullable / missing 规则：
 
   Expected: 记录 direct callers、affected processes、risk level。若任一目标返回 HIGH 或 CRITICAL，先向用户汇报再继续对应任务。若后续实际修改 route handler、manifest route、model method、service helper 或 repository method，也必须先对对应符号运行 impact analysis，不能只依赖本清单。
 
-- [ ] **Step 4: 建立测试基线**
+- [x] **Step 4: 建立测试基线**
 
   Run:
 
@@ -267,7 +267,7 @@ Nullable / missing 规则：
 - Modify if failing: `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md`
 - Modify if failing: `docs/superpowers/specs/2026-06-06-wes-single-layer-rack-orchestration-boundary-spec.md`
 
-- [ ] **Step 1: 写文档守护测试**
+- [x] **Step 1: 写文档守护测试**
 
   Test names:
 
@@ -301,7 +301,7 @@ Nullable / missing 规则：
   - ADR 与 SPEC 不得声明 WES 直连 RCS/AGV/CTU，或把 WES 扩展成全局 Location/库存主账。
   - SPEC 必须保持单层货架 active snapshot 只作为执行快照，不扩展成全局货架管理。
 
-- [ ] **Step 2: 运行文档守护测试并确认失败点**
+- [x] **Step 2: 运行文档守护测试并确认失败点**
 
   Run:
 
@@ -311,7 +311,7 @@ Nullable / missing 规则：
 
   Expected: 新增测试在未补齐文档时应指出具体冲突；若当前 SRS 已全部满足，则直接 PASS。
 
-- [ ] **Step 3: 最小修正文档冲突**
+- [x] **Step 3: 最小修正文档冲突**
 
   Edit only the conflicting paragraphs in:
 
@@ -329,7 +329,7 @@ Nullable / missing 规则：
   - WES 不持有库存主账或库存变动主账，但可以持有执行事实、单层 active snapshot、运行投影、回调和对账证据。
   - `WORKLINE_START_REQUESTED` 不表示货架到位或作业开始。
 
-- [ ] **Step 4: 验证文档守护通过**
+- [x] **Step 4: 验证文档守护通过**
 
   Run:
 
@@ -351,7 +351,7 @@ Nullable / missing 规则：
 - Modify if failing: `src/workline_plugins/smt_sorting_inbound/constants.py`
 - Modify if failing: `src/workline_plugins/smt_sorting_inbound/plugin.py`
 
-- [ ] **Step 1: 补强平台保留事件测试**
+- [x] **Step 1: 补强平台保留事件测试**
 
   Test names:
 
@@ -364,7 +364,7 @@ Nullable / missing 规则：
   - `WORKLINE_START_REQUESTED` 不允许通过 runtime event mapping 映射为插件普通事件。
   - `WorkLineRuntimeStatus` 成员只包含当前运行态集合，不新增 WorkLine 级空闲态。
 
-- [ ] **Step 2: 补强分拣机 NG 角色测试**
+- [x] **Step 2: 补强分拣机 NG 角色测试**
 
   Test names:
 
@@ -377,7 +377,7 @@ Nullable / missing 规则：
   - manifest 的 command target roles 不包含 `NG_ARM`。
   - 设备 role requirement 中不存在 `NG_ARM`。
 
-- [ ] **Step 3: 运行回归测试**
+- [x] **Step 3: 运行回归测试**
 
   Run:
 
@@ -401,7 +401,7 @@ Nullable / missing 规则：
 - Read: `src/app/workline/models/session.py`
 - Read: `src/app/sys/models/outbox.py`
 
-- [ ] **Step 1: 写 Station lease 失败测试**
+- [x] **Step 1: 写 Station lease 失败测试**
 
   Test names:
 
@@ -434,7 +434,7 @@ Nullable / missing 规则：
   - 两个不同 `business_demand_key` 的并发业务需求命中同一 WorkLine + Station 时，只有一个能成功 claim station dispatch lease，另一个必须返回 busy/block，不得生成第二个 WMS 载入请求。
   - 旧 dispatch 已 terminal 且 `finished_at` 存在后，同一 WorkLine + Station 的新业务需求可以再次 claim；全局唯一 `dispatch_key` 不得把 station scope 永久占住。
 
-- [ ] **Step 2: 运行 Station lease 测试确认失败**
+- [x] **Step 2: 运行 Station lease 测试确认失败**
 
   Run:
 
@@ -444,7 +444,7 @@ Nullable / missing 规则：
 
   Expected: FAIL because `station_lease_service.py` does not exist or methods are missing.
 
-- [ ] **Step 3: 实现最小 Station lease 服务**
+- [x] **Step 3: 实现最小 Station lease 服务**
 
   Implementation requirements:
 
@@ -463,14 +463,14 @@ Nullable / missing 规则：
   - `SystemOutbox.dispatch_key` 是全局唯一派发幂等键，只能表达具体业务 dispatch，不得单独作为 station scope lock。业务级 dispatch key 必须包含 `business_demand_key` / `operation_key` 等可追踪业务维度；station 互斥由上面的 station scope lock 保证。
   - 并发测试必须覆盖两个不同 `business_demand_key` 同时 claim 同一 WorkLine + Station 只成功一个，以及第一个 dispatch terminal 后新业务可再次 claim。
 
-- [ ] **Step 4: 导出服务**
+- [x] **Step 4: 导出服务**
 
   Modify `src/app/workline/services/__init__.py`:
 
   - export `StationLeaseService`
   - export `station_lease_service`
 
-- [ ] **Step 5: 验证 Station lease 测试通过**
+- [x] **Step 5: 验证 Station lease 测试通过**
 
   Run:
 
@@ -492,7 +492,7 @@ Nullable / missing 规则：
 - Read: `src/workline_runtime/runtime_intent.py`
 - Read: `src/workline_runtime/runtime_intent_effects.py`
 
-- [ ] **Step 1: 写 WMS contract 失败测试**
+- [x] **Step 1: 写 WMS contract 失败测试**
 
   Test names:
 
@@ -510,7 +510,7 @@ Nullable / missing 规则：
   - payload 任意嵌套层级都不得包含 `rcs_url`、`rcs_path`、`agv_id`、`ctu_id`、`vehicle_id`、`physical_coordinate`。
   - 修改原始 payload 后，contract 内部 payload 不变。
 
-- [ ] **Step 2: 运行 contract 测试确认失败**
+- [x] **Step 2: 运行 contract 测试确认失败**
 
   Run:
 
@@ -520,7 +520,7 @@ Nullable / missing 规则：
 
   Expected: FAIL because single-layer rack operation builder 或 forbidden-field 递归校验尚未补齐。
 
-- [ ] **Step 3: 扩展既有 WMS transport contract**
+- [x] **Step 3: 扩展既有 WMS transport contract**
 
   Implementation requirements:
 
@@ -534,7 +534,7 @@ Nullable / missing 规则：
   - builder 递归拒绝直连运输设备字段：`rcs_url`、`rcs_path`、`agv_id`、`ctu_id`、`vehicle_id`、`physical_coordinate`。
   - builder 不判断 WMS 资源可用性，只表达 WES 业务需求。
 
-- [ ] **Step 4: 验证 RuntimeIntent effect 合同**
+- [x] **Step 4: 验证 RuntimeIntent effect 合同**
 
   Add tests to existing files:
 
@@ -556,7 +556,7 @@ Nullable / missing 规则：
 - Modify: `tests/resource/test_smt_active_rack_snapshot_service.py`
 - Modify if failing: `src/app/resource/services/active_rack_snapshot_service.py`
 
-- [ ] **Step 1: 写快照边界测试**
+- [x] **Step 1: 写快照边界测试**
 
   Test names:
 
@@ -572,7 +572,7 @@ Nullable / missing 规则：
   - 没有 rack/bin active relation 时返回 `None`。
   - 五层/退料/生产相关 evidence 字段不会被转换成 `active_bin_rack`。
 
-- [ ] **Step 2: 运行快照测试确认当前行为**
+- [x] **Step 2: 运行快照测试确认当前行为**
 
   Run:
 
@@ -582,7 +582,7 @@ Nullable / missing 规则：
 
   Expected: 新增边界用例若失败，失败原因应指向 position 选择、歧义 placement 或非单层 projection 处理。
 
-- [ ] **Step 3: 最小修正快照服务**
+- [x] **Step 3: 最小修正快照服务**
 
   Implementation requirements:
 
@@ -591,7 +591,7 @@ Nullable / missing 规则：
   - 对多个 active placement 继续返回 `None`，不得任选一个。
   - 非单层 evidence 只保留在 trace/resource evidence，不作为当前 active snapshot。
 
-- [ ] **Step 4: 验证快照和相关运行时回归**
+- [x] **Step 4: 验证快照和相关运行时回归**
 
   Run:
 
@@ -614,7 +614,7 @@ Nullable / missing 规则：
 - Read: `src/app/wms_integration/services/transport_contract.py`
 - Read: `src/workline_runtime/runtime_intent.py`
 
-- [ ] **Step 1: 写编排服务失败测试**
+- [x] **Step 1: 写编排服务失败测试**
 
   Test names:
 
@@ -632,7 +632,7 @@ Nullable / missing 规则：
   - 输入只有“货架 ready 事实”但没有业务需求时，不生成分拣线 dispatch。
   - 粗分机释放事实不会直接 import 或调用 `smt_sorting_inbound` 插件。
 
-- [ ] **Step 2: 运行编排测试确认失败**
+- [x] **Step 2: 运行编排测试确认失败**
 
   Run:
 
@@ -642,7 +642,7 @@ Nullable / missing 规则：
 
   Expected: FAIL because orchestration service does not exist.
 
-- [ ] **Step 3: 实现最小编排服务**
+- [x] **Step 3: 实现最小编排服务**
 
   Implementation requirements:
 
@@ -658,7 +658,7 @@ Nullable / missing 规则：
   - 返回显式 decision：`WAITING`、`DISPATCH_WMS`、`BLOCKED`。
   - `DISPATCH_WMS` decision 必须携带 `rack_operation_request`；payload 包含可追踪的 `business_demand_key`、`dispatch_key`、`operation_key`、`workline_code`、`station_code`。
 
-- [ ] **Step 4: 导出服务并运行单元测试**
+- [x] **Step 4: 导出服务并运行单元测试**
 
   Run:
 
@@ -678,14 +678,14 @@ Nullable / missing 规则：
 - Modify: `tests/integration/workline_runtime/test_cross_plan_sandbox_smoke.py`
 - Modify: `tests/workline_runtime/test_start_admission_service.py`
 
-- [ ] **Step 1: 补强 START 不是作业开始的集成断言**
+- [x] **Step 1: 补强 START 不是作业开始的集成断言**
 
   Test additions:
 
   - In `test_cross_plan_sandbox_smoke.py`，START admission 后只断言 WorkLine 进入 `READY`，不创建 rack dispatch，不创建分拣 command。
   - In `test_start_admission_service.py`，START 成功后只释放 WorkLine 级 parked outbox，不把 station 绑定为 busy。
 
-- [ ] **Step 2: 补强 NG 设备角色回归**
+- [x] **Step 2: 补强 NG 设备角色回归**
 
   Assertions:
 
@@ -693,7 +693,7 @@ Nullable / missing 规则：
   - NG scan path 生成的 command intent device role 是 `ROLE_SORTING_TARGET_ARM`。
   - 任何 manifest、device requirement、command target role 中都不存在 `NG_ARM`。
 
-- [ ] **Step 3: 运行分拣链路回归**
+- [x] **Step 3: 运行分拣链路回归**
 
   Run:
 
@@ -723,7 +723,7 @@ Nullable / missing 规则：
 - Read: `src/workline_plugins/smt_sorting_inbound/plugin.py`
 - Read: `src/workline_plugins/smt_sorting_inbound/flow_service.py`
 
-- [ ] **Step 1: 写插件级准入失败测试**
+- [x] **Step 1: 写插件级准入失败测试**
 
   Test names:
 
@@ -757,7 +757,7 @@ Nullable / missing 规则：
   - 公开 route `GET /plugins/{plugin_key:path}/manifest` 必须返回 `single_layer_boundaries`，未知插件不得返回伪 boundary。
   - OpenAPI schema 中 `WorkLinePluginManifestSummary` 必须包含 `single_layer_boundaries`，确保前端 generated types 可消费。
 
-- [ ] **Step 2: 运行插件准入测试确认失败或暴露缺口**
+- [x] **Step 2: 运行插件准入测试确认失败或暴露缺口**
 
   Run:
 
@@ -767,7 +767,7 @@ Nullable / missing 规则：
 
   Expected: 新测试若失败，失败原因必须指向缺失的 station/rack boundary 声明、旧默认 station 口径、或插件 flow 与本 SPEC 冲突。
 
-- [ ] **Step 3: 收紧插件合同或测试夹具**
+- [x] **Step 3: 收紧插件合同或测试夹具**
 
   Implementation requirements:
 
@@ -782,7 +782,7 @@ Nullable / missing 规则：
   - SMT 分拣入库必须继续保持 `COMMAND_NG_PLACE -> ROLE_SORTING_TARGET_ARM`，并把 `ROLE_SORTING_NG_STATION` 定位为 evidence/station role。
   - 未来插件准入门禁不得要求所有插件声明 station/rack；只约束涉及单层货架的插件。
 
-- [ ] **Step 4: 运行插件级回归组合**
+- [x] **Step 4: 运行插件级回归组合**
 
   Run:
 
@@ -800,7 +800,7 @@ Nullable / missing 规则：
 - Modify if failing: `docs/architecture/SRS.md`
 - Read: `docs/superpowers/specs/2026-06-06-wes-single-layer-rack-orchestration-boundary-spec.md`
 
-- [ ] **Step 1: 补充业务链路文档断言**
+- [x] **Step 1: 补充业务链路文档断言**
 
   Test names:
 
@@ -816,7 +816,7 @@ Nullable / missing 规则：
   - 退料库存确认、库存调整和 SAP 同步由 WMS 完成。
   - 转运、补给、空架回流统一提交 WMS。
 
-- [ ] **Step 2: 运行文档业务链路测试**
+- [x] **Step 2: 运行文档业务链路测试**
 
   Run:
 
@@ -833,7 +833,7 @@ Nullable / missing 规则：
 - Inspect: all changed files
 - Inspect: GitNexus detect changes
 
-- [ ] **Step 1: 运行计划相关测试集**
+- [x] **Step 1: 运行计划相关测试集**
 
   Run:
 
@@ -843,7 +843,7 @@ Nullable / missing 规则：
 
   Expected: PASS。
 
-- [ ] **Step 2: 运行格式与静态检查**
+- [x] **Step 2: 运行格式与静态检查**
 
   Run:
 
@@ -854,7 +854,7 @@ Nullable / missing 规则：
 
   Expected: formatter applied；ruff check PASS。
 
-- [ ] **Step 3: 运行架构违规扫描**
+- [x] **Step 3: 运行架构违规扫描**
 
   Run:
 
@@ -865,7 +865,7 @@ Nullable / missing 规则：
 
   Expected: 本计划不应新增 API 层直接 DB 访问。
 
-- [ ] **Step 4: 运行 GitNexus detect changes**
+- [x] **Step 4: 运行 GitNexus detect changes**
 
   Use GitNexus MCP:
 
@@ -875,7 +875,7 @@ Nullable / missing 规则：
 
   Expected: changed symbols only cover Station lease、single-layer orchestration、WMS transport contract、resource snapshot tests/docs guards、plugin single-layer boundary tests、runtime detail structured fields，以及必要的 plugin manifest / plugin manifest summary / manifest route / rough sorter / SMT sorting inbound 合同收紧。若出现无关模块，复核 diff。
 
-- [ ] **Step 5: 检查文档和空白**
+- [x] **Step 5: 检查文档和空白**
 
   Run:
 

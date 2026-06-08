@@ -77,6 +77,29 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
     assert EVENT_NG_PLACE_RESULT not in manifest.event_source_roles
 
 
+def test_smt_sorter_has_only_source_and_target_arm_roles_for_business_commands() -> None:
+    manifest = SmtSortingInboundPlugin.manifest
+    command_roles = {role for roles in manifest.command_target_roles.values() for role in roles}
+    required_roles = {requirement.role for requirement in manifest.required_device_roles}
+    manifest_surface = {
+        "required_device_roles": sorted(required_roles),
+        "command_target_roles": {command: sorted(roles) for command, roles in manifest.command_target_roles.items()},
+        "supported_commands": sorted(manifest.supported_commands),
+    }
+
+    assert command_roles == {ROLE_SORTING_SOURCE_ARM, ROLE_SORTING_TARGET_ARM}
+    assert manifest.command_target_roles[COMMAND_NG_PLACE] == (ROLE_SORTING_TARGET_ARM,)
+    assert "NG_ARM" not in command_roles
+    assert "NG_ARM" not in required_roles
+    assert "NG_ARM" not in repr(manifest_surface)
+
+
+def test_ng_place_uses_target_arm_role() -> None:
+    manifest = SmtSortingInboundPlugin.manifest
+
+    assert manifest.command_target_roles[COMMAND_NG_PLACE] == (ROLE_SORTING_TARGET_ARM,)
+
+
 def test_smt_sorting_inbound_manifest_keeps_platform_start_out_of_business_events() -> None:
     manifest = SmtSortingInboundPlugin.manifest
 
@@ -123,7 +146,44 @@ def test_smt_sorting_inbound_classifier_leaves_success_and_failed_to_generic_cla
     assert failed.result_classification == "hardware_failure"
 
 
-def _ctx(session_context: dict[str, Any] | None = None) -> PluginContext:
+class FakeStationLeaseStatusProvider:
+    def __init__(self, *, available: bool = True, reason_code: str | None = None) -> None:
+        self.available = available
+        self.reason_code = reason_code
+        self.active_rack_code = None
+        self.active_session_id = None
+        self.active_dispatch_key = None
+        self.calls: list[tuple[str, bool]] = []
+
+    async def station_lease_status(
+        self,
+        position_code: str,
+        *,
+        allow_active_rack_bound: bool = False,
+    ) -> FakeStationLeaseStatusProvider:
+        self.calls.append((position_code, allow_active_rack_bound))
+        return self
+
+
+class FailingStationLeaseStatusProvider:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    async def station_lease_status(
+        self,
+        position_code: str,
+        *,
+        allow_active_rack_bound: bool = False,
+    ) -> None:
+        self.calls.append((position_code, allow_active_rack_bound))
+        raise ValueError("workline rack position not found: WL-SMT-SORTING-INBOUND-TEST/TARGET_STATION")
+
+
+def _ctx(
+    session_context: dict[str, Any] | None = None,
+    *,
+    services: SimpleNamespace | None = None,
+) -> PluginContext:
     return cast(
         "PluginContext",
         SimpleNamespace(
@@ -141,7 +201,7 @@ def _ctx(session_context: dict[str, Any] | None = None) -> PluginContext:
                     }
                 },
             ),
-            services=SimpleNamespace(),
+            services=services or SimpleNamespace(station_lease_status_provider=FakeStationLeaseStatusProvider()),
         ),
     )
 
@@ -451,6 +511,8 @@ async def test_working_bin_scan_uses_shared_policy_and_writes_pending_target_pla
         }
     ]
     assert len(plugin._flow_service._active_snapshot_provider.calls) == 1
+    assert plugin._flow_service._active_snapshot_provider.calls[0]["station"] == {"position_code": "TARGET_STATION"}
+    assert plugin._flow_service._active_snapshot_provider.calls[0]["target_station_code"] == "TARGET_STATION"
     sorting_patch = intents[0].context_patch["sorting"]
     assert sorting_patch["pending_target_placement"] == {
         "target_bin_code": "TGT-BIN-01",
@@ -469,6 +531,70 @@ async def test_working_bin_scan_uses_shared_policy_and_writes_pending_target_pla
     assert intents[1].device_role == ROLE_SORTING_TARGET_ARM
     assert intents[1].payload_json["target_bin_code"] == "TGT-BIN-01"
     assert intents[1].payload_json["target_cell_code"] == "B02"
+
+
+@pytest.mark.asyncio
+async def test_working_bin_scan_blocks_when_target_station_lease_is_busy() -> None:
+    policy = RecordingAllocationPolicy(_allocated_result())
+    plugin = _plugin_with_policy_and_snapshot(policy, {"snapshot_version": "snap-target-001", "cells": []})
+    lease_provider = FakeStationLeaseStatusProvider(available=False, reason_code="ACTIVE_DISPATCH_LEASE")
+
+    intents = await plugin.on_device_event(
+        _ctx(
+            _sorting_context_with_current_material(),
+            services=SimpleNamespace(station_lease_status_provider=lease_provider),
+        ),
+        _working_bin_scan_inbox(),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_TARGET_STATION_LEASE_BUSY"
+    assert intents[0].payload_json["position_code"] == "TARGET_STATION"
+    assert lease_provider.calls == [("TARGET_STATION", True)]
+    assert policy.calls == []
+    assert plugin._flow_service._active_snapshot_provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_working_bin_scan_blocks_when_target_station_lease_provider_missing() -> None:
+    policy = RecordingAllocationPolicy(_allocated_result())
+    plugin = SmtSortingInboundPlugin(flow_service=SmtSortingInboundFlowService(allocation_policy=policy))
+    context = _sorting_context_with_current_material()
+    embedded_snapshot = {"snapshot_version": "snap-target-embedded", "cells": []}
+    context["sorting"]["active_target_bin"] = embedded_snapshot
+
+    intents = await plugin.on_device_event(
+        _ctx(context, services=SimpleNamespace()),
+        _working_bin_scan_inbox(),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_TARGET_STATION_LEASE_UNKNOWN"
+    assert policy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_working_bin_scan_blocks_when_target_station_lease_config_invalid() -> None:
+    policy = RecordingAllocationPolicy(_allocated_result())
+    plugin = _plugin_with_policy_and_snapshot(policy, {"snapshot_version": "snap-target-001", "cells": []})
+    lease_provider = FailingStationLeaseStatusProvider()
+
+    intents = await plugin.on_device_event(
+        _ctx(
+            _sorting_context_with_current_material(),
+            services=SimpleNamespace(station_lease_status_provider=lease_provider),
+        ),
+        _working_bin_scan_inbox(),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_TARGET_STATION_LEASE_UNKNOWN"
+    assert intents[0].payload_json == {
+        "position_code": "TARGET_STATION",
+        "error": "workline rack position not found: WL-SMT-SORTING-INBOUND-TEST/TARGET_STATION",
+    }
+    assert lease_provider.calls == [("TARGET_STATION", True)]
+    assert policy.calls == []
 
 
 @pytest.mark.asyncio
@@ -548,6 +674,10 @@ async def test_working_bin_scan_identity_mismatch_sends_reel_to_local_ng() -> No
     assert intents[1].reason_code == "LOCAL_SORTING_NG"
     assert intents[2].action == COMMAND_NG_PLACE
     assert intents[2].device_role == ROLE_SORTING_TARGET_ARM
+    assert "NG_ARM" not in {
+        intents[2].device_role,
+        *SmtSortingInboundPlugin.manifest.command_target_roles[COMMAND_NG_PLACE],
+    }
 
 
 @pytest.mark.asyncio

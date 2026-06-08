@@ -10,14 +10,17 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.app.device.models import Device, DeviceProtocol
+from src.app.resource.models import RackKind
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
+from src.app.workline.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.services.start_admission_service import (
     StartAdmissionStatusFetchResult,
     StartAdmissionStatusTarget,
     WorkLineStartAdmissionService,
 )
+from src.app.workline.services.station_lease_service import WorklineStationLeaseService
 from src.core.task_queue_gateway import DISPATCH_SYSTEM_OUTBOX_TASK
 from src.workline_plugins.rough_sorter.contract import (
     ROLE_CONVEYOR,
@@ -246,6 +249,27 @@ async def test_start_admission_success_releases_and_enqueues_workline_parked_out
     assert outbox.blocked_reason is None
     assert outbox.last_error is None
     assert enqueued == [(DISPATCH_SYSTEM_OUTBOX_TASK, {"limit": 50})]
+    db_session.add(
+        WorklineRackPosition(
+            workline_id=workline.id,
+            workline_code=workline.line_code,
+            position_code="START-STATION-A",
+            position_name="START Station A",
+            position_role=WorklineRackPositionRole.SMT_CLASSIFIER_SINGLE_RACK_WORK,
+            allowed_rack_kind=RackKind.SINGLE_LAYER,
+        )
+    )
+    await db_session.commit()
+
+    station_lease = await WorklineStationLeaseService().get_station_lease_status(
+        db_session,
+        workline_id=workline.id,
+        workline_code=workline.line_code,
+        position_code="START-STATION-A",
+    )
+    assert station_lease.available is True
+    assert station_lease.active_session_id is None
+    assert station_lease.active_dispatch_key is None
 
 
 @pytest.mark.asyncio

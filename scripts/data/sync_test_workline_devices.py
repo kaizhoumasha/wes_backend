@@ -253,6 +253,57 @@ TEST_SMT_SORTING_INBOUND_DEVICES: tuple[TestDeviceSeed, ...] = (
     ),
 )
 
+TEST_SMT_SORTING_INBOUND_RACK_POSITIONS: tuple[TestRackPositionSeed, ...] = (
+    TestRackPositionSeed(
+        position_code="SOURCE_STATION_A",
+        position_name="测试 SMT 分拣入库源端 Station A",
+        position_role=WorklineRackPositionRole.SMT_SORTER_STATION,
+        allowed_rack_kind=RackKind.SINGLE_LAYER,
+        capacity=1,
+        logic_location_code=f"{TEST_SMT_SORTING_INBOUND_LINE_CODE}:SOURCE_STATION_A",
+        external_location_code="SOURCE_STATION_A",
+        device_role=ROLE_SORTING_SOURCE_ARM,
+        priority=100,
+        metadata_json={
+            "seed_source": "local-dev",
+            "single_layer_boundary": True,
+            "station_role": "SOURCE",
+        },
+    ),
+    TestRackPositionSeed(
+        position_code="SOURCE_STATION_B",
+        position_name="测试 SMT 分拣入库源端 Station B",
+        position_role=WorklineRackPositionRole.SMT_SORTER_STATION,
+        allowed_rack_kind=RackKind.SINGLE_LAYER,
+        capacity=1,
+        logic_location_code=f"{TEST_SMT_SORTING_INBOUND_LINE_CODE}:SOURCE_STATION_B",
+        external_location_code="SOURCE_STATION_B",
+        device_role=ROLE_SORTING_SOURCE_ARM,
+        priority=110,
+        metadata_json={
+            "seed_source": "local-dev",
+            "single_layer_boundary": True,
+            "station_role": "SOURCE",
+        },
+    ),
+    TestRackPositionSeed(
+        position_code="TARGET_STATION",
+        position_name="测试 SMT 分拣入库目标 Station",
+        position_role=WorklineRackPositionRole.SMT_SORTER_STATION,
+        allowed_rack_kind=RackKind.SINGLE_LAYER,
+        capacity=1,
+        logic_location_code=f"{TEST_SMT_SORTING_INBOUND_LINE_CODE}:TARGET_STATION",
+        external_location_code="TARGET_STATION",
+        device_role=ROLE_SORTING_TARGET_ARM,
+        priority=120,
+        metadata_json={
+            "seed_source": "local-dev",
+            "single_layer_boundary": True,
+            "station_role": "TARGET",
+        },
+    ),
+)
+
 TEST_ROUGH_SORTER_SEED = TestWorklineSeed(
     line_code=TEST_ROUGH_SORTER_LINE_CODE,
     line_name="测试粗分机作业线",
@@ -298,6 +349,7 @@ TEST_SMT_SORTING_INBOUND_SEED = TestWorklineSeed(
     },
     description="本地开发环境自动同步的 SMT 分拣入库基础作业线",
     devices=TEST_SMT_SORTING_INBOUND_DEVICES,
+    rack_positions=TEST_SMT_SORTING_INBOUND_RACK_POSITIONS,
 )
 
 TEST_WORKLINE_SEEDS: tuple[TestWorklineSeed, ...] = (

@@ -131,6 +131,7 @@ from .workline import (
     WorkLinePluginOption,
     WorkLineResponse,
     WorkLineRunMode,
+    WorkLineSingleLayerRackBoundarySummary,
     WorkLineStateTransitionRequest,
     WorkLineUpdate,
 )
@@ -212,6 +213,7 @@ __all__ = [
     "WorkLineResponse",
     "WorkLineRunMode",
     "WorkLineRuntimeStatus",
+    "WorkLineSingleLayerRackBoundarySummary",
     "WorkLineStateTransitionRequest",
     "WorkLineUpdate",
     "WorklineBinCellReservation",

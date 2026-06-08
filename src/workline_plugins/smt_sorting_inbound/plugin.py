@@ -23,7 +23,7 @@ from src.workline_plugins.smt_sorting_inbound.context import SortingInboundConte
 from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
 from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
 from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
-from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
+from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, SingleLayerRackBoundary, WorklinePluginManifest
 
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
@@ -108,6 +108,41 @@ class SmtSortingInboundPlugin(WorklinePlugin):
         context_model=SortingInboundContext,
         supported_events=frozenset(EVENT_SOURCE_ROLES),
         supported_commands=frozenset(COMMAND_TARGET_ROLES),
+        capabilities=frozenset({"active_snapshot", "station_lease", "rack_operation"}),
+        resource_kinds=frozenset({"SINGLE_LAYER", "FIVE_LAYER"}),
+        requires_single_layer_boundary=True,
+        single_layer_boundaries=(
+            SingleLayerRackBoundary(
+                station_code="SOURCE_STATION_A",
+                position_code="SOURCE_STATION_A",
+                rack_kind="SINGLE_LAYER",
+                station_role="SOURCE",
+                business_demand_type="SORTING_INBOUND_SOURCE",
+                wms_operation_type="SUPPLY_SINGLE_LAYER_RACK",
+                snapshot_kind="ACTIVE_SOURCE_BIN_RACK",
+                lease_scope="STATION",
+            ),
+            SingleLayerRackBoundary(
+                station_code="SOURCE_STATION_B",
+                position_code="SOURCE_STATION_B",
+                rack_kind="SINGLE_LAYER",
+                station_role="SOURCE",
+                business_demand_type="SORTING_INBOUND_SOURCE",
+                wms_operation_type="SUPPLY_SINGLE_LAYER_RACK",
+                snapshot_kind="ACTIVE_SOURCE_BIN_RACK",
+                lease_scope="STATION",
+            ),
+            SingleLayerRackBoundary(
+                station_code="TARGET_STATION",
+                position_code="TARGET_STATION",
+                rack_kind="SINGLE_LAYER",
+                station_role="TARGET",
+                business_demand_type="SORTING_INBOUND_TARGET",
+                wms_operation_type="ALLOCATE_SORTING_TARGET_BIN",
+                snapshot_kind="ACTIVE_TARGET_BIN_RACK",
+                lease_scope="STATION",
+            ),
+        ),
         event_source_roles=EVENT_SOURCE_ROLES,
         command_target_roles=COMMAND_TARGET_ROLES,
         ng_reason_catalog=(_ng_reason(NG_REASON_LOCAL_SORTING_NG, "本地分拣 NG"),),

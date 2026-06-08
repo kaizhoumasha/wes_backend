@@ -243,6 +243,19 @@ class DeviceRoleRequirementOption(BaseModel):
     capabilities: list[str] = Field(default_factory=list, description="要求能力声明")
 
 
+class WorkLineSingleLayerRackBoundarySummary(BaseModel):
+    """插件声明的货架承接边界。"""
+
+    station_code: str = Field(description="插件内 station/工作位逻辑编码")
+    position_code: str = Field(description="WMS/RCS 约定的逻辑位置编码")
+    rack_kind: str = Field(description="承接货架类型")
+    station_role: str = Field(description="该边界在插件业务中的承接角色")
+    business_demand_type: str = Field(description="驱动该边界的业务需求类型")
+    wms_operation_type: str = Field(description="由 WMS 转发的货架运输 operation 类型")
+    snapshot_kind: str = Field(description="WES 需要读取的 active 快照类型")
+    lease_scope: str = Field(description="WES 业务预占范围")
+
+
 class WorkLinePluginOption(BaseModel):
     """作业线插件下拉选项。"""
 
@@ -265,6 +278,10 @@ class WorkLinePluginManifestSummary(BaseModel):
     command_target_roles: dict[str, list[str]] = Field(default_factory=dict, description="命令目标设备角色映射")
     supported_events: list[str] = Field(default_factory=list, description="支持的事件")
     supported_commands: list[str] = Field(default_factory=list, description="支持的命令")
+    single_layer_boundaries: list[WorkLineSingleLayerRackBoundarySummary] = Field(
+        default_factory=list,
+        description="插件声明的货架承接边界",
+    )
 
 
 class WorkLineConfigurationCheck(BaseModel):

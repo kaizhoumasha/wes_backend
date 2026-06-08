@@ -1,5 +1,6 @@
 import pytest
 
+from src.app.wms_integration.services import WmsTransportContractService
 from src.workline_runtime.runtime_intent import (
     BlockScope,
     Destination,
@@ -92,6 +93,41 @@ def test_external_request_requires_dispatch_key_target_payload_and_timeout() -> 
             payload={"rack_release_id": "release-001"},
             timeout_seconds=None,
         )
+
+
+def test_wms_transport_contract_builds_rack_operation_intent() -> None:
+    contract = WmsTransportContractService().build_single_layer_rack_operation_request(
+        business_demand_key="WMS-DEMAND-001",
+        workline_code="WL-SMT-01",
+        endpoint_code="SINGLE_LAYER_A",
+        rack_kind="SINGLE_LAYER",
+        rack_snapshot_ref="snapshot:WL-SMT-01:SINGLE_LAYER_A",
+        operation_type="SUPPLY_SINGLE_LAYER_RACK",
+        payload={
+            "station": {"position_code": "SINGLE_LAYER_A"},
+            "rack_tasks": [
+                {
+                    "sequence_no": 1,
+                    "task_type": "ALLOCATE_AND_MOVE_RACK",
+                    "rack_kind": "SINGLE_LAYER",
+                    "target_position_code": "SINGLE_LAYER_A",
+                }
+            ],
+            "trace_id": "trace-single-layer-001",
+        },
+        timeout_seconds=1800,
+    )
+
+    intent = RuntimeIntent.rack_operation_request(**contract)
+
+    assert intent.kind == RuntimeIntentKind.RACK_OPERATION_REQUEST
+    assert intent.action == "SUPPLY_SINGLE_LAYER_RACK"
+    assert intent.idempotency_key == "wms-rack-operation:WMS-DEMAND-001:WL-SMT-01:SINGLE_LAYER_A"
+    assert intent.target_code == "WMS_RCS_RACK_OPERATION"
+    assert not intent.target_code.startswith(("http://", "https://"))
+    assert intent.payload_json["business_demand_key"] == "WMS-DEMAND-001"
+    assert intent.payload_json["station"]["position_code"] == "SINGLE_LAYER_A"
+    assert intent.source_system is None
 
 
 def test_block_still_requires_scope_reason_and_message() -> None:

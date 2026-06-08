@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 _SCAN_PLATFORM_EMPTY = "EMPTY"
 _SCAN_PLATFORM_OCCUPIED = "OCCUPIED"
+_TARGET_STATION_CODE = "TARGET_STATION"
 
 
 def _dict_copy(value: Any) -> dict[str, Any]:
@@ -173,12 +174,12 @@ class SmtSortingInboundFlowService:
             )
         actual_thickness = actual_thickness_text
 
-        active_snapshot = await self._active_target_snapshot(ctx, sorting_context.sorting)
-        if active_snapshot is None:
-            return self._block("SORTING_TARGET_SNAPSHOT_MISSING", "缺少 active target bin 快照，无法自动分格")
+        active_snapshot, target_block = await self._target_station_ready_snapshot(ctx, sorting_context.sorting)
+        if target_block is not None:
+            return target_block
 
         allocation = self._allocation_policy.allocate(
-            active_snapshot=active_snapshot,
+            active_snapshot=cast("dict[str, Any]", active_snapshot),
             material_identity_key=actual_identity_key,
             reel_thickness_mm=actual_thickness,
         )
@@ -552,8 +553,11 @@ class SmtSortingInboundFlowService:
         if provider is not None:
             snapshot = provider.active_bin_rack(
                 context={
+                    "active_bin_rack": _dict_copy(sorting.get("active_target_bin")),
                     "active_target_bin_code": sorting.get("active_target_bin_code"),
                     "current_material": _dict_copy(sorting.get("current_material")),
+                    "station": {"position_code": _TARGET_STATION_CODE},
+                    "target_station_code": _TARGET_STATION_CODE,
                 }
             )
             if inspect.isawaitable(snapshot):
@@ -561,10 +565,54 @@ class SmtSortingInboundFlowService:
             if isinstance(snapshot, Mapping):
                 return dict(cast("Mapping[str, Any]", snapshot))
 
-        embedded_snapshot = sorting.get("active_target_bin")
-        if isinstance(embedded_snapshot, Mapping):
-            return dict(cast("Mapping[str, Any]", embedded_snapshot))
         return None
+
+    async def _target_station_ready_snapshot(
+        self,
+        ctx: PluginContext,
+        sorting: Mapping[str, Any],
+    ) -> tuple[dict[str, Any] | None, list[RuntimeIntent] | None]:
+        try:
+            target_station_status = await self._target_station_lease_status(ctx)
+        except ValueError as exc:
+            return None, self._block(
+                "SORTING_TARGET_STATION_LEASE_UNKNOWN",
+                "目标 Station lease 配置无效，无法自动分格",
+                payload={"position_code": _TARGET_STATION_CODE, "error": str(exc)},
+            )
+        if target_station_status is None:
+            return None, self._block(
+                "SORTING_TARGET_STATION_LEASE_UNKNOWN",
+                "缺少目标 Station lease 状态，无法自动分格",
+                payload={"position_code": _TARGET_STATION_CODE},
+            )
+        if not getattr(target_station_status, "available", False):
+            return None, self._block(
+                "SORTING_TARGET_STATION_LEASE_BUSY",
+                "目标 Station 当前不可用，无法自动分格",
+                payload={
+                    "position_code": _TARGET_STATION_CODE,
+                    "reason_code": str(getattr(target_station_status, "reason_code", None) or ""),
+                    "active_rack_code": getattr(target_station_status, "active_rack_code", None),
+                    "active_session_id": getattr(target_station_status, "active_session_id", None),
+                    "active_dispatch_key": getattr(target_station_status, "active_dispatch_key", None),
+                },
+            )
+
+        active_snapshot = await self._active_target_snapshot(ctx, sorting)
+        if active_snapshot is None:
+            return None, self._block("SORTING_TARGET_SNAPSHOT_MISSING", "缺少 active target bin 快照，无法自动分格")
+        return active_snapshot, None
+
+    @staticmethod
+    async def _target_station_lease_status(ctx: PluginContext) -> Any | None:
+        provider = getattr(getattr(ctx, "services", None), "station_lease_status_provider", None)
+        if provider is None:
+            return None
+        status = provider.station_lease_status(_TARGET_STATION_CODE, allow_active_rack_bound=True)
+        if inspect.isawaitable(status):
+            status = await status
+        return status
 
     def _source_pick_payload(
         self,
