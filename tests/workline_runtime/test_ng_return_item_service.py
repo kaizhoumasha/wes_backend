@@ -14,7 +14,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     NG_REASON_LOCAL_SORTING_NG,
     PHASE_WAITING_SOURCE_PICK,
-    ROLE_SORTING_NG_ARM,
+    ROLE_SORTING_TARGET_ARM,
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
     SORTING_CONTEXT_SCHEMA_VERSION,
@@ -182,10 +182,10 @@ async def _create_smt_local_ng_fixture(db_session):
     await db_session.flush()
 
     device = Device(
-        device_code="SMT-NG-ARM-01",
-        device_name="SMT NG ARM",
+        device_code="SMT-TARGET-ARM-01",
+        device_name="SMT TARGET ARM",
         work_line_id=workline.id,
-        device_role=ROLE_SORTING_NG_ARM,
+        device_role=ROLE_SORTING_TARGET_ARM,
         role_index=1,
     )
     db_session.add(device)

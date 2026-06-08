@@ -49,6 +49,129 @@ def _normalize_role_map(
     return normalized
 
 
+def _normalize_string_set(
+    value: Sequence[str] | set[str] | frozenset[str] | None, *, field_name: str
+) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    if isinstance(value, str | Mapping):
+        raise TypeError(f"manifest.{field_name} must be a string collection")
+
+    normalized: set[str] = set()
+    for item in value:
+        if not _non_empty_str(item):
+            raise ValueError(f"manifest.{field_name} must contain only non-empty strings")
+        normalized.add(item)
+    return frozenset(normalized)
+
+
+_ALLOWED_SINGLE_LAYER_STATION_ROLES = frozenset({"SOURCE", "TARGET", "CLASSIFIER_WORK"})
+_ALLOWED_SINGLE_LAYER_BUSINESS_DEMAND_TYPES = frozenset(
+    {"SORTING_INBOUND_SOURCE", "SORTING_INBOUND_TARGET", "ROUGH_SORTER_BIN_ALLOCATION"}
+)
+_ALLOWED_SINGLE_LAYER_WMS_OPERATION_TYPES = frozenset(
+    {"SUPPLY_SINGLE_LAYER_RACK", "ALLOCATE_SORTING_TARGET_BIN", "REPLACE_CLASSIFIER_WORK_RACK"}
+)
+_ALLOWED_SINGLE_LAYER_SNAPSHOT_KINDS = frozenset(
+    {"ACTIVE_SOURCE_BIN_RACK", "ACTIVE_TARGET_BIN_RACK", "ACTIVE_CLASSIFIER_BIN_RACK"}
+)
+_ALLOWED_SINGLE_LAYER_LEASE_SCOPES = frozenset({"STATION"})
+
+
+def _ensure_allowed_single_layer_boundary_value(field_name: str, value: str, allowed_values: frozenset[str]) -> None:
+    if value not in allowed_values:
+        allowed_text = ", ".join(sorted(allowed_values))
+        raise ValueError(f"SingleLayerRackBoundary.{field_name} must be one of: {allowed_text}")
+
+
+@dataclass(frozen=True)
+class SingleLayerRackBoundary:
+    """插件涉及货架承接时必须显式声明的 station/rack 边界。"""
+
+    station_code: str
+    position_code: str
+    rack_kind: str
+    station_role: str
+    business_demand_type: str
+    wms_operation_type: str
+    snapshot_kind: str
+    lease_scope: str
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "station_code",
+            "position_code",
+            "rack_kind",
+            "station_role",
+            "business_demand_type",
+            "wms_operation_type",
+            "snapshot_kind",
+            "lease_scope",
+        ):
+            if not _non_empty_str(getattr(self, field_name)):
+                raise ValueError(f"SingleLayerRackBoundary.{field_name} must be a non-empty string")
+        if self.rack_kind != "SINGLE_LAYER":
+            raise ValueError("SingleLayerRackBoundary.rack_kind must be SINGLE_LAYER")
+        _ensure_allowed_single_layer_boundary_value(
+            "station_role",
+            self.station_role,
+            _ALLOWED_SINGLE_LAYER_STATION_ROLES,
+        )
+        _ensure_allowed_single_layer_boundary_value(
+            "business_demand_type",
+            self.business_demand_type,
+            _ALLOWED_SINGLE_LAYER_BUSINESS_DEMAND_TYPES,
+        )
+        _ensure_allowed_single_layer_boundary_value(
+            "wms_operation_type",
+            self.wms_operation_type,
+            _ALLOWED_SINGLE_LAYER_WMS_OPERATION_TYPES,
+        )
+        _ensure_allowed_single_layer_boundary_value(
+            "snapshot_kind",
+            self.snapshot_kind,
+            _ALLOWED_SINGLE_LAYER_SNAPSHOT_KINDS,
+        )
+        _ensure_allowed_single_layer_boundary_value(
+            "lease_scope",
+            self.lease_scope,
+            _ALLOWED_SINGLE_LAYER_LEASE_SCOPES,
+        )
+
+    @classmethod
+    def from_value(cls, value: SingleLayerRackBoundary | Mapping[str, Any]) -> SingleLayerRackBoundary:
+        """从 dataclass 或 dict 归一化插件声明。"""
+
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, Mapping):
+            raise TypeError("manifest.single_layer_boundaries item must be a mapping or SingleLayerRackBoundary")
+        return cls(
+            station_code=str(value.get("station_code") or ""),
+            position_code=str(value.get("position_code") or ""),
+            rack_kind=str(value.get("rack_kind") or ""),
+            station_role=str(value.get("station_role") or ""),
+            business_demand_type=str(value.get("business_demand_type") or ""),
+            wms_operation_type=str(value.get("wms_operation_type") or ""),
+            snapshot_kind=str(value.get("snapshot_kind") or ""),
+            lease_scope=str(value.get("lease_scope") or ""),
+        )
+
+    def to_summary(self) -> dict[str, str]:
+        """导出给 API summary 的稳定结构。"""
+
+        return {
+            "station_code": self.station_code,
+            "position_code": self.position_code,
+            "rack_kind": self.rack_kind,
+            "station_role": self.station_role,
+            "business_demand_type": self.business_demand_type,
+            "wms_operation_type": self.wms_operation_type,
+            "snapshot_kind": self.snapshot_kind,
+            "lease_scope": self.lease_scope,
+        }
+
+
 @dataclass(frozen=True)
 class DeviceRoleRequirement:
     """插件所需设备角色和数量/能力约束。"""
@@ -84,6 +207,10 @@ class WorklinePluginManifest:
     command_target_roles: Mapping[str, str | tuple[str, ...] | list[str] | set[str]] | None = None
     supported_events: frozenset[str] = field(default_factory=frozenset)
     supported_commands: frozenset[str] = field(default_factory=frozenset)
+    capabilities: frozenset[str] | Sequence[str] = field(default_factory=frozenset)
+    resource_kinds: frozenset[str] | Sequence[str] = field(default_factory=frozenset)
+    requires_single_layer_boundary: bool = False
+    single_layer_boundaries: Sequence[SingleLayerRackBoundary | Mapping[str, Any]] = field(default_factory=tuple)
     material_identity_resolver: MaterialIdentityResolver | None = None
     ng_reason_catalog: Sequence[NgReasonDefinition] = field(default_factory=tuple)
 
@@ -104,6 +231,17 @@ class WorklinePluginManifest:
         normalized_event_source_roles = _normalize_role_map(self.event_source_roles)
         object.__setattr__(self, "event_source_roles", normalized_event_source_roles)
         object.__setattr__(self, "command_target_roles", _normalize_role_map(self.command_target_roles))
+        object.__setattr__(self, "capabilities", _normalize_string_set(self.capabilities, field_name="capabilities"))
+        object.__setattr__(
+            self, "resource_kinds", _normalize_string_set(self.resource_kinds, field_name="resource_kinds")
+        )
+        object.__setattr__(
+            self,
+            "single_layer_boundaries",
+            tuple(SingleLayerRackBoundary.from_value(boundary) for boundary in self.single_layer_boundaries),
+        )
+        if _requires_single_layer_boundaries(self) and not self.single_layer_boundaries:
+            raise ValueError("manifest.single_layer_boundaries must be declared for single-layer rack plugins")
         object.__setattr__(self, "ng_reason_catalog", tuple(self.ng_reason_catalog))
 
         owner = f"manifest {self.plugin_key}"
@@ -146,10 +284,21 @@ class WorklinePluginManifest:
         return self.ng_reason_catalog
 
 
+def _requires_single_layer_boundaries(manifest: WorklinePluginManifest) -> bool:
+    return (
+        bool(manifest.requires_single_layer_boundary)
+        or "SINGLE_LAYER" in manifest.resource_kinds
+        or "station_lease" in manifest.capabilities
+        or "active_snapshot" in manifest.capabilities
+        or "rack_operation" in manifest.capabilities
+    )
+
+
 __all__ = [
     "BusinessKeyResolver",
     "DeviceRoleRequirement",
     "MaterialIdentityResolver",
     "ResultClassifier",
+    "SingleLayerRackBoundary",
     "WorklinePluginManifest",
 ]

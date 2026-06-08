@@ -11,7 +11,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
     NG_REASON_LOCAL_SORTING_NG,
-    ROLE_SORTING_NG_ARM,
     ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
@@ -24,7 +23,7 @@ from src.workline_plugins.smt_sorting_inbound.context import SortingInboundConte
 from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
 from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
 from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
-from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
+from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, SingleLayerRackBoundary, WorklinePluginManifest
 
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
@@ -34,7 +33,7 @@ if TYPE_CHECKING:
 COMMAND_TARGET_ROLES: dict[str, str] = {
     COMMAND_SOURCE_PICK: ROLE_SORTING_SOURCE_ARM,
     COMMAND_TARGET_PLACE: ROLE_SORTING_TARGET_ARM,
-    COMMAND_NG_PLACE: ROLE_SORTING_NG_ARM,
+    COMMAND_NG_PLACE: ROLE_SORTING_TARGET_ARM,
 }
 
 EVENT_SOURCE_ROLES: dict[str, str] = {
@@ -100,7 +99,6 @@ class SmtSortingInboundPlugin(WorklinePlugin):
         required_device_roles=(
             DeviceRoleRequirement(role=ROLE_SORTING_SOURCE_ARM, min_count=1, max_count=1),
             DeviceRoleRequirement(role=ROLE_SORTING_TARGET_ARM, min_count=1, max_count=1),
-            DeviceRoleRequirement(role=ROLE_SORTING_NG_ARM, min_count=1, max_count=1),
             DeviceRoleRequirement(role=ROLE_SORTING_SCAN_PLATFORM, min_count=1, max_count=1),
             DeviceRoleRequirement(role=ROLE_SORTING_NG_STATION, min_count=1, max_count=1),
             DeviceRoleRequirement(role=ROLE_SORTING_WORKSTATION, min_count=1, max_count=1),
@@ -110,6 +108,41 @@ class SmtSortingInboundPlugin(WorklinePlugin):
         context_model=SortingInboundContext,
         supported_events=frozenset(EVENT_SOURCE_ROLES),
         supported_commands=frozenset(COMMAND_TARGET_ROLES),
+        capabilities=frozenset({"active_snapshot", "station_lease", "rack_operation"}),
+        resource_kinds=frozenset({"SINGLE_LAYER", "FIVE_LAYER"}),
+        requires_single_layer_boundary=True,
+        single_layer_boundaries=(
+            SingleLayerRackBoundary(
+                station_code="SOURCE_STATION_A",
+                position_code="SOURCE_STATION_A",
+                rack_kind="SINGLE_LAYER",
+                station_role="SOURCE",
+                business_demand_type="SORTING_INBOUND_SOURCE",
+                wms_operation_type="SUPPLY_SINGLE_LAYER_RACK",
+                snapshot_kind="ACTIVE_SOURCE_BIN_RACK",
+                lease_scope="STATION",
+            ),
+            SingleLayerRackBoundary(
+                station_code="SOURCE_STATION_B",
+                position_code="SOURCE_STATION_B",
+                rack_kind="SINGLE_LAYER",
+                station_role="SOURCE",
+                business_demand_type="SORTING_INBOUND_SOURCE",
+                wms_operation_type="SUPPLY_SINGLE_LAYER_RACK",
+                snapshot_kind="ACTIVE_SOURCE_BIN_RACK",
+                lease_scope="STATION",
+            ),
+            SingleLayerRackBoundary(
+                station_code="TARGET_STATION",
+                position_code="TARGET_STATION",
+                rack_kind="SINGLE_LAYER",
+                station_role="TARGET",
+                business_demand_type="SORTING_INBOUND_TARGET",
+                wms_operation_type="ALLOCATE_SORTING_TARGET_BIN",
+                snapshot_kind="ACTIVE_TARGET_BIN_RACK",
+                lease_scope="STATION",
+            ),
+        ),
         event_source_roles=EVENT_SOURCE_ROLES,
         command_target_roles=COMMAND_TARGET_ROLES,
         ng_reason_catalog=(_ng_reason(NG_REASON_LOCAL_SORTING_NG, "本地分拣 NG"),),
@@ -144,13 +177,13 @@ class SmtSortingInboundPlugin(WorklinePlugin):
 
     @on_command(COMMAND_NG_PLACE, result="SUCCESS")
     async def handle_ng_place_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
-        """NG 机械臂放置成功后，关闭本地 NG 物料。"""
+        """目标机械臂完成 NG 放置后，关闭本地 NG 物料。"""
 
         return await self._flow_service.handle_ng_place_success(ctx, inbox)
 
     @on_command(COMMAND_NG_PLACE, result="FAILED")
     async def handle_ng_place_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
-        """NG 机械臂放置失败后，阻断自动流转。"""
+        """目标机械臂 NG 放置失败后，阻断自动流转。"""
 
         return await self._flow_service.handle_ng_place_failed(ctx, inbox)
 

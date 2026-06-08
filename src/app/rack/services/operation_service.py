@@ -36,6 +36,7 @@ from src.app.resource.repositories.resource_repository import (
     rack_placement_repository,
 )
 from src.app.sys.models.outbox import (
+    DispatchEnvelope,
     OperationCompletionPolicy,
     SystemOutbox,
     SystemOutboxDispatchType,
@@ -46,6 +47,10 @@ from src.app.sys.repositories.outbox_repository import SystemOutboxRepository, o
 from src.app.workline.services.rack_position_service import (
     WorklineRackPositionService,
     workline_rack_position_service,
+)
+from src.app.workline.services.station_lease_service import (
+    StationLeaseService,
+    station_lease_service,
 )
 from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_int, coerce_optional_str, enum_value
@@ -94,6 +99,7 @@ class RackOperationService:
         outbox_repository: SystemOutboxRepository = outbox_repository,
         rack_position_service: WorklineRackPositionService = workline_rack_position_service,
         rack_placement_repository: RackPlacementRepository = rack_placement_repository,
+        station_lease_service: StationLeaseService = station_lease_service,
         gateway: WmsRcsRackGateway = wms_rcs_rack_gateway,
     ) -> None:
         self.rack_task_repository = rack_task_repository
@@ -102,6 +108,7 @@ class RackOperationService:
         self.outbox_repository = outbox_repository
         self.rack_position_service = rack_position_service
         self.rack_placement_repository = rack_placement_repository
+        self.station_lease_service = station_lease_service
         self.gateway = gateway
 
     async def request_operation_tasks(
@@ -157,6 +164,7 @@ class RackOperationService:
                 operation_type=operation_type,
                 specs=specs,
             )
+            await self._ensure_existing_task_outbox_session_owners(db, existing_tasks, session=session)
             return list(existing_tasks)
 
         await self._ensure_capacity_for_task_specs(
@@ -167,12 +175,14 @@ class RackOperationService:
         )
 
         created_tasks: list[Any] = []
+        released_station_position_codes = _released_station_position_codes(specs)
         for spec in specs:
             outbox = await self._get_or_create_outbox(
                 db,
                 session=session,
                 workline=workline,
                 spec=spec,
+                released_station_position_codes=released_station_position_codes,
             )
             task = await self.rack_task_lifecycle_service.record_requested_task(
                 db,
@@ -253,16 +263,63 @@ class RackOperationService:
         session: Any | None,
         workline: Any | None,
         spec: RackTaskSpec,
+        released_station_position_codes: set[str],
     ) -> SystemOutbox:
         payload_json = _outbox_payload(spec)
-        existing = await self.outbox_repository.get_by_dispatch_key(db, spec.dispatch_key)
+        existing = await self.outbox_repository.get_by_dispatch_key_for_update(db, spec.dispatch_key)
         if existing is not None:
+            _ensure_existing_outbox_active(existing)
             _ensure_existing_outbox_shape(existing, spec=spec, payload_json=payload_json)
+            await self._prepare_existing_outbox_for_request(db, existing, session=session, payload_json=payload_json)
             return existing
+
+        station_position_code = _station_dispatch_position_code(spec)
+        workline_id = coerce_optional_int(getattr(workline, "id", None))
+        workline_code = coerce_optional_str(getattr(workline, "line_code", None))
+        if station_position_code is not None and workline_id is not None and workline_code is not None:
+            try:
+                async with db.begin_nested():
+                    outbox = await self.station_lease_service.claim_station_dispatch_lease(
+                        db,
+                        workline_id=workline_id,
+                        workline_code=workline_code,
+                        position_code=station_position_code,
+                        envelope=DispatchEnvelope(
+                            session_id=coerce_optional_int(getattr(session, "id", None)),
+                            workline_id=workline_id,
+                            operation_domain="RACK",
+                            operation_key=coerce_optional_str(spec.request_json.get("operation_key")),
+                            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+                            dispatch_key=spec.dispatch_key,
+                            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+                            target_code=spec.target_code,
+                            payload_json=payload_json,
+                            trace_id=coerce_optional_str(spec.request_json.get("trace_id")),
+                        ),
+                        allow_active_rack_bound=_allows_active_rack_bound_for_station_claim(
+                            spec,
+                            station_position_code=station_position_code,
+                            released_station_position_codes=released_station_position_codes,
+                        ),
+                        allow_active_operation_key=coerce_optional_str(spec.request_json.get("operation_key")),
+                    )
+                    if outbox is None:
+                        raise ValueError("station dispatch lease is not available")
+            except IntegrityError:
+                existing = await self.outbox_repository.get_by_dispatch_key_for_update(db, spec.dispatch_key)
+                if existing is None:
+                    raise
+                _ensure_existing_outbox_active(existing)
+                _ensure_existing_outbox_shape(existing, spec=spec, payload_json=payload_json)
+                await self._prepare_existing_outbox_for_request(
+                    db, existing, session=session, payload_json=payload_json
+                )
+                return existing
+            return outbox
 
         outbox = SystemOutbox(
             session_id=coerce_optional_int(getattr(session, "id", None)),
-            workline_id=coerce_optional_int(getattr(workline, "id", None)),
+            workline_id=workline_id,
             operation_domain="RACK",
             operation_key=coerce_optional_str(spec.request_json.get("operation_key")),
             dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
@@ -278,12 +335,75 @@ class RackOperationService:
                 db.add(outbox)
                 await db.flush()
         except IntegrityError:
-            existing = await self.outbox_repository.get_by_dispatch_key(db, spec.dispatch_key)
+            existing = await self.outbox_repository.get_by_dispatch_key_for_update(db, spec.dispatch_key)
             if existing is None:
                 raise
+            _ensure_existing_outbox_active(existing)
             _ensure_existing_outbox_shape(existing, spec=spec, payload_json=payload_json)
+            await self._prepare_existing_outbox_for_request(db, existing, session=session, payload_json=payload_json)
             return existing
         return outbox
+
+    async def _ensure_existing_task_outbox_session_owners(
+        self,
+        db: AsyncSession,
+        tasks: list[Any],
+        *,
+        session: Any | None,
+    ) -> None:
+        session_id = coerce_optional_int(getattr(session, "id", None))
+        if session_id is None:
+            return
+        for task in tasks:
+            dispatch_key = coerce_optional_str(getattr(task, "dispatch_key", None))
+            if dispatch_key is None:
+                continue
+            outbox = await self.outbox_repository.get_by_dispatch_key_for_update(db, dispatch_key)
+            if outbox is not None:
+                await self._ensure_existing_outbox_session_owner(db, outbox, session=session)
+
+    @staticmethod
+    async def _prepare_existing_outbox_for_request(
+        db: AsyncSession,
+        outbox: SystemOutbox,
+        *,
+        session: Any | None,
+        payload_json: dict[str, Any],
+    ) -> None:
+        changed = False
+        can_patch_existing_outbox = _is_new_outbox(outbox)
+        if outbox.payload_json != payload_json:
+            if not can_patch_existing_outbox:
+                raise ValueError("existing rack operation outbox payload differs after dispatch")
+            outbox.payload_json = payload_json
+            changed = True
+
+        session_id = coerce_optional_int(getattr(session, "id", None))
+        if session_id is not None:
+            if outbox.session_id is None:
+                if not can_patch_existing_outbox:
+                    raise ValueError("existing rack outbox session owner missing after dispatch")
+                outbox.session_id = session_id
+                changed = True
+            elif outbox.session_id != session_id:
+                raise ValueError("existing rack outbox belongs to another session")
+
+        if changed:
+            await db.flush()
+
+    @staticmethod
+    async def _ensure_existing_outbox_session_owner(
+        db: AsyncSession, outbox: SystemOutbox, *, session: Any | None
+    ) -> None:
+        session_id = coerce_optional_int(getattr(session, "id", None))
+        if session_id is None:
+            return
+        if outbox.session_id is None:
+            outbox.session_id = session_id
+            await db.flush()
+            return
+        if outbox.session_id != session_id:
+            raise ValueError("existing rack outbox belongs to another session")
 
     async def derive_operation_status(
         self,
@@ -895,6 +1015,41 @@ def _outbox_payload(spec: RackTaskSpec) -> dict[str, Any]:
     }
 
 
+def _station_dispatch_position_code(spec: RackTaskSpec) -> str | None:
+    if spec.rack_kind != RackKind.SINGLE_LAYER.value:
+        return None
+    if spec.task_type == RackTaskType.MOVE_RACK.value:
+        return spec.source_position_code
+    if spec.task_type == RackTaskType.ALLOCATE_AND_MOVE_RACK.value:
+        return spec.target_position_code
+    return None
+
+
+def _released_station_position_codes(specs: list[RackTaskSpec]) -> set[str]:
+    return {
+        source_position_code
+        for spec in specs
+        for source_position_code in [coerce_optional_str(spec.source_position_code)]
+        if spec.rack_kind == RackKind.SINGLE_LAYER.value
+        and spec.task_type == RackTaskType.MOVE_RACK.value
+        and source_position_code is not None
+    }
+
+
+def _allows_active_rack_bound_for_station_claim(
+    spec: RackTaskSpec,
+    *,
+    station_position_code: str,
+    released_station_position_codes: set[str],
+) -> bool:
+    if spec.task_type == RackTaskType.MOVE_RACK.value:
+        return True
+    return (
+        spec.task_type == RackTaskType.ALLOCATE_AND_MOVE_RACK.value
+        and station_position_code in released_station_position_codes
+    )
+
+
 def _ensure_existing_outbox_shape(
     outbox: SystemOutbox,
     *,
@@ -914,6 +1069,33 @@ def _ensure_existing_outbox_shape(
             continue
         if existing_payload.get(key) != value:
             raise ValueError(f"existing rack operation outbox payload {key} differs from request")
+
+
+def _ensure_existing_outbox_active(outbox: SystemOutbox) -> None:
+    status = getattr(outbox, "status", None)
+    active_statuses = {
+        SystemOutboxStatus.NEW,
+        SystemOutboxStatus.DISPATCHING,
+        SystemOutboxStatus.SENT,
+        SystemOutboxStatus.BLOCKED_RESOURCE,
+    }
+    if isinstance(status, str):
+        active_values = {item.value for item in active_statuses}
+        status_is_active = status in active_values
+        status_is_blocked = status == SystemOutboxStatus.BLOCKED_RESOURCE.value
+    else:
+        status_is_active = status in active_statuses
+        status_is_blocked = status == SystemOutboxStatus.BLOCKED_RESOURCE
+
+    if not status_is_active or (getattr(outbox, "finished_at", None) is not None and not status_is_blocked):
+        raise ValueError("existing rack operation outbox is no longer active")
+
+
+def _is_new_outbox(outbox: SystemOutbox) -> bool:
+    status = getattr(outbox, "status", None)
+    if isinstance(status, str):
+        return status == SystemOutboxStatus.NEW.value
+    return status == SystemOutboxStatus.NEW
 
 
 def _reserved_target_position_codes(specs: list[RackTaskSpec]) -> set[str]:

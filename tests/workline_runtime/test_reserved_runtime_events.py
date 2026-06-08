@@ -1,8 +1,13 @@
+from types import SimpleNamespace
+
 import pytest
 
+from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.workline_runtime.plugin_base import WorklinePlugin, on_event
 from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
+from src.workline_runtime.plugin_sdk import canonicalize_event_type
 from src.workline_runtime.runtime_events import (
+    PLATFORM_CONTROL_EVENTS,
     RESERVED_RUNTIME_EVENTS,
     assert_not_reserved_runtime_event,
     is_platform_control_event,
@@ -31,6 +36,25 @@ def test_platform_runtime_event_taxonomy_separates_control_safety_and_production
     assert is_platform_control_event("SCAN_COMPLETED") is False
     assert is_platform_safety_event("SCAN_COMPLETED") is False
     assert is_production_event("SCAN_COMPLETED") is True
+
+
+def test_workline_start_requested_is_platform_control_only() -> None:
+    workline = SimpleNamespace(runtime_config_json={"event_type_mapping": {"SCAN_FINISH": "WORKLINE_START_REQUESTED"}})
+
+    assert "WORKLINE_START_REQUESTED" in PLATFORM_CONTROL_EVENTS
+    assert "WORKLINE_START_REQUESTED" not in RESERVED_RUNTIME_EVENTS
+    assert is_platform_control_event("WORKLINE_START_REQUESTED") is True
+    assert is_platform_safety_event("WORKLINE_START_REQUESTED") is False
+    assert is_production_event("WORKLINE_START_REQUESTED") is False
+    with pytest.raises(ValueError, match="WORKLINE_START_REQUESTED 是平台保留控制事件"):
+        canonicalize_event_type("SCAN_FINISH", workline=workline)
+
+
+def test_workline_runtime_status_does_not_define_line_idle_state() -> None:
+    assert "READY" in WorkLineRuntimeStatus.__members__
+    assert "IDLE" not in WorkLineRuntimeStatus.__members__
+    assert "LINE_IDLE" not in WorkLineRuntimeStatus.__members__
+    assert "WORKLINE_IDLE" not in WorkLineRuntimeStatus.__members__
 
 
 def test_runtime_event_helper_rejects_estop_with_actionable_message() -> None:

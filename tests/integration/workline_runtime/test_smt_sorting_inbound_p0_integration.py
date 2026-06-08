@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -20,6 +21,28 @@ if TYPE_CHECKING:
     from src.workline_runtime.plugin_context import PluginContext
 
 
+class _FakeStationLeaseStatusProvider:
+    available = True
+
+    async def station_lease_status(
+        self,
+        _position_code: str,
+        *,
+        allow_active_rack_bound: bool = False,
+    ) -> _FakeStationLeaseStatusProvider:
+        return self
+
+
+class _SessionActiveTargetSnapshotProvider:
+    def __init__(self, session_context: dict[str, Any]) -> None:
+        self._session_context = session_context
+
+    async def active_bin_rack(self, *, context: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
+        sorting = self._session_context.get("sorting")
+        active_target_bin = sorting.get("active_target_bin") if isinstance(sorting, dict) else None
+        return dict(cast("Mapping[str, Any]", active_target_bin)) if isinstance(active_target_bin, Mapping) else None
+
+
 def _ctx(session_context: dict[str, Any]) -> PluginContext:
     return cast(
         "PluginContext",
@@ -29,7 +52,10 @@ def _ctx(session_context: dict[str, Any]) -> PluginContext:
             logger=SimpleNamespace(info=lambda *_args: None, warning=lambda *_args: None),
             normalized_input=None,
             session=SimpleNamespace(id=3001, context_json=session_context),
-            services=SimpleNamespace(),
+            services=SimpleNamespace(
+                active_rack_snapshot_provider=_SessionActiveTargetSnapshotProvider(session_context),
+                station_lease_status_provider=_FakeStationLeaseStatusProvider(),
+            ),
         ),
     )
 

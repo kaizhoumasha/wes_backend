@@ -703,6 +703,55 @@ class TestRuntimeQueryService:
 
         detail = RuntimeWorklineDetailResponse(summary=summary)
         assert detail.model_dump()["summary"]["start_admission_status"] == "FAILED"
+        assert detail.model_dump()["workline_readiness"] == "UNKNOWN"
+        assert detail.model_dump()["station_lease"] == "UNKNOWN"
+        assert detail.model_dump()["single_layer_rack_snapshot"] == "UNKNOWN"
+        assert detail.model_dump()["rack_operation_wait"] == "NONE"
+        assert detail.model_dump()["resource_evidence_kind"] == "UNKNOWN"
+
+    def test_runtime_workline_detail_schema_exposes_structured_boundary_fields(self) -> None:
+        from src.app.workline.models.runtime import RuntimeWorklineDetailResponse
+
+        schema = RuntimeWorklineDetailResponse.model_json_schema()
+        properties = schema["properties"]
+
+        def enum_values(field_name: str) -> list[str]:
+            field_schema = properties[field_name]
+            if "enum" in field_schema:
+                return field_schema["enum"]
+            ref_name = field_schema["$ref"].removeprefix("#/$defs/")
+            return schema["$defs"][ref_name]["enum"]
+
+        assert enum_values("workline_readiness") == ["READY", "NOT_READY", "UNKNOWN"]
+        assert enum_values("station_lease") == [
+            "IDLE",
+            "ACTIVE_RACK_BOUND",
+            "ACTIVE_DISPATCH_LEASE",
+            "ACTIVE_SESSION_BOUND",
+            "UNKNOWN",
+        ]
+        assert enum_values("single_layer_rack_snapshot") == [
+            "ACTIVE",
+            "MISSING",
+            "INVALID",
+            "NON_SINGLE_LAYER_EVIDENCE",
+            "UNKNOWN",
+        ]
+        assert enum_values("rack_operation_wait") == [
+            "WAITING_WMS",
+            "WMS_CALLBACK_RECEIVED",
+            "TIMEOUT",
+            "FAILED",
+            "NONE",
+            "UNKNOWN",
+        ]
+        assert enum_values("resource_evidence_kind") == [
+            "WES_ACTIVE_SNAPSHOT",
+            "WMS_CALLBACK_EVIDENCE",
+            "TRACE_RESOURCE_EVIDENCE",
+            "GENERIC_EVIDENCE",
+            "UNKNOWN",
+        ]
 
     def test_build_workline_summary_requires_persisted_workline(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
@@ -1816,6 +1865,446 @@ class TestRuntimeQueryService:
         mock_completed_sessions.assert_awaited_once_with(AnyArgHashable(), 45, limit=10)
         assert result is not None
         assert result.recent_completed_traces == [completed_trace]
+
+    @pytest.mark.asyncio
+    async def test_get_workline_detail_ignores_completed_session_for_current_rack_operation_wait(self) -> None:
+        from src.app.workline.models.runtime import RuntimeTraceListItem
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key=None,
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+        now = timezone.now_for_db()
+        completed_session = SimpleNamespace(
+            id=20,
+            status="COMPLETED",
+            context_json={"rack_operation": {"operation_key": "rack-op-1", "status": "ARRIVED"}},
+            last_ingress_at=None,
+            waiting_since=None,
+            ended_at=now,
+            started_at=now - timedelta(minutes=5),
+            created_at=now - timedelta(minutes=6),
+        )
+        completed_trace = RuntimeTraceListItem(
+            session_id=20,
+            session_code="SES-20",
+            workline_id=45,
+            status="COMPLETED",
+        )
+        db = AsyncMock()
+        db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: workline)
+
+        async def build_trace_items(_db, sessions):
+            if sessions == [completed_session]:
+                return [completed_trace]
+            return []
+
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(
+                service,
+                "_load_recent_completed_sessions_for_workline",
+                new=AsyncMock(return_value=[completed_session]),
+                create=True,
+            ),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(side_effect=build_trace_items)),
+        ):
+            result = await service.get_workline_detail(db, 45)
+
+        assert result is not None
+        assert result.rack_operation_wait == "NONE"
+        assert result.recent_completed_traces == [completed_trace]
+
+    @pytest.mark.asyncio
+    async def test_get_workline_detail_returns_structured_boundary_contract(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key="SMT_SORTING_INBOUND",
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+        waiting_session = SimpleNamespace(
+            id=20,
+            status="WAITING_EXTERNAL",
+            context_json={"waiting_rack_operation_key": "rack-op-1"},
+            last_ingress_at=None,
+            waiting_since=timezone.now_for_db(),
+            deadline_at=None,
+            started_at=timezone.now_for_db(),
+            created_at=timezone.now_for_db(),
+        )
+        db = AsyncMock()
+        db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: workline)
+        station_statuses = [
+            SimpleNamespace(available=True, reason_code=None),
+            SimpleNamespace(available=False, reason_code="ACTIVE_DISPATCH_LEASE"),
+            SimpleNamespace(available=True, reason_code=None),
+        ]
+
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[waiting_session])),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_completed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+            patch(
+                "src.app.workline.services.runtime_query_service.station_lease_service.get_station_lease_status",
+                new=AsyncMock(side_effect=station_statuses),
+            ) as mock_station_lease,
+            patch(
+                "src.app.workline.services.runtime_query_service.smt_active_rack_snapshot_service.get_active_bin_rack",
+                new=AsyncMock(return_value={"rack_code": "RACK-001"}),
+            ) as mock_snapshot,
+        ):
+            result = await service.get_workline_detail(db, 45)
+
+        assert result is not None
+        assert result.workline_readiness == "READY"
+        assert result.station_lease == "ACTIVE_DISPATCH_LEASE"
+        assert result.single_layer_rack_snapshot == "ACTIVE"
+        assert result.rack_operation_wait == "WAITING_WMS"
+        assert result.resource_evidence_kind == "WES_ACTIVE_SNAPSHOT"
+        assert mock_station_lease.await_args_list[0].kwargs["position_code"] == "SOURCE_STATION_A"
+        assert mock_station_lease.await_args_list[1].kwargs["position_code"] == "SOURCE_STATION_B"
+        assert mock_station_lease.await_args_list[2].kwargs["position_code"] == "TARGET_STATION"
+        assert mock_snapshot.await_args_list[0].kwargs["context"] == {"station": {"position_code": "SOURCE_STATION_A"}}
+        assert mock_snapshot.await_args_list[1].kwargs["context"] == {"station": {"position_code": "SOURCE_STATION_B"}}
+        assert mock_snapshot.await_args_list[2].kwargs["context"] == {"station": {"position_code": "TARGET_STATION"}}
+
+    @pytest.mark.asyncio
+    async def test_get_workline_detail_downgrades_boundary_when_station_config_missing(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key="SMT_SORTING_INBOUND",
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+        db = AsyncMock()
+        db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: workline)
+
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_completed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+            patch(
+                "src.app.workline.services.runtime_query_service.station_lease_service.get_station_lease_status",
+                new=AsyncMock(side_effect=ValueError("workline rack position not found")),
+            ),
+            patch(
+                "src.app.workline.services.runtime_query_service.smt_active_rack_snapshot_service.get_active_bin_rack",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await service.get_workline_detail(db, 45)
+
+        assert result is not None
+        assert result.workline_readiness == "READY"
+        assert result.station_lease == "UNKNOWN"
+        assert result.single_layer_rack_snapshot == "MISSING"
+        assert result.rack_operation_wait == "NONE"
+
+    @pytest.mark.asyncio
+    async def test_get_workline_detail_keeps_station_lease_unknown_when_any_source_config_missing(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key="SMT_SORTING_INBOUND",
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+        db = AsyncMock()
+        db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: workline)
+
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_completed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+            patch(
+                "src.app.workline.services.runtime_query_service.station_lease_service.get_station_lease_status",
+                new=AsyncMock(
+                    side_effect=[
+                        SimpleNamespace(available=True, reason_code=None),
+                        ValueError("workline rack position not found"),
+                        SimpleNamespace(available=True, reason_code=None),
+                    ]
+                ),
+            ),
+            patch(
+                "src.app.workline.services.runtime_query_service.smt_active_rack_snapshot_service.get_active_bin_rack",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await service.get_workline_detail(db, 45)
+
+        assert result is not None
+        assert result.station_lease == "UNKNOWN"
+
+    @pytest.mark.asyncio
+    async def test_get_workline_detail_projects_wms_callback_and_non_single_layer_evidence(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key="SMT_SORTING_INBOUND",
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+        session = SimpleNamespace(
+            id=20,
+            status="WAITING_EXTERNAL",
+            context_json={
+                "rack_operation": {
+                    "operation_key": "rack-op-1",
+                    "status": "ARRIVED",
+                    "source_system": "WMS",
+                    "callback_type": "WMS_RACK_ARRIVED",
+                    "rack_kind": "FIVE_LAYER",
+                },
+            },
+            last_ingress_at=None,
+            waiting_since=timezone.now_for_db(),
+            deadline_at=None,
+            started_at=timezone.now_for_db(),
+            created_at=timezone.now_for_db(),
+        )
+        db = AsyncMock()
+        db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: workline)
+
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[session])),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_completed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+            patch(
+                "src.app.workline.services.runtime_query_service.station_lease_service.get_station_lease_status",
+                new=AsyncMock(return_value=SimpleNamespace(available=True, reason_code=None)),
+            ),
+            patch(
+                "src.app.workline.services.runtime_query_service.smt_active_rack_snapshot_service.get_active_bin_rack",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await service.get_workline_detail(db, 45)
+
+        assert result is not None
+        assert result.rack_operation_wait == "WMS_CALLBACK_RECEIVED"
+        assert result.resource_evidence_kind == "WMS_CALLBACK_EVIDENCE"
+        assert result.single_layer_rack_snapshot == "NON_SINGLE_LAYER_EVIDENCE"
+
+    @pytest.mark.asyncio
+    async def test_get_workline_detail_projects_timed_out_rack_operation_wait(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key="rough_sorter",
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+        session = SimpleNamespace(
+            id=20,
+            status="WAITING_EXTERNAL",
+            context_json={
+                "waiting_rack_operation_key": "rack-op-timeout",
+                "rack_operation": {"operation_key": "rack-op-timeout", "status": "PENDING"},
+                "resource_evidence": {"resource_evidence_kind": "TRACE_RESOURCE_EVIDENCE"},
+            },
+            last_ingress_at=None,
+            waiting_since=timezone.now_for_db() - timedelta(minutes=5),
+            deadline_at=timezone.now_for_db() - timedelta(minutes=1),
+            started_at=timezone.now_for_db() - timedelta(minutes=10),
+            created_at=timezone.now_for_db() - timedelta(minutes=11),
+        )
+        db = AsyncMock()
+        db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: workline)
+
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[session])),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_completed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+            patch(
+                "src.app.workline.services.runtime_query_service.station_lease_service.get_station_lease_status",
+                new=AsyncMock(return_value=SimpleNamespace(available=True, reason_code=None)),
+            ),
+            patch(
+                "src.app.workline.services.runtime_query_service.smt_active_rack_snapshot_service.get_active_bin_rack",
+                new=AsyncMock(side_effect=ValueError("invalid active snapshot")),
+            ),
+        ):
+            result = await service.get_workline_detail(db, 45)
+
+        assert result is not None
+        assert result.single_layer_rack_snapshot == "INVALID"
+        assert result.rack_operation_wait == "TIMEOUT"
+        assert result.resource_evidence_kind == "TRACE_RESOURCE_EVIDENCE"
+
+    @pytest.mark.asyncio
+    async def test_get_workline_detail_projects_explicit_timeout_rack_operation_status(self) -> None:
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key="rough_sorter",
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+        session = SimpleNamespace(
+            id=20,
+            status="WAITING_EXTERNAL",
+            context_json={
+                "waiting_rack_operation_key": "rack-op-timeout",
+                "rack_operation": {"operation_key": "rack-op-timeout", "status": "TIMEOUT"},
+            },
+            last_ingress_at=None,
+            waiting_since=timezone.now_for_db() - timedelta(minutes=5),
+            deadline_at=None,
+            started_at=timezone.now_for_db() - timedelta(minutes=10),
+            created_at=timezone.now_for_db() - timedelta(minutes=11),
+        )
+        db = AsyncMock()
+        db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: workline)
+
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[session])),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_completed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+            patch(
+                "src.app.workline.services.runtime_query_service.station_lease_service.get_station_lease_status",
+                new=AsyncMock(return_value=SimpleNamespace(available=True, reason_code=None)),
+            ),
+            patch(
+                "src.app.workline.services.runtime_query_service.smt_active_rack_snapshot_service.get_active_bin_rack",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await service.get_workline_detail(db, 45)
+
+        assert result is not None
+        assert result.rack_operation_wait == "TIMEOUT"
 
     @pytest.mark.asyncio
     async def test_load_active_sessions_for_device_queries_sessions_directly(self) -> None:

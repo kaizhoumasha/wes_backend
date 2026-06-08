@@ -83,6 +83,7 @@ def _context(
         "trace_id": "trace-001",
         "six_in_one": six_in_one,
         "reel_diameter": reel_diameter,
+        "work_position_code": "SINGLE_LAYER_A",
         "active_bin_rack": {
             "rack_id": rack_id,
             "rack_code": rack_id,
@@ -606,6 +607,23 @@ def test_plan_allocation_full_rack_without_compatible_cell_requires_rack_operati
     assert len(payload["active_rack_bin_snapshots"]) == 4
 
 
+def test_plan_allocation_missing_work_position_blocks_without_rack_operation_request() -> None:
+    """换架 operation 缺少显式工作位时阻断，不回退到默认 SINGLE_LAYER_A。"""
+
+    service = SmtRackBinSchedulingService()
+    context = _context(cells=_full_rack_cells(), reel_diameter="15inch")
+    context.pop("work_position_code")
+
+    decision = service.plan_allocation(
+        "SVYU00125TP4LCR02_2",
+        context=context,
+    )
+
+    assert decision.kind == "BLOCKED"
+    assert decision.reason_code == "RACK_OPERATION_WORK_POSITION_MISSING"
+    assert decision.rack_operation_request is None
+
+
 def test_plan_allocation_accepts_legacy_rack_supply_target_alias() -> None:
     """兼容旧配置仍在使用的 wms_rcs_rack_supply_url。"""
 
@@ -631,6 +649,7 @@ def test_plan_allocation_missing_active_rack_requires_rack_operation_with_reason
         "SVYU00125TP4LCR02_2",
         context={
             "six_in_one": SIX_IN_ONE,
+            "work_position_code": "SINGLE_LAYER_A",
             "active_bin_rack": None,
             "wms_rcs_rack_operation_url": "http://wms-rcs/api/rack-operation",
         },
@@ -653,6 +672,7 @@ def test_plan_allocation_without_active_rack_requests_operation_allocate_only() 
             "trace_id": "trace-supply-001",
             "six_in_one": SIX_IN_ONE,
             "reel_diameter": "7inch",
+            "work_position_code": "SINGLE_LAYER_A",
             "active_bin_rack": None,
             "wms_rcs_rack_operation_url": "http://wms-rcs/api/rack-operation",
         },

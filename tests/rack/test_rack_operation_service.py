@@ -23,6 +23,7 @@ from src.app.sys.models import (
 )
 from src.app.workline.models.session import SessionStatus
 from src.celery_app.app import celery_app
+from src.utils.timezone import timezone
 
 RACK_TRANSPORT_OPERATION_TYPE = "RACK_TRANSPORT"
 CLASSIFIER_WORK_POSITION_CODE = "CLASSIFIER-WORK"
@@ -278,6 +279,7 @@ class FakeOutboxRepository:
     def __init__(self) -> None:
         self.by_dispatch_key: dict[str, SystemOutbox] = {}
         self.calls: list[str] = []
+        self.locked_calls: list[str] = []
         self.return_none_once_for: set[str] = set()
 
     async def get_by_dispatch_key(self, _db: Any, dispatch_key: str) -> SystemOutbox | None:
@@ -287,8 +289,59 @@ class FakeOutboxRepository:
             return None
         return self.by_dispatch_key.get(dispatch_key)
 
+    async def get_by_dispatch_key_for_update(self, _db: Any, dispatch_key: str) -> SystemOutbox | None:
+        self.locked_calls.append(dispatch_key)
+        if dispatch_key in self.return_none_once_for:
+            self.return_none_once_for.remove(dispatch_key)
+            return None
+        return self.by_dispatch_key.get(dispatch_key)
+
     def add_existing(self, outbox: SystemOutbox) -> SystemOutbox:
         self.by_dispatch_key[outbox.dispatch_key] = outbox
+        return outbox
+
+
+class FakeStationLeaseService:
+    def __init__(
+        self,
+        *,
+        unavailable_positions: set[str] | None = None,
+        active_rack_bound_positions: set[str] | None = None,
+    ) -> None:
+        self.unavailable_positions = unavailable_positions or set()
+        self.active_rack_bound_positions = active_rack_bound_positions or set()
+        self.calls: list[dict[str, Any]] = []
+
+    async def claim_station_dispatch_lease(self, db: Any, **kwargs: Any) -> SystemOutbox | None:
+        self.calls.append(kwargs)
+        if kwargs["position_code"] in self.unavailable_positions:
+            return None
+        if kwargs["position_code"] in self.active_rack_bound_positions and not kwargs["allow_active_rack_bound"]:
+            return None
+
+        envelope = kwargs["envelope"]
+        payload_json = dict(envelope.payload_json)
+        station = dict(payload_json.get("station") or {})
+        station.setdefault("workline_code", kwargs["workline_code"])
+        station["position_code"] = kwargs["position_code"]
+        payload_json["station"] = station
+        payload_json.setdefault("workline_code", kwargs["workline_code"])
+        payload_json["position_code"] = kwargs["position_code"]
+        outbox = SystemOutbox(
+            session_id=envelope.session_id,
+            workline_id=kwargs["workline_id"],
+            operation_domain=envelope.operation_domain,
+            operation_key=envelope.operation_key,
+            dispatch_type=envelope.dispatch_type,
+            dispatch_key=envelope.dispatch_key,
+            target_type=envelope.target_type,
+            target_code=envelope.target_code,
+            payload_json=payload_json,
+            status=SystemOutboxStatus.NEW,
+            trace_id=envelope.trace_id,
+        )
+        db.add(outbox)
+        await db.flush()
         return outbox
 
 
@@ -362,6 +415,7 @@ def _service(
     task_repository: FakeRackTaskRepository | None = None,
     system_outbox_repository: FakeOutboxRepository | None = None,
     rack_operation_repository: Any | None = None,
+    station_lease_service: FakeStationLeaseService | None = None,
 ) -> tuple[
     RackOperationService,
     FakeRackTaskRepository,
@@ -371,6 +425,7 @@ def _service(
     task_repository = task_repository or FakeRackTaskRepository()
     system_outbox_repository = system_outbox_repository or FakeOutboxRepository()
     rack_operation_repository = rack_operation_repository or FakeRackOperationRepository(existing=False)
+    station_lease_service = station_lease_service or FakeStationLeaseService()
     lifecycle_service = FakeRackTaskLifecycleService(task_repository)
     placement_repository = FakeRackPlacementRepository(
         active_placements=active_placements,
@@ -385,6 +440,7 @@ def _service(
             outbox_repository=system_outbox_repository,
             rack_position_service=FakeRackPositionService(capacity=capacity, allowed_rack_kind=allowed_rack_kind),
             rack_placement_repository=placement_repository,
+            station_lease_service=station_lease_service,
         ),
         task_repository,
         lifecycle_service,
@@ -753,6 +809,103 @@ async def test_request_operation_tasks_creates_move_out_and_supply_tasks_with_sa
     assert session.status == SessionStatus.RUNNING
     assert session.context_json == {"kept": "value"}
     assert session.awaiting_command_id == 99
+
+
+@pytest.mark.asyncio
+async def test_request_operation_tasks_claims_station_dispatch_lease_for_single_layer_station_tasks() -> None:
+    station_lease_service = FakeStationLeaseService()
+    service, _repo, _lifecycle, _placements = _service(
+        active_placements=[_active_rack()],
+        station_lease_service=station_lease_service,
+    )
+
+    await _request_classifier_replacement(
+        service,
+        FakeDb(),
+        operation_key="op-station-lease",
+        trace_id="trace-station-lease",
+    )
+
+    assert [call["position_code"] for call in station_lease_service.calls] == [
+        CLASSIFIER_WORK_POSITION_CODE,
+        CLASSIFIER_WORK_POSITION_CODE,
+    ]
+    assert [call["allow_active_rack_bound"] for call in station_lease_service.calls] == [True, True]
+    assert {call["allow_active_operation_key"] for call in station_lease_service.calls} == {"op-station-lease"}
+    assert [call["envelope"].dispatch_key for call in station_lease_service.calls] == [
+        "rack-operation:op-station-lease:1:MOVE_RACK",
+        "rack-operation:op-station-lease:2:ALLOCATE_AND_MOVE_RACK",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_request_operation_tasks_allows_same_operation_supply_to_replace_active_station_rack() -> None:
+    station_lease_service = FakeStationLeaseService(active_rack_bound_positions={CLASSIFIER_WORK_POSITION_CODE})
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[_active_rack()],
+        station_lease_service=station_lease_service,
+    )
+
+    tasks = await _request_classifier_replacement(
+        service,
+        FakeDb(),
+        operation_key="op-replace-active-station",
+        trace_id="trace-replace-active-station",
+    )
+
+    assert [task.task_type for task in tasks] == [
+        RackTaskType.MOVE_RACK.value,
+        RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+    ]
+    assert [call["dispatch_key"] for call in lifecycle.calls] == [
+        "rack-operation:op-replace-active-station:1:MOVE_RACK",
+        "rack-operation:op-replace-active-station:2:ALLOCATE_AND_MOVE_RACK",
+    ]
+    assert [call["allow_active_rack_bound"] for call in station_lease_service.calls] == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_request_operation_tasks_rejects_single_layer_task_when_station_dispatch_lease_busy() -> None:
+    station_lease_service = FakeStationLeaseService(unavailable_positions={CLASSIFIER_WORK_POSITION_CODE})
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[],
+        active_count=0,
+        station_lease_service=station_lease_service,
+    )
+
+    with pytest.raises(ValueError, match="station dispatch lease is not available"):
+        await _request_classifier_replacement(
+            service,
+            FakeDb(),
+            operation_key="op-station-busy",
+            trace_id="trace-station-busy",
+            include_move_out=False,
+        )
+
+    assert lifecycle.calls == []
+    assert [call["position_code"] for call in station_lease_service.calls] == [CLASSIFIER_WORK_POSITION_CODE]
+
+
+@pytest.mark.asyncio
+async def test_request_operation_tasks_rejects_supply_only_when_active_station_rack_bound() -> None:
+    station_lease_service = FakeStationLeaseService(active_rack_bound_positions={CLASSIFIER_WORK_POSITION_CODE})
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[],
+        active_count=0,
+        station_lease_service=station_lease_service,
+    )
+
+    with pytest.raises(ValueError, match="station dispatch lease is not available"):
+        await _request_classifier_replacement(
+            service,
+            FakeDb(),
+            operation_key="op-supply-active-station",
+            trace_id="trace-supply-active-station",
+            include_move_out=False,
+        )
+
+    assert lifecycle.calls == []
+    assert [call["allow_active_rack_bound"] for call in station_lease_service.calls] == [False]
 
 
 @pytest.mark.asyncio
@@ -1482,6 +1635,123 @@ async def test_repeated_replace_operation_returns_existing_tasks_without_recheck
 
 
 @pytest.mark.asyncio
+async def test_repeated_operation_links_existing_task_outbox_to_current_session() -> None:
+    task_repository = FakeRackTaskRepository()
+    existing_task = task_repository.add_existing(
+        operation_key="op-repeated-ownerless",
+        sequence_no=2,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        rack_kind=RackKind.SINGLE_LAYER.value,
+        source_position_code=None,
+        target_position_code=CLASSIFIER_WORK_POSITION_CODE,
+        target_position_role=CLASSIFIER_WORK_POSITION_ROLE,
+        target_code=RACK_OPERATION_TARGET_CODE,
+    )
+    system_outbox_repository = FakeOutboxRepository()
+    existing_outbox = system_outbox_repository.add_existing(
+        SystemOutbox(
+            dispatch_key=existing_task.dispatch_key,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code=RACK_OPERATION_TARGET_CODE,
+            operation_domain="RACK",
+            operation_key="op-repeated-ownerless",
+            workline_id=45,
+            session_id=None,
+            payload_json=dict(existing_task.request_json),
+            status=SystemOutboxStatus.NEW,
+        )
+    )
+    service, _repo, lifecycle, _placements = _service(
+        task_repository=task_repository,
+        system_outbox_repository=system_outbox_repository,
+    )
+    db = FakeDb()
+    session = _session()
+
+    tasks = await service.request_operation_tasks(
+        db,
+        operation_key="op-repeated-ownerless",
+        operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+        workline=_workline(),
+        session=session,
+        target_code=RACK_OPERATION_TARGET_CODE,
+        trace_id="trace-repeated-ownerless",
+        task_specs=[
+            {
+                "sequence_no": 2,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "rack_kind": RackKind.SINGLE_LAYER.value,
+                "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+            }
+        ],
+    )
+
+    assert tasks == [existing_task]
+    assert existing_outbox.session_id == session.id
+    assert lifecycle.calls == []
+    assert system_outbox_repository.locked_calls == [existing_task.dispatch_key]
+
+
+@pytest.mark.asyncio
+async def test_repeated_operation_rejects_existing_task_outbox_owned_by_different_session() -> None:
+    task_repository = FakeRackTaskRepository()
+    existing_task = task_repository.add_existing(
+        operation_key="op-repeated-conflict",
+        sequence_no=2,
+        task_type=RackTaskType.ALLOCATE_AND_MOVE_RACK,
+        rack_kind=RackKind.SINGLE_LAYER.value,
+        source_position_code=None,
+        target_position_code=CLASSIFIER_WORK_POSITION_CODE,
+        target_position_role=CLASSIFIER_WORK_POSITION_ROLE,
+        target_code=RACK_OPERATION_TARGET_CODE,
+    )
+    system_outbox_repository = FakeOutboxRepository()
+    system_outbox_repository.add_existing(
+        SystemOutbox(
+            dispatch_key=existing_task.dispatch_key,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code=RACK_OPERATION_TARGET_CODE,
+            operation_domain="RACK",
+            operation_key="op-repeated-conflict",
+            workline_id=45,
+            session_id=999,
+            payload_json=dict(existing_task.request_json),
+            status=SystemOutboxStatus.NEW,
+        )
+    )
+    service, _repo, lifecycle, _placements = _service(
+        task_repository=task_repository,
+        system_outbox_repository=system_outbox_repository,
+    )
+
+    with pytest.raises(ValueError, match="existing rack outbox belongs to another session"):
+        await service.request_operation_tasks(
+            FakeDb(),
+            operation_key="op-repeated-conflict",
+            operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+            workline=_workline(),
+            session=_session(),
+            target_code=RACK_OPERATION_TARGET_CODE,
+            trace_id="trace-repeated-conflict",
+            task_specs=[
+                {
+                    "sequence_no": 2,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "rack_kind": RackKind.SINGLE_LAYER.value,
+                    "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                    "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+                }
+            ],
+        )
+
+    assert lifecycle.calls == []
+    assert system_outbox_repository.locked_calls == [existing_task.dispatch_key]
+
+
+@pytest.mark.asyncio
 async def test_repeated_operation_rejects_missing_non_required_physical_task() -> None:
     task_repository = FakeRackTaskRepository()
     task_repository.add_existing(
@@ -1837,6 +2107,196 @@ async def test_request_reuses_existing_outbox_when_task_is_missing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_request_links_reused_ownerless_outbox_to_current_session() -> None:
+    system_outbox_repository = FakeOutboxRepository()
+    dispatch_key = "rack-operation:op-reused-ownerless:2:ALLOCATE_AND_MOVE_RACK"
+    existing_outbox = system_outbox_repository.add_existing(
+        SystemOutbox(
+            dispatch_key=dispatch_key,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code=RACK_OPERATION_TARGET_CODE,
+            operation_domain="RACK",
+            operation_key="op-reused-ownerless",
+            workline_id=45,
+            session_id=None,
+            payload_json={
+                "dispatch_key": dispatch_key,
+                "callback_type": "WMS_RACK_ARRIVED",
+                "operation_key": "op-reused-ownerless",
+                "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
+                "sequence_no": 2,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "workline_code": "WL-SMT-01",
+                "rack_kind": RackKind.SINGLE_LAYER.value,
+                "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+            },
+            status=SystemOutboxStatus.NEW,
+        )
+    )
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[],
+        active_count=0,
+        system_outbox_repository=system_outbox_repository,
+    )
+    db = FakeDb()
+    session = _session()
+
+    await service.request_operation_tasks(
+        db,
+        operation_key="op-reused-ownerless",
+        operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+        workline=_workline(),
+        session=session,
+        target_code=RACK_OPERATION_TARGET_CODE,
+        trace_id="trace-reused-ownerless",
+        task_specs=[
+            {
+                "sequence_no": 2,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "rack_kind": RackKind.SINGLE_LAYER.value,
+                "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+            }
+        ],
+    )
+
+    assert existing_outbox.session_id == session.id
+    assert lifecycle.calls[0]["outbox"] is existing_outbox
+    assert existing_outbox.payload_json["request_id"] == dispatch_key
+    assert existing_outbox.payload_json["callback_type"] == "WMS_RACK_ARRIVED"
+    assert existing_outbox.payload_json["source"] == {"position_code": None}
+    assert existing_outbox.payload_json["target"] == {
+        "position_code": CLASSIFIER_WORK_POSITION_CODE,
+        "position_role": CLASSIFIER_WORK_POSITION_ROLE,
+    }
+    assert existing_outbox.target_code == RACK_OPERATION_TARGET_CODE
+    assert existing_outbox.payload_json["actions"] == {
+        "action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+        "required": True,
+    }
+    assert db.flush_count == 1
+
+
+@pytest.mark.asyncio
+async def test_request_rejects_reused_finished_outbox() -> None:
+    system_outbox_repository = FakeOutboxRepository()
+    dispatch_key = "rack-operation:op-reused-finished:2:ALLOCATE_AND_MOVE_RACK"
+    system_outbox_repository.add_existing(
+        SystemOutbox(
+            dispatch_key=dispatch_key,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code=RACK_OPERATION_TARGET_CODE,
+            operation_domain="RACK",
+            operation_key="op-reused-finished",
+            workline_id=45,
+            session_id=300,
+            payload_json={
+                "dispatch_key": dispatch_key,
+                "callback_type": "WMS_RACK_ARRIVED",
+                "operation_key": "op-reused-finished",
+                "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
+                "sequence_no": 2,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "workline_code": "WL-SMT-01",
+                "rack_kind": RackKind.SINGLE_LAYER.value,
+                "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+            },
+            status=SystemOutboxStatus.SENT,
+            finished_at=timezone.now_for_db(),
+        )
+    )
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[],
+        active_count=0,
+        system_outbox_repository=system_outbox_repository,
+    )
+
+    with pytest.raises(ValueError, match="existing rack operation outbox is no longer active"):
+        await service.request_operation_tasks(
+            FakeDb(),
+            operation_key="op-reused-finished",
+            operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+            workline=_workline(),
+            session=_session(),
+            target_code=RACK_OPERATION_TARGET_CODE,
+            trace_id="trace-reused-finished",
+            task_specs=[
+                {
+                    "sequence_no": 2,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "rack_kind": RackKind.SINGLE_LAYER.value,
+                    "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                    "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+                }
+            ],
+        )
+
+    assert lifecycle.calls == []
+
+
+@pytest.mark.asyncio
+async def test_request_rejects_reused_outbox_owned_by_different_session() -> None:
+    system_outbox_repository = FakeOutboxRepository()
+    dispatch_key = "rack-operation:op-reused-conflict:2:ALLOCATE_AND_MOVE_RACK"
+    system_outbox_repository.add_existing(
+        SystemOutbox(
+            dispatch_key=dispatch_key,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code=RACK_OPERATION_TARGET_CODE,
+            operation_domain="RACK",
+            operation_key="op-reused-conflict",
+            workline_id=45,
+            session_id=999,
+            payload_json={
+                "dispatch_key": dispatch_key,
+                "callback_type": "WMS_RACK_ARRIVED",
+                "operation_key": "op-reused-conflict",
+                "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
+                "sequence_no": 2,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "workline_code": "WL-SMT-01",
+                "rack_kind": RackKind.SINGLE_LAYER.value,
+                "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+            },
+            status=SystemOutboxStatus.NEW,
+        )
+    )
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[],
+        active_count=0,
+        system_outbox_repository=system_outbox_repository,
+    )
+
+    with pytest.raises(ValueError, match="existing rack outbox belongs to another session"):
+        await service.request_operation_tasks(
+            FakeDb(),
+            operation_key="op-reused-conflict",
+            operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+            workline=_workline(),
+            session=_session(),
+            target_code=RACK_OPERATION_TARGET_CODE,
+            trace_id="trace-reused-conflict",
+            task_specs=[
+                {
+                    "sequence_no": 2,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "rack_kind": RackKind.SINGLE_LAYER.value,
+                    "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                    "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+                }
+            ],
+        )
+
+    assert lifecycle.calls == []
+
+
+@pytest.mark.asyncio
 async def test_request_reuses_existing_outbox_after_integrity_error_on_concurrent_insert() -> None:
     system_outbox_repository = FakeOutboxRepository()
     dispatch_key = "rack-operation:op-outbox-race:2:ALLOCATE_AND_MOVE_RACK"
@@ -1885,7 +2345,119 @@ async def test_request_reuses_existing_outbox_after_integrity_error_on_concurren
 
     assert len(tasks) == 1
     assert lifecycle.calls[0]["outbox"] is existing_outbox
-    assert system_outbox_repository.calls == [dispatch_key, dispatch_key]
+    assert system_outbox_repository.locked_calls == [dispatch_key, dispatch_key]
+    assert db.nested_rollback_count == 1
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
+
+
+@pytest.mark.asyncio
+async def test_request_links_ownerless_outbox_after_integrity_error_on_concurrent_insert() -> None:
+    system_outbox_repository = FakeOutboxRepository()
+    dispatch_key = "rack-operation:op-outbox-race-ownerless:2:ALLOCATE_AND_MOVE_RACK"
+    existing_outbox = system_outbox_repository.add_existing(
+        SystemOutbox(
+            id=89,
+            session_id=None,
+            workline_id=45,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            dispatch_key=dispatch_key,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code="WMS-RACK",
+            payload_json={
+                "operation_key": "op-outbox-race-ownerless",
+                "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
+                "sequence_no": 2,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "workline_code": "WL-SMT-01",
+                "rack_kind": RackKind.SINGLE_LAYER.value,
+                "source_position_code": None,
+                "target_position_code": "CLASSIFIER-WORK",
+                "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                "trace_id": "trace-outbox-race-ownerless",
+                "dispatch_key": dispatch_key,
+                "actions": {"action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
+            },
+            status=SystemOutboxStatus.NEW,
+        )
+    )
+    system_outbox_repository.return_none_once_for.add(dispatch_key)
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[],
+        active_count=0,
+        system_outbox_repository=system_outbox_repository,
+    )
+    db = FakeDb()
+    db.fail_next_flush_with_integrity = True
+    session = _session()
+
+    tasks = await _request_classifier_replacement(
+        service,
+        db,
+        operation_key="op-outbox-race-ownerless",
+        session=session,
+        trace_id="trace-outbox-race-ownerless",
+        include_move_out=False,
+    )
+
+    assert len(tasks) == 1
+    assert existing_outbox.session_id == session.id
+    assert lifecycle.calls[0]["outbox"] is existing_outbox
+    assert system_outbox_repository.locked_calls == [dispatch_key, dispatch_key]
+    assert db.nested_rollback_count == 1
+    assert db.flush_count == 2
+    assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
+
+
+@pytest.mark.asyncio
+async def test_request_rejects_conflicting_outbox_after_integrity_error_on_concurrent_insert() -> None:
+    system_outbox_repository = FakeOutboxRepository()
+    dispatch_key = "rack-operation:op-outbox-race-conflict:2:ALLOCATE_AND_MOVE_RACK"
+    system_outbox_repository.add_existing(
+        SystemOutbox(
+            id=89,
+            session_id=999,
+            workline_id=45,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            dispatch_key=dispatch_key,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code="WMS-RACK",
+            payload_json={
+                "operation_key": "op-outbox-race-conflict",
+                "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
+                "sequence_no": 2,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "workline_code": "WL-SMT-01",
+                "rack_kind": RackKind.SINGLE_LAYER.value,
+                "source_position_code": None,
+                "target_position_code": "CLASSIFIER-WORK",
+                "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                "trace_id": "trace-outbox-race-conflict",
+                "dispatch_key": dispatch_key,
+                "actions": {"action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
+            },
+            status=SystemOutboxStatus.NEW,
+        )
+    )
+    system_outbox_repository.return_none_once_for.add(dispatch_key)
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[],
+        active_count=0,
+        system_outbox_repository=system_outbox_repository,
+    )
+    db = FakeDb()
+    db.fail_next_flush_with_integrity = True
+
+    with pytest.raises(ValueError, match="existing rack outbox belongs to another session"):
+        await _request_classifier_replacement(
+            service,
+            db,
+            operation_key="op-outbox-race-conflict",
+            trace_id="trace-outbox-race-conflict",
+            include_move_out=False,
+        )
+
+    assert lifecycle.calls == []
+    assert system_outbox_repository.locked_calls == [dispatch_key, dispatch_key]
     assert db.nested_rollback_count == 1
     assert [item for item in db.added if isinstance(item, SystemOutbox)] == []
 
@@ -1936,6 +2508,56 @@ async def test_request_reuses_existing_outbox_when_only_trace_id_differs() -> No
 
     assert len(tasks) == 1
     assert lifecycle.calls[0]["outbox"] is existing_outbox
+
+
+@pytest.mark.asyncio
+async def test_request_rejects_dispatched_existing_outbox_when_payload_differs() -> None:
+    system_outbox_repository = FakeOutboxRepository()
+    dispatch_key = "rack-operation:op-dispatched-outbox-trace:2:ALLOCATE_AND_MOVE_RACK"
+    existing_payload = {
+        "operation_key": "op-dispatched-outbox-trace",
+        "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
+        "sequence_no": 2,
+        "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+        "workline_code": "WL-SMT-01",
+        "rack_kind": RackKind.SINGLE_LAYER.value,
+        "source_position_code": None,
+        "target_position_code": "CLASSIFIER-WORK",
+        "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+        "trace_id": "trace-old",
+        "dispatch_key": dispatch_key,
+        "actions": {"action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
+    }
+    existing_outbox = system_outbox_repository.add_existing(
+        SystemOutbox(
+            id=91,
+            session_id=300,
+            workline_id=45,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            dispatch_key=dispatch_key,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code="WMS-RACK",
+            payload_json=dict(existing_payload),
+            status=SystemOutboxStatus.SENT,
+        )
+    )
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[],
+        active_count=0,
+        system_outbox_repository=system_outbox_repository,
+    )
+
+    with pytest.raises(ValueError, match="payload differs after dispatch"):
+        await _request_classifier_replacement(
+            service,
+            FakeDb(),
+            operation_key="op-dispatched-outbox-trace",
+            trace_id="trace-new",
+            include_move_out=False,
+        )
+
+    assert lifecycle.calls == []
+    assert existing_outbox.payload_json == existing_payload
 
 
 @pytest.mark.asyncio

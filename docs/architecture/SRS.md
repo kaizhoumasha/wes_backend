@@ -11,7 +11,7 @@
 
 本文档定义了 **休斯顿 P9 智能仓储执行系统 (WES)** 的架构与功能需求。
 
-本项目不再定位为传统的 WMS，而是一个 **独立于现有企业级 WMS/SAP 的控制中台**。它旨在作为一个高可用、低延迟的智能化中间层，向上承接 ERP/WMS 的业务单据，向下协调各类异构自动化设备 (AGV, 机械臂, 流水线)，实现仓储物流的 "大脑" 职能。
+本项目不再定位为传统的 WMS，而是一个 **独立于现有企业级 WMS/SAP 的控制中台**。它旨在作为一个高可用、低延迟的智能化中间层，向上承接 ERP/WMS 的业务单据，向下协调自动化执行：本版本直接接入 ECS/视觉/贴标/X-Ray/LCR 等作业设备；AGV/CTU/RCS 类搬运、交换、旋转任务统一提交现有 WMS 转发执行，WES 不直连 RCS。
 
 系统具备 **独立部署 (Standalone Deployment)**、**API 驱动 (API-Driven)** 和 **业务逻辑可配置 (Configurable Logic)** 的特性，确保在外部网络或上层系统波动时，现场自动化作业仍能维持核心运行。
 
@@ -19,9 +19,9 @@
 
 本系统的核心职责是 **执行 (Execution)** 与 **协调 (Coordination)**：
 
-* **业务解耦**: 将复杂的硬件交互逻辑从企业级 SAP/WMS 中剥离，由本中台统一管理。
-* **多设备调度**: 统一调度 RCS (机器人)、WCS (输送线)、ECS (设备控制)，解决多设备协同作业难题。
-* **标准化接口**: 提供标准 RESTful API 供上层系统调用，提供标准 Protocol Adapter 对接下层硬件。
+* **业务解耦**: 将自动化执行策略、设备作业逻辑从企业级 SAP/WMS 中剥离，由本中台统一协调；库存、货架资源与 RCS 调度权仍由现有 WMS 持有。
+* **多设备协同**: 直接协调 ECS/WCS/视觉/贴标/X-Ray/LCR 等作业设备；AGV/CTU/RCS 任务由 WES 生成业务需求并提交 WMS，由 WMS 转发执行。
+* **标准化接口**: 提供标准 RESTful API 供上层系统调用，提供标准 Protocol Adapter 对接 WES 直连设备；搬运/交换/旋转类任务通过 WMS 接口转发。
 * **核心域**:
   * **入库执行**: 码头收货、IQC 路由、上架策略执行。
   * **库存代理**: 采用 **按需动态查询 (On-Demand Query)** 模式，实时调用 WMS 接口获取库存数据，不维护本地库存副本。
@@ -56,7 +56,7 @@
     * **任务编排 (Orchestration)**: 将 L1 的 "单据" 拆解为 L3 的 "原子指令"。
     * **状态机 (State Machine)**: 跟踪每个料箱、每个任务的实时状态。
 * **L3 - 执行层 (External - Hardware)**:
-  * **职责**: 物理动作执行 (RCS, ECS)。
+  * **职责**: 物理动作执行 (RCS, ECS)。其中 ECS 类作业设备由 WES 直接接入；RCS/AGV/CTU 类运输与交换设备由 WMS 统一调度并向 WES 回传结果。
 
 ### 2.2 关键架构特性 (Key Architectural Characteristics)
 
@@ -66,7 +66,7 @@
    * 系统包含完整的前后端、数据库及中间件 (Dockerized)。
    * **网络依赖性**: 系统作业强依赖于上游 WMS 的在线状态。若与 SAP/Legacy WMS 断网，系统将执行以下策略:
      * **立即暂停**: 所有涉及库存变动的业务任务 (收货、发料、装箱等)
-     * **允许继续**: 纯物理搬运任务 (AGV 回充电桩、空箱回流、设备空闲调度等)
+     * **外部续行**: 已由 WMS 接收并转发的纯物理搬运任务可由外部系统自行完成；WES 暂停新的搬运/交换需求提交，并等待回调或对账恢复。
      * **自动恢复**: 网络恢复后，自动继续执行被暂停的任务，无需人工干预
 2. **API 驱动架构 (API-Driven)**:
    * **API First**: 所有功能（包括前端 UI）均通过 RESTful/gRPC API 访问。
@@ -90,7 +90,7 @@
 
 > **本阶段集成边界 (Phase Boundary)**
 >
-> - **RCS 调度**: 仍由现有 WMS 统一调度。WES 生成搬运需求并提交给 WMS，由 WMS 调用 RCS 并将结果/事件回传 WES；WES 不直接调用 RCS。
+> - **RCS/AGV/CTU 调度**: 本版本仍由现有 WMS 统一调度。WES 只生成搬运、交换、旋转等业务需求并提交给 WMS，由 WMS 转发给 RCS/AGV/CTU 并将结果/事件回传 WES；WES 不直接调用 RCS，不直接下发 AGV/CTU 任务。
 > - **PDA 交互**: PDA 仅对接 WMS 应用；若 WES 需要感知 PDA 结果/事件，由 WMS 推送/同步给 WES。
 > - **自动化设备**: 所有自动化设备（ECS/视觉/贴标/X-Ray/LCR/打印机等）只通过 WES 接入，WMS 不直连设备。
 > - **标签打印**: WES 生成打印模板/ZPL。若为自动打印设备，则由 WES 下发；若为人工/非自动打印，则 WMS 获取模板后完成打印并回执结果。
@@ -145,8 +145,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * 单层货架满箱 -> CTU 交换至五层货架空箱位。
   * 生产发料: CTU 从五层货架取料箱 -> 放至单层货架 -> AGV 运至产线。
 * **调度策略**：
-  * **冷热区管理**: 高频物料分配至 A 面靠近产线侧，低频物料分配至 B 面远端。
-  * **A/B 面平衡**: WES 动态平衡两侧负载，避免单侧过载影响 CTU 效率。
+  * **冷热区管理**: 五层货架冷热区、A/B 面负载、空箱授权和 CTU 路径由 WMS/RCS 作为权威系统判断。
+  * **A/B 面平衡**: WES 可基于工单、波次或产线需求生成策略建议、交换需求或补给需求并提交 WMS；WES 只保存 WMS 授权结果、回调、执行投影和对账证据，不动态平衡五层货架两侧真实负载。
 
 **3. 生产货架 / 退货货架 (Production Rack / Return Rack)**
 
@@ -161,8 +161,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * 生产发料: 料箱 -> 人工拆箱 -> 料盘放至生产货架 -> 产线上料。
   * 生产退料: 产线下料 -> 料盘放至退货货架 -> 拆飞达 -> 装入料箱 -> 退库。
 * **管理特点**：
-  * **料盘级追踪**: WES 追踪每个料盘的 PKG 码和储位位置 (Rack_ID + Side + Slot_ID)。
-  * **A/B 面隔离**: 不同产线或不同工单的料盘可分配至不同面，避免混料。
+  * **料盘级执行证据**: WES 保存检测、贴标、人工确认和 WMS 回调形成的 PKG、Rack_ID、Side、Slot_ID 执行投影或证据；真实储位归属、库存可用性和 A/B 面资源授权以 WMS 为准。
+  * **A/B 面证据投影**: WES 可展示不同产线或工单的执行证据分布，但不作为生产货架或退货货架 A/B 面真实占用主账。
 
 ---
 
@@ -172,7 +172,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 #### 3.2.1 码头接收与绑定 (Dock Receiving & Binding)
 
-* **流程概述**: 物流录入 -> 导入到货清单 -> 打印栈板码 -> 物理扫码绑定 (支持混托) -> 呼叫 RCS 分流。
+* **流程概述**: 物流录入 -> 导入到货清单 -> 打印栈板码 -> 物理扫码绑定 (支持混托) -> 通过 WMS 转发 RCS 分流。
 * **关键变更**: **不再依赖供应商 ASN (Advance Shipping Notice)**，采用到货后导入清单或现场录入的方式。
 * **WMS 核心功能**:
   1. **到货清单管理 (Arrival List Management)**:
@@ -189,11 +189,11 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
        * **贵重料 (Precious)**: -> **贵重品仓** (人工直送，IQC 在仓内取样)。
        * **PCB/机构件**: -> **专属暂存区** (不与电子料混放)。
        * **普通电子料 (SMT/MSD/异形)**: -> **收货暂存区** (进入 IQC 流程)。
-     * WMS 生成搬运任务 `Transport_Task` 并调度 RCS。
+     * WMS 生成搬运任务 `Transport_Task` 并转发调度 RCS。
 
 #### 3.2.2 IQC 动态路由与复判 (IQC Routing & Review)
 
-* **流程概述**: 待检列表 (Wait List) -> RCS 呼叫 -> IQC 取样 -> 结果录入 -> 路由/复判。
+* **流程概述**: 待检列表 (Wait List) -> WMS 转发 RCS 呼叫 -> IQC 取样 -> 结果录入 -> 路由/复判。
 * **设计理念**: 引入 **待检列表 (Wait List)** 与 **QMS 动态抽检**，缓解 IQC 物理区域压力。
 * **WMS 核心功能**:
   1. **待检列表与优先级 (Wait List & Priority)**:
@@ -205,7 +205,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
      * **接口参数**: `(Material, Vendor, DC, Qty)` 或 `GRN`。
      * **免检逻辑**: 若 QMS 返回 `Sample_Qty = 0`，直接标记为 **免检 (Pass)**，无需进入 IQC 区域。
   3. **IQC 执行 (IQC Execution)**:
-     * **RCS 呼叫**: IQC 人员在 Web 端点击 "呼叫"，RCS 将栈板搬运至 IQC 工作台。
+     * **WMS 转发 RCS 呼叫**: IQC 人员在 Web 端点击 "呼叫"，WMS 转发 RCS 将栈板搬运至 IQC 工作台。
        * *自动模式*: 优先推荐包含多个待检 GRN 的栈板。
        * *手动模式*: 允许指定呼叫特定栈板。
      * **取样操作**: 扫描栈板号 -> 显示待检 GRN -> 逐盘扫描 PKG (直至达到抽检量) -> 取走样品。
@@ -232,7 +232,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 本环节位于 **IQC 完成后** 与 **正式上架前**。目的是将“标准盘自动化物料”与“特殊物料”进行物理分离，确保自动化立库的高效运行。
 
-* **流程概述**: `待收列表` -> RCS 呼叫 -> 预拆板/分流判断 -> 执行分流。
+* **流程概述**: `待收列表` -> WMS 转发 RCS 呼叫 -> 预拆板/分流判断 -> 执行分流。
 * **WMS 核心功能**:
   1. **待收列表 (Pending Acceptance List)**:
      * 显示所有 **IQC Pass (含免检)** 且在暂存区的栈板。
@@ -301,6 +301,11 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
         *   **层次归属**: `zone_code`, `work_line_code` (设备所属的区域和作业线)。
         *   **用途说明**: 设备的功能描述 (如 "用来点货，绑定栈板发运送任务")。
 
+*   **WorkLine 启动与分拣机设备边界**:
+    *   `WORKLINE_START_REQUESTED` 只表示工作线进入 READY/待机状态，可以开始接收业务需求；不表示已有货架到位，也不表示立即开始分拣。
+    *   分拣机只有 `SOURCE_ARM` 和 `TARGET_ARM` 两个机械臂，不存在 NG 专用机械臂；NG 放置动作由 `TARGET_ARM` 完成，目标设备角色仍是 `ROLE_SORTING_TARGET_ARM`。
+    *   分拣作业启动必须同时满足业务需求、WorkLine READY、Station 业务 lease 空闲、单层货架 active 执行快照或 WMS 到位/授权回调；具体设备命令下发前再按设备角色执行实时准入。
+
 **6. 任务管理 (Task Management)**
 
 *   **任务队列 (Task Queue)**:
@@ -331,17 +336,17 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 * **场景**: 从 **收货验收区 (流向 A)** -> 粗分机拆箱 -> 放入 **单层货架 (Single-Layer Rack)** (详见 3.1.2)。
 * **货架规格**: 单层货架可承载 **4 个料箱**，用于中转缓存，适合高频装卸操作。
-* **参与者**: WES (大脑), ECS (机械臂/视觉), RCS (AGV), 人工 (拆箱)。
+* **参与者**: WES (大脑), ECS (机械臂/视觉), WMS 转发的 RCS/AGV 搬运能力, 人工 (拆箱)。
 * **WES 控制逻辑**:
 
   **Step 1: 空架补给 (Empty Rack Supply)**
 
-  * **监控**: WES 监控装箱区是否有可用空单层货架 (4 个料箱位)。
-  * **决策**: 若无，WES 生成搬运需求从 "单层货架存放区" 补给空架，提交给 WMS 调度 RCS。
+  * **监控**: WES 基于单层货架 active 执行快照、WMS 授权结果和回调证据判断装箱区是否已有可执行空单层货架 (4 个料箱位)；空架资源主账和物理占用仍由 WMS/RCS 持有。
+  * **决策**: 若无，WES 生成搬运需求从 "单层货架存放区" 补给空架并提交 WMS，由 WMS 转发 RCS 执行。
   * **ECS 握手**:
     * ECS 机械臂扫描空架所有箱号。
     * `ECS -> WES: Verify_Empty(List<BinID>)`.
-    * WES 确认无误后，允许作业启动。
+    * WES 基于 ECS 证据确认当前执行快照无误后，允许本次装箱作业启动；该确认不代表 WES 接管全局空架库存或物理库位权威。
 
   **Step 2: 视觉识别与分箱校验 (Vision & Binning Validation)**
 
@@ -365,16 +370,16 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 * **装不进**: 若 ECS 反馈 `Put_Fail` (物理无法放入)，WES 标记该 Slot 异常，重新分配。
 * **初次无货架**: SMT 粗分机开工或当前 session 恢复时，如果粗分机工位没有 `active_bin_rack`，
-  SMT 插件只发起 `SMT_RACK_SUPPLY` 新货架补充请求，等待 WMS/RCS 回调 `WMS_RACK_ARRIVED` 后继续当前料盘分配；
+  SMT 插件只发起 `SMT_RACK_SUPPLY` 新货架补充请求，等待 WMS 回调 `WMS_RACK_ARRIVED` 后继续当前料盘分配；
   此场景不触发满箱交换。
 * **当前货架无可用料格**: 当 `active_bin_rack` 存在，但 4 个料箱中没有同 DC/LC 兼容格位，也没有满足料盘尺寸的空格时，
   SMT 插件同时执行两件事:
   * 向满箱交换插件发内部设备事件 `SINGLE_LAYER_RACK_RELEASED`，事件携带
     `rack_release_id`、`single_layer_rack_id`、`source_classifier_line_code`、`source_task_batch_id`、
     `release_reason_code=NO_COMPATIBLE_OR_EMPTY_CELL`、`bin_snapshots`。
-  * 向 WMS/RCS 发起 `SMT_RACK_SUPPLY` 新货架补充请求，并在当前 SMT session 的 `rack_supply` 上下文中记录
+  * 向 WMS 发起 `SMT_RACK_SUPPLY` 新货架补充请求，并在当前 SMT session 的 `rack_supply` 上下文中记录
     `dispatch_key`、`reason_code`、`pkg_id` 和恢复所需的设备信息。
-* **新货架到位恢复**: WMS/RCS 回调 `WMS_RACK_ARRIVED` 后，SMT 插件用回调中的 `active_bin_rack` 重新执行料格分配；
+* **新货架到位恢复**: WMS 回调 `WMS_RACK_ARRIVED` 后，SMT 插件用回调中的 `active_bin_rack` 重新执行料格分配；
   如果仍无可用料格，则再次按上述规则请求下一架。只有出料机械臂成功把当前料盘放入料格后，当前 SMT session 才完成。
 
 #### 3.3.2 混合入库策略 (Hybrid Inbound Strategy)
@@ -385,21 +390,21 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   1. **模式判断 (Mode Decision)**:
 
-     * **满箱交换 (Full Exchange)**: 若料箱 `Usage >= 80%` 且 WMS/RCS 授权存在可用空箱资源 -> WES 生成 **满箱交换外部请求**。
-     * **优先交换 (Priority Exchange)**: 若 `50% <= Usage < 80%`，WES 可向 WMS/RCS 请求优先交换；若 WMS/RCS 返回无资源或拒绝，则执行拣选或进入人工对账。
-     * **零散入库 (Pipeline Picking)**: 若料箱 `Usage < 50%`，或 WMS/RCS 未授权空箱资源 -> WES 生成 **拣选任务**。
+     * **满箱交换 (Full Exchange)**: 若料箱 `Usage >= 80%` 且 WMS 授权存在可用空箱资源 -> WES 生成 **满箱交换外部请求**。
+     * **优先交换 (Priority Exchange)**: 若 `50% <= Usage < 80%`，WES 可向 WMS 请求优先交换；若 WMS 返回无资源或拒绝，则执行拣选或进入人工对账。
+     * **零散入库 (Pipeline Picking)**: 若料箱 `Usage < 50%`，或 WMS 未授权空箱资源 -> WES 生成 **拣选任务**。
      * **混合模式**: 先交换，后拣选。
   2. **满箱交换执行 (Full Exchange Execution)**:
 
-     * WMS/RCS 负责判断五层货架空箱资源、交换区空位、排队和 CTU/AGV 动作闭环；WES 不本地锁定 `Empty_Bin`。
-     * WES 生成交换外部请求 `FULL_BIN_EXCHANGE(Source_Single_Layer_Rack, RackReleaseSnapshot)` 并提交给 WMS，由 WMS 调度 RCS/CTU 执行原子动作。
-     * **数据更新**: 交换完成后，库存属性、库存转移和账务确认由 WMS 完成；WES 只保存执行快照、WMS/RCS 回调、资源投影和回写证据。
+     * WMS 负责判断五层货架空箱资源、交换区空位、排队和 CTU/AGV 动作闭环；WES 不本地锁定 `Empty_Bin`。
+     * WES 生成交换外部请求 `FULL_BIN_EXCHANGE(Source_Single_Layer_Rack, RackReleaseSnapshot)` 并提交给 WMS，由 WMS 转发 RCS/CTU 执行原子动作。
+     * **数据更新**: 交换完成后，库存属性、库存转移和账务确认由 WMS 完成；WES 只保存执行快照、WMS 回调、资源投影和回写证据。
      * **职责边界**: 满箱交换插件只消费 `SINGLE_LAYER_RACK_RELEASED` 事件，判断旧货架是否需要满箱交换并生成旧货架处理请求；
        它不恢复 SMT 粗分机当前料盘 session，也不决定新货架补充。SMT 当前 session 的恢复只由 `SMT_RACK_SUPPLY`
        对应的 `WMS_RACK_ARRIVED` 回调驱动。
   3. **流水线零散入库 (Pipeline Picking Execution)**:
 
-     * **调度**: WES 生成 Target Bin (从五层货架) 到流水线的搬运需求，提交 WMS 调度 RCS。
+     * **调度**: WES 生成 Target Bin (从五层货架) 到流水线的搬运需求并提交 WMS，由 WMS 转发 RCS 执行。
      * **拣选指令**:
        * ECS 扫描流水线上的 Target Bin。
        * `WES -> ECS: Pick_List(From_Rack, To_Bin, Qty)`.
@@ -411,6 +416,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 * **WES 核心算法 (Rolling Wave)**:
 
   1. **任务接入**: 接收 SAP 工单，根据 "开线时间 + 6小时补料间隔" 生成波次。
+     * **驱动原则**: 生产发料/出库必须由工单、波次或产线需求驱动，不由货架就绪事实自行选择业务。
   2. **任务拆解**:
      * **电子料 (Auto)**: 生成 `Auto_Pick_Task`.
      * **特殊料 (Manual)**: 生成 `Rack_Move_Task` (MSD/PCB/异形)。
@@ -479,9 +485,9 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
     ```
   * **响应**: 现有 WMS 返回 `ReservationID`，并在 WMS 侧锁定库存；WES 只保存预留引用和执行证据。
   * **释放机制**:
-    * **主动释放**: 任务完成或取消时，WES 调用 `DELETE /api/wms/inventory/reserve/{ReservationID}` 释放预留。
+    * **释放请求**: 任务完成或取消时，WES 向 WMS 提交预留释放需求并保存释放引用、回执和执行证据；预留锁定与最终释放事实由 WMS 持有。
     * **自动过期**: WMS 在 `expire_time` 后自动释放预留，无需 WES 干预。
-    * **异常恢复**: WES 重启后，查询所有预留记录，释放已过期或已完成的预留。
+    * **异常恢复**: WES 重启后，可向 WMS 查询关联预留状态并提交对账/释放需求；不得在本地判定预留已释放。
 
   **3. 库存确认 (Inventory Confirmation)**
 
@@ -514,7 +520,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * **场景**: 物理动作失败 (如: AGV 故障、装箱失败)。
   * **流程**:
     1. WES 标记任务失败: `Task_Status = Failed`。
-    2. WES 释放预留: `DELETE /api/wms/inventory/reserve/{ReservationID}`。
+    2. WES 向 WMS 提交预留释放或异常处置需求，等待 WMS 确认、拒绝或人工授权。
     3. WES 记录异常日志: `Exception_Log(TaskID, Reason, Timestamp)`。
 
 #### 3.4.2 智能分配策略引擎 (Intelligent Allocation Engine)
@@ -523,6 +529,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 * **关键策略**:
 
   **1. 装箱分配策略 (Binning Strategy)**
+
+  本策略仅用于当前单层货架 active 执行快照内的装箱执行计算和 ECS/机械臂指令生成。`rack_slot_code`、`bin_cell_location`、`Used_Depth`、`Remaining_Capacity` 等字段是执行投影或过程证据，不作为 WES 的库存可用性、储位归属、非单层资源授权或物理占用主账。
 
   * **料箱规格定义**:
 
@@ -542,29 +550,29 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
     ```
     IF (料盘尺寸 == 7寸) THEN
-      优先查找: 已有 6 格箱或 3 格箱中，存有相同 Material+Vendor+DC 的 7 寸格位
+      优先查找: 当前单层货架 active 执行快照中，已有 6 格箱或 3 格箱内存有相同 Material+Vendor+DC 的 7 寸格位
       IF (找到 AND 储位未满) THEN
-        分配到该储位
+        生成本次装箱执行目标储位
       ELSE
         选择空料箱: 优先 6 格箱 (`-1` ~ `-6`) > 3 格箱 (`-1`、`-2`)
-        分配到第一个空 7 寸格位
+        生成第一个空 7 寸格位作为本次装箱执行目标
       END IF
 
     ELSE IF (料盘尺寸 > 7寸) THEN
-      优先查找: 已有 3 格箱中，大尺寸格存有相同 Material+Vendor+DC 的料盘
+      优先查找: 当前单层货架 active 执行快照中，已有 3 格箱的大尺寸格存有相同 Material+Vendor+DC 的料盘
       IF (找到 AND 储位未满) THEN
-        分配到该储位
+        生成本次装箱执行目标储位
       ELSE
         选择空 3 格箱
-        分配到大尺寸格 (`-7`)
+        生成大尺寸格 (`-7`) 作为本次装箱执行目标
       END IF
     END IF
     ```
   * **容量计算 (Capacity Calculation)**:
 
-    * **储位剩余容量** = `储位深度 - Sum(已存料盘厚度)`
-    * **可放入判断** = `剩余容量 >= 当前料盘厚度`
-    * **实时更新**: 每次放入后，WES 更新储位的 `Used_Depth` 和 `Remaining_Capacity`。
+    * **储位剩余容量投影** = `储位深度 - Sum(当前执行快照内已存料盘厚度)`
+    * **本次执行可放入判断** = `剩余容量投影 >= 当前料盘厚度`
+    * **实时更新**: 每次放入后，WES 更新当前执行快照中的 `Used_Depth` 和 `Remaining_Capacity` 过程证据；该更新不代表 WES 接管库存主账或非单层储位容量授权。
   * **防错机制 (Error Prevention)**:
 
     * **尺寸校验**: 7 寸料盘不得放入 3 格箱的大尺寸格；13/15 寸等大尺寸料盘不得放入 7 寸格位，也不得放入 6 格箱。
@@ -578,12 +586,12 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   **3. 冷热区存储优化策略 (Hot/Cold Zone Optimization)**
 
-  * **热区定义**: 近 7 天出库频次 > 10 次的物料 -> 分配到 **靠近产线的货架 (Hot Zone)**。
-    * **五层货架**: 优先分配至 **A 面** (靠近产线侧)，减少 CTU 搬运距离。
-  * **冷区定义**: 近 30 天无出库记录 -> 分配到 **远端货架 (Cold Zone)**。
-    * **五层货架**: 优先分配至 **B 面** (远端侧)，释放 A 面给高频物料。
-  * **动态调整**: WES 每日凌晨 2:00 执行 **冷热度重新计算 (Recalculation)**，生成货架搬运任务 (可选执行)。
-  * **A/B 面负载平衡**: WES 监控五层货架两侧的负载率，当单侧负载 > 80% 时，触发平衡任务。
+  * **热区定义**: 近 7 天出库频次 > 10 次的物料 -> 向 WMS 提交靠近产线侧资源的策略建议或需求。
+    * **五层货架**: A 面、B 面、冷热区和 CTU 路径由 WMS/RCS 判断，WES 只保存授权结果、回调和对账证据。
+  * **冷区定义**: 近 30 天无出库记录 -> 向 WMS 提交远端资源的策略建议或需求。
+    * **五层货架**: WES 不以本地主账判断 A/B 面容量、空箱资源或真实占用。
+  * **动态调整**: WES 可生成冷热度计算结果、策略建议或搬运需求并提交 WMS；是否执行、如何排队和降级由 WMS/RCS 决定。
+  * **A/B 面负载平衡**: WES 可记录 WMS 返回的负载证据或对账结果，但不得本地触发五层货架资源授权。
 
 #### 3.4.3 任务编排引擎 (Task Orchestration Engine)
 
@@ -599,7 +607,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   2. **依赖管理 (Dependency Management)**:
      * 示例: `Transport_Task(A)` 必须在 `Pick_Task(B)` 完成后才能执行。
   3. **并发控制 (Concurrency Control)**:
-     * 限制同一区域的并发任务数 (防止 AGV 拥堵)。
+     * WES 可根据业务优先级、节拍和 WorkLine/Station 状态提交任务节流或派发节奏建议；真实区域容量、AGV 拥堵、运输并发、路径规划和避让由 WMS/RCS 判断。
   4. **断点续传 (Checkpoint & Resume)**:
      * 任务执行到 Step 3 时系统重启 -> WES 从 Step 3 继续执行，无需重头开始。
 
@@ -649,15 +657,15 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   * **配对逻辑**: WES 根据工单识别 `Top_Cover_Material` 和 `Bottom_Cover_Material`。
   * **同步调度**:
-    * WES 生成 `Transport_Task_Pair(Pallet_A, Pallet_B)`。
+    * WES 生成成对搬运需求 `Transport_Task_Pair(Pallet_A, Pallet_B)` 并提交 WMS。
     * 确保两个栈板 **同时到达** 拆包区 (时间差 < 5 分钟)。
   * **缺料处理**: 若只有 A 无 B -> WES 挂起任务，触发 `Shortage_Alert`。
 
   **2. 拆包与追溯 (Unpacking & Traceability)**
 
   * **围膜拆除**:
-    * WES 生成 `Transport_Task(To Unwrap_Zone)`。
-    * 人工拆围膜后，WMS PDA 呼叫（WMS 记录作业结果）-> WES 生成 `Transport_Task(To Unpack_Line)`，由 WMS 调度 RCS 执行。
+    * WES 生成 `Transport_Task(To Unwrap_Zone)` 搬运需求并提交 WMS。
+    * 人工拆围膜后，WMS PDA 呼叫（WMS 记录作业结果）-> WES 生成 `Transport_Task(To Unpack_Line)` 搬运需求，由 WMS 转发 RCS 执行。
   * **箱级校验**:
     * `ECS -> WES: Validate_Box(PKG, Box_Barcode)`。
     * WES 校验: `PKG.Material == WorkOrder.Material`。
@@ -668,17 +676,18 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   **3. Magazine 调度与产线上料 (Magazine Dispatch)**
 
-  * **装满触发**: ECS 上报 `Magazine_Full` -> WES 生成 `Transport_Task(To Production_Buffer)`。
-  * **空 Magazine 回流**: RCS 自主调度空 Magazine 回自动线 (WES 不干预)。
-  * **产线需求驱动**: WES 接收 SFC 的 `Magazine_Request` -> 调度 RCS 从 Buffer 送产线。
+  * **装满触发**: ECS 上报 `Magazine_Full` -> WES 生成 `Transport_Task(To Production_Buffer)` 搬运需求并提交 WMS。
+  * **空 Magazine 回流**: RCS/WMS 自主调度空 Magazine 回自动线 (WES 不干预)。
+  * **产线需求驱动**: WES 接收 SFC 的 `Magazine_Request` -> 生成 Buffer 到产线的搬运需求并提交 WMS。
 
   **4. 空栈板回收 (Empty Pallet Return)**
 
   * **触发条件**: ECS 扫描栈板，确认 `IsEmpty = True`。
   * **回收流程**:
     * `ECS -> WES: Pallet_Empty(PalletID)`。
-    * WES 生成 `Transport_Task(To Empty_Pallet_Zone)`。
-    * WES 更新栈板状态: `Status = Empty, Location = Empty_Zone`。
+    * WES 生成 `Transport_Task(To Empty_Pallet_Zone)` 搬运需求并提交 WMS。
+    * WES 记录空栈板回收执行投影与 WMS 回调证据；真实位置和占用以 WMS/RCS 为准。
+  * **统一边界**: 转运、补给、空架回流和空栈板回收均表达为 WMS 搬运需求；AGV/CTU/RCS 任务由 WMS 转发并闭环。
 
 ---
 
@@ -691,7 +700,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 * **场景**: 产线下线 -> 料盘拆飞达 -> 放入标准胶框 -> 单层货架 -> SMT 退料作业区。
 * **货架说明**: 使用 **退货货架 (Return Rack)** (详见 3.1.2) 存放退料料盘，货架式结构支持料盘级追踪，具有 A/B 面区分。
 * **WES 处理流程**:
-  1. **人工呼叫**: 仓库人员通过 WMS PDA 呼叫搬运 -> WES 生成 `Transport_Task(To Return_Area)`，提交 WMS 调度 RCS。
+  1. **人工呼叫**: 仓库人员通过 WMS PDA 呼叫搬运 -> WES 生成 `Transport_Task(To Return_Area)` 搬运需求并提交 WMS，由 WMS 转发 RCS 执行。
   2. **物料分类**: WMS PDA 界面指导人工区分（分类结果同步给 WES）:
      * **电子料 (Electronic)**: 进入 X-Ray/LCR 流程。
      * **MSD 物料**: 标记 `RequiresDrying = True`。
@@ -762,23 +771,25 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
     ```
     IF (Material.IsMSD == True) THEN
       Route_To = Manual_Box  // 人工封包 -> 干燥柜
-    ELSE IF (Exists_Return_Rack_Space) THEN
-      Route_To = Return_Rack + Assign_Slot(Side, SlotID)
     ELSE
-      Call_RCS_For_Empty_Rack()
+      Submit_Return_Putaway_Request_To_WMS(
+        Evidence: XRay_Result + Label_Verification,
+        Need: Return_Rack_or_Empty_Rack
+      )
+      Wait_WMS_Authorization(RackID, Side, SlotID)  // WMS 可授权、拒绝或要求补空架
     END IF
     ```
   * **退料货架管理** (基于 3.1.2 定义的退货货架规格):
-    * WES 维护 `Return_Rack_Inventory(RackID, Side, SlotID, PKG, Qty)`。
-    * **料盘级追踪**: 每个储位存放单个料盘，WES 追踪 `Rack_ID + Side + Slot_ID` 精确位置。
-    * **A 面装满**: WES 提示人工切换至 B 面操作，或呼叫 RCS 转向货架。
-    * **全部装满**: WES 生成 `Transport_Task(To SMT_Storage)` -> 呼叫 RCS 补空架。
-    * **A/B 面隔离**: 不同产线或工单的退料可分配至不同面，避免混料。
+    * WES 维护退料执行投影或证据视图，例如 `Return_Rack_Execution_View(RackID, Side, SlotID, PKG, Qty, WMS_Confirmation)`；退料库存主账由 WMS 持有。
+    * **料盘级执行证据**: 每个 WMS 授权储位可对应单个料盘，WES 只保存检测、贴标、人工确认和 WMS 回调证据；真实储位归属、库存可用性和 Side/Slot 授权以 WMS 为准。
+    * **A 面装满**: WES 根据执行证据提示现场或向 WMS 请求转向货架；是否可转向、目标面和目标货架由 WMS 授权。
+    * **全部装满**: WES 提交退料货架转运或补空架需求给 WMS；是否搬运、目标区域和空架补给由 WMS 授权并转发执行。
+    * **A/B 面隔离**: 不同产线或工单的退料隔离策略由 WES 提交建议或需求，WMS 返回授权、拒绝或实际执行结果。
 
 #### 3.6.4 退料入库与库存更新 (Return Putaway & Inventory Update)
 
 * **WES 数据处理**:
-  1. **库存更新**: 立即调用 WMS 接口增加库存: `WMS.Adjust_Inventory(Add, Actual_Count)`.
+  1. **库存更新**: WES 提交退料检测、贴标和执行证据，由 WMS 完成库存调整并回传确认；库存增加在 WMS 确认后生效。
   2. **追溯记录**: `Return_Log(Original_PKG, New_PKG, Actual_Count, Return_Date)`。
   3. **SAP 同步**: 由 WMS 负责向 SAP 推送退料数据（WES 不越级上报）。
 
@@ -796,8 +807,8 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
      * 每个任务执行到关键节点时，WES 记录 `Task_Checkpoint(TaskID, Step, State, Timestamp)`。
      * 示例: 装箱任务执行到 "已扫描 PKG，未分配箱号" -> 记录 `Step = 2, State = Pending_Allocation`。
   2. **恢复策略 (Resume Strategy)**:
-     * **幂等性设计**: 所有 ECS/RCS 指令支持重复执行 (Idempotent)。
-     * **状态校验**: 恢复前，WES 查询 ECS/RCS 当前状态，确认物理世界与数据一致。
+     * **幂等性设计**: WES 直连的 ECS 指令、以及提交给 WMS 的搬运/交换需求均支持重复执行或幂等去重。
+     * **状态校验**: 恢复前，WES 查询 ECS 当前状态，并通过 WMS 查询 RCS/AGV/CTU 任务状态，确认物理世界与数据一致。
      * **从断点继续**: `WES -> Task_Engine: Resume_From(TaskID, Last_Checkpoint)`。
   3. **人工确认机制**:
      * 若断点状态不明确 (如: AGV 位置未知) -> WES 触发 `Manual_Confirm_Required`，等待人工确认后继续。
@@ -823,7 +834,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 #### 3.7.3 通信异常与重试机制 (Communication Exception & Retry)
 
-* **场景**: ECS/RCS 网络抖动、设备无响应。
+* **场景**: ECS 网络抖动、设备无响应，或 WMS 转发的 RCS/AGV/CTU 任务超时。
 * **WES 处理流程**:
 
   **1. 自动重试 (Auto Retry)**
@@ -850,15 +861,16 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
   **3. 设备恢复 (Device Recovery)**
 
-  * ECS/RCS 恢复在线 -> WES 自动检测 (心跳机制)。
-  * WES 执行 `Health_Check(DeviceID)` -> 若通过，自动恢复挂起任务。
+  * ECS 恢复在线 -> WES 自动检测 (心跳机制)。
+  * RCS/AGV/CTU 任务恢复或完成 -> WMS 回传任务状态，WES 根据回调或对账结果恢复挂起任务。
+  * WES 执行 `Health_Check(DeviceID)` 或 WMS 任务状态查询 -> 若通过，自动恢复挂起任务。
 
   **4. 上游 WMS 断连处理 (WMS Disconnection Handling)**
 
   * **熔断机制**: 若连续 3 次调用 WMS 接口超时或返回 5xx 错误，触发断网保护。
   * **暂停策略**:
     * **立即暂停**: 所有涉及库存变动的业务任务 (收货、发料、装箱、入库确认、出库确认等)
-    * **允许继续**: 纯物理搬运任务 (AGV 回充电桩、空箱回流、设备空闲调度等)
+    * **外部续行**: 已由 WMS 接收并转发的纯物理搬运任务可由外部系统自行完成；WES 暂停新的搬运/交换需求提交，并等待回调或对账恢复。
     * **告警通知**: 触发 `System_Pause` 告警，通知 IT 介入
   * **自动恢复**: WMS 接口恢复正常后，自动继续执行被暂停的任务，无需人工干预。
 
@@ -903,16 +915,16 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * **全局视图**: 提供全工厂的库存查询和报表。
 * **P9 WES (This System - 增强层)**:
 
-  * **执行协调**: 协调自动化区域的 RCS/ECS 设备完成物理动作。
+  * **执行协调**: 协调自动化区域的 ECS 作业设备，并向 WMS 提交 RCS/AGV/CTU 搬运、交换、旋转需求。
   * **状态追踪**: 追踪物料在自动化设备中的实时位置和状态 (瞬态数据)。
   * **策略引擎**: 运行装箱策略、发料优先级、路由算法等智能决策。
-  * **设备控制**: 直接调度 SMT 区、机构件区、退料区等自动化设备。
+  * **设备控制**: 直接调度 SMT 区、机构件区、退料区的 ECS/视觉/贴标/X-Ray/LCR 等作业设备；运输设备由 WMS 转发调度。
 * **协同原则 (Coordination Principles)**:
 
   * **查询驱动 (Query-Driven)**: WES 需要库存数据时，实时查询现有 WMS。
   * **确认驱动 (Confirmation-Driven)**: WES 完成物理动作后，通知现有 WMS 更新库存。
   * **预留机制 (Reservation)**: WES 通过预留接口请求 WMS 锁定库存，避免超发；锁定事实和释放规则仍由 WMS 拥有。
-  * **RCS 通道 (Phase Boundary)**: 本阶段 RCS 仍由现有 WMS 统一调度。WES 只提交搬运/交换需求给 WMS，由 WMS 调用 RCS 并回传结果/事件。
+  * **RCS 通道 (Phase Boundary)**: 本阶段 RCS/AGV/CTU 仍由现有 WMS 统一调度。WES 只提交搬运/交换/旋转需求给 WMS，由 WMS 转发给 RCS/AGV/CTU 并回传结果/事件。
   * **PDA 通道**: PDA 仅与 WMS 交互；WES 如需感知 PDA 作业结果，由 WMS 推送/同步。
 
 #### 3.8.2 集成接口规范 (Integration Interface Specification)
@@ -983,7 +995,7 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * 避免网络重试导致的重复入库/出库。
 * **事务补偿 (Transaction Compensation)**:
 
-  * 若 WES 物理动作失败 -> 释放预留 -> 记录异常日志。
+  * 若 WES 物理动作失败 -> 向 WMS 提交预留释放或异常处置需求 -> 保存 WMS 回执并记录异常日志；预留最终释放事实由 WMS 持有。
   * 若 WMS 确认接口失败 -> WES 重试 3 次 -> 失败后触发人工介入。
 * **对账机制 (Reconciliation)**:
 
@@ -999,16 +1011,16 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
 
 * **SAP**: 收货单、工单、主数据（本阶段仅通过现有 WMS 中转，不直接对接）。
 * **现有 WMS**: SAP 转发的单据、库存查询、库存预留、入库/出库确认——WES 的唯一业务/库存数据来源。
-* **RCS**: 搬运 (Move)、交换 (Exchange)、旋转 (Rotate)。
+* **RCS/AGV/CTU**: 搬运 (Move)、交换 (Exchange)、旋转 (Rotate)，本版本仅通过现有 WMS 转发，不由 WES 直连。
 * **ECS**: 校验 (Check)、指令 (Instruction)、结果 (Result)。
 * **QMS**: 抽检请求、结果回传。
 
 ## 4. 接口需求 (Interface Requirements)
 
 > **运行时资源边界 ADR（2026-05-13）**:
-> SMT 运行时资源、满箱交换、WMS/RCS 回调和库存权责边界以
+> SMT 运行时资源、满箱交换、WMS 转发的 RCS/AGV/CTU 回调和库存权责边界以
 > `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` 为准。
-> 该 ADR 明确：WES 不锁定五层空箱、不交换库存属性、不自动扣减库存；WMS/RCS 执行类回调统一走
+> 该 ADR 明确：WES 不锁定五层空箱、不交换库存属性、不自动扣减库存；WMS 转发的执行类回调统一走
 > `/api/v1/callback/external`，WES 只保存执行事实、资源投影、回写证据和对账证据。
 
 ### 4.1 北向接口 (Northbound API - To Existing WMS)
@@ -1023,17 +1035,18 @@ P9 智能仓库使用三种货架类型，各有不同的物理结构和业务�
   * `POST /api/v1/wms/inventory/reserve`: 调用现有 WMS 的库存预留接口。
   * `POST /api/v1/wms/inventory/confirm`: 向现有 WMS 推送入库/出库确认。
 
-### 4.2 南向接口 (Southbound API - To ECS/RCS)
+### 4.2 南向接口 (Southbound API - To ECS)
 
-* **定位**: 适配不同硬件厂商的插件层 (Adapter Layer)。
+* **定位**: 适配 WES 直连作业设备的插件层 (Adapter Layer)，包括 ECS、视觉、贴标、X-Ray、LCR、打印机等。
 * **协议**: TCP/Modbus/HTTP/MQTT (视硬件而定)。
-* **架构模式**: **插件化 (Plugin-Based)**。针对不同品牌的 AGV 或机械臂，开发独立的 Driver Plugin，转换为 WES 内部的标准化指令。
+* **架构模式**: **插件化 (Plugin-Based)**。针对不同品牌的机械臂、视觉、检测、贴标等设备，开发独立的 Driver Plugin，转换为 WES 内部的标准化指令。
+* **阶段边界**: 本版本 WES 不提供直连 RCS/AGV/CTU 的 Driver Plugin。所有搬运、交换、旋转需求均通过 4.1 的 WMS 接口提交，由 WMS 转发给 RCS/AGV/CTU，并由 WMS 将执行结果/事件回传 WES。
 
 ---
 
 ## 5. 非功能需求 (Non-functional Requirements)
 
 1. **启动独立性 (Startup Independence)**: WES 启动不应阻塞于 WMS 连接失败（可启动进入待命状态），但**业务执行**强依赖 WMS。
-2. **数据一致性 (Data Consistency)**: 采用 **强一致性 (Strong Consistency)** 模型。WES 不持有数据，所有库存变动必须在 WMS 端事务提交成功后，物理动作方可视为完成。
+2. **数据一致性 (Data Consistency)**: 采用 **强一致性 (Strong Consistency)** 模型。WES 不持有库存主账或库存变动主账；WES 可以持有执行事实、单层货架 active 执行快照、运行投影、WMS 回调和对账证据。所有库存变动必须在 WMS 端事务提交成功后，物理动作方可视为完成。
 3. **可观测性 (Observability)**: 提供独立的 Prometheus/Grafana 监控接口，重点监控 **WMS 接口延迟**、设备在线率及任务积压。
-4. **故障恢复 (Failure Recovery)**: 不要求本地业务数据持久化缓存。系统重启后，应通过查询 WMS 和现场设备状态重建上下文。
+4. **故障恢复 (Failure Recovery)**: 不要求 WES 本地持久化库存主账缓存。系统重启后，WES 可使用自身保存的执行事实、单层货架 active 执行快照、运行投影和回调证据恢复执行上下文，并通过查询 WMS 和现场设备状态完成对账。

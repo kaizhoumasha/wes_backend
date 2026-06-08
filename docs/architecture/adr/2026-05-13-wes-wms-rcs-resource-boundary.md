@@ -59,11 +59,13 @@ Accepted - 2026-05-13
 
 ## Runtime 外部请求规则
 
-1. 插件通过 `RuntimeIntent.external_request(...)` 表达外部系统请求，Runtime 统一创建 `WorklineOutbox(EXTERNAL_HTTP)`、Timeline 和等待状态。
-2. 外部请求必须有 `dispatch_key`、`target_code`、`payload`、`timeout_seconds` 和可追溯业务键。
-3. `WAITING_EXTERNAL` 没有设备 ACK 阶段，`deadline_at = now + timeout_seconds` 必须立即生效。
-4. 外部请求 wait token 使用 `dispatch_key`，满箱交换同时写入 `exchange_request_code`。
-5. 超时、派发 ACK 耗尽或迟到 terminal 回调不得自动完成 Session，必须进入 RuntimeHold 或资源对账。
+1. 插件通过 `RuntimeIntent.external_request(...)` 表达通用外部系统请求，Runtime 统一创建 `WorklineOutbox(EXTERNAL_HTTP)`、Timeline 和等待状态。
+2. 插件也可以通过领域化 `RuntimeIntent.rack_operation_request(...)` 表达 WES 单层货架搬运、交换、旋转或补给需求；该入口是 rack operation 领域包装，不是绕过外部请求机制的新通道。
+3. rack operation 由 runtime/gateway 统一关联 `EXTERNAL_HTTP` outbox、Timeline、wait context 和 `WAITING_EXTERNAL` 状态；task dispatch key 用于 WMS/RCS 回调恢复，wait token 使用 rack operation key。
+4. 外部请求必须有 `dispatch_key`、`target_code`、`payload`、`timeout_seconds` 和可追溯业务键。
+5. `WAITING_EXTERNAL` 没有设备 ACK 阶段，`deadline_at = now + timeout_seconds` 必须立即生效。
+6. 通用 `external_request` 的 wait token 使用 `dispatch_key`，满箱交换同时写入 `exchange_request_code`；rack operation 的 wait token 使用 operation key。
+7. 超时、派发 ACK 耗尽或迟到 terminal 回调不得自动完成 Session，必须进入 RuntimeHold 或资源对账。
 
 ## 后果
 

@@ -13,6 +13,7 @@ from src.app.rack.repositories.operation_repository import (
     RackTaskRepository,
     rack_task_repository,
 )
+from src.app.sys.repositories.outbox_repository import SystemOutboxRepository, outbox_repository
 from src.app.workline.models.session import SessionStatus
 from src.app.workline.repositories.session_repository import (
     WorklineSessionRepository,
@@ -71,10 +72,12 @@ class RackTaskLifecycleService:
         *,
         rack_task_repository: RackTaskRepository = rack_task_repository,
         session_repository: WorklineSessionRepository = workline_session_repository,
+        outbox_repository: SystemOutboxRepository = outbox_repository,
         rack_operation_service: Any | None = None,
     ) -> None:
         self.rack_task_repository = rack_task_repository
         self.session_repository = session_repository
+        self.outbox_repository = outbox_repository
         self._rack_operation_service = rack_operation_service
 
     async def record_requested_task(
@@ -214,6 +217,7 @@ class RackTaskLifecycleService:
             if trace_id is not None and not coerce_optional_str(getattr(task, "trace_id", None)):
                 task.trace_id = trace_id
                 db.add(task)
+            await self._finish_sent_external_outbox(db, task=task, dispatch_key=dispatch_key)
             if should_sync_waiting_session:
                 await self._sync_waiting_session_from_operation_status(
                     db,
@@ -242,6 +246,8 @@ class RackTaskLifecycleService:
         task.error_code = error_code
         task.error_message = error_message
         db.add(task)
+        if _is_terminal_task_status(status):
+            await self._finish_sent_external_outbox(db, task=task, dispatch_key=dispatch_key)
         if should_sync_waiting_session:
             await self._sync_waiting_session_from_operation_status(
                 db,
@@ -250,6 +256,11 @@ class RackTaskLifecycleService:
                 error_message=error_message,
             )
         return task
+
+    async def _finish_sent_external_outbox(self, db: AsyncSession, *, task: RackTask, dispatch_key: str) -> None:
+        if not hasattr(task, "outbox_id"):
+            return
+        await self.outbox_repository.finish_sent_external_by_dispatch_key(db, dispatch_key)
 
     def _resolve_rack_operation_service(self) -> Any:
         if self._rack_operation_service is None:
