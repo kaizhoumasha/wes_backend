@@ -165,6 +165,20 @@ class FakeStationLeaseStatusProvider:
         return self
 
 
+class FailingStationLeaseStatusProvider:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, bool]] = []
+
+    async def station_lease_status(
+        self,
+        position_code: str,
+        *,
+        allow_active_rack_bound: bool = False,
+    ) -> None:
+        self.calls.append((position_code, allow_active_rack_bound))
+        raise ValueError("workline rack position not found: WL-SMT-SORTING-INBOUND-TEST/TARGET_STATION")
+
+
 def _ctx(
     session_context: dict[str, Any] | None = None,
     *,
@@ -556,6 +570,30 @@ async def test_working_bin_scan_blocks_when_target_station_lease_provider_missin
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
     assert intents[0].reason_code == "SORTING_TARGET_STATION_LEASE_UNKNOWN"
+    assert policy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_working_bin_scan_blocks_when_target_station_lease_config_invalid() -> None:
+    policy = RecordingAllocationPolicy(_allocated_result())
+    plugin = _plugin_with_policy_and_snapshot(policy, {"snapshot_version": "snap-target-001", "cells": []})
+    lease_provider = FailingStationLeaseStatusProvider()
+
+    intents = await plugin.on_device_event(
+        _ctx(
+            _sorting_context_with_current_material(),
+            services=SimpleNamespace(station_lease_status_provider=lease_provider),
+        ),
+        _working_bin_scan_inbox(),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_TARGET_STATION_LEASE_UNKNOWN"
+    assert intents[0].payload_json == {
+        "position_code": "TARGET_STATION",
+        "error": "workline rack position not found: WL-SMT-SORTING-INBOUND-TEST/TARGET_STATION",
+    }
+    assert lease_provider.calls == [("TARGET_STATION", True)]
     assert policy.calls == []
 
 

@@ -146,9 +146,17 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session, 
     assert conveyor.upstream_device_id == input_arm.id
     assert output_arm.upstream_device_id == conveyor.id
 
-    rack_positions = (await db_session.execute(select(WorklineRackPosition))).scalars().all()
-    assert len(rack_positions) == 1
-    rack_position = rack_positions[0]
+    rough_rack_positions = (
+        (
+            await db_session.execute(
+                select(WorklineRackPosition).where(WorklineRackPosition.workline_code == TEST_ROUGH_SORTER_LINE_CODE)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rough_rack_positions) == 1
+    rack_position = rough_rack_positions[0]
     assert rack_position.workline_id == workline.id
     assert rack_position.workline_code == TEST_ROUGH_SORTER_LINE_CODE
     assert rack_position.position_code == "SINGLE_LAYER_A"
@@ -223,7 +231,7 @@ async def test_sync_test_workline_devices_refreshes_existing_seed_rows_without_t
     rack_position_count = await db_session.scalar(select(func.count()).select_from(WorklineRackPosition))
     assert workline_count == 2
     assert device_count == len(TEST_ROUGH_SORTER_DEVICES) + len(TEST_SMT_SORTING_INBOUND_DEVICES)
-    assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS)
+    assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS) + 3
     assert result["summary"]["worklines"]["updated"] == 1
     assert result["devices"]["RS-INPUT-ARM-01"] == "updated"
     assert result["rack_positions"]["SINGLE_LAYER_A"] == "unchanged"
@@ -319,7 +327,7 @@ async def test_sync_test_workline_devices_seeds_rough_sorter_when_unrelated_work
     rack_position_count = await db_session.scalar(select(func.count()).select_from(WorklineRackPosition))
     assert seeded_workline is not None
     assert device_count == len(TEST_ROUGH_SORTER_DEVICES) + len(TEST_SMT_SORTING_INBOUND_DEVICES)
-    assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS)
+    assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS) + 3
     assert result["summary"]["worklines"]["created"] == 1
     assert set(result["devices"].values()) == {"created"}
     assert result["summary"]["total_worklines"] == 3
@@ -396,10 +404,28 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
         .scalars()
         .all()
     )
-    assert smt_rack_positions == []
+    positions_by_code = {position.position_code: position for position in smt_rack_positions}
+    assert set(positions_by_code) == {"SOURCE_STATION_A", "SOURCE_STATION_B", "TARGET_STATION"}
+    for position_code, position in positions_by_code.items():
+        assert position.workline_id == workline.id
+        assert position.position_code == position_code
+        assert position.allowed_rack_kind == RackKind.SINGLE_LAYER
+        assert position.capacity == 1
+        assert position.enabled is True
+        assert position.logic_location_code == f"{TEST_SMT_SORTING_INBOUND_LINE_CODE}:{position_code}"
+        assert position.external_location_code == position_code
+        assert position.metadata_json["seed_source"] == "local-dev"
+        assert position.metadata_json["single_layer_boundary"] is True
+    assert positions_by_code["SOURCE_STATION_A"].position_role == WorklineRackPositionRole.SMT_SORTER_STATION
+    assert positions_by_code["SOURCE_STATION_B"].position_role == WorklineRackPositionRole.SMT_SORTER_STATION
+    assert positions_by_code["TARGET_STATION"].position_role == WorklineRackPositionRole.SMT_SORTER_STATION
+    assert positions_by_code["SOURCE_STATION_A"].device_role == ROLE_SORTING_SOURCE_ARM
+    assert positions_by_code["SOURCE_STATION_B"].device_role == ROLE_SORTING_SOURCE_ARM
+    assert positions_by_code["TARGET_STATION"].device_role == ROLE_SORTING_TARGET_ARM
     assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["devices"]["created"] == len(
         TEST_SMT_SORTING_INBOUND_DEVICES
     )
+    assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["rack_positions"]["created"] == 3
 
 
 @pytest.mark.asyncio
@@ -429,7 +455,7 @@ async def test_sync_test_workline_devices_is_idempotent_for_rough_and_smt(db_ses
     rack_position_count = await db_session.scalar(select(func.count()).select_from(WorklineRackPosition))
     assert workline_count == 2
     assert device_count == len(TEST_ROUGH_SORTER_DEVICES) + len(TEST_SMT_SORTING_INBOUND_DEVICES)
-    assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS)
+    assert rack_position_count == len(TEST_ROUGH_SORTER_RACK_POSITIONS) + 3
     assert result["summary_by_workline"][TEST_ROUGH_SORTER_LINE_CODE]["worklines"]["unchanged"] == 1
     assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["worklines"]["unchanged"] == 1
     assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["devices"]["unchanged"] == len(
@@ -492,4 +518,8 @@ async def test_sync_test_workline_devices_returns_rough_top_level_and_grouped_re
         seed.device_code for seed in TEST_SMT_SORTING_INBOUND_DEVICES
     }
     assert result["rack_positions_by_workline"][TEST_ROUGH_SORTER_LINE_CODE] == result["rack_positions"]
-    assert result["rack_positions_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE] == {}
+    assert set(result["rack_positions_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]) == {
+        "SOURCE_STATION_A",
+        "SOURCE_STATION_B",
+        "TARGET_STATION",
+    }

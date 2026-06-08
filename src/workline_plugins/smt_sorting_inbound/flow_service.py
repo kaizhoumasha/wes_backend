@@ -572,7 +572,14 @@ class SmtSortingInboundFlowService:
         ctx: PluginContext,
         sorting: Mapping[str, Any],
     ) -> tuple[dict[str, Any] | None, list[RuntimeIntent] | None]:
-        target_station_status = await self._target_station_lease_status(ctx)
+        try:
+            target_station_status = await self._target_station_lease_status(ctx)
+        except ValueError as exc:
+            return None, self._block(
+                "SORTING_TARGET_STATION_LEASE_UNKNOWN",
+                "目标 Station lease 配置无效，无法自动分格",
+                payload={"position_code": _TARGET_STATION_CODE, "error": str(exc)},
+            )
         if target_station_status is None:
             return None, self._block(
                 "SORTING_TARGET_STATION_LEASE_UNKNOWN",
