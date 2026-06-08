@@ -60,6 +60,15 @@ class RackOperationStatusProvider(Protocol):
 
 
 @runtime_checkable
+class StationLeaseStatusProvider(Protocol):
+    """Station lease 状态读取接口。"""
+
+    def station_lease_status(self, position_code: str, *, allow_active_rack_bound: bool = False) -> Awaitable[Any]:
+        """按 position_code 读取当前 Station lease 状态。"""
+        ...
+
+
+@runtime_checkable
 class WmsInventoryClient(Protocol):
     """WMS 库存查询接口。"""
 
@@ -77,6 +86,24 @@ class BoundRackOperationStatusProvider:
 
     async def derive_operation_status(self, operation_key: str) -> str:
         return str(await self._service.derive_operation_status(self._db, operation_key=operation_key))
+
+
+class BoundStationLeaseStatusProvider:
+    """绑定当前 DB 会话和工作线的 Station lease 状态读取器。"""
+
+    def __init__(self, *, db: Any, workline: Any, service: Any) -> None:
+        self._db = db
+        self._workline = workline
+        self._service = service
+
+    async def station_lease_status(self, position_code: str, *, allow_active_rack_bound: bool = False) -> Any:
+        return await self._service.get_station_lease_status(
+            self._db,
+            workline_id=self._workline.id,
+            workline_code=self._workline.line_code,
+            position_code=position_code,
+            allow_active_rack_bound=allow_active_rack_bound,
+        )
 
 
 class SandboxWmsInventoryClient:
@@ -107,6 +134,7 @@ class WorklineRuntimeServices:
     bin_allocator: BinAllocator | None = None
     active_rack_snapshot_provider: ActiveRackSnapshotProvider | None = None
     rack_operation_status_provider: RackOperationStatusProvider | None = None
+    station_lease_status_provider: StationLeaseStatusProvider | None = None
     wms_inventory_client: WmsInventoryClient | None = None
 
 
@@ -122,14 +150,21 @@ def build_workline_runtime_services(
 
     active_rack_snapshot_provider = None
     rack_operation_status_provider = None
+    station_lease_status_provider = None
     if db is not None and workline is not None:
         from src.app.rack.services import rack_operation_service
         from src.app.resource.services.active_rack_snapshot_service import smt_active_rack_snapshot_service
+        from src.app.workline.services.station_lease_service import station_lease_service
 
         active_rack_snapshot_provider = smt_active_rack_snapshot_service.bind(db=db, workline=workline)
         rack_operation_status_provider = BoundRackOperationStatusProvider(
             db=db,
             service=rack_operation_service,
+        )
+        station_lease_status_provider = BoundStationLeaseStatusProvider(
+            db=db,
+            workline=workline,
+            service=station_lease_service,
         )
 
     wms_inventory_client = None
@@ -147,6 +182,7 @@ def build_workline_runtime_services(
         bin_allocator=smt_rack_bin_scheduling_service,
         active_rack_snapshot_provider=active_rack_snapshot_provider,
         rack_operation_status_provider=rack_operation_status_provider,
+        station_lease_status_provider=station_lease_status_provider,
         wms_inventory_client=wms_inventory_client,
     )
 
@@ -155,8 +191,10 @@ __all__ = [
     "ActiveRackSnapshotProvider",
     "BinAllocator",
     "BoundRackOperationStatusProvider",
+    "BoundStationLeaseStatusProvider",
     "RackOperationStatusProvider",
     "SandboxWmsInventoryClient",
+    "StationLeaseStatusProvider",
     "WmsInventoryClient",
     "WorklineRuntimeServices",
     "build_workline_runtime_services",

@@ -46,7 +46,7 @@ from src.workline_plugins.rough_sorter.contract import (
 )
 from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
 from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
-from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
+from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, SingleLayerRackBoundary, WorklinePluginManifest
 from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntent
 
 if TYPE_CHECKING:
@@ -169,6 +169,21 @@ class RoughSorterPlugin(WorklinePlugin):
         context_model=RoughSorterContext,
         supported_events=frozenset({EVENT_SCAN_COMPLETED, EVENT_ROUGH_SORTER_STORAGE_RETRY}),
         supported_commands=frozenset(ACTION_TARGET_ROLES),
+        capabilities=frozenset({"active_snapshot", "rack_operation"}),
+        resource_kinds=frozenset({"SINGLE_LAYER"}),
+        requires_single_layer_boundary=True,
+        single_layer_boundaries=(
+            SingleLayerRackBoundary(
+                station_code="CLASSIFIER_WORK_POSITION",
+                position_code="SINGLE_LAYER_A",
+                rack_kind="SINGLE_LAYER",
+                station_role="CLASSIFIER_WORK",
+                business_demand_type="ROUGH_SORTER_BIN_ALLOCATION",
+                wms_operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                snapshot_kind="ACTIVE_CLASSIFIER_BIN_RACK",
+                lease_scope="STATION",
+            ),
+        ),
         command_target_roles=ACTION_TARGET_ROLES,
         ng_reason_catalog=(
             _ng_reason(NG_REASON_BARCODE_INVALID, "条码无效"),
@@ -309,7 +324,9 @@ class RoughSorterPlugin(WorklinePlugin):
         for index, action in enumerate(action_values, start=1):
             if not isinstance(action, str) or not action:
                 continue
-            work_position_code = payload.get("work_position_code") or "SINGLE_LAYER_A"
+            work_position_code = _non_empty_str(payload.get("work_position_code"))
+            if work_position_code is None:
+                raise ValueError("rack operation actions require work_position_code")
             task: dict[str, Any] = {
                 "sequence_no": index,
                 "task_type": action,
@@ -1160,7 +1177,10 @@ class RoughSorterPlugin(WorklinePlugin):
             return self._block("ROUGH_SORTER_ALLOCATION_DECISION_INVALID", "货架 operation 请求缺少关键字段")
 
         raw_payload_map = cast("Mapping[str, Any]", raw_payload)
-        operation_payload = self._rack_operation_payload(ctx, raw_payload_map)
+        try:
+            operation_payload = self._rack_operation_payload(ctx, raw_payload_map)
+        except ValueError as exc:
+            return self._block("ROUGH_SORTER_ALLOCATION_DECISION_INVALID", str(exc))
         operation_type = _non_empty_str(operation_payload.get("operation_type")) or "REPLACE_CLASSIFIER_WORK_RACK"
         timeout_seconds = int(getattr(rack_operation_request, "timeout_seconds", 1800) or 1800)
         source_device_code = self._command_source_location(ctx, {})

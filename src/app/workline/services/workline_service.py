@@ -17,6 +17,7 @@ from src.app.workline.models import (
     WorkLinePluginManifestSummary,
     WorkLinePluginOption,
     WorkLineRunMode,
+    WorkLineSingleLayerRackBoundarySummary,
 )
 from src.app.workline.repositories import WorkLineRepository, workline_repository
 from src.common.cache_config import cache_settings
@@ -184,6 +185,32 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             )
         return options
 
+    @classmethod
+    def _build_single_layer_boundary_summaries(
+        cls,
+        manifest: object,
+        plugin_key: str,
+    ) -> list[WorkLineSingleLayerRackBoundarySummary]:
+        if not hasattr(manifest, "single_layer_boundaries"):
+            return []
+        boundaries = cls._manifest_attr(manifest, plugin_key, "single_layer_boundaries")
+        if not isinstance(boundaries, Iterable) or isinstance(boundaries, str | bytes | Mapping):
+            raise ValueError(f"工作线插件 {plugin_key} manifest.single_layer_boundaries 必须是边界集合")  # noqa: TRY004
+
+        summaries: list[WorkLineSingleLayerRackBoundarySummary] = []
+        for boundary in boundaries:
+            if hasattr(boundary, "to_summary"):
+                raw_boundary = boundary.to_summary()
+            elif isinstance(boundary, Mapping):
+                raw_boundary = dict(boundary)
+            else:
+                raise ValueError(f"工作线插件 {plugin_key} manifest.single_layer_boundaries item 必须是结构化边界")
+            try:
+                summaries.append(WorkLineSingleLayerRackBoundarySummary.model_validate(raw_boundary))
+            except ValidationError as exc:
+                raise ValueError(f"工作线插件 {plugin_key} manifest.single_layer_boundaries item 无效: {exc}") from exc
+        return summaries
+
     def list_plugin_options(self) -> list[WorkLinePluginOption]:
         """从插件注册表导出作业线插件/契约版本选项。"""
 
@@ -221,6 +248,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             command_target_roles=self._normalize_manifest_role_map(manifest, plugin_key, "command_target_roles"),
             supported_events=self._normalize_manifest_string_set(manifest, plugin_key, "supported_events"),
             supported_commands=self._normalize_manifest_string_set(manifest, plugin_key, "supported_commands"),
+            single_layer_boundaries=self._build_single_layer_boundary_summaries(manifest, plugin_key),
         )
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> WorkLine | None:

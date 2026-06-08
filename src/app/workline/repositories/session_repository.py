@@ -74,6 +74,34 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         )
         return list(result.scalars().all())
 
+    async def list_open_by_workline_id(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        limit: int = 50,
+    ) -> list[WorklineSession]:
+        """查询同工作线未结束 Session，用于 Station lease 等运行时准入观察。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        open_statuses = [
+            SessionStatus.NEW,
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING_DEVICE_RESULT,
+            SessionStatus.WAITING_EXTERNAL,
+            SessionStatus.MANUAL_HOLD,
+        ]
+        result = await db.execute(
+            select(WorklineSession)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(open_statuses),
+            )
+            .order_by(columns.created_at.asc(), columns.id.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def get_latest_active_rack_template_session(
         self,
         db: AsyncSession,

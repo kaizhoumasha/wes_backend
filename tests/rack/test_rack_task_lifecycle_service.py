@@ -76,6 +76,15 @@ class FakeRackOperationService:
         return self.status
 
 
+class FakeOutboxRepository:
+    def __init__(self) -> None:
+        self.finished_dispatch_keys: list[str] = []
+
+    async def finish_sent_external_by_dispatch_key(self, _db: Any, dispatch_key: str) -> object | None:
+        self.finished_dispatch_keys.append(dispatch_key)
+        return SimpleNamespace(dispatch_key=dispatch_key)
+
+
 @pytest.mark.asyncio
 async def test_record_requested_task_creates_low_level_task_idempotently() -> None:
     repo = FakeRackTaskRepository()
@@ -336,6 +345,7 @@ async def test_record_requested_task_rejects_dispatch_key_bound_to_other_task() 
 @pytest.mark.asyncio
 async def test_record_callback_updates_single_task_status_only() -> None:
     repo = FakeRackTaskRepository()
+    outbox_repo = FakeOutboxRepository()
     dispatch_key = "dispatch:trace-001:allocate-empty:1"
     task = SimpleNamespace(
         id=1,
@@ -343,6 +353,7 @@ async def test_record_callback_updates_single_task_status_only() -> None:
         operation_key="rack-op:trace-001",
         sequence_no=1,
         dispatch_key=dispatch_key,
+        outbox_id=11,
         task_status=RackTaskStatus.REQUESTED,
         callback_json={},
         result_json={},
@@ -353,7 +364,7 @@ async def test_record_callback_updates_single_task_status_only() -> None:
         error_message=None,
     )
     repo.add_existing(task)
-    service = RackTaskLifecycleService(rack_task_repository=repo)
+    service = RackTaskLifecycleService(rack_task_repository=repo, outbox_repository=outbox_repo)
     db = SimpleNamespace(add=MagicMock())
 
     updated = await service.record_callback_from_external_http(
@@ -374,6 +385,85 @@ async def test_record_callback_updates_single_task_status_only() -> None:
     assert task.trace_id == "trace-001"
     assert task.completed_at is not None
     db.add.assert_called_once_with(task)
+    assert outbox_repo.finished_dispatch_keys == [dispatch_key]
+
+
+@pytest.mark.asyncio
+async def test_record_callback_keeps_sent_outbox_open_for_progress_status() -> None:
+    repo = FakeRackTaskRepository()
+    outbox_repo = FakeOutboxRepository()
+    dispatch_key = "dispatch:trace-001:allocate-empty:1"
+    task = SimpleNamespace(
+        id=1,
+        task_key="rack-task:trace-001:allocate-empty:1",
+        operation_key="rack-op:trace-001",
+        sequence_no=1,
+        dispatch_key=dispatch_key,
+        outbox_id=11,
+        task_status=RackTaskStatus.REQUESTED,
+        callback_json={},
+        result_json={},
+        trace_id=None,
+        started_at=None,
+        completed_at=None,
+        error_code=None,
+        error_message=None,
+    )
+    repo.add_existing(task)
+    service = RackTaskLifecycleService(rack_task_repository=repo, outbox_repository=outbox_repo)
+    db = SimpleNamespace(add=MagicMock())
+
+    await service.record_callback_from_external_http(
+        db,
+        payload_json={
+            "callback_type": "WMS_RACK_TASK_RESULT",
+            "dispatch_key": dispatch_key,
+            "status": "PHYSICAL_COMPLETED",
+        },
+        trace_id="trace-001",
+    )
+
+    assert task.task_status == RackTaskStatus.IN_PROGRESS
+    assert outbox_repo.finished_dispatch_keys == []
+
+
+@pytest.mark.asyncio
+async def test_record_callback_finishes_sent_outbox_for_existing_terminal_task() -> None:
+    repo = FakeRackTaskRepository()
+    outbox_repo = FakeOutboxRepository()
+    dispatch_key = "dispatch:trace-001:allocate-empty:1"
+    task = SimpleNamespace(
+        id=1,
+        task_key="rack-task:trace-001:allocate-empty:1",
+        operation_key="rack-op:trace-001",
+        sequence_no=1,
+        dispatch_key=dispatch_key,
+        outbox_id=11,
+        task_status=RackTaskStatus.SUCCEEDED,
+        callback_json={},
+        result_json={},
+        trace_id=None,
+        started_at=None,
+        completed_at=object(),
+        error_code=None,
+        error_message=None,
+    )
+    repo.add_existing(task)
+    service = RackTaskLifecycleService(rack_task_repository=repo, outbox_repository=outbox_repo)
+    db = SimpleNamespace(add=MagicMock())
+
+    updated = await service.record_callback_from_external_http(
+        db,
+        payload_json={
+            "callback_type": "WMS_RACK_TASK_RESULT",
+            "dispatch_key": dispatch_key,
+            "status": "SUCCEEDED",
+        },
+        trace_id="trace-001",
+    )
+
+    assert updated is task
+    assert outbox_repo.finished_dispatch_keys == [dispatch_key]
 
 
 @pytest.mark.asyncio

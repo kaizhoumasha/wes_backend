@@ -7,7 +7,7 @@ import pytest
 
 from src.app.rack.models import RackTaskType
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxTargetType
-from src.app.wms_integration.services import WmsTransportContractService
+from src.app.wms_integration.services import DEFAULT_RACK_OPERATION_ENDPOINT, WmsTransportContractService
 
 
 def test_transport_contract_builds_rack_task_envelope_without_behavior_drift() -> None:
@@ -161,6 +161,225 @@ def test_transport_contract_builds_bin_move_payload_and_drops_none_values() -> N
     assert "code" not in payload["carrier"]
 
 
+def test_transport_contract_builds_single_layer_rack_operation_with_wms_authority() -> None:
+    contract = WmsTransportContractService().build_single_layer_rack_operation_request(
+        business_demand_key="WMS-DEMAND-001",
+        workline_code="WL-SMT-01",
+        endpoint_code="SINGLE_LAYER_A",
+        rack_kind="SINGLE_LAYER",
+        rack_code="RACK-001",
+        operation_type="SUPPLY_SINGLE_LAYER_RACK",
+        trace_id="trace-single-layer-001",
+        payload={
+            "target_position_code": "SINGLE_LAYER_A",
+            "station": {"position_code": "SINGLE_LAYER_A"},
+            "rack_tasks": [
+                {
+                    "sequence_no": 1,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "rack_kind": "SINGLE_LAYER",
+                    "target_position_code": "SINGLE_LAYER_A",
+                    "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                }
+            ],
+        },
+        timeout_seconds=1800,
+    )
+
+    assert contract["operation_type"] == "SUPPLY_SINGLE_LAYER_RACK"
+    assert contract["operation_key"] == "wms-rack-operation:WMS-DEMAND-001:WL-SMT-01:SINGLE_LAYER_A"
+    assert contract["target_code"] == DEFAULT_RACK_OPERATION_ENDPOINT
+    assert not contract["target_code"].startswith(("http://", "https://"))
+    assert contract["timeout_seconds"] == 1800
+
+    payload = contract["payload"]
+    assert payload["dispatch_key"] == "wms-rack-operation:WMS-DEMAND-001:WL-SMT-01:SINGLE_LAYER_A"
+    assert payload["business_demand_key"] == "WMS-DEMAND-001"
+    assert payload["workline_code"] == "WL-SMT-01"
+    assert payload["endpoint_code"] == "SINGLE_LAYER_A"
+    assert payload["rack_kind"] == "SINGLE_LAYER"
+    assert payload["rack_code"] == "RACK-001"
+    assert payload["target_position_code"] == "SINGLE_LAYER_A"
+    assert payload["station"]["position_code"] == "SINGLE_LAYER_A"
+    assert payload["authority_system"] == "WMS"
+    assert "source_system" not in payload
+
+
+def test_transport_contract_rejects_non_single_layer_rack_kind_for_single_layer_builder() -> None:
+    with pytest.raises(ValueError, match="rack_kind must be SINGLE_LAYER"):
+        WmsTransportContractService().build_single_layer_rack_operation_request(
+            business_demand_key="WMS-DEMAND-001",
+            workline_code="WL-SMT-01",
+            endpoint_code="TARGET_STATION",
+            rack_kind="FIVE_LAYER",
+            rack_snapshot_ref="snapshot:WL-SMT-01:TARGET_STATION",
+            operation_type="SUPPLY_TARGET_RACK",
+            payload={"rack_tasks": [_single_layer_supply_task()]},
+            timeout_seconds=1800,
+        )
+
+
+def test_transport_contract_preserves_stable_dispatch_key() -> None:
+    service = WmsTransportContractService()
+
+    first = service.build_single_layer_rack_operation_request(
+        business_demand_key="WMS-DEMAND-001",
+        workline_code="WL-SMT-01",
+        endpoint_code="SINGLE_LAYER_A",
+        rack_kind="SINGLE_LAYER",
+        rack_snapshot_ref="snapshot:WL-SMT-01:SINGLE_LAYER_A",
+        operation_type="SUPPLY_SINGLE_LAYER_RACK",
+        payload={"rack_tasks": [_single_layer_supply_task()]},
+        timeout_seconds=1800,
+    )
+    second = service.build_single_layer_rack_operation_request(
+        business_demand_key="WMS-DEMAND-001",
+        workline_code="WL-SMT-01",
+        endpoint_code="SINGLE_LAYER_A",
+        rack_kind="SINGLE_LAYER",
+        rack_snapshot_ref="snapshot:WL-SMT-01:SINGLE_LAYER_A",
+        operation_type="SUPPLY_SINGLE_LAYER_RACK",
+        payload={"rack_tasks": [_single_layer_supply_task()]},
+        timeout_seconds=1800,
+    )
+    explicit = service.build_single_layer_rack_operation_request(
+        business_demand_key="WMS-DEMAND-001",
+        workline_code="WL-SMT-01",
+        endpoint_code="SINGLE_LAYER_A",
+        rack_kind="SINGLE_LAYER",
+        rack_snapshot_ref="snapshot:WL-SMT-01:SINGLE_LAYER_A",
+        operation_type="SUPPLY_SINGLE_LAYER_RACK",
+        payload={"rack_tasks": [_single_layer_supply_task()]},
+        timeout_seconds=1800,
+        dispatch_key="dispatch:caller:WMS-DEMAND-001",
+    )
+
+    assert first["operation_key"] == second["operation_key"]
+    assert first["payload"]["dispatch_key"] == second["payload"]["dispatch_key"]
+    assert explicit["operation_key"] == "dispatch:caller:WMS-DEMAND-001"
+    assert explicit["payload"]["dispatch_key"] == "dispatch:caller:WMS-DEMAND-001"
+    with pytest.raises(ValueError, match="dispatch_key"):
+        service.build_single_layer_rack_operation_request(
+            business_demand_key="WMS-DEMAND-001",
+            workline_code="WL-SMT-01",
+            endpoint_code="SINGLE_LAYER_A",
+            rack_kind="SINGLE_LAYER",
+            rack_snapshot_ref="snapshot:WL-SMT-01:SINGLE_LAYER_A",
+            operation_type="SUPPLY_SINGLE_LAYER_RACK",
+            payload={"rack_tasks": [_single_layer_supply_task()]},
+            timeout_seconds=1800,
+            dispatch_key=" ",
+        )
+
+
+def test_transport_contract_allows_wms_allocated_single_layer_rack_request() -> None:
+    contract = WmsTransportContractService().build_single_layer_rack_operation_request(
+        business_demand_key="WMS-DEMAND-ALLOCATE-001",
+        workline_code="WL-SMT-01",
+        endpoint_code="SOURCE_STATION_A",
+        rack_kind="SINGLE_LAYER",
+        operation_type="SUPPLY_SINGLE_LAYER_RACK",
+        payload={"rack_tasks": [_single_layer_supply_task()]},
+        timeout_seconds=1800,
+    )
+
+    assert contract["payload"]["rack_kind"] == "SINGLE_LAYER"
+    assert "rack_code" not in contract["payload"]
+    assert "rack_snapshot_ref" not in contract["payload"]
+    assert contract["payload"]["authority_system"] == "WMS"
+
+
+def test_transport_contract_rejects_direct_device_fields_recursively() -> None:
+    service = WmsTransportContractService()
+
+    for forbidden_key in ("rcs_url", "rcs_path", "agv_id", "ctu_id", "vehicle_id", "physical_coordinate"):
+        with pytest.raises(ValueError, match=forbidden_key):
+            service.build_single_layer_rack_operation_request(
+                business_demand_key="WMS-DEMAND-001",
+                workline_code="WL-SMT-01",
+                endpoint_code="SINGLE_LAYER_A",
+                rack_kind="SINGLE_LAYER",
+                rack_code="RACK-001",
+                operation_type="SUPPLY_SINGLE_LAYER_RACK",
+                payload={
+                    "rack_tasks": [_single_layer_supply_task()],
+                    "nested": [{"resource": {forbidden_key: "direct-device"}}],
+                },
+                timeout_seconds=1800,
+            )
+
+
+def test_transport_contract_task_request_json_cannot_override_authority_fields() -> None:
+    contract = WmsTransportContractService().build_single_layer_rack_operation_request(
+        business_demand_key="WMS-DEMAND-001",
+        workline_code="WL-SMT-01",
+        endpoint_code="SINGLE_LAYER_A",
+        rack_kind="SINGLE_LAYER",
+        rack_code="RACK-001",
+        operation_type="SUPPLY_SINGLE_LAYER_RACK",
+        payload={
+            "rack_tasks": [
+                {
+                    **_single_layer_supply_task(),
+                    "request_json": {
+                        "business_demand_key": "MUTATED",
+                        "workline_code": "MUTATED",
+                        "endpoint_code": "MUTATED",
+                        "rack_kind": "FIVE_LAYER",
+                        "authority_system": "RCS",
+                    },
+                }
+            ]
+        },
+        timeout_seconds=1800,
+    )
+
+    request_json = contract["payload"]["rack_tasks"][0]["request_json"]
+    assert request_json["business_demand_key"] == "WMS-DEMAND-001"
+    assert request_json["workline_code"] == "WL-SMT-01"
+    assert request_json["endpoint_code"] == "SINGLE_LAYER_A"
+    assert request_json["rack_kind"] == "SINGLE_LAYER"
+    assert request_json["authority_system"] == "WMS"
+
+
+def test_transport_contract_rejects_url_target_code_case_insensitively() -> None:
+    with pytest.raises(ValueError, match="logical endpoint code"):
+        WmsTransportContractService().build_single_layer_rack_operation_request(
+            business_demand_key="WMS-DEMAND-001",
+            workline_code="WL-SMT-01",
+            endpoint_code="SINGLE_LAYER_A",
+            rack_kind="SINGLE_LAYER",
+            rack_code="RACK-001",
+            operation_type="SUPPLY_SINGLE_LAYER_RACK",
+            payload={"rack_tasks": [_single_layer_supply_task()]},
+            timeout_seconds=1800,
+            target_code="HTTPS://rcs.example.test/task",
+        )
+
+
+def test_transport_contract_deep_copies_payload() -> None:
+    payload = {
+        "rack_tasks": [_single_layer_supply_task()],
+        "station": {"position_code": "SINGLE_LAYER_A"},
+    }
+    contract = WmsTransportContractService().build_single_layer_rack_operation_request(
+        business_demand_key="WMS-DEMAND-001",
+        workline_code="WL-SMT-01",
+        endpoint_code="SINGLE_LAYER_A",
+        rack_kind="SINGLE_LAYER",
+        rack_code="RACK-001",
+        operation_type="SUPPLY_SINGLE_LAYER_RACK",
+        payload=payload,
+        timeout_seconds=1800,
+    )
+
+    payload["rack_tasks"][0]["target_position_code"] = "MUTATED"
+    payload["station"]["position_code"] = "MUTATED"
+
+    assert contract["payload"]["rack_tasks"][0]["target_position_code"] == "SINGLE_LAYER_A"
+    assert contract["payload"]["station"]["position_code"] == "SINGLE_LAYER_A"
+
+
 def _handling_move(**overrides: Any) -> SimpleNamespace:
     values = {
         "object_type": "BIN",
@@ -179,3 +398,13 @@ def _handling_move(**overrides: Any) -> SimpleNamespace:
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+def _single_layer_supply_task() -> dict[str, Any]:
+    return {
+        "sequence_no": 1,
+        "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+        "rack_kind": "SINGLE_LAYER",
+        "target_position_code": "SINGLE_LAYER_A",
+        "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+    }

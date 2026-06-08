@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.app.wms_integration.services import WmsTransportContractService
 from src.app.workline.services import write_back_service as workline_effects
 from src.app.workline.services.inbox_batch_processor import _result_requires_outbox_dispatch
 from src.app.workline.services.inbox_service import DuplicateInboxError
@@ -974,6 +975,107 @@ async def test_rack_operation_request_creates_operation_tasks_and_waits_by_opera
     assert session.context_json["rack_operation"]["released_rack_codes"] == ["RACK-OLD"]
     assert [timeline["action_type"].value for timeline in timelines] == ["WAIT_STARTED"]
     assert timelines[0]["payload"]["wait_token"] == "rack-operation:trace-runtime"
+
+
+@pytest.mark.asyncio
+async def test_single_layer_rack_operation_creates_waiting_external_outbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timelines: list[dict[str, Any]] = []
+    operation_calls: list[dict[str, Any]] = []
+    created_outboxes: list[SimpleNamespace] = []
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["workline"].line_code = "WL-SMT-01"
+
+    contract = WmsTransportContractService().build_single_layer_rack_operation_request(
+        business_demand_key="WMS-DEMAND-001",
+        workline_code="WL-SMT-01",
+        endpoint_code="SINGLE_LAYER_A",
+        rack_kind="SINGLE_LAYER",
+        rack_snapshot_ref="snapshot:WL-SMT-01:SINGLE_LAYER_A",
+        operation_type="SUPPLY_SINGLE_LAYER_RACK",
+        payload={
+            "station": {"position_code": "SINGLE_LAYER_A"},
+            "target_position_code": "SINGLE_LAYER_A",
+            "rack_tasks": [
+                {
+                    "sequence_no": 1,
+                    "task_type": "ALLOCATE_AND_MOVE_RACK",
+                    "rack_kind": "SINGLE_LAYER",
+                    "target_position_code": "SINGLE_LAYER_A",
+                    "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                }
+            ],
+            "trace_id": "trace-single-layer-001",
+        },
+        timeout_seconds=1800,
+    )
+
+    class RecordingRackOperationService:
+        async def request_operation_tasks(self, db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+            operation_calls.append({"db": db, **kwargs})
+            task_spec = kwargs["task_specs"][0]
+            dispatch_key = "rack-operation:{operation_key}:{sequence_no}:{task_type}".format(
+                operation_key=kwargs["operation_key"],
+                sequence_no=task_spec["sequence_no"],
+                task_type=task_spec["task_type"],
+            )
+            created_outboxes.append(
+                SimpleNamespace(
+                    dispatch_type="EXTERNAL_HTTP",
+                    target_type="HTTP_ENDPOINT",
+                    dispatch_key=dispatch_key,
+                    target_code=kwargs["target_code"],
+                    payload_json=task_spec["request_json"],
+                )
+            )
+            return [
+                SimpleNamespace(
+                    id=901,
+                    operation_key=kwargs["operation_key"],
+                    sequence_no=1,
+                    task_type=task_spec["task_type"],
+                    dispatch_key=dispatch_key,
+                    actions_json={"required": True},
+                    rack_code=None,
+                    target_position_code=task_spec["target_position_code"],
+                )
+            ]
+
+    async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
+        timelines.append(kwargs)
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    await RuntimeIntentEffectApplier(rack_operation_service=RecordingRackOperationService()).apply(
+        ctx,
+        [RuntimeIntent.rack_operation_request(**contract)],
+    )
+
+    assert db.add.call_count == 0
+    assert operation_calls[0]["operation_key"] == "wms-rack-operation:WMS-DEMAND-001:WL-SMT-01:SINGLE_LAYER_A"
+    assert operation_calls[0]["target_code"] == "WMS_RCS_RACK_OPERATION"
+    assert operation_calls[0]["trace_id"] == "trace-single-layer-001"
+    assert operation_calls[0]["task_specs"][0]["request_json"]["business_demand_key"] == "WMS-DEMAND-001"
+    assert operation_calls[0]["task_specs"][0]["request_json"]["station"]["position_code"] == "SINGLE_LAYER_A"
+    assert created_outboxes[0].dispatch_type == "EXTERNAL_HTTP"
+    assert created_outboxes[0].target_type == "HTTP_ENDPOINT"
+    assert created_outboxes[0].dispatch_key == (
+        "rack-operation:wms-rack-operation:WMS-DEMAND-001:WL-SMT-01:SINGLE_LAYER_A:1:ALLOCATE_AND_MOVE_RACK"
+    )
+    assert created_outboxes[0].target_code == "WMS_RCS_RACK_OPERATION"
+    assert session.status == "WAITING_EXTERNAL"
+    assert session.current_wait_type == "RACK_OPERATION"
+    assert session.context_json["waiting_rack_operation_key"] == (
+        "wms-rack-operation:WMS-DEMAND-001:WL-SMT-01:SINGLE_LAYER_A"
+    )
+    assert session.context_json["rack_operation"]["task_dispatch_keys"] == [
+        "rack-operation:wms-rack-operation:WMS-DEMAND-001:WL-SMT-01:SINGLE_LAYER_A:1:ALLOCATE_AND_MOVE_RACK"
+    ]
+    assert session.context_json["rack_operation"]["target_position_code"] == "SINGLE_LAYER_A"
+    assert timelines[0]["payload"]["wait_token"] == "wms-rack-operation:WMS-DEMAND-001:WL-SMT-01:SINGLE_LAYER_A"
 
 
 @pytest.mark.asyncio

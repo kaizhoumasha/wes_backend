@@ -33,6 +33,11 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         result = await db.execute(select(SystemOutbox).where(columns.dispatch_key == dispatch_key))
         return result.scalar_one_or_none()
 
+    async def get_by_dispatch_key_for_update(self, db: AsyncSession, dispatch_key: str) -> SystemOutbox | None:
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(select(SystemOutbox).where(columns.dispatch_key == dispatch_key).with_for_update())
+        return result.scalar_one_or_none()
+
     async def get_pending_messages(
         self,
         db: AsyncSession,
@@ -276,12 +281,47 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         columns = cast("Any", SystemOutbox).__table__.c
         result = await db.execute(select(SystemOutbox).where(columns.id == outbox_id).with_for_update())
         outbox = result.scalar_one_or_none()
-        if outbox is None or outbox.status != SystemOutboxStatus.DISPATCHING:
+        if (
+            outbox is None
+            or outbox.status != SystemOutboxStatus.DISPATCHING
+            or getattr(outbox, "finished_at", None) is not None
+        ):
             return None
         outbox.status = SystemOutboxStatus.SENT
         outbox.sent_at = timezone.now_for_db()
         outbox.next_retry_at = None
         outbox.last_error = None
+        await db.flush()
+        return outbox
+
+    async def finish_sent_external_by_dispatch_key(self, db: AsyncSession, dispatch_key: str) -> SystemOutbox | None:
+        """按外部派发键闭环已发送或已回调 outbox，释放 station lease。"""
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(
+            select(SystemOutbox)
+            .where(
+                columns.dispatch_key == dispatch_key,
+                columns.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP,
+                columns.status.in_(
+                    [
+                        SystemOutboxStatus.NEW,
+                        SystemOutboxStatus.DISPATCHING,
+                        SystemOutboxStatus.SENT,
+                    ]
+                ),
+                columns.finished_at.is_(None),
+            )
+            .with_for_update()
+        )
+        outbox = result.scalar_one_or_none()
+        if outbox is None:
+            return None
+        outbox.status = SystemOutboxStatus.SENT
+        outbox.sent_at = outbox.sent_at or timezone.now_for_db()
+        outbox.next_retry_at = None
+        outbox.last_error = None
+        outbox.finished_at = timezone.now_for_db()
         await db.flush()
         return outbox
 
@@ -513,6 +553,48 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def get_active_external_station_dispatch(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        position_code: str,
+    ) -> SystemOutbox | None:
+        """查询占用单层 Station 的 active 外部派发 lease。"""
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        active_statuses = [
+            SystemOutboxStatus.NEW,
+            SystemOutboxStatus.DISPATCHING,
+            SystemOutboxStatus.SENT,
+            SystemOutboxStatus.BLOCKED_RESOURCE,
+        ]
+        payload = columns.payload_json
+        result = await db.execute(
+            select(SystemOutbox)
+            .where(
+                columns.workline_id == workline_id,
+                columns.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP,
+                columns.status.in_(active_statuses),
+                or_(
+                    columns.finished_at.is_(None),
+                    columns.status == SystemOutboxStatus.BLOCKED_RESOURCE,
+                ),
+                or_(
+                    payload["station"]["position_code"].as_string() == position_code,
+                    payload["position_code"].as_string() == position_code,
+                    payload["source"]["position_code"].as_string() == position_code,
+                    payload["source_position_code"].as_string() == position_code,
+                    payload["target_position_code"].as_string() == position_code,
+                    payload["rack_operation"]["target_position_code"].as_string() == position_code,
+                    payload["rack_operation"]["work_position_code"].as_string() == position_code,
+                ),
+            )
+            .order_by(columns.created_at.asc(), columns.id.asc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
     async def get_blocked_device_busy_messages(
         self,

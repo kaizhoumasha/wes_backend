@@ -129,6 +129,20 @@ def test_workline_service_returns_single_plugin_manifest_summary() -> None:
     assert COMMAND_TARGET_PLACE in summary.supported_commands
 
 
+def test_smt_sorting_inbound_manifest_summary_does_not_expose_ng_arm_role() -> None:
+    """SMT 分拣入库 NG 放置复用目标机械臂，不暴露独立 NG_ARM 角色。"""
+
+    summary = WorkLineService().get_plugin_manifest_summary(SMT_SORTING_INBOUND_PLUGIN_KEY)
+
+    assert summary is not None
+    command_roles = {role for roles in summary.command_target_roles.values() for role in roles}
+    required_roles = {requirement.role for requirement in summary.required_device_roles}
+    assert summary.command_target_roles[COMMAND_NG_PLACE] == [ROLE_SORTING_TARGET_ARM]
+    assert command_roles == {ROLE_SORTING_SOURCE_ARM, ROLE_SORTING_TARGET_ARM}
+    assert "NG_ARM" not in command_roles
+    assert "NG_ARM" not in required_roles
+
+
 def test_workline_service_rejects_manifest_summary_missing_event_source_roles(monkeypatch) -> None:
     """manifest 摘要字段缺失时，Service 应抛明确 ValueError。"""
 

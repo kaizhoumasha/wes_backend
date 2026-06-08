@@ -30,7 +30,7 @@ from src.app.resource.models import (
     ResourceStateEvent,
     ResourceStateEventType,
 )
-from src.app.sys.models import SystemOutbox
+from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.inbox import WorklineInbox
 from src.app.workline.models.runtime_hold import NgReasonSource, NgReturnItem, NgReturnItemStatus, RuntimeHold
@@ -124,6 +124,34 @@ class CapturingAsyncClient:
         return FakeStatusResponse()
 
 
+class FakeStationLeaseStatusProvider:
+    available = True
+    reason_code = None
+    active_rack_code = None
+    active_session_id = None
+    active_dispatch_key = None
+
+    async def station_lease_status(
+        self,
+        _position_code: str,
+        *,
+        allow_active_rack_bound: bool = False,
+    ) -> FakeStationLeaseStatusProvider:
+        return self
+
+
+class EmbeddedTargetSnapshotProvider:
+    def __init__(self, session_context: dict[str, Any]) -> None:
+        self.session_context = session_context
+
+    async def active_bin_rack(self, *, context: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        sorting = self.session_context.get("sorting")
+        if not isinstance(sorting, dict):
+            return None
+        snapshot = sorting.get("active_target_bin")
+        return dict(snapshot) if isinstance(snapshot, dict) else None
+
+
 class NullCommandRepository:
     async def get_by_command_code(self, _db: object, _command_code: str) -> None:
         return None
@@ -152,7 +180,11 @@ def _event_payload(**overrides: object) -> JsonDict:
     return payload
 
 
-def _ctx(session_context: dict[str, Any]) -> PluginContext:
+def _ctx(session_context: dict[str, Any], *, services: SimpleNamespace | None = None) -> PluginContext:
+    runtime_services = services or SimpleNamespace(
+        active_rack_snapshot_provider=EmbeddedTargetSnapshotProvider(session_context),
+        station_lease_status_provider=FakeStationLeaseStatusProvider(),
+    )
     return cast(
         "PluginContext",
         SimpleNamespace(
@@ -161,7 +193,7 @@ def _ctx(session_context: dict[str, Any]) -> PluginContext:
             logger=SimpleNamespace(info=lambda *_args: None, warning=lambda *_args: None),
             normalized_input=None,
             session=SimpleNamespace(id=3001, context_json=session_context),
-            services=SimpleNamespace(),
+            services=runtime_services,
         ),
     )
 
@@ -431,6 +463,22 @@ async def test_cross_plan_sandbox_smoke(
     assert admission.http_status == 200
     assert workline.runtime_status == WorkLineRuntimeStatus.READY
     assert len(fetcher.calls) == 1
+    rack_dispatches = (
+        (
+            await db_session.execute(
+                select(SystemOutbox).where(
+                    SystemOutbox.workline_id == workline.id,
+                    SystemOutbox.operation_domain == "RACK",
+                    SystemOutbox.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    sorting_commands = (await db_session.execute(select(DeviceCommand))).scalars().all()
+    assert rack_dispatches == []
+    assert sorting_commands == []
 
     plugin = SmtSortingInboundPlugin()
     session_context: dict[str, Any] = {
@@ -575,6 +623,7 @@ async def test_cross_plan_sandbox_smoke(
     assert ng_scan_intents[0].context_patch["scan_ng_reason_code"] == "LOCAL_SORTING_NG"
     assert ng_scan_intents[1].reason_code == "LOCAL_SORTING_NG"
     assert ng_scan_intents[2].action == COMMAND_NG_PLACE
+    assert ng_scan_intents[2].device_role == ROLE_SORTING_TARGET_ARM
 
     ng_place_intents = await plugin.on_command_result(_ctx(ng_context), _ng_place_result())
 
@@ -603,6 +652,11 @@ async def test_cross_plan_sandbox_smoke(
 
     # 8. WORKLINE_START_REQUESTED 不是 SMT 插件普通业务事件。
     manifest = SmtSortingInboundPlugin.manifest
+    manifest_roles = {requirement.role for requirement in manifest.required_device_roles}
+    command_target_roles = {role for roles in manifest.command_target_roles.values() for role in roles}
+    assert "NG_ARM" not in manifest_roles
+    assert "NG_ARM" not in command_target_roles
+    assert manifest.command_target_roles[COMMAND_NG_PLACE] == (ROLE_SORTING_TARGET_ARM,)
     assert "WORKLINE_START_REQUESTED" not in manifest.supported_events
     assert "WORKLINE_START_REQUESTED" not in manifest.event_source_roles
 

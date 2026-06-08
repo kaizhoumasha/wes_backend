@@ -49,6 +49,21 @@ class RecordingMultipleRackPlacementRepo:
         return [SimpleNamespace(rack_code="RACK-ACTIVE-001"), SimpleNamespace(rack_code="RACK-ACTIVE-002")]
 
 
+class RecordingMultipleRackPlacementRepoForPosition:
+    def __init__(self, expected_position_code: str) -> None:
+        self.expected_position_code = expected_position_code
+
+    async def list_active_by_workline_position(
+        self,
+        _db: object,
+        *,
+        workline_code: str,
+        position_code: str,
+    ) -> list[SimpleNamespace]:
+        assert (workline_code, position_code) == ("WL-SMT-001", self.expected_position_code)
+        return [SimpleNamespace(rack_code="RACK-ACTIVE-001"), SimpleNamespace(rack_code="RACK-ACTIVE-002")]
+
+
 class RecordingRackBinMountRepo:
     async def list_active_by_rack_code(self, _db: object, rack_code: str) -> list[SimpleNamespace]:
         assert rack_code == "RACK-ACTIVE-001"
@@ -58,6 +73,12 @@ class RecordingRackBinMountRepo:
             SimpleNamespace(rack_slot_code="C", bin_code="BIN-ACTIVE-C"),
             SimpleNamespace(rack_slot_code="D", bin_code="BIN-ACTIVE-D"),
         ]
+
+
+class RecordingEmptyRackBinMountRepo:
+    async def list_active_by_rack_code(self, _db: object, rack_code: str) -> list[SimpleNamespace]:
+        assert rack_code == "RACK-ACTIVE-001"
+        return []
 
 
 class FailingRackBinMountRepo:
@@ -628,6 +649,58 @@ async def test_get_active_bin_rack_synthesizes_large_cell_projection_without_las
 
 
 @pytest.mark.asyncio
+async def test_get_active_bin_rack_keeps_default_position_for_non_position_sorting_metadata() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepo(),
+        rack_bin_mount_repo=RecordingRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={
+            "active_target_bin_code": "BIN-ACTIVE-A",
+            "current_material": {"material_identity_key": "mid:pkg-001", "pkg_code": "PKG-001"},
+        },
+    )
+
+    assert snapshot is not None
+    assert snapshot["rack_code"] == "RACK-ACTIVE-001"
+
+
+@pytest.mark.asyncio
+async def test_get_active_bin_rack_keeps_default_position_for_empty_rack_operation_metadata() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepo(),
+        rack_bin_mount_repo=RecordingRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={
+            "six_in_one": {"barcode": "PKG-001"},
+            "measurement": {},
+            "wms_validation": {},
+            "rack_operation": {},
+            "config": {},
+            "trace_id": "trace-001",
+        },
+    )
+
+    assert snapshot is not None
+    assert snapshot["rack_code"] == "RACK-ACTIVE-001"
+
+
+@pytest.mark.asyncio
 async def test_get_active_bin_rack_returns_none_when_projection_template_cannot_be_synthesized() -> None:
     service = SmtActiveRackSnapshotService(
         rack_placement_repo=RecordingRackPlacementRepo(),
@@ -666,6 +739,93 @@ async def test_get_active_bin_rack_uses_rack_operation_work_position_code() -> N
 
     assert snapshot is not None
     assert snapshot["rack_code"] == "RACK-ACTIVE-001"
+
+
+@pytest.mark.asyncio
+async def test_active_snapshot_uses_single_layer_station_position_from_context() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepoForPosition("SOURCE_STATION_A"),
+        rack_bin_mount_repo=RecordingRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={"station": {"position_code": "SOURCE_STATION_A"}},
+    )
+
+    assert snapshot is not None
+    assert snapshot["rack_code"] == "RACK-ACTIVE-001"
+
+
+@pytest.mark.asyncio
+async def test_active_snapshot_returns_none_for_multiple_active_station_bindings() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingMultipleRackPlacementRepoForPosition("SOURCE_STATION_A"),
+        rack_bin_mount_repo=FailingRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingNoOccupancyRepo(),
+        bin_material_mount_repo=RecordingNoMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={"position_code": "SOURCE_STATION_A"},
+    )
+
+    assert snapshot is None
+
+
+@pytest.mark.asyncio
+async def test_active_snapshot_returns_none_when_position_has_no_single_layer_projection() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepoForPosition("SOURCE_STATION_A"),
+        rack_bin_mount_repo=RecordingEmptyRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingFlexibleNoProjectionRepo(),
+        bin_material_mount_repo=RecordingFlexibleNoProjectionRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={"position_code": "SOURCE_STATION_A"},
+    )
+
+    assert snapshot is None
+
+
+@pytest.mark.asyncio
+async def test_non_single_layer_projection_does_not_become_active_bin_rack_authority() -> None:
+    service = SmtActiveRackSnapshotService(
+        rack_placement_repo=RecordingRackPlacementRepo(),
+        rack_bin_mount_repo=RecordingRackBinMountRepo(),
+        bin_cell_occupancy_repo=RecordingLargeCellOccupancyRepo(),
+        bin_material_mount_repo=RecordingLargeCellMaterialMountRepo(),
+        bin_cell_reservation_repo=RecordingNoReservationRepo(),
+        session_repo=RecordingNoTemplateSessionRepo(),
+    )
+
+    snapshot = await service.get_active_bin_rack(
+        SimpleNamespace(),
+        workline=SimpleNamespace(id=1001, line_code="WL-SMT-001"),
+        context={
+            "resource_evidence": {
+                "five_layer_rack": {"rack_code": "FIVE-LAYER-01"},
+                "return_bin": {"bin_code": "RETURN-BIN-01"},
+                "production_rack": {"rack_code": "PRODUCTION-RACK-01"},
+            },
+        },
+    )
+
+    assert snapshot is None
 
 
 @pytest.mark.asyncio

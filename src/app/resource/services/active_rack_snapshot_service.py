@@ -186,6 +186,8 @@ class SmtActiveRackSnapshotService:
             return None
 
         position_code = self._position_code(runtime_context)
+        if position_code is None:
+            return None
         placements = await self.rack_placement_repo.list_active_by_workline_position(
             db,
             workline_code=workline_code,
@@ -250,7 +252,7 @@ class SmtActiveRackSnapshotService:
             or _text_or_none(getattr(workline, "workline_code", None))
         )
 
-    def _position_code(self, context: Mapping[str, Any]) -> str:
+    def _position_code(self, context: Mapping[str, Any]) -> str | None:
         rack_operation = context.get("rack_operation")
         if isinstance(rack_operation, Mapping):
             value = (
@@ -261,12 +263,35 @@ class SmtActiveRackSnapshotService:
             if value is not None:
                 return value
 
-        return (
-            _text_or_none(context.get("work_position_code"))
+        station = context.get("station")
+        station_position_code = _text_or_none(station.get("position_code")) if isinstance(station, Mapping) else None
+        value = (
+            station_position_code
+            or _text_or_none(context.get("work_position_code"))
             or _text_or_none(context.get("target_position_code"))
             or _text_or_none(context.get("position_code"))
-            or DEFAULT_SMT_RACK_POSITION_CODE
         )
+        if value is not None:
+            return value
+
+        # 位置相关上下文必须显式声明 station/position，不能由 evidence 隐式绑定；
+        # 普通排序元数据上下文仍沿用历史 SMT 上料位 fallback。
+        if self._requires_explicit_position(context):
+            return None
+        return DEFAULT_SMT_RACK_POSITION_CODE
+
+    @staticmethod
+    def _requires_explicit_position(context: Mapping[str, Any]) -> bool:
+        if any(
+            _text_or_none(context.get(key)) is not None
+            for key in ("work_position_code", "target_position_code", "position_code")
+        ):
+            return True
+        for key in ("active_bin_rack", "rack_operation", "resource_evidence", "station"):
+            value = context.get(key)
+            if isinstance(value, Mapping) and value:
+                return True
+        return False
 
     def _active_rack_from_context(
         self,

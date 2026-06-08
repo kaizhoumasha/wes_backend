@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 from sqlalchemy import and_, exists, func, or_, select
 
@@ -13,6 +13,7 @@ from src.app.callback.models import CallbackLog
 from src.app.callback.repositories.callback_log_repository import callback_log_repository
 from src.app.device.models import Device, DeviceCommand
 from src.app.device.repositories import device_repository
+from src.app.resource.services.active_rack_snapshot_service import smt_active_rack_snapshot_service
 from src.app.sys.models import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import (
     InboxKind,
@@ -27,7 +28,11 @@ from src.app.workline.models.runtime import (
     RuntimeDeviceHealthSummary,
     RuntimeDeviceSummary,
     RuntimeOverviewResponse,
+    RuntimeRackOperationWait,
+    RuntimeResourceEvidenceKind,
+    RuntimeSingleLayerRackSnapshot,
     RuntimeStatCard,
+    RuntimeStationLease,
     RuntimeTraceDeviceAction,
     RuntimeTraceDevicePathNode,
     RuntimeTraceListItem,
@@ -36,6 +41,7 @@ from src.app.workline.models.runtime import (
     RuntimeTraceTimelineGroup,
     RuntimeWorklineDetailResponse,
     RuntimeWorklineDeviceItem,
+    RuntimeWorklineReadiness,
     RuntimeWorklineSummary,
     TraceCallbackLogItem,
     TraceCommandItem,
@@ -43,6 +49,7 @@ from src.app.workline.models.runtime import (
 )
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.workline.services.diagnosis_verdict_builder import diagnosis_verdict_builder
+from src.app.workline.services.station_lease_service import station_lease_service
 from src.app.workline.services.trace_resource_view_builder import build_trace_resource_view
 from src.app.workline.services.trace_response_builder import (
     _blocked_wait_seconds,
@@ -53,8 +60,11 @@ from src.app.workline.services.trace_response_builder import (
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 from src.utils.value_normalization import optional_enum_str
+from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_runtime.business_identity import resolve_payload_display_identity
 from src.workline_runtime.utils import ensure_dict
+
+T = TypeVar("T")
 
 _ACTIVE_SESSION_STATUSES = {
     "NEW",
@@ -453,9 +463,15 @@ class RuntimeQueryService(BaseService[Any, Any]):
         active_trace_items = await self._build_trace_list_items(db, active_sessions)
         failed_trace_items = await self._build_trace_list_items(db, recent_failed_sessions)
         completed_trace_items = await self._build_trace_list_items(db, recent_completed_sessions)
+        structured_boundary = await self._build_workline_runtime_boundary(db, workline, active_sessions)
 
         return RuntimeWorklineDetailResponse(
             summary=summary,
+            workline_readiness=structured_boundary["workline_readiness"],
+            station_lease=structured_boundary["station_lease"],
+            single_layer_rack_snapshot=structured_boundary["single_layer_rack_snapshot"],
+            rack_operation_wait=structured_boundary["rack_operation_wait"],
+            resource_evidence_kind=structured_boundary["resource_evidence_kind"],
             devices=device_items,
             active_sessions=active_trace_items,
             recent_failed_traces=failed_trace_items,
@@ -1027,6 +1043,224 @@ class RuntimeQueryService(BaseService[Any, Any]):
             last_activity_at=_latest_activity_at(sessions),
         )
 
+    async def _build_workline_runtime_boundary(
+        self,
+        db: Any,
+        workline: WorkLine,
+        sessions: list[WorklineSession],
+    ) -> dict[str, str]:
+        station_lease = RuntimeStationLease.UNKNOWN
+        single_layer_rack_snapshot = RuntimeSingleLayerRackSnapshot.UNKNOWN
+        resource_evidence_kind = RuntimeResourceEvidenceKind.UNKNOWN
+        position_codes = self._single_layer_boundary_positions(workline)
+
+        if position_codes:
+            station_lease = await self._load_runtime_station_lease(db, workline, position_codes)
+            single_layer_rack_snapshot = await self._load_single_layer_rack_snapshot_state(db, workline, position_codes)
+            if single_layer_rack_snapshot == RuntimeSingleLayerRackSnapshot.ACTIVE:
+                resource_evidence_kind = RuntimeResourceEvidenceKind.WES_ACTIVE_SNAPSHOT
+
+        rack_operation_wait = self._runtime_rack_operation_wait(sessions)
+        resource_evidence_kind = self._runtime_resource_evidence_kind(
+            sessions,
+            current=resource_evidence_kind,
+            rack_operation_wait=rack_operation_wait,
+        )
+        if (
+            single_layer_rack_snapshot == RuntimeSingleLayerRackSnapshot.MISSING
+            and self._has_non_single_layer_resource_evidence(sessions)
+        ):
+            single_layer_rack_snapshot = RuntimeSingleLayerRackSnapshot.NON_SINGLE_LAYER_EVIDENCE
+
+        return {
+            "workline_readiness": self._runtime_workline_readiness(workline).value,
+            "station_lease": station_lease.value,
+            "single_layer_rack_snapshot": single_layer_rack_snapshot.value,
+            "rack_operation_wait": rack_operation_wait.value,
+            "resource_evidence_kind": resource_evidence_kind.value,
+        }
+
+    @staticmethod
+    def _runtime_workline_readiness(workline: WorkLine) -> RuntimeWorklineReadiness:
+        runtime_status = optional_enum_str(getattr(workline, "runtime_status", None))
+        if runtime_status == "READY":
+            return RuntimeWorklineReadiness.READY
+        if runtime_status in {"STOPPED", "STARTING", "ESTOPPED", "RECONCILING"}:
+            return RuntimeWorklineReadiness.NOT_READY
+        return RuntimeWorklineReadiness.UNKNOWN
+
+    @staticmethod
+    def _single_layer_boundary_positions(workline: WorkLine) -> list[str]:
+        definition = get_workline_plugin_definition(getattr(workline, "plugin_key", None))
+        if definition is None:
+            return []
+        position_codes: list[str] = []
+        for boundary in getattr(definition.manifest, "single_layer_boundaries", ()):
+            if getattr(boundary, "rack_kind", None) == "SINGLE_LAYER":
+                position_code = str(getattr(boundary, "position_code", "") or "").strip()
+                if position_code and position_code not in position_codes:
+                    position_codes.append(position_code)
+        return position_codes
+
+    async def _load_runtime_station_lease(
+        self,
+        db: Any,
+        workline: WorkLine,
+        position_codes: list[str],
+    ) -> RuntimeStationLease:
+        workline_id = getattr(workline, "id", None)
+        workline_code = str(getattr(workline, "line_code", "") or "")
+        if workline_id is None or not workline_code:
+            return RuntimeStationLease.UNKNOWN
+        states: list[RuntimeStationLease] = []
+        for position_code in position_codes:
+            try:
+                status = await station_lease_service.get_station_lease_status(
+                    db,
+                    workline_id=workline_id,
+                    workline_code=workline_code,
+                    position_code=position_code,
+                )
+            except ValueError:
+                states.append(RuntimeStationLease.UNKNOWN)
+                continue
+            if getattr(status, "available", False):
+                states.append(RuntimeStationLease.IDLE)
+                continue
+            reason_code = getattr(status, "reason_code", None)
+            normalized = str(getattr(reason_code, "value", reason_code or ""))
+            try:
+                states.append(RuntimeStationLease(normalized))
+            except ValueError:
+                states.append(RuntimeStationLease.UNKNOWN)
+        return _highest_priority_state(
+            states,
+            [
+                RuntimeStationLease.ACTIVE_RACK_BOUND,
+                RuntimeStationLease.ACTIVE_DISPATCH_LEASE,
+                RuntimeStationLease.ACTIVE_SESSION_BOUND,
+                RuntimeStationLease.UNKNOWN,
+                RuntimeStationLease.IDLE,
+            ],
+            RuntimeStationLease.UNKNOWN,
+        )
+
+    async def _load_single_layer_rack_snapshot_state(
+        self,
+        db: Any,
+        workline: WorkLine,
+        position_codes: list[str],
+    ) -> RuntimeSingleLayerRackSnapshot:
+        states: list[RuntimeSingleLayerRackSnapshot] = []
+        for position_code in position_codes:
+            try:
+                snapshot = await smt_active_rack_snapshot_service.get_active_bin_rack(
+                    db,
+                    workline=workline,
+                    context={"station": {"position_code": position_code}},
+                )
+            except ValueError:
+                states.append(RuntimeSingleLayerRackSnapshot.INVALID)
+                continue
+            states.append(RuntimeSingleLayerRackSnapshot.ACTIVE if snapshot else RuntimeSingleLayerRackSnapshot.MISSING)
+        return _highest_priority_state(
+            states,
+            [
+                RuntimeSingleLayerRackSnapshot.ACTIVE,
+                RuntimeSingleLayerRackSnapshot.INVALID,
+                RuntimeSingleLayerRackSnapshot.NON_SINGLE_LAYER_EVIDENCE,
+                RuntimeSingleLayerRackSnapshot.MISSING,
+                RuntimeSingleLayerRackSnapshot.UNKNOWN,
+            ],
+            RuntimeSingleLayerRackSnapshot.UNKNOWN,
+        )
+
+    @staticmethod
+    def _runtime_rack_operation_wait(sessions: list[WorklineSession]) -> RuntimeRackOperationWait:
+        states: list[RuntimeRackOperationWait] = []
+        now = timezone.now_for_db()
+        for session in sessions:
+            context = ensure_dict(getattr(session, "context_json", None))
+            rack_operation = ensure_dict(context.get("rack_operation"))
+            has_rack_wait = bool(context.get("waiting_rack_operation_key") or rack_operation.get("operation_key"))
+            if not has_rack_wait:
+                continue
+            operation_status = str(rack_operation.get("status") or "").upper()
+            session_status = optional_enum_str(getattr(session, "status", None))
+            if operation_status in {"ARRIVED", "SUCCEEDED", "COMPLETED", "DONE"}:
+                states.append(RuntimeRackOperationWait.WMS_CALLBACK_RECEIVED)
+                continue
+            if operation_status == "TIMEOUT":
+                states.append(RuntimeRackOperationWait.TIMEOUT)
+                continue
+            if operation_status in {"FAILED", "CANCELLED", "REJECTED"} or session_status in _FAILURE_SESSION_STATUSES:
+                states.append(RuntimeRackOperationWait.FAILED)
+                continue
+            deadline_at = getattr(session, "deadline_at", None)
+            if deadline_at is not None and deadline_at <= now:
+                states.append(RuntimeRackOperationWait.TIMEOUT)
+                continue
+            if session_status == "WAITING_EXTERNAL" or context.get("waiting_rack_operation_key"):
+                states.append(RuntimeRackOperationWait.WAITING_WMS)
+                continue
+            states.append(RuntimeRackOperationWait.UNKNOWN)
+        return _highest_priority_state(
+            states,
+            [
+                RuntimeRackOperationWait.FAILED,
+                RuntimeRackOperationWait.TIMEOUT,
+                RuntimeRackOperationWait.WAITING_WMS,
+                RuntimeRackOperationWait.WMS_CALLBACK_RECEIVED,
+                RuntimeRackOperationWait.UNKNOWN,
+            ],
+            RuntimeRackOperationWait.NONE,
+        )
+
+    @staticmethod
+    def _runtime_resource_evidence_kind(
+        sessions: list[WorklineSession],
+        *,
+        current: RuntimeResourceEvidenceKind,
+        rack_operation_wait: RuntimeRackOperationWait,
+    ) -> RuntimeResourceEvidenceKind:
+        if current != RuntimeResourceEvidenceKind.UNKNOWN:
+            return current
+        states: list[RuntimeResourceEvidenceKind] = []
+        for session in sessions:
+            context = ensure_dict(getattr(session, "context_json", None))
+            for evidence in _runtime_resource_evidence_payloads(context):
+                evidence_kind = str(evidence.get("resource_evidence_kind") or evidence.get("evidence_kind") or "")
+                source_system = str(evidence.get("source_system") or "").upper()
+                callback_type = str(evidence.get("callback_type") or "").upper()
+                if evidence_kind == RuntimeResourceEvidenceKind.TRACE_RESOURCE_EVIDENCE.value:
+                    states.append(RuntimeResourceEvidenceKind.TRACE_RESOURCE_EVIDENCE)
+                elif source_system in {"WMS", "RCS", "WMS_RCS"} or callback_type.startswith("WMS_"):
+                    states.append(RuntimeResourceEvidenceKind.WMS_CALLBACK_EVIDENCE)
+                else:
+                    states.append(RuntimeResourceEvidenceKind.GENERIC_EVIDENCE)
+        if not states and rack_operation_wait == RuntimeRackOperationWait.WAITING_WMS:
+            states.append(RuntimeResourceEvidenceKind.GENERIC_EVIDENCE)
+        return _highest_priority_state(
+            states,
+            [
+                RuntimeResourceEvidenceKind.WMS_CALLBACK_EVIDENCE,
+                RuntimeResourceEvidenceKind.TRACE_RESOURCE_EVIDENCE,
+                RuntimeResourceEvidenceKind.GENERIC_EVIDENCE,
+                RuntimeResourceEvidenceKind.UNKNOWN,
+            ],
+            RuntimeResourceEvidenceKind.UNKNOWN,
+        )
+
+    @staticmethod
+    def _has_non_single_layer_resource_evidence(sessions: list[WorklineSession]) -> bool:
+        for session in sessions:
+            context = ensure_dict(getattr(session, "context_json", None))
+            for evidence in _runtime_resource_evidence_payloads(context):
+                rack_kind = str(evidence.get("rack_kind") or evidence.get("resource_kind") or "").upper()
+                if rack_kind and rack_kind != "SINGLE_LAYER":
+                    return True
+        return False
+
     def _build_device_health_summary(
         self,
         devices: list[RuntimeDeviceSummary],
@@ -1561,6 +1795,25 @@ class RuntimeQueryService(BaseService[Any, Any]):
             is_current=False,
             is_blocked=False,
         )
+
+
+def _highest_priority_state(values: list[T], priority: list[T], fallback: T) -> T:
+    for item in priority:
+        if item in values:
+            return item
+    return fallback
+
+
+def _runtime_resource_evidence_payloads(context: dict[str, Any]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for key in ("resource_evidence", "resource_fact", "last_resource_fact", "rack_operation"):
+        value = context.get(key)
+        if isinstance(value, dict):
+            payloads.append(value)
+    events = context.get("resource_state_events")
+    if isinstance(events, list):
+        payloads.extend(item for item in events if isinstance(item, dict))
+    return payloads
 
 
 def _trace_path_has_facts(result: Any) -> bool:
