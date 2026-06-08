@@ -1,11 +1,15 @@
 # WES 单层货架执行编排边界 SPEC
 
-> 状态：Draft - 待评审
+> 状态：后端已落地并验收 - 前端承接待独立计划完成
 > 日期：2026-06-06
+> 进度更新：2026-06-08
 > 关联文档：
 >
 > - `docs/architecture/SRS.md`
 > - `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md`
+> - `docs/superpowers/plans/2026-06-06-wes-single-layer-rack-orchestration-boundary-plan.md`
+>
+> 2026-06-08 功能性验收结论：后端合同、服务、OpenAPI、文档守护和目标测试已通过；前端 generated types、scene adapter、`/runtime/monitor` 浏览器视觉 QA 由 `wes_frontend` 独立计划承接，当前不作为本仓库完成项。
 
 ## 1. 背景与目标
 
@@ -16,7 +20,7 @@
 - 五层货架、生产货架、退料货架、转运货架、库存、逻辑位置占用、AGV/CTU/RCS 任务均由 WMS 管理或转发。
 - 业务需求驱动货架流转，不能让货架主动选择业务。
 
-本 SPEC 的目标是将上述原则整理为可评审、可指导后续 PLAN 的统一业务规格。SRS 是需求文档，除原则性权责冲突外，不作为本 SPEC 的默认修改对象。
+本 SPEC 的目标是将上述原则整理为统一业务规格，并已作为当前实施 PLAN 的输入落地。SRS 是需求文档，除原则性权责冲突外，不作为本 SPEC 的默认修改对象。
 
 ## 2. 适用范围
 
@@ -28,7 +32,7 @@
 - 退料流程中的 LCR、X-Ray、贴标、退料执行证据。
 - 转运、补给、空架回流等需要 WMS/RCS/AGV/CTU 参与的运输需求。
 
-本 SPEC 不定义新的数据库表、API 实现或迁移脚本。评审通过后，再基于该 SPEC 生成后续 PLAN，决定是否需要代码、接口、测试或原则性 SRS 修订。
+本 SPEC 不定义新的数据库表、API 实现或迁移脚本。当前首轮落地范围由关联 PLAN 记录；后续新增代码、接口、测试或原则性 SRS 修订，应通过增量 PLAN 或 ADR 明确范围。
 
 ## 3. 核心架构决策
 
@@ -314,9 +318,9 @@ WES 遇到以下情况必须进入 RuntimeHold、诊断或对账，不得静默�
 - 同一单层货架被多个 active session 绑定。
 - 同一 endpoint 被多个 WES dispatch lease 绑定。
 
-## 7. 原则性冲突与后续 PLAN 输入
+## 7. 原则性冲突与维护 PLAN 输入
 
-本 SPEC 评审通过后，不默认要求立即改写 `docs/architecture/SRS.md`。只有当 SRS、ADR 或后续 PLAN 中存在以下原则性冲突时，才需要同步修订对应文档或先提出新的 ADR：
+本 SPEC 已完成首轮落地，维护阶段不默认要求立即改写 `docs/architecture/SRS.md`。只有当 SRS、ADR 或后续 PLAN 中存在以下原则性冲突时，才需要同步修订对应文档或先提出新的 ADR：
 
 - 将 WES 描述为全局资源主账、库存主账或位置占用权威。
 - 将 WES 描述为直接调用 RCS、直接下发 AGV/CTU 任务的系统。
@@ -325,7 +329,7 @@ WES 遇到以下情况必须进入 RuntimeHold、诊断或对账，不得静默�
 - 将 `WORKLINE_START_REQUESTED` 解释为货架到位、设备启动或作业开始事件。
 - 将分拣机描述为存在 `NG_ARM`，而不是由 `TARGET_ARM` 执行 NG 放置动作。
 
-后续 PLAN 应以本 SPEC 作为输入，逐项判断是否需要 SRS、ADR、接口、模型、服务、任务流或测试调整。SRS 的修订范围应限于消除权责冲突和需求歧义，不应把实现细节提前写入需求文档。
+后续维护或新增 PLAN 应以本 SPEC 作为边界输入，逐项判断是否需要 SRS、ADR、接口、模型、服务、任务流或测试调整。SRS 的修订范围应限于消除权责冲突和需求歧义，不应把实现细节提前写入需求文档。
 
 ## 8. 验收标准
 
@@ -342,15 +346,15 @@ WES 遇到以下情况必须进入 RuntimeHold、诊断或对账，不得静默�
 - 能解释非单层资源执行投影/证据与 WMS 主账的边界。
 - 能指出 SRS、ADR 或后续 PLAN 中哪些旧口径属于原则性冲突，而不是默认要求大范围回写 SRS。
 
-## 9. 后续实现边界
+## 9. 后续维护边界
 
-本 SPEC 评审通过后，建议按以下顺序拆分实现计划：
+本 SPEC 已完成首轮实现落地。后续维护或扩展建议按以下顺序处理：
 
-1. 生成后续 PLAN，明确本轮只做文档修订、模型调整、接口调整、服务实现还是测试补强。
-2. 由 PLAN 判断是否存在原则性 SRS/ADR 冲突；仅在必要时修订对应文档。
-3. 梳理现有 resource/workline/rack 模型中与“全局货架管理”冲突的命名和注释。
-4. 明确单层货架 active 快照服务与 WorkLine endpoint / Station lease 的最小数据合同。
-5. 将分拣机触发条件从 `WORKLINE_START_REQUESTED` 调整为业务需求 + WorkLine READY + Station lease 空闲 + WMS 到位/授权回调。
-6. 将退料货架库存表达改为 WMS 主账 + WES 执行证据。
+1. 生成增量 PLAN，明确本轮只做文档修订、模型调整、接口调整、服务实现还是测试补强。
+2. 由增量 PLAN 判断是否存在原则性 SRS/ADR 冲突；仅在必要时修订对应文档。
+3. 持续检查 resource/workline/rack 模型中是否出现“全局货架管理”口径回退，并同步更新命名和注释。
+4. 维护单层货架 active 快照服务与 WorkLine endpoint / Station lease 的最小数据合同。
+5. 保持分拣机触发条件为业务需求 + WorkLine READY + Station lease 空闲 + WMS 到位/授权回调，不回退到 `WORKLINE_START_REQUESTED` 直接触发作业。
+6. 保持退料货架库存表达为 WMS 主账 + WES 执行证据。
 
 任何实现计划如果需要 WES 管理五层货架库存、退料货架库存、物理库位占用、AGV/CTU/RCS 直连调度，必须先提出新的 ADR。

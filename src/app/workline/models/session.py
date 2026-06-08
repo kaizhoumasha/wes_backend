@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from sqlalchemy import JSON, Column, Index, Text, text
+from sqlalchemy import JSON, Column, ForeignKey, Index, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
@@ -208,7 +208,15 @@ class WorklineSessionBase(BaseMixin):
     awaiting_command_id: int | None = Field(
         default=None,
         index=True,
-        foreign_key="wes_biz.device_commands.id",
+        # 标记与 DeviceCommand.session_id_int 的已知外键环，
+        # 避免测试库 drop_all 清理排序 warning。
+        sa_column_args=(
+            ForeignKey(
+                "wes_biz.device_commands.id",
+                name="fk_workline_sessions_awaiting_command_id_device_commands",
+                use_alter=True,
+            ),
+        ),
         description="等待的设备指令 ID",
     )
 

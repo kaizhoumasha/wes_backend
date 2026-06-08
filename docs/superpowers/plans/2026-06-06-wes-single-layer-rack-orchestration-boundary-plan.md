@@ -1,6 +1,14 @@
 # WES 单层货架执行编排边界 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> 状态：后端已验收 - 前端承接待独立计划完成
+> 进度更新：2026-06-08
+> 对齐 SPEC：`docs/superpowers/specs/2026-06-06-wes-single-layer-rack-orchestration-boundary-spec.md`
+>
+> 2026-06-08 功能性验收结论：本仓库后端合同、服务、OpenAPI、文档守护和目标测试已通过；跨仓前端 generated types、scene adapter 与浏览器视觉 QA 不在本仓库落地范围，按 `wes_frontend` 独立计划继续跟进。
+>
+> 本计划 Task 0-10 的后端执行步骤均已完成，验收标准、review decisions 和验证记录保留在本文末尾，后续变更按增量 PLAN 或 ADR 处理。
+>
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use Markdown checkbox syntax for tracking.
 
 **Goal:** 将 `2026-06-06-wes-single-layer-rack-orchestration-boundary-spec.md` 落成可验证的 WES v1 执行边界：WES 只权威维护单层货架 active 执行快照和 WorkLine/Station 当前执行上下文，运输与非单层资源由 WMS 负责。
 
@@ -988,69 +996,71 @@ Nullable / missing 规则：
 
 ### Coverage Diagram
 
+2026-06-08 功能性验收已重新核对实现、GitNexus 图谱和目标测试。此前本节仍保留计划阶段缺口标记，是文档状态未随实现同步，不代表当前后端实现缺口。
+
 ```text
 CODE PATHS                                                USER / SYSTEM FLOWS
-[+] docs boundary guard                                   [+] Plan reader / future agent
-  ├── [GAP] SRS WES-not-direct-RCS assertions               ├── [GAP] detects WES/RCS wording drift
-  ├── [GAP] ADR/SPEC WMS authority assertions                ├── [GAP] detects cross-doc authority drift
-  ├── [GAP] return rack inventory wording assertions        ├── [GAP] detects START-as-job-start drift
-  ├── [GAP] empty rack authority wording assertions          ├── [GAP] detects WES-empty-rack-authority drift
-  ├── [GAP] five-layer hot/cold and A/B authority assertions └── [GAP] detects SRS old five-layer authority drift
-  └── [GAP] execution snapshot vs inventory master wording assertions
-[+] StationLeaseService
-  ├── [GAP] active RackPlacement -> ACTIVE_RACK_BOUND      [+] Dispatch admission
-  ├── [GAP] active SystemOutbox -> ACTIVE_DISPATCH_LEASE     ├── [GAP] Station busy prevents duplicate WMS request
-  ├── [GAP] SENT unfinished outbox remains active lease       ├── [GAP] station-scope transactional claim prevents duplicate WMS request
-  ├── [GAP] terminal dispatch allows later station re-claim    ├── [GAP] distinct business demands cannot both claim one station
-  ├── [GAP] terminal outbox ignored                          └── [GAP] historical failed request does not block forever
-  ├── [GAP] open session context -> ACTIVE_SESSION_BOUND
-  └── [GAP] non-single-layer position rejected
-[+] WMS transport contract in wms_integration
-  ├── [★★ TESTED] existing rack/handling envelope behavior
-  ├── [GAP] target_code/gateway/authority WMS boundary
-  ├── [GAP] outbound request does not misuse source_system=WMS
-  └── [GAP] recursive forbidden direct-device fields
-[+] SingleLayerRackOrchestrationService
-  ├── [GAP] WorkLine not READY -> WAITING
-  ├── [GAP] Station lease busy -> WAITING/BLOCKED
-  ├── [GAP] business demand -> rack operation decision
-  ├── [GAP] DISPATCH_WMS requires successful station claim
-  └── [GAP] rack-ready fact alone does not dispatch
-[+] Plugin single-layer boundary matrix
-  ├── [GAP] manifest capability/resource marker identifies mandatory boundary plugins
-  ├── [GAP] WorklinePluginManifest boundary contract
-  ├── [GAP] WorkLinePluginManifestSummary exports boundary
-  ├── [GAP] manifest route + OpenAPI exports boundary
-  ├── [GAP] rough sorter work position -> WMS rack operation
-  ├── [GAP] rough sorter WMS arrived -> same waiting session only
-  ├── [GAP] sorting inbound START -> READY only, no station bind
-  ├── [GAP] sorting inbound source station requires active source snapshot + lease
-  ├── [GAP] sorting inbound target allocation requires active target snapshot + lease
-  ├── [GAP] sorting inbound multiple source stations remain separate boundaries
-  └── [GAP] future single-layer plugins declare manifest station/rack boundary
-[+] Runtime detail structured frontend contract
-  ├── [GAP] runtime detail exports workline_readiness
-  ├── [GAP] runtime detail exports station_lease
-  ├── [GAP] runtime detail exports single_layer_rack_snapshot
-  ├── [GAP] runtime detail exports rack_operation_wait
-  ├── [GAP] runtime detail exports resource_evidence_kind
-  └── [GAP] runtime detail OpenAPI exports exact snake_case enums
-[+] Runtime rack operation effects
-  ├── [★★★ TESTED] rack operation creates tasks + wait context
-  ├── [GAP] new orchestration path uses same effect contract
-  └── [GAP] ADR/SPEC document external_request vs rack_operation_request relation
-[+] Frontend visual QA contract
-  ├── [GAP] executable agent-browser smoke command covers runtime monitor states
-  ├── [GAP] raw JSON scan limited to monitor adapter/components or allowlist
-  ├── [GAP] zsh-stable raw JSON scan command
-  └── [GAP] desktop/mobile /runtime/monitor checks for lease/rack operation/resource evidence overflow
-[+] SRS transport authority guard
-  └── [GAP] WES task concurrency wording does not claim AGV congestion authority
-[+] Production/return rack authority guard
-  └── [GAP] PKG/Rack/Side/Slot wording remains execution evidence, not WES slot mastership
+[TESTED] docs boundary guard                              [TESTED] Plan reader / future agent
+  ├── SRS WES-not-direct-RCS assertions                     ├── detects WES/RCS wording drift
+  ├── ADR/SPEC WMS authority assertions                      ├── detects cross-doc authority drift
+  ├── return rack inventory wording assertions               ├── detects START-as-job-start drift
+  ├── empty rack authority wording assertions                 ├── detects WES-empty-rack-authority drift
+  ├── five-layer hot/cold and A/B authority assertions        └── detects SRS old five-layer authority drift
+  └── execution snapshot vs inventory master wording assertions
+[TESTED] StationLeaseService                              [TESTED] Dispatch admission
+  ├── active RackPlacement -> ACTIVE_RACK_BOUND               ├── Station busy prevents duplicate WMS request
+  ├── active SystemOutbox -> ACTIVE_DISPATCH_LEASE            ├── station-scope transactional claim prevents duplicate WMS request
+  ├── SENT unfinished outbox remains active lease             ├── distinct business demands cannot both claim one station
+  ├── terminal dispatch allows later station re-claim         └── historical failed request does not block forever
+  ├── terminal outbox ignored
+  ├── open session context -> ACTIVE_SESSION_BOUND
+  └── non-single-layer position rejected
+[TESTED] WMS transport contract in wms_integration
+  ├── existing rack/handling envelope behavior
+  ├── target_code/gateway/authority WMS boundary
+  ├── outbound request does not misuse source_system=WMS
+  └── recursive forbidden direct-device fields
+[TESTED] SingleLayerRackOrchestrationService
+  ├── WorkLine not READY -> WAITING
+  ├── Station lease busy -> WAITING/BLOCKED
+  ├── business demand -> rack operation decision
+  ├── DISPATCH_WMS requires successful station claim
+  └── rack-ready fact alone does not dispatch
+[TESTED] Plugin single-layer boundary matrix
+  ├── manifest capability/resource marker identifies mandatory boundary plugins
+  ├── WorklinePluginManifest boundary contract
+  ├── WorkLinePluginManifestSummary exports boundary
+  ├── manifest route + OpenAPI exports boundary
+  ├── rough sorter work position -> WMS rack operation
+  ├── rough sorter WMS arrived -> same waiting session only
+  ├── sorting inbound START -> READY only, no station bind
+  ├── sorting inbound source station requires active source snapshot + lease
+  ├── sorting inbound target allocation requires active target snapshot + lease
+  ├── sorting inbound multiple source stations remain separate boundaries
+  └── future single-layer plugins declare manifest station/rack boundary
+[TESTED] Runtime detail backend contract
+  ├── runtime detail exports workline_readiness
+  ├── runtime detail exports station_lease
+  ├── runtime detail exports single_layer_rack_snapshot
+  ├── runtime detail exports rack_operation_wait
+  ├── runtime detail exports resource_evidence_kind
+  └── runtime detail OpenAPI exports exact snake_case enums
+[TESTED] Runtime rack operation effects
+  ├── rack operation creates tasks + wait context
+  ├── new orchestration path uses same effect contract
+  └── ADR/SPEC document external_request vs rack_operation_request relation
+[CROSS-REPO PENDING] Frontend generated types / scene adapter / visual QA
+  ├── generated runtime detail types consume the new snake_case fields
+  ├── scene adapter maps fields to camelCase monitor model
+  ├── executable browser smoke covers runtime monitor states
+  └── desktop/mobile /runtime/monitor checks lease/rack operation/resource evidence overflow
+[TESTED] SRS transport authority guard
+  └── WES task concurrency wording does not claim AGV congestion authority
+[TESTED] Production/return rack authority guard
+  └── PKG/Rack/Side/Slot wording remains execution evidence, not WES slot mastership
 
-COVERAGE: existing coverage strong for rack operation effects and parts of rough sorter/sorting plugin behavior, weak for new lease/orchestration/plugin-boundary/API/document-guard paths.
-QUALITY: ★★★:1 ★★:1 | GAPS: 50 | E2E-worthy: cross_plan_sandbox_smoke START/READY no dispatch; frontend /runtime/monitor smoke for viewport/overflow.
+COVERAGE: backend contract, lease/orchestration/plugin-boundary/API/document-guard paths pass targeted acceptance. Cross-repo frontend generated types, scene adapter and visual QA remain pending in the `wes_frontend` plan.
+QUALITY: backend acceptance command `uv run pytest tests/docs/test_wes_resource_boundary_docs.py tests/workline_runtime/test_station_lease_service.py tests/workline_runtime/test_single_layer_rack_orchestration_service.py tests/wms_integration/test_transport_contract.py tests/workline_runtime/test_plugin_single_layer_rack_boundary.py tests/api/test_workline_runtime_api.py tests/workline_runtime/test_runtime_intent_contract.py tests/workline_runtime/test_runtime_intent_effects.py tests/workline_runtime/test_smt_sorting_inbound_plugin.py tests/workline_runtime/test_reserved_runtime_events.py tests/scripts/test_sync_test_workline_devices.py` passed with 281 passed, 15 warnings. GitNexus refreshed with `npx gitnexus analyze` on 2026-06-08.
 ```
 
 ### NOT In Scope
