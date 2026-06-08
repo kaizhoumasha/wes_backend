@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import importlib.util
 import logging
+import math
 import os
 import re
 import sys
@@ -56,6 +57,27 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+
+def _positive_float_env(name: str) -> float | None:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("忽略无效的 %s=%r，使用 Mock WMS 默认格位容量", name, raw)
+        return None
+    if not math.isfinite(value):
+        logger.warning("忽略非有限数 %s=%r，使用 Mock WMS 默认格位容量", name, raw)
+        return None
+    if value <= 0:
+        logger.warning("忽略非正数 %s=%r，使用 Mock WMS 默认格位容量", name, raw)
+        return None
+    return value
+
+
+MOCK_WMS_CELL_CAPACITY_DEPTH_MM = _positive_float_env("MOCK_WMS_CELL_CAPACITY_DEPTH_MM")
 
 # ============================================
 # 种子数据 (Seed Data)
@@ -128,10 +150,35 @@ RECENT_OPERATION_LIMIT = 100
 RACK_SLOT_CODES = ("A", "B", "C", "D")
 RACK_PHYSICAL_LAYOUTS = {
     "RACK-001": {
-        "bin_type": "6格箱",
-        "bin_prefix": "BIN",
-        "cell_indexes": SEVEN_INCH_BIN_CELL_INDEXES,
-        "layout_code": "SIX_CELL",
+        "bin_type": "混合料箱",
+        "supported_bin_types": ("6格箱", "3格箱"),
+        "layout_code": "MIXED",
+        "bins": (
+            {
+                "rack_slot_code": "A",
+                "bin_code": "BIN-001",
+                "bin_type": "6格箱",
+                "cell_indexes": SEVEN_INCH_BIN_CELL_INDEXES,
+            },
+            {
+                "rack_slot_code": "B",
+                "bin_code": "BIN-002",
+                "bin_type": "6格箱",
+                "cell_indexes": SEVEN_INCH_BIN_CELL_INDEXES,
+            },
+            {
+                "rack_slot_code": "C",
+                "bin_code": "BIN-003",
+                "bin_type": "3格箱",
+                "cell_indexes": THREE_CELL_BIN_CELL_INDEXES,
+            },
+            {
+                "rack_slot_code": "D",
+                "bin_code": "BIN-004",
+                "bin_type": "3格箱",
+                "cell_indexes": THREE_CELL_BIN_CELL_INDEXES,
+            },
+        ),
     },
     "RACK-3CELL-001": {
         "bin_type": "3格箱",
@@ -190,8 +237,42 @@ def _rack_layout_from_pattern(rack_id: str) -> dict[str, Any]:
     }
 
 
+def _rack_layout_supports_bin_type(layout: dict[str, Any], required_bin_type: str) -> bool:
+    supported = layout.get("supported_bin_types")
+    if isinstance(supported, (list, tuple, set)):
+        return required_bin_type in {str(item) for item in supported}
+    return str(layout.get("bin_type") or "") == required_bin_type
+
+
+def _rack_layout_supports_auto_allocation(layout: dict[str, Any], required_bin_type: str) -> bool:
+    if required_bin_type == "3格箱":
+        return str(layout.get("bin_type") or "") == required_bin_type
+    return _rack_layout_supports_bin_type(layout, required_bin_type)
+
+
+def _rack_layout_bins(rack_code: str, layout: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    bins = layout.get("bins")
+    if isinstance(bins, (list, tuple)):
+        return tuple(dict(bin_spec) for bin_spec in bins if isinstance(bin_spec, dict))
+
+    bin_type = str(layout["bin_type"])
+    bin_prefix = str(layout["bin_prefix"])
+    cell_indexes = tuple(layout["cell_indexes"])
+    return tuple(
+        {
+            "rack_slot_code": slot_code,
+            "bin_code": f"{bin_prefix}-{index:03d}",
+            "bin_type": bin_type,
+            "cell_indexes": cell_indexes,
+        }
+        for index, slot_code in enumerate(RACK_SLOT_CODES, start=1)
+    )
+
+
 def _build_rack_state(rack_id: str) -> dict[str, Any]:
-    layout = _rack_layout_from_pattern(rack_id)
+    layout = _known_rack_layout(rack_id)
+    if layout is None:
+        raise ValueError(f"未知 WMS mock rack: {rack_id}")
     return {
         "rack_id": rack_id,
         "rack_type": "SINGLE_LAYER",
@@ -313,7 +394,7 @@ class MockWmsState:
         requested_rack_code = str(payload.get("rack_code") or "").strip()
         if requested_rack_code:
             requested_layout = _known_rack_layout(requested_rack_code)
-            if requested_layout is None or requested_layout["bin_type"] != required_bin_type:
+            if requested_layout is None or not _rack_layout_supports_bin_type(requested_layout, required_bin_type):
                 return build_rack_operation_failure_payload(
                     payload,
                     reason_code="RACK_LAYOUT_MISMATCH",
@@ -423,7 +504,7 @@ class MockWmsState:
                 preferred_rack is not None
                 and preferred_rack["status"] == "AVAILABLE"
                 and preferred_layout is not None
-                and preferred_layout["bin_type"] == required_bin_type
+                and _rack_layout_supports_bin_type(preferred_layout, required_bin_type)
             ):
                 return preferred_rack_code
             return None
@@ -431,7 +512,7 @@ class MockWmsState:
             if rack["status"] != "AVAILABLE":
                 continue
             layout = _known_rack_layout(rack_code)
-            if layout is not None and layout["bin_type"] == required_bin_type:
+            if layout is not None and _rack_layout_supports_auto_allocation(layout, required_bin_type):
                 return rack_code
         return None
 
@@ -667,29 +748,28 @@ def build_active_bin_rack_payload(rack_code: str, rack_kind: str = "SINGLE_LAYER
     layout = _known_rack_layout(rack_code)
     if layout is None:
         raise ValueError(f"未知 WMS mock rack: {rack_code}")
-    bin_type = str(layout["bin_type"])
-    bin_prefix = str(layout["bin_prefix"])
-    cell_indexes = tuple(layout["cell_indexes"])
+    layout_bins = _rack_layout_bins(rack_code, layout)
     bin_mounts = [
-        {"rack_code": rack_code, "rack_slot_code": slot_code, "bin_code": f"{bin_prefix}-{index:03d}"}
-        for index, slot_code in enumerate(RACK_SLOT_CODES, start=1)
+        {"rack_code": rack_code, "rack_slot_code": bin_spec["rack_slot_code"], "bin_code": bin_spec["bin_code"]}
+        for bin_spec in layout_bins
     ]
     cells = [
         {
-            "rack_slot_code": mount["rack_slot_code"],
-            "rack_slot_location_code": f"{rack_code}-1{mount['rack_slot_code']}-0",
-            "bin_code": mount["bin_code"],
-            "bin_id": mount["bin_code"],
+            "rack_slot_code": bin_spec["rack_slot_code"],
+            "rack_slot_location_code": f"{rack_code}-1{bin_spec['rack_slot_code']}-0",
+            "bin_code": bin_spec["bin_code"],
+            "bin_id": bin_spec["bin_code"],
             "bin_type": bin_type,
-            "bin_orientation_code": f"{mount['bin_code']}-A",
+            "bin_orientation_code": f"{bin_spec['bin_code']}-A",
             "bin_cell_index": cell_index,
-            "bin_cell_location": f"{mount['bin_code']}-{cell_index}",
+            "bin_cell_location": f"{bin_spec['bin_code']}-{cell_index}",
             "capacity_depth_mm": _rack_operation_cell_capacity_depth(bin_type, cell_index),
             "used_depth_mm": 0.0,
             "status": "EMPTY",
         }
-        for mount in bin_mounts
-        for cell_index in cell_indexes
+        for bin_spec in layout_bins
+        for bin_type in (str(bin_spec["bin_type"]),)
+        for cell_index in tuple(bin_spec["cell_indexes"])
     ]
     return {
         "active_bin_rack": {
@@ -721,7 +801,9 @@ def _rack_operation_rack_code(payload: dict[str, Any], required_bin_type: str) -
     if requested_rack_code:
         layout = _known_rack_layout(requested_rack_code)
         has_material_constraints = isinstance(payload.get("material"), dict)
-        if layout is not None and (layout["bin_type"] == required_bin_type or not has_material_constraints):
+        if layout is not None and (
+            _rack_layout_supports_bin_type(layout, required_bin_type) or not has_material_constraints
+        ):
             return requested_rack_code
     return _rack_operation_default_rack_code(required_bin_type)
 
@@ -766,6 +848,8 @@ def _has_large_reel_size(material: dict[str, Any]) -> bool:
 
 
 def _rack_operation_cell_capacity_depth(bin_type: str, cell_index: str) -> float:
+    if MOCK_WMS_CELL_CAPACITY_DEPTH_MM is not None:
+        return MOCK_WMS_CELL_CAPACITY_DEPTH_MM
     if bin_type == "3格箱" and cell_index == THREE_CELL_LARGE_BIN_CELL_INDEX:
         return 80.0
     return 20.0

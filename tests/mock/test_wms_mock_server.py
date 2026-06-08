@@ -60,9 +60,10 @@ def test_wms_mock_racks_route_returns_stateful_six_and_three_cell_pool() -> None
     racks = response.json()["data"]
     six_cell_racks = [rack for rack in racks if rack["layout_code"] == "SIX_CELL"]
     three_cell_racks = [rack for rack in racks if rack["layout_code"] == "THREE_CELL"]
+    mixed_racks = [rack for rack in racks if rack["layout_code"] == "MIXED"]
     assert len(six_cell_racks) >= 6
     assert len(three_cell_racks) >= 4
-    assert "RACK-001" in {rack["rack_id"] for rack in six_cell_racks}
+    assert "RACK-001" in {rack["rack_id"] for rack in mixed_racks}
     assert "RACK-3CELL-001" in {rack["rack_id"] for rack in three_cell_racks}
     for rack in racks:
         assert {
@@ -219,8 +220,14 @@ def test_wms_mock_rack_operation_builds_wes_external_callback(monkeypatch) -> No
     assert callback_payload["source_system"] == "WMS"
     assert callback_payload["active_bin_rack"]["rack_code"] == "RACK-001"
     assert {cell["rack_slot_code"] for cell in callback_payload["active_bin_rack"]["cells"]} == {"A", "B", "C", "D"}
-    assert len(callback_payload["active_bin_rack"]["cells"]) == 24
-    assert {cell["bin_type"] for cell in callback_payload["active_bin_rack"]["cells"]} == {"6格箱"}
+    assert len(callback_payload["active_bin_rack"]["cells"]) == 18
+    assert {cell["bin_type"] for cell in callback_payload["active_bin_rack"]["cells"]} == {"6格箱", "3格箱"}
+    assert {
+        cell["bin_cell_index"] for cell in callback_payload["active_bin_rack"]["cells"] if cell["rack_slot_code"] == "A"
+    } == {"1", "2", "3", "4", "5", "6"}
+    assert {
+        cell["bin_cell_index"] for cell in callback_payload["active_bin_rack"]["cells"] if cell["rack_slot_code"] == "C"
+    } == {"1", "2", "7"}
     assert {mount["rack_slot_code"] for mount in callback_payload["bin_mounts"]} == {"A", "B", "C", "D"}
     assert callback_payload["bin_mounts"][0]["bin_code"] == "BIN-001"
 
@@ -325,7 +332,7 @@ def test_wms_mock_rack_operation_allocates_seven_inch_six_cell_rack_and_marks_un
     callback_payload = mock_post_callback.await_args.args[1]
     assert callback_payload["callback_type"] == "WMS_RACK_ARRIVED"
     assert callback_payload["rack_code"] == "RACK-001"
-    assert {cell["bin_type"] for cell in callback_payload["active_bin_rack"]["cells"]} == {"6格箱"}
+    assert {cell["bin_type"] for cell in callback_payload["active_bin_rack"]["cells"]} == {"6格箱", "3格箱"}
     allocated_rack = wms_mock_server.mock_wms_state.rack_pool["RACK-001"]
     assert allocated_rack["status"] == "ACTIVE"
     assert allocated_rack["active_position_code"] == "SINGLE_LAYER_A"
@@ -435,7 +442,7 @@ def test_wms_mock_rack_operation_requested_rack_layout_mismatch_uses_failure_cal
     mock_post_callback = AsyncMock(return_value={"delivered": True})
     monkeypatch.setattr(wms_mock_server, "_post_callback", mock_post_callback)
     payload = _rack_allocate_payload("op-layout-mismatch", THIRTEEN_INCH_MATERIAL)
-    payload["rack_code"] = "RACK-001"
+    payload["rack_code"] = "RACK-6CELL-001"
 
     with TestClient(wms_mock_server.app) as client:
         response = client.post("/api/wms/rack-operation", json=payload)
@@ -448,7 +455,7 @@ def test_wms_mock_rack_operation_requested_rack_layout_mismatch_uses_failure_cal
         dispatch_key="rack-operation:op-layout-mismatch:1:ALLOCATE_AND_MOVE_RACK",
         operation_key="op-layout-mismatch",
         reason_code="RACK_LAYOUT_MISMATCH",
-        reason_message="指定货架 RACK-001 不匹配 3格箱",
+        reason_message="指定货架 RACK-6CELL-001 不匹配 3格箱",
     )
 
 
@@ -786,9 +793,9 @@ def test_wms_mock_rack_operation_keeps_rack_bin_cell_physical_constraints() -> N
     )
 
     assert six_cell_payload["rack_code"] == "RACK-001"
-    assert {cell["bin_type"] for cell in six_cell_payload["active_bin_rack"]["cells"]} == {"6格箱"}
+    assert {cell["bin_type"] for cell in six_cell_payload["active_bin_rack"]["cells"]} == {"6格箱", "3格箱"}
     assert len(six_cell_payload["bin_mounts"]) == 4
-    assert len(six_cell_payload["active_bin_rack"]["cells"]) == 24
+    assert len(six_cell_payload["active_bin_rack"]["cells"]) == 18
     for mount in six_cell_payload["bin_mounts"]:
         slot_cells = [
             cell
@@ -796,12 +803,15 @@ def test_wms_mock_rack_operation_keeps_rack_bin_cell_physical_constraints() -> N
             if cell["rack_slot_code"] == mount["rack_slot_code"]
         ]
         assert {cell["bin_code"] for cell in slot_cells} == {mount["bin_code"]}
-        assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "3", "4", "5", "6"}
+        if mount["rack_slot_code"] in {"A", "B"}:
+            assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "3", "4", "5", "6"}
+        else:
+            assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "7"}
 
-    assert three_cell_payload["rack_code"] == "RACK-3CELL-001"
-    assert {cell["bin_type"] for cell in three_cell_payload["active_bin_rack"]["cells"]} == {"3格箱"}
+    assert three_cell_payload["rack_code"] == "RACK-001"
+    assert {cell["bin_type"] for cell in three_cell_payload["active_bin_rack"]["cells"]} == {"6格箱", "3格箱"}
     assert len(three_cell_payload["bin_mounts"]) == 4
-    assert len(three_cell_payload["active_bin_rack"]["cells"]) == 12
+    assert len(three_cell_payload["active_bin_rack"]["cells"]) == 18
     for mount in three_cell_payload["bin_mounts"]:
         slot_cells = [
             cell
@@ -809,8 +819,11 @@ def test_wms_mock_rack_operation_keeps_rack_bin_cell_physical_constraints() -> N
             if cell["rack_slot_code"] == mount["rack_slot_code"]
         ]
         assert {cell["bin_code"] for cell in slot_cells} == {mount["bin_code"]}
-        assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "7"}
-        assert {cell["capacity_depth_mm"] for cell in slot_cells if cell["bin_cell_index"] == "7"} == {80.0}
+        if mount["rack_slot_code"] in {"A", "B"}:
+            assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "3", "4", "5", "6"}
+        else:
+            assert {cell["bin_cell_index"] for cell in slot_cells} == {"1", "2", "7"}
+            assert {cell["capacity_depth_mm"] for cell in slot_cells if cell["bin_cell_index"] == "7"} == {80.0}
 
 
 def test_wms_mock_large_reel_detection_does_not_match_dimension_substrings() -> None:
@@ -818,6 +831,19 @@ def test_wms_mock_large_reel_detection_does_not_match_dimension_substrings() -> 
     assert wms_mock_server._has_large_reel_size({"reel_diameter": "330.0"}) is True
     assert wms_mock_server._has_large_reel_size({"reel_diameter": "113mm"}) is False
     assert wms_mock_server._has_large_reel_size({"reel_diameter": "150mm"}) is False
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "0", "-1", "invalid"])
+def test_wms_mock_cell_capacity_env_rejects_invalid_values(monkeypatch, raw: str) -> None:
+    monkeypatch.setenv("MOCK_WMS_CELL_CAPACITY_DEPTH_MM", raw)
+
+    assert wms_mock_server._positive_float_env("MOCK_WMS_CELL_CAPACITY_DEPTH_MM") is None
+
+
+def test_wms_mock_cell_capacity_env_accepts_positive_finite_value(monkeypatch) -> None:
+    monkeypatch.setenv("MOCK_WMS_CELL_CAPACITY_DEPTH_MM", "30.5")
+
+    assert wms_mock_server._positive_float_env("MOCK_WMS_CELL_CAPACITY_DEPTH_MM") == 30.5
 
 
 def test_wms_mock_rack_operation_source_event_id_keeps_wes_idempotency_key_short() -> None:

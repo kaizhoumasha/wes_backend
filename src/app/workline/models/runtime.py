@@ -460,42 +460,82 @@ class RuntimeWorklineDeviceItem(BaseModel):
 
 
 class RuntimeWorklineReadiness(StrEnum):
-    READY = "READY"
-    NOT_READY = "NOT_READY"
-    UNKNOWN = "UNKNOWN"
+    """产线启动准入与运行准备状态。"""
+
+    READY = "READY"  # 满足启动或继续调度的准入条件
+    NOT_READY = "NOT_READY"  # 存在阻断条件，不允许启动或继续调度
+    UNKNOWN = "UNKNOWN"  # 当前证据不足，无法判断准备状态
 
 
 class RuntimeStationLease(StrEnum):
-    IDLE = "IDLE"
-    ACTIVE_RACK_BOUND = "ACTIVE_RACK_BOUND"
-    ACTIVE_DISPATCH_LEASE = "ACTIVE_DISPATCH_LEASE"
-    ACTIVE_SESSION_BOUND = "ACTIVE_SESSION_BOUND"
-    UNKNOWN = "UNKNOWN"
+    """工站当前占用来源，用于判断是否可继续调度。"""
+
+    IDLE = "IDLE"  # 工站未被运行时任务占用，可参与新调度
+    ACTIVE_RACK_BOUND = "ACTIVE_RACK_BOUND"  # 工站已绑定运行中料架，避免重复占用
+    ACTIVE_DISPATCH_LEASE = "ACTIVE_DISPATCH_LEASE"  # 工站已有下发租约，等待指令完成或释放
+    ACTIVE_SESSION_BOUND = "ACTIVE_SESSION_BOUND"  # 工站已绑定活动 session，继续归属当前流程
+    UNKNOWN = "UNKNOWN"  # 缺少占用证据，保持保守展示
 
 
 class RuntimeSingleLayerRackSnapshot(StrEnum):
-    ACTIVE = "ACTIVE"
-    MISSING = "MISSING"
-    INVALID = "INVALID"
-    NON_SINGLE_LAYER_EVIDENCE = "NON_SINGLE_LAYER_EVIDENCE"
-    UNKNOWN = "UNKNOWN"
+    """单层料架快照状态，用于运行时资源视图诊断。"""
+
+    ACTIVE = "ACTIVE"  # WES 存在有效的单层料架快照
+    MISSING = "MISSING"  # 未找到单层料架快照
+    INVALID = "INVALID"  # 找到快照但结构或状态不可用
+    NON_SINGLE_LAYER_EVIDENCE = "NON_SINGLE_LAYER_EVIDENCE"  # 仅有非单层料架证据，不适用于该视图
+    UNKNOWN = "UNKNOWN"  # 证据不足，无法判断料架快照状态
 
 
 class RuntimeRackOperationWait(StrEnum):
-    WAITING_WMS = "WAITING_WMS"
-    WMS_CALLBACK_RECEIVED = "WMS_CALLBACK_RECEIVED"
-    TIMEOUT = "TIMEOUT"
-    FAILED = "FAILED"
-    NONE = "NONE"
-    UNKNOWN = "UNKNOWN"
+    """料架操作等待状态，描述 WMS 回调与超时结果。"""
+
+    WAITING_WMS = "WAITING_WMS"  # 已发起料架操作，正在等待 WMS 回调
+    WMS_CALLBACK_RECEIVED = "WMS_CALLBACK_RECEIVED"  # 已收到 WMS 回调，等待进入后续处理
+    TIMEOUT = "TIMEOUT"  # 等待 WMS 回调超时
+    FAILED = "FAILED"  # WMS 回调或等待流程明确失败
+    NONE = "NONE"  # 当前没有料架操作等待
+    UNKNOWN = "UNKNOWN"  # 等待状态无法从现有证据判断
 
 
 class RuntimeResourceEvidenceKind(StrEnum):
-    WES_ACTIVE_SNAPSHOT = "WES_ACTIVE_SNAPSHOT"
-    WMS_CALLBACK_EVIDENCE = "WMS_CALLBACK_EVIDENCE"
-    TRACE_RESOURCE_EVIDENCE = "TRACE_RESOURCE_EVIDENCE"
-    GENERIC_EVIDENCE = "GENERIC_EVIDENCE"
-    UNKNOWN = "UNKNOWN"
+    """运行时资源证据来源类型，用于区分快照、回调和 Trace 证据。"""
+
+    WES_ACTIVE_SNAPSHOT = "WES_ACTIVE_SNAPSHOT"  # 来自 WES 当前活动资源快照
+    WMS_CALLBACK_EVIDENCE = "WMS_CALLBACK_EVIDENCE"  # 来自 WMS 回调中的资源证据
+    TRACE_RESOURCE_EVIDENCE = "TRACE_RESOURCE_EVIDENCE"  # 来自 Trace 关联证据链
+    GENERIC_EVIDENCE = "GENERIC_EVIDENCE"  # 兜底资源证据，来源不属于专门分类
+    UNKNOWN = "UNKNOWN"  # 无法识别证据来源类型
+
+
+class RuntimeResourceKind(StrEnum):
+    """运行时资源标识类型，用于统一料架、料盒、工位槽等资源编码。"""
+
+    RACK = "RACK"  # 料架资源，用于承载或流转物料
+    BIN = "BIN"  # 料盒资源，用于定位料架内的容器
+    PKG = "PKG"  # 包装或物料包资源，用于追踪流转单元
+    SLOT = "SLOT"  # 工位槽或料架槽位资源，用于表达位置占用
+    CELL = "CELL"  # 料盒内单元格资源，用于表达更细粒度库存位置
+    MAGAZINE = "MAGAZINE"  # magazine 类资源，用于兼容设备侧料仓/弹夹标识
+    PART_SN = "PART_SN"  # 物料序列号资源，用于追踪具体实物件
+    UNKNOWN = "UNKNOWN"  # 无法归类的资源标识
+
+
+class RuntimeResourceEvidenceItem(BaseModel):
+    resource_kind: RuntimeResourceKind
+    resource_code: str
+    display_label: str
+    evidence_kind: RuntimeResourceEvidenceKind
+    station_code: str | None = None
+    position_code: str | None = None
+    rack_code: str | None = None
+    bin_code: str | None = None
+    slot_code: str | None = None
+    pkg_code: str | None = None
+    part_sn: str | None = None
+    source_session_id: int | None = None
+    source_trace_id: str | None = None
+    occurred_at: datetime | None = None
 
 
 class RuntimeWorklineDetailResponse(BaseModel):
@@ -505,6 +545,9 @@ class RuntimeWorklineDetailResponse(BaseModel):
     single_layer_rack_snapshot: RuntimeSingleLayerRackSnapshot = RuntimeSingleLayerRackSnapshot.UNKNOWN
     rack_operation_wait: RuntimeRackOperationWait = RuntimeRackOperationWait.NONE
     resource_evidence_kind: RuntimeResourceEvidenceKind = RuntimeResourceEvidenceKind.UNKNOWN
+    resource_evidence_items: list[RuntimeResourceEvidenceItem] = Field(default_factory=list)
+    resource_evidence_total_count: int = 0
+    resource_evidence_truncated: bool = False
     devices: list[RuntimeWorklineDeviceItem] = Field(default_factory=list)
     active_sessions: list[RuntimeTraceListItem] = Field(default_factory=list)
     recent_failed_traces: list[RuntimeTraceListItem] = Field(default_factory=list)

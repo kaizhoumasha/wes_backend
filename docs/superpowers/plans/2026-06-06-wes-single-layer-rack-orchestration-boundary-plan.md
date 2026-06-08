@@ -173,13 +173,14 @@
   - 在 `RuntimeWorklineDetailResponse` 或其下游结构中暴露前端可直接消费的运行态边界字段。
 - 后端 Runtime detail / OpenAPI / generated types 必须使用下表的 snake_case 名称；前端 scene adapter 负责转换为 camelCase `RuntimeSceneModel` 字段，不得用“等价字段”替代。
 - Modify if failing: `src/app/workline/services/runtime_query_service.py`
-  - 从后端结构化运行事实、manifest boundary 和 runtime wait context 归一化这些字段；不得要求前端解析 raw JSON。
+  - 从后端结构化运行事实、manifest boundary 和 runtime wait/resource evidence context 归一化这些字段；不得要求前端解析 raw JSON。
+  - 新增逐项 `RuntimeResourceEvidenceItem[]` 聚合，按 stable key 去重、排序，默认最多返回 50 条，并返回 total/truncated。
 - Modify if failing: `src/app/workline/v1/runtime.py`
   - 仅当 response model / OpenAPI schema 未正确暴露运行态字段时修正。
 - Test: `tests/api/test_workline_runtime_api.py`
-  - 覆盖 runtime detail route 响应和 OpenAPI schema 包含前端所需结构化字段。
+  - 覆盖 runtime detail route 响应和 OpenAPI schema 包含前端所需结构化字段、`RuntimeResourceEvidenceItem` schema、total/truncated。
 - Test: `tests/workline_runtime/test_runtime_query_service.py`
-  - 覆盖 READY、Station lease busy、active snapshot、等待 WMS、WMS 回调证据和 generic evidence fallback 的归一化。
+  - 覆盖 READY、Station lease busy、active snapshot、等待 WMS、WMS 回调证据、generic evidence fallback、resource evidence items 去重和截断的归一化。
 
 字段合同：
 
@@ -190,10 +191,15 @@
 | `single_layer_rack_snapshot` | `singleLayerRackSnapshot` | `ACTIVE` / `MISSING` / `INVALID` / `NON_SINGLE_LAYER_EVIDENCE` / `UNKNOWN` | 来源为单层 active snapshot、manifest boundary 和资源证据；非单层资源只能降级为 evidence。 |
 | `rack_operation_wait` | `rackOperationWait` | `WAITING_WMS` / `WMS_CALLBACK_RECEIVED` / `TIMEOUT` / `FAILED` / `NONE` / `UNKNOWN` | 来源为 runtime wait context、rack operation task/outbox 和 WMS 回调；无等待时为 `NONE`。 |
 | `resource_evidence_kind` | `resourceEvidenceKind` | `WES_ACTIVE_SNAPSHOT` / `WMS_CALLBACK_EVIDENCE` / `TRACE_RESOURCE_EVIDENCE` / `GENERIC_EVIDENCE` / `UNKNOWN` | 来源为结构化 evidence kind；缺少可信分类时降级为 `GENERIC_EVIDENCE` 或 `UNKNOWN`。 |
+| `resource_evidence_items` | `resourceEvidenceItems` | `RuntimeResourceEvidenceItem[]` | 来源为后端结构化运行事实和 runtime evidence context；前端不得自行解析 raw JSON。 |
+| `resource_evidence_total_count` | `resourceEvidenceTotalCount` | `int` | 逐项资源证据总量。 |
+| `resource_evidence_truncated` | `resourceEvidenceTruncated` | `bool` | 默认 50 条上限是否截断。 |
 
 Nullable / missing 规则：
 
 - 除 `rack_operation_wait` 可明确返回 `NONE` 外，字段不得省略；无法判断时返回 `UNKNOWN`。
+- `resource_evidence_items` 必须是结构化 Pydantic model，字段包括 `resource_kind`、`resource_code`、`display_label`、`evidence_kind` 和 station/rack/bin/slot/pkg/source metadata；不得直接把 `dict[str, Any]` 列表暴露给前端做业务解析。
+- `resource_evidence_items` 内部可用 QueryOptions 风格 limit/offset/sort 组织，但 v1 runtime detail 不公开分页 query 参数；默认最多 50 条，超出时 `resource_evidence_truncated=true`。
 - OpenAPI schema 必须暴露上述 snake_case 字段和枚举，前端 generated types 按当前项目风格消费 snake_case；前端 scene adapter 再转换为 camelCase scene model 字段。若执行阶段决定改为 Pydantic alias 输出，必须同时补 response-by-alias、OpenAPI 和 generated type 回归测试。
 - 字段缺失属于后端合同缺口，前端只能显示通用 evidence fallback，不能从 `context_json`、`payload_json`、`event_payload` 或 raw badge 文本推断业务含义。
 

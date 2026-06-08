@@ -1,0 +1,181 @@
+import pytest
+from sqlalchemy import select
+
+from scripts.data.seed_runtime_monitor_smoke import FALLBACK_LINE_CODE, seed_runtime_monitor_smoke
+from scripts.data.sync_test_workline_devices import TEST_SMT_SORTING_INBOUND_LINE_CODE
+from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
+from src.app.workline.models.runtime_hold import RuntimeHold, RuntimeHoldType
+from src.app.workline.models.safety import WorkLineRuntimeStatus
+from src.app.workline.models.session import (
+    RuntimeReconciliationReason,
+    RuntimeReconciliationResolution,
+    RuntimeReconciliationSourceKind,
+    RuntimeReconciliationState,
+    SessionStatus,
+    WorklineSession,
+)
+from src.app.workline.services.runtime_query_service import RuntimeQueryService
+from src.core.conf import settings
+from src.utils.timezone import timezone
+
+
+@pytest.mark.asyncio
+async def test_seed_runtime_monitor_smoke_creates_runtime_detail_scenarios(db_session) -> None:
+    result = await seed_runtime_monitor_smoke(db_session, commit=False)
+    service = RuntimeQueryService()
+
+    single_layer_detail = await service.get_workline_detail(
+        db_session,
+        result["single_layer_workline"]["id"],
+    )
+    fallback_detail = await service.get_workline_detail(
+        db_session,
+        result["fallback_workline"]["id"],
+    )
+
+    assert single_layer_detail is not None
+    assert single_layer_detail.workline_readiness == "READY"
+    assert single_layer_detail.station_lease == "ACTIVE_DISPATCH_LEASE"
+    assert single_layer_detail.rack_operation_wait == "WAITING_WMS"
+    assert single_layer_detail.resource_evidence_kind == "WMS_CALLBACK_EVIDENCE"
+    assert single_layer_detail.resource_evidence_total_count > 50
+    assert single_layer_detail.resource_evidence_truncated is True
+    assert len(single_layer_detail.resource_evidence_items) == 50
+    assert any(item.evidence_kind == "WMS_CALLBACK_EVIDENCE" for item in single_layer_detail.resource_evidence_items)
+
+    assert fallback_detail is not None
+    assert fallback_detail.workline_readiness == "READY"
+    assert fallback_detail.station_lease == "UNKNOWN"
+    assert fallback_detail.single_layer_rack_snapshot == "UNKNOWN"
+    assert fallback_detail.resource_evidence_kind == "GENERIC_EVIDENCE"
+    assert fallback_detail.resource_evidence_items[0].resource_code == "GENERIC-FALLBACK-001"
+
+
+@pytest.mark.asyncio
+async def test_seed_runtime_monitor_smoke_ignores_soft_deleted_worklines(db_session) -> None:
+    soft_deleted_base = WorkLine(
+        line_code=TEST_SMT_SORTING_INBOUND_LINE_CODE,
+        line_name="soft deleted base line",
+        line_type=LineType.AUTO,
+        run_mode=WorkLineRunMode.SIMULATION,
+        runtime_status=WorkLineRuntimeStatus.STOPPED,
+    )
+    soft_deleted_base.soft_delete()
+    soft_deleted_fallback = WorkLine(
+        line_code=FALLBACK_LINE_CODE,
+        line_name="soft deleted fallback line",
+        line_type=LineType.AUTO,
+        run_mode=WorkLineRunMode.SIMULATION,
+        runtime_status=WorkLineRuntimeStatus.STOPPED,
+    )
+    soft_deleted_fallback.soft_delete()
+    db_session.add_all([soft_deleted_base, soft_deleted_fallback])
+    await db_session.flush()
+
+    result = await seed_runtime_monitor_smoke(db_session, commit=False)
+
+    assert result["single_layer_workline"]["id"] != soft_deleted_base.id
+    assert result["fallback_workline"]["id"] != soft_deleted_fallback.id
+    assert result["fallback_workline"]["line_code"] == FALLBACK_LINE_CODE
+
+
+@pytest.mark.asyncio
+async def test_seed_runtime_monitor_smoke_clears_terminal_session_state(db_session) -> None:
+    await seed_runtime_monitor_smoke(db_session, commit=False)
+    result = await db_session.execute(
+        select(WorklineSession).where(WorklineSession.session_code == "runtime-monitor-smoke:single-layer:waiting-wms")
+    )
+    session = result.scalar_one()
+    now = timezone.now_for_db()
+    session.status = SessionStatus.FAILED
+    session.barcode = "OLD-BARCODE"
+    session.ended_at = now
+    session.awaiting_command_id = 123
+    session.failure_domain = "DEVICE"
+    session.failure_code = "OLD_FAILURE"
+    session.failure_message = "old failure"
+    session.ingress_count = 99
+    session.last_inbox_id = 456
+    session.reconciliation_state = RuntimeReconciliationState.PENDING
+    session.reconciliation_reason = RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED
+    session.reconciliation_source_kind = RuntimeReconciliationSourceKind.TIMER_TIMEOUT
+    session.reconciliation_source_inbox_id = 11
+    session.reconciliation_source_outbox_id = 12
+    session.reconciliation_command_id = 13
+    session.reconciliation_device_id = 14
+    session.reconciliation_wait_token = "old-token"
+    session.reconciliation_ack_received_at = now
+    session.reconciliation_deadline_at = now
+    session.reconciliation_occurred_at = now
+    session.reconciliation_late_evidence_received = True
+    session.reconciliation_resolution = RuntimeReconciliationResolution.FAILED
+    session.reconciliation_resolved_at = now
+    await db_session.flush()
+
+    await seed_runtime_monitor_smoke(db_session, commit=False)
+    await db_session.refresh(session)
+
+    assert session.status == SessionStatus.WAITING_EXTERNAL
+    assert session.barcode is None
+    assert session.ended_at is None
+    assert session.awaiting_command_id is None
+    assert session.failure_domain is None
+    assert session.failure_code is None
+    assert session.failure_message is None
+    assert session.ingress_count == 1
+    assert session.last_inbox_id is None
+    assert session.reconciliation_state is None
+    assert session.reconciliation_reason is None
+    assert session.reconciliation_source_kind is None
+    assert session.reconciliation_source_inbox_id is None
+    assert session.reconciliation_source_outbox_id is None
+    assert session.reconciliation_command_id is None
+    assert session.reconciliation_device_id is None
+    assert session.reconciliation_wait_token is None
+    assert session.reconciliation_ack_received_at is None
+    assert session.reconciliation_deadline_at is None
+    assert session.reconciliation_occurred_at is None
+    assert session.reconciliation_late_evidence_received is False
+    assert session.reconciliation_resolution is None
+    assert session.reconciliation_resolved_at is None
+
+
+@pytest.mark.asyncio
+async def test_seed_runtime_monitor_smoke_rejects_prod_env(db_session, monkeypatch) -> None:
+    monkeypatch.setattr(settings, "APP_ENV", "prod")
+
+    with pytest.raises(RuntimeError, match="不允许同步开发/测试调试"):
+        await seed_runtime_monitor_smoke(db_session, commit=False)
+
+    result = await db_session.execute(select(WorkLine).where(WorkLine.line_code == FALLBACK_LINE_CODE))
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_seed_runtime_monitor_smoke_rejects_active_safety_incident(db_session) -> None:
+    result = await seed_runtime_monitor_smoke(db_session, commit=False)
+    workline = await db_session.get(WorkLine, result["single_layer_workline"]["id"])
+    assert workline is not None
+    workline.active_safety_incident_id = 1001
+    await db_session.flush()
+
+    with pytest.raises(RuntimeError, match="active safety incident"):
+        await seed_runtime_monitor_smoke(db_session, commit=False)
+
+
+@pytest.mark.asyncio
+async def test_seed_runtime_monitor_smoke_rejects_active_runtime_hold(db_session) -> None:
+    result = await seed_runtime_monitor_smoke(db_session, commit=False)
+    workline_id = result["single_layer_workline"]["id"]
+    hold = RuntimeHold(
+        hold_type=RuntimeHoldType.SAFETY_ESTOP,
+        workline_id=workline_id,
+        source_kind="SAFETY_ESTOP",
+        source_reason="ESTOP_PRESSED",
+        source_idempotency_key="runtime-monitor-smoke:active-hold",
+    )
+    db_session.add(hold)
+    await db_session.flush()
+
+    with pytest.raises(RuntimeError, match="active runtime hold"):
+        await seed_runtime_monitor_smoke(db_session, commit=False)

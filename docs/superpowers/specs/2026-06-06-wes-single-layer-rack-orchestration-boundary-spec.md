@@ -190,7 +190,7 @@ WES 对 endpoint 的职责是维护自身业务预约和执行绑定，避免同
 
 运行态 detail 合同：
 
-- 后端运行态 detail / OpenAPI 必须提供结构化字段，供前端区分 WorkLine READY、Station lease、单层 active snapshot、WMS rack operation wait 和 resource evidence。
+- 后端运行态 detail / OpenAPI 必须提供结构化字段，供前端区分 WorkLine READY、Station lease、单层 active snapshot、WMS rack operation wait、resource evidence kind 和逐项 resource evidence。
 - 后端字段必须使用下表的 snake_case 名称并通过 OpenAPI / generated types 暴露；前端 scene adapter 负责转换为 camelCase `RuntimeSceneModel` 字段，不得用“等价字段”替代。
 - 若后续执行阶段选择后端 Pydantic alias 输出 camelCase，必须补齐 response-by-alias、OpenAPI schema 和 generated type 回归测试，证明 snake_case 后端合同与前端消费合同没有分叉。
 - 字段来源必须是后端结构化运行事实、plugin manifest/display 元数据或 runtime wait context，不得要求前端解析 `context_json`、`payload_json`、`event_payload` 或 raw resource badge 文本推断业务含义。
@@ -202,8 +202,21 @@ WES 对 endpoint 的职责是维护自身业务预约和执行绑定，避免同
 | `single_layer_rack_snapshot` | `singleLayerRackSnapshot` | `ACTIVE` / `MISSING` / `INVALID` / `NON_SINGLE_LAYER_EVIDENCE` / `UNKNOWN` | 来源为单层 active snapshot、manifest boundary 和资源证据；非单层资源只能降级为 evidence。 |
 | `rack_operation_wait` | `rackOperationWait` | `WAITING_WMS` / `WMS_CALLBACK_RECEIVED` / `TIMEOUT` / `FAILED` / `NONE` / `UNKNOWN` | 来源为 runtime wait context、rack operation task/outbox 和 WMS 回调；无等待时为 `NONE`。 |
 | `resource_evidence_kind` | `resourceEvidenceKind` | `WES_ACTIVE_SNAPSHOT` / `WMS_CALLBACK_EVIDENCE` / `TRACE_RESOURCE_EVIDENCE` / `GENERIC_EVIDENCE` / `UNKNOWN` | 来源为结构化 evidence kind；缺少可信分类时降级为 `GENERIC_EVIDENCE` 或 `UNKNOWN`。 |
+| `resource_evidence_items` | `resourceEvidenceItems` | `RuntimeResourceEvidenceItem[]` | 来源为后端结构化运行事实和 runtime wait/resource evidence context；前端不得自行解析 raw JSON。 |
+| `resource_evidence_total_count` | `resourceEvidenceTotalCount` | `int` | 去重前后端可展示证据总量；用于提示是否还有未展示证据。 |
+| `resource_evidence_truncated` | `resourceEvidenceTruncated` | `bool` | 默认最多返回 50 条逐项证据，超出时为 `true`。 |
 
 `UNKNOWN` 表示后端无法给出可信结构化结论；除明确允许为 `NONE` 的 `rack_operation_wait` 外，字段不得省略。字段缺失属于合同缺口，前端只能显示通用 evidence fallback，不能解析 raw JSON 自行补语义。
+
+`RuntimeResourceEvidenceItem` 必须是可生成 OpenAPI schema 的结构化模型，不得直接暴露 `dict[str, Any]` 给前端做业务解析。字段：
+
+- `resource_kind`: `RACK` / `BIN` / `PKG` / `SLOT` / `CELL` / `MAGAZINE` / `PART_SN` / `UNKNOWN`
+- `resource_code`: 稳定资源编码，缺少编码时不得生成伪业务编码。
+- `display_label`: 前端可直接展示的短标签。
+- `evidence_kind`: 与 `resource_evidence_kind` 同一枚举集合。
+- optional metadata: `station_code`、`position_code`、`rack_code`、`bin_code`、`slot_code`、`pkg_code`、`part_sn`、`source_session_id`、`source_trace_id`、`occurred_at`。
+
+后端按 stable key 去重并排序，默认最多 50 条；同时返回 `resource_evidence_total_count` 和 `resource_evidence_truncated`。内部可按 QueryOptions 风格组织 limit/offset/sort，v1 runtime detail 不公开分页 query 参数。
 
 ## 5. 业务流规格
 

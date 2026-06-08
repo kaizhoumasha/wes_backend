@@ -597,6 +597,7 @@ services:
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       WES_EXTERNAL_CALLBACK_URL: ${CONTAINER_WES_EXTERNAL_CALLBACK_URL:-http://api:8001/api/v1/callback/external}
+      MOCK_WMS_CELL_CAPACITY_DEPTH_MM: ${MOCK_WMS_CELL_CAPACITY_DEPTH_MM:-50}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8011/"]
       interval: 30s
