@@ -72,6 +72,7 @@ class WorklineStationLeaseService:
         workline_code: str,
         position_code: str,
         allow_active_rack_bound: bool = False,
+        allow_active_operation_key: str | None = None,
     ) -> StationLeaseResult:
         """按 Station scope 查询 WES 侧占用状态。"""
 
@@ -82,6 +83,7 @@ class WorklineStationLeaseService:
             position_code=position_code,
             lock_position=False,
             allow_active_rack_bound=allow_active_rack_bound,
+            allow_active_operation_key=allow_active_operation_key,
         )
 
     async def claim_station_dispatch_lease(

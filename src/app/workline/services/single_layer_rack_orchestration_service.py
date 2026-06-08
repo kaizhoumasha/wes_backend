@@ -138,11 +138,18 @@ class SingleLayerRackOrchestrationService:
             )
 
         allow_active_rack_bound = self._allows_active_rack_bound(payload)
+        operation_key = self._single_layer_operation_key(
+            dispatch_key=dispatch_key,
+            business_demand_key=business_demand_key,
+            workline_code=workline_code,
+            station_code=station_code,
+        )
         station_status = await self.station_lease_service.get_station_lease_status(
             db,
             workline_id=workline_id,
             workline_code=workline_code,
             position_code=station_code,
+            allow_active_operation_key=operation_key,
         )
         if not station_status.available and not (
             allow_active_rack_bound and station_status.reason_code == StationLeaseReasonCode.ACTIVE_RACK_BOUND
@@ -188,6 +195,7 @@ class SingleLayerRackOrchestrationService:
             station_code=station_code,
             envelope=envelope,
             allow_active_rack_bound=allow_active_rack_bound,
+            allow_active_operation_key=envelope.operation_key,
         )
         if claimed_outbox is None:
             current_status = await self.station_lease_service.get_station_lease_status(
@@ -195,6 +203,7 @@ class SingleLayerRackOrchestrationService:
                 workline_id=workline_id,
                 workline_code=workline_code,
                 position_code=station_code,
+                allow_active_operation_key=envelope.operation_key,
             )
             return SingleLayerRackOrchestrationDecision(
                 decision=SingleLayerRackOrchestrationDecisionCode.WAITING,
@@ -217,6 +226,7 @@ class SingleLayerRackOrchestrationService:
         station_code: str,
         envelope: DispatchEnvelope,
         allow_active_rack_bound: bool,
+        allow_active_operation_key: str | None = None,
     ) -> SystemOutbox | None:
         try:
             if hasattr(db, "begin_nested"):
@@ -228,6 +238,7 @@ class SingleLayerRackOrchestrationService:
                         position_code=station_code,
                         envelope=envelope,
                         allow_active_rack_bound=allow_active_rack_bound,
+                        allow_active_operation_key=allow_active_operation_key,
                     )
             return await self.station_lease_service.claim_station_dispatch_lease(
                 db,
@@ -236,6 +247,7 @@ class SingleLayerRackOrchestrationService:
                 position_code=station_code,
                 envelope=envelope,
                 allow_active_rack_bound=allow_active_rack_bound,
+                allow_active_operation_key=allow_active_operation_key,
             )
         except IntegrityError:
             existing = await self.outbox_repository.get_by_dispatch_key_for_update(db, envelope.dispatch_key)
@@ -355,6 +367,19 @@ class SingleLayerRackOrchestrationService:
         if session_id is None:
             return None
         return int(session_id)
+
+    @staticmethod
+    def _single_layer_operation_key(
+        *,
+        dispatch_key: str | None,
+        business_demand_key: str,
+        workline_code: str,
+        station_code: str,
+    ) -> str:
+        explicit_dispatch_key = _non_empty_text(dispatch_key)
+        if explicit_dispatch_key is not None:
+            return explicit_dispatch_key
+        return f"wms-rack-operation:{business_demand_key}:{workline_code}:{station_code}"
 
     @staticmethod
     def _first_rack_task(payload: Mapping[str, Any]) -> Mapping[str, Any]:

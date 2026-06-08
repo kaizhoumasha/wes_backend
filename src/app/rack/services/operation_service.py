@@ -371,13 +371,18 @@ class RackOperationService:
         payload_json: dict[str, Any],
     ) -> None:
         changed = False
+        can_patch_existing_outbox = _is_new_outbox(outbox)
         if outbox.payload_json != payload_json:
+            if not can_patch_existing_outbox:
+                raise ValueError("existing rack operation outbox payload differs after dispatch")
             outbox.payload_json = payload_json
             changed = True
 
         session_id = coerce_optional_int(getattr(session, "id", None))
         if session_id is not None:
             if outbox.session_id is None:
+                if not can_patch_existing_outbox:
+                    raise ValueError("existing rack outbox session owner missing after dispatch")
                 outbox.session_id = session_id
                 changed = True
             elif outbox.session_id != session_id:
@@ -1084,6 +1089,13 @@ def _ensure_existing_outbox_active(outbox: SystemOutbox) -> None:
 
     if not status_is_active or (getattr(outbox, "finished_at", None) is not None and not status_is_blocked):
         raise ValueError("existing rack operation outbox is no longer active")
+
+
+def _is_new_outbox(outbox: SystemOutbox) -> bool:
+    status = getattr(outbox, "status", None)
+    if isinstance(status, str):
+        return status == SystemOutboxStatus.NEW.value
+    return status == SystemOutboxStatus.NEW
 
 
 def _reserved_target_position_codes(specs: list[RackTaskSpec]) -> set[str]:

@@ -2511,6 +2511,56 @@ async def test_request_reuses_existing_outbox_when_only_trace_id_differs() -> No
 
 
 @pytest.mark.asyncio
+async def test_request_rejects_dispatched_existing_outbox_when_payload_differs() -> None:
+    system_outbox_repository = FakeOutboxRepository()
+    dispatch_key = "rack-operation:op-dispatched-outbox-trace:2:ALLOCATE_AND_MOVE_RACK"
+    existing_payload = {
+        "operation_key": "op-dispatched-outbox-trace",
+        "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
+        "sequence_no": 2,
+        "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+        "workline_code": "WL-SMT-01",
+        "rack_kind": RackKind.SINGLE_LAYER.value,
+        "source_position_code": None,
+        "target_position_code": "CLASSIFIER-WORK",
+        "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+        "trace_id": "trace-old",
+        "dispatch_key": dispatch_key,
+        "actions": {"action": RackTaskType.ALLOCATE_AND_MOVE_RACK.value, "required": True},
+    }
+    existing_outbox = system_outbox_repository.add_existing(
+        SystemOutbox(
+            id=91,
+            session_id=300,
+            workline_id=45,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            dispatch_key=dispatch_key,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code="WMS-RACK",
+            payload_json=dict(existing_payload),
+            status=SystemOutboxStatus.SENT,
+        )
+    )
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[],
+        active_count=0,
+        system_outbox_repository=system_outbox_repository,
+    )
+
+    with pytest.raises(ValueError, match="payload differs after dispatch"):
+        await _request_classifier_replacement(
+            service,
+            FakeDb(),
+            operation_key="op-dispatched-outbox-trace",
+            trace_id="trace-new",
+            include_move_out=False,
+        )
+
+    assert lifecycle.calls == []
+    assert existing_outbox.payload_json == existing_payload
+
+
+@pytest.mark.asyncio
 async def test_operation_request_does_not_dispatch_http_inside_db_transaction(monkeypatch: pytest.MonkeyPatch) -> None:
     service, _repo, _lifecycle, _placements = _service(active_placements=[_active_rack()])
     db = FakeDb()

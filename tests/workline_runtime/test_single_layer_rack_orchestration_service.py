@@ -23,6 +23,7 @@ from src.workline_runtime.runtime_intent import RuntimeIntent, RuntimeIntentKind
 class FakeStationLeaseService:
     status: StationLeaseResult
     claim_result: SystemOutbox | None = None
+    active_operation_key: str | None = None
     expose_claim_as_busy: bool = False
     raise_integrity_error: bool = False
 
@@ -38,14 +39,23 @@ class FakeStationLeaseService:
         workline_id: int,
         workline_code: str,
         position_code: str,
+        allow_active_operation_key: str | None = None,
     ) -> StationLeaseResult:
         self.status_calls.append(
             {
                 "workline_id": workline_id,
                 "workline_code": workline_code,
                 "position_code": position_code,
+                "allow_active_operation_key": allow_active_operation_key,
             }
         )
+        if (
+            not self.status.available
+            and self.status.reason_code == StationLeaseReasonCode.ACTIVE_DISPATCH_LEASE
+            and allow_active_operation_key is not None
+            and allow_active_operation_key == self.active_operation_key
+        ):
+            return available_status()
         return self.status
 
     async def claim_station_dispatch_lease(
@@ -57,6 +67,7 @@ class FakeStationLeaseService:
         position_code: str,
         envelope: DispatchEnvelope,
         allow_active_rack_bound: bool = False,
+        allow_active_operation_key: str | None = None,
     ) -> SystemOutbox | None:
         self.claim_calls.append(
             {
@@ -65,6 +76,7 @@ class FakeStationLeaseService:
                 "position_code": position_code,
                 "envelope": envelope,
                 "allow_active_rack_bound": allow_active_rack_bound,
+                "allow_active_operation_key": allow_active_operation_key,
             }
         )
         if self.expose_claim_as_busy and self._claimed:
@@ -252,7 +264,12 @@ async def test_orchestration_waits_when_station_lease_busy() -> None:
     assert decision.reason == StationLeaseReasonCode.ACTIVE_DISPATCH_LEASE.value
     assert decision.rack_operation_request is None
     assert lease.status_calls == [
-        {"workline_id": 1001, "workline_code": "WL-SMT-01", "position_code": "SINGLE_LAYER_A"}
+        {
+            "workline_id": 1001,
+            "workline_code": "WL-SMT-01",
+            "position_code": "SINGLE_LAYER_A",
+            "allow_active_operation_key": "wms-rack-operation:DEMAND-001:WL-SMT-01:SINGLE_LAYER_A",
+        }
     ]
     assert lease.claim_calls == []
 
@@ -301,6 +318,39 @@ async def test_orchestration_dispatches_wms_load_when_business_demand_and_statio
     assert envelope.payload_json["rack_kind"] == "SINGLE_LAYER"
     assert envelope.payload_json["target_position_code"] == "SINGLE_LAYER_A"
     assert envelope.payload_json["target_position_role"] == "SMT_CLASSIFIER_SINGLE_RACK_WORK"
+
+
+@pytest.mark.asyncio
+async def test_orchestration_retries_same_station_claim_when_active_dispatch_matches_operation() -> None:
+    dispatch_key = "wms-rack-operation:DEMAND-RETRY:WL-SMT-01:SINGLE_LAYER_A"
+    task_dispatch_key = f"rack-operation:{dispatch_key}:1:ALLOCATE_AND_MOVE_RACK"
+    lease = FakeStationLeaseService(
+        status=StationLeaseResult(
+            workline_code="WL-SMT-01",
+            position_code="SINGLE_LAYER_A",
+            available=False,
+            reason_code=StationLeaseReasonCode.ACTIVE_DISPATCH_LEASE,
+            active_dispatch_key=task_dispatch_key,
+            active_session_id=2001,
+        ),
+        claim_result=claimed_outbox(task_dispatch_key),
+        active_operation_key=dispatch_key,
+    )
+    orchestrator = service(station_lease_service=lease)
+
+    decision = await orchestrator.plan_single_layer_rack_dispatch(
+        object(),
+        business_demand_key="DEMAND-RETRY",
+        demand_type="SUPPLY_SINGLE_LAYER_RACK",
+        workline=ready_workline(),
+        session=active_session(),
+        station_code="SINGLE_LAYER_A",
+    )
+
+    assert decision.decision == SingleLayerRackOrchestrationDecisionCode.DISPATCH_WMS
+    assert decision.rack_operation_request is not None
+    assert lease.status_calls[0]["allow_active_operation_key"] == dispatch_key
+    assert lease.claim_calls[0]["allow_active_operation_key"] == dispatch_key
 
 
 @pytest.mark.asyncio
@@ -401,7 +451,12 @@ async def test_orchestration_blocks_without_session_before_claiming_station_leas
     assert decision.reason == "SESSION_REQUIRED_FOR_STATION_LEASE"
     assert decision.rack_operation_request is None
     assert lease.status_calls == [
-        {"workline_id": 1001, "workline_code": "WL-SMT-01", "position_code": "SINGLE_LAYER_A"}
+        {
+            "workline_id": 1001,
+            "workline_code": "WL-SMT-01",
+            "position_code": "SINGLE_LAYER_A",
+            "allow_active_operation_key": "wms-rack-operation:DEMAND-NO-SESSION:WL-SMT-01:SINGLE_LAYER_A",
+        }
     ]
     assert lease.claim_calls == []
     assert contract.calls == []
