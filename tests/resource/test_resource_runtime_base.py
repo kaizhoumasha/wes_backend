@@ -2,8 +2,13 @@
 
 from typing import Any, cast
 
+import pytest
 from sqlalchemy import Numeric
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import select, text
 from sqlmodel import SQLModel
+
+from src.app.resource.models import BinSlotSize, BinSlotTemplate
 
 
 def _table_columns(model: type[Any]) -> set[str]:
@@ -60,6 +65,45 @@ def test_first_stage_resource_tables_are_registered_with_required_fields() -> No
 
     for model in (RackType, RackSlotTemplate, Rack, BinType, BinSlotTemplate, Bin):
         assert model.__schema__ == "wes_biz"
+
+
+@pytest.mark.asyncio
+async def test_bin_slot_template_reads_database_slot_size_values(db_session: AsyncSession) -> None:
+    """料箱槽位模板必须能读取数据库约束允许的业务枚举值。"""
+
+    await db_session.execute(
+        text(
+            """
+            INSERT INTO wes_biz.resource_bin_slot_templates (
+                created_at,
+                updated_at,
+                bin_type_code,
+                bin_slot_code,
+                slot_size,
+                max_depth_mm,
+                max_weight_g,
+                active,
+                metadata_json
+            ) VALUES (
+                CURRENT_TIMESTAMP,
+                NULL,
+                'SMT_6_CELL_BIN',
+                '1',
+                '7INCH',
+                999999,
+                NULL,
+                TRUE,
+                '{}'
+            )
+            """
+        )
+    )
+    await db_session.commit()
+
+    result = await db_session.execute(select(BinSlotTemplate).where(BinSlotTemplate.bin_type_code == "SMT_6_CELL_BIN"))
+    template = result.scalar_one()
+
+    assert template.slot_size == BinSlotSize.SEVEN_INCH
 
 
 def test_second_stage_resource_fact_and_projection_tables_are_registered() -> None:

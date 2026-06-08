@@ -286,7 +286,16 @@ class BinSlotTemplateBase(BaseMixin):
     bin_type_code: str = Field(min_length=1, max_length=50, index=True, description="所属料箱类型编码")
     bin_slot_code: str = Field(min_length=1, max_length=50, description="料箱内槽位编码")
     slot_size: BinSlotSize = Field(
-        sa_type=cast("Any", SQLAEnum(BinSlotSize, native_enum=False, create_constraint=True, length=20)),
+        sa_type=cast(
+            "Any",
+            SQLAEnum(
+                BinSlotSize,
+                values_callable=lambda enum_cls: [item.value for item in enum_cls],
+                native_enum=False,
+                create_constraint=True,
+                length=20,
+            ),
+        ),
         description="槽位尺寸",
     )
     max_depth_mm: int | None = Field(default=None, ge=1, description="最大深度")
