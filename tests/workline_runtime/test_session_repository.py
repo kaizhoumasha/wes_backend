@@ -69,3 +69,71 @@ async def test_persist_external_wait_clears_command_wait_and_stores_context(db_s
     assert session.waiting_since == occurred_at
     assert session.deadline_at == occurred_at + timedelta(seconds=300)
     assert session.context_json["waiting_rack_operation_key"] == "rack-operation:trace-runtime"
+
+
+@pytest.mark.asyncio
+async def test_list_open_station_conflict_candidates_filters_by_station_scope(db_session) -> None:
+    sessions = [
+        WorklineSession(
+            session_code="session-station-bound",
+            workline_id=45,
+            plugin_key="test_workline_plugin",
+            run_mode=RunMode.SIMULATION,
+            status=SessionStatus.RUNNING,
+            context_json={"station": {"position_code": "STATION-A"}},
+        ),
+        WorklineSession(
+            session_code="session-rack-operation-bound",
+            workline_id=45,
+            plugin_key="test_workline_plugin",
+            run_mode=RunMode.SIMULATION,
+            status=SessionStatus.WAITING_EXTERNAL,
+            context_json={"rack_operation": {"target_position_code": "STATION-A"}},
+        ),
+        WorklineSession(
+            session_code="session-active-rack-bound",
+            workline_id=45,
+            plugin_key="test_workline_plugin",
+            run_mode=RunMode.SIMULATION,
+            status=SessionStatus.MANUAL_HOLD,
+            context_json={"active_bin_rack": {"position_code": "STATION-A"}},
+        ),
+        WorklineSession(
+            session_code="session-other-position",
+            workline_id=45,
+            plugin_key="test_workline_plugin",
+            run_mode=RunMode.SIMULATION,
+            status=SessionStatus.RUNNING,
+            context_json={"station": {"position_code": "STATION-B"}},
+        ),
+        WorklineSession(
+            session_code="session-terminal-position",
+            workline_id=45,
+            plugin_key="test_workline_plugin",
+            run_mode=RunMode.SIMULATION,
+            status=SessionStatus.COMPLETED,
+            context_json={"station": {"position_code": "STATION-A"}},
+        ),
+        WorklineSession(
+            session_code="session-other-workline",
+            workline_id=46,
+            plugin_key="test_workline_plugin",
+            run_mode=RunMode.SIMULATION,
+            status=SessionStatus.RUNNING,
+            context_json={"station": {"position_code": "STATION-A"}},
+        ),
+    ]
+    db_session.add_all(sessions)
+    await db_session.flush()
+
+    candidates = await WorklineSessionRepository().list_open_station_conflict_candidates(
+        db_session,
+        workline_id=45,
+        position_code="STATION-A",
+    )
+
+    assert [candidate.session_code for candidate in candidates] == [
+        "session-station-bound",
+        "session-rack-operation-bound",
+        "session-active-rack-bound",
+    ]

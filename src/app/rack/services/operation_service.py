@@ -268,6 +268,7 @@ class RackOperationService:
         payload_json = _outbox_payload(spec)
         existing = await self.outbox_repository.get_by_dispatch_key_for_update(db, spec.dispatch_key)
         if existing is not None:
+            _ensure_existing_outbox_active(existing)
             _ensure_existing_outbox_shape(existing, spec=spec, payload_json=payload_json)
             await self._prepare_existing_outbox_for_request(db, existing, session=session, payload_json=payload_json)
             return existing
@@ -308,6 +309,7 @@ class RackOperationService:
                 existing = await self.outbox_repository.get_by_dispatch_key_for_update(db, spec.dispatch_key)
                 if existing is None:
                     raise
+                _ensure_existing_outbox_active(existing)
                 _ensure_existing_outbox_shape(existing, spec=spec, payload_json=payload_json)
                 await self._prepare_existing_outbox_for_request(
                     db, existing, session=session, payload_json=payload_json
@@ -336,6 +338,7 @@ class RackOperationService:
             existing = await self.outbox_repository.get_by_dispatch_key_for_update(db, spec.dispatch_key)
             if existing is None:
                 raise
+            _ensure_existing_outbox_active(existing)
             _ensure_existing_outbox_shape(existing, spec=spec, payload_json=payload_json)
             await self._prepare_existing_outbox_for_request(db, existing, session=session, payload_json=payload_json)
             return existing
@@ -1061,6 +1064,26 @@ def _ensure_existing_outbox_shape(
             continue
         if existing_payload.get(key) != value:
             raise ValueError(f"existing rack operation outbox payload {key} differs from request")
+
+
+def _ensure_existing_outbox_active(outbox: SystemOutbox) -> None:
+    status = getattr(outbox, "status", None)
+    active_statuses = {
+        SystemOutboxStatus.NEW,
+        SystemOutboxStatus.DISPATCHING,
+        SystemOutboxStatus.SENT,
+        SystemOutboxStatus.BLOCKED_RESOURCE,
+    }
+    if isinstance(status, str):
+        active_values = {item.value for item in active_statuses}
+        status_is_active = status in active_values
+        status_is_blocked = status == SystemOutboxStatus.BLOCKED_RESOURCE.value
+    else:
+        status_is_active = status in active_statuses
+        status_is_blocked = status == SystemOutboxStatus.BLOCKED_RESOURCE
+
+    if not status_is_active or (getattr(outbox, "finished_at", None) is not None and not status_is_blocked):
+        raise ValueError("existing rack operation outbox is no longer active")
 
 
 def _reserved_target_position_codes(specs: list[RackTaskSpec]) -> set[str]:

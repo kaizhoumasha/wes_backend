@@ -177,6 +177,7 @@ class FakeWorklineSessionRepository:
     def __init__(self, sessions: list[WorklineSession] | None = None) -> None:
         self.sessions = sessions or []
         self.calls: list[tuple[int, int]] = []
+        self.station_candidate_calls: list[tuple[int, str]] = []
 
     async def list_open_by_workline_id(
         self,
@@ -196,6 +197,22 @@ class FakeWorklineSessionRepository:
     ) -> list[WorklineSession]:
         self.calls.append((workline_id, 0))
         return self.sessions
+
+    async def list_open_station_conflict_candidates(
+        self,
+        _db: object,
+        *,
+        workline_id: int,
+        position_code: str,
+    ) -> list[WorklineSession]:
+        self.station_candidate_calls.append((workline_id, position_code))
+        return [
+            session
+            for session in self.sessions
+            if session.workline_id == workline_id
+            and WorklineStationLeaseService._session_station_lease_reason(session, position_code=position_code)
+            is not None
+        ]
 
     async def get_by_workline_id(
         self,
@@ -494,7 +511,8 @@ async def test_station_lease_checks_open_session_conflicts_beyond_first_page() -
     assert result.available is False
     assert result.reason_code == StationLeaseReasonCode.ACTIVE_SESSION_BOUND
     assert result.active_session_id == 652
-    assert harness.session_repo.calls == [(1001, 1), (1001, 2), (1001, 3), (1001, 4), (1001, 5)]
+    assert harness.session_repo.station_candidate_calls == [(1001, "STATION-A")]
+    assert harness.session_repo.calls == []
 
 
 @pytest.mark.asyncio

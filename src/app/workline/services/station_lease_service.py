@@ -10,7 +10,6 @@ from src.app.resource.models import RackKind
 from src.app.resource.repositories import RackPlacementRepository, rack_placement_repository
 from src.app.sys.models.outbox import DispatchEnvelope, SystemOutbox, SystemOutboxDispatchType
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository, system_outbox_repository
-from src.app.workline.models.session import SessionStatus
 from src.app.workline.repositories.session_repository import WorklineSessionRepository, workline_session_repository
 from src.app.workline.services.rack_position_service import (
     WorklineRackPositionService,
@@ -197,7 +196,11 @@ class WorklineStationLeaseService:
                 active_session_id=active_outbox.session_id,
             )
 
-        sessions = await self._list_open_sessions(db, workline_id=workline_id)
+        sessions = await self.session_repository.list_open_station_conflict_candidates(
+            db,
+            workline_id=workline_id,
+            position_code=position_code,
+        )
         for session in sessions:
             reason_code = self._session_station_lease_reason(
                 session,
@@ -214,18 +217,6 @@ class WorklineStationLeaseService:
                 )
 
         return StationLeaseResult(workline_code=workline_code, position_code=position_code, available=True)
-
-    async def _list_open_sessions(self, db: AsyncSession, *, workline_id: int) -> list[WorklineSession]:
-        sessions: list[WorklineSession] = []
-        for status in (
-            SessionStatus.NEW,
-            SessionStatus.RUNNING,
-            SessionStatus.WAITING_DEVICE_RESULT,
-            SessionStatus.WAITING_EXTERNAL,
-            SessionStatus.MANUAL_HOLD,
-        ):
-            sessions.extend(await self.session_repository.get_by_workline_id(db, workline_id, status=status))
-        return sessions
 
     @classmethod
     def _session_station_lease_reason(

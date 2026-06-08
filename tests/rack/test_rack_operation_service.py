@@ -23,6 +23,7 @@ from src.app.sys.models import (
 )
 from src.app.workline.models.session import SessionStatus
 from src.celery_app.app import celery_app
+from src.utils.timezone import timezone
 
 RACK_TRANSPORT_OPERATION_TYPE = "RACK_TRANSPORT"
 CLASSIFIER_WORK_POSITION_CODE = "CLASSIFIER-WORK"
@@ -2176,6 +2177,65 @@ async def test_request_links_reused_ownerless_outbox_to_current_session() -> Non
         "required": True,
     }
     assert db.flush_count == 1
+
+
+@pytest.mark.asyncio
+async def test_request_rejects_reused_finished_outbox() -> None:
+    system_outbox_repository = FakeOutboxRepository()
+    dispatch_key = "rack-operation:op-reused-finished:2:ALLOCATE_AND_MOVE_RACK"
+    system_outbox_repository.add_existing(
+        SystemOutbox(
+            dispatch_key=dispatch_key,
+            dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+            target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+            target_code=RACK_OPERATION_TARGET_CODE,
+            operation_domain="RACK",
+            operation_key="op-reused-finished",
+            workline_id=45,
+            session_id=300,
+            payload_json={
+                "dispatch_key": dispatch_key,
+                "callback_type": "WMS_RACK_ARRIVED",
+                "operation_key": "op-reused-finished",
+                "operation_type": RACK_TRANSPORT_OPERATION_TYPE,
+                "sequence_no": 2,
+                "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                "workline_code": "WL-SMT-01",
+                "rack_kind": RackKind.SINGLE_LAYER.value,
+                "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+            },
+            status=SystemOutboxStatus.SENT,
+            finished_at=timezone.now_for_db(),
+        )
+    )
+    service, _repo, lifecycle, _placements = _service(
+        active_placements=[],
+        active_count=0,
+        system_outbox_repository=system_outbox_repository,
+    )
+
+    with pytest.raises(ValueError, match="existing rack operation outbox is no longer active"):
+        await service.request_operation_tasks(
+            FakeDb(),
+            operation_key="op-reused-finished",
+            operation_type=RACK_TRANSPORT_OPERATION_TYPE,
+            workline=_workline(),
+            session=_session(),
+            target_code=RACK_OPERATION_TARGET_CODE,
+            trace_id="trace-reused-finished",
+            task_specs=[
+                {
+                    "sequence_no": 2,
+                    "task_type": RackTaskType.ALLOCATE_AND_MOVE_RACK.value,
+                    "rack_kind": RackKind.SINGLE_LAYER.value,
+                    "target_position_code": CLASSIFIER_WORK_POSITION_CODE,
+                    "target_position_role": CLASSIFIER_WORK_POSITION_ROLE,
+                }
+            ],
+        )
+
+    assert lifecycle.calls == []
 
 
 @pytest.mark.asyncio

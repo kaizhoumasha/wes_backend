@@ -102,6 +102,45 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         )
         return list(result.scalars().all())
 
+    async def list_open_station_conflict_candidates(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        position_code: str,
+    ) -> list[WorklineSession]:
+        """按 Station scope 查询可能冲突的未结束 Session。
+
+        Station lease 服务仍会用业务规则做精确判定；这里先在数据库侧按
+        context_json 中已知 station 字段缩小候选集，避免高并发工作线拉取
+        全量 open sessions 后再逐条过滤。
+        """
+
+        columns = cast("Any", WorklineSession).__table__.c
+        open_statuses = [
+            SessionStatus.NEW,
+            SessionStatus.RUNNING,
+            SessionStatus.WAITING_DEVICE_RESULT,
+            SessionStatus.WAITING_EXTERNAL,
+            SessionStatus.MANUAL_HOLD,
+        ]
+        result = await db.execute(
+            select(WorklineSession)
+            .where(
+                columns.workline_id == workline_id,
+                columns.status.in_(open_statuses),
+                or_(
+                    columns.context_json["station"]["position_code"].as_string() == position_code,
+                    columns.context_json["position_code"].as_string() == position_code,
+                    columns.context_json["active_bin_rack"]["position_code"].as_string() == position_code,
+                    columns.context_json["rack_operation"]["target_position_code"].as_string() == position_code,
+                    columns.context_json["rack_operation"]["work_position_code"].as_string() == position_code,
+                ),
+            )
+            .order_by(columns.created_at.asc(), columns.id.asc())
+        )
+        return list(result.scalars().all())
+
     async def get_latest_active_rack_template_session(
         self,
         db: AsyncSession,
