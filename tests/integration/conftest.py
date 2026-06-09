@@ -7,6 +7,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import pytest
 import pytest_asyncio
@@ -33,23 +34,53 @@ if TYPE_CHECKING:
 
 
 def _is_integration_enabled() -> bool:
-    flag = os.getenv("RUN_WORKLINE_INTEGRATION", "0").strip().lower()
-    return flag in {"1", "true", "yes", "on"}
+    return _truthy_env("RUN_WORKLINE_INTEGRATION")
+
+
+def _truthy_env(name: str) -> bool:
+    return os.getenv(name, "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _database_url_label(database_url: str) -> str:
+    parsed = urlparse(database_url)
+    database_name = parsed.path.lstrip("/") or "<unknown-db>"
+    return f"{parsed.hostname or '<unknown-host>'}/{database_name}"
+
+
+def _is_safe_integration_database_url(database_url: str) -> bool:
+    if _truthy_env("ALLOW_SHARED_DEV_DB_INTEGRATION"):
+        return True
+
+    parsed = urlparse(database_url)
+    hostname = (parsed.hostname or "").lower()
+    database_name = parsed.path.lstrip("/").lower()
+    return (
+        hostname in {"localhost", "127.0.0.1", "::1", "db"}
+        or database_name in {"test"}
+        or database_name.startswith("test_")
+        or database_name.endswith("_test")
+    )
 
 
 def _candidate_database_urls() -> list[str]:
-    urls: list[str] = []
     override = os.getenv("INTEGRATION_DATABASE_URL")
-    if override:
-        urls.append(override)
-
-    urls.append(str(settings.DATABASE_URL))
+    urls: list[str] = [override] if override else [str(settings.DATABASE_URL)]
     for url in list(urls):
         if "@db:" in url:
             urls.append(url.replace("@db:", "@localhost:"))
 
     # de-duplicate while preserving order
-    return list(dict.fromkeys(urls))
+    safe_urls = list(dict.fromkeys(urls))
+    unsafe_urls = [url for url in safe_urls if not _is_safe_integration_database_url(url)]
+    if unsafe_urls:
+        labels = ", ".join(_database_url_label(url) for url in unsafe_urls)
+        raise RuntimeError(
+            "Workline integration tests require a Docker/local/test database URL. "
+            f"Unsafe candidates: {labels}. "
+            "Set INTEGRATION_DATABASE_URL to the local docker database, or explicitly set "
+            "ALLOW_SHARED_DEV_DB_INTEGRATION=1."
+        )
+    return safe_urls
 
 
 def _candidate_redis_urls() -> list[str]:

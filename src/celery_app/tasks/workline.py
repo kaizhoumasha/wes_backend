@@ -370,7 +370,7 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
     4. 加载关联实体：session/workline/device/devices_by_role
     5. 调用 OrchestratorService 执行编排
     6. 应用编排结果：command/outbox/timeline
-    7. 更新状态：PROCESSED/FAILED
+    7. 更新状态：PROCESSED/FAILED/DEAD_LETTER/RETRY(RESOURCE_WAIT)
     执行模式：
     - bind=True：任务方法接收 self（WorklineTask 实例）
     - max_retries=3：失败后自动重试最多 3 次

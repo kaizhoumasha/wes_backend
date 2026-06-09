@@ -66,11 +66,14 @@ def build_claim_bucket_key(
 def build_claim_bucket_key_for_update(*, current: Any, data: dict[str, Any]) -> str:
     """Build claim bucket key from current Inbox values plus pending updates."""
 
+    def value_for(field_name: str) -> Any:
+        return data[field_name] if field_name in data else getattr(current, field_name, None)
+
     return build_claim_bucket_key(
-        session_id=data.get("session_id", getattr(current, "session_id", None)),
-        device_id=data.get("device_id", getattr(current, "device_id", None)),
-        workline_id=data.get("workline_id", getattr(current, "workline_id", None)),
-        payload_json=data.get("payload_json", getattr(current, "payload_json", None)),
+        session_id=value_for("session_id"),
+        device_id=value_for("device_id"),
+        workline_id=value_for("workline_id"),
+        payload_json=value_for("payload_json"),
     )
 
 

@@ -80,6 +80,39 @@ def test_claim_bucket_key_helper_fits_model_column_length() -> None:
     assert claim_bucket_key == f"{raw_key[:183]}:{digest}"
 
 
+def test_claim_bucket_key_for_update_respects_explicit_none() -> None:
+    from types import SimpleNamespace
+
+    from src.app.workline.inbox_claim_bucket import build_claim_bucket_key_for_update
+
+    current = SimpleNamespace(
+        session_id=10,
+        device_id=20,
+        workline_id=30,
+        payload_json={"device_code": "SCN-01"},
+    )
+
+    assert build_claim_bucket_key_for_update(current=current, data={"session_id": None}) == "device:20"
+    assert (
+        build_claim_bucket_key_for_update(current=current, data={"session_id": None, "device_id": None})
+        == "device_code:SCN-01"
+    )
+    assert (
+        build_claim_bucket_key_for_update(
+            current=current,
+            data={"session_id": None, "device_id": None, "payload_json": None},
+        )
+        == "workline:30"
+    )
+    assert (
+        build_claim_bucket_key_for_update(
+            current=current,
+            data={"session_id": None, "device_id": None, "workline_id": None, "payload_json": None},
+        )
+        == "serial:unknown"
+    )
+
+
 def test_claim_bucket_key_migration_backfill_matches_runtime_normalization_contract() -> None:
     migration_sql = Path(
         "migrations/versions/20260609_2208_2937b05e1b1c_add_workline_inbox_claim_bucket_key.py"
