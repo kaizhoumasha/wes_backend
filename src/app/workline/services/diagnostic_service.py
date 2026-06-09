@@ -123,6 +123,20 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
 
         return await self.repo.get_active_by_trace_id(db, trace_id)
 
+    async def resolve_entry_admission_diagnostics(
+        self,
+        db: Any,
+        *,
+        inbox_id: int,
+        auto_commit: bool = True,
+    ) -> int:
+        """入口准入等待成功重试后，关闭同一 Inbox 的临时阻塞诊断。"""
+
+        resolved = await self.repo.resolve_entry_admission_by_inbox_id(db, inbox_id=inbox_id)
+        if auto_commit:
+            await self._commit_mutation(db)
+        return resolved
+
 
 workline_diagnostic_service = WorklineDiagnosticService()
 

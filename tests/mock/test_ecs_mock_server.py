@@ -705,3 +705,61 @@ def test_ecs_mock_timeout_scenario_only_applies_to_next_command(monkeypatch) -> 
     ]
     assert CapturingAsyncClient.requests[0]["json"]["result"] == "SUCCESS"
     assert status_response.json()["state"]["scenario"] == "success"
+
+
+def test_ecs_mock_does_not_assign_command_delay_before_device_receives_command() -> None:
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.get("/api/v1/device/status")
+
+    assert response.status_code == 200
+    delays = [item["state"]["command_delay_seconds"] for item in response.json()["devices"]]
+    assert delays == [None for _ in delays]
+
+
+def test_ecs_mock_generates_new_random_command_delay_for_each_command(monkeypatch) -> None:
+    sleep_calls: list[float] = []
+    random_delays = iter([2.25, 7.75])
+
+    async def fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(ecs_mock_server.random, "uniform", lambda _start, _end: next(random_delays))
+    monkeypatch.setattr(ecs_mock_server.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", CapturingAsyncClient)
+    monkeypatch.setattr(ecs_mock_server, "COMMAND_EXECUTION_DELAY_SECONDS", None)
+
+    with TestClient(ecs_mock_server.app) as client:
+        first_response = client.post(
+            "/api/v1/device/command",
+            json={
+                "device_code": "RS-CONVEYOR-01",
+                "command_code": "CMD-ECS-DELAYED-1",
+                "task_type": "MOVE_FORWARD",
+            },
+        )
+        second_response = client.post(
+            "/api/v1/device/command",
+            json={
+                "device_code": "RS-CONVEYOR-01",
+                "command_code": "CMD-ECS-DELAYED-2",
+                "task_type": "MOVE_FORWARD",
+            },
+        )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert sleep_calls == [2.25, 7.75]
+    assert [request["json"]["command_code"] for request in CapturingAsyncClient.requests] == [
+        "CMD-ECS-DELAYED-1",
+        "CMD-ECS-DELAYED-2",
+    ]
+
+
+def test_ecs_mock_does_not_expose_command_delay_mutation_endpoint() -> None:
+    with TestClient(ecs_mock_server.app) as client:
+        response = client.post(
+            "/api/v1/mock/devices/RS-CONVEYOR-01/command-delay",
+            json={"delay_seconds": 1.25},
+        )
+
+    assert response.status_code == 404

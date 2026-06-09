@@ -350,6 +350,10 @@ curl -sS -X POST "http://127.0.0.1:8010/api/v1/mock/devices/RS-CONVEYOR-01/scena
 
 可选场景为 `success`、`fail`、`timeout`。`timeout` 场景会 ACK 命令但不回调 Result，用于验证 WES 的执行超时和对账流程。
 
+Mock ECS 接收每条 WES 命令时，会为该命令随机生成一个 2~8 秒的模拟运行时间。设备会立即返回 ACK，并在
+本条命令的 `command_delay_seconds` 后回调 Result；期间状态接口会保持 `RUNNING` 和 `current_command_id`，
+用于观察 WES 对设备运行态、占用和并发准入的处理。
+
 ---
 
 ## 4. Mock WMS 调试

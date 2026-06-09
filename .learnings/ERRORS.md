@@ -259,3 +259,35 @@ sed: /Users/kaizhou/SynologyDrive/github/gstack/.agents/skills/gstack-review/che
 - **Notes**: 本次通过 fallback 完成 review，并发现/修复了设备派发并发风险。
 
 ---
+
+## [ERR-20260609-001] ad_hoc_debug_query_assumptions
+
+**Logged**: 2026-06-09T11:26:35+08:00
+**Priority**: medium
+**Status**: pending
+**Area**: backend
+
+### Summary
+粗分机 Mock 联调核对时按猜测字段名和未引用 URL 执行命令，导致多次无效查询。
+
+### Error
+```text
+ERROR: column "action" does not exist
+ERROR: column "code" does not exist
+zsh: no matches found: http://localhost:8010/api/v1/device/status?device_code=...
+```
+
+### Context
+- Command/operation attempted: 查询 workline timeline、diagnostics、device status 等联调证据。
+- Trigger: 没有先查 `information_schema.columns` 或源码接口定义，直接使用记忆中的字段名；在 zsh 中 curl 带 `?` 的 URL 时没有加引号。
+- Impact: 没有破坏数据，但浪费调试时间，并可能让联调结论延迟。
+
+### Suggested Fix
+以后做 DB/接口证据核对时，先查表结构或 route 定义，再写 SQL；zsh 下 curl 带查询参数的 URL 必须加引号。对 trace API 也应先确认认证要求和实际路由路径。
+
+### Metadata
+- Reproducible: yes
+- Related Files: src/app/workline/v1/trace.py, tests/mock/ecs_mock_server.py
+- See Also: none
+
+---

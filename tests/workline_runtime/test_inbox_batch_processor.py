@@ -1,6 +1,8 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -781,7 +783,13 @@ async def test_process_batch_uses_injected_write_back_service(mock_db, mock_inbo
         def __init__(self, *args, **kwargs):
             pass
 
-        async def process_inbox(self, *args, write_callback, **kwargs):
+        async def process_inbox(
+            self,
+            *args: object,
+            write_callback: Callable[[OrchestratorResult], Awaitable[None]],
+            **kwargs: object,
+        ) -> OrchestratorResult:
+            _ = args, kwargs
             result = OrchestratorResult(success=True, intents=[])
             await write_callback(result)
             return result
@@ -824,14 +832,13 @@ async def test_process_batch_uses_injected_write_back_service(mock_db, mock_inbo
 
 
 @pytest.mark.asyncio
-async def test_process_batch_sse_payload_uses_precommit_identity_snapshot(mock_inbox_service):
-    db = _CommitTrackingDb()
+async def test_process_batch_resolves_entry_admission_diagnostics_after_retry_success(mock_db, mock_inbox_service):
     inbox = MagicMock()
     inbox.id = 1
-    inbox.trace_id = "trace-1"
-    inbox.payload_json = {"event_type": "SOME_EVENT"}
-    session = _CommitExpiredEntity(db, entity_id=10, status="RUNNING", awaiting_command_id=None)
-    workline = _CommitExpiredEntity(db, entity_id=20)
+    inbox.trace_id = "trace-entry-admission-retry"
+    inbox.payload_json = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "PART-NEXT"}}
+    session = SimpleNamespace(id=10, status="RUNNING", awaiting_command_id=None)
+    workline = SimpleNamespace(id=20)
     injected_write_back = SimpleNamespace(write_back=AsyncMock())
     mock_inbox_service.get_new_messages.return_value = [inbox]
 
@@ -858,9 +865,77 @@ async def test_process_batch_sse_payload_uses_precommit_identity_snapshot(mock_i
             return_value=False,
         ),
         patch("src.app.workline.services.inbox_batch_processor.OrchestratorService", FakeOrchestratorService),
+        patch(
+            "src.app.workline.services.diagnostic_service.workline_diagnostic_service.resolve_entry_admission_diagnostics",
+            new_callable=AsyncMock,
+            create=True,
+        ) as resolve_diagnostics,
+    ):
+        mock_load.return_value = {
+            "session": session,
+            "workline": workline,
+            "device": None,
+            "command": None,
+            "devices_by_role": {},
+            "services": {},
+            "safety_checked": True,
+        }
+
+        processor = _processor_for_db(mock_db, write_back_service=injected_write_back)
+        result = await processor.process_batch(mock_db, limit=1)
+
+    assert result["success"] == 1
+    cast("AsyncMock", resolve_diagnostics).assert_awaited_once_with(mock_db, inbox_id=1, auto_commit=False)
+
+
+@pytest.mark.asyncio
+async def test_process_batch_sse_payload_uses_precommit_identity_snapshot(mock_inbox_service):
+    db = _CommitTrackingDb()
+    inbox = MagicMock()
+    inbox.id = 1
+    inbox.trace_id = "trace-1"
+    inbox.payload_json = {"event_type": "SOME_EVENT"}
+    session = _CommitExpiredEntity(db, entity_id=10, status="RUNNING", awaiting_command_id=None)
+    workline = _CommitExpiredEntity(db, entity_id=20)
+    injected_write_back = SimpleNamespace(write_back=AsyncMock())
+    mock_inbox_service.get_new_messages.return_value = [inbox]
+
+    class FakeOrchestratorService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def process_inbox(
+            self,
+            *args: object,
+            write_callback: Callable[[OrchestratorResult], Awaitable[None]],
+            **kwargs: object,
+        ) -> OrchestratorResult:
+            _ = args, kwargs
+            result = OrchestratorResult(success=True, intents=[])
+            await write_callback(result)
+            return result
+
+    with (
+        patch(
+            "src.app.workline.services.inbox_batch_processor._load_related_entities",
+            new_callable=AsyncMock,
+        ) as mock_load,
+        patch(
+            "src.app.workline.services.inbox_batch_processor._is_duplicate_entry_event_for_session",
+            return_value=False,
+        ),
+        patch(
+            "src.app.workline.services.inbox_batch_processor._is_late_or_duplicate_command_result_for_session",
+            return_value=False,
+        ),
+        patch("src.app.workline.services.inbox_batch_processor.OrchestratorService", FakeOrchestratorService),
         patch("src.app.sys.services.event_stream_service.defer_sse_event") as defer_sse_event,
         patch(
             "src.app.sys.services.event_stream_service.publish_deferred_sse_events",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "src.app.workline.services.diagnostic_service.workline_diagnostic_service.resolve_entry_admission_diagnostics",
             new_callable=AsyncMock,
         ),
     ):

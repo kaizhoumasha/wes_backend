@@ -2,11 +2,12 @@
 
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.workline.models.diagnostic import WorklineDiagnostic
+from src.app.workline.models.diagnostic import DiagnosticStatus, WorklineDiagnostic
 from src.database.base_repository import BaseRepository
+from src.utils.timezone import timezone
 
 
 class WorklineDiagnosticRepository(BaseRepository[WorklineDiagnostic]):
@@ -35,6 +36,31 @@ class WorklineDiagnosticRepository(BaseRepository[WorklineDiagnostic]):
             .order_by(columns.created_at.desc())
         )
         return list(result.scalars().all())
+
+    async def resolve_entry_admission_by_inbox_id(
+        self,
+        db: AsyncSession,
+        *,
+        inbox_id: int,
+    ) -> int:
+        """将已成功重试的入口准入阻塞诊断标记为已解决。"""
+
+        columns = cast("Any", WorklineDiagnostic).__table__.c
+        now = timezone.now_for_db()
+        result = await db.execute(
+            update(WorklineDiagnostic)
+            .where(
+                columns.inbox_id == inbox_id,
+                columns.status == DiagnosticStatus.ACTIVE.value,
+                columns.evidence_json["reason"].as_string() == "WORKLINE_ENTRY_ADMISSION_BLOCKED",
+            )
+            .values(
+                status=DiagnosticStatus.RESOLVED,
+                resolved_at=now,
+                updated_at=now,
+            )
+        )
+        return int(result.rowcount or 0)
 
 
 workline_diagnostic_repository = WorklineDiagnosticRepository()

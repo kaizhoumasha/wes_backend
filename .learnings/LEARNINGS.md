@@ -1831,3 +1831,59 @@ Handler 签名选择规则：inbox vs NormalizedCommandResult 的注入优先级
 - Recurrence-Count: 1
 - First-Seen: 2026-05-19
 - Last-Seen: 2026-05-19
+
+---
+
+## [LRN-20260609-001] correction
+
+**Logged**: 2026-06-09T11:26:35+08:00
+**Priority**: high
+**Status**: pending
+**Category**: correction
+**Area**: tests
+
+### Summary
+Mock ECS 设备运行耗时应在每条命令接收时随机生成，而不是新增手动接口或 Docker 启动时固定。
+
+### Details
+用户连续纠正了 Mock ECS 延迟建模方式。先前实现新增了 `/command-delay` 调试接口，随后又改成 Docker 启动/重置时为每台设备固定随机 2~8 秒；这两种方式都不够贴近真实设备。正确模型是：设备空闲时 `command_delay_seconds=null`；每次接收 WES 命令后立即 ACK，并为本条命令随机生成 2~8 秒耗时；执行期间状态保持 `RUNNING/current_command_id` 并暴露本条命令的 `command_delay_seconds`；Result 回调后恢复 `IDLE` 并清空延迟。
+
+### Suggested Action
+后续实现设备 Mock 行为时，优先在真实物理事件边界建模，不轻易新增人工调试接口。对“设备执行耗时”类行为，应在命令接收时生成命令级状态，并用测试覆盖：空闲状态无耗时、每条命令独立随机、旧调试接口不存在。
+
+### Metadata
+- Source: user_feedback
+- Related Files: tests/mock/ecs_mock_server.py, tests/mock/test_ecs_mock_server.py, docs/hardware/粗分机内部Mock与Sandbox调试手册.md
+- Tags: mock, ecs, device-state, command-delay, tdd
+- Pattern-Key: mock.device_delay_per_command
+- Recurrence-Count: 1
+- First-Seen: 2026-06-09
+- Last-Seen: 2026-06-09
+
+---
+
+## [LRN-20260609-002] insight
+
+**Logged**: 2026-06-09T11:26:35+08:00
+**Priority**: high
+**Status**: pending
+**Category**: insight
+**Area**: backend
+
+### Summary
+当前粗分机 WorkLine 联调表现为工作线级串行准入，不是设备级并行推进。
+
+### Details
+并行联调中，通过让第一笔物料卡在 `RS-OUTPUT-ARM-01` 的 `PUT_TO_BIN` 等待结果阶段，验证第二笔 `SCAN_COMPLETED` 的处理方式。即使 `RS-INPUT-ARM-01` 和 `RS-CONVEYOR-01` 为空闲，第二笔仍被诊断为 `Workline entry admission blocked by busy session`，直到第一笔完成后才进入正式 session 并下发命令。这说明当前实现是 busy session 级入口闸门，而非按设备资源/WIP 工位并行。
+
+### Suggested Action
+如果要实现工作线内设备并行，不能只改 Mock；需要调整 WorkLine 准入和编排模型，从“工作线是否有 busy session”改为“物理工位、WIP、目标设备是否可接收下一笔”。同时保留每台设备自己的互斥和 `current_command_id` 约束。
+
+### Metadata
+- Source: conversation
+- Related Files: src/app/workline/services/inbox_batch_processor.py, src/app/workline/services/device_command_gateway.py, src/workline_plugins/rough_sorter/plugin.py
+- Tags: workline, rough-sorter, concurrency, admission, device-dispatch
+- Pattern-Key: workline.admission_session_serial
+- Recurrence-Count: 1
+- First-Seen: 2026-06-09
+- Last-Seen: 2026-06-09

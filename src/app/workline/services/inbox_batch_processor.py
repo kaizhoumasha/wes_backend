@@ -1211,7 +1211,7 @@ class InboxBatchProcessor:
 
                             write_back_service = orchestrator_write_back_service
 
-                        await write_back_service.write_back(
+                        _ = await write_back_service.write_back(
                             db,
                             session=_session,
                             workline=_workline,
@@ -1222,6 +1222,11 @@ class InboxBatchProcessor:
                         )
                         _ = await inbox_service.mark_as_processed(
                             db, _inbox_pk, processor_token=_processor_token, auto_commit=False
+                        )
+                        from src.app.workline.services.diagnostic_service import workline_diagnostic_service
+
+                        _ = await workline_diagnostic_service.resolve_entry_admission_diagnostics(
+                            db, inbox_id=_inbox_pk, auto_commit=False
                         )
                         await db.commit()
                         write_effects_applied = True
