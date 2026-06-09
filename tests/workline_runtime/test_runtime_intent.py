@@ -94,6 +94,62 @@ def test_resource_reservation_intent_describes_planned_bin_cell_claim():
     assert intent.payload_json["bin_code"] == "BIN-001"
 
 
+def test_resource_wait_intent_requires_resource_kind_and_key():
+    intent = RuntimeIntent.resource_wait(
+        resource_kind="STATION",
+        resource_key="station:TARGET_STATION",
+        reason_code="STATION_BUSY",
+        message="目标工位正在处理其它物料",
+    )
+
+    assert intent.kind == RuntimeIntentKind.RESOURCE_WAIT
+    assert intent.reason_code == "STATION_BUSY"
+    assert intent.message == "目标工位正在处理其它物料"
+    assert intent.payload_json["resource_kind"] == "STATION"
+    assert intent.payload_json["resource_key"] == "station:TARGET_STATION"
+
+    with pytest.raises(ValueError, match="RESOURCE_WAIT intent requires resource_kind"):
+        RuntimeIntent.resource_wait(
+            resource_kind="",
+            resource_key="station:TARGET_STATION",
+            reason_code="STATION_BUSY",
+            message="目标工位正在处理其它物料",
+        )
+
+    with pytest.raises(ValueError, match="RESOURCE_WAIT intent requires resource_key"):
+        RuntimeIntent.resource_wait(
+            resource_kind="STATION",
+            resource_key="",
+            reason_code="STATION_BUSY",
+            message="目标工位正在处理其它物料",
+        )
+
+
+def test_resource_wait_intent_preserves_reason_and_evidence():
+    evidence = {"station_code": "TARGET_STATION", "active_session_id": 1001}
+
+    intent = RuntimeIntent.resource_wait(
+        resource_kind="STATION",
+        resource_key="station:TARGET_STATION",
+        reason_code="STATION_BUSY",
+        message="目标工位正在处理其它物料",
+        suggested_action="等待资源释放后自动重试",
+        payload=evidence,
+    )
+    evidence["active_session_id"] = 2002
+
+    assert intent.kind == RuntimeIntentKind.RESOURCE_WAIT
+    assert intent.reason_code == "STATION_BUSY"
+    assert intent.message == "目标工位正在处理其它物料"
+    assert intent.suggested_action == "等待资源释放后自动重试"
+    assert intent.payload_json == {
+        "resource_kind": "STATION",
+        "resource_key": "station:TARGET_STATION",
+        "station_code": "TARGET_STATION",
+        "active_session_id": 1001,
+    }
+
+
 def test_rack_operation_request_intent_describes_rack_operation():
     intent = RuntimeIntent.rack_operation_request(
         operation_type="REPLACE_CLASSIFIER_WORK_RACK",

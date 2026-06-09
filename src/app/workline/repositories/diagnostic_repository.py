@@ -37,28 +37,72 @@ class WorklineDiagnosticRepository(BaseRepository[WorklineDiagnostic]):
         )
         return list(result.scalars().all())
 
-    async def resolve_entry_admission_by_inbox_id(
+    async def update_resource_wait_by_key(
+        self,
+        db: AsyncSession,
+        *,
+        diagnostic_key: str,
+        message: str,
+        evidence_json: dict[str, Any],
+    ) -> WorklineDiagnostic | None:
+        """幂等更新 RESOURCE_WAIT 诊断证据。"""
+
+        columns = cast("Any", WorklineDiagnostic).__table__.c
+        await db.execute(
+            update(WorklineDiagnostic)
+            .where(columns.diagnostic_key == diagnostic_key)
+            .values(
+                message=message,
+                technical_summary=message,
+                evidence_json=evidence_json,
+                status=DiagnosticStatus.ACTIVE,
+                resolved_at=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        return await self.get_by_diagnostic_key(db, diagnostic_key)
+
+    async def resolve_resource_wait_by_key(
+        self,
+        db: AsyncSession,
+        *,
+        diagnostic_key: str,
+    ) -> int:
+        """按幂等键关闭 ACTIVE RESOURCE_WAIT 诊断。"""
+
+        columns = cast("Any", WorklineDiagnostic).__table__.c
+        result = await db.execute(
+            update(WorklineDiagnostic)
+            .where(
+                columns.diagnostic_key == diagnostic_key,
+                columns.diagnostic_code == "RESOURCE_WAIT",
+                columns.status == DiagnosticStatus.ACTIVE,
+            )
+            .values(status=DiagnosticStatus.RESOLVED, resolved_at=timezone.now_for_db())
+            .execution_options(synchronize_session=False)
+        )
+        return int(result.rowcount or 0)
+
+    async def resolve_other_active_resource_waits_for_inbox(
         self,
         db: AsyncSession,
         *,
         inbox_id: int,
+        keep_diagnostic_key: str,
     ) -> int:
-        """将已成功重试的入口准入阻塞诊断标记为已解决。"""
+        """同一 Inbox 转等新资源前，关闭旧 ACTIVE RESOURCE_WAIT。"""
 
         columns = cast("Any", WorklineDiagnostic).__table__.c
-        now = timezone.now_for_db()
         result = await db.execute(
             update(WorklineDiagnostic)
             .where(
                 columns.inbox_id == inbox_id,
-                columns.status == DiagnosticStatus.ACTIVE.value,
-                columns.evidence_json["reason"].as_string() == "WORKLINE_ENTRY_ADMISSION_BLOCKED",
+                columns.diagnostic_code == "RESOURCE_WAIT",
+                columns.status == DiagnosticStatus.ACTIVE,
+                columns.diagnostic_key != keep_diagnostic_key,
             )
-            .values(
-                status=DiagnosticStatus.RESOLVED,
-                resolved_at=now,
-                updated_at=now,
-            )
+            .values(status=DiagnosticStatus.RESOLVED, resolved_at=timezone.now_for_db())
+            .execution_options(synchronize_session=False)
         )
         return int(result.rowcount or 0)
 

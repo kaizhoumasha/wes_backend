@@ -213,7 +213,7 @@ def test_workline_task_direct_call_lazy_initializes_db(monkeypatch: pytest.Monke
     async def fake_process_batch(self: Any, db: Any, limit: int = 10) -> workline_tasks.ProcessResult:
         assert isinstance(db, _FakeAsyncSession)
         assert limit == 0
-        return {"processed": 0, "success": 0, "failed": 0, "skipped": 0}
+        return {"processed": 0, "success": 0, "failed": 0, "skipped": 0, "resource_wait": 0}
 
     monkeypatch.setattr(db_module, "AsyncSessionLocal", None)
     monkeypatch.setattr(db_module, "init_db", fake_init_db)
@@ -222,7 +222,7 @@ def test_workline_task_direct_call_lazy_initializes_db(monkeypatch: pytest.Monke
     monkeypatch.setattr(InboxBatchProcessor, "process_batch", fake_process_batch)
 
     try:
-        assert task(limit=0) == {"processed": 0, "success": 0, "failed": 0, "skipped": 0}
+        assert task(limit=0) == {"processed": 0, "success": 0, "failed": 0, "skipped": 0, "resource_wait": 0}
         assert init_called
     finally:
         task.cleanup()

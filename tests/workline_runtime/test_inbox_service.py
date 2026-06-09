@@ -41,75 +41,6 @@ def test_workline_inbox_declares_hot_queue_partial_indexes() -> None:
     assert "status = 'RETRY'" in retry_where
 
 
-@pytest.mark.asyncio
-async def test_repository_lists_pending_entry_admission_cases_with_real_filters(db_session) -> None:
-    repository = WorklineInboxRepository()
-    matching = WorklineInbox(
-        kind=InboxKind.DEVICE_EVENT,
-        source_system=SourceSystem.DEVICE,
-        source_message_id="pending-entry-admission-match",
-        workline_id=1,
-        device_id=7,
-        session_id=None,
-        payload_json={"event_type": "SCAN_COMPLETED"},
-        status=InboxStatus.RETRY,
-        error_message=(
-            "Workline entry admission blocked by busy session: "
-            "workline_id=1, business_key=PKG-001, blocker_session_id=41"
-        ),
-    )
-    prefix_only = WorklineInbox(
-        kind=InboxKind.DEVICE_EVENT,
-        source_system=SourceSystem.DEVICE,
-        source_message_id="pending-entry-admission-prefix-only",
-        workline_id=None,
-        session_id=None,
-        payload_json={"event_type": "SCAN_COMPLETED"},
-        status=InboxStatus.RETRY,
-        error_message=(
-            "Workline entry admission blocked by busy session: "
-            "workline_id=10, business_key=PKG-010, blocker_session_id=410"
-        ),
-    )
-    other_retry = WorklineInbox(
-        kind=InboxKind.DEVICE_EVENT,
-        source_system=SourceSystem.DEVICE,
-        source_message_id="pending-entry-admission-other-retry",
-        workline_id=1,
-        session_id=None,
-        payload_json={"event_type": "SCAN_COMPLETED"},
-        status=InboxStatus.RETRY,
-        error_message="Workline stopped",
-    )
-    processed = WorklineInbox(
-        kind=InboxKind.DEVICE_EVENT,
-        source_system=SourceSystem.DEVICE,
-        source_message_id="pending-entry-admission-processed",
-        workline_id=1,
-        session_id=None,
-        payload_json={"event_type": "SCAN_COMPLETED"},
-        status=InboxStatus.PROCESSED,
-        error_message=matching.error_message,
-    )
-    db_session.add_all([matching, prefix_only, other_retry, processed])
-    await db_session.flush()
-
-    result = await repository.list_pending_entry_admission_cases(
-        db_session,
-        limit=10,
-        workline_id=1,
-        device_id=7,
-    )
-    count = await repository.count_pending_entry_admission_cases(
-        db_session,
-        workline_id=1,
-        device_id=7,
-    )
-
-    assert [item.id for item in result] == [matching.id]
-    assert count == 1
-
-
 def test_calculate_device_event_idempotency_key_with_vendor_id():
     """测试设备事件幂等键计算（有厂商事件 ID）"""
     repository = WorklineInboxRepository()
@@ -321,34 +252,6 @@ async def test_create_idempotent_conflict_target_matches_partial_unique_index(mo
     sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[attr-defined]
 
     assert "ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL" in sql
-
-
-@pytest.mark.asyncio
-async def test_get_new_messages_only_selects_retry_ready_messages() -> None:
-    repository = WorklineInboxRepository()
-
-    class _FakeResult:
-        def scalars(self) -> "_FakeResult":
-            return self
-
-        def all(self) -> list[object]:
-            return []
-
-    class _FakeDB:
-        statement = None
-
-        async def execute(self, statement):
-            self.statement = statement
-            return _FakeResult()
-
-    db = _FakeDB()
-
-    await repository.get_new_messages(db, limit=10)
-
-    assert db.statement is not None
-    sql = str(db.statement)
-    assert "status = :status_1 OR wes_biz.workline_inbox.status = :status_2 AND" in sql
-    assert "status = :status_1 OR wes_biz.workline_inbox.status = :status_2 OR" not in sql
 
 
 @pytest.mark.asyncio

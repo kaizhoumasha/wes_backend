@@ -587,17 +587,23 @@ class SmtSortingInboundFlowService:
                 payload={"position_code": _TARGET_STATION_CODE},
             )
         if not getattr(target_station_status, "available", False):
-            return None, self._block(
-                "SORTING_TARGET_STATION_LEASE_BUSY",
-                "目标 Station 当前不可用，无法自动分格",
-                payload={
-                    "position_code": _TARGET_STATION_CODE,
-                    "reason_code": str(getattr(target_station_status, "reason_code", None) or ""),
-                    "active_rack_code": getattr(target_station_status, "active_rack_code", None),
-                    "active_session_id": getattr(target_station_status, "active_session_id", None),
-                    "active_dispatch_key": getattr(target_station_status, "active_dispatch_key", None),
-                },
-            )
+            reason_code = str(getattr(target_station_status, "reason_code", None) or "STATION_BUSY")
+            return None, [
+                RuntimeIntent.resource_wait(
+                    resource_kind="STATION",
+                    resource_key=f"station:{_TARGET_STATION_CODE}",
+                    reason_code="SORTING_TARGET_STATION_LEASE_BUSY",
+                    message="目标 Station 当前不可用，等待资源释放后自动重试",
+                    suggested_action="等待目标 Station 释放，或检查当前 active rack/session/dispatch 占用",
+                    payload={
+                        "position_code": _TARGET_STATION_CODE,
+                        "status_reason_code": reason_code,
+                        "active_rack_code": getattr(target_station_status, "active_rack_code", None),
+                        "active_session_id": getattr(target_station_status, "active_session_id", None),
+                        "active_dispatch_key": getattr(target_station_status, "active_dispatch_key", None),
+                    },
+                )
+            ]
 
         active_snapshot = await self._active_target_snapshot(ctx, sorting)
         if active_snapshot is None:

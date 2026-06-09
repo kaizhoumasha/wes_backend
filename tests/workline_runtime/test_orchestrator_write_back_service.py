@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.app.workline.services.write_back_service import orchestrator_write_back_service
+from src.workline_runtime.effect_result import RuntimeIntentEffectResult, WriteBackDisposition
 from src.workline_runtime.orchestrator import OrchestratorResult
 
 
@@ -40,9 +41,10 @@ async def test_write_back_calls_applier(mock_db):
 
     with patch("src.workline_runtime.runtime_intent_effects.RuntimeIntentEffectApplier") as mock_applier_class:
         mock_applier = AsyncMock()
+        mock_applier.apply.return_value = RuntimeIntentEffectResult.resource_retry()
         mock_applier_class.return_value = mock_applier
 
-        await orchestrator_write_back_service.write_back(
+        result = await orchestrator_write_back_service.write_back(
             db=mock_db,
             session=session,
             workline=workline,
@@ -53,6 +55,7 @@ async def test_write_back_calls_applier(mock_db):
         )
 
         mock_applier.apply.assert_awaited_once()
+        assert result.disposition == WriteBackDisposition.RESOURCE_RETRY
         call_args = mock_applier.apply.call_args
         ctx = call_args[0][0]
         intents = call_args[0][1]

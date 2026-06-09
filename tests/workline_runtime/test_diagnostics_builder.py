@@ -4,9 +4,12 @@ from src.workline_runtime.diagnostics import (
     ErrorCode,
     ErrorDomain,
     ProblemClass,
+    Recoverability,
+    Severity,
     build_diagnostic_card,
     build_diagnostic_context,
     build_diagnostic_event,
+    get_diagnostic_code_definition,
 )
 
 
@@ -63,3 +66,28 @@ def test_build_diagnostic_card_preserves_explicit_error_domain_override() -> Non
     assert card.error_code == ErrorCode.UNKNOWN
     assert card.error_domain == ErrorDomain.DEVICE
     assert card.problem_class == ProblemClass.HARDWARE
+
+
+def test_resource_wait_diagnostic_code_defaults_to_auto_retryable_warning() -> None:
+    context = build_diagnostic_context(
+        trace_id="trace-resource-wait",
+        inbox=SimpleNamespace(id=42, trace_id="trace-resource-wait"),
+        extra={"resource_kind": "STATION", "resource_key": "station:TARGET_STATION"},
+    )
+
+    card = build_diagnostic_card(
+        build_diagnostic_event(
+            error_code=ErrorCode.RESOURCE_WAIT,
+            context=context,
+            message="目标工位正在处理其它物料",
+        )
+    )
+    definition = get_diagnostic_code_definition(ErrorCode.RESOURCE_WAIT)
+
+    assert card.error_code == ErrorCode.RESOURCE_WAIT
+    assert card.error_domain == ErrorDomain.WORKFLOW
+    assert card.severity == Severity.WARNING
+    assert card.recoverability == Recoverability.AUTO_RETRYABLE
+    assert card.problem_class == ProblemClass.SOFTWARE
+    assert "等待" in definition.operator_action
+    assert "resource" in definition.docs_anchor.lower()

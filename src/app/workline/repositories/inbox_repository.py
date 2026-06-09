@@ -2,14 +2,14 @@
 
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import String, and_, case, exists, func, literal, or_, select, tuple_, update
-from sqlalchemy import cast as sql_cast
+from sqlalchemy import and_, exists, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
 from src.app.workline.models.inbox import (
     InboxKind,
     InboxStatus,
@@ -31,6 +31,7 @@ class WorklineInboxClaim:
     device_id: int | None
     kind: InboxKind | str
     payload_json: dict[str, Any]
+    claim_bucket_key: str = "serial:unknown"
 
 
 class WorklineInboxRepository(BaseRepository[WorklineInbox]):
@@ -39,6 +40,24 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
     def __init__(self) -> None:
         """初始化收件箱仓库"""
         super().__init__(WorklineInbox)
+
+    @staticmethod
+    def _with_claim_bucket_key(data: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(data)
+        claim_bucket_key = normalized.get("claim_bucket_key")
+        if not isinstance(claim_bucket_key, str) or not claim_bucket_key.strip():
+            normalized["claim_bucket_key"] = build_claim_bucket_key(
+                session_id=normalized.get("session_id"),
+                device_id=normalized.get("device_id"),
+                workline_id=normalized.get("workline_id"),
+                payload_json=cast("dict[str, Any] | None", normalized.get("payload_json")),
+            )
+        return normalized
+
+    async def create(self, db: AsyncSession, data: dict[str, Any]) -> WorklineInbox | None:
+        """创建 Inbox 时兜底写入物化 claim bucket key。"""
+
+        return await super().create(db, self._with_claim_bucket_key(data))
 
     async def get_by_idempotency_key(
         self,
@@ -63,6 +82,7 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
     ) -> WorklineInbox:
         """按 idempotency_key 原子创建；冲突时返回已有记录，不回滚当前事务。"""
 
+        data = self._with_claim_bucket_key(data)
         table = cast("Any", WorklineInbox).__table__
         statement = (
             insert(table)
@@ -85,55 +105,6 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         if existing is None:
             raise RuntimeError(f"Inbox 幂等创建冲突后无法读取原消息: {idempotency_key}")
         return existing
-
-    async def get_new_messages(
-        self,
-        db: AsyncSession,
-        limit: int = 10,
-    ) -> list[WorklineInbox]:
-        """获取待处理的新消息
-
-        包括：
-        - NEW 状态的消息
-        - RETRY 状态且 next_retry_at <= now 的消息（重试到期）
-        """
-        columns = cast("Any", WorklineInbox).__table__.c
-        now = timezone.now_for_db()
-
-        # NEW 状态的消息，或 RETRY 状态且重试时间已到的消息
-        retry_ready = and_(
-            columns.status == InboxStatus.RETRY,
-            columns.next_retry_at <= now,
-        )
-
-        result = await db.execute(
-            select(WorklineInbox)
-            .where(
-                or_(
-                    columns.status == InboxStatus.NEW,
-                    retry_ready,
-                )
-            )
-            .order_by(columns.received_at)
-            .limit(limit)
-            .with_for_update(skip_locked=True)  # 加锁，避免并发消费
-        )
-        return list(result.scalars().all())
-
-    @staticmethod
-    def _claim_bucket_key_expr(columns: Any) -> Any:
-        """与 InboxBatchProcessor bucket 规则保持一致，用于 claim 阶段跨 worker 排序。"""
-
-        device_code = func.nullif(columns.payload_json["device_code"].as_string(), "")
-        location = func.nullif(columns.payload_json["location"].as_string(), "")
-        return case(
-            (columns.session_id.is_not(None), literal("session:") + sql_cast(columns.session_id, String)),
-            (columns.device_id.is_not(None), literal("device:") + sql_cast(columns.device_id, String)),
-            (device_code.is_not(None), literal("device_code:") + device_code),
-            (location.is_not(None), literal("device_code:") + location),
-            (columns.workline_id.is_not(None), literal("workline:") + sql_cast(columns.workline_id, String)),
-            else_=literal("serial:unknown"),
-        )
 
     @staticmethod
     def _claimable_condition(columns: Any, *, now: datetime, stale_cutoff: datetime) -> Any:
@@ -178,8 +149,8 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         earlier_inbox = table.alias("earlier_inbox")
         candidate_columns = claim_candidate.c
         earlier_columns = earlier_inbox.c
-        candidate_bucket_key = self._claim_bucket_key_expr(candidate_columns)
-        earlier_bucket_key = self._claim_bucket_key_expr(earlier_columns)
+        candidate_bucket_key = candidate_columns.claim_bucket_key
+        earlier_bucket_key = earlier_columns.claim_bucket_key
         candidate_claimable = self._claimable_condition(
             candidate_columns,
             now=now,
@@ -233,10 +204,11 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
                 columns.device_id,
                 columns.kind,
                 columns.payload_json,
+                columns.claim_bucket_key,
             )
         )
         result = await db.execute(statement)
-        return [
+        claims = [
             WorklineInboxClaim(
                 id=int(row["id"]),
                 processor_token=str(row["processor_token"]),
@@ -246,9 +218,14 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
                 device_id=cast("int | None", row["device_id"]),
                 kind=cast("InboxKind | str", row["kind"]),
                 payload_json=dict(cast("dict[str, Any] | None", row["payload_json"]) or {}),
+                claim_bucket_key=str(row.get("claim_bucket_key") or "serial:unknown"),
             )
             for row in result.mappings().all()
         ]
+        claims.sort(
+            key=lambda item: (item.received_at is None, item.received_at or datetime.min.replace(tzinfo=UTC), item.id)
+        )
+        return claims
 
     async def update_processing_message(
         self,
@@ -274,68 +251,6 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         statement = select(WorklineInbox).from_statement(update_statement).execution_options(populate_existing=True)
         result = await db.execute(statement)
         return cast("WorklineInbox | None", result.scalar_one_or_none())
-
-    async def list_pending_entry_admission_cases(
-        self,
-        db: AsyncSession,
-        *,
-        limit: int,
-        workline_id: int | None = None,
-        device_id: int | None = None,
-    ) -> list[WorklineInbox]:
-        if limit <= 0:
-            return []
-
-        columns = cast("Any", WorklineInbox).__table__.c
-        filters = self._pending_entry_admission_filters(
-            columns,
-            workline_id=workline_id,
-            device_id=device_id,
-        )
-        result = await db.execute(
-            select(WorklineInbox).where(*filters).order_by(columns.received_at.asc(), columns.id.asc()).limit(limit)
-        )
-        return list(result.scalars().all())
-
-    async def count_pending_entry_admission_cases(
-        self,
-        db: AsyncSession,
-        *,
-        workline_id: int | None = None,
-        device_id: int | None = None,
-    ) -> int:
-        columns = cast("Any", WorklineInbox).__table__.c
-        filters = self._pending_entry_admission_filters(
-            columns,
-            workline_id=workline_id,
-            device_id=device_id,
-        )
-        result = await db.execute(select(func.count()).select_from(WorklineInbox).where(*filters))
-        return int(result.scalar_one() or 0)
-
-    def _pending_entry_admission_filters(
-        self,
-        columns: Any,
-        *,
-        workline_id: int | None,
-        device_id: int | None,
-    ) -> list[Any]:
-        filters: list[Any] = [
-            columns.status == InboxStatus.RETRY.value,
-            columns.kind == InboxKind.DEVICE_EVENT.value,
-            columns.session_id.is_(None),
-            columns.error_message.ilike("%Workline entry admission blocked by busy session%"),
-        ]
-        if workline_id is not None:
-            filters.append(
-                or_(
-                    columns.workline_id == workline_id,
-                    columns.error_message.ilike(f"%workline_id={workline_id},%"),
-                )
-            )
-        if device_id is not None:
-            filters.append(columns.device_id == device_id)
-        return filters
 
     async def get_by_kind(
         self,

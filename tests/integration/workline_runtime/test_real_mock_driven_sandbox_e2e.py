@@ -80,9 +80,9 @@ if TYPE_CHECKING:
     from fastapi import Request
 
 
-class _NoopBucketLockProvider:
+class _NoopLockProvider:
     @asynccontextmanager
-    async def __call__(self, _bucket_key: str) -> AsyncIterator[None]:
+    async def __call__(self, _lock_key: str) -> AsyncIterator[None]:
         yield
 
 
@@ -129,7 +129,7 @@ def _disable_runtime_enqueues(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         inbox_batch_processor_module,
         "_build_orchestrator_lock_provider",
-        lambda _db: lambda lock_key: _NoopBucketLockProvider()(lock_key),
+        lambda _db: lambda lock_key: _NoopLockProvider()(lock_key),
     )
 
 
@@ -164,7 +164,6 @@ def _session_factory_context(session_factory: async_sessionmaker[AsyncSession]) 
 def _inbox_processor(session_factory: async_sessionmaker[AsyncSession]) -> InboxBatchProcessor:
     return InboxBatchProcessor(
         session_factory=_session_factory_context(session_factory),
-        bucket_lock_provider=lambda _db, _bucket_key: _NoopBucketLockProvider()(_bucket_key),
     )
 
 
@@ -338,7 +337,7 @@ async def _process_inboxes(
     limit: int = 10,
 ) -> dict[str, int]:
     async with session_factory() as db:
-        return await _inbox_processor(session_factory).process_batch(db, limit=limit, parallelism=1)
+        return await _inbox_processor(session_factory).process_batch(db, limit=limit)
 
 
 async def _append_and_process_command_result(

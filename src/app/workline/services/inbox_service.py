@@ -234,23 +234,6 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             auto_commit=auto_commit,
         )
 
-    async def get_new_messages(
-        self,
-        db: AsyncSession,
-        limit: int = 10,
-    ) -> list[WorklineInbox]:
-        """
-        获取待处理的新消息
-
-        Args:
-            db: 数据库会话
-            limit: 获取数量
-
-        Returns:
-            待处理的消息列表
-        """
-        return await self.repo.get_new_messages(db, limit=limit)
-
     async def claim_pending_messages(
         self,
         db: AsyncSession,

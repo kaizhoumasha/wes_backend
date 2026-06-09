@@ -12,9 +12,13 @@ from src.app.workline.repositories.diagnostic_repository import (
 from src.core.base_service import BaseService
 from src.workline_runtime.diagnostics import (
     DiagnosticEvent,
+    ErrorCode,
     build_diagnostic_card,
+    build_diagnostic_context,
+    build_diagnostic_event,
     get_diagnostic_code_definition,
 )
+from src.workline_runtime.resource_wait_evidence import ResourceWaitEvidence
 
 _REDACT_KEYS = {
     "authorization",
@@ -66,11 +70,12 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
         evidence: dict[str, Any] | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
+        diagnostic_key_override: str | None = None,
         auto_commit: bool = True,
     ) -> WorklineDiagnostic:
         """按诊断事件创建或复用诊断记录。"""
 
-        diagnostic_key = self.build_diagnostic_key(event)
+        diagnostic_key = diagnostic_key_override or self.build_diagnostic_key(event)
         existing = await self.repo.get_by_diagnostic_key(db, diagnostic_key)
         if existing is not None:
             return existing
@@ -123,16 +128,102 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
 
         return await self.repo.get_active_by_trace_id(db, trace_id)
 
-    async def resolve_entry_admission_diagnostics(
+    async def record_resource_wait(
+        self,
+        db: Any,
+        *,
+        evidence: ResourceWaitEvidence,
+        inbox: Any,
+        session: Any,
+        workline: Any,
+        auto_commit: bool = True,
+    ) -> WorklineDiagnostic:
+        """幂等记录当前 Inbox 的 RESOURCE_WAIT 诊断。"""
+
+        _ = await self.repo.resolve_other_active_resource_waits_for_inbox(
+            db,
+            inbox_id=evidence.inbox_id,
+            keep_diagnostic_key=evidence.diagnostic_key,
+        )
+        existing = await self.repo.get_by_diagnostic_key(db, evidence.diagnostic_key)
+        existing_evidence = existing.evidence_json if existing is not None else None
+        merged_evidence = (
+            ResourceWaitEvidence.build(
+                inbox_id=evidence.inbox_id,
+                resource_kind=evidence.resource_kind,
+                resource_key=evidence.resource_key,
+                reason_code=evidence.reason_code,
+                message=evidence.message,
+                occurred_at=evidence.last_seen_at,
+                session_id=evidence.session_id,
+                workline_id=evidence.workline_id,
+                trace_id=evidence.trace_id,
+                details=evidence.details,
+                existing=existing_evidence if isinstance(existing_evidence, dict) else None,
+            )
+            if existing is not None
+            else evidence
+        )
+        diagnostic_evidence = merged_evidence.to_diagnostic_evidence()
+        if existing is not None:
+            updated = await self.repo.update_resource_wait_by_key(
+                db,
+                diagnostic_key=merged_evidence.diagnostic_key,
+                message=merged_evidence.message,
+                evidence_json=_redact(diagnostic_evidence),
+            )
+            if auto_commit:
+                await self._commit_mutation(db)
+            return updated or existing
+
+        context = build_diagnostic_context(
+            trace_id=merged_evidence.trace_id,
+            session=session,
+            inbox=inbox,
+            workline=workline,
+            extra={
+                "resource_kind": merged_evidence.resource_kind,
+                "resource_key": merged_evidence.resource_key,
+                "reason_code": merged_evidence.reason_code,
+            },
+        )
+        event = build_diagnostic_event(
+            error_code=ErrorCode.RESOURCE_WAIT,
+            context=context,
+            message=merged_evidence.message,
+            operator_action="等待资源释放后自动重试",
+        )
+        return await self.record_event(
+            db,
+            event=event,
+            evidence=diagnostic_evidence,
+            diagnostic_key_override=merged_evidence.diagnostic_key,
+            auto_commit=auto_commit,
+        )
+
+    async def resolve_resource_wait_diagnostics(
         self,
         db: Any,
         *,
         inbox_id: int,
+        resource_key: str,
         auto_commit: bool = True,
     ) -> int:
-        """入口准入等待成功重试后，关闭同一 Inbox 的临时阻塞诊断。"""
+        """成功推进后关闭当前 Inbox + resource_key 的 ACTIVE RESOURCE_WAIT 诊断。"""
 
-        resolved = await self.repo.resolve_entry_admission_by_inbox_id(db, inbox_id=inbox_id)
+        resolved = await self.repo.resolve_resource_wait_by_key(
+            db,
+            diagnostic_key=ResourceWaitEvidence(
+                inbox_id=inbox_id,
+                resource_kind="RESOURCE",
+                resource_key=resource_key,
+                reason_code="RESOURCE_WAIT_RESOLVED",
+                message="RESOURCE_WAIT resolved",
+                first_seen_at="",
+                last_seen_at="",
+                wait_count=1,
+            ).diagnostic_key,
+        )
         if auto_commit:
             await self._commit_mutation(db)
         return resolved

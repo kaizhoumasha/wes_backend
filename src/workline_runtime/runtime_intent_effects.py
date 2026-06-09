@@ -8,7 +8,9 @@ from typing import Any, cast
 from urllib.parse import urlparse
 
 from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
+from src.workline_runtime.effect_result import RuntimeIntentEffectResult
 from src.workline_runtime.material_target_resolver import resolve_destination_device
+from src.workline_runtime.resource_wait_evidence import ResourceWaitEvidence
 from src.workline_runtime.runtime_intent import (
     BlockScope,
     Destination,
@@ -28,11 +30,12 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.DEVICE_EVENT,
     RuntimeIntentKind.RESOURCE_FACT,
     RuntimeIntentKind.RESOURCE_RESERVATION,
+    RuntimeIntentKind.RESOURCE_WAIT,
     RuntimeIntentKind.COMPLETE,
     RuntimeIntentKind.BLOCK,
     RuntimeIntentKind.CONTINUE_NEXT,
 }
-_TERMINAL_INTENT_KINDS = {RuntimeIntentKind.COMPLETE, RuntimeIntentKind.BLOCK}
+_TERMINAL_INTENT_KINDS = {RuntimeIntentKind.COMPLETE, RuntimeIntentKind.BLOCK, RuntimeIntentKind.RESOURCE_WAIT}
 _DEFAULT_RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
 _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
 
@@ -328,7 +331,7 @@ class RuntimeIntentEffectApplier:
         self._resource_projection_service = resource_projection_service
         self._bin_cell_reservation_service = bin_cell_reservation_service
 
-    async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> None:
+    async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> RuntimeIntentEffectResult:
         _validate_runtime_intents(intents)
 
         from src.app.workline.services import write_back_service as workline_effects
@@ -336,7 +339,7 @@ class RuntimeIntentEffectApplier:
         workline_effects._sync_effect_trace_fields(ctx)
         if not intents:
             await self._apply_noop_completion(ctx)
-            return
+            return RuntimeIntentEffectResult.processed()
 
         for intent in intents:
             if intent.kind == RuntimeIntentKind.UPDATE_CONTEXT:
@@ -372,14 +375,17 @@ class RuntimeIntentEffectApplier:
                 result = await self._apply_resource_fact(ctx, intent)
                 if _is_reconciling_result(result):
                     await self._apply_resource_reconciliation_hold(ctx, result)
-                    return
+                    return RuntimeIntentEffectResult.processed()
                 continue
 
             if intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION:
                 result = await self._apply_resource_reservation(ctx, intent)
                 if _is_reconciling_result(result):
-                    return
+                    return RuntimeIntentEffectResult.processed()
                 continue
+
+            if intent.kind == RuntimeIntentKind.RESOURCE_WAIT:
+                return await self._apply_resource_wait(ctx, intent)
 
             if intent.kind == RuntimeIntentKind.COMPLETE:
                 _merge_context_patch(ctx, intent.context_patch)
@@ -398,6 +404,8 @@ class RuntimeIntentEffectApplier:
                 continue
 
             raise ValueError(f"unsupported RuntimeIntent kind: {intent.kind.value}")
+
+        return RuntimeIntentEffectResult.processed()
 
     async def _apply_noop_completion(self, ctx: Any) -> None:
         from src.app.workline.models.timeline import (
@@ -946,6 +954,96 @@ class RuntimeIntentEffectApplier:
             idempotency_key=intent.idempotency_key,
             trace_id=_ctx_trace_id(ctx_map),
         )
+
+    async def _apply_resource_wait(self, ctx: Any, intent: RuntimeIntent) -> RuntimeIntentEffectResult:
+        from src.app.workline.models.timeline import (
+            TimelineActionType,
+            TimelineActorType,
+            TimelineStage,
+            TimelineStatus,
+        )
+        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+        from src.app.workline.services import write_back_service as workline_effects
+        from src.app.workline.services.diagnostic_service import workline_diagnostic_service
+
+        session = ctx["session"]
+        inbox = ctx["inbox"]
+        workline = ctx["workline"]
+        payload_json = dict(intent.payload_json)
+        resource_kind = str(payload_json["resource_kind"])
+        resource_key = str(payload_json["resource_key"])
+        context_json = dict(getattr(session, "context_json", None) or {})
+        existing_wait = context_json.get("resource_wait")
+        existing_wait_evidence = (
+            cast("dict[str, Any]", existing_wait)
+            if isinstance(existing_wait, Mapping) and existing_wait.get("resource_key") == resource_key
+            else None
+        )
+        evidence = ResourceWaitEvidence.build(
+            inbox_id=resolve_required_pk(inbox, "inbox"),
+            resource_kind=resource_kind,
+            resource_key=resource_key,
+            reason_code=str(intent.reason_code),
+            message=str(intent.message),
+            occurred_at=ctx["now"],
+            session_id=optional_int(getattr(session, "id", None)),
+            workline_id=optional_int(getattr(workline, "id", None))
+            or optional_int(getattr(session, "workline_id", None)),
+            trace_id=_non_empty_text(_ctx_trace_id(cast("Mapping[str, Any]", ctx))),
+            details={key: value for key, value in payload_json.items() if key not in {"resource_kind", "resource_key"}},
+            existing=existing_wait_evidence,
+        )
+
+        context_json["resource_wait"] = evidence.to_session_context()
+        session.context_json = context_json
+        ctx["session_ctx"] = dict(context_json)
+        workline_effects.workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="RESOURCE_WAIT",
+            occurred_at=ctx["now"],
+            deadline_seconds=None,
+        )
+        workline_effects._clear_session_failure(session)
+        await WorklineSessionRepository().persist_external_wait(
+            ctx["db"],
+            session_id=resolve_required_pk(session, "session"),
+            wait_type="RESOURCE_WAIT",
+            occurred_at=ctx["now"],
+            timeout_seconds=None,
+            context_json=getattr(session, "context_json", None),
+        )
+        await workline_diagnostic_service.record_resource_wait(
+            ctx["db"],
+            evidence=evidence,
+            inbox=inbox,
+            session=session,
+            workline=workline,
+            auto_commit=False,
+        )
+        await workline_effects._emit_timeline(
+            ctx,
+            stage=TimelineStage.WAITING,
+            action_type=TimelineActionType.WAIT_STARTED,
+            payload={
+                **workline_effects._wait_timeline_payload(
+                    ctx,
+                    wait_type="RESOURCE_WAIT",
+                    wait_token=resource_key,
+                    deadline_seconds=0,
+                ),
+                "resource_kind": resource_kind,
+                "resource_key": resource_key,
+                "reason_code": intent.reason_code,
+                "message": intent.message,
+                "suggested_action": intent.suggested_action,
+            },
+            from_status=ctx["current_status"],
+            to_status=session.status,
+            actor_type=TimelineActorType.ORCHESTRATOR,
+            related_inbox_id=workline_effects._timeline_inbox_id(ctx),
+            status=TimelineStatus.PENDING,
+        )
+        return RuntimeIntentEffectResult.resource_retry()
 
     async def _apply_command_wait(self, ctx: Any, intent: RuntimeIntent) -> None:
         from src.app.workline.models.timeline import (

@@ -1,21 +1,16 @@
 import asyncio
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from typing import cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.app.workline.constants import WORKLINE_INBOX_PROCESSING_STALE_SECONDS
 from src.app.workline.models.inbox import InboxKind
 from src.app.workline.repositories.inbox_repository import WorklineInboxClaim
 from src.app.workline.services.inbox_batch_processor import (
     InboxBatchProcessor,
     ProcessResult,
     _backfill_workline_from_device,
-    _build_inbox_bucket_lock_provider,
-    _inbox_bucket_lock_ttl_seconds,
     _load_command_entity,
     _load_device_entity,
     _load_devices_by_role,
@@ -23,8 +18,8 @@ from src.app.workline.services.inbox_batch_processor import (
     _load_workline_session,
 )
 from src.workline_runtime.diagnostics import ErrorCode
+from src.workline_runtime.effect_result import RuntimeIntentEffectResult
 from src.workline_runtime.orchestrator import OrchestratorResult
-from src.workline_runtime.session_resolver import WorklineEntryAdmissionBlocked
 
 
 @pytest.fixture
@@ -34,7 +29,7 @@ def mock_inbox_service():
 
         async def _claim_pending_messages(_db: object, *, limit: int, processor_token: str, **kwargs):
             _ = _db, limit, kwargs
-            messages = mock_inbox_service.get_new_messages.return_value
+            messages = list(getattr(mock_inbox_service, "pending_messages", []))
             claimed_by_id.clear()
             for message in messages:
                 claimed_by_id[int(message.id)] = message
@@ -132,7 +127,7 @@ def _claim(
 
 @pytest.mark.asyncio
 async def test_process_batch_returns_empty_stats_on_zero_limit(mock_db, mock_inbox_service):
-    mock_inbox_service.get_new_messages.return_value = []
+    mock_inbox_service.pending_messages = []
 
     processor = InboxBatchProcessor()
     result = await processor.process_batch(mock_db, limit=0)
@@ -142,179 +137,32 @@ async def test_process_batch_returns_empty_stats_on_zero_limit(mock_db, mock_inb
         "success": 0,
         "failed": 0,
         "skipped": 0,
+        "resource_wait": 0,
     }
 
 
 @pytest.mark.asyncio
-async def test_process_batch_parallelism_two_uses_distinct_bucket_sessions(mock_db, mock_inbox_service):
-    claims = [
-        WorklineInboxClaim(
-            id=1,
-            processor_token="token",
-            received_at=None,
-            session_id=None,
-            workline_id=1,
-            device_id=101,
-            kind=InboxKind.DEVICE_EVENT,
-            payload_json={},
-        ),
-        WorklineInboxClaim(
-            id=2,
-            processor_token="token",
-            received_at=None,
-            session_id=None,
-            workline_id=1,
-            device_id=202,
-            kind=InboxKind.DEVICE_EVENT,
-            payload_json={},
-        ),
-    ]
-    mock_inbox_service.claim_pending_messages.side_effect = None
-    mock_inbox_service.claim_pending_messages.return_value = claims
-    created_sessions: list[object] = []
-    seen_sessions: list[object] = []
+async def test_process_batch_does_not_accept_parallelism_kwarg(mock_db, mock_inbox_service):
+    processor = InboxBatchProcessor()
 
-    async def _process(db: object, claim: WorklineInboxClaim) -> ProcessResult:
-        _ = claim
-        seen_sessions.append(db)
-        return {"processed": 1, "success": 1, "failed": 0, "skipped": 0}
+    with pytest.raises(TypeError):
+        await processor.process_batch(mock_db, limit=1, parallelism=2)  # type: ignore[call-arg]
 
-    processor = InboxBatchProcessor(session_factory=_session_factory_factory(created_sessions))
-    processor._process_claimed_message = AsyncMock(side_effect=_process)  # type: ignore[method-assign]
+    mock_inbox_service.claim_pending_messages.assert_not_awaited()
 
-    result = await processor.process_batch(mock_db, limit=2, parallelism=2)
 
-    assert result == {"processed": 2, "success": 2, "failed": 0, "skipped": 0}
-    assert len(created_sessions) == 2
-    assert seen_sessions == created_sessions
+def test_processor_does_not_accept_bucket_lock_provider() -> None:
+    with pytest.raises(TypeError):
+        InboxBatchProcessor(bucket_lock_provider=object())  # type: ignore[call-arg]
 
 
 @pytest.mark.asyncio
-async def test_process_batch_same_device_bucket_is_serial(mock_db, mock_inbox_service):
-    claims = [
-        WorklineInboxClaim(
-            id=1,
-            processor_token="token",
-            received_at=None,
-            session_id=None,
-            workline_id=1,
-            device_id=101,
-            kind=InboxKind.DEVICE_EVENT,
-            payload_json={},
-        ),
-        WorklineInboxClaim(
-            id=2,
-            processor_token="token",
-            received_at=None,
-            session_id=None,
-            workline_id=1,
-            device_id=101,
-            kind=InboxKind.DEVICE_EVENT,
-            payload_json={},
-        ),
-    ]
-    mock_inbox_service.claim_pending_messages.side_effect = None
-    mock_inbox_service.claim_pending_messages.return_value = claims
-    running = 0
-    max_running = 0
-
-    async def _process(_db: object, _claim: WorklineInboxClaim) -> ProcessResult:
-        nonlocal running, max_running
-        running += 1
-        max_running = max(max_running, running)
-        await asyncio.sleep(0.01)
-        running -= 1
-        return {"processed": 1, "success": 1, "failed": 0, "skipped": 0}
-
-    processor = InboxBatchProcessor(session_factory=_session_factory_factory([]))
-    processor._process_claimed_message = AsyncMock(side_effect=_process)  # type: ignore[method-assign]
-
-    result = await processor.process_batch(mock_db, limit=2, parallelism=2)
-
-    assert result["processed"] == 2
-    assert max_running == 1
-
-
-@pytest.mark.asyncio
-async def test_process_batch_different_device_buckets_can_run_concurrently(mock_db, mock_inbox_service):
-    claims = [
-        WorklineInboxClaim(
-            id=1,
-            processor_token="token",
-            received_at=None,
-            session_id=None,
-            workline_id=1,
-            device_id=101,
-            kind=InboxKind.DEVICE_EVENT,
-            payload_json={},
-        ),
-        WorklineInboxClaim(
-            id=2,
-            processor_token="token",
-            received_at=None,
-            session_id=None,
-            workline_id=1,
-            device_id=202,
-            kind=InboxKind.DEVICE_EVENT,
-            payload_json={},
-        ),
-    ]
-    mock_inbox_service.claim_pending_messages.side_effect = None
-    mock_inbox_service.claim_pending_messages.return_value = claims
-    running = 0
-    max_running = 0
-
-    async def _process(_db: object, _claim: WorklineInboxClaim) -> ProcessResult:
-        nonlocal running, max_running
-        running += 1
-        max_running = max(max_running, running)
-        await asyncio.sleep(0.01)
-        running -= 1
-        return {"processed": 1, "success": 1, "failed": 0, "skipped": 0}
-
-    processor = InboxBatchProcessor(session_factory=_session_factory_factory([]))
-    processor._process_claimed_message = AsyncMock(side_effect=_process)  # type: ignore[method-assign]
-
-    result = await processor.process_batch(mock_db, limit=2, parallelism=2)
-
-    assert result["processed"] == 2
-    assert max_running == 2
-
-
-@pytest.mark.asyncio
-async def test_process_batch_claims_in_parallelism_sized_waves(mock_db, mock_inbox_service):
-    claim_calls: list[int] = []
-    claim_batches = [
-        [_claim(1, device_id=101), _claim(2, device_id=202)],
-        [_claim(3, device_id=303), _claim(4, device_id=404)],
-        [_claim(5, device_id=505)],
-    ]
-
-    async def _claim_pending_messages(_db: object, *, limit: int, **kwargs):
-        _ = _db, kwargs
-        claim_calls.append(limit)
-        return claim_batches.pop(0) if claim_batches else []
-
-    async def _process(_db: object, _claim_item: WorklineInboxClaim) -> ProcessResult:
-        return {"processed": 1, "success": 1, "failed": 0, "skipped": 0}
-
-    mock_inbox_service.claim_pending_messages.side_effect = _claim_pending_messages
-    processor = InboxBatchProcessor(session_factory=_session_factory_factory([]))
-    processor._process_claimed_message = AsyncMock(side_effect=_process)  # type: ignore[method-assign]
-
-    result = await processor.process_batch(mock_db, limit=5, parallelism=2)
-
-    assert result == {"processed": 5, "success": 5, "failed": 0, "skipped": 0}
-    assert claim_calls == [2, 2, 1]
-
-
-@pytest.mark.asyncio
-async def test_process_batch_continues_after_short_claim_wave(mock_db, mock_inbox_service):
+async def test_process_batch_claims_one_message_at_a_time_until_limit(mock_db, mock_inbox_service):
     claim_calls: list[int] = []
     claim_batches = [
         [_claim(1, device_id=101)],
-        [_claim(2, device_id=101)],
-        [_claim(3, device_id=101)],
+        [_claim(2, device_id=202)],
+        [_claim(3, device_id=303)],
     ]
 
     async def _claim_pending_messages(_db: object, *, limit: int, **kwargs):
@@ -326,154 +174,89 @@ async def test_process_batch_continues_after_short_claim_wave(mock_db, mock_inbo
         return {"processed": 1, "success": 1, "failed": 0, "skipped": 0}
 
     mock_inbox_service.claim_pending_messages.side_effect = _claim_pending_messages
-    processor = InboxBatchProcessor(session_factory=_session_factory_factory([]))
+    processor = InboxBatchProcessor()
     processor._process_claimed_message = AsyncMock(side_effect=_process)  # type: ignore[method-assign]
 
-    result = await processor.process_batch(mock_db, limit=3, parallelism=4)
+    result = await processor.process_batch(mock_db, limit=3)
 
-    assert result == {"processed": 3, "success": 3, "failed": 0, "skipped": 0}
-    assert claim_calls == [3, 2, 1]
+    assert result == {"processed": 3, "success": 3, "failed": 0, "skipped": 0, "resource_wait": 0}
+    assert claim_calls == [1, 1, 1]
 
 
 @pytest.mark.asyncio
-async def test_process_batch_bucket_lock_serializes_same_bucket_across_processors(mock_db, mock_inbox_service):
-    lock_by_key: dict[str, asyncio.Lock] = {}
+async def test_process_batch_processes_claims_sequentially(mock_db, mock_inbox_service):
+    claim_batches = [
+        [_claim(1, device_id=101)],
+        [_claim(2, device_id=202)],
+    ]
+    process_order: list[int] = []
     running = 0
     max_running = 0
 
-    @asynccontextmanager
-    async def _bucket_lock(_db: object, bucket_key: str):
-        lock = lock_by_key.setdefault(bucket_key, asyncio.Lock())
-        async with lock:
-            yield
+    async def _claim_pending_messages(_db: object, *, limit: int, **kwargs):
+        _ = _db, limit, kwargs
+        return claim_batches.pop(0) if claim_batches else []
 
-    async def _process(_db: object, _claim_item: WorklineInboxClaim) -> ProcessResult:
+    async def _process(_db: object, claim: WorklineInboxClaim) -> ProcessResult:
         nonlocal running, max_running
         running += 1
         max_running = max(max_running, running)
         await asyncio.sleep(0.01)
+        process_order.append(claim.id)
         running -= 1
         return {"processed": 1, "success": 1, "failed": 0, "skipped": 0}
 
-    processor_a = InboxBatchProcessor(
-        session_factory=_session_factory_factory([]),
-        bucket_lock_provider=_bucket_lock,
-    )
-    processor_b = InboxBatchProcessor(
-        session_factory=_session_factory_factory([]),
-        bucket_lock_provider=_bucket_lock,
-    )
-    processor_a._process_claimed_message = AsyncMock(side_effect=_process)  # type: ignore[method-assign]
-    processor_b._process_claimed_message = AsyncMock(side_effect=_process)  # type: ignore[method-assign]
-
-    async def _claim_for_a(_db: object, *, limit: int, processor_token: str, **kwargs):
-        _ = _db, limit, processor_token, kwargs
-        return [_claim(1, device_id=101)]
-
-    async def _claim_for_b(_db: object, *, limit: int, processor_token: str, **kwargs):
-        _ = _db, limit, processor_token, kwargs
-        return [_claim(2, device_id=101)]
-
-    with patch("src.app.workline.services.inbox_service.inbox_service", new_callable=AsyncMock) as service_a:
-        service_a.claim_pending_messages.side_effect = _claim_for_a
-        task_a = asyncio.create_task(processor_a.process_batch(mock_db, limit=1, parallelism=1))
-        await asyncio.sleep(0)
-        with patch("src.app.workline.services.inbox_service.inbox_service", new_callable=AsyncMock) as service_b:
-            service_b.claim_pending_messages.side_effect = _claim_for_b
-            task_b = asyncio.create_task(processor_b.process_batch(mock_db, limit=1, parallelism=1))
-            result_a, result_b = await asyncio.gather(task_a, task_b)
-
-    assert result_a["processed"] == 1
-    assert result_b["processed"] == 1
-    assert max_running == 1
-
-
-@pytest.mark.asyncio
-async def test_inbox_bucket_pg_degraded_provider_does_not_hold_session_advisory_lock():
-    mock_db = AsyncMock()
-
-    with patch("src.app.workline.services.inbox_batch_processor.get_redis", return_value=None):
-        provider = _build_inbox_bucket_lock_provider(mock_db)
-        async with provider("device:101"):
-            await mock_db.commit()
-
-    mock_db.execute.assert_not_called()
-    mock_db.commit.assert_awaited_once()
-
-
-def test_inbox_bucket_redis_lock_ttl_does_not_exceed_stale_reclaim_window():
-    assert _inbox_bucket_lock_ttl_seconds() <= WORKLINE_INBOX_PROCESSING_STALE_SECONDS
-
-
-@pytest.mark.asyncio
-async def test_process_batch_terminalizes_claims_when_bucket_lock_fails(mock_db, mock_inbox_service):
-    claims = [
-        WorklineInboxClaim(
-            id=1,
-            processor_token="token-1",
-            received_at=None,
-            session_id=None,
-            workline_id=1,
-            device_id=101,
-            kind=InboxKind.DEVICE_EVENT,
-            payload_json={},
-        )
-    ]
-    mock_inbox_service.claim_pending_messages.side_effect = None
-    mock_inbox_service.claim_pending_messages.return_value = claims
-
-    @asynccontextmanager
-    async def _failing_bucket_lock(_db: object, _bucket_key: str):
-        raise RuntimeError("bucket lock down")
-        yield
-
-    async def _process(_db: object, _claim: WorklineInboxClaim) -> ProcessResult:
-        raise AssertionError("message handler must not run when bucket setup fails")
-
-    processor = InboxBatchProcessor(
-        session_factory=_session_factory_factory([]),
-        bucket_lock_provider=_failing_bucket_lock,
-    )
+    mock_inbox_service.claim_pending_messages.side_effect = _claim_pending_messages
+    processor = InboxBatchProcessor()
     processor._process_claimed_message = AsyncMock(side_effect=_process)  # type: ignore[method-assign]
 
-    result = await processor.process_batch(mock_db, limit=1, parallelism=1)
+    result = await processor.process_batch(mock_db, limit=2)
 
-    assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0}
-    mock_inbox_service.mark_as_failed.assert_awaited_once_with(
-        mock_db,
-        1,
-        "Inbox bucket processing failed before message handler: bucket lock down",
-        processor_token="token-1",
-        auto_commit=False,
-    )
-    mock_db.commit.assert_awaited()
+    assert result["processed"] == 2
+    assert max_running == 1
+    assert process_order == [1, 2]
 
 
 @pytest.mark.asyncio
-async def test_process_batch_propagates_cancelled_bucket_without_processed_stats(mock_db, mock_inbox_service):
-    claims = [
-        WorklineInboxClaim(
-            id=1,
-            processor_token="token",
-            received_at=None,
-            session_id=None,
-            workline_id=1,
-            device_id=101,
-            kind=InboxKind.DEVICE_EVENT,
-            payload_json={},
-        )
+async def test_process_batch_stops_when_claim_returns_empty(mock_db, mock_inbox_service):
+    claim_calls: list[int] = []
+    claim_batches = [
+        [_claim(1, device_id=101)],
+        [],
     ]
+
+    async def _claim_pending_messages(_db: object, *, limit: int, **kwargs):
+        _ = _db, kwargs
+        claim_calls.append(limit)
+        return claim_batches.pop(0) if claim_batches else []
+
+    async def _process(_db: object, _claim_item: WorklineInboxClaim) -> ProcessResult:
+        return {"processed": 1, "success": 1, "failed": 0, "skipped": 0}
+
+    mock_inbox_service.claim_pending_messages.side_effect = _claim_pending_messages
+    processor = InboxBatchProcessor()
+    processor._process_claimed_message = AsyncMock(side_effect=_process)  # type: ignore[method-assign]
+
+    result = await processor.process_batch(mock_db, limit=3)
+
+    assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+    assert claim_calls == [1, 1]
+
+
+@pytest.mark.asyncio
+async def test_process_batch_propagates_cancelled_claim_without_processed_stats(mock_db, mock_inbox_service):
+    claims = [_claim(1, device_id=101)]
     mock_inbox_service.claim_pending_messages.side_effect = None
     mock_inbox_service.claim_pending_messages.return_value = claims
 
     async def _process(_db: object, _claim: WorklineInboxClaim) -> ProcessResult:
         raise asyncio.CancelledError
 
-    processor = InboxBatchProcessor(session_factory=_session_factory_factory([]))
+    processor = InboxBatchProcessor()
     processor._process_claimed_message = AsyncMock(side_effect=_process)  # type: ignore[method-assign]
 
     with pytest.raises(asyncio.CancelledError):
-        await processor.process_batch(mock_db, limit=1, parallelism=1)
+        await processor.process_batch(mock_db, limit=1)
 
     mock_inbox_service.mark_as_failed.assert_not_awaited()
 
@@ -550,7 +333,7 @@ async def test_process_batch_scan_completed_missing_payload(mock_db, mock_inbox_
     inbox = MagicMock()
     inbox.id = 1
     inbox.payload_json = {"event_type": "SCAN_COMPLETED"}
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    mock_inbox_service.pending_messages = [inbox]
 
     with patch(
         "src.app.workline.services.inbox_batch_processor._record_diagnostic", new_callable=AsyncMock
@@ -574,7 +357,7 @@ async def test_process_batch_estop_pressed_no_workline(mock_db, mock_inbox_servi
     inbox = MagicMock()
     inbox.id = 1
     inbox.payload_json = {"event_type": "ESTOP_PRESSED"}
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    mock_inbox_service.pending_messages = [inbox]
 
     with patch(
         "src.app.workline.services.inbox_batch_processor._load_related_entities", new_callable=AsyncMock
@@ -603,7 +386,7 @@ async def test_process_batch_estop_pressed_success(mock_db, mock_inbox_service):
     inbox = MagicMock()
     inbox.id = 1
     inbox.payload_json = {"event_type": "ESTOP_PRESSED"}
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    mock_inbox_service.pending_messages = [inbox]
 
     with patch(
         "src.app.workline.services.inbox_batch_processor._load_related_entities", new_callable=AsyncMock
@@ -639,7 +422,7 @@ async def test_process_batch_timer_timeout(mock_db, mock_inbox_service):
     inbox.kind = MagicMock()
     inbox.kind.value = "TIMER_TIMEOUT"
     inbox.payload_json = {"event_type": "TIMER_TIMEOUT"}
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    mock_inbox_service.pending_messages = [inbox]
 
     with patch(
         "src.app.workline.services.inbox_batch_processor._load_related_entities", new_callable=AsyncMock
@@ -670,7 +453,7 @@ async def test_process_batch_missing_context(mock_db, mock_inbox_service):
     inbox = MagicMock()
     inbox.id = 1
     inbox.payload_json = {"event_type": "SOME_EVENT"}
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    mock_inbox_service.pending_messages = [inbox]
 
     with patch(
         "src.app.workline.services.inbox_batch_processor._load_related_entities", new_callable=AsyncMock
@@ -700,7 +483,7 @@ async def test_process_batch_duplicate_entry(mock_db, mock_inbox_service):
     inbox = MagicMock()
     inbox.id = 1
     inbox.payload_json = {"event_type": "SOME_EVENT"}
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    mock_inbox_service.pending_messages = [inbox]
 
     with patch(
         "src.app.workline.services.inbox_batch_processor._load_related_entities", new_callable=AsyncMock
@@ -736,7 +519,7 @@ async def test_process_batch_late_command(mock_db, mock_inbox_service):
     inbox = MagicMock()
     inbox.id = 1
     inbox.payload_json = {"event_type": "SOME_EVENT"}
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    mock_inbox_service.pending_messages = [inbox]
 
     with patch(
         "src.app.workline.services.inbox_batch_processor._load_related_entities", new_callable=AsyncMock
@@ -776,8 +559,8 @@ async def test_process_batch_uses_injected_write_back_service(mock_db, mock_inbo
     inbox.payload_json = {"event_type": "SOME_EVENT"}
     session = SimpleNamespace(id=10, status="RUNNING", awaiting_command_id=None)
     workline = SimpleNamespace(id=20)
-    injected_write_back = SimpleNamespace(write_back=AsyncMock())
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    injected_write_back = SimpleNamespace(write_back=AsyncMock(return_value=RuntimeIntentEffectResult.processed()))
+    mock_inbox_service.pending_messages = [inbox]
 
     class FakeOrchestratorService:
         def __init__(self, *args, **kwargs):
@@ -832,21 +615,29 @@ async def test_process_batch_uses_injected_write_back_service(mock_db, mock_inbo
 
 
 @pytest.mark.asyncio
-async def test_process_batch_resolves_entry_admission_diagnostics_after_retry_success(mock_db, mock_inbox_service):
+async def test_resource_retry_disposition_parks_inbox_and_does_not_mark_processed(mock_db, mock_inbox_service):
     inbox = MagicMock()
     inbox.id = 1
-    inbox.trace_id = "trace-entry-admission-retry"
-    inbox.payload_json = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "PART-NEXT"}}
-    session = SimpleNamespace(id=10, status="RUNNING", awaiting_command_id=None)
+    inbox.trace_id = "trace-resource-wait"
+    inbox.payload_json = {"event_type": "SOME_EVENT"}
+    session = SimpleNamespace(
+        id=10, status="WAITING_EXTERNAL", current_wait_type="RESOURCE_WAIT", awaiting_command_id=None
+    )
     workline = SimpleNamespace(id=20)
-    injected_write_back = SimpleNamespace(write_back=AsyncMock())
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    injected_write_back = SimpleNamespace(write_back=AsyncMock(return_value=RuntimeIntentEffectResult.resource_retry()))
+    mock_inbox_service.pending_messages = [inbox]
 
     class FakeOrchestratorService:
         def __init__(self, *args, **kwargs):
             pass
 
-        async def process_inbox(self, *args, write_callback, **kwargs):
+        async def process_inbox(
+            self,
+            *args: object,
+            write_callback: Callable[[OrchestratorResult], Awaitable[None]],
+            **kwargs: object,
+        ) -> OrchestratorResult:
+            _ = args, kwargs
             result = OrchestratorResult(success=True, intents=[])
             await write_callback(result)
             return result
@@ -865,11 +656,6 @@ async def test_process_batch_resolves_entry_admission_diagnostics_after_retry_su
             return_value=False,
         ),
         patch("src.app.workline.services.inbox_batch_processor.OrchestratorService", FakeOrchestratorService),
-        patch(
-            "src.app.workline.services.diagnostic_service.workline_diagnostic_service.resolve_entry_admission_diagnostics",
-            new_callable=AsyncMock,
-            create=True,
-        ) as resolve_diagnostics,
     ):
         mock_load.return_value = {
             "session": session,
@@ -884,8 +670,9 @@ async def test_process_batch_resolves_entry_admission_diagnostics_after_retry_su
         processor = _processor_for_db(mock_db, write_back_service=injected_write_back)
         result = await processor.process_batch(mock_db, limit=1)
 
-    assert result["success"] == 1
-    cast("AsyncMock", resolve_diagnostics).assert_awaited_once_with(mock_db, inbox_id=1, auto_commit=False)
+    assert result == {"processed": 1, "success": 0, "failed": 0, "skipped": 0, "resource_wait": 1}
+    mock_inbox_service.park_for_retry.assert_awaited_once()
+    mock_inbox_service.mark_as_processed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -897,8 +684,8 @@ async def test_process_batch_sse_payload_uses_precommit_identity_snapshot(mock_i
     inbox.payload_json = {"event_type": "SOME_EVENT"}
     session = _CommitExpiredEntity(db, entity_id=10, status="RUNNING", awaiting_command_id=None)
     workline = _CommitExpiredEntity(db, entity_id=20)
-    injected_write_back = SimpleNamespace(write_back=AsyncMock())
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    injected_write_back = SimpleNamespace(write_back=AsyncMock(return_value=RuntimeIntentEffectResult.processed()))
+    mock_inbox_service.pending_messages = [inbox]
 
     class FakeOrchestratorService:
         def __init__(self, *args, **kwargs):
@@ -934,10 +721,6 @@ async def test_process_batch_sse_payload_uses_precommit_identity_snapshot(mock_i
             "src.app.sys.services.event_stream_service.publish_deferred_sse_events",
             new_callable=AsyncMock,
         ),
-        patch(
-            "src.app.workline.services.diagnostic_service.workline_diagnostic_service.resolve_entry_admission_diagnostics",
-            new_callable=AsyncMock,
-        ),
     ):
         mock_load.return_value = {
             "session": session,
@@ -965,7 +748,7 @@ async def test_process_batch_workline_safety_blocked(mock_db, mock_inbox_service
     inbox.id = 1
     inbox.attempt_count = 2
     inbox.payload_json = {"event_type": "SOME_EVENT"}
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    mock_inbox_service.pending_messages = [inbox]
     mock_inbox_service.repo.get_by_id.return_value = inbox
 
     from src.app.workline.services.safety_service import WorkLineSafetyBlocked
@@ -989,41 +772,12 @@ async def test_process_batch_workline_safety_blocked(mock_db, mock_inbox_service
 
 
 @pytest.mark.asyncio
-async def test_process_batch_parks_entry_admission_blocked_material(mock_db, mock_inbox_service):
-    inbox = MagicMock()
-    inbox.id = 1
-    inbox.attempt_count = 1
-    inbox.payload_json = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "PART-NEXT"}}
-    mock_inbox_service.get_new_messages.return_value = [inbox]
-    mock_inbox_service.repo.get_by_id.return_value = inbox
-
-    error = WorklineEntryAdmissionBlocked(workline_id=1, business_key="PART-NEXT", blocker_session_id=500)
-    with patch(
-        "src.app.workline.services.inbox_batch_processor._load_related_entities",
-        new_callable=AsyncMock,
-        side_effect=error,
-    ):
-        with patch(
-            "src.app.workline.services.inbox_batch_processor._record_diagnostic", new_callable=AsyncMock
-        ) as mock_record_diag:
-            processor = _processor_for_db(mock_db)
-            result = await processor.process_batch(mock_db, limit=1)
-
-    assert result["failed"] == 1
-    mock_inbox_service.park_for_retry.assert_awaited_once_with(
-        mock_db, 1, str(error), processor_token=ANY, auto_commit=False, delay_seconds=20, workline_id=1
-    )
-    mock_inbox_service.mark_as_failed.assert_not_awaited()
-    mock_record_diag.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_process_batch_exception_diagnostic_snapshot_exposes_payload_json(mock_db, mock_inbox_service):
     inbox = MagicMock()
     inbox.id = 1
     inbox.trace_id = "trace-exception-snapshot"
     inbox.payload_json = {"event_type": "COMMAND_RESULT", "command_code": "CMD-1"}
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    mock_inbox_service.pending_messages = [inbox]
     mock_inbox_service.repo.get_by_id.return_value = inbox
 
     with patch(
@@ -1050,7 +804,7 @@ async def test_process_batch_orchestrator_failure_records_diagnostic_with_snapsh
     inbox.payload_json = {"event_type": "COMMAND_RESULT", "command_code": "CMD-1"}
     session = SimpleNamespace(id=10, status="RUNNING", awaiting_command_id=None)
     workline = SimpleNamespace(id=20)
-    mock_inbox_service.get_new_messages.return_value = [inbox]
+    mock_inbox_service.pending_messages = [inbox]
     mock_inbox_service.repo.get_by_id.return_value = inbox
 
     class FakeOrchestratorService:

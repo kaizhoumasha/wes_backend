@@ -5,7 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, cast
 
-from src.app.workline.models.inbox import InboxKind, InboxStatus, SourceSystem
 from src.app.workline.services.integration_debug_service import IntegrationDebugService
 from src.app.workline.services.trace_query_service import TraceQueryResult
 from src.workline_runtime.diagnostics import build_diagnostic_context
@@ -127,34 +126,6 @@ class _LatestCasesTraceQuery(_EmptyTraceQuery):
                 ),
             ),
         )
-
-
-class _RecordingPendingAdmissionRepo:
-    def __init__(self, inboxes: list[Any]) -> None:
-        self.inboxes = inboxes
-        self.list_calls: list[dict[str, Any]] = []
-        self.count_calls: list[dict[str, Any]] = []
-
-    async def list_pending_entry_admission_cases(
-        self,
-        _db: Any,
-        *,
-        limit: int,
-        workline_id: int | None,
-        device_id: int | None,
-    ) -> list[Any]:
-        self.list_calls.append({"limit": limit, "workline_id": workline_id, "device_id": device_id})
-        return self.inboxes[:limit]
-
-    async def count_pending_entry_admission_cases(
-        self,
-        _db: Any,
-        *,
-        workline_id: int | None,
-        device_id: int | None,
-    ) -> int:
-        self.count_calls.append({"workline_id": workline_id, "device_id": device_id})
-        return len(self.inboxes)
 
 
 def test_build_case_identifies_wms_timeout_after_device_command_completed() -> None:
@@ -439,42 +410,10 @@ async def test_lookup_case_ignores_empty_fallback_diagnostic() -> None:
     assert case is None
 
 
-async def test_latest_cases_includes_pending_entry_admission_backlog() -> None:
-    pending_inbox = SimpleNamespace(
-        id=191,
-        kind=InboxKind.DEVICE_EVENT,
-        status=InboxStatus.RETRY,
-        source_system=SourceSystem.DEVICE,
-        source_message_id="msg-191",
-        trace_id="trace-pending",
-        event_id="evt-pending",
-        causation_id=None,
-        workline_id=None,
-        device_id=7,
-        command_id=None,
-        session_id=None,
-        payload_json={
-            "event_type": "SCAN_COMPLETED",
-            "data": {
-                "HHPN": "IC001",
-                "LotCode": "LOT-I",
-                "PkgID": "PKG-IC001-LOT-I-002",
-            },
-        },
-        attempt_count=0,
-        max_attempts=3,
-        next_retry_at=None,
-        error_message=(
-            "Workline entry admission blocked by busy session: "
-            "workline_id=1, business_key=5f52ae4ceab09288, blocker_session_id=41"
-        ),
-        received_at=None,
-    )
-    pending_repo = _RecordingPendingAdmissionRepo([pending_inbox])
+async def test_latest_cases_only_uses_real_trace_backlog() -> None:
     service = IntegrationDebugService(
         trace_query=cast("Any", _LatestCasesTraceQuery()),
         runtime_query=cast("Any", _LatestCasesRuntimeQuery()),
-        inbox_repo=cast("Any", pending_repo),
     )
 
     result = await service.latest_cases(
@@ -483,48 +422,21 @@ async def test_latest_cases_includes_pending_entry_admission_backlog() -> None:
         limit=10,
     )
 
-    assert result.total == 2
-    assert [item.case_id for item in result.items] == ["session:41", "inbox:191"]
-    pending_case = result.items[1]
-    assert pending_case.session_id is None
-    assert pending_case.session_code == "PENDING-INBOX-191"
-    assert pending_repo.list_calls == [{"limit": 10, "workline_id": 1, "device_id": None}]
-    assert pending_repo.count_calls == [{"workline_id": 1, "device_id": None}]
+    assert result.total == 1
+    assert [item.case_id for item in result.items] == ["session:41"]
+    legacy_code = "WORKLINE_ENTRY_ADMISSION_BLOCKED"
+    assert all(item.blocking_code != legacy_code for item in result.items)
 
 
-async def test_latest_cases_keeps_pending_entry_admission_visible_when_trace_page_is_full() -> None:
-    pending_inbox = SimpleNamespace(
-        id=192,
-        kind=InboxKind.DEVICE_EVENT,
-        status=InboxStatus.RETRY,
-        source_system=SourceSystem.DEVICE,
-        source_message_id="msg-192",
-        trace_id="trace-pending-2",
-        event_id="evt-pending-2",
-        causation_id=None,
-        workline_id=1,
-        device_id=None,
-        command_id=None,
-        session_id=None,
-        payload_json={"event_type": "SCAN_COMPLETED", "data": {"PkgID": "PKG-002"}},
-        attempt_count=0,
-        max_attempts=3,
-        next_retry_at=None,
-        error_message=(
-            "Workline entry admission blocked by busy session: "
-            "workline_id=1, business_key=PKG-002, blocker_session_id=41"
-        ),
-        received_at=None,
-    )
-    pending_repo = _RecordingPendingAdmissionRepo([pending_inbox])
+async def test_latest_cases_does_not_replace_full_trace_page_with_synthetic_backlog() -> None:
     service = IntegrationDebugService(
         trace_query=cast("Any", _LatestCasesTraceQuery()),
         runtime_query=cast("Any", _FullLatestCasesRuntimeQuery()),
-        inbox_repo=cast("Any", pending_repo),
     )
 
     result = await service.latest_cases(cast("Any", object()), workline_id=1, limit=2)
 
-    assert result.total == 3
-    assert [item.case_id for item in result.items] == ["session:41", "inbox:192"]
-    assert pending_repo.list_calls == [{"limit": 2, "workline_id": 1, "device_id": None}]
+    assert result.total == 2
+    assert [item.case_id for item in result.items] == ["session:41", "session:42"]
+    legacy_code = "WORKLINE_ENTRY_ADMISSION_BLOCKED"
+    assert all(item.blocking_code != legacy_code for item in result.items)

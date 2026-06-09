@@ -227,7 +227,48 @@ curl -sS -X POST "$WES_API/workline/operations/results" \
 如果 `MOVE_FORWARD` 成功后没有新的 `PUT_TO_BIN`，先查 blocking-point。看到 `ROUGH_SORTER_ALLOCATOR_UNAVAILABLE`、
 `ROUGH_SORTER_ALLOCATION_BLOCKED` 或等待货架相关阻塞时，说明出料资源没配好。补齐资源域或料箱分配配置后，再跑正常主流程。
 
-### 2.8 清理 Sandbox 残留运行态
+### 2.8 观察多物料并发与 RESOURCE_WAIT
+
+资源约束并发的观察重点不是把 worker 参数调大，而是确认多条 Session 可以同时存在，并且各自在资源可用时推进。
+
+建议在 Sandbox 中连续发送两条或更多 `SCAN_COMPLETED`，每条使用不同的 `trace_id` 和 `PkgID`：
+
+```bash
+export TRACE_ID_A="rough-sorter-parallel-a-$(date +%s)"
+export TRACE_ID_B="rough-sorter-parallel-b-$(date +%s)"
+```
+
+两条事件的 `PkgID` 必须不同，例如：
+
+```json
+{
+  "PkgID": "PKG-CAP001-LOT-A-PARALLEL-A"
+}
+```
+
+```json
+{
+  "PkgID": "PKG-CAP001-LOT-A-PARALLEL-B"
+}
+```
+
+期望现象：
+
+- Trace 中能看到多个 open Session，不会因为同一 WorkLine 已有其它物料而产生新的入口准入阻塞。
+- 同一设备或同一 Station 被占用时，后续物料等待真实资源释放；其它不冲突资源仍可继续推进。
+- `pending?limit=10` 的 `limit` 只是展示和查询上限；worker 的 `limit` 也只是单轮处理上限，不代表业务并发容量。
+- 当前运行时不提供旧 `parallelism` 调参入口；业务并发容量只来自设备、Station、rack/bin/cell 和外部任务状态。
+
+如果 Trace 或 blocking-point 出现 `RESOURCE_WAIT`，优先查看：
+
+- `resource_kind`：等待的是 Station、rack、bin、cell 或其它资源类型。
+- `resource_key`：具体等待的资源标识。
+- `first_seen_at` / `last_seen_at`：首次和最近一次等待时间。
+- `wait_count`：同一 Inbox 等待同一资源的累计次数。
+
+`RESOURCE_WAIT` 是自动等待态。修复资源配置、释放 Station 或补齐料箱后，等待中的 Inbox 会按重试间隔重新进入处理；不需要人工伪造 Result。
+
+### 2.9 清理 Sandbox 残留运行态
 
 多轮调试后，如果设备状态残留为 `RUNNING`、WorkLine 残留为 `READY` / `RECONCILING`，或存在旧 Session / Outbox 影响下一轮测试，可以使用 Sandbox 清理接口。
 

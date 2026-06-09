@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 from sqlalchemy import select
 
@@ -9,7 +7,7 @@ from src.app.device.models.device import Device
 from src.app.workline.models.inbox import InboxStatus, WorklineInbox
 from src.app.workline.models.session import WorklineSession
 from src.app.workline.models.workline import LineType, WorkLine
-from src.app.workline.services.inbox_service import WorklineInboxService, inbox_service
+from src.app.workline.services.inbox_service import inbox_service
 from src.celery_app.tasks.workline import process_inbox_batch
 
 
@@ -19,7 +17,6 @@ async def test_process_inbox_batch_entry_marks_message_processed(
     inline_task_runner: None,
     integration_session_factory,
     test_prefix: str,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     trace_id = f"{test_prefix}_process_entry"
     line_code = f"{test_prefix}_line"
@@ -56,29 +53,12 @@ async def test_process_inbox_batch_entry_marks_message_processed(
         await setup_db.commit()
         inbox_id = created.id
 
-    async def get_target_messages(
-        self: WorklineInboxService,
-        db: Any,
-        limit: int = 10,
-    ) -> list[WorklineInbox]:
-        query = (
-            select(WorklineInbox)
-            .where(
-                WorklineInbox.trace_id == trace_id,  # type: ignore[arg-type]
-                WorklineInbox.status == InboxStatus.NEW,  # type: ignore[arg-type]
-            )
-            .order_by(WorklineInbox.received_at)
-            .limit(limit)
-        )
-        return list((await db.execute(query)).scalars().all())
-
-    monkeypatch.setattr(WorklineInboxService, "get_new_messages", get_target_messages)
-
     result = await process_inbox_batch(20)
     assert result["processed"] == 1
     assert result["success"] == 1
     assert result["failed"] == 0
     assert result["skipped"] == 0
+    assert result["resource_wait"] == 0
 
     async with integration_session_factory() as verify_db:
         query = select(WorklineInbox).where(WorklineInbox.id == inbox_id)  # type: ignore[arg-type]

@@ -140,6 +140,38 @@ def test_block_still_requires_scope_reason_and_message() -> None:
     assert intent.kind == RuntimeIntentKind.BLOCK
 
 
+def test_resource_wait_direct_contract_requires_reason_message_and_resource_fields() -> None:
+    with pytest.raises(ValueError, match="RESOURCE_WAIT intent requires reason_code"):
+        RuntimeIntent(
+            kind=RuntimeIntentKind.RESOURCE_WAIT,
+            message="目标工位正在处理其它物料",
+            payload_json={"resource_kind": "STATION", "resource_key": "station:TARGET_STATION"},
+        )
+
+    with pytest.raises(ValueError, match="RESOURCE_WAIT intent requires message"):
+        RuntimeIntent(
+            kind=RuntimeIntentKind.RESOURCE_WAIT,
+            reason_code="STATION_BUSY",
+            payload_json={"resource_kind": "STATION", "resource_key": "station:TARGET_STATION"},
+        )
+
+    with pytest.raises(ValueError, match="RESOURCE_WAIT intent requires resource_kind"):
+        RuntimeIntent(
+            kind=RuntimeIntentKind.RESOURCE_WAIT,
+            reason_code="STATION_BUSY",
+            message="目标工位正在处理其它物料",
+            payload_json={"resource_key": "station:TARGET_STATION"},
+        )
+
+    with pytest.raises(ValueError, match="RESOURCE_WAIT intent requires resource_key"):
+        RuntimeIntent(
+            kind=RuntimeIntentKind.RESOURCE_WAIT,
+            reason_code="STATION_BUSY",
+            message="目标工位正在处理其它物料",
+            payload_json={"resource_kind": "STATION"},
+        )
+
+
 def test_mark_ng_requires_reason_code() -> None:
     with pytest.raises(ValueError, match="MARK_NG intent requires reason_code"):
         RuntimeIntent.mark_ng(reason_code="", message="扫码判定 NG")
