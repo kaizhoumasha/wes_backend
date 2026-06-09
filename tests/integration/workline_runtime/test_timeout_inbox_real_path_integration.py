@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 
@@ -19,8 +20,8 @@ from src.utils.timezone import timezone
 @pytest.mark.asyncio
 async def test_scan_timeouts_batch_creates_timeout_inbox_for_expired_session(
     eager_celery: None,
-    inline_task_runner: None,
     integration_session_factory,
+    isolated_workline_timeout_queue: None,
     test_prefix: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -102,7 +103,7 @@ async def test_scan_timeouts_batch_creates_timeout_inbox_for_expired_session(
         get_target_timed_out_sessions,
     )
 
-    result = await scan_timeouts_batch(500)
+    result = await asyncio.to_thread(scan_timeouts_batch, 1)
     assert result["scanned"] == 1
     assert result["timeouts_created"] == 1
 

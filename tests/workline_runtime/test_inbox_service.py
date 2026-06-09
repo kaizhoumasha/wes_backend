@@ -309,7 +309,7 @@ async def test_claim_pending_messages_atomically_claims_ready_and_stale_messages
     assert "status = %(status_2)s" in sql
     assert "updated_at <= %(updated_at_1)s" in sql
     assert "NOT (EXISTS" in sql
-    assert "earlier_inbox.status =" in sql
+    assert "earlier_inbox.status IN" in sql
     assert "RETURNING wes_biz.workline_inbox.id" in sql
 
 

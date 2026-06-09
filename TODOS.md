@@ -47,19 +47,22 @@
 
 ## P2 - 监控与告警配置
 
-**What**: 为 SMT 粗分机工作线配置监控仪表盘和告警规则。
+**What**: 为 SMT 粗分机工作线配置监控仪表盘和告警规则，覆盖设备状态、Session 延迟、RESOURCE_WAIT 与 Outbox `BLOCKED_RESOURCE`。
 
 **Why**: 生产环境需要实时监控设备状态、Session 处理延迟、错误率等关键指标，及时发现异常。
 
-**Context**: CEO Review 过程中推迟，建议在实现阶段根据实际需求细化。
+**Context**: CEO Review 过程中推迟，建议在实现阶段根据实际需求细化。2026-06-09 WorkLine 资源约束并发终审决定：当前实现只写结构化 RESOURCE_WAIT evidence 和诊断，不在首版定义生产阈值；生产化后应基于真实等待数据补监控。
 
 **Scope**:
 - 设备状态监控：IDLE/RUNNING/ERROR/OFFLINE 状态分布
 - Session 处理延迟：P99 延迟、超时率
+- RESOURCE_WAIT active 数、等待时长、retry 次数和 batch result `resource_wait` 计数，按 `resource_kind/resource_key` 分组
+- 区分 Inbox `RESOURCE_WAIT` 与 Outbox `BLOCKED_RESOURCE`，避免把设备 dispatch 忙误读成入口阻塞
+- 区分本地设备投影 IDLE 与 ECS 实时 `IDLE` probe，避免把诊断投影误读成 dispatch 放行事实
 - 错误率追踪：按 error_code 分类统计
 - 急停事件告警：实时推送
 
-**Dependencies**: 完成基础实现后，根据实际运行数据调整阈值。
+**Dependencies**: 完成资源约束并发实现并产生真实或 mock 压测数据后，根据实际运行数据调整阈值。
 
 **Effort**: M (human: 1-2 days / CC: ~30 min)
 
@@ -73,22 +76,26 @@
 
 ## P2 - Workline worker 吞吐 benchmark 与队列/连接策略调优
 
-**What**: 在 Workline task decomposition 落地后，基于真实数据评估 worker concurrency、队列隔离、batch limit 和 HTTP client strategy。
+**What**: 在 Workline task decomposition 和资源约束并发落地后，基于真实数据评估 worker concurrency、队列隔离、batch limit、claim 索引、RESOURCE_WAIT retry 和 HTTP client strategy。
 
 **Why**: 本次拆分选择单 batch 内顺序处理，以保护事务边界、fencing 语义和共享 `AsyncSession` 安全；吞吐优化需要在职责边界稳定后用基准数据驱动。
 
-**Context**: `docs/superpowers/plans/2026-05-27-workline-task-decomposition.md` Task 7 延后项；`docs/superpowers/plans/2026-06-01-workline-fast-fail-start-admission-plan.md` 已引入 START 准入批量 status、command 前单设备 status 预检和操作级 HTTP client。
+**Context**: `docs/superpowers/plans/2026-05-27-workline-task-decomposition.md` Task 7 延后项；`docs/superpowers/plans/2026-06-01-workline-fast-fail-start-admission-plan.md` 已引入 START 准入批量 status、command 前单设备 status 预检和操作级 HTTP client。2026-06-09 WorkLine 资源约束并发终审决定：benchmark 还必须覆盖物化 `claim_bucket_key`、Inbox RESOURCE_WAIT retry、batch result `resource_wait` 计数、诊断写入频率，以及设备忙保留在 Outbox `BLOCKED_RESOURCE` 的分层等待模型。
 
 **Scope**:
 - 建立 Workline inbox/outbox worker 吞吐基准
 - 评估 Celery worker concurrency 与队列隔离策略
 - 评估 batch limit 对延迟、锁竞争和重试的影响
+- 评估应用层普通列物化的 `claim_bucket_key` hot queue 索引、claim 返回排序，以及 claimable 队列排序、同 bucket 队首围栏、到期 `RETRY`、stale `PROCESSING` 回收四类 PostgreSQL EXPLAIN gate 在热队列下是否稳定
+- 评估 RESOURCE_WAIT 默认 10 秒 retry、env 调优、batch result `resource_wait` 计数和诊断幂等更新的写入频率
+- 分别统计 Inbox `RESOURCE_WAIT` 与 Outbox `BLOCKED_RESOURCE` 对 worker 延迟和资源释放后恢复时间的影响
+- 统计本地 command terminal / DeviceStatus 投影时间与 ECS `IDLE` probe 放行时间的差异，防止后续调优绕过实时 admission source
 - 评估设备 HTTP client 复用、超时和连接池策略，覆盖实时 status GET + command POST 双 HTTP 路径
 - 对比 START 准入 ECS batch status 延迟、bounded probe concurrency 与 command dispatch 单设备 status GET 延迟
 - 对比当前 operation-scoped `httpx.AsyncClient` 与未来全局 client pool 的连接复用、超时隔离、故障扩散和资源回收成本
 - 明确不得在共享 `AsyncSession` 内引入 batch-internal `asyncio.gather`
 
-**Dependencies**: Workline task decomposition 代码稳定后，采集真实或接近真实的任务量、设备 ACK 延迟和 outbox 重试数据。
+**Dependencies**: Workline task decomposition 与资源约束并发代码稳定后，采集真实或接近真实的任务量、设备 ACK 延迟、RESOURCE_WAIT retry 和 outbox 重试数据。
 
 **Effort**: M (human: 1-2 days / CC: ~30-60 min after metrics are available)
 

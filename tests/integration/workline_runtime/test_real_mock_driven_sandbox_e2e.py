@@ -37,6 +37,7 @@ from src.app.resource.models import (
     ResourceStateEvent,
 )
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxStatus
+from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.inbox import InboxKind, InboxStatus, WorklineInbox
 from src.app.workline.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
@@ -182,6 +183,13 @@ def _rough_result_inbox(
     result: str = "SUCCESS",
     data: dict[str, Any] | None = None,
 ) -> WorklineInbox:
+    payload_json = {
+        "command_code": command.command_code,
+        "device_code": device_code,
+        "task_type": task_type,
+        "result": result,
+        "data": data or {},
+    }
     return WorklineInbox(
         kind=InboxKind.COMMAND_RESULT,
         source_system="DEVICE",
@@ -192,13 +200,13 @@ def _rough_result_inbox(
         workline_id=command.workline_id,
         session_id=command.session_id,
         trace_id=command.trace_id,
-        payload_json={
-            "command_code": command.command_code,
-            "device_code": device_code,
-            "task_type": task_type,
-            "result": result,
-            "data": data or {},
-        },
+        payload_json=payload_json,
+        claim_bucket_key=build_claim_bucket_key(
+            session_id=command.session_id,
+            device_id=command.device_id,
+            workline_id=command.workline_id,
+            payload_json=payload_json,
+        ),
     )
 
 
@@ -721,6 +729,13 @@ def _source_pick_inbox(
     source_device: Device,
     data: dict[str, Any],
 ) -> WorklineInbox:
+    payload_json = {
+        "command_code": f"{session.trace_id}:CMD-SOURCE-PICK",
+        "device_code": source_device.device_code,
+        "task_type": COMMAND_SOURCE_PICK,
+        "result": "SUCCESS",
+        "data": data,
+    }
     return WorklineInbox(
         kind=InboxKind.COMMAND_RESULT,
         source_system="DEVICE",
@@ -730,13 +745,13 @@ def _source_pick_inbox(
         workline_id=session.workline_id,
         session_id=session.id,
         trace_id=session.trace_id,
-        payload_json={
-            "command_code": f"{session.trace_id}:CMD-SOURCE-PICK",
-            "device_code": source_device.device_code,
-            "task_type": COMMAND_SOURCE_PICK,
-            "result": "SUCCESS",
-            "data": data,
-        },
+        payload_json=payload_json,
+        claim_bucket_key=build_claim_bucket_key(
+            session_id=session.id,
+            device_id=source_device.id,
+            workline_id=session.workline_id,
+            payload_json=payload_json,
+        ),
     )
 
 
@@ -746,6 +761,12 @@ def _working_bin_scan_inbox(
     scan_device: Device,
     data: dict[str, Any],
 ) -> WorklineInbox:
+    payload_json = {
+        "event_id": f"{session.trace_id}:working-bin-scan",
+        "device_code": scan_device.device_code,
+        "event_type": EVENT_WORKING_BIN_SCAN,
+        "data": data,
+    }
     return WorklineInbox(
         kind=InboxKind.DEVICE_EVENT,
         source_system="DEVICE",
@@ -755,12 +776,13 @@ def _working_bin_scan_inbox(
         workline_id=session.workline_id,
         session_id=session.id,
         trace_id=session.trace_id,
-        payload_json={
-            "event_id": f"{session.trace_id}:working-bin-scan",
-            "device_code": scan_device.device_code,
-            "event_type": EVENT_WORKING_BIN_SCAN,
-            "data": data,
-        },
+        payload_json=payload_json,
+        claim_bucket_key=build_claim_bucket_key(
+            session_id=session.id,
+            device_id=scan_device.id,
+            workline_id=session.workline_id,
+            payload_json=payload_json,
+        ),
     )
 
 
@@ -770,6 +792,13 @@ def _target_place_inbox(
     command: DeviceCommand,
     device_code: str,
 ) -> WorklineInbox:
+    payload_json = {
+        "command_code": command.command_code,
+        "device_code": device_code,
+        "task_type": COMMAND_TARGET_PLACE,
+        "result": "SUCCESS",
+        "data": {},
+    }
     return WorklineInbox(
         kind=InboxKind.COMMAND_RESULT,
         source_system="DEVICE",
@@ -780,13 +809,13 @@ def _target_place_inbox(
         workline_id=session.workline_id,
         session_id=session.id,
         trace_id=session.trace_id,
-        payload_json={
-            "command_code": command.command_code,
-            "device_code": device_code,
-            "task_type": COMMAND_TARGET_PLACE,
-            "result": "SUCCESS",
-            "data": {},
-        },
+        payload_json=payload_json,
+        claim_bucket_key=build_claim_bucket_key(
+            session_id=session.id,
+            device_id=command.device_id,
+            workline_id=session.workline_id,
+            payload_json=payload_json,
+        ),
     )
 
 

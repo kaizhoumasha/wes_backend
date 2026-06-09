@@ -16,6 +16,7 @@ Phase 1 简化:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -39,8 +40,12 @@ if TYPE_CHECKING:
     from src.workline_runtime.services import WorklineRuntimeServices
 
 
+def _env_allows_null_plugin() -> bool:
+    return os.getenv("WORKLINE_ALLOW_NULL_PLUGIN", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 # NullPlugin 允许配置（用于测试或显式 disabled 的 workline）
-_ALLOW_NULL_PLUGIN = False
+_ALLOW_NULL_PLUGIN = _env_allows_null_plugin()
 
 
 def set_allow_null_plugin(allow: bool) -> None:

@@ -43,3 +43,17 @@ def test_resource_wait_evidence_is_single_source_for_context_and_diagnostic_payl
     assert session_context["wait_count"] == diagnostic_payload["wait_count"]
     assert "details" not in session_context
     assert diagnostic_payload["details"] == {"active_session_id": 44}
+
+
+def test_resource_wait_diagnostic_key_fits_model_column_length_for_large_ids() -> None:
+    evidence = ResourceWaitEvidence.build(
+        inbox_id=9_223_372_036_854_775_807,
+        resource_kind="STATION",
+        resource_key="station:" + "TARGET_STATION" * 100,
+        reason_code="STATION_BUSY",
+        message="目标 Station 忙",
+        occurred_at="2026-01-01T00:00:10",
+    )
+
+    assert len(evidence.diagnostic_key) <= 300
+    assert evidence.diagnostic_key.startswith("RESOURCE_WAIT:9223372036854775807:station:")

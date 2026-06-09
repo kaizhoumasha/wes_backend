@@ -1,9 +1,34 @@
+from hashlib import md5
+from pathlib import Path
+
 import pytest
 
 from src.app.workline.models.inbox import InboxKind, InboxStatus, SourceSystem, WorklineInbox
+from src.app.workline.models.session import WorklineSession
+from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.repositories.inbox_repository import WorklineInboxRepository
+from src.app.workline.services.inbox_service import inbox_service
 from src.core.mixins import DataTableMixin
 from tests.helpers.workline_inbox_factory import build_workline_inbox
+
+
+async def _create_workline_session(db_session, suffix: str) -> WorklineSession:
+    workline = WorkLine(
+        line_code=f"claim-bucket-{suffix}",
+        line_name=f"claim-bucket-{suffix}",
+        line_type=LineType.AUTO,
+    )
+    db_session.add(workline)
+    await db_session.flush()
+
+    session = WorklineSession(
+        session_code=f"claim-bucket-session-{suffix}",
+        workline_id=workline.id,
+        plugin_key="claim-bucket-test",
+    )
+    db_session.add(session)
+    await db_session.flush()
+    return session
 
 
 def test_claim_bucket_key_helper_priority() -> None:
@@ -15,6 +40,55 @@ def test_claim_bucket_key_helper_priority() -> None:
     assert build_claim_bucket_key(payload_json={"location": "LOC-01"}, workline_id=30) == "device_code:LOC-01"
     assert build_claim_bucket_key(workline_id=30) == "workline:30"
     assert build_claim_bucket_key(payload_json={}) == "serial:unknown"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"session_id": " 10 ", "device_id": 20, "workline_id": 30}, "session:10"),
+        ({"device_id": " 20 ", "workline_id": 30}, "device:20"),
+        ({"payload_json": {"device_code": "  SCN-01  "}, "workline_id": 30}, "device_code:SCN-01"),
+        (
+            {"payload_json": {"device_code": "   ", "location": "  LOC-01  "}, "workline_id": 30},
+            "device_code:LOC-01",
+        ),
+        ({"workline_id": " 30 "}, "workline:30"),
+        ({"payload_json": {"device_code": "   ", "location": ""}}, "serial:unknown"),
+    ],
+)
+def test_claim_bucket_key_helper_matches_backfill_case_matrix(kwargs: dict[str, object], expected: str) -> None:
+    from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
+
+    assert build_claim_bucket_key(**kwargs) == expected
+
+
+def test_claim_bucket_key_helper_trims_payload_fallbacks() -> None:
+    from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
+
+    assert build_claim_bucket_key(payload_json={"device_code": "  SCN-01  "}) == "device_code:SCN-01"
+    assert build_claim_bucket_key(payload_json={"device_code": "   ", "location": "  LOC-01  "}) == "device_code:LOC-01"
+
+
+def test_claim_bucket_key_helper_fits_model_column_length() -> None:
+    from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
+
+    raw_key = "device_code:" + ("S" * 500)
+    digest = md5(raw_key.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+    claim_bucket_key = build_claim_bucket_key(payload_json={"device_code": "S" * 500})
+
+    assert len(claim_bucket_key) <= 200
+    assert claim_bucket_key == f"{raw_key[:183]}:{digest}"
+
+
+def test_claim_bucket_key_migration_backfill_matches_runtime_normalization_contract() -> None:
+    migration_sql = Path(
+        "migrations/versions/20260609_2208_2937b05e1b1c_add_workline_inbox_claim_bucket_key.py"
+    ).read_text()
+
+    assert "btrim(payload_json ->> 'device_code')" in migration_sql
+    assert "btrim(payload_json ->> 'location')" in migration_sql
+    assert "length(normalized.raw_claim_bucket_key) <= 200" in migration_sql
+    assert "substring(normalized.raw_claim_bucket_key from 1 for 183)" in migration_sql
 
 
 def test_workline_inbox_model_declares_claim_bucket_key() -> None:
@@ -67,6 +141,61 @@ async def test_repository_create_idempotent_injects_claim_bucket_key_for_direct_
     )
 
     assert created.claim_bucket_key == "workline:30"
+
+
+@pytest.mark.asyncio
+async def test_repository_update_recomputes_claim_bucket_key(db_session) -> None:
+    repository = WorklineInboxRepository()
+    created = await repository.create(
+        db_session,
+        {
+            "kind": InboxKind.DEVICE_EVENT,
+            "source_system": SourceSystem.DEVICE,
+            "source_message_id": "claim-key-update-guard",
+            "payload_json": {"device_code": "SCN-01"},
+            "status": InboxStatus.NEW,
+        },
+    )
+    assert created is not None
+
+    updated = await repository.update(
+        db_session,
+        created.id,
+        {"payload_json": {"device_code": "SCN-02"}},
+    )
+
+    assert updated is not None
+    assert updated.claim_bucket_key == "device_code:SCN-02"
+
+
+@pytest.mark.asyncio
+async def test_processing_retry_recomputes_claim_bucket_from_resolved_session(db_session) -> None:
+    repository = WorklineInboxRepository()
+    session = await _create_workline_session(db_session, "processing")
+    created = await repository.create(
+        db_session,
+        {
+            "kind": InboxKind.DEVICE_EVENT,
+            "source_system": SourceSystem.DEVICE,
+            "source_message_id": "claim-key-processing-guard",
+            "payload_json": {"device_code": "SCN-01"},
+            "status": InboxStatus.PROCESSING,
+            "processor_token": "processor-token",
+        },
+    )
+    assert created is not None
+    created.session_id = session.id
+
+    updated = await inbox_service.park_for_retry(
+        db_session,
+        created.id,
+        "RESOURCE_WAIT",
+        processor_token="processor-token",
+        auto_commit=False,
+    )
+
+    assert updated.status == InboxStatus.RETRY
+    assert updated.claim_bucket_key == f"session:{session.id}"
 
 
 @pytest.mark.asyncio

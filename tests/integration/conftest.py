@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import os
 import subprocess
 import tempfile
@@ -12,20 +11,22 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 from redis.asyncio import Redis
-from sqlalchemy import delete, or_, select, text
+from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 # 预加载外键目标模型，避免 SQLModel 在 flush 时出现 NoReferencedTableError。
-from src.app.device.models.command import DeviceCommand
+from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
 from src.app.sys.models import SystemOutbox
-from src.app.workline.models.inbox import WorklineInbox
-from src.app.workline.models.session import WorklineSession
+from src.app.workline.models.diagnostic import WorklineDiagnostic
+from src.app.workline.models.inbox import InboxStatus, WorklineInbox
+from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.models.timeline import WorklineTimeline
 from src.app.workline.models.workline import WorkLine
 from src.core.conf import settings
 from src.database.schema_conf import get_schema_search_path
+from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -148,6 +149,81 @@ async def integration_db_session(
         await session.rollback()
 
 
+async def _find_hot_queue_inboxes(db: AsyncSession) -> list[tuple[object, ...]]:
+    result = await db.execute(
+        select(
+            WorklineInbox.id,
+            WorklineInbox.status,
+            WorklineInbox.next_retry_at,
+            WorklineInbox.updated_at,
+        )
+        .where(WorklineInbox.status.in_([InboxStatus.NEW, InboxStatus.RETRY, InboxStatus.PROCESSING]))  # type: ignore[arg-type]
+        .order_by(WorklineInbox.received_at.asc(), WorklineInbox.id.asc())  # type: ignore[arg-type]
+        .limit(5)
+    )
+    return list(result.all())
+
+
+async def _count_timed_out_sessions(db: AsyncSession) -> int:
+    result = await db.execute(
+        select(func.count())
+        .select_from(WorklineSession)
+        .outerjoin(DeviceCommand, WorklineSession.awaiting_command_id == DeviceCommand.id)
+        .where(  # type: ignore[arg-type]
+            WorklineSession.deadline_at.isnot(None),
+            WorklineSession.deadline_at < timezone.now_for_db(),
+            or_(
+                and_(
+                    WorklineSession.status == SessionStatus.WAITING_DEVICE_RESULT,
+                    WorklineSession.awaiting_command_id.isnot(None),
+                    DeviceCommand.status == CommandStatus.ACK_RECEIVED,
+                    DeviceCommand.ack_received_at.isnot(None),
+                ),
+                WorklineSession.status == SessionStatus.WAITING_EXTERNAL,
+            ),
+        )
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def _count_ack_timed_out_commands(db: AsyncSession) -> int:
+    result = await db.execute(
+        select(DeviceCommand).where(  # type: ignore[arg-type]
+            DeviceCommand.status == CommandStatus.SENT,
+            DeviceCommand.sent_at.is_not(None),
+            DeviceCommand.ack_received_at.is_(None),
+            DeviceCommand.session_id_int.is_not(None),
+            DeviceCommand.workline_id.is_not(None),
+        )
+    )
+    return sum(1 for command in result.scalars().all() if command.is_timeout())
+
+
+@pytest_asyncio.fixture(scope="function")
+async def isolated_workline_inbox_queue(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with integration_session_factory() as db:
+        hot_queue_rows = await _find_hot_queue_inboxes(db)
+    if hot_queue_rows:
+        pytest.fail(f"WorkLine inbox 全局 task smoke 需要空队列；当前 Docker DB 仍有热队列 inbox: {hot_queue_rows}")
+
+
+@pytest_asyncio.fixture(scope="function")
+async def isolated_workline_timeout_queue(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with integration_session_factory() as db:
+        timed_out_session_count = await _count_timed_out_sessions(db)
+        ack_timeout_count = await _count_ack_timed_out_commands(db)
+    if timed_out_session_count or ack_timeout_count:
+        pytest.fail(
+            "WorkLine timeout 全局 task smoke 需要空队列；"
+            f"当前 Docker DB 仍有 {timed_out_session_count} 个超时 session、"
+            f"{ack_timeout_count} 条 ACK 超时 command。"
+        )
+
+
 @pytest.fixture(scope="function")
 def eager_celery(patch_global_session_factory: None) -> Iterator[None]:
     from src.celery_app.app import celery_app
@@ -165,20 +241,6 @@ def eager_celery(patch_global_session_factory: None) -> Iterator[None]:
         celery_app.conf.task_always_eager = old_always_eager
         celery_app.conf.task_eager_propagates = old_eager_propagates
         celery_app.conf.task_ignore_result = old_ignore_result
-
-
-@pytest.fixture(scope="function")
-def inline_task_runner(monkeypatch: pytest.MonkeyPatch) -> None:
-    import src.celery_app.tasks.workline as workline_tasks
-
-    def _run_async_inline(coro: object) -> object:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coro)  # pragma: no cover - only for sync tests
-        return loop.create_task(coro)
-
-    monkeypatch.setattr(workline_tasks, "_run_async", _run_async_inline)
 
 
 @pytest.fixture(scope="session")
@@ -199,6 +261,7 @@ def celery_worker_process(integration_guard: None) -> Iterator[dict[str, str]]:
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{repo_root}:{existing_pythonpath}" if existing_pythonpath else str(repo_root)
+        env["WORKLINE_ALLOW_NULL_PLUGIN"] = "1"
 
         command = [
             "uv",
@@ -271,7 +334,48 @@ async def test_prefix(
 
     async with integration_session_factory() as cleanup_session:
         prefixed_worklines = select(WorkLine.id).where(WorkLine.line_code.like(f"{prefix}%"))  # type: ignore[arg-type]
+        prefixed_sessions = select(WorklineSession.id).where(
+            or_(
+                WorklineSession.trace_id.like(f"{prefix}%"),  # type: ignore[arg-type]
+                WorklineSession.workline_id.in_(prefixed_worklines),
+            )
+        )
+        prefixed_inboxes = select(WorklineInbox.id).where(
+            or_(
+                WorklineInbox.trace_id.like(f"{prefix}%"),  # type: ignore[arg-type]
+                WorklineInbox.workline_id.in_(prefixed_worklines),
+            )
+        )
+        prefixed_outboxes = select(SystemOutbox.id).where(
+            or_(
+                SystemOutbox.dispatch_key.like(f"{prefix}%"),  # type: ignore[arg-type]
+                SystemOutbox.workline_id.in_(prefixed_worklines),
+                SystemOutbox.session_id.in_(prefixed_sessions),
+            )
+        )
 
+        await cleanup_session.execute(
+            delete(WorklineDiagnostic).where(  # type: ignore[arg-type]
+                or_(
+                    WorklineDiagnostic.trace_id.like(f"{prefix}%"),
+                    WorklineDiagnostic.request_id.like(f"{prefix}%"),
+                    WorklineDiagnostic.device_code.like(f"{prefix}%"),
+                    WorklineDiagnostic.workline_id.in_(prefixed_worklines),
+                    WorklineDiagnostic.session_id.in_(prefixed_sessions),
+                    WorklineDiagnostic.inbox_id.in_(prefixed_inboxes),
+                    WorklineDiagnostic.outbox_id.in_(prefixed_outboxes),
+                )
+            )
+        )
+        await cleanup_session.execute(
+            delete(SystemOutbox).where(  # type: ignore[arg-type]
+                or_(
+                    SystemOutbox.dispatch_key.like(f"{prefix}%"),
+                    SystemOutbox.workline_id.in_(prefixed_worklines),
+                    SystemOutbox.session_id.in_(prefixed_sessions),
+                )
+            )
+        )
         await cleanup_session.execute(
             delete(WorklineInbox).where(  # type: ignore[arg-type]
                 or_(
@@ -281,33 +385,10 @@ async def test_prefix(
             )
         )
         await cleanup_session.execute(
-            delete(SystemOutbox).where(  # type: ignore[arg-type]
-                or_(
-                    SystemOutbox.dispatch_key.like(f"{prefix}%"),
-                    SystemOutbox.workline_id.in_(prefixed_worklines),
-                    SystemOutbox.session_id.in_(
-                        select(WorklineSession.id).where(
-                            or_(
-                                WorklineSession.trace_id.like(f"{prefix}%"),
-                                WorklineSession.workline_id.in_(prefixed_worklines),
-                            )
-                        )
-                    ),
-                )
-            )
-        )
-        await cleanup_session.execute(
             delete(WorklineTimeline).where(  # type: ignore[arg-type]
                 or_(
                     WorklineTimeline.workline_id.in_(prefixed_worklines),
-                    WorklineTimeline.session_id.in_(
-                        select(WorklineSession.id).where(
-                            or_(
-                                WorklineSession.trace_id.like(f"{prefix}%"),
-                                WorklineSession.workline_id.in_(prefixed_worklines),
-                            )
-                        )
-                    ),
+                    WorklineTimeline.session_id.in_(prefixed_sessions),
                 )
             )
         )

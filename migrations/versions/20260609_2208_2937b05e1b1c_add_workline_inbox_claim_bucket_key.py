@@ -29,18 +29,30 @@ def upgrade() -> None:
     op.execute(
         sa.text(
             """
-            UPDATE wes_biz.workline_inbox
+            WITH normalized AS (
+                SELECT
+                    id,
+                    CASE
+                        WHEN session_id IS NOT NULL THEN 'session:' || session_id::text
+                        WHEN device_id IS NOT NULL THEN 'device:' || device_id::text
+                        WHEN NULLIF(btrim(payload_json ->> 'device_code'), '') IS NOT NULL
+                            THEN 'device_code:' || NULLIF(btrim(payload_json ->> 'device_code'), '')
+                        WHEN NULLIF(btrim(payload_json ->> 'location'), '') IS NOT NULL
+                            THEN 'device_code:' || NULLIF(btrim(payload_json ->> 'location'), '')
+                        WHEN workline_id IS NOT NULL THEN 'workline:' || workline_id::text
+                        ELSE 'serial:unknown'
+                    END AS raw_claim_bucket_key
+                FROM wes_biz.workline_inbox
+                WHERE claim_bucket_key IS NULL
+            )
+            UPDATE wes_biz.workline_inbox AS inbox
             SET claim_bucket_key = CASE
-                WHEN session_id IS NOT NULL THEN 'session:' || session_id::text
-                WHEN device_id IS NOT NULL THEN 'device:' || device_id::text
-                WHEN NULLIF(payload_json ->> 'device_code', '') IS NOT NULL
-                    THEN 'device_code:' || NULLIF(payload_json ->> 'device_code', '')
-                WHEN NULLIF(payload_json ->> 'location', '') IS NOT NULL
-                    THEN 'device_code:' || NULLIF(payload_json ->> 'location', '')
-                WHEN workline_id IS NOT NULL THEN 'workline:' || workline_id::text
-                ELSE 'serial:unknown'
+                WHEN length(normalized.raw_claim_bucket_key) <= 200 THEN normalized.raw_claim_bucket_key
+                ELSE substring(normalized.raw_claim_bucket_key from 1 for 183)
+                    || ':' || substring(md5(normalized.raw_claim_bucket_key) from 1 for 16)
             END
-            WHERE claim_bucket_key IS NULL
+            FROM normalized
+            WHERE inbox.id = normalized.id
             """
         )
     )

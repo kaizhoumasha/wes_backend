@@ -754,34 +754,32 @@ class InboxBatchProcessor:
         return result
 
     async def _process_claimed_message(self, db: Any, claim: WorklineInboxClaim) -> ProcessResult:  # noqa: PLR0912
-        """批量处理 Inbox 消息
+        """处理已被当前 worker claim 的单条 Inbox 消息。
 
         处理流程：
-        1. 从数据库获取 status='NEW' 的待处理消息（limit 限制数量）
-        2. 遍历每个消息：
-           a. 尝试加锁标记为 PROCESSING（并发控制）
-           b. 入站后 malformed gate：空的 SCAN_COMPLETED payload 直接失败
-           c. 加载关联实体（session/workline/device/devices_by_role）
-           d. 调用 OrchestratorService.process_inbox() 执行编排
-           e. 成功：应用编排结果，更新状态为 PROCESSED
-           f. 失败：更新状态为 FAILED
-        3. 提交数据库事务
+        1. 根据 claim 重新加载 ORM，确认 PROCESSING + processor_token fencing。
+        2. 入站后 malformed gate：空的 SCAN_COMPLETED payload 直接失败。
+        3. 加载关联实体（session/workline/device/devices_by_role）。
+        4. 调用 OrchestratorService.process_inbox() 执行编排。
+        5. PROCESSED disposition：更新为 PROCESSED；RESOURCE_RETRY disposition：park 到 RETRY。
+        6. 真实异常或安全阻断按对应终态写回。
 
         并发控制：
-        - 使用 SELECT ... FOR UPDATE SKIP LOCKED 获取消息
-        - 使用 processor_token 标记处理 worker
-        - 已被锁定的消息会被标记为 SKIPPED
+        - claim_pending_messages 使用 SELECT ... FOR UPDATE SKIP LOCKED claim 消息。
+        - processor_token 标记当前处理 worker，终态更新必须携带 token。
+        - 单 processor 顺序 claim；跨 worker 并发由数据库 claim 和 claim_bucket_key 队首围栏承载。
 
         Args:
             db: 数据库会话
-            limit: 批处理数量，默认 10
+            claim: 当前 worker 已 claim 的轻量消息
 
         Returns:
             处理结果统计 {
                 "processed": 处理总数,
                 "success": 成功数,
                 "failed": 失败数,
-                "skipped": 跳过数（已被其他 worker 锁定）
+                "skipped": 跳过数,
+                "resource_wait": 资源等待数
             }
         """
         from src.app.workline.services.inbox_service import inbox_service

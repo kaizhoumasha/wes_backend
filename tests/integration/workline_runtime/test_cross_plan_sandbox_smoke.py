@@ -31,6 +31,7 @@ from src.app.resource.models import (
     ResourceStateEventType,
 )
 from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType
+from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.inbox import WorklineInbox
 from src.app.workline.models.runtime_hold import NgReasonSource, NgReturnItem, NgReturnItemStatus, RuntimeHold
@@ -76,6 +77,18 @@ gateway_module = importlib.import_module("src.app.workline.services.device_comma
 
 
 JsonDict = dict[str, object]
+
+
+def _inbox_with_claim_bucket(**kwargs: Any) -> WorklineInbox:
+    payload_json = dict(kwargs.get("payload_json") or {})
+    kwargs["payload_json"] = payload_json
+    kwargs["claim_bucket_key"] = build_claim_bucket_key(
+        session_id=kwargs.get("session_id"),
+        device_id=kwargs.get("device_id"),
+        workline_id=kwargs.get("workline_id"),
+        payload_json=payload_json,
+    )
+    return WorklineInbox(**kwargs)
 
 
 class RecordingStatusFetcher:
@@ -292,7 +305,7 @@ def _idle_payload(devices: list[Device]) -> dict[str, Any]:
 
 
 def _source_pick_result(data: dict[str, Any]) -> WorklineInbox:
-    return WorklineInbox(
+    return _inbox_with_claim_bucket(
         kind="COMMAND_RESULT",
         source_system="DEVICE",
         payload_json={
@@ -306,7 +319,7 @@ def _source_pick_result(data: dict[str, Any]) -> WorklineInbox:
 
 
 def _scan_event(data: dict[str, Any]) -> WorklineInbox:
-    return WorklineInbox(
+    return _inbox_with_claim_bucket(
         kind="DEVICE_EVENT",
         source_system="DEVICE",
         payload_json={
@@ -319,7 +332,7 @@ def _scan_event(data: dict[str, Any]) -> WorklineInbox:
 
 
 def _target_place_result() -> WorklineInbox:
-    return WorklineInbox(
+    return _inbox_with_claim_bucket(
         kind="COMMAND_RESULT",
         source_system="DEVICE",
         payload_json={
@@ -333,7 +346,7 @@ def _target_place_result() -> WorklineInbox:
 
 
 def _ng_place_result() -> WorklineInbox:
-    return WorklineInbox(
+    return _inbox_with_claim_bucket(
         kind="COMMAND_RESULT",
         source_system="DEVICE",
         payload_json={
@@ -635,7 +648,7 @@ async def test_cross_plan_sandbox_smoke(
 
     complete_intents = await plugin.on_device_event(
         _ctx(ng_context),
-        WorklineInbox(
+        _inbox_with_claim_bucket(
             kind="DEVICE_EVENT",
             source_system="DEVICE",
             payload_json={
@@ -751,6 +764,11 @@ async def test_cross_plan_runtime_effect_stitching_persists_context_resource_fac
     source_inbox.workline_id = workline.id
     source_inbox.session_id = session.id
     source_inbox.trace_id = session.trace_id
+    source_inbox.claim_bucket_key = build_claim_bucket_key(
+        session_id=session.id,
+        workline_id=workline.id,
+        payload_json=source_inbox.payload_json,
+    )
     db_session.add(source_inbox)
     await db_session.flush()
     await db_session.refresh(session)
@@ -808,6 +826,11 @@ async def test_cross_plan_runtime_effect_stitching_persists_context_resource_fac
     scan_inbox.workline_id = workline.id
     scan_inbox.session_id = session.id
     scan_inbox.trace_id = session.trace_id
+    scan_inbox.claim_bucket_key = build_claim_bucket_key(
+        session_id=session.id,
+        workline_id=workline.id,
+        payload_json=scan_inbox.payload_json,
+    )
     db_session.add(scan_inbox)
     await db_session.commit()
     await db_session.refresh(session)
@@ -879,7 +902,7 @@ async def test_cross_plan_ng_material_conflict_blocks_session_completion(
             }
         },
     )
-    inbox = WorklineInbox(
+    inbox = _inbox_with_claim_bucket(
         kind="DEVICE_EVENT",
         source_system="DEVICE",
         workline_id=workline.id,
@@ -895,6 +918,11 @@ async def test_cross_plan_ng_material_conflict_blocks_session_completion(
     db_session.add(session)
     await db_session.flush()
     inbox.session_id = session.id
+    inbox.claim_bucket_key = build_claim_bucket_key(
+        session_id=session.id,
+        workline_id=workline.id,
+        payload_json=inbox.payload_json,
+    )
     ng_device = next(device for device in devices if device.device_code == "SORT-TARGET-ARM")
     existing_command = DeviceCommand(
         command_code="CMD-SMT-NG-CONFLICT-EXISTING",

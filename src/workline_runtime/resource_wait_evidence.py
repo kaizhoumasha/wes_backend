@@ -9,6 +9,9 @@ from typing import Any
 
 from src.utils.value_normalization import optional_int, string_value
 
+DIAGNOSTIC_KEY_MAX_LENGTH = 300
+_DIAGNOSTIC_KEY_DIGEST_LENGTH = 16
+
 
 def _iso(value: datetime | str | None) -> str | None:
     if value is None:
@@ -23,6 +26,21 @@ def _positive_int(value: Any, default: int) -> int:
     if resolved is None or resolved < 1:
         return default
     return resolved
+
+
+def _fit_resource_wait_diagnostic_key(prefix: str, resource_key: str) -> str:
+    raw_key = f"{prefix}{resource_key}"
+    if len(raw_key) <= DIAGNOSTIC_KEY_MAX_LENGTH:
+        return raw_key
+
+    digest = sha256(raw_key.encode("utf-8")).hexdigest()[:_DIAGNOSTIC_KEY_DIGEST_LENGTH]
+    digest_suffix = f":{digest}"
+    resource_budget = DIAGNOSTIC_KEY_MAX_LENGTH - len(prefix) - len(digest_suffix)
+    if resource_budget > 0:
+        return f"{prefix}{resource_key[:resource_budget]}{digest_suffix}"
+
+    head_budget = DIAGNOSTIC_KEY_MAX_LENGTH - len(digest_suffix)
+    return f"{raw_key[:head_budget]}{digest_suffix}"
 
 
 @dataclass(frozen=True)
@@ -79,11 +97,10 @@ class ResourceWaitEvidence:
 
     @property
     def diagnostic_key(self) -> str:
-        raw_key = f"RESOURCE_WAIT:{self.inbox_id}:{self.resource_key}"
-        if len(raw_key) <= 300:
-            return raw_key
-        digest = sha256(raw_key.encode("utf-8")).hexdigest()[:16]
-        return f"RESOURCE_WAIT:{self.inbox_id}:{self.resource_key[:250]}:{digest}"
+        return _fit_resource_wait_diagnostic_key(
+            f"RESOURCE_WAIT:{self.inbox_id}:",
+            self.resource_key,
+        )
 
     def to_session_context(self) -> dict[str, Any]:
         payload = self.to_diagnostic_evidence()
@@ -107,4 +124,4 @@ class ResourceWaitEvidence:
         }
 
 
-__all__ = ["ResourceWaitEvidence"]
+__all__ = ["DIAGNOSTIC_KEY_MAX_LENGTH", "ResourceWaitEvidence"]

@@ -9,7 +9,7 @@ from sqlalchemy import and_, exists, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
+from src.app.workline.inbox_claim_bucket import build_claim_bucket_key, build_claim_bucket_key_for_update
 from src.app.workline.models.inbox import (
     InboxKind,
     InboxStatus,
@@ -54,10 +54,24 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
             )
         return normalized
 
+    @staticmethod
+    def _with_current_claim_bucket_key(current: WorklineInbox, data: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(data)
+        normalized["claim_bucket_key"] = build_claim_bucket_key_for_update(current=current, data=normalized)
+        return normalized
+
     async def create(self, db: AsyncSession, data: dict[str, Any]) -> WorklineInbox | None:
         """创建 Inbox 时兜底写入物化 claim bucket key。"""
 
         return await super().create(db, self._with_claim_bucket_key(data))
+
+    async def update(self, db: AsyncSession, id: int, data: dict[str, Any]) -> WorklineInbox | None:
+        """更新 Inbox 时同步刷新物化 claim bucket key。"""
+
+        current = await self.get_by_id(db, id)
+        if current is None:
+            return await super().update(db, id, data)
+        return await super().update(db, id, self._with_current_claim_bucket_key(current, data))
 
     async def get_by_idempotency_key(
         self,
@@ -156,14 +170,12 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
             now=now,
             stale_cutoff=stale_cutoff,
         )
-        earlier_claimable = self._claimable_condition(
-            earlier_columns,
-            now=now,
-            stale_cutoff=stale_cutoff,
-        )
-        earlier_blocks_bucket = or_(
-            earlier_claimable,
-            earlier_columns.status == InboxStatus.PROCESSING,
+        earlier_blocks_bucket = earlier_columns.status.in_(
+            [
+                InboxStatus.NEW,
+                InboxStatus.RETRY,
+                InboxStatus.PROCESSING,
+            ]
         )
         earlier_message_in_bucket = exists(
             select(1)

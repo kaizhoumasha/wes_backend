@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from sqlalchemy import select
 
 from src.app.device.models.device import Device
 from src.app.workline.models.inbox import InboxStatus, WorklineInbox
+from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.models.session import WorklineSession
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.services.inbox_service import inbox_service
 from src.celery_app.tasks.workline import process_inbox_batch
+from src.workline_runtime.orchestrator import set_allow_null_plugin
 
 
 @pytest.mark.asyncio
 async def test_process_inbox_batch_entry_marks_message_processed(
     eager_celery: None,
-    inline_task_runner: None,
     integration_session_factory,
+    isolated_workline_inbox_queue: None,
     test_prefix: str,
 ) -> None:
     trace_id = f"{test_prefix}_process_entry"
@@ -27,6 +31,8 @@ async def test_process_inbox_batch_entry_marks_message_processed(
             line_code=line_code,
             line_name=f"{test_prefix}-line",
             line_type=LineType.AUTO,
+            plugin_key=line_code,
+            runtime_status=WorkLineRuntimeStatus.READY,
         )
         setup_db.add(line)
         await setup_db.flush()
@@ -53,7 +59,11 @@ async def test_process_inbox_batch_entry_marks_message_processed(
         await setup_db.commit()
         inbox_id = created.id
 
-    result = await process_inbox_batch(20)
+    set_allow_null_plugin(True)
+    try:
+        result = await asyncio.to_thread(process_inbox_batch, 1)
+    finally:
+        set_allow_null_plugin(False)
     assert result["processed"] == 1
     assert result["success"] == 1
     assert result["failed"] == 0
@@ -63,13 +73,16 @@ async def test_process_inbox_batch_entry_marks_message_processed(
     async with integration_session_factory() as verify_db:
         query = select(WorklineInbox).where(WorklineInbox.id == inbox_id)  # type: ignore[arg-type]
         db_inbox = (await verify_db.execute(query)).scalar_one()
-        db_session = await verify_db.get(WorklineSession, db_inbox.session_id)
+        db_session = (
+            await verify_db.execute(
+                select(WorklineSession).where(WorklineSession.trace_id == trace_id)  # type: ignore[arg-type]
+            )
+        ).scalar_one()
 
     assert db_inbox.status == InboxStatus.PROCESSED
-    assert db_inbox.processor_token
+    assert db_inbox.processor_token is None
     assert db_inbox.processed_at is not None
-    assert db_inbox.device_id == device.id
-    assert db_inbox.session_id is not None
+    assert db_inbox.workline_id == line.id
     assert db_session is not None
     assert db_session.workline_id == line.id
     assert db_session.plugin_key == line_code

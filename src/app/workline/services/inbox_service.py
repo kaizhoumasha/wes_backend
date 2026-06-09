@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from src.app.workline.inbox_claim_bucket import build_claim_bucket_key_for_update
 from src.app.workline.models.inbox import (
     InboxKind,
     InboxStatus,
@@ -407,7 +408,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         device_id: int | None = None,
     ) -> WorklineInbox:
         """
-        因安全状态阻塞，暂时挂起消息（不增加重试次数）。
+        因资源等待或运行时等待条件暂时挂起消息（不增加重试次数）。
         这样不会耗尽 attempt_count 导致消息进入 DEAD_LETTER。
         """
         data = {
@@ -545,6 +546,11 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         data: dict[str, Any],
         auto_commit: bool = True,
     ) -> WorklineInbox:
+        current = await self.repo.get_by_id(db, inbox_id)
+        if current is not None:
+            data = dict(data)
+            data["claim_bucket_key"] = build_claim_bucket_key_for_update(current=current, data=data)
+
         updated = await self.repo.update_processing_message(
             db,
             inbox_id=inbox_id,
