@@ -389,7 +389,7 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
             "resource_wait": 资源暂忙等待数
         }
     触发方式：
-        celery beat 定时调度（默认每 5 秒）
+        celery beat 定时调度（默认每 10 秒）
         手动调用：process_inbox_batch.delay(limit=10)
     """
     logger.debug(f"开始处理 Inbox 消息, limit={limit}")

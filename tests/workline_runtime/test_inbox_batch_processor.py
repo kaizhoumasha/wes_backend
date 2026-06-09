@@ -6,6 +6,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 from src.app.workline.models.inbox import InboxKind
+from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.repositories.inbox_repository import WorklineInboxClaim
 from src.app.workline.services.inbox_batch_processor import (
     InboxBatchProcessor,
@@ -673,6 +674,90 @@ async def test_resource_retry_disposition_parks_inbox_and_does_not_mark_processe
     assert result == {"processed": 1, "success": 0, "failed": 0, "skipped": 0, "resource_wait": 1}
     mock_inbox_service.park_for_retry.assert_awaited_once()
     mock_inbox_service.mark_as_processed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_processed_resource_wait_resolves_diagnostic_and_clears_session_context(db_session, mock_inbox_service):
+    session = WorklineSession(
+        session_code="test-resource-wait-resolved",
+        workline_id=20,
+        plugin_key="test_plugin",
+        status=SessionStatus.RUNNING,
+        context_json={"resource_wait": {"inbox_id": 1, "resource_key": "station:S1"}, "keep": "value"},
+    )
+    db_session.add(session)
+    await db_session.commit()
+    await db_session.refresh(session)
+
+    inbox = MagicMock()
+    inbox.id = 1
+    inbox.trace_id = "trace-resource-wait-resolved"
+    inbox.payload_json = {"event_type": "SOME_EVENT"}
+    workline = SimpleNamespace(id=20)
+    injected_write_back = SimpleNamespace(write_back=AsyncMock(return_value=RuntimeIntentEffectResult.processed()))
+    mock_inbox_service.pending_messages = [inbox]
+
+    class FakeOrchestratorService:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def process_inbox(
+            self,
+            *args: object,
+            write_callback: Callable[[OrchestratorResult], Awaitable[None]],
+            **kwargs: object,
+        ) -> OrchestratorResult:
+            _ = args, kwargs
+            result = OrchestratorResult(success=True, intents=[])
+            await write_callback(result)
+            return result
+
+    with (
+        patch(
+            "src.app.workline.services.inbox_batch_processor._load_related_entities",
+            new_callable=AsyncMock,
+        ) as mock_load,
+        patch(
+            "src.app.workline.services.inbox_batch_processor._is_duplicate_entry_event_for_session",
+            return_value=False,
+        ),
+        patch(
+            "src.app.workline.services.inbox_batch_processor._is_late_or_duplicate_command_result_for_session",
+            return_value=False,
+        ),
+        patch("src.app.workline.services.inbox_batch_processor.OrchestratorService", FakeOrchestratorService),
+        patch(
+            "src.app.workline.services.diagnostic_service.workline_diagnostic_service.resolve_resource_wait_diagnostics",
+            new_callable=AsyncMock,
+        ) as resolve_diagnostic,
+        patch("src.app.sys.services.event_stream_service.defer_sse_event"),
+        patch(
+            "src.app.sys.services.event_stream_service.publish_deferred_sse_events",
+            new_callable=AsyncMock,
+        ),
+    ):
+        mock_load.return_value = {
+            "session": session,
+            "workline": workline,
+            "device": None,
+            "command": None,
+            "devices_by_role": {},
+            "services": {},
+            "safety_checked": True,
+        }
+
+        processor = _processor_for_db(db_session, write_back_service=injected_write_back)
+        result = await processor.process_batch(db_session, limit=1)
+
+    assert result["success"] == 1
+    resolve_diagnostic.assert_awaited_once_with(
+        db_session,
+        inbox_id=1,
+        resource_key="station:S1",
+        auto_commit=False,
+    )
+    await db_session.refresh(session)
+    assert session.context_json == {"keep": "value"}
 
 
 @pytest.mark.asyncio

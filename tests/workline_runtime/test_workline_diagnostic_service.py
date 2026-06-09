@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.app.workline.models.diagnostic import WorklineDiagnostic
 from src.workline_runtime.diagnostics import ErrorCode, build_diagnostic_context, build_diagnostic_event
 
 
@@ -13,6 +14,7 @@ class _DiagnosticRepoStub:
         self.existing: Any | None = None
         self.get_by_diagnostic_key = AsyncMock(side_effect=self._get_by_key)
         self.create = AsyncMock(side_effect=self._create)
+        self.create_idempotent_by_diagnostic_key = AsyncMock(side_effect=self._create)
         self.update_resource_wait_by_key = AsyncMock(side_effect=self._update_resource_wait)
         self.resolve_resource_wait_by_key = AsyncMock(return_value=1)
         self.resolve_other_active_resource_waits_for_inbox = AsyncMock(return_value=0)
@@ -74,6 +76,8 @@ async def test_diagnostic_service_upserts_card_with_registry_and_redacted_eviden
 
     assert diagnostic.id == 41
     assert repo.created is not None
+    repo.create.assert_not_awaited()
+    repo.create_idempotent_by_diagnostic_key.assert_awaited_once()
     assert repo.created["diagnostic_key"] == "OUTBOX_DISPATCH_FAILED:trace-001:CMD-001:req-001"
     assert repo.created["owner"] == "integration"
     assert repo.created["recoverability"] == "manual_intervention_required"
@@ -102,6 +106,44 @@ async def test_diagnostic_service_returns_existing_record_for_duplicate_key() ->
 
     assert diagnostic.id == 99
     repo.create.assert_not_awaited()
+    repo.create_idempotent_by_diagnostic_key.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_repository_create_idempotent_by_diagnostic_key_returns_existing_without_rollback(
+    db_session,
+) -> None:
+    from sqlalchemy import func, select
+
+    from src.app.workline.repositories.diagnostic_repository import WorklineDiagnosticRepository
+
+    repo = WorklineDiagnosticRepository()
+    data = {
+        "diagnostic_key": "duplicate-diagnostic-key",
+        "trace_id": "trace-duplicate",
+        "request_id": "request-duplicate",
+        "diagnostic_code": "UNKNOWN",
+        "error_domain": "UNKNOWN",
+        "severity": "WARNING",
+        "recoverability": "manual_intervention_required",
+        "problem_class": "SOFTWARE",
+        "owner": "runtime",
+        "message": "重复诊断",
+        "next_steps_json": [],
+        "evidence_json": {},
+        "card_json": {},
+    }
+
+    first = await repo.create_idempotent_by_diagnostic_key(db_session, data)
+    second = await repo.create_idempotent_by_diagnostic_key(db_session, data)
+
+    assert second.id == first.id
+    count_result = await db_session.execute(
+        select(func.count())
+        .select_from(WorklineDiagnostic)
+        .where(WorklineDiagnostic.diagnostic_key == data["diagnostic_key"])
+    )
+    assert count_result.scalar_one() == 1
 
 
 @pytest.mark.asyncio

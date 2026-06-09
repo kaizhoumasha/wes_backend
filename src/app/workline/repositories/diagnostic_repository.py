@@ -3,6 +3,8 @@
 from typing import Any, cast
 
 from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.workline.models.diagnostic import DiagnosticStatus, WorklineDiagnostic
@@ -22,6 +24,47 @@ class WorklineDiagnosticRepository(BaseRepository[WorklineDiagnostic]):
         columns = cast("Any", WorklineDiagnostic).__table__.c
         result = await db.execute(select(WorklineDiagnostic).where(columns.diagnostic_key == diagnostic_key))
         return result.scalar_one_or_none()
+
+    @staticmethod
+    def _insert_values(data: dict[str, Any]) -> dict[str, Any]:
+        diagnostic = WorklineDiagnostic(**data)
+        table = cast("Any", WorklineDiagnostic).__table__
+        values: dict[str, Any] = {}
+        for column in table.columns:
+            value = getattr(diagnostic, column.name)
+            if column.primary_key and value is None:
+                continue
+            values[column.name] = value
+        return values
+
+    async def create_idempotent_by_diagnostic_key(
+        self,
+        db: AsyncSession,
+        data: dict[str, Any],
+    ) -> WorklineDiagnostic:
+        """按 diagnostic_key 原子创建；冲突时返回已有记录，不回滚当前事务。"""
+
+        diagnostic_key = str(data["diagnostic_key"])
+        table = cast("Any", WorklineDiagnostic).__table__
+        dialect_name = db.get_bind().dialect.name
+        insert_fn = sqlite_insert if dialect_name == "sqlite" else postgresql_insert
+        statement = (
+            insert_fn(table)
+            .values(**self._insert_values(data))
+            .on_conflict_do_nothing(index_elements=[table.c.diagnostic_key])
+            .returning(table.c.id)
+        )
+        result = await db.execute(statement)
+        created_id = result.scalar_one_or_none()
+        if isinstance(created_id, int):
+            created = await self.get_by_id(db, created_id)
+            if created is not None:
+                return created
+
+        existing = await self.get_by_diagnostic_key(db, diagnostic_key)
+        if existing is not None:
+            return existing
+        raise RuntimeError(f"创建工作线诊断失败: {diagnostic_key}")
 
     async def get_active_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[WorklineDiagnostic]:
         """按 trace_id 查询活跃诊断。"""

@@ -48,23 +48,25 @@ def _database_url_label(database_url: str) -> str:
 
 
 def _is_safe_integration_database_url(database_url: str) -> bool:
-    if _truthy_env("ALLOW_SHARED_DEV_DB_INTEGRATION"):
-        return True
-
     parsed = urlparse(database_url)
     hostname = (parsed.hostname or "").lower()
     database_name = parsed.path.lstrip("/").lower()
-    return (
-        hostname in {"localhost", "127.0.0.1", "::1", "db"}
-        or database_name in {"test"}
-        or database_name.startswith("test_")
-        or database_name.endswith("_test")
-    )
+    is_local_host = hostname in {"localhost", "127.0.0.1", "::1", "db"}
+    is_test_database = database_name in {"test"} or database_name.startswith("test_") or database_name.endswith("_test")
+    if _truthy_env("ALLOW_SHARED_DEV_DB_INTEGRATION"):
+        return is_local_host
+    return is_local_host and is_test_database
 
 
 def _candidate_database_urls() -> list[str]:
     override = os.getenv("INTEGRATION_DATABASE_URL")
-    urls: list[str] = [override] if override else [str(settings.DATABASE_URL)]
+    if not override:
+        raise RuntimeError(
+            "Workline integration tests require INTEGRATION_DATABASE_URL. "
+            "Point it at the docker/local test database. For a local shared dev database, "
+            "also set ALLOW_SHARED_DEV_DB_INTEGRATION=1."
+        )
+    urls: list[str] = [override]
     for url in list(urls):
         if "@db:" in url:
             urls.append(url.replace("@db:", "@localhost:"))
@@ -77,8 +79,8 @@ def _candidate_database_urls() -> list[str]:
         raise RuntimeError(
             "Workline integration tests require a Docker/local/test database URL. "
             f"Unsafe candidates: {labels}. "
-            "Set INTEGRATION_DATABASE_URL to the local docker database, or explicitly set "
-            "ALLOW_SHARED_DEV_DB_INTEGRATION=1."
+            "Set INTEGRATION_DATABASE_URL to the local docker test database. For a local shared dev database, "
+            "also set ALLOW_SHARED_DEV_DB_INTEGRATION=1."
         )
     return safe_urls
 
@@ -124,7 +126,7 @@ async def integration_engine(integration_guard: None) -> AsyncEngine:
             last_error = exc
             await engine.dispose()
 
-    pytest.skip(f"no reachable postgres for integration tests: {last_error}")
+    pytest.fail(f"no reachable postgres for integration tests: {last_error}")
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
@@ -139,7 +141,7 @@ async def redis_client(integration_guard: None) -> Redis:
             last_error = exc
             await client.close()
 
-    pytest.skip(f"no reachable redis for integration tests: {last_error}")
+    pytest.fail(f"no reachable redis for integration tests: {last_error}")
 
 
 @pytest.fixture(scope="function")
@@ -289,6 +291,8 @@ def celery_worker_process(integration_guard: None) -> Iterator[dict[str, str]]:
         suffix=".log",
         delete=False,
     ) as log_file:
+        keep_log = True
+        log_path = Path(log_file.name)
         env = os.environ.copy()
         existing_pythonpath = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = f"{repo_root}:{existing_pythonpath}" if existing_pythonpath else str(repo_root)
@@ -337,11 +341,16 @@ def celery_worker_process(integration_guard: None) -> Iterator[dict[str, str]]:
                     ping_result = None
 
                 if ping_result and hostname in ping_result:
-                    yield {
-                        "hostname": hostname,
-                        "queue": queue_name,
-                        "log_path": log_file.name,
-                    }
+                    keep_log = False
+                    try:
+                        yield {
+                            "hostname": hostname,
+                            "queue": queue_name,
+                            "log_path": log_file.name,
+                        }
+                    except BaseException:
+                        keep_log = True
+                        raise
                     break
 
                 time.sleep(1)
@@ -354,6 +363,8 @@ def celery_worker_process(integration_guard: None) -> Iterator[dict[str, str]]:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+            if not keep_log:
+                log_path.unlink(missing_ok=True)
 
 
 @pytest_asyncio.fixture(scope="function")

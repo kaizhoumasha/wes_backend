@@ -202,7 +202,7 @@ async def test_repository_update_recomputes_claim_bucket_key(db_session) -> None
 
 
 @pytest.mark.asyncio
-async def test_processing_retry_recomputes_claim_bucket_from_resolved_session(db_session) -> None:
+async def test_processing_retry_keeps_claim_bucket_frozen_after_resolved_session(db_session) -> None:
     repository = WorklineInboxRepository()
     session = await _create_workline_session(db_session, "processing")
     created = await repository.create(
@@ -228,7 +228,7 @@ async def test_processing_retry_recomputes_claim_bucket_from_resolved_session(db
     )
 
     assert updated.status == InboxStatus.RETRY
-    assert updated.claim_bucket_key == f"session:{session.id}"
+    assert updated.claim_bucket_key == "device_code:SCN-01"
 
 
 @pytest.mark.asyncio

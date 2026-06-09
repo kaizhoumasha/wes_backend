@@ -243,6 +243,7 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
     assert inbox.session_id == session.id
     assert inbox.command_id == command.id
     assert inbox.device_id == device.id
+    assert inbox.claim_bucket_key == f"session:{session.id}"
     assert inbox.payload_json == {
         "command_code": command.command_code,
         "device_code": device.device_code,

@@ -60,16 +60,23 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
         normalized["claim_bucket_key"] = build_claim_bucket_key_for_update(current=current, data=normalized)
         return normalized
 
+    @staticmethod
+    def _can_recompute_claim_bucket_key(current: WorklineInbox) -> bool:
+        status = getattr(current, "status", None)
+        return status in {InboxStatus.NEW, InboxStatus.NEW.value} and not getattr(current, "processor_token", None)
+
     async def create(self, db: AsyncSession, data: dict[str, Any]) -> WorklineInbox | None:
         """创建 Inbox 时兜底写入物化 claim bucket key。"""
 
         return await super().create(db, self._with_claim_bucket_key(data))
 
     async def update(self, db: AsyncSession, id: int, data: dict[str, Any]) -> WorklineInbox | None:
-        """更新 Inbox 时同步刷新物化 claim bucket key。"""
+        """更新未 claim 的 Inbox 归属字段时同步刷新物化 claim bucket key。"""
 
         current = await self.get_by_id(db, id)
         if current is None:
+            return await super().update(db, id, data)
+        if not self._can_recompute_claim_bucket_key(current):
             return await super().update(db, id, data)
         return await super().update(db, id, self._with_current_claim_bucket_key(current, data))
 

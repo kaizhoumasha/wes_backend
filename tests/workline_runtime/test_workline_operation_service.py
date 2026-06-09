@@ -4,11 +4,13 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy import select
 
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
-from src.app.workline.models.inbox import InboxKind, SourceSystem
-from src.app.workline.models.session import SessionStatus
-from src.app.workline.models.workline import WorkLineRunMode
+from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
+from src.app.workline.models.inbox import InboxKind, SourceSystem, WorklineInbox
+from src.app.workline.models.session import SessionStatus, WorklineSession
+from src.app.workline.models.workline import LineType, WorkLine, WorkLineRunMode
 from src.utils.timezone import timezone
 from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
 
@@ -22,12 +24,27 @@ class _InboxRepoStub:
         self.create = AsyncMock(side_effect=self._create)
         self.create_idempotent = AsyncMock(side_effect=self._create_idempotent)
 
+    @staticmethod
+    def _with_claim_bucket_key(data: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(data)
+        claim_bucket_key = normalized.get("claim_bucket_key")
+        if not isinstance(claim_bucket_key, str) or not claim_bucket_key:
+            normalized["claim_bucket_key"] = build_claim_bucket_key(
+                session_id=normalized.get("session_id"),
+                device_id=normalized.get("device_id"),
+                workline_id=normalized.get("workline_id"),
+                payload_json=normalized.get("payload_json")
+                if isinstance(normalized.get("payload_json"), dict)
+                else None,
+            )
+        return normalized
+
     async def _create(self, _db: object, data: dict[str, Any]) -> Any:
-        self.created = data
-        return SimpleNamespace(id=88, **data)
+        self.created = self._with_claim_bucket_key(data)
+        return SimpleNamespace(id=88, **self.created)
 
     async def _create_idempotent(self, _db: object, data: dict[str, Any], *, idempotency_key: str) -> Any:
-        self.created = data | {"idempotency_key": idempotency_key}
+        self.created = self._with_claim_bucket_key(data | {"idempotency_key": idempotency_key})
         return SimpleNamespace(id=88, **self.created)
 
     def calculate_external_http_idempotency_key(
@@ -120,6 +137,8 @@ async def test_submit_sandbox_event_locks_workline_before_creating_inbox() -> No
     assert inbox is not None
     workline_repo.get_for_update.assert_awaited_once_with(db, 42)
     workline_repo.get_by_id.assert_not_awaited()
+    assert inbox_repo.created is not None
+    assert inbox_repo.created["claim_bucket_key"] == "device:7"
 
 
 @pytest.mark.asyncio
@@ -182,6 +201,7 @@ async def test_replay_clones_original_inbox_for_runtime_processing_and_does_not_
     assert inbox_repo.created["trace_id"] == "trace-001"
     assert inbox_repo.created["event_id"].startswith("replay:event-original:")
     assert inbox_repo.created["causation_id"] == "event-original"
+    assert inbox_repo.created["claim_bucket_key"] == "session:2"
     assert inbox_repo.created["payload_json"]["replay_of_event_id"] == "event-original"
     assert inbox_repo.created["payload_json"]["message_type"] == original_payload["message_type"]
     assert original.payload_json == original_payload
@@ -275,6 +295,77 @@ async def test_manual_operation_rejects_inactive_workline() -> None:
 
 
 @pytest.mark.asyncio
+async def test_manual_operation_inbox_receives_claim_bucket_key() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    session = SimpleNamespace(
+        id=20,
+        status=SessionStatus.RUNNING,
+        workline_id=1,
+        trace_id="trace-open",
+        reconciliation_state=None,
+    )
+    inbox_repo = _InboxRepoStub()
+    service = WorklineOperationService(
+        inbox_repo=cast("Any", inbox_repo),
+        session_repo=cast("Any", _SessionRepoStub(session)),
+        workline_repo=cast("Any", _SingleItemRepoStub(SimpleNamespace(id=1, is_active=True))),
+    )
+
+    inbox = await service.create_manual_operation(
+        object(),
+        session_id=20,
+        operation="HOLD",
+        operator_id="ops-1",
+        reason="需要检查",
+        auto_commit=False,
+    )
+
+    assert inbox.id == 88
+    assert inbox_repo.created is not None
+    assert inbox_repo.created["kind"] == InboxKind.MANUAL_HOLD
+    assert inbox_repo.created["claim_bucket_key"] == "session:20"
+
+
+@pytest.mark.asyncio
+async def test_manual_operation_persists_claim_bucket_key_with_real_repository(db_session) -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    workline = WorkLine(
+        line_code="manual-real-bucket",
+        line_name="manual-real-bucket",
+        line_type=LineType.AUTO,
+        is_active=True,
+    )
+    db_session.add(workline)
+    await db_session.flush()
+
+    session = WorklineSession(
+        session_code="manual-real-bucket-session",
+        workline_id=workline.id,
+        plugin_key="test_plugin",
+        status=SessionStatus.RUNNING,
+        trace_id="trace-manual-real-bucket",
+    )
+    db_session.add(session)
+    await db_session.commit()
+    await db_session.refresh(session)
+
+    service = WorklineOperationService()
+    inbox = await service.create_manual_operation(
+        db_session,
+        session_id=session.id,
+        operation="HOLD",
+        operator_id="ops-1",
+        reason="需要检查",
+    )
+
+    persisted = (await db_session.execute(select(WorklineInbox).where(WorklineInbox.id == inbox.id))).scalar_one()
+    assert persisted.kind == InboxKind.MANUAL_HOLD
+    assert persisted.claim_bucket_key == f"session:{session.id}"
+
+
+@pytest.mark.asyncio
 async def test_sandbox_external_callback_creates_external_http_inbox_for_pending_outbox() -> None:
     from src.app.workline.services.operation_service import WorklineOperationService
 
@@ -344,6 +435,7 @@ async def test_sandbox_external_callback_creates_external_http_inbox_for_pending
     assert inbox_repo.created["trace_id"] == "trace-001"
     assert inbox_repo.created["event_id"] == "wms-event-001"
     assert inbox_repo.created["source_message_id"] == "rack-request-001"
+    assert inbox_repo.created["claim_bucket_key"] == "session:530"
     created_payload = inbox_repo.created["payload_json"]
     assert created_payload["message_type"] == "EXTERNAL_HTTP"
     assert created_payload["callback_type"] == "WMS_RACK_ARRIVED"
@@ -1231,6 +1323,7 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
     assert result_payload["data"] == {"item_id": "ITEM-001"}
     assert "item_id" not in result_payload
     assert inbox_repo.created["session_id"] == 530
+    assert inbox_repo.created["claim_bucket_key"] == "session:530"
     assert input_payload == {"item_id": "ITEM-001"}
 
 

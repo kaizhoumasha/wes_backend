@@ -112,13 +112,7 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
             "card_json": card_json,
         }
 
-        created = await self.repo.create(db, data)
-        if created is None:
-            # 如果并发事务已经创建了同一 diagnostic_key，优先返回已存在记录。
-            existing_after_conflict = await self.repo.get_by_diagnostic_key(db, diagnostic_key)
-            if existing_after_conflict is not None:
-                return existing_after_conflict
-            raise RuntimeError(f"创建工作线诊断失败: {diagnostic_key}")
+        created = await self.repo.create_idempotent_by_diagnostic_key(db, data)
         if auto_commit:
             await self._commit_mutation(db)
         return created

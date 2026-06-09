@@ -1090,9 +1090,8 @@ class InboxBatchProcessor:
                             _ = await inbox_service.mark_as_processed(
                                 db, _inbox_pk, processor_token=_processor_token, auto_commit=False
                             )
-                            resource_wait_context = payload_dict(
-                                payload_dict(getattr(_session, "context_json", None)).get("resource_wait")
-                            )
+                            session_context = dict(payload_dict(getattr(_session, "context_json", None)))
+                            resource_wait_context = payload_dict(session_context.get("resource_wait"))
                             if optional_int(
                                 resource_wait_context.get("inbox_id")
                             ) == _inbox_pk and resource_wait_context.get("resource_key"):
@@ -1104,6 +1103,8 @@ class InboxBatchProcessor:
                                     resource_key=str(resource_wait_context["resource_key"]),
                                     auto_commit=False,
                                 )
+                                session_context.pop("resource_wait", None)
+                                _session.context_json = session_context
                         else:
                             raise RuntimeError(f"Unsupported write-back disposition: {write_disposition}")
                         await db.commit()
