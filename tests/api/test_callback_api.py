@@ -1109,9 +1109,11 @@ class TestCallbackResultAPI:
                 db=db_session,
             )
 
-        assert response["code"] == 404
+        assert response["code"] == ResourceErrorCode.NOT_FOUND.code
         assert response["message"] == "未找到设备: ARM_01"
-        assert response["request_id"] == "req-ctx-001"
+        data = _response_data(response)
+        assert data["ack"] is False
+        assert data["reason_code"] == ResourceErrorCode.NOT_FOUND.code
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
@@ -1412,6 +1414,52 @@ class TestCallbackEventAPI:
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
         assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_event_rejects_device_context_failure_as_response_model(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        http_response = Response()
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
+                new=AsyncMock(return_value=(None, {"code": 404, "message": "未找到设备: ARM_01"})),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-event-ctx-001"),
+        ):
+            from src.app.callback.v1.callback import callback_event
+
+            response = await callback_event(
+                request=build_request(body=create_event_payload(), path="/api/v1/callback/event"),
+                db=db_session,
+                response=http_response,
+            )
+
+        assert http_response.status_code == 404
+        assert response["code"] == ResourceErrorCode.NOT_FOUND.code
+        assert response["message"] == "未找到设备: ARM_01"
+        data = _response_data(response)
+        assert data["ack"] is False
+        assert data["reason_code"] == ResourceErrorCode.NOT_FOUND.code
+        response_model_data = _response_model_data(response)
+        assert response_model_data["ack"] is False
+        assert response_model_data["reason_code"] == ResourceErrorCode.NOT_FOUND.code
+        mock_log_callback.assert_awaited_once()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "DEVICE_CONTEXT_RESOLVE"
+        assert log_kwargs["response_status"] == 404
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
