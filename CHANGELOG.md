@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 修复 `RESOURCE_WAIT` 成功重试后旧 ACTIVE 诊断和 session 等待上下文未及时关闭的问题。
 - 修复设备上下文缺失的 callback event 返回合同，未知设备现在返回 HTTP 404、业务码 `3000` 和 `ack=false`。
 - 修复 Inbox claim bucket 模型索引声明与 Alembic migration 之间的 schema drift 风险。
+- 修复 stale `PROCESSING` 回收缺少专用热队列 partial index 导致 PostgreSQL claim 执行计划可能退化的问题。
 
 ## [0.4.8.0] - 2026-06-08
 
