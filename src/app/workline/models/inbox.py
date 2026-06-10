@@ -159,7 +159,6 @@ class WorklineInboxBase(BaseMixin):
     claim_bucket_key: str = Field(
         default="serial:unknown",
         max_length=200,
-        index=True,
         description="Inbox claim 冲突域物化键",
     )
     event_id: str | None = Field(

@@ -38,6 +38,7 @@ _SUPPORTED_INTENT_KINDS = {
 _TERMINAL_INTENT_KINDS = {RuntimeIntentKind.COMPLETE, RuntimeIntentKind.BLOCK, RuntimeIntentKind.RESOURCE_WAIT}
 _DEFAULT_RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
 _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
+_STATION_DISPATCH_LEASE_UNAVAILABLE = "station dispatch lease is not available"
 
 
 def _all_devices(devices_by_role: dict[str, list[Any]]) -> list[Any]:
@@ -224,6 +225,41 @@ def _required_rack_task_specs(payload_json: Mapping[str, Any]) -> list[dict[str,
     return specs
 
 
+def _station_position_code_from_mapping(value: Mapping[str, Any]) -> str | None:
+    for key in ("target_position_code", "work_position_code", "position_code", "endpoint_code"):
+        if (position_code := _non_empty_text(value.get(key))) is not None:
+            return position_code
+
+    station = value.get("station")
+    if isinstance(station, Mapping):
+        return _station_position_code_from_mapping(cast("Mapping[str, Any]", station))
+    return None
+
+
+def _station_position_code_from_rack_operation_request(
+    payload_json: Mapping[str, Any],
+    task_specs: list[dict[str, Any]],
+) -> str | None:
+    if (position_code := _station_position_code_from_mapping(payload_json)) is not None:
+        return position_code
+
+    for task_spec in task_specs:
+        if (position_code := _station_position_code_from_mapping(task_spec)) is not None:
+            return position_code
+        request_json = task_spec.get("request_json")
+        if (
+            isinstance(request_json, Mapping)
+            and (position_code := _station_position_code_from_mapping(cast("Mapping[str, Any]", request_json)))
+            is not None
+        ):
+            return position_code
+    return None
+
+
+def _is_station_dispatch_lease_unavailable(exc: ValueError) -> bool:
+    return str(exc) == _STATION_DISPATCH_LEASE_UNAVAILABLE
+
+
 def _required_handling_move_specs(payload_json: Mapping[str, Any], kind: RuntimeIntentKind) -> list[dict[str, Any]]:
     raw_specs = payload_json.get("moves")
     if not isinstance(raw_specs, list) or not raw_specs:
@@ -360,7 +396,9 @@ class RuntimeIntentEffectApplier:
                 continue
 
             if intent.kind == RuntimeIntentKind.RACK_OPERATION_REQUEST:
-                await self._apply_rack_operation_request(ctx, intent)
+                result = await self._apply_rack_operation_request(ctx, intent)
+                if result is not None:
+                    return result
                 continue
 
             if intent.kind in {RuntimeIntentKind.BIN_OPERATION_REQUEST, RuntimeIntentKind.RACK_BIN_EXCHANGE_REQUEST}:
@@ -616,7 +654,7 @@ class RuntimeIntentEffectApplier:
             status=TimelineStatus.PENDING,
         )
 
-    async def _apply_rack_operation_request(self, ctx: Any, intent: RuntimeIntent) -> None:
+    async def _apply_rack_operation_request(self, ctx: Any, intent: RuntimeIntent) -> RuntimeIntentEffectResult | None:
         from src.app.workline.models.timeline import (
             TimelineActionType,
             TimelineActorType,
@@ -643,17 +681,41 @@ class RuntimeIntentEffectApplier:
         if trace_id is None:
             raise ValueError("RACK_OPERATION_REQUEST intent requires trace_id")
         task_specs = _required_rack_task_specs(payload_json)
-        tasks = await service.request_operation_tasks(
-            ctx_map["db"],
-            operation_key=operation_key,
-            operation_type=operation_type,
-            workline=ctx_map["workline"],
-            session=session,
-            target_code=target_code,
-            trace_id=trace_id,
-            task_specs=task_specs,
-            timeout_seconds=timeout_seconds,
-        )
+        try:
+            tasks = await service.request_operation_tasks(
+                ctx_map["db"],
+                operation_key=operation_key,
+                operation_type=operation_type,
+                workline=ctx_map["workline"],
+                session=session,
+                target_code=target_code,
+                trace_id=trace_id,
+                task_specs=task_specs,
+                timeout_seconds=timeout_seconds,
+            )
+        except ValueError as exc:
+            if not _is_station_dispatch_lease_unavailable(exc):
+                raise
+            position_code = _station_position_code_from_rack_operation_request(payload_json, task_specs)
+            if position_code is None:
+                raise
+            return await self._apply_resource_wait(
+                ctx,
+                RuntimeIntent.resource_wait(
+                    resource_kind="STATION",
+                    resource_key=f"station:{position_code}",
+                    reason_code="STATION_LEASE_CLAIM_FAILED",
+                    message="目标 Station dispatch lease 已被其它会话占用，等待资源释放后自动重试",
+                    suggested_action="等待目标 Station dispatch lease 释放，或检查当前 rack operation/session 占用",
+                    payload={
+                        "position_code": position_code,
+                        "operation_key": operation_key,
+                        "operation_type": operation_type,
+                        "target_code": target_code,
+                        "trace_id": trace_id,
+                    },
+                ),
+            )
 
         self._mark_session_waiting_for_rack_operation(
             ctx,
@@ -682,6 +744,7 @@ class RuntimeIntentEffectApplier:
             related_inbox_id=workline_effects._timeline_inbox_id(ctx),
             status=TimelineStatus.PENDING,
         )
+        return None
 
     def _mark_session_waiting_for_rack_operation(
         self,

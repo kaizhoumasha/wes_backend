@@ -80,6 +80,19 @@ def test_claim_bucket_key_helper_fits_model_column_length() -> None:
     assert claim_bucket_key == f"{raw_key[:183]}:{digest}"
 
 
+def test_claim_bucket_key_uses_only_hot_queue_composite_index() -> None:
+    indexes_by_name = {
+        index.name: [column.name for column in index.columns] for index in WorklineInbox.__table__.indexes
+    }
+
+    assert indexes_by_name["ix_wes_biz_workline_inbox_hot_claim_bucket_fifo"] == [
+        "claim_bucket_key",
+        "received_at",
+        "id",
+    ]
+    assert "ix_wes_biz_workline_inbox_claim_bucket_key" not in indexes_by_name
+
+
 def test_claim_bucket_key_for_update_respects_explicit_none() -> None:
     from types import SimpleNamespace
 
