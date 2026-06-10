@@ -10,6 +10,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.5.0.0] - 2026-06-10
+
+### Added
+
+- WorkLine runtime 支持按设备、工位和 Session 资源约束并发处理，同一资源保持 FIFO 串行，不同资源可并行推进。
+- 新增 Inbox `claim_bucket_key` 热队列合同和 PostgreSQL-backed claim/EXPLAIN 验收，覆盖同 bucket 队首围栏、到期重试和 stale `PROCESSING` 回收。
+- 新增 `RESOURCE_WAIT` 运行时等待语义、诊断证据和 runtime/trace 资源证据视图，操作员可看到当前阻塞资源、等待次数和最近等待时间。
+- 新增粗分机/SMT mock 与 Docker 集成验证支撑，覆盖 WMS 有状态货架池、ECS 随机延迟和 WorkLine runtime smoke 数据。
+
+### Changed
+
+- WorkLine Inbox worker 从工作线级 Session 串行改为资源约束 claim 模型，并移除旧 parallelism/bucket lock 参数与入口 blocker 合同。
+- SMT 分拣入库在目标工位资源忙时进入 `RESOURCE_WAIT`，未知资源仍保持明确阻断，避免把正常资源等待计入普通失败。
+- WorkLine runtime、诊断、trace、操作文档和硬件流程文档同步到多 open session 与资源决定并发的运行模型。
+
+### Fixed
+
+- 修复 station dispatch lease 并发写入竞争可能被当作普通失败并进入死信的问题，竞争失败现在按资源等待重试处理。
+- 修复 `RESOURCE_WAIT` 成功重试后旧 ACTIVE 诊断和 session 等待上下文未及时关闭的问题。
+- 修复设备上下文缺失的 callback event 返回合同，未知设备现在返回 HTTP 404、业务码 `3000` 和 `ack=false`。
+- 修复 Inbox claim bucket 模型索引声明与 Alembic migration 之间的 schema drift 风险。
+
 ## [0.4.8.0] - 2026-06-08
 
 ### Added
