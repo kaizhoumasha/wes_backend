@@ -10,7 +10,9 @@
 
 **Tech Stack:** Python 3.13, FastAPI, SQLModel/SQLAlchemy async, Celery, pytest/pytest-asyncio, Ruff, GitNexus, uv。
 
-**Implementation Status (2026-06-09):** 资源约束并发代码、迁移、用户文档和本地门禁已落地；`uv run ruff format/check <changed-python-files-only>` 通过，focused tests 为 364 passed / 1 skipped，全量 `uv run pytest tests/` 为 2011 passed / 9 skipped。本地未提供 PostgreSQL 集成环境时，`RUN_WORKLINE_INTEGRATION=1` / `INTEGRATION_DATABASE_URL` claim/EXPLAIN 门禁需由 CI 或集成环境补跑并留痕。
+**Implementation Status (2026-06-10):** 资源约束并发代码、迁移、用户文档和本地门禁已落地；PostgreSQL-backed claim/EXPLAIN 门禁已在本地 test DB 用 `RUN_WORKLINE_INTEGRATION=1` + `INTEGRATION_DATABASE_URL` 通过确认；focused runtime 契约测试为 319 passed，PostgreSQL-backed claim/EXPLAIN + 多物料集成子集为 17 passed，全量 `uv run pytest tests/` 为 2035 passed / 21 skipped。当前剩余状态仅为最终提交未执行，等待用户明确提交指令。
+
+**Acceptance Audit (2026-06-10):** 下方 checkbox 已按功能验收口径逐项更新：`[x]` 表示该项对应合同已由实现、测试、静态搜索、PostgreSQL-backed 门禁或 GitNexus detect changes 证明；RED 阶段的“写失败测试/运行失败测试”不在验收审计中破坏当前实现重放，只确认对应回归测试已存在并通过。`Task 6 / Step 7` 涉及真实 Git commit，本轮未擅自提交，因此保持未勾选。
 
 ---
 
@@ -149,35 +151,35 @@ Device dispatch boundary
 
 Synthesized from Eng Review findings. These are already folded into Task 1-6 below; do not implement them as a separate branch.
 
-- [ ] **R1 (P1, human: ~30min / CC: ~5min)** — runtime — 定义 `RESOURCE_RETRY` 统计语义
+- [x] **R1 (P1, human: ~30min / CC: ~5min)** — runtime — 定义 `RESOURCE_RETRY` 统计语义
   - Surfaced by: Architecture Review — 当前等待分支按 failed 计数，资源等待不应污染 failed 或 skipped。
   - Files: PLAN、SPEC、`tests/workline_runtime/test_inbox_batch_processor.py`
   - Verify: `test_resource_retry_counts_as_processed_resource_wait_not_skipped_failed_success`
-- [ ] **R2 (P1, human: ~30min / CC: ~5min)** — inbox claim — 锁定 `claim_bucket_key` 生命周期
+- [x] **R2 (P1, human: ~30min / CC: ~5min)** — inbox claim — 锁定 `claim_bucket_key` 生命周期
   - Surfaced by: Architecture Review — claim 后重算 key 会移动冲突域，破坏同 bucket 队首围栏。
-  - Files: PLAN、SPEC、`tests/workline_runtime/test_inbox_claim_plan.py`
+  - Files: PLAN、SPEC、`tests/workline_runtime/test_inbox_claim_bucket.py`
   - Verify: `test_claim_bucket_key_frozen_after_processing_claim`
-- [ ] **R3 (P2, human: ~1h / CC: ~10min)** — tests — 加入 WorklineInbox 测试构造 helper
+- [x] **R3 (P2, human: ~1h / CC: ~10min)** — tests — 加入 WorklineInbox 测试构造 helper
   - Surfaced by: Code Quality Review — `claim_bucket_key` 非空后，多处直接 `WorklineInbox(...)` fixture 会重复手写字段。
   - Files: `tests/helpers/workline_inbox_factory.py` 或现有测试 helper、相关 WorkLine tests
   - Verify: 全量 WorkLine runtime focused tests 不因缺 `claim_bucket_key` 失败。
-- [ ] **R4 (P2, human: ~30min / CC: ~5min)** — runtime — 把 `WriteBackDisposition` 放到中立小模块
+- [x] **R4 (P2, human: ~30min / CC: ~5min)** — runtime — 把 `WriteBackDisposition` 放到中立小模块
   - Surfaced by: Code Quality Review — runtime effect 和 app write-back service 已有局部互引，disposition 不应放在 service 层。
   - Files: `src/workline_runtime/effect_result.py`、effect/write-back/processor
   - Verify: import graph 无 runtime -> app service enum 依赖。
-- [ ] **R5 (P1, human: ~45min / CC: ~10min)** — diagnostics — 明确连续 `RESOURCE_WAIT` 诊断关闭规则
+- [x] **R5 (P1, human: ~45min / CC: ~10min)** — diagnostics — 明确连续 `RESOURCE_WAIT` 诊断关闭规则
   - Surfaced by: Test Review — 同一 Inbox 从资源 A 等到资源 B 时旧 ACTIVE wait 必须关闭。
   - Files: diagnostic service/repository、resource wait tests
   - Verify: `test_resource_wait_transition_resolves_previous_active_resource_wait_for_same_inbox`
-- [ ] **R6 (P1, human: ~45min / CC: ~10min)** — inbox claim — 补齐 direct writer 覆盖矩阵
+- [x] **R6 (P1, human: ~45min / CC: ~10min)** — inbox claim — 补齐 direct writer 覆盖矩阵
   - Surfaced by: Code Quality Review — 当前文档只点名 sandbox external callback，但现有代码还有 replay、manual、sandbox event/result、timeout 和 Runtime Hold continue-result 等写入形态。
   - Files: PLAN、SPEC、`tests/workline_runtime/test_workline_operation_service.py`、`tests/workline_runtime/test_runtime_hold_release_service.py`、`tests/workline_runtime/test_inbox_service.py`
   - Verify: `test_direct_inbox_writers_receive_claim_bucket_key`
-- [ ] **R7 (P2, human: ~15min / CC: ~5min)** — inbox model — 清理重复 `DataTableMixin`
+- [x] **R7 (P2, human: ~15min / CC: ~5min)** — inbox model — 清理重复 `DataTableMixin`
   - Surfaced by: Code Quality Review — `WorklineInbox` 当前重复继承 `DataTableMixin`，Task 3 已修改模型，适合同步消除结构噪声。
   - Files: `src/app/workline/models/inbox.py`、model contract tests
   - Verify: `test_workline_inbox_has_single_data_table_mixin`
-- [ ] **R8 (P1, human: ~30min / CC: ~10min)** — PostgreSQL gate — 写明强制运行入口
+- [x] **R8 (P1, human: ~30min / CC: ~10min)** — PostgreSQL gate — 写明强制运行入口
   - Surfaced by: Test Review — 默认 `tests/conftest.py` 使用 SQLite，`SKIP LOCKED` 和 partial index 不能靠 SQLite 证明。
   - Files: PLAN、SPEC、PostgreSQL-backed claim/EXPLAIN tests
   - Verify: `RUN_WORKLINE_INTEGRATION=1 INTEGRATION_DATABASE_URL=... uv run pytest ...`
@@ -209,7 +211,7 @@ Runtime、Inbox、diagnostic、plugin 路径共享同一批合同；并行 workt
 - Test: `tests/workline_runtime/test_runtime_intent.py`
 - Test: `tests/workline_runtime/test_diagnostics_builder.py`
 
-- [ ] **Step 1: 运行影响分析**
+- [x] **Step 1: 运行影响分析**
 
 在 GitNexus MCP 中运行：
 
@@ -220,7 +222,7 @@ impact(repo="wes_backend", target="RuntimeIntentKind", direction="upstream")
 
 通过标准：记录直接 import/callers；若 HIGH/CRITICAL，先汇报再继续。
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
 新增或更新以下测试点：
 
@@ -246,7 +248,7 @@ WORKLINE_INBOX_BATCH_PARALLELISM is not exported
 INBOX_BUCKET_LOCK_TTL_SECONDS is not exported
 ```
 
-- [ ] **Step 3: 运行失败测试**
+- [x] **Step 3: 运行失败测试**
 
 ```bash
 uv run pytest \
@@ -258,7 +260,7 @@ uv run pytest \
 
 期望：RESOURCE_WAIT enum/factory/constant/diagnostic code 相关测试失败。
 
-- [ ] **Step 4: 最小实现**
+- [x] **Step 4: 最小实现**
 
 实现合同：
 
@@ -278,7 +280,7 @@ uv run pytest \
   - registry fix 文案指向“等待物理资源释放或检查资源占用证据”。
   - builder 默认值使用 `Severity.WARNING`、`Recoverability.AUTO_RETRYABLE`、`ProblemClass.SOFTWARE`。
 
-- [ ] **Step 5: 运行通过测试**
+- [x] **Step 5: 运行通过测试**
 
 ```bash
 uv run pytest \
@@ -290,7 +292,7 @@ uv run pytest \
 
 期望：全部通过。
 
-- [ ] **Step 6: 记录阶段结果**
+- [x] **Step 6: 记录阶段结果**
 
 不提交。确认 focused tests 通过后继续 Task 2；最终统一在 Task 6 跑全量门禁、GitNexus detect changes 并单次提交。
 
@@ -306,7 +308,7 @@ uv run pytest \
 - Test: `tests/workline_runtime/test_integration_debug_service.py`
 - Test: `tests/workline_runtime/test_workline_diagnostic_service.py`
 
-- [ ] **Step 1: 运行影响分析**
+- [x] **Step 1: 运行影响分析**
 
 ```text
 impact(repo="wes_backend", target="SessionResolver", direction="upstream")
@@ -316,7 +318,7 @@ impact(repo="wes_backend", target="WorklineEntryAdmissionBlocked", direction="up
 
 通过标准：确认影响主要集中在 `inbox_batch_processor` 和 workline tests；HIGH/CRITICAL 先汇报。
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
 新增/改写测试点：
 
@@ -339,7 +341,7 @@ integration debug latest cases:
   不返回 WORKLINE_ENTRY_ADMISSION_BLOCKED synthetic case
 ```
 
-- [ ] **Step 3: 运行失败测试**
+- [x] **Step 3: 运行失败测试**
 
 ```bash
 uv run pytest \
@@ -351,7 +353,7 @@ uv run pytest \
 
 期望：旧 blocker 行为和旧 debug/diagnostic 入口导致测试失败。
 
-- [ ] **Step 4: 最小实现**
+- [x] **Step 4: 最小实现**
 
 实现合同：
 
@@ -370,7 +372,7 @@ uv run pytest \
   - 删除 pending entry-admission backlog 加载、计数和 synthetic case 构造。
   - 保留真实 trace/diagnostic 查询。
 
-- [ ] **Step 5: 全仓搜索旧合同**
+- [x] **Step 5: 全仓搜索旧合同**
 
 ```bash
 rg "WorklineEntryAdmissionBlocked|get_open_entry_blocker_for_workline|workline-entry-admission|WORKLINE_ENTRY_ADMISSION_BLOCKED|pending_entry_admission" src tests
@@ -378,7 +380,7 @@ rg "WorklineEntryAdmissionBlocked|get_open_entry_blocker_for_workline|workline-e
 
 期望：只允许 SPEC/plan 文档命中；`src/` 和 `tests/` 不再命中旧实现合同。
 
-- [ ] **Step 6: 运行通过测试**
+- [x] **Step 6: 运行通过测试**
 
 ```bash
 uv run pytest \
@@ -390,7 +392,7 @@ uv run pytest \
 
 期望：全部通过。
 
-- [ ] **Step 7: 记录阶段结果**
+- [x] **Step 7: 记录阶段结果**
 
 不提交。确认旧 blocker 搜索和 focused tests 通过后继续 Task 3；最终统一在 Task 6 单次提交。
 
@@ -406,13 +408,13 @@ uv run pytest \
 - Create/Modify: `tests/helpers/workline_inbox_factory.py` 或现有测试 helper
 - Test: `tests/workline_runtime/test_inbox_service.py`
 - Test: `tests/workline_runtime/test_inbox_batch_processor.py`
-- Test: `tests/workline_runtime/test_inbox_claim_plan.py`
+- Test: `tests/workline_runtime/test_inbox_claim_bucket.py`
 - Test: `tests/workline_runtime/test_workline_operation_service.py`
 - Test: `tests/workline_runtime/test_runtime_hold_release_service.py`
 - Test: `tests/workline_runtime/test_celery_task_entrypoints.py`
 - Test: `tests/workline_runtime/test_celery_internal_signals.py`
 
-- [ ] **Step 1: 运行影响分析**
+- [x] **Step 1: 运行影响分析**
 
 ```text
 impact(repo="wes_backend", target="InboxBatchProcessor", direction="upstream")
@@ -424,7 +426,7 @@ impact(repo="wes_backend", target="WorklineInbox", file_path="src/app/workline/m
 
 通过标准：确认 task entrypoint、tests、service exports 的影响范围；HIGH/CRITICAL 先汇报。
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
 新增/改写测试点：
 
@@ -474,13 +476,13 @@ WorklineInbox 只继承一次 DataTableMixin
 scan_timeouts / device_heartbeat_scanner alias 不再可 import
 ```
 
-- [ ] **Step 3: 运行失败测试**
+- [x] **Step 3: 运行失败测试**
 
 ```bash
 uv run pytest \
   tests/workline_runtime/test_inbox_service.py \
   tests/workline_runtime/test_inbox_batch_processor.py \
-  tests/workline_runtime/test_inbox_claim_plan.py \
+  tests/workline_runtime/test_inbox_claim_bucket.py \
   tests/workline_runtime/test_workline_operation_service.py \
   tests/workline_runtime/test_runtime_hold_release_service.py \
   tests/workline_runtime/test_celery_task_entrypoints.py \
@@ -489,7 +491,7 @@ uv run pytest \
 
 期望：旧 `parallelism`、bucket lock、`get_new_messages` 和 alias 合同导致失败。
 
-- [ ] **Step 4: 最小实现**
+- [x] **Step 4: 最小实现**
 
 实现合同：
 
@@ -536,7 +538,7 @@ uv run pytest \
   - 删除 `scan_timeouts = TimeoutScanner` 和 `device_heartbeat_scanner = DeviceHeartbeatScanner` alias。
   - 更新 `__all__` 和 docstring。
 
-- [ ] **Step 5: 搜索旧合同**
+- [x] **Step 5: 搜索旧合同**
 
 ```bash
 rg "WORKLINE_INBOX_BATCH_PARALLELISM|WORKLINE_INBOX_BATCH_MAX_PARALLELISM|INBOX_BUCKET_LOCK_TTL_SECONDS|get_new_messages|parallelism|bucket_lock_provider|scan_timeouts =|device_heartbeat_scanner =" src tests
@@ -544,13 +546,13 @@ rg "WORKLINE_INBOX_BATCH_PARALLELISM|WORKLINE_INBOX_BATCH_MAX_PARALLELISM|INBOX_
 
 期望：`src/` 不再命中旧合同；测试只保留“已删除合同”的反向断言。
 
-- [ ] **Step 6: 运行通过测试**
+- [x] **Step 6: 运行通过测试**
 
 ```bash
 uv run pytest \
   tests/workline_runtime/test_inbox_service.py \
   tests/workline_runtime/test_inbox_batch_processor.py \
-  tests/workline_runtime/test_inbox_claim_plan.py \
+  tests/workline_runtime/test_inbox_claim_bucket.py \
   tests/workline_runtime/test_workline_operation_service.py \
   tests/workline_runtime/test_runtime_hold_release_service.py \
   tests/workline_runtime/test_celery_task_entrypoints.py \
@@ -559,7 +561,7 @@ uv run pytest \
 
 期望：全部通过。
 
-- [ ] **Step 7: 记录阶段结果**
+- [x] **Step 7: 记录阶段结果**
 
 不提交。确认 claim 合同、旧参数搜索和 focused tests 通过后继续 Task 4；最终统一在 Task 6 单次提交。
 
@@ -581,7 +583,7 @@ uv run pytest \
 - Test: `tests/workline_runtime/test_smt_sorting_inbound_plugin.py`
 - Test: `tests/workline_runtime/test_smt_sorting_inbound_context.py`
 
-- [ ] **Step 1: 运行影响分析**
+- [x] **Step 1: 运行影响分析**
 
 ```text
 impact(repo="wes_backend", target="RuntimeIntentEffectApplier", direction="upstream")
@@ -591,7 +593,7 @@ impact(repo="wes_backend", target="_target_station_ready_snapshot", file_path="s
 
 通过标准：确认 effect、插件和诊断查询影响；HIGH/CRITICAL 先汇报。
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
 新增/改写测试点：
 
@@ -650,7 +652,7 @@ Device busy:
   current Inbox is not parked as RESOURCE_WAIT
 ```
 
-- [ ] **Step 3: 运行失败测试**
+- [x] **Step 3: 运行失败测试**
 
 ```bash
 uv run pytest \
@@ -664,7 +666,7 @@ uv run pytest \
 
 期望：RESOURCE_WAIT effect/diagnostic/plugin 相关测试失败。
 
-- [ ] **Step 4: 最小实现**
+- [x] **Step 4: 最小实现**
 
 实现合同：
 
@@ -709,7 +711,7 @@ uv run pytest \
   - 保留 `_enforce_device_command_governance(..., allow_busy=True)` 与 Outbox dispatch `BLOCKED_RESOURCE` 逻辑。
   - 不把 device busy 改写为 Inbox `RESOURCE_WAIT`，只在 trace/monitor 展示层统一呈现为资源等待。
 
-- [ ] **Step 5: 运行通过测试**
+- [x] **Step 5: 运行通过测试**
 
 ```bash
 uv run pytest \
@@ -723,7 +725,7 @@ uv run pytest \
 
 期望：全部通过。
 
-- [ ] **Step 6: 记录阶段结果**
+- [x] **Step 6: 记录阶段结果**
 
 不提交。确认 RESOURCE_WAIT、diagnostic、disposition 和设备 Outbox 边界 tests 通过后继续 Task 5；最终统一在 Task 6 单次提交。
 
@@ -735,9 +737,9 @@ uv run pytest \
 - Modify: `tests/workline_runtime/test_inbox_service.py`
 - Modify: `tests/workline_runtime/test_inbox_batch_processor.py`
 - Modify: `tests/workline_runtime/test_outbox_dispatch_service.py`
-- Modify: `tests/workline_runtime/test_inbox_claim_plan.py`
+- Modify: `tests/integration/workline_runtime/test_inbox_claim_plan.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 新增/改写测试点：
 
@@ -783,7 +785,7 @@ EXPLAIN gate:
   SQLite 环境 skip，理由写明 "PostgreSQL plan gate only"；该 skip 只允许作为本地开发降级，最终交付或 CI 必须提供 PostgreSQL-backed 结果
 ```
 
-- [ ] **Step 2: 运行失败测试**
+- [x] **Step 2: 运行失败测试**
 
 ```bash
 uv run pytest \
@@ -792,12 +794,12 @@ uv run pytest \
   tests/workline_runtime/test_inbox_service.py \
   tests/workline_runtime/test_inbox_batch_processor.py \
   tests/workline_runtime/test_outbox_dispatch_service.py \
-  tests/workline_runtime/test_inbox_claim_plan.py -q
+  tests/integration/workline_runtime/test_inbox_claim_plan.py -q
 ```
 
 期望：多 session、RESOURCE_WAIT、EXPLAIN gate 覆盖在当前实现上失败或部分失败。
 
-- [ ] **Step 3: 补齐测试辅助数据**
+- [x] **Step 3: 补齐测试辅助数据**
 
 实现要求：
 
@@ -813,7 +815,7 @@ uv run pytest \
 - EXPLAIN 测试读取 JSON plan，只断言 active queue 访问路径使用 `claim_bucket_key` partial index，不断言本机毫秒耗时。
 - EXPLAIN 测试必须复用现有 integration fixture 入口；不要为本计划新增并行的 PostgreSQL fixture 框架。
 
-- [ ] **Step 4: 运行通过测试**
+- [x] **Step 4: 运行通过测试**
 
 ```bash
 uv run pytest \
@@ -822,7 +824,7 @@ uv run pytest \
   tests/workline_runtime/test_inbox_service.py \
   tests/workline_runtime/test_inbox_batch_processor.py \
   tests/workline_runtime/test_outbox_dispatch_service.py \
-  tests/workline_runtime/test_inbox_claim_plan.py -q
+  tests/integration/workline_runtime/test_inbox_claim_plan.py -q
 ```
 
 期望：全部通过；SQLite 环境中的 PostgreSQL-only plan gate 可以本地明确 skip，但最终交付或 CI 必须有 PostgreSQL-backed 通过记录。
@@ -835,12 +837,12 @@ INTEGRATION_DATABASE_URL="<postgresql+asyncpg url>" \
 uv run pytest \
   tests/integration/workline_runtime/test_process_inbox_real_entry_integration.py \
   tests/integration/workline_runtime/test_real_mock_driven_sandbox_e2e.py \
-  tests/workline_runtime/test_inbox_claim_plan.py -q
+  tests/integration/workline_runtime/test_inbox_claim_plan.py -q
 ```
 
 期望：PostgreSQL 环境不 skip；`SKIP LOCKED`、同 bucket 队首围栏和 `EXPLAIN` 断言全部通过。
 
-- [ ] **Step 5: 记录阶段结果**
+- [x] **Step 5: 记录阶段结果**
 
 不提交。确认集成、资源等待和 EXPLAIN gate tests 通过；本地 PostgreSQL 缺失时可以记录 skip 原因继续文档/代码收尾，但最终交付或 CI 必须补 PostgreSQL-backed 通过记录。最终统一在 Task 6 单次提交。
 
@@ -854,7 +856,7 @@ uv run pytest \
 - Modify: `docs/superpowers/specs/2026-06-09-workline-resource-constrained-parallelism-spec.md`
 - Modify: `docs/superpowers/plans/2026-06-09-workline-resource-constrained-parallelism.md`
 
-- [ ] **Step 1: 更新用户文档**
+- [x] **Step 1: 更新用户文档**
 
 文档必须表达以下事实：
 
@@ -868,17 +870,17 @@ uv run pytest \
 - 内部 MOCK/Sandbox 文档必须展示多物料并行观察步骤，不再把 worker `limit` 或旧 `parallelism` 写成业务并发开关。
 - Runtime workflow guide 必须区分 Inbox `RESOURCE_WAIT` 和 Outbox `BLOCKED_RESOURCE`，并明确二者都可展示为资源等待但写入边界不同。
 
-- [ ] **Step 2: 更新 SPEC 状态和职责边界**
+- [x] **Step 2: 更新 SPEC 状态和职责边界**
 
 在 `docs/superpowers/specs/2026-06-09-workline-resource-constrained-parallelism-spec.md` 中把状态更新为当前实现态：
 
 ```text
-状态：已实现 - 待 PostgreSQL-backed claim/EXPLAIN 集成门禁最终确认
+状态：已实现 - PostgreSQL-backed claim/EXPLAIN 集成门禁已确认
 ```
 
 SPEC 不维护 `GSTACK REVIEW REPORT`、Implementation Tasks 或 Failure Modes；这些内容只保留在本文，避免合同文档和执行计划重复维护后漂移。
 
-- [ ] **Step 3: 运行文档旧术语门禁**
+- [x] **Step 3: 运行文档旧术语门禁**
 
 ```bash
 rg "WORKLINE_INBOX_BATCH_PARALLELISM|WORKLINE_INBOX_BATCH_MAX_PARALLELISM|INBOX_BUCKET_LOCK_TTL_SECONDS|工作线一次只能跑一个|一次只能跑一个 SESSION|parallelism|entry-admission|WORKLINE_ENTRY_ADMISSION_BLOCKED" \
@@ -890,7 +892,7 @@ rg "WORKLINE_INBOX_BATCH_PARALLELISM|WORKLINE_INBOX_BATCH_MAX_PARALLELISM|INBOX_
 
 期望：无命中，或只命中明确说明“旧行为已删除/不再作为正常路径”的段落；不允许用户操作文档继续指导旧串行、旧 `parallelism` 调参或旧 entry-admission 诊断。
 
-- [ ] **Step 4: 运行格式和 focused tests**
+- [x] **Step 4: 运行格式和 focused tests**
 
 ```bash
 uv run ruff format <changed-python-files-only>
@@ -902,7 +904,7 @@ uv run pytest \
   tests/workline_runtime/test_session_resolver.py \
   tests/workline_runtime/test_inbox_service.py \
   tests/workline_runtime/test_inbox_batch_processor.py \
-  tests/workline_runtime/test_inbox_claim_plan.py \
+  tests/workline_runtime/test_inbox_claim_bucket.py \
   tests/workline_runtime/test_outbox_dispatch_service.py \
   tests/workline_runtime/test_runtime_intent_effects.py \
   tests/workline_runtime/test_orchestrator_write_back_service.py \
@@ -924,7 +926,7 @@ uv run pytest \
 
 PostgreSQL-backed claim/EXPLAIN 子集必须按 Task 5 的 `RUN_WORKLINE_INTEGRATION=1` / `INTEGRATION_DATABASE_URL` 命令留下通过记录；SQLite skip 只能作为本地开发降级说明，不能作为最终通过依据。
 
-- [ ] **Step 5: 运行全量测试**
+- [x] **Step 5: 运行全量测试**
 
 ```bash
 uv run pytest tests/
@@ -932,7 +934,7 @@ uv run pytest tests/
 
 期望：全量通过。
 
-- [ ] **Step 6: GitNexus detect changes**
+- [x] **Step 6: GitNexus detect changes**
 
 在 GitNexus MCP 中运行：
 
@@ -947,6 +949,8 @@ detect_changes(repo="wes_backend", scope="all")
 - 没有意外 API 层直连数据库或跨层调用。
 
 - [ ] **Step 7: 单次最终提交**
+
+状态：未执行。本轮只做功能验收和文档状态同步，不擅自创建 Git commit；等待用户明确提交指令后再执行。
 
 先运行：
 
@@ -978,6 +982,7 @@ git commit -m "feat(workline): 实现资源约束并发"
 - 类型一致性：统一使用 `RuntimeIntentKind.RESOURCE_WAIT`、`RuntimeIntent.resource_wait()`、`WORKLINE_RESOURCE_WAIT_RETRY_SECONDS`、`current_wait_type="RESOURCE_WAIT"`、`resource_kind`、`resource_key`。
 - 项目规则：计划文档没有粘贴完整类、完整函数或大段测试代码；实现阶段仍按 TDD 先写失败测试。
 - 变更卫生：最终质量门禁按变更 Python 文件精确 format/check，提交前按 `git status --short` 精确暂存，禁止目录级 `git add` 带入无关 churn；计划文档只保留暂存规则，不维护易过期的逐文件 `git add` 脚本。
+- 2026-06-10 功能验收：focused runtime 契约测试 319 passed；PostgreSQL-backed claim/EXPLAIN + 多物料集成子集 17 passed；全量 `uv run pytest tests/` 2035 passed / 21 skipped；`npx gitnexus detect-changes --scope all --repo wes_backend` 为 low risk、affected processes=0。
 
 ## GSTACK REVIEW REPORT
 

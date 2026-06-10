@@ -1,6 +1,6 @@
 # WorkLine 资源约束并发 SPEC
 
-> 状态：已实现 - 待 PostgreSQL-backed claim/EXPLAIN 集成门禁最终确认
+> 状态：已实现 - PostgreSQL-backed claim/EXPLAIN 集成门禁已确认
 > 日期：2026-06-09
 > 兼容策略：当前系统未发布，按破坏性优化处理，不保留旧入口准入兼容合同。
 > 关联背景：

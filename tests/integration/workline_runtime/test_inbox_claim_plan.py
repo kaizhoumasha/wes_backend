@@ -21,6 +21,10 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 HOT_CLAIM_INDEX = "ix_wes_biz_workline_inbox_hot_claim_bucket_fifo"
+NEW_CLAIM_INDEX = "ix_wes_biz_workline_inbox_new_received_at"
+RETRY_CLAIM_INDEX = "ix_wes_biz_workline_inbox_retry_next_retry_received_at"
+PROCESSING_CLAIM_INDEX = "ix_wes_biz_workline_inbox_processing_updated_received_at"
+BROAD_STATUS_INDEX = "ix_wes_biz_workline_inbox_status"
 
 
 def _inbox(
@@ -416,26 +420,24 @@ async def _explain_plan_nodes(db: AsyncSession, statement: Any) -> list[dict[str
     return list(_iter_plan_nodes(plan_doc[0]["Plan"]))
 
 
-def _uses_hot_claim_index(plan_nodes: list[dict[str, Any]], *, alias: str) -> bool:
+def _node_uses_index(plan_node: dict[str, Any], *, index_name: str) -> bool:
+    for node in _iter_plan_nodes(plan_node):
+        if "Index" in str(node.get("Node Type", "")) and node.get("Index Name") == index_name:
+            return True
+    return False
+
+
+def _alias_uses_index(plan_nodes: list[dict[str, Any]], *, alias: str, index_name: str) -> bool:
     for node in plan_nodes:
         if node.get("Alias") != alias:
             continue
-
-        node_type = str(node.get("Node Type", ""))
-        if "Index" in node_type and node.get("Index Name") == HOT_CLAIM_INDEX:
+        if _node_uses_index(node, index_name=index_name):
             return True
-
-        if node_type == "Bitmap Heap Scan":
-            for child in node.get("Plans", []):
-                child_type = str(child.get("Node Type", ""))
-                if "Index" in child_type and child.get("Index Name") == HOT_CLAIM_INDEX:
-                    return True
-
     return False
 
 
 @pytest.mark.asyncio
-async def test_claim_pending_messages_explain_uses_hot_claim_bucket_fifo_index(
+async def test_claim_pending_messages_explain_uses_hot_queue_partial_indexes(
     integration_session_factory: async_sessionmaker[AsyncSession],
     test_prefix: str,
 ) -> None:
@@ -482,6 +484,23 @@ async def test_claim_pending_messages_explain_uses_hot_claim_bucket_fifo_index(
                 ),
             ]
         )
+        # Seed a real hot queue, not only processed history. Otherwise PostgreSQL can pick
+        # a small-sample status index plan that says little about the production access path.
+        for index in range(1500):
+            rows.append(
+                _inbox(
+                    test_prefix=test_prefix,
+                    source_id=f"future-retry-noise-{index}",
+                    claim_bucket_key=f"{test_prefix}:noise:{index}",
+                    received_at=base_time + timedelta(seconds=1, milliseconds=index),
+                    status=InboxStatus.RETRY,
+                    next_retry_at=base_time + timedelta(hours=1),
+                )
+            )
+        hot_queue_seed_count = sum(
+            1 for row in rows if row.status in {InboxStatus.NEW, InboxStatus.RETRY, InboxStatus.PROCESSING}
+        )
+        assert hot_queue_seed_count >= 1000
         db.add_all(rows)
         await db.commit()
         await _assert_claim_queue_isolated(db, test_prefix=test_prefix)
@@ -503,5 +522,8 @@ async def test_claim_pending_messages_explain_uses_hot_claim_bucket_fifo_index(
         finally:
             await transaction.rollback()
 
-    assert _uses_hot_claim_index(plan_nodes, alias="claim_candidate")
-    assert _uses_hot_claim_index(plan_nodes, alias="earlier_inbox")
+    assert _alias_uses_index(plan_nodes, alias="claim_candidate", index_name=NEW_CLAIM_INDEX)
+    assert _alias_uses_index(plan_nodes, alias="claim_candidate", index_name=RETRY_CLAIM_INDEX)
+    assert _alias_uses_index(plan_nodes, alias="claim_candidate", index_name=PROCESSING_CLAIM_INDEX)
+    assert not _alias_uses_index(plan_nodes, alias="claim_candidate", index_name=BROAD_STATUS_INDEX)
+    assert _alias_uses_index(plan_nodes, alias="earlier_inbox", index_name=HOT_CLAIM_INDEX)

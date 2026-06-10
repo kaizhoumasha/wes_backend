@@ -29,6 +29,7 @@ def test_workline_inbox_declares_hot_queue_partial_indexes() -> None:
 
     new_index = indexes.get("ix_wes_biz_workline_inbox_new_received_at")
     retry_index = indexes.get("ix_wes_biz_workline_inbox_retry_next_retry_received_at")
+    processing_index = indexes.get("ix_wes_biz_workline_inbox_processing_updated_received_at")
 
     assert new_index is not None
     assert [column.name for column in new_index.columns] == ["received_at"]
@@ -39,6 +40,11 @@ def test_workline_inbox_declares_hot_queue_partial_indexes() -> None:
     assert [column.name for column in retry_index.columns] == ["next_retry_at", "received_at"]
     retry_where = str(retry_index.dialect_options["postgresql"]["where"])
     assert "status = 'RETRY'" in retry_where
+
+    assert processing_index is not None
+    assert [column.name for column in processing_index.columns] == ["updated_at", "received_at"]
+    processing_where = str(processing_index.dialect_options["postgresql"]["where"])
+    assert "status = 'PROCESSING'" in processing_where
 
 
 def test_calculate_device_event_idempotency_key_with_vendor_id():

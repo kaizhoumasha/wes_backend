@@ -288,6 +288,13 @@ class WorklineInbox(
             sqlite_where=text("status = 'RETRY'"),
         ),
         Index(
+            "ix_wes_biz_workline_inbox_processing_updated_received_at",
+            "updated_at",
+            "received_at",
+            postgresql_where=text("status = 'PROCESSING'"),
+            sqlite_where=text("status = 'PROCESSING'"),
+        ),
+        Index(
             "ix_wes_biz_workline_inbox_hot_claim_bucket_fifo",
             "claim_bucket_key",
             "received_at",
