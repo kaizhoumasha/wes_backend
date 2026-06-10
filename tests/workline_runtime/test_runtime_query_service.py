@@ -79,3 +79,52 @@ async def test_runtime_device_projection_includes_resource_wait_summary() -> Non
         "error_kind": "http_status",
         "http_status": 503,
     }
+
+
+@pytest.mark.asyncio
+async def test_blocked_outbox_projection_handles_missing_created_at() -> None:
+    service = RuntimeQueryService()
+    blocked_at = timezone.now_for_db() - timedelta(seconds=30)
+    device = SimpleNamespace(
+        id=77,
+        device_code="ARM-01",
+        device_name="机械臂 01",
+        device_role="ROBOT_ARM",
+        role_index=1,
+        upstream_device_id=None,
+        work_line_id=22,
+        device_status="IDLE",
+        maintenance_mode=False,
+        current_command_id=None,
+        last_heartbeat_at=None,
+        error_code=None,
+    )
+    missing_created_at_outbox = SimpleNamespace(
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        blocked_device_id=77,
+        target_code="ARM-01",
+        blocked_reason="MISSING_CREATED_AT",
+        blocked_at=blocked_at,
+        blocked_check_count=1,
+        blocked_detail_json={},
+        payload_json={"command_code": "CMD-MISSING-CREATED-AT"},
+        created_at=None,
+    )
+    dated_outbox = SimpleNamespace(
+        status=SystemOutboxStatus.BLOCKED_RESOURCE,
+        blocked_device_id=77,
+        target_code="ARM-01",
+        blocked_reason="DATED_HEAD",
+        blocked_at=blocked_at,
+        blocked_check_count=2,
+        blocked_detail_json={},
+        payload_json={"command_code": "CMD-DATED"},
+        created_at=blocked_at,
+    )
+    db = SimpleNamespace(execute=AsyncMock(return_value=_ResultStub([missing_created_at_outbox, dated_outbox])))
+
+    projection = await service._load_blocked_outbox_projection(db, [device])
+
+    assert projection.count_by_device_id[77] == 2
+    assert projection.command_codes_by_device_id[77] == {"CMD-MISSING-CREATED-AT", "CMD-DATED"}
+    assert projection.summary_by_device_id[77]["blocked_reason"] == "DATED_HEAD"

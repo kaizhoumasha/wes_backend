@@ -234,23 +234,6 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             auto_commit=auto_commit,
         )
 
-    async def get_new_messages(
-        self,
-        db: AsyncSession,
-        limit: int = 10,
-    ) -> list[WorklineInbox]:
-        """
-        获取待处理的新消息
-
-        Args:
-            db: 数据库会话
-            limit: 获取数量
-
-        Returns:
-            待处理的消息列表
-        """
-        return await self.repo.get_new_messages(db, limit=limit)
-
     async def claim_pending_messages(
         self,
         db: AsyncSession,
@@ -424,7 +407,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         device_id: int | None = None,
     ) -> WorklineInbox:
         """
-        因安全状态阻塞，暂时挂起消息（不增加重试次数）。
+        因资源等待或运行时等待条件暂时挂起消息（不增加重试次数）。
         这样不会耗尽 attempt_count 导致消息进入 DEAD_LETTER。
         """
         data = {

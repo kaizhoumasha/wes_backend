@@ -17,6 +17,11 @@ def test_open_session_business_key_guard_index_exists() -> None:
     assert "WAITING_DEVICE_RESULT" in str(index.dialect_options["postgresql"]["where"])
 
 
+def test_workline_entry_admission_repository_method_removed() -> None:
+    legacy_method_name = "get_open_entry_blocker_for_workline"
+    assert not hasattr(WorklineSessionRepository, legacy_method_name)
+
+
 @pytest.mark.asyncio
 async def test_get_timed_out_sessions_includes_external_waits_without_command(db_session) -> None:
     expired_session = WorklineSession(

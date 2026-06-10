@@ -35,6 +35,7 @@ class RuntimeIntentKind(str, Enum):
     DEVICE_EVENT = "DEVICE_EVENT"
     RESOURCE_FACT = "RESOURCE_FACT"
     RESOURCE_RESERVATION = "RESOURCE_RESERVATION"
+    RESOURCE_WAIT = "RESOURCE_WAIT"
     ROUTE = "ROUTE"
     COMPLETE = "COMPLETE"
     BLOCK = "BLOCK"
@@ -286,6 +287,28 @@ class RuntimeIntent(BaseModel):
         )
 
     @classmethod
+    def resource_wait(
+        cls,
+        *,
+        resource_kind: str,
+        resource_key: str,
+        reason_code: str,
+        message: str,
+        suggested_action: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> RuntimeIntent:
+        payload_json = deepcopy(payload) if payload is not None else {}
+        payload_json["resource_kind"] = resource_kind
+        payload_json["resource_key"] = resource_key
+        return cls(
+            kind=RuntimeIntentKind.RESOURCE_WAIT,
+            reason_code=reason_code,
+            message=message,
+            suggested_action=suggested_action,
+            payload_json=payload_json,
+        )
+
+    @classmethod
     def block(
         cls,
         *,
@@ -401,6 +424,17 @@ class RuntimeIntent(BaseModel):
                 raise ValueError("RESOURCE_RESERVATION intent requires action")
             if not self.payload_json:
                 raise ValueError("RESOURCE_RESERVATION intent requires payload")
+        if self.kind == RuntimeIntentKind.RESOURCE_WAIT:
+            if not self.reason_code:
+                raise ValueError("RESOURCE_WAIT intent requires reason_code")
+            if not self.message:
+                raise ValueError("RESOURCE_WAIT intent requires message")
+            resource_kind = self.payload_json.get("resource_kind")
+            if not isinstance(resource_kind, str) or not resource_kind.strip():
+                raise ValueError("RESOURCE_WAIT intent requires resource_kind")
+            resource_key = self.payload_json.get("resource_key")
+            if not isinstance(resource_key, str) or not resource_key.strip():
+                raise ValueError("RESOURCE_WAIT intent requires resource_key")
         if self.kind == RuntimeIntentKind.BLOCK:
             if self.block_scope is None:
                 raise ValueError("BLOCK intent requires block_scope")

@@ -16,9 +16,11 @@ Phase 1 简化:
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from src.core.conf import settings
 from src.core.logger import logger
 from src.workline_runtime.diagnostics import ErrorCode, error_domain_for
 from src.workline_runtime.lock import LockAcquireError
@@ -39,8 +41,17 @@ if TYPE_CHECKING:
     from src.workline_runtime.services import WorklineRuntimeServices
 
 
+def _env_allows_null_plugin() -> bool:
+    enabled = os.getenv("WORKLINE_ALLOW_NULL_PLUGIN", "").strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return False
+    if settings.APP_ENV not in {"dev", "test"}:
+        raise RuntimeError("WORKLINE_ALLOW_NULL_PLUGIN is only allowed when APP_ENV is dev or test")
+    return True
+
+
 # NullPlugin 允许配置（用于测试或显式 disabled 的 workline）
-_ALLOW_NULL_PLUGIN = False
+_ALLOW_NULL_PLUGIN = _env_allows_null_plugin()
 
 
 def set_allow_null_plugin(allow: bool) -> None:
@@ -381,7 +392,7 @@ class OrchestratorService:
 
                 raise PluginNotFoundError(
                     "Plugin not registered and null plugin not allowed. "
-                    "Set allow_null_plugin=True in config or register the plugin."
+                    "Enable NullPlugin only in test setup or register the plugin."
                 )
             # 显式允许时使用单例
             return null_plugin

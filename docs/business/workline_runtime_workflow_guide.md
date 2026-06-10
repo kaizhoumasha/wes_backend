@@ -1,6 +1,6 @@
 # 工作线运行时工作流指南
 
-**最后更新**: 2026-05-27
+**最后更新**: 2026-06-09
 
 本文档定义 WES 工作线运行时的标准数据链路，适用于真实设备、SANDBOX 调试和插件开发。本文只描述主干职责和状态边界，具体插件可在此基础上扩展业务决策。
 
@@ -17,6 +17,7 @@
 - `WorklineTimeline` 是运行时决策和状态迁移账本。
 - 设备 ACK 只表示“收到命令”，不表示“命令完成”。
 - Command Result 才是推动 Runtime decision 继续前进的业务完成信号。
+- 同一 WorkLine 可以同时存在多个 open Session；业务并发容量来自设备、Station、rack/bin/cell 和外部任务状态，不来自 worker 环境变量。
 
 ## 2. 标准链路
 
@@ -104,7 +105,7 @@ Device Event -> Inbox -> Runtime Decision
 | `NEW` | 已创建，等待系统级派发任务拉取。 |
 | `DISPATCHING` | 派发服务正在派发。 |
 | `SENT` | 已发送到目标；设备 ACK 与 Result 事实记录在 DeviceCommand，不复制到 Outbox。 |
-| `BLOCKED_RESOURCE` | WorkLine runtime reconciliation 隔离中，暂缓派发。 |
+| `BLOCKED_RESOURCE` | 目标设备或派发资源暂忙，等待下一轮 ECS 实时 `IDLE` probe 放行。 |
 | `FAILED` | 派发失败。 |
 | `CANCELLED` | 已取消。 |
 
@@ -115,6 +116,7 @@ Device Event -> Inbox -> Runtime Decision
 - Pending Outbox 展示的是 WES 等待外部处理的副作用，不代表设备之间互相发消息。
 - `SENT` 且 Session 仍为 `WAITING_DEVICE_RESULT` 时，仍属于 Pending，因为业务还在等待 Result。
 - 终态 Session 的 Outbox 不再属于 Pending。
+- 设备 command terminal、本地 `DeviceStatus=IDLE` 和 `current_command_id=null` 只是诊断投影；blocked outbox 的重新派发必须由下一轮真实 ECS status probe 返回 `IDLE` 后放行。
 
 ### 4.3 DeviceCommand
 
@@ -164,6 +166,7 @@ Device Event -> Inbox -> Runtime Decision
 - ACK 和 Result 都必须校验 Session 仍在等待对应 Command。
 - 超过 `deadline_at` 后，Timeout Scanner 会创建 `TIMER_TIMEOUT` Inbox。
 - 终态 Session 不再接受旧 ACK 或旧 Result 推动。
+- `current_wait_type=RESOURCE_WAIT` 表示 Runtime 已识别下一步资源暂不可用；它是自动等待，不是人工 Hold。
 
 ## 5. ACK 与 Result 的边界
 
@@ -209,6 +212,7 @@ Result 被 Worker 消费后，插件返回 `RuntimeIntent`，Runtime 决定：
 
 - 创建下一条 Command。
 - 等待外部系统。
+- 进入资源等待并自动重试。
 - 进入人工暂停。
 - 标记完成。
 - 标记失败。
@@ -265,18 +269,28 @@ Outbox 是待派发副作用记录。派发服务成功发送后，Outbox 才进
 
 Runtime 必须只接受当前等待点的 Result。旧 Result 如果在 Session 已进入下一步或终态后继续生效，会破坏因果链。
 
+### 7.6 `RESOURCE_WAIT` 和 `BLOCKED_RESOURCE` 有什么区别？
+
+`RESOURCE_WAIT` 属于 Inbox / Runtime decision 边界，表示插件或资源调度已经知道下一步 Station、rack/bin/cell 等资源暂不可用。它会写入 Session 等待态、诊断 evidence，并按重试间隔重新处理同一 Inbox。
+
+`BLOCKED_RESOURCE` 属于 Outbox / dispatch 边界，表示设备命令副作用已经创建，但派发前实时 ECS 状态显示目标设备暂忙。它只能由后续 ECS `IDLE` probe 放行，不能由 WES 本地设备投影直接改回可派发。
+
+两者都可以在运维视角展示为资源等待，但不能混用写入路径。
+
 ## 8. 判断一条链路是否健康
 
 健康链路必须满足：
 
 - 每个 accepted Event 都有 `trace_id`。
 - 每个 Runtime decision 输入都进入 `WorklineInbox`。
+- 同一 WorkLine 可有多个 open Session，后续推进由真实资源状态约束。
 - 每个设备副作用都先写 `DeviceCommand` 和 `SystemOutbox`。
 - Outbox 派发有明确目标 `target_code`。
 - ACK 不推动业务状态，只闭环派发接收。
 - Result 通过 `COMMAND_RESULT` Inbox 推动 Runtime decision。
 - Session 的 `awaiting_command_id` 与当前 Result 的 Command 一致。
 - Timeline 能复盘每次决策、派发、等待、完成或失败。
+- `RESOURCE_WAIT` evidence 能说明等待的 `resource_kind`、`resource_key`、首次等待、最近等待和等待次数。
 
 ## 9. 最小排障顺序
 

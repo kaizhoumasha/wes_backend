@@ -156,6 +156,11 @@ class WorklineInboxBase(BaseMixin):
         index=True,
         description="统一 Trace ID（串联业务流程）",
     )
+    claim_bucket_key: str = Field(
+        default="serial:unknown",
+        max_length=200,
+        description="Inbox claim 冲突域物化键",
+    )
     event_id: str | None = Field(
         default=None,
         max_length=200,
@@ -262,7 +267,8 @@ class WorklineInbox(
     处理约束:
     - claim 只返回轻量字段，处理 session 内必须重新加载 ORM。
     - 所有 consumer 终态更新必须携带 id + PROCESSING + processor_token 条件。
-    - 同 bucket 串行，不同 bucket 可按配置有界并发处理。
+    - 同 bucket 队首围栏由 claim_bucket_key 保证。
+    - 单 processor 顺序 claim，跨 worker 并发由数据库 claim 承载。
     """
 
     __tablename__: ClassVar[str] = "workline_inbox"  # pyright: ignore[reportIncompatibleVariableOverride]
@@ -280,6 +286,21 @@ class WorklineInbox(
             "received_at",
             postgresql_where=text("status = 'RETRY'"),
             sqlite_where=text("status = 'RETRY'"),
+        ),
+        Index(
+            "ix_wes_biz_workline_inbox_processing_updated_received_at",
+            "updated_at",
+            "received_at",
+            postgresql_where=text("status = 'PROCESSING'"),
+            sqlite_where=text("status = 'PROCESSING'"),
+        ),
+        Index(
+            "ix_wes_biz_workline_inbox_hot_claim_bucket_fifo",
+            "claim_bucket_key",
+            "received_at",
+            "id",
+            postgresql_where=text("status IN ('NEW', 'RETRY', 'PROCESSING')"),
+            sqlite_where=text("status IN ('NEW', 'RETRY', 'PROCESSING')"),
         ),
         {"schema": SchemaType.BIZ.value},
     )

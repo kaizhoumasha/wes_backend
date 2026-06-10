@@ -22,7 +22,6 @@ from src.utils.timezone import timezone
 from src.workline_plugins.rough_sorter.contract import resolve_rough_sorter_business_key
 from src.workline_runtime.session_resolver import (
     SessionResolveError,
-    WorklineEntryAdmissionBlocked,
     _resolve_business_key,
 )
 
@@ -75,24 +74,6 @@ class MockSessionRepository:
             # 按 id 降序，返回最新的
             matching.sort(key=lambda x: x.id if hasattr(x, "id") else 0, reverse=True)
             return matching[0]
-        return None
-
-    async def get_open_entry_blocker_for_workline(
-        self,
-        db: object,
-        *,
-        workline_id: int,
-        business_key: str,
-    ) -> object | None:
-        self.find_calls.append(("entry_blocker", workline_id, business_key))
-        for session in sorted(self.sessions.values(), key=lambda item: getattr(item, "id", 0)):
-            s = session if isinstance(session, dict) else session.__dict__
-            if (
-                s.get("workline_id") == workline_id
-                and s.get("business_key") != business_key
-                and s.get("status") in ["NEW", "RUNNING", "WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"]
-            ):
-                return session
         return None
 
     async def get_by_session_code(
@@ -263,6 +244,22 @@ def make_devices_by_role() -> dict[str, list]:
     }
 
 
+def test_legacy_entry_blocker_symbols_removed() -> None:
+    import importlib
+
+    session_resolver_module = importlib.import_module("src.workline_runtime.session_resolver")
+
+    legacy_error_name = "WorklineEntryAdmissionBlocked"
+    legacy_lock_name = "_lock_workline_entry_admission"
+    legacy_lookup_name = "_find_entry_admission_blocker_session"
+
+    assert not hasattr(session_resolver_module, legacy_error_name)
+    assert not hasattr(session_resolver_module, legacy_lock_name)
+    assert not hasattr(session_resolver_module, legacy_lookup_name)
+    assert not hasattr(session_resolver_module, "_lock_workline_entry_admission")
+    assert legacy_error_name not in session_resolver_module.__all__
+
+
 class TestSessionResolver:
     """SessionResolver 测试套件"""
 
@@ -365,9 +362,7 @@ class TestSessionResolver:
         lock_statement, lock_params = mock_db.execute.await_args_list[0].args
         assert "pg_advisory_xact_lock(hashtext(:lock_key))" in str(lock_statement)
         assert lock_params == {"lock_key": "workline-session:7:ORDER_LOCK"}
-        admission_lock_statement, admission_lock_params = mock_db.execute.await_args_list[1].args
-        assert "pg_advisory_xact_lock(hashtext(:lock_key))" in str(admission_lock_statement)
-        assert admission_lock_params == {"lock_key": "workline-entry-admission:7"}
+        assert len(mock_db.execute.await_args_list) == 1
 
     @pytest.mark.asyncio
     async def test_resolve_device_event_falls_back_to_registry_contract_version_when_workline_missing(
@@ -1544,7 +1539,7 @@ class TestSessionResolver:
         assert inbox.trace_id == "trace-301"
 
     @pytest.mark.asyncio
-    async def test_device_event_blocks_new_material_when_workline_has_busy_session(
+    async def test_device_event_creates_new_session_when_other_business_key_open(
         self,
         mock_db,
         mock_session_repo,
@@ -1556,6 +1551,7 @@ class TestSessionResolver:
             business_key="busy-material",
             status=SessionStatus.WAITING_DEVICE_RESULT,
         )
+        mock_session_repo.sessions[501] = blocker
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
@@ -1572,23 +1568,17 @@ class TestSessionResolver:
             },
         )
 
-        with patch(
-            "src.workline_runtime.session_resolver._find_entry_admission_blocker_session",
-            new_callable=AsyncMock,
-            return_value=blocker,
-        ) as find_blocker:
-            with pytest.raises(WorklineEntryAdmissionBlocked, match="busy session"):
-                await resolver.resolve_or_create(
-                    db=mock_db,
-                    inbox=inbox,
-                    workline=make_workline(workline_id=1, plugin_key="test_workline_plugin"),
-                    devices_by_role=make_devices_by_role(),
-                )
+        session = await resolver.resolve_or_create(
+            db=mock_db,
+            inbox=inbox,
+            workline=make_workline(workline_id=1, plugin_key="test_workline_plugin"),
+            devices_by_role=make_devices_by_role(),
+        )
 
-        find_blocker.assert_awaited_once()
-        _, kwargs = find_blocker.await_args
-        assert kwargs["workline_id"] == 1
-        assert isinstance(kwargs["business_key"], str)
-        assert kwargs["business_key"]
-        assert kwargs["session_repo"] is mock_session_repo
-        assert len(mock_session_repo.created_sessions) == 0
+        assert session.id != blocker.id
+        assert session.workline_id == 1
+        assert session.business_key
+        assert session.business_key != blocker.business_key
+        assert session.status == SessionStatus.NEW
+        assert len(mock_session_repo.created_sessions) == 1
+        assert ("entry_blocker", 1, session.business_key) not in mock_session_repo.find_calls

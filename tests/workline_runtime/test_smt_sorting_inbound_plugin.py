@@ -534,7 +534,7 @@ async def test_working_bin_scan_uses_shared_policy_and_writes_pending_target_pla
 
 
 @pytest.mark.asyncio
-async def test_working_bin_scan_blocks_when_target_station_lease_is_busy() -> None:
+async def test_working_bin_scan_waits_when_target_station_lease_is_busy() -> None:
     policy = RecordingAllocationPolicy(_allocated_result())
     plugin = _plugin_with_policy_and_snapshot(policy, {"snapshot_version": "snap-target-001", "cells": []})
     lease_provider = FakeStationLeaseStatusProvider(available=False, reason_code="ACTIVE_DISPATCH_LEASE")
@@ -547,8 +547,10 @@ async def test_working_bin_scan_blocks_when_target_station_lease_is_busy() -> No
         _working_bin_scan_inbox(),
     )
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_WAIT]
     assert intents[0].reason_code == "SORTING_TARGET_STATION_LEASE_BUSY"
+    assert intents[0].payload_json["resource_kind"] == "STATION"
+    assert intents[0].payload_json["resource_key"] == "station:TARGET_STATION"
     assert intents[0].payload_json["position_code"] == "TARGET_STATION"
     assert lease_provider.calls == [("TARGET_STATION", True)]
     assert policy.calls == []

@@ -50,6 +50,7 @@ class ErrorCode(str, Enum):
     - 执行 Callback 超时：``CALLBACK_DEADLINE_EXPIRED``
     - 指令派发动作失败：``OUTBOX_DISPATCH_FAILED``
     - Inbox worker 自身处理超时：``INBOX_PROCESSING_TIMEOUT``
+    - 资源暂不可用，等待自动重试：``RESOURCE_WAIT``
     - 重试次数耗尽：``INBOX_RETRY_EXHAUSTED``
     - 配置本身有问题：``CONFIG_INVALID``
     - 无法明确归因时才使用：``UNKNOWN``
@@ -74,6 +75,7 @@ class ErrorCode(str, Enum):
     CALLBACK_DEADLINE_EXPIRED = "CALLBACK_DEADLINE_EXPIRED"  # ACK 后执行 Callback 未在业务窗口内回传。
     OUTBOX_DISPATCH_FAILED = "OUTBOX_DISPATCH_FAILED"  # Outbox 派发失败，消息未成功下发。
     INBOX_PROCESSING_TIMEOUT = "INBOX_PROCESSING_TIMEOUT"  # Inbox worker 自身处理超时。
+    RESOURCE_WAIT = "RESOURCE_WAIT"  # Session 等待真实资源释放后自动重试。
 
     # 重试 / 配置 / 兜底问题
     INBOX_RETRY_EXHAUSTED = "INBOX_RETRY_EXHAUSTED"  # Inbox 重试次数耗尽，仍未处理成功。
@@ -95,6 +97,7 @@ _ERROR_CODE_TO_DOMAIN: dict[ErrorCode, ErrorDomain] = {
     ErrorCode.CALLBACK_DEADLINE_EXPIRED: ErrorDomain.WORKFLOW,
     ErrorCode.OUTBOX_DISPATCH_FAILED: ErrorDomain.INTEGRATION,
     ErrorCode.INBOX_PROCESSING_TIMEOUT: ErrorDomain.SYSTEM,
+    ErrorCode.RESOURCE_WAIT: ErrorDomain.WORKFLOW,
     ErrorCode.INBOX_RETRY_EXHAUSTED: ErrorDomain.SYSTEM,
     ErrorCode.WMS_TIMEOUT: ErrorDomain.INTEGRATION,
     ErrorCode.CONFIG_INVALID: ErrorDomain.CONFIG,

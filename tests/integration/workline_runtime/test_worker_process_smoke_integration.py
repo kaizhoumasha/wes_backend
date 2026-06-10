@@ -6,8 +6,10 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
+from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
 from src.app.workline.models.inbox import InboxKind, InboxStatus, WorklineInbox
+from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.services.inbox_service import inbox_service
@@ -19,6 +21,7 @@ from src.utils.timezone import timezone
 async def test_process_inbox_batch_consumed_by_real_worker(
     celery_worker_process: dict[str, str],
     integration_session_factory,
+    isolated_workline_inbox_queue: None,
     test_prefix: str,
 ) -> None:
     celery_app.loader.import_default_modules()
@@ -31,6 +34,8 @@ async def test_process_inbox_batch_consumed_by_real_worker(
             line_code=line_code,
             line_name=f"{test_prefix}-line",
             line_type=LineType.AUTO,
+            plugin_key=line_code,
+            runtime_status=WorkLineRuntimeStatus.READY,
         )
         setup_db.add(line)
         await setup_db.flush()
@@ -60,13 +65,13 @@ async def test_process_inbox_batch_consumed_by_real_worker(
     result = await asyncio.to_thread(
         lambda: celery_app.send_task(
             "src.celery_app.tasks.workline.process_inbox_batch",
-            kwargs={"limit": 20},
+            kwargs={"limit": 1},
             queue=celery_worker_process["queue"],
             routing_key=celery_worker_process["queue"],
         ).get(timeout=30, propagate=True)
     )
-    assert result["processed"] >= 1
-    assert result["success"] >= 1
+    assert result["processed"] == 1
+    assert result["success"] == 1
 
     async with integration_session_factory() as verify_db:
         db_inbox = (
@@ -74,11 +79,14 @@ async def test_process_inbox_batch_consumed_by_real_worker(
                 select(WorklineInbox).where(WorklineInbox.id == inbox_id)  # type: ignore[arg-type]
             )
         ).scalar_one()
-        db_session = await verify_db.get(WorklineSession, db_inbox.session_id)
+        db_session = (
+            await verify_db.execute(
+                select(WorklineSession).where(WorklineSession.trace_id == trace_id)  # type: ignore[arg-type]
+            )
+        ).scalar_one()
 
     assert db_inbox.status == InboxStatus.PROCESSED
-    assert db_inbox.device_id == device.id
-    assert db_inbox.session_id is not None
+    assert db_inbox.workline_id == line.id
     assert db_session is not None
     assert db_session.workline_id == line.id
     assert db_session.plugin_key == line_code
@@ -88,6 +96,7 @@ async def test_process_inbox_batch_consumed_by_real_worker(
 async def test_scan_timeouts_batch_consumed_by_real_worker(
     celery_worker_process: dict[str, str],
     integration_session_factory,
+    isolated_workline_timeout_queue: None,
     test_prefix: str,
 ) -> None:
     celery_app.loader.import_default_modules()
@@ -105,6 +114,15 @@ async def test_scan_timeouts_batch_consumed_by_real_worker(
         setup_db.add(line)
         await setup_db.flush()
 
+        device = Device(
+            device_code=f"{test_prefix}_timeout_DEVICE",
+            device_name=f"{test_prefix}-timeout-device",
+            work_line_id=line.id,
+            device_role="ROBOT_ARM",
+        )
+        setup_db.add(device)
+        await setup_db.flush()
+
         workline_session = WorklineSession(
             session_code=session_code,
             workline_id=line.id,
@@ -115,19 +133,35 @@ async def test_scan_timeouts_batch_consumed_by_real_worker(
             deadline_at=expired_deadline,
         )
         setup_db.add(workline_session)
+        await setup_db.flush()
+
+        command = DeviceCommand(
+            device_id=device.id,
+            command_code=f"{test_prefix}_timeout_command",
+            task_type="TEST_TIMEOUT",
+            status=CommandStatus.ACK_RECEIVED,
+            ack_received_at=timezone.now_for_db() - timedelta(minutes=9),
+            trace_id=trace_id,
+            workline_id=line.id,
+            session_id_int=workline_session.id,
+        )
+        setup_db.add(command)
+        await setup_db.flush()
+
+        workline_session.awaiting_command_id = command.id
         await setup_db.commit()
         session_id = workline_session.id
 
     result = await asyncio.to_thread(
         lambda: celery_app.send_task(
             "src.celery_app.tasks.workline.scan_timeouts_batch",
-            kwargs={"limit": 500},
+            kwargs={"limit": 1},
             queue=celery_worker_process["queue"],
             routing_key=celery_worker_process["queue"],
         ).get(timeout=30, propagate=True)
     )
-    assert result["scanned"] >= 1
-    assert result["timeouts_created"] >= 1
+    assert result["scanned"] == 1
+    assert result["timeouts_created"] == 1
 
     async with integration_session_factory() as verify_db:
         created_items = list(

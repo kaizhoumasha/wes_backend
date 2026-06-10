@@ -36,7 +36,7 @@ from src.app.workline.services.start_admission_service import start_admission_se
 from src.core.client_ip import resolve_client_ip
 from src.core.logger import logger
 from src.core.response import response_builder
-from src.core.response.response_code import ClientErrorCode, ResourceErrorCode
+from src.core.response.response_code import ClientErrorCode, ResourceErrorCode, ResponseCode, ServerErrorCode
 from src.database.dependencies import AsyncSessionDep
 from src.utils.value_normalization import resolve_entity_id
 from src.workline_runtime.diagnostics import (
@@ -109,6 +109,14 @@ def _resolve_ctx_error_response_status(ctx_error: JsonDict) -> int:
     if isinstance(code, int) and 100 <= code <= 599:
         return code
     return 500
+
+
+def _resolve_ctx_error_response_code(response_status: int) -> ResponseCode:
+    if response_status == 404:
+        return ResourceErrorCode.NOT_FOUND
+    if response_status == 403:
+        return ClientErrorCode.FORBIDDEN
+    return ServerErrorCode.INTERNAL_ERROR
 
 
 def _resolve_optional_str(payload: JsonDict, aliases: tuple[str, ...]) -> str | None:
@@ -694,6 +702,8 @@ async def _handle_device_context_failure(
     causation_id: str | None = None,
 ) -> CallbackResultIngressResponse | CallbackEventIngressResponse:
     message = str(error.get("message") or "设备上下文解析失败")
+    response_status = _resolve_ctx_error_response_status(error)
+    response_code = _resolve_ctx_error_response_code(response_status)
     await _log_callback_outcome(
         db,
         request,
@@ -704,7 +714,7 @@ async def _handle_device_context_failure(
         trace_id=trace_id or _resolve_callback_trace_id(request_body),
         event_id=event_id or _resolve_callback_event_id(request_body),
         causation_id=causation_id or _resolve_callback_causation_id(request_body),
-        response_status=_resolve_ctx_error_response_status(error),
+        response_status=response_status,
         response_time_ms=response_time_ms,
         success=False,
         record_audit=True,
@@ -714,7 +724,12 @@ async def _handle_device_context_failure(
         failure_stage=_FAILURE_STAGE_DEVICE_CONTEXT_RESOLVE,
     )
     return cast(
-        "CallbackResultIngressResponse | CallbackEventIngressResponse", JsonDict(**error, request_id=request_id)
+        "CallbackResultIngressResponse | CallbackEventIngressResponse",
+        response_builder.fail(
+            code=response_code,
+            message=message,
+            data=build_callback_rejected_response(reason_code=response_code.code),
+        ),
     )
 
 
@@ -1107,6 +1122,7 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
     # 设备/工作线上下文和能力校验属于“是否可路由入站”的入口职责。
     ctx_result, ctx_error = await device_context_service.resolve(db, device_code)
     if ctx_error:
+        response_status = _resolve_ctx_error_response_status(ctx_error)
         return CallbackEventIngressDecision(
             body=cast(
                 "CallbackEventIngressResponse",
@@ -1121,7 +1137,8 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
                     error=ctx_error,
                     audit_title="设备事件上报",
                 ),
-            )
+            ),
+            http_status=response_status,
         )
     # ctx_error 为 None 时，ctx_result 必有值（类型检查器无法理解 tuple 解包后的关联）
     device = ctx_result.device  # type: ignore[union-attr]

@@ -11,11 +11,9 @@ from sqlalchemy import text
 
 from src.app.workline.constants import (
     EXTERNAL_HTTP_INBOX_KIND,
-    INBOX_BUCKET_LOCK_TTL_SECONDS,
     INBOX_PROCESS_TIMEOUT_SECONDS,
-    WORKLINE_INBOX_BATCH_MAX_PARALLELISM,
-    WORKLINE_INBOX_BATCH_PARALLELISM,
     WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
+    WORKLINE_RESOURCE_WAIT_RETRY_SECONDS,
 )
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.repositories.inbox_repository import WorklineInboxClaim
@@ -34,12 +32,13 @@ from src.utils.value_normalization import (
 from src.workline_plugin_registry import get_workline_plugin_definition, parse_workline_six_in_one
 from src.workline_runtime.diagnostics import ErrorCode, ErrorDomain, ProblemClass
 from src.workline_runtime.diagnostics.failure_mapper import map_failure_to_diagnostic
+from src.workline_runtime.effect_result import WriteBackDisposition
 from src.workline_runtime.lock import RedisDistributedLock
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
 from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 from src.workline_runtime.services import WorklineRuntimeServices, build_workline_runtime_services
-from src.workline_runtime.session_resolver import SessionResolveError, WorklineEntryAdmissionBlocked
+from src.workline_runtime.session_resolver import SessionResolveError
 from src.workline_runtime.utils import payload_dict
 
 if TYPE_CHECKING:
@@ -53,6 +52,7 @@ class ProcessResult(TypedDict):
     success: int
     failed: int
     skipped: int
+    resource_wait: int
 
 
 class LoadedEntities(TypedDict):
@@ -65,16 +65,6 @@ class LoadedEntities(TypedDict):
     devices_by_role: dict[str, list[Any]]
     services: WorklineRuntimeServices
     safety_checked: bool
-
-
-class InboxBucketProcessingError(Exception):
-    """bucket 调度层异常，携带尚未进入终态更新的 claim。"""
-
-    def __init__(self, bucket_key: str, claims: list[WorklineInboxClaim], cause: Exception) -> None:
-        super().__init__(str(cause))
-        self.bucket_key = bucket_key
-        self.claims = claims
-        self.cause = cause
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +123,13 @@ def _result_requires_outbox_dispatch(result: OrchestratorResult) -> bool:
         if intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action:
             return True
     return False
+
+
+def _is_resource_wait_retry_for_same_inbox(session: Any, inbox_id: int) -> bool:
+    if getattr(session, "current_wait_type", None) != "RESOURCE_WAIT":
+        return False
+    resource_wait = payload_dict(payload_dict(getattr(session, "context_json", None)).get("resource_wait"))
+    return optional_int(resource_wait.get("inbox_id")) == inbox_id
 
 
 def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
@@ -492,45 +489,6 @@ def _build_orchestrator_lock_provider(db: Any):
     return _pg_lock
 
 
-def _inbox_bucket_lock_ttl_seconds() -> int:
-    """bucket 锁 TTL 覆盖一个最大并发 wave 的处理窗口。"""
-
-    return INBOX_BUCKET_LOCK_TTL_SECONDS
-
-
-def _build_inbox_bucket_lock_provider(db: Any):
-    """构建跨 worker 的 Inbox bucket 锁。
-
-    Redis 可用时使用自动续期分布式锁；Redis 不可用时不使用 PostgreSQL session-level
-    advisory lock，因为单条消息处理内部会 commit，连接池可能在 commit 后切换连接。
-    此退化路径依赖 claim 阶段“每 bucket 只 claim 队首”和 token fencing 保持正确性。
-    """
-
-    ttl_seconds = _inbox_bucket_lock_ttl_seconds()
-    redis_client = get_redis()
-    if redis_client is not None:
-        lock = RedisDistributedLock(
-            redis_client=cast("Any", redis_client),
-            key_prefix="workline:inbox-bucket:",
-            default_ttl=ttl_seconds,
-            auto_renewal=True,
-            renewal_interval=10.0,
-            fallback_to_pg=False,
-        )
-
-        def _redis_lock(bucket_key: str):
-            return lock.acquire(bucket_key, ttl=ttl_seconds, db=db)
-
-        return _redis_lock
-
-    @asynccontextmanager
-    async def _pg_lock(bucket_key: str):
-        _ = bucket_key, db
-        yield
-
-    return _pg_lock
-
-
 def _problem_class_for_error_domain(error_domain: ErrorDomain | None) -> ProblemClass | None:
     """为 UNKNOWN 等兜底码补充更接近现场语义的问题大类。"""
     if error_domain in {ErrorDomain.DEVICE, ErrorDomain.NETWORK}:
@@ -738,7 +696,6 @@ class InboxBatchProcessor:
         self,
         write_back_service: Any = None,
         session_factory: Any = None,
-        bucket_lock_provider: Any = None,
     ) -> None:
         self.write_back_service = write_back_service
         if session_factory is None:
@@ -746,7 +703,6 @@ class InboxBatchProcessor:
 
             session_factory = get_db_context
         self.session_factory = session_factory
-        self.bucket_lock_provider = bucket_lock_provider
 
     @staticmethod
     def _empty_result() -> ProcessResult:
@@ -755,6 +711,7 @@ class InboxBatchProcessor:
             "success": 0,
             "failed": 0,
             "skipped": 0,
+            "resource_wait": 0,
         }
 
     @staticmethod
@@ -763,169 +720,66 @@ class InboxBatchProcessor:
         target["success"] += source.get("success", 0)
         target["failed"] += source.get("failed", 0)
         target["skipped"] += source.get("skipped", 0)
+        target["resource_wait"] += source.get("resource_wait", 0)
 
-    @staticmethod
-    def _clamp_parallelism(parallelism: int | None) -> int:
-        raw = WORKLINE_INBOX_BATCH_PARALLELISM if parallelism is None else parallelism
-        return max(1, min(int(raw or 1), WORKLINE_INBOX_BATCH_MAX_PARALLELISM))
+    async def process_batch(self, db: Any, limit: int = 10) -> ProcessResult:
+        """顺序 claim 并处理 Inbox。
 
-    @staticmethod
-    def _bucket_key(claim: WorklineInboxClaim) -> str:
-        payload = payload_dict(claim.payload_json)
-        if claim.session_id is not None:
-            return f"session:{claim.session_id}"
-        if claim.device_id is not None:
-            return f"device:{claim.device_id}"
-        device_code = optional_str(payload.get("device_code")) or optional_str(payload.get("location"))
-        if device_code is not None:
-            return f"device_code:{device_code}"
-        if claim.workline_id is not None:
-            return f"workline:{claim.workline_id}"
-        return "serial:unknown"
-
-    async def process_batch(self, db: Any, limit: int = 10, parallelism: int | None = None) -> ProcessResult:
-        """claim-first 有界并发处理 Inbox。
-
-        调度层只负责原子 claim 和 bucket 并发；每个 bucket 使用独立 AsyncSession，
-        bucket 内按 received_at/id 串行，bucket 间受 semaphore 限制。
+        单个 processor 每轮只 claim 1 条消息；跨 worker 并发由数据库 token claim、
+        claim_bucket_key 和同 bucket 队首围栏承载。
         """
         from src.app.workline.services.inbox_service import inbox_service
 
         if limit <= 0:
             return self._empty_result()
 
-        parallelism_value = self._clamp_parallelism(parallelism)
         remaining = limit
         result = self._empty_result()
         while remaining > 0:
-            claim_limit = min(remaining, parallelism_value)
             processor_token = str(uuid.uuid4())
             claims = await inbox_service.claim_pending_messages(
                 db,
-                limit=claim_limit,
+                limit=1,
                 processor_token=processor_token,
                 stale_after_seconds=WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
             )
             if not claims:
                 break
-            wave_result = await self._process_claims(db, claims, parallelism=parallelism_value)
-            self._merge_result(result, wave_result)
-            remaining -= len(claims)
-        return result
-
-    async def _process_claims(self, db: Any, claims: list[WorklineInboxClaim], *, parallelism: int) -> ProcessResult:
-        buckets: dict[str, list[WorklineInboxClaim]] = {}
-        for claim in claims:
-            buckets.setdefault(self._bucket_key(claim), []).append(claim)
-        for bucket_claims in buckets.values():
-            bucket_claims.sort(key=lambda item: (item.received_at or timezone.now_for_db(), item.id))
-
-        semaphore = asyncio.Semaphore(parallelism)
-
-        async def _run_bucket(bucket_key: str, bucket_claims: list[WorklineInboxClaim]) -> ProcessResult:
-            async with semaphore:
-                bucket_result = self._empty_result()
-                pending_claims = list(bucket_claims)
-                try:
-                    async with self.session_factory() as bucket_db:
-                        if self.bucket_lock_provider is not None:
-                            lock_context = self.bucket_lock_provider(bucket_db, bucket_key)
-                        else:
-                            lock_context = _build_inbox_bucket_lock_provider(bucket_db)(bucket_key)
-                        async with lock_context:
-                            for claim in bucket_claims:
-                                message_result = await self._process_claimed_message(bucket_db, claim)
-                                self._merge_result(bucket_result, message_result)
-                                pending_claims.pop(0)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:
-                    raise InboxBucketProcessingError(bucket_key, pending_claims, e) from e
-                logger.debug(f"Inbox bucket processed: bucket={bucket_key}, result={bucket_result}")
-                return bucket_result
-
-        result = self._empty_result()
-        bucket_results = await asyncio.gather(
-            *(_run_bucket(bucket_key, bucket_claims) for bucket_key, bucket_claims in buckets.items()),
-            return_exceptions=True,
-        )
-        for (bucket_key, _bucket_claims), bucket_result in zip(buckets.items(), bucket_results, strict=True):
-            if isinstance(bucket_result, asyncio.CancelledError):
-                logger.warning(f"Inbox bucket processing cancelled: bucket={bucket_key}")
-                raise bucket_result
-            if isinstance(bucket_result, InboxBucketProcessingError):
-                failed_result = await self._mark_bucket_claims_failed(db, bucket_result.claims, bucket_result.cause)
-                self._merge_result(result, failed_result)
-                logger.error(f"Inbox bucket processing failed: bucket={bucket_key}, error={bucket_result.cause}")
-                continue
-            if isinstance(bucket_result, BaseException):
-                logger.error(f"Inbox bucket processing failed: bucket={bucket_key}, error={bucket_result}")
-                raise bucket_result
-            self._merge_result(result, bucket_result)
-        return result
-
-    async def _mark_bucket_claims_failed(
-        self,
-        db: Any,
-        claims: list[WorklineInboxClaim],
-        error: Exception,
-    ) -> ProcessResult:
-        """bucket 调度失败时，先把已 claim 但未处理的消息落到可重试终态。"""
-
-        from src.app.workline.services.inbox_service import inbox_service
-
-        result = self._empty_result()
-        if not claims:
-            return result
-
-        error_message = f"Inbox bucket processing failed before message handler: {error}"
-        try:
             for claim in claims:
-                _ = await inbox_service.mark_as_failed(
-                    db,
-                    claim.id,
-                    error_message,
-                    processor_token=claim.processor_token,
-                    auto_commit=False,
-                )
-                result["processed"] += 1
-                result["failed"] += 1
-            await db.commit()
-        except Exception:
-            with suppress(Exception):
-                await db.rollback()
-            raise
+                message_result = await self._process_claimed_message(db, claim)
+                self._merge_result(result, message_result)
+                remaining -= 1
+                if remaining <= 0:
+                    break
         return result
 
     async def _process_claimed_message(self, db: Any, claim: WorklineInboxClaim) -> ProcessResult:  # noqa: PLR0912
-        """批量处理 Inbox 消息
+        """处理已被当前 worker claim 的单条 Inbox 消息。
 
         处理流程：
-        1. 从数据库获取 status='NEW' 的待处理消息（limit 限制数量）
-        2. 遍历每个消息：
-           a. 尝试加锁标记为 PROCESSING（并发控制）
-           b. 入站后 malformed gate：空的 SCAN_COMPLETED payload 直接失败
-           c. 加载关联实体（session/workline/device/devices_by_role）
-           d. 调用 OrchestratorService.process_inbox() 执行编排
-           e. 成功：应用编排结果，更新状态为 PROCESSED
-           f. 失败：更新状态为 FAILED
-        3. 提交数据库事务
+        1. 根据 claim 重新加载 ORM，确认 PROCESSING + processor_token fencing。
+        2. 入站后 malformed gate：空的 SCAN_COMPLETED payload 直接失败。
+        3. 加载关联实体（session/workline/device/devices_by_role）。
+        4. 调用 OrchestratorService.process_inbox() 执行编排。
+        5. PROCESSED disposition：更新为 PROCESSED；RESOURCE_RETRY disposition：park 到 RETRY。
+        6. 真实异常或安全阻断按对应终态写回。
 
         并发控制：
-        - 使用 SELECT ... FOR UPDATE SKIP LOCKED 获取消息
-        - 使用 processor_token 标记处理 worker
-        - 已被锁定的消息会被标记为 SKIPPED
+        - claim_pending_messages 使用 SELECT ... FOR UPDATE SKIP LOCKED claim 消息。
+        - processor_token 标记当前处理 worker，终态更新必须携带 token。
+        - 单 processor 顺序 claim；跨 worker 并发由数据库 claim 和 claim_bucket_key 队首围栏承载。
 
         Args:
             db: 数据库会话
-            limit: 批处理数量，默认 10
+            claim: 当前 worker 已 claim 的轻量消息
 
         Returns:
             处理结果统计 {
                 "processed": 处理总数,
                 "success": 成功数,
                 "failed": 失败数,
-                "skipped": 跳过数（已被其他 worker 锁定）
+                "skipped": 跳过数,
+                "resource_wait": 资源等待数
             }
         """
         from src.app.workline.services.inbox_service import inbox_service
@@ -1064,7 +918,7 @@ class InboxBatchProcessor:
 
                 if _is_duplicate_entry_event_for_session(
                     inbox=inbox, payload=payload, session=session, workline=workline
-                ):
+                ) and not _is_resource_wait_retry_for_same_inbox(session, inbox_pk):
                     material_conflict = _duplicate_entry_material_conflict(
                         session=session,
                         workline=workline,
@@ -1153,6 +1007,7 @@ class InboxBatchProcessor:
 
                 write_effects_applied = False
                 enqueue_outbox_dispatch = False
+                write_disposition = WriteBackDisposition.PROCESSED
                 session_snapshot = _session_write_snapshot(session)
                 sse_workline_id = resolve_entity_id(workline)
                 sse_session_id = resolve_entity_id(session)
@@ -1171,7 +1026,7 @@ class InboxBatchProcessor:
                     _sse_session_id: int | None = sse_session_id,
                     _processor_token: str = processor_token,
                 ) -> None:
-                    nonlocal write_effects_applied, enqueue_outbox_dispatch
+                    nonlocal write_disposition, write_effects_applied, enqueue_outbox_dispatch
                     try:
                         await db.refresh(_session)
                         _payload = payload_dict(getattr(_inbox, "payload_json", None))
@@ -1194,6 +1049,7 @@ class InboxBatchProcessor:
                                 db, _inbox_pk, processor_token=_processor_token, auto_commit=False
                             )
                             await db.commit()
+                            write_disposition = WriteBackDisposition.PROCESSED
                             write_effects_applied = True
                             enqueue_outbox_dispatch = False
                             return
@@ -1211,7 +1067,7 @@ class InboxBatchProcessor:
 
                             write_back_service = orchestrator_write_back_service
 
-                        await write_back_service.write_back(
+                        effect_result = await write_back_service.write_back(
                             db,
                             session=_session,
                             workline=_workline,
@@ -1220,12 +1076,43 @@ class InboxBatchProcessor:
                             source_device=_device,
                             orch_result=write_result,
                         )
-                        _ = await inbox_service.mark_as_processed(
-                            db, _inbox_pk, processor_token=_processor_token, auto_commit=False
-                        )
+                        write_disposition = effect_result.disposition
+                        if write_disposition == WriteBackDisposition.RESOURCE_RETRY:
+                            _ = await inbox_service.park_for_retry(
+                                db,
+                                _inbox_pk,
+                                "RESOURCE_WAIT",
+                                processor_token=_processor_token,
+                                auto_commit=False,
+                                delay_seconds=WORKLINE_RESOURCE_WAIT_RETRY_SECONDS,
+                            )
+                        elif write_disposition == WriteBackDisposition.PROCESSED:
+                            _ = await inbox_service.mark_as_processed(
+                                db, _inbox_pk, processor_token=_processor_token, auto_commit=False
+                            )
+                            session_context = dict(payload_dict(getattr(_session, "context_json", None)))
+                            resource_wait_context = payload_dict(session_context.get("resource_wait"))
+                            if optional_int(
+                                resource_wait_context.get("inbox_id")
+                            ) == _inbox_pk and resource_wait_context.get("resource_key"):
+                                from src.app.workline.services.diagnostic_service import workline_diagnostic_service
+
+                                _ = await workline_diagnostic_service.resolve_resource_wait_diagnostics(
+                                    db,
+                                    inbox_id=_inbox_pk,
+                                    resource_key=str(resource_wait_context["resource_key"]),
+                                    auto_commit=False,
+                                )
+                                session_context.pop("resource_wait", None)
+                                _session.context_json = session_context
+                        else:
+                            raise RuntimeError(f"Unsupported write-back disposition: {write_disposition}")
                         await db.commit()
                         write_effects_applied = True
-                        enqueue_outbox_dispatch = _result_requires_outbox_dispatch(write_result)
+                        enqueue_outbox_dispatch = (
+                            write_disposition == WriteBackDisposition.PROCESSED
+                            and _result_requires_outbox_dispatch(write_result)
+                        )
                         # 通知前端工作线运行态已变更，key 用于增量刷新定位
                         from src.app.sys.services.event_stream_service import (
                             WORKLINE_RUNTIME_CHANGED_EVENT,
@@ -1269,8 +1156,12 @@ class InboxBatchProcessor:
                     if not write_effects_applied:
                         raise RuntimeError("WRITE lock callback was not executed for successful orchestrator result")
 
-                    result["success"] += 1
-                    logger.info(f"Inbox {inbox_pk} 处理成功")
+                    if write_disposition == WriteBackDisposition.RESOURCE_RETRY:
+                        result["resource_wait"] += 1
+                        logger.info(f"Inbox {inbox_pk} resource wait, parked for retry")
+                    else:
+                        result["success"] += 1
+                        logger.info(f"Inbox {inbox_pk} 处理成功")
 
                     if enqueue_outbox_dispatch:
                         _enqueue_outbox_dispatch()
@@ -1299,43 +1190,6 @@ class InboxBatchProcessor:
                     result["failed"] += 1
                     logger.warning(f"Inbox {inbox_pk} 处理失败: {error_msg}")
 
-                result["processed"] += 1
-
-            except WorklineEntryAdmissionBlocked as e:
-                logger.warning(f"Inbox {inbox_pk_text} entry admission blocked: {e}")
-                with suppress(Exception):
-                    await db.rollback()
-                await _record_diagnostic(
-                    db,
-                    inbox=diagnostic_inbox,
-                    error_code=ErrorCode.UNKNOWN,
-                    error_domain=ErrorDomain.WORKFLOW,
-                    message=str(e),
-                    extra={
-                        "reason": "WORKLINE_ENTRY_ADMISSION_BLOCKED",
-                        "workline_id": e.workline_id,
-                        "business_key": e.business_key,
-                        "blocker_session_id": e.blocker_session_id,
-                    },
-                )
-                try:
-                    inbox_pk = diagnostic_inbox.id
-                    if inbox_pk is not None:
-                        attempt_count = getattr(diagnostic_inbox, "attempt_count", 0)
-                        delay_seconds = min(600, 10 * (2**attempt_count))
-                        _ = await inbox_service.park_for_retry(
-                            db,
-                            inbox_pk,
-                            str(e),
-                            processor_token=processor_token,
-                            auto_commit=False,
-                            delay_seconds=delay_seconds,
-                            workline_id=e.workline_id,
-                        )
-                        await db.commit()
-                except Exception as mark_error:
-                    logger.warning(f"Inbox {inbox_pk_text} entry admission blocked 补记失败: {mark_error}")
-                result["failed"] += 1
                 result["processed"] += 1
 
             except SessionResolveError as e:

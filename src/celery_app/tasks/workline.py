@@ -21,8 +21,6 @@ from celery import Task
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
 from src.app.device.models.command import DeviceCommand
 from src.celery_app.app import celery_app
-
-# Backwards compatible exports for things that were moved
 from src.celery_app.constants import (
     DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
 )
@@ -45,6 +43,7 @@ class ProcessResult(TypedDict):
     success: int
     failed: int
     skipped: int
+    resource_wait: int
 
 
 class ScanResult(TypedDict):
@@ -361,17 +360,17 @@ class DeviceHeartbeatScanner:
     max_retries=3,
     default_retry_delay=5,
 )
-def process_inbox_batch(self: WorklineTask, limit: int = 10, parallelism: int | None = None) -> ProcessResult:
-    """批量处理 Inbox 消息 (Celery 任务入口)
-    从数据库获取 status='NEW' 的 Inbox 消息，调用 InboxBatchProcessor.process_batch() 执行处理。
+def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
+    """顺序处理 Inbox 消息 (Celery 任务入口)
+    通过 InboxBatchProcessor.process_batch() claim 并处理消息。
     处理流程（详见 InboxBatchProcessor）：
-    1. 批量获取待处理消息（limit 限制）
-    2. 并发控制：标记为 PROCESSING，防止重复处理
+    1. 每轮 claim 1 条待处理消息（总量受 limit 限制）
+    2. token fencing：标记为 PROCESSING，防止重复处理
     3. 入站后 malformed gate：拦截完全空的 SCAN_COMPLETED payload
     4. 加载关联实体：session/workline/device/devices_by_role
     5. 调用 OrchestratorService 执行编排
     6. 应用编排结果：command/outbox/timeline
-    7. 更新状态：PROCESSED/FAILED
+    7. 更新状态：PROCESSED/FAILED/DEAD_LETTER/RETRY(RESOURCE_WAIT)
     执行模式：
     - bind=True：任务方法接收 self（WorklineTask 实例）
     - max_retries=3：失败后自动重试最多 3 次
@@ -381,16 +380,16 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10, parallelism: int | 
     Args:
         self: Celery 任务实例（bind=True）
         limit: 批处理数量，默认 10
-        parallelism: 可选覆盖单次批处理并发度，会在 Processor 内 clamp 到安全范围
     Returns:
         处理结果统计 {
             "processed": 处理总数,
             "success": 成功数,
             "failed": 失败数,
-            "skipped": 跳过数
+            "skipped": 跳过数,
+            "resource_wait": 资源暂忙等待数
         }
     触发方式：
-        celery beat 定时调度（默认每 5 秒）
+        celery beat 定时调度（默认每 10 秒）
         手动调用：process_inbox_batch.delay(limit=10)
     """
     logger.debug(f"开始处理 Inbox 消息, limit={limit}")
@@ -401,9 +400,7 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10, parallelism: int | 
             from src.app.workline.services.write_back_service import orchestrator_write_back_service
 
             processor = InboxBatchProcessor(write_back_service=orchestrator_write_back_service)
-            if parallelism is None:
-                return await processor.process_batch(db, limit=limit)
-            return await processor.process_batch(db, limit=limit, parallelism=parallelism)
+            return await processor.process_batch(db, limit=limit)
 
     try:
         result = _run_async(_process())
@@ -534,19 +531,14 @@ def scan_device_heartbeats_batch(
         raise self.retry(exc=e, countdown=countdown) from None
 
 
-# 历史测试/脚本兼容入口
-scan_timeouts = TimeoutScanner
-device_heartbeat_scanner = DeviceHeartbeatScanner
 # ============================================
 # 导出
 # ============================================
 __all__ = [
     # Celery 任务入口（公共 API）
-    "device_heartbeat_scanner",
     "process_inbox_batch",
     "process_signal",
     "scan_device_heartbeats_batch",
-    "scan_timeouts",
     "scan_timeouts_batch",
 ]
 

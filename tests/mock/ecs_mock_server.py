@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import logging
 import os
+import random
 import sys
 import time
 from datetime import UTC, datetime
@@ -43,7 +44,12 @@ WES_EVENT_CALLBACK_URL = os.getenv(
 )
 API_APP_ID = os.getenv("API_APP_ID", "app_Gqnvr3dpjGwlrjtO")
 API_APP_SECRET = os.getenv("API_APP_SECRET", "sec_fqYNIij1ZD8aekbn0AONhk_H7VAzj5gEpcMC9d__tao")
-COMMAND_EXECUTION_DELAY_SECONDS = float(os.getenv("ECS_MOCK_COMMAND_DELAY_SECONDS", "0.05"))
+_COMMAND_EXECUTION_DELAY_SECONDS_RAW = os.getenv("ECS_MOCK_COMMAND_DELAY_SECONDS")
+COMMAND_EXECUTION_DELAY_SECONDS = (
+    float(_COMMAND_EXECUTION_DELAY_SECONDS_RAW) if _COMMAND_EXECUTION_DELAY_SECONDS_RAW else None
+)
+COMMAND_DELAY_MIN_SECONDS = 2.0
+COMMAND_DELAY_MAX_SECONDS = 8.0
 
 ScenarioName = Literal["success", "fail", "timeout"]
 
@@ -151,6 +157,7 @@ class DeviceRuntimeState(BaseModel):
     is_online: bool = True
     current_command_id: str | None = None
     scenario: ScenarioName = "success"
+    command_delay_seconds: float | None = Field(default=None, ge=0)
     updated_at: int
 
 
@@ -171,6 +178,10 @@ def _build_api_auth_headers(method: str, path: str) -> dict[str, str]:
         "X-Timestamp": timestamp,
         "X-Signature": signature,
     }
+
+
+def _random_command_delay_seconds() -> float:
+    return round(random.uniform(COMMAND_DELAY_MIN_SECONDS, COMMAND_DELAY_MAX_SECONDS), 3)
 
 
 def _initial_state() -> dict[str, DeviceRuntimeState]:
@@ -201,6 +212,12 @@ def _get_state_or_400(device_code: str) -> DeviceRuntimeState:
     return state
 
 
+def _command_delay_seconds_for_command() -> float:
+    if COMMAND_EXECUTION_DELAY_SECONDS is not None:
+        return COMMAND_EXECUTION_DELAY_SECONDS
+    return _random_command_delay_seconds()
+
+
 async def _post_callback(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     parsed_url = urlparse(url)
     headers = _build_api_auth_headers("POST", parsed_url.path)
@@ -227,12 +244,12 @@ async def _post_event_callback_for_debug(url: str, payload: dict[str, Any]) -> d
     }
 
 
-async def _finish_command(payload: DeviceCommandPayload) -> None:
+async def _finish_command(payload: DeviceCommandPayload, delay_seconds: float) -> None:
     state = _get_state_or_400(payload.device_code)
     scenario = state.scenario
     try:
-        if COMMAND_EXECUTION_DELAY_SECONDS > 0:
-            await asyncio.sleep(COMMAND_EXECUTION_DELAY_SECONDS)
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
 
         if scenario == "timeout":
             logger.info("ECS Mock 超时场景不回调: command_code=%s", payload.command_code)
@@ -264,6 +281,7 @@ async def _finish_command(payload: DeviceCommandPayload) -> None:
             state.scenario = "success"
         state.status = "IDLE"
         state.current_command_id = None
+        state.command_delay_seconds = None
         state.updated_at = _now_ms()
 
 
@@ -298,10 +316,13 @@ async def receive_command(payload: DeviceCommandPayload, background_tasks: Backg
     state.status = "RUNNING"
     state.current_command_id = payload.command_code
     state.updated_at = _now_ms()
+    delay_seconds = _command_delay_seconds_for_command()
+    state.command_delay_seconds = delay_seconds
     command_record = payload.model_dump()
     command_record["current_command_id"] = payload.command_code
+    command_record["command_delay_seconds"] = delay_seconds
     command_history.append(command_record)
-    background_tasks.add_task(_finish_command, payload)
+    background_tasks.add_task(_finish_command, payload, delay_seconds)
     return DeviceCommandAck(code=200, message="Accepted", trace_id=f"ECS-MOCK-{payload.command_code}")
 
 

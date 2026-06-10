@@ -84,13 +84,13 @@ class TestTimeoutScanner:
     @pytest.mark.asyncio
     async def test_scan_no_timed_out_sessions(self, mock_db, mock_session_repo):
         """测试无超时 Session 时正常退出"""
-        from src.celery_app.tasks.workline import scan_timeouts
+        from src.celery_app.tasks.workline import TimeoutScanner
 
         with patch(
             "src.app.workline.repositories.session_repository.WorklineSessionRepository",
             return_value=mock_session_repo,
         ):
-            result = await scan_timeouts._scan(mock_db)
+            result = await TimeoutScanner._scan(mock_db)
 
         assert result["scanned"] == 0
         assert result["timeouts_created"] == 0
@@ -106,7 +106,7 @@ class TestTimeoutScanner:
         mock_device_repo,
     ):
         """测试单个超时 Session 处理"""
-        from src.celery_app.tasks.workline import scan_timeouts
+        from src.celery_app.tasks.workline import TimeoutScanner
 
         # 创建一个过期的 Session
         expired_time = datetime.now(UTC) - timedelta(minutes=5)
@@ -133,7 +133,7 @@ class TestTimeoutScanner:
                 mock_device_repo,
             ),
         ):
-            result = await scan_timeouts._scan(mock_db)
+            result = await TimeoutScanner._scan(mock_db)
 
         assert result["scanned"] == 1
         assert result["timeouts_created"] == 1
@@ -153,7 +153,7 @@ class TestTimeoutScanner:
         mock_session_repo,
     ):
         """SENT 指令 ACK 等待超时后必须进入通信 ACK 对账隔离。"""
-        from src.celery_app.tasks.workline import scan_timeouts
+        from src.celery_app.tasks.workline import TimeoutScanner
 
         command = SimpleNamespace(
             id=881,
@@ -189,7 +189,7 @@ class TestTimeoutScanner:
                 runtime_service,
             ),
         ):
-            result = await scan_timeouts._scan(mock_db)
+            result = await TimeoutScanner._scan(mock_db)
 
         assert result["scanned"] == 1
         assert result["timeouts_created"] == 0
@@ -214,7 +214,7 @@ class TestTimeoutScanner:
         mock_device_repo,
     ):
         """WAITING_EXTERNAL 没有关联 DeviceCommand 时也必须生成 TIMER_TIMEOUT。"""
-        from src.celery_app.tasks.workline import scan_timeouts
+        from src.celery_app.tasks.workline import TimeoutScanner
 
         expired_time = datetime.now(UTC) - timedelta(minutes=5)
         session = MockSession(
@@ -243,7 +243,7 @@ class TestTimeoutScanner:
                 mock_device_repo,
             ),
         ):
-            result = await scan_timeouts._scan(mock_db)
+            result = await TimeoutScanner._scan(mock_db)
 
         assert result["scanned"] == 1
         assert result["timeouts_created"] == 1
@@ -265,7 +265,7 @@ class TestTimeoutScanner:
         mock_device_repo,
     ):
         """测试批量扫描多个超时 Session"""
-        from src.celery_app.tasks.workline import scan_timeouts
+        from src.celery_app.tasks.workline import TimeoutScanner
 
         expired_time = datetime.now(UTC) - timedelta(minutes=5)
         sessions = [
@@ -294,7 +294,7 @@ class TestTimeoutScanner:
                 mock_device_repo,
             ),
         ):
-            result = await scan_timeouts._scan(mock_db)
+            result = await TimeoutScanner._scan(mock_db)
 
         assert result["scanned"] == 3
         assert result["timeouts_created"] == 3
@@ -307,7 +307,7 @@ class TestTimeoutScanner:
         mock_session_repo,
     ):
         """测试跳过非等待状态的 Session（仅扫描等待状态）"""
-        from src.celery_app.tasks.workline import scan_timeouts
+        from src.celery_app.tasks.workline import TimeoutScanner
 
         # RUNNING 状态不应被扫描
         mock_session_repo.get_timed_out_sessions.return_value = []
@@ -316,7 +316,7 @@ class TestTimeoutScanner:
             "src.app.workline.repositories.session_repository.WorklineSessionRepository",
             return_value=mock_session_repo,
         ):
-            result = await scan_timeouts._scan(mock_db)
+            result = await TimeoutScanner._scan(mock_db)
 
         assert result["scanned"] == 0
         # 验证查询参数：只扫描等待状态
@@ -331,7 +331,7 @@ class TestTimeoutScanner:
         mock_device_repo,
     ):
         """测试 Inbox 创建失败时的错误处理"""
-        from src.celery_app.tasks.workline import scan_timeouts
+        from src.celery_app.tasks.workline import TimeoutScanner
 
         expired_time = datetime.now(UTC) - timedelta(minutes=5)
         session = MockSession(
@@ -359,7 +359,7 @@ class TestTimeoutScanner:
                 mock_device_repo,
             ),
         ):
-            result = await scan_timeouts._scan(mock_db)
+            result = await TimeoutScanner._scan(mock_db)
 
         # 应该记录错误但继续处理
         assert result["scanned"] == 1

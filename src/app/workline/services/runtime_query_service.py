@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any, TypeVar, cast
 
 from sqlalchemy import and_, exists, func, or_, select
@@ -29,7 +30,9 @@ from src.app.workline.models.runtime import (
     RuntimeDeviceSummary,
     RuntimeOverviewResponse,
     RuntimeRackOperationWait,
+    RuntimeResourceEvidenceItem,
     RuntimeResourceEvidenceKind,
+    RuntimeResourceKind,
     RuntimeSingleLayerRackSnapshot,
     RuntimeStatCard,
     RuntimeStationLease,
@@ -82,6 +85,29 @@ _PENDING_COMMAND_STATUSES = {"PENDING", "SENT", "ACK_RECEIVED"}
 _INBOX_BACKLOG_STATUSES = {"NEW", "RETRY", "PROCESSING"}
 _OUTBOX_BACKLOG_STATUSES = {"NEW", "DISPATCHING"}
 _RECENT_FAILURE_HOURS = 24
+_RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT = 200
+_RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT = 50
+_RUNTIME_RESOURCE_EVIDENCE_KIND_PRIORITY = {
+    RuntimeResourceEvidenceKind.WES_ACTIVE_SNAPSHOT: 0,
+    RuntimeResourceEvidenceKind.WMS_CALLBACK_EVIDENCE: 1,
+    RuntimeResourceEvidenceKind.TRACE_RESOURCE_EVIDENCE: 2,
+    RuntimeResourceEvidenceKind.GENERIC_EVIDENCE: 3,
+    RuntimeResourceEvidenceKind.UNKNOWN: 4,
+}
+_RUNTIME_RESOURCE_KIND_PRIORITY = {
+    RuntimeResourceKind.RACK: 0,
+    RuntimeResourceKind.SLOT: 1,
+    RuntimeResourceKind.BIN: 2,
+    RuntimeResourceKind.CELL: 3,
+    RuntimeResourceKind.PKG: 4,
+    RuntimeResourceKind.PART_SN: 5,
+    RuntimeResourceKind.MAGAZINE: 6,
+    RuntimeResourceKind.UNKNOWN: 7,
+}
+_RUNTIME_STATION_CODE_KEYS = ("station_code", "work_station_code", "target_station_code")
+_RUNTIME_STATION_NESTED_CODE_KEYS = ("station_code", "code")
+_RUNTIME_STATION_METADATA_GROUP = ("station", *_RUNTIME_STATION_CODE_KEYS)
+_RUNTIME_POSITION_CODE_KEYS = ("target_position_code", "work_position_code", "source_position_code", "position_code")
 _ORCHESTRATOR_TIMELINE_ACTIONS = {
     "SESSION_CREATED",
     "SESSION_STARTED",
@@ -431,14 +457,19 @@ class RuntimeQueryService(BaseService[Any, Any]):
             return None
 
         devices = await device_repository.get_by_work_line_id(db, workline_id)
-        active_sessions = await self._load_active_sessions_for_workline(db, workline_id, limit=20)
+        all_active_sessions = await self._load_active_sessions_for_workline(
+            db,
+            workline_id,
+            limit=_RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT,
+        )
+        active_sessions = all_active_sessions[:20]
         recent_failed_sessions = await self._load_recent_failed_sessions_for_workline(db, workline_id, limit=10)
         recent_completed_sessions = await self._load_recent_completed_sessions_for_workline(db, workline_id, limit=10)
-        active_session_ids = {session.id for session in active_sessions}
+        active_session_ids = {session.id for session in all_active_sessions}
         visible_terminal_sessions = [
             item for item in [*recent_failed_sessions, *recent_completed_sessions] if item.id not in active_session_ids
         ]
-        all_sessions = active_sessions + visible_terminal_sessions
+        all_sessions = all_active_sessions + visible_terminal_sessions
 
         blocked_outbox_projection = await self._load_blocked_outbox_projection(db, devices)
         open_command_map = await self._load_open_command_count_map(
@@ -463,7 +494,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         active_trace_items = await self._build_trace_list_items(db, active_sessions)
         failed_trace_items = await self._build_trace_list_items(db, recent_failed_sessions)
         completed_trace_items = await self._build_trace_list_items(db, recent_completed_sessions)
-        structured_boundary = await self._build_workline_runtime_boundary(db, workline, active_sessions)
+        structured_boundary = await self._build_workline_runtime_boundary(db, workline, all_active_sessions)
 
         return RuntimeWorklineDetailResponse(
             summary=summary,
@@ -472,6 +503,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
             single_layer_rack_snapshot=structured_boundary["single_layer_rack_snapshot"],
             rack_operation_wait=structured_boundary["rack_operation_wait"],
             resource_evidence_kind=structured_boundary["resource_evidence_kind"],
+            resource_evidence_items=structured_boundary["resource_evidence_items"],
+            resource_evidence_total_count=structured_boundary["resource_evidence_total_count"],
+            resource_evidence_truncated=structured_boundary["resource_evidence_truncated"],
             devices=device_items,
             active_sessions=active_trace_items,
             recent_failed_traces=failed_trace_items,
@@ -704,14 +738,21 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
         return list(result.scalars().all())
 
-    async def _load_active_sessions_for_workline(self, db: Any, workline_id: int, limit: int) -> list[WorklineSession]:
+    async def _load_active_sessions_for_workline(
+        self,
+        db: Any,
+        workline_id: int,
+        limit: int | None,
+    ) -> list[WorklineSession]:
         columns = cast("Any", WorklineSession).__table__.c
-        result = await db.execute(
+        query = (
             select(WorklineSession)
             .where(columns.workline_id == workline_id, columns.status.in_(list(_ACTIVE_SESSION_STATUSES)))
             .order_by(columns.last_ingress_at.desc().nullslast(), columns.id.desc())
-            .limit(limit)
         )
+        if limit is not None:
+            query = query.limit(limit)
+        result = await db.execute(query)
         return list(result.scalars().all())
 
     async def _load_open_command_count_map(
@@ -772,7 +813,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 continue
             count_by_device_id[device_id] += 1
             current_head = head_by_device_id.get(device_id)
-            if current_head is None or getattr(outbox, "created_at", None) < getattr(current_head, "created_at", None):
+            if current_head is None or _blocked_outbox_is_earlier(outbox, current_head):
                 head_by_device_id[device_id] = outbox
             payload = _payload_dict(outbox.payload_json)
             command_code = payload.get("command_code")
@@ -1048,15 +1089,20 @@ class RuntimeQueryService(BaseService[Any, Any]):
         db: Any,
         workline: WorkLine,
         sessions: list[WorklineSession],
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         station_lease = RuntimeStationLease.UNKNOWN
         single_layer_rack_snapshot = RuntimeSingleLayerRackSnapshot.UNKNOWN
         resource_evidence_kind = RuntimeResourceEvidenceKind.UNKNOWN
+        active_snapshots: list[tuple[str, dict[str, Any]]] = []
         position_codes = self._single_layer_boundary_positions(workline)
 
         if position_codes:
             station_lease = await self._load_runtime_station_lease(db, workline, position_codes)
-            single_layer_rack_snapshot = await self._load_single_layer_rack_snapshot_state(db, workline, position_codes)
+            single_layer_rack_snapshot, active_snapshots = await self._load_single_layer_rack_snapshot_projection(
+                db,
+                workline,
+                position_codes,
+            )
             if single_layer_rack_snapshot == RuntimeSingleLayerRackSnapshot.ACTIVE:
                 resource_evidence_kind = RuntimeResourceEvidenceKind.WES_ACTIVE_SNAPSHOT
 
@@ -1072,12 +1118,22 @@ class RuntimeQueryService(BaseService[Any, Any]):
         ):
             single_layer_rack_snapshot = RuntimeSingleLayerRackSnapshot.NON_SINGLE_LAYER_EVIDENCE
 
+        resource_evidence_items = self._runtime_resource_evidence_items(
+            sessions,
+            active_snapshots=active_snapshots,
+        )
+        resource_evidence_total_count = len(resource_evidence_items)
+        resource_evidence_truncated = resource_evidence_total_count > _RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT
+
         return {
             "workline_readiness": self._runtime_workline_readiness(workline).value,
             "station_lease": station_lease.value,
             "single_layer_rack_snapshot": single_layer_rack_snapshot.value,
             "rack_operation_wait": rack_operation_wait.value,
             "resource_evidence_kind": resource_evidence_kind.value,
+            "resource_evidence_items": resource_evidence_items[:_RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT],
+            "resource_evidence_total_count": resource_evidence_total_count,
+            "resource_evidence_truncated": resource_evidence_truncated,
         }
 
     @staticmethod
@@ -1151,7 +1207,17 @@ class RuntimeQueryService(BaseService[Any, Any]):
         workline: WorkLine,
         position_codes: list[str],
     ) -> RuntimeSingleLayerRackSnapshot:
+        state, _ = await self._load_single_layer_rack_snapshot_projection(db, workline, position_codes)
+        return state
+
+    async def _load_single_layer_rack_snapshot_projection(
+        self,
+        db: Any,
+        workline: WorkLine,
+        position_codes: list[str],
+    ) -> tuple[RuntimeSingleLayerRackSnapshot, list[tuple[str, dict[str, Any]]]]:
         states: list[RuntimeSingleLayerRackSnapshot] = []
+        active_snapshots: list[tuple[str, dict[str, Any]]] = []
         for position_code in position_codes:
             try:
                 snapshot = await smt_active_rack_snapshot_service.get_active_bin_rack(
@@ -1162,17 +1228,22 @@ class RuntimeQueryService(BaseService[Any, Any]):
             except ValueError:
                 states.append(RuntimeSingleLayerRackSnapshot.INVALID)
                 continue
+            if snapshot and isinstance(snapshot, Mapping):
+                active_snapshots.append((position_code, dict(snapshot)))
             states.append(RuntimeSingleLayerRackSnapshot.ACTIVE if snapshot else RuntimeSingleLayerRackSnapshot.MISSING)
-        return _highest_priority_state(
-            states,
-            [
-                RuntimeSingleLayerRackSnapshot.ACTIVE,
-                RuntimeSingleLayerRackSnapshot.INVALID,
-                RuntimeSingleLayerRackSnapshot.NON_SINGLE_LAYER_EVIDENCE,
-                RuntimeSingleLayerRackSnapshot.MISSING,
+        return (
+            _highest_priority_state(
+                states,
+                [
+                    RuntimeSingleLayerRackSnapshot.ACTIVE,
+                    RuntimeSingleLayerRackSnapshot.INVALID,
+                    RuntimeSingleLayerRackSnapshot.NON_SINGLE_LAYER_EVIDENCE,
+                    RuntimeSingleLayerRackSnapshot.MISSING,
+                    RuntimeSingleLayerRackSnapshot.UNKNOWN,
+                ],
                 RuntimeSingleLayerRackSnapshot.UNKNOWN,
-            ],
-            RuntimeSingleLayerRackSnapshot.UNKNOWN,
+            ),
+            active_snapshots,
         )
 
     @staticmethod
@@ -1223,41 +1294,84 @@ class RuntimeQueryService(BaseService[Any, Any]):
         current: RuntimeResourceEvidenceKind,
         rack_operation_wait: RuntimeRackOperationWait,
     ) -> RuntimeResourceEvidenceKind:
-        if current != RuntimeResourceEvidenceKind.UNKNOWN:
-            return current
         states: list[RuntimeResourceEvidenceKind] = []
+        if current != RuntimeResourceEvidenceKind.UNKNOWN:
+            states.append(current)
         for session in sessions:
             context = ensure_dict(getattr(session, "context_json", None))
-            for evidence in _runtime_resource_evidence_payloads(context):
-                evidence_kind = str(evidence.get("resource_evidence_kind") or evidence.get("evidence_kind") or "")
-                source_system = str(evidence.get("source_system") or "").upper()
-                callback_type = str(evidence.get("callback_type") or "").upper()
-                if evidence_kind == RuntimeResourceEvidenceKind.TRACE_RESOURCE_EVIDENCE.value:
-                    states.append(RuntimeResourceEvidenceKind.TRACE_RESOURCE_EVIDENCE)
-                elif source_system in {"WMS", "RCS", "WMS_RCS"} or callback_type.startswith("WMS_"):
-                    states.append(RuntimeResourceEvidenceKind.WMS_CALLBACK_EVIDENCE)
-                else:
-                    states.append(RuntimeResourceEvidenceKind.GENERIC_EVIDENCE)
+            if ensure_dict(context.get("active_bin_rack")):
+                states.append(RuntimeResourceEvidenceKind.GENERIC_EVIDENCE)
+            states.extend(
+                _runtime_resource_evidence_kind_from_payload(evidence)
+                for evidence in _runtime_resource_evidence_payloads(context)
+            )
         if not states and rack_operation_wait == RuntimeRackOperationWait.WAITING_WMS:
             states.append(RuntimeResourceEvidenceKind.GENERIC_EVIDENCE)
         return _highest_priority_state(
             states,
-            [
-                RuntimeResourceEvidenceKind.WMS_CALLBACK_EVIDENCE,
-                RuntimeResourceEvidenceKind.TRACE_RESOURCE_EVIDENCE,
-                RuntimeResourceEvidenceKind.GENERIC_EVIDENCE,
-                RuntimeResourceEvidenceKind.UNKNOWN,
-            ],
+            list(_RUNTIME_RESOURCE_EVIDENCE_KIND_PRIORITY),
             RuntimeResourceEvidenceKind.UNKNOWN,
         )
+
+    @staticmethod
+    def _runtime_resource_evidence_items(
+        sessions: list[WorklineSession],
+        *,
+        active_snapshots: list[tuple[str, dict[str, Any]]],
+    ) -> list[RuntimeResourceEvidenceItem]:
+        items: list[RuntimeResourceEvidenceItem] = []
+        for position_code, snapshot in active_snapshots:
+            items.extend(
+                _runtime_resource_evidence_items_from_active_snapshot(
+                    snapshot,
+                    evidence_kind=RuntimeResourceEvidenceKind.WES_ACTIVE_SNAPSHOT,
+                    fallback_position_code=position_code,
+                )
+            )
+
+        for session in sessions:
+            context = ensure_dict(getattr(session, "context_json", None))
+            active_snapshot = ensure_dict(context.get("active_bin_rack"))
+            if active_snapshot:
+                items.extend(
+                    _runtime_resource_evidence_items_from_active_snapshot(
+                        active_snapshot,
+                        evidence_kind=RuntimeResourceEvidenceKind.GENERIC_EVIDENCE,
+                        session=session,
+                        context=context,
+                    )
+                )
+            for evidence in _runtime_resource_evidence_payloads(context):
+                evidence_kind = _runtime_resource_evidence_kind_from_payload(evidence)
+                items.extend(
+                    _runtime_resource_evidence_items_from_payload(
+                        evidence,
+                        evidence_kind=evidence_kind,
+                        session=session,
+                        context=context,
+                    )
+                )
+                nested_active_snapshot = ensure_dict(evidence.get("active_bin_rack"))
+                if nested_active_snapshot:
+                    items.extend(
+                        _runtime_resource_evidence_items_from_active_snapshot(
+                            nested_active_snapshot,
+                            evidence_kind=evidence_kind,
+                            session=session,
+                            context={**context, **evidence},
+                        )
+                    )
+
+        return _dedupe_runtime_resource_evidence_items(items)
 
     @staticmethod
     def _has_non_single_layer_resource_evidence(sessions: list[WorklineSession]) -> bool:
         for session in sessions:
             context = ensure_dict(getattr(session, "context_json", None))
-            for evidence in _runtime_resource_evidence_payloads(context):
-                rack_kind = str(evidence.get("rack_kind") or evidence.get("resource_kind") or "").upper()
-                if rack_kind and rack_kind != "SINGLE_LAYER":
+            active_bin_rack = ensure_dict(context.get("active_bin_rack"))
+            for evidence in [active_bin_rack, *_runtime_resource_evidence_payloads(context)]:
+                rack_kind = _runtime_resource_evidence_rack_kind(evidence)
+                if rack_kind is not None and rack_kind != "SINGLE_LAYER":
                     return True
         return False
 
@@ -1802,6 +1916,445 @@ def _highest_priority_state(values: list[T], priority: list[T], fallback: T) -> 
         if item in values:
             return item
     return fallback
+
+
+def _blocked_outbox_is_earlier(candidate: Any, current: Any) -> bool:
+    candidate_created_at = getattr(candidate, "created_at", None)
+    current_created_at = getattr(current, "created_at", None)
+    if not isinstance(candidate_created_at, datetime):
+        return False
+    if not isinstance(current_created_at, datetime):
+        return True
+    return candidate_created_at < current_created_at
+
+
+def _runtime_resource_evidence_items_from_active_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    evidence_kind: RuntimeResourceEvidenceKind,
+    session: WorklineSession | None = None,
+    context: dict[str, Any] | None = None,
+    fallback_position_code: str | None = None,
+) -> list[RuntimeResourceEvidenceItem]:
+    items = _runtime_resource_evidence_items_from_payload(
+        snapshot,
+        evidence_kind=evidence_kind,
+        session=session,
+        context=context,
+        fallback_position_code=fallback_position_code,
+    )
+    rack_code = _first_text(snapshot, ("rack_code", "rack_id"))
+    for cell_payload in _runtime_active_snapshot_cell_payloads(snapshot, rack_code=rack_code):
+        items.extend(
+            _runtime_resource_evidence_items_from_payload(
+                cell_payload,
+                evidence_kind=evidence_kind,
+                session=session,
+                context=context,
+                fallback_position_code=fallback_position_code,
+            )
+        )
+    return items
+
+
+def _runtime_active_snapshot_parent_metadata(snapshot: dict[str, Any], *, rack_code: str | None) -> dict[str, Any]:
+    parent_keys = (
+        "station",
+        *_RUNTIME_STATION_CODE_KEYS,
+        *_RUNTIME_POSITION_CODE_KEYS,
+        "rack_code",
+        "rack_id",
+    )
+    metadata = {key: snapshot[key] for key in parent_keys if key in snapshot}
+    if rack_code is not None:
+        metadata.setdefault("rack_code", rack_code)
+    return _runtime_normalized_station_position_defaults(metadata)
+
+
+def _runtime_normalized_station_position_defaults(defaults: dict[str, Any]) -> dict[str, Any]:
+    result = dict(defaults)
+    station = ensure_dict(result.get("station"))
+    if _first_text(result, _RUNTIME_STATION_CODE_KEYS) is None:
+        station_code = _first_text(station, _RUNTIME_STATION_NESTED_CODE_KEYS)
+        if station_code is not None:
+            result["station_code"] = station_code
+    if _first_text(result, _RUNTIME_POSITION_CODE_KEYS) is None:
+        position_code = _first_text(station, ("position_code",))
+        if position_code is not None:
+            result["position_code"] = position_code
+    return result
+
+
+def _runtime_active_snapshot_cell_payloads(snapshot: dict[str, Any], *, rack_code: str | None) -> list[dict[str, Any]]:
+    parent_metadata = _runtime_active_snapshot_parent_metadata(snapshot, rack_code=rack_code)
+    payloads = _runtime_active_snapshot_flat_cell_payloads(snapshot, parent_metadata=parent_metadata)
+    payloads.extend(_runtime_active_snapshot_nested_bin_cell_payloads(snapshot, parent_metadata=parent_metadata))
+    return payloads
+
+
+def _runtime_active_snapshot_flat_cell_payloads(
+    snapshot: dict[str, Any], *, parent_metadata: dict[str, Any]
+) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for key in ("cells", "bin_cells", "cell_snapshots"):
+        if key not in snapshot:
+            continue
+        cells = snapshot[key]
+        if not isinstance(cells, list):
+            continue
+        for cell in cells:
+            if not isinstance(cell, dict):
+                continue
+            payloads.append(_runtime_payload_with_metadata_defaults(cell, parent_metadata))
+    return payloads
+
+
+def _runtime_active_snapshot_nested_bin_cell_payloads(
+    snapshot: dict[str, Any],
+    *,
+    parent_metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
+    bins = snapshot.get("bins")
+    if not isinstance(bins, list):
+        return []
+
+    payloads: list[dict[str, Any]] = []
+    for bin_payload in bins:
+        if not isinstance(bin_payload, dict):
+            continue
+        bin_metadata = {key: value for key, value in bin_payload.items() if key != "cells"}
+        bin_metadata = _runtime_payload_with_metadata_defaults(bin_metadata, parent_metadata)
+        bin_metadata = _runtime_normalized_station_position_defaults(bin_metadata)
+        payloads.append(bin_metadata)
+        cells = bin_payload.get("cells")
+        if not isinstance(cells, list):
+            continue
+        for cell in cells:
+            if not isinstance(cell, dict):
+                continue
+            payloads.append(_runtime_payload_with_metadata_defaults(cell, bin_metadata))
+    return payloads
+
+
+def _runtime_payload_with_metadata_defaults(
+    payload: dict[str, Any],
+    defaults: dict[str, Any],
+) -> dict[str, Any]:
+    result = dict(payload)
+    metadata_groups = (
+        _RUNTIME_STATION_METADATA_GROUP,
+        _RUNTIME_POSITION_CODE_KEYS,
+        ("rack_code", "rack_id"),
+    )
+    grouped_keys = {key for group in metadata_groups for key in group}
+    defaults = _runtime_normalized_station_position_defaults(defaults)
+
+    for group in metadata_groups:
+        if _runtime_metadata_default_group_has_value(payload, group):
+            continue
+        for key in group:
+            if key in defaults:
+                _runtime_set_metadata_default_value(result, key, defaults[key])
+
+    for key, value in defaults.items():
+        if key not in grouped_keys:
+            _runtime_set_metadata_default_value(result, key, value)
+    return result
+
+
+def _runtime_metadata_default_group_has_value(payload: dict[str, Any], group: tuple[str, ...]) -> bool:
+    if group == _RUNTIME_STATION_METADATA_GROUP:
+        station = ensure_dict(payload.get("station"))
+        return (
+            _first_text(payload, _RUNTIME_STATION_CODE_KEYS) is not None
+            or _first_text(station, _RUNTIME_STATION_NESTED_CODE_KEYS) is not None
+        )
+    if group == _RUNTIME_POSITION_CODE_KEYS:
+        station = ensure_dict(payload.get("station"))
+        return _first_text(payload, group) is not None or _first_text(station, ("position_code",)) is not None
+    return _first_text(payload, group) is not None
+
+
+def _runtime_set_metadata_default_value(payload: dict[str, Any], key: str, value: Any) -> None:
+    current = payload.get(key)
+    if isinstance(current, dict):
+        if current:
+            return
+    elif _non_empty_text(current) is not None:
+        return
+    payload[key] = value
+
+
+def _runtime_resource_evidence_items_from_payload(
+    payload: dict[str, Any],
+    *,
+    evidence_kind: RuntimeResourceEvidenceKind,
+    session: WorklineSession | None = None,
+    context: dict[str, Any] | None = None,
+    fallback_position_code: str | None = None,
+) -> list[RuntimeResourceEvidenceItem]:
+    metadata = _runtime_resource_evidence_metadata(
+        payload,
+        session=session,
+        context=context,
+        fallback_position_code=fallback_position_code,
+    )
+    items: list[RuntimeResourceEvidenceItem] = []
+
+    direct_kind = _runtime_resource_kind(payload.get("resource_kind") or payload.get("resource_type"))
+    direct_code = _first_text(payload, ("resource_code", "resource_id"))
+    if direct_code is not None:
+        item = _make_runtime_resource_evidence_item(
+            resource_kind=direct_kind,
+            resource_code=direct_code,
+            display_label=_first_text(payload, ("display_label",)),
+            evidence_kind=evidence_kind,
+            metadata=metadata,
+        )
+        if item is not None:
+            items.append(item)
+
+    for resource_kind, code in (
+        (RuntimeResourceKind.RACK, metadata["rack_code"]),
+        (RuntimeResourceKind.SLOT, metadata["slot_code"]),
+        (RuntimeResourceKind.BIN, metadata["bin_code"]),
+        (RuntimeResourceKind.CELL, _runtime_cell_code(payload)),
+        (RuntimeResourceKind.PKG, metadata["pkg_code"]),
+        (RuntimeResourceKind.PART_SN, metadata["part_sn"]),
+        (RuntimeResourceKind.MAGAZINE, _first_text(payload, ("magazine_code", "magazine_id"))),
+    ):
+        item = _make_runtime_resource_evidence_item(
+            resource_kind=resource_kind,
+            resource_code=code,
+            display_label=None,
+            evidence_kind=evidence_kind,
+            metadata=metadata,
+        )
+        if item is not None:
+            items.append(item)
+
+    for reel_payload in _runtime_resource_evidence_reel_payloads(payload):
+        reel_metadata = _runtime_resource_evidence_metadata(
+            _runtime_payload_with_metadata_defaults(reel_payload, payload),
+            session=session,
+            context=context,
+            fallback_position_code=fallback_position_code,
+        )
+        item = _make_runtime_resource_evidence_item(
+            resource_kind=RuntimeResourceKind.PKG,
+            resource_code=reel_metadata["pkg_code"],
+            display_label=_first_text(reel_payload, ("display_label",)),
+            evidence_kind=evidence_kind,
+            metadata=reel_metadata,
+        )
+        if item is not None:
+            items.append(item)
+
+    return items
+
+
+def _runtime_resource_evidence_reel_payloads(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    reels = payload.get("reels")
+    if not isinstance(reels, list):
+        return []
+    return [dict(reel) for reel in reels if isinstance(reel, dict)]
+
+
+def _runtime_resource_evidence_metadata(
+    payload: dict[str, Any],
+    *,
+    session: WorklineSession | None,
+    context: dict[str, Any] | None,
+    fallback_position_code: str | None,
+) -> dict[str, Any]:
+    context_payload = context or {}
+    station = ensure_dict(payload.get("station")) or ensure_dict(context_payload.get("station"))
+    return {
+        "station_code": _first_text(payload, _RUNTIME_STATION_CODE_KEYS)
+        or _first_text(station, _RUNTIME_STATION_NESTED_CODE_KEYS),
+        "position_code": _first_text(
+            payload,
+            _RUNTIME_POSITION_CODE_KEYS,
+        )
+        or _first_text(
+            context_payload,
+            _RUNTIME_POSITION_CODE_KEYS,
+        )
+        or _first_text(station, ("position_code",))
+        or fallback_position_code,
+        "rack_code": _first_text(payload, ("rack_code", "rack_id")),
+        "bin_code": _first_text(payload, ("bin_code", "bin_id")),
+        "slot_code": _first_text(payload, ("rack_slot_code", "slot_code", "rack_slot_location_code")),
+        "pkg_code": _first_text(payload, ("pkg_code", "package_code", "PkgID", "pkg_id", "material_identity_key")),
+        "part_sn": _first_text(payload, ("part_sn", "part_serial_no", "serial_no")),
+        "source_session_id": _int_or_none(getattr(session, "id", None)),
+        "source_trace_id": _first_text(payload, ("source_trace_id", "trace_id"))
+        or _first_text(context_payload, ("source_trace_id", "trace_id"))
+        or _non_empty_text(getattr(session, "trace_id", None)),
+        "occurred_at": _datetime_or_none(
+            payload.get("occurred_at")
+            or payload.get("received_at")
+            or payload.get("created_at")
+            or getattr(session, "last_ingress_at", None)
+            or getattr(session, "started_at", None)
+            or getattr(session, "created_at", None)
+        ),
+    }
+
+
+def _runtime_resource_evidence_kind_from_payload(payload: dict[str, Any]) -> RuntimeResourceEvidenceKind:
+    explicit = _first_text(payload, ("resource_evidence_kind", "evidence_kind"))
+    if explicit is not None:
+        try:
+            return RuntimeResourceEvidenceKind(explicit.upper())
+        except ValueError:
+            return RuntimeResourceEvidenceKind.UNKNOWN
+
+    source_system = str(payload.get("source_system") or "").upper()
+    callback_type = str(payload.get("callback_type") or "").upper()
+    if source_system in {"WMS", "RCS", "WMS_RCS"} or callback_type.startswith("WMS_"):
+        return RuntimeResourceEvidenceKind.WMS_CALLBACK_EVIDENCE
+    return RuntimeResourceEvidenceKind.GENERIC_EVIDENCE
+
+
+def _runtime_resource_evidence_rack_kind(payload: dict[str, Any]) -> str | None:
+    rack_kind = _first_text(payload, ("rack_kind", "rack_type"))
+    if rack_kind is not None:
+        return rack_kind.upper()
+    active_bin_rack = ensure_dict(payload.get("active_bin_rack"))
+    nested_rack_kind = _first_text(active_bin_rack, ("rack_kind", "rack_type"))
+    if nested_rack_kind is not None:
+        return nested_rack_kind.upper()
+    return None
+
+
+def _runtime_resource_kind(value: Any) -> RuntimeResourceKind:
+    normalized = str(getattr(value, "value", value or "")).strip().upper()
+    mapping = {
+        "RACK": RuntimeResourceKind.RACK,
+        "BIN": RuntimeResourceKind.BIN,
+        "PKG": RuntimeResourceKind.PKG,
+        "PACKAGE": RuntimeResourceKind.PKG,
+        "MATERIAL": RuntimeResourceKind.PKG,
+        "SLOT": RuntimeResourceKind.SLOT,
+        "RACK_SLOT": RuntimeResourceKind.SLOT,
+        "CELL": RuntimeResourceKind.CELL,
+        "BIN_CELL": RuntimeResourceKind.CELL,
+        "MAGAZINE": RuntimeResourceKind.MAGAZINE,
+        "PART_SN": RuntimeResourceKind.PART_SN,
+        "PART_SERIAL_NO": RuntimeResourceKind.PART_SN,
+    }
+    return mapping.get(normalized, RuntimeResourceKind.UNKNOWN)
+
+
+def _runtime_cell_code(payload: dict[str, Any]) -> str | None:
+    return _first_text(payload, ("bin_cell_code", "cell_code", "bin_cell_location"))
+
+
+def _make_runtime_resource_evidence_item(
+    *,
+    resource_kind: RuntimeResourceKind,
+    resource_code: str | None,
+    display_label: str | None,
+    evidence_kind: RuntimeResourceEvidenceKind,
+    metadata: dict[str, Any],
+) -> RuntimeResourceEvidenceItem | None:
+    normalized_code = _non_empty_text(resource_code)
+    if normalized_code is None:
+        return None
+    normalized_display_label = _non_empty_text(display_label)
+    return RuntimeResourceEvidenceItem(
+        resource_kind=resource_kind,
+        resource_code=normalized_code,
+        display_label=normalized_display_label or f"{resource_kind.value} {normalized_code}",
+        evidence_kind=evidence_kind,
+        station_code=metadata["station_code"],
+        position_code=metadata["position_code"],
+        rack_code=metadata["rack_code"],
+        bin_code=metadata["bin_code"],
+        slot_code=metadata["slot_code"],
+        pkg_code=metadata["pkg_code"],
+        part_sn=metadata["part_sn"],
+        source_session_id=metadata["source_session_id"],
+        source_trace_id=metadata["source_trace_id"],
+        occurred_at=metadata["occurred_at"],
+    )
+
+
+def _dedupe_runtime_resource_evidence_items(
+    items: list[RuntimeResourceEvidenceItem],
+) -> list[RuntimeResourceEvidenceItem]:
+    deduped: dict[
+        tuple[str, str, str, int | None, str | None, str | None, str | None, str | None],
+        RuntimeResourceEvidenceItem,
+    ] = {}
+    for item in items:
+        cell_rack_code = item.rack_code if item.resource_kind == RuntimeResourceKind.CELL else None
+        cell_bin_code = item.bin_code if item.resource_kind == RuntimeResourceKind.CELL else None
+        key = (
+            item.resource_kind.value,
+            item.resource_code,
+            item.evidence_kind.value,
+            item.source_session_id,
+            item.source_trace_id,
+            item.position_code,
+            cell_rack_code,
+            cell_bin_code,
+        )
+        if key not in deduped:
+            deduped[key] = item
+    return sorted(deduped.values(), key=_runtime_resource_evidence_item_sort_key)
+
+
+def _runtime_resource_evidence_item_sort_key(item: RuntimeResourceEvidenceItem) -> tuple[int, int, str, str, str, str]:
+    return (
+        _RUNTIME_RESOURCE_EVIDENCE_KIND_PRIORITY.get(item.evidence_kind, 99),
+        _RUNTIME_RESOURCE_KIND_PRIORITY.get(item.resource_kind, 99),
+        item.position_code or "",
+        item.resource_code,
+        item.rack_code or "",
+        item.bin_code or "",
+    )
+
+
+def _first_text(payload: dict[str, Any], aliases: tuple[str, ...]) -> str | None:
+    for alias in aliases:
+        value = _non_empty_text(payload.get(alias))
+        if value is not None:
+            return value
+    return None
+
+
+def _non_empty_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(getattr(value, "value", value)).strip()
+    return text or None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value))
+    except ValueError:
+        return None
+
+
+def _datetime_or_none(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        try:
+            return datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
 
 
 def _runtime_resource_evidence_payloads(context: dict[str, Any]) -> list[dict[str, Any]]:

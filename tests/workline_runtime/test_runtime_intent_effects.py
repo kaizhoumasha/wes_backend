@@ -13,6 +13,7 @@ from src.app.workline.services.inbox_batch_processor import _result_requires_out
 from src.app.workline.services.inbox_service import DuplicateInboxError
 from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, ng_return_item_service
 from src.app.workline.services.runtime_hold_creation_service import runtime_hold_creation_service
+from src.workline_runtime.effect_result import WriteBackDisposition
 from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.runtime_intent import BlockScope, Destination, RuntimeIntent, RuntimeIntentKind
 from src.workline_runtime.runtime_intent_effects import (
@@ -1079,6 +1080,68 @@ async def test_single_layer_rack_operation_creates_waiting_external_outbox(
 
 
 @pytest.mark.asyncio
+async def test_rack_operation_station_lease_race_returns_resource_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None, context_json={})
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    emit_timeline = AsyncMock()
+    persist_external_wait = AsyncMock()
+    record_resource_wait = AsyncMock()
+
+    class LosingRackOperationService:
+        async def request_operation_tasks(self, db: Any, **kwargs: Any) -> list[SimpleNamespace]:
+            _ = db, kwargs
+            raise ValueError("station dispatch lease is not available")
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(
+        "src.app.workline.repositories.session_repository.WorklineSessionRepository.persist_external_wait",
+        persist_external_wait,
+    )
+    monkeypatch.setattr(
+        "src.app.workline.services.diagnostic_service.workline_diagnostic_service.record_resource_wait",
+        record_resource_wait,
+    )
+
+    result = await RuntimeIntentEffectApplier(rack_operation_service=LosingRackOperationService()).apply(
+        ctx,
+        [
+            RuntimeIntent.rack_operation_request(
+                operation_type="REPLACE_CLASSIFIER_WORK_RACK",
+                operation_key="rack-operation:trace-runtime",
+                target_code="WMS_RCS_RACK_OPERATION",
+                payload={
+                    "trace_id": "trace-runtime",
+                    "rack_tasks": [
+                        {
+                            "sequence_no": 1,
+                            "task_type": "ALLOCATE_AND_MOVE_RACK",
+                            "rack_kind": "SINGLE_LAYER",
+                            "target_position_code": "SINGLE_LAYER_A",
+                            "target_position_role": "SMT_CLASSIFIER_SINGLE_RACK_WORK",
+                        }
+                    ],
+                },
+                timeout_seconds=1800,
+            )
+        ],
+    )
+
+    assert result.disposition == WriteBackDisposition.RESOURCE_RETRY
+    assert session.status == "WAITING_EXTERNAL"
+    assert session.current_wait_type == "RESOURCE_WAIT"
+    assert session.context_json["resource_wait"]["resource_kind"] == "STATION"
+    assert session.context_json["resource_wait"]["resource_key"] == "station:SINGLE_LAYER_A"
+    assert session.context_json["resource_wait"]["reason_code"] == "STATION_LEASE_CLAIM_FAILED"
+    assert "rack_operation" not in session.context_json
+    persist_external_wait.assert_awaited_once()
+    record_resource_wait.assert_awaited_once()
+    emit_timeline.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_rack_operation_request_stores_operation_wait_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2050,6 +2113,108 @@ async def test_command_before_terminal_intent_is_rejected_before_side_effects(
     assert session.status == "RUNNING"
     assert session.ended_at is None
     assert ctx["db"].add.call_count == 0
+    create_command.assert_not_awaited()
+    emit_timeline.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_resource_wait_sets_waiting_external_and_returns_resource_retry_disposition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        status="RUNNING",
+        current_wait_type=None,
+        awaiting_command_id=None,
+        context_json={},
+    )
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    emit_timeline = AsyncMock()
+    persist_external_wait = AsyncMock()
+    record_resource_wait = AsyncMock()
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(
+        "src.app.workline.repositories.session_repository.WorklineSessionRepository.persist_external_wait",
+        persist_external_wait,
+    )
+    monkeypatch.setattr(
+        "src.app.workline.services.diagnostic_service.workline_diagnostic_service.record_resource_wait",
+        record_resource_wait,
+    )
+
+    result = await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.resource_wait(
+                resource_kind="STATION",
+                resource_key="station:TARGET_STATION",
+                reason_code="STATION_BUSY",
+                message="目标 Station 忙",
+                payload={"active_session_id": 456},
+            )
+        ],
+    )
+
+    assert result.disposition == WriteBackDisposition.RESOURCE_RETRY
+    assert session.status == "WAITING_EXTERNAL"
+    assert session.current_wait_type == "RESOURCE_WAIT"
+    assert session.context_json["resource_wait"]["inbox_id"] == 10
+    assert session.context_json["resource_wait"]["resource_kind"] == "STATION"
+    assert session.context_json["resource_wait"]["resource_key"] == "station:TARGET_STATION"
+    assert session.context_json["resource_wait"]["wait_count"] == 1
+    persist_external_wait.assert_awaited_once()
+    record_resource_wait.assert_awaited_once()
+    emit_timeline.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_resource_wait_must_be_final_intent(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    emit_timeline = AsyncMock()
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+
+    with pytest.raises(ValueError, match="terminal RuntimeIntent must be final intent"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.resource_wait(
+                    resource_kind="STATION",
+                    resource_key="station:TARGET_STATION",
+                    reason_code="STATION_BUSY",
+                    message="目标 Station 忙",
+                ),
+                RuntimeIntent.update_context({"late": True}),
+            ],
+        )
+
+    emit_timeline.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resource_wait_cannot_follow_command_producing_intent(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    emit_timeline = AsyncMock()
+    create_command = AsyncMock()
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr("src.app.device.repositories.command_repository.DeviceCommandRepository.create", create_command)
+
+    with pytest.raises(ValueError, match="terminal RuntimeIntent cannot follow command-producing RuntimeIntent"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.command(action="MOVE_FORWARD", payload={}, destination=Destination.current()),
+                RuntimeIntent.resource_wait(
+                    resource_kind="STATION",
+                    resource_key="station:TARGET_STATION",
+                    reason_code="STATION_BUSY",
+                    message="目标 Station 忙",
+                ),
+            ],
+        )
+
     create_command.assert_not_awaited()
     emit_timeline.assert_not_awaited()
 

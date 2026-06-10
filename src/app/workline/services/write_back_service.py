@@ -12,6 +12,7 @@ from src.app.workline.services.device_command_gateway import (
 from src.utils.timezone import timezone
 from src.utils.value_normalization import canonical_event_type, resolve_entity_id, string_value
 from src.workline_plugin_registry import get_plugin_contract_version
+from src.workline_runtime.effect_result import RuntimeIntentEffectResult
 from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.trace_context import TraceContext
 from src.workline_runtime.utils import payload_dict
@@ -755,7 +756,7 @@ class OrchestratorWriteBackService:
         devices_by_role: dict[str, list[Any]],
         source_device: Any | None,
         orch_result: OrchestratorResult,
-    ) -> None:
+    ) -> RuntimeIntentEffectResult:
         """应用 OrchestratorResult 到 Session / Command / Outbox / Timeline。"""
         ctx = _build_effect_apply_context(
             db=db,
@@ -768,7 +769,7 @@ class OrchestratorWriteBackService:
         )
         from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
 
-        await RuntimeIntentEffectApplier().apply(ctx, orch_result.intents or [])
+        return await RuntimeIntentEffectApplier().apply(ctx, orch_result.intents or [])
 
 
 orchestrator_write_back_service = OrchestratorWriteBackService()

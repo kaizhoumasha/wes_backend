@@ -120,6 +120,13 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         "Inbox worker 处理超时，未完成本次编排事务。",
         ["检查 worker 日志和锁等待", "修复后重试或 replay inbox"],
     ),
+    ErrorCode.RESOURCE_WAIT: (
+        Severity.WARNING,
+        Recoverability.AUTO_RETRYABLE,
+        ProblemClass.SOFTWARE,
+        "目标资源暂不可用，系统会等待资源释放后自动重试。",
+        ["检查 resource_kind/resource_key 等待证据", "确认目标资源释放事件是否到达"],
+    ),
     ErrorCode.WMS_TIMEOUT: (
         Severity.ERROR,
         Recoverability.MANUAL_INTERVENTION_REQUIRED,
