@@ -234,7 +234,9 @@ def upgrade() -> None:
         ["source_pick_inbox_id", "updated_at", "id"],
         unique=False,
         schema=SCHEMA,
-        postgresql_where=sa.text("status IN ('PICK_REQUESTED') AND source_pick_inbox_id IS NOT NULL"),
+        postgresql_where=sa.text(
+            "status IN ('PICK_REQUESTED', 'CLAIMED_BY_SORTING') AND source_pick_inbox_id IS NOT NULL"
+        ),
     )
     op.create_index(
         "ix_smt_inbound_handoff_source_items_demand_status_id",

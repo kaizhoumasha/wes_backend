@@ -229,3 +229,25 @@ def test_normalize_inbox_input_rejects_malformed_internal_event_payload() -> Non
 
     with pytest.raises(ValueError, match="INTERNAL_EVENT payload missing routable event type"):
         normalize_inbox_input(inbox)
+
+
+def test_normalize_inbox_input_rejects_internal_event_without_handoff_correlation() -> None:
+    inbox = SimpleNamespace(
+        kind=SimpleNamespace(value="INTERNAL_EVENT"),
+        trace_id="trace-handoff-3",
+        payload_json={
+            "message_type": "INTERNAL_EVENT",
+            "event_type": "SORTING_SOURCE_PICK_REQUESTED",
+            "canonical_event_type": "SORTING_SOURCE_PICK_REQUESTED",
+            "event_id": "smt-inbound-handoff-source-item:22:claim:2",
+            "causation_id": "handoff-source-item:22",
+            "trace_id": "trace-handoff-3",
+            "data": {
+                "handoff_source_item_id": 22,
+                "claim_attempt_no": 2,
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="handoff_demand_id"):
+        normalize_inbox_input(inbox)

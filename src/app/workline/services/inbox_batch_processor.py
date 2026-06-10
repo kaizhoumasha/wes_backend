@@ -533,7 +533,17 @@ async def _load_workline_entity(db: Any, inbox: Any, session: Any, workline_repo
     from src.app.workline.repositories import WorkLineRepository
 
     repo = workline_repo or WorkLineRepository()
-    workline_id = getattr(inbox, "workline_id", None) or getattr(session, "workline_id", None)
+    inbox_workline_id = getattr(inbox, "workline_id", None)
+    session_workline_id = getattr(session, "workline_id", None)
+    if _kind_value(inbox) == "INTERNAL_EVENT" and isinstance(session_workline_id, int):
+        if isinstance(inbox_workline_id, int) and inbox_workline_id != session_workline_id:
+            raise ValueError(
+                "INTERNAL_EVENT workline_id mismatch: "
+                f"inbox.workline_id={inbox_workline_id}, session.workline_id={session_workline_id}"
+            )
+        workline_id = session_workline_id
+    else:
+        workline_id = inbox_workline_id or session_workline_id
     if isinstance(workline_id, int):
         return await repo.get_by_id(db, workline_id)
     return None

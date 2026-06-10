@@ -652,6 +652,21 @@ class SessionResolver:
         if not session:
             raise ValueError(f"Session not found: {session_id}")
 
+        if inbox.kind == InboxKind.INTERNAL_EVENT:
+            inbox_workline_id = getattr(inbox, "workline_id", None)
+            session_workline_id = getattr(session, "workline_id", None)
+            if (
+                isinstance(inbox_workline_id, int)
+                and isinstance(session_workline_id, int)
+                and inbox_workline_id != session_workline_id
+            ):
+                raise ValueError(
+                    "INTERNAL_EVENT workline_id mismatch: "
+                    f"inbox.workline_id={inbox_workline_id}, session.workline_id={session_workline_id}"
+                )
+            if not isinstance(inbox_workline_id, int) and isinstance(session_workline_id, int):
+                inbox.workline_id = session_workline_id
+
         return session
 
 

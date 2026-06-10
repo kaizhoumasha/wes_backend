@@ -128,6 +128,11 @@ def _normalize_internal_event(inbox: Any, payload: dict[str, Any], *, trace_id: 
         raise ValueError("INTERNAL_EVENT payload missing trace_id")
 
     data = payload_dict(data_value)
+    for field_name in ("handoff_demand_id", "handoff_source_item_id", "claim_attempt_no"):
+        value = data.get(field_name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"INTERNAL_EVENT payload data missing valid {field_name}")
+
     return NormalizedDeviceEvent(
         source_event_type=source_event_type,
         canonical_event_type=canonical_event_type,

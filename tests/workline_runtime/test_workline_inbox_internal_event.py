@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.app.workline.models.inbox import InboxKind, SourceSystem
-from src.app.workline.services.inbox_batch_processor import _should_resolve_session
+from src.app.workline.services.inbox_batch_processor import _load_workline_entity, _should_resolve_session
 from src.app.workline.services.inbox_service import WorklineInboxService
 from src.workline_runtime.session_resolver import SessionResolver
 
@@ -79,6 +79,30 @@ async def test_create_internal_event_inbox_builds_routable_session_bound_envelop
     db.commit.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_create_internal_event_inbox_rejects_missing_handoff_correlation() -> None:
+    service = WorklineInboxService()
+    service.repo = _FakeInboxRepo()  # type: ignore[assignment]
+    db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+
+    with pytest.raises(ValueError, match="claim_attempt_no"):
+        await service.create_internal_event_inbox(
+            db,
+            event_type="SORTING_SOURCE_PICK_REQUESTED",
+            data={
+                "handoff_demand_id": 11,
+                "handoff_source_item_id": 22,
+            },
+            session_id=123,
+            workline_id=456,
+            trace_id="trace-handoff-1",
+            causation_id="handoff-source-item:22",
+            event_id="smt-inbound-handoff-source-item:22:claim:2",
+        )
+
+    db.commit.assert_not_awaited()
+
+
 def test_internal_event_batch_processor_resolves_by_existing_session_binding() -> None:
     inbox = SimpleNamespace(
         kind=SimpleNamespace(value="INTERNAL_EVENT"),
@@ -119,3 +143,68 @@ async def test_internal_event_session_resolver_uses_session_id() -> None:
 
     assert session is expected_session
     session_repo.get_by_id.assert_awaited_once_with(db, 123)
+
+
+@pytest.mark.asyncio
+async def test_internal_event_session_resolver_rejects_workline_mismatch() -> None:
+    session_repo = SimpleNamespace(get_by_id=AsyncMock(return_value=SimpleNamespace(id=123, workline_id=456)))
+    resolver = SessionResolver(
+        session_repo=session_repo,
+        command_repo=SimpleNamespace(),
+        outbox_repo=SimpleNamespace(),
+        rack_task_repo=SimpleNamespace(),
+        handling_step_repo=SimpleNamespace(),
+        handling_operation_repo=SimpleNamespace(),
+    )
+    inbox = SimpleNamespace(
+        kind=InboxKind.INTERNAL_EVENT,
+        session_id=123,
+        workline_id=999,
+        payload_json={"message_type": "INTERNAL_EVENT", "event_type": "SORTING_SOURCE_PICK_REQUESTED", "data": {}},
+    )
+
+    with pytest.raises(ValueError, match="workline_id mismatch"):
+        await resolver.resolve_or_create(object(), inbox, workline=None, devices_by_role={})  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_internal_event_loads_workline_from_session_ownership() -> None:
+    calls: list[int] = []
+
+    class _WorklineRepo:
+        async def get_by_id(self, db: object, workline_id: int) -> object:
+            _ = db
+            calls.append(workline_id)
+            return SimpleNamespace(id=workline_id)
+
+    inbox = SimpleNamespace(
+        kind=InboxKind.INTERNAL_EVENT,
+        session_id=123,
+        workline_id=None,
+        payload_json={"message_type": "INTERNAL_EVENT", "event_type": "SORTING_SOURCE_PICK_REQUESTED", "data": {}},
+    )
+    session = SimpleNamespace(id=123, workline_id=456)
+
+    workline = await _load_workline_entity(object(), inbox, session, _WorklineRepo())
+
+    assert workline.id == 456
+    assert calls == [456]
+
+
+@pytest.mark.asyncio
+async def test_internal_event_load_workline_rejects_inbox_session_workline_mismatch() -> None:
+    class _WorklineRepo:
+        async def get_by_id(self, db: object, workline_id: int) -> object:
+            _ = db
+            return SimpleNamespace(id=workline_id)
+
+    inbox = SimpleNamespace(
+        kind=InboxKind.INTERNAL_EVENT,
+        session_id=123,
+        workline_id=999,
+        payload_json={"message_type": "INTERNAL_EVENT", "event_type": "SORTING_SOURCE_PICK_REQUESTED", "data": {}},
+    )
+    session = SimpleNamespace(id=123, workline_id=456)
+
+    with pytest.raises(ValueError, match="workline_id mismatch"):
+        await _load_workline_entity(object(), inbox, session, _WorklineRepo())

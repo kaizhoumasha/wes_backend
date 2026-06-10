@@ -41,6 +41,22 @@ def _format_deadline(deadline_at: object | None) -> str:
     return deadline_at.isoformat()
 
 
+_INTERNAL_HANDOFF_REQUIRED_DATA_FIELDS = (
+    "handoff_demand_id",
+    "handoff_source_item_id",
+    "claim_attempt_no",
+)
+
+
+def _validate_internal_handoff_correlation(data: dict[str, Any]) -> None:
+    """校验内部 source pick 事件的最小 handoff correlation。"""
+
+    for field_name in _INTERNAL_HANDOFF_REQUIRED_DATA_FIELDS:
+        value = data.get(field_name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"internal event data requires positive integer {field_name}")
+
+
 class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
     """作业线收件箱业务逻辑层"""
 
@@ -263,6 +279,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             raise ValueError("internal event requires trace_id")
         if not isinstance(data, dict):
             raise TypeError("internal event data must be a dict")
+        _validate_internal_handoff_correlation(data)
 
         payload: dict[str, Any] = {
             "message_type": "INTERNAL_EVENT",

@@ -103,7 +103,9 @@ def test_smt_inbound_handoff_metadata_declares_idempotency_and_hot_path_indexes(
 
     assert recovery_index is not None
     assert [column.name for column in recovery_index.columns] == ["source_pick_inbox_id", "updated_at", "id"]
-    assert "PICK_REQUESTED" in str(recovery_index.dialect_options["postgresql"]["where"])
+    recovery_where = str(recovery_index.dialect_options["postgresql"]["where"])
+    assert "PICK_REQUESTED" in recovery_where
+    assert "CLAIMED_BY_SORTING" in recovery_where
 
 
 def test_smt_inbound_handoff_release_snapshot_is_json_evidence_not_claim_path() -> None:
