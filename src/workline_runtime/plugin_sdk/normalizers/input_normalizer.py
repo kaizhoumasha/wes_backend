@@ -103,11 +103,51 @@ def _resolve_device_event_business_key(
     )
 
 
+def _is_internal_event(kind: Any, payload: dict[str, Any]) -> bool:
+    return kind == "INTERNAL_EVENT" or payload.get("message_type") == "INTERNAL_EVENT"
+
+
+def _normalize_internal_event(inbox: Any, payload: dict[str, Any], *, trace_id: str, plugin_key: str | None) -> Any:
+    source_event_type = non_empty_str(payload.get("event_type"))
+    canonical_event_type = non_empty_str(payload.get("canonical_event_type")) or source_event_type
+    if not canonical_event_type:
+        raise ValueError("INTERNAL_EVENT payload missing routable event type")
+    if source_event_type is None:
+        source_event_type = canonical_event_type
+
+    data_value = payload.get("data")
+    if not isinstance(data_value, dict):
+        raise TypeError("INTERNAL_EVENT payload data must be an object")
+
+    if not non_empty_str(payload.get("event_id")):
+        raise ValueError("INTERNAL_EVENT payload missing event_id")
+    if not non_empty_str(payload.get("causation_id")):
+        raise ValueError("INTERNAL_EVENT payload missing causation_id")
+    resolved_trace_id = _resolve_trace_id(inbox, payload, trace_id=trace_id)
+    if not resolved_trace_id:
+        raise ValueError("INTERNAL_EVENT payload missing trace_id")
+
+    data = payload_dict(data_value)
+    return NormalizedDeviceEvent(
+        source_event_type=source_event_type,
+        canonical_event_type=canonical_event_type,
+        device_code=non_empty_str(payload.get("device_code")),
+        business_key=_resolve_device_event_business_key(payload, data, plugin_key=plugin_key),
+        trace_id=resolved_trace_id,
+        event_time=payload.get("timestamp"),
+        payload=payload,
+        data=data,
+        attributes=payload_dict(payload.get("attributes")),
+    )
+
+
 def normalize_inbox_input(inbox: Any, *, trace_id: str = "", plugin_key: str | None = None) -> Any:
     """按 inbox 类型构建标准化输入模型。"""
 
     payload = payload_dict(getattr(inbox, "payload_json", None))
     kind = _infer_kind(getattr(inbox, "kind", None), payload)
+    if _is_internal_event(kind, payload):
+        return _normalize_internal_event(inbox, payload, trace_id=trace_id, plugin_key=plugin_key)
 
     if kind == "COMMAND_RESULT":
         source_result = str(payload.get("result") or "UNKNOWN")

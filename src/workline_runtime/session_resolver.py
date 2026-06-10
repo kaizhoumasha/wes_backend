@@ -7,6 +7,7 @@ Session 归属解析器
 - DEVICE_EVENT: 按 device_id + business_key 查找或创建
 - COMMAND_RESULT: 按 command_code -> awaiting_command_id / trace_id 恢复 Session
 - EXTERNAL_HTTP: 优先按 dispatch_key -> rack task operation 恢复 Session，回退 outbox/trace_id
+- INTERNAL_EVENT: 按 session_id 恢复 Session
 - TIMER_TIMEOUT: 按 session_id 恢复 Session
 - MANUAL_*: 按 session_id 恢复 Session
 
@@ -51,6 +52,7 @@ _SESSION_ID_KINDS = {
     InboxKind.MANUAL_RESUME,
     InboxKind.MANUAL_CANCEL,
     InboxKind.REPLAY_REQUEST,
+    InboxKind.INTERNAL_EVENT,
 }
 
 # 无业务条码、但每次事件实例都必须独立归属的事件。
@@ -628,7 +630,7 @@ class SessionResolver:
     ) -> WorklineSession:
         """按 session_id 恢复 Session
 
-        用于 TIMER_TIMEOUT、MANUAL_*、REPLAY_REQUEST 类型。
+        用于 TIMER_TIMEOUT、MANUAL_*、REPLAY_REQUEST、INTERNAL_EVENT 类型。
 
         Args:
             db: 数据库会话

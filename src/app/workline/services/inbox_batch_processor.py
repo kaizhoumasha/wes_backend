@@ -176,6 +176,10 @@ def _should_resolve_session(inbox: Any) -> bool:
         return bool(getattr(inbox, "command_id", None) or payload.get("command_code"))
     if kind == EXTERNAL_HTTP_INBOX_KIND:
         return bool(getattr(inbox, "trace_id", None))
+    if kind == "INTERNAL_EVENT":
+        return isinstance(getattr(inbox, "session_id", None), int) and isinstance(
+            getattr(inbox, "workline_id", None), int
+        )
     if kind in {"TIMER_TIMEOUT", "MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL", "REPLAY_REQUEST"}:
         return isinstance(getattr(inbox, "session_id", None), int)
     return False

@@ -68,6 +68,7 @@ _INBOX_KIND_TO_PLUGIN_TYPE = {
     "COMMAND_RESULT": "COMMAND_RESULT",
     "DEVICE_EVENT": "DEVICE_EVENT",
     "EXTERNAL_HTTP": "EXTERNAL_HTTP",
+    "INTERNAL_EVENT": "DEVICE_EVENT",
     "TIMER_TIMEOUT": "TIMEOUT",
     "MANUAL_HOLD": "MANUAL_OPERATION",
     "MANUAL_RESUME": "MANUAL_OPERATION",
@@ -450,6 +451,8 @@ class OrchestratorService:
         payload = ensure_dict(getattr(inbox, "payload_json", None))
         explicit_type = payload.get("message_type")
         if isinstance(explicit_type, str):
+            if explicit_type == "INTERNAL_EVENT":
+                return "DEVICE_EVENT"
             return explicit_type
 
         inbox_kind = getattr(inbox, "kind", None)
