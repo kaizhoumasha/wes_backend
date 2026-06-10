@@ -132,18 +132,35 @@ async def _seed_single_layer_sessions(db: AsyncSession, workline: WorkLine) -> l
 
 
 def _trace_resource_events(now: Any, *, count: int = 55) -> list[dict[str, Any]]:
-    return [
-        {
-            "resource_kind": "PKG",
-            "resource_code": f"PKG-SMOKE-{index:03d}",
-            "pkg_code": f"PKG-SMOKE-{index:03d}",
-            "bin_code": "BIN-SMOKE-CALLBACK",
-            "evidence_kind": "TRACE_RESOURCE_EVIDENCE",
-            "trace_id": "runtime-monitor-smoke-wms-callback",
-            "occurred_at": now.isoformat(),
-        }
-        for index in range(1, count + 1)
-    ]
+    events: list[dict[str, Any]] = []
+    for index in range(1, count + 1):
+        cell_index = ((index - 1) % 4) + 1
+        events.append(
+            {
+                "resource_kind": "PKG",
+                "resource_code": f"PKG-SMOKE-{index:03d}",
+                "display_label": f"PKG PKG-SMOKE-{index:03d}",
+                "pkg_code": f"PKG-SMOKE-{index:03d}",
+                "rack_code": "RACK-SMOKE-CALLBACK",
+                "bin_code": "BIN-SMOKE-CALLBACK",
+                "rack_slot_code": "A",
+                "bin_cell_code": f"CELL-SMOKE-{cell_index}",
+                "material_code": "620100L00-011-G",
+                "date_code": "2401",
+                "lot_code": "LOT-A",
+                "reel_count": 1,
+                "reel_code": f"REEL-SMOKE-{index:03d}",
+                "position_index": index,
+                "evidence_kind": "WMS_CALLBACK_EVIDENCE",
+                "station_code": "TARGET_STATION",
+                "position_code": "TARGET_STATION",
+                "source_system": "WMS",
+                "callback_type": "WMS_RACK_ARRIVED",
+                "trace_id": "runtime-monitor-smoke-wms-callback",
+                "occurred_at": now.isoformat(),
+            }
+        )
+    return events
 
 
 async def _upsert_fallback_workline(db: AsyncSession) -> WorkLine:

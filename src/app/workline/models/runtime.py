@@ -531,8 +531,15 @@ class RuntimeResourceEvidenceItem(BaseModel):
     rack_code: str | None = None
     bin_code: str | None = None
     slot_code: str | None = None
+    cell_code: str | None = None
     pkg_code: str | None = None
     part_sn: str | None = None
+    material_code: str | None = None
+    date_code: str | None = None
+    lot_code: str | None = None
+    reel_count: int | float | None = None
+    reel_code: str | None = None
+    position_index: int | float | None = None
     source_session_id: int | None = None
     source_trace_id: str | None = None
     occurred_at: datetime | None = None
@@ -668,4 +675,130 @@ class RuntimeDeviceDetailResponse(BaseModel):
     active_sessions: list[RuntimeTraceListItem] = Field(default_factory=list)
 
 
+class RuntimeMonitorDeviceNode(BaseModel):
+    id: int
+    device_code: str
+    device_name: str
+    device_role: str
+    role_index: int
+    upstream_device_id: int | None = None
+    device_status: str
+    maintenance_mode: bool = False
+    current_command_id: int | None = None
+    open_command_count: int = 0
+    pending_command_count: int = 0
+    blocked_outbox_count: int = 0
+    blocked_reason: str | None = None
+    blocked_wait_seconds: int | None = None
+    blocked_check_count: int | None = None
+    open_issue_count: int = 0
+    active_runtime_hold_ids: list[int] = Field(default_factory=list)
+    last_heartbeat_at: datetime | None = None
+    error_code: str | None = None
+
+
+class RuntimeMonitorSessionItem(BaseModel):
+    session_id: int
+    session_code: str
+    trace_id: str | None = None
+    request_id: str | None = None
+    last_inbox_id: int | None = None
+    barcode: str | None = None
+    workline_id: int
+    device_id: int | None = None
+    device_name: str | None = None
+    device_code: str | None = None
+    status: str
+    current_wait_type: str | None = None
+    failure_domain: str | None = None
+    failure_code: str | None = None
+    latest_timeline_action: str | None = None
+    latest_timeline_status: str | None = None
+    latest_timeline_message: str | None = None
+    started_at: datetime | None = None
+    last_ingress_at: datetime | None = None
+    deadline_at: datetime | None = None
+    is_timed_out: bool = False
+
+
+class RuntimeMonitorTraceItem(BaseModel):
+    session_id: int
+    session_code: str
+    trace_id: str | None = None
+    request_id: str | None = None
+    barcode: str | None = None
+    workline_id: int
+    device_id: int | None = None
+    device_name: str | None = None
+    device_code: str | None = None
+    status: str
+    failure_domain: str | None = None
+    failure_code: str | None = None
+    latest_timeline_action: str | None = None
+    latest_timeline_status: str | None = None
+    latest_timeline_message: str | None = None
+    started_at: datetime | None = None
+    last_ingress_at: datetime | None = None
+    deadline_at: datetime | None = None
+    is_timed_out: bool = False
+
+
+class RuntimeMonitorSessionSection(BaseModel):
+    items: list[RuntimeMonitorSessionItem] = Field(default_factory=list)
+    total_count: int = 0
+    truncated: bool = False
+
+
+class RuntimeMonitorTraceSection(BaseModel):
+    items: list[RuntimeMonitorTraceItem] = Field(default_factory=list)
+    total_count: int = 0
+    truncated: bool = False
+
+
+class RuntimeMonitorEvidenceSection(BaseModel):
+    kind: RuntimeResourceEvidenceKind = RuntimeResourceEvidenceKind.UNKNOWN
+    items: list[RuntimeResourceEvidenceItem] = Field(default_factory=list)
+    total_count: int = 0
+    truncated: bool = False
+
+
+class RuntimeMonitorReconciliationCandidate(BaseModel):
+    session_id: int
+    session_code: str
+    trace_id: str | None = None
+    request_id: str | None = None
+    reason: str
+    source_kind: str
+    device_id: int | None = None
+    command_id: int | None = None
+    wait_token: str | None = None
+    occurred_at: datetime
+    deadline_at: datetime | None = None
+    late_evidence_received: bool = False
+
+
+class RuntimeMonitorActionCandidates(BaseModel):
+    pending_reconciliation: RuntimeMonitorReconciliationCandidate | None = None
+
+
+class RuntimeWorklineBoundary(BaseModel):
+    workline_readiness: RuntimeWorklineReadiness = RuntimeWorklineReadiness.UNKNOWN
+    station_lease: RuntimeStationLease = RuntimeStationLease.UNKNOWN
+    single_layer_rack_snapshot: RuntimeSingleLayerRackSnapshot = RuntimeSingleLayerRackSnapshot.UNKNOWN
+    rack_operation_wait: RuntimeRackOperationWait = RuntimeRackOperationWait.NONE
+
+
+class RuntimeWorklineMonitorProjectionResponse(BaseModel):
+    summary: RuntimeWorklineSummary
+    boundary: RuntimeWorklineBoundary
+    device_nodes: list[RuntimeMonitorDeviceNode] = Field(default_factory=list)
+    active_sessions: RuntimeMonitorSessionSection
+    recent_failed_traces: RuntimeMonitorTraceSection
+    recent_completed_traces: RuntimeMonitorTraceSection
+    resource_evidence: RuntimeMonitorEvidenceSection
+    action_candidates: RuntimeMonitorActionCandidates
+    generated_at: datetime
+
+
 _ = RuntimeOverviewResponse.model_rebuild()
+_ = RuntimeWorklineMonitorProjectionResponse.model_rebuild()

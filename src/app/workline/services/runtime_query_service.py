@@ -28,6 +28,14 @@ from src.app.workline.models.runtime import (
     RuntimeDeviceDetailResponse,
     RuntimeDeviceHealthSummary,
     RuntimeDeviceSummary,
+    RuntimeMonitorActionCandidates,
+    RuntimeMonitorDeviceNode,
+    RuntimeMonitorEvidenceSection,
+    RuntimeMonitorReconciliationCandidate,
+    RuntimeMonitorSessionItem,
+    RuntimeMonitorSessionSection,
+    RuntimeMonitorTraceItem,
+    RuntimeMonitorTraceSection,
     RuntimeOverviewResponse,
     RuntimeRackOperationWait,
     RuntimeResourceEvidenceItem,
@@ -42,8 +50,10 @@ from src.app.workline.models.runtime import (
     RuntimeTraceListResponse,
     RuntimeTracePathResponse,
     RuntimeTraceTimelineGroup,
+    RuntimeWorklineBoundary,
     RuntimeWorklineDetailResponse,
     RuntimeWorklineDeviceItem,
+    RuntimeWorklineMonitorProjectionResponse,
     RuntimeWorklineReadiness,
     RuntimeWorklineSummary,
     TraceCallbackLogItem,
@@ -137,8 +147,38 @@ class _BlockedOutboxProjection:
     summary_by_device_id: dict[int, dict[str, Any]]
 
 
+@dataclass(frozen=True, slots=True)
+class _RuntimeEvidenceSession:
+    id: int
+    trace_id: str | None
+    context_json: dict[str, Any] | None
+    last_ingress_at: datetime | None
+    started_at: datetime | None
+    created_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeResourceEvidenceProjection:
+    kind: RuntimeResourceEvidenceKind
+    items: list[RuntimeResourceEvidenceItem]
+    total_count: int
+    truncated: bool
+    has_non_single_layer: bool
+
+
 def _status_str(value: Any) -> str:
     return optional_enum_str(value) or "UNKNOWN"
+
+
+def _api_utc_datetime(value: Any) -> datetime | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, datetime):
+        return timezone.to_utc(value)
+    if isinstance(value, (int, float)):
+        return timezone.to_utc(float(value))
+    parsed = timezone.parse_datetime(value)
+    return timezone.to_utc(parsed) if parsed is not None else None
 
 
 def _is_maintenance_device(item: Any) -> bool:
@@ -447,6 +487,40 @@ class RuntimeQueryService(BaseService[Any, Any]):
             summaries.append(self._build_workline_summary(workline, devices, sessions))
         return summaries
 
+    async def _load_workline_session_summary_counts(
+        self, db: Any, workline_id: int, now: Any
+    ) -> tuple[dict[str, int], int, int]:
+        session_columns = cast("Any", WorklineSession).__table__.c
+        active_status_count_result = await db.execute(
+            select(session_columns.status, func.count(WorklineSession.id))
+            .where(
+                session_columns.workline_id == workline_id,
+                session_columns.status.in_(list(_ACTIVE_SESSION_STATUSES)),
+            )
+            .group_by(session_columns.status)
+        )
+        active_status_counts = {
+            optional_enum_str(status) or str(status): int(count) for status, count in active_status_count_result.all()
+        }
+
+        waiting_count_result = await db.execute(
+            select(func.count(WorklineSession.id)).where(
+                session_columns.workline_id == workline_id,
+                _waiting_not_timed_out_clause(session_columns, now),
+            )
+        )
+        waiting_sessions_total = int(waiting_count_result.scalar_one() or 0)
+
+        recent_since = _recent_failure_since()
+        failed_count_result = await db.execute(
+            select(func.count(WorklineSession.id)).where(
+                session_columns.workline_id == workline_id,
+                _recent_failure_or_timeout_clause(session_columns, now, recent_since),
+            )
+        )
+        recent_failed_total = int(failed_count_result.scalar_one() or 0)
+        return active_status_counts, waiting_sessions_total, recent_failed_total
+
     async def get_workline_detail(self, db: Any, workline_id: int) -> RuntimeWorklineDetailResponse | None:
         workline_columns = cast("Any", WorkLine).__table__.c
         workline_result = await db.execute(
@@ -481,6 +555,17 @@ class RuntimeQueryService(BaseService[Any, Any]):
             db, [item.id for item in devices if item.id is not None]
         )
         summary = self._build_workline_summary(workline, devices, all_sessions)
+        if len(all_active_sessions) >= _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT or len(recent_failed_sessions) >= 10:
+            (
+                active_status_counts,
+                waiting_sessions_total,
+                recent_failed_total,
+            ) = await self._load_workline_session_summary_counts(db, workline_id, timezone.now_for_db())
+            summary.active_session_count = sum(
+                active_status_counts.get(status, 0) for status in _IN_PROGRESS_SESSION_STATUSES
+            )
+            summary.waiting_session_count = waiting_sessions_total
+            summary.failed_session_count = recent_failed_total
         device_items = [
             self._build_workline_device_item(
                 device,
@@ -510,6 +595,254 @@ class RuntimeQueryService(BaseService[Any, Any]):
             active_sessions=active_trace_items,
             recent_failed_traces=failed_trace_items,
             recent_completed_traces=completed_trace_items,
+        )
+
+    async def get_workline_monitor_projection(
+        self, db: Any, workline_id: int
+    ) -> RuntimeWorklineMonitorProjectionResponse | None:
+        workline_columns = cast("Any", WorkLine).__table__.c
+        workline_result = await db.execute(
+            select(WorkLine).where(workline_columns.id == workline_id, workline_columns.is_deleted.is_(False))
+        )
+        workline = workline_result.scalar_one_or_none()
+        if workline is None or getattr(workline, "is_deleted", False):
+            return None
+
+        devices = await device_repository.get_by_work_line_id(db, workline_id)
+
+        now = timezone.now_for_db()
+        (
+            active_status_counts,
+            waiting_sessions_total,
+            recent_failed_total,
+        ) = await self._load_workline_session_summary_counts(
+            db,
+            workline_id,
+            now,
+        )
+        active_sessions_total = sum(active_status_counts.values())
+
+        active_sessions = await self._load_active_sessions_for_workline(
+            db,
+            workline_id,
+            limit=20,
+        )
+        boundary_active_sessions = await self._load_active_sessions_for_workline(
+            db,
+            workline_id,
+            limit=_RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT,
+        )
+        active_sessions_truncated = active_sessions_total > len(active_sessions)
+
+        recent_failed_sessions = await self._load_recent_failed_sessions_for_workline(db, workline_id, limit=10)
+        recent_failed_truncated = recent_failed_total > 10
+
+        completed_columns = cast("Any", WorklineSession).__table__.c
+        completed_count_query = select(func.count(WorklineSession.id)).where(
+            completed_columns.workline_id == workline_id,
+            completed_columns.status.in_(list(_COMPLETED_SESSION_STATUSES)),
+        )
+        completed_count_result = await db.execute(completed_count_query)
+        recent_completed_total = completed_count_result.scalar_one() or 0
+        recent_completed_sessions = await self._load_recent_completed_sessions_for_workline(db, workline_id, limit=10)
+        recent_completed_truncated = recent_completed_total > 10
+
+        active_session_ids = {session.id for session in boundary_active_sessions}
+        visible_terminal_sessions = [
+            item for item in [*recent_failed_sessions, *recent_completed_sessions] if item.id not in active_session_ids
+        ]
+        all_sessions = boundary_active_sessions + visible_terminal_sessions
+
+        blocked_outbox_projection = await self._load_blocked_outbox_projection(db, devices)
+        open_command_map = await self._load_open_command_count_map(
+            db,
+            [item.id for item in devices if item.id is not None],
+            blocked_command_codes_by_device=blocked_outbox_projection.command_codes_by_device_id,
+        )
+        active_hold_ids_map = await self._load_active_runtime_hold_ids_map(
+            db, [item.id for item in devices if item.id is not None]
+        )
+        summary = self._build_workline_summary(workline, devices, all_sessions)
+        summary.active_session_count = sum(
+            active_status_counts.get(status, 0) for status in _IN_PROGRESS_SESSION_STATUSES
+        )
+        summary.waiting_session_count = waiting_sessions_total
+        summary.failed_session_count = int(recent_failed_total)
+        summary.stopped_at = _api_utc_datetime(summary.stopped_at)
+        summary.resumed_at = _api_utc_datetime(summary.resumed_at)
+        summary.start_admission_checked_at = _api_utc_datetime(summary.start_admission_checked_at)
+        summary.last_activity_at = _api_utc_datetime(summary.last_activity_at)
+
+        device_nodes = [
+            self._build_monitor_device_node(
+                device,
+                open_command_count=open_command_map.get(device.id or 0, 0),
+                blocked_outbox_count=blocked_outbox_projection.count_by_device_id.get(device.id or 0, 0),
+                blocked_outbox_summary=blocked_outbox_projection.summary_by_device_id.get(device.id or 0),
+                active_runtime_hold_ids=active_hold_ids_map.get(device.id or 0, []),
+            )
+            for device in devices
+        ]
+
+        active_trace_items = await self._build_trace_list_items(db, active_sessions)
+        failed_trace_items = await self._build_trace_list_items(db, recent_failed_sessions)
+        completed_trace_items = await self._build_trace_list_items(db, recent_completed_sessions)
+        structured_boundary = await self._build_workline_runtime_boundary(
+            db,
+            workline,
+            boundary_active_sessions,
+            full_resource_evidence=active_sessions_total > _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT,
+        )
+
+        reconcile_columns = cast("Any", WorklineSession).__table__.c
+        reconciliation_result = await db.execute(
+            select(WorklineSession)
+            .where(reconcile_columns.workline_id == workline_id, reconcile_columns.reconciliation_state == "PENDING")
+            .order_by(reconcile_columns.reconciliation_occurred_at.desc(), reconcile_columns.id.desc())
+            .limit(1)
+        )
+        pending_session = reconciliation_result.scalar_one_or_none()
+        pending_reconciliation = None
+        if pending_session is not None:
+            reason_str = ""
+            if pending_session.reconciliation_reason:
+                reason_str = (
+                    pending_session.reconciliation_reason.value
+                    if hasattr(pending_session.reconciliation_reason, "value")
+                    else str(pending_session.reconciliation_reason)
+                )
+            source_kind_str = ""
+            if pending_session.reconciliation_source_kind:
+                source_kind_str = (
+                    pending_session.reconciliation_source_kind.value
+                    if hasattr(pending_session.reconciliation_source_kind, "value")
+                    else str(pending_session.reconciliation_source_kind)
+                )
+            pending_reconciliation = RuntimeMonitorReconciliationCandidate(
+                session_id=pending_session.id,
+                session_code=pending_session.session_code,
+                trace_id=pending_session.trace_id,
+                request_id=pending_session.request_id,
+                reason=reason_str,
+                source_kind=source_kind_str,
+                device_id=pending_session.reconciliation_device_id,
+                command_id=pending_session.reconciliation_command_id,
+                wait_token=pending_session.reconciliation_wait_token,
+                occurred_at=_api_utc_datetime(pending_session.reconciliation_occurred_at or pending_session.updated_at)
+                or timezone.now_utc(),
+                deadline_at=_api_utc_datetime(pending_session.reconciliation_deadline_at),
+                late_evidence_received=getattr(pending_session, "reconciliation_late_evidence_received", False),
+            )
+
+        def to_monitor_session_item(item) -> RuntimeMonitorSessionItem:
+            return RuntimeMonitorSessionItem(
+                session_id=item.session_id,
+                session_code=item.session_code,
+                trace_id=item.trace_id,
+                request_id=item.request_id,
+                last_inbox_id=item.last_inbox_id,
+                barcode=item.barcode,
+                workline_id=item.workline_id,
+                device_id=item.device_id,
+                device_name=item.device_name,
+                device_code=item.device_code,
+                status=item.status,
+                current_wait_type=item.current_wait_type,
+                failure_domain=item.failure_domain,
+                failure_code=item.failure_code,
+                latest_timeline_action=item.latest_timeline_action,
+                latest_timeline_status=item.latest_timeline_status,
+                latest_timeline_message=item.latest_timeline_message,
+                started_at=_api_utc_datetime(item.started_at),
+                last_ingress_at=_api_utc_datetime(item.last_ingress_at),
+                deadline_at=_api_utc_datetime(item.deadline_at),
+                is_timed_out=item.is_timed_out,
+            )
+
+        def to_monitor_trace_item(item) -> RuntimeMonitorTraceItem:
+            return RuntimeMonitorTraceItem(
+                session_id=item.session_id,
+                session_code=item.session_code,
+                trace_id=item.trace_id,
+                request_id=item.request_id,
+                barcode=item.barcode,
+                workline_id=item.workline_id,
+                device_id=item.device_id,
+                device_name=item.device_name,
+                device_code=item.device_code,
+                status=item.status,
+                failure_domain=item.failure_domain,
+                failure_code=item.failure_code,
+                latest_timeline_action=item.latest_timeline_action,
+                latest_timeline_status=item.latest_timeline_status,
+                latest_timeline_message=item.latest_timeline_message,
+                started_at=_api_utc_datetime(item.started_at),
+                last_ingress_at=_api_utc_datetime(item.last_ingress_at),
+                deadline_at=_api_utc_datetime(item.deadline_at),
+                is_timed_out=item.is_timed_out,
+            )
+
+        resource_items = [
+            RuntimeResourceEvidenceItem(
+                resource_kind=item.resource_kind,
+                resource_code=item.resource_code,
+                display_label=item.display_label,
+                evidence_kind=item.evidence_kind,
+                station_code=item.station_code,
+                position_code=item.position_code,
+                rack_code=item.rack_code,
+                bin_code=item.bin_code,
+                slot_code=item.slot_code,
+                cell_code=item.cell_code,
+                pkg_code=item.pkg_code,
+                part_sn=item.part_sn,
+                material_code=item.material_code,
+                date_code=item.date_code,
+                lot_code=item.lot_code,
+                reel_count=item.reel_count,
+                reel_code=item.reel_code,
+                position_index=item.position_index,
+                source_session_id=item.source_session_id,
+                source_trace_id=item.source_trace_id,
+                occurred_at=_api_utc_datetime(item.occurred_at),
+            )
+            for item in structured_boundary["resource_evidence_items"]
+        ]
+
+        generated_at = timezone.now_utc()
+
+        return RuntimeWorklineMonitorProjectionResponse(
+            summary=summary,
+            boundary=RuntimeWorklineBoundary(
+                workline_readiness=structured_boundary["workline_readiness"],
+                station_lease=structured_boundary["station_lease"],
+                single_layer_rack_snapshot=structured_boundary["single_layer_rack_snapshot"],
+                rack_operation_wait=structured_boundary["rack_operation_wait"],
+            ),
+            device_nodes=device_nodes,
+            active_sessions=RuntimeMonitorSessionSection(
+                items=[to_monitor_session_item(item) for item in active_trace_items],
+                total_count=active_sessions_total,
+                truncated=active_sessions_truncated,
+            ),
+            recent_failed_traces=RuntimeMonitorTraceSection(
+                items=[to_monitor_trace_item(item) for item in failed_trace_items],
+                total_count=recent_failed_total,
+                truncated=recent_failed_truncated,
+            ),
+            recent_completed_traces=RuntimeMonitorTraceSection(
+                items=[to_monitor_trace_item(item) for item in completed_trace_items],
+                total_count=recent_completed_total,
+                truncated=recent_completed_truncated,
+            ),
+            resource_evidence=RuntimeMonitorEvidenceSection(
+                kind=structured_boundary["resource_evidence_kind"],
+                items=resource_items,
+                total_count=structured_boundary["resource_evidence_total_count"],
+                truncated=structured_boundary["resource_evidence_truncated"],
+            ),
+            action_candidates=RuntimeMonitorActionCandidates(pending_reconciliation=pending_reconciliation),
+            generated_at=generated_at,
         )
 
     async def list_devices(self, db: Any, workline_id: int | None = None) -> list[RuntimeDeviceSummary]:
@@ -1089,6 +1422,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
         db: Any,
         workline: WorkLine,
         sessions: list[WorklineSession],
+        *,
+        full_resource_evidence: bool = False,
     ) -> dict[str, Any]:
         station_lease = RuntimeStationLease.UNKNOWN
         single_layer_rack_snapshot = RuntimeSingleLayerRackSnapshot.UNKNOWN
@@ -1107,23 +1442,27 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 resource_evidence_kind = RuntimeResourceEvidenceKind.WES_ACTIVE_SNAPSHOT
 
         rack_operation_wait = self._runtime_rack_operation_wait(sessions)
-        resource_evidence_kind = self._runtime_resource_evidence_kind(
-            sessions,
-            current=resource_evidence_kind,
-            rack_operation_wait=rack_operation_wait,
-        )
+        if full_resource_evidence:
+            resource_evidence_projection = await self._load_runtime_resource_evidence_projection_for_workline(
+                db,
+                _require_int_id(workline.id, "workline.id"),
+                active_snapshots=active_snapshots,
+                current=resource_evidence_kind,
+                rack_operation_wait=rack_operation_wait,
+            )
+        else:
+            resource_evidence_projection = self._runtime_resource_evidence_projection(
+                sessions,
+                active_snapshots=active_snapshots,
+                current=resource_evidence_kind,
+                rack_operation_wait=rack_operation_wait,
+            )
+        resource_evidence_kind = resource_evidence_projection.kind
         if (
             single_layer_rack_snapshot == RuntimeSingleLayerRackSnapshot.MISSING
-            and self._has_non_single_layer_resource_evidence(sessions)
+            and resource_evidence_projection.has_non_single_layer
         ):
             single_layer_rack_snapshot = RuntimeSingleLayerRackSnapshot.NON_SINGLE_LAYER_EVIDENCE
-
-        resource_evidence_items = self._runtime_resource_evidence_items(
-            sessions,
-            active_snapshots=active_snapshots,
-        )
-        resource_evidence_total_count = len(resource_evidence_items)
-        resource_evidence_truncated = resource_evidence_total_count > _RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT
 
         return {
             "workline_readiness": self._runtime_workline_readiness(workline).value,
@@ -1131,10 +1470,132 @@ class RuntimeQueryService(BaseService[Any, Any]):
             "single_layer_rack_snapshot": single_layer_rack_snapshot.value,
             "rack_operation_wait": rack_operation_wait.value,
             "resource_evidence_kind": resource_evidence_kind.value,
-            "resource_evidence_items": resource_evidence_items[:_RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT],
-            "resource_evidence_total_count": resource_evidence_total_count,
-            "resource_evidence_truncated": resource_evidence_truncated,
+            "resource_evidence_items": resource_evidence_projection.items,
+            "resource_evidence_total_count": resource_evidence_projection.total_count,
+            "resource_evidence_truncated": resource_evidence_projection.truncated,
         }
+
+    def _runtime_resource_evidence_projection(
+        self,
+        sessions: list[WorklineSession],
+        *,
+        active_snapshots: list[tuple[str, dict[str, Any]]],
+        current: RuntimeResourceEvidenceKind,
+        rack_operation_wait: RuntimeRackOperationWait,
+    ) -> _RuntimeResourceEvidenceProjection:
+        resource_evidence_kind = self._runtime_resource_evidence_kind(
+            sessions,
+            current=current,
+            rack_operation_wait=rack_operation_wait,
+        )
+        resource_evidence_items = self._runtime_resource_evidence_items(
+            sessions,
+            active_snapshots=active_snapshots,
+        )
+        total_count = len(resource_evidence_items)
+        return _RuntimeResourceEvidenceProjection(
+            kind=resource_evidence_kind,
+            items=resource_evidence_items[:_RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT],
+            total_count=total_count,
+            truncated=total_count > _RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT,
+            has_non_single_layer=self._has_non_single_layer_resource_evidence(sessions),
+        )
+
+    async def _load_runtime_resource_evidence_projection_for_workline(
+        self,
+        db: Any,
+        workline_id: int,
+        *,
+        active_snapshots: list[tuple[str, dict[str, Any]]],
+        current: RuntimeResourceEvidenceKind,
+        rack_operation_wait: RuntimeRackOperationWait,
+    ) -> _RuntimeResourceEvidenceProjection:
+        states: list[RuntimeResourceEvidenceKind] = []
+        if current != RuntimeResourceEvidenceKind.UNKNOWN:
+            states.append(current)
+
+        deduped: dict[
+            tuple[str, str, str, int | None, str | None, str | None, str | None, str | None],
+            RuntimeResourceEvidenceItem,
+        ] = {}
+
+        def merge_items(items: list[RuntimeResourceEvidenceItem]) -> None:
+            for item in items:
+                key = _runtime_resource_evidence_item_key(item)
+                if key not in deduped:
+                    deduped[key] = item
+
+        merge_items(self._runtime_resource_evidence_items([], active_snapshots=active_snapshots))
+
+        has_non_single_layer = False
+        columns = cast("Any", WorklineSession).__table__.c
+        offset = 0
+        while True:
+            result = await db.execute(
+                select(
+                    columns.id.label("id"),
+                    columns.trace_id.label("trace_id"),
+                    columns.context_json.label("context_json"),
+                    columns.last_ingress_at.label("last_ingress_at"),
+                    columns.started_at.label("started_at"),
+                    columns.created_at.label("created_at"),
+                )
+                .where(columns.workline_id == workline_id, columns.status.in_(list(_ACTIVE_SESSION_STATUSES)))
+                .order_by(columns.last_ingress_at.desc().nullslast(), columns.id.desc())
+                .offset(offset)
+                .limit(_RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT)
+            )
+            rows = list(result.mappings().all())
+            if not rows:
+                break
+
+            sessions = [
+                cast(
+                    "WorklineSession",
+                    _RuntimeEvidenceSession(
+                        id=row["id"],
+                        trace_id=row["trace_id"],
+                        context_json=row["context_json"],
+                        last_ingress_at=row["last_ingress_at"],
+                        started_at=row["started_at"],
+                        created_at=row["created_at"],
+                    ),
+                )
+                for row in rows
+            ]
+            for session in sessions:
+                context = ensure_dict(getattr(session, "context_json", None))
+                if ensure_dict(context.get("active_bin_rack")):
+                    states.append(RuntimeResourceEvidenceKind.GENERIC_EVIDENCE)
+                states.extend(
+                    _runtime_resource_evidence_kind_from_payload(evidence)
+                    for evidence in _runtime_resource_evidence_payloads(context)
+                )
+                if not has_non_single_layer:
+                    has_non_single_layer = self._has_non_single_layer_resource_evidence([session])
+
+            merge_items(self._runtime_resource_evidence_items(sessions, active_snapshots=[]))
+
+            if len(rows) < _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT:
+                break
+            offset += _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT
+
+        if not states and rack_operation_wait == RuntimeRackOperationWait.WAITING_WMS:
+            states.append(RuntimeResourceEvidenceKind.GENERIC_EVIDENCE)
+
+        resource_evidence_items = sorted(deduped.values(), key=_runtime_resource_evidence_item_sort_key)
+        total_count = len(resource_evidence_items)
+        return _RuntimeResourceEvidenceProjection(
+            kind=_highest_priority_state(
+                states,
+                list(_RUNTIME_RESOURCE_EVIDENCE_KIND_PRIORITY),
+                RuntimeResourceEvidenceKind.UNKNOWN,
+            ),
+            items=resource_evidence_items[:_RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT],
+            total_count=total_count,
+            truncated=total_count > _RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT,
+            has_non_single_layer=has_non_single_layer,
+        )
 
     @staticmethod
     def _runtime_workline_readiness(workline: WorkLine) -> RuntimeWorklineReadiness:
@@ -1433,6 +1894,39 @@ class RuntimeQueryService(BaseService[Any, Any]):
             open_issue_count=len(hold_ids),
             active_runtime_hold_ids=hold_ids,
             last_heartbeat_at=device.last_heartbeat_at,
+            error_code=device.error_code,
+        )
+
+    def _build_monitor_device_node(
+        self,
+        device: Device,
+        *,
+        open_command_count: int = 0,
+        blocked_outbox_count: int = 0,
+        blocked_outbox_summary: dict[str, Any] | None = None,
+        active_runtime_hold_ids: list[int] | None = None,
+    ) -> RuntimeMonitorDeviceNode:
+        hold_ids = active_runtime_hold_ids or []
+        blocked_summary = blocked_outbox_summary or {}
+        return RuntimeMonitorDeviceNode(
+            id=_require_int_id(device.id, "device.id"),
+            device_code=device.device_code,
+            device_name=device.device_name,
+            device_role=device.device_role,
+            role_index=device.role_index,
+            upstream_device_id=device.upstream_device_id,
+            device_status=_status_str(device.device_status),
+            maintenance_mode=device.maintenance_mode,
+            current_command_id=device.current_command_id,
+            open_command_count=open_command_count,
+            pending_command_count=open_command_count,
+            blocked_outbox_count=blocked_outbox_count,
+            blocked_reason=blocked_summary.get("blocked_reason"),
+            blocked_wait_seconds=blocked_summary.get("blocked_wait_seconds"),
+            blocked_check_count=blocked_summary.get("blocked_check_count"),
+            open_issue_count=len(hold_ids),
+            active_runtime_hold_ids=hold_ids,
+            last_heartbeat_at=_api_utc_datetime(device.last_heartbeat_at),
             error_code=device.error_code,
         )
 
@@ -2185,8 +2679,17 @@ def _runtime_resource_evidence_metadata(
         "rack_code": _first_text(payload, ("rack_code", "rack_id")),
         "bin_code": _first_text(payload, ("bin_code", "bin_id")),
         "slot_code": _first_text(payload, ("rack_slot_code", "slot_code", "rack_slot_location_code")),
+        "cell_code": _runtime_cell_code(payload),
         "pkg_code": _first_text(payload, ("pkg_code", "package_code", "PkgID", "pkg_id", "material_identity_key")),
         "part_sn": _first_text(payload, ("part_sn", "part_serial_no", "serial_no")),
+        "material_code": _first_text(payload, ("material_code", "material_id", "MaterialCode", "MaterialID")),
+        "date_code": _first_text(payload, ("date_code", "DateCode")),
+        "lot_code": _first_text(payload, ("lot_code", "LotCode")),
+        "reel_count": _int_or_none(_first_value(payload, ("reel_count", "ReelCount"))),
+        "reel_code": _first_text(payload, ("reel_code", "reel_id", "ReelCode", "ReelID")),
+        "position_index": _int_or_none(
+            _first_value(payload, ("position_index", "stack_index", "cell_stack_position", "CellStackPosition"))
+        ),
         "source_session_id": _int_or_none(getattr(session, "id", None)),
         "source_trace_id": _first_text(payload, ("source_trace_id", "trace_id"))
         or _first_text(context_payload, ("source_trace_id", "trace_id"))
@@ -2273,8 +2776,15 @@ def _make_runtime_resource_evidence_item(
         rack_code=metadata["rack_code"],
         bin_code=metadata["bin_code"],
         slot_code=metadata["slot_code"],
+        cell_code=metadata["cell_code"],
         pkg_code=metadata["pkg_code"],
         part_sn=metadata["part_sn"],
+        material_code=metadata["material_code"],
+        date_code=metadata["date_code"],
+        lot_code=metadata["lot_code"],
+        reel_count=metadata["reel_count"],
+        reel_code=metadata["reel_code"],
+        position_index=metadata["position_index"],
         source_session_id=metadata["source_session_id"],
         source_trace_id=metadata["source_trace_id"],
         occurred_at=metadata["occurred_at"],
@@ -2289,21 +2799,27 @@ def _dedupe_runtime_resource_evidence_items(
         RuntimeResourceEvidenceItem,
     ] = {}
     for item in items:
-        cell_rack_code = item.rack_code if item.resource_kind == RuntimeResourceKind.CELL else None
-        cell_bin_code = item.bin_code if item.resource_kind == RuntimeResourceKind.CELL else None
-        key = (
-            item.resource_kind.value,
-            item.resource_code,
-            item.evidence_kind.value,
-            item.source_session_id,
-            item.source_trace_id,
-            item.position_code,
-            cell_rack_code,
-            cell_bin_code,
-        )
+        key = _runtime_resource_evidence_item_key(item)
         if key not in deduped:
             deduped[key] = item
     return sorted(deduped.values(), key=_runtime_resource_evidence_item_sort_key)
+
+
+def _runtime_resource_evidence_item_key(
+    item: RuntimeResourceEvidenceItem,
+) -> tuple[str, str, str, int | None, str | None, str | None, str | None, str | None]:
+    cell_rack_code = item.rack_code if item.resource_kind == RuntimeResourceKind.CELL else None
+    cell_bin_code = item.bin_code if item.resource_kind == RuntimeResourceKind.CELL else None
+    return (
+        item.resource_kind.value,
+        item.resource_code,
+        item.evidence_kind.value,
+        item.source_session_id,
+        item.source_trace_id,
+        item.position_code,
+        cell_rack_code,
+        cell_bin_code,
+    )
 
 
 def _runtime_resource_evidence_item_sort_key(item: RuntimeResourceEvidenceItem) -> tuple[int, int, str, str, str, str]:
@@ -2322,6 +2838,13 @@ def _first_text(payload: dict[str, Any], aliases: tuple[str, ...]) -> str | None
         value = _non_empty_text(payload.get(alias))
         if value is not None:
             return value
+    return None
+
+
+def _first_value(payload: dict[str, Any], aliases: tuple[str, ...]) -> Any:
+    for alias in aliases:
+        if alias in payload and payload[alias] is not None:
+            return payload[alias]
     return None
 
 

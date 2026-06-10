@@ -11,7 +11,7 @@ from src.app.workline.models.runtime import (
     RuntimeDeviceSummary,
     RuntimeOverviewResponse,
     RuntimeTracePathResponse,
-    RuntimeWorklineDetailResponse,
+    RuntimeWorklineMonitorProjectionResponse,
     RuntimeWorklineSummary,
 )
 from src.app.workline.services import runtime_query_service
@@ -54,22 +54,22 @@ async def get_runtime_worklines(
 
 @router.get(
     "/worklines/{workline_id}",
-    summary="[biz:workline:list] 工作线运行态详情",
-    response_model=ResponseSchemaModel[RuntimeWorklineDetailResponse],
+    summary="[biz:workline:list] 工作线运行态监控投影",
+    response_model=ResponseSchemaModel[RuntimeWorklineMonitorProjectionResponse],
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(RequirePermission("biz:workline:list"))],
 )
 async def get_runtime_workline_detail(
     workline_id: int,
     db: AsyncSessionDep,
-) -> ResponseSchemaModel[RuntimeWorklineDetailResponse]:
-    result = await runtime_query_service.get_workline_detail(db, workline_id)
+) -> ResponseSchemaModel[RuntimeWorklineMonitorProjectionResponse]:
+    result = await runtime_query_service.get_workline_monitor_projection(db, workline_id)
     if result is None:
         return cast(
-            "ResponseSchemaModel[RuntimeWorklineDetailResponse]",
-            response_builder.fail(code=DEFAULT_NOT_FOUND, message=f"工作线运行态不存在: {workline_id}"),
+            "ResponseSchemaModel[RuntimeWorklineMonitorProjectionResponse]",
+            response_builder.fail(code=DEFAULT_NOT_FOUND, message=f"工作线运行态监控投影不存在: {workline_id}"),
         )
-    return cast("ResponseSchemaModel[RuntimeWorklineDetailResponse]", response_builder.success(data=result))
+    return cast("ResponseSchemaModel[RuntimeWorklineMonitorProjectionResponse]", response_builder.success(data=result))
 
 
 @router.get(

@@ -110,11 +110,11 @@ class DeviceService(BaseService[Device, DeviceRepository]):
             db,
             DEVICE_STATUS_CHANGED_EVENT,
             {
-                "domain": "workline_trace",
+                "domain": "workline_runtime",
                 "entity": "device",
                 "action": "updated",
                 "keys": {
-                    "work_line_id": getattr(device, "work_line_id", None),
+                    "workline_id": getattr(device, "work_line_id", None),
                     "device_id": getattr(device, "id", None),
                 },
                 "device_id": getattr(device, "id", None),

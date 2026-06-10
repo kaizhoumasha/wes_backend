@@ -95,6 +95,20 @@ _BUSY_SESSION_STATUSES = frozenset({"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL",
 _TERMINAL_COMMAND_STATUSES = frozenset({"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"})
 
 
+def build_workline_runtime_session_updated_event_payload(
+    *, workline_id: int | None, session_id: int | None
+) -> dict[str, Any]:
+    return {
+        "domain": "workline_runtime",
+        "entity": "session",
+        "action": "updated",
+        "keys": {
+            "workline_id": workline_id,
+            "session_id": session_id,
+        },
+    }
+
+
 def _scan_completed_has_any_barcode_payload(payload: dict[str, Any]) -> bool:
     """SCAN_COMPLETED 的最小通用 gate。
     这里只判断 payload.data 中是否出现过任何扫码事实，作为入站后的 malformed
@@ -1122,15 +1136,10 @@ class InboxBatchProcessor:
                         defer_sse_event(
                             db,
                             WORKLINE_RUNTIME_CHANGED_EVENT,
-                            {
-                                "domain": "workline_trace",
-                                "entity": "session",
-                                "action": "updated",
-                                "keys": {
-                                    "workline_id": _sse_workline_id,
-                                    "session_id": _sse_session_id,
-                                },
-                            },
+                            build_workline_runtime_session_updated_event_payload(
+                                workline_id=_sse_workline_id,
+                                session_id=_sse_session_id,
+                            ),
                         )
                     except Exception:
                         await db.rollback()

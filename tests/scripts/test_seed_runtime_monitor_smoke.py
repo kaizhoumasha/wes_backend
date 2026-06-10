@@ -20,35 +20,51 @@ from src.utils.timezone import timezone
 
 
 @pytest.mark.asyncio
-async def test_seed_runtime_monitor_smoke_creates_runtime_detail_scenarios(db_session) -> None:
+async def test_seed_runtime_monitor_smoke_creates_runtime_projection_scenarios(db_session) -> None:
     result = await seed_runtime_monitor_smoke(db_session, commit=False)
     service = RuntimeQueryService()
 
-    single_layer_detail = await service.get_workline_detail(
+    single_layer_projection = await service.get_workline_monitor_projection(
         db_session,
         result["single_layer_workline"]["id"],
     )
-    fallback_detail = await service.get_workline_detail(
+    fallback_projection = await service.get_workline_monitor_projection(
         db_session,
         result["fallback_workline"]["id"],
     )
 
-    assert single_layer_detail is not None
-    assert single_layer_detail.workline_readiness == "READY"
-    assert single_layer_detail.station_lease == "ACTIVE_DISPATCH_LEASE"
-    assert single_layer_detail.rack_operation_wait == "WAITING_WMS"
-    assert single_layer_detail.resource_evidence_kind == "WMS_CALLBACK_EVIDENCE"
-    assert single_layer_detail.resource_evidence_total_count > 50
-    assert single_layer_detail.resource_evidence_truncated is True
-    assert len(single_layer_detail.resource_evidence_items) == 50
-    assert any(item.evidence_kind == "WMS_CALLBACK_EVIDENCE" for item in single_layer_detail.resource_evidence_items)
+    assert single_layer_projection is not None
+    assert single_layer_projection.boundary.workline_readiness == "READY"
+    assert single_layer_projection.boundary.station_lease == "ACTIVE_DISPATCH_LEASE"
+    assert single_layer_projection.boundary.rack_operation_wait == "WAITING_WMS"
+    assert single_layer_projection.resource_evidence.kind == "WMS_CALLBACK_EVIDENCE"
+    assert single_layer_projection.resource_evidence.total_count > 50
+    assert single_layer_projection.resource_evidence.truncated is True
+    assert len(single_layer_projection.resource_evidence.items) == 50
+    assert any(
+        item.evidence_kind == "WMS_CALLBACK_EVIDENCE" for item in single_layer_projection.resource_evidence.items
+    )
+    assert any(item.slot_code == "A" for item in single_layer_projection.resource_evidence.items)
+    assert any(item.cell_code == "CELL-SMOKE-1" for item in single_layer_projection.resource_evidence.items)
+    smoke_pkg = next(
+        item for item in single_layer_projection.resource_evidence.items if item.resource_code == "PKG-SMOKE-001"
+    )
+    assert smoke_pkg.rack_code == "RACK-SMOKE-CALLBACK"
+    assert smoke_pkg.bin_code == "BIN-SMOKE-CALLBACK"
+    assert smoke_pkg.slot_code == "A"
+    assert smoke_pkg.cell_code == "CELL-SMOKE-1"
+    assert smoke_pkg.material_code == "620100L00-011-G"
+    assert smoke_pkg.date_code == "2401"
+    assert smoke_pkg.lot_code == "LOT-A"
+    assert smoke_pkg.reel_code == "REEL-SMOKE-001"
+    assert smoke_pkg.position_index == 1
 
-    assert fallback_detail is not None
-    assert fallback_detail.workline_readiness == "READY"
-    assert fallback_detail.station_lease == "UNKNOWN"
-    assert fallback_detail.single_layer_rack_snapshot == "UNKNOWN"
-    assert fallback_detail.resource_evidence_kind == "GENERIC_EVIDENCE"
-    assert fallback_detail.resource_evidence_items[0].resource_code == "GENERIC-FALLBACK-001"
+    assert fallback_projection is not None
+    assert fallback_projection.boundary.workline_readiness == "READY"
+    assert fallback_projection.boundary.station_lease == "UNKNOWN"
+    assert fallback_projection.boundary.single_layer_rack_snapshot == "UNKNOWN"
+    assert fallback_projection.resource_evidence.kind == "GENERIC_EVIDENCE"
+    assert fallback_projection.resource_evidence.items[0].resource_code == "GENERIC-FALLBACK-001"
 
 
 @pytest.mark.asyncio

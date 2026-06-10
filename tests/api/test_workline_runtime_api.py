@@ -3,7 +3,7 @@ from contextlib import nullcontext
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -60,6 +60,10 @@ def _permission_names(module, path: str, method: str) -> list[str]:
     return [getattr(dep.dependency, "permission_required", "") for dep in route.dependencies]
 
 
+def _has_route(module, path: str, method: str) -> bool:
+    return any(method in route.methods and route.path == path for route in module.router.routes)
+
+
 class TestWorklineRuntimeRoutePermissions:
     def test_trace_routes_require_workline_list_permission(self) -> None:
         assert _permission_names(trace_module, "/request/{request_id}", "GET") == ["biz:workline:list"]
@@ -74,6 +78,7 @@ class TestWorklineRuntimeRoutePermissions:
         assert _permission_names(runtime_module, "/overview", "GET") == ["biz:workline:list"]
         assert _permission_names(runtime_module, "/worklines", "GET") == ["biz:workline:list"]
         assert _permission_names(runtime_module, "/worklines/{workline_id}", "GET") == ["biz:workline:list"]
+        assert not _has_route(runtime_module, "/worklines/{workline_id}/monitor-projection", "GET")
         assert _permission_names(runtime_module, "/devices", "GET") == ["biz:device:list"]
         assert _permission_names(runtime_module, "/devices/{device_id}", "GET") == ["biz:device:list"]
 
@@ -306,14 +311,44 @@ class TestWorklineRuntimeApi:
     async def test_get_runtime_workline_detail_returns_not_found_when_missing(self) -> None:
         from src.app.workline.v1.runtime import get_runtime_workline_detail
 
-        with patch(
-            "src.app.workline.v1.runtime.runtime_query_service.get_workline_detail",
-            new=AsyncMock(return_value=None),
-        ) as mock_get_workline_detail:
+        with (
+            patch(
+                "src.app.workline.v1.runtime.runtime_query_service.get_workline_monitor_projection",
+                new=AsyncMock(return_value=None),
+            ) as mock_get_monitor_projection,
+            patch(
+                "src.app.workline.v1.runtime.runtime_query_service.get_workline_detail",
+                new=AsyncMock(side_effect=AssertionError("runtime workline endpoint must use the monitor projection")),
+            ),
+        ):
             response = await get_runtime_workline_detail(workline_id=404, db=AsyncMock())
 
-        mock_get_workline_detail.assert_awaited_once_with(AnyArgHashable(), 404)
-        assert _response_message(response) == "工作线运行态不存在: 404"
+        mock_get_monitor_projection.assert_awaited_once_with(AnyArgHashable(), 404)
+        assert _response_message(response) == "工作线运行态监控投影不存在: 404"
+
+    def test_runtime_workline_detail_route_uses_monitor_projection_response_contract(self) -> None:
+        from src.app.workline.models.runtime import RuntimeWorklineMonitorProjectionResponse
+        from src.app.workline.v1.runtime import router
+        from src.core.response import ResponseSchemaModel
+
+        route = next(item for item in router.routes if getattr(item, "path", None) == "/worklines/{workline_id}")
+
+        assert getattr(route, "response_model", None) == ResponseSchemaModel[RuntimeWorklineMonitorProjectionResponse]
+
+    @pytest.mark.asyncio
+    async def test_get_runtime_workline_detail_uses_monitor_projection_service(self) -> None:
+        from src.app.workline.v1.runtime import get_runtime_workline_detail
+
+        result = SimpleNamespace(summary=SimpleNamespace(line_code="WL-45"))
+
+        with patch(
+            "src.app.workline.v1.runtime.runtime_query_service.get_workline_monitor_projection",
+            new=AsyncMock(return_value=result),
+        ) as mock_get_monitor_projection:
+            response = await get_runtime_workline_detail(workline_id=45, db=AsyncMock())
+
+        mock_get_monitor_projection.assert_awaited_once_with(AnyArgHashable(), 45)
+        assert _response_data(response) is result
 
     @pytest.mark.asyncio
     async def test_get_runtime_device_detail_uses_workline_scoped_service(self) -> None:
@@ -777,9 +812,20 @@ class TestRuntimeQueryService:
             "GENERIC_EVIDENCE",
             "UNKNOWN",
         ]
-        assert {"resource_code", "display_label", "source_session_id", "source_trace_id", "occurred_at"}.issubset(
-            item_properties
-        )
+        assert {
+            "resource_code",
+            "display_label",
+            "cell_code",
+            "material_code",
+            "date_code",
+            "lot_code",
+            "reel_count",
+            "reel_code",
+            "position_index",
+            "source_session_id",
+            "source_trace_id",
+            "occurred_at",
+        }.issubset(item_properties)
 
     def test_runtime_resource_evidence_projects_active_bin_rack_cell_aliases_and_nested_bins(self) -> None:
         from src.app.workline.models.runtime import RuntimeResourceEvidenceKind
@@ -797,6 +843,12 @@ class TestRuntimeQueryService:
                         "bin_cell_index": "1",
                         "bin_cell_code": "CELL-A",
                         "pkg_code": "PKG-A",
+                        "material_code": "620100L00-011-G",
+                        "DateCode": "2401",
+                        "LotCode": "LOT-A",
+                        "reel_count": 2,
+                        "reel_code": "REEL-A",
+                        "position_index": 1,
                     }
                 ],
             },
@@ -904,6 +956,14 @@ class TestRuntimeQueryService:
             ("CELL", "CELL-A"),
             ("PKG", "PKG-A"),
         }
+        pkg_a = next(item for item in bin_cells_items if item.resource_code == "PKG-A")
+        assert pkg_a.cell_code == "CELL-A"
+        assert pkg_a.material_code == "620100L00-011-G"
+        assert pkg_a.date_code == "2401"
+        assert pkg_a.lot_code == "LOT-A"
+        assert pkg_a.reel_count == 2
+        assert pkg_a.reel_code == "REEL-A"
+        assert pkg_a.position_index == 1
         assert {(item.resource_kind.value, item.resource_code) for item in cell_snapshots_items} >= {
             ("RACK", "RACK-CELL-SNAPSHOTS"),
             ("SLOT", "B"),
@@ -1239,14 +1299,20 @@ class TestRuntimeQueryService:
                         "rack_slot_code": "SLOT-REELS",
                         "bin_code": "BIN-REELS",
                         "bin_cell_index": "1",
+                        "bin_cell_code": "CELL-REELS",
                         "PkgID": "PKG-LATEST",
+                        "material_code": "620100L00-011-G",
+                        "DateCode": "2401",
+                        "LotCode": "LOT-A",
                         "reels": [
                             {
                                 "pkg_code": "PKG-LATEST",
+                                "reel_code": "REEL-LATEST",
                                 "cell_stack_position": 2,
                             },
                             {
                                 "pkg_code": "PKG-OLDER",
+                                "reel_code": "REEL-OLDER",
                                 "cell_stack_position": 1,
                             },
                         ],
@@ -1258,6 +1324,13 @@ class TestRuntimeQueryService:
 
         pkg_codes = {item.resource_code for item in items if item.resource_kind.value == "PKG"}
         assert pkg_codes >= {"PKG-LATEST", "PKG-OLDER"}
+        older_reel = next(item for item in items if item.resource_code == "PKG-OLDER")
+        assert older_reel.cell_code == "CELL-REELS"
+        assert older_reel.material_code == "620100L00-011-G"
+        assert older_reel.date_code == "2401"
+        assert older_reel.lot_code == "LOT-A"
+        assert older_reel.reel_code == "REEL-OLDER"
+        assert older_reel.position_index == 1
 
     def test_runtime_resource_evidence_prefers_child_station_alias_over_parent_station_code(self) -> None:
         from src.app.workline.models.runtime import RuntimeResourceEvidenceKind
@@ -1657,7 +1730,7 @@ class TestRuntimeQueryService:
 
     @pytest.mark.asyncio
     async def test_get_workline_detail_uses_bounded_active_sessions_for_resource_evidence(self) -> None:
-        from src.app.workline.models.runtime import RuntimeTraceListItem
+        from src.app.workline.models.runtime import RuntimeResourceEvidenceKind, RuntimeTraceListItem
         from src.app.workline.services.runtime_query_service import (
             _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT,
             RuntimeQueryService,
@@ -1701,10 +1774,31 @@ class TestRuntimeQueryService:
                 started_at=now,
                 created_at=now,
             )
-            for index in range(1, 26)
+            for index in range(1, _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT + 1)
         ]
         db = AsyncMock()
-        db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: workline)
+
+        class MockExecuteResult:
+            def __init__(self, value):
+                self._value = value
+
+            def scalar_one_or_none(self):
+                return self._value
+
+            def scalar_one(self):
+                return self._value
+
+            def all(self):
+                return self._value
+
+        db.execute = AsyncMock(
+            side_effect=[
+                MockExecuteResult(workline),
+                MockExecuteResult([("WAITING_EXTERNAL", 250)]),
+                MockExecuteResult(250),
+                MockExecuteResult(0),
+            ]
+        )
 
         async def build_trace_items(_db, sessions):
             return [
@@ -1732,11 +1826,11 @@ class TestRuntimeQueryService:
 
         load_active_sessions.assert_awaited_once_with(db, 45, limit=_RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT)
         assert result is not None
-        assert result.summary.waiting_session_count == 25
+        assert result.summary.waiting_session_count == 250
         assert len(result.active_sessions) == 20
-        assert result.resource_evidence_total_count == 25
-        assert result.resource_evidence_truncated is False
-        assert {item.resource_code for item in result.resource_evidence_items} >= {"PKG-001", "PKG-025"}
+        assert result.resource_evidence_total_count == _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT
+        assert result.resource_evidence_truncated is True
+        assert {item.resource_code for item in result.resource_evidence_items} >= {"PKG-001", "PKG-050"}
 
     def test_build_workline_summary_requires_persisted_workline(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
@@ -2785,7 +2879,7 @@ class TestRuntimeQueryService:
 
     @pytest.mark.asyncio
     async def test_get_workline_detail_returns_recent_completed_traces(self) -> None:
-        from src.app.workline.models.runtime import RuntimeTraceListItem
+        from src.app.workline.models.runtime import RuntimeResourceEvidenceKind, RuntimeTraceListItem
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 
         service = RuntimeQueryService()
@@ -3599,3 +3693,478 @@ class TestRuntimeQueryService:
 
         assert result[0].event_type == "SCAN_COMPLETED"
         assert result[0].event_payload == device_event_inbox.payload_json
+
+    @pytest.mark.asyncio
+    async def test_get_workline_monitor_projection(self) -> None:
+        from unittest.mock import MagicMock, call
+
+        from src.app.workline.models.runtime import (
+            RuntimeResourceEvidenceItem,
+            RuntimeWorklineMonitorProjectionResponse,
+        )
+        from src.app.workline.services.runtime_query_service import (
+            _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT,
+            RuntimeQueryService,
+        )
+        from src.utils.timezone import timezone
+
+        service = RuntimeQueryService()
+        db = AsyncMock()
+        db_time = timezone.now_for_db()
+
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key=None,
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+
+        class MockExecuteResult:
+            def __init__(self, value):
+                self._value = value
+
+            def scalar_one_or_none(self):
+                return self._value
+
+            def scalar_one(self):
+                return self._value
+
+            def scalars(self):
+                mock_scalars = MagicMock()
+                mock_scalars.all.return_value = self._value
+                return mock_scalars
+
+            def all(self):
+                return self._value
+
+        pending_session = SimpleNamespace(
+            id=99,
+            session_code="SES-99",
+            trace_id="trace-99",
+            request_id="req-99",
+            reconciliation_state="PENDING",
+            reconciliation_reason=SimpleNamespace(value="CALLBACK_DEADLINE_EXPIRED"),
+            reconciliation_source_kind=SimpleNamespace(value="DEVICE"),
+            reconciliation_device_id=12,
+            reconciliation_command_id=34,
+            reconciliation_wait_token="token-99",
+            reconciliation_occurred_at=db_time,
+            reconciliation_deadline_at=db_time,
+            reconciliation_late_evidence_received=True,
+            updated_at=db_time,
+        )
+
+        db_executes = [
+            MockExecuteResult(workline),  # 1. workline lookup
+            MockExecuteResult([("RUNNING", 25), ("WAITING_EXTERNAL", 4)]),  # 2. active sessions status counts
+            MockExecuteResult(3),  # 3. non-timed-out waiting sessions count
+            MockExecuteResult(5),  # 4. failed traces count
+            MockExecuteResult(8),  # 5. completed traces count
+            MockExecuteResult(pending_session),  # 6. pending reconciliation session lookup
+        ]
+        db.execute = AsyncMock(side_effect=db_executes)
+
+        active_sessions = [
+            SimpleNamespace(
+                id=i,
+                session_code=f"SES-{i}",
+                status="RUNNING",
+                last_ingress_at=db_time,
+                waiting_since=None,
+                ended_at=None,
+                started_at=db_time,
+                created_at=db_time,
+            )
+            for i in range(25)
+        ]
+        recent_failed = [
+            SimpleNamespace(
+                id=i,
+                session_code=f"SES-F-{i}",
+                status="FAILED",
+                last_ingress_at=db_time,
+                waiting_since=None,
+                ended_at=None,
+                started_at=db_time,
+                created_at=db_time,
+            )
+            for i in range(3)
+        ]
+        recent_completed = [
+            SimpleNamespace(
+                id=i,
+                session_code=f"SES-C-{i}",
+                status="COMPLETED",
+                last_ingress_at=db_time,
+                waiting_since=None,
+                ended_at=None,
+                started_at=db_time,
+                created_at=db_time,
+            )
+            for i in range(4)
+        ]
+        devices = [
+            SimpleNamespace(
+                id=12,
+                device_code="DEV-12",
+                device_name="设备 12",
+                device_role="SORTER",
+                role_index=1,
+                upstream_device_id=None,
+                device_status="IDLE",
+                maintenance_mode=False,
+                current_command_id=None,
+                last_heartbeat_at=db_time,
+                error_code=None,
+            )
+        ]
+
+        async def mock_build_trace_list_items(db, sessions):
+            from src.app.workline.models.runtime import RuntimeTraceListItem
+
+            return [
+                RuntimeTraceListItem(
+                    session_id=s.id,
+                    session_code=s.session_code,
+                    last_inbox_id=9000 + s.id,
+                    workline_id=45,
+                    status=s.status,
+                    started_at=s.started_at,
+                    last_ingress_at=s.last_ingress_at,
+                    deadline_at=getattr(s, "deadline_at", None),
+                )
+                for s in sessions
+            ]
+
+        load_active_sessions = AsyncMock(side_effect=[active_sessions[:20], active_sessions])
+        build_boundary = AsyncMock(
+            return_value={
+                "workline_readiness": "READY",
+                "station_lease": "IDLE",
+                "single_layer_rack_snapshot": "ACTIVE",
+                "rack_operation_wait": "NONE",
+                "resource_evidence_kind": "WES_ACTIVE_SNAPSHOT",
+                "resource_evidence_items": [
+                    RuntimeResourceEvidenceItem(
+                        resource_kind="BIN",
+                        resource_code="BIN-WMS",
+                        display_label="BIN BIN-WMS",
+                        evidence_kind="WMS_CALLBACK_EVIDENCE",
+                        rack_code="RACK-WMS",
+                        cell_code="CELL-WMS",
+                        material_code="620100L00-011-G",
+                        date_code="2401",
+                        lot_code="LOT-A",
+                        reel_count=2,
+                        reel_code="REEL-WMS",
+                        position_index=1,
+                        occurred_at=db_time,
+                    )
+                ],
+                "resource_evidence_total_count": 1,
+                "resource_evidence_truncated": False,
+            }
+        )
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=devices),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=load_active_sessions),
+            patch.object(
+                service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=recent_failed)
+            ),
+            patch.object(
+                service, "_load_recent_completed_sessions_for_workline", new=AsyncMock(return_value=recent_completed)
+            ),
+            patch.object(
+                service,
+                "_load_blocked_outbox_projection",
+                new=AsyncMock(
+                    return_value=SimpleNamespace(
+                        command_codes_by_device_id={},
+                        count_by_device_id={},
+                        summary_by_device_id={},
+                    )
+                ),
+            ),
+            patch.object(service, "_load_open_command_count_map", new=AsyncMock(return_value={})),
+            patch.object(service, "_load_active_runtime_hold_ids_map", new=AsyncMock(return_value={})),
+            patch.object(service, "_build_trace_list_items", new=mock_build_trace_list_items),
+            patch.object(service, "_build_workline_runtime_boundary", new=build_boundary),
+        ):
+            result = await service.get_workline_monitor_projection(db, 45)
+
+        load_active_sessions.assert_has_awaits(
+            [
+                call(db, 45, limit=20),
+                call(db, 45, limit=_RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT),
+            ]
+        )
+        assert build_boundary.await_args.args[2] == active_sessions
+        assert isinstance(result, RuntimeWorklineMonitorProjectionResponse)
+        assert result.summary.line_code == "WL-45"
+        assert result.summary.active_session_count == 25
+        assert result.summary.waiting_session_count == 3
+        assert result.summary.failed_session_count == 5
+        assert result.summary.last_activity_at is not None
+        assert result.summary.last_activity_at.utcoffset() == timedelta(0)
+        assert result.boundary.workline_readiness.value == "READY"
+        assert result.device_nodes[0].last_heartbeat_at is not None
+        assert result.device_nodes[0].last_heartbeat_at.utcoffset() == timedelta(0)
+        assert result.resource_evidence.items[0].rack_code == "RACK-WMS"
+        assert result.resource_evidence.items[0].cell_code == "CELL-WMS"
+        assert result.resource_evidence.items[0].material_code == "620100L00-011-G"
+        assert result.resource_evidence.items[0].date_code == "2401"
+        assert result.resource_evidence.items[0].lot_code == "LOT-A"
+        assert result.resource_evidence.items[0].reel_count == 2
+        assert result.resource_evidence.items[0].reel_code == "REEL-WMS"
+        assert result.resource_evidence.items[0].position_index == 1
+        assert result.resource_evidence.items[0].occurred_at is not None
+        assert result.resource_evidence.items[0].occurred_at.utcoffset() == timedelta(0)
+
+        assert len(result.active_sessions.items) == 20
+        assert result.active_sessions.items[0].last_inbox_id == 9000
+        assert result.active_sessions.items[0].started_at is not None
+        assert result.active_sessions.items[0].started_at.utcoffset() == timedelta(0)
+        assert result.active_sessions.items[0].last_ingress_at is not None
+        assert result.active_sessions.items[0].last_ingress_at.utcoffset() == timedelta(0)
+        assert result.active_sessions.total_count == 29
+        assert result.active_sessions.truncated is True
+
+        assert len(result.recent_failed_traces.items) == 3
+        assert result.recent_failed_traces.items[0].started_at is not None
+        assert result.recent_failed_traces.items[0].started_at.utcoffset() == timedelta(0)
+        assert result.recent_failed_traces.total_count == 5
+        assert result.recent_failed_traces.truncated is False
+
+        assert len(result.recent_completed_traces.items) == 4
+        assert result.recent_completed_traces.items[0].last_ingress_at is not None
+        assert result.recent_completed_traces.items[0].last_ingress_at.utcoffset() == timedelta(0)
+        assert result.recent_completed_traces.total_count == 8
+        assert result.recent_completed_traces.truncated is False
+
+        assert result.action_candidates.pending_reconciliation is not None
+        assert result.action_candidates.pending_reconciliation.session_id == 99
+        assert result.action_candidates.pending_reconciliation.reason == "CALLBACK_DEADLINE_EXPIRED"
+        assert result.action_candidates.pending_reconciliation.late_evidence_received is True
+        assert result.action_candidates.pending_reconciliation.occurred_at.utcoffset() == timedelta(0)
+        assert result.action_candidates.pending_reconciliation.deadline_at is not None
+        assert result.action_candidates.pending_reconciliation.deadline_at.utcoffset() == timedelta(0)
+        assert result.generated_at.tzinfo is not None
+        assert result.generated_at.utcoffset() == timedelta(0)
+
+    async def test_get_workline_monitor_projection_counts_resource_evidence_beyond_active_session_cap(
+        self,
+    ) -> None:
+        from src.app.workline.models.runtime import RuntimeResourceEvidenceKind, RuntimeTraceListItem
+        from src.app.workline.services.runtime_query_service import (
+            _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT,
+            _RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT,
+            RuntimeQueryService,
+        )
+        from src.utils.timezone import timezone
+
+        service = RuntimeQueryService()
+        db = AsyncMock()
+        db_time = timezone.now_for_db()
+
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key=None,
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+
+        class MockExecuteResult:
+            def __init__(self, value):
+                self._value = value
+
+            def scalar_one_or_none(self):
+                return self._value
+
+            def scalar_one(self):
+                return self._value
+
+            def scalars(self):
+                mock_scalars = MagicMock()
+                mock_scalars.all.return_value = self._value
+                return mock_scalars
+
+            def all(self):
+                return self._value
+
+        active_total = _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT + 25
+        db.execute = AsyncMock(
+            side_effect=[
+                MockExecuteResult(workline),
+                MockExecuteResult([("RUNNING", active_total)]),
+                MockExecuteResult(0),
+                MockExecuteResult(0),
+                MockExecuteResult(0),
+                MockExecuteResult(None),
+            ]
+        )
+
+        active_sessions = [
+            SimpleNamespace(
+                id=index,
+                session_code=f"SES-{index}",
+                trace_id=f"trace-{index}",
+                request_id=f"req-{index}",
+                status="RUNNING",
+                context_json={
+                    "resource_evidence": {
+                        "resource_kind": "PKG",
+                        "resource_code": f"PKG-{index:03d}",
+                        "evidence_kind": "TRACE_RESOURCE_EVIDENCE",
+                    }
+                },
+                last_ingress_at=db_time,
+                waiting_since=None,
+                deadline_at=None,
+                started_at=db_time,
+                created_at=db_time,
+            )
+            for index in range(1, active_total + 1)
+        ]
+        evidence_projection = SimpleNamespace(
+            kind=RuntimeResourceEvidenceKind.TRACE_RESOURCE_EVIDENCE,
+            items=[],
+            total_count=active_total,
+            truncated=True,
+            has_non_single_layer=False,
+        )
+
+        async def build_trace_items(_db, sessions):
+            return [
+                RuntimeTraceListItem(
+                    session_id=session.id,
+                    session_code=session.session_code,
+                    trace_id=session.trace_id,
+                    request_id=session.request_id,
+                    workline_id=45,
+                    status=session.status,
+                    started_at=session.started_at,
+                    last_ingress_at=session.last_ingress_at,
+                )
+                for session in sessions
+            ]
+
+        load_active_sessions = AsyncMock(
+            side_effect=[active_sessions[:20], active_sessions[:_RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT]]
+        )
+        load_resource_evidence_projection = AsyncMock(return_value=evidence_projection)
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=load_active_sessions),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_completed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(side_effect=build_trace_items)),
+            patch.object(
+                service,
+                "_load_runtime_resource_evidence_projection_for_workline",
+                new=load_resource_evidence_projection,
+            ),
+        ):
+            result = await service.get_workline_monitor_projection(db, 45)
+
+        load_active_sessions.assert_has_awaits(
+            [
+                call(db, 45, limit=20),
+                call(db, 45, limit=_RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT),
+            ]
+        )
+        assert all(await_call.kwargs.get("limit") is not None for await_call in load_active_sessions.await_args_list)
+        load_resource_evidence_projection.assert_awaited_once()
+        assert result is not None
+        assert result.active_sessions.total_count == active_total
+        assert result.active_sessions.truncated is True
+        assert result.resource_evidence.total_count == active_total
+        assert result.resource_evidence.truncated is True
+
+    async def test_runtime_resource_evidence_projection_pages_and_caps_items(self) -> None:
+        from src.app.workline.models.runtime import RuntimeRackOperationWait, RuntimeResourceEvidenceKind
+        from src.app.workline.services.runtime_query_service import (
+            _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT,
+            _RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT,
+            RuntimeQueryService,
+        )
+        from src.utils.timezone import timezone
+
+        service = RuntimeQueryService()
+        db = AsyncMock()
+        db_time = timezone.now_for_db()
+        active_total = _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT + 25
+        rows = [
+            {
+                "id": index,
+                "trace_id": f"trace-{index}",
+                "context_json": {
+                    "resource_evidence": {
+                        "resource_kind": "PKG",
+                        "resource_code": f"PKG-{index:03d}",
+                        "evidence_kind": "TRACE_RESOURCE_EVIDENCE",
+                    }
+                },
+                "last_ingress_at": db_time,
+                "started_at": db_time,
+                "created_at": db_time,
+            }
+            for index in range(1, active_total + 1)
+        ]
+
+        class MockMappingResult:
+            def __init__(self, value):
+                self._value = value
+
+            def mappings(self):
+                mock_mappings = MagicMock()
+                mock_mappings.all.return_value = self._value
+                return mock_mappings
+
+        db.execute = AsyncMock(
+            side_effect=[
+                MockMappingResult(rows[:_RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT]),
+                MockMappingResult(rows[_RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT:]),
+            ]
+        )
+
+        result = await service._load_runtime_resource_evidence_projection_for_workline(
+            db,
+            45,
+            active_snapshots=[],
+            current=RuntimeResourceEvidenceKind.UNKNOWN,
+            rack_operation_wait=RuntimeRackOperationWait.NONE,
+        )
+
+        assert db.execute.await_count == 2
+        assert result.kind == RuntimeResourceEvidenceKind.TRACE_RESOURCE_EVIDENCE
+        assert result.total_count == active_total
+        assert result.truncated is True
+        assert len(result.items) == _RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT
