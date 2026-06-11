@@ -371,7 +371,7 @@ Endpoints：
 - [x] **Step 5: 运行 GREEN**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_route_service.py tests/workline_runtime/test_smt_inbound_handoff_claim.py -q`
   - Expected: PASS。
-- [ ] **Step 6: PostgreSQL 并发门禁**
+- [x] **Step 6: PostgreSQL 并发门禁**
   - Run: `RUN_WORKLINE_INTEGRATION=1 INTEGRATION_DATABASE_URL=<postgres-url> uv run pytest tests/integration/workline_runtime/test_smt_inbound_handoff_claim_postgres.py -q`
   - Expected: PASS；若本机无 PostgreSQL，交付说明必须标明未运行原因，不能视为最终通过。
 
@@ -441,7 +441,7 @@ Endpoints：
 - [x] **Step 5: 运行 GREEN**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_recovery.py tests/workline_runtime/test_smt_inbound_handoff_celery.py tests/workline_runtime/test_celery_task_entrypoints.py -q`
   - Expected: PASS。
-- [ ] **Step 6: PostgreSQL recovery/EXPLAIN 门禁**
+- [x] **Step 6: PostgreSQL recovery/EXPLAIN 门禁**
   - Run: `RUN_WORKLINE_INTEGRATION=1 INTEGRATION_DATABASE_URL=<postgres-url> uv run pytest tests/integration/workline_runtime/test_smt_inbound_handoff_recovery_postgres.py -q`
   - Expected: PASS and EXPLAIN proves demand scan/source claim/post-claim recovery use index-friendly access paths.
 
@@ -491,7 +491,7 @@ Endpoints：
 - [x] **Step 3: focused verification**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_models.py tests/workline_runtime/test_smt_inbound_handoff_reason_catalog.py tests/workline_runtime/test_workline_inbox_internal_event.py tests/workline_runtime/test_runtime_config_and_normalization.py tests/workline_runtime/test_workline_orchestrator_internal_event.py tests/workline_runtime/test_smt_usage_policy.py tests/workline_runtime/test_smt_inbound_handoff_service_release.py tests/workline_runtime/test_smt_inbound_handoff_release_producer.py tests/workline_runtime/test_smt_inbound_handoff_exchange.py tests/workline_runtime/test_smt_inbound_handoff_route_service.py tests/workline_runtime/test_smt_inbound_handoff_claim.py tests/workline_runtime/test_smt_inbound_handoff_command_correlation.py tests/workline_runtime/test_smt_inbound_handoff_recovery.py tests/workline_runtime/test_smt_inbound_handoff_celery.py tests/workline_runtime/test_smt_sorting_inbound_plugin.py tests/api/test_smt_inbound_handoff_api.py -q`
   - Expected: PASS。
-- [ ] **Step 4: PostgreSQL verification**
+- [x] **Step 4: PostgreSQL verification**
   - Run: `RUN_WORKLINE_INTEGRATION=1 INTEGRATION_DATABASE_URL=<postgres-url> uv run pytest tests/integration/workline_runtime/test_smt_inbound_handoff_claim_postgres.py tests/integration/workline_runtime/test_smt_inbound_handoff_recovery_postgres.py tests/integration/workline_runtime/test_smt_inbound_handoff_e2e.py -q`
   - Expected: PASS。
 - [x] **Step 5: quality gate**
@@ -507,17 +507,17 @@ Endpoints：
 
 - Integration smoke: added `tests/integration/workline_runtime/test_smt_inbound_handoff_e2e.py`, covering `ROUGH_SORTER_RELEASE_FACT` idempotent release, source item claim, internal `SORTING_SOURCE_PICK_REQUESTED` Inbox, plugin command intent, runtime effect command/outbox correlation writeback and recovery scan.
 - 文档守护: extended `tests/docs/test_wes_resource_boundary_docs.py` to prevent spec drift around not restoring the old plugin/task and not replacing WMS/RCS authority.
-- Focused verification: `147 passed` for SMT handoff runtime/API/docs focused suites.
-- PostgreSQL gated verification command without integration env: `3 skipped`; true PostgreSQL execution still requires `RUN_WORKLINE_INTEGRATION=1` and `INTEGRATION_DATABASE_URL`.
-- Full verification: `uv run pytest tests/` -> `2137 passed, 24 skipped`.
-- Quality gate: `uv run ruff format . && uv run ruff check .` passed; `./scripts/git-quality-gate.sh --profile quality` passed with Ruff and Bandit.
-- GitNexus staged detect changes: `risk_level: none`, no indexed symbols or execution flows mapped.
+- Focused verification: `159 passed` for SMT handoff runtime/API/docs focused suites.
+- PostgreSQL gated verification: Docker test infra `wes_postgres_test` and `wes_redis_test` were healthy on host ports `5433`/`6380`; with `RUN_WORKLINE_INTEGRATION=1`, claim/recovery/e2e integration tests executed against PostgreSQL and passed as `3 passed in 0.94s`.
+- Full verification: `uv run pytest tests/` -> `2138 passed, 24 skipped in 207.00s`.
+- Quality gate: `uv run ruff check .` passed; `git diff --check` passed; `./scripts/git-quality-gate.sh --profile quality` passed with Ruff format/check and Bandit.
+- GitNexus detect changes: current working tree `scope=all` reports no uncommitted changes; branch compare against `origin/develop` is intentionally broad WorkLine/runtime scope and reports `risk_level: critical`.
 
 ### QA Audit (2026-06-11)
 
-- `/qa` 对 SPEC 与本计划做 diff-aware 文档验收后确认：实现提交已覆盖 Task 0-7 的非 PostgreSQL 步骤，计划 checkbox 已同步为已完成。
-- 仍未完成的门禁只剩外部 PostgreSQL 集成验证：Task 4 并发 claim、Task 6 recovery/EXPLAIN、Task 8 e2e smoke 在未配置 `RUN_WORKLINE_INTEGRATION=1` 和 `INTEGRATION_DATABASE_URL` 时只会被 pytest 标记为 skipped，不能计为最终通过。
-- 当前本地可验证范围以 Task 8 Acceptance Audit 为准：focused suites、全量 `uv run pytest tests/`、Ruff、Bandit、GitNexus staged detect changes 均已通过。
+- `/qa` 对 SPEC 与本计划做 diff-aware 文档验收后确认：实现提交已覆盖 Task 0-8，包含 PostgreSQL 并发 claim、recovery/EXPLAIN 和 e2e smoke 门禁。
+- 本机长跑 `wes_api_dev` 容器挂载的是主仓库 `/Users/kaizhou/SynologyDrive/works/wes_backend/src`，不是当前 worktree，因此不作为本分支 live API 验收依据；API 路由注册以当前 worktree 的 route tests 为准。
+- 当前本地可验证范围以 Task 8 Acceptance Audit 为准：focused suites、全量 `uv run pytest tests/`、Docker/PostgreSQL gated tests、Ruff、Bandit 与 GitNexus detect changes 均已通过。
 
 ## Planned Test Coverage Diagram
 
@@ -613,5 +613,5 @@ API
 | Design Review | `/plan-design-review` | UI/UX 缺口 | 0 | 未运行 | 前端运营页面不在本轮范围内 |
 | DX Review | `/plan-devex-review` | 开发者体验缺口 | 0 | 未运行 | 未运行 |
 
-- **UNRESOLVED:** 0 个交互决策未决；1 类外部环境门禁未完成：PostgreSQL 集成验证需要 `RUN_WORKLINE_INTEGRATION=1` 和 `INTEGRATION_DATABASE_URL`。
-- **VERDICT:** IMPLEMENTATION COMPLETE WITH EXTERNAL POSTGRESQL VERIFICATION PENDING；代码实施、本地 focused/full test、Ruff、Bandit 与 GitNexus staged detect changes 已完成，最终交付前仍需在 PostgreSQL 环境补跑 Task 4/6/8 集成门禁。
+- **UNRESOLVED:** 0 个交互决策未决；0 个外部环境门禁未完成。
+- **VERDICT:** IMPLEMENTATION COMPLETE AND QA VERIFIED；代码实施、本地 focused/full test、Docker/PostgreSQL gated tests、Ruff、Bandit 与 GitNexus detect changes 已完成，可进入提交/交付前最终流程。
