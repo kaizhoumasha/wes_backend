@@ -15,6 +15,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_TARGET_PLACE,
     EVENT_NG_PLACE_RESULT,
     EVENT_SESSION_COMPLETE_REQUESTED,
+    EVENT_SOURCE_PICK_REQUESTED,
     EVENT_SOURCE_PICK_RESULT,
     EVENT_TARGET_PLACE_RESULT,
     EVENT_WORKING_BIN_SCAN,
@@ -72,6 +73,8 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
         EVENT_WORKING_BIN_SCAN: (ROLE_SORTING_SCAN_PLATFORM,),
         EVENT_SESSION_COMPLETE_REQUESTED: (ROLE_SORTING_WORKSTATION,),
     }
+    assert EVENT_SOURCE_PICK_REQUESTED in manifest.supported_events
+    assert EVENT_SOURCE_PICK_REQUESTED not in manifest.event_source_roles
     assert EVENT_SOURCE_PICK_RESULT not in manifest.event_source_roles
     assert EVENT_TARGET_PLACE_RESULT not in manifest.event_source_roles
     assert EVENT_NG_PLACE_RESULT not in manifest.event_source_roles
@@ -228,6 +231,40 @@ def _source_pick_success_inbox(data: dict[str, Any] | None = None) -> WorklineIn
                     "source_version": "12",
                     **(data or {}),
                 },
+            },
+        ),
+    )
+
+
+def _source_pick_requested_inbox(data: dict[str, Any] | None = None) -> WorklineInbox:
+    payload_data = {
+        "handoff_demand_id": 11,
+        "handoff_source_item_id": 22,
+        "claim_attempt_no": 2,
+        "rack_release_id": "release-001",
+        "single_layer_rack_code": "RACK-001",
+        "bin_code": "SRC-BIN-01",
+        "bin_cell_index": 3,
+        "bin_cell_code": "A03",
+        "material_identity_key": "mid:pkg-001",
+        "pkg_code": "PKG-001",
+        "reel_thickness_mm": "7.125",
+        "route_evidence": {"selected_workline_code": "SMT-SORT-01"},
+    }
+    payload_data.update(data or {})
+    return cast(
+        "WorklineInbox",
+        SimpleNamespace(
+            id=2101,
+            kind="INTERNAL_EVENT",
+            payload_json={
+                "message_type": "INTERNAL_EVENT",
+                "event_type": EVENT_SOURCE_PICK_REQUESTED,
+                "canonical_event_type": EVENT_SOURCE_PICK_REQUESTED,
+                "event_id": "smt-inbound-handoff-source-item:22:claim:2",
+                "causation_id": "handoff-source-item:22",
+                "trace_id": "trace-handoff-1",
+                "data": payload_data,
             },
         ),
     )
@@ -454,6 +491,47 @@ async def test_source_pick_success_emits_unmounted_fact_before_opening_current_m
     assert sorting_patch["current_material"]["reel_thickness_mm"] == "7.125"
     assert sorting_patch["stations"]["scan_platform"] == "OCCUPIED"
     assert sorting_patch["business_phase"] == PHASE_WAITING_SCAN
+
+
+@pytest.mark.asyncio
+async def test_source_pick_requested_returns_source_pick_command_intent() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_device_event(_ctx(), _source_pick_requested_inbox())
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.COMMAND]
+    intent = intents[0]
+    assert intent.action == COMMAND_SOURCE_PICK
+    assert intent.device_role == ROLE_SORTING_SOURCE_ARM
+    assert intent.payload_json == {
+        "handoff_demand_id": 11,
+        "handoff_source_item_id": 22,
+        "claim_attempt_no": 2,
+        "source_pick_inbox_id": 2101,
+        "source_pick_request_event_id": "smt-inbound-handoff-source-item:22:claim:2",
+        "rack_release_id": "release-001",
+        "single_layer_rack_code": "RACK-001",
+        "bin_code": "SRC-BIN-01",
+        "source_bin_code": "SRC-BIN-01",
+        "bin_cell_index": 3,
+        "bin_cell_code": "A03",
+        "source_cell_code": "A03",
+        "material_identity_key": "mid:pkg-001",
+        "pkg_code": "PKG-001",
+        "reel_thickness": "7.125",
+        "reel_thickness_mm": "7.125",
+        "route_evidence": {"selected_workline_code": "SMT-SORT-01"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_source_pick_requested_invalid_payload_returns_plugin_contract_block() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_device_event(_ctx(), _source_pick_requested_inbox({"handoff_source_item_id": None}))
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "PLUGIN_CONTRACT_INVALID"
 
 
 @pytest.mark.asyncio

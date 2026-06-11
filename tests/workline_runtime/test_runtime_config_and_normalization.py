@@ -188,3 +188,66 @@ def test_normalize_inbox_input_prefers_canonical_six_in_one_business_key() -> No
     ]
 
     assert normalized.business_key == expected_hash
+
+
+def test_normalize_inbox_input_preserves_internal_event_canonical_type() -> None:
+    inbox = SimpleNamespace(
+        kind=SimpleNamespace(value="INTERNAL_EVENT"),
+        trace_id="trace-handoff-1",
+        payload_json={
+            "message_type": "INTERNAL_EVENT",
+            "event_type": "SORTING_SOURCE_PICK_REQUESTED",
+            "canonical_event_type": "SORTING_SOURCE_PICK_REQUESTED",
+            "event_id": "smt-inbound-handoff-source-item:22:claim:2",
+            "causation_id": "handoff-source-item:22",
+            "trace_id": "trace-handoff-1",
+            "data": {
+                "handoff_demand_id": 11,
+                "handoff_source_item_id": 22,
+                "claim_attempt_no": 2,
+            },
+        },
+    )
+
+    normalized = normalize_inbox_input(inbox)
+
+    assert normalized.source_event_type == "SORTING_SOURCE_PICK_REQUESTED"
+    assert normalized.canonical_event_type == "SORTING_SOURCE_PICK_REQUESTED"
+    assert normalized.trace_id == "trace-handoff-1"
+    assert normalized.data["handoff_source_item_id"] == 22
+
+
+def test_normalize_inbox_input_rejects_malformed_internal_event_payload() -> None:
+    inbox = SimpleNamespace(
+        kind=SimpleNamespace(value="INTERNAL_EVENT"),
+        trace_id="trace-handoff-2",
+        payload_json={
+            "message_type": "INTERNAL_EVENT",
+            "data": {"handoff_source_item_id": 22},
+        },
+    )
+
+    with pytest.raises(ValueError, match="INTERNAL_EVENT payload missing routable event type"):
+        normalize_inbox_input(inbox)
+
+
+def test_normalize_inbox_input_rejects_internal_event_without_handoff_correlation() -> None:
+    inbox = SimpleNamespace(
+        kind=SimpleNamespace(value="INTERNAL_EVENT"),
+        trace_id="trace-handoff-3",
+        payload_json={
+            "message_type": "INTERNAL_EVENT",
+            "event_type": "SORTING_SOURCE_PICK_REQUESTED",
+            "canonical_event_type": "SORTING_SOURCE_PICK_REQUESTED",
+            "event_id": "smt-inbound-handoff-source-item:22:claim:2",
+            "causation_id": "handoff-source-item:22",
+            "trace_id": "trace-handoff-3",
+            "data": {
+                "handoff_source_item_id": 22,
+                "claim_attempt_no": 2,
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="handoff_demand_id"):
+        normalize_inbox_input(inbox)

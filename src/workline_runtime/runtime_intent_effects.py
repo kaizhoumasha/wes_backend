@@ -39,6 +39,7 @@ _TERMINAL_INTENT_KINDS = {RuntimeIntentKind.COMPLETE, RuntimeIntentKind.BLOCK, R
 _DEFAULT_RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
 _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
 _STATION_DISPATCH_LEASE_UNAVAILABLE = "station dispatch lease is not available"
+_SMT_SOURCE_PICK_COMMAND = "SORTING_SOURCE_PICK"
 
 
 def _all_devices(devices_by_role: dict[str, list[Any]]) -> list[Any]:
@@ -351,6 +352,58 @@ def _resolve_target_device(ctx: Any, intent: RuntimeIntent) -> Any:
     )
 
 
+def _positive_int_payload(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    return None
+
+
+def _source_pick_command_correlation(intent: RuntimeIntent) -> dict[str, int] | None:
+    if intent.action != _SMT_SOURCE_PICK_COMMAND:
+        return None
+    payload = intent.payload_json
+    handoff_demand_id = _positive_int_payload(payload.get("handoff_demand_id"))
+    source_item_id = _positive_int_payload(payload.get("handoff_source_item_id"))
+    claim_attempt_no = _positive_int_payload(payload.get("claim_attempt_no"))
+    source_pick_inbox_id = _positive_int_payload(payload.get("source_pick_inbox_id"))
+    if None in {handoff_demand_id, source_item_id, claim_attempt_no, source_pick_inbox_id}:
+        return None
+    return {
+        "handoff_demand_id": cast("int", handoff_demand_id),
+        "source_item_id": cast("int", source_item_id),
+        "claim_attempt_no": cast("int", claim_attempt_no),
+        "source_pick_inbox_id": cast("int", source_pick_inbox_id),
+    }
+
+
+async def _record_source_pick_command_correlation(
+    ctx: Any,
+    intent: RuntimeIntent,
+    *,
+    command: Any,
+    command_outbox: Any,
+) -> None:
+    correlation = _source_pick_command_correlation(intent)
+    if correlation is None:
+        return
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    await smt_inbound_handoff_service.record_source_pick_command_correlation(
+        ctx["db"],
+        command_id=resolve_required_pk(command, "source_pick_command"),
+        command_code=string_value(getattr(command, "command_code", None), ""),
+        dispatch_key=string_value(getattr(command_outbox, "dispatch_key", None), ""),
+        trace_id=string_value(ctx.get("trace_id"), ""),
+        **correlation,
+    )
+
+
 class RuntimeIntentEffectApplier:
     def __init__(
         self,
@@ -571,6 +624,7 @@ class RuntimeIntentEffectApplier:
 
         command_outbox = workline_effects._build_command_outbox_model(ctx, command=command, device_code=device_code)
         ctx["db"].add(command_outbox)
+        await _record_source_pick_command_correlation(ctx, intent, command=command, command_outbox=command_outbox)
         await workline_effects._emit_timeline(
             ctx,
             stage=TimelineStage.DISPATCH_PREPARE,

@@ -9,6 +9,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
     EVENT_SESSION_COMPLETE_REQUESTED,
+    EVENT_SOURCE_PICK_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
     NG_REASON_LOCAL_SORTING_NG,
     ROLE_SORTING_NG_STATION,
@@ -106,7 +107,7 @@ class SmtSortingInboundPlugin(WorklinePlugin):
         business_key_resolver=resolve_sorting_inbound_business_key,
         result_classifier=classify_sorting_inbound_result,
         context_model=SortingInboundContext,
-        supported_events=frozenset(EVENT_SOURCE_ROLES),
+        supported_events=frozenset({*EVENT_SOURCE_ROLES, EVENT_SOURCE_PICK_REQUESTED}),
         supported_commands=frozenset(COMMAND_TARGET_ROLES),
         capabilities=frozenset({"active_snapshot", "station_lease", "rack_operation"}),
         resource_kinds=frozenset({"SINGLE_LAYER", "FIVE_LAYER"}),
@@ -150,6 +151,12 @@ class SmtSortingInboundPlugin(WorklinePlugin):
 
     def __init__(self, flow_service: SmtSortingInboundFlowService | None = None) -> None:
         self._flow_service = flow_service or SmtSortingInboundFlowService()
+
+    @on_event(EVENT_SOURCE_PICK_REQUESTED)
+    async def handle_source_pick_requested(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """内部 handoff 事件请求源端首盘取盘，只返回 command intent。"""
+
+        return await self._flow_service.handle_source_pick_requested(ctx, inbox)
 
     @on_command(COMMAND_SOURCE_PICK, result="SUCCESS")
     async def handle_source_pick_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:

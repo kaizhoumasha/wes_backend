@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
 from src.app.workline.models.inbox import (
     InboxKind,
     InboxStatus,
@@ -38,6 +39,22 @@ def _format_deadline(deadline_at: object | None) -> str:
         return "unknown"
 
     return deadline_at.isoformat()
+
+
+_INTERNAL_HANDOFF_REQUIRED_DATA_FIELDS = (
+    "handoff_demand_id",
+    "handoff_source_item_id",
+    "claim_attempt_no",
+)
+
+
+def _validate_internal_handoff_correlation(data: dict[str, Any]) -> None:
+    """校验内部 source pick 事件的最小 handoff correlation。"""
+
+    for field_name in _INTERNAL_HANDOFF_REQUIRED_DATA_FIELDS:
+        value = data.get(field_name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"internal event data requires positive integer {field_name}")
 
 
 class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
@@ -233,6 +250,74 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             source_system=source_system,
             auto_commit=auto_commit,
         )
+
+    async def create_internal_event_inbox(
+        self,
+        db: AsyncSession,
+        *,
+        event_type: str,
+        data: dict[str, Any],
+        session_id: int,
+        workline_id: int,
+        trace_id: str,
+        event_id: str,
+        causation_id: str,
+        canonical_event_type: str | None = None,
+        source_message_id: str | None = None,
+        auto_commit: bool = True,
+    ) -> WorklineInbox:
+        """创建系统内部插件事件 Inbox 消息。"""
+
+        resolved_event_type = canonical_event_type or event_type
+        if not isinstance(resolved_event_type, str) or not resolved_event_type:
+            raise ValueError("internal event requires event_type")
+        if not isinstance(event_id, str) or not event_id:
+            raise ValueError("internal event requires event_id")
+        if not isinstance(causation_id, str) or not causation_id:
+            raise ValueError("internal event requires causation_id")
+        if not isinstance(trace_id, str) or not trace_id:
+            raise ValueError("internal event requires trace_id")
+        if not isinstance(data, dict):
+            raise TypeError("internal event data must be a dict")
+        _validate_internal_handoff_correlation(data)
+
+        payload: dict[str, Any] = {
+            "message_type": "INTERNAL_EVENT",
+            "event_type": event_type,
+            "canonical_event_type": resolved_event_type,
+            "data": data,
+            "event_id": event_id,
+            "causation_id": causation_id,
+            "trace_id": trace_id,
+        }
+        claim_bucket_key = build_claim_bucket_key(
+            session_id=session_id,
+            workline_id=workline_id,
+            payload_json=payload,
+        )
+        if claim_bucket_key == "serial:unknown":
+            raise ValueError("internal event requires session/workline claim bucket")
+
+        idempotency_key = f"internal_event:{resolved_event_type}:{event_id}"
+        inbox_data: dict[str, Any] = {
+            "kind": InboxKind.INTERNAL_EVENT,
+            "idempotency_key": idempotency_key,
+            "source_system": SourceSystem.SYSTEM,
+            "source_message_id": source_message_id,
+            "payload_json": payload,
+            "status": InboxStatus.NEW,
+            "received_at": timezone.now_for_db(),
+            "session_id": session_id,
+            "workline_id": workline_id,
+            "claim_bucket_key": claim_bucket_key,
+            "trace_id": trace_id,
+            "event_id": event_id,
+            "causation_id": causation_id,
+        }
+
+        created = await self.repo.create_idempotent(db, inbox_data, idempotency_key=idempotency_key)
+        await self._commit_inbox_mutation(db, auto_commit=auto_commit)
+        return created
 
     async def claim_pending_messages(
         self,
@@ -476,6 +561,11 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         event_id: str | None = None,
         causation_id: str | None = None,
         source_system: SourceSystem = SourceSystem.DEVICE,
+        session_id: int | None = None,
+        workline_id: int | None = None,
+        device_id: int | None = None,
+        command_id: int | None = None,
+        claim_bucket_key: str | None = None,
         *,
         auto_commit: bool = True,
     ) -> WorklineInbox:
@@ -496,6 +586,16 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             "received_at": timezone.now_for_db(),
         }
 
+        if session_id is not None:
+            inbox_data["session_id"] = session_id
+        if workline_id is not None:
+            inbox_data["workline_id"] = workline_id
+        if device_id is not None:
+            inbox_data["device_id"] = device_id
+        if command_id is not None:
+            inbox_data["command_id"] = command_id
+        if claim_bucket_key:
+            inbox_data["claim_bucket_key"] = claim_bucket_key
         if trace_id:
             inbox_data["trace_id"] = trace_id
         if event_id:

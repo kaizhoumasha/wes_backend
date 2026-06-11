@@ -24,6 +24,7 @@ from src.app.wms_integration.services.transport_contract import (
     wms_transport_contract_service,
 )
 from src.app.workline.models.safety import WorkLineRuntimeStatus
+from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
 from src.app.workline.services.station_lease_service import (
     StationLeaseReasonCode,
     StationLeaseService,
@@ -79,10 +80,12 @@ class SingleLayerRackOrchestrationService:
         station_lease_service: StationLeaseService = station_lease_service,
         outbox_repository: SystemOutboxRepository = outbox_repository,
         transport_contract_service: WmsTransportContractService = wms_transport_contract_service,
+        smt_inbound_handoff_service: Any | None = smt_inbound_handoff_service,
     ) -> None:
         self.station_lease_service = station_lease_service
         self.outbox_repository = outbox_repository
         self.transport_contract_service = transport_contract_service
+        self.smt_inbound_handoff_service = smt_inbound_handoff_service
 
     async def plan_single_layer_rack_dispatch(
         self,
@@ -126,15 +129,29 @@ class SingleLayerRackOrchestrationService:
             )
 
         if demand_type == self.ROUGH_SORTER_RELEASE_FACT:
+            recorded_fact_payload = self._rough_sorter_release_fact_payload(
+                fact_payload,
+                business_demand_key=business_demand_key,
+                workline_code=workline_code,
+                station_code=station_code,
+            )
+            diagnostics: dict[str, Any] = {}
+            if self._should_invoke_handoff_release_producer(db):
+                handoff_demand = await self.smt_inbound_handoff_service.create_or_get_from_release(
+                    db,
+                    **self._handoff_release_producer_payload(
+                        recorded_fact_payload,
+                        source_workline_id=workline_id,
+                        source_workline_code=workline_code,
+                    ),
+                )
+                diagnostics["handoff_demand_id"] = getattr(handoff_demand, "id", None)
+                diagnostics["handoff_demand_key"] = getattr(handoff_demand, "demand_key", None)
             return SingleLayerRackOrchestrationDecision(
                 decision=SingleLayerRackOrchestrationDecisionCode.WAITING,
                 reason="ROUGH_SORTER_RELEASE_FACT_RECORDED",
-                fact_payload=self._rough_sorter_release_fact_payload(
-                    fact_payload,
-                    business_demand_key=business_demand_key,
-                    workline_code=workline_code,
-                    station_code=station_code,
-                ),
+                fact_payload=recorded_fact_payload,
+                diagnostics=diagnostics,
             )
 
         allow_active_rack_bound = self._allows_active_rack_bound(payload)
@@ -487,6 +504,24 @@ class SingleLayerRackOrchestrationService:
         payload["workline_code"] = workline_code
         payload["station_code"] = station_code
         return payload
+
+    @staticmethod
+    def _handoff_release_producer_payload(
+        fact_payload: Mapping[str, Any],
+        *,
+        source_workline_id: int | None,
+        source_workline_code: str,
+    ) -> dict[str, Any]:
+        payload = dict(fact_payload)
+        payload.pop("workline_code", None)
+        payload["source_workline_id"] = source_workline_id
+        payload["source_workline_code"] = source_workline_code
+        return payload
+
+    def _should_invoke_handoff_release_producer(self, db: Any) -> bool:
+        if self.smt_inbound_handoff_service is None:
+            return False
+        return not (self.smt_inbound_handoff_service is smt_inbound_handoff_service and not hasattr(db, "execute"))
 
 
 def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: DispatchEnvelope) -> None:

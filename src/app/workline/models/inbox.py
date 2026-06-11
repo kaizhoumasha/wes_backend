@@ -37,6 +37,9 @@ class InboxKind(str, Enum):
     # 外部系统调用
     EXTERNAL_HTTP = "EXTERNAL_HTTP"  # HTTP 回调
 
+    # 系统内部插件事件
+    INTERNAL_EVENT = "INTERNAL_EVENT"  # 系统内部生成并交给插件事件 handler 的事件
+
     # 定时器
     TIMER_TIMEOUT = "TIMER_TIMEOUT"  # 定时器超时
 
