@@ -71,6 +71,23 @@ def _recreate_inbox_kind_constraint(*, include_internal_event: bool) -> None:
     )
 
 
+def _guard_no_internal_event_rows_for_downgrade() -> None:
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM wes_biz.workline_inbox
+                WHERE kind = 'INTERNAL_EVENT'
+            ) THEN
+                RAISE EXCEPTION 'Cannot downgrade while workline_inbox contains INTERNAL_EVENT rows; archive or delete those rows first';
+            END IF;
+        END $$
+        """
+    )
+
+
 def upgrade() -> None:
     """Upgrade schema."""
     _recreate_inbox_kind_constraint(include_internal_event=True)
@@ -171,6 +188,7 @@ def upgrade() -> None:
             sa.Enum(
                 "READY",
                 "PICK_REQUESTED",
+                "CLAIMED_BY_SORTING",
                 "PICKED",
                 "SORTING",
                 "SORTED",
@@ -267,6 +285,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
+    _guard_no_internal_event_rows_for_downgrade()
+
     for index_name in (
         "ix_smt_in_handoff_items_status",
         "ix_smt_in_handoff_items_sorting_session",

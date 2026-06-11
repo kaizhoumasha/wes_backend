@@ -298,22 +298,26 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         if claim_bucket_key == "serial:unknown":
             raise ValueError("internal event requires session/workline claim bucket")
 
-        return await self._create_inbox_message(
-            db=db,
-            idempotency_key=f"internal_event:{resolved_event_type}:{event_id}",
-            duplicate_message="内部事件已存在（幂等键重复）",
-            kind=InboxKind.INTERNAL_EVENT,
-            payload=payload,
-            source_message_id=source_message_id,
-            trace_id=trace_id,
-            event_id=event_id,
-            causation_id=causation_id,
-            source_system=SourceSystem.SYSTEM,
-            session_id=session_id,
-            workline_id=workline_id,
-            claim_bucket_key=claim_bucket_key,
-            auto_commit=auto_commit,
-        )
+        idempotency_key = f"internal_event:{resolved_event_type}:{event_id}"
+        inbox_data: dict[str, Any] = {
+            "kind": InboxKind.INTERNAL_EVENT,
+            "idempotency_key": idempotency_key,
+            "source_system": SourceSystem.SYSTEM,
+            "source_message_id": source_message_id,
+            "payload_json": payload,
+            "status": InboxStatus.NEW,
+            "received_at": timezone.now_for_db(),
+            "session_id": session_id,
+            "workline_id": workline_id,
+            "claim_bucket_key": claim_bucket_key,
+            "trace_id": trace_id,
+            "event_id": event_id,
+            "causation_id": causation_id,
+        }
+
+        created = await self.repo.create_idempotent(db, inbox_data, idempotency_key=idempotency_key)
+        await self._commit_inbox_mutation(db, auto_commit=auto_commit)
+        return created
 
     async def claim_pending_messages(
         self,

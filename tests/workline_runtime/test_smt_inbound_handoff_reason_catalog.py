@@ -63,3 +63,15 @@ def test_smt_inbound_handoff_reason_catalog_returns_stable_failure_code_and_acti
     assert command_missing.available_actions == ("RETRY_SOURCE_PICK", "RELEASE_HOLD")
     assert dead_letter.failure_code == "SOURCE_PICK_INBOX_DEAD_LETTER"
     assert dead_letter.available_actions == ("RETRY_SOURCE_PICK", "RELEASE_HOLD")
+
+
+def test_smt_inbound_handoff_reason_catalog_is_exported_from_domain_services_package() -> None:
+    package = importlib.import_module("src.app.workline.domain.services")
+    module = _reason_module()
+
+    assert package.SMT_INBOUND_HANDOFF_REASON_CATALOG is module.SMT_INBOUND_HANDOFF_REASON_CATALOG
+    assert package.SmtInboundHandoffReasonCode is module.SmtInboundHandoffReasonCode
+    assert package.SmtInboundHandoffReasonDefinition is module.SmtInboundHandoffReasonDefinition
+    assert package.SmtInboundHandoffReasonCategory is module.SmtInboundHandoffReasonCategory
+    assert package.SmtInboundHandoffReasonCatalog is module.SmtInboundHandoffReasonCatalog
+    assert package.build_smt_inbound_handoff_reason_catalog is module.build_smt_inbound_handoff_reason_catalog

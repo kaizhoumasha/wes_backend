@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -21,6 +23,13 @@ def _model_attr(module: Any, name: str) -> Any:
     if value is None:
         pytest.fail(f"缺少模型导出: {name}")
     return value
+
+
+def _handoff_migration_source() -> str:
+    migration_path = (
+        Path(__file__).parents[2] / "migrations/versions/20260611_0731_fb02178f9772_add_smt_inbound_handoff.py"
+    )
+    return migration_path.read_text()
 
 
 def test_smt_inbound_handoff_status_enums_match_spec() -> None:
@@ -45,6 +54,7 @@ def test_smt_inbound_handoff_status_enums_match_spec() -> None:
     assert [item.value for item in source_item_status] == [
         "READY",
         "PICK_REQUESTED",
+        "CLAIMED_BY_SORTING",
         "PICKED",
         "SORTING",
         "SORTED",
@@ -106,6 +116,8 @@ def test_smt_inbound_handoff_metadata_declares_idempotency_and_hot_path_indexes(
     recovery_where = str(recovery_index.dialect_options["postgresql"]["where"])
     assert "PICK_REQUESTED" in recovery_where
     assert "CLAIMED_BY_SORTING" in recovery_where
+    recovery_statuses = set(re.findall(r"'([^']+)'", recovery_where))
+    assert recovery_statuses <= {item.value for item in _model_attr(models, "SmtInboundHandoffSourceItemStatus")}
 
 
 def test_smt_inbound_handoff_release_snapshot_is_json_evidence_not_claim_path() -> None:
@@ -113,5 +125,33 @@ def test_smt_inbound_handoff_release_snapshot_is_json_evidence_not_claim_path() 
     demand = _model_attr(models, "SmtInboundHandoffDemand")
 
     assert isinstance(demand.__table__.c.bin_snapshots_json.type, JSON)
+    assert demand.__table__.c.bin_snapshots_json.nullable is False
+    assert demand.__table__.c.bin_snapshots_json.server_default is not None
     indexed_columns = {column.name for index in demand.__table__.indexes for column in index.columns}
     assert "bin_snapshots_json" not in indexed_columns
+
+
+def test_smt_inbound_handoff_migration_source_item_check_constraint_covers_recovery_states() -> None:
+    enum_blocks = re.findall(
+        r"sa\.Column\(\s*\"status\",\s*sa\.Enum\((.*?)name=\"([^\"]+)\"",
+        _handoff_migration_source(),
+        flags=re.S,
+    )
+    source_item_enum = next(body for body, enum_name in enum_blocks if enum_name == "smtinboundhandoffsourceitemstatus")
+
+    assert '"CLAIMED_BY_SORTING"' in source_item_enum
+
+
+def test_smt_inbound_handoff_migration_downgrade_guards_internal_event_rows() -> None:
+    migration_source = _handoff_migration_source()
+    guard_source = migration_source.split("def _guard_no_internal_event_rows_for_downgrade() -> None:", maxsplit=1)[
+        1
+    ].split("\ndef ", maxsplit=1)[0]
+    downgrade_source = migration_source.split("def downgrade() -> None:", maxsplit=1)[1]
+
+    assert "INTERNAL_EVENT" in guard_source
+    assert "RAISE EXCEPTION" in guard_source
+    assert "_guard_no_internal_event_rows_for_downgrade()" in downgrade_source
+    assert downgrade_source.index("_guard_no_internal_event_rows_for_downgrade()") < downgrade_source.index(
+        "_recreate_inbox_kind_constraint(include_internal_event=False)"
+    )

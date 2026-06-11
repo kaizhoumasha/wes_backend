@@ -37,6 +37,7 @@ class SmtInboundHandoffSourceItemStatus(str, Enum):
 
     READY = "READY"
     PICK_REQUESTED = "PICK_REQUESTED"
+    CLAIMED_BY_SORTING = "CLAIMED_BY_SORTING"
     PICKED = "PICKED"
     SORTING = "SORTING"
     SORTED = "SORTED"
@@ -66,7 +67,7 @@ class SmtInboundHandoffDemandBase(BaseMixin):
     release_reason_code: str | None = Field(default=None, max_length=120, description="释放原因码")
     bin_snapshots_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON),
+        sa_column=Column(JSON, nullable=False, server_default=text("'{}'")),
         description="释放时料箱和料格快照，仅作为 release evidence",
     )
     decision_status: str | None = Field(default=None, max_length=50, description="满箱交换决策状态")

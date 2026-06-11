@@ -16,15 +16,32 @@ from src.workline_runtime.session_resolver import SessionResolver
 class _FakeInboxRepo:
     def __init__(self) -> None:
         self.created_data: dict[str, object] | None = None
+        self._by_idempotency_key: dict[str, object] = {}
 
     async def get_by_idempotency_key(self, db: object, idempotency_key: str) -> object | None:
-        _ = db, idempotency_key
-        return None
+        _ = db
+        return self._by_idempotency_key.get(idempotency_key)
 
     async def create(self, db: object, data: dict[str, object]) -> object:
         _ = db
         self.created_data = data
-        return SimpleNamespace(id=1001, **data)
+        inbox = SimpleNamespace(id=1001 + len(self._by_idempotency_key), **data)
+        idempotency_key = data.get("idempotency_key")
+        if isinstance(idempotency_key, str):
+            self._by_idempotency_key[idempotency_key] = inbox
+        return inbox
+
+    async def create_idempotent(
+        self,
+        db: object,
+        data: dict[str, object],
+        *,
+        idempotency_key: str,
+    ) -> object:
+        existing = await self.get_by_idempotency_key(db, idempotency_key)
+        if existing is not None:
+            return existing
+        return await self.create(db, data)
 
 
 @pytest.mark.asyncio
@@ -101,6 +118,34 @@ async def test_create_internal_event_inbox_rejects_missing_handoff_correlation()
         )
 
     db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_internal_event_inbox_reuses_duplicate_without_rolling_back_outer_transaction() -> None:
+    service = WorklineInboxService()
+    service.repo = _FakeInboxRepo()  # type: ignore[assignment]
+    db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+    kwargs = {
+        "event_type": "SORTING_SOURCE_PICK_REQUESTED",
+        "data": {
+            "handoff_demand_id": 11,
+            "handoff_source_item_id": 22,
+            "claim_attempt_no": 2,
+        },
+        "session_id": 123,
+        "workline_id": 456,
+        "trace_id": "trace-handoff-1",
+        "causation_id": "handoff-source-item:22",
+        "event_id": "smt-inbound-handoff-source-item:22:claim:2",
+        "auto_commit": False,
+    }
+
+    first = await service.create_internal_event_inbox(db, **kwargs)
+    second = await service.create_internal_event_inbox(db, **kwargs)
+
+    assert second is first
+    db.commit.assert_not_awaited()
+    db.rollback.assert_not_awaited()
 
 
 def test_internal_event_batch_processor_resolves_by_existing_session_binding() -> None:
