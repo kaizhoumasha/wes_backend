@@ -249,7 +249,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_smt_inbound_handoff_source_items_post_claim_recovery",
         "smt_inbound_handoff_source_items",
-        ["source_pick_inbox_id", "updated_at", "id"],
+        ["updated_at", "id"],
         unique=False,
         schema=SCHEMA,
         postgresql_where=sa.text(

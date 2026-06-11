@@ -114,10 +114,11 @@ def test_smt_inbound_handoff_metadata_declares_idempotency_and_hot_path_indexes(
     assert "status = 'READY'" in str(ready_claim_index.dialect_options["postgresql"]["where"])
 
     assert recovery_index is not None
-    assert [column.name for column in recovery_index.columns] == ["source_pick_inbox_id", "updated_at", "id"]
+    assert [column.name for column in recovery_index.columns] == ["updated_at", "id"]
     recovery_where = str(recovery_index.dialect_options["postgresql"]["where"])
     assert "PICK_REQUESTED" in recovery_where
     assert "CLAIMED_BY_SORTING" in recovery_where
+    assert "source_pick_inbox_id IS NOT NULL" in recovery_where
     recovery_statuses = set(re.findall(r"'([^']+)'", recovery_where))
     assert recovery_statuses <= {item.value for item in _model_attr(models, "SmtInboundHandoffSourceItemStatus")}
 

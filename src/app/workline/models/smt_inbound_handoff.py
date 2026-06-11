@@ -230,7 +230,6 @@ class SmtInboundHandoffSourceItem(SmtInboundHandoffSourceItemBase, DataTableMixi
         ),
         Index(
             "ix_smt_inbound_handoff_source_items_post_claim_recovery",
-            "source_pick_inbox_id",
             "updated_at",
             "id",
             postgresql_where=text(

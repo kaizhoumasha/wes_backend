@@ -1508,7 +1508,11 @@ class SmtInboundHandoffService:
     @staticmethod
     def _cell_is_empty(cell: Mapping[str, Any]) -> bool:
         status = str(cell.get("status") or cell.get("cell_status") or "").strip().upper()
-        return status in {"", "EMPTY", "EMPTY_VERIFIED", "AVAILABLE"}
+        if status in {"EMPTY", "EMPTY_VERIFIED", "AVAILABLE"}:
+            return True
+        if status:
+            return False
+        return not any(str(cell.get(field) or "").strip() for field in ("material_identity_key", "pkg_code", "PkgID"))
 
     @staticmethod
     def _text_or_none(value: Any) -> str | None:

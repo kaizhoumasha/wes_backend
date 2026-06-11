@@ -98,6 +98,17 @@ async def test_stuck_source_item_recovery_explain_uses_post_claim_partial_index(
         )
         db.add(inbox)
         await db.flush()
+        db.add_all(
+            [
+                SmtInboundHandoffSourceItem(
+                    handoff_demand_id=demand.id,
+                    item_key=f"{test_prefix}:item:history:{index}",
+                    status=SmtInboundHandoffSourceItemStatus.PICKED,
+                    updated_at=base_time - timedelta(days=1, seconds=index),
+                )
+                for index in range(2000)
+            ]
+        )
         db.add(
             SmtInboundHandoffSourceItem(
                 handoff_demand_id=demand.id,

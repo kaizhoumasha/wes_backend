@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from src.app.device.models.device import Device
 from src.app.workline.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
     SmtInboundHandoffDemandStatus,
@@ -68,6 +69,38 @@ async def test_create_or_get_from_release_is_idempotent_by_rack_release_id(db_se
     source_items = (await db_session.execute(SmtInboundHandoffSourceItem.__table__.select())).all()
     assert len(demands) == 1
     assert len(source_items) == 4
+
+
+@pytest.mark.asyncio
+async def test_create_or_get_from_release_keeps_material_cell_without_status(db_session: Any) -> None:
+    from src.app.workline.services.smt_inbound_handoff_service import SmtInboundHandoffService
+
+    cell_without_status = {
+        "bin_code": "BIN-A",
+        "bin_cell_index": 1,
+        "bin_cell_code": "A01",
+        "material_identity_key": "MAT-A",
+        "pkg_code": "PKG-A",
+        "reel_thickness_mm": "7.125",
+    }
+
+    await SmtInboundHandoffService().create_or_get_from_release(
+        db_session,
+        **_release_payload(
+            rack_release_id="release-cell-without-status",
+            bin_snapshots=[
+                {
+                    "slot_code": "A",
+                    "bin_code": "BIN-A",
+                    "usage": 0.25,
+                    "cells": [cell_without_status],
+                }
+            ],
+        ),
+    )
+
+    source_items = (await db_session.execute(SmtInboundHandoffSourceItem.__table__.select())).all()
+    assert len(source_items) == 1
 
 
 @pytest.mark.asyncio
