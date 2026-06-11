@@ -529,6 +529,53 @@ class SmtInboundHandoffService:
             await db.flush()
         return item
 
+    async def record_source_pick_command_correlation(
+        self,
+        db: AsyncSession,
+        *,
+        handoff_demand_id: int,
+        source_item_id: int,
+        claim_attempt_no: int,
+        source_pick_inbox_id: int,
+        command_id: int,
+        command_code: str,
+        dispatch_key: str,
+        trace_id: str | None = None,
+    ) -> SmtInboundHandoffSourceItem:
+        """记录首盘 source-pick command/outbox evidence，并推进 claim 后状态。"""
+
+        _ = trace_id
+        item = await self.repository.get_source_item_for_update(db, source_item_id)
+        if item is None:
+            raise ValueError(f"未找到 handoff source item: {source_item_id}")
+        if item.handoff_demand_id != handoff_demand_id:
+            raise ValueError("source pick command correlation demand/item 不匹配")
+        if item.claim_attempt_no != claim_attempt_no:
+            raise ValueError("source pick command correlation claim_attempt_no 不匹配")
+        if item.source_pick_inbox_id != source_pick_inbox_id:
+            raise ValueError("source pick command correlation inbox 不匹配")
+        if item.status not in _CLAIMED_ITEM_STATUSES:
+            raise ValueError(f"source pick command correlation 状态不允许: {item.status}")
+
+        item.status = SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING
+        item.source_pick_command_id = command_id
+        item.source_pick_command_code = self._text_or_none(command_code)
+        item.source_pick_dispatch_key = self._text_or_none(dispatch_key)
+        item.failure_code = None
+        item.failure_message = None
+        item.next_attempt_at = None
+        db.add(item)
+
+        demand = await db.get(SmtInboundHandoffDemand, handoff_demand_id)
+        if demand is not None:
+            demand.failure_code = None
+            demand.failure_message = None
+            db.add(demand)
+            await self.recalculate_demand_status(db, demand, reason="source_pick_command_correlation")
+        else:
+            await db.flush()
+        return item
+
     def _demand_data(
         self,
         *,

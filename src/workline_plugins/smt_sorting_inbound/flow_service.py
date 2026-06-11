@@ -12,6 +12,7 @@ from src.app.resource.services.material_identity import material_identity_keys_m
 from src.app.resource.services.smt_bin_cell_allocation_policy import SmtBinCellAllocationPolicy
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
+    COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
     NG_REASON_LOCAL_SORTING_NG,
     PHASE_COMPLETED,
@@ -20,6 +21,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     PHASE_WAITING_SOURCE_PICK,
     PHASE_WAITING_TARGET_BIN_SWITCH,
     PHASE_WAITING_TARGET_PLACE,
+    ROLE_SORTING_SOURCE_ARM,
     ROLE_SORTING_TARGET_ARM,
 )
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext, SortingInboundContextError
@@ -69,6 +71,46 @@ class SmtSortingInboundFlowService:
     ) -> None:
         self._allocation_policy = allocation_policy or SmtBinCellAllocationPolicy()
         self._active_snapshot_provider = active_snapshot_provider
+
+    async def handle_source_pick_requested(self, _ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """内部 source-pick 请求转为源端机械臂 command intent。"""
+
+        payload_json = _dict_copy(getattr(inbox, "payload_json", None))
+        data = _payload_data(payload_json)
+        command_payload = self._source_pick_request_command_payload(payload_json, data, inbox)
+        missing_fields = [
+            field_name
+            for field_name in (
+                "handoff_demand_id",
+                "handoff_source_item_id",
+                "claim_attempt_no",
+                "source_pick_inbox_id",
+                "source_pick_request_event_id",
+                "bin_code",
+                "bin_cell_index",
+                "material_identity_key",
+                "reel_thickness",
+            )
+            if command_payload.get(field_name) is None
+        ]
+        if missing_fields:
+            return self._block(
+                "PLUGIN_CONTRACT_INVALID",
+                "SORTING_SOURCE_PICK_REQUESTED payload 缺少生成首盘取盘命令所需字段",
+                payload={
+                    "missing_fields": missing_fields,
+                    "event_id": payload_json.get("event_id"),
+                    "inbox_id": getattr(inbox, "id", None),
+                },
+            )
+
+        return [
+            RuntimeIntent.command(
+                device_role=ROLE_SORTING_SOURCE_ARM,
+                action=COMMAND_SOURCE_PICK,
+                payload=command_payload,
+            )
+        ]
 
     async def handle_source_pick_success(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
         """源端取盘成功后出账源格，并打开当前物料上下文。"""
@@ -638,6 +680,36 @@ class SmtSortingInboundFlowService:
             "source_event_id": source_event_id,
         }
 
+    def _source_pick_request_command_payload(
+        self,
+        payload_json: Mapping[str, Any],
+        data: Mapping[str, Any],
+        inbox: WorklineInbox,
+    ) -> dict[str, Any]:
+        bin_code = _payload_text(payload_json, data, "bin_code", "source_bin_code")
+        bin_cell_index = _positive_int(data.get("bin_cell_index")) or _positive_int(data.get("source_cell_index"))
+        bin_cell_code = _payload_text(payload_json, data, "bin_cell_code", "source_cell_code")
+        reel_thickness = _payload_text(payload_json, data, "reel_thickness", "reel_thickness_mm")
+        return {
+            "handoff_demand_id": _positive_int(data.get("handoff_demand_id")),
+            "handoff_source_item_id": _positive_int(data.get("handoff_source_item_id")),
+            "claim_attempt_no": _positive_int(data.get("claim_attempt_no")),
+            "source_pick_inbox_id": _positive_int(getattr(inbox, "id", None)),
+            "source_pick_request_event_id": _payload_text(payload_json, data, "event_id"),
+            "rack_release_id": _payload_text(payload_json, data, "rack_release_id"),
+            "single_layer_rack_code": _payload_text(payload_json, data, "single_layer_rack_code"),
+            "bin_code": bin_code,
+            "source_bin_code": bin_code,
+            "bin_cell_index": bin_cell_index,
+            "bin_cell_code": bin_cell_code,
+            "source_cell_code": bin_cell_code or (str(bin_cell_index) if bin_cell_index is not None else None),
+            "material_identity_key": _payload_text(payload_json, data, "material_identity_key"),
+            "pkg_code": _payload_text(payload_json, data, "pkg_code", "PkgID"),
+            "reel_thickness": reel_thickness,
+            "reel_thickness_mm": reel_thickness,
+            "route_evidence": _dict_copy(data.get("route_evidence")),
+        }
+
     @staticmethod
     def _source_event_id(payload_json: Mapping[str, Any], inbox: WorklineInbox) -> str:
         return (
@@ -669,6 +741,17 @@ def _positive_decimal_text(value: str | None) -> str | None:
     if not decimal_value.is_finite() or decimal_value <= 0:
         return None
     return value
+
+
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    return None
 
 
 def _payload_has_any(payload_json: Mapping[str, Any], data: Mapping[str, Any], *field_names: str) -> bool:

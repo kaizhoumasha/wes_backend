@@ -162,6 +162,19 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
 
         return await db.get(SmtInboundHandoffSourceItem, source_item_id)
 
+    async def get_source_item_for_update(
+        self,
+        db: AsyncSession,
+        source_item_id: int,
+    ) -> SmtInboundHandoffSourceItem | None:
+        """按 ID 加锁读取 source item，用于 claim 后 correlation 回写。"""
+
+        columns = cast("Any", SmtInboundHandoffSourceItem).__table__.c
+        result = await db.execute(
+            select(SmtInboundHandoffSourceItem).where(columns.id == source_item_id).with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     @staticmethod
     def _model_insert_values(model: type[Any], data: dict[str, Any]) -> dict[str, Any]:
         instance = model(**data)
