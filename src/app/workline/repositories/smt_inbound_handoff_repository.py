@@ -35,6 +35,19 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         result = await db.execute(select(SmtInboundHandoffDemand).where(columns.rack_release_id == rack_release_id))
         return result.scalar_one_or_none()
 
+    async def get_demand_by_handling_operation_key(
+        self,
+        db: AsyncSession,
+        handling_operation_key: str,
+    ) -> SmtInboundHandoffDemand | None:
+        """按 full-box exchange handling operation key 查询 handoff demand。"""
+
+        columns = cast("Any", SmtInboundHandoffDemand).__table__.c
+        result = await db.execute(
+            select(SmtInboundHandoffDemand).where(columns.handling_operation_key == handling_operation_key)
+        )
+        return result.scalar_one_or_none()
+
     async def create_or_get_demand_by_release(
         self,
         db: AsyncSession,
@@ -82,6 +95,21 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         )
         await db.execute(statement)
         await db.flush()
+
+    async def list_source_items(
+        self,
+        db: AsyncSession,
+        handoff_demand_id: int,
+    ) -> list[SmtInboundHandoffSourceItem]:
+        """读取 demand 下的 source item，按 item_key 稳定排序。"""
+
+        columns = cast("Any", SmtInboundHandoffSourceItem).__table__.c
+        result = await db.execute(
+            select(SmtInboundHandoffSourceItem)
+            .where(columns.handoff_demand_id == handoff_demand_id)
+            .order_by(columns.item_key)
+        )
+        return list(result.scalars().all())
 
     @staticmethod
     def _model_insert_values(model: type[Any], data: dict[str, Any]) -> dict[str, Any]:
