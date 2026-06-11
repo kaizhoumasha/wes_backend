@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.app.workline.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
     SmtInboundHandoffSourceItem,
+    SmtInboundHandoffSourceItemStatus,
 )
+from src.app.workline.models.workline import WorkLine
 from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:
@@ -110,6 +112,55 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
             .order_by(columns.item_key)
         )
         return list(result.scalars().all())
+
+    async def list_sorting_candidate_worklines(self, db: AsyncSession) -> list[WorkLine]:
+        """读取 SMT 入库分拣 WorkLine 配置候选。"""
+
+        columns = cast("Any", WorkLine).__table__.c
+        result = await db.execute(
+            select(WorkLine)
+            .where(
+                columns.plugin_key == "SMT_SORTING_INBOUND",
+                columns.is_active.is_(True),
+            )
+            .order_by(columns.line_code.asc(), columns.id.asc())
+        )
+        return list(result.scalars().all())
+
+    def build_ready_source_item_claim_statement(self, *, now: Any, limit: int = 1) -> Any:
+        """构建 READY source item claim SQL，供 PostgreSQL SKIP LOCKED 使用。"""
+
+        columns = cast("Any", SmtInboundHandoffSourceItem).__table__.c
+        return (
+            select(SmtInboundHandoffSourceItem)
+            .where(
+                columns.status == SmtInboundHandoffSourceItemStatus.READY.value,
+                or_(columns.next_attempt_at.is_(None), columns.next_attempt_at <= now),
+            )
+            .order_by(columns.next_attempt_at.asc().nullsfirst(), columns.handoff_demand_id.asc(), columns.id.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+
+    async def claim_next_ready_source_item(
+        self,
+        db: AsyncSession,
+        *,
+        now: Any,
+    ) -> SmtInboundHandoffSourceItem | None:
+        """使用 READY claim statement 认领下一条 source item。"""
+
+        result = await db.execute(self.build_ready_source_item_claim_statement(now=now, limit=1))
+        return result.scalars().first()
+
+    async def get_source_item_by_id(
+        self,
+        db: AsyncSession,
+        source_item_id: int,
+    ) -> SmtInboundHandoffSourceItem | None:
+        """按 ID 读取 source item。"""
+
+        return await db.get(SmtInboundHandoffSourceItem, source_item_id)
 
     @staticmethod
     def _model_insert_values(model: type[Any], data: dict[str, Any]) -> dict[str, Any]:
