@@ -219,13 +219,13 @@ Endpoints：
 - Inspect: GitNexus impact analysis
 - Inspect: current tests around WorkLine/handling/resource
 
-- [ ] **Step 1: 确认工作区**
+- [x] **Step 1: 确认工作区**
   - Run: `git status --short`
   - Expected: 明确记录已有用户变更；不得回滚 `AGENTS.md`、`CLAUDE.md` 或 SPEC 变更。
-- [ ] **Step 2: 检查 GitNexus**
+- [x] **Step 2: 检查 GitNexus**
   - Run: `npx gitnexus status`
   - Expected: repo `wes_backend` 已索引；若 stale，先 `npx gitnexus analyze`。
-- [ ] **Step 3: 对首批会修改符号运行 impact analysis**
+- [x] **Step 3: 对首批会修改符号运行 impact analysis**
   - Minimum targets: `InboxKind`、`WorklineInboxRepository`、`WorklineInboxService`、`InboxBatchProcessor`、session resolver、`OrchestratorService._resolve_inbox_type`、runtime input normalizer、`RuntimeIntentEffectApplier._apply_command`、`SingleLayerRackOrchestrationService.plan_single_layer_rack_dispatch`、`SmtSortingInboundPlugin`、`SmtSortingInboundFlowService`、`HandlingOperationService`、`RuntimeQueryService`、`WorkLineService`、`SmtRackBinSchedulingService`。
   - Expected: HIGH/CRITICAL 风险先汇报；记录 blast radius 到交付说明。
 
@@ -248,7 +248,7 @@ Endpoints：
 - Test: `tests/workline_runtime/test_runtime_config_and_normalization.py`
 - Test: `tests/workline_runtime/test_workline_orchestrator_internal_event.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
   - Assert demand/source item enum values match SPEC.
   - Assert source item metadata contains `claim_attempt_no` and command evidence fields.
   - Assert `SmtInboundHandoffReasonCode` catalog returns stable `failure_code` and `available_actions`.
@@ -256,22 +256,22 @@ Endpoints：
   - Assert `INTERNAL_EVENT` or equivalent kind/helper creates a routable Inbox envelope with session/workline binding and non-`serial:unknown` claim bucket.
   - Assert runtime orchestrator maps `INTERNAL_EVENT` to plugin event routing instead of defaulting to `DEVICE_EVENT`.
   - Assert input normalizer preserves `SORTING_SOURCE_PICK_REQUESTED` as canonical event type and rejects malformed internal payloads with diagnostic errors.
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_models.py tests/workline_runtime/test_smt_inbound_handoff_reason_catalog.py tests/workline_runtime/test_workline_inbox_internal_event.py tests/workline_runtime/test_runtime_config_and_normalization.py tests/workline_runtime/test_workline_orchestrator_internal_event.py -q`
   - Expected: FAIL because model/catalog/internal Inbox helper/orchestrator routing do not exist.
-- [ ] **Step 3: 实现模型与 catalog**
+- [x] **Step 3: 实现模型与 catalog**
   - Model 使用 `BaseMixin + DataTableMixin`，不要重复继承 `EnterpriseMixin` 与 `AuditMixin`。
   - `bin_snapshots_json` 使用 JSON column，只作 release evidence，不作 claim 热路径。
   - Source item 包含 `claim_attempt_no`、`source_pick_command_id`、`source_pick_command_code`、`source_pick_dispatch_key`。
   - Catalog 至少覆盖 SPEC 中的 release fact、usage、WMS/RCS、reconcile、route、target busy、ECS、claim/plugin 分类。
-- [ ] **Step 4: 生成并编辑 migration**
+- [x] **Step 4: 生成并编辑 migration**
   - Run: `uv run alembic revision -m "add smt inbound handoff"`
   - Migration 必须包含 handoff 表、唯一约束、partial indexes、source item command evidence 字段，以及 Inbox kind enum/check constraint 更新；revision id 由 Alembic 生成。
-- [ ] **Step 5: 实现内部 Inbox helper**
+- [x] **Step 5: 实现内部 Inbox helper**
   - 新 helper 使用系统内部 source system、标准 envelope、session/workline binding、稳定 `event_id` / idempotency key 和非 `serial:unknown` claim bucket。
   - Session resolver 与 batch processor 识别内部事件，并按既有 session/workline 归属处理。
   - Orchestrator 的 Inbox kind/type 解析必须把 `INTERNAL_EVENT` 交给插件事件 handler；normalizer 必须输出可被 manifest `supported_events` 匹配的 canonical event。
-- [ ] **Step 6: 运行 GREEN**
+- [x] **Step 6: 运行 GREEN**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_models.py tests/workline_runtime/test_smt_inbound_handoff_reason_catalog.py tests/workline_runtime/test_workline_inbox_internal_event.py tests/workline_runtime/test_runtime_config_and_normalization.py tests/workline_runtime/test_workline_orchestrator_internal_event.py -q`
   - Expected: PASS。
 
@@ -290,22 +290,22 @@ Endpoints：
 - Test: `tests/workline_runtime/test_smt_inbound_handoff_service_release.py`
 - Test: `tests/workline_runtime/test_smt_inbound_handoff_release_producer.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
   - usage policy 覆盖 `0`、`0.5`、`0.8`、`1`、缺失、非法值和旧字段兼容。
   - `create_or_get_from_release(...)` 同一 `rack_release_id` 幂等返回同一 demand。
   - 缺 `rack_release_id`、`single_layer_rack_code` 或有效快照时进入 `MANUAL_HOLD`，原因来自 catalog。
   - `ROUGH_SORTER_RELEASE_FACT` / resource fact 应用链触发 handoff release producer；普通 API、Beat、projection 查询不会成为第二 producer。
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
   - Run: `uv run pytest tests/workline_runtime/test_smt_usage_policy.py tests/workline_runtime/test_smt_inbound_handoff_service_release.py tests/workline_runtime/test_smt_inbound_handoff_release_producer.py -q`
   - Expected: FAIL because usage helper/service/repository/producer wiring do not exist.
-- [ ] **Step 3: 实现 usage policy**
+- [x] **Step 3: 实现 usage policy**
   - 从 `SmtRackBinSchedulingService` 抽出共享 helper，保持现有调度测试通过。
   - usage 输出为 `0..1` float；非法值返回明确 invalid result，不静默归零。
-- [ ] **Step 4: 实现 release fact 入口**
+- [x] **Step 4: 实现 release fact 入口**
   - Service 创建 demand 和 source items；Repository 负责唯一约束下的 get/create。
   - 现有 `SingleLayerRackOrchestrationService` 的 `ROUGH_SORTER_RELEASE_FACT` / resource fact 应用链调用 `create_or_get_from_release(...)`。
   - Beat 和 projection replay 只能重放同一 release fact 并返回同一 demand；不新增前端按钮、列表页操作或资源投影查询作为 release 事实源。
-- [ ] **Step 5: 运行 GREEN**
+- [x] **Step 5: 运行 GREEN**
   - Run: `uv run pytest tests/workline_runtime/test_smt_usage_policy.py tests/workline_runtime/test_smt_inbound_handoff_service_release.py tests/workline_runtime/test_smt_inbound_handoff_release_producer.py tests/workline_runtime/test_smt_rack_bin_scheduling_service.py tests/workline_runtime/test_single_layer_rack_orchestration_service.py -q`
   - Expected: PASS。
 
@@ -319,23 +319,23 @@ Endpoints：
 - Test: `tests/handling/test_handling_operation_core.py`
 - Test: `tests/handling/test_handling_operation_lifecycle.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
   - `usage < 0.5` skips exchange and creates READY source items.
   - `usage >= 0.8` creates `SINGLE_LAYER_FULL_BOX_EXCHANGE` handling operation with idempotent key.
   - `0.5 <= usage < 0.8` supports preferred exchange and fallback to sorting after reject/failure.
   - `BUSINESS_COMPLETED` maps exchanged/remaining items; `PHYSICAL_COMPLETED` without `post_exchange_relations` stays `RECONCILING`; `rack_release_id` mismatch enters `MANUAL_HOLD`.
   - Callback、manual reconcile、retry exchange 完成后都调用 demand 聚合入口。
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_exchange.py -q`
   - Expected: FAIL because exchange branch is not implemented.
-- [ ] **Step 3: 实现 exchange decision**
+- [x] **Step 3: 实现 exchange decision**
   - Handoff service only decides and calls handling service; it must not construct WMS/RCS payload directly.
   - Store `handling_operation_key` and handling trace evidence on demand.
-- [ ] **Step 4: 实现 callback/reconcile 推进**
+- [x] **Step 4: 实现 callback/reconcile 推进**
   - Callback result updates demand/source item through service method.
   - `RECONCILING` only moves forward after new reconciliation evidence or manual action.
   - 所有推进路径最后经由 `recalculate_demand_status(...)` 或等价单一入口重算 demand 摘要。
-- [ ] **Step 5: 运行 GREEN**
+- [x] **Step 5: 运行 GREEN**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_exchange.py tests/handling/test_handling_operation_core.py tests/handling/test_handling_operation_lifecycle.py -q`
   - Expected: PASS。
 
@@ -351,24 +351,24 @@ Endpoints：
 - Test: `tests/workline_runtime/test_smt_inbound_handoff_claim.py`
 - Integration: `tests/integration/workline_runtime/test_smt_inbound_handoff_claim_postgres.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
   - route missing -> `MANUAL_HOLD` with `ROUTE_NOT_FOUND`。
   - multi-candidate route uses priority, `workline_code`, `id` stable order。
   - Config candidate exists but WorkLine not READY, station lease busy, session `current_material` open, ECS non-IDLE -> retry with `next_attempt_at`。
   - Internal Inbox created with first-class kind/helper, stable idempotency key, session/workline binding and non-`serial:unknown` claim bucket.
   - concurrent claim under PostgreSQL does not duplicate source item.
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_route_service.py tests/workline_runtime/test_smt_inbound_handoff_claim.py -q`
   - Expected: FAIL because route/claim are missing.
-- [ ] **Step 3: 实现 route service**
+- [x] **Step 3: 实现 route service**
   - 配置候选只使用 WorkLine `plugin_key`、manifest `supported_events`/`supported_commands`、required roles、single-layer boundary 和 route config/runtime_config。
   - 运行态准入再检查 `runtime_status`、station lease、session `current_material` 和 ECS realtime `IDLE`。
   - No hardcoded target line in handoff service.
-- [ ] **Step 4: 实现 row-lock claim**
+- [x] **Step 4: 实现 row-lock claim**
   - Repository claim 使用 DB transaction、row-level lock、stable ordering。
   - Service 同一事务内更新 demand、item、session，并通过内部 Inbox helper 创建或复用 `SORTING_SOURCE_PICK_REQUESTED`。
   - `event_id` / idempotency key 使用 `handoff_source_item_id + claim_attempt_no` 或等价稳定代次；dead-letter 人工释放后递增 attempt。
-- [ ] **Step 5: 运行 GREEN**
+- [x] **Step 5: 运行 GREEN**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_route_service.py tests/workline_runtime/test_smt_inbound_handoff_claim.py -q`
   - Expected: PASS。
 - [ ] **Step 6: PostgreSQL 并发门禁**
@@ -387,23 +387,23 @@ Endpoints：
 - Test: `tests/workline_runtime/test_smt_inbound_handoff_command_correlation.py`
 - Integration: `tests/integration/workline_runtime/test_smt_sorting_inbound_p0_integration.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
   - manifest declares `SORTING_SOURCE_PICK_REQUESTED` in supported events.
   - handler returns one `SORTING_SOURCE_PICK` command intent with source rack/bin/cell payload and handoff source item correlation.
   - Runtime effect creates `DeviceCommand`/Outbox then writes `source_pick_command_id`、`source_pick_command_code`、`source_pick_dispatch_key` back to source item.
   - invalid payload returns plugin contract failure, not silent no-op.
   - existing `SORTING_SOURCE_PICK` success callback still handles `MATERIAL_UNMOUNTED` and `current_material`。
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
   - Run: `uv run pytest tests/workline_runtime/test_smt_sorting_inbound_plugin.py tests/workline_runtime/test_smt_inbound_handoff_command_correlation.py -q`
   - Expected: FAIL on missing event support/handler and runtime effect command correlation writeback.
-- [ ] **Step 3: 实现 plugin event**
+- [x] **Step 3: 实现 plugin event**
   - Add event constant and `@on_event(EVENT_SOURCE_PICK_REQUESTED)` handler.
   - Handler delegates command construction to flow service.
   - Handler 不直接写 handoff 表，只返回 command intent 和 correlation payload。
-- [ ] **Step 4: 实现 runtime effect correlation 写回**
+- [x] **Step 4: 实现 runtime effect correlation 写回**
   - `_apply_command` 创建 command/outbox 后，识别 handoff source item correlation 并写回 command evidence。
   - 未写回视为 `SOURCE_PICK_COMMAND_NOT_CREATED`，由 recovery 兜底转人工或重试。
-- [ ] **Step 5: 运行 GREEN**
+- [x] **Step 5: 运行 GREEN**
   - Run: `uv run pytest tests/workline_runtime/test_smt_sorting_inbound_plugin.py tests/workline_runtime/test_smt_inbound_handoff_command_correlation.py tests/integration/workline_runtime/test_smt_sorting_inbound_p0_integration.py -q`
   - Expected: PASS。
 
@@ -419,7 +419,7 @@ Endpoints：
 - Test: `tests/workline_runtime/test_celery_task_entrypoints.py`
 - Integration: `tests/integration/workline_runtime/test_smt_inbound_handoff_recovery_postgres.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
   - Inbox `FAILED`/retryable does not leave item forever in `PICK_REQUESTED`。
   - Inbox `DEAD_LETTER` moves item/demand to `MANUAL_HOLD` with evidence.
   - stale `PROCESSING` is observed without bypassing WorkLine Inbox token fencing.
@@ -427,18 +427,18 @@ Endpoints：
   - Command result exists but source item state did not advance is detected and repaired or moved to `MANUAL_HOLD` with evidence.
   - New Beat task scans due demand and stuck source item with batch limit and stable ordering.
   - Old `scan_smt_full_box_exchange_candidates_batch` remains unavailable.
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_recovery.py tests/workline_runtime/test_smt_inbound_handoff_celery.py tests/workline_runtime/test_celery_task_entrypoints.py -q`
   - Expected: FAIL because recovery scanner/task are missing.
-- [ ] **Step 3: 实现 recovery service**
+- [x] **Step 3: 实现 recovery service**
   - Scan demand statuses from SPEC with `next_attempt_at` due.
   - Scan stuck source items by `status`、`source_pick_inbox_id`、`updated_at` using repository hot path.
   - Map each recovery outcome through reason catalog.
   - Recovery outcome must call demand aggregation entry instead of mutating demand status ad hoc.
-- [ ] **Step 4: 实现 Celery task**
+- [x] **Step 4: 实现 Celery task**
   - Task name: `src.celery_app.tasks.workline.scan_smt_inbound_handoff_demands_batch`。
   - Return summary includes scanned, advanced, retry_scheduled, manual_hold, recovery_errors.
-- [ ] **Step 5: 运行 GREEN**
+- [x] **Step 5: 运行 GREEN**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_recovery.py tests/workline_runtime/test_smt_inbound_handoff_celery.py tests/workline_runtime/test_celery_task_entrypoints.py -q`
   - Expected: PASS。
 - [ ] **Step 6: PostgreSQL recovery/EXPLAIN 门禁**
@@ -455,22 +455,22 @@ Endpoints：
 - Test: `tests/api/test_smt_inbound_handoff_api.py`
 - Test: `tests/test_api_application_routes.py`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
   - list returns summaries: demand status, decision, failure code, item status counts, handling trace summary, claim stuck/dead-letter summary, available actions.
   - detail returns source item rows, `source_pick_inbox_id` recovery evidence and command/outbox correlation evidence.
   - action endpoints enforce permission and state machine.
   - available actions come from reason catalog and demand aggregation state, not raw JSON inference.
   - nonprod debug endpoints are hidden or rejected in prod env.
   - API route is registered under WorkLine router.
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
   - Run: `uv run pytest tests/api/test_smt_inbound_handoff_api.py tests/test_api_application_routes.py -q`
   - Expected: FAIL because route is not registered.
-- [ ] **Step 3: 实现 API**
+- [x] **Step 3: 实现 API**
   - API only calls service methods.
   - `available_actions` must come from reason catalog/state machine, not frontend raw JSON inference.
   - 状态摘要来自 `recalculate_demand_status(...)` 或等价聚合结果，不在 API 层重新推断。
   - Use existing `response_builder` and `ResponseSchemaModel` pattern.
-- [ ] **Step 4: 运行 GREEN**
+- [x] **Step 4: 运行 GREEN**
   - Run: `uv run pytest tests/api/test_smt_inbound_handoff_api.py tests/test_api_application_routes.py -q`
   - Expected: PASS。
 
@@ -512,6 +512,12 @@ Endpoints：
 - Full verification: `uv run pytest tests/` -> `2137 passed, 24 skipped`.
 - Quality gate: `uv run ruff format . && uv run ruff check .` passed; `./scripts/git-quality-gate.sh --profile quality` passed with Ruff and Bandit.
 - GitNexus staged detect changes: `risk_level: none`, no indexed symbols or execution flows mapped.
+
+### QA Audit (2026-06-11)
+
+- `/qa` 对 SPEC 与本计划做 diff-aware 文档验收后确认：实现提交已覆盖 Task 0-7 的非 PostgreSQL 步骤，计划 checkbox 已同步为已完成。
+- 仍未完成的门禁只剩外部 PostgreSQL 集成验证：Task 4 并发 claim、Task 6 recovery/EXPLAIN、Task 8 e2e smoke 在未配置 `RUN_WORKLINE_INTEGRATION=1` 和 `INTEGRATION_DATABASE_URL` 时只会被 pytest 标记为 skipped，不能计为最终通过。
+- 当前本地可验证范围以 Task 8 Acceptance Audit 为准：focused suites、全量 `uv run pytest tests/`、Ruff、Bandit、GitNexus staged detect changes 均已通过。
 
 ## Planned Test Coverage Diagram
 
@@ -607,5 +613,5 @@ API
 | Design Review | `/plan-design-review` | UI/UX 缺口 | 0 | 未运行 | 前端运营页面不在本轮范围内 |
 | DX Review | `/plan-devex-review` | 开发者体验缺口 | 0 | 未运行 | 未运行 |
 
-- **UNRESOLVED:** 0 个交互决策未决；0 个实施门禁项。
-- **VERDICT:** ENG CLEARED FOR IMPLEMENTATION；可按本文进入代码实施，但实施阶段必须先跑 GitNexus impact analysis、按 RED/GREEN 顺序推进，并在提交前运行 detect changes。
+- **UNRESOLVED:** 0 个交互决策未决；1 类外部环境门禁未完成：PostgreSQL 集成验证需要 `RUN_WORKLINE_INTEGRATION=1` 和 `INTEGRATION_DATABASE_URL`。
+- **VERDICT:** IMPLEMENTATION COMPLETE WITH EXTERNAL POSTGRESQL VERIFICATION PENDING；代码实施、本地 focused/full test、Ruff、Bandit 与 GitNexus staged detect changes 已完成，最终交付前仍需在 PostgreSQL 环境补跑 Task 4/6/8 集成门禁。
