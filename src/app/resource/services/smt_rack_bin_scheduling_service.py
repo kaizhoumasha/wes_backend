@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -21,6 +22,17 @@ SmtRackBinSchedulingDecisionKind = Literal[
 ]
 SmtReelSizeKind = Literal["SEVEN_INCH", "LARGE"]
 WMS_RCS_RACK_OPERATION_ENDPOINT = "WMS_RCS_RACK_OPERATION"
+SMT_USAGE_POLICY: Any | None = None
+
+
+def _smt_usage_policy() -> Any:
+    """惰性读取共享 usage policy，避免 resource/domain 兼容导出循环导入。"""
+
+    global SMT_USAGE_POLICY
+    if SMT_USAGE_POLICY is None:
+        usage_policy_module = importlib.import_module("src.app.workline.domain.services.smt_usage_policy")
+        SMT_USAGE_POLICY = usage_policy_module.SMT_USAGE_POLICY
+    return SMT_USAGE_POLICY
 
 
 @dataclass(frozen=True, slots=True)
@@ -984,16 +996,8 @@ class SmtRackBinSchedulingService:
         return [by_slot[slot_code] for slot_code in self.RACK_SLOT_CODES]
 
     def _release_bin_usage(self, snapshot: Mapping[str, Any]) -> float | None:
-        value = snapshot.get("usage") if "usage" in snapshot else snapshot.get("usage_snapshot")
-        if value is None:
-            return None
-        try:
-            usage = float(value)
-        except (TypeError, ValueError):
-            return None
-        if usage < 0 or usage > 1:
-            return None
-        return usage
+        result = _smt_usage_policy().resolve_release_bin_usage(snapshot)
+        return result.usage if result.valid else None
 
     def _release_bin_status(self, value: Any, *, usage: float | None) -> str | None:
         text = self._text_or_none(value)
@@ -1008,13 +1012,11 @@ class SmtRackBinSchedulingService:
         return status if status in self.RELEASE_BIN_STATUSES else None
 
     def _rack_bin_usage(self, cells: Sequence[Mapping[str, Any]]) -> float:
-        depth_usage = self._rack_bin_depth_usage(cells)
-        if depth_usage is not None:
-            return depth_usage
-        capacity = self._rack_bin_capacity(cells)
-        if capacity <= 0:
-            return 0.0
-        return min(self._occupied_cell_count(cells) / capacity, 1.0)
+        result = _smt_usage_policy().resolve_rack_bin_usage(
+            cells,
+            capacity_count=self._rack_bin_capacity(cells),
+        )
+        return result.usage if result.valid and result.usage is not None else 0.0
 
     def _rack_bin_depth_usage(self, cells: Sequence[Mapping[str, Any]]) -> float | None:
         used_total = 0.0

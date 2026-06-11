@@ -33,6 +33,7 @@ from .single_layer_rack_orchestration_service import (
     SingleLayerRackOrchestrationService,
     single_layer_rack_orchestration_service,
 )
+from .smt_inbound_handoff_service import SmtInboundHandoffService, smt_inbound_handoff_service
 from .start_admission_service import (
     StartAdmissionResult,
     StartAdmissionStatusFetchResult,
@@ -72,6 +73,7 @@ __all__ = [
     "SingleLayerRackOrchestrationDecision",
     "SingleLayerRackOrchestrationDecisionCode",
     "SingleLayerRackOrchestrationService",
+    "SmtInboundHandoffService",
     "StartAdmissionResult",
     "StartAdmissionStatusFetchResult",
     "StartAdmissionStatusTarget",
@@ -107,6 +109,7 @@ __all__ = [
     "runtime_query_service",
     "sandbox_cleanup_service",
     "single_layer_rack_orchestration_service",
+    "smt_inbound_handoff_service",
     "start_admission_service",
     "station_lease_service",
     "trace_query_service",

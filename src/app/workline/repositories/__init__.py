@@ -21,6 +21,7 @@ from .session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
 )
+from .smt_inbound_handoff_repository import SmtInboundHandoffRepository, smt_inbound_handoff_repository
 from .workline_repository import WorkLineRepository, workline_repository
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "RuntimeHoldRepository",
     "SandboxCleanupRepository",
     "SandboxCleanupSelection",
+    "SmtInboundHandoffRepository",
     "WorkLineRepository",
     "WorklineBinCellReservationRepository",
     "WorklineDiagnosticRepository",
@@ -40,6 +42,7 @@ __all__ = [
     "rack_task_repository",
     "runtime_hold_repository",
     "sandbox_cleanup_repository",
+    "smt_inbound_handoff_repository",
     "workline_bin_cell_reservation_repository",
     "workline_diagnostic_repository",
     "workline_dispatch_attempt_repository",

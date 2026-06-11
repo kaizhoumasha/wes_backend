@@ -22,9 +22,11 @@ from .smt_rack_bin_scheduling_service import (
     SmtRackOperationRequest,
     smt_rack_bin_scheduling_service,
 )
+from .smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy, SmtUsageResult
 
 __all__ = [
     "SMT_INBOUND_HANDOFF_REASON_CATALOG",
+    "SMT_USAGE_POLICY",
     "BarcodeDecisionService",
     "InvalidSessionTransition",
     "SmtInboundHandoffReasonCatalog",
@@ -36,6 +38,8 @@ __all__ = [
     "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",
     "SmtRackOperationRequest",
+    "SmtUsagePolicy",
+    "SmtUsageResult",
     "WorklineSessionLifecycleService",
     "barcode_decision_service",
     "build_smt_inbound_handoff_reason_catalog",
