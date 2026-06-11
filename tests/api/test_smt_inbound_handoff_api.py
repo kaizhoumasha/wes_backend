@@ -40,7 +40,7 @@ def test_inbound_handoff_routes_require_expected_permissions() -> None:
     module = _module()
 
     assert _permission_names(module, "/demands", "GET") == ["biz:workline:list"]
-    assert _permission_names(module, "/demands/{demand_id}", "GET") == ["biz:workline:list"]
+    assert _permission_names(module, "/demands/{demand_id}", "GET") == ["biz:workline:detail"]
     assert _permission_names(module, "/source-items/{source_item_id}/actions/retry-source-pick", "POST") == [
         "biz:workline:update"
     ]

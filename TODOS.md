@@ -74,6 +74,28 @@
 
 ---
 
+## P2 - SMT 入库 Handoff 运营看板、告警与 Runbook
+
+**What**: 在 SMT 入库 Handoff 首版产生真实运行数据后，补齐运营看板、告警阈值和现场 Runbook。
+
+**Why**: 本轮只落地后端 handoff 账本、结构化查询、恢复 evidence 和兜底扫描；生产现场还需要按真实失败分布配置告警、人工处置 SOP 和恢复时长指标，避免过早定义阈值造成误报。
+
+**Context**: `docs/superpowers/specs/2026-06-10-smt-inbound-handoff-business-spec.md` 明确将运营看板、告警阈值和 Runbook 列为 P2 follow-up，不阻塞首版后端闭环发布。
+
+**Scope**:
+- Handoff demand/source item 状态分布、MANUAL_HOLD 原因、dead-letter 和 command correlation 缺失监控
+- `scan_smt_inbound_handoff_demands_batch` 兜底扫描量、推进量、恢复失败量和延迟指标
+- 运营处置 SOP：route 缺失、WMS/RCS 拒绝、Inbox dead-letter、command evidence 缺失、对账 evidence 缺失
+- 告警阈值基于首版真实运行数据回放和现场试运行数据确定
+
+**Dependencies**: SMT 入库 Handoff 后端闭环上线并产生真实或接近真实的运行数据。
+
+**Effort**: M
+
+**Priority**: P2
+
+---
+
 ## P2 - Workline worker 吞吐 benchmark 与队列/连接策略调优
 
 **What**: 在 Workline task decomposition 和资源约束并发落地后，基于真实数据评估 worker concurrency、队列隔离、batch limit、claim 索引、RESOURCE_WAIT retry 和 HTTP client strategy。

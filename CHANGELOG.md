@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.6.0.0] - 2026-06-11
+
+### Added
+
+- 新增 SMT 入库 Handoff 后端闭环，覆盖粗分机释放单层货架后的 handoff demand/source item 账本、状态聚合和原因码 catalog。
+- 新增 SMT handoff 查询与处置 API，支持 demand 列表、详情 evidence 和 source-pick 重试动作。
+- 新增 `SORTING_SOURCE_PICK_REQUESTED` 内部 Inbox 合同，分拣首盘 source pick 通过 `SMT_SORTING_INBOUND` 插件进入 runtime 并写回 command/outbox correlation。
+- 新增 SMT handoff Celery 兜底扫描和 Docker/PostgreSQL 并发 claim、recovery/EXPLAIN、端到端 smoke 验收。
+
+### Changed
+
+- 粗分机 `ROUGH_SORTER_RELEASE_FACT` / resource fact 链路接入 SMT handoff producer，重复 release、callback 和扫描保持幂等。
+- SMT usage 口径抽为共享 policy，handoff 与现有 SMT rack/bin 调度统一使用 `0..1` usage 规范。
+- SMT 分拣入库插件 manifest 和事件处理扩展为支持 handoff source-pick 内部事件。
+
+### Fixed
+
+- 修复 SMT handoff detail API 权限合同，详情接口使用 `biz:workline:detail`，动作接口继续使用 `biz:workline:update`。
+
 ## [0.5.0.0] - 2026-06-10
 
 ### Added

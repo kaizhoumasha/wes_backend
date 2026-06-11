@@ -53,10 +53,10 @@ async def list_inbound_handoff_demands(
 
 @router.get(
     "/demands/{demand_id}",
-    summary="[biz:workline:list] 查询 SMT 入库 handoff demand 详情",
+    summary="[biz:workline:detail] 查询 SMT 入库 handoff demand 详情",
     response_model=ResponseSchemaModel[SmtInboundHandoffDemandDetailResponse],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:list"))],
+    dependencies=[Depends(RequirePermission("biz:workline:detail"))],
 )
 async def get_inbound_handoff_demand_detail(
     db: AsyncSessionDep,
