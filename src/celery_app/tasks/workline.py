@@ -62,6 +62,16 @@ class DeviceHeartbeatScanResult(TypedDict):
     marked_offline: int
 
 
+class SmtInboundHandoffRecoveryResult(TypedDict):
+    """SMT 入库 handoff 恢复扫描结果。"""
+
+    scanned: int
+    advanced: int
+    retry_scheduled: int
+    manual_hold: int
+    recovery_errors: int
+
+
 class DispatchResult(TypedDict):
     """派发结果"""
 
@@ -83,6 +93,16 @@ def _ensure_non_empty_retry_result(task_name: str, result: dict[str, int], retri
     raise RuntimeError(
         f"{task_name} returned an empty result after {retries} retries; refusing to mark it as succeeded"
     )
+
+
+def _empty_smt_inbound_handoff_recovery_result() -> SmtInboundHandoffRecoveryResult:
+    return {
+        "scanned": 0,
+        "advanced": 0,
+        "retry_scheduled": 0,
+        "manual_hold": 0,
+        "recovery_errors": 0,
+    }
 
 
 def _get_sync_event_loop() -> asyncio.AbstractEventLoop:
@@ -531,14 +551,63 @@ def scan_device_heartbeats_batch(
         raise self.retry(exc=e, countdown=countdown) from None
 
 
+@celery_app.task(
+    name="src.celery_app.tasks.workline.scan_smt_inbound_handoff_demands_batch",
+    base=WorklineTask,
+    bind=True,
+    max_retries=3,
+    default_retry_delay=60,
+)
+def scan_smt_inbound_handoff_demands_batch(
+    self: WorklineTask,
+    limit: int = 100,
+    stale_after_seconds: int = 300,
+) -> SmtInboundHandoffRecoveryResult:
+    """扫描 SMT 入库 handoff 到期 demand 和 claim 后卡住的 source item。"""
+
+    logger.info(f"开始扫描 SMT 入库 handoff 恢复项, limit={limit}, stale_after_seconds={stale_after_seconds}")
+
+    async def _scan() -> SmtInboundHandoffRecoveryResult:
+        async with self.db as db:
+            from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+            return cast(
+                "SmtInboundHandoffRecoveryResult",
+                await smt_inbound_handoff_service.scan_smt_inbound_handoff_demands_batch(
+                    db,
+                    limit=limit,
+                    stale_after_seconds=stale_after_seconds,
+                ),
+            )
+
+    try:
+        result = _run_async(_scan())
+        _ensure_non_empty_retry_result(
+            "scan_smt_inbound_handoff_demands_batch",
+            result,
+            int(getattr(self.request, "retries", 0) or 0),
+        )
+        if result != _empty_smt_inbound_handoff_recovery_result():
+            logger.info(f"SMT 入库 handoff 恢复扫描完成: {result}")
+        else:
+            logger.debug(f"SMT 入库 handoff 恢复扫描完成: {result}")
+        return result
+    except Exception as e:
+        logger.error(f"SMT 入库 handoff 恢复扫描失败: {e}")
+        countdown = 60 * (2**self.request.retries)
+        raise self.retry(exc=e, countdown=countdown) from None
+
+
 # ============================================
 # 导出
 # ============================================
 __all__ = [
     # Celery 任务入口（公共 API）
+    "_empty_smt_inbound_handoff_recovery_result",
     "process_inbox_batch",
     "process_signal",
     "scan_device_heartbeats_batch",
+    "scan_smt_inbound_handoff_demands_batch",
     "scan_timeouts_batch",
 ]
 

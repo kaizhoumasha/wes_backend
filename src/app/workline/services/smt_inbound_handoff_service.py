@@ -576,6 +576,169 @@ class SmtInboundHandoffService:
             await db.flush()
         return item
 
+    async def scan_smt_inbound_handoff_demands_batch(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int = 100,
+        stale_after_seconds: int = 300,
+        trace_id: str | None = None,
+    ) -> dict[str, int]:
+        """扫描到期 demand 和 claim 后卡住的 source item，执行兜底恢复。"""
+
+        _ = trace_id
+        summary = self._empty_recovery_summary()
+        if limit <= 0:
+            return summary
+
+        now = timezone.now_for_db()
+        due_demands = await self.repository.list_due_recovery_demands(db, now=now, limit=limit)
+        for demand in due_demands:
+            summary["scanned"] += 1
+            before_status = demand.status
+            await self.recalculate_demand_status(db, demand, reason="recovery_due_demand_scan")
+            if demand.status != before_status:
+                summary["advanced"] += 1
+
+        stuck_items = await self.repository.list_stuck_source_items_for_recovery(
+            db,
+            now=now,
+            limit=limit,
+            stale_after_seconds=stale_after_seconds,
+        )
+        for item in stuck_items:
+            summary["scanned"] += 1
+            try:
+                outcome = await self._recover_stuck_source_item(db, item, now=now)
+            except Exception:
+                summary["recovery_errors"] += 1
+                continue
+            if outcome in summary:
+                summary[outcome] += 1
+        return summary
+
+    async def _recover_stuck_source_item(
+        self,
+        db: AsyncSession,
+        item: SmtInboundHandoffSourceItem,
+        *,
+        now: Any,
+    ) -> str | None:
+        from src.app.device.models.command import CommandResult, CommandStatus, DeviceCommand
+        from src.app.workline.models.inbox import InboxStatus, WorklineInbox
+
+        demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
+        if demand is None:
+            raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
+        inbox = await db.get(WorklineInbox, item.source_pick_inbox_id)
+        inbox_status = self._enum_text(getattr(inbox, "status", None))
+        outcome: str | None = None
+        if inbox is None:
+            await self._manual_hold_source_pick_recovery(
+                db,
+                demand=demand,
+                item=item,
+                failure_code=SmtInboundHandoffReasonCode.INTERNAL_INBOX_ENVELOPE_INVALID.value,
+                message="source pick inbox 不存在，无法确认内部事件处理结果",
+            )
+            outcome = "manual_hold"
+        elif inbox_status in {InboxStatus.NEW.value, InboxStatus.PROCESSING.value, InboxStatus.RETRY.value}:
+            outcome = None
+        elif inbox_status == InboxStatus.FAILED.value:
+            self._release_item_for_source_pick_retry(item, next_attempt_at=getattr(inbox, "next_retry_at", None) or now)
+            db.add(item)
+            demand.failure_code = None
+            demand.failure_message = None
+            db.add(demand)
+            await self.recalculate_demand_status(db, demand, reason="source_pick_inbox_retryable_failed")
+            outcome = "retry_scheduled"
+        elif inbox_status == InboxStatus.DEAD_LETTER.value:
+            await self._manual_hold_source_pick_recovery(
+                db,
+                demand=demand,
+                item=item,
+                failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_INBOX_DEAD_LETTER.value,
+                message=getattr(inbox, "error_message", None),
+            )
+            outcome = "manual_hold"
+        elif inbox_status == InboxStatus.PROCESSED.value and item.source_pick_command_id is None:
+            await self._manual_hold_source_pick_recovery(
+                db,
+                demand=demand,
+                item=item,
+                failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                message="source pick inbox 已处理但缺少 command correlation evidence",
+            )
+            outcome = "manual_hold"
+        elif item.source_pick_command_id is not None:
+            command = await db.get(DeviceCommand, item.source_pick_command_id)
+            command_status = self._enum_text(getattr(command, "status", None))
+            command_result = self._enum_text(getattr(command, "result", None))
+            if command_status == CommandStatus.COMPLETED.value and command_result == CommandResult.SUCCESS.value:
+                item.status = SmtInboundHandoffSourceItemStatus.PICKED
+                item.failure_code = None
+                item.failure_message = None
+                item.next_attempt_at = None
+                db.add(item)
+                await self.recalculate_demand_status(db, demand, reason="source_pick_command_success_recovery")
+                outcome = "advanced"
+            elif command_status in {
+                CommandStatus.FAILED.value,
+                CommandStatus.TIMEOUT.value,
+                CommandStatus.CANCELLED.value,
+            }:
+                await self._manual_hold_source_pick_recovery(
+                    db,
+                    demand=demand,
+                    item=item,
+                    failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value,
+                    message="source pick command 已进入失败终态但 source item 未推进",
+                )
+                outcome = "manual_hold"
+        return outcome
+
+    def _release_item_for_source_pick_retry(
+        self,
+        item: SmtInboundHandoffSourceItem,
+        *,
+        next_attempt_at: Any,
+    ) -> None:
+        item.claim_attempt_no += 1
+        item.status = SmtInboundHandoffSourceItemStatus.READY
+        item.source_pick_inbox_id = None
+        item.source_pick_command_id = None
+        item.source_pick_command_code = None
+        item.source_pick_dispatch_key = None
+        item.sorting_session_id = None
+        item.failure_code = None
+        item.failure_message = None
+        item.next_attempt_at = next_attempt_at
+
+    async def _manual_hold_source_pick_recovery(
+        self,
+        db: AsyncSession,
+        *,
+        demand: SmtInboundHandoffDemand,
+        item: SmtInboundHandoffSourceItem,
+        failure_code: str,
+        message: str | None,
+    ) -> None:
+        self._apply_item_failure(item, failure_code, message=message)
+        self._apply_failure(demand, failure_code, message=message)
+        db.add(item)
+        db.add(demand)
+        await self.recalculate_demand_status(db, demand, reason="source_pick_recovery_manual_hold")
+
+    @staticmethod
+    def _empty_recovery_summary() -> dict[str, int]:
+        return {
+            "scanned": 0,
+            "advanced": 0,
+            "retry_scheduled": 0,
+            "manual_hold": 0,
+            "recovery_errors": 0,
+        }
+
     def _demand_data(
         self,
         *,
@@ -714,6 +877,11 @@ class SmtInboundHandoffService:
     @staticmethod
     def _dict_or_empty(value: Any) -> dict[str, Any]:
         return dict(value) if isinstance(value, Mapping) else {}
+
+    @staticmethod
+    def _enum_text(value: Any) -> str | None:
+        raw = getattr(value, "value", value)
+        return raw if isinstance(raw, str) else None
 
     def _release_fact_failure_code(
         self,

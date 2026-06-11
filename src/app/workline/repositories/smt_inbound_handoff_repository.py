@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import or_, select
@@ -10,6 +11,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.app.workline.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
+    SmtInboundHandoffDemandStatus,
     SmtInboundHandoffSourceItem,
     SmtInboundHandoffSourceItemStatus,
 )
@@ -174,6 +176,87 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
             select(SmtInboundHandoffSourceItem).where(columns.id == source_item_id).with_for_update()
         )
         return result.scalar_one_or_none()
+
+    def build_due_recovery_demand_statement(self, *, now: Any, limit: int = 100) -> Any:
+        """构建 handoff demand 兜底扫描 SQL。"""
+
+        columns = cast("Any", SmtInboundHandoffDemand).__table__.c
+        return (
+            select(SmtInboundHandoffDemand)
+            .where(
+                columns.status.in_(
+                    [
+                        SmtInboundHandoffDemandStatus.CREATED.value,
+                        SmtInboundHandoffDemandStatus.EVALUATING.value,
+                        SmtInboundHandoffDemandStatus.FULL_BOX_EXCHANGED.value,
+                        SmtInboundHandoffDemandStatus.READY_FOR_SORTING.value,
+                    ]
+                ),
+                or_(columns.next_attempt_at.is_(None), columns.next_attempt_at <= now),
+            )
+            .order_by(columns.next_attempt_at.asc().nullsfirst(), columns.updated_at.asc(), columns.id.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+
+    async def list_due_recovery_demands(
+        self,
+        db: AsyncSession,
+        *,
+        now: Any,
+        limit: int = 100,
+    ) -> list[SmtInboundHandoffDemand]:
+        """读取到期 demand 兜底扫描候选。"""
+
+        result = await db.execute(self.build_due_recovery_demand_statement(now=now, limit=limit))
+        return list(result.scalars().all())
+
+    def build_stuck_source_item_recovery_statement(
+        self,
+        *,
+        now: Any,
+        stale_after_seconds: int = 300,
+        limit: int = 100,
+    ) -> Any:
+        """构建 claim 后卡住 source item 的恢复扫描 SQL。"""
+
+        columns = cast("Any", SmtInboundHandoffSourceItem).__table__.c
+        stale_cutoff = now - timedelta(seconds=max(stale_after_seconds, 1))
+        return (
+            select(SmtInboundHandoffSourceItem)
+            .where(
+                columns.status.in_(
+                    [
+                        SmtInboundHandoffSourceItemStatus.PICK_REQUESTED.value,
+                        SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING.value,
+                    ]
+                ),
+                columns.source_pick_inbox_id.isnot(None),
+                columns.updated_at <= stale_cutoff,
+            )
+            .order_by(columns.updated_at.asc(), columns.id.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+
+    async def list_stuck_source_items_for_recovery(
+        self,
+        db: AsyncSession,
+        *,
+        now: Any,
+        limit: int = 100,
+        stale_after_seconds: int = 300,
+    ) -> list[SmtInboundHandoffSourceItem]:
+        """读取 claim 后卡住的 source item 恢复候选。"""
+
+        result = await db.execute(
+            self.build_stuck_source_item_recovery_statement(
+                now=now,
+                stale_after_seconds=stale_after_seconds,
+                limit=limit,
+            )
+        )
+        return list(result.scalars().all())
 
     @staticmethod
     def _model_insert_values(model: type[Any], data: dict[str, Any]) -> dict[str, Any]:

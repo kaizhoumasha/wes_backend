@@ -104,6 +104,11 @@ def test_smt_full_box_exchange_candidate_scan_task_is_removed() -> None:
     assert "scan-smt-full-box-exchange-candidates-batch" not in config.beat_schedule
 
 
+def test_smt_inbound_handoff_recovery_replaces_old_full_box_scan_task() -> None:
+    assert hasattr(workline_tasks, "scan_smt_inbound_handoff_demands_batch")
+    assert "scan-smt-inbound-handoff-demands-batch" in config.beat_schedule
+
+
 def test_system_outbox_dispatch_task_is_registered() -> None:
     from src.celery_app.app import celery_app
     from src.celery_app.tasks import sys as sys_tasks
