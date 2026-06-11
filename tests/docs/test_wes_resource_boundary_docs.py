@@ -4,6 +4,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SRS = ROOT / "docs/architecture/SRS.md"
 ADR = ROOT / "docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md"
 SPEC = ROOT / "docs/superpowers/specs/2026-06-06-wes-single-layer-rack-orchestration-boundary-spec.md"
+SMT_HANDOFF_SPEC = ROOT / "docs/superpowers/specs/2026-06-10-smt-inbound-handoff-business-spec.md"
 
 
 def read(path: Path) -> str:
@@ -198,6 +199,24 @@ def test_srs_does_not_assign_five_layer_hot_cold_or_side_balance_to_wes():
             "WES 判断五层货架冷热区",
             "WES 授权五层货架空箱",
             "WES 规划 CTU 路径",
+        ),
+    )
+
+
+def test_smt_handoff_spec_keeps_wms_rcs_authority_and_old_entries_removed():
+    spec = read(SMT_HANDOFF_SPEC)
+
+    assert_contains_all(
+        spec,
+        (
+            "不复活 `smt_full_box_exchange` 插件",
+            "不恢复 `scan_smt_full_box_exchange_candidates_batch`",
+            "不让 WES 锁定五层空箱",
+            "不本地判断 CTU 路径",
+            "不替代 WMS/RCS 权威",
+            "唯一生产入口",
+            "ROUGH_SORTER_RELEASE_FACT",
+            "设备 busy 时只等待对应资源，不阻塞整条 WorkLine",
         ),
     )
 

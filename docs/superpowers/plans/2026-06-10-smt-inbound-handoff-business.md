@@ -482,26 +482,36 @@ Endpoints：
 - Modify: `docs/superpowers/specs/2026-06-10-smt-inbound-handoff-business-spec.md`
 - Modify: this plan file for acceptance audit
 
-- [ ] **Step 1: 写集成 smoke 测试**
+- [x] **Step 1: 写集成 smoke 测试**
   - Mock `ROUGH_SORTER_RELEASE_FACT` -> optional exchange -> source item claim -> internal `SORTING_SOURCE_PICK_REQUESTED` Inbox -> plugin command intent -> runtime effect command/outbox correlation writeback。
   - Repeat release/callback/scan are idempotent.
   - Device busy only waits matching resource, not entire WorkLine.
-- [ ] **Step 2: 文档守护**
+- [x] **Step 2: 文档守护**
   - Ensure docs still state WES does not lock five-layer empty boxes, does not bypass WMS/RCS, does not restore old plugin/task.
-- [ ] **Step 3: focused verification**
+- [x] **Step 3: focused verification**
   - Run: `uv run pytest tests/workline_runtime/test_smt_inbound_handoff_models.py tests/workline_runtime/test_smt_inbound_handoff_reason_catalog.py tests/workline_runtime/test_workline_inbox_internal_event.py tests/workline_runtime/test_runtime_config_and_normalization.py tests/workline_runtime/test_workline_orchestrator_internal_event.py tests/workline_runtime/test_smt_usage_policy.py tests/workline_runtime/test_smt_inbound_handoff_service_release.py tests/workline_runtime/test_smt_inbound_handoff_release_producer.py tests/workline_runtime/test_smt_inbound_handoff_exchange.py tests/workline_runtime/test_smt_inbound_handoff_route_service.py tests/workline_runtime/test_smt_inbound_handoff_claim.py tests/workline_runtime/test_smt_inbound_handoff_command_correlation.py tests/workline_runtime/test_smt_inbound_handoff_recovery.py tests/workline_runtime/test_smt_inbound_handoff_celery.py tests/workline_runtime/test_smt_sorting_inbound_plugin.py tests/api/test_smt_inbound_handoff_api.py -q`
   - Expected: PASS。
 - [ ] **Step 4: PostgreSQL verification**
   - Run: `RUN_WORKLINE_INTEGRATION=1 INTEGRATION_DATABASE_URL=<postgres-url> uv run pytest tests/integration/workline_runtime/test_smt_inbound_handoff_claim_postgres.py tests/integration/workline_runtime/test_smt_inbound_handoff_recovery_postgres.py tests/integration/workline_runtime/test_smt_inbound_handoff_e2e.py -q`
   - Expected: PASS。
-- [ ] **Step 5: quality gate**
+- [x] **Step 5: quality gate**
   - Run: `uv run ruff format . && uv run ruff check .`
   - Run: `uv run pytest tests/`
   - Run: `./scripts/git-quality-gate.sh --profile quality`
   - Expected: PASS or documented pre-existing failures unrelated to this plan.
-- [ ] **Step 6: GitNexus detect changes**
+- [x] **Step 6: GitNexus detect changes**
   - Run: `gitnexus_detect_changes()` before commit.
   - Expected: affected symbols and flows match WorkLine handoff, handling reuse, plugin event, API and Celery task only.
+
+### Task 8 Acceptance Audit (2026-06-11)
+
+- Integration smoke: added `tests/integration/workline_runtime/test_smt_inbound_handoff_e2e.py`, covering `ROUGH_SORTER_RELEASE_FACT` idempotent release, source item claim, internal `SORTING_SOURCE_PICK_REQUESTED` Inbox, plugin command intent, runtime effect command/outbox correlation writeback and recovery scan.
+- 文档守护: extended `tests/docs/test_wes_resource_boundary_docs.py` to prevent spec drift around not restoring the old plugin/task and not replacing WMS/RCS authority.
+- Focused verification: `147 passed` for SMT handoff runtime/API/docs focused suites.
+- PostgreSQL gated verification command without integration env: `3 skipped`; true PostgreSQL execution still requires `RUN_WORKLINE_INTEGRATION=1` and `INTEGRATION_DATABASE_URL`.
+- Full verification: `uv run pytest tests/` -> `2137 passed, 24 skipped`.
+- Quality gate: `uv run ruff format . && uv run ruff check .` passed; `./scripts/git-quality-gate.sh --profile quality` passed with Ruff and Bandit.
+- GitNexus staged detect changes: `risk_level: none`, no indexed symbols or execution flows mapped.
 
 ## Planned Test Coverage Diagram
 
