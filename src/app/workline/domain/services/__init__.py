@@ -12,6 +12,7 @@ from .smt_inbound_handoff_reason import (
     SmtInboundHandoffReasonCategory,
     SmtInboundHandoffReasonCode,
     SmtInboundHandoffReasonDefinition,
+    SmtInboundHandoffRecoverability,
     build_smt_inbound_handoff_reason_catalog,
 )
 from .smt_rack_bin_scheduling_service import (
@@ -30,6 +31,7 @@ __all__ = [
     "SmtInboundHandoffReasonCategory",
     "SmtInboundHandoffReasonCode",
     "SmtInboundHandoffReasonDefinition",
+    "SmtInboundHandoffRecoverability",
     "SmtRackBinSchedulingDecision",
     "SmtRackBinSchedulingDecisionKind",
     "SmtRackBinSchedulingService",

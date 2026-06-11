@@ -74,4 +74,5 @@ def test_smt_inbound_handoff_reason_catalog_is_exported_from_domain_services_pac
     assert package.SmtInboundHandoffReasonDefinition is module.SmtInboundHandoffReasonDefinition
     assert package.SmtInboundHandoffReasonCategory is module.SmtInboundHandoffReasonCategory
     assert package.SmtInboundHandoffReasonCatalog is module.SmtInboundHandoffReasonCatalog
+    assert package.SmtInboundHandoffRecoverability is module.SmtInboundHandoffRecoverability
     assert package.build_smt_inbound_handoff_reason_catalog is module.build_smt_inbound_handoff_reason_catalog

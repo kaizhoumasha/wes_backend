@@ -9,11 +9,37 @@ from typing import Any, ClassVar, cast
 
 from sqlalchemy import JSON, Column, Index, Numeric, Text, UniqueConstraint, text
 from sqlalchemy import Enum as SQLAEnum
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.expression import ColumnElement
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
+
+
+class _JsonObjectServerDefault(ColumnElement[str]):
+    """JSON 对象默认值，兼容 PostgreSQL Alembic 对比和 SQLite 测试建表。"""
+
+    inherit_cache = True
+
+
+@compiles(_JsonObjectServerDefault, "postgresql")
+def _compile_json_object_server_default_for_postgresql(
+    element: _JsonObjectServerDefault,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    return "'{}'::json"
+
+
+@compiles(_JsonObjectServerDefault)
+def _compile_json_object_server_default(
+    element: _JsonObjectServerDefault,
+    compiler: Any,
+    **kwargs: Any,
+) -> str:
+    return "'{}'"
 
 
 class SmtInboundHandoffDemandStatus(str, Enum):
@@ -67,7 +93,7 @@ class SmtInboundHandoffDemandBase(BaseMixin):
     release_reason_code: str | None = Field(default=None, max_length=120, description="释放原因码")
     bin_snapshots_json: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON, nullable=False, server_default=text("'{}'")),
+        sa_column=Column(JSON, nullable=False, server_default=_JsonObjectServerDefault()),
         description="释放时料箱和料格快照，仅作为 release evidence",
     )
     decision_status: str | None = Field(default=None, max_length=50, description="满箱交换决策状态")

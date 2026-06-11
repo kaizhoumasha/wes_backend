@@ -9,6 +9,8 @@ from typing import Any
 
 import pytest
 from sqlalchemy import JSON, UniqueConstraint
+from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.schema import CreateTable
 
 
 def _handoff_models() -> Any:
@@ -129,6 +131,18 @@ def test_smt_inbound_handoff_release_snapshot_is_json_evidence_not_claim_path() 
     assert demand.__table__.c.bin_snapshots_json.server_default is not None
     indexed_columns = {column.name for index in demand.__table__.indexes for column in index.columns}
     assert "bin_snapshots_json" not in indexed_columns
+
+
+def test_smt_inbound_handoff_release_snapshot_default_matches_postgresql_and_sqlite_ddl() -> None:
+    models = _handoff_models()
+    demand = _model_attr(models, "SmtInboundHandoffDemand")
+
+    postgresql_ddl = str(CreateTable(demand.__table__).compile(dialect=postgresql.dialect()))
+    sqlite_ddl = str(CreateTable(demand.__table__).compile(dialect=sqlite.dialect()))
+
+    assert "bin_snapshots_json JSON DEFAULT '{}'::json NOT NULL" in postgresql_ddl
+    assert "bin_snapshots_json JSON DEFAULT '{}' NOT NULL" in sqlite_ddl
+    assert "::json" not in sqlite_ddl
 
 
 def test_smt_inbound_handoff_migration_source_item_check_constraint_covers_recovery_states() -> None:
