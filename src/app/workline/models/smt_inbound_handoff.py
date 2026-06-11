@@ -7,6 +7,8 @@ from decimal import Decimal  # noqa: TC003 - SQLModel 运行时需要解析字�
 from enum import Enum
 from typing import Any, ClassVar, cast
 
+from pydantic import BaseModel, ConfigDict
+from pydantic import Field as PydanticField
 from sqlalchemy import JSON, Column, Index, Numeric, Text, UniqueConstraint, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlalchemy.ext.compiler import compiles
@@ -272,15 +274,103 @@ class SmtInboundHandoffSourceItemUpdate(ModelFactory(SmtInboundHandoffSourceItem
     """SMT 入库 handoff source item 更新 Schema。"""
 
 
+class SmtInboundHandoffSourceItemDetailResponse(BaseModel):
+    """SMT 入库 handoff source item 详情投影。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    item_key: str | None = None
+    bin_code: str | None = None
+    bin_cell_index: int | None = None
+    bin_cell_code: str | None = None
+    material_identity_key: str | None = None
+    pkg_code: str | None = None
+    reel_thickness_mm: str | None = None
+    status: str
+    target_workline_id: int | None = None
+    target_workline_code: str | None = None
+    sorting_session_id: int | None = None
+    claim_attempt_no: int = 1
+    source_pick_inbox_id: int | None = None
+    source_pick_command_id: int | None = None
+    source_pick_command_code: str | None = None
+    source_pick_dispatch_key: str | None = None
+    failure_code: str | None = None
+    failure_message: str | None = None
+    source_pick_inbox: dict[str, Any] | None = None
+    source_pick_command: dict[str, Any] | None = None
+    source_pick_outbox: dict[str, Any] | None = None
+    available_actions: list[str] = PydanticField(default_factory=list)
+
+
+class SmtInboundHandoffDemandSummaryResponse(BaseModel):
+    """SMT 入库 handoff demand 列表摘要投影。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    demand_key: str
+    rack_release_id: str
+    source_workline_id: int | None = None
+    source_workline_code: str | None = None
+    target_workline_id: int | None = None
+    target_workline_code: str | None = None
+    single_layer_rack_code: str
+    release_reason_code: str | None = None
+    decision_status: str | None = None
+    handling_operation_key: str | None = None
+    sorting_source_demand_key: str | None = None
+    status: str
+    failure_code: str | None = None
+    failure_message: str | None = None
+    trace_id: str | None = None
+    item_status_counts: dict[str, int] = PydanticField(default_factory=dict)
+    handling_trace_summary: dict[str, Any] = PydanticField(default_factory=dict)
+    claim_recovery_summary: dict[str, int] = PydanticField(default_factory=dict)
+    available_actions: list[str] = PydanticField(default_factory=list)
+
+
+class SmtInboundHandoffDemandListResponse(BaseModel):
+    """SMT 入库 handoff demand 列表响应数据。"""
+
+    total: int = PydanticField(default=0, ge=0)
+    items: list[SmtInboundHandoffDemandSummaryResponse] = PydanticField(default_factory=list)
+    limit: int = PydanticField(default=50, ge=1)
+    offset: int = PydanticField(default=0, ge=0)
+
+
+class SmtInboundHandoffDemandDetailResponse(SmtInboundHandoffDemandSummaryResponse):
+    """SMT 入库 handoff demand 详情投影。"""
+
+    release_snapshot: dict[str, Any] = PydanticField(default_factory=dict)
+    source_items: list[SmtInboundHandoffSourceItemDetailResponse] = PydanticField(default_factory=list)
+
+
+class SmtInboundHandoffActionResponse(BaseModel):
+    """SMT 入库 handoff 手工动作响应。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    status: str
+    available_actions: list[str] = PydanticField(default_factory=list)
+
+
 __all__ = [
+    "SmtInboundHandoffActionResponse",
     "SmtInboundHandoffDemand",
     "SmtInboundHandoffDemandBase",
     "SmtInboundHandoffDemandCreate",
+    "SmtInboundHandoffDemandDetailResponse",
+    "SmtInboundHandoffDemandListResponse",
     "SmtInboundHandoffDemandStatus",
+    "SmtInboundHandoffDemandSummaryResponse",
     "SmtInboundHandoffDemandUpdate",
     "SmtInboundHandoffSourceItem",
     "SmtInboundHandoffSourceItemBase",
     "SmtInboundHandoffSourceItemCreate",
+    "SmtInboundHandoffSourceItemDetailResponse",
     "SmtInboundHandoffSourceItemStatus",
     "SmtInboundHandoffSourceItemUpdate",
 ]

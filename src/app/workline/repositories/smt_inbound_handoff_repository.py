@@ -5,10 +5,13 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
+from src.app.device.models.command import DeviceCommand
+from src.app.sys.models.outbox import SystemOutbox
+from src.app.workline.models.inbox import WorklineInbox
 from src.app.workline.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
     SmtInboundHandoffDemandStatus,
@@ -114,6 +117,68 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
             .order_by(columns.item_key)
         )
         return list(result.scalars().all())
+
+    async def list_demands_for_api(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+    ) -> list[SmtInboundHandoffDemand]:
+        """读取 handoff demand 查询 API 列表页。"""
+
+        columns = cast("Any", SmtInboundHandoffDemand).__table__.c
+        statement = select(SmtInboundHandoffDemand)
+        if status is not None:
+            statement = statement.where(columns.status == status)
+        statement = statement.order_by(columns.updated_at.desc(), columns.id.desc()).offset(offset).limit(limit)
+        result = await db.execute(statement)
+        return list(result.scalars().all())
+
+    async def count_demands_for_api(
+        self,
+        db: AsyncSession,
+        *,
+        status: str | None = None,
+    ) -> int:
+        """统计 handoff demand 查询 API 总数。"""
+
+        columns = cast("Any", SmtInboundHandoffDemand).__table__.c
+        statement = select(func.count(columns.id))
+        if status is not None:
+            statement = statement.where(columns.status == status)
+        result = await db.execute(statement)
+        return int(result.scalar_one() or 0)
+
+    async def get_workline_inbox_by_id(
+        self,
+        db: AsyncSession,
+        inbox_id: int,
+    ) -> WorklineInbox | None:
+        """按 ID 读取 WorklineInbox evidence。"""
+
+        return await db.get(WorklineInbox, inbox_id)
+
+    async def get_device_command_by_id(
+        self,
+        db: AsyncSession,
+        command_id: int,
+    ) -> DeviceCommand | None:
+        """按 ID 读取 DeviceCommand evidence。"""
+
+        return await db.get(DeviceCommand, command_id)
+
+    async def get_outbox_by_dispatch_key(
+        self,
+        db: AsyncSession,
+        dispatch_key: str,
+    ) -> SystemOutbox | None:
+        """按 dispatch_key 读取 source-pick outbox evidence。"""
+
+        columns = cast("Any", SystemOutbox).__table__.c
+        result = await db.execute(select(SystemOutbox).where(columns.dispatch_key == dispatch_key))
+        return result.scalar_one_or_none()
 
     async def list_sorting_candidate_worklines(self, db: AsyncSession) -> list[WorkLine]:
         """读取 SMT 入库分拣 WorkLine 配置候选。"""

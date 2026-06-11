@@ -32,6 +32,7 @@ from src.app.workline.repositories.smt_inbound_handoff_repository import (
 )
 from src.app.workline.services.inbox_service import WorklineInboxService, inbox_service
 from src.utils.timezone import timezone
+from src.utils.value_normalization import enum_value
 from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
@@ -617,6 +618,70 @@ class SmtInboundHandoffService:
                 summary[outcome] += 1
         return summary
 
+    async def list_handoff_demand_summaries(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        """查询 handoff demand 摘要，供人工处置页列表使用。"""
+
+        normalized_status = self._text_or_none(status)
+        demands = await self.repository.list_demands_for_api(
+            db,
+            limit=limit,
+            offset=offset,
+            status=normalized_status,
+        )
+        total = await self.repository.count_demands_for_api(db, status=normalized_status)
+        items: list[dict[str, Any]] = []
+        for demand in demands:
+            demand_id = getattr(demand, "id", None)
+            source_items = await self.repository.list_source_items(db, demand_id) if isinstance(demand_id, int) else []
+            items.append(self._demand_summary(demand, source_items))
+        return {"total": total, "items": items, "limit": limit, "offset": offset}
+
+    async def get_handoff_demand_detail(
+        self,
+        db: AsyncSession,
+        demand_id: int,
+    ) -> dict[str, Any] | None:
+        """查询 handoff demand 详情和 source-pick evidence。"""
+
+        demand = await self.repository.get_by_id(db, demand_id)
+        if demand is None:
+            return None
+        source_items = await self.repository.list_source_items(db, demand_id)
+        detail = self._demand_summary(demand, source_items)
+        detail["release_snapshot"] = self._dict_or_empty(demand.bin_snapshots_json)
+        detail["source_items"] = [await self._source_item_detail(db, item) for item in source_items]
+        return detail
+
+    async def retry_source_pick_action(
+        self,
+        db: AsyncSession,
+        *,
+        source_item_id: int,
+    ) -> dict[str, Any]:
+        """人工释放 source-pick 失败 item，允许后续 claim 重新创建内部事件和命令。"""
+
+        item = await self.repository.get_source_item_by_id(db, source_item_id)
+        if item is None:
+            raise ValueError(f"handoff source item 不存在: {source_item_id}")
+        if item.status != SmtInboundHandoffSourceItemStatus.MANUAL_HOLD:
+            raise ValueError("当前状态不可重试 source pick")
+        if "RETRY_SOURCE_PICK" not in self._available_actions(item):
+            raise ValueError("当前失败原因不可重试 source pick")
+
+        released = await self.release_source_pick_dead_letter_for_retry(db, source_item_id=source_item_id)
+        return {
+            "id": released.id,
+            "status": enum_value(released.status),
+            "available_actions": self._available_actions(released),
+        }
+
     async def _recover_stuck_source_item(
         self,
         db: AsyncSession,
@@ -877,6 +942,189 @@ class SmtInboundHandoffService:
     @staticmethod
     def _dict_or_empty(value: Any) -> dict[str, Any]:
         return dict(value) if isinstance(value, Mapping) else {}
+
+    def _demand_summary(
+        self,
+        demand: SmtInboundHandoffDemand,
+        source_items: Sequence[SmtInboundHandoffSourceItem],
+    ) -> dict[str, Any]:
+        return {
+            "id": demand.id,
+            "demand_key": demand.demand_key,
+            "rack_release_id": demand.rack_release_id,
+            "source_workline_id": demand.source_workline_id,
+            "source_workline_code": demand.source_workline_code,
+            "target_workline_id": demand.target_workline_id,
+            "target_workline_code": demand.target_workline_code,
+            "single_layer_rack_code": demand.single_layer_rack_code,
+            "release_reason_code": demand.release_reason_code,
+            "decision_status": demand.decision_status,
+            "handling_operation_key": demand.handling_operation_key,
+            "sorting_source_demand_key": demand.sorting_source_demand_key,
+            "status": enum_value(demand.status),
+            "failure_code": demand.failure_code,
+            "failure_message": demand.failure_message,
+            "trace_id": demand.trace_id,
+            "item_status_counts": self._item_status_counts(source_items),
+            "handling_trace_summary": {
+                "handling_operation_key": demand.handling_operation_key,
+                "decision_status": demand.decision_status,
+            },
+            "claim_recovery_summary": self._claim_recovery_summary(source_items),
+            "available_actions": self._available_actions(demand, source_items=source_items),
+        }
+
+    async def _source_item_detail(
+        self,
+        db: AsyncSession,
+        item: SmtInboundHandoffSourceItem,
+    ) -> dict[str, Any]:
+        return {
+            "id": item.id,
+            "item_key": item.item_key,
+            "bin_code": item.bin_code,
+            "bin_cell_index": item.bin_cell_index,
+            "bin_cell_code": item.bin_cell_code,
+            "material_identity_key": item.material_identity_key,
+            "pkg_code": item.pkg_code,
+            "reel_thickness_mm": str(item.reel_thickness_mm) if item.reel_thickness_mm is not None else None,
+            "status": enum_value(item.status),
+            "target_workline_id": item.target_workline_id,
+            "target_workline_code": item.target_workline_code,
+            "sorting_session_id": item.sorting_session_id,
+            "claim_attempt_no": item.claim_attempt_no,
+            "source_pick_inbox_id": item.source_pick_inbox_id,
+            "source_pick_command_id": item.source_pick_command_id,
+            "source_pick_command_code": item.source_pick_command_code,
+            "source_pick_dispatch_key": item.source_pick_dispatch_key,
+            "failure_code": item.failure_code,
+            "failure_message": item.failure_message,
+            "source_pick_inbox": await self._source_pick_inbox_evidence(db, item.source_pick_inbox_id),
+            "source_pick_command": await self._source_pick_command_evidence(db, item.source_pick_command_id),
+            "source_pick_outbox": await self._source_pick_outbox_evidence(db, item.source_pick_dispatch_key),
+            "available_actions": self._available_actions(item),
+        }
+
+    @staticmethod
+    def _item_status_counts(source_items: Sequence[SmtInboundHandoffSourceItem]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for item in source_items:
+            status = str(enum_value(item.status))
+            counts[status] = counts.get(status, 0) + 1
+        return counts
+
+    def _claim_recovery_summary(self, source_items: Sequence[SmtInboundHandoffSourceItem]) -> dict[str, int]:
+        summary = {
+            "dead_letter": 0,
+            "command_missing": 0,
+            "inbox_invalid": 0,
+            "manual_hold": 0,
+            "claim_stuck": 0,
+        }
+        for item in source_items:
+            failure_code = item.failure_code
+            status = enum_value(item.status)
+            if status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD.value:
+                summary["manual_hold"] += 1
+            if status in {
+                SmtInboundHandoffSourceItemStatus.PICK_REQUESTED.value,
+                SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING.value,
+            }:
+                summary["claim_stuck"] += 1
+            if failure_code == SmtInboundHandoffReasonCode.SOURCE_PICK_INBOX_DEAD_LETTER.value:
+                summary["dead_letter"] += 1
+            elif failure_code == SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value:
+                summary["command_missing"] += 1
+            elif failure_code == SmtInboundHandoffReasonCode.INTERNAL_INBOX_ENVELOPE_INVALID.value:
+                summary["inbox_invalid"] += 1
+        return {key: value for key, value in summary.items() if value}
+
+    def _available_actions(
+        self,
+        entity: Any,
+        *,
+        source_items: Sequence[SmtInboundHandoffSourceItem] = (),
+    ) -> list[str]:
+        failure_code = self._text_or_none(getattr(entity, "failure_code", None))
+        if failure_code in self.reason_catalog.by_code:
+            return list(self.reason_catalog.get(failure_code).available_actions)
+
+        actions: list[str] = []
+        status = enum_value(getattr(entity, "status", None))
+        if status in {
+            SmtInboundHandoffDemandStatus.CLAIMED_BY_SORTING.value,
+            SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS.value,
+            SmtInboundHandoffSourceItemStatus.PICK_REQUESTED.value,
+            SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING.value,
+        }:
+            actions.append("SCAN_RECOVERY")
+        for item in source_items:
+            actions.extend(self._available_actions(item))
+        return list(dict.fromkeys(actions))
+
+    async def _source_pick_inbox_evidence(
+        self,
+        db: AsyncSession,
+        inbox_id: int | None,
+    ) -> dict[str, Any] | None:
+        if inbox_id is None:
+            return None
+        inbox = await self.repository.get_workline_inbox_by_id(db, inbox_id)
+        if inbox is None:
+            return None
+        return {
+            "id": inbox.id,
+            "status": enum_value(inbox.status),
+            "event_id": inbox.event_id,
+            "attempt_count": inbox.attempt_count,
+            "max_attempts": inbox.max_attempts,
+            "next_retry_at": inbox.next_retry_at,
+            "processed_at": inbox.processed_at,
+            "error_message": inbox.error_message,
+        }
+
+    async def _source_pick_command_evidence(
+        self,
+        db: AsyncSession,
+        command_id: int | None,
+    ) -> dict[str, Any] | None:
+        if command_id is None:
+            return None
+        command = await self.repository.get_device_command_by_id(db, command_id)
+        if command is None:
+            return None
+        return {
+            "id": command.id,
+            "command_code": command.command_code,
+            "status": enum_value(command.status),
+            "result": enum_value(command.result),
+            "result_data": command.result_data,
+            "error_detail": command.error_detail,
+            "sent_at": command.sent_at,
+            "ack_received_at": command.ack_received_at,
+            "completed_at": command.completed_at,
+        }
+
+    async def _source_pick_outbox_evidence(
+        self,
+        db: AsyncSession,
+        dispatch_key: str | None,
+    ) -> dict[str, Any] | None:
+        if dispatch_key is None:
+            return None
+        outbox = await self.repository.get_outbox_by_dispatch_key(db, dispatch_key)
+        if outbox is None:
+            return None
+        return {
+            "id": outbox.id,
+            "dispatch_key": outbox.dispatch_key,
+            "status": enum_value(outbox.status),
+            "attempt_count": outbox.attempt_count,
+            "next_retry_at": outbox.next_retry_at,
+            "last_error": outbox.last_error,
+            "sent_at": outbox.sent_at,
+            "finished_at": outbox.finished_at,
+        }
 
     @staticmethod
     def _enum_text(value: Any) -> str | None:
