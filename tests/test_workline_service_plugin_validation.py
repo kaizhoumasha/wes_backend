@@ -10,6 +10,7 @@ from sqlalchemy import update
 
 from src.app.device.models import Device
 from src.app.device.models.command import CommandStatus, DeviceCommand
+from src.app.resource.models import RackKind
 from src.app.sys.models.outbox import (
     SystemOutbox,
     SystemOutboxDispatchType,
@@ -73,6 +74,20 @@ def make_device(device_id: int, role: str) -> SimpleNamespace:
     )
 
 
+def _carrier_capability(
+    *,
+    allowed_rack_kinds: tuple[str, ...] = ("SINGLE_LAYER",),
+    min_capacity: int = 1,
+    max_capacity: int = 1,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        allowed_rack_kinds=allowed_rack_kinds,
+        min_capacity=min_capacity,
+        max_capacity=max_capacity,
+        allowed_slot_kinds=(),
+    )
+
+
 def test_workline_model_returns_none_for_removed_smt_plugin() -> None:
     """旧 SMT 插件清理后，WorkLine 不再解析该插件类。"""
 
@@ -88,8 +103,8 @@ def test_workline_model_returns_none_for_removed_smt_plugin() -> None:
     assert workline.plugin_definition is None
 
 
-def test_workline_service_lists_registered_plugin_options() -> None:
-    """插件注册后，插件下拉选项应暴露合同版本。"""
+def test_workline_service_lists_selector_only_plugin_options() -> None:
+    """插件下拉选项只暴露选择器字段，不承载 manifest 能力事实。"""
 
     service = WorkLineService()
 
@@ -97,14 +112,18 @@ def test_workline_service_lists_registered_plugin_options() -> None:
     options_by_key = {option.plugin_key: option for option in options}
 
     assert [option.plugin_key for option in options] == [SMT_SORTING_INBOUND_PLUGIN_KEY, "rough_sorter"]
+    assert all(
+        set(option.model_dump()) == {"plugin_key", "label", "contract_versions", "default_contract_version"}
+        for option in options
+    )
     assert options_by_key["rough_sorter"].default_contract_version == "rough_sorter.v1"
     assert options_by_key[SMT_SORTING_INBOUND_PLUGIN_KEY].default_contract_version == (
         SMT_SORTING_INBOUND_CONTRACT_VERSION
     )
 
 
-def test_workline_service_returns_single_plugin_manifest_summary() -> None:
-    """单插件 manifest 摘要应暴露前端现场态势图所需角色映射。"""
+def test_workline_service_returns_new_plugin_manifest_summary() -> None:
+    """单插件 manifest 摘要应暴露新纯数据合同字段。"""
 
     service = WorkLineService()
 
@@ -113,20 +132,61 @@ def test_workline_service_returns_single_plugin_manifest_summary() -> None:
     assert summary is not None
     assert summary.plugin_key == SMT_SORTING_INBOUND_PLUGIN_KEY
     assert summary.contract_version == SMT_SORTING_INBOUND_CONTRACT_VERSION
-    assert {req.role for req in summary.required_device_roles} == {
+    assert {req.role for req in summary.devices} == {
         ROLE_SORTING_SOURCE_ARM,
         ROLE_SORTING_SCAN_PLATFORM,
         ROLE_SORTING_TARGET_ARM,
         ROLE_SORTING_NG_STATION,
         ROLE_SORTING_WORKSTATION,
     }
-    assert summary.event_source_roles[EVENT_WORKING_BIN_SCAN] == [ROLE_SORTING_SCAN_PLATFORM]
-    assert summary.event_source_roles[EVENT_SESSION_COMPLETE_REQUESTED] == [ROLE_SORTING_WORKSTATION]
-    assert summary.command_target_roles[COMMAND_SOURCE_PICK] == [ROLE_SORTING_SOURCE_ARM]
-    assert summary.command_target_roles[COMMAND_TARGET_PLACE] == [ROLE_SORTING_TARGET_ARM]
-    assert summary.command_target_roles[COMMAND_NG_PLACE] == [ROLE_SORTING_TARGET_ARM]
-    assert EVENT_WORKING_BIN_SCAN in summary.supported_events
-    assert COMMAND_TARGET_PLACE in summary.supported_commands
+    events_by_name = {event.event: event for event in summary.events}
+    commands_by_name = {command.command: command for command in summary.commands}
+    assert events_by_name[EVENT_WORKING_BIN_SCAN].source_device_roles == [ROLE_SORTING_SCAN_PLATFORM]
+    assert events_by_name[EVENT_SESSION_COMPLETE_REQUESTED].source_device_roles == [ROLE_SORTING_WORKSTATION]
+    assert commands_by_name[COMMAND_SOURCE_PICK].target_device_role == ROLE_SORTING_SOURCE_ARM
+    assert commands_by_name[COMMAND_TARGET_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
+    assert commands_by_name[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
+
+
+def test_plugin_options_do_not_expose_manifest_capabilities() -> None:
+    """插件选择器不再复制 manifest 的设备、事件和命令能力字段。"""
+
+    option = WorkLineService().list_plugin_options()[0]
+
+    assert not hasattr(option, "required_device_roles")
+    assert not hasattr(option, "supported_events")
+    assert not hasattr(option, "supported_commands")
+
+
+def test_manifest_summary_exposes_devices_positions_topology_events_commands_resource_boundaries() -> None:
+    """manifest summary 使用新字段名完整暴露纯数据合同。"""
+
+    summary = WorkLineService().get_plugin_manifest_summary("rough_sorter")
+
+    assert summary is not None
+    assert set(summary.model_dump()) == {
+        "plugin_key",
+        "contract_version",
+        "devices",
+        "positions",
+        "topology",
+        "events",
+        "commands",
+        "resource_boundaries",
+    }
+    assert summary.devices
+    assert summary.positions
+    assert summary.topology.flow_edges
+    assert summary.events
+    assert summary.commands
+    assert summary.resource_boundaries
+    assert summary.positions[0].carrier_capability.allowed_rack_kinds
+    assert not hasattr(summary, "required_device_roles")
+    assert not hasattr(summary, "event_source_roles")
+    assert not hasattr(summary, "command_target_roles")
+    assert not hasattr(summary, "supported_events")
+    assert not hasattr(summary, "supported_commands")
+    assert not hasattr(summary, "single_layer_boundaries")
 
 
 def test_smt_sorting_inbound_manifest_summary_does_not_expose_ng_arm_role() -> None:
@@ -135,140 +195,124 @@ def test_smt_sorting_inbound_manifest_summary_does_not_expose_ng_arm_role() -> N
     summary = WorkLineService().get_plugin_manifest_summary(SMT_SORTING_INBOUND_PLUGIN_KEY)
 
     assert summary is not None
-    command_roles = {role for roles in summary.command_target_roles.values() for role in roles}
-    required_roles = {requirement.role for requirement in summary.required_device_roles}
-    assert summary.command_target_roles[COMMAND_NG_PLACE] == [ROLE_SORTING_TARGET_ARM]
+    command_roles = {command.target_device_role for command in summary.commands}
+    required_roles = {requirement.role for requirement in summary.devices}
+    commands_by_name = {command.command: command for command in summary.commands}
+    assert commands_by_name[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
     assert command_roles == {ROLE_SORTING_SOURCE_ARM, ROLE_SORTING_TARGET_ARM}
     assert "NG_ARM" not in command_roles
     assert "NG_ARM" not in required_roles
 
 
-def test_workline_service_rejects_manifest_summary_missing_event_source_roles(monkeypatch) -> None:
-    """manifest 摘要字段缺失时，Service 应抛明确 ValueError。"""
+def test_configuration_checks_use_event_and_command_bindings(monkeypatch) -> None:
+    """配置预检应读取 manifest.events / manifest.commands，而不是旧角色映射。"""
 
     manifest = SimpleNamespace(
-        plugin_key="broken_plugin",
-        contract_version="broken.v1",
-        required_device_roles=(),
-        command_target_roles={},
-        supported_events=frozenset(),
-        supported_commands=frozenset(),
-    )
-    definition = SimpleNamespace(plugin_key="broken_plugin", manifest=manifest)
-    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
-
-    with pytest.raises(ValueError, match="event_source_roles"):
-        WorkLineService().get_plugin_manifest_summary("broken_plugin")
-
-
-def test_workline_service_rejects_manifest_summary_missing_supported_events(monkeypatch) -> None:
-    """manifest 摘要字段缺失时，Service 应抛明确 ValueError。"""
-
-    manifest = SimpleNamespace(
-        plugin_key="broken_plugin",
-        contract_version="broken.v1",
-        required_device_roles=(),
-        event_source_roles={},
-        command_target_roles={},
-        supported_commands=frozenset(),
-    )
-    definition = SimpleNamespace(plugin_key="broken_plugin", manifest=manifest)
-    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
-
-    with pytest.raises(ValueError, match="supported_events"):
-        WorkLineService().get_plugin_manifest_summary("broken_plugin")
-
-
-def test_workline_service_rejects_manifest_summary_mapping_supported_events(monkeypatch) -> None:
-    """supported_events 不能把 dict keys 当事件列表。"""
-
-    manifest = SimpleNamespace(
-        plugin_key="broken_plugin",
-        contract_version="broken.v1",
-        required_device_roles=(),
-        event_source_roles={},
-        command_target_roles={},
-        supported_events={"EVENT_A": "bad"},
-        supported_commands=frozenset(),
-    )
-    definition = SimpleNamespace(plugin_key="broken_plugin", manifest=manifest)
-    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
-
-    with pytest.raises(ValueError, match="supported_events"):
-        WorkLineService().get_plugin_manifest_summary("broken_plugin")
-
-
-def test_workline_service_rejects_mapping_required_role_capabilities(monkeypatch) -> None:
-    """capabilities 不能把 dict keys 当能力列表。"""
-
-    manifest = SimpleNamespace(
-        plugin_key="broken_plugin",
-        contract_version="broken.v1",
-        required_device_roles=(
+        plugin_key="binding_plugin",
+        contract_version="binding.v1",
+        devices=(
+            SimpleNamespace(role="SCANNER", min_count=1, max_count=1, hardware_capabilities=frozenset()),
+            SimpleNamespace(role="ARM", min_count=1, max_count=1, hardware_capabilities=frozenset()),
+        ),
+        positions=(),
+        topology=SimpleNamespace(flow_edges=()),
+        events=(
             SimpleNamespace(
-                role="SCANNER",
-                min_count=1,
-                max_count=1,
-                capabilities={"cap_a": "bad"},
+                event="NEW_EVENT",
+                source_device_roles=("SCANNER",),
+                category="ENTRY_DEVICE",
+                payload_schema_ref=None,
             ),
         ),
-        event_source_roles={},
-        command_target_roles={},
-        supported_events=frozenset(),
-        supported_commands=frozenset(),
-    )
-    definition = SimpleNamespace(plugin_key="broken_plugin", manifest=manifest)
-    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
-
-    with pytest.raises(ValueError, match="capabilities"):
-        WorkLineService().get_plugin_manifest_summary("broken_plugin")
-
-
-def test_workline_service_rejects_mapping_event_source_role_values(monkeypatch) -> None:
-    """event_source_roles 不能把 dict keys 当角色列表。"""
-
-    manifest = SimpleNamespace(
-        plugin_key="broken_plugin",
-        contract_version="broken.v1",
-        required_device_roles=(),
-        event_source_roles={"EVENT_A": {"SCANNER": "bad"}},
-        command_target_roles={},
-        supported_events=frozenset(),
-        supported_commands=frozenset(),
-    )
-    definition = SimpleNamespace(plugin_key="broken_plugin", manifest=manifest)
-    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
-
-    with pytest.raises(ValueError, match=r"event_source_roles\.EVENT_A"):
-        WorkLineService().get_plugin_manifest_summary("broken_plugin")
-
-
-def test_workline_service_sorts_manifest_required_role_capabilities(monkeypatch) -> None:
-    """capabilities 来自 frozenset，响应中必须稳定排序。"""
-
-    manifest = SimpleNamespace(
-        plugin_key="capability_plugin",
-        contract_version="capability.v1",
-        required_device_roles=(
+        commands=(
             SimpleNamespace(
-                role="SCANNER",
-                min_count=1,
-                max_count=1,
-                capabilities=frozenset({"cap_z", "cap_a", "cap_m", "cap_b", "cap_y"}),
+                command="NEW_COMMAND",
+                target_device_role="ARM",
+                position_args=(),
+                payload_schema_ref=None,
+                result_bindings=(),
             ),
         ),
-        event_source_roles={},
-        command_target_roles={},
-        supported_events=frozenset(),
-        supported_commands=frozenset(),
+        resource_boundaries=(),
+        event_source_roles={"OLD_EVENT": ("SCANNER",)},
+        command_target_roles={"OLD_COMMAND": ("ARM",)},
     )
-    definition = SimpleNamespace(plugin_key="capability_plugin", manifest=manifest)
+    definition = SimpleNamespace(plugin_key="binding_plugin", manifest=manifest)
     monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
 
-    summary = WorkLineService().get_plugin_manifest_summary("capability_plugin")
+    scanner = make_device(1, "SCANNER")
+    scanner.capabilities_json = {"supports_event_types": ["NEW_EVENT"]}
+    arm = make_device(2, "ARM")
+    arm.capabilities_json = {"supports_command_types": ["NEW_COMMAND"]}
+    workline = WorkLine(
+        line_code="WL-BINDING",
+        line_name="事件命令绑定检查",
+        line_type=LineType.AUTO,
+        plugin_key="binding_plugin",
+        contract_version="binding.v1",
+    )
 
-    assert summary is not None
-    assert summary.required_device_roles[0].capabilities == ["cap_a", "cap_b", "cap_m", "cap_y", "cap_z"]
+    checks = WorkLineService()._build_configuration_checks(workline, [scanner, arm])
+    event_checks = [check for check in checks if check.code == "EVENT_SOURCE_CAPABILITY"]
+    command_checks = [check for check in checks if check.code == "COMMAND_TARGET_CAPABILITY"]
+
+    assert [check.context["event_type"] for check in event_checks] == ["NEW_EVENT"]
+    assert [check.context["command_type"] for check in command_checks] == ["NEW_COMMAND"]
+    assert all(check.status == "PASS" for check in [*event_checks, *command_checks])
+
+
+def test_configuration_checks_validate_position_carrier_capability_against_workline_config(monkeypatch) -> None:
+    """配置预检应比较 manifest position 承载约束和工作线货架位置配置。"""
+
+    manifest = SimpleNamespace(
+        plugin_key="carrier_plugin",
+        contract_version="carrier.v1",
+        devices=(),
+        positions=(
+            SimpleNamespace(
+                code="WORK_POSITION",
+                role="WORK",
+                station_code="WORK_STATION",
+                carrier_capability=_carrier_capability(
+                    allowed_rack_kinds=("FIVE_LAYER",),
+                    min_capacity=2,
+                    max_capacity=4,
+                ),
+            ),
+        ),
+        topology=SimpleNamespace(flow_edges=()),
+        events=(),
+        commands=(),
+        resource_boundaries=(),
+    )
+    definition = SimpleNamespace(plugin_key="carrier_plugin", manifest=manifest)
+    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
+    workline = WorkLine(
+        line_code="WL-CARRIER",
+        line_name="承载能力检查",
+        line_type=LineType.AUTO,
+        plugin_key="carrier_plugin",
+        contract_version="carrier.v1",
+    )
+    rack_position = SimpleNamespace(
+        position_code="WORK_POSITION",
+        allowed_rack_kind=RackKind.SINGLE_LAYER,
+        capacity=1,
+        enabled=True,
+    )
+
+    checks = WorkLineService()._build_configuration_checks(workline, [], [rack_position])
+    carrier_checks = [check for check in checks if check.code == "POSITION_CARRIER_CAPABILITY"]
+
+    assert len(carrier_checks) == 1
+    assert carrier_checks[0].status == "FAIL"
+    assert carrier_checks[0].severity == "BLOCKER"
+    assert carrier_checks[0].context["position_code"] == "WORK_POSITION"
+    assert carrier_checks[0].context["allowed_rack_kind"] == "SINGLE_LAYER"
+    assert carrier_checks[0].context["allowed_rack_kinds"] == ["FIVE_LAYER"]
+    assert carrier_checks[0].context["capacity"] == 1
+    assert carrier_checks[0].context["min_capacity"] == 2
+    assert carrier_checks[0].context["max_capacity"] == 4
 
 
 def test_workline_service_returns_none_for_unknown_plugin_manifest_summary() -> None:
