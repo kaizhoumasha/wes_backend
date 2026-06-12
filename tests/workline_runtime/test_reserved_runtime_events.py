@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 from src.app.workline.models.safety import WorkLineRuntimeStatus
+from src.workline_runtime import plugin_manifest as manifest_contract
 from src.workline_runtime.plugin_base import WorklinePlugin, on_event
-from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
 from src.workline_runtime.plugin_sdk import canonicalize_event_type
 from src.workline_runtime.runtime_events import (
     PLATFORM_CONTROL_EVENTS,
@@ -16,8 +16,28 @@ from src.workline_runtime.runtime_events import (
 )
 
 
-def _business_key(_payload: dict[str, object]) -> str | None:
-    return "BK-1"
+def _contract(name: str):
+    return getattr(manifest_contract, name)
+
+
+def _event_binding(event: str):
+    return _contract("EventBinding")(
+        event=event,
+        source_device_roles=("ENTRY_SCANNER",),
+        category=_contract("EventCategory").ENTRY_DEVICE,
+        payload_schema_ref=None,
+    )
+
+
+def _command_result_binding(event: str, *, next_event: str | None = None):
+    return _contract("CommandResultBinding")(
+        result="SUCCESS",
+        event=event,
+        category=_contract("EventCategory").COMMAND_RESULT,
+        classification="success",
+        terminal=False,
+        next_event=next_event,
+    )
 
 
 def test_estop_is_reserved_runtime_event() -> None:
@@ -67,48 +87,19 @@ def test_runtime_event_helper_rejects_platform_control_start_with_actionable_mes
         assert_not_reserved_runtime_event("WORKLINE_START_REQUESTED", owner="test")
 
 
-def test_manifest_rejects_reserved_supported_event() -> None:
-    with pytest.raises(ValueError, match="supported_events"):
-        WorklinePluginManifest(
-            plugin_key="bad",
-            contract_version="1.0",
-            required_device_roles=(DeviceRoleRequirement(role="SCANNER"),),
-            business_key_resolver=_business_key,
-            supported_events=frozenset({"ESTOP_PRESSED"}),
-        )
+def test_manifest_rejects_reserved_runtime_event_binding_event() -> None:
+    with pytest.raises(ValueError, match="ESTOP_PRESSED"):
+        _event_binding("ESTOP_PRESSED")
 
 
-def test_manifest_rejects_platform_control_supported_event() -> None:
-    with pytest.raises(ValueError, match="supported_events"):
-        WorklinePluginManifest(
-            plugin_key="bad",
-            contract_version="1.0",
-            required_device_roles=(DeviceRoleRequirement(role="SCANNER"),),
-            business_key_resolver=_business_key,
-            supported_events=frozenset({"WORKLINE_START_REQUESTED"}),
-        )
+def test_manifest_rejects_reserved_runtime_command_result_event() -> None:
+    with pytest.raises(ValueError, match="WORKLINE_START_REQUESTED"):
+        _command_result_binding("WORKLINE_START_REQUESTED")
 
 
-def test_manifest_rejects_reserved_event_source_role() -> None:
-    with pytest.raises(ValueError, match="event_source_roles"):
-        WorklinePluginManifest(
-            plugin_key="bad",
-            contract_version="1.0",
-            required_device_roles=(DeviceRoleRequirement(role="SCANNER"),),
-            business_key_resolver=_business_key,
-            event_source_roles={"ESTOP_PRESSED": "SCANNER"},
-        )
-
-
-def test_manifest_rejects_platform_control_event_source_role() -> None:
-    with pytest.raises(ValueError, match="event_source_roles"):
-        WorklinePluginManifest(
-            plugin_key="bad",
-            contract_version="1.0",
-            required_device_roles=(DeviceRoleRequirement(role="SCANNER"),),
-            business_key_resolver=_business_key,
-            event_source_roles={"WORKLINE_START_REQUESTED": "SCANNER"},
-        )
+def test_manifest_rejects_reserved_runtime_command_result_next_event() -> None:
+    with pytest.raises(ValueError, match="next_event"):
+        _command_result_binding("TOTE_WEIGHED", next_event="WORKLINE_START_REQUESTED")
 
 
 def test_on_event_rejects_reserved_event() -> None:
