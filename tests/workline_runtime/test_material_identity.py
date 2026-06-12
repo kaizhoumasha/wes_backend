@@ -1,27 +1,16 @@
 """Material identity contract tests."""
 
+import src.workline_plugin_registry as registry
 from src.workline_runtime.material_identity import (
     MaterialIdentityInput,
     MaterialIdentityResolutionStatus,
     hash_material_evidence,
 )
-from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
 
 
-def _business_key_resolver(payload_json: dict) -> str | None:
-    data = payload_json.get("data")
-    return data.get("PkgID") if isinstance(data, dict) else None
-
-
-def test_manifest_without_material_identity_resolver_returns_missing() -> None:
-    manifest = WorklinePluginManifest(
-        plugin_key="test_plugin",
-        contract_version="1.0",
-        required_device_roles=(DeviceRoleRequirement("SCANNER"),),
-        business_key_resolver=_business_key_resolver,
-    )
-
-    identity = manifest.resolve_material_identity(
+def test_registry_material_identity_helper_returns_missing_default() -> None:
+    identity = registry.resolve_workline_material_identity(
+        "unknown_plugin",
         MaterialIdentityInput(
             source_payload={
                 "data": {
@@ -30,7 +19,7 @@ def test_manifest_without_material_identity_resolver_returns_missing() -> None:
                     "LotCode": "8904936031",
                 }
             }
-        )
+        ),
     )
 
     assert identity.resolution_status == MaterialIdentityResolutionStatus.MISSING

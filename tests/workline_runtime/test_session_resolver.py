@@ -10,6 +10,8 @@ SessionResolver 单元测试
 设计参考: 设计文档 phase2-orchestrator
 """
 
+import hashlib
+import json
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,13 +21,85 @@ import pytest
 from src.app.workline.models.inbox import InboxKind
 from src.app.workline.models.session import RunMode, SessionStatus
 from src.utils.timezone import timezone
-from src.workline_plugins.rough_sorter.contract import resolve_rough_sorter_business_key
+from src.workline_plugin_registry import WORKLINE_PLUGIN_REGISTRY, WorklinePluginDefinition
+from src.workline_runtime.plugin_manifest import (
+    DeviceRequirement,
+    Position,
+    PositionCarrierCapability,
+    TopologySpec,
+    WorklinePluginManifest,
+)
 from src.workline_runtime.session_resolver import (
     SessionResolveError,
     _resolve_business_key,
 )
 
 pytestmark = pytest.mark.usefixtures("registered_test_workline_plugin")
+
+
+def _stable_hash(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+
+
+def _plugin_manifest(plugin_key: str) -> WorklinePluginManifest:
+    return WorklinePluginManifest(
+        plugin_key=plugin_key,
+        contract_version="test.v1",
+        devices=(DeviceRequirement(role="SCANNER", min_count=0),),
+        positions=(
+            Position(
+                code="ENTRY",
+                role="ENTRY",
+                station_code="ST-1",
+                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
+            ),
+        ),
+        topology=TopologySpec(),
+    )
+
+
+def _payload_data(payload_json: dict[str, object]) -> dict[str, object]:
+    data = payload_json.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def _resolve_test_business_key(payload_json: dict[str, object]) -> str | None:
+    data = _payload_data(payload_json)
+    item_id = data.get("item_id")
+    if isinstance(item_id, str) and item_id:
+        return _stable_hash(item_id)
+
+    required_without_item_id = ("part_no", "vendor_part_no", "quantity", "production_date", "lot_no")
+    if all(isinstance(data.get(field), str) and data.get(field) for field in required_without_item_id):
+        evidence = {field: data[field] for field in required_without_item_id}
+        return f"incomplete-test-item:{_stable_hash(evidence)}"
+    return None
+
+
+def _resolve_rough_sorter_business_key(payload_json: dict[str, object]) -> str | None:
+    data = _payload_data(payload_json)
+    pkg_id = data.get("PkgID")
+    return pkg_id if isinstance(pkg_id, str) and pkg_id else None
+
+
+@pytest.fixture(autouse=True)
+def registered_runtime_resolver_plugins(registered_test_workline_plugin):
+    old_registry = dict(WORKLINE_PLUGIN_REGISTRY)
+    WORKLINE_PLUGIN_REGISTRY["test_workline_plugin"] = WorklinePluginDefinition(
+        plugin_key="test_workline_plugin",
+        plugin_module=__name__,
+        plugin_class_name="TestWorklineRuntimePlugin",
+    )
+    WORKLINE_PLUGIN_REGISTRY["rough_sorter"] = WorklinePluginDefinition(
+        plugin_key="rough_sorter",
+        plugin_module=__name__,
+        plugin_class_name="RoughSorterRuntimePlugin",
+    )
+    try:
+        yield
+    finally:
+        WORKLINE_PLUGIN_REGISTRY.clear()
+        WORKLINE_PLUGIN_REGISTRY.update(old_registry)
 
 
 class MockSessionRepository:
@@ -203,6 +277,37 @@ class MockHandlingOperationRepository:
         return self.operations.get(operation_key)
 
 
+class RuntimeBusinessKeyPlugin:
+    """仅用于验证 registry helper 调用插件运行时方法。"""
+
+    manifest = _plugin_manifest("runtime_business_key_plugin")
+
+    def resolve_business_key(self, payload_json: dict) -> str | None:
+        data = payload_json.get("data")
+        if isinstance(data, dict):
+            value = data.get("runtime_key")
+            return value if isinstance(value, str) and value else None
+        return None
+
+
+class TestWorklineRuntimePlugin:
+    """SessionResolver 测试用插件运行时。"""
+
+    manifest = _plugin_manifest("test_workline_plugin")
+
+    def resolve_business_key(self, payload_json: dict[str, object]) -> str | None:
+        return _resolve_test_business_key(payload_json)
+
+
+class RoughSorterRuntimePlugin:
+    """粗分机 SessionResolver 测试用插件运行时。"""
+
+    manifest = _plugin_manifest("rough_sorter")
+
+    def resolve_business_key(self, payload_json: dict[str, object]) -> str | None:
+        return _resolve_rough_sorter_business_key(payload_json)
+
+
 def make_inbox(
     kind: InboxKind,
     device_id: int | None = None,
@@ -258,6 +363,27 @@ def test_legacy_entry_blocker_symbols_removed() -> None:
     assert not hasattr(session_resolver_module, legacy_lookup_name)
     assert not hasattr(session_resolver_module, "_lock_workline_entry_admission")
     assert legacy_error_name not in session_resolver_module.__all__
+
+
+def test_resolve_business_key_uses_registry_plugin_runtime() -> None:
+    old_definition = WORKLINE_PLUGIN_REGISTRY.get("runtime_business_key_plugin")
+    WORKLINE_PLUGIN_REGISTRY["runtime_business_key_plugin"] = WorklinePluginDefinition(
+        plugin_key="runtime_business_key_plugin",
+        plugin_module=__name__,
+        plugin_class_name="RuntimeBusinessKeyPlugin",
+    )
+    try:
+        key = _resolve_business_key(
+            {"business_key": "UPSTREAM-MISMATCH", "data": {"runtime_key": "runtime-key-001"}},
+            plugin_key="runtime_business_key_plugin",
+        )
+    finally:
+        if old_definition is None:
+            WORKLINE_PLUGIN_REGISTRY.pop("runtime_business_key_plugin", None)
+        else:
+            WORKLINE_PLUGIN_REGISTRY["runtime_business_key_plugin"] = old_definition
+
+    assert key == "runtime-key-001"
 
 
 class TestSessionResolver:
@@ -969,8 +1095,8 @@ class TestSessionResolver:
 
         assert key == "PKG12345"
 
-    def test_resolve_business_key_uses_plugin_manifest_resolver_for_test_item(self):
-        """测试插件业务键由插件 manifest resolver 解析。"""
+    def test_resolve_business_key_uses_plugin_runtime_resolver_for_test_item(self):
+        """测试插件业务键由插件运行时 resolver 解析。"""
         payload = {
             "data": {
                 "part_no": "PART-001",
@@ -985,10 +1111,7 @@ class TestSessionResolver:
         key1 = _resolve_business_key(payload, plugin_key="test_workline_plugin")
         key2 = _resolve_business_key(payload, plugin_key="test_workline_plugin")
 
-        import hashlib
-        import json
-
-        expected_hash = hashlib.sha256(json.dumps("ITEM-001", ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+        expected_hash = _stable_hash("ITEM-001")
 
         assert key1 == expected_hash
         assert key2 == expected_hash
@@ -1260,7 +1383,7 @@ class TestSessionResolver:
                 "PkgID": "PKG-ROUGH-001",
             },
         }
-        expected_key = resolve_rough_sorter_business_key(payload)
+        expected_key = "PKG-ROUGH-001"
         workline = make_workline(workline_id=1, plugin_key="rough_sorter")
 
         first_session = await resolver.resolve_or_create(

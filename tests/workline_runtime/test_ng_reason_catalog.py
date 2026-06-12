@@ -1,5 +1,6 @@
 """NG reason taxonomy tests."""
 
+import src.workline_plugin_registry as registry
 from src.workline_runtime.ng_reason import (
     BUILTIN_NG_REASONS,
     NgReasonDefinition,
@@ -48,3 +49,7 @@ def test_ng_reason_catalog_keeps_plugin_and_builtin_groups() -> None:
     assert catalog.by_code["SCAN_NG"] == plugin_reason
     assert catalog.by_source[NgReasonSource.PLUGIN] == (plugin_reason,)
     assert "UNKNOWN_PHYSICAL_STATE" in catalog.by_code
+
+
+def test_registry_ng_reason_helper_returns_empty_catalog_default() -> None:
+    assert registry.list_workline_ng_reasons("unknown_plugin") == ()

@@ -51,7 +51,7 @@ def classify_result_category(
 ) -> ResultClassification | None:
     """按通用规则给命令结果增加失败分类。
 
-    业务 NG 不在通用层硬编码，必须由插件 manifest 的 result_classifier 显式覆盖。
+    业务 NG 不在通用层硬编码，必须由插件运行时 result classifier 显式覆盖。
     """
 
     normalized_result = classify_result(value)

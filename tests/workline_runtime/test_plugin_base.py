@@ -2,7 +2,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.workline_plugin_registry import WorklinePluginDefinition
 from src.workline_runtime.plugin_base import WorklinePlugin, build_payload_invalid_block, on_event
+from src.workline_runtime.plugin_manifest import (
+    DeviceRequirement,
+    Position,
+    PositionCarrierCapability,
+    TopologySpec,
+    WorklinePluginManifest,
+)
 from src.workline_runtime.runtime_intent import RuntimeIntent, RuntimeIntentKind
 
 
@@ -20,6 +28,24 @@ class InvalidReturnPlugin(WorklinePlugin):
     @on_event("SCAN_COMPLETED")
     async def handle_scan(self, ctx, event):
         return "bad"
+
+
+class RegistrySingletonPlugin(WorklinePlugin):
+    plugin_key = "registry_singleton"
+    manifest = WorklinePluginManifest(
+        plugin_key=plugin_key,
+        contract_version="test.v1",
+        devices=(DeviceRequirement(role="SCANNER", min_count=0),),
+        positions=(
+            Position(
+                code="ENTRY",
+                role="ENTRY",
+                station_code="ST-1",
+                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
+            ),
+        ),
+        topology=TopologySpec(),
+    )
 
 
 def _ctx() -> SimpleNamespace:
@@ -70,3 +96,16 @@ def test_build_payload_invalid_block_returns_block_intent() -> None:
     assert isinstance(intent, RuntimeIntent)
     assert intent.kind == RuntimeIntentKind.BLOCK
     assert intent.reason_code == "PAYLOAD_INVALID"
+
+
+def test_registry_definition_returns_single_plugin_instance() -> None:
+    definition = WorklinePluginDefinition(
+        plugin_key="registry_singleton",
+        plugin_module=__name__,
+        plugin_class_name="RegistrySingletonPlugin",
+    )
+
+    first = definition.plugin_instance
+    second = definition.plugin_instance
+
+    assert first is second

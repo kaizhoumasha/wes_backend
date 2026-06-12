@@ -60,10 +60,6 @@ def set_allow_null_plugin(allow: bool) -> None:
     _ALLOW_NULL_PLUGIN = allow
 
 
-# 插件实例缓存:避免每次处理都新建实例
-# key: plugin_class, value: plugin_instance
-_plugin_instance_cache: dict[type, Any] = {}
-
 _INBOX_KIND_TO_PLUGIN_TYPE = {
     "COMMAND_RESULT": "COMMAND_RESULT",
     "DEVICE_EVENT": "DEVICE_EVENT",
@@ -368,10 +364,9 @@ class OrchestratorService:
         return read_result
 
     def _load_plugin(self, plugin_class: type[Any] | None) -> Any:
-        """加载插件实例（带缓存）
+        """加载插件实例。
 
-        优先使用缓存的实例，避免每次处理都新建实例。
-        NullPlugin 是单例。
+        已注册插件由 registry definition 维护单例实例；NullPlugin 是单例。
 
         Phase 1 修正:
         - 非 opt-in 时，plugin_class is None 抛错（避免 mask 配置错误）
@@ -398,12 +393,17 @@ class OrchestratorService:
             # 显式允许时使用单例
             return null_plugin
 
-        # 使用缓存的实例
-        if plugin_class not in _plugin_instance_cache:
-            _plugin_instance_cache[plugin_class] = plugin_class()
-            logger.debug(f"插件实例已缓存: {plugin_class.__name__}")
+        from src.workline_plugin_registry import list_workline_plugin_definitions
 
-        return _plugin_instance_cache[plugin_class]
+        for definition in list_workline_plugin_definitions():
+            try:
+                if definition.plugin_class is plugin_class:
+                    return definition.plugin_instance
+            except (ImportError, AttributeError, TypeError, ValueError) as exc:
+                logger.debug(f"跳过不可加载的工作线插件定义 {definition.plugin_key}: {exc}")
+
+        logger.debug(f"插件类未注册到 registry，直接创建实例: {plugin_class.__name__}")
+        return plugin_class()
 
     async def _call_plugin(
         self,
