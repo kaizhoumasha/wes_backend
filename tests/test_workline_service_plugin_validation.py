@@ -256,6 +256,57 @@ def test_configuration_checks_use_event_and_command_bindings(monkeypatch) -> Non
     assert all(check.status == "PASS" for check in [*event_checks, *command_checks])
 
 
+def test_configuration_checks_only_require_entry_device_event_capability(monkeypatch) -> None:
+    """只有入口设备事件需要设备声明 supports_event_types。"""
+
+    manifest = SimpleNamespace(
+        plugin_key="entry_event_plugin",
+        contract_version="entry-event.v1",
+        devices=(
+            SimpleNamespace(role="SCANNER", min_count=1, max_count=1, hardware_capabilities=frozenset()),
+            SimpleNamespace(role="ARM", min_count=1, max_count=1, hardware_capabilities=frozenset()),
+        ),
+        positions=(),
+        topology=SimpleNamespace(flow_edges=()),
+        events=(
+            SimpleNamespace(
+                event="ENTRY_SCAN",
+                source_device_roles=("SCANNER",),
+                category="ENTRY_DEVICE",
+                payload_schema_ref=None,
+            ),
+            SimpleNamespace(
+                event="INTERNAL_RETRY",
+                source_device_roles=("ARM",),
+                category="INTERNAL",
+                payload_schema_ref=None,
+            ),
+        ),
+        commands=(),
+        resource_boundaries=(),
+    )
+    definition = SimpleNamespace(plugin_key="entry_event_plugin", manifest=manifest)
+    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
+
+    scanner = make_device(1, "SCANNER")
+    scanner.capabilities_json = {"supports_event_types": ["ENTRY_SCAN"]}
+    arm = make_device(2, "ARM")
+    arm.capabilities_json = {"supports_event_types": ["ARM_READY"]}
+    workline = WorkLine(
+        line_code="WL-ENTRY-EVENT",
+        line_name="入口事件能力检查",
+        line_type=LineType.AUTO,
+        plugin_key="entry_event_plugin",
+        contract_version="entry-event.v1",
+    )
+
+    checks = WorkLineService()._build_configuration_checks(workline, [scanner, arm])
+    event_checks = [check for check in checks if check.code == "EVENT_SOURCE_CAPABILITY"]
+
+    assert [check.context["event_type"] for check in event_checks] == ["ENTRY_SCAN"]
+    assert all(check.status == "PASS" for check in event_checks)
+
+
 def test_configuration_checks_validate_position_carrier_capability_against_workline_config(monkeypatch) -> None:
     """配置预检应比较 manifest position 承载约束和工作线货架位置配置。"""
 

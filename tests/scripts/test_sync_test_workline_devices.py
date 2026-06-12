@@ -406,16 +406,23 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
     )
     positions_by_code = {position.position_code: position for position in smt_rack_positions}
     assert set(positions_by_code) == {"SOURCE_STATION_A", "SOURCE_STATION_B", "TARGET_STATION"}
+    expected_rack_kinds = {
+        "SOURCE_STATION_A": RackKind.SINGLE_LAYER,
+        "SOURCE_STATION_B": RackKind.SINGLE_LAYER,
+        "TARGET_STATION": RackKind.FIVE_LAYER,
+    }
     for position_code, position in positions_by_code.items():
         assert position.workline_id == workline.id
         assert position.position_code == position_code
-        assert position.allowed_rack_kind == RackKind.SINGLE_LAYER
+        assert position.allowed_rack_kind == expected_rack_kinds[position_code]
         assert position.capacity == 1
         assert position.enabled is True
         assert position.logic_location_code == f"{TEST_SMT_SORTING_INBOUND_LINE_CODE}:{position_code}"
         assert position.external_location_code == position_code
         assert position.metadata_json["seed_source"] == "local-dev"
-        assert position.metadata_json["single_layer_boundary"] is True
+    assert positions_by_code["SOURCE_STATION_A"].metadata_json["single_layer_boundary"] is True
+    assert positions_by_code["SOURCE_STATION_B"].metadata_json["single_layer_boundary"] is True
+    assert positions_by_code["TARGET_STATION"].metadata_json["rack_boundary"] == "FIVE_LAYER"
     assert positions_by_code["SOURCE_STATION_A"].position_role == WorklineRackPositionRole.SMT_SORTER_STATION
     assert positions_by_code["SOURCE_STATION_B"].position_role == WorklineRackPositionRole.SMT_SORTER_STATION
     assert positions_by_code["TARGET_STATION"].position_role == WorklineRackPositionRole.SMT_SORTER_STATION

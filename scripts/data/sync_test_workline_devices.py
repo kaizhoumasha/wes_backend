@@ -290,7 +290,7 @@ TEST_SMT_SORTING_INBOUND_RACK_POSITIONS: tuple[TestRackPositionSeed, ...] = (
         position_code="TARGET_STATION",
         position_name="测试 SMT 分拣入库目标 Station",
         position_role=WorklineRackPositionRole.SMT_SORTER_STATION,
-        allowed_rack_kind=RackKind.SINGLE_LAYER,
+        allowed_rack_kind=RackKind.FIVE_LAYER,
         capacity=1,
         logic_location_code=f"{TEST_SMT_SORTING_INBOUND_LINE_CODE}:TARGET_STATION",
         external_location_code="TARGET_STATION",
@@ -298,7 +298,7 @@ TEST_SMT_SORTING_INBOUND_RACK_POSITIONS: tuple[TestRackPositionSeed, ...] = (
         priority=120,
         metadata_json={
             "seed_source": "local-dev",
-            "single_layer_boundary": True,
+            "rack_boundary": "FIVE_LAYER",
             "station_role": "TARGET",
         },
     ),

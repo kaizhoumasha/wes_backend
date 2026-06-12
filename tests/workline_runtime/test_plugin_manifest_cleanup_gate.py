@@ -67,6 +67,33 @@ MANIFEST_ATTRIBUTE_PATTERNS = tuple(
     (name, re.compile(rf"\bmanifest\s*\.\s*{re.escape(name)}\b")) for name in LEGACY_MANIFEST_NAMES
 )
 
+LEGACY_REMOVED_CONTRACT_MEMBER_FIELDS = {
+    _legacy_symbol("DeviceRequirement"): ("capabilities",),
+    _legacy_symbol("Position"): ("capabilities",),
+    _legacy_symbol("PositionCarrierCapability"): ("capacity",),
+    _legacy_symbol("CommandBinding"): (
+        _legacy_symbol("position", "_ref"),
+        _legacy_symbol("result", "_event"),
+    ),
+}
+
+LEGACY_REMOVED_CONTRACT_MEMBER_SYMBOLS = tuple(
+    _legacy_symbol(owner, ".", field)
+    for owner, fields in LEGACY_REMOVED_CONTRACT_MEMBER_FIELDS.items()
+    for field in fields
+)
+
+LEGACY_REMOVED_CONTRACT_MEMBER_PATTERNS = tuple(
+    (symbol, re.compile(rf"\b{re.escape(symbol)}\b")) for symbol in LEGACY_REMOVED_CONTRACT_MEMBER_SYMBOLS
+)
+
+LEGACY_REMOVED_TYPE_SIGNATURE_PATTERNS = (
+    (
+        _legacy_symbol("TopologySpec", " | ", "None"),
+        re.compile(r"\bTopologySpec\s*\|\s*None\b"),
+    ),
+)
+
 
 def _iter_active_files() -> list[Path]:
     files: list[Path] = []
@@ -108,6 +135,16 @@ def _literal_string(node: ast.AST) -> str | None:
     return None
 
 
+def _removed_type_signature(annotation: ast.AST | None) -> str | None:
+    if annotation is None:
+        return None
+    annotation_text = ast.unparse(annotation)
+    for signature, pattern in LEGACY_REMOVED_TYPE_SIGNATURE_PATTERNS:
+        if pattern.search(annotation_text):
+            return signature
+    return None
+
+
 def _is_legacy_type_or_export(name: str | None) -> bool:
     if name is None:
         return False
@@ -133,6 +170,7 @@ def _python_legacy_manifest_hits(path: Path, text: str) -> list[str]:
     hits: list[str] = []
     legacy_manifest_names = set(LEGACY_MANIFEST_NAMES)
     legacy_field_names = set(LEGACY_MANIFEST_FIELDS)
+    legacy_removed_contract_member_fields = LEGACY_REMOVED_CONTRACT_MEMBER_FIELDS
 
     class Visitor(ast.NodeVisitor):
         def visit_Call(self, node: ast.Call) -> Any:
@@ -145,6 +183,10 @@ def _python_legacy_manifest_hits(path: Path, text: str) -> list[str]:
                 for keyword in node.keywords:
                     if keyword.arg in legacy_manifest_names and _is_assigned_manifest(tree, node):
                         hits.append(f"{path}:{keyword.lineno}: manifest namespace field {keyword.arg}")
+            if call_name in legacy_removed_contract_member_fields:
+                for keyword in node.keywords:
+                    if keyword.arg in legacy_removed_contract_member_fields[call_name]:
+                        hits.append(f"{path}:{keyword.lineno}: {call_name}.{keyword.arg}")
             if (
                 call_name == "hasattr"
                 and len(node.args) >= 2
@@ -152,6 +194,21 @@ def _python_legacy_manifest_hits(path: Path, text: str) -> list[str]:
                 and (field_name := _literal_string(node.args[1])) in legacy_field_names
             ):
                 hits.append(f"{path}:{node.lineno}: public assertion for old manifest field {field_name}")
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> Any:
+            if signature := _removed_type_signature(node.annotation):
+                hits.append(f"{path}:{node.lineno}: removed type signature {signature}")
+            self.generic_visit(node)
+
+        def visit_arg(self, node: ast.arg) -> Any:
+            if signature := _removed_type_signature(node.annotation):
+                hits.append(f"{path}:{node.lineno}: removed type signature {signature}")
+            self.generic_visit(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
+            if signature := _removed_type_signature(node.returns):
+                hits.append(f"{path}:{node.lineno}: removed type signature {signature}")
             self.generic_visit(node)
 
         def visit_Attribute(self, node: ast.Attribute) -> Any:
@@ -222,6 +279,18 @@ def _text_legacy_manifest_hits(path: Path, text: str) -> list[str]:
             if not _line_is_allowlisted(_line_at(text, line_number)):
                 hits.append(f"{path}:{line_number}: manifest.{name}")
 
+    for symbol, pattern in LEGACY_REMOVED_CONTRACT_MEMBER_PATTERNS:
+        for match in pattern.finditer(text):
+            line_number = _line_number(text, match.start())
+            if not _line_is_allowlisted(_line_at(text, line_number)):
+                hits.append(f"{path}:{line_number}: removed contract member {symbol}")
+
+    for signature, pattern in LEGACY_REMOVED_TYPE_SIGNATURE_PATTERNS:
+        for match in pattern.finditer(text):
+            line_number = _line_number(text, match.start())
+            if not _line_is_allowlisted(_line_at(text, line_number)):
+                hits.append(f"{path}:{line_number}: removed type signature {signature}")
+
     if path.suffix == ".json":
         for line_number, line in enumerate(text.splitlines(), start=1):
             if _line_is_allowlisted(line):
@@ -265,6 +334,42 @@ def _legacy_symbol_hits(path: Path, text: str) -> list[str]:
         hits.extend(_text_legacy_manifest_hits(path, text))
         hits.extend(_text_legacy_type_hits(path, text))
     return hits
+
+
+def test_cleanup_gate_detects_removed_contract_member_symbols_in_text() -> None:
+    text = "\n".join(
+        (
+            _legacy_symbol("DeviceRequirement", ".", "capabilities"),
+            _legacy_symbol("Position", ".", "capabilities"),
+            _legacy_symbol("PositionCarrierCapability", ".", "capacity"),
+            _legacy_symbol("CommandBinding", ".", "position_ref"),
+            _legacy_symbol("CommandBinding", ".", "result_event"),
+            _legacy_symbol("TopologySpec", " | ", "None"),
+        )
+    )
+
+    hits = _text_legacy_manifest_hits(Path("sample.md"), text)
+
+    assert len(hits) == 6
+
+
+def test_cleanup_gate_detects_removed_contract_member_constructor_keywords() -> None:
+    text = """
+DeviceRequirement(role='PLC', capabilities=['scan'])
+Position(code='BIN', capabilities=['single'])
+PositionCarrierCapability(capacity=1)
+CommandBinding(position_ref='BIN', result_event='DONE')
+topology: TopologySpec | None = None
+""".strip()
+
+    hits = _python_legacy_manifest_hits(Path("sample.py"), text)
+
+    assert any("DeviceRequirement.capabilities" in hit for hit in hits)
+    assert any("Position.capabilities" in hit for hit in hits)
+    assert any("PositionCarrierCapability.capacity" in hit for hit in hits)
+    assert any("CommandBinding.position_ref" in hit for hit in hits)
+    assert any("CommandBinding.result_event" in hit for hit in hits)
+    assert any("TopologySpec | None" in hit for hit in hits)
 
 
 def test_old_manifest_contract_symbols_are_removed_from_active_paths() -> None:

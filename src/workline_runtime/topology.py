@@ -139,6 +139,9 @@ def validate_topology_manifest(manifest: WorklinePluginManifest, topology: Workl
                     )
 
     for event in manifest.events:
+        category = getattr(getattr(event, "category", None), "value", getattr(event, "category", None))
+        if category != "ENTRY_DEVICE":
+            continue
         if not any(
             device.supports_event(event.event)
             for role in event.source_device_roles

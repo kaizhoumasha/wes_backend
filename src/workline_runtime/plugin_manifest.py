@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, TypeVar, cast
 
 from src.workline_runtime.runtime_events import assert_not_reserved_runtime_event
 
@@ -30,6 +30,8 @@ class EventCategory(str, Enum):
     ENTRY_DEVICE = "ENTRY_DEVICE"
     INTERNAL = "INTERNAL"
     COMMAND_RESULT = "COMMAND_RESULT"
+    OPERATOR = "OPERATOR"
+    SAFETY = "SAFETY"
 
 
 class PositionArgRole(str, Enum):
@@ -49,6 +51,8 @@ class PositionArgSourceKind(str, Enum):
 
 
 _ALLOWED_RACK_KINDS = frozenset({"SINGLE_LAYER", "FIVE_LAYER"})
+_MISSING_TOPOLOGY = object()
+_EnumT = TypeVar("_EnumT", bound=Enum)
 
 
 def _non_empty_str(value: Any) -> str | None:
@@ -77,7 +81,7 @@ def _optional_string(value: str | None, *, field_name: str) -> str | None:
     return value
 
 
-def _coerce_enum(enum_type: type[Enum], value: Any, *, field_name: str) -> Enum:
+def _coerce_enum(enum_type: type[_EnumT], value: Any, *, field_name: str) -> _EnumT:
     if isinstance(value, enum_type):
         return value
     try:
@@ -403,7 +407,7 @@ class WorklinePluginManifest:
     contract_version: str = ""
     devices: tuple[DeviceRequirement, ...] | list[DeviceRequirement] | None = None
     positions: tuple[Position, ...] | list[Position] | None = None
-    topology: TopologySpec | None = None
+    topology: TopologySpec = field(default=cast("TopologySpec", _MISSING_TOPOLOGY))
     commands: tuple[CommandBinding, ...] | list[CommandBinding] = field(default_factory=tuple)
     events: tuple[EventBinding, ...] | list[EventBinding] = field(default_factory=tuple)
     resource_boundaries: tuple[ResourceBoundary, ...] | list[ResourceBoundary] = field(default_factory=tuple)
@@ -430,10 +434,12 @@ class WorklinePluginManifest:
         position_codes = tuple(position.code for position in positions)
         _ensure_unique(position_codes, field_name="manifest.positions.code")
 
-        if self.topology is None:
+        raw_topology: Any = self.topology
+        if raw_topology is _MISSING_TOPOLOGY or raw_topology is None:
             raise ValueError("manifest.topology must be declared")
-        if not isinstance(self.topology, TopologySpec):
+        if not isinstance(raw_topology, TopologySpec):
             raise TypeError("manifest.topology must be TopologySpec")
+        topology = raw_topology
 
         commands = tuple(self.commands)
         if not all(isinstance(command, CommandBinding) for command in commands):
@@ -446,14 +452,16 @@ class WorklinePluginManifest:
             raise TypeError("manifest.resource_boundaries must contain only ResourceBoundary")
 
         device_role_set = set(device_roles)
+        positions_by_code = {position.code: position for position in positions}
         position_code_set = set(position_codes)
         self._validate_events(events, device_role_set)
         self._validate_commands(commands, device_role_set, position_code_set)
-        self._validate_resource_boundaries(resource_boundaries, position_code_set)
-        self._validate_topology_refs(self.topology, device_role_set, position_code_set)
+        self._validate_resource_boundaries(resource_boundaries, positions_by_code)
+        self._validate_topology_refs(topology, device_role_set, position_code_set)
 
         object.__setattr__(self, "devices", devices)
         object.__setattr__(self, "positions", positions)
+        object.__setattr__(self, "topology", topology)
         object.__setattr__(self, "commands", commands)
         object.__setattr__(self, "events", events)
         object.__setattr__(self, "resource_boundaries", resource_boundaries)
@@ -489,12 +497,21 @@ class WorklinePluginManifest:
     @staticmethod
     def _validate_resource_boundaries(
         resource_boundaries: tuple[ResourceBoundary, ...],
-        position_codes: set[str],
+        positions_by_code: dict[str, Position],
     ) -> None:
         for boundary in resource_boundaries:
-            if boundary.position_code not in position_codes:
+            position = positions_by_code.get(boundary.position_code)
+            if position is None:
                 raise ValueError(
                     f"ResourceBoundary.position_code is not declared in manifest.positions: {boundary.position_code}"
+                )
+            if boundary.rack_kind not in position.carrier_capability.allowed_rack_kinds:
+                allowed_rack_kinds = ", ".join(position.carrier_capability.allowed_rack_kinds)
+                raise ValueError(
+                    "ResourceBoundary.rack_kind is not allowed by "
+                    "Position.carrier_capability.allowed_rack_kinds: "
+                    f"position_code={boundary.position_code}, rack_kind={boundary.rack_kind}, "
+                    f"allowed_rack_kinds={allowed_rack_kinds}"
                 )
 
     @staticmethod

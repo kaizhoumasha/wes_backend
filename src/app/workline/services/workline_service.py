@@ -616,6 +616,8 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _event_source_checks(manifest: Any, topology: WorklineTopologyView) -> list[WorkLineConfigurationCheck]:
         checks: list[WorkLineConfigurationCheck] = []
         for event in manifest.events:
+            if WorkLineService._manifest_value(getattr(event, "category", None)) != "ENTRY_DEVICE":
+                continue
             event_type = event.event
             roles = tuple(getattr(event, "source_device_roles", ()))
             has_source = any(

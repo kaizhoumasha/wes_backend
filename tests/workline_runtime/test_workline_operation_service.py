@@ -142,12 +142,12 @@ def test_sandbox_event_templates_derive_from_manifest_events_and_filter_roles() 
             ),
             SimpleNamespace(
                 event="OPERATOR_OVERRIDE",
-                category="OPERATOR",
+                category=EventCategory.OPERATOR,
                 source_device_roles=("SCANNER",),
             ),
             SimpleNamespace(
                 event="SAFETY_RESET",
-                category="SAFETY",
+                category=EventCategory.SAFETY,
                 source_device_roles=("SCANNER",),
             ),
         )

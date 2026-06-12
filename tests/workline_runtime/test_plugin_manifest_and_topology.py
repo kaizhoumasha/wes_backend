@@ -119,12 +119,13 @@ def _position(
     *,
     role: str = "ENTRY",
     station_code: str = "ENTRY_STATION",
+    allowed_rack_kinds: tuple[str, ...] = ("SINGLE_LAYER",),
 ):
     return _contract("Position")(
         code=code,
         role=role,
         station_code=station_code,
-        carrier_capability=_carrier(),
+        carrier_capability=_carrier(allowed_rack_kinds=allowed_rack_kinds),
     )
 
 
@@ -326,6 +327,18 @@ def test_event_binding_entry_device_is_only_entry_filter_source() -> None:
     assert {event.event for event in manifest.events if event.category == EventCategory.ENTRY_DEVICE} == {"ENTRY_SCAN"}
 
 
+def test_event_binding_accepts_operator_and_safety_categories() -> None:
+    EventCategory = _contract("EventCategory")
+    manifest = _manifest(
+        events=(
+            _event_binding("OPERATOR_OVERRIDE", category=EventCategory.OPERATOR),
+            _event_binding("SAFETY_RESET", category="SAFETY"),
+        )
+    )
+
+    assert [event.category for event in manifest.events] == [EventCategory.OPERATOR, EventCategory.SAFETY]
+
+
 def test_command_binding_rejects_unknown_target_role() -> None:
     command = _command_binding(target_device_role="UNKNOWN_ROLE")
 
@@ -387,6 +400,14 @@ def test_resource_boundary_references_position_and_omits_station_fields() -> Non
     assert positions_by_code[boundary.position_code].station_code == "ENTRY_STATION"
 
 
+def test_resource_boundary_rack_kind_must_match_position_carrier_capability() -> None:
+    with pytest.raises(ValueError, match=r"rack_kind|FIVE_LAYER|allowed_rack_kinds"):
+        _manifest(
+            positions=(_position(allowed_rack_kinds=("SINGLE_LAYER",)),),
+            resource_boundaries=(_resource_boundary(rack_kind="FIVE_LAYER"),),
+        )
+
+
 def test_topology_view_derives_roles_and_upstream_downstream() -> None:
     scanner = _device(1, code="SCAN01", role="ENTRY_SCANNER")
     scale = _device(2, code="SCALE01", role="WEIGH_SCALE", upstream_device_id=1)
@@ -443,6 +464,36 @@ def test_validate_topology_manifest_reads_devices_events_commands_happy_path() -
     )
 
     validate_topology_manifest(_topology_manifest_for_validation(), topology)
+
+
+def test_validate_topology_manifest_only_requires_entry_device_event_capability() -> None:
+    EventCategory = _contract("EventCategory")
+    topology = WorklineTopologyView.from_devices(
+        [
+            _device(
+                1,
+                code="SCAN01",
+                role="ENTRY_SCANNER",
+                capabilities_json={
+                    "capabilities": ["barcode_scan"],
+                    "supports_event_types": ["TOTE_ARRIVED"],
+                    "supports_command_types": ["WEIGH_TOTE"],
+                },
+            )
+        ]
+    )
+    manifest = _topology_manifest_for_validation()
+    object.__setattr__(
+        manifest,
+        "events",
+        (
+            *manifest.events,
+            _event_binding("INTERNAL_RETRY", category=EventCategory.INTERNAL),
+            _event_binding("COMMAND_DONE", category=EventCategory.COMMAND_RESULT),
+        ),
+    )
+
+    validate_topology_manifest(manifest, topology)
 
 
 def test_validate_topology_manifest_rejects_missing_hardware_capability() -> None:
