@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
+    EVENT_NG_PLACE_RESULT,
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_SOURCE_PICK_REQUESTED,
+    EVENT_SOURCE_PICK_RESULT,
+    EVENT_TARGET_PLACE_RESULT,
     EVENT_WORKING_BIN_SCAN,
     NG_REASON_LOCAL_SORTING_NG,
     ROLE_SORTING_NG_STATION,
@@ -22,24 +26,50 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
 )
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext
 from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
+from src.workline_runtime.material_identity import (
+    MaterialIdentity,
+    MaterialIdentityInput,
+    MaterialIdentityResolutionStatus,
+    material_identity_input_to_hash,
+)
 from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
 from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
-from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, SingleLayerRackBoundary, WorklinePluginManifest
+from src.workline_runtime.plugin_manifest import (
+    CommandBinding,
+    CommandResultBinding,
+    DeviceRequirement,
+    EventBinding,
+    EventCategory,
+    FlowEdge,
+    FlowEdgeType,
+    NodeRef,
+    NodeRefKind,
+    Position,
+    PositionArg,
+    PositionArgRole,
+    PositionArgSource,
+    PositionArgSourceKind,
+    PositionCarrierCapability,
+    ResourceBoundary,
+    TopologySpec,
+    WorklinePluginManifest,
+)
 
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
     from src.workline_runtime.plugin_context import PluginContext
     from src.workline_runtime.runtime_intent import RuntimeIntent
 
-COMMAND_TARGET_ROLES: dict[str, str] = {
-    COMMAND_SOURCE_PICK: ROLE_SORTING_SOURCE_ARM,
-    COMMAND_TARGET_PLACE: ROLE_SORTING_TARGET_ARM,
-    COMMAND_NG_PLACE: ROLE_SORTING_TARGET_ARM,
-}
+POSITION_SOURCE_STATION_A = "SOURCE_STATION_A"
+POSITION_SOURCE_STATION_B = "SOURCE_STATION_B"
+POSITION_TARGET_STATION = "TARGET_STATION"
+POSITION_NG_STATION = "NG_STATION"
+POSITION_WORKSTATION = "WORKSTATION"
 
-EVENT_SOURCE_ROLES: dict[str, str] = {
-    EVENT_WORKING_BIN_SCAN: ROLE_SORTING_SCAN_PLATFORM,
-    EVENT_SESSION_COMPLETE_REQUESTED: ROLE_SORTING_WORKSTATION,
+COMMAND_RESULT_EVENTS = {
+    COMMAND_SOURCE_PICK: EVENT_SOURCE_PICK_RESULT,
+    COMMAND_TARGET_PLACE: EVENT_TARGET_PLACE_RESULT,
+    COMMAND_NG_PLACE: EVENT_NG_PLACE_RESULT,
 }
 
 
@@ -85,6 +115,81 @@ def _ng_reason(canonical_code: str, label: str) -> NgReasonDefinition:
     )
 
 
+def _carrier(*rack_kinds: str, min_capacity: int = 0, max_capacity: int = 1) -> PositionCarrierCapability:
+    return PositionCarrierCapability(
+        allowed_rack_kinds=rack_kinds,
+        min_capacity=min_capacity,
+        max_capacity=max_capacity,
+    )
+
+
+def _position(
+    code: str,
+    *,
+    role: str,
+    station_code: str,
+    rack_kinds: tuple[str, ...],
+    min_capacity: int = 0,
+    max_capacity: int = 1,
+) -> Position:
+    return Position(
+        code=code,
+        role=role,
+        station_code=station_code,
+        carrier_capability=_carrier(*rack_kinds, min_capacity=min_capacity, max_capacity=max_capacity),
+    )
+
+
+def _node(kind: NodeRefKind, ref: str) -> NodeRef:
+    return NodeRef(kind=kind, ref=ref)
+
+
+def _command_result_bindings(command: str) -> tuple[CommandResultBinding, ...]:
+    event = COMMAND_RESULT_EVENTS[command]
+    return (
+        CommandResultBinding(
+            result="SUCCESS",
+            event=event,
+            category=EventCategory.COMMAND_RESULT,
+            classification="success",
+        ),
+        CommandResultBinding(
+            result="FAILED",
+            event=event,
+            category=EventCategory.COMMAND_RESULT,
+            classification="hardware_failure",
+            terminal=True,
+        ),
+    )
+
+
+def _static_position_arg(name: str, *, role: PositionArgRole, position_ref: str) -> PositionArg:
+    return PositionArg(name=name, role=role, position_ref=position_ref)
+
+
+def _position_arg_from_source(
+    name: str,
+    *,
+    role: PositionArgRole,
+    kind: PositionArgSourceKind,
+    path: str,
+    fallback_position_ref: str,
+) -> PositionArg:
+    return PositionArg(
+        name=name,
+        role=role,
+        source=PositionArgSource(kind=kind, path=path, fallback_position_ref=fallback_position_ref),
+    )
+
+
+def _sorting_ng_reasons() -> tuple[NgReasonDefinition, ...]:
+    return (_ng_reason(NG_REASON_LOCAL_SORTING_NG, "本地分拣 NG"),)
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return dict(cast("Mapping[str, Any]", value)) if isinstance(value, Mapping) else {}
+
+
 class SmtSortingInboundPlugin(WorklinePlugin):
     """SMT 分拣入库插件。
 
@@ -97,60 +202,231 @@ class SmtSortingInboundPlugin(WorklinePlugin):
     manifest = WorklinePluginManifest(
         plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
         contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
-        required_device_roles=(
-            DeviceRoleRequirement(role=ROLE_SORTING_SOURCE_ARM, min_count=1, max_count=1),
-            DeviceRoleRequirement(role=ROLE_SORTING_TARGET_ARM, min_count=1, max_count=1),
-            DeviceRoleRequirement(role=ROLE_SORTING_SCAN_PLATFORM, min_count=1, max_count=1),
-            DeviceRoleRequirement(role=ROLE_SORTING_NG_STATION, min_count=1, max_count=1),
-            DeviceRoleRequirement(role=ROLE_SORTING_WORKSTATION, min_count=1, max_count=1),
+        devices=(
+            DeviceRequirement(role=ROLE_SORTING_SOURCE_ARM, min_count=1, max_count=1),
+            DeviceRequirement(role=ROLE_SORTING_TARGET_ARM, min_count=1, max_count=1),
+            DeviceRequirement(role=ROLE_SORTING_SCAN_PLATFORM, min_count=1, max_count=1),
+            DeviceRequirement(role=ROLE_SORTING_NG_STATION, min_count=1, max_count=1),
+            DeviceRequirement(role=ROLE_SORTING_WORKSTATION, min_count=1, max_count=1),
         ),
-        business_key_resolver=resolve_sorting_inbound_business_key,
-        result_classifier=classify_sorting_inbound_result,
-        context_model=SortingInboundContext,
-        supported_events=frozenset({*EVENT_SOURCE_ROLES, EVENT_SOURCE_PICK_REQUESTED}),
-        supported_commands=frozenset(COMMAND_TARGET_ROLES),
-        capabilities=frozenset({"active_snapshot", "station_lease", "rack_operation"}),
-        resource_kinds=frozenset({"SINGLE_LAYER", "FIVE_LAYER"}),
-        requires_single_layer_boundary=True,
-        single_layer_boundaries=(
-            SingleLayerRackBoundary(
-                station_code="SOURCE_STATION_A",
-                position_code="SOURCE_STATION_A",
+        positions=(
+            _position(
+                POSITION_SOURCE_STATION_A,
+                role="SOURCE",
+                station_code=POSITION_SOURCE_STATION_A,
+                rack_kinds=("SINGLE_LAYER",),
+                min_capacity=1,
+            ),
+            _position(
+                POSITION_SOURCE_STATION_B,
+                role="SOURCE",
+                station_code=POSITION_SOURCE_STATION_B,
+                rack_kinds=("SINGLE_LAYER",),
+                min_capacity=1,
+            ),
+            _position(
+                POSITION_TARGET_STATION,
+                role="TARGET",
+                station_code=POSITION_TARGET_STATION,
+                rack_kinds=("FIVE_LAYER",),
+                min_capacity=1,
+            ),
+            _position(
+                POSITION_NG_STATION,
+                role="NG",
+                station_code=POSITION_NG_STATION,
+                rack_kinds=("SINGLE_LAYER",),
+            ),
+            _position(
+                POSITION_WORKSTATION,
+                role="WORK",
+                station_code=POSITION_WORKSTATION,
+                rack_kinds=("SINGLE_LAYER", "FIVE_LAYER"),
+            ),
+        ),
+        topology=TopologySpec(
+            flow_edges=(
+                FlowEdge(
+                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_SOURCE_ARM),
+                    to_node=_node(NodeRefKind.POSITION, POSITION_SOURCE_STATION_A),
+                    type=FlowEdgeType.OPERATION,
+                ),
+                FlowEdge(
+                    from_node=_node(NodeRefKind.POSITION, POSITION_SOURCE_STATION_A),
+                    to_node=_node(NodeRefKind.POSITION, POSITION_WORKSTATION),
+                    type=FlowEdgeType.MATERIAL_FLOW,
+                ),
+                FlowEdge(
+                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_SCAN_PLATFORM),
+                    to_node=_node(NodeRefKind.POSITION, POSITION_WORKSTATION),
+                    type=FlowEdgeType.OPERATION,
+                ),
+                FlowEdge(
+                    from_node=_node(NodeRefKind.POSITION, POSITION_WORKSTATION),
+                    to_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_TARGET_ARM),
+                    type=FlowEdgeType.OPERATION,
+                ),
+                FlowEdge(
+                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_TARGET_ARM),
+                    to_node=_node(NodeRefKind.POSITION, POSITION_TARGET_STATION),
+                    type=FlowEdgeType.MATERIAL_FLOW,
+                ),
+                FlowEdge(
+                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_TARGET_ARM),
+                    to_node=_node(NodeRefKind.POSITION, POSITION_NG_STATION),
+                    type=FlowEdgeType.MATERIAL_FLOW,
+                ),
+            )
+        ),
+        commands=(
+            CommandBinding(
+                command=COMMAND_SOURCE_PICK,
+                target_device_role=ROLE_SORTING_SOURCE_ARM,
+                position_args=(
+                    _position_arg_from_source(
+                        "source_position_code",
+                        role=PositionArgRole.SOURCE,
+                        kind=PositionArgSourceKind.EVENT_PAYLOAD,
+                        path="data.source_position_code",
+                        fallback_position_ref=POSITION_SOURCE_STATION_A,
+                    ),
+                    _static_position_arg(
+                        "target_position_code",
+                        role=PositionArgRole.TARGET,
+                        position_ref=POSITION_WORKSTATION,
+                    ),
+                ),
+                result_bindings=_command_result_bindings(COMMAND_SOURCE_PICK),
+            ),
+            CommandBinding(
+                command=COMMAND_TARGET_PLACE,
+                target_device_role=ROLE_SORTING_TARGET_ARM,
+                position_args=(
+                    _static_position_arg(
+                        "source_position_code",
+                        role=PositionArgRole.SOURCE,
+                        position_ref=POSITION_WORKSTATION,
+                    ),
+                    _position_arg_from_source(
+                        "target_position_code",
+                        role=PositionArgRole.TARGET,
+                        kind=PositionArgSourceKind.SESSION_CONTEXT,
+                        path="sorting.pending_target_placement.target_bin_code",
+                        fallback_position_ref=POSITION_TARGET_STATION,
+                    ),
+                ),
+                result_bindings=_command_result_bindings(COMMAND_TARGET_PLACE),
+            ),
+            CommandBinding(
+                command=COMMAND_NG_PLACE,
+                target_device_role=ROLE_SORTING_TARGET_ARM,
+                position_args=(
+                    _static_position_arg(
+                        "source_position_code",
+                        role=PositionArgRole.SOURCE,
+                        position_ref=POSITION_WORKSTATION,
+                    ),
+                    _static_position_arg(
+                        "target_position_code",
+                        role=PositionArgRole.TARGET,
+                        position_ref=POSITION_NG_STATION,
+                    ),
+                ),
+                result_bindings=_command_result_bindings(COMMAND_NG_PLACE),
+            ),
+        ),
+        events=(
+            EventBinding(
+                event=EVENT_WORKING_BIN_SCAN,
+                source_device_roles=(ROLE_SORTING_SCAN_PLATFORM,),
+                category=EventCategory.ENTRY_DEVICE,
+            ),
+            EventBinding(
+                event=EVENT_SESSION_COMPLETE_REQUESTED,
+                source_device_roles=(ROLE_SORTING_WORKSTATION,),
+                category=EventCategory.ENTRY_DEVICE,
+            ),
+        ),
+        resource_boundaries=(
+            ResourceBoundary(
+                position_code=POSITION_SOURCE_STATION_A,
                 rack_kind="SINGLE_LAYER",
-                station_role="SOURCE",
                 business_demand_type="SORTING_INBOUND_SOURCE",
                 wms_operation_type="SUPPLY_SINGLE_LAYER_RACK",
                 snapshot_kind="ACTIVE_SOURCE_BIN_RACK",
                 lease_scope="STATION",
             ),
-            SingleLayerRackBoundary(
-                station_code="SOURCE_STATION_B",
-                position_code="SOURCE_STATION_B",
+            ResourceBoundary(
+                position_code=POSITION_SOURCE_STATION_B,
                 rack_kind="SINGLE_LAYER",
-                station_role="SOURCE",
                 business_demand_type="SORTING_INBOUND_SOURCE",
                 wms_operation_type="SUPPLY_SINGLE_LAYER_RACK",
                 snapshot_kind="ACTIVE_SOURCE_BIN_RACK",
                 lease_scope="STATION",
             ),
-            SingleLayerRackBoundary(
-                station_code="TARGET_STATION",
-                position_code="TARGET_STATION",
-                rack_kind="SINGLE_LAYER",
-                station_role="TARGET",
+            ResourceBoundary(
+                position_code=POSITION_TARGET_STATION,
+                rack_kind="FIVE_LAYER",
                 business_demand_type="SORTING_INBOUND_TARGET",
                 wms_operation_type="ALLOCATE_SORTING_TARGET_BIN",
                 snapshot_kind="ACTIVE_TARGET_BIN_RACK",
                 lease_scope="STATION",
             ),
+            ResourceBoundary(
+                position_code=POSITION_NG_STATION,
+                rack_kind="SINGLE_LAYER",
+                business_demand_type="SORTING_INBOUND_NG",
+                wms_operation_type="PLACE_LOCAL_NG",
+                snapshot_kind="ACTIVE_NG_RACK",
+                lease_scope="STATION",
+            ),
+            ResourceBoundary(
+                position_code=POSITION_WORKSTATION,
+                rack_kind="SINGLE_LAYER",
+                business_demand_type="SORTING_INBOUND_WORK",
+                wms_operation_type="SCAN_AND_CLASSIFY_MATERIAL",
+                snapshot_kind="ACTIVE_WORK_MATERIAL",
+                lease_scope="STATION",
+            ),
         ),
-        event_source_roles=EVENT_SOURCE_ROLES,
-        command_target_roles=COMMAND_TARGET_ROLES,
-        ng_reason_catalog=(_ng_reason(NG_REASON_LOCAL_SORTING_NG, "本地分拣 NG"),),
     )
 
     def __init__(self, flow_service: SmtSortingInboundFlowService | None = None) -> None:
         self._flow_service = flow_service or SmtSortingInboundFlowService()
+
+    def resolve_business_key(self, payload_json: dict[str, Any]) -> str | None:
+        return resolve_sorting_inbound_business_key(payload_json)
+
+    def classify_result(self, payload_json: dict[str, Any]) -> str | None:
+        return classify_sorting_inbound_result(payload_json)
+
+    def get_context_model(self) -> type[SortingInboundContext]:
+        return SortingInboundContext
+
+    def list_ng_reasons(self) -> tuple[NgReasonDefinition, ...]:
+        return _sorting_ng_reasons()
+
+    def resolve_material_identity(self, input_value: MaterialIdentityInput) -> MaterialIdentity:
+        source_payload = dict(cast("Mapping[str, Any]", input_value.source_payload or {}))
+        command_payload = dict(cast("Mapping[str, Any]", input_value.command_payload or {}))
+        session_context = _dict_or_empty(input_value.session_context)
+        sorting_context = _dict_or_empty(session_context.get("sorting"))
+        current_material = _dict_or_empty(sorting_context.get("current_material"))
+        business_key = (
+            self.resolve_business_key(source_payload)
+            or self.resolve_business_key(command_payload)
+            or _non_empty_str(current_material.get("material_identity_key"))
+            or _non_empty_str(current_material.get("pkg_code"))
+        )
+        if business_key is None:
+            return MaterialIdentity(resolution_status=MaterialIdentityResolutionStatus.MISSING)
+        return MaterialIdentity(
+            resolution_status=MaterialIdentityResolutionStatus.RESOLVED,
+            idempotency_key=business_key,
+            business_key=business_key,
+            display={key: value for key, value in current_material.items() if value is not None},
+            raw_evidence_hash=material_identity_input_to_hash(input_value),
+        )
 
     @on_event(EVENT_SOURCE_PICK_REQUESTED)
     async def handle_source_pick_requested(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
@@ -202,8 +478,6 @@ class SmtSortingInboundPlugin(WorklinePlugin):
 
 
 __all__ = [
-    "COMMAND_TARGET_ROLES",
-    "EVENT_SOURCE_ROLES",
     "SmtSortingInboundPlugin",
     "classify_sorting_inbound_result",
     "resolve_sorting_inbound_business_key",

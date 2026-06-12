@@ -32,8 +32,10 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
 )
 from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
 from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
+from src.workline_runtime.plugin_manifest import EventCategory
 from src.workline_runtime.plugin_sdk import normalize_inbox_input
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
+from src.workline_runtime.topology import WorklineTopologyView, validate_topology_manifest
 
 if TYPE_CHECKING:
     from src.app.workline.models.inbox import WorklineInbox
@@ -48,50 +50,128 @@ def test_smt_sorting_inbound_plugin_is_registered() -> None:
     assert definition.manifest is SmtSortingInboundPlugin.manifest
 
 
+def _command_role_map(manifest) -> dict[str, tuple[str, ...]]:
+    return {command.command: (command.target_device_role,) for command in manifest.commands}
+
+
+def _command_by_name(manifest):
+    return {command.command: command for command in manifest.commands}
+
+
+def _event_role_map(manifest) -> dict[str, tuple[str, ...]]:
+    return {event.event: event.source_device_roles for event in manifest.events}
+
+
+def _event_category_map(manifest) -> dict[str, EventCategory]:
+    return {event.event: event.category for event in manifest.events}
+
+
+def _topology_device(
+    device_id: int,
+    *,
+    code: str,
+    role: str,
+    supports_event_types: list[str] | None = None,
+    supports_command_types: list[str] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=device_id,
+        device_code=code,
+        device_role=role,
+        role_index=device_id,
+        sort_order=device_id,
+        upstream_device_id=None,
+        capabilities_json={
+            "supports_event_types": supports_event_types or [],
+            "supports_command_types": supports_command_types or [],
+        },
+    )
+
+
 def test_smt_sorting_inbound_manifest_declares_required_roles() -> None:
     manifest = SmtSortingInboundPlugin.manifest
 
-    assert {requirement.role for requirement in manifest.required_device_roles} == {
+    assert {requirement.role for requirement in manifest.devices} == {
         ROLE_SORTING_SOURCE_ARM,
         ROLE_SORTING_TARGET_ARM,
         ROLE_SORTING_SCAN_PLATFORM,
         ROLE_SORTING_NG_STATION,
         ROLE_SORTING_WORKSTATION,
     }
-    assert all(requirement.min_count == 1 for requirement in manifest.required_device_roles)
+    assert all(requirement.min_count == 1 for requirement in manifest.devices)
 
 
 def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None:
     manifest = SmtSortingInboundPlugin.manifest
+    command_roles = _command_role_map(manifest)
+    event_roles = _event_role_map(manifest)
+    event_categories = _event_category_map(manifest)
+    result_events = {
+        result_binding.event for command in manifest.commands for result_binding in command.result_bindings
+    }
 
-    assert manifest.command_target_roles == {
+    assert command_roles == {
         COMMAND_SOURCE_PICK: (ROLE_SORTING_SOURCE_ARM,),
         COMMAND_TARGET_PLACE: (ROLE_SORTING_TARGET_ARM,),
         COMMAND_NG_PLACE: (ROLE_SORTING_TARGET_ARM,),
     }
-    assert manifest.event_source_roles == {
-        EVENT_WORKING_BIN_SCAN: (ROLE_SORTING_SCAN_PLATFORM,),
-        EVENT_SESSION_COMPLETE_REQUESTED: (ROLE_SORTING_WORKSTATION,),
-    }
-    assert EVENT_SOURCE_PICK_REQUESTED in manifest.supported_events
-    assert EVENT_SOURCE_PICK_REQUESTED not in manifest.event_source_roles
-    assert EVENT_SOURCE_PICK_RESULT not in manifest.event_source_roles
-    assert EVENT_TARGET_PLACE_RESULT not in manifest.event_source_roles
-    assert EVENT_NG_PLACE_RESULT not in manifest.event_source_roles
+    assert event_roles[EVENT_WORKING_BIN_SCAN] == (ROLE_SORTING_SCAN_PLATFORM,)
+    assert event_roles[EVENT_SESSION_COMPLETE_REQUESTED] == (ROLE_SORTING_WORKSTATION,)
+    assert event_categories[EVENT_WORKING_BIN_SCAN] == EventCategory.ENTRY_DEVICE
+    assert event_categories[EVENT_SESSION_COMPLETE_REQUESTED] == EventCategory.ENTRY_DEVICE
+    assert EVENT_SOURCE_PICK_REQUESTED not in event_roles
+    assert {EVENT_SOURCE_PICK_RESULT, EVENT_TARGET_PLACE_RESULT, EVENT_NG_PLACE_RESULT} <= result_events
+
+
+def test_smt_sorting_inbound_real_manifest_validates_seed_like_device_capabilities() -> None:
+    workstation_supported_events = [EVENT_SESSION_COMPLETE_REQUESTED]
+    topology = WorklineTopologyView.from_devices(
+        [
+            _topology_device(
+                1,
+                code="SORT-SOURCE-ARM",
+                role=ROLE_SORTING_SOURCE_ARM,
+                supports_command_types=[COMMAND_SOURCE_PICK],
+            ),
+            _topology_device(
+                2,
+                code="SORT-TARGET-ARM",
+                role=ROLE_SORTING_TARGET_ARM,
+                supports_command_types=[COMMAND_TARGET_PLACE, COMMAND_NG_PLACE],
+            ),
+            _topology_device(
+                3,
+                code="SORT-SCAN-PLATFORM",
+                role=ROLE_SORTING_SCAN_PLATFORM,
+                supports_event_types=[EVENT_WORKING_BIN_SCAN],
+            ),
+            _topology_device(4, code="SORT-NG-STATION", role=ROLE_SORTING_NG_STATION),
+            _topology_device(
+                5,
+                code="SORT-WORKSTATION",
+                role=ROLE_SORTING_WORKSTATION,
+                supports_event_types=workstation_supported_events,
+            ),
+        ]
+    )
+
+    assert EVENT_SOURCE_PICK_REQUESTED not in workstation_supported_events
+    validate_topology_manifest(SmtSortingInboundPlugin.manifest, topology)
 
 
 def test_smt_sorter_has_only_source_and_target_arm_roles_for_business_commands() -> None:
     manifest = SmtSortingInboundPlugin.manifest
-    command_roles = {role for roles in manifest.command_target_roles.values() for role in roles}
-    required_roles = {requirement.role for requirement in manifest.required_device_roles}
+    command_roles_by_name = _command_role_map(manifest)
+    command_roles = {role for roles in command_roles_by_name.values() for role in roles}
+    required_roles = {requirement.role for requirement in manifest.devices}
     manifest_surface = {
-        "required_device_roles": sorted(required_roles),
-        "command_target_roles": {command: sorted(roles) for command, roles in manifest.command_target_roles.items()},
-        "supported_commands": sorted(manifest.supported_commands),
+        "declared_roles": sorted(required_roles),
+        "command_roles": {command: sorted(roles) for command, roles in command_roles_by_name.items()},
+        "commands": sorted(command.command for command in manifest.commands),
     }
 
     assert command_roles == {ROLE_SORTING_SOURCE_ARM, ROLE_SORTING_TARGET_ARM}
-    assert manifest.command_target_roles[COMMAND_NG_PLACE] == (ROLE_SORTING_TARGET_ARM,)
+    assert command_roles_by_name[COMMAND_NG_PLACE] == (ROLE_SORTING_TARGET_ARM,)
     assert "NG_ARM" not in command_roles
     assert "NG_ARM" not in required_roles
     assert "NG_ARM" not in repr(manifest_surface)
@@ -100,14 +180,14 @@ def test_smt_sorter_has_only_source_and_target_arm_roles_for_business_commands()
 def test_ng_place_uses_target_arm_role() -> None:
     manifest = SmtSortingInboundPlugin.manifest
 
-    assert manifest.command_target_roles[COMMAND_NG_PLACE] == (ROLE_SORTING_TARGET_ARM,)
+    assert _command_role_map(manifest)[COMMAND_NG_PLACE] == (ROLE_SORTING_TARGET_ARM,)
 
 
 def test_smt_sorting_inbound_manifest_keeps_platform_start_out_of_business_events() -> None:
     manifest = SmtSortingInboundPlugin.manifest
+    event_names = {event.event for event in manifest.events}
 
-    assert "WORKLINE_START_REQUESTED" not in manifest.supported_events
-    assert "WORKLINE_START_REQUESTED" not in manifest.event_source_roles
+    assert "WORKLINE_START_REQUESTED" not in event_names
 
 
 def test_smt_sorting_inbound_plugin_does_not_hard_code_device_codes() -> None:
@@ -756,7 +836,7 @@ async def test_working_bin_scan_identity_mismatch_sends_reel_to_local_ng() -> No
     assert intents[2].device_role == ROLE_SORTING_TARGET_ARM
     assert "NG_ARM" not in {
         intents[2].device_role,
-        *SmtSortingInboundPlugin.manifest.command_target_roles[COMMAND_NG_PLACE],
+        *_command_role_map(SmtSortingInboundPlugin.manifest)[COMMAND_NG_PLACE],
     }
 
 

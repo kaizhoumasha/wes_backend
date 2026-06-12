@@ -5,6 +5,32 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.workline_plugins.rough_sorter.contract import (
+    ACTION_MOVE_FORWARD,
+    ACTION_MOVE_TO_NG,
+    ACTION_PICK_AND_PUT,
+    ACTION_PUT_TO_BIN,
+    EVENT_ROUGH_SORTER_STORAGE_RETRY,
+    EVENT_SCAN_COMPLETED,
+    ROLE_CONVEYOR,
+    ROLE_INPUT_ARM,
+    ROLE_OUTPUT_ARM,
+)
+from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
+from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_NG_PLACE,
+    COMMAND_SOURCE_PICK,
+    COMMAND_TARGET_PLACE,
+    EVENT_SESSION_COMPLETE_REQUESTED,
+    EVENT_SOURCE_PICK_REQUESTED,
+    EVENT_WORKING_BIN_SCAN,
+    ROLE_SORTING_NG_STATION,
+    ROLE_SORTING_SCAN_PLATFORM,
+    ROLE_SORTING_SOURCE_ARM,
+    ROLE_SORTING_TARGET_ARM,
+    ROLE_SORTING_WORKSTATION,
+)
+from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
 from src.workline_runtime import plugin_manifest as manifest_contract
 from src.workline_runtime.topology import WorklineTopologyView, validate_topology_manifest
 
@@ -17,6 +43,27 @@ EXPECTED_MANIFEST_FIELDS = (
     "commands",
     "events",
     "resource_boundaries",
+)
+
+
+def _legacy_field(*parts: str) -> str:
+    return "".join(parts)
+
+
+OLD_MANIFEST_FIELDS = (
+    _legacy_field("required", "_device_roles"),
+    _legacy_field("business", "_key_resolver"),
+    _legacy_field("result", "_classifier"),
+    _legacy_field("context", "_model"),
+    _legacy_field("event", "_source_roles"),
+    _legacy_field("command", "_target_roles"),
+    _legacy_field("supported", "_events"),
+    _legacy_field("supported", "_commands"),
+    _legacy_field("resource", "_kinds"),
+    _legacy_field("requires", "_single_layer_boundary"),
+    _legacy_field("single", "_layer_boundaries"),
+    _legacy_field("material", "_identity_resolver"),
+    _legacy_field("ng", "_reason_catalog"),
 )
 
 
@@ -449,3 +496,106 @@ def test_validate_topology_manifest_rejects_unsupported_event_or_command(
 
     with pytest.raises(ValueError, match=message):
         validate_topology_manifest(_topology_manifest_for_validation(), topology)
+
+
+def _assert_real_manifest_surface(manifest) -> None:
+    assert tuple(field.name for field in fields(manifest)) == EXPECTED_MANIFEST_FIELDS
+    for field_name in OLD_MANIFEST_FIELDS:
+        assert not hasattr(manifest, field_name), field_name
+
+
+def _assert_topology_uses_node_refs(manifest) -> None:
+    NodeRef = _contract("NodeRef")
+
+    assert manifest.topology.flow_edges
+    for edge in manifest.topology.flow_edges:
+        assert isinstance(edge.from_node, NodeRef)
+        assert isinstance(edge.to_node, NodeRef)
+
+
+def _events_by_name(manifest):
+    return {event.event: event for event in manifest.events}
+
+
+def _commands_by_name(manifest):
+    return {command.command: command for command in manifest.commands}
+
+
+def _boundaries_by_position(manifest):
+    return {boundary.position_code: boundary for boundary in manifest.resource_boundaries}
+
+
+def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
+    manifest = RoughSorterPlugin.manifest
+    EventCategory = _contract("EventCategory")
+    PositionArgRole = _contract("PositionArgRole")
+
+    _assert_real_manifest_surface(manifest)
+    _assert_topology_uses_node_refs(manifest)
+    assert {device.role for device in manifest.devices} == {ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM}
+
+    events = _events_by_name(manifest)
+    assert events[EVENT_SCAN_COMPLETED].source_device_roles == (ROLE_INPUT_ARM,)
+    assert events[EVENT_SCAN_COMPLETED].category == EventCategory.ENTRY_DEVICE
+    assert events[EVENT_ROUGH_SORTER_STORAGE_RETRY].source_device_roles == (ROLE_OUTPUT_ARM,)
+    assert events[EVENT_ROUGH_SORTER_STORAGE_RETRY].category == EventCategory.INTERNAL
+
+    commands = _commands_by_name(manifest)
+    assert commands[ACTION_PICK_AND_PUT].target_device_role == ROLE_INPUT_ARM
+    assert commands[ACTION_MOVE_FORWARD].target_device_role == ROLE_CONVEYOR
+    assert commands[ACTION_PUT_TO_BIN].target_device_role == ROLE_OUTPUT_ARM
+    assert commands[ACTION_MOVE_TO_NG].target_device_role == ROLE_INPUT_ARM
+    for command in commands.values():
+        assert command.position_args
+        assert command.result_bindings
+    assert {arg.role for arg in commands[ACTION_PICK_AND_PUT].position_args} == {
+        PositionArgRole.SOURCE,
+        PositionArgRole.TARGET,
+    }
+
+    boundary = _boundaries_by_position(manifest)["SINGLE_LAYER_A"]
+    assert boundary.rack_kind == "SINGLE_LAYER"
+    assert boundary.business_demand_type == "ROUGH_SORTER_BIN_ALLOCATION"
+    assert boundary.snapshot_kind == "ACTIVE_CLASSIFIER_BIN_RACK"
+
+
+def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None:
+    manifest = SmtSortingInboundPlugin.manifest
+    EventCategory = _contract("EventCategory")
+
+    _assert_real_manifest_surface(manifest)
+    _assert_topology_uses_node_refs(manifest)
+    assert {device.role for device in manifest.devices} == {
+        ROLE_SORTING_SOURCE_ARM,
+        ROLE_SORTING_TARGET_ARM,
+        ROLE_SORTING_SCAN_PLATFORM,
+        ROLE_SORTING_NG_STATION,
+        ROLE_SORTING_WORKSTATION,
+    }
+    assert {"SOURCE_STATION_A", "SOURCE_STATION_B", "TARGET_STATION", "NG_STATION", "WORKSTATION"} <= {
+        position.code for position in manifest.positions
+    }
+
+    events = _events_by_name(manifest)
+    assert events[EVENT_WORKING_BIN_SCAN].source_device_roles == (ROLE_SORTING_SCAN_PLATFORM,)
+    assert events[EVENT_WORKING_BIN_SCAN].category == EventCategory.ENTRY_DEVICE
+    assert events[EVENT_SESSION_COMPLETE_REQUESTED].source_device_roles == (ROLE_SORTING_WORKSTATION,)
+    assert events[EVENT_SESSION_COMPLETE_REQUESTED].category == EventCategory.ENTRY_DEVICE
+    assert EVENT_SOURCE_PICK_REQUESTED not in events
+
+    commands = _commands_by_name(manifest)
+    assert commands[COMMAND_SOURCE_PICK].target_device_role == ROLE_SORTING_SOURCE_ARM
+    assert commands[COMMAND_TARGET_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
+    assert commands[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
+    for command in commands.values():
+        assert command.position_args
+        assert command.result_bindings
+
+    boundaries = _boundaries_by_position(manifest)
+    assert boundaries["SOURCE_STATION_A"].business_demand_type == "SORTING_INBOUND_SOURCE"
+    assert boundaries["SOURCE_STATION_A"].rack_kind == "SINGLE_LAYER"
+    assert boundaries["TARGET_STATION"].business_demand_type == "SORTING_INBOUND_TARGET"
+    assert boundaries["TARGET_STATION"].rack_kind == "FIVE_LAYER"
+    assert boundaries["NG_STATION"].business_demand_type == "SORTING_INBOUND_NG"
+    assert boundaries["WORKSTATION"].business_demand_type == "SORTING_INBOUND_WORK"
+    assert any(boundary.rack_kind == "FIVE_LAYER" for boundary in manifest.resource_boundaries)
