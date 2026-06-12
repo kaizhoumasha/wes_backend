@@ -341,11 +341,6 @@ class ResourceBoundary(BaseModel):
     lease_scope: str = Field(description="WES 业务预占范围")
 
 
-# 保持 models 包导出稳定；新的 API 合同不再使用这些旧字段名。
-DeviceRoleRequirementOption = DeviceRequirement
-WorkLineSingleLayerRackBoundarySummary = ResourceBoundary
-
-
 class WorkLinePluginOption(BaseModel):
     """作业线插件下拉选项。"""
 

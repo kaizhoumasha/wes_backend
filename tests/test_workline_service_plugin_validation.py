@@ -153,9 +153,12 @@ def test_plugin_options_do_not_expose_manifest_capabilities() -> None:
 
     option = WorkLineService().list_plugin_options()[0]
 
-    assert not hasattr(option, "required_device_roles")
-    assert not hasattr(option, "supported_events")
-    assert not hasattr(option, "supported_commands")
+    assert set(option.model_dump()) == {
+        "plugin_key",
+        "label",
+        "contract_versions",
+        "default_contract_version",
+    }
 
 
 def test_manifest_summary_exposes_devices_positions_topology_events_commands_resource_boundaries() -> None:
@@ -181,12 +184,6 @@ def test_manifest_summary_exposes_devices_positions_topology_events_commands_res
     assert summary.commands
     assert summary.resource_boundaries
     assert summary.positions[0].carrier_capability.allowed_rack_kinds
-    assert not hasattr(summary, "required_device_roles")
-    assert not hasattr(summary, "event_source_roles")
-    assert not hasattr(summary, "command_target_roles")
-    assert not hasattr(summary, "supported_events")
-    assert not hasattr(summary, "supported_commands")
-    assert not hasattr(summary, "single_layer_boundaries")
 
 
 def test_smt_sorting_inbound_manifest_summary_does_not_expose_ng_arm_role() -> None:
@@ -234,8 +231,6 @@ def test_configuration_checks_use_event_and_command_bindings(monkeypatch) -> Non
             ),
         ),
         resource_boundaries=(),
-        event_source_roles={"OLD_EVENT": ("SCANNER",)},
-        command_target_roles={"OLD_COMMAND": ("ARM",)},
     )
     definition = SimpleNamespace(plugin_key="binding_plugin", manifest=manifest)
     monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)

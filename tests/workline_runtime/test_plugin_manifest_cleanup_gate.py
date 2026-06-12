@@ -1,0 +1,276 @@
+"""旧 Workline manifest 合同清理门禁。"""
+
+import ast
+import re
+from pathlib import Path
+from typing import Any
+
+ACTIVE_PATHS = (
+    Path("src"),
+    Path("tests"),
+    Path("docs/templates"),
+    Path("docs/plugin_development_guide.md"),
+)
+
+TEXT_SUFFIXES = {".json", ".md", ".py", ".tmpl", ".txt", ".yaml", ".yml"}
+ALLOWLIST_MARKER = "manifest-cleanup-allowlist"
+
+
+def _legacy_symbol(*parts: str) -> str:
+    return "".join(parts)
+
+
+LEGACY_IDENTIFIER_FRAGMENTS = (
+    _legacy_symbol("Device", "RoleRequirement"),
+    _legacy_symbol("Single", "LayerRackBoundary"),
+)
+
+LEGACY_API_EXPORTS = (
+    _legacy_symbol("Device", "RoleRequirement", "Option"),
+    _legacy_symbol("WorkLine", "Single", "LayerRackBoundary", "Summary"),
+)
+
+LEGACY_EXACT_SYMBOLS = (
+    _legacy_symbol("Business", "KeyResolver"),
+    _legacy_symbol("Result", "Classifier"),
+    _legacy_symbol("_looks", "_like_manifest"),
+    _legacy_symbol("_ALLOWED", "_SINGLE_LAYER_"),
+    _legacy_symbol("_requires", "_single", "_layer_boundaries"),
+)
+
+LEGACY_MANIFEST_FIELDS = (
+    _legacy_symbol("required", "_device_roles"),
+    _legacy_symbol("event", "_source_roles"),
+    _legacy_symbol("command", "_target_roles"),
+    _legacy_symbol("supported", "_events"),
+    _legacy_symbol("supported", "_commands"),
+    _legacy_symbol("resource", "_kinds"),
+    _legacy_symbol("requires", "_single_layer_boundary"),
+    _legacy_symbol("single", "_layer_boundaries"),
+    _legacy_symbol("runtime", "_source"),
+    "capabilities",
+)
+
+LEGACY_MANIFEST_CALLABLE_PARAMS = (
+    _legacy_symbol("business", "_key_resolver"),
+    _legacy_symbol("result", "_classifier"),
+    _legacy_symbol("context", "_model"),
+    _legacy_symbol("material", "_identity_resolver"),
+    _legacy_symbol("ng", "_reason_catalog"),
+)
+
+LEGACY_MANIFEST_NAMES = LEGACY_MANIFEST_FIELDS + LEGACY_MANIFEST_CALLABLE_PARAMS
+
+MANIFEST_CONSTRUCTOR_PATTERN = re.compile(r"\bWorklinePluginManifest\s*\(", re.DOTALL)
+MANIFEST_NAMESPACE_PATTERN = re.compile(r"\bmanifest\s*=\s*SimpleNamespace\s*\(", re.DOTALL)
+MANIFEST_ATTRIBUTE_PATTERNS = tuple(
+    (name, re.compile(rf"\bmanifest\s*\.\s*{re.escape(name)}\b")) for name in LEGACY_MANIFEST_NAMES
+)
+
+
+def _iter_active_files() -> list[Path]:
+    files: list[Path] = []
+    for path in ACTIVE_PATHS:
+        if path.is_file():
+            files.append(path)
+            continue
+        files.extend(item for item in path.rglob("*") if item.is_file() and item.suffix in TEXT_SUFFIXES)
+    return sorted(files)
+
+
+def _line_is_allowlisted(line: str) -> bool:
+    return ALLOWLIST_MARKER in line
+
+
+def _line_number(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def _line_at(text: str, line_number: int) -> str:
+    return text.splitlines()[line_number - 1]
+
+
+def _call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _is_manifest_like_name(node: ast.AST) -> bool:
+    return isinstance(node, ast.Name) and node.id in {"manifest", "summary", "option"}
+
+
+def _literal_string(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _is_legacy_type_or_export(name: str | None) -> bool:
+    if name is None:
+        return False
+    return name in LEGACY_API_EXPORTS or any(fragment in name for fragment in LEGACY_IDENTIFIER_FRAGMENTS)
+
+
+def _is_assigned_manifest(tree: ast.AST, call: ast.Call) -> bool:
+    for parent in ast.walk(tree):
+        value = getattr(parent, "value", None)
+        if value is not call:
+            continue
+        targets = getattr(parent, "targets", ())
+        return any(isinstance(target, ast.Name) and target.id == "manifest" for target in targets)
+    return False
+
+
+def _python_legacy_manifest_hits(path: Path, text: str) -> list[str]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return _text_legacy_manifest_hits(path, text)
+
+    hits: list[str] = []
+    legacy_manifest_names = set(LEGACY_MANIFEST_NAMES)
+    legacy_field_names = set(LEGACY_MANIFEST_FIELDS)
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Call(self, node: ast.Call) -> Any:
+            call_name = _call_name(node.func)
+            if call_name == "WorklinePluginManifest":
+                for keyword in node.keywords:
+                    if keyword.arg in legacy_manifest_names:
+                        hits.append(f"{path}:{keyword.lineno}: WorklinePluginManifest.{keyword.arg}")
+            if call_name == "SimpleNamespace":
+                for keyword in node.keywords:
+                    if keyword.arg in legacy_manifest_names and _is_assigned_manifest(tree, node):
+                        hits.append(f"{path}:{keyword.lineno}: manifest namespace field {keyword.arg}")
+            if (
+                call_name == "hasattr"
+                and len(node.args) >= 2
+                and _is_manifest_like_name(node.args[0])
+                and (field_name := _literal_string(node.args[1])) in legacy_field_names
+            ):
+                hits.append(f"{path}:{node.lineno}: public assertion for old manifest field {field_name}")
+            self.generic_visit(node)
+
+        def visit_Attribute(self, node: ast.Attribute) -> Any:
+            if _is_manifest_like_name(node.value) and node.attr in legacy_manifest_names:
+                hits.append(f"{path}:{node.lineno}: manifest.{node.attr}")
+            self.generic_visit(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+            if _is_legacy_type_or_export(node.name):
+                hits.append(f"{path}:{node.lineno}: legacy manifest type definition {node.name}")
+            if any(token in node.name for token in ("Manifest", "Summary", "Option")):
+                for statement in node.body:
+                    target = getattr(statement, "target", None)
+                    if isinstance(target, ast.Name) and target.id in legacy_manifest_names:
+                        hits.append(f"{path}:{statement.lineno}: public model field {target.id}")
+            self.generic_visit(node)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:
+            for alias in node.names:
+                if _is_legacy_type_or_export(alias.name):
+                    hits.append(f"{path}:{node.lineno}: legacy manifest type import {alias.name}")
+            self.generic_visit(node)
+
+        def visit_Import(self, node: ast.Import) -> Any:
+            for alias in node.names:
+                imported_name = alias.name.rsplit(".", maxsplit=1)[-1]
+                if _is_legacy_type_or_export(imported_name):
+                    hits.append(f"{path}:{node.lineno}: legacy manifest type import {imported_name}")
+            self.generic_visit(node)
+
+        def visit_Assign(self, node: ast.Assign) -> Any:
+            for target in node.targets:
+                if isinstance(target, ast.Name) and _is_legacy_type_or_export(target.id):
+                    hits.append(f"{path}:{node.lineno}: legacy manifest alias {target.id}")
+                if isinstance(target, ast.Name) and target.id == "__all__":
+                    for item in ast.walk(node.value):
+                        exported_name = _literal_string(item)
+                        if _is_legacy_type_or_export(exported_name):
+                            hits.append(f"{path}:{item.lineno}: legacy manifest export {exported_name}")
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+    return hits
+
+
+def _window_legacy_name_hits(path: Path, text: str, pattern: re.Pattern[str], reason: str) -> list[str]:
+    hits: list[str] = []
+    for match in pattern.finditer(text):
+        window = text[match.start() : match.start() + 5000]
+        for name in LEGACY_MANIFEST_NAMES:
+            name_match = re.search(rf"\b{re.escape(name)}\s*=", window)
+            if name_match is None:
+                continue
+            line_number = _line_number(text, match.start() + name_match.start())
+            if not _line_is_allowlisted(_line_at(text, line_number)):
+                hits.append(f"{path}:{line_number}: {reason} {name}")
+    return hits
+
+
+def _text_legacy_manifest_hits(path: Path, text: str) -> list[str]:
+    hits: list[str] = []
+    hits.extend(_window_legacy_name_hits(path, text, MANIFEST_CONSTRUCTOR_PATTERN, "WorklinePluginManifest param"))
+    hits.extend(_window_legacy_name_hits(path, text, MANIFEST_NAMESPACE_PATTERN, "manifest namespace field"))
+
+    for name, pattern in MANIFEST_ATTRIBUTE_PATTERNS:
+        for match in pattern.finditer(text):
+            line_number = _line_number(text, match.start())
+            if not _line_is_allowlisted(_line_at(text, line_number)):
+                hits.append(f"{path}:{line_number}: manifest.{name}")
+
+    if path.suffix == ".json":
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if _line_is_allowlisted(line):
+                continue
+            for name in LEGACY_MANIFEST_NAMES:
+                if re.search(rf'"{re.escape(name)}"\s*:', line):
+                    hits.append(f"{path}:{line_number}: json manifest key {name}")
+
+    if path.suffix == ".md":
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if _line_is_allowlisted(line):
+                continue
+            for name in (field_name for field_name in LEGACY_MANIFEST_FIELDS if field_name != "capabilities"):
+                if name in line:
+                    hits.append(f"{path}:{line_number}: documented old manifest field {name}")
+
+    return hits
+
+
+def _text_legacy_type_hits(path: Path, text: str) -> list[str]:
+    hits: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if _line_is_allowlisted(line):
+            continue
+        for symbol in LEGACY_API_EXPORTS + LEGACY_IDENTIFIER_FRAGMENTS:
+            if not re.search(rf"\b{re.escape(symbol)}\b", line):
+                continue
+            if re.search(r"\b(from|import|class|def)\b", line) or re.search(rf"\b{re.escape(symbol)}\s*[=(]", line):
+                hits.append(f"{path}:{line_number}: legacy manifest type/export {symbol}")
+        for symbol in LEGACY_EXACT_SYMBOLS:
+            if re.search(rf"\b(def|class)\s+{re.escape(symbol)}\b|^\s*{re.escape(symbol)}\s*=", line):
+                hits.append(f"{path}:{line_number}: legacy helper {symbol}")
+    return hits
+
+
+def _legacy_symbol_hits(path: Path, text: str) -> list[str]:
+    hits: list[str] = []
+    if path.suffix == ".py":
+        hits.extend(_python_legacy_manifest_hits(path, text))
+    else:
+        hits.extend(_text_legacy_manifest_hits(path, text))
+        hits.extend(_text_legacy_type_hits(path, text))
+    return hits
+
+
+def test_old_manifest_contract_symbols_are_removed_from_active_paths() -> None:
+    hits: list[str] = []
+    for path in _iter_active_files():
+        text = path.read_text(encoding="utf-8")
+        hits.extend(_legacy_symbol_hits(path, text))
+
+    assert not hits, "旧 manifest 合同残留:\n" + "\n".join(hits[:200])

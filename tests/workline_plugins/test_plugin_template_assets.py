@@ -154,8 +154,10 @@ def test_plugin_template_uses_pure_data_manifest_contract() -> None:
     ):
         assert name in plugin_template
 
-    assert "DeviceRoleRequirement" not in plugin_template
-    assert "SingleLayerRackBoundary" not in plugin_template
+    removed_device_requirement = "Device" + "RoleRequirement"
+    removed_resource_boundary = "Single" + "LayerRackBoundary"
+    assert removed_device_requirement not in plugin_template
+    assert removed_resource_boundary not in plugin_template
 
     for field_name in REMOVED_MANIFEST_RUNTIME_FIELDS:
         assert f"{field_name}=" not in plugin_template

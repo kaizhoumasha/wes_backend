@@ -665,13 +665,14 @@ async def test_cross_plan_sandbox_smoke(
 
     # 8. WORKLINE_START_REQUESTED 不是 SMT 插件普通业务事件。
     manifest = SmtSortingInboundPlugin.manifest
-    manifest_roles = {requirement.role for requirement in manifest.required_device_roles}
-    command_target_roles = {role for roles in manifest.command_target_roles.values() for role in roles}
+    manifest_roles = {requirement.role for requirement in manifest.devices}
+    command_roles = {command.target_device_role for command in manifest.commands}
+    commands_by_name = {command.command: command for command in manifest.commands}
+    event_names = {event.event for event in manifest.events}
     assert "NG_ARM" not in manifest_roles
-    assert "NG_ARM" not in command_target_roles
-    assert manifest.command_target_roles[COMMAND_NG_PLACE] == (ROLE_SORTING_TARGET_ARM,)
-    assert "WORKLINE_START_REQUESTED" not in manifest.supported_events
-    assert "WORKLINE_START_REQUESTED" not in manifest.event_source_roles
+    assert "NG_ARM" not in command_roles
+    assert commands_by_name[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
+    assert "WORKLINE_START_REQUESTED" not in event_names
 
 
 @pytest.mark.asyncio
