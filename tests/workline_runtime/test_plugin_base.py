@@ -1,8 +1,12 @@
+from concurrent.futures import ThreadPoolExecutor
+from time import sleep
 from types import SimpleNamespace
 
 import pytest
 
+import src.workline_plugin_registry as registry
 from src.workline_plugin_registry import WorklinePluginDefinition
+from src.workline_runtime.orchestrator import OrchestratorService
 from src.workline_runtime.plugin_base import WorklinePlugin, build_payload_invalid_block, on_event
 from src.workline_runtime.plugin_manifest import (
     DeviceRequirement,
@@ -46,6 +50,35 @@ class RegistrySingletonPlugin(WorklinePlugin):
         ),
         topology=TopologySpec(),
     )
+
+
+class SlowRegistrySingletonPlugin(WorklinePlugin):
+    plugin_key = "slow_registry_singleton"
+    instances_created = 0
+
+    def __init__(self) -> None:
+        sleep(0.01)
+        type(self).instances_created += 1
+
+
+class LegacyContextModel:
+    pass
+
+
+class RuntimeContextModel:
+    pass
+
+
+class LegacyContextModelOnlyPlugin(WorklinePlugin):
+    plugin_key = "legacy_context_model_only"
+    context_model = LegacyContextModel
+
+
+class RuntimeContextModelPlugin(WorklinePlugin):
+    plugin_key = "runtime_context_model"
+
+    def get_context_model(self) -> type[RuntimeContextModel]:
+        return RuntimeContextModel
 
 
 def _ctx() -> SimpleNamespace:
@@ -109,3 +142,72 @@ def test_registry_definition_returns_single_plugin_instance() -> None:
     second = definition.plugin_instance
 
     assert first is second
+
+
+def test_registry_definition_returns_single_plugin_instance_under_concurrency() -> None:
+    SlowRegistrySingletonPlugin.instances_created = 0
+    definition = WorklinePluginDefinition(
+        plugin_key="slow_registry_singleton",
+        plugin_module=__name__,
+        plugin_class_name="SlowRegistrySingletonPlugin",
+    )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        instances = list(executor.map(lambda _: definition.plugin_instance, range(16)))
+
+    assert len({id(instance) for instance in instances}) == 1
+    assert SlowRegistrySingletonPlugin.instances_created == 1
+
+
+def test_registry_context_model_helper_ignores_legacy_field() -> None:
+    plugin_key = "legacy_context_model_only"
+    old_definition = registry.WORKLINE_PLUGIN_REGISTRY.get(plugin_key)
+    registry.WORKLINE_PLUGIN_REGISTRY[plugin_key] = WorklinePluginDefinition(
+        plugin_key=plugin_key,
+        plugin_module=__name__,
+        plugin_class_name="LegacyContextModelOnlyPlugin",
+    )
+    try:
+        assert registry.get_workline_context_model(plugin_key) is None
+    finally:
+        if old_definition is None:
+            registry.WORKLINE_PLUGIN_REGISTRY.pop(plugin_key, None)
+        else:
+            registry.WORKLINE_PLUGIN_REGISTRY[plugin_key] = old_definition
+
+
+def test_registry_context_model_helper_uses_runtime_method() -> None:
+    plugin_key = "runtime_context_model"
+    old_definition = registry.WORKLINE_PLUGIN_REGISTRY.get(plugin_key)
+    registry.WORKLINE_PLUGIN_REGISTRY[plugin_key] = WorklinePluginDefinition(
+        plugin_key=plugin_key,
+        plugin_module=__name__,
+        plugin_class_name="RuntimeContextModelPlugin",
+    )
+    try:
+        assert registry.get_workline_context_model(plugin_key) is RuntimeContextModel
+    finally:
+        if old_definition is None:
+            registry.WORKLINE_PLUGIN_REGISTRY.pop(plugin_key, None)
+        else:
+            registry.WORKLINE_PLUGIN_REGISTRY[plugin_key] = old_definition
+
+
+def test_orchestrator_load_plugin_returns_registry_cached_instance() -> None:
+    plugin_key = "registry_singleton"
+    definition = WorklinePluginDefinition(
+        plugin_key=plugin_key,
+        plugin_module=__name__,
+        plugin_class_name="RegistrySingletonPlugin",
+    )
+    old_definition = registry.WORKLINE_PLUGIN_REGISTRY.get(plugin_key)
+    registry.WORKLINE_PLUGIN_REGISTRY[plugin_key] = definition
+    try:
+        loaded = OrchestratorService()._load_plugin(RegistrySingletonPlugin)
+    finally:
+        if old_definition is None:
+            registry.WORKLINE_PLUGIN_REGISTRY.pop(plugin_key, None)
+        else:
+            registry.WORKLINE_PLUGIN_REGISTRY[plugin_key] = old_definition
+
+    assert loaded is definition.plugin_instance

@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from importlib import import_module
+from threading import Lock
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ class WorklinePluginDefinition:
     plugin_class_name: str
     contract_module: str | None = None
     _plugin_instance: Any | None = field(default=None, init=False, repr=False, compare=False)
+    _plugin_instance_lock: Lock = field(default_factory=Lock, init=False, repr=False, compare=False)
 
     @property
     def plugin_class(self) -> type[Any]:
@@ -62,7 +64,9 @@ class WorklinePluginDefinition:
         """惰性创建并缓存该 definition 的唯一插件实例。"""
 
         if self._plugin_instance is None:
-            object.__setattr__(self, "_plugin_instance", self.plugin_class())
+            with self._plugin_instance_lock:
+                if self._plugin_instance is None:
+                    object.__setattr__(self, "_plugin_instance", self.plugin_class())
         return self._plugin_instance
 
 
@@ -139,9 +143,8 @@ def get_workline_context_model(plugin_key: str | None) -> type[Any] | None:
     if definition is None:
         return None
 
-    plugin = definition.plugin_instance
-    resolver = getattr(plugin, "get_context_model", None)
-    context_model = resolver() if callable(resolver) else getattr(plugin, "context_model", None)
+    resolver = getattr(definition.plugin_instance, "get_context_model", None)
+    context_model = resolver() if callable(resolver) else None
     return context_model if isinstance(context_model, type) else None
 
 
@@ -174,9 +177,8 @@ def list_workline_ng_reasons(plugin_key: str | None) -> tuple["NgReasonDefinitio
     if definition is None:
         return ()
 
-    plugin = definition.plugin_instance
-    resolver = getattr(plugin, "list_ng_reasons", None)
-    reasons = resolver() if callable(resolver) else getattr(plugin, "ng_reason_catalog", None)
+    resolver = getattr(definition.plugin_instance, "list_ng_reasons", None)
+    reasons = resolver() if callable(resolver) else None
     return tuple(reasons or ())
 
 
