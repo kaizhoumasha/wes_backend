@@ -263,18 +263,23 @@ class SmtSortingInboundPlugin(WorklinePlugin):
                 ),
                 FlowEdge(
                     from_node=_node(NodeRefKind.POSITION, POSITION_WORKSTATION),
-                    to_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_TARGET_ARM),
-                    type=FlowEdgeType.OPERATION,
-                ),
-                FlowEdge(
-                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_TARGET_ARM),
                     to_node=_node(NodeRefKind.POSITION, POSITION_TARGET_STATION),
                     type=FlowEdgeType.MATERIAL_FLOW,
                 ),
                 FlowEdge(
-                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_TARGET_ARM),
+                    from_node=_node(NodeRefKind.POSITION, POSITION_WORKSTATION),
                     to_node=_node(NodeRefKind.POSITION, POSITION_NG_STATION),
                     type=FlowEdgeType.MATERIAL_FLOW,
+                ),
+                FlowEdge(
+                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_TARGET_ARM),
+                    to_node=_node(NodeRefKind.POSITION, POSITION_TARGET_STATION),
+                    type=FlowEdgeType.OPERATION,
+                ),
+                FlowEdge(
+                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_TARGET_ARM),
+                    to_node=_node(NodeRefKind.POSITION, POSITION_NG_STATION),
+                    type=FlowEdgeType.OPERATION,
                 ),
             )
         ),
@@ -383,6 +388,14 @@ class SmtSortingInboundPlugin(WorklinePlugin):
             ResourceBoundary(
                 position_code=POSITION_WORKSTATION,
                 rack_kind="SINGLE_LAYER",
+                business_demand_type="SORTING_INBOUND_WORK",
+                wms_operation_type="SCAN_AND_CLASSIFY_MATERIAL",
+                snapshot_kind="ACTIVE_WORK_MATERIAL",
+                lease_scope="STATION",
+            ),
+            ResourceBoundary(
+                position_code=POSITION_WORKSTATION,
+                rack_kind="FIVE_LAYER",
                 business_demand_type="SORTING_INBOUND_WORK",
                 wms_operation_type="SCAN_AND_CLASSIFY_MATERIAL",
                 snapshot_kind="ACTIVE_WORK_MATERIAL",

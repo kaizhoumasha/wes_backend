@@ -601,6 +601,9 @@ async def test_move_forward_success_with_allocated_bin_claims_cell_and_dispatche
     assert intents[2].payload_json["params"]["bin_location"] == "BIN-001-4"
     assert allocator.calls[0]["barcode"] == "PKG-ROUGH-001"
     assert allocator.calls[0]["context"]["active_bin_rack"] == {"rack_id": "RACK-001"}
+    assert allocator.calls[0]["context"]["work_position_code"] == "SINGLE_LAYER_A"
+    assert allocator.calls[0]["context"]["target_position_code"] == "SINGLE_LAYER_A"
+    assert allocator.calls[0]["context"]["rack_kind"] == "SINGLE_LAYER"
 
 
 @pytest.mark.asyncio

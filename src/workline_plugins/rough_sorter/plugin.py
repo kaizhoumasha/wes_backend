@@ -296,10 +296,6 @@ class RoughSorterPlugin(WorklinePlugin):
             DeviceRequirement(role=ROLE_OUTPUT_ARM, min_count=1, max_count=1),
         ),
         positions=(
-            _position(POSITION_SCAN_POINT, role="SCAN_POINT", station_code="ROUGH_SORTER_SCAN"),
-            _position(DEFAULT_PIPELINE_INPUT_LOCATION, role="PIPELINE_INPUT", station_code="ROUGH_SORTER_PIPELINE"),
-            _position(DEFAULT_PIPELINE_OUTPUT_LOCATION, role="PIPELINE_OUTPUT", station_code="ROUGH_SORTER_PIPELINE"),
-            _position(DEFAULT_NG_LOCATION, role="NG", station_code="ROUGH_SORTER_NG"),
             _position(
                 POSITION_WORK_SINGLE_LAYER,
                 role="CLASSIFIER_WORK",
@@ -310,34 +306,9 @@ class RoughSorterPlugin(WorklinePlugin):
         topology=TopologySpec(
             flow_edges=(
                 FlowEdge(
-                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_INPUT_ARM),
-                    to_node=_node(NodeRefKind.POSITION, POSITION_SCAN_POINT),
-                    type=FlowEdgeType.OPERATION,
-                ),
-                FlowEdge(
-                    from_node=_node(NodeRefKind.POSITION, POSITION_SCAN_POINT),
-                    to_node=_node(NodeRefKind.POSITION, DEFAULT_PIPELINE_INPUT_LOCATION),
-                    type=FlowEdgeType.MATERIAL_FLOW,
-                ),
-                FlowEdge(
-                    from_node=_node(NodeRefKind.POSITION, DEFAULT_PIPELINE_INPUT_LOCATION),
-                    to_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_CONVEYOR),
-                    type=FlowEdgeType.OPERATION,
-                ),
-                FlowEdge(
-                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_CONVEYOR),
-                    to_node=_node(NodeRefKind.POSITION, DEFAULT_PIPELINE_OUTPUT_LOCATION),
-                    type=FlowEdgeType.MATERIAL_FLOW,
-                ),
-                FlowEdge(
-                    from_node=_node(NodeRefKind.POSITION, DEFAULT_PIPELINE_OUTPUT_LOCATION),
-                    to_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_OUTPUT_ARM),
-                    type=FlowEdgeType.OPERATION,
-                ),
-                FlowEdge(
                     from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_OUTPUT_ARM),
                     to_node=_node(NodeRefKind.POSITION, POSITION_WORK_SINGLE_LAYER),
-                    type=FlowEdgeType.MATERIAL_FLOW,
+                    type=FlowEdgeType.OPERATION,
                 ),
             )
         ),
@@ -345,47 +316,17 @@ class RoughSorterPlugin(WorklinePlugin):
             CommandBinding(
                 command=ACTION_PICK_AND_PUT,
                 target_device_role=ROLE_INPUT_ARM,
-                position_args=(
-                    _payload_position_arg(
-                        "source_location",
-                        role=PositionArgRole.SOURCE,
-                        path="data.location",
-                        fallback_position_ref=POSITION_SCAN_POINT,
-                    ),
-                    _static_position_arg(
-                        "target_location",
-                        role=PositionArgRole.TARGET,
-                        position_ref=DEFAULT_PIPELINE_INPUT_LOCATION,
-                    ),
-                ),
                 result_bindings=_command_result_bindings(ACTION_PICK_AND_PUT),
             ),
             CommandBinding(
                 command=ACTION_MOVE_FORWARD,
                 target_device_role=ROLE_CONVEYOR,
-                position_args=(
-                    _static_position_arg(
-                        "source_location",
-                        role=PositionArgRole.SOURCE,
-                        position_ref=DEFAULT_PIPELINE_INPUT_LOCATION,
-                    ),
-                    _static_position_arg(
-                        "target_location",
-                        role=PositionArgRole.TARGET,
-                        position_ref=DEFAULT_PIPELINE_OUTPUT_LOCATION,
-                    ),
-                ),
                 result_bindings=_command_result_bindings(ACTION_MOVE_FORWARD),
             ),
             CommandBinding(
                 command=ACTION_PUT_TO_BIN,
                 target_device_role=ROLE_OUTPUT_ARM,
                 position_args=(
-                    _static_position_arg(
-                        "source_location",
-                        role=PositionArgRole.SOURCE,
-                        position_ref=DEFAULT_PIPELINE_OUTPUT_LOCATION,
-                    ),
                     _resource_position_arg(
                         "bin_location",
                         role=PositionArgRole.TARGET,
@@ -398,18 +339,6 @@ class RoughSorterPlugin(WorklinePlugin):
             CommandBinding(
                 command=ACTION_MOVE_TO_NG,
                 target_device_role=ROLE_INPUT_ARM,
-                position_args=(
-                    _static_position_arg(
-                        "source_location",
-                        role=PositionArgRole.SOURCE,
-                        position_ref=DEFAULT_PIPELINE_INPUT_LOCATION,
-                    ),
-                    _static_position_arg(
-                        "ng_location",
-                        role=PositionArgRole.TARGET,
-                        position_ref=DEFAULT_NG_LOCATION,
-                    ),
-                ),
                 result_bindings=_command_result_bindings(ACTION_MOVE_TO_NG),
             ),
         ),

@@ -32,7 +32,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
 )
 from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
 from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
-from src.workline_runtime.plugin_manifest import EventCategory
+from src.workline_runtime.plugin_manifest import EventCategory, FlowEdgeType, NodeRefKind
 from src.workline_runtime.plugin_sdk import normalize_inbox_input
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 from src.workline_runtime.topology import WorklineTopologyView, validate_topology_manifest
@@ -121,6 +121,22 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
     assert event_categories[EVENT_SESSION_COMPLETE_REQUESTED] == EventCategory.ENTRY_DEVICE
     assert EVENT_SOURCE_PICK_REQUESTED not in event_roles
     assert {EVENT_SOURCE_PICK_RESULT, EVENT_TARGET_PLACE_RESULT, EVENT_NG_PLACE_RESULT} <= result_events
+
+
+def test_smt_sorting_inbound_material_flow_edges_are_position_to_position() -> None:
+    manifest = SmtSortingInboundPlugin.manifest
+
+    material_flow_edges = [edge for edge in manifest.topology.flow_edges if edge.type == FlowEdgeType.MATERIAL_FLOW]
+    assert material_flow_edges
+    assert all(
+        edge.from_node.kind == NodeRefKind.POSITION and edge.to_node.kind == NodeRefKind.POSITION
+        for edge in material_flow_edges
+    )
+    assert all(
+        edge.type == FlowEdgeType.OPERATION
+        for edge in manifest.topology.flow_edges
+        if NodeRefKind.DEVICE_ROLE in {edge.from_node.kind, edge.to_node.kind}
+    )
 
 
 def test_smt_sorting_inbound_real_manifest_validates_seed_like_device_capabilities() -> None:
