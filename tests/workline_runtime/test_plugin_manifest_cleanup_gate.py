@@ -75,6 +75,7 @@ LEGACY_REMOVED_CONTRACT_MEMBER_FIELDS = {
         _legacy_symbol("position", "_ref"),
         _legacy_symbol("result", "_event"),
     ),
+    _legacy_symbol("PositionArg"): (_legacy_symbol("runtime", "_source"),),
 }
 
 LEGACY_REMOVED_CONTRACT_MEMBER_SYMBOLS = tuple(
@@ -91,6 +92,23 @@ LEGACY_REMOVED_TYPE_SIGNATURE_PATTERNS = (
     (
         _legacy_symbol("TopologySpec", " | ", "None"),
         re.compile(r"\bTopologySpec\s*\|\s*None\b"),
+    ),
+)
+
+LEGACY_TEXT_SYMBOLS = (
+    *(field_name for field_name in LEGACY_MANIFEST_FIELDS if field_name != "capabilities"),
+    *LEGACY_MANIFEST_CALLABLE_PARAMS,
+    *LEGACY_IDENTIFIER_FRAGMENTS,
+    *LEGACY_API_EXPORTS,
+    *LEGACY_EXACT_SYMBOLS,
+)
+
+LEGACY_TEXT_SYMBOL_PATTERNS = tuple((symbol, re.compile(rf"\b{re.escape(symbol)}\b")) for symbol in LEGACY_TEXT_SYMBOLS)
+
+LEGACY_CAPABILITIES_FIELD_PATTERNS = (
+    (
+        _legacy_symbol("manifest", ".", "capabilities"),
+        re.compile(r"\bmanifest\s*\.\s*capabilities\b"),
     ),
 )
 
@@ -115,6 +133,39 @@ def _line_number(text: str, offset: int) -> int:
 
 def _line_at(text: str, line_number: int) -> str:
     return text.splitlines()[line_number - 1]
+
+
+def _find_matching_call_end(text: str, open_paren_offset: int) -> int | None:
+    depth = 0
+    for offset in range(open_paren_offset, len(text)):
+        char = text[offset]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return offset
+    return None
+
+
+def _depth_one_keyword_line(text: str, start_offset: int, end_offset: int, keyword: str) -> int | None:
+    depth = 1
+    offset = start_offset
+    keyword_pattern = re.compile(rf"\b{re.escape(keyword)}\s*=")
+    while offset < end_offset:
+        char = text[offset]
+        if char == "(":
+            depth += 1
+            offset += 1
+            continue
+        if char == ")":
+            depth -= 1
+            offset += 1
+            continue
+        if depth == 1 and (match := keyword_pattern.match(text, offset)) is not None:
+            return _line_number(text, match.start())
+        offset += 1
+    return None
 
 
 def _call_name(node: ast.AST) -> str | None:
@@ -148,7 +199,11 @@ def _removed_type_signature(annotation: ast.AST | None) -> str | None:
 def _is_legacy_type_or_export(name: str | None) -> bool:
     if name is None:
         return False
-    return name in LEGACY_API_EXPORTS or any(fragment in name for fragment in LEGACY_IDENTIFIER_FRAGMENTS)
+    return (
+        name in LEGACY_API_EXPORTS
+        or name in LEGACY_EXACT_SYMBOLS
+        or any(fragment in name for fragment in LEGACY_IDENTIFIER_FRAGMENTS)
+    )
 
 
 def _is_assigned_manifest(tree: ast.AST, call: ast.Call) -> bool:
@@ -292,10 +347,13 @@ def _text_legacy_manifest_hits(path: Path, text: str) -> list[str]:
                 hits.append(f"{path}:{line_number}: removed type signature {signature}")
 
     if path.suffix == ".json":
+        manifest_like_json = re.search(r'"plugin_key"\s*:', text) and re.search(r'"contract_version"\s*:', text)
         for line_number, line in enumerate(text.splitlines(), start=1):
             if _line_is_allowlisted(line):
                 continue
             for name in LEGACY_MANIFEST_NAMES:
+                if name == "capabilities" and not manifest_like_json:
+                    continue
                 if re.search(rf'"{re.escape(name)}"\s*:', line):
                     hits.append(f"{path}:{line_number}: json manifest key {name}")
 
@@ -326,8 +384,47 @@ def _text_legacy_type_hits(path: Path, text: str) -> list[str]:
     return hits
 
 
-def _legacy_symbol_hits(path: Path, text: str) -> list[str]:
+def _legacy_contract_member_keyword_hits(path: Path, text: str) -> list[str]:
     hits: list[str] = []
+    for owner, fields in LEGACY_REMOVED_CONTRACT_MEMBER_FIELDS.items():
+        call_pattern = re.compile(rf"\b{re.escape(owner)}\s*\(")
+        for call_match in call_pattern.finditer(text):
+            open_paren_offset = call_match.end() - 1
+            end_offset = _find_matching_call_end(text, open_paren_offset)
+            if end_offset is None:
+                continue
+            for field_name in fields:
+                line_number = _depth_one_keyword_line(text, open_paren_offset + 1, end_offset, field_name)
+                if line_number is None or _line_is_allowlisted(_line_at(text, line_number)):
+                    continue
+                hits.append(f"{path}:{line_number}: removed contract member keyword {owner}.{field_name}")
+    return hits
+
+
+def _text_removed_token_hits(path: Path, text: str) -> list[str]:
+    hits: list[str] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if _line_is_allowlisted(line):
+            continue
+        for symbol, pattern in LEGACY_TEXT_SYMBOL_PATTERNS:
+            if pattern.search(line):
+                hits.append(f"{path}:{line_number}: removed manifest symbol {symbol}")
+        for symbol, pattern in LEGACY_REMOVED_CONTRACT_MEMBER_PATTERNS:
+            if pattern.search(line):
+                hits.append(f"{path}:{line_number}: removed contract member {symbol}")
+        for signature, pattern in LEGACY_REMOVED_TYPE_SIGNATURE_PATTERNS:
+            if pattern.search(line):
+                hits.append(f"{path}:{line_number}: removed type signature {signature}")
+        for reason, pattern in LEGACY_CAPABILITIES_FIELD_PATTERNS:
+            if pattern.search(line):
+                hits.append(f"{path}:{line_number}: removed {reason}")
+
+    hits.extend(_legacy_contract_member_keyword_hits(path, text))
+    return hits
+
+
+def _legacy_symbol_hits(path: Path, text: str) -> list[str]:
+    hits = _text_removed_token_hits(path, text)
     if path.suffix == ".py":
         hits.extend(_python_legacy_manifest_hits(path, text))
     else:
@@ -336,40 +433,50 @@ def _legacy_symbol_hits(path: Path, text: str) -> list[str]:
     return hits
 
 
-def test_cleanup_gate_detects_removed_contract_member_symbols_in_text() -> None:
+def test_cleanup_gate_allows_hardware_capabilities_json_fixture() -> None:
+    text = '{"' + "cap" + 'abilities": ["scan_item"]}'
+
+    hits = _legacy_symbol_hits(Path("fixture.json"), text)
+
+    assert hits == []
+
+
+def test_cleanup_gate_detects_multiline_command_binding_position_ref_in_text() -> None:
     text = "\n".join(
         (
-            _legacy_symbol("DeviceRequirement", ".", "capabilities"),
-            _legacy_symbol("Position", ".", "capabilities"),
-            _legacy_symbol("PositionCarrierCapability", ".", "capacity"),
-            _legacy_symbol("CommandBinding", ".", "position_ref"),
-            _legacy_symbol("CommandBinding", ".", "result_event"),
-            _legacy_symbol("TopologySpec", " | ", "None"),
+            _legacy_symbol("Command", "Binding", "("),
+            '    command="MOVE",',
+            _legacy_symbol("    position", '_ref="BIN",'),
+            ")",
         )
     )
 
-    hits = _text_legacy_manifest_hits(Path("sample.md"), text)
+    hits = _text_removed_token_hits(Path("sample.tmpl"), text)
 
-    assert len(hits) == 6
+    assert any(_legacy_symbol("Command", "Binding.position", "_ref") in hit for hit in hits)
 
 
-def test_cleanup_gate_detects_removed_contract_member_constructor_keywords() -> None:
-    text = """
-DeviceRequirement(role='PLC', capabilities=['scan'])
-Position(code='BIN', capabilities=['single'])
-PositionCarrierCapability(capacity=1)
-CommandBinding(position_ref='BIN', result_event='DONE')
-topology: TopologySpec | None = None
-""".strip()
+def test_cleanup_gate_detects_multiline_device_requirement_capabilities_in_text() -> None:
+    text = "\n".join(
+        (
+            _legacy_symbol("Device", "Requirement", "("),
+            '    role="SCANNER",',
+            _legacy_symbol("    cap", 'abilities=("scan_item",),'),
+            ")",
+        )
+    )
 
-    hits = _python_legacy_manifest_hits(Path("sample.py"), text)
+    hits = _text_removed_token_hits(Path("sample.md"), text)
 
-    assert any("DeviceRequirement.capabilities" in hit for hit in hits)
-    assert any("Position.capabilities" in hit for hit in hits)
-    assert any("PositionCarrierCapability.capacity" in hit for hit in hits)
-    assert any("CommandBinding.position_ref" in hit for hit in hits)
-    assert any("CommandBinding.result_event" in hit for hit in hits)
-    assert any("TopologySpec | None" in hit for hit in hits)
+    assert any(_legacy_symbol("Device", "Requirement.cap", "abilities") in hit for hit in hits)
+
+
+def test_cleanup_gate_allows_position_arg_position_ref() -> None:
+    text = _legacy_symbol("Position", "Arg", '(name="target", position', '_ref="BIN")')
+
+    hits = _text_removed_token_hits(Path("sample.tmpl"), text)
+
+    assert not any(_legacy_symbol("Command", "Binding.position", "_ref") in hit for hit in hits)
 
 
 def test_old_manifest_contract_symbols_are_removed_from_active_paths() -> None:

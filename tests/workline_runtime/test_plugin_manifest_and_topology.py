@@ -16,7 +16,13 @@ from src.workline_plugins.rough_sorter.contract import (
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
 )
-from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
+from src.workline_plugins.rough_sorter.plugin import (
+    DEFAULT_NG_LOCATION,
+    DEFAULT_PIPELINE_INPUT_LOCATION,
+    DEFAULT_PIPELINE_OUTPUT_LOCATION,
+    POSITION_SCAN_POINT,
+    RoughSorterPlugin,
+)
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
@@ -43,27 +49,6 @@ EXPECTED_MANIFEST_FIELDS = (
     "commands",
     "events",
     "resource_boundaries",
-)
-
-
-def _legacy_field(*parts: str) -> str:
-    return "".join(parts)
-
-
-OLD_MANIFEST_FIELDS = (
-    _legacy_field("required", "_device_roles"),
-    _legacy_field("business", "_key_resolver"),
-    _legacy_field("result", "_classifier"),
-    _legacy_field("context", "_model"),
-    _legacy_field("event", "_source_roles"),
-    _legacy_field("command", "_target_roles"),
-    _legacy_field("supported", "_events"),
-    _legacy_field("supported", "_commands"),
-    _legacy_field("resource", "_kinds"),
-    _legacy_field("requires", "_single_layer_boundary"),
-    _legacy_field("single", "_layer_boundaries"),
-    _legacy_field("material", "_identity_resolver"),
-    _legacy_field("ng", "_reason_catalog"),
 )
 
 
@@ -293,6 +278,26 @@ def test_manifest_rejects_unknown_topology_node_ref(bad_node) -> None:
 def test_manifest_rejects_illegal_flow_edge_type() -> None:
     with pytest.raises(ValueError, match=r"MATERIAL_FLOW|OPERATION|type"):
         _manifest(topology=_topology(flow_edges=(_flow_edge(edge_type="SIDE_EFFECT"),)))
+
+
+@pytest.mark.parametrize(
+    "edge",
+    [
+        lambda: _flow_edge(
+            from_node=_node(_contract("NodeRefKind").DEVICE_ROLE, "ENTRY_SCANNER"),
+            to_node=_node(_contract("NodeRefKind").POSITION, "ENTRY_POSITION"),
+            edge_type=_contract("FlowEdgeType").MATERIAL_FLOW,
+        ),
+        lambda: _flow_edge(
+            from_node=_node(_contract("NodeRefKind").POSITION, "ENTRY_POSITION"),
+            to_node=_node(_contract("NodeRefKind").DEVICE_ROLE, "ENTRY_SCANNER"),
+            edge_type=_contract("FlowEdgeType").MATERIAL_FLOW,
+        ),
+    ],
+)
+def test_material_flow_edges_must_connect_positions(edge) -> None:
+    with pytest.raises(ValueError, match=r"MATERIAL_FLOW|POSITION"):
+        _manifest(topology=_topology(flow_edges=(edge(),)))
 
 
 def test_event_binding_rejects_unknown_source_role() -> None:
@@ -551,8 +556,10 @@ def test_validate_topology_manifest_rejects_unsupported_event_or_command(
 
 def _assert_real_manifest_surface(manifest) -> None:
     assert tuple(field.name for field in fields(manifest)) == EXPECTED_MANIFEST_FIELDS
-    for field_name in OLD_MANIFEST_FIELDS:
-        assert not hasattr(manifest, field_name), field_name
+    for field_name in EXPECTED_MANIFEST_FIELDS:
+        value = getattr(manifest, field_name)
+        assert not callable(value)
+        assert not isinstance(value, type)
 
 
 def _assert_topology_uses_node_refs(manifest) -> None:
@@ -608,6 +615,28 @@ def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
     assert boundary.rack_kind == "SINGLE_LAYER"
     assert boundary.business_demand_type == "ROUGH_SORTER_BIN_ALLOCATION"
     assert boundary.snapshot_kind == "ACTIVE_CLASSIFIER_BIN_RACK"
+
+
+def test_rough_sorter_internal_physical_points_do_not_enter_manifest_positions_or_position_args() -> None:
+    manifest = RoughSorterPlugin.manifest
+    internal_physical_points = {
+        POSITION_SCAN_POINT,
+        DEFAULT_PIPELINE_INPUT_LOCATION,
+        DEFAULT_PIPELINE_OUTPUT_LOCATION,
+        DEFAULT_NG_LOCATION,
+    }
+    position_codes = {position.code for position in manifest.positions}
+    position_arg_refs: set[str] = set()
+
+    for command in manifest.commands:
+        for position_arg in command.position_args:
+            if position_arg.position_ref is not None:
+                position_arg_refs.add(position_arg.position_ref)
+            if position_arg.source is not None and position_arg.source.fallback_position_ref is not None:
+                position_arg_refs.add(position_arg.source.fallback_position_ref)
+
+    assert internal_physical_points.isdisjoint(position_codes)
+    assert internal_physical_points.isdisjoint(position_arg_refs)
 
 
 def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None:
