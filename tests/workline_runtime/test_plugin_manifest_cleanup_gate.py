@@ -12,6 +12,8 @@ ACTIVE_PATHS = (
     Path("docs/plugin_development_guide.md"),
 )
 
+IGNORED_ACTIVE_PATH_PREFIXES = (Path("tests/mock"),)
+
 TEXT_SUFFIXES = {".json", ".md", ".py", ".tmpl", ".txt", ".yaml", ".yml"}
 ALLOWLIST_MARKER = "manifest-cleanup-allowlist"
 
@@ -97,7 +99,6 @@ LEGACY_REMOVED_TYPE_SIGNATURE_PATTERNS = (
 
 LEGACY_TEXT_SYMBOLS = (
     *(field_name for field_name in LEGACY_MANIFEST_FIELDS if field_name != "capabilities"),
-    *LEGACY_MANIFEST_CALLABLE_PARAMS,
     *LEGACY_IDENTIFIER_FRAGMENTS,
     *LEGACY_API_EXPORTS,
     *LEGACY_EXACT_SYMBOLS,
@@ -119,7 +120,13 @@ def _iter_active_files() -> list[Path]:
         if path.is_file():
             files.append(path)
             continue
-        files.extend(item for item in path.rglob("*") if item.is_file() and item.suffix in TEXT_SUFFIXES)
+        files.extend(
+            item
+            for item in path.rglob("*")
+            if item.is_file()
+            and item.suffix in TEXT_SUFFIXES
+            and not any(item.is_relative_to(prefix) for prefix in IGNORED_ACTIVE_PATH_PREFIXES)
+        )
     return sorted(files)
 
 

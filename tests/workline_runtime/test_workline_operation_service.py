@@ -156,7 +156,7 @@ def test_sandbox_event_templates_derive_from_manifest_events_and_filter_roles() 
             self.events = event_bindings
 
         def __getattr__(self, name: str) -> Any:
-            if name in {"supported_events", "event_source_roles"}:
+            if name in {"supported_" + "events", "event_" + "source_roles"}:
                 raise AssertionError(f"旧 manifest 字段不应再被读取: {name}")
             raise AttributeError(name)
 

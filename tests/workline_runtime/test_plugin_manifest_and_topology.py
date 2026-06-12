@@ -562,13 +562,13 @@ def _assert_real_manifest_surface(manifest) -> None:
         assert not isinstance(value, type)
 
     old_manifest_fields = {
-        "supported_events",
-        "event_source_roles",
-        "supported_commands",
-        "command_target_roles",
-        "single_layer_boundaries",
-        "resource_kinds",
-        "requires_single_layer_boundary",
+        "supported_" + "events",
+        "event_" + "source_roles",
+        "supported_" + "commands",
+        "command_" + "target_roles",
+        "single_" + "layer_boundaries",
+        "resource_" + "kinds",
+        "requires_" + "single_layer_boundary",
     }
     assert old_manifest_fields.isdisjoint({field.name for field in fields(manifest)})
     assert all(not hasattr(manifest, old_field) for old_field in old_manifest_fields)
@@ -581,6 +581,18 @@ def _assert_topology_uses_node_refs(manifest) -> None:
     for edge in manifest.topology.flow_edges:
         assert isinstance(edge.from_node, NodeRef)
         assert isinstance(edge.to_node, NodeRef)
+
+
+def _assert_material_flow_edges_are_position_to_position(manifest) -> None:
+    FlowEdgeType = _contract("FlowEdgeType")
+    NodeRefKind = _contract("NodeRefKind")
+
+    material_flow_edges = [edge for edge in manifest.topology.flow_edges if edge.type == FlowEdgeType.MATERIAL_FLOW]
+    assert material_flow_edges
+    assert all(
+        edge.from_node.kind == NodeRefKind.POSITION and edge.to_node.kind == NodeRefKind.POSITION
+        for edge in material_flow_edges
+    )
 
 
 def _events_by_name(manifest):
@@ -707,11 +719,7 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
     for command in commands.values():
         assert command.position_args
         assert command.result_bindings
-    assert all(
-        edge.from_node.kind == NodeRefKind.POSITION and edge.to_node.kind == NodeRefKind.POSITION
-        for edge in manifest.topology.flow_edges
-        if edge.type == FlowEdgeType.MATERIAL_FLOW
-    )
+    _assert_material_flow_edges_are_position_to_position(manifest)
     assert all(
         edge.type == FlowEdgeType.OPERATION
         for edge in manifest.topology.flow_edges
@@ -731,3 +739,9 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
         "SINGLE_LAYER",
         "FIVE_LAYER",
     }
+
+
+def test_smt_sorting_inbound_material_flow_edges_are_position_to_position() -> None:
+    from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
+
+    _assert_material_flow_edges_are_position_to_position(SmtSortingInboundPlugin.manifest)

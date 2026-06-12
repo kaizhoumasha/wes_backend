@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -44,12 +45,74 @@ def _normalized_command_result_bodies(content: str) -> list[str]:
     return re.findall(r"NormalizedCommandResult\(\n(?P<body>.*?)\n    \)", content, flags=re.DOTALL)
 
 
-def _flow_edge_bodies(content: str, edge_type: str) -> list[str]:
+def _render_python_template(content: str) -> str:
+    replacements = {
+        "{{PLUGIN_NAME}}": "示例",
+        "{{PLUGIN_MODULE}}": "sample_plugin",
+        "{{CONTEXT_CLASS}}": "SampleContext",
+        "{{PLUGIN_CLASS}}": "SamplePlugin",
+        "{{PLUGIN_KEY}}": "sample_plugin",
+        "{{CONTRACT_VERSION}}": "1.0.0",
+        "{{PLUGIN_INSTANCE}}": "sample_plugin",
+    }
+    for placeholder, value in replacements.items():
+        content = content.replace(placeholder, value)
+    return content
+
+
+def _call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _keyword(call: ast.Call, name: str) -> ast.AST:
+    for keyword in call.keywords:
+        if keyword.arg == name:
+            return keyword.value
+    raise AssertionError(f"missing keyword: {name}")
+
+
+def _tuple_items(node: ast.AST) -> list[ast.AST]:
+    if isinstance(node, ast.Tuple):
+        return list(node.elts)
+    return [node]
+
+
+def _manifest_call(tree: ast.AST) -> ast.Call:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and _call_name(node.func) == "WorklinePluginManifest":
+            return node
+    raise AssertionError("missing WorklinePluginManifest call")
+
+
+def _flow_edges_from_template() -> list[ast.Call]:
+    plugin_template = (TEMPLATE_DIR / "plugin.py.tmpl").read_text(encoding="utf-8")
+    tree = ast.parse(_render_python_template(plugin_template))
+    manifest = _manifest_call(tree)
+    topology = _keyword(manifest, "topology")
+    assert isinstance(topology, ast.Call)
     return [
-        body
-        for body in re.findall(r"FlowEdge\(\n(?P<body>.*?)\n                \)", content, flags=re.DOTALL)
-        if f"type=FlowEdgeType.{edge_type}" in body
+        edge
+        for edge in _tuple_items(_keyword(topology, "flow_edges"))
+        if isinstance(edge, ast.Call) and _call_name(edge.func) == "FlowEdge"
     ]
+
+
+def _node_ref_kind(node_ref: ast.AST) -> str:
+    assert isinstance(node_ref, ast.Call)
+    assert _call_name(node_ref.func) == "NodeRef"
+    kind = node_ref.args[0]
+    assert isinstance(kind, ast.Attribute)
+    return kind.attr
+
+
+def _flow_edge_type(edge: ast.Call) -> str:
+    edge_type = _keyword(edge, "type")
+    assert isinstance(edge_type, ast.Attribute)
+    return edge_type.attr
 
 
 def test_template_assets_cover_required_files() -> None:
@@ -199,18 +262,23 @@ def test_plugin_template_uses_pure_data_manifest_contract() -> None:
     assert RACK_POSITION_CONTRACT_SENTENCE in plugin_template
 
 
-def test_plugin_template_material_flow_edges_are_position_to_position_only() -> None:
-    plugin_template = (TEMPLATE_DIR / "plugin.py.tmpl").read_text(encoding="utf-8")
+def test_plugin_template_material_flow_edges_are_position_to_position() -> None:
+    flow_edges = _flow_edges_from_template()
 
-    material_flow_edges = _flow_edge_bodies(plugin_template, "MATERIAL_FLOW")
+    material_flow_edges = [edge for edge in flow_edges if _flow_edge_type(edge) == "MATERIAL_FLOW"]
     assert material_flow_edges
-    for edge_body in material_flow_edges:
-        assert edge_body.count("NodeRef(NodeRefKind.POSITION") == 2
-        assert "NodeRefKind.DEVICE_ROLE" not in edge_body
+    assert all(
+        _node_ref_kind(_keyword(edge, "from_node")) == "POSITION"
+        and _node_ref_kind(_keyword(edge, "to_node")) == "POSITION"
+        for edge in material_flow_edges
+    )
 
-    operation_edges = _flow_edge_bodies(plugin_template, "OPERATION")
+    operation_edges = [edge for edge in flow_edges if _flow_edge_type(edge) == "OPERATION"]
     assert operation_edges
-    assert any("NodeRefKind.DEVICE_ROLE" in edge_body for edge_body in operation_edges)
+    assert any(
+        "DEVICE_ROLE" in {_node_ref_kind(_keyword(edge, "from_node")), _node_ref_kind(_keyword(edge, "to_node"))}
+        for edge in operation_edges
+    )
 
 
 def test_template_tests_assert_new_manifest_and_runtime_contract() -> None:
