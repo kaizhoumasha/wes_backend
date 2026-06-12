@@ -118,40 +118,49 @@ def test_sandbox_event_templates_derive_from_manifest_events_and_filter_roles() 
     from src.app.workline.services.operation_service import WorklineOperationService
 
     service = WorklineOperationService()
-    manifest = SimpleNamespace(
-        events=(
-            SimpleNamespace(
-                event="ENTRY_SCAN",
-                category=EventCategory.ENTRY_DEVICE,
-                source_device_roles=("SCANNER",),
-            ),
-            SimpleNamespace(
-                event="ROBOT_ENTRY",
-                category=EventCategory.ENTRY_DEVICE,
-                source_device_roles=("ROBOT",),
-            ),
-            SimpleNamespace(
-                event="INTERNAL_RETRY",
-                category=EventCategory.INTERNAL,
-                source_device_roles=("SCANNER",),
-            ),
-            SimpleNamespace(
-                event="COMMAND_DONE",
-                category=EventCategory.COMMAND_RESULT,
-                source_device_roles=("SCANNER",),
-            ),
-            SimpleNamespace(
-                event="OPERATOR_OVERRIDE",
-                category=EventCategory.OPERATOR,
-                source_device_roles=("SCANNER",),
-            ),
-            SimpleNamespace(
-                event="SAFETY_RESET",
-                category=EventCategory.SAFETY,
-                source_device_roles=("SCANNER",),
-            ),
-        )
+    events = (
+        SimpleNamespace(
+            event="ENTRY_SCAN",
+            category=EventCategory.ENTRY_DEVICE,
+            source_device_roles=("SCANNER",),
+        ),
+        SimpleNamespace(
+            event="ROBOT_ENTRY",
+            category=EventCategory.ENTRY_DEVICE,
+            source_device_roles=("ROBOT",),
+        ),
+        SimpleNamespace(
+            event="INTERNAL_RETRY",
+            category=EventCategory.INTERNAL,
+            source_device_roles=("SCANNER",),
+        ),
+        SimpleNamespace(
+            event="COMMAND_DONE",
+            category=EventCategory.COMMAND_RESULT,
+            source_device_roles=("SCANNER",),
+        ),
+        SimpleNamespace(
+            event="OPERATOR_OVERRIDE",
+            category=EventCategory.OPERATOR,
+            source_device_roles=("SCANNER",),
+        ),
+        SimpleNamespace(
+            event="SAFETY_RESET",
+            category=EventCategory.SAFETY,
+            source_device_roles=("SCANNER",),
+        ),
     )
+
+    class _ManifestEventsOnly:
+        def __init__(self, event_bindings: tuple[Any, ...]) -> None:
+            self.events = event_bindings
+
+        def __getattr__(self, name: str) -> Any:
+            if name in {"supported_events", "event_source_roles"}:
+                raise AssertionError(f"旧 manifest 字段不应再被读取: {name}")
+            raise AttributeError(name)
+
+    manifest = _ManifestEventsOnly(events)
 
     templates = service._generate_event_templates_from_manifest_events(
         manifest,
@@ -165,6 +174,43 @@ def test_sandbox_event_templates_derive_from_manifest_events_and_filter_roles() 
         "SAFETY_RESET",
     ]
     assert {template.payload_template["device_code"] for template in templates} == {"SCAN-01"}
+
+
+def test_sandbox_event_templates_accept_unfiltered_operator_visible_manifest_events() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    service = WorklineOperationService()
+    manifest = SimpleNamespace(
+        events=(
+            SimpleNamespace(
+                event="ENTRY_WITHOUT_ROLE",
+                category=EventCategory.ENTRY_DEVICE,
+                source_device_roles=None,
+            ),
+            SimpleNamespace(
+                event="OPERATOR_OVERRIDE",
+                category="OPERATOR",
+                source_device_roles=None,
+            ),
+            SimpleNamespace(
+                event="SAFETY_RESET",
+                category="SAFETY",
+                source_device_roles=None,
+            ),
+        )
+    )
+
+    templates = service._generate_event_templates_from_manifest_events(
+        manifest,
+        device_role="SCANNER",
+        device_code="SCAN-01",
+    )
+
+    assert [template.event_type for template in templates] == [
+        "ENTRY_WITHOUT_ROLE",
+        "OPERATOR_OVERRIDE",
+        "SAFETY_RESET",
+    ]
 
 
 @pytest.mark.asyncio

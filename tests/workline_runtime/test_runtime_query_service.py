@@ -153,6 +153,35 @@ def test_single_layer_boundary_positions_derive_from_manifest_resource_boundarie
     assert positions == ["INBOUND_SLOT"]
 
 
+def test_manifest_position_metadata_derives_station_code_and_role_from_positions(monkeypatch) -> None:
+    query_module = importlib.import_module("src.app.workline.services.runtime_query_service")
+
+    manifest = SimpleNamespace(
+        positions=(
+            SimpleNamespace(code="INBOUND_SLOT", role="ENTRY_STATION", station_code="ST-01"),
+            SimpleNamespace(code="BUFFER_STACK", role="BUFFER", station_code="ST-02"),
+        )
+    )
+    monkeypatch.setattr(
+        query_module,
+        "get_workline_plugin_definition",
+        lambda plugin_key: SimpleNamespace(manifest=manifest) if plugin_key == "manifest_positions" else None,
+    )
+
+    metadata = RuntimeQueryService._manifest_position_metadata_by_code(SimpleNamespace(plugin_key="manifest_positions"))
+
+    assert metadata["INBOUND_SLOT"] == {
+        "position_code": "INBOUND_SLOT",
+        "station_code": "ST-01",
+        "station_role": "ENTRY_STATION",
+    }
+    assert metadata["BUFFER_STACK"] == {
+        "position_code": "BUFFER_STACK",
+        "station_code": "ST-02",
+        "station_role": "BUFFER",
+    }
+
+
 @pytest.mark.asyncio
 async def test_runtime_boundary_keeps_five_layer_generic_evidence_with_single_layer_filter(monkeypatch) -> None:
     query_module = importlib.import_module("src.app.workline.services.runtime_query_service")
