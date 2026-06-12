@@ -244,21 +244,21 @@ class DeviceRequirement(BaseModel):
 
 
 class PositionCarrierCapability(BaseModel):
-    """位置可承载货架/槽位能力。"""
+    """WES 管理货架停靠位的货架/槽位承载能力。"""
 
-    allowed_rack_kinds: list[str] = Field(default_factory=list, description="允许货架类型")
-    min_capacity: int = Field(description="最小容量限制")
-    max_capacity: int = Field(description="最大容量限制")
-    allowed_slot_kinds: list[str] = Field(default_factory=list, description="允许槽位类型")
+    allowed_rack_kinds: list[str] = Field(default_factory=list, description="停靠位允许承载的货架类型")
+    min_capacity: int = Field(description="停靠位最小承载容量限制")
+    max_capacity: int = Field(description="停靠位最大承载容量限制")
+    allowed_slot_kinds: list[str] = Field(default_factory=list, description="停靠位允许承载的槽位类型")
 
 
 class Position(BaseModel):
-    """插件声明的逻辑位置。"""
+    """WES 管理的货架停靠位/库存事实锚点，不代表泛化物理位置。"""
 
-    code: str = Field(description="位置编码")
-    role: str = Field(description="位置业务角色")
+    code: str = Field(description="WES 管理货架停靠位编码，也是库存事实锚点编码")
+    role: str = Field(description="货架停靠位业务角色")
     station_code: str = Field(description="插件内 station/工作位逻辑编码")
-    carrier_capability: PositionCarrierCapability = Field(description="位置承载能力")
+    carrier_capability: PositionCarrierCapability = Field(description="货架停靠位承载能力")
 
 
 class NodeRef(BaseModel):

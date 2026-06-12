@@ -242,6 +242,18 @@ def test_openapi_workline_plugin_manifest_summary_includes_new_manifest_fields()
     }
 
 
+def test_openapi_manifest_position_schemas_document_rack_position_semantics() -> None:
+    position_schema = _workline_openapi_component("Position")
+    carrier_schema = _workline_openapi_component("PositionCarrierCapability")
+
+    assert "货架停靠位" in position_schema["description"]
+    assert "库存事实锚点" in position_schema["description"]
+    assert "货架停靠位" in position_schema["properties"]["code"]["description"]
+    assert "承载能力" in position_schema["properties"]["carrier_capability"]["description"]
+    assert "承载能力" in carrier_schema["description"]
+    assert "货架类型" in carrier_schema["properties"]["allowed_rack_kinds"]["description"]
+
+
 @pytest.mark.asyncio
 async def test_configuration_status_route_converts_missing_workline_to_not_found(monkeypatch) -> None:
     service = SimpleNamespace(configuration_status=AsyncMock(side_effect=ValueError("WorkLine 不存在: 404")))
