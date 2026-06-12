@@ -5,24 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.workline_plugins.rough_sorter.contract import (
-    ACTION_MOVE_FORWARD,
-    ACTION_MOVE_TO_NG,
-    ACTION_PICK_AND_PUT,
-    ACTION_PUT_TO_BIN,
-    EVENT_ROUGH_SORTER_STORAGE_RETRY,
-    EVENT_SCAN_COMPLETED,
-    ROLE_CONVEYOR,
-    ROLE_INPUT_ARM,
-    ROLE_OUTPUT_ARM,
-)
-from src.workline_plugins.rough_sorter.plugin import (
-    DEFAULT_NG_LOCATION,
-    DEFAULT_PIPELINE_INPUT_LOCATION,
-    DEFAULT_PIPELINE_OUTPUT_LOCATION,
-    POSITION_SCAN_POINT,
-    RoughSorterPlugin,
-)
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
@@ -36,9 +18,22 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     ROLE_SORTING_TARGET_ARM,
     ROLE_SORTING_WORKSTATION,
 )
-from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
 from src.workline_runtime import plugin_manifest as manifest_contract
 from src.workline_runtime.topology import WorklineTopologyView, validate_topology_manifest
+
+ACTION_MOVE_FORWARD = "MOVE_FORWARD"
+ACTION_MOVE_TO_NG = "MOVE_TO_NG"
+ACTION_PICK_AND_PUT = "PICK_AND_PUT"
+ACTION_PUT_TO_BIN = "PUT_TO_BIN"
+DEFAULT_NG_LOCATION = "NG-01"
+DEFAULT_PIPELINE_INPUT_LOCATION = "PIPELINE-IN-01"
+DEFAULT_PIPELINE_OUTPUT_LOCATION = "PIPELINE-OUT-01"
+EVENT_ROUGH_SORTER_STORAGE_RETRY = "ROUGH_SORTER_STORAGE_RETRY"
+EVENT_SCAN_COMPLETED = "SCAN_COMPLETED"
+POSITION_SCAN_POINT = "ROUGH_SORTER_SCAN_POINT"
+ROLE_CONVEYOR = "ROUGH_SORTER_CONVEYOR"
+ROLE_INPUT_ARM = "ROUGH_SORTER_INPUT_ARM"
+ROLE_OUTPUT_ARM = "ROUGH_SORTER_OUTPUT_ARM"
 
 EXPECTED_MANIFEST_FIELDS = (
     "plugin_key",
@@ -584,6 +579,8 @@ def _boundaries_by_position(manifest):
 
 
 def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
+    from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
+
     manifest = RoughSorterPlugin.manifest
     EventCategory = _contract("EventCategory")
     PositionArgRole = _contract("PositionArgRole")
@@ -618,6 +615,8 @@ def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
 
 
 def test_rough_sorter_internal_physical_points_do_not_enter_manifest_positions_or_position_args() -> None:
+    from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
+
     manifest = RoughSorterPlugin.manifest
     internal_physical_points = {
         POSITION_SCAN_POINT,
@@ -640,6 +639,8 @@ def test_rough_sorter_internal_physical_points_do_not_enter_manifest_positions_o
 
 
 def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None:
+    from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
+
     manifest = SmtSortingInboundPlugin.manifest
     EventCategory = _contract("EventCategory")
 

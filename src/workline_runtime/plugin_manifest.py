@@ -122,7 +122,7 @@ class DeviceRequirement:
 
 @dataclass(frozen=True, slots=True)
 class PositionCarrierCapability:
-    """位置可承载货架/槽位能力。"""
+    """WES 管理货架停靠位可承载的货架/槽位能力。"""
 
     allowed_rack_kinds: tuple[str, ...] | list[str] | set[str] | frozenset[str]
     min_capacity: int = 1
@@ -158,7 +158,7 @@ class PositionCarrierCapability:
 
 @dataclass(frozen=True, slots=True)
 class Position:
-    """插件声明的逻辑位置。"""
+    """WES 管理的货架停靠位/库存事实锚点，不代表泛化物理位置。"""
 
     code: str
     role: str
@@ -204,7 +204,10 @@ class FlowEdge:
 
 @dataclass(frozen=True, slots=True)
 class TopologySpec:
-    """插件声明的静态拓扑。"""
+    """插件声明的静态拓扑。
+
+    MATERIAL_FLOW 只描述货架位之间的库存/物料流；设备与货架位的动作关系使用 OPERATION。
+    """
 
     flow_edges: tuple[FlowEdge, ...] | list[FlowEdge] = field(default_factory=tuple)
 
@@ -521,6 +524,12 @@ class WorklinePluginManifest:
         position_codes: set[str],
     ) -> None:
         for edge in topology.flow_edges:
+            if edge.type not in (FlowEdgeType.MATERIAL_FLOW, FlowEdgeType.OPERATION):
+                raise ValueError("FlowEdge.type must be MATERIAL_FLOW or OPERATION")
+            if edge.type == FlowEdgeType.MATERIAL_FLOW and (
+                edge.from_node.kind != NodeRefKind.POSITION or edge.to_node.kind != NodeRefKind.POSITION
+            ):
+                raise ValueError("FlowEdge MATERIAL_FLOW edges must connect POSITION nodes")
             for node_ref in (edge.from_node, edge.to_node):
                 if node_ref.kind == NodeRefKind.DEVICE_ROLE and node_ref.ref not in device_roles:
                     raise ValueError(
