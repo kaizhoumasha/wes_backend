@@ -20,6 +20,12 @@ from src.workline_runtime.material_identity import (
     MaterialIdentityResolutionStatus,
 )
 from src.workline_runtime.plugin_next import PluginNext
+from src.workline_runtime.plugin_manifest import (
+    CommandBinding,
+    EventBinding,
+    PositionArgSourceKind,
+    ResourceBoundary,
+)
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 
@@ -57,12 +63,16 @@ def test_manifest_contract() -> None:
     assert manifest.plugin_key == "{{PLUGIN_KEY}}"
     assert manifest.contract_version == "{{CONTRACT_VERSION}}"
     assert manifest.devices[0].role == "ENTRY_SENSOR"
+    assert manifest.positions[0].code == "ENTRY_POSITION"
+    assert isinstance(manifest.events[0], EventBinding)
     assert manifest.events[0].event == "ITEM_ARRIVED"
     assert manifest.events[0].source_device_roles == ("ENTRY_SENSOR",)
+    assert isinstance(manifest.commands[0], CommandBinding)
     assert manifest.commands[0].command == "MEASURE_ITEM"
     assert manifest.commands[0].target_device_role == "MEASURE_DEVICE"
     assert manifest.commands[0].position_args[0].position_ref == "MEASURE_POSITION"
-    assert manifest.commands[0].position_args[1].source.kind.value == "EVENT_PAYLOAD"
+    assert manifest.commands[0].position_args[1].source.kind is PositionArgSourceKind.EVENT_PAYLOAD
+    assert isinstance(manifest.resource_boundaries[0], ResourceBoundary)
     assert manifest.resource_boundaries[0].position_code == "MEASURE_POSITION"
 
     for field_name in REMOVED_MANIFEST_RUNTIME_FIELDS:
@@ -89,11 +99,16 @@ def test_plugin_runtime_helpers_live_on_plugin_instance() -> None:
     )
 
     assert plugin.resolve_business_key(event_payload) == "ITEM-001"
+    assert callable(plugin.resolve_business_key)
     assert plugin.classify_result({"result": "FAILED", "data": {}}) == "hardware_failure"
+    assert callable(plugin.classify_result)
     assert plugin.get_context_model() is {{CONTEXT_CLASS}}
+    assert callable(plugin.get_context_model)
     assert identity.resolution_status == MaterialIdentityResolutionStatus.RESOLVED
     assert identity.idempotency_key == "{{PLUGIN_KEY}}:ITEM-001"
     assert [reason.canonical_code for reason in plugin.list_ng_reasons()] == ["VALUE_OUT_OF_TOLERANCE"]
+    assert callable(plugin.resolve_material_identity)
+    assert callable(plugin.list_ng_reasons)
 
 
 def test_event_payload_uses_data_boundary() -> None:

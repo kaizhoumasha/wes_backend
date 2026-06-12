@@ -47,13 +47,14 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
     """示例插件。
 
     manifest 只保留可序列化静态事实；registry helper 通过插件实例方法读取运行时行为。
+    positions 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。
+    MATERIAL_FLOW 只表达 rack position 到 rack position；设备动作边使用 `FlowEdgeType.OPERATION`。
     PositionArg 静态位置使用 `position_ref`，`position_ref` 与 `source` 互斥；
     `PositionArgSource` 不支持 `STATIC`。
     """
 
     plugin_key = "{{PLUGIN_KEY}}"
     contract_version = "{{CONTRACT_VERSION}}"
-    context_model = {{CONTEXT_CLASS}}
 
     manifest = WorklinePluginManifest(
         plugin_key=plugin_key,
@@ -67,6 +68,7 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
                 hardware_capabilities=("measure_item",),
             ),
         ),
+        # WES-managed rack docking positions / inventory-fact anchors，不枚举设备内部所有物理点位。
         positions=(
             Position(
                 code=POSITION_ENTRY,

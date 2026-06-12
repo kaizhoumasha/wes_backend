@@ -28,6 +28,12 @@ REMOVED_MANIFEST_RUNTIME_FIELDS = (
     "material_identity_resolver",
     "ng_reason_catalog",
 )
+RACK_POSITION_CONTRACT_SENTENCE = (
+    "positions 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。"
+)
+POSITION_ARG_CONTRACT_SENTENCE = (
+    "PositionArg 静态位置使用 `position_ref`，`position_ref` 与 `source` 互斥；`PositionArgSource` 不支持 `STATIC`。"
+)
 
 
 def _read_json(name: str) -> dict:
@@ -36,6 +42,14 @@ def _read_json(name: str) -> dict:
 
 def _normalized_command_result_bodies(content: str) -> list[str]:
     return re.findall(r"NormalizedCommandResult\(\n(?P<body>.*?)\n    \)", content, flags=re.DOTALL)
+
+
+def _flow_edge_bodies(content: str, edge_type: str) -> list[str]:
+    return [
+        body
+        for body in re.findall(r"FlowEdge\(\n(?P<body>.*?)\n                \)", content, flags=re.DOTALL)
+        if f"type=FlowEdgeType.{edge_type}" in body
+    ]
 
 
 def test_template_assets_cover_required_files() -> None:
@@ -170,6 +184,8 @@ def test_plugin_template_uses_pure_data_manifest_contract() -> None:
         "def list_ng_reasons(",
     ):
         assert helper_name in plugin_template
+    assert "context_model = {{CONTEXT_CLASS}}" not in plugin_template
+    assert "def get_context_model(self) -> type[{{CONTEXT_CLASS}}]:" in plugin_template
 
     for manifest_field, binding_name in (
         ("devices", "DeviceRequirement("),
@@ -180,6 +196,22 @@ def test_plugin_template_uses_pure_data_manifest_contract() -> None:
         assert f"{manifest_field}=(" in plugin_template
         assert binding_name in plugin_template
 
+    assert RACK_POSITION_CONTRACT_SENTENCE in plugin_template
+
+
+def test_plugin_template_material_flow_edges_are_position_to_position_only() -> None:
+    plugin_template = (TEMPLATE_DIR / "plugin.py.tmpl").read_text(encoding="utf-8")
+
+    material_flow_edges = _flow_edge_bodies(plugin_template, "MATERIAL_FLOW")
+    assert material_flow_edges
+    for edge_body in material_flow_edges:
+        assert edge_body.count("NodeRef(NodeRefKind.POSITION") == 2
+        assert "NodeRefKind.DEVICE_ROLE" not in edge_body
+
+    operation_edges = _flow_edge_bodies(plugin_template, "OPERATION")
+    assert operation_edges
+    assert any("NodeRefKind.DEVICE_ROLE" in edge_body for edge_body in operation_edges)
+
 
 def test_template_tests_assert_new_manifest_and_runtime_contract() -> None:
     tests_template = (TEMPLATE_DIR / "tests.py.tmpl").read_text(encoding="utf-8")
@@ -188,9 +220,12 @@ def test_template_tests_assert_new_manifest_and_runtime_contract() -> None:
         assert field_name in tests_template
 
     assert "fields(manifest)" in tests_template
-    assert "manifest.events" in tests_template
-    assert "manifest.commands" in tests_template
-    assert "manifest.resource_boundaries" in tests_template
+    assert "isinstance(manifest.events[0], EventBinding)" in tests_template
+    assert "isinstance(manifest.commands[0], CommandBinding)" in tests_template
+    assert "isinstance(manifest.resource_boundaries[0], ResourceBoundary)" in tests_template
+    assert 'manifest.positions[0].code == "ENTRY_POSITION"' in tests_template
+    assert 'manifest.commands[0].position_args[0].position_ref == "MEASURE_POSITION"' in tests_template
+    assert "manifest.commands[0].position_args[1].source.kind is PositionArgSourceKind.EVENT_PAYLOAD" in tests_template
 
     for helper_name in (
         "resolve_business_key",
@@ -199,7 +234,7 @@ def test_template_tests_assert_new_manifest_and_runtime_contract() -> None:
         "resolve_material_identity",
         "list_ng_reasons",
     ):
-        assert helper_name in tests_template
+        assert f"callable(plugin.{helper_name})" in tests_template or f"plugin.{helper_name}(" in tests_template
 
     for field_name in REMOVED_MANIFEST_RUNTIME_FIELDS:
         assert field_name in tests_template
@@ -221,15 +256,25 @@ def test_template_tests_use_current_normalized_command_result_contract() -> None
 
 
 def test_template_docs_explain_position_arg_static_contract() -> None:
-    required_sentence = (
-        "PositionArg 静态位置使用 `position_ref`，`position_ref` 与 `source` 互斥；"
-        "`PositionArgSource` 不支持 `STATIC`。"
-    )
-
     for relative_path in (
         "README.md",
         "sandbox_happy_path.md",
         "../../plugin_development_guide.md",
     ):
         content = (TEMPLATE_DIR / relative_path).resolve().read_text(encoding="utf-8")
-        assert required_sentence in content
+        assert POSITION_ARG_CONTRACT_SENTENCE in content
+        assert RACK_POSITION_CONTRACT_SENTENCE in content
+        assert "MATERIAL_FLOW 只表达 rack position 到 rack position" in content
+        assert "设备动作边使用 `FlowEdgeType.OPERATION`" in content
+
+
+def test_template_docs_do_not_document_legacy_context_model_or_empty_registry() -> None:
+    readme = (TEMPLATE_DIR / "README.md").read_text(encoding="utf-8")
+    guide = (TEMPLATE_DIR.parents[1] / "plugin_development_guide.md").read_text(encoding="utf-8")
+
+    for content in (readme, guide):
+        assert "或 `context_model`" not in content
+        assert "必须实现 `get_context_model()`" in content
+
+    assert "registry 默认为空" not in readme
+    assert "在现有 registry 中显式新增/合并" in readme

@@ -86,7 +86,8 @@ plugin_key, contract_version, devices, positions, topology, commands, events, re
 ```
 
 - `devices` 使用 `DeviceRequirement`，声明设备角色、数量和硬件能力。
-- `positions` + `topology` 声明逻辑位置和物料流/操作关系。
+- positions 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。
+- `topology` 中 MATERIAL_FLOW 只表达 rack position 到 rack position；设备动作边使用 `FlowEdgeType.OPERATION`。
 - `events` 使用 `EventBinding`，声明事件名、来源设备角色、事件分类和 payload schema 引用。
 - `commands` 使用 `CommandBinding`，声明命令名、目标设备角色、位置参数和结果事件绑定。
 - `resource_boundaries` 使用 `ResourceBoundary`，声明 rack/WMS/snapshot/lease 等资源编排边界。
@@ -96,7 +97,7 @@ plugin_key, contract_version, devices, positions, topology, commands, events, re
 
 - `resolve_business_key(payload_json)`
 - `classify_result(payload_json)`
-- `get_context_model()` 或 `context_model`
+- 必须实现 `get_context_model()`
 - `resolve_material_identity(input_value)`
 - `list_ng_reasons()`
 
@@ -202,6 +203,10 @@ from src.workline_runtime.plugin_manifest import (
     DeviceRequirement,
     EventBinding,
     EventCategory,
+    FlowEdge,
+    FlowEdgeType,
+    NodeRef,
+    NodeRefKind,
     Position,
     PositionArg,
     PositionArgRole,
@@ -224,7 +229,6 @@ from .contract import (
 class ExamplePlugin(WorklinePlugin):
     plugin_key = "example_plugin"
     contract_version = "2026.04"
-    context_model = ExampleContext
 
     manifest = WorklinePluginManifest(
         plugin_key=plugin_key,
@@ -247,7 +251,20 @@ class ExamplePlugin(WorklinePlugin):
                 carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
             ),
         ),
-        topology=TopologySpec(),
+        topology=TopologySpec(
+            flow_edges=(
+                FlowEdge(
+                    from_node=NodeRef(NodeRefKind.DEVICE_ROLE, "ENTRY_SENSOR"),
+                    to_node=NodeRef(NodeRefKind.POSITION, "ENTRY_POSITION"),
+                    type=FlowEdgeType.OPERATION,
+                ),
+                FlowEdge(
+                    from_node=NodeRef(NodeRefKind.POSITION, "ENTRY_POSITION"),
+                    to_node=NodeRef(NodeRefKind.POSITION, "MEASURE_POSITION"),
+                    type=FlowEdgeType.MATERIAL_FLOW,
+                ),
+            )
+        ),
         events=(
             EventBinding(
                 event="ITEM_ARRIVED",
