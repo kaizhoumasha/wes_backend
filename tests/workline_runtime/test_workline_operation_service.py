@@ -153,7 +153,7 @@ def test_sandbox_event_templates_derive_from_manifest_events_and_filter_roles() 
         )
     )
 
-    templates = service._generate_event_templates_from_supported_events(
+    templates = service._generate_event_templates_from_manifest_events(
         manifest,
         device_role="SCANNER",
         device_code="SCAN-01",
