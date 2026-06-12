@@ -11,8 +11,9 @@
 ### 插件负责什么
 
 - 定义本业务线的 `plugin_key`、`contract_version` 和 manifest。
-- 声明设备角色、事件来源、命令目标和设备能力要求。
-- 定义业务 payload 模型、业务键解析器和结果分类器。
+- 用 pure-data manifest 声明设备、位置、拓扑、事件、命令和资源边界。
+- 在插件类成员上定义业务键解析、结果分类、context model、物料身份解析和 NG 原因目录。
+- 定义业务 payload 模型。
 - 定义类型化 context。
 - 通过 handler 把事件和命令结果转成 `RuntimeIntent` 或 `list[RuntimeIntent]`：更新上下文、下发命令、业务 NG、阻断或完成。
 
@@ -76,13 +77,36 @@ tests/workline_plugins/test_<plugin_key>_plugin.py
 
 模板见 `docs/templates/workline_plugin/`。模板抽象通用插件结构，不复制 SMT 的私有复杂度。
 
+## Manifest 与 runtime helper
+
+manifest 是 pure data，只保留八类可序列化静态事实：
+
+```text
+plugin_key, contract_version, devices, positions, topology, commands, events, resource_boundaries
+```
+
+- `devices` 使用 `DeviceRequirement`，声明设备角色、数量和硬件能力。
+- `positions` + `topology` 声明逻辑位置和物料流/操作关系。
+- `events` 使用 `EventBinding`，声明事件名、来源设备角色、事件分类和 payload schema 引用。
+- `commands` 使用 `CommandBinding`，声明命令名、目标设备角色、位置参数和结果事件绑定。
+- `resource_boundaries` 使用 `ResourceBoundary`，声明 rack/WMS/snapshot/lease 等资源编排边界。
+- PositionArg 静态位置使用 `position_ref`，`position_ref` 与 `source` 互斥；`PositionArgSource` 不支持 `STATIC`。
+
+运行时行为不进入 manifest。registry helper 通过插件实例读取以下成员：
+
+- `resolve_business_key(payload_json)`
+- `classify_result(payload_json)`
+- `get_context_model()` 或 `context_model`
+- `resolve_material_identity(input_value)`
+- `list_ng_reasons()`
+
 ## contract.py
 
 `contract.py` 放协议边界和业务分类逻辑。
 
 - 使用 Pydantic 定义 `event.data`、`result.data`、`command.params` 模型。
-- `business_key_resolver` 只从业务层读取稳定业务键。
-- `result_classifier` 区分设备执行失败、数据非法和业务结果。
+- `resolve_business_key` 只从业务层读取稳定业务键。
+- `classify_result` 区分设备执行失败、数据非法和业务结果。
 - 命令参数通过 helper 构建，确保业务字段只进入 `params`。
 
 最小示例：
@@ -165,73 +189,122 @@ class ExampleContext(BaseModel):
 
 ## plugin.py
 
-插件入口必须把 manifest、handler 和业务结果写清楚。
+插件入口必须把 pure-data manifest、runtime helper 和 handler 写清楚。示例只展示合同形状，完整业务判断放在插件自己的 handler 或 service 中。
 
 ```python
-from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
-from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
-from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
+from typing import Any
+
+from src.workline_runtime.material_identity import MaterialIdentity, MaterialIdentityInput
+from src.workline_runtime.ng_reason import NgReasonDefinition
+from src.workline_runtime.plugin_base import WorklinePlugin, on_event
+from src.workline_runtime.plugin_manifest import (
+    CommandBinding,
+    DeviceRequirement,
+    EventBinding,
+    EventCategory,
+    Position,
+    PositionArg,
+    PositionArgRole,
+    PositionCarrierCapability,
+    ResourceBoundary,
+    TopologySpec,
+    WorklinePluginManifest,
+)
 
 from .context import ExampleContext
-from .contract import ItemArrivedPayload, MeasureCompletedData, build_measure_params, classify_result, resolve_business_key
+from .contract import (
+    ItemArrivedPayload,
+    build_measure_params,
+    classify_result,
+    resolve_business_key,
+    resolve_material_identity,
+)
 
 
 class ExamplePlugin(WorklinePlugin):
     plugin_key = "example_plugin"
     contract_version = "2026.04"
+    context_model = ExampleContext
+
     manifest = WorklinePluginManifest(
         plugin_key=plugin_key,
         contract_version=contract_version,
-        required_device_roles=(
-            DeviceRoleRequirement("ENTRY_SENSOR", 1, 1, frozenset({"scan_item"})),
-            DeviceRoleRequirement("MEASURE_DEVICE", 1, 1, frozenset({"measure_item"})),
+        devices=(
+            DeviceRequirement(role="ENTRY_SENSOR", min_count=1, max_count=1, hardware_capabilities=("scan_item",)),
+            DeviceRequirement(role="MEASURE_DEVICE", min_count=1, max_count=1),
         ),
-        business_key_resolver=resolve_business_key,
-        result_classifier=classify_result,
-        context_model=ExampleContext,
-        event_source_roles={"ITEM_ARRIVED": "ENTRY_SENSOR"},
-        command_target_roles={"MEASURE_ITEM": "MEASURE_DEVICE"},
+        positions=(
+            Position(
+                code="ENTRY_POSITION",
+                role="ENTRY",
+                station_code="ENTRY_STATION",
+                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
+            ),
+            Position(
+                code="MEASURE_POSITION",
+                role="WORK",
+                station_code="MEASURE_STATION",
+                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
+            ),
+        ),
+        topology=TopologySpec(),
+        events=(
+            EventBinding(
+                event="ITEM_ARRIVED",
+                source_device_roles=("ENTRY_SENSOR",),
+                category=EventCategory.ENTRY_DEVICE,
+                payload_schema_ref="ItemArrivedPayload",
+            ),
+        ),
+        commands=(
+            CommandBinding(
+                command="MEASURE_ITEM",
+                target_device_role="MEASURE_DEVICE",
+                position_args=(
+                    PositionArg(name="work_position", role=PositionArgRole.TARGET, position_ref="MEASURE_POSITION"),
+                ),
+                payload_schema_ref="MeasureParams",
+            ),
+        ),
+        resource_boundaries=(
+            ResourceBoundary(
+                position_code="MEASURE_POSITION",
+                rack_kind="SINGLE_LAYER",
+                business_demand_type="MEASURE_WORK_RACK",
+                wms_operation_type="SUPPLY_MEASURE_RACK",
+                snapshot_kind="ACTIVE_MEASURE_RACK",
+                lease_scope="STATION",
+            ),
+        ),
     )
+
+    def resolve_business_key(self, payload_json: dict[str, Any]) -> str | None:
+        return resolve_business_key(payload_json)
+
+    def classify_result(self, payload_json: dict[str, Any]) -> str | None:
+        return classify_result(payload_json)
+
+    def get_context_model(self) -> type[ExampleContext]:
+        return ExampleContext
+
+    def resolve_material_identity(self, input_value: MaterialIdentityInput) -> MaterialIdentity:
+        return resolve_material_identity(input_value)
+
+    def list_ng_reasons(self) -> tuple[NgReasonDefinition, ...]:
+        return ()
 
     @on_event("ITEM_ARRIVED")
     async def handle_item_arrived(self, ctx, event: ItemArrivedPayload):
-        return [
-            ctx.next.update_context(
-                ExampleContext(
-                    business_key=event.data.business_key,
-                    expected_value=event.data.expected_value,
-                    tolerance=event.data.tolerance,
-                ).to_patch()
+        return ctx.next.command(
+            action="MEASURE_ITEM",
+            device_role="MEASURE_DEVICE",
+            destination_role="MEASURE_DEVICE",
+            payload=build_measure_params(
+                business_key=event.data.business_key,
+                station_code=event.data.station_code,
             ),
-            ctx.next.command(
-                action="MEASURE_ITEM",
-                device_role="MEASURE_DEVICE",
-                destination_role="MEASURE_DEVICE",
-                payload=build_measure_params(
-                    business_key=event.data.business_key,
-                    station_code=event.data.station_code,
-                ),
-                timeout_seconds=120,
-            )
-        ]
-
-    @on_command("MEASURE_ITEM", result="SUCCESS")
-    async def handle_measure_success(self, ctx, result: NormalizedCommandResult):
-        data = MeasureCompletedData.model_validate(result.data)
-        business_ctx = ExampleContext.from_session(ctx)
-        is_ng = abs(data.actual_value - business_ctx.expected_value) > business_ctx.tolerance
-        if is_ng:
-            return ctx.next.mark_ng(
-                reason_code="VALUE_OUT_OF_TOLERANCE",
-                message="业务检测超出允差",
-                payload={
-                    "business_key": data.business_key,
-                    "expected_value": business_ctx.expected_value,
-                    "actual_value": data.actual_value,
-                    "tolerance": business_ctx.tolerance,
-                },
-            )
-        return ctx.next.complete({"business_key": data.business_key})
+            timeout_seconds=120,
+        )
 ```
 
 ## 业务 NG、异常流与错误
@@ -292,9 +365,9 @@ WORKLINE 级调试必须用 sandbox，因为只有 sandbox 覆盖事件输入、
 
 每个新插件至少覆盖：
 
-- manifest：`plugin_key`、`contract_version`、设备角色、事件来源、命令目标和 context model。
+- manifest：八个顶层静态字段、`DeviceRequirement`、`EventBinding`、`CommandBinding`、`ResourceBoundary` 和位置参数引用完整性。
 - 包络：event/result 业务字段只在 `data`，下发命令业务字段只在 `params`。
-- 业务键：`business_key_resolver` 不依赖 runtime 私有逻辑。
+- 业务键：插件实例 `resolve_business_key` 不依赖 runtime 私有逻辑。
 - 当前事实：handler 只根据 Session context、设备事件和命令结果生成下一步 `RuntimeIntent`。
 - happy path：一个事件产生一个命令，等待一个回调，Session 能继续推进。
 - 业务 NG：表达为 `RuntimeIntent.mark_ng(...)`，不写成系统 failure，并验证后续 NG 分流或完成。
@@ -317,7 +390,7 @@ uv run ruff check src/workline_plugins/<plugin_key> tests/workline_plugins/test_
 1. 从 `docs/templates/workline_plugin/` 复制模板。
 2. 先写 `contract.py`，锁定 `data` / `params` 和业务键。
 3. 写 `context.py`，明确插件需要读取和更新的业务事实。
-4. 写 manifest，声明设备角色、唯一性、能力、事件来源角色和命令目标角色。
+4. 写 manifest，声明设备、位置、拓扑、结构化事件、结构化命令和资源边界。
 5. 写第一个事件 handler，让它产生一个命令和 wait。
 6. 写第一个命令 result handler，让它推进状态或完成。
 7. 补业务 NG、已建模异常流和真正系统错误。

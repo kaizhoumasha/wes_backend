@@ -2,52 +2,168 @@
 
 from __future__ import annotations
 
-from src.workline_runtime.plugin_base import (
-    WorklinePlugin,
-    build_payload_invalid_block,
-    on_command,
-    on_event,
-    resolve_normalized_command_envelope,
-    resolve_normalized_command_failure,
-)
-from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
-from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult  # noqa: TC001
-from src.workline_runtime.runtime_intent import BlockScope
+from typing import Any
 
-from .context import {{CONTEXT_CLASS}}, parse_context
+from src.workline_runtime.material_identity import MaterialIdentity, MaterialIdentityInput
+from src.workline_runtime.ng_reason import NgReasonDefinition
+from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
+from src.workline_runtime.plugin_manifest import (
+    CommandBinding,
+    CommandResultBinding,
+    DeviceRequirement,
+    EventBinding,
+    EventCategory,
+    FlowEdge,
+    FlowEdgeType,
+    NodeRef,
+    NodeRefKind,
+    Position,
+    PositionArg,
+    PositionArgRole,
+    PositionArgSource,
+    PositionArgSourceKind,
+    PositionCarrierCapability,
+    ResourceBoundary,
+    TopologySpec,
+    WorklinePluginManifest,
+)
+from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
+
+from .context import {{CONTEXT_CLASS}}
 from .contract import (
     PLUGIN_NG_REASONS,
     ItemArrivedPayload,
-    MeasureCompletedData,
-    build_divert_params,
     build_measure_params,
     classify_result,
     resolve_business_key,
     resolve_material_identity,
 )
 
+POSITION_ENTRY = "ENTRY_POSITION"
+POSITION_MEASURE = "MEASURE_POSITION"
+
 
 class {{PLUGIN_CLASS}}(WorklinePlugin):
+    """示例插件。
+
+    manifest 只保留可序列化静态事实；registry helper 通过插件实例方法读取运行时行为。
+    PositionArg 静态位置使用 `position_ref`，`position_ref` 与 `source` 互斥；
+    `PositionArgSource` 不支持 `STATIC`。
+    """
+
     plugin_key = "{{PLUGIN_KEY}}"
     contract_version = "{{CONTRACT_VERSION}}"
+    context_model = {{CONTEXT_CLASS}}
+
     manifest = WorklinePluginManifest(
         plugin_key=plugin_key,
         contract_version=contract_version,
-        required_device_roles=(
-            DeviceRoleRequirement("ENTRY_SENSOR", min_count=1, max_count=1, capabilities=frozenset({"scan_item"})),
-            DeviceRoleRequirement("MEASURE_DEVICE", min_count=1, max_count=1, capabilities=frozenset({"measure_item"})),
-            DeviceRoleRequirement("DIVERT_DEVICE", min_count=1, max_count=1, capabilities=frozenset({"divert_item"})),
+        devices=(
+            DeviceRequirement(role="ENTRY_SENSOR", min_count=1, max_count=1, hardware_capabilities=("scan_item",)),
+            DeviceRequirement(
+                role="MEASURE_DEVICE",
+                min_count=1,
+                max_count=1,
+                hardware_capabilities=("measure_item",),
+            ),
         ),
-        business_key_resolver=resolve_business_key,
-        result_classifier=classify_result,
-        material_identity_resolver=resolve_material_identity,
-        ng_reason_catalog=PLUGIN_NG_REASONS,
-        context_model={{CONTEXT_CLASS}},
-        event_source_roles={"ITEM_ARRIVED": "ENTRY_SENSOR"},
-        command_target_roles={"MEASURE_ITEM": "MEASURE_DEVICE", "DIVERT_ITEM": "DIVERT_DEVICE"},
-        supported_events=frozenset({"ITEM_ARRIVED"}),
-        supported_commands=frozenset({"MEASURE_ITEM", "DIVERT_ITEM"}),
+        positions=(
+            Position(
+                code=POSITION_ENTRY,
+                role="ENTRY",
+                station_code="ENTRY_STATION",
+                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
+            ),
+            Position(
+                code=POSITION_MEASURE,
+                role="WORK",
+                station_code="MEASURE_STATION",
+                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
+            ),
+        ),
+        topology=TopologySpec(
+            flow_edges=(
+                FlowEdge(
+                    from_node=NodeRef(NodeRefKind.DEVICE_ROLE, "ENTRY_SENSOR"),
+                    to_node=NodeRef(NodeRefKind.POSITION, POSITION_ENTRY),
+                    type=FlowEdgeType.OPERATION,
+                ),
+                FlowEdge(
+                    from_node=NodeRef(NodeRefKind.POSITION, POSITION_ENTRY),
+                    to_node=NodeRef(NodeRefKind.POSITION, POSITION_MEASURE),
+                    type=FlowEdgeType.MATERIAL_FLOW,
+                ),
+            )
+        ),
+        events=(
+            EventBinding(
+                event="ITEM_ARRIVED",
+                source_device_roles=("ENTRY_SENSOR",),
+                category=EventCategory.ENTRY_DEVICE,
+                payload_schema_ref="ItemArrivedPayload",
+            ),
+        ),
+        commands=(
+            CommandBinding(
+                command="MEASURE_ITEM",
+                target_device_role="MEASURE_DEVICE",
+                position_args=(
+                    PositionArg(name="work_position", role=PositionArgRole.TARGET, position_ref=POSITION_MEASURE),
+                    PositionArg(
+                        name="source_position",
+                        role=PositionArgRole.SOURCE,
+                        required=False,
+                        source=PositionArgSource(
+                            kind=PositionArgSourceKind.EVENT_PAYLOAD,
+                            path="data.position_code",
+                            fallback_position_ref=POSITION_ENTRY,
+                        ),
+                    ),
+                ),
+                payload_schema_ref="MeasureParams",
+                result_bindings=(
+                    CommandResultBinding(
+                        result="SUCCESS",
+                        event="MEASURE_ITEM_RESULT",
+                        category=EventCategory.COMMAND_RESULT,
+                        classification="success",
+                    ),
+                    CommandResultBinding(
+                        result="FAILED",
+                        event="MEASURE_ITEM_RESULT",
+                        category=EventCategory.COMMAND_RESULT,
+                        classification="hardware_failure",
+                        terminal=True,
+                    ),
+                ),
+            ),
+        ),
+        resource_boundaries=(
+            ResourceBoundary(
+                position_code=POSITION_MEASURE,
+                rack_kind="SINGLE_LAYER",
+                business_demand_type="MEASURE_WORK_RACK",
+                wms_operation_type="SUPPLY_MEASURE_RACK",
+                snapshot_kind="ACTIVE_MEASURE_RACK",
+                lease_scope="STATION",
+            ),
+        ),
     )
+
+    def resolve_business_key(self, payload_json: dict[str, Any]) -> str | None:
+        return resolve_business_key(payload_json)
+
+    def classify_result(self, payload_json: dict[str, Any]) -> str | None:
+        return classify_result(payload_json)
+
+    def get_context_model(self) -> type[{{CONTEXT_CLASS}}]:
+        return {{CONTEXT_CLASS}}
+
+    def resolve_material_identity(self, input_value: MaterialIdentityInput) -> MaterialIdentity:
+        return resolve_material_identity(input_value)
+
+    def list_ng_reasons(self) -> tuple[NgReasonDefinition, ...]:
+        return PLUGIN_NG_REASONS
 
     @on_event("ITEM_ARRIVED")
     async def handle_item_arrived(self, ctx, event: ItemArrivedPayload):
@@ -76,97 +192,7 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
 
     @on_command("MEASURE_ITEM", result="SUCCESS")
     async def handle_measure_success(self, ctx, result: NormalizedCommandResult):
-        if resolve_normalized_command_envelope(result) is None:
-            return build_payload_invalid_block("MEASURE_ITEM 成功回调缺少 command_code 或 device_code")
-        try:
-            measure_data = MeasureCompletedData.model_validate(result.data)
-        except Exception:
-            return build_payload_invalid_block("MEASURE_ITEM 成功回调 data 非法")
-
-        business_ctx = parse_context(ctx)
-        if business_ctx.expected_value is None or business_ctx.tolerance is None:
-            return build_payload_invalid_block("缺少业务上下文")
-
-        is_ng = abs(measure_data.actual_value - business_ctx.expected_value) > business_ctx.tolerance
-        destination_lane = "HOLD_LANE" if is_ng else "PASS_LANE"
-        reason_code = "VALUE_OUT_OF_TOLERANCE" if is_ng else "VALUE_OK"
-        intents = [
-            ctx.next.update_context(
-                {{CONTEXT_CLASS}}(
-                    business_key=measure_data.business_key,
-                    item_id=measure_data.item_id,
-                    actual_value=measure_data.actual_value,
-                    destination_lane=destination_lane,
-                    reason_code=reason_code,
-                ).to_patch()
-            )
-        ]
-        if is_ng:
-            intents.append(
-                ctx.next.mark_ng(
-                    reason_code=reason_code,
-                    message="业务检测超出允差，分流到异常线",
-                    payload={
-                        "business_key": measure_data.business_key,
-                        "item_id": measure_data.item_id,
-                        "expected_value": business_ctx.expected_value,
-                        "actual_value": measure_data.actual_value,
-                        "tolerance": business_ctx.tolerance,
-                    },
-                )
-            )
-        intents.append(
-            ctx.next.command(
-                device_role="DIVERT_DEVICE",
-                action="DIVERT_ITEM",
-                payload=build_divert_params(
-                    business_key=measure_data.business_key,
-                    item_id=measure_data.item_id,
-                    destination_lane=destination_lane,
-                    reason_code=reason_code,
-                ),
-                destination_role="DIVERT_DEVICE",
-                timeout_seconds=120,
-            )
-        )
-        return intents
-
-    @on_command("MEASURE_ITEM", result="FAILED")
-    async def handle_measure_failed(self, ctx, result: NormalizedCommandResult):
-        error_code, error_message = resolve_normalized_command_failure(
-            result,
-            default_code="MEASURE_DEVICE_FAILED",
-            default_message="测量设备执行失败",
-        )
-        return ctx.next.block(
-            scope=BlockScope.COMMAND,
-            reason_code=error_code,
-            message=error_message,
-            suggested_action="检查测量设备后重试",
-        )
-
-    @on_command("DIVERT_ITEM", result="SUCCESS")
-    async def handle_divert_success(self, ctx, result: NormalizedCommandResult):
-        if resolve_normalized_command_envelope(result) is None:
-            return build_payload_invalid_block("DIVERT_ITEM 成功回调缺少 command_code 或 device_code")
-        return ctx.next.complete()
-
-    @on_command("DIVERT_ITEM", result="FAILED")
-    async def handle_divert_failed(self, ctx, result: NormalizedCommandResult):
-        error_code, error_message = resolve_normalized_command_failure(
-            result,
-            default_code="DIVERT_DEVICE_FAILED",
-            default_message="分流设备执行失败",
-        )
-        return [
-            ctx.next.update_context({{CONTEXT_CLASS}}(reason_code=error_code).to_patch()),
-            ctx.next.block(
-                scope=BlockScope.MATERIAL,
-                reason_code=error_code,
-                message=error_message,
-                suggested_action="转人工处理分流异常",
-            ),
-        ]
+        return ctx.next.complete({"command_code": result.command_code})
 
 
 {{PLUGIN_INSTANCE}} = {{PLUGIN_CLASS}}()

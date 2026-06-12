@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
@@ -12,8 +13,6 @@ from src.workline_plugins.{{PLUGIN_MODULE}}.contract import (
     ItemArrivedPayload,
     build_divert_params,
     build_measure_params,
-    resolve_business_key,
-    resolve_material_identity,
 )
 from src.workline_plugins.{{PLUGIN_MODULE}}.plugin import {{PLUGIN_CLASS}}
 from src.workline_runtime.material_identity import (
@@ -23,6 +22,24 @@ from src.workline_runtime.material_identity import (
 from src.workline_runtime.plugin_next import PluginNext
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
+
+MANIFEST_TOP_LEVEL_FIELDS = (
+    "plugin_key",
+    "contract_version",
+    "devices",
+    "positions",
+    "topology",
+    "commands",
+    "events",
+    "resource_boundaries",
+)
+REMOVED_MANIFEST_RUNTIME_FIELDS = (
+    "business_key_resolver",
+    "result_classifier",
+    "context_model",
+    "material_identity_resolver",
+    "ng_reason_catalog",
+)
 
 
 def make_ctx(context_json=None):
@@ -35,10 +52,48 @@ def make_ctx(context_json=None):
 
 def test_manifest_contract() -> None:
     manifest = {{PLUGIN_CLASS}}.manifest
+
+    assert tuple(field.name for field in fields(manifest)) == MANIFEST_TOP_LEVEL_FIELDS
     assert manifest.plugin_key == "{{PLUGIN_KEY}}"
-    assert manifest.context_model is {{CONTEXT_CLASS}}
-    assert manifest.event_source_roles["ITEM_ARRIVED"] == ("ENTRY_SENSOR",)
-    assert manifest.command_target_roles["MEASURE_ITEM"] == ("MEASURE_DEVICE",)
+    assert manifest.contract_version == "{{CONTRACT_VERSION}}"
+    assert manifest.devices[0].role == "ENTRY_SENSOR"
+    assert manifest.events[0].event == "ITEM_ARRIVED"
+    assert manifest.events[0].source_device_roles == ("ENTRY_SENSOR",)
+    assert manifest.commands[0].command == "MEASURE_ITEM"
+    assert manifest.commands[0].target_device_role == "MEASURE_DEVICE"
+    assert manifest.commands[0].position_args[0].position_ref == "MEASURE_POSITION"
+    assert manifest.commands[0].position_args[1].source.kind.value == "EVENT_PAYLOAD"
+    assert manifest.resource_boundaries[0].position_code == "MEASURE_POSITION"
+
+    for field_name in REMOVED_MANIFEST_RUNTIME_FIELDS:
+        assert not hasattr(manifest, field_name)
+
+
+def test_plugin_runtime_helpers_live_on_plugin_instance() -> None:
+    plugin = {{PLUGIN_CLASS}}()
+    event_payload = {
+        "device_code": "ENTRY01",
+        "event_type": "ITEM_ARRIVED",
+        "timestamp": 1777046400000,
+        "data": {
+            "business_key": "ITEM-001",
+            "item_id": "ITEM-001",
+            "station_code": "QC01",
+            "expected_value": 10.0,
+            "tolerance": 0.5,
+        },
+    }
+
+    identity = plugin.resolve_material_identity(
+        MaterialIdentityInput(source_payload={"data": {"business_key": "ITEM-001", "item_id": "ITEM-001"}})
+    )
+
+    assert plugin.resolve_business_key(event_payload) == "ITEM-001"
+    assert plugin.classify_result({"result": "FAILED", "data": {}}) == "hardware_failure"
+    assert plugin.get_context_model() is {{CONTEXT_CLASS}}
+    assert identity.resolution_status == MaterialIdentityResolutionStatus.RESOLVED
+    assert identity.idempotency_key == "{{PLUGIN_KEY}}:ITEM-001"
+    assert [reason.canonical_code for reason in plugin.list_ng_reasons()] == ["VALUE_OUT_OF_TOLERANCE"]
 
 
 def test_event_payload_uses_data_boundary() -> None:
@@ -54,7 +109,8 @@ def test_event_payload_uses_data_boundary() -> None:
             "tolerance": 0.5,
         },
     }
-    assert resolve_business_key(payload) == "ITEM-001"
+
+    assert {{PLUGIN_CLASS}}().resolve_business_key(payload) == "ITEM-001"
     assert ItemArrivedPayload.model_validate(payload).data.business_key == "ITEM-001"
 
 
@@ -107,26 +163,21 @@ async def test_happy_path_event_creates_measure_command() -> None:
 
 
 @pytest.mark.asyncio()
-async def test_business_ng_is_decision_not_failure() -> None:
+async def test_measure_success_completes_session() -> None:
     plugin = {{PLUGIN_CLASS}}()
     ctx = make_ctx({"expected_value": 10.0, "tolerance": 0.5})
     command_result = NormalizedCommandResult(
-        command_type="MEASURE_ITEM",
         command_code="CMD-001",
+        source_result="SUCCESS",
+        normalized_result="SUCCESS",
+        command_type="MEASURE_ITEM",
         device_code="MEASURE01",
-        result="SUCCESS",
-        data={"business_key": "ITEM-001", "item_id": "ITEM-001", "actual_value": 11.0},
+        data={"business_key": "ITEM-001", "item_id": "ITEM-001", "actual_value": 10.1},
     )
 
-    intents = await plugin.handle_measure_success(ctx, command_result)
+    intent = await plugin.handle_measure_success(ctx, command_result)
 
-    assert [intent.kind for intent in intents] == [
-        RuntimeIntentKind.UPDATE_CONTEXT,
-        RuntimeIntentKind.MARK_NG,
-        RuntimeIntentKind.COMMAND,
-    ]
-    assert intents[1].reason_code == "VALUE_OUT_OF_TOLERANCE"
-    assert intents[2].action == "DIVERT_ITEM"
+    assert intent.kind == RuntimeIntentKind.COMPLETE
 
 
 def test_registry_definition_loads_manifest() -> None:
@@ -139,18 +190,3 @@ def test_registry_definition_loads_manifest() -> None:
     assert definition.plugin_class is {{PLUGIN_CLASS}}
     assert definition.manifest.plugin_key == "{{PLUGIN_KEY}}"
     assert definition.manifest.contract_version == "{{CONTRACT_VERSION}}"
-
-
-def test_manifest_exposes_material_identity_and_ng_reasons() -> None:
-    manifest = {{PLUGIN_CLASS}}.manifest
-
-    identity = resolve_material_identity(
-        MaterialIdentityInput(source_payload={"data": {"business_key": "ITEM-001", "item_id": "ITEM-001"}})
-    )
-
-    assert identity.resolution_status == MaterialIdentityResolutionStatus.RESOLVED
-    assert identity.idempotency_key == "{{PLUGIN_KEY}}:ITEM-001"
-    assert manifest.resolve_material_identity(
-        MaterialIdentityInput(source_payload={"data": {"item_id": "ITEM-001"}})
-    ).idempotency_key == "{{PLUGIN_KEY}}:ITEM-001"
-    assert [reason.canonical_code for reason in manifest.list_ng_reasons()] == ["VALUE_OUT_OF_TOLERANCE"]
