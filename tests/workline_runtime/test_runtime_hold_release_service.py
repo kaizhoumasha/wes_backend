@@ -1,3 +1,5 @@
+import importlib
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -30,6 +32,9 @@ from src.app.workline.models.session import (
     WorklineSession,
 )
 from src.app.workline.services.runtime_hold_release_service import RuntimeHoldReleaseError, RuntimeHoldReleaseService
+from src.workline_runtime.material_identity import MaterialIdentity, MaterialIdentityResolutionStatus
+from src.workline_runtime.ng_reason import NgReasonDefinition
+from src.workline_runtime.ng_reason import NgReasonSource as RuntimeNgReasonSource
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("registered_test_workline_plugin")]
 
@@ -503,6 +508,77 @@ async def test_return_to_ng_requires_handoff_evidence_and_does_not_release_workl
     await db_session.refresh(hold)
     assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
     assert hold.status == RuntimeHoldStatus.OPEN
+
+
+async def test_return_to_ng_uses_registry_helpers_for_material_identity_and_ng_reasons(
+    db_session,
+    monkeypatch,
+) -> None:
+    release_module = importlib.import_module("src.app.workline.services.runtime_hold_release_service")
+
+    service = RuntimeHoldReleaseService()
+    workline = await _create_workline(db_session, code="WL-HOLD-REGISTRY-HELPERS")
+    session = await _create_session(
+        db_session,
+        workline,
+        code="S-HOLD-REGISTRY-HELPERS",
+        context={"item_id": "ITEM-001"},
+    )
+    hold = await _create_hold(db_session, workline, session=session, key="hold:registry-helpers")
+    material_calls: list[str | None] = []
+    reason_calls: list[str | None] = []
+
+    def _resolve_material(plugin_key, input_value):
+        material_calls.append(plugin_key)
+        assert input_value.session_context["item_id"] == "ITEM-001"
+        return MaterialIdentity(
+            resolution_status=MaterialIdentityResolutionStatus.RESOLVED,
+            idempotency_key="test-material:ITEM-001",
+            display={"item_id": "ITEM-001"},
+            raw_evidence_hash="sha256:test",
+        )
+
+    def _list_reasons(plugin_key):
+        reason_calls.append(plugin_key)
+        return (
+            NgReasonDefinition(
+                canonical_code="SCAN_NG",
+                label="扫码异常",
+                source=RuntimeNgReasonSource.PLUGIN,
+                plugin_key="test_workline_plugin",
+                contract_version="1.0",
+            ),
+        )
+
+    monkeypatch.setattr(release_module, "resolve_workline_material_identity", _resolve_material, raising=False)
+    monkeypatch.setattr(release_module, "list_workline_ng_reasons", _list_reasons, raising=False)
+
+    result = await service.resolve_hold(db_session, cast("int", hold.id), _return_to_ng_request(service, hold), 42)
+
+    assert result["status"] == RuntimeHoldStatus.RESOLVED.value
+    assert material_calls == ["test_workline_plugin"]
+    assert reason_calls == ["test_workline_plugin"]
+
+
+async def test_material_identity_unknown_plugin_uses_registry_missing_fallback() -> None:
+    service = RuntimeHoldReleaseService()
+    hold = SimpleNamespace(
+        id=999,
+        plugin_key="missing_plugin",
+        contract_version="missing.v1",
+        evidence_snapshot_json={"inbox_payload": {"data": {"item_id": "ITEM-UNKNOWN"}}},
+    )
+    request = SimpleNamespace(
+        physical_handoff_evidence=SimpleNamespace(material_scan_payload={"item_id": "ITEM-UNKNOWN"})
+    )
+    session = SimpleNamespace(context_json={"item_id": "ITEM-UNKNOWN"})
+
+    material_identity = service._resolve_material_identity(
+        cast("Any", hold), request=cast("Any", request), session=session
+    )
+
+    assert material_identity.resolution_status == MaterialIdentityResolutionStatus.MISSING
+    assert material_identity.idempotency_key is None
 
 
 async def test_failed_resolution_preserves_session_failure_reason(db_session) -> None:

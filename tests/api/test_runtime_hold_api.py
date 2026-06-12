@@ -1,3 +1,4 @@
+import importlib
 import json
 from typing import cast
 from unittest.mock import AsyncMock, patch
@@ -20,6 +21,8 @@ from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.services.runtime_hold_query_service import runtime_hold_query_service
 from src.app.workline.v1 import runtime_hold as runtime_hold_api
+from src.workline_runtime.ng_reason import NgReasonDefinition
+from src.workline_runtime.ng_reason import NgReasonSource as RuntimeNgReasonSource
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("registered_test_workline_plugin")]
 
@@ -392,12 +395,31 @@ async def test_resolve_runtime_hold_already_resolved_returns_409(db_session) -> 
     assert _json_response_body(response)["code"] == "RUNTIME_HOLD_ALREADY_RESOLVED"
 
 
-async def test_get_runtime_hold_ng_reasons_returns_plugin_and_fallback(db_session) -> None:
+async def test_get_runtime_hold_ng_reasons_uses_registry_helper_and_returns_fallback(db_session, monkeypatch) -> None:
+    hold_query_module = importlib.import_module("src.app.workline.services.runtime_hold_query_service")
+
+    calls: list[str | None] = []
+
+    def _list_reasons(plugin_key):
+        calls.append(plugin_key)
+        return (
+            NgReasonDefinition(
+                canonical_code="SCAN_NG",
+                label="扫码异常",
+                source=RuntimeNgReasonSource.PLUGIN,
+                plugin_key="test_workline_plugin",
+                contract_version="1.0",
+            ),
+        )
+
+    monkeypatch.setattr(hold_query_module, "list_workline_ng_reasons", _list_reasons, raising=False)
+
     response = await runtime_hold_api.get_runtime_hold_ng_reasons(db_session, plugin_key="test_workline_plugin")
 
     codes = {item.code for item in response["data"]}
     assert "SCAN_NG" in codes
     assert "UNKNOWN_PHYSICAL_STATE" in codes
+    assert calls == ["test_workline_plugin"]
 
 
 async def test_list_ng_return_items_filters_by_hold(db_session) -> None:

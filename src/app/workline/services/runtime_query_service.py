@@ -1612,12 +1612,33 @@ class RuntimeQueryService(BaseService[Any, Any]):
         if definition is None:
             return []
         position_codes: list[str] = []
-        for boundary in getattr(definition.manifest, "single_layer_boundaries", ()):
+        for boundary in getattr(definition.manifest, "resource_boundaries", ()):
             if getattr(boundary, "rack_kind", None) == "SINGLE_LAYER":
                 position_code = str(getattr(boundary, "position_code", "") or "").strip()
                 if position_code and position_code not in position_codes:
                     position_codes.append(position_code)
         return position_codes
+
+    @staticmethod
+    def _manifest_position_metadata_by_code(workline: WorkLine) -> dict[str, dict[str, str]]:
+        definition = get_workline_plugin_definition(getattr(workline, "plugin_key", None))
+        if definition is None:
+            return {}
+
+        metadata_by_code: dict[str, dict[str, str]] = {}
+        for position in getattr(definition.manifest, "positions", ()):
+            position_code = str(getattr(position, "code", "") or "").strip()
+            if not position_code:
+                continue
+            metadata: dict[str, str] = {"position_code": position_code}
+            station_code = str(getattr(position, "station_code", "") or "").strip()
+            if station_code:
+                metadata["station_code"] = station_code
+            station_role = str(getattr(position, "role", "") or "").strip()
+            if station_role:
+                metadata["station_role"] = station_role
+            metadata_by_code[position_code] = metadata
+        return metadata_by_code
 
     async def _load_runtime_station_lease(
         self,
@@ -1679,6 +1700,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
     ) -> tuple[RuntimeSingleLayerRackSnapshot, list[tuple[str, dict[str, Any]]]]:
         states: list[RuntimeSingleLayerRackSnapshot] = []
         active_snapshots: list[tuple[str, dict[str, Any]]] = []
+        position_metadata_by_code = self._manifest_position_metadata_by_code(workline)
         for position_code in position_codes:
             try:
                 snapshot = await smt_active_rack_snapshot_service.get_active_bin_rack(
@@ -1690,7 +1712,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 states.append(RuntimeSingleLayerRackSnapshot.INVALID)
                 continue
             if snapshot and isinstance(snapshot, Mapping):
-                active_snapshots.append((position_code, dict(snapshot)))
+                snapshot_payload = _runtime_payload_with_metadata_defaults(
+                    dict(snapshot),
+                    position_metadata_by_code.get(position_code, {"position_code": position_code}),
+                )
+                active_snapshots.append((position_code, snapshot_payload))
             states.append(RuntimeSingleLayerRackSnapshot.ACTIVE if snapshot else RuntimeSingleLayerRackSnapshot.MISSING)
         return (
             _highest_priority_state(

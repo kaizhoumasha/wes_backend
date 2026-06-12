@@ -12,6 +12,7 @@ from src.app.workline.models.inbox import InboxKind, SourceSystem, WorklineInbox
 from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.models.workline import LineType, WorkLine, WorkLineRunMode
 from src.utils.timezone import timezone
+from src.workline_runtime.plugin_manifest import EventCategory
 from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
 
 
@@ -111,6 +112,59 @@ def test_sandbox_move_forward_template_keeps_result_payload_status_only() -> Non
     assert payload["event_type"] == "MOVE_FORWARD"
     assert payload["device_code"] == "RS-CONVEYOR-01"
     assert isinstance(payload["timestamp"], int)
+
+
+def test_sandbox_event_templates_derive_from_manifest_events_and_filter_roles() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    service = WorklineOperationService()
+    manifest = SimpleNamespace(
+        events=(
+            SimpleNamespace(
+                event="ENTRY_SCAN",
+                category=EventCategory.ENTRY_DEVICE,
+                source_device_roles=("SCANNER",),
+            ),
+            SimpleNamespace(
+                event="ROBOT_ENTRY",
+                category=EventCategory.ENTRY_DEVICE,
+                source_device_roles=("ROBOT",),
+            ),
+            SimpleNamespace(
+                event="INTERNAL_RETRY",
+                category=EventCategory.INTERNAL,
+                source_device_roles=("SCANNER",),
+            ),
+            SimpleNamespace(
+                event="COMMAND_DONE",
+                category=EventCategory.COMMAND_RESULT,
+                source_device_roles=("SCANNER",),
+            ),
+            SimpleNamespace(
+                event="OPERATOR_OVERRIDE",
+                category="OPERATOR",
+                source_device_roles=("SCANNER",),
+            ),
+            SimpleNamespace(
+                event="SAFETY_RESET",
+                category="SAFETY",
+                source_device_roles=("SCANNER",),
+            ),
+        )
+    )
+
+    templates = service._generate_event_templates_from_supported_events(
+        manifest,
+        device_role="SCANNER",
+        device_code="SCAN-01",
+    )
+
+    assert [template.event_type for template in templates] == [
+        "ENTRY_SCAN",
+        "OPERATOR_OVERRIDE",
+        "SAFETY_RESET",
+    ]
+    assert {template.payload_template["device_code"] for template in templates} == {"SCAN-01"}
 
 
 @pytest.mark.asyncio

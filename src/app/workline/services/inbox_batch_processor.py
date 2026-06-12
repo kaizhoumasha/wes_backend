@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import uuid
-from collections.abc import Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypedDict, cast
@@ -35,6 +34,7 @@ from src.workline_runtime.diagnostics.failure_mapper import map_failure_to_diagn
 from src.workline_runtime.effect_result import WriteBackDisposition
 from src.workline_runtime.lock import RedisDistributedLock
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
+from src.workline_runtime.plugin_manifest import EventCategory
 from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 from src.workline_runtime.services import WorklineRuntimeServices, build_workline_runtime_services
@@ -209,18 +209,22 @@ def _command_code_value(command: Any, payload: dict[str, Any]) -> str | None:
 
 
 def _entry_event_types_for_workline(workline: Any | None) -> frozenset[str]:
-    """从插件 manifest 获取入口事件类型，缺省时保留当前 SMT 入口。"""
+    """从插件 manifest.events 获取 ENTRY_DEVICE 入口事件类型，缺省时保留当前 SMT 入口。"""
     plugin_key = string_value(getattr(workline, "plugin_key", None)) if workline is not None else ""
     definition = get_workline_plugin_definition(plugin_key)
     if definition is None:
         return _ENTRY_DEVICE_EVENT_TYPES
-    event_source_roles = getattr(definition.manifest, "event_source_roles", None)
-    if not isinstance(event_source_roles, Mapping):
+    events = getattr(definition.manifest, "events", None)
+    if events is None:
         return _ENTRY_DEVICE_EVENT_TYPES
-    event_types = frozenset(
-        event_type for event_type in event_source_roles if isinstance(event_type, str) and event_type
+    return frozenset(
+        event_type
+        for event in events
+        if getattr(getattr(event, "category", None), "value", getattr(event, "category", None))
+        == EventCategory.ENTRY_DEVICE.value
+        for event_type in (getattr(event, "event", None),)
+        if isinstance(event_type, str) and event_type
     )
-    return event_types or _ENTRY_DEVICE_EVENT_TYPES
 
 
 def _is_payload_invalid_entry_replay(

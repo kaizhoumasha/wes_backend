@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -8,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.app.sys.models import SystemOutboxStatus
+from src.app.workline.models.runtime import RuntimeResourceEvidenceKind, RuntimeSingleLayerRackSnapshot
 from src.app.workline.services.runtime_query_service import RuntimeQueryService
 from src.utils.timezone import timezone
 
@@ -128,3 +130,102 @@ async def test_blocked_outbox_projection_handles_missing_created_at() -> None:
     assert projection.count_by_device_id[77] == 2
     assert projection.command_codes_by_device_id[77] == {"CMD-MISSING-CREATED-AT", "CMD-DATED"}
     assert projection.summary_by_device_id[77]["blocked_reason"] == "DATED_HEAD"
+
+
+def test_single_layer_boundary_positions_derive_from_manifest_resource_boundaries(monkeypatch) -> None:
+    query_module = importlib.import_module("src.app.workline.services.runtime_query_service")
+
+    manifest = SimpleNamespace(
+        resource_boundaries=(
+            SimpleNamespace(position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),
+            SimpleNamespace(position_code="BUFFER_STACK", rack_kind="FIVE_LAYER"),
+            SimpleNamespace(position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),
+        )
+    )
+    monkeypatch.setattr(
+        query_module,
+        "get_workline_plugin_definition",
+        lambda plugin_key: SimpleNamespace(manifest=manifest) if plugin_key == "manifest_boundaries" else None,
+    )
+
+    positions = RuntimeQueryService._single_layer_boundary_positions(SimpleNamespace(plugin_key="manifest_boundaries"))
+
+    assert positions == ["INBOUND_SLOT"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_boundary_keeps_five_layer_generic_evidence_with_single_layer_filter(monkeypatch) -> None:
+    query_module = importlib.import_module("src.app.workline.services.runtime_query_service")
+
+    manifest = SimpleNamespace(
+        positions=(SimpleNamespace(code="INBOUND_SLOT", role="ENTRY_STATION", station_code="ST-01"),),
+        resource_boundaries=(SimpleNamespace(position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),),
+    )
+    monkeypatch.setattr(
+        query_module,
+        "get_workline_plugin_definition",
+        lambda plugin_key: SimpleNamespace(manifest=manifest) if plugin_key == "manifest_boundaries" else None,
+    )
+
+    async def _lease_status(*args, **kwargs):
+        return SimpleNamespace(available=True)
+
+    async def _active_snapshot(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(query_module.station_lease_service, "get_station_lease_status", _lease_status)
+    monkeypatch.setattr(query_module.smt_active_rack_snapshot_service, "get_active_bin_rack", _active_snapshot)
+
+    boundary = await RuntimeQueryService()._build_workline_runtime_boundary(
+        SimpleNamespace(),
+        SimpleNamespace(id=42, line_code="WL-BOUNDARY", plugin_key="manifest_boundaries"),
+        [
+            SimpleNamespace(
+                id=10,
+                trace_id="trace-five-layer",
+                context_json={"active_bin_rack": {"rack_kind": "FIVE_LAYER", "rack_code": "RACK-5"}},
+                last_ingress_at=None,
+                started_at=None,
+                created_at=None,
+            )
+        ],
+    )
+
+    assert boundary["single_layer_rack_snapshot"] == RuntimeSingleLayerRackSnapshot.NON_SINGLE_LAYER_EVIDENCE.value
+    assert boundary["resource_evidence_kind"] == RuntimeResourceEvidenceKind.GENERIC_EVIDENCE.value
+    assert [item.resource_code for item in boundary["resource_evidence_items"]] == ["RACK-5"]
+
+
+@pytest.mark.asyncio
+async def test_active_snapshot_resource_evidence_derives_station_code_from_manifest_position(monkeypatch) -> None:
+    query_module = importlib.import_module("src.app.workline.services.runtime_query_service")
+
+    manifest = SimpleNamespace(
+        positions=(SimpleNamespace(code="INBOUND_SLOT", role="ENTRY_STATION", station_code="ST-01"),),
+        resource_boundaries=(SimpleNamespace(position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),),
+    )
+    monkeypatch.setattr(
+        query_module,
+        "get_workline_plugin_definition",
+        lambda plugin_key: SimpleNamespace(manifest=manifest) if plugin_key == "manifest_positions" else None,
+    )
+
+    async def _lease_status(*args, **kwargs):
+        return SimpleNamespace(available=True)
+
+    async def _active_snapshot(*args, **kwargs):
+        return {"rack_code": "RACK-1"}
+
+    monkeypatch.setattr(query_module.station_lease_service, "get_station_lease_status", _lease_status)
+    monkeypatch.setattr(query_module.smt_active_rack_snapshot_service, "get_active_bin_rack", _active_snapshot)
+
+    boundary = await RuntimeQueryService()._build_workline_runtime_boundary(
+        SimpleNamespace(),
+        SimpleNamespace(id=42, line_code="WL-POSITION", plugin_key="manifest_positions"),
+        [],
+    )
+
+    assert boundary["single_layer_rack_snapshot"] == RuntimeSingleLayerRackSnapshot.ACTIVE.value
+    assert [(item.position_code, item.station_code) for item in boundary["resource_evidence_items"]] == [
+        ("INBOUND_SLOT", "ST-01")
+    ]

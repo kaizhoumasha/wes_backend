@@ -28,7 +28,7 @@ from src.app.workline.services.runtime_hold_release_service import (
 )
 from src.app.workline.services.trace_response_builder import build_failed_command_evidence
 from src.utils.value_normalization import as_dict, optional_enum_str
-from src.workline_plugin_registry import get_workline_plugin_definition
+from src.workline_plugin_registry import list_workline_ng_reasons
 from src.workline_runtime.ng_reason import BUILTIN_NG_REASONS, NgReasonDefinition
 
 if TYPE_CHECKING:
@@ -111,9 +111,7 @@ class RuntimeHoldQueryService:
         """返回插件 NG reasons + 系统 fallback。"""
 
         reasons: list[NgReasonDefinition] = []
-        definition = get_workline_plugin_definition(plugin_key)
-        if definition is not None:
-            reasons.extend(definition.manifest.list_ng_reasons())
+        reasons.extend(list_workline_ng_reasons(plugin_key))
         reasons.extend(BUILTIN_NG_REASONS)
         return [self._reason_option(item) for item in reasons]
 
