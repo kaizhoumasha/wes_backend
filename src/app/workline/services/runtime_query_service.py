@@ -722,7 +722,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 session_id=pending_session.id,
                 session_code=pending_session.session_code,
                 trace_id=pending_session.trace_id,
-                request_id=pending_session.request_id,
+                request_id=getattr(pending_session, "last_request_id", None)
+                or getattr(pending_session, "request_id", None),
                 reason=reason_str,
                 source_kind=source_kind_str,
                 device_id=pending_session.reconciliation_device_id,
