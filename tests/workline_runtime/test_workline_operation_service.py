@@ -214,6 +214,57 @@ def test_sandbox_event_templates_accept_unfiltered_operator_visible_manifest_eve
 
 
 @pytest.mark.asyncio
+async def test_get_sandbox_templates_ignores_legacy_manifest_sandbox_config() -> None:
+    from src.app.workline.services.operation_service import WorklineOperationService
+
+    service = WorklineOperationService(
+        workline_repo=cast(
+            "Any",
+            _SingleItemRepoStub(SimpleNamespace(id=42, plugin_key="rough_sorter")),
+        ),
+        device_repo=cast(
+            "Any",
+            _SingleItemRepoStub(SimpleNamespace(id=7, device_role="SCANNER", device_code="SCAN-01")),
+        ),
+    )
+    manifest = SimpleNamespace(
+        events=(
+            SimpleNamespace(
+                event="ENTRY_SCAN",
+                category=EventCategory.ENTRY_DEVICE,
+                source_device_roles=("SCANNER",),
+            ),
+        ),
+        sandbox=SimpleNamespace(
+            event_templates=[
+                {
+                    "event_type": "LEGACY_EVENT",
+                    "label": "Legacy event",
+                    "payload_template": {"legacy": True},
+                }
+            ],
+            result_templates=[
+                {
+                    "command_type": "LEGACY_COMMAND",
+                    "label": "Legacy command",
+                    "success_payload_template": {"legacy": True},
+                }
+            ],
+        ),
+    )
+
+    with patch(
+        "src.app.workline.services.operation_service.get_workline_plugin_definition",
+        return_value=SimpleNamespace(manifest=manifest),
+    ):
+        templates = await service.get_sandbox_templates(object(), workline_id=42, device_id=7)
+
+    assert [template.event_type for template in templates.event_templates] == ["ENTRY_SCAN"]
+    assert templates.event_templates[0].payload_template["device_code"] == "SCAN-01"
+    assert templates.result_templates == []
+
+
+@pytest.mark.asyncio
 async def test_submit_sandbox_event_locks_workline_before_creating_inbox() -> None:
     from src.app.workline.services.operation_service import WorklineOperationService
 

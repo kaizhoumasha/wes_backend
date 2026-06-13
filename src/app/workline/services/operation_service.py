@@ -1189,32 +1189,9 @@ class WorklineOperationService(BaseService[Any, Any]):
         if manifest is None:
             return SandboxTemplatesResponse()
 
-        sandbox_config = getattr(manifest, "sandbox", None)
-
-        # 优先使用 manifest.sandbox 配置，否则从 manifest.events 自动生成
-        if sandbox_config is not None:
-            event_templates = [
-                SandboxEventTemplate(
-                    event_type=str(et.get("event_type", "")),
-                    label=et.get("label", et.get("event_type", "")),
-                    payload_template=et.get("payload_template", {}),
-                )
-                for et in (getattr(sandbox_config, "event_templates", None) or [])
-            ]
-            result_templates = [
-                SandboxResultTemplate(
-                    command_type=rt.get("command_type", ""),
-                    label=rt.get("label", rt.get("command_type", "")),
-                    success_payload_template=rt.get("success_payload_template", {}),
-                    failed_payload_template=rt.get("failed_payload_template", {}),
-                    error_template=rt.get("error_template"),
-                )
-                for rt in (getattr(sandbox_config, "result_templates", None) or [])
-            ]
-        else:
-            # 自动从 manifest.events 生成 Event 模板（可按设备角色过滤）
-            event_templates = self._generate_event_templates_from_manifest_events(manifest, device_role, device_code)
-            result_templates = []
+        # 自动从 manifest.events 生成 Event 模板（可按设备角色过滤）
+        event_templates = self._generate_event_templates_from_manifest_events(manifest, device_role, device_code)
+        result_templates: list[SandboxResultTemplate] = []
 
         return SandboxTemplatesResponse(
             event_templates=event_templates,
