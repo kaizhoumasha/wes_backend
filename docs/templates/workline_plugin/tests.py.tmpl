@@ -195,6 +195,26 @@ async def test_measure_success_completes_session() -> None:
     assert intent.kind == RuntimeIntentKind.COMPLETE
 
 
+@pytest.mark.asyncio()
+async def test_measure_failure_blocks_session() -> None:
+    plugin = {{PLUGIN_CLASS}}()
+    ctx = make_ctx({"expected_value": 10.0, "tolerance": 0.5})
+    command_result = NormalizedCommandResult(
+        command_code="CMD-001",
+        source_result="FAILED",
+        normalized_result="TERMINAL_FAILURE",
+        command_type="MEASURE_ITEM",
+        device_code="MEASURE01",
+        data={"error_message": "measure device alarm"},
+    )
+
+    intent = await plugin.handle_measure_failed(ctx, command_result)
+
+    assert intent.kind == RuntimeIntentKind.BLOCK
+    assert intent.reason_code == "MEASURE_ITEM_FAILED"
+    assert intent.message == "measure device alarm"
+
+
 def test_registry_definition_loads_manifest() -> None:
     definition = WorklinePluginDefinition(
         plugin_key="{{PLUGIN_KEY}}",

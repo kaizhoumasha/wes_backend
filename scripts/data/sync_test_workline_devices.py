@@ -302,6 +302,38 @@ TEST_SMT_SORTING_INBOUND_RACK_POSITIONS: tuple[TestRackPositionSeed, ...] = (
             "station_role": "TARGET",
         },
     ),
+    TestRackPositionSeed(
+        position_code="NG_STATION",
+        position_name="测试 SMT 分拣入库 NG Station",
+        position_role=WorklineRackPositionRole.SMT_SORTER_STATION,
+        allowed_rack_kind=RackKind.SINGLE_LAYER,
+        capacity=1,
+        logic_location_code=f"{TEST_SMT_SORTING_INBOUND_LINE_CODE}:NG_STATION",
+        external_location_code="NG_STATION",
+        device_role=ROLE_SORTING_NG_STATION,
+        priority=130,
+        metadata_json={
+            "seed_source": "local-dev",
+            "single_layer_boundary": True,
+            "station_role": "NG",
+        },
+    ),
+    TestRackPositionSeed(
+        position_code="WORKSTATION",
+        position_name="测试 SMT 分拣入库工作站",
+        position_role=WorklineRackPositionRole.SMT_SORTER_STATION,
+        allowed_rack_kind=RackKind.SINGLE_LAYER,
+        capacity=1,
+        logic_location_code=f"{TEST_SMT_SORTING_INBOUND_LINE_CODE}:WORKSTATION",
+        external_location_code="WORKSTATION",
+        device_role=ROLE_SORTING_WORKSTATION,
+        priority=140,
+        metadata_json={
+            "seed_source": "local-dev",
+            "single_layer_boundary": True,
+            "station_role": "WORK",
+        },
+    ),
 )
 
 TEST_ROUGH_SORTER_SEED = TestWorklineSeed(

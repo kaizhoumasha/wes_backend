@@ -26,7 +26,7 @@
 | 1 | Manifest = 纯数据契约，代码归 Plugin 类 | callable 不可序列化，应属于实现 |
 | 2 | 拓扑显式声明 `flow_edges`，节点使用 typed `NodeRef` | 前端和后端都不能靠裸字符串判断设备角色还是货位 |
 | 3 | 货位是独立拓扑节点 | 货位是物料流转的位置，不是设备属性 |
-| 4 | 命令绑定用 `CommandBinding(command, target_device_role, position_args[])` 声明 | 命令需要表达 source/target/work/bin/NG 等位置参数，单个 `position_ref` 不足以支持业务动作 |
+| 4 | 命令绑定用 `CommandBinding(command, target_device_role, position_args[])` 声明 | 命令只在涉及 WES 货架位/资源位置时声明 `PositionArg`；硬件闭环内部点位留在 command payload 或插件业务逻辑 |
 | 5 | 货位之间的物料流动用 `flow_edges` 显式声明 | 前端可直接消费，无需推导 |
 | 6 | 触发约束不放在 manifest 里 | 属于业务逻辑，不是契约 |
 | 7 | 事件能力用 `EventBinding(event, source_device_roles, category, payload_schema_ref?)` 声明 | 事件来源是静态能力合同，前端和后端校验都应直接消费纯数据 |
@@ -50,6 +50,7 @@
 | 25 | 静态 manifest 与运行时 overlay 分离 | manifest 按 `plugin_key + contract_version` 缓存；runtime polling 只返回当前货架/箱体/物料/占用状态 |
 | 26 | `WorkLinePluginOption` 只做插件选择摘要 | 完整 devices/events/commands/topology 能力统一从 manifest 详情读取，避免 options API 继续暴露旧字段或双写合同事实 |
 | 27 | `PositionArg.position_ref` 与 `PositionArg.source` 互斥 | 固定位置和运行时解析路径不能双写；`PositionArgSource.kind` 不提供 `STATIC` |
+| 28 | `positions` 只声明 WES 管理的货架停靠位/库存事实锚点 | 扫码台、输送线内部点、机器人中转位属于设备/硬件闭环，不进入资源拓扑；`MATERIAL_FLOW` 只表达货架位之间的库存/物料流 |
 
 ---
 
@@ -102,7 +103,7 @@
 | `plugin_key` | `str` | 插件标识 |
 | `contract_version` | `str` | 插件合同版本 |
 | `devices` | `list[DeviceRequirement]` | 操作工位角色、数量和硬件约束 |
-| `positions` | `list[Position]` | 承载工位拓扑节点和承载能力 |
+| `positions` | `list[Position]` | WES 管理的货架停靠位/库存事实锚点和承载能力 |
 | `topology` | `TopologySpec` | 必填；typed `NodeRef` 组成的物料/操作流 |
 | `commands` | `list[CommandBinding]` | command 到操作设备角色的绑定，包含结构化位置参数和结果路径 |
 | `events` | `list[EventBinding]` | event 到来源设备角色的绑定 |
@@ -113,10 +114,10 @@
 | 结构 | 字段 | 约定 |
 |------|------|------|
 | `DeviceRequirement` | `role`, `min_count`, `max_count`, `hardware_capabilities` | 设备是操作工位；不重复声明 EVENT/COMMAND，事件和命令能力从 bindings 派生 |
-| `Position` | `code`, `role`, `station_code`, `carrier_capability` | 货位是承载工位；身份稳定，当前承载对象由运行时投影覆盖 |
+| `Position` | `code`, `role`, `station_code`, `carrier_capability` | 货架停靠位是库存事实、资源边界和 runtime overlay 的锚点；扫码台、传感器、输送线内部点和机器人临时中转位不得声明为 `Position` |
 | `PositionCarrierCapability` | `allowed_rack_kinds`, `min_capacity`, `max_capacity`, `allowed_slot_kinds` | 声明插件对货位承载对象的约束；实际 `allowed_rack_kind` / `capacity` 仍由 Workline 现场配置保存 |
 | `NodeRef` | `kind`, `ref` | `kind` 仅允许 `DEVICE_ROLE` 或 `POSITION`；`ref` 必须能在 devices/positions 中解析 |
-| `FlowEdge` | `from_node`, `to_node`, `type` | `from_node`/`to_node` 使用 `NodeRef`；`type` 仅允许 `MATERIAL_FLOW` 或 `OPERATION` |
+| `FlowEdge` | `from_node`, `to_node`, `type` | `from_node`/`to_node` 使用 `NodeRef`；`type` 仅允许 `MATERIAL_FLOW` 或 `OPERATION`；`MATERIAL_FLOW` 必须是 `POSITION -> POSITION`，设备参与货架位动作只能用 `OPERATION` |
 | `EventBinding` | `event`, `source_device_roles`, `category`, `payload_schema_ref` | 定义事件来源和事件类别；source role 必须在 `devices` 中存在；`category` 必须使用 `EventCategory` |
 | `EventCategory` | `ENTRY_DEVICE`, `INTERNAL`, `COMMAND_RESULT`, `OPERATOR`, `SAFETY` | 入口过滤只消费 `ENTRY_DEVICE`；内部驱动、命令结果、人工和安全事件不得混入 entry admission |
 | `CommandBinding` | `command`, `target_device_role`, `position_args`, `payload_schema_ref`, `result_bindings` | 定义命令目标设备、动作参数和结果路径；target role 必须在 `devices` 中存在 |
@@ -132,9 +133,9 @@ Manifest 只描述不会随业务批次变化的事实：
 ```text
 DeviceRequirement(操作工位)
   -- OPERATION -->
-Position(承载工位)
+Position(货架停靠位 / 库存事实锚点)
   -- MATERIAL_FLOW -->
-Position(承载工位)
+Position(货架停靠位 / 库存事实锚点)
 
 Runtime resource/detail projection
   -- keyed by position_code -->
@@ -208,7 +209,7 @@ Runtime resource/detail projection
 | Frontend generated types | 在前端仓库运行 `pnpm generate:types` 和 `pnpm generate:zod` |
 | Frontend runtime aliases | 只保留 generated schema 的类型别名，不手写接口 |
 | Frontend config page | 插件下拉只消费 `WorkLinePluginOption` selector 字段；角色覆盖、事件和命令展示按选中 `plugin_key` 拉取 manifest 详情 |
-| `runtime-scene.ts` | 从 cached manifest 消费 `devices` / `positions` / `topology.flow_edges` / `events` / `commands.position_args` / `resource_boundaries` 静态数据；runtime polling 只按 `position_code` 叠加当前承载状态 |
+| `runtime-scene.ts` | 从 cached manifest 消费 `devices` / `positions` / `topology.flow_edges` / `events` / `resource_boundaries` 静态场景数据；`commands.position_args` 只可用于命令详情/能力展示，不得用于边界或拓扑推导；runtime polling 只按 `position_code` 叠加当前承载状态 |
 
 ### 4. 受影响文件清单
 
@@ -233,12 +234,12 @@ Runtime resource/detail projection
 1. `WorklinePluginManifest` 只包含纯数据字段：`plugin_key`, `contract_version`, `devices`, `positions`, `topology`, `commands`, `events`, `resource_boundaries`
 2. manifest 内没有 callable、model type 或其它不可序列化字段
 3. `devices` 能完整定义操作工位：role、min/max count、硬件约束；设备 EVENT/COMMAND 能力必须从 `EventBinding` / `CommandBinding` 派生，不在 device 上重复维护
-4. `positions` 能完整定义承载工位：code、role、station_code、`PositionCarrierCapability`；货位身份稳定，当前承载货架/箱体/物料不进入 manifest
+4. `positions` 能完整定义 WES 管理的货架停靠位/库存事实锚点：code、role、station_code、`PositionCarrierCapability`；货位身份稳定，当前承载货架/箱体/物料不进入 manifest；扫码台、传感器、输送线内部点和机器人临时中转位不得进入 `positions`
 5. `PositionCarrierCapability` 能表达插件承载约束：`allowed_rack_kinds`、`min_capacity`、`max_capacity`、可选 `allowed_slot_kinds`；实际 workline 位置配置必须满足这些约束
 6. `EventBinding` 能定义设备事件能力：event、source device roles、`EventCategory`、payload schema ref；validator 能拒绝不存在的 source role 和非法 category；entry admission 只消费 `ENTRY_DEVICE`
 7. `CommandBinding` 能定义设备命令能力：command、target device role、`position_args`、payload schema ref、`result_bindings`；validator 能拒绝不存在的 target role 和非法结果绑定
 8. `PositionArg` 能表达动作参数：SOURCE、TARGET、WORK、BIN、NG 等语义位置；固定位置使用 `position_ref`，运行时来源使用结构化 `PositionArgSource`；required 参数必须且只能设置二者之一，optional 参数可不设置但不能同时设置；`PositionArgSource.kind` 不允许 `STATIC`
-9. `topology` 必填，不能为 `None`；`FlowEdge` 端点使用 typed `NodeRef`，validator 能拒绝不存在的 device role / position code；`FlowEdge.type` 仅允许 `MATERIAL_FLOW` 或 `OPERATION`
+9. `topology` 必填，不能为 `None`；`FlowEdge` 端点使用 typed `NodeRef`，validator 能拒绝不存在的 device role / position code；`FlowEdge.type` 仅允许 `MATERIAL_FLOW` 或 `OPERATION`；`MATERIAL_FLOW` 必须拒绝任何 device-role 端点，设备到货架位关系使用 `OPERATION`
 10. `ResourceBoundary.position_code` 必须在 `positions` 中存在；`ResourceBoundary.rack_kind` 必须包含在对应 `Position.carrier_capability.allowed_rack_kinds` 中；`ResourceBoundary` 不包含 `station_code` / `station_role`，相关值必须通过 `position_code -> Position` 派生；`rack_kind` 必须作为通用资源边界维度覆盖单层、五层和未来 rack kind，不允许实现只按旧 `SingleLayerRackBoundary` 语义测试
 11. 前端能先用 manifest 渲染完整静态拓扑，再用运行时详情按 `position_code` 覆盖当前承载状态
 12. manifest 静态合同按 `plugin_key + contract_version` 缓存或等价复用；runtime polling 不重复返回完整 manifest，只返回按 `position_code` 关联的当前承载状态
@@ -261,18 +262,18 @@ Runtime resource/detail projection
 | Backend unit | Manifest 数据合同 | 正常字段、缺失必填、空字符串、重复 code、不可序列化字段不再存在 |
 | Backend unit | Device operation capability | `EventBinding` / `CommandBinding` 派生设备 EVENT/COMMAND 能力；未知 source/target role 失败 |
 | Backend unit | Position carrier capability | 单层/五层货架约束、min/max capacity、slot kind、空约束、非法 rack kind，以及 Workline 实际配置满足/不满足约束 |
-| Backend unit | Topology | topology 必填、typed `NodeRef` 成功/失败、未知 role、未知 position、非法 edge type |
+| Backend unit | Topology | topology 必填、typed `NodeRef` 成功/失败、未知 role、未知 position、非法 edge type、`MATERIAL_FLOW` 必须 position-to-position、device-role 端点只能用于 `OPERATION` |
 | Backend unit | Command binding | 无位置参数命令、多位置参数命令、SOURCE/TARGET/WORK/BIN/NG、未知 `position_ref`、`position_ref` 与 `source` 同时设置失败、required 参数二者都缺失失败、optional 参数二者都缺失成功、非法 `PositionArgSource.kind/path/fallback_position_ref`、`STATIC` kind 禁用、多结果绑定、非法 result category |
 | Backend unit | Event binding | 多 source role、未知 source role、payload schema ref、`EventCategory` 枚举、ENTRY_DEVICE/internal/command-result 过滤边界 |
 | Backend unit | Resource boundary | 通用 rack resource boundary 完整性、单层/五层/混合 rack kind、未知 position、station 派生、rack/WMS/snapshot/lease 字段校验 |
 | Backend unit | Registry helper | business key、result、context model、material identity、NG reasons、缺省语义、唯一插件实例 |
-| Backend unit | Real plugin manifest golden samples | `rough_sorter` 和 `smt_sorting_inbound` 导出完整新 manifest；断言 8 个顶层字段、必填 topology、EventCategory、CommandResultBinding、PositionArgSource、PositionCarrierCapability 和旧字段不存在 |
+| Backend unit | Real plugin manifest golden samples | `rough_sorter` 和 `smt_sorting_inbound` 导出完整新 manifest；断言 8 个顶层字段、必填 topology、EventCategory、CommandResultBinding、PositionArgSource、PositionCarrierCapability、rack-position-only `positions`、position-to-position `MATERIAL_FLOW` 和旧字段不存在 |
 | Backend service/API | Workline manifest summary | 两个插件 summary、OpenAPI schema、旧字段不再返回 |
 | Backend service/API | Workline plugin options | options API 只返回 selector 字段；旧 role/event/command 字段不再进入 OpenAPI/generated contract |
 | Backend integration | Runtime consumers | inbox entry filtering、sandbox event template、runtime resource lookup、hold release、NG return |
 | Frontend contract | OpenAPI / zod | `pnpm generate:types`、`pnpm generate:zod`、contract verify |
 | Frontend unit | WorkLine config page | 插件下拉使用 selector options；角色覆盖、事件和命令展示从 manifest 详情读取，旧 option 字段不存在时页面仍可工作 |
-| Frontend unit | Runtime scene | cached manifest 的 devices/positions/topology/events/commands/resource boundaries 消费、contract version 变化刷新、runtime polling 只叠加 overlay、不重复依赖完整 manifest |
+| Frontend unit | Runtime scene | cached manifest 的 devices/positions/topology/resource boundaries 场景消费、contract version 变化刷新、runtime polling 只叠加 overlay、不重复依赖完整 manifest；断言 `commands.position_args` 为空不会影响边界或拓扑渲染 |
 | Docs/templates | Plugin developer assets | 模板、指南、fixture 和资产测试同步 |
 | Cleanup gate | 旧合同清零 | 以下符号不得出现在新 `src/`、`tests/`、插件模板、活跃开发者指南、前端源码/测试和 generated contract 中：`required_device_roles`、`DeviceRoleRequirement`、`event_source_roles`、`command_target_roles`、`supported_events`、`supported_commands`、`capabilities`(manifest级)、旧 `DeviceRequirement.capabilities`、旧 `Position.capabilities`、旧 `PositionCarrierCapability.capacity`、扁平 `CommandBinding.position_ref`、旧 `CommandBinding.result_event`、旧 `PositionArg.runtime_source`、`TopologySpec \| None`、`resource_kinds`、`requires_single_layer_boundary`、`single_layer_boundaries`、`SingleLayerRackBoundary`、`business_key_resolver`、`result_classifier`、`context_model`、`material_identity_resolver`、`ng_reason_catalog`、`BusinessKeyResolver`(类型别名)、`ResultClassifier`(类型别名)、`_looks_like_manifest`、`_ALLOWED_SINGLE_LAYER_*` 常量、`_requires_single_layer_boundaries`、旧 `__all__` 导出项；本迁移 SPEC、历史归档文档和 review report 可保留旧符号作为迁移说明 |
 
@@ -380,7 +381,7 @@ Runtime resource/detail projection
 | D16 | 原 SPEC 对用户四项能力只“部分支持” | 补齐静态拓扑、设备 EVENT/COMMAND、货位承载能力、动作位置参数四类合同 | 10/10 |
 | D17 | 货位上的货架会随业务变化 | Manifest 只保存静态 position；当前货架/箱体/物料由运行时投影按 `position_code` 覆盖 | 10/10 |
 | D18 | 现有 `WorkLineRackPosition` 已有 `allowed_rack_kind` 和 `capacity` | 新 manifest 定义插件约束，Workline 配置继续保存实际值，validator 校验实际值满足约束 | 10/10 |
-| D19 | 现有 rough sorter action/payload 需要 source/target/bin/NG 等位置 | 单个 `position_ref` 不够，必须用 `PositionArg` 表达业务动作参数 | 10/10 |
+| D19 | 现有 rough sorter action/payload 同时包含 WES 货架位和硬件内部物理点 | `PositionArg` 只表达 WES 货架位/资源位置；扫码点、输送线入口/出口和 NG 物理点保留为 command payload / 插件业务逻辑 | 10/10 |
 | D20 | 计划影响超过 8 个文件/区域，触发范围挑战 | 用户确认保持完整破坏性重构；manifest 是中心合同，不拆成半套旧/新合同 | 10/10 |
 | D21 | `PositionCarrierCapability.capacity` 与 `WorklineRackPosition.capacity` 容易双写 | 改为 `min_capacity` / `max_capacity` 约束，实际容量仍归 Workline 配置 | 10/10 |
 | D22 | `PositionArg.runtime_source` 会变成新的字符串黑盒 | 改为结构化 `PositionArgSource(kind, path, fallback_position_ref)`，kind 使用受控枚举 | 10/10 |
@@ -402,7 +403,7 @@ Runtime resource/detail projection
 - `src/app/workline/services/rack_position_service.py` 已校验货位启用状态、rack kind 和容量，manifest 应对齐该语义而不是新增另一套能力解释。
 - `src/app/workline/services/station_lease_service.py` 按 `position_code` 和运行时 active rack/outbox/session 状态处理占用，说明当前承载对象必须是运行时 overlay。
 - `src/workline_plugins/smt_sorting_inbound/plugin.py` 已声明 `SINGLE_LAYER` / `FIVE_LAYER` 两类资源，但旧 boundary 只覆盖 `SingleLayerRackBoundary`，说明新 `resource_boundaries` 必须按 `rack_kind` 泛化校验。
-- `src/workline_plugins/rough_sorter/contract.py` 与插件 action 生成逻辑已经使用 source/target/bin/NG/work position 参数，说明 `CommandBinding.position_ref` 的单字段模型不够。
+- `src/workline_plugins/rough_sorter/contract.py` 与插件 action 生成逻辑已经使用 source/target/bin/NG/work 参数；其中只有 WES 货架位/资源位置进入 `PositionArg`，扫码点、输送线入口/出口和 NG 物理点留在 payload/business logic。
 - `src/workline_runtime/__init__.py`、插件实现、模板、文档和测试仍暴露或引用旧字段和旧类型。
 - `src/workline_runtime/orchestrator.py` 已有插件实例缓存；重构后需要迁移到 registry 单一入口。
 - `src/app/workline/services/operation_service.py` 的 sandbox event template 仍从 `supported_events` / `event_source_roles` 生成，必须迁移到结构化 `EventBinding`。
@@ -435,7 +436,7 @@ Plugin class
 - 删除 `event_source_roles` 但没有 `EventBinding` 替代，会破坏 inbox batch 入口事件分类和 sandbox event template 生成。
 - 用泛化 `capabilities` 表达 EVENT/COMMAND，会和 `EventBinding` / `CommandBinding` 形成重复事实，后续必然漂移。
 - 用泛化 `capabilities` 表达货位承载约束，会丢失 `allowed_rack_kinds`、`min_capacity`、`max_capacity`、slot kind 这类可校验字段。
-- 用单个 `CommandBinding.position_ref` 表达动作，会无法描述 rough sorter 现有 source/target/work/bin/NG 参数。
+- 把 rough sorter 的扫码点、输送线入口/出口或 NG 物理点声明成 `PositionArg.position_ref`，会重新污染 `positions` 的货架位/库存事实锚点语义。
 - 把当前货架或物料状态写进 manifest，会把运行时状态误当静态拓扑，导致前端显示和实际占用不一致。
 - 保留裸字符串 topology，会让 device role 与 position 的错误引用延迟到运行时才暴露。
 - 删除 rack 资源边界元数据，会丢失 WMS operation、snapshot kind、lease scope 和 allocation context。
@@ -444,7 +445,7 @@ Plugin class
 - 同时保留 registry 和 orchestrator 插件实例缓存，会拆分运行时状态并隐藏生命周期问题。
 - 保留旧 public exports 或 generated 字段，会让新代码继续依赖已删除合同。
 - 只清理 manifest summary 而不清理 `WorkLinePluginOption`，旧字段会通过 options API 和 generated contract 重新进入前端。
-- 允许 `PositionArg.position_ref` 与 `PositionArg.source` 双写或都缺失，会让 validator、runtime resolver 和前端展示对 source/target/bin/NG 位置得出不同结论。
+- 允许 `PositionArg.position_ref` 与 `PositionArg.source` 双写或都缺失，会让 validator、runtime resolver 和前端展示对 WES 货架位/资源位置得出不同结论。
 - 手写前端类型会造成后端 OpenAPI 与 zod 生成产物漂移。
 - 高频 runtime polling 如果重复返回完整 manifest，会把静态合同和动态状态重新耦合，增加 payload 和前端重复解析成本。
 

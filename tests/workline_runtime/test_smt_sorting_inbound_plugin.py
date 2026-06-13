@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from src.app.resource.models import RackKind
 from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
@@ -252,29 +253,31 @@ class FakeStationLeaseStatusProvider:
         self.active_rack_code = None
         self.active_session_id = None
         self.active_dispatch_key = None
-        self.calls: list[tuple[str, bool]] = []
+        self.calls: list[tuple[str, bool, RackKind | None]] = []
 
     async def station_lease_status(
         self,
         position_code: str,
         *,
         allow_active_rack_bound: bool = False,
+        rack_kind: RackKind | None = None,
     ) -> FakeStationLeaseStatusProvider:
-        self.calls.append((position_code, allow_active_rack_bound))
+        self.calls.append((position_code, allow_active_rack_bound, rack_kind))
         return self
 
 
 class FailingStationLeaseStatusProvider:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, bool]] = []
+        self.calls: list[tuple[str, bool, RackKind | None]] = []
 
     async def station_lease_status(
         self,
         position_code: str,
         *,
         allow_active_rack_bound: bool = False,
+        rack_kind: RackKind | None = None,
     ) -> None:
-        self.calls.append((position_code, allow_active_rack_bound))
+        self.calls.append((position_code, allow_active_rack_bound, rack_kind))
         raise ValueError("workline rack position not found: WL-SMT-SORTING-INBOUND-TEST/TARGET_STATION")
 
 
@@ -590,6 +593,23 @@ async def test_source_pick_success_emits_unmounted_fact_before_opening_current_m
 
 
 @pytest.mark.asyncio
+async def test_source_pick_failure_enters_manual_suspend_instead_of_empty_intents() -> None:
+    plugin = SmtSortingInboundPlugin()
+    inbox = _source_pick_success_inbox({"error_code": "ARM_JAM", "error_message": "source arm jam"})
+    inbox.payload_json["result"] = "FAILED"
+
+    intents = await plugin.on_command_result(
+        _ctx(),
+        inbox,
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_SOURCE_PICK_FAILED"
+    assert intents[0].message == "source arm jam"
+    assert intents[0].payload_json["error_detail"]["error_code"] == "ARM_JAM"
+
+
+@pytest.mark.asyncio
 async def test_source_pick_requested_returns_source_pick_command_intent() -> None:
     plugin = SmtSortingInboundPlugin()
 
@@ -673,10 +693,18 @@ async def test_working_bin_scan_uses_shared_policy_and_writes_pending_target_pla
     snapshot = {"snapshot_version": "snap-target-001", "cells": []}
     policy = RecordingAllocationPolicy(_allocated_result())
     plugin = _plugin_with_policy_and_snapshot(policy, snapshot)
+    lease_provider = FakeStationLeaseStatusProvider()
 
-    intents = await plugin.on_device_event(_ctx(_sorting_context_with_current_material()), _working_bin_scan_inbox())
+    intents = await plugin.on_device_event(
+        _ctx(
+            _sorting_context_with_current_material(),
+            services=SimpleNamespace(station_lease_status_provider=lease_provider),
+        ),
+        _working_bin_scan_inbox(),
+    )
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+    assert lease_provider.calls == [("TARGET_STATION", True, RackKind.FIVE_LAYER)]
     assert policy.calls == [
         {
             "active_snapshot": snapshot,
@@ -726,7 +754,7 @@ async def test_working_bin_scan_waits_when_target_station_lease_is_busy() -> Non
     assert intents[0].payload_json["resource_kind"] == "STATION"
     assert intents[0].payload_json["resource_key"] == "station:TARGET_STATION"
     assert intents[0].payload_json["position_code"] == "TARGET_STATION"
-    assert lease_provider.calls == [("TARGET_STATION", True)]
+    assert lease_provider.calls == [("TARGET_STATION", True, RackKind.FIVE_LAYER)]
     assert policy.calls == []
     assert plugin._flow_service._active_snapshot_provider.calls == []
 
@@ -769,7 +797,7 @@ async def test_working_bin_scan_blocks_when_target_station_lease_config_invalid(
         "position_code": "TARGET_STATION",
         "error": "workline rack position not found: WL-SMT-SORTING-INBOUND-TEST/TARGET_STATION",
     }
-    assert lease_provider.calls == [("TARGET_STATION", True)]
+    assert lease_provider.calls == [("TARGET_STATION", True, RackKind.FIVE_LAYER)]
     assert policy.calls == []
 
 

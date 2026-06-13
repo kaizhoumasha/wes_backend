@@ -453,6 +453,12 @@ class SmtSortingInboundPlugin(WorklinePlugin):
 
         return await self._flow_service.handle_source_pick_success(ctx, inbox)
 
+    @on_command(COMMAND_SOURCE_PICK, result="FAILED")
+    async def handle_source_pick_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """源端机械臂取盘失败后，阻断自动流转并保留失败证据。"""
+
+        return await self._flow_service.handle_source_pick_failed(ctx, inbox)
+
     @on_event(EVENT_WORKING_BIN_SCAN)
     async def handle_working_bin_scan(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
         """扫码平台完成物料识别后，分配目标料格。"""

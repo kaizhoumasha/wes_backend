@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+from src.app.resource.models import RackKind
 from src.app.resource.services.material_identity import material_identity_keys_match
 from src.app.resource.services.smt_bin_cell_allocation_policy import SmtBinCellAllocationPolicy
 from src.workline_plugins.smt_sorting_inbound.constants import (
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
 _SCAN_PLATFORM_EMPTY = "EMPTY"
 _SCAN_PLATFORM_OCCUPIED = "OCCUPIED"
 _TARGET_STATION_CODE = "TARGET_STATION"
+_TARGET_STATION_RACK_KIND = RackKind.FIVE_LAYER
 
 
 def _dict_copy(value: Any) -> dict[str, Any]:
@@ -159,6 +161,22 @@ class SmtSortingInboundFlowService:
             ),
             RuntimeIntent.update_context(context_patch),
         ]
+
+    async def handle_source_pick_failed(self, _ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
+        """源端取盘失败后，保留设备失败证据并停止自动流转。"""
+
+        payload_json = _dict_copy(getattr(inbox, "payload_json", None))
+        data = _payload_data(payload_json)
+        return self._block(
+            "SORTING_SOURCE_PICK_FAILED",
+            _payload_text(payload_json, data, "error_message", "message") or "源端取盘失败，需人工确认",
+            payload={
+                "command_code": payload_json.get("command_code"),
+                "source_position_code": _payload_text(payload_json, data, "source_position_code", "bin_code"),
+                "source_cell_code": _payload_text(payload_json, data, "source_cell_code", "bin_cell_code"),
+                "error_detail": data,
+            },
+        )
 
     async def handle_working_bin_scan(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
         """扫码平台完成物料识别后，分配目标料格并写入 pending placement。"""
@@ -657,7 +675,11 @@ class SmtSortingInboundFlowService:
         provider = getattr(getattr(ctx, "services", None), "station_lease_status_provider", None)
         if provider is None:
             return None
-        status = provider.station_lease_status(_TARGET_STATION_CODE, allow_active_rack_bound=True)
+        status = provider.station_lease_status(
+            _TARGET_STATION_CODE,
+            rack_kind=_TARGET_STATION_RACK_KIND,
+            allow_active_rack_bound=True,
+        )
         if inspect.isawaitable(status):
             status = await status
         return status

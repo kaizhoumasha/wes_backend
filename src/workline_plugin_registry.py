@@ -148,10 +148,17 @@ def get_workline_context_model(plugin_key: str | None) -> type[Any] | None:
     return context_model if isinstance(context_model, type) else None
 
 
-def _missing_material_identity() -> "MaterialIdentity":
-    from src.workline_runtime.material_identity import MaterialIdentity, MaterialIdentityResolutionStatus
+def _missing_material_identity(input_value: "MaterialIdentityInput") -> "MaterialIdentity":
+    from src.workline_runtime.material_identity import (
+        MaterialIdentity,
+        MaterialIdentityResolutionStatus,
+        material_identity_input_to_hash,
+    )
 
-    return MaterialIdentity(resolution_status=MaterialIdentityResolutionStatus.MISSING)
+    return MaterialIdentity(
+        resolution_status=MaterialIdentityResolutionStatus.MISSING,
+        raw_evidence_hash=material_identity_input_to_hash(input_value),
+    )
 
 
 def resolve_workline_material_identity(
@@ -162,11 +169,11 @@ def resolve_workline_material_identity(
 
     definition = get_workline_plugin_definition(plugin_key)
     if definition is None:
-        return _missing_material_identity()
+        return _missing_material_identity(input_value)
 
     resolver = getattr(definition.plugin_instance, "resolve_material_identity", None)
     if not callable(resolver):
-        return _missing_material_identity()
+        return _missing_material_identity(input_value)
     return resolver(input_value)
 
 

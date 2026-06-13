@@ -28,6 +28,7 @@ from src.workline_runtime.plugin_manifest import (
     WorklinePluginManifest,
 )
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
+from src.workline_runtime.runtime_intent import BlockScope
 
 from .context import {{CONTEXT_CLASS}}
 from .contract import (
@@ -195,6 +196,20 @@ class {{PLUGIN_CLASS}}(WorklinePlugin):
     @on_command("MEASURE_ITEM", result="SUCCESS")
     async def handle_measure_success(self, ctx, result: NormalizedCommandResult):
         return ctx.next.complete({"command_code": result.command_code})
+
+    @on_command("MEASURE_ITEM", result="FAILED")
+    async def handle_measure_failed(self, ctx, result: NormalizedCommandResult):
+        return ctx.next.block(
+            scope=BlockScope.MATERIAL,
+            reason_code="MEASURE_ITEM_FAILED",
+            message=result.data.get("error_message") or result.error_detail.get("message") or "测量设备失败，需人工确认",
+            suggested_action="检查测量设备状态和当前物料后人工处理",
+            payload={
+                "command_code": result.command_code,
+                "device_code": result.device_code,
+                "error_detail": result.error_detail or result.data,
+            },
+        )
 
 
 {{PLUGIN_INSTANCE}} = {{PLUGIN_CLASS}}()

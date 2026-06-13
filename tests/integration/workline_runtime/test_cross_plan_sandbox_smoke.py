@@ -26,6 +26,7 @@ from src.app.resource.models import (
     BinCellOccupancyStatus,
     BinMaterialMount,
     BinMaterialMountStatus,
+    RackKind,
     ResourceSourceSystem,
     ResourceStateEvent,
     ResourceStateEventType,
@@ -34,6 +35,7 @@ from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType
 from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.inbox import WorklineInbox
+from src.app.workline.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models.runtime_hold import NgReasonSource, NgReturnItem, NgReturnItemStatus, RuntimeHold
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.models.session import SessionStatus, WorklineSession
@@ -61,7 +63,14 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
-from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
+from src.workline_plugins.smt_sorting_inbound.plugin import (
+    POSITION_NG_STATION,
+    POSITION_SOURCE_STATION_A,
+    POSITION_SOURCE_STATION_B,
+    POSITION_TARGET_STATION,
+    POSITION_WORKSTATION,
+    SmtSortingInboundPlugin,
+)
 from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.runtime_intent import RuntimeIntentKind
 from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
@@ -148,6 +157,7 @@ class FakeStationLeaseStatusProvider:
         self,
         _position_code: str,
         *,
+        rack_kind: object | None = None,
         allow_active_rack_bound: bool = False,
     ) -> FakeStationLeaseStatusProvider:
         return self
@@ -288,6 +298,30 @@ async def _persist_workline_with_devices(db_session: AsyncSession, workline: Wor
     for device in devices:
         device.work_line_id = workline.id
         db_session.add(device)
+    position_specs = (
+        (POSITION_SOURCE_STATION_A, RackKind.SINGLE_LAYER, ROLE_SORTING_SOURCE_ARM),
+        (POSITION_SOURCE_STATION_B, RackKind.SINGLE_LAYER, ROLE_SORTING_SOURCE_ARM),
+        (POSITION_TARGET_STATION, RackKind.FIVE_LAYER, ROLE_SORTING_TARGET_ARM),
+        (POSITION_NG_STATION, RackKind.SINGLE_LAYER, ROLE_SORTING_NG_STATION),
+        (POSITION_WORKSTATION, RackKind.SINGLE_LAYER, ROLE_SORTING_WORKSTATION),
+    )
+    for priority, (position_code, rack_kind, device_role) in enumerate(position_specs, start=100):
+        db_session.add(
+            WorklineRackPosition(
+                workline_id=workline.id,
+                workline_code=workline.line_code,
+                position_code=position_code,
+                position_name=f"SMT 分拣入库 {position_code}",
+                position_role=WorklineRackPositionRole.SMT_SORTER_STATION,
+                allowed_rack_kind=rack_kind,
+                capacity=1,
+                logic_location_code=f"{workline.line_code}:{position_code}",
+                external_location_code=position_code,
+                device_role=device_role,
+                priority=priority,
+                metadata_json={"test_fixture": True},
+            )
+        )
     await db_session.commit()
     return devices
 

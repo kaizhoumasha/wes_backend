@@ -209,6 +209,17 @@ def test_plugin_template_imports_command_result_type_at_runtime() -> None:
     assert type_checking_import not in plugin_template
 
 
+def test_plugin_template_failed_result_binding_has_runtime_handler() -> None:
+    plugin_template = (TEMPLATE_DIR / "plugin.py.tmpl").read_text(encoding="utf-8")
+    tests_template = (TEMPLATE_DIR / "tests.py.tmpl").read_text(encoding="utf-8")
+
+    assert 'result="FAILED"' in plugin_template
+    assert '@on_command("MEASURE_ITEM", result="FAILED")' in plugin_template
+    assert "async def handle_measure_failed" in plugin_template
+    assert "ctx.next.block(" in plugin_template
+    assert "test_measure_failure_blocks_session" in tests_template
+
+
 def test_plugin_template_uses_pure_data_manifest_contract() -> None:
     plugin_template = (TEMPLATE_DIR / "plugin.py.tmpl").read_text(encoding="utf-8")
 

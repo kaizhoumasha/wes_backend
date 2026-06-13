@@ -6,6 +6,8 @@
 
 **Architecture:** Manifest 只保留 `plugin_key + contract_version + devices + positions + topology + commands + events + resource_boundaries` 八类静态事实。所有 callable/type/runtime 行为迁移到 Plugin 类并通过 registry helper 统一进入，前端只消费 OpenAPI 生成的合同和 manifest detail，不从 plugin options 读取能力事实。
 
+**Accepted Amendment:** `docs/superpowers/plans/2026-06-12-rack-position-contract-optimization.md` 已并入本计划。`positions` 只声明 WES 管理的货架停靠位/库存事实锚点；扫码台、输送线内部点和机器人中转位留在设备命令 payload 或插件业务逻辑中，不进入 manifest 资源拓扑。
+
 **Tech Stack:** Python 3.13, dataclasses, Pydantic/FastAPI, pytest, GitNexus impact analysis, Vue 3, TypeScript, Vitest, OpenAPI generated types/zod schemas.
 
 ---
@@ -28,7 +30,7 @@
 ### 后端核心合同
 
 - Modify: `src/workline_runtime/plugin_manifest.py`
-  - 负责纯数据 dataclass/enum 合同、字段归一化、引用完整性辅助校验、旧导出清理。
+  - 负责纯数据 dataclass/enum 合同、字段归一化、引用完整性辅助校验、`MATERIAL_FLOW` position-to-position 校验、旧导出清理。
 - Modify: `src/workline_runtime/topology.py`
   - 负责 `WorklineTopologyView` 与新 manifest 约束校验，不再读取 `required_device_roles/event_source_roles/command_target_roles`。
 - Modify: `src/workline_runtime/__init__.py`
@@ -50,7 +52,7 @@
 
 - Modify: `src/workline_plugins/rough_sorter/plugin.py`
 - Modify: `src/workline_plugins/smt_sorting_inbound/plugin.py`
-  - manifest 只声明纯数据；Plugin 类公开 runtime 能力方法/属性。
+  - manifest 只声明纯数据；Plugin 类公开 runtime 能力方法/属性；`positions` 只保留货架停靠位，`MATERIAL_FLOW` 只连接 position 到 position。
 - Read/keep aligned: `src/workline_plugins/rough_sorter/contract.py`
 - Read/keep aligned: `src/workline_plugins/smt_sorting_inbound/constants.py`
   - 作为事件、命令、角色、动作参数来源。
@@ -58,7 +60,7 @@
 ### 后端 Workline service/runtime consumers
 
 - Modify: `src/app/workline/models/workline.py`
-  - 更新 `WorkLinePluginOption` selector-only 与 `WorkLinePluginManifestSummary` 新合同 schema。
+  - 更新 `WorkLinePluginOption` selector-only 与 `WorkLinePluginManifestSummary` 新合同 schema，并把 Position 描述收敛为货架停靠位/库存事实锚点。
 - Modify: `src/app/workline/services/workline_service.py`
   - 更新 options、manifest summary、配置检查、设备/事件/命令/承载约束校验。
 - Modify: `src/app/workline/services/inbox_batch_processor.py`
@@ -143,6 +145,15 @@ rack_kind     -> must be allowed by that Position.carrier_capability.allowed_rac
 never         -> station_code/station_role duplicated on ResourceBoundary
 ```
 
+`Position` / `FlowEdge` 不变量：
+
+```text
+positions     -> WES-managed rack docking positions / inventory-fact anchors only
+never         -> scanner stations, conveyor internal points, robot transfer points in positions
+MATERIAL_FLOW -> POSITION to POSITION only
+OPERATION     -> device role to/from position for hardware action relationships
+```
+
 `PositionArg` 不变量：
 
 ```text
@@ -173,7 +184,8 @@ git status --short
 Expected:
 
 ```text
-develop
+main repo before worktree creation: develop
+implementation worktree: feature/workline-plugin-manifest-refactor
 ```
 
 已有 `.gitignore`、`AGENTS.md`、`CLAUDE.md` 等非本计划改动不得回滚；只操作本任务列出的文件。
@@ -211,6 +223,23 @@ gitnexus_impact({target: "_generate_event_templates_from_supported_events", dire
 
 Expected: no HIGH/CRITICAL unreported risk. If HIGH/CRITICAL appears, pause and report blast radius before editing.
 
+Second-pass preflight on 2026-06-12 refreshed GitNexus with `npx gitnexus analyze` and recorded:
+
+```text
+WorklinePluginManifest: MEDIUM, direct 7, impacted 49
+validate_topology_manifest: LOW, direct 1, impacted 2
+WorklinePluginDefinition: HIGH, direct 16, impacted 74
+resolve_workline_business_key: LOW
+classify_workline_result: LOW
+WorkLinePluginOption: MEDIUM
+WorkLinePluginManifestSummary: MEDIUM
+list_plugin_options: LOW
+get_plugin_manifest_summary service method: LOW
+_generate_event_templates_from_supported_events: not found in current index
+```
+
+Task 1 may proceed because it only updates tests. Before Task 3 or any edit to `WorklinePluginDefinition`, pause and confirm the HIGH blast radius with the user.
+
 ---
 
 ### Task 1: Backend Manifest Contract Tests First
@@ -242,6 +271,8 @@ In `tests/workline_runtime/test_plugin_manifest_and_topology.py`, keep `_device(
 | `test_manifest_rejects_missing_required_topology` | missing or `None` topology raises `ValueError` mentioning `topology` |
 | `test_manifest_rejects_unknown_topology_node_ref` | unknown `DEVICE_ROLE` or `POSITION` ref raises `ValueError` |
 | `test_manifest_rejects_illegal_flow_edge_type` | edge type outside `MATERIAL_FLOW` / `OPERATION` raises `ValueError` |
+| `test_material_flow_edges_must_connect_positions` | `MATERIAL_FLOW` with any `DEVICE_ROLE` endpoint raises `ValueError` |
+| `test_rough_sorter_internal_physical_points_do_not_enter_manifest_positions_or_position_args` | scan point, conveyor input/output, and NG physical point are absent from manifest `positions`, `position_ref`, and `fallback_position_ref` |
 | `test_event_binding_rejects_unknown_source_role` | event source role must exist in `devices` |
 | `test_event_binding_entry_device_is_only_entry_filter_source` | entry admission candidates derive only from `EventCategory.ENTRY_DEVICE` |
 | `test_command_binding_rejects_unknown_target_role` | command target role must exist in `devices` |
@@ -377,6 +408,7 @@ resource boundary rack_kind exists in that position's carrier_capability.allowed
 NodeRef DEVICE_ROLE exists in devices
 NodeRef POSITION exists in positions
 FlowEdge.type in MATERIAL_FLOW / OPERATION
+MATERIAL_FLOW edges connect POSITION nodes only
 resource boundary has no station_code/station_role fields
 reserved runtime events are rejected through EventBinding and CommandResultBinding
 ```
@@ -575,9 +607,13 @@ SmtSortingInboundPlugin.manifest has 8 top-level fields
 old fields are absent on both manifest objects
 topology is non-empty and uses typed NodeRef
 events contain expected source roles and categories
-commands contain target device role, position_args, and result_bindings
+commands contain target device role and result_bindings; only commands that reference WES rack positions expose position_args
 resource_boundaries cover rough single-layer work position
 resource_boundaries cover SMT source, target, NG/work, and FIVE_LAYER needs
+rough sorter positions exclude scan point, conveyor internal points, and NG physical point
+rough sorter PICK_AND_PUT, MOVE_FORWARD, and MOVE_TO_NG expose empty position_args because their physical locations are hardware payload facts
+rough sorter PUT_TO_BIN keeps only the WES rack-position/resource-overlay position_args
+SMT MATERIAL_FLOW edges are POSITION to POSITION; device relationships use OPERATION
 ```
 
 - [ ] **Step 3: Migrate rough sorter manifest**
@@ -590,7 +626,9 @@ move business_key/result/context/material/NG capability to Plugin class methods/
 replace supported_events/event_source_roles -> EventBinding list
 replace supported_commands/command_target_roles -> CommandBinding list
 replace single_layer_boundaries/resource_kinds/requires_single_layer_boundary -> positions + resource_boundaries
-replace command action location facts with PositionArg role/source contracts
+replace command action location facts with PositionArg role/source contracts only when the location is a WES rack position
+keep scan point, conveyor input/output, and NG physical location constants in command payload/business logic, but do not declare them as manifest positions
+set rough sorter PICK_AND_PUT, MOVE_FORWARD, and MOVE_TO_NG position_args to empty tuples; keep PUT_TO_BIN target rack/bin location as the only WES resource position argument
 ```
 
 Keep existing business methods and action behavior; do not rewrite plugin workflow logic in this task.
@@ -607,6 +645,7 @@ replace COMMAND_TARGET_ROLES -> CommandBinding list
 declare source, target, workstation, NG station positions
 declare resource_boundaries for SINGLE_LAYER and FIVE_LAYER rack kinds
 ensure NG place command target remains TARGET_ARM when current behavior requires it
+convert device-role -> target/NG MATERIAL_FLOW edges to OPERATION and add explicit POSITION -> POSITION business material flows where inventory movement is modeled
 ```
 
 - [ ] **Step 5: Update plugin-local manifest references**
@@ -711,7 +750,7 @@ In `src/app/workline/models/workline.py`, replace old summary fields with genera
 
 ```text
 DeviceRequirement summary
-Position summary
+Position summary with rack docking / inventory anchor descriptions
 PositionCarrierCapability summary
 NodeRef summary
 FlowEdge summary
@@ -973,6 +1012,8 @@ do not pass business_key_resolver/result_classifier/context_model/material_ident
 declare runtime methods/properties on plugin class
 declare events/commands/resource_boundaries in manifest
 document PositionArg XOR/source behavior
+document positions as rack docking positions only
+assert template MATERIAL_FLOW edges are POSITION to POSITION
 ```
 
 - [ ] **Step 2: Update plugin template**
@@ -998,6 +1039,8 @@ In `docs/templates/workline_plugin/README.md`, `docs/templates/workline_plugin/s
 manifest = pure data
 registry helper = runtime behavior
 events/commands/resource_boundaries are structured
+positions = WES-managed rack docking positions / inventory-fact anchors, not all physical points
+MATERIAL_FLOW = rack position to rack position only; device action edges use OPERATION
 PositionArg static source uses position_ref
 PositionArgSource does not support STATIC
 ```
@@ -1056,6 +1099,26 @@ rg -n -P "(?<![A-Za-z0-9_])(required_device_roles|DeviceRoleRequirement|event_so
 ```
 
 Expected: no output. Any output in active source/test/template docs must be removed or converted to the new contract. Bare Plugin runtime helper names such as `get_context_model` or `context_model` are allowed outside manifest; this scan only rejects old manifest fields, old exported types, and `manifest.<runtime_field>` access.
+
+Also add executable golden assertions for the rack-position contract:
+
+```text
+test_rough_sorter_internal_physical_points_do_not_enter_manifest_positions_or_position_args
+test_smt_sorting_inbound_material_flow_edges_are_position_to_position
+test_plugin_template_material_flow_edges_are_position_to_position
+```
+
+These tests must instantiate or parse the manifest/template and inspect structured fields, not rely on string-only scanning. Internal physical point strings may still appear in command payload constants, command payload tests, hardware docs, or plugin business logic.
+
+Use this optional scan only as an implementation review aid:
+
+```bash
+rg -n "ROUGH_SORTER_SCAN_POINT|PIPELINE-IN-01|PIPELINE-OUT-01|NG-01|SCAN_POSITION|PIPELINE_POSITION" \
+  src/workline_plugins docs/templates tests/workline_runtime tests/workline_plugins \
+  --glob '!docs/superpowers/**'
+```
+
+Expected: review any hits manually; passing/failing is determined by the structured pytest golden assertions above, not by zero output from this scan.
 
 - [ ] **Step 3: Run backend focused suite**
 
@@ -1237,6 +1300,8 @@ positions include station_code and carrier_capability
 resource_boundaries include position_code/rack_kind/WMS/snapshot/lease
 topology includes typed flow edges
 runtime evidence overlays by position_code
+rough_sorter-like fixture keeps internal command position_args empty while resource_boundaries/topology still render
+runtime scene does not derive boundaries or topology from commands.position_args
 manifestLoadFailed still falls back to generic evidence
 contract_version mismatch still fails closed through caller
 ```
@@ -1248,6 +1313,7 @@ In `src/utils/runtime-scene.ts`:
 ```text
 hasManifestBoundaries reads manifest.resource_boundaries
 resolveBoundaries maps ResourceBoundary + Position into RuntimeSceneBoundary
+resolveBoundaries never infers scene boundaries from commands.position_args
 fallback boundary summaries remain for no-manifest state
 semantic fallback messages mention manifest/resource boundaries, not single_layer_boundaries
 no code references WorkLineSingleLayerRackBoundarySummary
@@ -1384,3 +1450,16 @@ Expected: only intended files are committed; unrelated pre-existing changes rema
 - Spec coverage: Tasks 1-2 cover manifest pure data, typed topology, event/command/result/position/resource contracts; Task 3 covers registry helper and singleton lifecycle; Task 4 covers real plugins; Tasks 5-6 cover API and runtime consumers; Tasks 7-8 cover docs/templates and cleanup gate; Tasks 9-10 cover frontend generated contract/config/runtime scene; Task 11 covers final verification.
 - Red-flag scan: no banned placeholder expressions; every test step names concrete files, test cases, assertions, and commands.
 - Type consistency: all task names use the spec's final names: `DeviceRequirement`, `PositionCarrierCapability`, `NodeRef`, `FlowEdge`, `EventBinding`, `CommandBinding`, `PositionArgSource`, `CommandResultBinding`, `ResourceBoundary`, `WorkLinePluginOption`, `WorkLinePluginManifestSummary`.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | Not run for this backend contract amendment |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | Not run |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 2 | CLEAR | 7 total issues accepted and folded: first pass 5, second pass 2; 0 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | Not needed for backend-first contract amendment |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | Not run |
+
+- **VERDICT:** ENG CLEARED — implement from this main plan; `2026-06-12-rack-position-contract-optimization.md` is accepted only as an amendment, not a standalone execution plan. Second pass also confirmed runtime scene must not derive boundaries/topology from `commands.position_args`.
+NO UNRESOLVED DECISIONS

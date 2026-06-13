@@ -19,6 +19,7 @@ from src.app.sys.models.outbox import (
 )
 from src.app.workline.models import InboxKind, InboxStatus, LineType, SourceSystem, WorkLine, WorkLineRunMode
 from src.app.workline.models.inbox import WorklineInbox
+from src.app.workline.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models.runtime_hold import RuntimeHoldType
 from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository
@@ -30,6 +31,7 @@ from src.workline_plugins.rough_sorter.contract import (
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
 )
+from src.workline_plugins.rough_sorter.plugin import POSITION_WORK_SINGLE_LAYER
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
@@ -43,6 +45,13 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     ROLE_SORTING_WORKSTATION,
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
+)
+from src.workline_plugins.smt_sorting_inbound.plugin import (
+    POSITION_NG_STATION,
+    POSITION_SOURCE_STATION_A,
+    POSITION_SOURCE_STATION_B,
+    POSITION_TARGET_STATION,
+    POSITION_WORKSTATION,
 )
 
 workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
@@ -86,6 +95,58 @@ def _carrier_capability(
         max_capacity=max_capacity,
         allowed_slot_kinds=(),
     )
+
+
+async def _add_rough_sorter_rack_positions(db_session, workline: WorkLine) -> None:
+    workline_id = workline.id
+    assert workline_id is not None
+    db_session.add(
+        WorklineRackPosition(
+            workline_id=workline_id,
+            workline_code=workline.line_code,
+            position_code=POSITION_WORK_SINGLE_LAYER,
+            position_name="粗分机单层货架工作位",
+            position_role=WorklineRackPositionRole.SMT_CLASSIFIER_SINGLE_RACK_WORK,
+            allowed_rack_kind=RackKind.SINGLE_LAYER,
+            capacity=1,
+            logic_location_code=f"{workline.line_code}:{POSITION_WORK_SINGLE_LAYER}",
+            external_location_code=POSITION_WORK_SINGLE_LAYER,
+            device_role=ROLE_OUTPUT_ARM,
+            priority=100,
+            metadata_json={"test_fixture": True},
+        )
+    )
+    await db_session.commit()
+
+
+async def _add_smt_sorting_inbound_rack_positions(db_session, workline: WorkLine) -> None:
+    workline_id = workline.id
+    assert workline_id is not None
+    specs = (
+        (POSITION_SOURCE_STATION_A, RackKind.SINGLE_LAYER, ROLE_SORTING_SOURCE_ARM),
+        (POSITION_SOURCE_STATION_B, RackKind.SINGLE_LAYER, ROLE_SORTING_SOURCE_ARM),
+        (POSITION_TARGET_STATION, RackKind.FIVE_LAYER, ROLE_SORTING_TARGET_ARM),
+        (POSITION_NG_STATION, RackKind.SINGLE_LAYER, ROLE_SORTING_NG_STATION),
+        (POSITION_WORKSTATION, RackKind.SINGLE_LAYER, ROLE_SORTING_WORKSTATION),
+    )
+    for priority, (position_code, rack_kind, device_role) in enumerate(specs, start=100):
+        db_session.add(
+            WorklineRackPosition(
+                workline_id=workline_id,
+                workline_code=workline.line_code,
+                position_code=position_code,
+                position_name=f"SMT 分拣入库 {position_code}",
+                position_role=WorklineRackPositionRole.SMT_SORTER_STATION,
+                allowed_rack_kind=rack_kind,
+                capacity=1,
+                logic_location_code=f"{workline.line_code}:{position_code}",
+                external_location_code=position_code,
+                device_role=device_role,
+                priority=priority,
+                metadata_json={"test_fixture": True},
+            )
+        )
+    await db_session.commit()
 
 
 def test_workline_model_returns_none_for_removed_smt_plugin() -> None:
@@ -361,6 +422,53 @@ def test_configuration_checks_validate_position_carrier_capability_against_workl
     assert carrier_checks[0].context["max_capacity"] == 4
 
 
+def test_configuration_checks_block_when_manifest_position_config_missing(monkeypatch) -> None:
+    """配置预检应阻断 manifest 声明但工作线未配置的货架停靠位。"""
+
+    manifest = SimpleNamespace(
+        plugin_key="carrier_plugin",
+        contract_version="carrier.v1",
+        devices=(),
+        positions=(
+            SimpleNamespace(
+                code="MISSING_POSITION",
+                role="WORK",
+                station_code="WORK_STATION",
+                carrier_capability=_carrier_capability(
+                    allowed_rack_kinds=("FIVE_LAYER",),
+                    min_capacity=2,
+                    max_capacity=4,
+                ),
+            ),
+        ),
+        topology=SimpleNamespace(flow_edges=()),
+        events=(),
+        commands=(),
+        resource_boundaries=(),
+    )
+    definition = SimpleNamespace(plugin_key="carrier_plugin", manifest=manifest)
+    monkeypatch.setattr(workline_service_module, "get_workline_plugin_definition", lambda plugin_key: definition)
+    workline = WorkLine(
+        line_code="WL-CARRIER",
+        line_name="承载能力检查",
+        line_type=LineType.AUTO,
+        plugin_key="carrier_plugin",
+        contract_version="carrier.v1",
+    )
+
+    checks = WorkLineService()._build_configuration_checks(workline, [], [])
+    carrier_checks = [check for check in checks if check.code == "POSITION_CARRIER_CAPABILITY"]
+
+    assert len(carrier_checks) == 1
+    assert carrier_checks[0].status == "FAIL"
+    assert carrier_checks[0].severity == "BLOCKER"
+    assert carrier_checks[0].context["position_code"] == "MISSING_POSITION"
+    assert carrier_checks[0].context["missing_position_config"] is True
+    assert carrier_checks[0].context["allowed_rack_kinds"] == ["FIVE_LAYER"]
+    assert carrier_checks[0].context["min_capacity"] == 2
+    assert carrier_checks[0].context["max_capacity"] == 4
+
+
 def test_workline_service_returns_none_for_unknown_plugin_manifest_summary() -> None:
     """未知插件 manifest 摘要应返回 None，交给 API 层转统一 404。"""
 
@@ -454,6 +562,7 @@ async def test_smt_sorting_inbound_configuration_status_does_not_require_event_c
             )
         )
     await db_session.commit()
+    await _add_smt_sorting_inbound_rack_positions(db_session, workline)
 
     status = await WorkLineService().configuration_status(db_session, workline.id)  # type: ignore[arg-type]
 
@@ -910,6 +1019,7 @@ async def test_configuration_status_reports_incomplete_command_target_communicat
             )
         )
     await db_session.commit()
+    await _add_rough_sorter_rack_positions(db_session, workline)
 
     service = WorkLineService()
     status = await service.configuration_status(db_session, workline.id)  # type: ignore[arg-type]
@@ -1003,6 +1113,7 @@ async def test_activate_simulation_does_not_block_on_command_target_communicatio
             )
         )
     await db_session.commit()
+    await _add_rough_sorter_rack_positions(db_session, workline)
 
     service = WorkLineService()
     status = await service.configuration_status(db_session, workline.id)  # type: ignore[arg-type]
@@ -1055,6 +1166,7 @@ async def test_activate_succeeds_only_after_configuration_checks_pass(db_session
             )
         )
     await db_session.commit()
+    await _add_rough_sorter_rack_positions(db_session, workline)
     await db_session.refresh(workline)
 
     activated = await service.activate(db_session, workline.id, version=workline.version)  # type: ignore[arg-type]
@@ -1092,6 +1204,7 @@ async def test_activate_locks_workline_before_configuration_checks(db_session) -
             )
         )
     await db_session.commit()
+    await _add_rough_sorter_rack_positions(db_session, workline)
     await db_session.refresh(workline)
 
     service = WorkLineService()

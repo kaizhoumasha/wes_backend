@@ -15,6 +15,7 @@ from src.workline_runtime.sandbox_catalog import query_sandbox_wms_inventory_row
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
 
+    from src.app.resource.models import RackKind
     from src.app.resource.services.smt_rack_bin_scheduling_service import SmtRackBinSchedulingDecision
     from src.app.wms_integration.models import QueryInventoryRequest, QueryInventoryResponse
 
@@ -63,7 +64,13 @@ class RackOperationStatusProvider(Protocol):
 class StationLeaseStatusProvider(Protocol):
     """Station lease 状态读取接口。"""
 
-    def station_lease_status(self, position_code: str, *, allow_active_rack_bound: bool = False) -> Awaitable[Any]:
+    def station_lease_status(
+        self,
+        position_code: str,
+        *,
+        rack_kind: RackKind | None = None,
+        allow_active_rack_bound: bool = False,
+    ) -> Awaitable[Any]:
         """按 position_code 读取当前 Station lease 状态。"""
         ...
 
@@ -96,12 +103,21 @@ class BoundStationLeaseStatusProvider:
         self._workline = workline
         self._service = service
 
-    async def station_lease_status(self, position_code: str, *, allow_active_rack_bound: bool = False) -> Any:
+    async def station_lease_status(
+        self,
+        position_code: str,
+        *,
+        rack_kind: RackKind | None = None,
+        allow_active_rack_bound: bool = False,
+    ) -> Any:
+        from src.app.resource.models import RackKind
+
         return await self._service.get_station_lease_status(
             self._db,
             workline_id=self._workline.id,
             workline_code=self._workline.line_code,
             position_code=position_code,
+            rack_kind=rack_kind or RackKind.SINGLE_LAYER,
             allow_active_rack_bound=allow_active_rack_bound,
         )
 

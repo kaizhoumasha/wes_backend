@@ -28,6 +28,7 @@ class _FakeStationLeaseStatusProvider:
         self,
         _position_code: str,
         *,
+        rack_kind: object | None = None,
         allow_active_rack_bound: bool = False,
     ) -> _FakeStationLeaseStatusProvider:
         return self

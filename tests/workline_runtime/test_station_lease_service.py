@@ -555,6 +555,22 @@ async def test_station_lease_rejects_non_single_layer_position() -> None:
 
 
 @pytest.mark.asyncio
+async def test_station_lease_accepts_explicit_five_layer_position() -> None:
+    harness = build_harness(rack_kind=RackKind.FIVE_LAYER)
+
+    result = await harness.service.get_station_lease_status(
+        object(),
+        workline_id=1001,
+        workline_code="SMT_SORTER_01",
+        position_code="TARGET_STATION",
+        rack_kind=RackKind.FIVE_LAYER,
+    )
+
+    assert result.available is True
+    assert harness.rack_position_service.calls == [("SMT_SORTER_01", "TARGET_STATION", RackKind.FIVE_LAYER)]
+
+
+@pytest.mark.asyncio
 async def test_station_lease_does_not_check_external_location_occupancy() -> None:
     harness = build_harness()
 

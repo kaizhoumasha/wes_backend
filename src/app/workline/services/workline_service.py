@@ -746,30 +746,47 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         manifest: Any,
         rack_positions: list[Any] | None,
     ) -> list[WorkLineConfigurationCheck]:
-        if not rack_positions:
-            return []
-
         rack_position_by_code = {
             getattr(position, "position_code", None): position
-            for position in rack_positions
+            for position in rack_positions or []
             if isinstance(getattr(position, "position_code", None), str)
         }
         checks: list[WorkLineConfigurationCheck] = []
         for position in getattr(manifest, "positions", ()):
             position_code = getattr(position, "code", None)
             rack_position = rack_position_by_code.get(position_code)
-            if rack_position is None:
-                continue
 
             capability = position.carrier_capability
             allowed_rack_kinds = [
                 str(WorkLineService._manifest_value(rack_kind))
                 for rack_kind in getattr(capability, "allowed_rack_kinds", ())
             ]
-            allowed_rack_kind = WorkLineService._rack_kind_value(getattr(rack_position, "allowed_rack_kind", None))
-            capacity = getattr(rack_position, "capacity", None)
             min_capacity = capability.min_capacity
             max_capacity = capability.max_capacity
+            if rack_position is None:
+                checks.append(
+                    WorkLineService._check(
+                        "POSITION_CARRIER_CAPABILITY",
+                        _FAIL,
+                        _BLOCKER,
+                        {
+                            "position_code": position_code,
+                            "position_role": getattr(position, "role", None),
+                            "station_code": getattr(position, "station_code", None),
+                            "missing_position_config": True,
+                            "enabled": False,
+                            "allowed_rack_kind": None,
+                            "allowed_rack_kinds": allowed_rack_kinds,
+                            "capacity": None,
+                            "min_capacity": min_capacity,
+                            "max_capacity": max_capacity,
+                        },
+                    )
+                )
+                continue
+
+            allowed_rack_kind = WorkLineService._rack_kind_value(getattr(rack_position, "allowed_rack_kind", None))
+            capacity = getattr(rack_position, "capacity", None)
             enabled = bool(getattr(rack_position, "enabled", True))
             rack_kind_passes = allowed_rack_kind in allowed_rack_kinds
             capacity_passes = isinstance(capacity, int) and min_capacity <= capacity <= max_capacity

@@ -6,6 +6,7 @@ from src.workline_runtime.material_identity import (
     MaterialIdentityInput,
     MaterialIdentityResolutionStatus,
     hash_material_evidence,
+    material_identity_input_to_hash,
 )
 
 
@@ -22,18 +23,16 @@ def test_registry_material_identity_helper_returns_missing_default() -> None:
         plugin_class_name="MaterialIdentityMissingCapabilityPlugin",
     )
     try:
-        identity = registry.resolve_workline_material_identity(
-            plugin_key,
-            MaterialIdentityInput(
-                source_payload={
-                    "data": {
-                        "PkgID": "PKG-001",
-                        "HHPN": "620100L00-011-G",
-                        "LotCode": "8904936031",
-                    }
+        input_value = MaterialIdentityInput(
+            source_payload={
+                "data": {
+                    "PkgID": "PKG-001",
+                    "HHPN": "620100L00-011-G",
+                    "LotCode": "8904936031",
                 }
-            ),
+            }
         )
+        identity = registry.resolve_workline_material_identity(plugin_key, input_value)
     finally:
         if old_definition is None:
             registry.WORKLINE_PLUGIN_REGISTRY.pop(plugin_key, None)
@@ -43,6 +42,7 @@ def test_registry_material_identity_helper_returns_missing_default() -> None:
     assert identity.resolution_status == MaterialIdentityResolutionStatus.MISSING
     assert identity.idempotency_key is None
     assert identity.display == {}
+    assert identity.raw_evidence_hash == material_identity_input_to_hash(input_value)
 
 
 def test_hash_material_evidence_is_order_insensitive() -> None:
