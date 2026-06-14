@@ -126,6 +126,26 @@ def test_plugin_manifest_route_accepts_encoded_slash_plugin_keys() -> None:
     assert child_scope["path_params"]["plugin_key"] == "rough%20sorter%2F1"
 
 
+def test_plugin_manifest_openapi_exposes_contract_version_query() -> None:
+    app = FastAPI()
+    app.include_router(workline_api.router)
+
+    parameters = app.openapi()["paths"]["/plugins/{plugin_key}/manifest"]["get"]["parameters"]
+
+    assert {
+        "name": "contract_version",
+        "in": "query",
+        "required": False,
+    } in [
+        {
+            "name": parameter["name"],
+            "in": parameter["in"],
+            "required": parameter.get("required", False),
+        }
+        for parameter in parameters
+    ]
+
+
 @pytest.mark.asyncio
 async def test_list_plugin_options_returns_selector_only_fields(monkeypatch) -> None:
     option = WorkLinePluginOption(
@@ -153,13 +173,26 @@ async def test_list_plugin_options_returns_selector_only_fields(monkeypatch) -> 
 @pytest.mark.asyncio
 async def test_get_plugin_manifest_returns_registered_plugin_summary(monkeypatch) -> None:
     summary = _manifest_summary()
-    service = SimpleNamespace(get_plugin_manifest_summary=lambda plugin_key: summary)
+    seen_requests: list[tuple[str, str | None]] = []
+
+    def get_plugin_manifest_summary(
+        plugin_key: str,
+        contract_version: str | None = None,
+    ) -> WorkLinePluginManifestSummary:
+        seen_requests.append((plugin_key, contract_version))
+        return summary
+
+    service = SimpleNamespace(get_plugin_manifest_summary=get_plugin_manifest_summary)
     monkeypatch.setattr(workline_api, "workline_service", service)
 
-    response = await workline_api.get_workline_plugin_manifest("demo_plugin")
+    response = await workline_api.get_workline_plugin_manifest(
+        "demo_plugin",
+        contract_version="demo.v1",
+    )
 
     assert response["code"] == "1000"
     assert response["data"] == summary
+    assert seen_requests == [("demo_plugin", "demo.v1")]
     assert set(response["data"].model_dump()) == {
         "plugin_key",
         "contract_version",
@@ -177,7 +210,10 @@ async def test_get_plugin_manifest_decodes_encoded_plugin_key(monkeypatch) -> No
     seen_plugin_keys: list[str] = []
     summary = _manifest_summary(plugin_key="rough sorter/1")
 
-    def get_plugin_manifest_summary(plugin_key: str) -> WorkLinePluginManifestSummary:
+    def get_plugin_manifest_summary(
+        plugin_key: str,
+        contract_version: str | None = None,
+    ) -> WorkLinePluginManifestSummary:
         seen_plugin_keys.append(plugin_key)
         return summary
 
@@ -193,7 +229,7 @@ async def test_get_plugin_manifest_decodes_encoded_plugin_key(monkeypatch) -> No
 
 @pytest.mark.asyncio
 async def test_get_plugin_manifest_returns_not_found_for_unknown_plugin(monkeypatch) -> None:
-    service = SimpleNamespace(get_plugin_manifest_summary=lambda plugin_key: None)
+    service = SimpleNamespace(get_plugin_manifest_summary=lambda plugin_key, contract_version=None: None)
     monkeypatch.setattr(workline_api, "workline_service", service)
 
     response = await workline_api.get_workline_plugin_manifest("unknown_plugin")
@@ -204,7 +240,10 @@ async def test_get_plugin_manifest_returns_not_found_for_unknown_plugin(monkeypa
 
 @pytest.mark.asyncio
 async def test_get_plugin_manifest_returns_validation_error_for_invalid_manifest(monkeypatch) -> None:
-    def get_plugin_manifest_summary(plugin_key: str) -> None:
+    def get_plugin_manifest_summary(
+        plugin_key: str,
+        contract_version: str | None = None,
+    ) -> None:
         raise TypeError(f"工作线插件 {plugin_key} 缺少有效 manifest")
 
     service = SimpleNamespace(get_plugin_manifest_summary=get_plugin_manifest_summary)

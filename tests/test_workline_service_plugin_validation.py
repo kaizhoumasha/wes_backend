@@ -477,6 +477,14 @@ def test_workline_service_returns_none_for_unknown_plugin_manifest_summary() -> 
     assert service.get_plugin_manifest_summary("unknown_plugin") is None
 
 
+def test_workline_service_does_not_return_default_manifest_for_different_contract_version() -> None:
+    """请求指定版本时，不允许把同插件默认版本误当作匹配 manifest。"""
+
+    service = WorkLineService()
+
+    assert service.get_plugin_manifest_summary("rough_sorter", contract_version="missing.v2") is None
+
+
 def test_workline_service_status_path_defaults_to_standard_endpoint_not_callback_path() -> None:
     """START/status 预检不能把命令 callback_path 当成设备 status endpoint。"""
 

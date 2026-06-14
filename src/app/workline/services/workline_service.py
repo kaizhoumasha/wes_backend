@@ -245,7 +245,11 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             )
         return options
 
-    def get_plugin_manifest_summary(self, plugin_key: str) -> WorkLinePluginManifestSummary | None:
+    def get_plugin_manifest_summary(
+        self,
+        plugin_key: str,
+        contract_version: str | None = None,
+    ) -> WorkLinePluginManifestSummary | None:
         """返回单个工作线插件 manifest 摘要。"""
 
         definition = get_workline_plugin_definition(plugin_key)
@@ -253,6 +257,9 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             return None
 
         manifest = definition.manifest
+        if contract_version and manifest.contract_version != contract_version:
+            return None
+
         plugin_key = definition.plugin_key
         return WorkLinePluginManifestSummary(
             plugin_key=plugin_key,
@@ -596,7 +603,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             required_capabilities = frozenset(getattr(requirement, "hardware_capabilities", ()))
             if required_capabilities:
                 for device in devices:
-                    missing_capabilities = required_capabilities - device.capabilities
+                    missing_capabilities = required_capabilities.difference(device.capabilities)
                     checks.append(
                         WorkLineService._check(
                             "DEVICE_CAPABILITY",
