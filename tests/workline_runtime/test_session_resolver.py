@@ -24,8 +24,8 @@ from src.utils.timezone import timezone
 from src.workline_plugin_registry import WORKLINE_PLUGIN_REGISTRY, WorklinePluginDefinition
 from src.workline_runtime.plugin_manifest import (
     DeviceRequirement,
-    Position,
-    PositionCarrierCapability,
+    RackPosition,
+    RackPositionCarrierCapability,
     TopologySpec,
     WorklinePluginManifest,
 )
@@ -46,12 +46,12 @@ def _plugin_manifest(plugin_key: str) -> WorklinePluginManifest:
         plugin_key=plugin_key,
         contract_version="test.v1",
         devices=(DeviceRequirement(role="SCANNER", min_count=0),),
-        positions=(
-            Position(
+        rack_positions=(
+            RackPosition(
                 code="ENTRY",
                 role="ENTRY",
                 station_code="ST-1",
-                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
+                carrier_capability=RackPositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
             ),
         ),
         topology=TopologySpec(),

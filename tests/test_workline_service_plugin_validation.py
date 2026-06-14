@@ -222,7 +222,7 @@ def test_plugin_options_do_not_expose_manifest_capabilities() -> None:
     }
 
 
-def test_manifest_summary_exposes_devices_positions_topology_events_commands_resource_boundaries() -> None:
+def test_manifest_summary_exposes_devices_rack_positions_topology_events_commands_resource_boundaries() -> None:
     """manifest summary 使用新字段名完整暴露纯数据合同。"""
 
     summary = WorkLineService().get_plugin_manifest_summary("rough_sorter")
@@ -232,19 +232,19 @@ def test_manifest_summary_exposes_devices_positions_topology_events_commands_res
         "plugin_key",
         "contract_version",
         "devices",
-        "positions",
+        "rack_positions",
         "topology",
         "events",
         "commands",
         "resource_boundaries",
     }
     assert summary.devices
-    assert summary.positions
+    assert summary.rack_positions
     assert summary.topology.flow_edges
     assert summary.events
     assert summary.commands
     assert summary.resource_boundaries
-    assert summary.positions[0].carrier_capability.allowed_rack_kinds
+    assert summary.rack_positions[0].carrier_capability.allowed_rack_kinds
 
 
 def test_smt_sorting_inbound_manifest_summary_does_not_expose_ng_arm_role() -> None:
@@ -272,7 +272,7 @@ def test_configuration_checks_use_event_and_command_bindings(monkeypatch) -> Non
             SimpleNamespace(role="SCANNER", min_count=1, max_count=1, hardware_capabilities=frozenset()),
             SimpleNamespace(role="ARM", min_count=1, max_count=1, hardware_capabilities=frozenset()),
         ),
-        positions=(),
+        rack_positions=(),
         topology=SimpleNamespace(flow_edges=()),
         events=(
             SimpleNamespace(
@@ -286,7 +286,7 @@ def test_configuration_checks_use_event_and_command_bindings(monkeypatch) -> Non
             SimpleNamespace(
                 command="NEW_COMMAND",
                 target_device_role="ARM",
-                position_args=(),
+                rack_position_args=(),
                 payload_schema_ref=None,
                 result_bindings=(),
             ),
@@ -327,7 +327,7 @@ def test_configuration_checks_only_require_entry_device_event_capability(monkeyp
             SimpleNamespace(role="SCANNER", min_count=1, max_count=1, hardware_capabilities=frozenset()),
             SimpleNamespace(role="ARM", min_count=1, max_count=1, hardware_capabilities=frozenset()),
         ),
-        positions=(),
+        rack_positions=(),
         topology=SimpleNamespace(flow_edges=()),
         events=(
             SimpleNamespace(
@@ -368,14 +368,14 @@ def test_configuration_checks_only_require_entry_device_event_capability(monkeyp
     assert all(check.status == "PASS" for check in event_checks)
 
 
-def test_configuration_checks_validate_position_carrier_capability_against_workline_config(monkeypatch) -> None:
-    """配置预检应比较 manifest position 承载约束和工作线货架位置配置。"""
+def test_configuration_checks_validate_rack_position_carrier_capability_against_workline_config(monkeypatch) -> None:
+    """配置预检应比较 manifest rack position 承载约束和工作线货架位置配置。"""
 
     manifest = SimpleNamespace(
         plugin_key="carrier_plugin",
         contract_version="carrier.v1",
         devices=(),
-        positions=(
+        rack_positions=(
             SimpleNamespace(
                 code="WORK_POSITION",
                 role="WORK",
@@ -409,12 +409,12 @@ def test_configuration_checks_validate_position_carrier_capability_against_workl
     )
 
     checks = WorkLineService()._build_configuration_checks(workline, [], [rack_position])
-    carrier_checks = [check for check in checks if check.code == "POSITION_CARRIER_CAPABILITY"]
+    carrier_checks = [check for check in checks if check.code == "RACK_POSITION_CARRIER_CAPABILITY"]
 
     assert len(carrier_checks) == 1
     assert carrier_checks[0].status == "FAIL"
     assert carrier_checks[0].severity == "BLOCKER"
-    assert carrier_checks[0].context["position_code"] == "WORK_POSITION"
+    assert carrier_checks[0].context["rack_position_code"] == "WORK_POSITION"
     assert carrier_checks[0].context["allowed_rack_kind"] == "SINGLE_LAYER"
     assert carrier_checks[0].context["allowed_rack_kinds"] == ["FIVE_LAYER"]
     assert carrier_checks[0].context["capacity"] == 1
@@ -422,14 +422,14 @@ def test_configuration_checks_validate_position_carrier_capability_against_workl
     assert carrier_checks[0].context["max_capacity"] == 4
 
 
-def test_configuration_checks_block_when_manifest_position_config_missing(monkeypatch) -> None:
+def test_configuration_checks_block_when_manifest_rack_position_config_missing(monkeypatch) -> None:
     """配置预检应阻断 manifest 声明但工作线未配置的货架停靠位。"""
 
     manifest = SimpleNamespace(
         plugin_key="carrier_plugin",
         contract_version="carrier.v1",
         devices=(),
-        positions=(
+        rack_positions=(
             SimpleNamespace(
                 code="MISSING_POSITION",
                 role="WORK",
@@ -457,13 +457,13 @@ def test_configuration_checks_block_when_manifest_position_config_missing(monkey
     )
 
     checks = WorkLineService()._build_configuration_checks(workline, [], [])
-    carrier_checks = [check for check in checks if check.code == "POSITION_CARRIER_CAPABILITY"]
+    carrier_checks = [check for check in checks if check.code == "RACK_POSITION_CARRIER_CAPABILITY"]
 
     assert len(carrier_checks) == 1
     assert carrier_checks[0].status == "FAIL"
     assert carrier_checks[0].severity == "BLOCKER"
-    assert carrier_checks[0].context["position_code"] == "MISSING_POSITION"
-    assert carrier_checks[0].context["missing_position_config"] is True
+    assert carrier_checks[0].context["rack_position_code"] == "MISSING_POSITION"
+    assert carrier_checks[0].context["missing_rack_position_config"] is True
     assert carrier_checks[0].context["allowed_rack_kinds"] == ["FIVE_LAYER"]
     assert carrier_checks[0].context["min_capacity"] == 2
     assert carrier_checks[0].context["max_capacity"] == 4

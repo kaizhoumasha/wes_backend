@@ -21,7 +21,7 @@ def _manifest_summary(plugin_key: str = "demo_plugin") -> WorkLinePluginManifest
                 "hardware_capabilities": ["barcode_reader"],
             }
         ],
-        positions=[
+        rack_positions=[
             {
                 "code": "SCAN_POSITION",
                 "role": "SCAN",
@@ -38,7 +38,7 @@ def _manifest_summary(plugin_key: str = "demo_plugin") -> WorkLinePluginManifest
             "flow_edges": [
                 {
                     "from_node": {"kind": "DEVICE_ROLE", "ref": "SCANNER"},
-                    "to_node": {"kind": "POSITION", "ref": "SCAN_POSITION"},
+                    "to_node": {"kind": "RACK_POSITION", "ref": "SCAN_POSITION"},
                     "type": "OPERATION",
                 }
             ]
@@ -55,12 +55,12 @@ def _manifest_summary(plugin_key: str = "demo_plugin") -> WorkLinePluginManifest
             {
                 "command": "COMMAND_A",
                 "target_device_role": "SCANNER",
-                "position_args": [
+                "rack_position_args": [
                     {
                         "name": "target_position",
                         "role": "TARGET",
                         "required": True,
-                        "position_ref": "SCAN_POSITION",
+                        "rack_position_ref": "SCAN_POSITION",
                         "source": None,
                     }
                 ],
@@ -79,7 +79,7 @@ def _manifest_summary(plugin_key: str = "demo_plugin") -> WorkLinePluginManifest
         ],
         resource_boundaries=[
             {
-                "position_code": "SCAN_POSITION",
+                "rack_position_code": "SCAN_POSITION",
                 "rack_kind": "SINGLE_LAYER",
                 "business_demand_type": "DEMO_DEMAND",
                 "wms_operation_type": "DEMO_OPERATION",
@@ -197,7 +197,7 @@ async def test_get_plugin_manifest_returns_registered_plugin_summary(monkeypatch
         "plugin_key",
         "contract_version",
         "devices",
-        "positions",
+        "rack_positions",
         "topology",
         "events",
         "commands",
@@ -273,7 +273,7 @@ def test_openapi_workline_plugin_manifest_summary_includes_new_manifest_fields()
         "plugin_key",
         "contract_version",
         "devices",
-        "positions",
+        "rack_positions",
         "topology",
         "events",
         "commands",
@@ -281,9 +281,9 @@ def test_openapi_workline_plugin_manifest_summary_includes_new_manifest_fields()
     }
 
 
-def test_openapi_manifest_position_schemas_document_rack_position_semantics() -> None:
-    position_schema = _workline_openapi_component("Position")
-    carrier_schema = _workline_openapi_component("PositionCarrierCapability")
+def test_openapi_manifest_rack_position_schemas_document_rack_position_semantics() -> None:
+    position_schema = _workline_openapi_component("RackPosition")
+    carrier_schema = _workline_openapi_component("RackPositionCarrierCapability")
 
     assert "货架停靠位" in position_schema["description"]
     assert "库存事实锚点" in position_schema["description"]

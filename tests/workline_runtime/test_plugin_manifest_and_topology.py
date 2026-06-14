@@ -43,7 +43,7 @@ EXPECTED_MANIFEST_FIELDS = (
     "plugin_key",
     "contract_version",
     "devices",
-    "positions",
+    "rack_positions",
     "topology",
     "commands",
     "events",
@@ -90,7 +90,7 @@ def _carrier(
     max_capacity: int = 1,
     allowed_slot_kinds: tuple[str, ...] = (),
 ):
-    return _contract("PositionCarrierCapability")(
+    return _contract("RackPositionCarrierCapability")(
         allowed_rack_kinds=allowed_rack_kinds,
         min_capacity=min_capacity,
         max_capacity=max_capacity,
@@ -105,7 +105,7 @@ def _position(
     station_code: str = "ENTRY_STATION",
     allowed_rack_kinds: tuple[str, ...] = ("SINGLE_LAYER",),
 ):
-    return _contract("Position")(
+    return _contract("RackPosition")(
         code=code,
         role=role,
         station_code=station_code,
@@ -122,7 +122,7 @@ def _flow_edge(*, from_node=None, to_node=None, edge_type=None):
     FlowEdgeType = _contract("FlowEdgeType")
     return _contract("FlowEdge")(
         from_node=from_node or _node(NodeRefKind.DEVICE_ROLE, "ENTRY_SCANNER"),
-        to_node=to_node or _node(NodeRefKind.POSITION, "ENTRY_POSITION"),
+        to_node=to_node or _node(NodeRefKind.RACK_POSITION, "ENTRY_POSITION"),
         type=edge_type or FlowEdgeType.OPERATION,
     )
 
@@ -146,29 +146,34 @@ def _event_binding(
     )
 
 
-def _position_arg_source(*, kind=None, path: str = "data.position_code", fallback_position_ref: str | None = None):
-    PositionArgSourceKind = _contract("PositionArgSourceKind")
-    return _contract("PositionArgSource")(
-        kind=kind or PositionArgSourceKind.EVENT_PAYLOAD,
+def _rack_position_arg_source(
+    *,
+    kind=None,
+    path: str = "data.position_code",
+    fallback_rack_position_ref: str | None = None,
+):
+    RackPositionArgSourceKind = _contract("RackPositionArgSourceKind")
+    return _contract("RackPositionArgSource")(
+        kind=kind or RackPositionArgSourceKind.EVENT_PAYLOAD,
         path=path,
-        fallback_position_ref=fallback_position_ref,
+        fallback_rack_position_ref=fallback_rack_position_ref,
     )
 
 
-def _position_arg(
+def _rack_position_arg(
     *,
     name: str = "target_position",
     role=None,
     required: bool = True,
-    position_ref: str | None = "ENTRY_POSITION",
+    rack_position_ref: str | None = "ENTRY_POSITION",
     source=None,
 ):
-    PositionArgRole = _contract("PositionArgRole")
-    return _contract("PositionArg")(
+    RackPositionArgRole = _contract("RackPositionArgRole")
+    return _contract("RackPositionArg")(
         name=name,
-        role=role or PositionArgRole.TARGET,
+        role=role or RackPositionArgRole.TARGET,
         required=required,
-        position_ref=position_ref,
+        rack_position_ref=rack_position_ref,
         source=source,
     )
 
@@ -194,25 +199,25 @@ def _command_binding(
     command: str = "WEIGH_TOTE",
     *,
     target_device_role: str = "ENTRY_SCANNER",
-    position_args=None,
+    rack_position_args=None,
     result_bindings=None,
 ):
     return _contract("CommandBinding")(
         command=command,
         target_device_role=target_device_role,
-        position_args=tuple(position_args or (_position_arg(),)),
+        rack_position_args=tuple(rack_position_args or (_rack_position_arg(),)),
         payload_schema_ref=None,
         result_bindings=tuple(result_bindings or (_command_result_binding(),)),
     )
 
 
 def _resource_boundary(
-    position_code: str = "ENTRY_POSITION",
+    rack_position_code: str = "ENTRY_POSITION",
     *,
     rack_kind: str = "SINGLE_LAYER",
 ):
     return _contract("ResourceBoundary")(
-        position_code=position_code,
+        rack_position_code=rack_position_code,
         rack_kind=rack_kind,
         business_demand_type="ENTRY_RACK_DEMAND",
         wms_operation_type="SUPPLY_ENTRY_RACK",
@@ -226,7 +231,7 @@ def _manifest_kwargs(**overrides):
         "plugin_key": "example_plugin",
         "contract_version": "pure-data.v1",
         "devices": (_device_requirement(),),
-        "positions": (_position(),),
+        "rack_positions": (_position(),),
         "topology": _topology(),
         "commands": (_command_binding(),),
         "events": (_event_binding(),),
@@ -264,7 +269,7 @@ def test_manifest_rejects_missing_required_topology() -> None:
     "bad_node",
     [
         lambda: _node(_contract("NodeRefKind").DEVICE_ROLE, "UNKNOWN_ROLE"),
-        lambda: _node(_contract("NodeRefKind").POSITION, "UNKNOWN_POSITION"),
+        lambda: _node(_contract("NodeRefKind").RACK_POSITION, "UNKNOWN_POSITION"),
     ],
 )
 def test_manifest_rejects_unknown_topology_node_ref(bad_node) -> None:
@@ -284,18 +289,18 @@ def test_manifest_rejects_illegal_flow_edge_type() -> None:
     [
         lambda: _flow_edge(
             from_node=_node(_contract("NodeRefKind").DEVICE_ROLE, "ENTRY_SCANNER"),
-            to_node=_node(_contract("NodeRefKind").POSITION, "ENTRY_POSITION"),
+            to_node=_node(_contract("NodeRefKind").RACK_POSITION, "ENTRY_POSITION"),
             edge_type=_contract("FlowEdgeType").MATERIAL_FLOW,
         ),
         lambda: _flow_edge(
-            from_node=_node(_contract("NodeRefKind").POSITION, "ENTRY_POSITION"),
+            from_node=_node(_contract("NodeRefKind").RACK_POSITION, "ENTRY_POSITION"),
             to_node=_node(_contract("NodeRefKind").DEVICE_ROLE, "ENTRY_SCANNER"),
             edge_type=_contract("FlowEdgeType").MATERIAL_FLOW,
         ),
     ],
 )
-def test_material_flow_edges_must_connect_positions(edge) -> None:
-    with pytest.raises(ValueError, match=r"MATERIAL_FLOW|POSITION"):
+def test_material_flow_edges_must_connect_rack_positions(edge) -> None:
+    with pytest.raises(ValueError, match=r"MATERIAL_FLOW|RACK_POSITION"):
         _manifest(topology=_topology(flow_edges=(edge(),)))
 
 
@@ -358,41 +363,41 @@ def test_command_result_binding_requires_command_result_category() -> None:
         _manifest(commands=(command,))
 
 
-def test_position_arg_position_ref_and_source_are_mutually_exclusive() -> None:
-    source = _position_arg_source()
+def test_rack_position_arg_ref_and_source_are_mutually_exclusive() -> None:
+    source = _rack_position_arg_source()
 
-    with pytest.raises(ValueError, match=r"position_ref|source"):
-        _position_arg(position_ref="ENTRY_POSITION", source=source)
-    with pytest.raises(ValueError, match=r"position_ref|source|required"):
-        _position_arg(required=True, position_ref=None, source=None)
+    with pytest.raises(ValueError, match=r"rack_position_ref|source"):
+        _rack_position_arg(rack_position_ref="ENTRY_POSITION", source=source)
+    with pytest.raises(ValueError, match=r"rack_position_ref|source|required"):
+        _rack_position_arg(required=True, rack_position_ref=None, source=None)
 
-    optional_arg = _position_arg(required=False, position_ref=None, source=None)
-    assert optional_arg.position_ref is None
+    optional_arg = _rack_position_arg(required=False, rack_position_ref=None, source=None)
+    assert optional_arg.rack_position_ref is None
     assert optional_arg.source is None
 
 
-def test_position_arg_source_rejects_static_kind() -> None:
-    PositionArgSourceKind = _contract("PositionArgSourceKind")
+def test_rack_position_arg_source_rejects_static_kind() -> None:
+    RackPositionArgSourceKind = _contract("RackPositionArgSourceKind")
 
-    assert "STATIC" not in {kind.value for kind in PositionArgSourceKind}
+    assert "STATIC" not in {kind.value for kind in RackPositionArgSourceKind}
     with pytest.raises(ValueError, match="STATIC"):
-        _position_arg_source(kind="STATIC")
+        _rack_position_arg_source(kind="STATIC")
 
 
-def test_position_carrier_capability_validates_capacity_and_rack_kind() -> None:
+def test_rack_position_carrier_capability_validates_capacity_and_rack_kind() -> None:
     with pytest.raises(ValueError, match=r"capacity|min|max"):
         _carrier(min_capacity=10, max_capacity=1)
     with pytest.raises(ValueError, match=r"rack|UNKNOWN_RACK"):
         _carrier(allowed_rack_kinds=("UNKNOWN_RACK",))
 
 
-def test_position_carrier_capability_rejects_mapping_rack_kinds() -> None:
+def test_rack_position_carrier_capability_rejects_mapping_rack_kinds() -> None:
     with pytest.raises(TypeError, match=r"allowed_rack_kinds|string collection"):
         _carrier(allowed_rack_kinds={"SINGLE_LAYER": "bad"})
 
 
-def test_resource_boundary_references_position_and_omits_station_fields() -> None:
-    with pytest.raises(ValueError, match=r"position_code|UNKNOWN_POSITION"):
+def test_resource_boundary_references_rack_position_and_omits_station_fields() -> None:
+    with pytest.raises(ValueError, match=r"rack_position_code|UNKNOWN_POSITION"):
         _manifest(resource_boundaries=(_resource_boundary("UNKNOWN_POSITION"),))
 
     manifest = _manifest()
@@ -400,14 +405,14 @@ def test_resource_boundary_references_position_and_omits_station_fields() -> Non
     assert "station_code" not in {field.name for field in fields(boundary)}
     assert "station_role" not in {field.name for field in fields(boundary)}
 
-    positions_by_code = {position.code: position for position in manifest.positions}
-    assert positions_by_code[boundary.position_code].station_code == "ENTRY_STATION"
+    rack_positions_by_code = {rack_position.code: rack_position for rack_position in manifest.rack_positions}
+    assert rack_positions_by_code[boundary.rack_position_code].station_code == "ENTRY_STATION"
 
 
 def test_resource_boundary_rack_kind_must_match_position_carrier_capability() -> None:
     with pytest.raises(ValueError, match=r"rack_kind|FIVE_LAYER|allowed_rack_kinds"):
         _manifest(
-            positions=(_position(allowed_rack_kinds=("SINGLE_LAYER",)),),
+            rack_positions=(_position(allowed_rack_kinds=("SINGLE_LAYER",)),),
             resource_boundaries=(_resource_boundary(rack_kind="FIVE_LAYER"),),
         )
 
@@ -583,14 +588,14 @@ def _assert_topology_uses_node_refs(manifest) -> None:
         assert isinstance(edge.to_node, NodeRef)
 
 
-def _assert_material_flow_edges_are_position_to_position(manifest) -> None:
+def _assert_material_flow_edges_are_rack_position_to_rack_position(manifest) -> None:
     FlowEdgeType = _contract("FlowEdgeType")
     NodeRefKind = _contract("NodeRefKind")
 
     material_flow_edges = [edge for edge in manifest.topology.flow_edges if edge.type == FlowEdgeType.MATERIAL_FLOW]
     assert material_flow_edges
     assert all(
-        edge.from_node.kind == NodeRefKind.POSITION and edge.to_node.kind == NodeRefKind.POSITION
+        edge.from_node.kind == NodeRefKind.RACK_POSITION and edge.to_node.kind == NodeRefKind.RACK_POSITION
         for edge in material_flow_edges
     )
 
@@ -603,8 +608,8 @@ def _commands_by_name(manifest):
     return {command.command: command for command in manifest.commands}
 
 
-def _boundaries_by_position(manifest):
-    return {boundary.position_code: boundary for boundary in manifest.resource_boundaries}
+def _boundaries_by_rack_position(manifest):
+    return {boundary.rack_position_code: boundary for boundary in manifest.resource_boundaries}
 
 
 def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
@@ -612,16 +617,16 @@ def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
 
     manifest = RoughSorterPlugin.manifest
     EventCategory = _contract("EventCategory")
-    PositionArgRole = _contract("PositionArgRole")
-    PositionArgSourceKind = _contract("PositionArgSourceKind")
+    RackPositionArgRole = _contract("RackPositionArgRole")
+    RackPositionArgSourceKind = _contract("RackPositionArgSourceKind")
     FlowEdgeType = _contract("FlowEdgeType")
     NodeRefKind = _contract("NodeRefKind")
 
     _assert_real_manifest_surface(manifest)
     _assert_topology_uses_node_refs(manifest)
     assert {device.role for device in manifest.devices} == {ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM}
-    assert {position.code for position in manifest.positions} == {POSITION_WORK_SINGLE_LAYER}
-    assert manifest.positions[0].role == "CLASSIFIER_WORK"
+    assert {rack_position.code for rack_position in manifest.rack_positions} == {POSITION_WORK_SINGLE_LAYER}
+    assert manifest.rack_positions[0].role == "CLASSIFIER_WORK"
 
     events = _events_by_name(manifest)
     assert events[EVENT_SCAN_COMPLETED].source_device_roles == (ROLE_INPUT_ARM,)
@@ -636,31 +641,31 @@ def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
     assert commands[ACTION_MOVE_TO_NG].target_device_role == ROLE_INPUT_ARM
     for command in commands.values():
         assert command.result_bindings
-    assert commands[ACTION_PICK_AND_PUT].position_args == ()
-    assert commands[ACTION_MOVE_FORWARD].position_args == ()
-    assert commands[ACTION_MOVE_TO_NG].position_args == ()
+    assert commands[ACTION_PICK_AND_PUT].rack_position_args == ()
+    assert commands[ACTION_MOVE_FORWARD].rack_position_args == ()
+    assert commands[ACTION_MOVE_TO_NG].rack_position_args == ()
 
-    assert len(commands[ACTION_PUT_TO_BIN].position_args) == 1
-    bin_location = commands[ACTION_PUT_TO_BIN].position_args[0]
+    assert len(commands[ACTION_PUT_TO_BIN].rack_position_args) == 1
+    bin_location = commands[ACTION_PUT_TO_BIN].rack_position_args[0]
     assert bin_location.name == "bin_location"
-    assert bin_location.role == PositionArgRole.TARGET
-    assert bin_location.position_ref is None
+    assert bin_location.role == RackPositionArgRole.TARGET
+    assert bin_location.rack_position_ref is None
     assert bin_location.source is not None
-    assert bin_location.source.kind == PositionArgSourceKind.RESOURCE_OVERLAY
+    assert bin_location.source.kind == RackPositionArgSourceKind.RESOURCE_OVERLAY
     assert bin_location.source.path == "target_bin_location.bin_cell_location"
-    assert bin_location.source.fallback_position_ref == POSITION_WORK_SINGLE_LAYER
+    assert bin_location.source.fallback_rack_position_ref == POSITION_WORK_SINGLE_LAYER
 
     for edge in manifest.topology.flow_edges:
         if NodeRefKind.DEVICE_ROLE in {edge.from_node.kind, edge.to_node.kind}:
             assert edge.type == FlowEdgeType.OPERATION
 
-    boundary = _boundaries_by_position(manifest)[POSITION_WORK_SINGLE_LAYER]
+    boundary = _boundaries_by_rack_position(manifest)[POSITION_WORK_SINGLE_LAYER]
     assert boundary.rack_kind == "SINGLE_LAYER"
     assert boundary.business_demand_type == "ROUGH_SORTER_BIN_ALLOCATION"
     assert boundary.snapshot_kind == "ACTIVE_CLASSIFIER_BIN_RACK"
 
 
-def test_rough_sorter_internal_physical_points_do_not_enter_manifest_positions_or_position_args() -> None:
+def test_rough_sorter_internal_physical_points_do_not_enter_manifest_rack_positions_or_rack_position_args() -> None:
     from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
 
     manifest = RoughSorterPlugin.manifest
@@ -670,18 +675,18 @@ def test_rough_sorter_internal_physical_points_do_not_enter_manifest_positions_o
         DEFAULT_PIPELINE_OUTPUT_LOCATION,
         DEFAULT_NG_LOCATION,
     }
-    position_codes = {position.code for position in manifest.positions}
-    position_arg_refs: set[str] = set()
+    rack_position_codes = {rack_position.code for rack_position in manifest.rack_positions}
+    rack_position_arg_refs: set[str] = set()
 
     for command in manifest.commands:
-        for position_arg in command.position_args:
-            if position_arg.position_ref is not None:
-                position_arg_refs.add(position_arg.position_ref)
-            if position_arg.source is not None and position_arg.source.fallback_position_ref is not None:
-                position_arg_refs.add(position_arg.source.fallback_position_ref)
+        for rack_position_arg in command.rack_position_args:
+            if rack_position_arg.rack_position_ref is not None:
+                rack_position_arg_refs.add(rack_position_arg.rack_position_ref)
+            if rack_position_arg.source is not None and rack_position_arg.source.fallback_rack_position_ref is not None:
+                rack_position_arg_refs.add(rack_position_arg.source.fallback_rack_position_ref)
 
-    assert internal_physical_points.isdisjoint(position_codes)
-    assert internal_physical_points.isdisjoint(position_arg_refs)
+    assert internal_physical_points.isdisjoint(rack_position_codes)
+    assert internal_physical_points.isdisjoint(rack_position_arg_refs)
 
 
 def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None:
@@ -702,7 +707,7 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
         ROLE_SORTING_WORKSTATION,
     }
     assert {"SOURCE_STATION_A", "SOURCE_STATION_B", "TARGET_STATION", "NG_STATION", "WORKSTATION"} <= {
-        position.code for position in manifest.positions
+        rack_position.code for rack_position in manifest.rack_positions
     }
 
     events = _events_by_name(manifest)
@@ -717,16 +722,16 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
     assert commands[COMMAND_TARGET_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
     assert commands[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
     for command in commands.values():
-        assert command.position_args
+        assert command.rack_position_args
         assert command.result_bindings
-    _assert_material_flow_edges_are_position_to_position(manifest)
+    _assert_material_flow_edges_are_rack_position_to_rack_position(manifest)
     assert all(
         edge.type == FlowEdgeType.OPERATION
         for edge in manifest.topology.flow_edges
         if NodeRefKind.DEVICE_ROLE in {edge.from_node.kind, edge.to_node.kind}
     )
 
-    boundaries = _boundaries_by_position(manifest)
+    boundaries = _boundaries_by_rack_position(manifest)
     assert boundaries["SOURCE_STATION_A"].business_demand_type == "SORTING_INBOUND_SOURCE"
     assert boundaries["SOURCE_STATION_A"].rack_kind == "SINGLE_LAYER"
     assert boundaries["TARGET_STATION"].business_demand_type == "SORTING_INBOUND_TARGET"
@@ -734,14 +739,14 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
     assert boundaries["NG_STATION"].business_demand_type == "SORTING_INBOUND_NG"
     assert boundaries["WORKSTATION"].business_demand_type == "SORTING_INBOUND_WORK"
     assert {
-        boundary.rack_kind for boundary in manifest.resource_boundaries if boundary.position_code == "WORKSTATION"
+        boundary.rack_kind for boundary in manifest.resource_boundaries if boundary.rack_position_code == "WORKSTATION"
     } == {
         "SINGLE_LAYER",
         "FIVE_LAYER",
     }
 
 
-def test_smt_sorting_inbound_material_flow_edges_are_position_to_position() -> None:
+def test_smt_sorting_inbound_material_flow_edges_are_rack_position_to_rack_position() -> None:
     from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
 
-    _assert_material_flow_edges_are_position_to_position(SmtSortingInboundPlugin.manifest)
+    _assert_material_flow_edges_are_rack_position_to_rack_position(SmtSortingInboundPlugin.manifest)

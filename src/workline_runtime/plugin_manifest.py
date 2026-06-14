@@ -14,7 +14,7 @@ class NodeRefKind(str, Enum):
     """拓扑节点引用类型。"""
 
     DEVICE_ROLE = "DEVICE_ROLE"
-    POSITION = "POSITION"
+    RACK_POSITION = "RACK_POSITION"
 
 
 class FlowEdgeType(str, Enum):
@@ -34,15 +34,15 @@ class EventCategory(str, Enum):
     SAFETY = "SAFETY"
 
 
-class PositionArgRole(str, Enum):
-    """命令位置参数的业务角色。"""
+class RackPositionArgRole(str, Enum):
+    """命令货架位参数的业务角色。"""
 
     SOURCE = "SOURCE"
     TARGET = "TARGET"
 
 
-class PositionArgSourceKind(str, Enum):
-    """命令位置参数的动态来源。"""
+class RackPositionArgSourceKind(str, Enum):
+    """命令货架位参数的动态来源。"""
 
     EVENT_PAYLOAD = "EVENT_PAYLOAD"
     SESSION_CONTEXT = "SESSION_CONTEXT"
@@ -121,7 +121,7 @@ class DeviceRequirement:
 
 
 @dataclass(frozen=True, slots=True)
-class PositionCarrierCapability:
+class RackPositionCarrierCapability:
     """WES 管理货架停靠位可承载的货架/槽位能力。"""
 
     allowed_rack_kinds: tuple[str, ...] | list[str] | set[str] | frozenset[str]
@@ -131,20 +131,20 @@ class PositionCarrierCapability:
 
     def __post_init__(self) -> None:
         if self.min_capacity < 0:
-            raise ValueError("PositionCarrierCapability.min_capacity must be >= 0")
+            raise ValueError("RackPositionCarrierCapability.min_capacity must be >= 0")
         if self.max_capacity < self.min_capacity:
-            raise ValueError("PositionCarrierCapability.max_capacity must be >= min_capacity")
+            raise ValueError("RackPositionCarrierCapability.max_capacity must be >= min_capacity")
 
         rack_kinds = _string_tuple(
             self.allowed_rack_kinds,
-            field_name="PositionCarrierCapability.allowed_rack_kinds",
+            field_name="RackPositionCarrierCapability.allowed_rack_kinds",
         )
         if not rack_kinds:
-            raise ValueError("PositionCarrierCapability.allowed_rack_kinds must not be empty")
+            raise ValueError("RackPositionCarrierCapability.allowed_rack_kinds must not be empty")
         invalid_rack_kinds = sorted(set(rack_kinds) - _ALLOWED_RACK_KINDS)
         if invalid_rack_kinds:
             raise ValueError(
-                "PositionCarrierCapability.allowed_rack_kinds contains unsupported rack kind: "
+                "RackPositionCarrierCapability.allowed_rack_kinds contains unsupported rack kind: "
                 + ", ".join(invalid_rack_kinds)
             )
 
@@ -152,25 +152,25 @@ class PositionCarrierCapability:
         object.__setattr__(
             self,
             "allowed_slot_kinds",
-            _string_tuple(self.allowed_slot_kinds, field_name="PositionCarrierCapability.allowed_slot_kinds"),
+            _string_tuple(self.allowed_slot_kinds, field_name="RackPositionCarrierCapability.allowed_slot_kinds"),
         )
 
 
 @dataclass(frozen=True, slots=True)
-class Position:
+class RackPosition:
     """WES 管理的货架停靠位/库存事实锚点，不代表泛化物理位置。"""
 
     code: str
     role: str
     station_code: str
-    carrier_capability: PositionCarrierCapability
+    carrier_capability: RackPositionCarrierCapability
 
     def __post_init__(self) -> None:
         for field_name in ("code", "role", "station_code"):
             if not _non_empty_str(getattr(self, field_name)):
-                raise ValueError(f"Position.{field_name} must be a non-empty string")
-        if not isinstance(self.carrier_capability, PositionCarrierCapability):
-            raise TypeError("Position.carrier_capability must be PositionCarrierCapability")
+                raise ValueError(f"RackPosition.{field_name} must be a non-empty string")
+        if not isinstance(self.carrier_capability, RackPositionCarrierCapability):
+            raise TypeError("RackPosition.carrier_capability must be RackPositionCarrierCapability")
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,50 +255,57 @@ class EventBinding:
 
 
 @dataclass(frozen=True, slots=True)
-class PositionArgSource:
-    """命令位置参数的动态解析来源。"""
+class RackPositionArgSource:
+    """命令货架位参数的动态解析来源。"""
 
-    kind: PositionArgSourceKind
+    kind: RackPositionArgSourceKind
     path: str
-    fallback_position_ref: str | None = None
+    fallback_rack_position_ref: str | None = None
 
     def __post_init__(self) -> None:
-        kind = _coerce_enum(PositionArgSourceKind, self.kind, field_name="PositionArgSource.kind")
+        kind = _coerce_enum(RackPositionArgSourceKind, self.kind, field_name="RackPositionArgSource.kind")
         if not _non_empty_str(self.path):
-            raise ValueError("PositionArgSource.path must be a non-empty string")
+            raise ValueError("RackPositionArgSource.path must be a non-empty string")
         object.__setattr__(self, "kind", kind)
         object.__setattr__(
             self,
-            "fallback_position_ref",
-            _optional_string(self.fallback_position_ref, field_name="PositionArgSource.fallback_position_ref"),
+            "fallback_rack_position_ref",
+            _optional_string(
+                self.fallback_rack_position_ref,
+                field_name="RackPositionArgSource.fallback_rack_position_ref",
+            ),
         )
 
 
 @dataclass(frozen=True, slots=True)
-class PositionArg:
-    """命令中的位置参数声明。"""
+class RackPositionArg:
+    """命令中的货架位参数声明。"""
 
     name: str
-    role: PositionArgRole
+    role: RackPositionArgRole
     required: bool = True
-    position_ref: str | None = None
-    source: PositionArgSource | None = None
+    rack_position_ref: str | None = None
+    source: RackPositionArgSource | None = None
 
     def __post_init__(self) -> None:
         if not _non_empty_str(self.name):
-            raise ValueError("PositionArg.name must be a non-empty string")
-        object.__setattr__(self, "role", _coerce_enum(PositionArgRole, self.role, field_name="PositionArg.role"))
+            raise ValueError("RackPositionArg.name must be a non-empty string")
         object.__setattr__(
             self,
-            "position_ref",
-            _optional_string(self.position_ref, field_name="PositionArg.position_ref"),
+            "role",
+            _coerce_enum(RackPositionArgRole, self.role, field_name="RackPositionArg.role"),
         )
-        if self.source is not None and not isinstance(self.source, PositionArgSource):
-            raise TypeError("PositionArg.source must be PositionArgSource")
-        if self.position_ref is not None and self.source is not None:
-            raise ValueError("PositionArg.position_ref and source are mutually exclusive")
-        if self.required and self.position_ref is None and self.source is None:
-            raise ValueError("required PositionArg must declare position_ref or source")
+        object.__setattr__(
+            self,
+            "rack_position_ref",
+            _optional_string(self.rack_position_ref, field_name="RackPositionArg.rack_position_ref"),
+        )
+        if self.source is not None and not isinstance(self.source, RackPositionArgSource):
+            raise TypeError("RackPositionArg.source must be RackPositionArgSource")
+        if self.rack_position_ref is not None and self.source is not None:
+            raise ValueError("RackPositionArg.rack_position_ref and source are mutually exclusive")
+        if self.required and self.rack_position_ref is None and self.source is None:
+            raise ValueError("required RackPositionArg must declare rack_position_ref or source")
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,7 +357,7 @@ class CommandBinding:
 
     command: str
     target_device_role: str
-    position_args: tuple[PositionArg, ...] | list[PositionArg] = field(default_factory=tuple)
+    rack_position_args: tuple[RackPositionArg, ...] | list[RackPositionArg] = field(default_factory=tuple)
     payload_schema_ref: str | None = None
     result_bindings: tuple[CommandResultBinding, ...] | list[CommandResultBinding] = field(default_factory=tuple)
 
@@ -360,14 +367,14 @@ class CommandBinding:
         if not _non_empty_str(self.target_device_role):
             raise ValueError("CommandBinding.target_device_role must be a non-empty string")
 
-        position_args = tuple(self.position_args)
-        if not all(isinstance(arg, PositionArg) for arg in position_args):
-            raise TypeError("CommandBinding.position_args must contain only PositionArg")
+        rack_position_args = tuple(self.rack_position_args)
+        if not all(isinstance(arg, RackPositionArg) for arg in rack_position_args):
+            raise TypeError("CommandBinding.rack_position_args must contain only RackPositionArg")
         result_bindings = tuple(self.result_bindings)
         if not all(isinstance(binding, CommandResultBinding) for binding in result_bindings):
             raise TypeError("CommandBinding.result_bindings must contain only CommandResultBinding")
 
-        object.__setattr__(self, "position_args", position_args)
+        object.__setattr__(self, "rack_position_args", rack_position_args)
         object.__setattr__(
             self,
             "payload_schema_ref",
@@ -380,7 +387,7 @@ class CommandBinding:
 class ResourceBoundary:
     """插件声明的资源边界。"""
 
-    position_code: str
+    rack_position_code: str
     rack_kind: str
     business_demand_type: str
     wms_operation_type: str
@@ -389,7 +396,7 @@ class ResourceBoundary:
 
     def __post_init__(self) -> None:
         for field_name in (
-            "position_code",
+            "rack_position_code",
             "rack_kind",
             "business_demand_type",
             "wms_operation_type",
@@ -409,7 +416,7 @@ class WorklinePluginManifest:
     plugin_key: str = ""
     contract_version: str = ""
     devices: tuple[DeviceRequirement, ...] | list[DeviceRequirement] | None = None
-    positions: tuple[Position, ...] | list[Position] | None = None
+    rack_positions: tuple[RackPosition, ...] | list[RackPosition] | None = None
     topology: TopologySpec = field(default=cast("TopologySpec", _MISSING_TOPOLOGY))
     commands: tuple[CommandBinding, ...] | list[CommandBinding] = field(default_factory=tuple)
     events: tuple[EventBinding, ...] | list[EventBinding] = field(default_factory=tuple)
@@ -429,13 +436,13 @@ class WorklinePluginManifest:
         device_roles = tuple(device.role for device in devices)
         _ensure_unique(device_roles, field_name="manifest.devices.role")
 
-        positions = tuple(self.positions or ())
-        if not positions:
-            raise ValueError("manifest.positions must not be empty")
-        if not all(isinstance(position, Position) for position in positions):
-            raise TypeError("manifest.positions must contain only Position")
-        position_codes = tuple(position.code for position in positions)
-        _ensure_unique(position_codes, field_name="manifest.positions.code")
+        rack_positions = tuple(self.rack_positions or ())
+        if not rack_positions:
+            raise ValueError("manifest.rack_positions must not be empty")
+        if not all(isinstance(rack_position, RackPosition) for rack_position in rack_positions):
+            raise TypeError("manifest.rack_positions must contain only RackPosition")
+        rack_position_codes = tuple(rack_position.code for rack_position in rack_positions)
+        _ensure_unique(rack_position_codes, field_name="manifest.rack_positions.code")
 
         raw_topology: Any = self.topology
         if raw_topology is _MISSING_TOPOLOGY or raw_topology is None:
@@ -455,15 +462,15 @@ class WorklinePluginManifest:
             raise TypeError("manifest.resource_boundaries must contain only ResourceBoundary")
 
         device_role_set = set(device_roles)
-        positions_by_code = {position.code: position for position in positions}
-        position_code_set = set(position_codes)
+        rack_positions_by_code = {rack_position.code: rack_position for rack_position in rack_positions}
+        rack_position_code_set = set(rack_position_codes)
         self._validate_events(events, device_role_set)
-        self._validate_commands(commands, device_role_set, position_code_set)
-        self._validate_resource_boundaries(resource_boundaries, positions_by_code)
-        self._validate_topology_refs(topology, device_role_set, position_code_set)
+        self._validate_commands(commands, device_role_set, rack_position_code_set)
+        self._validate_resource_boundaries(resource_boundaries, rack_positions_by_code)
+        self._validate_topology_refs(topology, device_role_set, rack_position_code_set)
 
         object.__setattr__(self, "devices", devices)
-        object.__setattr__(self, "positions", positions)
+        object.__setattr__(self, "rack_positions", rack_positions)
         object.__setattr__(self, "topology", topology)
         object.__setattr__(self, "commands", commands)
         object.__setattr__(self, "events", events)
@@ -483,7 +490,7 @@ class WorklinePluginManifest:
     def _validate_commands(
         commands: tuple[CommandBinding, ...],
         device_roles: set[str],
-        position_codes: set[str],
+        rack_position_codes: set[str],
     ) -> None:
         for command in commands:
             if command.target_device_role not in device_roles:
@@ -494,26 +501,27 @@ class WorklinePluginManifest:
             for result_binding in command.result_bindings:
                 if result_binding.category != EventCategory.COMMAND_RESULT:
                     raise ValueError("CommandResultBinding.category must be COMMAND_RESULT")
-            for position_arg in command.position_args:
-                _validate_position_arg_refs(position_arg, position_codes)
+            for rack_position_arg in command.rack_position_args:
+                _validate_rack_position_arg_refs(rack_position_arg, rack_position_codes)
 
     @staticmethod
     def _validate_resource_boundaries(
         resource_boundaries: tuple[ResourceBoundary, ...],
-        positions_by_code: dict[str, Position],
+        rack_positions_by_code: dict[str, RackPosition],
     ) -> None:
         for boundary in resource_boundaries:
-            position = positions_by_code.get(boundary.position_code)
-            if position is None:
+            rack_position = rack_positions_by_code.get(boundary.rack_position_code)
+            if rack_position is None:
                 raise ValueError(
-                    f"ResourceBoundary.position_code is not declared in manifest.positions: {boundary.position_code}"
+                    "ResourceBoundary.rack_position_code is not declared in manifest.rack_positions: "
+                    f"{boundary.rack_position_code}"
                 )
-            if boundary.rack_kind not in position.carrier_capability.allowed_rack_kinds:
-                allowed_rack_kinds = ", ".join(position.carrier_capability.allowed_rack_kinds)
+            if boundary.rack_kind not in rack_position.carrier_capability.allowed_rack_kinds:
+                allowed_rack_kinds = ", ".join(rack_position.carrier_capability.allowed_rack_kinds)
                 raise ValueError(
                     "ResourceBoundary.rack_kind is not allowed by "
-                    "Position.carrier_capability.allowed_rack_kinds: "
-                    f"position_code={boundary.position_code}, rack_kind={boundary.rack_kind}, "
+                    "RackPosition.carrier_capability.allowed_rack_kinds: "
+                    f"rack_position_code={boundary.rack_position_code}, rack_kind={boundary.rack_kind}, "
                     f"allowed_rack_kinds={allowed_rack_kinds}"
                 )
 
@@ -521,37 +529,43 @@ class WorklinePluginManifest:
     def _validate_topology_refs(
         topology: TopologySpec,
         device_roles: set[str],
-        position_codes: set[str],
+        rack_position_codes: set[str],
     ) -> None:
         for edge in topology.flow_edges:
             if edge.type not in (FlowEdgeType.MATERIAL_FLOW, FlowEdgeType.OPERATION):
                 raise ValueError("FlowEdge.type must be MATERIAL_FLOW or OPERATION")
             if edge.type == FlowEdgeType.MATERIAL_FLOW and (
-                edge.from_node.kind != NodeRefKind.POSITION or edge.to_node.kind != NodeRefKind.POSITION
+                edge.from_node.kind != NodeRefKind.RACK_POSITION or edge.to_node.kind != NodeRefKind.RACK_POSITION
             ):
-                raise ValueError("FlowEdge MATERIAL_FLOW edges must connect POSITION nodes")
+                raise ValueError("FlowEdge MATERIAL_FLOW edges must connect RACK_POSITION nodes")
             for node_ref in (edge.from_node, edge.to_node):
                 if node_ref.kind == NodeRefKind.DEVICE_ROLE and node_ref.ref not in device_roles:
                     raise ValueError(
                         f"Topology NodeRef DEVICE_ROLE ref is not declared in manifest.devices: {node_ref.ref}"
                     )
-                if node_ref.kind == NodeRefKind.POSITION and node_ref.ref not in position_codes:
+                if node_ref.kind == NodeRefKind.RACK_POSITION and node_ref.ref not in rack_position_codes:
                     raise ValueError(
-                        f"Topology NodeRef POSITION ref is not declared in manifest.positions: {node_ref.ref}"
+                        f"Topology NodeRef RACK_POSITION ref is not declared in manifest.rack_positions: {node_ref.ref}"
                     )
 
 
-def _validate_position_arg_refs(position_arg: PositionArg, position_codes: set[str]) -> None:
-    if position_arg.position_ref is not None and position_arg.position_ref not in position_codes:
-        raise ValueError(f"PositionArg.position_ref is not declared in manifest.positions: {position_arg.position_ref}")
+def _validate_rack_position_arg_refs(rack_position_arg: RackPositionArg, rack_position_codes: set[str]) -> None:
     if (
-        position_arg.source is not None
-        and position_arg.source.fallback_position_ref is not None
-        and position_arg.source.fallback_position_ref not in position_codes
+        rack_position_arg.rack_position_ref is not None
+        and rack_position_arg.rack_position_ref not in rack_position_codes
     ):
         raise ValueError(
-            "PositionArgSource.fallback_position_ref is not declared in manifest.positions: "
-            f"{position_arg.source.fallback_position_ref}"
+            "RackPositionArg.rack_position_ref is not declared in manifest.rack_positions: "
+            f"{rack_position_arg.rack_position_ref}"
+        )
+    if (
+        rack_position_arg.source is not None
+        and rack_position_arg.source.fallback_rack_position_ref is not None
+        and rack_position_arg.source.fallback_rack_position_ref not in rack_position_codes
+    ):
+        raise ValueError(
+            "RackPositionArgSource.fallback_rack_position_ref is not declared in manifest.rack_positions: "
+            f"{rack_position_arg.source.fallback_rack_position_ref}"
         )
 
 
@@ -565,12 +579,12 @@ __all__ = [
     "FlowEdgeType",
     "NodeRef",
     "NodeRefKind",
-    "Position",
-    "PositionArg",
-    "PositionArgRole",
-    "PositionArgSource",
-    "PositionArgSourceKind",
-    "PositionCarrierCapability",
+    "RackPosition",
+    "RackPositionArg",
+    "RackPositionArgRole",
+    "RackPositionArgSource",
+    "RackPositionArgSourceKind",
+    "RackPositionCarrierCapability",
     "ResourceBoundary",
     "TopologySpec",
     "WorklinePluginManifest",

@@ -16,7 +16,7 @@ MANIFEST_TOP_LEVEL_FIELDS = (
     "plugin_key",
     "contract_version",
     "devices",
-    "positions",
+    "rack_positions",
     "topology",
     "commands",
     "events",
@@ -30,10 +30,11 @@ REMOVED_MANIFEST_RUNTIME_FIELDS = (
     "ng_reason_catalog",
 )
 RACK_POSITION_CONTRACT_SENTENCE = (
-    "positions 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。"
+    "`rack_positions` 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。"
 )
 POSITION_ARG_CONTRACT_SENTENCE = (
-    "PositionArg 静态位置使用 `position_ref`，`position_ref` 与 `source` 互斥；`PositionArgSource` 不支持 `STATIC`。"
+    "`RackPositionArg` 静态货架位使用 `rack_position_ref`，"
+    "`rack_position_ref` 与 `source` 互斥；`RackPositionArgSource` 不支持 `STATIC`。"
 )
 
 
@@ -228,17 +229,17 @@ def test_plugin_template_uses_pure_data_manifest_contract() -> None:
         "EventBinding",
         "CommandBinding",
         "ResourceBoundary",
-        "Position",
-        "PositionCarrierCapability",
+        "RackPosition",
+        "RackPositionCarrierCapability",
         "TopologySpec",
         "NodeRef",
         "NodeRefKind",
         "FlowEdge",
         "FlowEdgeType",
-        "PositionArg",
-        "PositionArgRole",
-        "PositionArgSource",
-        "PositionArgSourceKind",
+        "RackPositionArg",
+        "RackPositionArgRole",
+        "RackPositionArgSource",
+        "RackPositionArgSourceKind",
     ):
         assert name in plugin_template
 
@@ -279,8 +280,8 @@ def test_plugin_template_material_flow_edges_are_position_to_position() -> None:
     material_flow_edges = [edge for edge in flow_edges if _flow_edge_type(edge) == "MATERIAL_FLOW"]
     assert material_flow_edges
     assert all(
-        _node_ref_kind(_keyword(edge, "from_node")) == "POSITION"
-        and _node_ref_kind(_keyword(edge, "to_node")) == "POSITION"
+        _node_ref_kind(_keyword(edge, "from_node")) == "RACK_POSITION"
+        and _node_ref_kind(_keyword(edge, "to_node")) == "RACK_POSITION"
         for edge in material_flow_edges
     )
 
@@ -302,9 +303,12 @@ def test_template_tests_assert_new_manifest_and_runtime_contract() -> None:
     assert "isinstance(manifest.events[0], EventBinding)" in tests_template
     assert "isinstance(manifest.commands[0], CommandBinding)" in tests_template
     assert "isinstance(manifest.resource_boundaries[0], ResourceBoundary)" in tests_template
-    assert 'manifest.positions[0].code == "ENTRY_POSITION"' in tests_template
-    assert 'manifest.commands[0].position_args[0].position_ref == "MEASURE_POSITION"' in tests_template
-    assert "manifest.commands[0].position_args[1].source.kind is PositionArgSourceKind.EVENT_PAYLOAD" in tests_template
+    assert 'manifest.rack_positions[0].code == "ENTRY_POSITION"' in tests_template
+    assert 'manifest.commands[0].rack_position_args[0].rack_position_ref == "MEASURE_POSITION"' in tests_template
+    assert (
+        "manifest.commands[0].rack_position_args[1].source.kind is RackPositionArgSourceKind.EVENT_PAYLOAD"
+        in tests_template
+    )
 
     for helper_name in (
         "resolve_business_key",

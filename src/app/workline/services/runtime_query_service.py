@@ -1615,7 +1615,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         position_codes: list[str] = []
         for boundary in getattr(definition.manifest, "resource_boundaries", ()):
             if getattr(boundary, "rack_kind", None) == "SINGLE_LAYER":
-                position_code = str(getattr(boundary, "position_code", "") or "").strip()
+                position_code = str(getattr(boundary, "rack_position_code", "") or "").strip()
                 if position_code and position_code not in position_codes:
                     position_codes.append(position_code)
         return position_codes
@@ -1627,7 +1627,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             return {}
 
         metadata_by_code: dict[str, dict[str, str]] = {}
-        for position in getattr(definition.manifest, "positions", ()):
+        for position in getattr(definition.manifest, "rack_positions", ()):
             position_code = str(getattr(position, "code", "") or "").strip()
             if not position_code:
                 continue

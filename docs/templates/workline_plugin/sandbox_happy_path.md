@@ -7,11 +7,11 @@ Sandbox 用于 WORKLINE 级调试。它会保留真实编排链路，只把真�
 - `APP_ENV=dev` 或 `APP_ENV=test`。
 - WorkLine 的 `run_mode=SIMULATION`。
 - 插件已注册到 `src/workline_plugin_registry.py`，`plugin_key`、`contract_version` 与 WorkLine 配置一致。
-- manifest 是 pure data，且 `devices`、`positions`、`topology`、`events`、`commands`、`resource_boundaries` 都能被平台校验通过。
+- manifest 是 pure data，且 `devices`、`rack_positions`、`topology`、`events`、`commands`、`resource_boundaries` 都能被平台校验通过。
 - `events`、`commands`、`resource_boundaries` 必须使用结构化 binding，不使用字符串映射或插件私有字段补充能力事实。
-- positions 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。
+- `rack_positions` 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。
 - `topology` 中 MATERIAL_FLOW 只表达 rack position 到 rack position；设备动作边使用 `FlowEdgeType.OPERATION`。
-- PositionArg 静态位置使用 `position_ref`，`position_ref` 与 `source` 互斥；`PositionArgSource` 不支持 `STATIC`。
+- `RackPositionArg` 静态货架位使用 `rack_position_ref`，`rack_position_ref` 与 `source` 互斥；`RackPositionArgSource` 不支持 `STATIC`。
 - 运行时行为由 registry helper 调插件实例方法提供，包括业务键、结果分类、context model、物料身份和 NG 原因目录。
 - 事件、结果和命令 payload 不增加 `sandbox` 标志字段。
 

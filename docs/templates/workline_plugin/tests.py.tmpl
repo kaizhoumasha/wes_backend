@@ -23,7 +23,7 @@ from src.workline_runtime.plugin_next import PluginNext
 from src.workline_runtime.plugin_manifest import (
     CommandBinding,
     EventBinding,
-    PositionArgSourceKind,
+    RackPositionArgSourceKind,
     ResourceBoundary,
 )
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
@@ -33,7 +33,7 @@ MANIFEST_TOP_LEVEL_FIELDS = (
     "plugin_key",
     "contract_version",
     "devices",
-    "positions",
+    "rack_positions",
     "topology",
     "commands",
     "events",
@@ -63,17 +63,17 @@ def test_manifest_contract() -> None:
     assert manifest.plugin_key == "{{PLUGIN_KEY}}"
     assert manifest.contract_version == "{{CONTRACT_VERSION}}"
     assert manifest.devices[0].role == "ENTRY_SENSOR"
-    assert manifest.positions[0].code == "ENTRY_POSITION"
+    assert manifest.rack_positions[0].code == "ENTRY_POSITION"
     assert isinstance(manifest.events[0], EventBinding)
     assert manifest.events[0].event == "ITEM_ARRIVED"
     assert manifest.events[0].source_device_roles == ("ENTRY_SENSOR",)
     assert isinstance(manifest.commands[0], CommandBinding)
     assert manifest.commands[0].command == "MEASURE_ITEM"
     assert manifest.commands[0].target_device_role == "MEASURE_DEVICE"
-    assert manifest.commands[0].position_args[0].position_ref == "MEASURE_POSITION"
-    assert manifest.commands[0].position_args[1].source.kind is PositionArgSourceKind.EVENT_PAYLOAD
+    assert manifest.commands[0].rack_position_args[0].rack_position_ref == "MEASURE_POSITION"
+    assert manifest.commands[0].rack_position_args[1].source.kind is RackPositionArgSourceKind.EVENT_PAYLOAD
     assert isinstance(manifest.resource_boundaries[0], ResourceBoundary)
-    assert manifest.resource_boundaries[0].position_code == "MEASURE_POSITION"
+    assert manifest.resource_boundaries[0].rack_position_code == "MEASURE_POSITION"
 
     for field_name in REMOVED_MANIFEST_RUNTIME_FIELDS:
         assert not hasattr(manifest, field_name)

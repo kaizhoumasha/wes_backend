@@ -82,16 +82,16 @@ tests/workline_plugins/test_<plugin_key>_plugin.py
 manifest 是 pure data，只保留八类可序列化静态事实：
 
 ```text
-plugin_key, contract_version, devices, positions, topology, commands, events, resource_boundaries
+plugin_key, contract_version, devices, rack_positions, topology, commands, events, resource_boundaries
 ```
 
 - `devices` 使用 `DeviceRequirement`，声明设备角色、数量和硬件能力。
-- positions 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。
+- `rack_positions` 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。
 - `topology` 中 MATERIAL_FLOW 只表达 rack position 到 rack position；设备动作边使用 `FlowEdgeType.OPERATION`。
 - `events` 使用 `EventBinding`，声明事件名、来源设备角色、事件分类和 payload schema 引用。
-- `commands` 使用 `CommandBinding`，声明命令名、目标设备角色、位置参数和结果事件绑定。
+- `commands` 使用 `CommandBinding`，声明命令名、目标设备角色、货架位参数和结果事件绑定。
 - `resource_boundaries` 使用 `ResourceBoundary`，声明 rack/WMS/snapshot/lease 等资源编排边界。
-- PositionArg 静态位置使用 `position_ref`，`position_ref` 与 `source` 互斥；`PositionArgSource` 不支持 `STATIC`。
+- `RackPositionArg` 静态货架位使用 `rack_position_ref`，`rack_position_ref` 与 `source` 互斥；`RackPositionArgSource` 不支持 `STATIC`。
 
 运行时行为不进入 manifest。registry helper 通过插件实例读取以下成员：
 
@@ -207,10 +207,10 @@ from src.workline_runtime.plugin_manifest import (
     FlowEdgeType,
     NodeRef,
     NodeRefKind,
-    Position,
-    PositionArg,
-    PositionArgRole,
-    PositionCarrierCapability,
+    RackPosition,
+    RackPositionArg,
+    RackPositionArgRole,
+    RackPositionCarrierCapability,
     ResourceBoundary,
     TopologySpec,
     WorklinePluginManifest,
@@ -237,30 +237,30 @@ class ExamplePlugin(WorklinePlugin):
             DeviceRequirement(role="ENTRY_SENSOR", min_count=1, max_count=1, hardware_capabilities=("scan_item",)),
             DeviceRequirement(role="MEASURE_DEVICE", min_count=1, max_count=1),
         ),
-        positions=(
-            Position(
+        rack_positions=(
+            RackPosition(
                 code="ENTRY_POSITION",
                 role="ENTRY",
                 station_code="ENTRY_STATION",
-                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
+                carrier_capability=RackPositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
             ),
-            Position(
+            RackPosition(
                 code="MEASURE_POSITION",
                 role="WORK",
                 station_code="MEASURE_STATION",
-                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
+                carrier_capability=RackPositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
             ),
         ),
         topology=TopologySpec(
             flow_edges=(
                 FlowEdge(
                     from_node=NodeRef(NodeRefKind.DEVICE_ROLE, "ENTRY_SENSOR"),
-                    to_node=NodeRef(NodeRefKind.POSITION, "ENTRY_POSITION"),
+                    to_node=NodeRef(NodeRefKind.RACK_POSITION, "ENTRY_POSITION"),
                     type=FlowEdgeType.OPERATION,
                 ),
                 FlowEdge(
-                    from_node=NodeRef(NodeRefKind.POSITION, "ENTRY_POSITION"),
-                    to_node=NodeRef(NodeRefKind.POSITION, "MEASURE_POSITION"),
+                    from_node=NodeRef(NodeRefKind.RACK_POSITION, "ENTRY_POSITION"),
+                    to_node=NodeRef(NodeRefKind.RACK_POSITION, "MEASURE_POSITION"),
                     type=FlowEdgeType.MATERIAL_FLOW,
                 ),
             )
@@ -277,15 +277,19 @@ class ExamplePlugin(WorklinePlugin):
             CommandBinding(
                 command="MEASURE_ITEM",
                 target_device_role="MEASURE_DEVICE",
-                position_args=(
-                    PositionArg(name="work_position", role=PositionArgRole.TARGET, position_ref="MEASURE_POSITION"),
+                rack_position_args=(
+                    RackPositionArg(
+                        name="work_position",
+                        role=RackPositionArgRole.TARGET,
+                        rack_position_ref="MEASURE_POSITION",
+                    ),
                 ),
                 payload_schema_ref="MeasureParams",
             ),
         ),
         resource_boundaries=(
             ResourceBoundary(
-                position_code="MEASURE_POSITION",
+                rack_position_code="MEASURE_POSITION",
                 rack_kind="SINGLE_LAYER",
                 business_demand_type="MEASURE_WORK_RACK",
                 wms_operation_type="SUPPLY_MEASURE_RACK",

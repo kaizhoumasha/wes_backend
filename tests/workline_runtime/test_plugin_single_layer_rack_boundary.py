@@ -28,7 +28,7 @@ def _carrier(
     min_capacity: int = 1,
     max_capacity: int = 1,
 ):
-    return _contract("PositionCarrierCapability")(
+    return _contract("RackPositionCarrierCapability")(
         allowed_rack_kinds=allowed_rack_kinds,
         min_capacity=min_capacity,
         max_capacity=max_capacity,
@@ -37,7 +37,7 @@ def _carrier(
 
 
 def _position(code: str, *, role: str, station_code: str, rack_kinds: tuple[str, ...]):
-    return _contract("Position")(
+    return _contract("RackPosition")(
         code=code,
         role=role,
         station_code=station_code,
@@ -56,7 +56,7 @@ def _topology():
         flow_edges=(
             _contract("FlowEdge")(
                 from_node=_node(NodeRefKind.DEVICE_ROLE, "ENTRY_SCANNER"),
-                to_node=_node(NodeRefKind.POSITION, "SOURCE_RACK"),
+                to_node=_node(NodeRefKind.RACK_POSITION, "SOURCE_RACK"),
                 type=FlowEdgeType.OPERATION,
             ),
         )
@@ -72,9 +72,9 @@ def _event_binding():
     )
 
 
-def _resource_boundary(position_code: str, *, rack_kind: str):
+def _resource_boundary(rack_position_code: str, *, rack_kind: str):
     return _contract("ResourceBoundary")(
-        position_code=position_code,
+        rack_position_code=rack_position_code,
         rack_kind=rack_kind,
         business_demand_type=f"{rack_kind}_DEMAND",
         wms_operation_type=f"SUPPLY_{rack_kind}",
@@ -83,12 +83,12 @@ def _resource_boundary(position_code: str, *, rack_kind: str):
     )
 
 
-def _manifest(*, positions, resource_boundaries):
+def _manifest(*, rack_positions, resource_boundaries):
     return _contract("WorklinePluginManifest")(
         plugin_key="example_plugin",
         contract_version="pure-data.v1",
         devices=(_device_requirement(),),
-        positions=tuple(positions),
+        rack_positions=tuple(rack_positions),
         topology=_topology(),
         commands=(),
         events=(_event_binding(),),
@@ -98,7 +98,7 @@ def _manifest(*, positions, resource_boundaries):
 
 def test_resource_boundary_accepts_single_layer_and_five_layer_kinds() -> None:
     manifest = _manifest(
-        positions=(
+        rack_positions=(
             _position(
                 "SOURCE_RACK",
                 role="SOURCE",
@@ -117,7 +117,7 @@ def test_resource_boundary_accepts_single_layer_and_five_layer_kinds() -> None:
 
 def test_resource_boundary_derives_station_from_position() -> None:
     manifest = _manifest(
-        positions=(
+        rack_positions=(
             _position(
                 "SOURCE_RACK",
                 role="SOURCE",
@@ -131,9 +131,9 @@ def test_resource_boundary_derives_station_from_position() -> None:
 
     assert "station_code" not in {field.name for field in fields(boundary)}
     assert "station_role" not in {field.name for field in fields(boundary)}
-    position = {item.code: item for item in manifest.positions}[boundary.position_code]
-    assert position.station_code == "SOURCE_STATION"
-    assert position.role == "SOURCE"
+    rack_position = {item.code: item for item in manifest.rack_positions}[boundary.rack_position_code]
+    assert rack_position.station_code == "SOURCE_STATION"
+    assert rack_position.role == "SOURCE"
 
 
 def test_registered_plugins_declare_resource_boundaries_for_rack_operations() -> None:

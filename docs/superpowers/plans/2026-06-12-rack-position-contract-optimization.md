@@ -5,6 +5,10 @@
 > **Status:** Accepted as amendment to `docs/superpowers/plans/2026-06-12-workline-plugin-manifest-refactor.md`.
 > Do not execute this as a standalone PR unless the main manifest refactor plan is explicitly split later. The canonical implementation tasks now live in the main plan and spec.
 
+> **Superseded:** 本计划中“保持 `Position` / `NodeRefKind.POSITION` 公开合同名”的决策已被
+> `docs/superpowers/plans/2026-06-14-workline-manifest-rack-position-rename.md` 反转。当前实现以
+> `RackPosition` / `NodeRefKind.RACK_POSITION` / `rack_positions` 作为 manifest 静态合同名。
+
 **Goal:** 将 WorkLine plugin manifest 中的 `positions` 从泛化物理位置收敛为 WES 管理的货架停靠位/库存事实锚点，避免扫码台、输送线内部点位和机器人中转位混入资源拓扑。
 
 **Architecture:** 保持当前公开合同名 `Position` / `NodeRefKind.POSITION` 不做破坏性重命名，先通过注释、字段描述、validator 和真实插件测试收紧语义。`MATERIAL_FLOW` 表达货架位之间的库存/物料流向，`OPERATION` 表达设备角色与货架位的动作关系；硬件闭环内部节点只留在设备命令 payload 或插件业务逻辑中，不进入 `positions`。

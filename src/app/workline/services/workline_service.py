@@ -25,10 +25,10 @@ from src.app.workline.models.workline import (
     EventBinding,
     FlowEdge,
     NodeRef,
-    Position,
-    PositionArg,
-    PositionArgSource,
-    PositionCarrierCapability,
+    RackPosition,
+    RackPositionArg,
+    RackPositionArgSource,
+    RackPositionCarrierCapability,
     ResourceBoundary,
     TopologySpec,
 )
@@ -126,8 +126,8 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         )
 
     @classmethod
-    def _build_position_carrier_capability_summary(cls, capability: object) -> PositionCarrierCapability:
-        return PositionCarrierCapability(
+    def _build_rack_position_carrier_capability_summary(cls, capability: object) -> RackPositionCarrierCapability:
+        return RackPositionCarrierCapability(
             allowed_rack_kinds=cls._string_list(getattr(capability, "allowed_rack_kinds", ())),
             min_capacity=capability.min_capacity,
             max_capacity=capability.max_capacity,
@@ -135,12 +135,12 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         )
 
     @classmethod
-    def _build_position_summary(cls, position: object) -> Position:
-        return Position(
-            code=position.code,
-            role=position.role,
-            station_code=position.station_code,
-            carrier_capability=cls._build_position_carrier_capability_summary(position.carrier_capability),
+    def _build_rack_position_summary(cls, rack_position: object) -> RackPosition:
+        return RackPosition(
+            code=rack_position.code,
+            role=rack_position.role,
+            station_code=rack_position.station_code,
+            carrier_capability=cls._build_rack_position_carrier_capability_summary(rack_position.carrier_capability),
         )
 
     @classmethod
@@ -174,23 +174,23 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         )
 
     @classmethod
-    def _build_position_arg_source_summary(cls, source: object | None) -> PositionArgSource | None:
+    def _build_rack_position_arg_source_summary(cls, source: object | None) -> RackPositionArgSource | None:
         if source is None:
             return None
-        return PositionArgSource(
+        return RackPositionArgSource(
             kind=str(cls._manifest_value(source.kind)),
             path=source.path,
-            fallback_position_ref=getattr(source, "fallback_position_ref", None),
+            fallback_rack_position_ref=getattr(source, "fallback_rack_position_ref", None),
         )
 
     @classmethod
-    def _build_position_arg_summary(cls, arg: object) -> PositionArg:
-        return PositionArg(
+    def _build_rack_position_arg_summary(cls, arg: object) -> RackPositionArg:
+        return RackPositionArg(
             name=arg.name,
             role=str(cls._manifest_value(arg.role)),
             required=getattr(arg, "required", True),
-            position_ref=getattr(arg, "position_ref", None),
-            source=cls._build_position_arg_source_summary(getattr(arg, "source", None)),
+            rack_position_ref=getattr(arg, "rack_position_ref", None),
+            source=cls._build_rack_position_arg_source_summary(getattr(arg, "source", None)),
         )
 
     @classmethod
@@ -209,7 +209,9 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         return CommandBinding(
             command=command.command,
             target_device_role=command.target_device_role,
-            position_args=[cls._build_position_arg_summary(arg) for arg in getattr(command, "position_args", ())],
+            rack_position_args=[
+                cls._build_rack_position_arg_summary(arg) for arg in getattr(command, "rack_position_args", ())
+            ],
             payload_schema_ref=getattr(command, "payload_schema_ref", None),
             result_bindings=[
                 cls._build_command_result_binding_summary(binding)
@@ -220,7 +222,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     @staticmethod
     def _build_resource_boundary_summary(boundary: object) -> ResourceBoundary:
         return ResourceBoundary(
-            position_code=boundary.position_code,
+            rack_position_code=boundary.rack_position_code,
             rack_kind=boundary.rack_kind,
             business_demand_type=boundary.business_demand_type,
             wms_operation_type=boundary.wms_operation_type,
@@ -268,9 +270,9 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 self._build_device_requirement_summary(device)
                 for device in self._manifest_sequence(manifest, plugin_key, "devices")
             ],
-            positions=[
-                self._build_position_summary(position)
-                for position in self._manifest_sequence(manifest, plugin_key, "positions")
+            rack_positions=[
+                self._build_rack_position_summary(rack_position)
+                for rack_position in self._manifest_sequence(manifest, plugin_key, "rack_positions")
             ],
             topology=self._build_topology_summary(self._manifest_attr(manifest, plugin_key, "topology")),
             events=[
@@ -491,12 +493,12 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             return []
 
         columns = cast("Any", WorklineRackPosition).__table__.c
-        _, positions = await workline_rack_position_repository.get_list(
+        _, rack_position_rows = await workline_rack_position_repository.get_list(
             db,
             limit=1000,
             where_clauses_raw=[columns.workline_id == workline_id],
         )
-        return positions
+        return rack_position_rows
 
     def _build_configuration_checks(
         self,
@@ -548,7 +550,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         checks.extend(self._command_target_checks(manifest, topology))
         checks.extend(self._command_target_capability_config_checks(manifest, devices))
         checks.extend(self._command_target_communication_checks(workline, manifest, devices))
-        checks.extend(self._position_carrier_capability_checks(manifest, rack_positions))
+        checks.extend(self._rack_position_carrier_capability_checks(manifest, rack_positions))
         return checks
 
     @staticmethod
@@ -749,38 +751,38 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         return target_map
 
     @staticmethod
-    def _position_carrier_capability_checks(
+    def _rack_position_carrier_capability_checks(
         manifest: Any,
         rack_positions: list[Any] | None,
     ) -> list[WorkLineConfigurationCheck]:
-        rack_position_by_code = {
-            getattr(position, "position_code", None): position
-            for position in rack_positions or []
-            if isinstance(getattr(position, "position_code", None), str)
+        configured_rack_position_by_code = {
+            getattr(configured_position, "position_code", None): configured_position
+            for configured_position in rack_positions or []
+            if isinstance(getattr(configured_position, "position_code", None), str)
         }
         checks: list[WorkLineConfigurationCheck] = []
-        for position in getattr(manifest, "positions", ()):
-            position_code = getattr(position, "code", None)
-            rack_position = rack_position_by_code.get(position_code)
+        for rack_position in getattr(manifest, "rack_positions", ()):
+            rack_position_code = getattr(rack_position, "code", None)
+            configured_rack_position = configured_rack_position_by_code.get(rack_position_code)
 
-            capability = position.carrier_capability
+            capability = rack_position.carrier_capability
             allowed_rack_kinds = [
                 str(WorkLineService._manifest_value(rack_kind))
                 for rack_kind in getattr(capability, "allowed_rack_kinds", ())
             ]
             min_capacity = capability.min_capacity
             max_capacity = capability.max_capacity
-            if rack_position is None:
+            if configured_rack_position is None:
                 checks.append(
                     WorkLineService._check(
-                        "POSITION_CARRIER_CAPABILITY",
+                        "RACK_POSITION_CARRIER_CAPABILITY",
                         _FAIL,
                         _BLOCKER,
                         {
-                            "position_code": position_code,
-                            "position_role": getattr(position, "role", None),
-                            "station_code": getattr(position, "station_code", None),
-                            "missing_position_config": True,
+                            "rack_position_code": rack_position_code,
+                            "rack_position_role": getattr(rack_position, "role", None),
+                            "station_code": getattr(rack_position, "station_code", None),
+                            "missing_rack_position_config": True,
                             "enabled": False,
                             "allowed_rack_kind": None,
                             "allowed_rack_kinds": allowed_rack_kinds,
@@ -792,21 +794,23 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 )
                 continue
 
-            allowed_rack_kind = WorkLineService._rack_kind_value(getattr(rack_position, "allowed_rack_kind", None))
-            capacity = getattr(rack_position, "capacity", None)
-            enabled = bool(getattr(rack_position, "enabled", True))
+            allowed_rack_kind = WorkLineService._rack_kind_value(
+                getattr(configured_rack_position, "allowed_rack_kind", None)
+            )
+            capacity = getattr(configured_rack_position, "capacity", None)
+            enabled = bool(getattr(configured_rack_position, "enabled", True))
             rack_kind_passes = allowed_rack_kind in allowed_rack_kinds
             capacity_passes = isinstance(capacity, int) and min_capacity <= capacity <= max_capacity
-            position_passes = enabled and rack_kind_passes and capacity_passes
+            rack_position_passes = enabled and rack_kind_passes and capacity_passes
             checks.append(
                 WorkLineService._check(
-                    "POSITION_CARRIER_CAPABILITY",
-                    _OK if position_passes else _FAIL,
-                    "INFO" if position_passes else _BLOCKER,
+                    "RACK_POSITION_CARRIER_CAPABILITY",
+                    _OK if rack_position_passes else _FAIL,
+                    "INFO" if rack_position_passes else _BLOCKER,
                     {
-                        "position_code": position_code,
-                        "position_role": getattr(position, "role", None),
-                        "station_code": getattr(position, "station_code", None),
+                        "rack_position_code": rack_position_code,
+                        "rack_position_role": getattr(rack_position, "role", None),
+                        "station_code": getattr(rack_position, "station_code", None),
                         "enabled": enabled,
                         "allowed_rack_kind": allowed_rack_kind,
                         "allowed_rack_kinds": allowed_rack_kinds,
