@@ -249,7 +249,8 @@ class WorkLineStartAdmissionService:
             )
 
         devices = await device_repository.get_by_work_line_id(db, workline_id)
-        checks = workline_service._build_configuration_checks(workline, devices)
+        rack_positions = await workline_service._list_rack_positions(db, workline)
+        checks = workline_service._build_configuration_checks(workline, devices, rack_positions)
         blockers = [check for check in checks if check.status == "FAIL" and check.severity == "BLOCKER"]
         if blockers:
             diagnostic = {

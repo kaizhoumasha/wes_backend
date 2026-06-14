@@ -79,6 +79,8 @@ _MANUAL_OPERATION_KIND = {
     "CANCEL": InboxKind.MANUAL_CANCEL,
 }
 
+_SANDBOX_OPERATOR_VISIBLE_EVENT_CATEGORIES = frozenset({"ENTRY_DEVICE", "OPERATOR", "SAFETY"})
+
 
 # 常用 Event 类型的默认 Payload 模板（不含 device_code/event_type/timestamp，由运行时填充）
 _DEFAULT_EVENT_PAYLOAD_TEMPLATES: dict[str, dict[str, Any]] = {
@@ -1112,21 +1114,23 @@ class WorklineOperationService(BaseService[Any, Any]):
         template["device_code"] = device_code or "DEVICE_CODE"
         return template
 
-    def _generate_event_templates_from_supported_events(
+    def _generate_event_templates_from_manifest_events(
         self, manifest: Any, device_role: str | None = None, device_code: str | None = None
     ) -> list[SandboxEventTemplate]:
-        """从 manifest.supported_events 自动生成 Event 模板，可按设备角色过滤。"""
-        supported_events = getattr(manifest, "supported_events", None) or frozenset()
-        event_source_roles = getattr(manifest, "event_source_roles", None) or {}
-
-        if device_role:
-            filtered_events = {
-                event_type
-                for event_type, roles in event_source_roles.items()
-                if self._event_allows_device_role(roles, device_role)
-            }
-            if filtered_events:
-                supported_events = supported_events & filtered_events
+        """从 manifest.events 自动生成操作员可见 Event 模板，可按设备角色过滤。"""
+        event_types: list[str] = []
+        for binding in getattr(manifest, "events", None) or ():
+            category = getattr(getattr(binding, "category", None), "value", getattr(binding, "category", None))
+            if category not in _SANDBOX_OPERATOR_VISIBLE_EVENT_CATEGORIES:
+                continue
+            if device_role and not self._event_allows_device_role(
+                getattr(binding, "source_device_roles", None),
+                device_role,
+            ):
+                continue
+            event_type = getattr(binding, "event", None)
+            if isinstance(event_type, str) and event_type:
+                event_types.append(event_type)
 
         return [
             SandboxEventTemplate(
@@ -1134,7 +1138,7 @@ class WorklineOperationService(BaseService[Any, Any]):
                 label=event_type.replace("_", " ").title(),
                 payload_template=self._get_default_payload_template(event_type, device_code),
             )
-            for event_type in supported_events
+            for event_type in event_types
         ]
 
     @staticmethod
@@ -1185,32 +1189,9 @@ class WorklineOperationService(BaseService[Any, Any]):
         if manifest is None:
             return SandboxTemplatesResponse()
 
-        sandbox_config = getattr(manifest, "sandbox", None)
-
-        # 优先使用 manifest.sandbox 配置，否则从 supported_events 自动生成
-        if sandbox_config is not None:
-            event_templates = [
-                SandboxEventTemplate(
-                    event_type=str(et.get("event_type", "")),
-                    label=et.get("label", et.get("event_type", "")),
-                    payload_template=et.get("payload_template", {}),
-                )
-                for et in (getattr(sandbox_config, "event_templates", None) or [])
-            ]
-            result_templates = [
-                SandboxResultTemplate(
-                    command_type=rt.get("command_type", ""),
-                    label=rt.get("label", rt.get("command_type", "")),
-                    success_payload_template=rt.get("success_payload_template", {}),
-                    failed_payload_template=rt.get("failed_payload_template", {}),
-                    error_template=rt.get("error_template"),
-                )
-                for rt in (getattr(sandbox_config, "result_templates", None) or [])
-            ]
-        else:
-            # 自动从 manifest.supported_events 生成 Event 模板（可按设备角色过滤）
-            event_templates = self._generate_event_templates_from_supported_events(manifest, device_role, device_code)
-            result_templates = []
+        # 自动从 manifest.events 生成 Event 模板（可按设备角色过滤）
+        event_templates = self._generate_event_templates_from_manifest_events(manifest, device_role, device_code)
+        result_templates: list[SandboxResultTemplate] = []
 
         return SandboxTemplatesResponse(
             event_templates=event_templates,

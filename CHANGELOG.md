@@ -10,6 +10,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.6.1.0] - 2026-06-14
+
+### Added
+
+- WorkLine 插件 manifest 支持纯数据合同，插件可声明设备角色、事件、命令、位置参数、资源边界、物料流和承载能力，前端和运行时可基于同一事实源渲染与校验。
+- 新增 manifest 拓扑、资源边界、物料身份、Station lease、runtime monitor、插件模板和真实 mock E2E 回归覆盖，防止旧 manifest 字段和运行时投影再次漂移。
+
+### Changed
+
+- WorkLine 插件详情 API、配置预检、激活校验、runtime 查询、Inbox/Outbox 处理和 session 解析迁移到新 manifest 合同。
+- 粗分机与 SMT 分拣入库插件迁移到角色驱动的新 manifest，并将 SMT 目标位统一为五层货架工位合同。
+- 插件 options 保持 selector-only，完整设备、事件、命令和拓扑能力由 manifest detail 提供，避免前端合同重复维护。
+- 插件开发模板、沙盒文档和测试模板同步到新 manifest/result binding 合同。
+
+### Fixed
+
+- 修复 SMT 五层目标位与 Station lease、runtime monitor smoke seed、真实 mock E2E 夹具之间的货架类型不一致。
+- 修复插件 material identity 未解析时丢失 raw evidence hash，NG evidence 继续保留扫码和交接输入审计证据。
+- 修复 runtime monitor request_id 映射回归，并补充对应测试。
+- 修复 manifest/result binding 中失败结果路径与插件 handler 不一致导致设备失败回调被吞的问题。
+
+### Removed
+
+- 移除旧 manifest 扫描、缓存和 sandbox 兼容分支，运行时只保留新合同入口。
+
 ## [0.6.0.0] - 2026-06-11
 
 ### Added

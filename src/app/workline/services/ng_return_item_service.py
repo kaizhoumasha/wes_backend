@@ -14,7 +14,10 @@ from src.app.workline.models.runtime_hold import (
 )
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.utils.value_normalization import as_dict
-from src.workline_plugin_registry import get_workline_plugin_definition
+from src.workline_plugin_registry import (
+    list_workline_ng_reasons,
+    resolve_workline_material_identity,
+)
 from src.workline_runtime.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
 from src.workline_runtime.ng_reason import NgReasonDefinition, build_ng_reason_catalog
 
@@ -74,11 +77,8 @@ class NgReturnItemService:
             or _as_non_empty_str(getattr(workline, "plugin_key", None))
             or ""
         )
-        definition = get_workline_plugin_definition(plugin_key)
-        if definition is None:
-            raise ValueError(f"不支持的工作线插件: {plugin_key}")
-
-        material_identity = definition.manifest.resolve_material_identity(
+        material_identity = resolve_workline_material_identity(
+            plugin_key,
             MaterialIdentityInput(
                 session_context=session_context,
                 source_payload=self._source_payload(session_context),
@@ -89,7 +89,7 @@ class NgReturnItemService:
                     or _as_non_empty_str(getattr(workline, "contract_version", None)),
                     "session_code": getattr(session, "session_code", None),
                 },
-            )
+            ),
         )
         material_identity_key = self._material_identity_key(
             material_identity=material_identity,
@@ -117,7 +117,7 @@ class NgReturnItemService:
                 material_identity_json=material_identity_json,
             )
 
-        reason = self._resolve_ng_reason(definition.manifest.list_ng_reasons(), session_context)
+        reason = self._resolve_ng_reason(list_workline_ng_reasons(plugin_key), session_context)
         evidence = self._build_evidence(
             session=session,
             inbox=inbox,

@@ -1,12 +1,26 @@
 """工作线插件注册表。"""
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from importlib import import_module
+from threading import Lock
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from src.workline_runtime.material_identity import MaterialIdentity, MaterialIdentityInput
+    from src.workline_runtime.ng_reason import NgReasonDefinition
     from src.workline_runtime.plugin_manifest import WorklinePluginManifest
+
+_WORKLINE_PLUGIN_MANIFEST_FIELDS = (
+    "plugin_key",
+    "contract_version",
+    "devices",
+    "positions",
+    "topology",
+    "commands",
+    "events",
+    "resource_boundaries",
+)
 
 
 @dataclass(frozen=True)
@@ -17,6 +31,8 @@ class WorklinePluginDefinition:
     plugin_module: str
     plugin_class_name: str
     contract_module: str | None = None
+    _plugin_instance: Any | None = field(default=None, init=False, repr=False, compare=False)
+    _plugin_instance_lock: Lock = field(default_factory=Lock, init=False, repr=False, compare=False)
 
     @property
     def plugin_class(self) -> type[Any]:
@@ -29,25 +45,29 @@ class WorklinePluginDefinition:
         """惰性解析插件 manifest。"""
 
         manifest = getattr(self.plugin_class, "manifest", None)
-        if not _looks_like_manifest(manifest):
+        if not is_dataclass(manifest) or isinstance(manifest, type):
             raise TypeError(f"工作线插件 {self.plugin_key} 缺少有效 manifest")
+        manifest_fields = tuple(item.name for item in fields(manifest))
+        if manifest_fields != _WORKLINE_PLUGIN_MANIFEST_FIELDS:
+            raise TypeError(
+                f"工作线插件 {self.plugin_key} manifest 必须只声明 8 个静态字段: "
+                f"{', '.join(_WORKLINE_PLUGIN_MANIFEST_FIELDS)}"
+            )
         if getattr(manifest, "plugin_key", None) != self.plugin_key:
             raise ValueError(
                 f"工作线插件 {self.plugin_key} manifest.plugin_key 不匹配: {getattr(manifest, 'plugin_key', None)}"
             )
         return manifest  # type: ignore[return-value]
 
+    @property
+    def plugin_instance(self) -> Any:
+        """惰性创建并缓存该 definition 的唯一插件实例。"""
 
-def _looks_like_manifest(value: Any) -> bool:
-    """轻量校验 manifest 形状，避免 registry 顶层导入 runtime 包。"""
-
-    return (
-        value is not None
-        and isinstance(getattr(value, "plugin_key", None), str)
-        and isinstance(getattr(value, "contract_version", None), str)
-        and isinstance(getattr(value, "required_device_roles", None), tuple)
-        and callable(getattr(value, "resolve_business_key", None))
-    )
+        if self._plugin_instance is None:
+            with self._plugin_instance_lock:
+                if self._plugin_instance is None:
+                    object.__setattr__(self, "_plugin_instance", self.plugin_class())
+        return self._plugin_instance
 
 
 WORKLINE_PLUGIN_REGISTRY: dict[str, WorklinePluginDefinition] = {
@@ -86,28 +106,87 @@ def parse_workline_six_in_one(plugin_key: str | None, payload: dict[str, Any] | 
     if definition is None:
         return None
 
-    parser = getattr(definition.plugin_class, "parse_six_in_one_payload", None)
+    parser = getattr(definition.plugin_instance, "parse_six_in_one_payload", None)
     if callable(parser):
         return parser(payload)
     return None
 
 
 def resolve_workline_business_key(plugin_key: str | None, payload_json: dict[str, Any]) -> str | None:
-    """通过插件 manifest 解析业务主键。"""
+    """通过插件运行时实例解析业务主键。"""
 
     definition = get_workline_plugin_definition(plugin_key)
     if definition is None:
         return None
-    return definition.manifest.resolve_business_key(payload_json)
+    resolver = getattr(definition.plugin_instance, "resolve_business_key", None)
+    if not callable(resolver):
+        return None
+    return resolver(payload_json)
 
 
 def classify_workline_result(plugin_key: str | None, payload_json: dict[str, Any]) -> str | None:
-    """通过插件 manifest 解析命令结果分类。"""
+    """通过插件运行时实例解析命令结果分类。"""
 
     definition = get_workline_plugin_definition(plugin_key)
     if definition is None:
         return None
-    return definition.manifest.classify_result(payload_json)
+    classifier = getattr(definition.plugin_instance, "classify_result", None)
+    if not callable(classifier):
+        return None
+    return classifier(payload_json)
+
+
+def get_workline_context_model(plugin_key: str | None) -> type[Any] | None:
+    """通过插件运行时实例获取上下文模型。"""
+
+    definition = get_workline_plugin_definition(plugin_key)
+    if definition is None:
+        return None
+
+    resolver = getattr(definition.plugin_instance, "get_context_model", None)
+    context_model = resolver() if callable(resolver) else None
+    return context_model if isinstance(context_model, type) else None
+
+
+def _missing_material_identity(input_value: "MaterialIdentityInput") -> "MaterialIdentity":
+    from src.workline_runtime.material_identity import (
+        MaterialIdentity,
+        MaterialIdentityResolutionStatus,
+        material_identity_input_to_hash,
+    )
+
+    return MaterialIdentity(
+        resolution_status=MaterialIdentityResolutionStatus.MISSING,
+        raw_evidence_hash=material_identity_input_to_hash(input_value),
+    )
+
+
+def resolve_workline_material_identity(
+    plugin_key: str | None,
+    input_value: "MaterialIdentityInput",
+) -> "MaterialIdentity":
+    """通过插件运行时实例解析物料身份，缺省时返回 MISSING。"""
+
+    definition = get_workline_plugin_definition(plugin_key)
+    if definition is None:
+        return _missing_material_identity(input_value)
+
+    resolver = getattr(definition.plugin_instance, "resolve_material_identity", None)
+    if not callable(resolver):
+        return _missing_material_identity(input_value)
+    return resolver(input_value)
+
+
+def list_workline_ng_reasons(plugin_key: str | None) -> tuple["NgReasonDefinition", ...]:
+    """通过插件运行时实例列出 NG 原因，缺省时返回空目录。"""
+
+    definition = get_workline_plugin_definition(plugin_key)
+    if definition is None:
+        return ()
+
+    resolver = getattr(definition.plugin_instance, "list_ng_reasons", None)
+    reasons = resolver() if callable(resolver) else None
+    return tuple(reasons or ())
 
 
 def get_plugin_contract_version(plugin_key: str | None) -> str | None:
@@ -152,7 +231,7 @@ def validate_workline_plugin_assignment(
 
         raise BadRequestException(message=str(exc)) from exc
 
-    validator = getattr(definition.plugin_class, "validate_workline_topology", None)
+    validator = getattr(definition.plugin_instance, "validate_workline_topology", None)
     if callable(validator):
         _ = validator(workline, devices)
 
@@ -162,9 +241,12 @@ __all__ = [
     "WorklinePluginDefinition",
     "classify_workline_result",
     "get_plugin_contract_version",
+    "get_workline_context_model",
     "get_workline_plugin_definition",
+    "list_workline_ng_reasons",
     "list_workline_plugin_definitions",
     "parse_workline_six_in_one",
     "resolve_workline_business_key",
+    "resolve_workline_material_identity",
     "validate_workline_plugin_assignment",
 ]

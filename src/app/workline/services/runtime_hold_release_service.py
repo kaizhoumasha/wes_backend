@@ -40,7 +40,10 @@ from src.app.workline.repositories import (
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.utils.timezone import timezone
 from src.utils.value_normalization import as_dict, enum_str
-from src.workline_plugin_registry import get_workline_plugin_definition
+from src.workline_plugin_registry import (
+    list_workline_ng_reasons,
+    resolve_workline_material_identity,
+)
 from src.workline_runtime.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
 from src.workline_runtime.ng_reason import NgReasonDefinition, build_ng_reason_catalog
 
@@ -477,8 +480,7 @@ class RuntimeHoldReleaseService:
         )
 
     def _resolve_ng_reason(self, hold: RuntimeHold, ng_reason: Any) -> NgReasonDefinition:
-        definition = get_workline_plugin_definition(hold.plugin_key)
-        plugin_reasons = definition.manifest.list_ng_reasons() if definition is not None else ()
+        plugin_reasons = list_workline_ng_reasons(hold.plugin_key)
         catalog = build_ng_reason_catalog(plugin_reasons)
         reason = catalog.by_code.get(ng_reason.code)
         if reason is None or reason.source.value != ng_reason.source:
@@ -581,10 +583,6 @@ class RuntimeHoldReleaseService:
     def _resolve_material_identity(
         self, hold: RuntimeHold, *, request: ResolveRuntimeHoldRequest, session: Any | None
     ) -> Any:
-        definition = get_workline_plugin_definition(hold.plugin_key)
-        if definition is None:
-            raise ValueError(f"不支持的工作线插件: {hold.plugin_key}")
-
         evidence = cast("Any", request.physical_handoff_evidence)
         material_scan_payload = evidence.material_scan_payload
         if not isinstance(material_scan_payload, dict):
@@ -601,7 +599,7 @@ class RuntimeHoldReleaseService:
                 "hold_id": hold.id,
             },
         )
-        return definition.manifest.resolve_material_identity(input_value)
+        return resolve_workline_material_identity(hold.plugin_key, input_value)
 
     def _write_release_facts(
         self,

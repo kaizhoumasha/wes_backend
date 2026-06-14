@@ -13,10 +13,49 @@ from src.workline_runtime.material_identity import (
     hash_material_evidence,
 )
 from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
-from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, WorklinePluginManifest
+from src.workline_runtime.plugin_manifest import (
+    CommandBinding,
+    DeviceRequirement,
+    EventBinding,
+    EventCategory,
+    Position,
+    PositionCarrierCapability,
+    ResourceBoundary,
+    TopologySpec,
+    WorklinePluginManifest,
+)
 
 PLUGIN_KEY = "test_workline_plugin"
 CONTRACT_VERSION = "test.v1"
+TEST_DEVICE_ROLE = "TEST_DEVICE"
+TEST_POSITION_CODE = "TEST_POSITION"
+
+TEST_NG_REASON_CATALOG = (
+    NgReasonDefinition(
+        canonical_code="SCAN_NG",
+        label="扫码异常",
+        source=NgReasonSource.PLUGIN,
+        plugin_key=PLUGIN_KEY,
+        contract_version=CONTRACT_VERSION,
+        maps_from=("SCAN_NG",),
+    ),
+    NgReasonDefinition(
+        canonical_code="BARCODE_INVALID",
+        label="条码无效",
+        source=NgReasonSource.PLUGIN,
+        plugin_key=PLUGIN_KEY,
+        contract_version=CONTRACT_VERSION,
+        maps_from=("BARCODE_INVALID",),
+    ),
+    NgReasonDefinition(
+        canonical_code="BARCODE_INCOMPLETE",
+        label="条码不完整",
+        source=NgReasonSource.PLUGIN,
+        plugin_key=PLUGIN_KEY,
+        contract_version=CONTRACT_VERSION,
+        maps_from=("BARCODE_INCOMPLETE",),
+    ),
+)
 
 
 def _stable_hash(value: Any) -> str:
@@ -86,34 +125,44 @@ class TestWorklinePlugin:
     manifest = WorklinePluginManifest(
         plugin_key=PLUGIN_KEY,
         contract_version=CONTRACT_VERSION,
-        required_device_roles=(DeviceRoleRequirement(role="TEST_DEVICE", min_count=0),),
-        business_key_resolver=_resolve_business_key,
-        result_classifier=_classify_result,
-        material_identity_resolver=_resolve_material_identity,
-        ng_reason_catalog=(
-            NgReasonDefinition(
-                canonical_code="SCAN_NG",
-                label="扫码异常",
-                source=NgReasonSource.PLUGIN,
-                plugin_key=PLUGIN_KEY,
-                contract_version=CONTRACT_VERSION,
-                maps_from=("SCAN_NG",),
+        devices=(DeviceRequirement(role=TEST_DEVICE_ROLE, min_count=0),),
+        positions=(
+            Position(
+                code=TEST_POSITION_CODE,
+                role="TEST_ENTRY",
+                station_code="TEST_STATION",
+                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
             ),
-            NgReasonDefinition(
-                canonical_code="BARCODE_INVALID",
-                label="条码无效",
-                source=NgReasonSource.PLUGIN,
-                plugin_key=PLUGIN_KEY,
-                contract_version=CONTRACT_VERSION,
-                maps_from=("BARCODE_INVALID",),
+        ),
+        topology=TopologySpec(),
+        commands=(CommandBinding(command="TEST_COMMAND", target_device_role=TEST_DEVICE_ROLE),),
+        events=(
+            EventBinding(
+                event="SCAN_COMPLETED",
+                source_device_roles=(TEST_DEVICE_ROLE,),
+                category=EventCategory.ENTRY_DEVICE,
             ),
-            NgReasonDefinition(
-                canonical_code="BARCODE_INCOMPLETE",
-                label="条码不完整",
-                source=NgReasonSource.PLUGIN,
-                plugin_key=PLUGIN_KEY,
-                contract_version=CONTRACT_VERSION,
-                maps_from=("BARCODE_INCOMPLETE",),
+        ),
+        resource_boundaries=(
+            ResourceBoundary(
+                position_code=TEST_POSITION_CODE,
+                rack_kind="SINGLE_LAYER",
+                business_demand_type="TEST_DEMAND",
+                wms_operation_type="TEST_WMS_OPERATION",
+                snapshot_kind="TEST_SNAPSHOT",
+                lease_scope="WORKLINE",
             ),
         ),
     )
+
+    def resolve_business_key(self, payload_json: dict[str, Any]) -> str | None:
+        return _resolve_business_key(payload_json)
+
+    def classify_result(self, payload_json: dict[str, Any]) -> str | None:
+        return _classify_result(payload_json)
+
+    def resolve_material_identity(self, input_value: MaterialIdentityInput) -> MaterialIdentity:
+        return _resolve_material_identity(input_value)
+
+    def list_ng_reasons(self) -> tuple[NgReasonDefinition, ...]:
+        return TEST_NG_REASON_CATALOG

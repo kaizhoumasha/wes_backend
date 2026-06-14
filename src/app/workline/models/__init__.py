@@ -138,7 +138,6 @@ from .timeline import (
     WorklineTimelineCreate,
 )
 from .workline import (
-    DeviceRoleRequirementOption,
     LineType,
     WorkLine,
     WorkLineBase,
@@ -149,7 +148,6 @@ from .workline import (
     WorkLinePluginOption,
     WorkLineResponse,
     WorkLineRunMode,
-    WorkLineSingleLayerRackBoundarySummary,
     WorkLineStateTransitionRequest,
     WorkLineUpdate,
 )
@@ -157,7 +155,6 @@ from .workline import (
 __all__ = [
     "BinCellReservationStatus",
     "ClearWorkLineEstopRequest",
-    "DeviceRoleRequirementOption",
     "DiagnosisEvidenceHealthItemResponse",
     "DiagnosisEvidenceHealthResponse",
     "DiagnosisVerdictResponse",
@@ -247,7 +244,6 @@ __all__ = [
     "WorkLineResponse",
     "WorkLineRunMode",
     "WorkLineRuntimeStatus",
-    "WorkLineSingleLayerRackBoundarySummary",
     "WorkLineStateTransitionRequest",
     "WorkLineUpdate",
     "WorklineBinCellReservation",

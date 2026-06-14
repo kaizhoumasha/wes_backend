@@ -234,22 +234,107 @@ class WorkLineResponse(WorkLineBase):
     is_active: bool
 
 
-class DeviceRoleRequirementOption(BaseModel):
-    """设备角色要求明细。"""
+class DeviceRequirement(BaseModel):
+    """插件所需设备角色和数量/能力约束。"""
 
     role: str = Field(description="必需角色名")
     min_count: int = Field(description="最小数量限制")
     max_count: int | None = Field(default=None, description="最大数量限制")
-    capabilities: list[str] = Field(default_factory=list, description="要求能力声明")
+    hardware_capabilities: list[str] = Field(default_factory=list, description="要求硬件能力声明")
 
 
-class WorkLineSingleLayerRackBoundarySummary(BaseModel):
-    """插件声明的货架承接边界。"""
+class PositionCarrierCapability(BaseModel):
+    """WES 管理货架停靠位的货架/槽位承载能力。"""
 
+    allowed_rack_kinds: list[str] = Field(default_factory=list, description="停靠位允许承载的货架类型")
+    min_capacity: int = Field(description="停靠位最小承载容量限制")
+    max_capacity: int = Field(description="停靠位最大承载容量限制")
+    allowed_slot_kinds: list[str] = Field(default_factory=list, description="停靠位允许承载的槽位类型")
+
+
+class Position(BaseModel):
+    """WES 管理的货架停靠位/库存事实锚点，不代表泛化物理位置。"""
+
+    code: str = Field(description="WES 管理货架停靠位编码，也是库存事实锚点编码")
+    role: str = Field(description="货架停靠位业务角色")
     station_code: str = Field(description="插件内 station/工作位逻辑编码")
+    carrier_capability: PositionCarrierCapability = Field(description="货架停靠位承载能力")
+
+
+class NodeRef(BaseModel):
+    """拓扑节点引用。"""
+
+    kind: str = Field(description="拓扑节点引用类型")
+    ref: str = Field(description="拓扑节点引用值")
+
+
+class FlowEdge(BaseModel):
+    """拓扑中的物料流或操作关系。"""
+
+    from_node: NodeRef = Field(description="起点节点")
+    to_node: NodeRef = Field(description="终点节点")
+    type: str = Field(description="拓扑边类型")
+
+
+class TopologySpec(BaseModel):
+    """插件声明的静态拓扑。"""
+
+    flow_edges: list[FlowEdge] = Field(default_factory=list, description="拓扑边列表")
+
+
+class EventBinding(BaseModel):
+    """插件声明的业务事件及来源设备角色。"""
+
+    event: str = Field(description="事件类型")
+    source_device_roles: list[str] = Field(default_factory=list, description="来源设备角色")
+    category: str = Field(description="事件分类")
+    payload_schema_ref: str | None = Field(default=None, description="事件 payload schema 引用")
+
+
+class PositionArgSource(BaseModel):
+    """命令位置参数的动态解析来源。"""
+
+    kind: str = Field(description="参数来源类型")
+    path: str = Field(description="参数来源路径")
+    fallback_position_ref: str | None = Field(default=None, description="兜底静态位置引用")
+
+
+class PositionArg(BaseModel):
+    """命令中的位置参数声明。"""
+
+    name: str = Field(description="参数名")
+    role: str = Field(description="参数业务角色")
+    required: bool = Field(default=True, description="是否必填")
+    position_ref: str | None = Field(default=None, description="静态位置引用")
+    source: PositionArgSource | None = Field(default=None, description="动态来源")
+
+
+class CommandResultBinding(BaseModel):
+    """命令结果到事件的静态绑定。"""
+
+    result: str = Field(description="命令结果")
+    event: str = Field(description="派生事件")
+    category: str = Field(description="事件分类")
+    classification: str | None = Field(default=None, description="结果分类")
+    terminal: bool = Field(default=False, description="是否终止当前流程")
+    next_event: str | None = Field(default=None, description="后续事件")
+
+
+class CommandBinding(BaseModel):
+    """插件命令及目标设备/结果绑定。"""
+
+    command: str = Field(description="命令类型")
+    target_device_role: str = Field(description="目标设备角色")
+    position_args: list[PositionArg] = Field(default_factory=list, description="位置参数声明")
+    payload_schema_ref: str | None = Field(default=None, description="命令 payload schema 引用")
+    result_bindings: list[CommandResultBinding] = Field(default_factory=list, description="命令结果绑定")
+
+
+class ResourceBoundary(BaseModel):
+    """插件声明的资源边界。"""
+
     position_code: str = Field(description="WMS/RCS 约定的逻辑位置编码")
     rack_kind: str = Field(description="承接货架类型")
-    station_role: str = Field(description="该边界在插件业务中的承接角色")
     business_demand_type: str = Field(description="驱动该边界的业务需求类型")
     wms_operation_type: str = Field(description="由 WMS 转发的货架运输 operation 类型")
     snapshot_kind: str = Field(description="WES 需要读取的 active 快照类型")
@@ -263,9 +348,6 @@ class WorkLinePluginOption(BaseModel):
     label: str = Field(description="插件显示文本")
     contract_versions: list[str] = Field(default_factory=list, description="可选契约版本")
     default_contract_version: str = Field(description="默认契约版本")
-    required_device_roles: list[DeviceRoleRequirementOption] = Field(default_factory=list, description="必需设备角色")
-    supported_events: list[str] = Field(default_factory=list, description="支持的事件")
-    supported_commands: list[str] = Field(default_factory=list, description="支持的命令")
 
 
 class WorkLinePluginManifestSummary(BaseModel):
@@ -273,15 +355,12 @@ class WorkLinePluginManifestSummary(BaseModel):
 
     plugin_key: str = Field(description="工作线执行插件标识")
     contract_version: str = Field(description="插件契约版本")
-    required_device_roles: list[DeviceRoleRequirementOption] = Field(default_factory=list, description="必需设备角色")
-    event_source_roles: dict[str, list[str]] = Field(default_factory=dict, description="事件来源设备角色映射")
-    command_target_roles: dict[str, list[str]] = Field(default_factory=dict, description="命令目标设备角色映射")
-    supported_events: list[str] = Field(default_factory=list, description="支持的事件")
-    supported_commands: list[str] = Field(default_factory=list, description="支持的命令")
-    single_layer_boundaries: list[WorkLineSingleLayerRackBoundarySummary] = Field(
-        default_factory=list,
-        description="插件声明的货架承接边界",
-    )
+    devices: list[DeviceRequirement] = Field(default_factory=list, description="设备角色要求")
+    positions: list[Position] = Field(default_factory=list, description="逻辑位置声明")
+    topology: TopologySpec = Field(description="静态拓扑声明")
+    events: list[EventBinding] = Field(default_factory=list, description="事件绑定")
+    commands: list[CommandBinding] = Field(default_factory=list, description="命令绑定")
+    resource_boundaries: list[ResourceBoundary] = Field(default_factory=list, description="资源边界")
 
 
 class WorkLineConfigurationCheck(BaseModel):

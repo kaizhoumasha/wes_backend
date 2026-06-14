@@ -1,3 +1,4 @@
+import importlib
 from typing import cast
 
 import pytest
@@ -19,6 +20,9 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_PLUGIN_KEY,
     SORTING_CONTEXT_SCHEMA_VERSION,
 )
+from src.workline_runtime.material_identity import MaterialIdentity, MaterialIdentityResolutionStatus
+from src.workline_runtime.ng_reason import NgReasonDefinition
+from src.workline_runtime.ng_reason import NgReasonSource as RuntimeNgReasonSource
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("registered_test_workline_plugin")]
 
@@ -270,9 +274,41 @@ async def _create_smt_local_ng_fixture(db_session):
     return workline, session, inbox
 
 
-async def test_record_scan_ng_completion_creates_material_ng_item(db_session) -> None:
+async def test_record_scan_ng_completion_uses_registry_helpers_and_creates_material_ng_item(
+    db_session,
+    monkeypatch,
+) -> None:
+    ng_item_module = importlib.import_module("src.app.workline.services.ng_return_item_service")
+
     service = NgReturnItemService()
     workline, session, inbox = await _create_scan_ng_fixture(db_session)
+    material_calls: list[str | None] = []
+    reason_calls: list[str | None] = []
+
+    def _resolve_material(plugin_key, input_value):
+        material_calls.append(plugin_key)
+        assert input_value.session_context["scan_ng_reason_code"] == "BARCODE_INVALID"
+        return MaterialIdentity(
+            resolution_status=MaterialIdentityResolutionStatus.RESOLVED,
+            idempotency_key="test-material:ITEM-6",
+            display={"item_id": "ITEM-6"},
+            raw_evidence_hash="sha256:test",
+        )
+
+    def _list_reasons(plugin_key):
+        reason_calls.append(plugin_key)
+        return (
+            NgReasonDefinition(
+                canonical_code="BARCODE_INVALID",
+                label="条码无效",
+                source=RuntimeNgReasonSource.PLUGIN,
+                plugin_key="test_workline_plugin",
+                contract_version="1.0",
+            ),
+        )
+
+    monkeypatch.setattr(ng_item_module, "resolve_workline_material_identity", _resolve_material, raising=False)
+    monkeypatch.setattr(ng_item_module, "list_workline_ng_reasons", _list_reasons, raising=False)
 
     item = await service.record_completed_ng_flow(
         db_session,
@@ -298,6 +334,39 @@ async def test_record_scan_ng_completion_creates_material_ng_item(db_session) ->
     assert item.status == NgReturnItemStatus.WAITING_REWORK
     assert item.physical_handoff_evidence_json["source"] == "WORKFLOW_SCAN_NG"
     assert item.physical_handoff_evidence_json["source_inbox_id"] == inbox.id
+    assert material_calls == ["test_workline_plugin"]
+    assert reason_calls == ["test_workline_plugin"]
+
+
+async def test_record_scan_ng_completion_unknown_plugin_uses_registry_fallbacks(db_session) -> None:
+    service = NgReturnItemService()
+    workline, session, inbox = await _create_scan_ng_fixture(db_session)
+    initial_payload = session.context_json["initial_payload"]
+    workline.plugin_key = "missing_plugin"
+    workline.contract_version = "missing.v1"
+    session.plugin_key = "missing_plugin"
+    session.contract_version = "missing.v1"
+    session.context_json = {
+        "initial_payload": initial_payload,
+        "ng_reason": "UNKNOWN_PHYSICAL_STATE",
+    }
+
+    item = await service.record_completed_ng_flow(
+        db_session,
+        session=session,
+        workline=workline,
+        inbox=inbox,
+        transition="pick_ng",
+        occurred_at=timezone.now_for_db(),
+    )
+
+    assert item is not None
+    assert item.material_identity_key == f"workflow-ng:missing_plugin:session:{session.id}"
+    assert item.material_identity_json["resolution_status"] == "MISSING"
+    assert item.material_identity_json["fallback_identity"] is True
+    assert item.material_identity_json["fallback_source"] == "SESSION"
+    assert item.ng_reason_source == NgReasonSource.RUNTIME
+    assert item.ng_reason_code == "UNKNOWN_PHYSICAL_STATE"
 
 
 async def test_record_smt_local_ng_completion_without_legacy_transition_creates_material_ng_item(db_session) -> None:

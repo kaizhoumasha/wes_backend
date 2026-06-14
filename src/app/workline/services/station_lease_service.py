@@ -51,7 +51,7 @@ class StationLeaseResult:
 
 
 class WorklineStationLeaseService:
-    """单层货架 Station lease 最小服务。"""
+    """Station lease 最小服务。"""
 
     def __init__(
         self,
@@ -73,6 +73,7 @@ class WorklineStationLeaseService:
         workline_id: int,
         workline_code: str,
         position_code: str,
+        rack_kind: RackKind = RackKind.SINGLE_LAYER,
         allow_active_rack_bound: bool = False,
         allow_active_operation_key: str | None = None,
     ) -> StationLeaseResult:
@@ -83,6 +84,7 @@ class WorklineStationLeaseService:
             workline_id=workline_id,
             workline_code=workline_code,
             position_code=position_code,
+            rack_kind=rack_kind,
             lock_position=False,
             allow_active_rack_bound=allow_active_rack_bound,
             allow_active_operation_key=allow_active_operation_key,
@@ -113,6 +115,7 @@ class WorklineStationLeaseService:
             workline_id=workline_id,
             workline_code=workline_code,
             position_code=position_code,
+            rack_kind=RackKind.SINGLE_LAYER,
             lock_position=True,
             allow_active_rack_bound=allow_active_rack_bound,
             allow_active_operation_key=allow_active_operation_key,
@@ -149,6 +152,7 @@ class WorklineStationLeaseService:
         workline_id: int,
         workline_code: str,
         position_code: str,
+        rack_kind: RackKind,
         lock_position: bool,
         allow_active_rack_bound: bool = False,
         allow_active_operation_key: str | None = None,
@@ -158,14 +162,14 @@ class WorklineStationLeaseService:
                 db,
                 workline_code=workline_code,
                 position_code=position_code,
-                rack_kind=RackKind.SINGLE_LAYER,
+                rack_kind=rack_kind,
             )
         else:
             await self.rack_position_service.require_enabled_position(
                 db,
                 workline_code=workline_code,
                 position_code=position_code,
-                rack_kind=RackKind.SINGLE_LAYER,
+                rack_kind=rack_kind,
             )
 
         placements = await self.rack_placement_repository.list_active_by_workline_position(

@@ -27,6 +27,7 @@ from src.workline_plugins.rough_sorter.contract import (
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
 )
+from src.workline_plugins.rough_sorter.plugin import POSITION_WORK_SINGLE_LAYER
 
 start_admission_module = importlib.import_module("src.app.workline.services.start_admission_service")
 
@@ -94,6 +95,22 @@ async def _persist_workline_with_devices(db_session, workline: WorkLine) -> list
     for device in devices:
         device.work_line_id = workline.id
         db_session.add(device)
+    db_session.add(
+        WorklineRackPosition(
+            workline_id=workline.id,
+            workline_code=workline.line_code,
+            position_code=POSITION_WORK_SINGLE_LAYER,
+            position_name="START 单层货架工作位",
+            position_role=WorklineRackPositionRole.SMT_CLASSIFIER_SINGLE_RACK_WORK,
+            allowed_rack_kind=RackKind.SINGLE_LAYER,
+            capacity=1,
+            logic_location_code=f"{workline.line_code}:{POSITION_WORK_SINGLE_LAYER}",
+            external_location_code=POSITION_WORK_SINGLE_LAYER,
+            device_role=ROLE_OUTPUT_ARM,
+            priority=100,
+            metadata_json={"test_fixture": True},
+        )
+    )
     await db_session.commit()
     return devices
 

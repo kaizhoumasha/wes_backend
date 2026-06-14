@@ -1,8 +1,8 @@
 """WorkLine Service 层"""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,16 +10,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.device.models import parse_device_capabilities
 from src.app.device.repositories import device_repository
 from src.app.workline.models import (
-    DeviceRoleRequirementOption,
     WorkLine,
     WorkLineConfigurationCheck,
     WorkLineConfigurationStatus,
     WorkLinePluginManifestSummary,
     WorkLinePluginOption,
     WorkLineRunMode,
-    WorkLineSingleLayerRackBoundarySummary,
+)
+from src.app.workline.models.rack_position import WorklineRackPosition
+from src.app.workline.models.workline import (
+    CommandBinding,
+    CommandResultBinding,
+    DeviceRequirement,
+    EventBinding,
+    FlowEdge,
+    NodeRef,
+    Position,
+    PositionArg,
+    PositionArgSource,
+    PositionCarrierCapability,
+    ResourceBoundary,
+    TopologySpec,
 )
 from src.app.workline.repositories import WorkLineRepository, workline_repository
+from src.app.workline.repositories.rack_position_repository import workline_rack_position_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.conf import settings
@@ -82,134 +96,137 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         return getattr(manifest, field_name)
 
     @classmethod
-    def _normalize_manifest_string_set(cls, manifest: object, plugin_key: str, field_name: str) -> list[str]:
+    def _manifest_sequence(cls, manifest: object, plugin_key: str, field_name: str) -> list[Any]:
         value = cls._manifest_attr(manifest, plugin_key, field_name)
-        if isinstance(value, str | bytes | Mapping) or not isinstance(value, Iterable):
-            raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name} 必须是字符串集合")  # noqa: TRY004
-
-        normalized: list[str] = []
-        for item in value:
-            if not isinstance(item, str) or not item:
-                raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name} 必须只包含非空字符串")
-            normalized.append(item)
-        return sorted(normalized)
-
-    @classmethod
-    def _normalize_manifest_role_map(
-        cls,
-        manifest: object,
-        plugin_key: str,
-        field_name: str,
-    ) -> dict[str, list[str]]:
-        value = cls._manifest_attr(manifest, plugin_key, field_name)
-        if not isinstance(value, Mapping):
-            raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name} 必须是角色映射")  # noqa: TRY004
-
-        normalized: dict[str, list[str]] = {}
-        for contract_name, roles in value.items():
-            if not isinstance(contract_name, str) or not contract_name:
-                raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name} key 必须是非空字符串")
-            normalized[contract_name] = cls._normalize_manifest_role_values(
-                plugin_key, field_name, contract_name, roles
-            )
-        return normalized
+        if isinstance(value, str | bytes) or not isinstance(value, Iterable):
+            raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name} 必须是结构化集合")  # noqa: TRY004
+        return list(value)
 
     @staticmethod
-    def _normalize_manifest_role_values(
-        plugin_key: str,
-        field_name: str,
-        contract_name: str,
-        roles: object,
-    ) -> list[str]:
-        if isinstance(roles, str):
-            return [roles]
-        if isinstance(roles, bytes | Mapping) or not isinstance(roles, Iterable):
-            raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name}.{contract_name} 必须是角色集合")  # noqa: TRY004
-
-        normalized: list[str] = []
-        for role in roles:
-            if not isinstance(role, str) or not role:
-                raise ValueError(f"工作线插件 {plugin_key} manifest.{field_name}.{contract_name} 必须只包含非空角色")
-            normalized.append(role)
-        return sorted(normalized) if isinstance(roles, set | frozenset) else normalized
+    def _manifest_value(value: object) -> object:
+        return getattr(value, "value", value)
 
     @staticmethod
-    def _normalize_requirement_capabilities(requirement: object, plugin_key: str, role: str) -> list[str]:
-        capabilities = getattr(requirement, "capabilities", frozenset())
-        if capabilities is None:
+    def _string_list(value: object) -> list[str]:
+        if value is None:
             return []
-        if isinstance(capabilities, str | bytes | Mapping) or not isinstance(capabilities, Iterable):
-            raise ValueError(  # noqa: TRY004
-                f"工作线插件 {plugin_key} manifest.required_device_roles.{role}.capabilities 必须是字符串集合"
-            )
-
-        normalized: list[str] = []
-        for capability in capabilities:
-            if not isinstance(capability, str) or not capability:
-                raise ValueError(
-                    f"工作线插件 {plugin_key} manifest.required_device_roles.{role}.capabilities 必须只包含非空字符串"
-                )
-            normalized.append(capability)
-        return sorted(normalized)
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, Iterable):
+            return [str(item) for item in value]
+        return []
 
     @classmethod
-    def _build_device_role_requirement_options(
-        cls,
-        manifest: object,
-        plugin_key: str,
-    ) -> list[DeviceRoleRequirementOption]:
-        required_device_roles = cls._manifest_attr(manifest, plugin_key, "required_device_roles")
-        if not isinstance(required_device_roles, Iterable) or isinstance(required_device_roles, str | bytes):
-            raise ValueError(f"工作线插件 {plugin_key} manifest.required_device_roles 必须是设备角色集合")  # noqa: TRY004
-
-        options: list[DeviceRoleRequirementOption] = []
-        for req in required_device_roles:
-            role = getattr(req, "role", None)
-            if not isinstance(role, str) or not role:
-                raise ValueError(f"工作线插件 {plugin_key} manifest.required_device_roles.role 必须是非空字符串")
-            min_count = getattr(req, "min_count", None)
-            if not isinstance(min_count, int) or min_count < 0:
-                raise ValueError(
-                    f"工作线插件 {plugin_key} manifest.required_device_roles.{role}.min_count 必须是非负整数"
-                )
-            max_count = getattr(req, "max_count", None)
-            if max_count is not None and not isinstance(max_count, int):
-                raise ValueError(f"工作线插件 {plugin_key} manifest.required_device_roles.{role}.max_count 必须是整数")
-            options.append(
-                DeviceRoleRequirementOption(
-                    role=role,
-                    min_count=min_count,
-                    max_count=max_count,
-                    capabilities=cls._normalize_requirement_capabilities(req, plugin_key, role),
-                )
-            )
-        return options
+    def _build_device_requirement_summary(cls, requirement: object) -> DeviceRequirement:
+        return DeviceRequirement(
+            role=requirement.role,
+            min_count=requirement.min_count,
+            max_count=getattr(requirement, "max_count", None),
+            hardware_capabilities=cls._string_list(getattr(requirement, "hardware_capabilities", ())),
+        )
 
     @classmethod
-    def _build_single_layer_boundary_summaries(
-        cls,
-        manifest: object,
-        plugin_key: str,
-    ) -> list[WorkLineSingleLayerRackBoundarySummary]:
-        if not hasattr(manifest, "single_layer_boundaries"):
-            return []
-        boundaries = cls._manifest_attr(manifest, plugin_key, "single_layer_boundaries")
-        if not isinstance(boundaries, Iterable) or isinstance(boundaries, str | bytes | Mapping):
-            raise ValueError(f"工作线插件 {plugin_key} manifest.single_layer_boundaries 必须是边界集合")  # noqa: TRY004
+    def _build_position_carrier_capability_summary(cls, capability: object) -> PositionCarrierCapability:
+        return PositionCarrierCapability(
+            allowed_rack_kinds=cls._string_list(getattr(capability, "allowed_rack_kinds", ())),
+            min_capacity=capability.min_capacity,
+            max_capacity=capability.max_capacity,
+            allowed_slot_kinds=cls._string_list(getattr(capability, "allowed_slot_kinds", ())),
+        )
 
-        summaries: list[WorkLineSingleLayerRackBoundarySummary] = []
-        for boundary in boundaries:
-            if hasattr(boundary, "to_summary"):
-                raw_boundary = boundary.to_summary()
-            elif isinstance(boundary, Mapping):
-                raw_boundary = dict(boundary)
-            else:
-                raise ValueError(f"工作线插件 {plugin_key} manifest.single_layer_boundaries item 必须是结构化边界")
-            try:
-                summaries.append(WorkLineSingleLayerRackBoundarySummary.model_validate(raw_boundary))
-            except ValidationError as exc:
-                raise ValueError(f"工作线插件 {plugin_key} manifest.single_layer_boundaries item 无效: {exc}") from exc
-        return summaries
+    @classmethod
+    def _build_position_summary(cls, position: object) -> Position:
+        return Position(
+            code=position.code,
+            role=position.role,
+            station_code=position.station_code,
+            carrier_capability=cls._build_position_carrier_capability_summary(position.carrier_capability),
+        )
+
+    @classmethod
+    def _build_node_ref_summary(cls, node_ref: object) -> NodeRef:
+        return NodeRef(
+            kind=str(cls._manifest_value(node_ref.kind)),
+            ref=node_ref.ref,
+        )
+
+    @classmethod
+    def _build_flow_edge_summary(cls, edge: object) -> FlowEdge:
+        return FlowEdge(
+            from_node=cls._build_node_ref_summary(edge.from_node),
+            to_node=cls._build_node_ref_summary(edge.to_node),
+            type=str(cls._manifest_value(edge.type)),
+        )
+
+    @classmethod
+    def _build_topology_summary(cls, topology: object) -> TopologySpec:
+        return TopologySpec(
+            flow_edges=[cls._build_flow_edge_summary(edge) for edge in getattr(topology, "flow_edges", ())]
+        )
+
+    @classmethod
+    def _build_event_binding_summary(cls, event: object) -> EventBinding:
+        return EventBinding(
+            event=event.event,
+            source_device_roles=cls._string_list(getattr(event, "source_device_roles", ())),
+            category=str(cls._manifest_value(event.category)),
+            payload_schema_ref=getattr(event, "payload_schema_ref", None),
+        )
+
+    @classmethod
+    def _build_position_arg_source_summary(cls, source: object | None) -> PositionArgSource | None:
+        if source is None:
+            return None
+        return PositionArgSource(
+            kind=str(cls._manifest_value(source.kind)),
+            path=source.path,
+            fallback_position_ref=getattr(source, "fallback_position_ref", None),
+        )
+
+    @classmethod
+    def _build_position_arg_summary(cls, arg: object) -> PositionArg:
+        return PositionArg(
+            name=arg.name,
+            role=str(cls._manifest_value(arg.role)),
+            required=getattr(arg, "required", True),
+            position_ref=getattr(arg, "position_ref", None),
+            source=cls._build_position_arg_source_summary(getattr(arg, "source", None)),
+        )
+
+    @classmethod
+    def _build_command_result_binding_summary(cls, binding: object) -> CommandResultBinding:
+        return CommandResultBinding(
+            result=binding.result,
+            event=binding.event,
+            category=str(cls._manifest_value(binding.category)),
+            classification=getattr(binding, "classification", None),
+            terminal=getattr(binding, "terminal", False),
+            next_event=getattr(binding, "next_event", None),
+        )
+
+    @classmethod
+    def _build_command_binding_summary(cls, command: object) -> CommandBinding:
+        return CommandBinding(
+            command=command.command,
+            target_device_role=command.target_device_role,
+            position_args=[cls._build_position_arg_summary(arg) for arg in getattr(command, "position_args", ())],
+            payload_schema_ref=getattr(command, "payload_schema_ref", None),
+            result_bindings=[
+                cls._build_command_result_binding_summary(binding)
+                for binding in getattr(command, "result_bindings", ())
+            ],
+        )
+
+    @staticmethod
+    def _build_resource_boundary_summary(boundary: object) -> ResourceBoundary:
+        return ResourceBoundary(
+            position_code=boundary.position_code,
+            rack_kind=boundary.rack_kind,
+            business_demand_type=boundary.business_demand_type,
+            wms_operation_type=boundary.wms_operation_type,
+            snapshot_kind=boundary.snapshot_kind,
+            lease_scope=boundary.lease_scope,
+        )
 
     def list_plugin_options(self) -> list[WorkLinePluginOption]:
         """从插件注册表导出作业线插件/契约版本选项。"""
@@ -224,9 +241,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                     label=plugin_key,
                     contract_versions=[manifest.contract_version],
                     default_contract_version=manifest.contract_version,
-                    required_device_roles=self._build_device_role_requirement_options(manifest, plugin_key),
-                    supported_events=self._normalize_manifest_string_set(manifest, plugin_key, "supported_events"),
-                    supported_commands=self._normalize_manifest_string_set(manifest, plugin_key, "supported_commands"),
                 )
             )
         return options
@@ -243,12 +257,27 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         return WorkLinePluginManifestSummary(
             plugin_key=plugin_key,
             contract_version=manifest.contract_version,
-            required_device_roles=self._build_device_role_requirement_options(manifest, plugin_key),
-            event_source_roles=self._normalize_manifest_role_map(manifest, plugin_key, "event_source_roles"),
-            command_target_roles=self._normalize_manifest_role_map(manifest, plugin_key, "command_target_roles"),
-            supported_events=self._normalize_manifest_string_set(manifest, plugin_key, "supported_events"),
-            supported_commands=self._normalize_manifest_string_set(manifest, plugin_key, "supported_commands"),
-            single_layer_boundaries=self._build_single_layer_boundary_summaries(manifest, plugin_key),
+            devices=[
+                self._build_device_requirement_summary(device)
+                for device in self._manifest_sequence(manifest, plugin_key, "devices")
+            ],
+            positions=[
+                self._build_position_summary(position)
+                for position in self._manifest_sequence(manifest, plugin_key, "positions")
+            ],
+            topology=self._build_topology_summary(self._manifest_attr(manifest, plugin_key, "topology")),
+            events=[
+                self._build_event_binding_summary(event)
+                for event in self._manifest_sequence(manifest, plugin_key, "events")
+            ],
+            commands=[
+                self._build_command_binding_summary(command)
+                for command in self._manifest_sequence(manifest, plugin_key, "commands")
+            ],
+            resource_boundaries=[
+                self._build_resource_boundary_summary(boundary)
+                for boundary in self._manifest_sequence(manifest, plugin_key, "resource_boundaries")
+            ],
         )
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> WorkLine | None:
@@ -334,7 +363,8 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             raise ValueError(f"WorkLine 不存在: {workline_id}")
 
         devices = await device_repository.get_by_work_line_id(db, workline_id)
-        checks = self._build_configuration_checks(workline, devices)
+        rack_positions = await self._list_rack_positions(db, workline)
+        checks = self._build_configuration_checks(workline, devices, rack_positions)
         can_activate = self._can_activate(checks)
         return WorkLineConfigurationStatus(
             workline_id=workline_id,
@@ -359,7 +389,8 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         self._assert_version(current, workline_id, version)
 
         devices = await device_repository.get_by_work_line_id(db, workline_id)
-        checks = self._build_configuration_checks(current, devices)
+        rack_positions = await self._list_rack_positions(db, current)
+        checks = self._build_configuration_checks(current, devices, rack_positions)
         can_activate = self._can_activate(checks)
         if not can_activate:
             raise BusinessException(
@@ -446,10 +477,25 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _can_activate(checks: list[WorkLineConfigurationCheck]) -> bool:
         return not any(check.status == _FAIL and check.severity == _BLOCKER for check in checks)
 
+    @staticmethod
+    async def _list_rack_positions(db: AsyncSession, workline: WorkLine) -> list[WorklineRackPosition]:
+        workline_id = getattr(workline, "id", None)
+        if not isinstance(workline_id, int):
+            return []
+
+        columns = cast("Any", WorklineRackPosition).__table__.c
+        _, positions = await workline_rack_position_repository.get_list(
+            db,
+            limit=1000,
+            where_clauses_raw=[columns.workline_id == workline_id],
+        )
+        return positions
+
     def _build_configuration_checks(
         self,
         workline: WorkLine,
         devices: list[Any],
+        rack_positions: list[Any] | None = None,
     ) -> list[WorkLineConfigurationCheck]:
         checks: list[WorkLineConfigurationCheck] = []
         plugin_key = self._resolve_plugin_key({}, workline)
@@ -495,6 +541,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         checks.extend(self._command_target_checks(manifest, topology))
         checks.extend(self._command_target_capability_config_checks(manifest, devices))
         checks.extend(self._command_target_communication_checks(workline, manifest, devices))
+        checks.extend(self._position_carrier_capability_checks(manifest, rack_positions))
         return checks
 
     @staticmethod
@@ -526,7 +573,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     @staticmethod
     def _role_requirement_checks(manifest: Any, topology: WorklineTopologyView) -> list[WorkLineConfigurationCheck]:
         checks: list[WorkLineConfigurationCheck] = []
-        for requirement in manifest.required_device_roles:
+        for requirement in manifest.devices:
             devices = topology.devices_for_role(requirement.role)
             count = len(devices)
             role_passes = count >= requirement.min_count and (
@@ -546,9 +593,10 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 )
             )
 
-            if requirement.capabilities:
+            required_capabilities = frozenset(getattr(requirement, "hardware_capabilities", ()))
+            if required_capabilities:
                 for device in devices:
-                    missing_capabilities = requirement.capabilities - device.capabilities
+                    missing_capabilities = required_capabilities - device.capabilities
                     checks.append(
                         WorkLineService._check(
                             "DEVICE_CAPABILITY",
@@ -567,7 +615,11 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     @staticmethod
     def _event_source_checks(manifest: Any, topology: WorklineTopologyView) -> list[WorkLineConfigurationCheck]:
         checks: list[WorkLineConfigurationCheck] = []
-        for event_type, roles in manifest.event_source_roles.items():
+        for event in manifest.events:
+            if WorkLineService._manifest_value(getattr(event, "category", None)) != "ENTRY_DEVICE":
+                continue
+            event_type = event.event
+            roles = tuple(getattr(event, "source_device_roles", ()))
             has_source = any(
                 device.supports_event(event_type) for role in roles for device in topology.devices_for_role(role)
             )
@@ -584,16 +636,16 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     @staticmethod
     def _command_target_checks(manifest: Any, topology: WorklineTopologyView) -> list[WorkLineConfigurationCheck]:
         checks: list[WorkLineConfigurationCheck] = []
-        for command_type, roles in manifest.command_target_roles.items():
-            has_target = any(
-                device.supports_command(command_type) for role in roles for device in topology.devices_for_role(role)
-            )
+        for command in manifest.commands:
+            command_type = command.command
+            target_role = command.target_device_role
+            has_target = any(device.supports_command(command_type) for device in topology.devices_for_role(target_role))
             checks.append(
                 WorkLineService._check(
                     "COMMAND_TARGET_CAPABILITY",
                     _OK if has_target else _FAIL,
                     "INFO" if has_target else _BLOCKER,
-                    {"command_type": command_type, "roles": list(roles)},
+                    {"command_type": command_type, "roles": [target_role]},
                 )
             )
         return checks
@@ -643,13 +695,14 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     @staticmethod
     def _command_target_capability_config_checks(manifest: Any, devices: list[Any]) -> list[WorkLineConfigurationCheck]:
         checks: list[WorkLineConfigurationCheck] = []
-        for command_type, roles in manifest.command_target_roles.items():
-            role_set = set(roles)
+        for command in manifest.commands:
+            command_type = command.command
+            target_role = command.target_device_role
             for device in devices:
                 device_id = getattr(device, "id", None)
                 if not isinstance(device_id, int):
                     continue
-                if getattr(device, "device_role", None) not in role_set:
+                if getattr(device, "device_role", None) != target_role:
                     continue
                 try:
                     _ = parse_device_capabilities(getattr(device, "capabilities_json", None))
@@ -673,19 +726,96 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     @staticmethod
     def _command_target_device_map(manifest: Any, devices: list[Any]) -> dict[int, tuple[Any, set[str]]]:
         target_map: dict[int, tuple[Any, set[str]]] = {}
-        for command_type, roles in manifest.command_target_roles.items():
-            role_set = set(roles)
+        for command in manifest.commands:
+            command_type = command.command
+            target_role = command.target_device_role
             for device in devices:
                 device_id = getattr(device, "id", None)
                 if not isinstance(device_id, int):
                     continue
-                if getattr(device, "device_role", None) not in role_set:
+                if getattr(device, "device_role", None) != target_role:
                     continue
                 if not WorkLineService._device_supports_command(device, command_type):
                     continue
                 _, command_types = target_map.setdefault(device_id, (device, set()))
                 command_types.add(command_type)
         return target_map
+
+    @staticmethod
+    def _position_carrier_capability_checks(
+        manifest: Any,
+        rack_positions: list[Any] | None,
+    ) -> list[WorkLineConfigurationCheck]:
+        rack_position_by_code = {
+            getattr(position, "position_code", None): position
+            for position in rack_positions or []
+            if isinstance(getattr(position, "position_code", None), str)
+        }
+        checks: list[WorkLineConfigurationCheck] = []
+        for position in getattr(manifest, "positions", ()):
+            position_code = getattr(position, "code", None)
+            rack_position = rack_position_by_code.get(position_code)
+
+            capability = position.carrier_capability
+            allowed_rack_kinds = [
+                str(WorkLineService._manifest_value(rack_kind))
+                for rack_kind in getattr(capability, "allowed_rack_kinds", ())
+            ]
+            min_capacity = capability.min_capacity
+            max_capacity = capability.max_capacity
+            if rack_position is None:
+                checks.append(
+                    WorkLineService._check(
+                        "POSITION_CARRIER_CAPABILITY",
+                        _FAIL,
+                        _BLOCKER,
+                        {
+                            "position_code": position_code,
+                            "position_role": getattr(position, "role", None),
+                            "station_code": getattr(position, "station_code", None),
+                            "missing_position_config": True,
+                            "enabled": False,
+                            "allowed_rack_kind": None,
+                            "allowed_rack_kinds": allowed_rack_kinds,
+                            "capacity": None,
+                            "min_capacity": min_capacity,
+                            "max_capacity": max_capacity,
+                        },
+                    )
+                )
+                continue
+
+            allowed_rack_kind = WorkLineService._rack_kind_value(getattr(rack_position, "allowed_rack_kind", None))
+            capacity = getattr(rack_position, "capacity", None)
+            enabled = bool(getattr(rack_position, "enabled", True))
+            rack_kind_passes = allowed_rack_kind in allowed_rack_kinds
+            capacity_passes = isinstance(capacity, int) and min_capacity <= capacity <= max_capacity
+            position_passes = enabled and rack_kind_passes and capacity_passes
+            checks.append(
+                WorkLineService._check(
+                    "POSITION_CARRIER_CAPABILITY",
+                    _OK if position_passes else _FAIL,
+                    "INFO" if position_passes else _BLOCKER,
+                    {
+                        "position_code": position_code,
+                        "position_role": getattr(position, "role", None),
+                        "station_code": getattr(position, "station_code", None),
+                        "enabled": enabled,
+                        "allowed_rack_kind": allowed_rack_kind,
+                        "allowed_rack_kinds": allowed_rack_kinds,
+                        "capacity": capacity,
+                        "min_capacity": min_capacity,
+                        "max_capacity": max_capacity,
+                    },
+                )
+            )
+        return checks
+
+    @staticmethod
+    def _rack_kind_value(value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(WorkLineService._manifest_value(value))
 
     @staticmethod
     def _device_supports_command(device: Any, command_type: str) -> bool:

@@ -106,7 +106,7 @@ def _resolve_payload_barcode(data: dict[str, Any]) -> str | None:
 
 
 def _resolve_plugin_business_key(payload_json: dict[str, Any], *, plugin_key: str | None) -> str | None:
-    """通过插件 manifest 恢复稳定 business_key。"""
+    """通过 registry 插件运行时恢复稳定 business_key。"""
 
     try:
         return resolve_workline_business_key(plugin_key, payload_json)
@@ -143,13 +143,13 @@ def _resolve_business_key(payload_json: dict[str, Any], *, plugin_key: str | Non
     """从事件 payload 提取业务主键，无法稳定求值时显式失败。
 
     约束：
-    - 原始外部协议字段映射优先走插件 manifest 的 business_key_resolver
+    - 原始外部协议字段映射优先走 registry 插件运行时 business_key 解析能力
     - 明确允许的设备级事件（如 ESTOP）按 event_type + device_code 稳定归属
     - 对未知插件且缺少稳定业务标识的 payload，不再返回随机 business_key，
       而是显式抛出 SessionResolveError，避免重复建单
     """
     data = ensure_dict(payload_json.get("data"))
-    # 插件解析器优先级最高。SMT 等插件可在这里按自身 data 模型派生业务键，
+    # registry 插件运行时解析器优先级最高。SMT 等插件可在这里按自身 data 模型派生业务键，
     # 不再把供应商字段名固化到通用 SessionResolver。
     business_key_from_plugin = _resolve_plugin_business_key(payload_json, plugin_key=plugin_key)
     if business_key_from_plugin:

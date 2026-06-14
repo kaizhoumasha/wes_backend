@@ -117,7 +117,7 @@ class WorklineTopologyView:
 def validate_topology_manifest(manifest: WorklinePluginManifest, topology: WorklineTopologyView) -> None:
     """校验工作线拓扑是否满足插件 manifest。"""
 
-    for requirement in manifest.required_device_roles:
+    for requirement in manifest.devices:
         devices = topology.devices_for_role(requirement.role)
         count = len(devices)
         if count < requirement.min_count:
@@ -129,27 +129,35 @@ def validate_topology_manifest(manifest: WorklinePluginManifest, topology: Workl
                 f"插件 {manifest.plugin_key} 要求角色 {requirement.role} 最多 {requirement.max_count} 个设备，当前 {count} 个"
             )
 
-        if requirement.capabilities:
+        required_capabilities = frozenset(requirement.hardware_capabilities)
+        if required_capabilities:
             for device in devices:
-                missing_capabilities = requirement.capabilities - device.capabilities
+                missing_capabilities = required_capabilities - device.capabilities
                 if missing_capabilities:
                     raise ValueError(
                         f"设备 {device.device_code or device.device_id} 缺少能力: {', '.join(sorted(missing_capabilities))}"
                     )
 
-    if manifest.event_source_roles is None:
-        manifest.event_source_roles = {}
-    for event_type, roles in manifest.event_source_roles.items():
-        if not any(device.supports_event(event_type) for role in roles for device in topology.devices_for_role(role)):
-            raise ValueError(f"插件 {manifest.plugin_key} 事件 {event_type} 没有可用来源设备角色: {', '.join(roles)}")
-
-    if manifest.command_target_roles is None:
-        manifest.command_target_roles = {}
-    for command_type, roles in manifest.command_target_roles.items():
+    for event in manifest.events:
+        category = getattr(getattr(event, "category", None), "value", getattr(event, "category", None))
+        if category != "ENTRY_DEVICE":
+            continue
         if not any(
-            device.supports_command(command_type) for role in roles for device in topology.devices_for_role(role)
+            device.supports_event(event.event)
+            for role in event.source_device_roles
+            for device in topology.devices_for_role(role)
         ):
-            raise ValueError(f"插件 {manifest.plugin_key} 命令 {command_type} 没有可用目标设备角色: {', '.join(roles)}")
+            raise ValueError(
+                f"插件 {manifest.plugin_key} 事件 {event.event} 没有可用来源设备角色: {', '.join(event.source_device_roles)}"
+            )
+
+    for command in manifest.commands:
+        if not any(
+            device.supports_command(command.command) for device in topology.devices_for_role(command.target_device_role)
+        ):
+            raise ValueError(
+                f"插件 {manifest.plugin_key} 命令 {command.command} 没有可用目标设备角色: {command.target_device_role}"
+            )
 
 
 __all__ = [

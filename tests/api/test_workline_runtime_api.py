@@ -3052,6 +3052,7 @@ class TestRuntimeQueryService:
             SimpleNamespace(available=True, reason_code=None),
             SimpleNamespace(available=False, reason_code="ACTIVE_DISPATCH_LEASE"),
             SimpleNamespace(available=True, reason_code=None),
+            SimpleNamespace(available=True, reason_code=None),
         ]
 
         with (
@@ -3080,12 +3081,18 @@ class TestRuntimeQueryService:
         assert result.single_layer_rack_snapshot == "ACTIVE"
         assert result.rack_operation_wait == "WAITING_WMS"
         assert result.resource_evidence_kind == "WES_ACTIVE_SNAPSHOT"
-        assert mock_station_lease.await_args_list[0].kwargs["position_code"] == "SOURCE_STATION_A"
-        assert mock_station_lease.await_args_list[1].kwargs["position_code"] == "SOURCE_STATION_B"
-        assert mock_station_lease.await_args_list[2].kwargs["position_code"] == "TARGET_STATION"
-        assert mock_snapshot.await_args_list[0].kwargs["context"] == {"station": {"position_code": "SOURCE_STATION_A"}}
-        assert mock_snapshot.await_args_list[1].kwargs["context"] == {"station": {"position_code": "SOURCE_STATION_B"}}
-        assert mock_snapshot.await_args_list[2].kwargs["context"] == {"station": {"position_code": "TARGET_STATION"}}
+        expected_single_layer_positions = [
+            "SOURCE_STATION_A",
+            "SOURCE_STATION_B",
+            "NG_STATION",
+            "WORKSTATION",
+        ]
+        assert [
+            call.kwargs["position_code"] for call in mock_station_lease.await_args_list
+        ] == expected_single_layer_positions
+        assert [call.kwargs["context"] for call in mock_snapshot.await_args_list] == [
+            {"station": {"position_code": position_code}} for position_code in expected_single_layer_positions
+        ]
 
     @pytest.mark.asyncio
     async def test_get_workline_detail_downgrades_boundary_when_station_config_missing(self) -> None:
@@ -3178,6 +3185,7 @@ class TestRuntimeQueryService:
                     side_effect=[
                         SimpleNamespace(available=True, reason_code=None),
                         ValueError("workline rack position not found"),
+                        SimpleNamespace(available=True, reason_code=None),
                         SimpleNamespace(available=True, reason_code=None),
                     ]
                 ),

@@ -33,6 +33,7 @@ from src.utils.timezone import timezone
 FALLBACK_LINE_CODE = "WL-RUNTIME-MONITOR-FALLBACK-SMOKE"
 FALLBACK_PLUGIN_KEY = "runtime_monitor_smoke_missing_manifest"
 SMOKE_CONTRACT_VERSION = "runtime-monitor-smoke-v1"
+SINGLE_LAYER_SMOKE_POSITION_CODE = "SOURCE_STATION_A"
 
 
 async def seed_runtime_monitor_smoke(db: AsyncSession, *, commit: bool = True) -> dict[str, Any]:
@@ -99,8 +100,8 @@ async def _seed_single_layer_sessions(db: AsyncSession, workline: WorkLine) -> l
                 "status": "PENDING",
                 "rack_kind": "SINGLE_LAYER",
                 "rack_code": "RACK-SMOKE-WAITING",
-                "target_position_code": "TARGET_STATION",
-                "work_position_code": "TARGET_STATION",
+                "target_position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
+                "work_position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
                 "source_system": "WMS",
                 "occurred_at": now.isoformat(),
             },
@@ -121,8 +122,8 @@ async def _seed_single_layer_sessions(db: AsyncSession, workline: WorkLine) -> l
                 "rack_kind": "SINGLE_LAYER",
                 "rack_code": "RACK-SMOKE-CALLBACK",
                 "bin_code": "BIN-SMOKE-CALLBACK",
-                "target_position_code": "TARGET_STATION",
-                "work_position_code": "TARGET_STATION",
+                "target_position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
+                "work_position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
                 "occurred_at": now.isoformat(),
             },
             "resource_state_events": _trace_resource_events(now),
@@ -152,8 +153,8 @@ def _trace_resource_events(now: Any, *, count: int = 55) -> list[dict[str, Any]]
                 "reel_code": f"REEL-SMOKE-{index:03d}",
                 "position_index": index,
                 "evidence_kind": "WMS_CALLBACK_EVIDENCE",
-                "station_code": "TARGET_STATION",
-                "position_code": "TARGET_STATION",
+                "station_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
+                "position_code": SINGLE_LAYER_SMOKE_POSITION_CODE,
                 "source_system": "WMS",
                 "callback_type": "WMS_RACK_ARRIVED",
                 "trace_id": "runtime-monitor-smoke-wms-callback",

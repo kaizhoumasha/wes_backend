@@ -44,9 +44,34 @@ from src.workline_plugins.rough_sorter.contract import (
     normalize_six_in_one_payload,
     resolve_rough_sorter_business_key,
 )
+from src.workline_runtime.material_identity import (
+    MaterialIdentity,
+    MaterialIdentityInput,
+    MaterialIdentityResolutionStatus,
+    material_identity_input_to_hash,
+)
 from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
 from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
-from src.workline_runtime.plugin_manifest import DeviceRoleRequirement, SingleLayerRackBoundary, WorklinePluginManifest
+from src.workline_runtime.plugin_manifest import (
+    CommandBinding,
+    CommandResultBinding,
+    DeviceRequirement,
+    EventBinding,
+    EventCategory,
+    FlowEdge,
+    FlowEdgeType,
+    NodeRef,
+    NodeRefKind,
+    Position,
+    PositionArg,
+    PositionArgRole,
+    PositionArgSource,
+    PositionArgSourceKind,
+    PositionCarrierCapability,
+    ResourceBoundary,
+    TopologySpec,
+    WorklinePluginManifest,
+)
 from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntent
 
 if TYPE_CHECKING:
@@ -56,6 +81,14 @@ if TYPE_CHECKING:
 DEFAULT_NG_LOCATION = "NG-01"
 DEFAULT_PIPELINE_INPUT_LOCATION = "PIPELINE-IN-01"
 DEFAULT_PIPELINE_OUTPUT_LOCATION = "PIPELINE-OUT-01"
+POSITION_SCAN_POINT = "ROUGH_SORTER_SCAN_POINT"
+POSITION_WORK_SINGLE_LAYER = "SINGLE_LAYER_A"
+ROUGH_SORTER_COMMAND_RESULT_EVENTS = {
+    ACTION_PICK_AND_PUT: "ROUGH_SORTER_PICK_AND_PUT_RESULT",
+    ACTION_MOVE_FORWARD: "ROUGH_SORTER_MOVE_FORWARD_RESULT",
+    ACTION_PUT_TO_BIN: "ROUGH_SORTER_PUT_TO_BIN_RESULT",
+    ACTION_MOVE_TO_NG: "ROUGH_SORTER_MOVE_TO_NG_RESULT",
+}
 
 
 def _ng_reason(canonical_code: str, label: str) -> NgReasonDefinition:
@@ -150,6 +183,104 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
     return dict(cast("Mapping[str, Any]", value)) if isinstance(value, Mapping) else {}
 
 
+def _carrier(*rack_kinds: str, min_capacity: int = 0, max_capacity: int = 1) -> PositionCarrierCapability:
+    return PositionCarrierCapability(
+        allowed_rack_kinds=rack_kinds,
+        min_capacity=min_capacity,
+        max_capacity=max_capacity,
+    )
+
+
+def _position(
+    code: str,
+    *,
+    role: str,
+    station_code: str,
+    rack_kinds: tuple[str, ...] = ("SINGLE_LAYER",),
+    min_capacity: int = 0,
+    max_capacity: int = 1,
+) -> Position:
+    return Position(
+        code=code,
+        role=role,
+        station_code=station_code,
+        carrier_capability=_carrier(*rack_kinds, min_capacity=min_capacity, max_capacity=max_capacity),
+    )
+
+
+def _node(kind: NodeRefKind, ref: str) -> NodeRef:
+    return NodeRef(kind=kind, ref=ref)
+
+
+def _command_result_bindings(action: str) -> tuple[CommandResultBinding, ...]:
+    event = ROUGH_SORTER_COMMAND_RESULT_EVENTS[action]
+    return (
+        CommandResultBinding(
+            result="SUCCESS",
+            event=event,
+            category=EventCategory.COMMAND_RESULT,
+            classification="success",
+        ),
+        CommandResultBinding(
+            result="FAILED",
+            event=event,
+            category=EventCategory.COMMAND_RESULT,
+            classification="hardware_failure",
+            terminal=True,
+        ),
+    )
+
+
+def _static_position_arg(name: str, *, role: PositionArgRole, position_ref: str) -> PositionArg:
+    return PositionArg(name=name, role=role, position_ref=position_ref)
+
+
+def _payload_position_arg(
+    name: str,
+    *,
+    role: PositionArgRole,
+    path: str,
+    fallback_position_ref: str,
+) -> PositionArg:
+    return PositionArg(
+        name=name,
+        role=role,
+        source=PositionArgSource(
+            kind=PositionArgSourceKind.EVENT_PAYLOAD,
+            path=path,
+            fallback_position_ref=fallback_position_ref,
+        ),
+    )
+
+
+def _resource_position_arg(
+    name: str,
+    *,
+    role: PositionArgRole,
+    path: str,
+    fallback_position_ref: str,
+) -> PositionArg:
+    return PositionArg(
+        name=name,
+        role=role,
+        source=PositionArgSource(
+            kind=PositionArgSourceKind.RESOURCE_OVERLAY,
+            path=path,
+            fallback_position_ref=fallback_position_ref,
+        ),
+    )
+
+
+def _rough_sorter_ng_reasons() -> tuple[NgReasonDefinition, ...]:
+    return (
+        _ng_reason(NG_REASON_BARCODE_INVALID, "条码无效"),
+        _ng_reason(NG_REASON_BARCODE_INCOMPLETE, "条码不完整"),
+        _ng_reason(NG_REASON_BARCODE_RULE_NG, "条码规则判定 NG"),
+        _ng_reason(NG_REASON_MEASUREMENT_NG, "测量业务判定 NG"),
+        _ng_reason(NG_REASON_WMS_REJECTED, "WMS 库存校验拒绝"),
+    )
+
+
 class RoughSorterPlugin(WorklinePlugin):
     """粗分机插件。"""
 
@@ -159,40 +290,118 @@ class RoughSorterPlugin(WorklinePlugin):
     manifest = WorklinePluginManifest(
         plugin_key=ROUGH_SORTER_PLUGIN_KEY,
         contract_version=ROUGH_SORTER_CONTRACT_VERSION,
-        required_device_roles=(
-            DeviceRoleRequirement(role=ROLE_INPUT_ARM, min_count=1, max_count=1),
-            DeviceRoleRequirement(role=ROLE_CONVEYOR, min_count=1, max_count=1),
-            DeviceRoleRequirement(role=ROLE_OUTPUT_ARM, min_count=1, max_count=1),
+        devices=(
+            DeviceRequirement(role=ROLE_INPUT_ARM, min_count=1, max_count=1),
+            DeviceRequirement(role=ROLE_CONVEYOR, min_count=1, max_count=1),
+            DeviceRequirement(role=ROLE_OUTPUT_ARM, min_count=1, max_count=1),
         ),
-        business_key_resolver=resolve_rough_sorter_business_key,
-        result_classifier=classify_rough_sorter_result,
-        context_model=RoughSorterContext,
-        supported_events=frozenset({EVENT_SCAN_COMPLETED, EVENT_ROUGH_SORTER_STORAGE_RETRY}),
-        supported_commands=frozenset(ACTION_TARGET_ROLES),
-        capabilities=frozenset({"active_snapshot", "rack_operation"}),
-        resource_kinds=frozenset({"SINGLE_LAYER"}),
-        requires_single_layer_boundary=True,
-        single_layer_boundaries=(
-            SingleLayerRackBoundary(
+        positions=(
+            _position(
+                POSITION_WORK_SINGLE_LAYER,
+                role="CLASSIFIER_WORK",
                 station_code="CLASSIFIER_WORK_POSITION",
-                position_code="SINGLE_LAYER_A",
+                min_capacity=1,
+            ),
+        ),
+        topology=TopologySpec(
+            flow_edges=(
+                FlowEdge(
+                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_OUTPUT_ARM),
+                    to_node=_node(NodeRefKind.POSITION, POSITION_WORK_SINGLE_LAYER),
+                    type=FlowEdgeType.OPERATION,
+                ),
+            )
+        ),
+        commands=(
+            CommandBinding(
+                command=ACTION_PICK_AND_PUT,
+                target_device_role=ROLE_INPUT_ARM,
+                result_bindings=_command_result_bindings(ACTION_PICK_AND_PUT),
+            ),
+            CommandBinding(
+                command=ACTION_MOVE_FORWARD,
+                target_device_role=ROLE_CONVEYOR,
+                result_bindings=_command_result_bindings(ACTION_MOVE_FORWARD),
+            ),
+            CommandBinding(
+                command=ACTION_PUT_TO_BIN,
+                target_device_role=ROLE_OUTPUT_ARM,
+                position_args=(
+                    _resource_position_arg(
+                        "bin_location",
+                        role=PositionArgRole.TARGET,
+                        path="target_bin_location.bin_cell_location",
+                        fallback_position_ref=POSITION_WORK_SINGLE_LAYER,
+                    ),
+                ),
+                result_bindings=_command_result_bindings(ACTION_PUT_TO_BIN),
+            ),
+            CommandBinding(
+                command=ACTION_MOVE_TO_NG,
+                target_device_role=ROLE_INPUT_ARM,
+                result_bindings=_command_result_bindings(ACTION_MOVE_TO_NG),
+            ),
+        ),
+        events=(
+            EventBinding(
+                event=EVENT_SCAN_COMPLETED,
+                source_device_roles=(ROLE_INPUT_ARM,),
+                category=EventCategory.ENTRY_DEVICE,
+            ),
+            EventBinding(
+                event=EVENT_ROUGH_SORTER_STORAGE_RETRY,
+                source_device_roles=(ROLE_OUTPUT_ARM,),
+                category=EventCategory.INTERNAL,
+            ),
+        ),
+        resource_boundaries=(
+            ResourceBoundary(
+                position_code=POSITION_WORK_SINGLE_LAYER,
                 rack_kind="SINGLE_LAYER",
-                station_role="CLASSIFIER_WORK",
                 business_demand_type="ROUGH_SORTER_BIN_ALLOCATION",
                 wms_operation_type="REPLACE_CLASSIFIER_WORK_RACK",
                 snapshot_kind="ACTIVE_CLASSIFIER_BIN_RACK",
                 lease_scope="STATION",
             ),
         ),
-        command_target_roles=ACTION_TARGET_ROLES,
-        ng_reason_catalog=(
-            _ng_reason(NG_REASON_BARCODE_INVALID, "条码无效"),
-            _ng_reason(NG_REASON_BARCODE_INCOMPLETE, "条码不完整"),
-            _ng_reason(NG_REASON_BARCODE_RULE_NG, "条码规则判定 NG"),
-            _ng_reason(NG_REASON_MEASUREMENT_NG, "测量业务判定 NG"),
-            _ng_reason(NG_REASON_WMS_REJECTED, "WMS 库存校验拒绝"),
-        ),
     )
+
+    def resolve_business_key(self, payload_json: dict[str, Any]) -> str | None:
+        return resolve_rough_sorter_business_key(payload_json)
+
+    def classify_result(self, payload_json: dict[str, Any]) -> str | None:
+        return classify_rough_sorter_result(payload_json)
+
+    def get_context_model(self) -> type[RoughSorterContext]:
+        return RoughSorterContext
+
+    def list_ng_reasons(self) -> tuple[NgReasonDefinition, ...]:
+        return _rough_sorter_ng_reasons()
+
+    def resolve_material_identity(self, input_value: MaterialIdentityInput) -> MaterialIdentity:
+        session_context = input_value.session_context or {}
+        source_payload = input_value.source_payload or {}
+        command_payload = input_value.command_payload or {}
+        six_in_one = _dict_or_empty(session_context.get("six_in_one"))
+        payload_key = self.resolve_business_key(dict(cast("Mapping[str, Any]", source_payload)))
+        business_key = (
+            payload_key
+            or _non_empty_str(session_context.get("business_key"))
+            or _non_empty_str(command_payload.get("business_key"))
+            or _non_empty_str(six_in_one.get("PkgID"))
+        )
+        if business_key is None:
+            return MaterialIdentity(
+                resolution_status=MaterialIdentityResolutionStatus.MISSING,
+                raw_evidence_hash=material_identity_input_to_hash(input_value),
+            )
+        return MaterialIdentity(
+            resolution_status=MaterialIdentityResolutionStatus.RESOLVED,
+            idempotency_key=business_key,
+            business_key=business_key,
+            display={key: value for key, value in six_in_one.items() if value is not None},
+            raw_evidence_hash=material_identity_input_to_hash(input_value),
+        )
 
     @staticmethod
     def _scan_source_location(payload_json: dict[str, Any]) -> str:
@@ -270,6 +479,18 @@ class RoughSorterPlugin(WorklinePlugin):
             snapshot = await snapshot
         return _dict_or_empty(snapshot) or None
 
+    @classmethod
+    def _classifier_work_boundary(cls) -> ResourceBoundary | None:
+        return next(
+            (
+                boundary
+                for boundary in cls.manifest.resource_boundaries
+                if boundary.business_demand_type == "ROUGH_SORTER_BIN_ALLOCATION"
+                and boundary.snapshot_kind == "ACTIVE_CLASSIFIER_BIN_RACK"
+            ),
+            None,
+        )
+
     async def _allocation_context(self, ctx: PluginContext, rough_context: RoughSorterContext) -> dict[str, Any]:
         context: dict[str, Any] = {
             "six_in_one": rough_context.six_in_one,
@@ -279,7 +500,7 @@ class RoughSorterPlugin(WorklinePlugin):
             "config": dict(ctx.config),
             "trace_id": _non_empty_str(getattr(ctx, "trace_id", None)),
         }
-        boundary = next(iter(self.manifest.single_layer_boundaries), None)
+        boundary = self._classifier_work_boundary()
         if boundary is not None:
             context.setdefault("work_position_code", boundary.position_code)
             context.setdefault("target_position_code", boundary.position_code)

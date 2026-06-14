@@ -9,9 +9,11 @@ from src.app.workline.models.inbox import InboxKind
 from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.repositories.inbox_repository import WorklineInboxClaim
 from src.app.workline.services.inbox_batch_processor import (
+    _ENTRY_DEVICE_EVENT_TYPES,
     InboxBatchProcessor,
     ProcessResult,
     _backfill_workline_from_device,
+    _entry_event_types_for_workline,
     _load_command_entity,
     _load_device_entity,
     _load_devices_by_role,
@@ -21,6 +23,7 @@ from src.app.workline.services.inbox_batch_processor import (
 from src.workline_runtime.diagnostics import ErrorCode
 from src.workline_runtime.effect_result import RuntimeIntentEffectResult
 from src.workline_runtime.orchestrator import OrchestratorResult
+from src.workline_runtime.plugin_manifest import EventCategory
 
 
 @pytest.fixture
@@ -155,6 +158,53 @@ async def test_process_batch_does_not_accept_parallelism_kwarg(mock_db, mock_inb
 def test_processor_does_not_accept_bucket_lock_provider() -> None:
     with pytest.raises(TypeError):
         InboxBatchProcessor(bucket_lock_provider=object())  # type: ignore[call-arg]
+
+
+def test_entry_event_types_for_workline_derive_only_from_entry_device_events(monkeypatch) -> None:
+    import src.app.workline.services.inbox_batch_processor as processor_module
+
+    manifest = SimpleNamespace(
+        events=(
+            SimpleNamespace(event="ENTRY_SCAN", category=EventCategory.ENTRY_DEVICE),
+            SimpleNamespace(event="INTERNAL_RETRY", category=EventCategory.INTERNAL),
+            SimpleNamespace(event="COMMAND_DONE", category=EventCategory.COMMAND_RESULT),
+            SimpleNamespace(event="OPERATOR_OVERRIDE", category="OPERATOR"),
+            SimpleNamespace(event="SAFETY_STOPPED", category="SAFETY"),
+        )
+    )
+    monkeypatch.setattr(
+        processor_module,
+        "get_workline_plugin_definition",
+        lambda plugin_key: SimpleNamespace(manifest=manifest) if plugin_key == "manifest_events" else None,
+    )
+
+    assert _entry_event_types_for_workline(SimpleNamespace(plugin_key="manifest_events")) == frozenset({"ENTRY_SCAN"})
+
+
+def test_entry_event_types_for_workline_falls_back_for_unknown_plugin(monkeypatch) -> None:
+    import src.app.workline.services.inbox_batch_processor as processor_module
+
+    monkeypatch.setattr(processor_module, "get_workline_plugin_definition", lambda plugin_key: None)
+
+    assert _entry_event_types_for_workline(SimpleNamespace(plugin_key="missing_plugin")) == _ENTRY_DEVICE_EVENT_TYPES
+
+
+def test_entry_event_types_for_workline_keeps_explicit_no_entry_manifest_empty(monkeypatch) -> None:
+    import src.app.workline.services.inbox_batch_processor as processor_module
+
+    manifest = SimpleNamespace(
+        events=(
+            SimpleNamespace(event="INTERNAL_RETRY", category=EventCategory.INTERNAL),
+            SimpleNamespace(event="COMMAND_DONE", category=EventCategory.COMMAND_RESULT),
+        )
+    )
+    monkeypatch.setattr(
+        processor_module,
+        "get_workline_plugin_definition",
+        lambda plugin_key: SimpleNamespace(manifest=manifest) if plugin_key == "no_entry_plugin" else None,
+    )
+
+    assert _entry_event_types_for_workline(SimpleNamespace(plugin_key="no_entry_plugin")) == frozenset()
 
 
 @pytest.mark.asyncio

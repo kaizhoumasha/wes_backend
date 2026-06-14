@@ -601,6 +601,9 @@ async def test_move_forward_success_with_allocated_bin_claims_cell_and_dispatche
     assert intents[2].payload_json["params"]["bin_location"] == "BIN-001-4"
     assert allocator.calls[0]["barcode"] == "PKG-ROUGH-001"
     assert allocator.calls[0]["context"]["active_bin_rack"] == {"rack_id": "RACK-001"}
+    assert allocator.calls[0]["context"]["work_position_code"] == "SINGLE_LAYER_A"
+    assert allocator.calls[0]["context"]["target_position_code"] == "SINGLE_LAYER_A"
+    assert allocator.calls[0]["context"]["rack_kind"] == "SINGLE_LAYER"
 
 
 @pytest.mark.asyncio
@@ -677,6 +680,40 @@ async def test_move_forward_success_with_rack_operation_required_stores_resume_a
     assert intents[0].context_patch["rack_operation"]["rack_kind"] == "SINGLE_LAYER"
     assert intents[0].context_patch["rack_operation"]["target_position_code"] == "SINGLE_LAYER_A"
     assert intents[0].context_patch["rack_operation"]["work_position_code"] == "SINGLE_LAYER_A"
+
+
+def test_rack_tasks_from_actions_require_work_position_code_for_move_in_action() -> None:
+    with pytest.raises(ValueError, match="work_position_code"):
+        RoughSorterPlugin._rack_tasks_from_actions({"actions": ["ALLOCATE_AND_MOVE_RACK"]})
+
+
+def test_rack_operation_required_without_work_position_blocks_allocation_decision() -> None:
+    rack_operation_request = SmtRackOperationRequest(
+        operation_key="external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
+        target_code="WMS_RCS_RACK_OPERATION",
+        payload={
+            "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
+            "actions": ["ALLOCATE_AND_MOVE_RACK"],
+        },
+    )
+    decision = SmtRackBinSchedulingDecision(rack_operation_request=rack_operation_request)
+    ctx = _command_ctx(
+        command_type=ACTION_MOVE_FORWARD,
+        device_code="RS-CONVEYOR-01",
+        session_context=_rough_sorter_context_for_phase(PHASE_MOVING_FORWARD),
+    )
+
+    intents = RoughSorterPlugin()._rack_operation_required_intents(
+        ctx,
+        {},
+        RoughSorterContext.model_validate(ctx.session.context_json),
+        "PKG-ROUGH-001",
+        decision,
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "ROUGH_SORTER_ALLOCATION_DECISION_INVALID"
+    assert "work_position_code" in intents[0].message
 
 
 def test_rack_tasks_from_actions_marks_move_out_source_position() -> None:
