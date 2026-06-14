@@ -432,7 +432,10 @@ class SmtSortingInboundPlugin(WorklinePlugin):
             or _non_empty_str(current_material.get("pkg_code"))
         )
         if business_key is None:
-            return MaterialIdentity(resolution_status=MaterialIdentityResolutionStatus.MISSING)
+            return MaterialIdentity(
+                resolution_status=MaterialIdentityResolutionStatus.MISSING,
+                raw_evidence_hash=material_identity_input_to_hash(input_value),
+            )
         return MaterialIdentity(
             resolution_status=MaterialIdentityResolutionStatus.RESOLVED,
             idempotency_key=business_key,

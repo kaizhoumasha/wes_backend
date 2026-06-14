@@ -2,6 +2,8 @@
 
 import src.workline_plugin_registry as registry
 from src.workline_plugin_registry import WorklinePluginDefinition
+from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
+from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
 from src.workline_runtime.material_identity import (
     MaterialIdentityInput,
     MaterialIdentityResolutionStatus,
@@ -43,6 +45,20 @@ def test_registry_material_identity_helper_returns_missing_default() -> None:
     assert identity.idempotency_key is None
     assert identity.display == {}
     assert identity.raw_evidence_hash == material_identity_input_to_hash(input_value)
+
+
+def test_real_plugin_material_identity_missing_preserves_evidence_hash() -> None:
+    input_value = MaterialIdentityInput(
+        source_payload={"data": {"raw_barcode": "UNKNOWN"}},
+        command_payload={"error_code": "NO_MATCH"},
+        session_context={"sorting": {}, "six_in_one": {}},
+    )
+
+    for plugin in (RoughSorterPlugin(), SmtSortingInboundPlugin()):
+        identity = plugin.resolve_material_identity(input_value)
+
+        assert identity.resolution_status == MaterialIdentityResolutionStatus.MISSING
+        assert identity.raw_evidence_hash == material_identity_input_to_hash(input_value)
 
 
 def test_hash_material_evidence_is_order_insensitive() -> None:
