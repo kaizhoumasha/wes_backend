@@ -22,6 +22,10 @@ class _ResultStub:
         return SimpleNamespace(all=lambda: self._rows)
 
 
+def test_pending_command_count_compat_wrapper_removed_from_runtime_query_service() -> None:
+    assert not hasattr(RuntimeQueryService, "_load_pending_command_count_map")
+
+
 @pytest.mark.asyncio
 async def test_runtime_device_projection_includes_resource_wait_summary() -> None:
     service = RuntimeQueryService()

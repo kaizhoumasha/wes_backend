@@ -114,25 +114,6 @@ class RackTaskRepository(BaseRepository[RackTask]):
         )
         return list(result.scalars().all())
 
-    async def list_active_by_material_session(
-        self,
-        db: AsyncSession,
-        *,
-        material_session_id: int,
-    ) -> list[RackTask]:
-        """查询物料 session 当前未闭环的货架任务。"""
-
-        columns = cast("Any", RackTask).__table__.c
-        result = await db.execute(
-            select(RackTask)
-            .where(
-                columns.material_session_id == material_session_id,
-                columns.task_status.in_(_ACTIVE_STATUSES),
-            )
-            .order_by(columns.operation_key.asc(), columns.sequence_no.asc())
-        )
-        return list(result.scalars().all())
-
     async def list_active_by_target_position(
         self,
         db: AsyncSession,
@@ -177,15 +158,6 @@ class RackTaskRepository(BaseRepository[RackTask]):
             .order_by(columns.operation_key.asc(), columns.sequence_no.asc())
         )
         return list(result.scalars().all())
-
-    async def list_open_by_material_session_id(
-        self,
-        db: AsyncSession,
-        material_session_id: int,
-    ) -> list[RackTask]:
-        """兼容旧调用：查询物料 session 当前未闭环的货架任务。"""
-
-        return await self.list_active_by_material_session(db, material_session_id=material_session_id)
 
     async def cancel_active_by_material_session(
         self,

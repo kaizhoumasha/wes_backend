@@ -106,6 +106,12 @@ class MockOutbox:
         self.blocked_detail_json = {}
 
 
+def test_device_busy_outbox_compat_wrapper_removed_from_dispatch_module() -> None:
+    from src.app.workline.services import outbox_dispatch_service
+
+    assert not hasattr(outbox_dispatch_service, "_block_outbox_for_device_busy")
+
+
 class TestOutboxDispatchService:
     """OutboxDispatchService 任务测试"""
 

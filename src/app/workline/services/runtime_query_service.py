@@ -492,7 +492,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
     ) -> tuple[dict[str, int], int, int]:
         session_columns = cast("Any", WorklineSession).__table__.c
         active_status_count_result = await db.execute(
-            select(session_columns.status, func.count(WorklineSession.id))
+            select(session_columns.status, func.count(session_columns.id))
             .where(
                 session_columns.workline_id == workline_id,
                 session_columns.status.in_(list(_ACTIVE_SESSION_STATUSES)),
@@ -504,7 +504,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         }
 
         waiting_count_result = await db.execute(
-            select(func.count(WorklineSession.id)).where(
+            select(func.count(session_columns.id)).where(
                 session_columns.workline_id == workline_id,
                 _waiting_not_timed_out_clause(session_columns, now),
             )
@@ -513,7 +513,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
         recent_since = _recent_failure_since()
         failed_count_result = await db.execute(
-            select(func.count(WorklineSession.id)).where(
+            select(func.count(session_columns.id)).where(
                 session_columns.workline_id == workline_id,
                 _recent_failure_or_timeout_clause(session_columns, now, recent_since),
             )
@@ -638,7 +638,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         recent_failed_truncated = recent_failed_total > 10
 
         completed_columns = cast("Any", WorklineSession).__table__.c
-        completed_count_query = select(func.count(WorklineSession.id)).where(
+        completed_count_query = select(func.count(completed_columns.id)).where(
             completed_columns.workline_id == workline_id,
             completed_columns.status.in_(list(_COMPLETED_SESSION_STATUSES)),
         )
@@ -1111,11 +1111,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 continue
             mapping[item.device_id] += 1
         return mapping
-
-    async def _load_pending_command_count_map(self, db: Any, device_ids: list[int]) -> dict[int, int]:
-        """Compatibility wrapper: pending_command_count now equals open_command_count."""
-
-        return await self._load_open_command_count_map(db, device_ids)
 
     async def _load_blocked_outbox_projection(self, db: Any, devices: list[Device]) -> _BlockedOutboxProjection:
         device_ids = [item.id for item in devices if item.id is not None]

@@ -254,28 +254,6 @@ async def _block_outbox_for_device_resource_wait(
     return True
 
 
-async def _block_outbox_for_device_busy(
-    db: Any,
-    *,
-    outbox_repo: Any,
-    outbox: Any,
-    outbox_id: int,
-    governance_error: _DeviceCommandGovernanceError,
-    dispatch_attempt: Any | None = None,
-    attempt_service: Any | None = None,
-) -> bool:
-    """兼容旧入口：目标设备资源等待时暂停 outbox。"""
-    return await _block_outbox_for_device_resource_wait(
-        db,
-        outbox_repo=outbox_repo,
-        outbox=outbox,
-        outbox_id=outbox_id,
-        governance_error=governance_error,
-        dispatch_attempt=dispatch_attempt,
-        attempt_service=attempt_service,
-    )
-
-
 def _latest_dispatch_attempt(attempts: list[Any]) -> Any | None:
     if not attempts:
         return None
