@@ -240,3 +240,4 @@ sessions/
 .playwright-cli/
 .gstack/
 .gbrain-source
+.sources/*

@@ -124,13 +124,13 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
     assert {EVENT_SOURCE_PICK_RESULT, EVENT_TARGET_PLACE_RESULT, EVENT_NG_PLACE_RESULT} <= result_events
 
 
-def test_smt_sorting_inbound_material_flow_edges_are_position_to_position() -> None:
+def test_smt_sorting_inbound_material_flow_edges_are_rack_position_to_rack_position() -> None:
     manifest = SmtSortingInboundPlugin.manifest
 
     material_flow_edges = [edge for edge in manifest.topology.flow_edges if edge.type == FlowEdgeType.MATERIAL_FLOW]
     assert material_flow_edges
     assert all(
-        edge.from_node.kind == NodeRefKind.POSITION and edge.to_node.kind == NodeRefKind.POSITION
+        edge.from_node.kind == NodeRefKind.RACK_POSITION and edge.to_node.kind == NodeRefKind.RACK_POSITION
         for edge in material_flow_edges
     )
     assert all(

@@ -21,7 +21,7 @@ def _manifest_summary(plugin_key: str = "demo_plugin") -> WorkLinePluginManifest
                 "hardware_capabilities": ["barcode_reader"],
             }
         ],
-        positions=[
+        rack_positions=[
             {
                 "code": "SCAN_POSITION",
                 "role": "SCAN",
@@ -38,7 +38,7 @@ def _manifest_summary(plugin_key: str = "demo_plugin") -> WorkLinePluginManifest
             "flow_edges": [
                 {
                     "from_node": {"kind": "DEVICE_ROLE", "ref": "SCANNER"},
-                    "to_node": {"kind": "POSITION", "ref": "SCAN_POSITION"},
+                    "to_node": {"kind": "RACK_POSITION", "ref": "SCAN_POSITION"},
                     "type": "OPERATION",
                 }
             ]
@@ -55,12 +55,12 @@ def _manifest_summary(plugin_key: str = "demo_plugin") -> WorkLinePluginManifest
             {
                 "command": "COMMAND_A",
                 "target_device_role": "SCANNER",
-                "position_args": [
+                "rack_position_args": [
                     {
                         "name": "target_position",
                         "role": "TARGET",
                         "required": True,
-                        "position_ref": "SCAN_POSITION",
+                        "rack_position_ref": "SCAN_POSITION",
                         "source": None,
                     }
                 ],
@@ -79,7 +79,7 @@ def _manifest_summary(plugin_key: str = "demo_plugin") -> WorkLinePluginManifest
         ],
         resource_boundaries=[
             {
-                "position_code": "SCAN_POSITION",
+                "rack_position_code": "SCAN_POSITION",
                 "rack_kind": "SINGLE_LAYER",
                 "business_demand_type": "DEMO_DEMAND",
                 "wms_operation_type": "DEMO_OPERATION",
@@ -126,6 +126,26 @@ def test_plugin_manifest_route_accepts_encoded_slash_plugin_keys() -> None:
     assert child_scope["path_params"]["plugin_key"] == "rough%20sorter%2F1"
 
 
+def test_plugin_manifest_openapi_exposes_contract_version_query() -> None:
+    app = FastAPI()
+    app.include_router(workline_api.router)
+
+    parameters = app.openapi()["paths"]["/plugins/{plugin_key}/manifest"]["get"]["parameters"]
+
+    assert {
+        "name": "contract_version",
+        "in": "query",
+        "required": False,
+    } in [
+        {
+            "name": parameter["name"],
+            "in": parameter["in"],
+            "required": parameter.get("required", False),
+        }
+        for parameter in parameters
+    ]
+
+
 @pytest.mark.asyncio
 async def test_list_plugin_options_returns_selector_only_fields(monkeypatch) -> None:
     option = WorkLinePluginOption(
@@ -153,18 +173,31 @@ async def test_list_plugin_options_returns_selector_only_fields(monkeypatch) -> 
 @pytest.mark.asyncio
 async def test_get_plugin_manifest_returns_registered_plugin_summary(monkeypatch) -> None:
     summary = _manifest_summary()
-    service = SimpleNamespace(get_plugin_manifest_summary=lambda plugin_key: summary)
+    seen_requests: list[tuple[str, str | None]] = []
+
+    def get_plugin_manifest_summary(
+        plugin_key: str,
+        contract_version: str | None = None,
+    ) -> WorkLinePluginManifestSummary:
+        seen_requests.append((plugin_key, contract_version))
+        return summary
+
+    service = SimpleNamespace(get_plugin_manifest_summary=get_plugin_manifest_summary)
     monkeypatch.setattr(workline_api, "workline_service", service)
 
-    response = await workline_api.get_workline_plugin_manifest("demo_plugin")
+    response = await workline_api.get_workline_plugin_manifest(
+        "demo_plugin",
+        contract_version="demo.v1",
+    )
 
     assert response["code"] == "1000"
     assert response["data"] == summary
+    assert seen_requests == [("demo_plugin", "demo.v1")]
     assert set(response["data"].model_dump()) == {
         "plugin_key",
         "contract_version",
         "devices",
-        "positions",
+        "rack_positions",
         "topology",
         "events",
         "commands",
@@ -177,7 +210,10 @@ async def test_get_plugin_manifest_decodes_encoded_plugin_key(monkeypatch) -> No
     seen_plugin_keys: list[str] = []
     summary = _manifest_summary(plugin_key="rough sorter/1")
 
-    def get_plugin_manifest_summary(plugin_key: str) -> WorkLinePluginManifestSummary:
+    def get_plugin_manifest_summary(
+        plugin_key: str,
+        contract_version: str | None = None,
+    ) -> WorkLinePluginManifestSummary:
         seen_plugin_keys.append(plugin_key)
         return summary
 
@@ -193,7 +229,7 @@ async def test_get_plugin_manifest_decodes_encoded_plugin_key(monkeypatch) -> No
 
 @pytest.mark.asyncio
 async def test_get_plugin_manifest_returns_not_found_for_unknown_plugin(monkeypatch) -> None:
-    service = SimpleNamespace(get_plugin_manifest_summary=lambda plugin_key: None)
+    service = SimpleNamespace(get_plugin_manifest_summary=lambda plugin_key, contract_version=None: None)
     monkeypatch.setattr(workline_api, "workline_service", service)
 
     response = await workline_api.get_workline_plugin_manifest("unknown_plugin")
@@ -204,7 +240,10 @@ async def test_get_plugin_manifest_returns_not_found_for_unknown_plugin(monkeypa
 
 @pytest.mark.asyncio
 async def test_get_plugin_manifest_returns_validation_error_for_invalid_manifest(monkeypatch) -> None:
-    def get_plugin_manifest_summary(plugin_key: str) -> None:
+    def get_plugin_manifest_summary(
+        plugin_key: str,
+        contract_version: str | None = None,
+    ) -> None:
         raise TypeError(f"工作线插件 {plugin_key} 缺少有效 manifest")
 
     service = SimpleNamespace(get_plugin_manifest_summary=get_plugin_manifest_summary)
@@ -234,7 +273,7 @@ def test_openapi_workline_plugin_manifest_summary_includes_new_manifest_fields()
         "plugin_key",
         "contract_version",
         "devices",
-        "positions",
+        "rack_positions",
         "topology",
         "events",
         "commands",
@@ -242,9 +281,9 @@ def test_openapi_workline_plugin_manifest_summary_includes_new_manifest_fields()
     }
 
 
-def test_openapi_manifest_position_schemas_document_rack_position_semantics() -> None:
-    position_schema = _workline_openapi_component("Position")
-    carrier_schema = _workline_openapi_component("PositionCarrierCapability")
+def test_openapi_manifest_rack_position_schemas_document_rack_position_semantics() -> None:
+    position_schema = _workline_openapi_component("RackPosition")
+    carrier_schema = _workline_openapi_component("RackPositionCarrierCapability")
 
     assert "货架停靠位" in position_schema["description"]
     assert "库存事实锚点" in position_schema["description"]

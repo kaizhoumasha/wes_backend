@@ -3,7 +3,7 @@
 from typing import cast
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Body, Depends, Path, status
+from fastapi import APIRouter, Body, Depends, Path, Query, status
 
 from src.app.workline.models import (
     WorkLine,
@@ -62,12 +62,16 @@ async def list_workline_plugin_options() -> ResponseSchemaModel[list[WorkLinePlu
 )
 async def get_workline_plugin_manifest(
     plugin_key: str = Path(...),
+    contract_version: str | None = Query(default=None),
 ) -> ResponseSchemaModel[WorkLinePluginManifestSummary]:
     """从插件注册表导出单个作业线插件 manifest 摘要。"""
 
     plugin_key = unquote(plugin_key)
     try:
-        summary = workline_service.get_plugin_manifest_summary(plugin_key)
+        summary = workline_service.get_plugin_manifest_summary(
+            plugin_key,
+            contract_version=contract_version,
+        )
     except (TypeError, ValueError) as exc:
         return cast(
             "ResponseSchemaModel[WorkLinePluginManifestSummary]",

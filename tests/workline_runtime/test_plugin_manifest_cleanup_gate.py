@@ -30,6 +30,12 @@ LEGACY_IDENTIFIER_FRAGMENTS = (
 LEGACY_API_EXPORTS = (
     _legacy_symbol("Device", "RoleRequirement", "Option"),
     _legacy_symbol("WorkLine", "Single", "LayerRackBoundary", "Summary"),
+    _legacy_symbol("Pos", "ition"),
+    _legacy_symbol("Pos", "ition", "Carrier", "Capability"),
+    _legacy_symbol("Pos", "ition", "Arg"),
+    _legacy_symbol("Pos", "ition", "Arg", "Role"),
+    _legacy_symbol("Pos", "ition", "Arg", "Source"),
+    _legacy_symbol("Pos", "ition", "Arg", "Source", "Kind"),
 )
 
 LEGACY_EXACT_SYMBOLS = (
@@ -50,6 +56,7 @@ LEGACY_MANIFEST_FIELDS = (
     _legacy_symbol("requires", "_single_layer_boundary"),
     _legacy_symbol("single", "_layer_boundaries"),
     _legacy_symbol("runtime", "_source"),
+    _legacy_symbol("pos", "itions"),
     "capabilities",
 )
 
@@ -71,19 +78,30 @@ MANIFEST_ATTRIBUTE_PATTERNS = tuple(
 
 LEGACY_REMOVED_CONTRACT_MEMBER_FIELDS = {
     _legacy_symbol("DeviceRequirement"): ("capabilities",),
-    _legacy_symbol("Position"): ("capabilities",),
-    _legacy_symbol("PositionCarrierCapability"): ("capacity",),
+    _legacy_symbol("Pos", "ition"): ("capabilities",),
+    _legacy_symbol("Pos", "ition", "Carrier", "Capability"): ("capacity",),
     _legacy_symbol("CommandBinding"): (
+        _legacy_symbol("position", "_args"),
         _legacy_symbol("position", "_ref"),
         _legacy_symbol("result", "_event"),
     ),
-    _legacy_symbol("PositionArg"): (_legacy_symbol("runtime", "_source"),),
+    _legacy_symbol("Pos", "ition", "Arg"): (
+        _legacy_symbol("position", "_ref"),
+        _legacy_symbol("runtime", "_source"),
+    ),
+    _legacy_symbol("Rack", "Pos", "ition", "Arg"): (_legacy_symbol("position", "_ref"),),
+    _legacy_symbol("Pos", "ition", "Arg", "Source"): (_legacy_symbol("fallback", "_position", "_ref"),),
+    _legacy_symbol("Rack", "Pos", "ition", "Arg", "Source"): (_legacy_symbol("fallback", "_position", "_ref"),),
+    _legacy_symbol("ResourceBoundary"): (_legacy_symbol("position", "_code"),),
 }
 
-LEGACY_REMOVED_CONTRACT_MEMBER_SYMBOLS = tuple(
-    _legacy_symbol(owner, ".", field)
-    for owner, fields in LEGACY_REMOVED_CONTRACT_MEMBER_FIELDS.items()
-    for field in fields
+LEGACY_REMOVED_CONTRACT_MEMBER_SYMBOLS = (
+    *(
+        _legacy_symbol(owner, ".", field)
+        for owner, fields in LEGACY_REMOVED_CONTRACT_MEMBER_FIELDS.items()
+        for field in fields
+    ),
+    _legacy_symbol("NodeRefKind", ".", "POS", "ITION"),
 )
 
 LEGACY_REMOVED_CONTRACT_MEMBER_PATTERNS = tuple(
@@ -98,7 +116,7 @@ LEGACY_REMOVED_TYPE_SIGNATURE_PATTERNS = (
 )
 
 LEGACY_TEXT_SYMBOLS = (
-    *(field_name for field_name in LEGACY_MANIFEST_FIELDS if field_name != "capabilities"),
+    *(field_name for field_name in LEGACY_MANIFEST_FIELDS if field_name not in {"capabilities", "positions"}),
     *LEGACY_IDENTIFIER_FRAGMENTS,
     *LEGACY_API_EXPORTS,
     *LEGACY_EXACT_SYMBOLS,
@@ -369,7 +387,11 @@ def _text_legacy_manifest_hits(path: Path, text: str) -> list[str]:
             if _line_is_allowlisted(line):
                 continue
             for name in (field_name for field_name in LEGACY_MANIFEST_FIELDS if field_name != "capabilities"):
-                if name in line:
+                if name == "positions":
+                    has_legacy_field_context = bool(re.search(r"(^|[`,\s])positions(`|\s+只声明|,|，|$)", line))
+                else:
+                    has_legacy_field_context = bool(re.search(rf"\b{re.escape(name)}\b", line))
+                if has_legacy_field_context:
                     hits.append(f"{path}:{line_number}: documented old manifest field {name}")
 
     return hits
@@ -478,12 +500,36 @@ def test_cleanup_gate_detects_multiline_device_requirement_capabilities_in_text(
     assert any(_legacy_symbol("Device", "Requirement.cap", "abilities") in hit for hit in hits)
 
 
-def test_cleanup_gate_allows_position_arg_position_ref() -> None:
-    text = _legacy_symbol("Position", "Arg", '(name="target", position', '_ref="BIN")')
+def test_cleanup_gate_detects_rack_position_arg_legacy_position_ref() -> None:
+    text = _legacy_symbol("Rack", "Pos", "ition", "Arg", '(name="target", position', '_ref="BIN")')
 
     hits = _text_removed_token_hits(Path("sample.tmpl"), text)
 
-    assert not any(_legacy_symbol("Command", "Binding.position", "_ref") in hit for hit in hits)
+    assert any(_legacy_symbol("Rack", "Pos", "ition", "Arg.position", "_ref") in hit for hit in hits)
+
+
+def test_cleanup_gate_detects_manifest_positions_field_without_flagging_rack_positions() -> None:
+    text = "\n".join(
+        (
+            "WorklinePluginManifest(",
+            _legacy_symbol("    pos", "itions=(),"),
+            "    rack_positions=(),",
+            ")",
+        )
+    )
+
+    hits = _text_legacy_manifest_hits(Path("sample.tmpl"), text)
+
+    assert any(_legacy_symbol("pos", "itions") in hit for hit in hits)
+    assert not any("rack_positions" in hit for hit in hits)
+
+
+def test_cleanup_gate_allows_runtime_position_code_payload_key() -> None:
+    text = '{"position_code": "WORK_POSITION"}'
+
+    hits = _text_removed_token_hits(Path("runtime_payload.json"), text)
+
+    assert hits == []
 
 
 def test_old_manifest_contract_symbols_are_removed_from_active_paths() -> None:

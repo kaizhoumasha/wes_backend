@@ -137,9 +137,9 @@ def test_single_layer_boundary_positions_derive_from_manifest_resource_boundarie
 
     manifest = SimpleNamespace(
         resource_boundaries=(
-            SimpleNamespace(position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),
-            SimpleNamespace(position_code="BUFFER_STACK", rack_kind="FIVE_LAYER"),
-            SimpleNamespace(position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),
+            SimpleNamespace(rack_position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),
+            SimpleNamespace(rack_position_code="BUFFER_STACK", rack_kind="FIVE_LAYER"),
+            SimpleNamespace(rack_position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),
         )
     )
     monkeypatch.setattr(
@@ -153,11 +153,11 @@ def test_single_layer_boundary_positions_derive_from_manifest_resource_boundarie
     assert positions == ["INBOUND_SLOT"]
 
 
-def test_manifest_position_metadata_derives_station_code_and_role_from_positions(monkeypatch) -> None:
+def test_manifest_position_metadata_derives_station_code_and_role_from_rack_positions(monkeypatch) -> None:
     query_module = importlib.import_module("src.app.workline.services.runtime_query_service")
 
     manifest = SimpleNamespace(
-        positions=(
+        rack_positions=(
             SimpleNamespace(code="INBOUND_SLOT", role="ENTRY_STATION", station_code="ST-01"),
             SimpleNamespace(code="BUFFER_STACK", role="BUFFER", station_code="ST-02"),
         )
@@ -187,8 +187,8 @@ async def test_runtime_boundary_keeps_five_layer_generic_evidence_with_single_la
     query_module = importlib.import_module("src.app.workline.services.runtime_query_service")
 
     manifest = SimpleNamespace(
-        positions=(SimpleNamespace(code="INBOUND_SLOT", role="ENTRY_STATION", station_code="ST-01"),),
-        resource_boundaries=(SimpleNamespace(position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),),
+        rack_positions=(SimpleNamespace(code="INBOUND_SLOT", role="ENTRY_STATION", station_code="ST-01"),),
+        resource_boundaries=(SimpleNamespace(rack_position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),),
     )
     monkeypatch.setattr(
         query_module,
@@ -230,8 +230,8 @@ async def test_active_snapshot_resource_evidence_derives_station_code_from_manif
     query_module = importlib.import_module("src.app.workline.services.runtime_query_service")
 
     manifest = SimpleNamespace(
-        positions=(SimpleNamespace(code="INBOUND_SLOT", role="ENTRY_STATION", station_code="ST-01"),),
-        resource_boundaries=(SimpleNamespace(position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),),
+        rack_positions=(SimpleNamespace(code="INBOUND_SLOT", role="ENTRY_STATION", station_code="ST-01"),),
+        resource_boundaries=(SimpleNamespace(rack_position_code="INBOUND_SLOT", rack_kind="SINGLE_LAYER"),),
     )
     monkeypatch.setattr(
         query_module,

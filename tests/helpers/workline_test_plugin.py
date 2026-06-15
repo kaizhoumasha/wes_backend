@@ -18,8 +18,8 @@ from src.workline_runtime.plugin_manifest import (
     DeviceRequirement,
     EventBinding,
     EventCategory,
-    Position,
-    PositionCarrierCapability,
+    RackPosition,
+    RackPositionCarrierCapability,
     ResourceBoundary,
     TopologySpec,
     WorklinePluginManifest,
@@ -126,12 +126,12 @@ class TestWorklinePlugin:
         plugin_key=PLUGIN_KEY,
         contract_version=CONTRACT_VERSION,
         devices=(DeviceRequirement(role=TEST_DEVICE_ROLE, min_count=0),),
-        positions=(
-            Position(
+        rack_positions=(
+            RackPosition(
                 code=TEST_POSITION_CODE,
                 role="TEST_ENTRY",
                 station_code="TEST_STATION",
-                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
+                carrier_capability=RackPositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
             ),
         ),
         topology=TopologySpec(),
@@ -145,7 +145,7 @@ class TestWorklinePlugin:
         ),
         resource_boundaries=(
             ResourceBoundary(
-                position_code=TEST_POSITION_CODE,
+                rack_position_code=TEST_POSITION_CODE,
                 rack_kind="SINGLE_LAYER",
                 business_demand_type="TEST_DEMAND",
                 wms_operation_type="TEST_WMS_OPERATION",

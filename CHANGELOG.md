@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.6.2.0] - 2026-06-15
+
+### Added
+
+- WorkLine 插件 manifest 查询支持传入合同版本，调用方可按指定合同读取插件能力视图。
+
+### Changed
+
+- WorkLine 插件 manifest 货架位合同统一改为 `RackPosition*` / `rack_positions` / `rack_position_args`，API summary、真实插件、插件模板和运行时查询同步使用新命名。
+- 新增 `.sources/*` 本地生成目录忽略规则，避免源码工作区临时文件进入提交范围。
+
+### Fixed
+
+- 修复粗分机入库分配上下文仍读取旧 `ResourceBoundary.position_code` 字段的问题，避免插件运行时因边界字段重命名触发异常。
+
 ## [0.6.1.0] - 2026-06-14
 
 ### Added

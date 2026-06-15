@@ -10,8 +10,8 @@ from src.workline_runtime.orchestrator import OrchestratorService
 from src.workline_runtime.plugin_base import WorklinePlugin, build_payload_invalid_block, on_event
 from src.workline_runtime.plugin_manifest import (
     DeviceRequirement,
-    Position,
-    PositionCarrierCapability,
+    RackPosition,
+    RackPositionCarrierCapability,
     TopologySpec,
     WorklinePluginManifest,
 )
@@ -40,12 +40,12 @@ class RegistrySingletonPlugin(WorklinePlugin):
         plugin_key=plugin_key,
         contract_version="test.v1",
         devices=(DeviceRequirement(role="SCANNER", min_count=0),),
-        positions=(
-            Position(
+        rack_positions=(
+            RackPosition(
                 code="ENTRY",
                 role="ENTRY",
                 station_code="ST-1",
-                carrier_capability=PositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
+                carrier_capability=RackPositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
             ),
         ),
         topology=TopologySpec(),

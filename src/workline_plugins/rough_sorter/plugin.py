@@ -62,12 +62,12 @@ from src.workline_runtime.plugin_manifest import (
     FlowEdgeType,
     NodeRef,
     NodeRefKind,
-    Position,
-    PositionArg,
-    PositionArgRole,
-    PositionArgSource,
-    PositionArgSourceKind,
-    PositionCarrierCapability,
+    RackPosition,
+    RackPositionArg,
+    RackPositionArgRole,
+    RackPositionArgSource,
+    RackPositionArgSourceKind,
+    RackPositionCarrierCapability,
     ResourceBoundary,
     TopologySpec,
     WorklinePluginManifest,
@@ -183,8 +183,8 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
     return dict(cast("Mapping[str, Any]", value)) if isinstance(value, Mapping) else {}
 
 
-def _carrier(*rack_kinds: str, min_capacity: int = 0, max_capacity: int = 1) -> PositionCarrierCapability:
-    return PositionCarrierCapability(
+def _carrier(*rack_kinds: str, min_capacity: int = 0, max_capacity: int = 1) -> RackPositionCarrierCapability:
+    return RackPositionCarrierCapability(
         allowed_rack_kinds=rack_kinds,
         min_capacity=min_capacity,
         max_capacity=max_capacity,
@@ -199,8 +199,8 @@ def _position(
     rack_kinds: tuple[str, ...] = ("SINGLE_LAYER",),
     min_capacity: int = 0,
     max_capacity: int = 1,
-) -> Position:
-    return Position(
+) -> RackPosition:
+    return RackPosition(
         code=code,
         role=role,
         station_code=station_code,
@@ -231,24 +231,24 @@ def _command_result_bindings(action: str) -> tuple[CommandResultBinding, ...]:
     )
 
 
-def _static_position_arg(name: str, *, role: PositionArgRole, position_ref: str) -> PositionArg:
-    return PositionArg(name=name, role=role, position_ref=position_ref)
+def _static_position_arg(name: str, *, role: RackPositionArgRole, rack_position_ref: str) -> RackPositionArg:
+    return RackPositionArg(name=name, role=role, rack_position_ref=rack_position_ref)
 
 
 def _payload_position_arg(
     name: str,
     *,
-    role: PositionArgRole,
+    role: RackPositionArgRole,
     path: str,
-    fallback_position_ref: str,
-) -> PositionArg:
-    return PositionArg(
+    fallback_rack_position_ref: str,
+) -> RackPositionArg:
+    return RackPositionArg(
         name=name,
         role=role,
-        source=PositionArgSource(
-            kind=PositionArgSourceKind.EVENT_PAYLOAD,
+        source=RackPositionArgSource(
+            kind=RackPositionArgSourceKind.EVENT_PAYLOAD,
             path=path,
-            fallback_position_ref=fallback_position_ref,
+            fallback_rack_position_ref=fallback_rack_position_ref,
         ),
     )
 
@@ -256,17 +256,17 @@ def _payload_position_arg(
 def _resource_position_arg(
     name: str,
     *,
-    role: PositionArgRole,
+    role: RackPositionArgRole,
     path: str,
-    fallback_position_ref: str,
-) -> PositionArg:
-    return PositionArg(
+    fallback_rack_position_ref: str,
+) -> RackPositionArg:
+    return RackPositionArg(
         name=name,
         role=role,
-        source=PositionArgSource(
-            kind=PositionArgSourceKind.RESOURCE_OVERLAY,
+        source=RackPositionArgSource(
+            kind=RackPositionArgSourceKind.RESOURCE_OVERLAY,
             path=path,
-            fallback_position_ref=fallback_position_ref,
+            fallback_rack_position_ref=fallback_rack_position_ref,
         ),
     )
 
@@ -295,7 +295,7 @@ class RoughSorterPlugin(WorklinePlugin):
             DeviceRequirement(role=ROLE_CONVEYOR, min_count=1, max_count=1),
             DeviceRequirement(role=ROLE_OUTPUT_ARM, min_count=1, max_count=1),
         ),
-        positions=(
+        rack_positions=(
             _position(
                 POSITION_WORK_SINGLE_LAYER,
                 role="CLASSIFIER_WORK",
@@ -307,7 +307,7 @@ class RoughSorterPlugin(WorklinePlugin):
             flow_edges=(
                 FlowEdge(
                     from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_OUTPUT_ARM),
-                    to_node=_node(NodeRefKind.POSITION, POSITION_WORK_SINGLE_LAYER),
+                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_WORK_SINGLE_LAYER),
                     type=FlowEdgeType.OPERATION,
                 ),
             )
@@ -326,12 +326,12 @@ class RoughSorterPlugin(WorklinePlugin):
             CommandBinding(
                 command=ACTION_PUT_TO_BIN,
                 target_device_role=ROLE_OUTPUT_ARM,
-                position_args=(
+                rack_position_args=(
                     _resource_position_arg(
                         "bin_location",
-                        role=PositionArgRole.TARGET,
+                        role=RackPositionArgRole.TARGET,
                         path="target_bin_location.bin_cell_location",
-                        fallback_position_ref=POSITION_WORK_SINGLE_LAYER,
+                        fallback_rack_position_ref=POSITION_WORK_SINGLE_LAYER,
                     ),
                 ),
                 result_bindings=_command_result_bindings(ACTION_PUT_TO_BIN),
@@ -356,7 +356,7 @@ class RoughSorterPlugin(WorklinePlugin):
         ),
         resource_boundaries=(
             ResourceBoundary(
-                position_code=POSITION_WORK_SINGLE_LAYER,
+                rack_position_code=POSITION_WORK_SINGLE_LAYER,
                 rack_kind="SINGLE_LAYER",
                 business_demand_type="ROUGH_SORTER_BIN_ALLOCATION",
                 wms_operation_type="REPLACE_CLASSIFIER_WORK_RACK",
@@ -502,8 +502,8 @@ class RoughSorterPlugin(WorklinePlugin):
         }
         boundary = self._classifier_work_boundary()
         if boundary is not None:
-            context.setdefault("work_position_code", boundary.position_code)
-            context.setdefault("target_position_code", boundary.position_code)
+            context.setdefault("work_position_code", boundary.rack_position_code)
+            context.setdefault("target_position_code", boundary.rack_position_code)
             context.setdefault("rack_kind", boundary.rack_kind)
         if rough_context.active_bin_rack is not None:
             context["active_bin_rack"] = rough_context.active_bin_rack

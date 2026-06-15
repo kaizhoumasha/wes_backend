@@ -15,7 +15,7 @@ _WORKLINE_PLUGIN_MANIFEST_FIELDS = (
     "plugin_key",
     "contract_version",
     "devices",
-    "positions",
+    "rack_positions",
     "topology",
     "commands",
     "events",

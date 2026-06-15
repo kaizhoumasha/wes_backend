@@ -44,12 +44,12 @@ from src.workline_runtime.plugin_manifest import (
     FlowEdgeType,
     NodeRef,
     NodeRefKind,
-    Position,
-    PositionArg,
-    PositionArgRole,
-    PositionArgSource,
-    PositionArgSourceKind,
-    PositionCarrierCapability,
+    RackPosition,
+    RackPositionArg,
+    RackPositionArgRole,
+    RackPositionArgSource,
+    RackPositionArgSourceKind,
+    RackPositionCarrierCapability,
     ResourceBoundary,
     TopologySpec,
     WorklinePluginManifest,
@@ -115,8 +115,8 @@ def _ng_reason(canonical_code: str, label: str) -> NgReasonDefinition:
     )
 
 
-def _carrier(*rack_kinds: str, min_capacity: int = 0, max_capacity: int = 1) -> PositionCarrierCapability:
-    return PositionCarrierCapability(
+def _carrier(*rack_kinds: str, min_capacity: int = 0, max_capacity: int = 1) -> RackPositionCarrierCapability:
+    return RackPositionCarrierCapability(
         allowed_rack_kinds=rack_kinds,
         min_capacity=min_capacity,
         max_capacity=max_capacity,
@@ -131,8 +131,8 @@ def _position(
     rack_kinds: tuple[str, ...],
     min_capacity: int = 0,
     max_capacity: int = 1,
-) -> Position:
-    return Position(
+) -> RackPosition:
+    return RackPosition(
         code=code,
         role=role,
         station_code=station_code,
@@ -163,22 +163,22 @@ def _command_result_bindings(command: str) -> tuple[CommandResultBinding, ...]:
     )
 
 
-def _static_position_arg(name: str, *, role: PositionArgRole, position_ref: str) -> PositionArg:
-    return PositionArg(name=name, role=role, position_ref=position_ref)
+def _static_position_arg(name: str, *, role: RackPositionArgRole, rack_position_ref: str) -> RackPositionArg:
+    return RackPositionArg(name=name, role=role, rack_position_ref=rack_position_ref)
 
 
 def _position_arg_from_source(
     name: str,
     *,
-    role: PositionArgRole,
-    kind: PositionArgSourceKind,
+    role: RackPositionArgRole,
+    kind: RackPositionArgSourceKind,
     path: str,
-    fallback_position_ref: str,
-) -> PositionArg:
-    return PositionArg(
+    fallback_rack_position_ref: str,
+) -> RackPositionArg:
+    return RackPositionArg(
         name=name,
         role=role,
-        source=PositionArgSource(kind=kind, path=path, fallback_position_ref=fallback_position_ref),
+        source=RackPositionArgSource(kind=kind, path=path, fallback_rack_position_ref=fallback_rack_position_ref),
     )
 
 
@@ -209,7 +209,7 @@ class SmtSortingInboundPlugin(WorklinePlugin):
             DeviceRequirement(role=ROLE_SORTING_NG_STATION, min_count=1, max_count=1),
             DeviceRequirement(role=ROLE_SORTING_WORKSTATION, min_count=1, max_count=1),
         ),
-        positions=(
+        rack_positions=(
             _position(
                 POSITION_SOURCE_STATION_A,
                 role="SOURCE",
@@ -248,37 +248,37 @@ class SmtSortingInboundPlugin(WorklinePlugin):
             flow_edges=(
                 FlowEdge(
                     from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_SOURCE_ARM),
-                    to_node=_node(NodeRefKind.POSITION, POSITION_SOURCE_STATION_A),
+                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_SOURCE_STATION_A),
                     type=FlowEdgeType.OPERATION,
                 ),
                 FlowEdge(
-                    from_node=_node(NodeRefKind.POSITION, POSITION_SOURCE_STATION_A),
-                    to_node=_node(NodeRefKind.POSITION, POSITION_WORKSTATION),
+                    from_node=_node(NodeRefKind.RACK_POSITION, POSITION_SOURCE_STATION_A),
+                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_WORKSTATION),
                     type=FlowEdgeType.MATERIAL_FLOW,
                 ),
                 FlowEdge(
                     from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_SCAN_PLATFORM),
-                    to_node=_node(NodeRefKind.POSITION, POSITION_WORKSTATION),
+                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_WORKSTATION),
                     type=FlowEdgeType.OPERATION,
                 ),
                 FlowEdge(
-                    from_node=_node(NodeRefKind.POSITION, POSITION_WORKSTATION),
-                    to_node=_node(NodeRefKind.POSITION, POSITION_TARGET_STATION),
+                    from_node=_node(NodeRefKind.RACK_POSITION, POSITION_WORKSTATION),
+                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_TARGET_STATION),
                     type=FlowEdgeType.MATERIAL_FLOW,
                 ),
                 FlowEdge(
-                    from_node=_node(NodeRefKind.POSITION, POSITION_WORKSTATION),
-                    to_node=_node(NodeRefKind.POSITION, POSITION_NG_STATION),
+                    from_node=_node(NodeRefKind.RACK_POSITION, POSITION_WORKSTATION),
+                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_NG_STATION),
                     type=FlowEdgeType.MATERIAL_FLOW,
                 ),
                 FlowEdge(
                     from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_TARGET_ARM),
-                    to_node=_node(NodeRefKind.POSITION, POSITION_TARGET_STATION),
+                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_TARGET_STATION),
                     type=FlowEdgeType.OPERATION,
                 ),
                 FlowEdge(
                     from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_TARGET_ARM),
-                    to_node=_node(NodeRefKind.POSITION, POSITION_NG_STATION),
+                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_NG_STATION),
                     type=FlowEdgeType.OPERATION,
                 ),
             )
@@ -287,18 +287,18 @@ class SmtSortingInboundPlugin(WorklinePlugin):
             CommandBinding(
                 command=COMMAND_SOURCE_PICK,
                 target_device_role=ROLE_SORTING_SOURCE_ARM,
-                position_args=(
+                rack_position_args=(
                     _position_arg_from_source(
                         "source_position_code",
-                        role=PositionArgRole.SOURCE,
-                        kind=PositionArgSourceKind.EVENT_PAYLOAD,
+                        role=RackPositionArgRole.SOURCE,
+                        kind=RackPositionArgSourceKind.EVENT_PAYLOAD,
                         path="data.source_position_code",
-                        fallback_position_ref=POSITION_SOURCE_STATION_A,
+                        fallback_rack_position_ref=POSITION_SOURCE_STATION_A,
                     ),
                     _static_position_arg(
                         "target_position_code",
-                        role=PositionArgRole.TARGET,
-                        position_ref=POSITION_WORKSTATION,
+                        role=RackPositionArgRole.TARGET,
+                        rack_position_ref=POSITION_WORKSTATION,
                     ),
                 ),
                 result_bindings=_command_result_bindings(COMMAND_SOURCE_PICK),
@@ -306,18 +306,18 @@ class SmtSortingInboundPlugin(WorklinePlugin):
             CommandBinding(
                 command=COMMAND_TARGET_PLACE,
                 target_device_role=ROLE_SORTING_TARGET_ARM,
-                position_args=(
+                rack_position_args=(
                     _static_position_arg(
                         "source_position_code",
-                        role=PositionArgRole.SOURCE,
-                        position_ref=POSITION_WORKSTATION,
+                        role=RackPositionArgRole.SOURCE,
+                        rack_position_ref=POSITION_WORKSTATION,
                     ),
                     _position_arg_from_source(
                         "target_position_code",
-                        role=PositionArgRole.TARGET,
-                        kind=PositionArgSourceKind.SESSION_CONTEXT,
+                        role=RackPositionArgRole.TARGET,
+                        kind=RackPositionArgSourceKind.SESSION_CONTEXT,
                         path="sorting.pending_target_placement.target_bin_code",
-                        fallback_position_ref=POSITION_TARGET_STATION,
+                        fallback_rack_position_ref=POSITION_TARGET_STATION,
                     ),
                 ),
                 result_bindings=_command_result_bindings(COMMAND_TARGET_PLACE),
@@ -325,16 +325,16 @@ class SmtSortingInboundPlugin(WorklinePlugin):
             CommandBinding(
                 command=COMMAND_NG_PLACE,
                 target_device_role=ROLE_SORTING_TARGET_ARM,
-                position_args=(
+                rack_position_args=(
                     _static_position_arg(
                         "source_position_code",
-                        role=PositionArgRole.SOURCE,
-                        position_ref=POSITION_WORKSTATION,
+                        role=RackPositionArgRole.SOURCE,
+                        rack_position_ref=POSITION_WORKSTATION,
                     ),
                     _static_position_arg(
                         "target_position_code",
-                        role=PositionArgRole.TARGET,
-                        position_ref=POSITION_NG_STATION,
+                        role=RackPositionArgRole.TARGET,
+                        rack_position_ref=POSITION_NG_STATION,
                     ),
                 ),
                 result_bindings=_command_result_bindings(COMMAND_NG_PLACE),
@@ -354,7 +354,7 @@ class SmtSortingInboundPlugin(WorklinePlugin):
         ),
         resource_boundaries=(
             ResourceBoundary(
-                position_code=POSITION_SOURCE_STATION_A,
+                rack_position_code=POSITION_SOURCE_STATION_A,
                 rack_kind="SINGLE_LAYER",
                 business_demand_type="SORTING_INBOUND_SOURCE",
                 wms_operation_type="SUPPLY_SINGLE_LAYER_RACK",
@@ -362,7 +362,7 @@ class SmtSortingInboundPlugin(WorklinePlugin):
                 lease_scope="STATION",
             ),
             ResourceBoundary(
-                position_code=POSITION_SOURCE_STATION_B,
+                rack_position_code=POSITION_SOURCE_STATION_B,
                 rack_kind="SINGLE_LAYER",
                 business_demand_type="SORTING_INBOUND_SOURCE",
                 wms_operation_type="SUPPLY_SINGLE_LAYER_RACK",
@@ -370,7 +370,7 @@ class SmtSortingInboundPlugin(WorklinePlugin):
                 lease_scope="STATION",
             ),
             ResourceBoundary(
-                position_code=POSITION_TARGET_STATION,
+                rack_position_code=POSITION_TARGET_STATION,
                 rack_kind="FIVE_LAYER",
                 business_demand_type="SORTING_INBOUND_TARGET",
                 wms_operation_type="ALLOCATE_SORTING_TARGET_BIN",
@@ -378,7 +378,7 @@ class SmtSortingInboundPlugin(WorklinePlugin):
                 lease_scope="STATION",
             ),
             ResourceBoundary(
-                position_code=POSITION_NG_STATION,
+                rack_position_code=POSITION_NG_STATION,
                 rack_kind="SINGLE_LAYER",
                 business_demand_type="SORTING_INBOUND_NG",
                 wms_operation_type="PLACE_LOCAL_NG",
@@ -386,7 +386,7 @@ class SmtSortingInboundPlugin(WorklinePlugin):
                 lease_scope="STATION",
             ),
             ResourceBoundary(
-                position_code=POSITION_WORKSTATION,
+                rack_position_code=POSITION_WORKSTATION,
                 rack_kind="SINGLE_LAYER",
                 business_demand_type="SORTING_INBOUND_WORK",
                 wms_operation_type="SCAN_AND_CLASSIFY_MATERIAL",
@@ -394,7 +394,7 @@ class SmtSortingInboundPlugin(WorklinePlugin):
                 lease_scope="STATION",
             ),
             ResourceBoundary(
-                position_code=POSITION_WORKSTATION,
+                rack_position_code=POSITION_WORKSTATION,
                 rack_kind="FIVE_LAYER",
                 business_demand_type="SORTING_INBOUND_WORK",
                 wms_operation_type="SCAN_AND_CLASSIFY_MATERIAL",
