@@ -1,7 +1,7 @@
 # Workline Plugin Manifest 重构
 
 > **日期**: 2026-06-12
-> **状态**: Ready for Implementation
+> **状态**: 已实现并归档；后续 `RackPosition` 公开命名由 2026-06-14 rename 计划继续收口
 > **类型**: 破坏性重构（未发布系统）
 > **影响范围**: 后端插件系统 + 前端类型定义
 
@@ -16,6 +16,8 @@
 4. **资源边界语义被误认为拓扑字段**：单层货架的 WMS operation、snapshot、lease 等元数据不能从 position role 安全推导
 
 本次重构从第一性原理出发，将 manifest 回归为**纯数据契约**。
+
+> 2026-06-15 归档审计：本 SPEC 的后端/前端合同、测试清理和模板同步已由 `aeeb9d48 v0.6.1.0 feat(workline): 重构插件 manifest 合同 (#33)` 与 `abe0e750 v0.6.2.0 fix(workline): 重命名 manifest 货架位合同 (#34)` 落地。下方任务勾选按当前实现、focused backend pytest、frontend Vitest/type/contract test 和清理门禁确认。
 
 ---
 
@@ -453,31 +455,31 @@ Plugin class
 
 每个任务都来自上面的锁定决策。实现时需要先按项目规则对要修改的函数/类/方法运行 GitNexus impact analysis。
 
-- [ ] **T1 (P1, human: ~1h / CC: ~10min)** — spec — 保持计划文档为字段合同、任务边界和验收标准
+- [x] **T1 (P1, human: ~1h / CC: ~10min)** — spec — 保持计划文档为字段合同、任务边界和验收标准
   - 来源: D14/D15/D16
   - 文件: `docs/superpowers/specs/2026-06-12-workline-plugin-manifest-refactor.md`
   - 验证: 无完整类/函数实现代码块；最后一个报告标题和哨兵有效
-- [ ] **T2 (P1, human: ~5h / CC: ~60min)** — manifest-contract — 重写 `WorklinePluginManifest` 为纯数据合同并删除旧导出
+- [x] **T2 (P1, human: ~5h / CC: ~60min)** — manifest-contract — 重写 `WorklinePluginManifest` 为纯数据合同并删除旧导出
   - 来源: D1/D2/D4/D5/D6/D7/D8/D9/D11/D16/D17/D18/D19/D20/D21/D22/D23/D24/D28/D31
   - 文件: `src/workline_runtime/plugin_manifest.py`, `src/workline_runtime/topology.py`, `src/workline_runtime/__init__.py`
   - 验证: manifest 单测覆盖有效/无效合同、必填 topology、`EventCategory`、`EventBinding`、`CommandBinding.position_args`、`PositionArg.position_ref` 与 `source` 互斥、`PositionArgSource` 不含 `STATIC`、`CommandResultBinding`、`PositionCarrierCapability`；旧 manifest 符号不存在
-- [ ] **T3 (P1, human: ~3h / CC: ~35min)** — plugin-registry — 建立 registry 唯一插件实例和 runtime helper
+- [x] **T3 (P1, human: ~3h / CC: ~35min)** — plugin-registry — 建立 registry 唯一插件实例和 runtime helper
   - 来源: D3/D13
   - 文件: `src/workline_plugin_registry.py`, `src/workline_runtime/orchestrator.py` 和当前 workline plugins
   - 验证: helper 测试覆盖缺省语义、context model、material identity、NG reasons、result classification、business key 和单实例行为
-- [ ] **T4 (P1, human: ~4h / CC: ~50min)** — runtime-services — 迁移 Workline 运行时消费方到新合同
+- [x] **T4 (P1, human: ~4h / CC: ~50min)** — runtime-services — 迁移 Workline 运行时消费方到新合同
   - 来源: D2/D5/D7/D8/D12/D17/D18/D19/D21/D22/D23/D24/D28/D29
   - 文件: workline validation、runtime query、inbox batch processor、`src/app/workline/services/operation_service.py` sandbox event template、hold/release、NG return services
   - 验证: 定向后端测试覆盖 topology validation、event category filtering、command position args、command result bindings、carrier capability 约束、resource boundary lookup、runtime overlay、station derivation 和 NG/material flows
-- [ ] **T5 (P1, human: ~2h / CC: ~25min)** — frontend-contract — 通过 OpenAPI 生成链路更新前端类型并适配 runtime scene
+- [x] **T5 (P1, human: ~2h / CC: ~25min)** — frontend-contract — 通过 OpenAPI 生成链路更新前端类型并适配 runtime scene
   - 来源: D10/D12/D16/D17/D27/D30
   - 文件: 前端 generated types/zod schemas、metadata、WorkLine config page、runtime scene 和 config consumers
   - 验证: 前端类型生成、合同校验、plugin options selector-only、配置页按 manifest 详情展示角色/事件/命令、cached manifest 静态拓扑渲染、contract version 变化刷新、按 `position_code` runtime overlay、runtime scene Vitest 和旧字段 `rg` 门禁通过
-- [ ] **T6 (P1, human: ~4h / CC: ~45min)** — tests-cleanup — 删除或改写旧测试，补齐后端、前端、合同与集成测试矩阵
+- [x] **T6 (P1, human: ~4h / CC: ~45min)** — tests-cleanup — 删除或改写旧测试，补齐后端、前端、合同与集成测试矩阵
   - 来源: D12/D25/D26/D28
   - 文件: 后端 workline runtime/service/API tests 和前端 runtime-scene tests
   - 验证: focused pytest + Vitest suites 通过；真实插件 manifest 金样例、失败路径和可执行清理门禁被覆盖
-- [ ] **T7 (P2, human: ~1h / CC: ~15min)** — plugin-docs — 同步插件模板和开发者指南到新 manifest 契约
+- [x] **T7 (P2, human: ~1h / CC: ~15min)** — plugin-docs — 同步插件模板和开发者指南到新 manifest 契约
   - 来源: D1/D12
   - 文件: plugin template assets、developer docs、template asset tests
   - 验证: plugin template asset tests 通过

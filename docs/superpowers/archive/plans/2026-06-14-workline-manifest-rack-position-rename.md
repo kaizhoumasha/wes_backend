@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.13, dataclasses, Pydantic, FastAPI OpenAPI, pytest, ruff, GitNexus, uv, Vue 3, TypeScript, pnpm, Vitest。
 
+**Acceptance Audit (2026-06-15):** 本计划已由 `abe0e750 v0.6.2.0 fix(workline): 重命名 manifest 货架位合同 (#34)` 落地。当前后端 focused regression 151 passed，frontend targeted Vitest 88 passed，`pnpm type:check` 与 `pnpm contract:test` 通过；下方 checkbox 按当前源码、生成合同、测试和提交历史勾选，历史 RED 阶段不重放。
+
 ---
 
 ## Investigation Summary
@@ -122,7 +124,7 @@ Frontend files under `/Users/kaizhou/SynologyDrive/works/worktrees/wes_frontend/
 - Read: `/Users/kaizhou/SynologyDrive/works/worktrees/wes_frontend/feature-workline-plugin-manifest-refactor/src/utils/runtime-scene.ts`
 - Read: `/Users/kaizhou/SynologyDrive/works/worktrees/wes_frontend/feature-workline-plugin-manifest-refactor/src/views/admin/worklines/config/WorkLineConfigPage.vue`
 
-- [ ] **Step 1: 确认 worktree 干净**
+- [x] **Step 1: 确认 worktree 干净**
 
 Run:
 
@@ -132,7 +134,7 @@ git status --short
 
 Expected: no output, or only unrelated user-owned files that are explicitly excluded from this task.
 
-- [ ] **Step 2: 刷新 GitNexus 索引**
+- [x] **Step 2: 刷新 GitNexus 索引**
 
 Run:
 
@@ -142,7 +144,7 @@ npx gitnexus analyze
 
 Expected: analyzer completes, or reports only generated/large-file skips. If it exits non-zero without a usable index, capture the output and continue with `mcp__gitnexus.cypher` plus local source search as fallback.
 
-- [ ] **Step 3: 运行 backend symbol impact analysis**
+- [x] **Step 3: 运行 backend symbol impact analysis**
 
 Call GitNexus impact for these symbols before editing code symbols:
 
@@ -165,13 +167,13 @@ SmtSortingInboundPlugin
 
 Expected: no HIGH or CRITICAL risk. If any target returns HIGH, CRITICAL, or UNKNOWN for a symbol that will be edited, stop and report the direct callers, affected processes and unknowns before changing files.
 
-- [ ] **Step 4: Confirm rename tool availability**
+- [x] **Step 4: Confirm rename tool availability**
 
 Call `tool_search` for GitNexus rename support.
 
 Expected: use GitNexus rename for class/enum symbol renames if available. If no rename tool is exposed, use targeted symbol-level edits only; do not run broad repository string replacement commands.
 
-- [ ] **Step 5: Record blast radius**
+- [x] **Step 5: Record blast radius**
 
 Run:
 
@@ -192,7 +194,7 @@ Expected: output is limited to manifest contract, plugin declarations, API summa
 - Modify: `tests/test_workline_routes.py`
 - Modify: `tests/workline_plugins/test_plugin_template_assets.py`
 
-- [ ] **Step 1: 修改 manifest 合同 shape 测试**
+- [x] **Step 1: 修改 manifest 合同 shape 测试**
 
 Update `test_manifest_contract_exports_public_data_types` or the closest current public surface test to assert:
 
@@ -208,7 +210,7 @@ uv run pytest tests/workline_runtime/test_plugin_manifest_and_topology.py -q
 
 Expected before production changes: failures mention missing `RackPosition*` or unexpected old `Position*`.
 
-- [ ] **Step 2: 修改 topology ref 测试**
+- [x] **Step 2: 修改 topology ref 测试**
 
 Update topology tests to use `NodeRefKind.RACK_POSITION`. Keep the existing rule that `MATERIAL_FLOW` edges must connect rack-position nodes only.
 
@@ -220,7 +222,7 @@ uv run pytest tests/workline_runtime/test_plugin_manifest_and_topology.py::test_
 
 Expected before production changes: failure mentions missing `RACK_POSITION` or old `POSITION` enum value.
 
-- [ ] **Step 3: 修改 command rack position arg 测试**
+- [x] **Step 3: 修改 command rack position arg 测试**
 
 Rename command arg tests so they assert:
 
@@ -237,7 +239,7 @@ uv run pytest tests/workline_runtime/test_plugin_manifest_and_topology.py -k "ra
 
 Expected before production changes: failures mention old `PositionArg` names or missing `rack_position_ref`.
 
-- [ ] **Step 4: 修改 cleanup gate**
+- [x] **Step 4: 修改 cleanup gate**
 
 Update `tests/workline_runtime/test_plugin_manifest_cleanup_gate.py` so active sources fail on old manifest names in manifest contexts:
 
@@ -257,7 +259,7 @@ uv run pytest tests/workline_runtime/test_plugin_manifest_cleanup_gate.py -q
 
 Expected before production changes: cleanup gate reports old manifest contract names in active source/template files.
 
-- [ ] **Step 5: 修改 API route/service tests**
+- [x] **Step 5: 修改 API route/service tests**
 
 Update expected manifest summary fields from `positions` to `rack_positions`, and expected configuration check code from `POSITION_CARRIER_CAPABILITY` to `RACK_POSITION_CARRIER_CAPABILITY`.
 
@@ -269,7 +271,7 @@ uv run pytest tests/test_workline_service_plugin_validation.py tests/test_workli
 
 Expected before production changes: failures mention missing `rack_positions` or check code mismatch.
 
-- [ ] **Step 6: 修改 plugin template asset tests**
+- [x] **Step 6: 修改 plugin template asset tests**
 
 Update template asset tests to expect `RackPosition*`, `rack_positions`, `rack_position_args`, `rack_position_ref` and `fallback_rack_position_ref`.
 
@@ -289,7 +291,7 @@ Expected before template changes: failures mention old template snippets.
 - Test: `tests/workline_runtime/test_plugin_manifest_and_topology.py`
 - Test: `tests/workline_runtime/test_plugin_manifest_cleanup_gate.py`
 
-- [ ] **Step 1: Rename manifest data types**
+- [x] **Step 1: Rename manifest data types**
 
 In `src/workline_runtime/plugin_manifest.py`, rename the manifest-only dataclasses/enums according to the Naming Contract table:
 
@@ -301,7 +303,7 @@ In `src/workline_runtime/plugin_manifest.py`, rename the manifest-only dataclass
 
 Do not alter `PositionArgRole` enum values `SOURCE` and `TARGET`; only rename the enum type to `RackPositionArgRole`.
 
-- [ ] **Step 2: Update validation messages and helper names**
+- [x] **Step 2: Update validation messages and helper names**
 
 Update validation helpers and error messages so they refer to:
 
@@ -314,11 +316,11 @@ Update validation helpers and error messages so they refer to:
 
 Keep validation behavior identical to current behavior.
 
-- [ ] **Step 3: Update runtime package exports**
+- [x] **Step 3: Update runtime package exports**
 
 In `src/workline_runtime/__init__.py`, export the new names and remove old `Position*` exports. Keep unrelated runtime exports unchanged.
 
-- [ ] **Step 4: Run manifest tests**
+- [x] **Step 4: Run manifest tests**
 
 Run:
 
@@ -336,7 +338,7 @@ Expected: selected tests pass after plugin files are updated in Task 4; at this 
 - Test: `tests/workline_runtime/test_plugin_manifest_and_topology.py`
 - Test: `tests/workline_runtime/test_smt_sorting_inbound_plugin.py`
 
-- [ ] **Step 1: Update rough sorter imports and builders**
+- [x] **Step 1: Update rough sorter imports and builders**
 
 In `src/workline_plugins/rough_sorter/plugin.py`:
 
@@ -349,13 +351,13 @@ In `src/workline_plugins/rough_sorter/plugin.py`:
 
 Keep command payload names such as `"source_position_code"` and `"target_position_code"` unchanged.
 
-- [ ] **Step 2: Update SMT inbound imports and builders**
+- [x] **Step 2: Update SMT inbound imports and builders**
 
 Apply the same manifest-only rename in `src/workline_plugins/smt_sorting_inbound/plugin.py`.
 
 Keep constants such as `POSITION_SOURCE_STATION_A` unchanged in this task; they are plugin-local stable codes and not public type names.
 
-- [ ] **Step 3: Update real plugin golden assertions**
+- [x] **Step 3: Update real plugin golden assertions**
 
 In `tests/workline_runtime/test_plugin_manifest_and_topology.py`, update real plugin assertions:
 
@@ -364,7 +366,7 @@ In `tests/workline_runtime/test_plugin_manifest_and_topology.py`, update real pl
 - `NodeRefKind.RACK_POSITION` replaces `NodeRefKind.POSITION`
 - boundary lookup uses `boundary.rack_position_code`
 
-- [ ] **Step 4: Run real plugin tests**
+- [x] **Step 4: Run real plugin tests**
 
 Run:
 
@@ -382,7 +384,7 @@ Expected: all selected tests pass or only API summary/template tests remain fail
 - Test: `tests/test_workline_service_plugin_validation.py`
 - Test: `tests/test_workline_routes.py`
 
-- [ ] **Step 1: Rename API schema classes and fields**
+- [x] **Step 1: Rename API schema classes and fields**
 
 In `src/app/workline/models/workline.py`:
 
@@ -395,7 +397,7 @@ In `src/app/workline/models/workline.py`:
 
 Update descriptions to say “货架停靠位” and “rack position” consistently.
 
-- [ ] **Step 2: Update service summary builders**
+- [x] **Step 2: Update service summary builders**
 
 In `src/app/workline/services/workline_service.py`:
 
@@ -409,11 +411,11 @@ In `src/app/workline/services/workline_service.py`:
 
 Do not change service/repository layering.
 
-- [ ] **Step 3: Update configuration check context**
+- [x] **Step 3: Update configuration check context**
 
 Rename the check code to `RACK_POSITION_CARRIER_CAPABILITY`. In the context payload, prefer `rack_position_code` and `rack_position_role`; keep `position_code` out of this manifest-derived check to prevent mixed terminology.
 
-- [ ] **Step 4: Run service and route tests**
+- [x] **Step 4: Run service and route tests**
 
 Run:
 
@@ -435,7 +437,7 @@ Expected: all selected tests pass or only docs/template cleanup failures remain.
 - Test: `tests/workline_plugins/test_plugin_template_assets.py`
 - Test: `tests/workline_runtime/test_plugin_manifest_cleanup_gate.py`
 
-- [ ] **Step 1: Update plugin development guide**
+- [x] **Step 1: Update plugin development guide**
 
 Replace manifest contract references so the guide says:
 
@@ -444,19 +446,19 @@ Replace manifest contract references so the guide says:
 - `RackPositionArg.rack_position_ref` is the only static fixed rack position reference path
 - hardware internal points remain in command payload or plugin business logic
 
-- [ ] **Step 2: Update plugin template files**
+- [x] **Step 2: Update plugin template files**
 
 Update template imports, manifest declaration and template tests from old `Position*` names to `RackPosition*` names.
 
 Keep template examples focused on rack docking positions; do not introduce scanner, conveyor or robot internal point examples as rack positions.
 
-- [ ] **Step 3: Mark old rack-position semantic plan as superseded**
+- [x] **Step 3: Mark old rack-position semantic plan as superseded**
 
 At the top of `docs/superpowers/plans/2026-06-12-rack-position-contract-optimization.md`, add a short note that its “keep Position naming” decision is superseded by `docs/superpowers/plans/2026-06-14-workline-manifest-rack-position-rename.md`.
 
 Do not delete the old plan; it is useful decision history.
 
-- [ ] **Step 4: Run template and cleanup tests**
+- [x] **Step 4: Run template and cleanup tests**
 
 Run:
 
@@ -481,7 +483,7 @@ Expected: all selected tests pass.
 - Test: `/Users/kaizhou/SynologyDrive/works/worktrees/wes_frontend/feature-workline-plugin-manifest-refactor/tests/unit/views/runtime/runtimeRouteSync.test.ts`
 - Test: `/Users/kaizhou/SynologyDrive/works/worktrees/wes_frontend/feature-workline-plugin-manifest-refactor/tests/unit/scripts/contract-endpoint-noise.test.ts`
 
-- [ ] **Step 1: Start backend OpenAPI server**
+- [x] **Step 1: Start backend OpenAPI server**
 
 From backend repo:
 
@@ -491,7 +493,7 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8001
 
 Expected: server exposes `http://localhost:8001/api/openapi.json`.
 
-- [ ] **Step 2: Regenerate frontend OpenAPI types**
+- [x] **Step 2: Regenerate frontend OpenAPI types**
 
 From frontend worktree:
 
@@ -503,7 +505,7 @@ pnpm generate:zod
 
 Expected: generated files contain `RackPosition`, `RackPositionArg`, `rack_positions`, `rack_position_args`, `rack_position_ref`, `fallback_rack_position_ref`, and no manifest `PositionArg` schema.
 
-- [ ] **Step 3: Update runtime scene consumer**
+- [x] **Step 3: Update runtime scene consumer**
 
 In `src/utils/runtime-scene.ts`:
 
@@ -512,7 +514,7 @@ In `src/utils/runtime-scene.ts`:
 - read `boundary.rack_position_code` when mapping manifest resource boundaries
 - keep runtime evidence fields such as `item.position_code` unchanged
 
-- [ ] **Step 4: Update config page consumer**
+- [x] **Step 4: Update config page consumer**
 
 In `src/views/admin/worklines/config/WorkLineConfigPage.vue`:
 
@@ -521,7 +523,7 @@ In `src/views/admin/worklines/config/WorkLineConfigPage.vue`:
 - update labels and check-code handling to `RACK_POSITION_CARRIER_CAPABILITY`
 - keep workline actual configuration model names such as `WorklineRackPosition` unchanged
 
-- [ ] **Step 5: Update frontend tests and fixtures**
+- [x] **Step 5: Update frontend tests and fixtures**
 
 Update frontend tests so manifest fixtures use:
 
@@ -534,7 +536,7 @@ Update frontend tests so manifest fixtures use:
 
 Keep runtime projection/resource evidence fixtures using `position_code`.
 
-- [ ] **Step 6: Run frontend targeted tests**
+- [x] **Step 6: Run frontend targeted tests**
 
 Run:
 
@@ -555,7 +557,7 @@ Expected: all selected Vitest suites pass.
 **Files:**
 - Verify backend and frontend files changed in Tasks 2-7.
 
-- [ ] **Step 1: Run backend focused regression**
+- [x] **Step 1: Run backend focused regression**
 
 Run:
 
@@ -570,7 +572,7 @@ uv run pytest tests/workline_runtime/test_plugin_manifest_and_topology.py \
 
 Expected: all selected tests pass.
 
-- [ ] **Step 2: Run backend formatting and lint**
+- [x] **Step 2: Run backend formatting and lint**
 
 Run:
 
@@ -581,7 +583,7 @@ uv run ruff check src/workline_runtime/plugin_manifest.py src/workline_runtime/_
 
 Expected: ruff reports no errors after formatting.
 
-- [ ] **Step 3: Run backend manifest cleanup search**
+- [x] **Step 3: Run backend manifest cleanup search**
 
 Run:
 
@@ -592,7 +594,7 @@ rg -n -P "\\b(?<!Rack)PositionCarrierCapability\\b|\\b(?<!Rack)PositionArg\\b|\\
 
 Expected: no output except archived/superseded plan references if the command is intentionally extended to include `docs/superpowers`.
 
-- [ ] **Step 4: Run frontend type and contract checks**
+- [x] **Step 4: Run frontend type and contract checks**
 
 Run:
 
@@ -604,7 +606,7 @@ pnpm contract:test
 
 Expected: type check and contract test pass.
 
-- [ ] **Step 5: Run frontend cleanup search**
+- [x] **Step 5: Run frontend cleanup search**
 
 Run:
 
@@ -616,7 +618,7 @@ rg -n -P "\\bPositionSchema\\b|\\bPositionArg\\b|\\bPositionArgSource\\b|positio
 
 Expected: no manifest-contract old names. If unrelated UI layout text contains “position”, keep it only outside manifest contract files.
 
-- [ ] **Step 6: Run GitNexus detect changes before commit**
+- [x] **Step 6: Run GitNexus detect changes before commit**
 
 Call:
 
@@ -632,7 +634,7 @@ Expected: changed symbols and affected flows are limited to manifest contract, w
 - Backend: all modified backend repo files from Tasks 2-6 plus this plan file.
 - Frontend: all modified frontend worktree files from Task 7.
 
-- [ ] **Step 1: Review backend diff**
+- [x] **Step 1: Review backend diff**
 
 Run:
 
@@ -642,7 +644,7 @@ git diff -- src/workline_runtime/plugin_manifest.py src/workline_runtime/__init_
 
 Expected: diff contains only manifest RackPosition rename, docs/templates alignment, and tests.
 
-- [ ] **Step 2: Commit backend**
+- [x] **Step 2: Commit backend**
 
 Run:
 
@@ -653,7 +655,7 @@ git commit -m "refactor(workline): 将 manifest 货架位合同重命名为 Rack
 
 Expected: backend commit succeeds.
 
-- [ ] **Step 3: Review frontend diff**
+- [x] **Step 3: Review frontend diff**
 
 Run:
 
@@ -664,7 +666,7 @@ git diff -- src/api/generated src/types/generated src/utils/runtime-scene.ts src
 
 Expected: diff contains generated schema rename, runtime scene/config page consumption updates, and tests.
 
-- [ ] **Step 4: Commit frontend**
+- [x] **Step 4: Commit frontend**
 
 Run:
 

@@ -10,9 +10,9 @@
 
 **Tech Stack:** Python 3.13, FastAPI, SQLModel/SQLAlchemy async, Celery, pytest/pytest-asyncio, Ruff, GitNexus, uv。
 
-**Implementation Status (2026-06-10):** 资源约束并发代码、迁移、用户文档和本地门禁已落地；PostgreSQL-backed claim/EXPLAIN 门禁已在本地 test DB 用 `RUN_WORKLINE_INTEGRATION=1` + `INTEGRATION_DATABASE_URL` 通过确认；focused runtime 契约测试为 319 passed，PostgreSQL-backed claim/EXPLAIN + 多物料集成子集为 17 passed，全量 `uv run pytest tests/` 为 2035 passed / 21 skipped。当前剩余状态仅为最终提交未执行，等待用户明确提交指令。
+**Implementation Status (2026-06-10):** 资源约束并发代码、迁移、用户文档和本地门禁已落地；PostgreSQL-backed claim/EXPLAIN 门禁已在本地 test DB 用 `RUN_WORKLINE_INTEGRATION=1` + `INTEGRATION_DATABASE_URL` 通过确认；focused runtime 契约测试为 319 passed，PostgreSQL-backed claim/EXPLAIN + 多物料集成子集为 17 passed，全量 `uv run pytest tests/` 为 2035 passed / 21 skipped。最终提交已在 `57a22274 v0.5.0.0 feat(workline): 支持资源约束并发处理 (#31)` 落地。
 
-**Acceptance Audit (2026-06-10):** 下方 checkbox 已按功能验收口径逐项更新：`[x]` 表示该项对应合同已由实现、测试、静态搜索、PostgreSQL-backed 门禁或 GitNexus detect changes 证明；RED 阶段的“写失败测试/运行失败测试”不在验收审计中破坏当前实现重放，只确认对应回归测试已存在并通过。`Task 6 / Step 7` 涉及真实 Git commit，本轮未擅自提交，因此保持未勾选。
+**Acceptance Audit (2026-06-15):** 下方 checkbox 已按功能验收口径逐项更新：`[x]` 表示该项对应合同已由实现、测试、静态搜索、PostgreSQL-backed 门禁、GitNexus detect changes 或落地提交证明；RED 阶段的“写失败测试/运行失败测试”不在验收审计中破坏当前实现重放，只确认对应回归测试已存在并通过。
 
 ---
 
@@ -948,9 +948,9 @@ detect_changes(repo="wes_backend", scope="all")
 - 影响流程集中在 WorkLine runtime、Inbox worker、diagnostics、SMT sorting resource wait。
 - 没有意外 API 层直连数据库或跨层调用。
 
-- [ ] **Step 7: 单次最终提交**
+- [x] **Step 7: 单次最终提交**
 
-状态：未执行。本轮只做功能验收和文档状态同步，不擅自创建 Git commit；等待用户明确提交指令后再执行。
+状态：已执行。最终落地提交为 `57a22274 v0.5.0.0 feat(workline): 支持资源约束并发处理 (#31)`。
 
 先运行：
 
