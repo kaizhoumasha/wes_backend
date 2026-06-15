@@ -502,8 +502,8 @@ class RoughSorterPlugin(WorklinePlugin):
         }
         boundary = self._classifier_work_boundary()
         if boundary is not None:
-            context.setdefault("work_position_code", boundary.position_code)
-            context.setdefault("target_position_code", boundary.position_code)
+            context.setdefault("work_position_code", boundary.rack_position_code)
+            context.setdefault("target_position_code", boundary.rack_position_code)
             context.setdefault("rack_kind", boundary.rack_kind)
         if rough_context.active_bin_rack is not None:
             context["active_bin_rack"] = rough_context.active_bin_rack
