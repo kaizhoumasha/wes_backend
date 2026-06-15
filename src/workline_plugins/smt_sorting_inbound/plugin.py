@@ -257,6 +257,16 @@ class SmtSortingInboundPlugin(WorklinePlugin):
                     type=FlowEdgeType.MATERIAL_FLOW,
                 ),
                 FlowEdge(
+                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_SOURCE_ARM),
+                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_SOURCE_STATION_B),
+                    type=FlowEdgeType.OPERATION,
+                ),
+                FlowEdge(
+                    from_node=_node(NodeRefKind.RACK_POSITION, POSITION_SOURCE_STATION_B),
+                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_WORKSTATION),
+                    type=FlowEdgeType.MATERIAL_FLOW,
+                ),
+                FlowEdge(
                     from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_SCAN_PLATFORM),
                     to_node=_node(NodeRefKind.RACK_POSITION, POSITION_WORKSTATION),
                     type=FlowEdgeType.OPERATION,

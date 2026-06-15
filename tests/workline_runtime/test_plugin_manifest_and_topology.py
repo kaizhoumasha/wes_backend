@@ -746,6 +746,35 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
     }
 
 
+def test_smt_sorting_inbound_topology_connects_declared_source_stations() -> None:
+    from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
+
+    manifest = SmtSortingInboundPlugin.manifest
+    FlowEdgeType = _contract("FlowEdgeType")
+    NodeRefKind = _contract("NodeRefKind")
+    source_station_codes = {
+        rack_position.code for rack_position in manifest.rack_positions if rack_position.role == "SOURCE"
+    }
+
+    operation_targets = {
+        edge.to_node.ref
+        for edge in manifest.topology.flow_edges
+        if edge.type == FlowEdgeType.OPERATION
+        and edge.from_node.kind == NodeRefKind.DEVICE_ROLE
+        and edge.to_node.kind == NodeRefKind.RACK_POSITION
+    }
+    material_flow_sources = {
+        edge.from_node.ref
+        for edge in manifest.topology.flow_edges
+        if edge.type == FlowEdgeType.MATERIAL_FLOW
+        and edge.from_node.kind == NodeRefKind.RACK_POSITION
+        and edge.to_node.kind == NodeRefKind.RACK_POSITION
+    }
+
+    assert source_station_codes <= operation_targets
+    assert source_station_codes <= material_flow_sources
+
+
 def test_smt_sorting_inbound_material_flow_edges_are_rack_position_to_rack_position() -> None:
     from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
 

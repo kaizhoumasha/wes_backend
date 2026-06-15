@@ -206,17 +206,19 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
     @classmethod
     def _build_command_binding_summary(cls, command: object) -> CommandBinding:
-        return CommandBinding(
-            command=command.command,
-            target_device_role=command.target_device_role,
-            rack_position_args=[
-                cls._build_rack_position_arg_summary(arg) for arg in getattr(command, "rack_position_args", ())
-            ],
-            payload_schema_ref=getattr(command, "payload_schema_ref", None),
-            result_bindings=[
-                cls._build_command_result_binding_summary(binding)
-                for binding in getattr(command, "result_bindings", ())
-            ],
+        return CommandBinding.model_validate(
+            {
+                "command": command.command,
+                "target_device_role": command.target_device_role,
+                "rack_position_args": [
+                    cls._build_rack_position_arg_summary(arg) for arg in getattr(command, "rack_position_args", ())
+                ],
+                "payload_schema_ref": getattr(command, "payload_schema_ref", None),
+                "result_bindings": [
+                    cls._build_command_result_binding_summary(binding)
+                    for binding in getattr(command, "result_bindings", ())
+                ],
+            }
         )
 
     @staticmethod
