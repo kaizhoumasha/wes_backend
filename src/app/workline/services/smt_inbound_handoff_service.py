@@ -968,6 +968,7 @@ class SmtInboundHandoffService:
             raise ValueError(f"未找到 handoff source item: {source_item_id}")
         if handoff_demand_id is not None and item.handoff_demand_id != handoff_demand_id:
             raise ValueError("terminal handoff ledger demand/item 不匹配")
+        self._validate_terminal_source_item_session_binding(item, session)
 
         demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
         if demand is None:
@@ -1580,6 +1581,19 @@ class SmtInboundHandoffService:
         if raw == SmtInboundHandoffSourceItemStatus.SKIPPED.value:
             return SmtInboundHandoffSourceItemStatus.SKIPPED
         raise ValueError("terminal_status 仅允许 SORTED 或 SKIPPED")
+
+    def _validate_terminal_source_item_session_binding(
+        self,
+        item: SmtInboundHandoffSourceItem,
+        session: Any,
+    ) -> None:
+        session_id = self._int_or_none(getattr(session, "id", None))
+        item_session_id = self._int_or_none(getattr(item, "sorting_session_id", None))
+        if session_id is None or item_session_id != session_id:
+            raise ValueError(
+                "terminal handoff ledger sorting_session 不匹配: "
+                f"item.sorting_session_id={item_session_id}, session.id={session_id}"
+            )
 
     def _write_terminal_session_evidence(
         self,

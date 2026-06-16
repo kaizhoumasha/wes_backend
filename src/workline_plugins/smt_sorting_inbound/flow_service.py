@@ -352,15 +352,12 @@ class SmtSortingInboundFlowService:
 
         payload_json = _dict_copy(getattr(inbox, "payload_json", None))
         data = _payload_data(payload_json)
-        ng_target_evidence_exists = (
-            _payload_has_any(
-                payload_json,
-                data,
-                "ng_location",
-                "ng_location_code",
-                "ng_reason_code",
-            )
-            or current_material.get("ng_status") == "MOVING_TO_NG"
+        ng_target_evidence_exists = _payload_has_non_blank_any(
+            payload_json,
+            data,
+            "ng_location",
+            "ng_location_code",
+            "ng_reason_code",
         )
         if not ng_target_evidence_exists:
             return self._block(
@@ -800,6 +797,15 @@ def _positive_int(value: Any) -> int | None:
         parsed = int(value)
         return parsed if parsed > 0 else None
     return None
+
+
+def _payload_has_non_blank_any(payload_json: Mapping[str, Any], data: Mapping[str, Any], *field_names: str) -> bool:
+    for field_name in field_names:
+        for payload in (data, payload_json):
+            value = payload.get(field_name)
+            if isinstance(value, str) and value.strip():
+                return True
+    return False
 
 
 def _payload_has_any(payload_json: Mapping[str, Any], data: Mapping[str, Any], *field_names: str) -> bool:

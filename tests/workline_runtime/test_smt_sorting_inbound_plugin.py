@@ -971,7 +971,8 @@ async def test_ng_place_success_closes_material_and_keeps_ng_return_context() ->
     plugin = SmtSortingInboundPlugin()
 
     intents = await plugin.on_command_result(
-        _ctx(_sorting_context_with_ng_current_material()), _ng_place_result_inbox()
+        _ctx(_sorting_context_with_ng_current_material()),
+        _ng_place_result_inbox(data={"ng_location": "NG-01", "ng_reason_code": "LOCAL_SORTING_NG"}),
     )
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
@@ -980,6 +981,26 @@ async def test_ng_place_success_closes_material_and_keeps_ng_return_context() ->
     assert patch["ng_reason"] == "LOCAL_SORTING_NG"
     assert "current_material" not in patch["sorting"]
     assert patch["sorting"]["stations"]["scan_platform"] == "EMPTY"
+    assert patch["smt_inbound_handoff_terminal_result"]["terminal_status"] == "SKIPPED"
+    terminal_evidence = patch["smt_inbound_handoff_terminal_result"]["terminal_evidence"]
+    assert terminal_evidence["ng_command_payload"]["data"]["ng_location"] == "NG-01"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", [{}, {"ng_location": "", "ng_location_code": None, "ng_reason_code": " "}])
+async def test_ng_place_success_without_payload_evidence_blocks_terminal_marker(
+    data: dict[str, Any],
+) -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_command_result(
+        _ctx(_sorting_context_with_ng_current_material()),
+        _ng_place_result_inbox(data=data),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_NG_PLACE_EVIDENCE_MISSING"
+    assert "smt_inbound_handoff_terminal_result" not in intents[0].context_patch
 
 
 @pytest.mark.asyncio

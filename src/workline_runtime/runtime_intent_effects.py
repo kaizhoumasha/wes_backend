@@ -8,6 +8,10 @@ from typing import Any, cast
 from urllib.parse import urlparse
 
 from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
+from src.workline_plugins.smt_sorting_inbound.constants import (
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+    SORTING_CONTEXT_SCHEMA_VERSION,
+)
 from src.workline_runtime.effect_result import RuntimeIntentEffectResult
 from src.workline_runtime.material_target_resolver import resolve_destination_device
 from src.workline_runtime.resource_wait_evidence import ResourceWaitEvidence
@@ -438,6 +442,41 @@ def _target_terminal_evidence(ctx: Any) -> dict[str, Any]:
     }
 
 
+def _is_smt_sorting_inbound_session(ctx: Any) -> bool:
+    plugin_keys = {
+        string_value(getattr(ctx.get("workline"), "plugin_key", None), ""),
+        string_value(getattr(ctx.get("session"), "plugin_key", None), ""),
+        string_value(ctx.get("plugin_key"), ""),
+    }
+    if SMT_SORTING_INBOUND_PLUGIN_KEY in plugin_keys:
+        return True
+    context_json = getattr(ctx["session"], "context_json", None)
+    if not isinstance(context_json, Mapping):
+        return False
+    sorting = context_json.get("sorting")
+    return (
+        isinstance(sorting, Mapping)
+        and optional_int(sorting.get("context_schema_version")) == SORTING_CONTEXT_SCHEMA_VERSION
+    )
+
+
+def _smt_handoff_source_item_id(ctx: Any) -> int | None:
+    context_json = getattr(ctx["session"], "context_json", None)
+    if not isinstance(context_json, Mapping):
+        return None
+    sorting = context_json.get("sorting")
+    if not isinstance(sorting, Mapping):
+        return None
+    source_pick_request = sorting.get("source_pick_request")
+    if not isinstance(source_pick_request, Mapping):
+        return None
+    return optional_int(source_pick_request.get("handoff_source_item_id"))
+
+
+def _can_record_smt_target_terminal_result(ctx: Any) -> bool:
+    return _is_smt_sorting_inbound_session(ctx) and _smt_handoff_source_item_id(ctx) is not None
+
+
 def _consume_terminal_result_marker(ctx: Any) -> dict[str, Any] | None:
     session = ctx["session"]
     context_json = getattr(session, "context_json", None)
@@ -557,7 +596,7 @@ class RuntimeIntentEffectApplier:
                 if str(intent.action) == "MATERIAL_UNMOUNTED":
                     terminal_state.pending_source_pick_success = True
                     terminal_state.pending_source_pick_success_command_id = _source_pick_success_command_id(ctx)
-                if str(intent.action) == "MATERIAL_MOUNTED":
+                if str(intent.action) == "MATERIAL_MOUNTED" and _can_record_smt_target_terminal_result(ctx):
                     terminal_state.pending_target_terminal_success = True
                     terminal_state.pending_target_terminal_command_id = _terminal_command_id(ctx)
                 continue

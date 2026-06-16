@@ -564,3 +564,57 @@ async def test_handoff_terminal_requires_source_pick_request_before_ledger_write
             assert item.completed_at is None
         finally:
             await _cleanup_handoff_rows(db, test_prefix=test_prefix)
+
+
+@pytest.mark.asyncio
+async def test_handoff_terminal_requires_source_item_bound_to_current_session(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+    test_prefix: str,
+) -> None:
+    async with integration_session_factory() as db:
+        try:
+            handoff_service = SmtInboundHandoffService()
+            _demand, item, session = await _seed_terminal_handoff(
+                db,
+                test_prefix=test_prefix,
+                item_status=SmtInboundHandoffSourceItemStatus.PICKED,
+                suffix="terminal-session-mismatch",
+            )
+            other_session = WorklineSession(
+                session_code=f"{test_prefix}:terminal-session-mismatch:other-session",
+                workline_id=session.workline_id,
+                plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+                run_mode=RunMode.AUTO,
+                business_key=f"{test_prefix}:terminal-session-mismatch:other",
+                status=SessionStatus.WAITING_DEVICE_RESULT,
+                context_json={},
+                context_schema_version="smt-sorting-inbound.v1",
+                contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+                started_at=timezone.now_for_db(),
+                current_wait_type="COMMAND_RESULT",
+                waiting_since=timezone.now_for_db(),
+                current_wait_timeout_seconds=60,
+                trace_id=f"{test_prefix}:terminal-session-mismatch:other-trace",
+            )
+            db.add(other_session)
+            await db.flush()
+            item.sorting_session_id = other_session.id
+            db.add(item)
+            await db.flush()
+
+            with pytest.raises(ValueError, match="sorting_session"):
+                await handoff_service.record_source_item_terminal_result(
+                    db,
+                    session=session,
+                    terminal_status="SORTED",
+                    trace_id=f"{test_prefix}:terminal-session-mismatch:trace",
+                    terminal_evidence={"target_command_payload": {"command_code": "TARGET-CMD-001"}},
+                )
+
+            await db.refresh(item)
+            await db.refresh(session)
+            assert item.status == SmtInboundHandoffSourceItemStatus.PICKED
+            assert item.completed_at is None
+            assert session.status == SessionStatus.WAITING_DEVICE_RESULT
+        finally:
+            await _cleanup_handoff_rows(db, test_prefix=test_prefix)
