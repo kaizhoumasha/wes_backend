@@ -1007,6 +1007,32 @@ async def test_ng_place_success_closes_material_and_keeps_ng_return_context() ->
     assert patch["ng_reason"] == "LOCAL_SORTING_NG"
     assert "current_material" not in patch["sorting"]
     assert patch["sorting"]["stations"]["scan_platform"] == "EMPTY"
+    assert "smt_inbound_handoff_terminal_result" not in patch
+
+
+@pytest.mark.asyncio
+async def test_ng_place_success_writes_terminal_marker_for_handoff_session() -> None:
+    plugin = SmtSortingInboundPlugin()
+    context = _sorting_context_with_ng_current_material()
+    context["sorting"]["source_pick_request"] = {
+        "handoff_demand_id": 11,
+        "handoff_source_item_id": 22,
+        "claim_attempt_no": 1,
+        "event_id": "source-pick-requested:11:22:1",
+        "target_workline_code": "SMT_SORTER_01",
+        "manifest_contract_version": "v1",
+        "source_rack_position_code": "SINGLE_LAYER_A",
+        "target_rack_position_code": "TARGET_STATION",
+        "route_evidence": {},
+    }
+
+    intents = await plugin.on_command_result(
+        _ctx(context),
+        _ng_place_result_inbox(data={"ng_location": "NG-01", "ng_reason_code": "LOCAL_SORTING_NG"}),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    patch = intents[0].context_patch
     assert patch["smt_inbound_handoff_terminal_result"]["terminal_status"] == "SKIPPED"
     terminal_evidence = patch["smt_inbound_handoff_terminal_result"]["terminal_evidence"]
     assert terminal_evidence["ng_command_payload"]["data"]["ng_location"] == "NG-01"
@@ -1018,9 +1044,21 @@ async def test_ng_place_success_without_payload_evidence_blocks_terminal_marker(
     data: dict[str, Any],
 ) -> None:
     plugin = SmtSortingInboundPlugin()
+    context = _sorting_context_with_ng_current_material()
+    context["sorting"]["source_pick_request"] = {
+        "handoff_demand_id": 11,
+        "handoff_source_item_id": 22,
+        "claim_attempt_no": 1,
+        "event_id": "source-pick-requested:11:22:1",
+        "target_workline_code": "SMT_SORTER_01",
+        "manifest_contract_version": "v1",
+        "source_rack_position_code": "SINGLE_LAYER_A",
+        "target_rack_position_code": "TARGET_STATION",
+        "route_evidence": {},
+    }
 
     intents = await plugin.on_command_result(
-        _ctx(_sorting_context_with_ng_current_material()),
+        _ctx(context),
         _ng_place_result_inbox(data=data),
     )
 

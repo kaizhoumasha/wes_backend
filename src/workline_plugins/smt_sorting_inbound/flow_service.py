@@ -352,6 +352,7 @@ class SmtSortingInboundFlowService:
 
         payload_json = _dict_copy(getattr(inbox, "payload_json", None))
         data = _payload_data(payload_json)
+        is_handoff_session = _has_handoff_source_pick_request(sorting_context)
         ng_target_evidence_exists = _payload_has_non_blank_any(
             payload_json,
             data,
@@ -359,7 +360,7 @@ class SmtSortingInboundFlowService:
             "ng_location_code",
             "ng_reason_code",
         )
-        if not ng_target_evidence_exists:
+        if is_handoff_session and not ng_target_evidence_exists:
             return self._block(
                 "SORTING_NG_PLACE_EVIDENCE_MISSING",
                 "NG 放置成功回调缺少 NG 目标位置或原因证据，拒绝写入 handoff terminal ledger",
@@ -377,14 +378,15 @@ class SmtSortingInboundFlowService:
             reason_message="本地 NG 放置成功",
             evidence={"ng_command_payload": payload_json, "current_material": current_material},
         )
-        patch["smt_inbound_handoff_terminal_result"] = {
-            "terminal_status": "SKIPPED",
-            "command_id": _positive_int(getattr(inbox, "command_id", None)),
-            "terminal_evidence": {
-                "ng_command_payload": payload_json,
-                "current_material": current_material,
-            },
-        }
+        if is_handoff_session:
+            patch["smt_inbound_handoff_terminal_result"] = {
+                "terminal_status": "SKIPPED",
+                "command_id": _positive_int(getattr(inbox, "command_id", None)),
+                "terminal_evidence": {
+                    "ng_command_payload": payload_json,
+                    "current_material": current_material,
+                },
+            }
         return [RuntimeIntent.update_context(patch)]
 
     async def handle_ng_place_failed(self, _ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
@@ -806,6 +808,11 @@ def _payload_has_non_blank_any(payload_json: Mapping[str, Any], data: Mapping[st
             if isinstance(value, str) and value.strip():
                 return True
     return False
+
+
+def _has_handoff_source_pick_request(sorting_context: SortingInboundContext) -> bool:
+    source_pick_request = sorting_context.get_source_pick_request()
+    return _positive_int(source_pick_request.get("handoff_source_item_id")) is not None
 
 
 def _payload_has_any(payload_json: Mapping[str, Any], data: Mapping[str, Any], *field_names: str) -> bool:

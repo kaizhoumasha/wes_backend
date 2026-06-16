@@ -417,15 +417,29 @@ def _source_pick_success_command_id(ctx: Any) -> int | None:
     )
 
 
+def _has_smt_handoff_source_pick_evidence(ctx: Any, *, command_id: int | None) -> bool:
+    if _smt_handoff_source_item_id(ctx) is not None:
+        return True
+    return command_id is not None
+
+
 async def _record_source_pick_success(ctx: Any, *, command_id: int | None = None) -> None:
+    if not _has_smt_handoff_source_pick_evidence(ctx, command_id=command_id):
+        return
+
     from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
 
-    await smt_inbound_handoff_service.record_source_pick_success(
-        ctx["db"],
-        session=ctx["session"],
-        command_id=command_id,
-        trace_id=string_value(ctx.get("trace_id"), ""),
-    )
+    try:
+        await smt_inbound_handoff_service.record_source_pick_success(
+            ctx["db"],
+            session=ctx["session"],
+            command_id=command_id,
+            trace_id=string_value(ctx.get("trace_id"), ""),
+        )
+    except ValueError as exc:
+        if "source pick success 缺少 source_item_id" in str(exc):
+            return
+        raise
 
 
 def _terminal_command_id(ctx: Any) -> int | None:

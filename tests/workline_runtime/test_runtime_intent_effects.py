@@ -580,6 +580,62 @@ async def test_source_pick_resource_fact_records_handoff_success_with_command_ev
 
 
 @pytest.mark.asyncio
+async def test_source_pick_resource_fact_without_handoff_evidence_does_not_record_handoff_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        awaiting_command_id=None,
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+            }
+        },
+    )
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    resource_projection = RecordingResourceProjectionService()
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    record_call = AsyncMock()
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_pick_success",
+        record_call,
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_UNMOUNTED",
+                payload={
+                    "material_identity_key": "material:PKG-001",
+                    "pkg_code": "PKG-001",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                },
+                idempotency_key="MATERIAL_UNMOUNTED:manual:PKG-001:SINGLE_LAYER_A",
+            ),
+            RuntimeIntent.update_context(
+                {
+                    "sorting": {
+                        "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                        "current_material": {
+                            "material_identity_key": "material:PKG-001",
+                            "pkg_code": "PKG-001",
+                            "source_rack_position_code": "SINGLE_LAYER_A",
+                        },
+                    }
+                }
+            ),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_UNMOUNTED"
+    record_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_reconciling_source_pick_resource_fact_does_not_record_handoff_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
