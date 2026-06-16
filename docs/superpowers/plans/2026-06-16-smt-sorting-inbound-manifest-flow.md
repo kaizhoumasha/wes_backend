@@ -928,7 +928,7 @@ Actual: T8 implementation commits `ec15740d`, `6160bd04`, `a0c21197`。Integrati
 
 ## Final Gate
 
-- [ ] **Step 1: Run GitNexus detect changes before final commit/PR**
+- [x] **Step 1: Run GitNexus detect changes before final commit/PR**
 
 Run:
 
@@ -938,7 +938,7 @@ detect_changes()
 
 Expected: changed symbols and execution flows match this plan: SMT sorting inbound manifest/context/route/claim/runtime effect/Celery/tests only.
 
-- [ ] **Step 2: Run final test suite subset**
+- [x] **Step 2: Run final test suite subset**
 
 Run:
 
@@ -960,7 +960,7 @@ rtk uv run pytest \
 
 Expected: PASS.
 
-- [ ] **Step 3: Run broad local quality gate**
+- [x] **Step 3: Run broad local quality gate**
 
 Run:
 
@@ -971,6 +971,15 @@ rtk uv run pytest tests/workline_runtime/ tests/integration/workline_runtime/ -q
 ```
 
 Expected: PASS or documented environment blocker.
+
+Actual (2026-06-16):
+
+- GitNexus compare against `develop`: `critical` because this branch contains the complete T0-T8 implementation and plan docs; changed scope matches this plan's SMT sorting inbound manifest/context/route/claim/runtime effect/Celery/tests boundary.
+- Final focused subset: `254 passed, 9 skipped`.
+- Broad quality gate: `ruff format .` reported no file changes; `ruff check .` passed.
+- Broad runtime/integration subset: `1121 passed, 27 skipped`.
+- Final Gate follow-up fix committed as `2c7ca403 fix(workline): 收窄 SMT handoff ledger 触发条件`.
+- Remaining environment note: PostgreSQL-backed integration cases that require `INTEGRATION_DATABASE_URL` are skipped by local guard and need an integration environment for full database-backed E2E execution.
 
 ## Self-Review
 
