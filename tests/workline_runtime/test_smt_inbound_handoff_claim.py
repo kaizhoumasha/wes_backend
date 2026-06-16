@@ -417,6 +417,45 @@ async def test_phase2_recheck_not_ready_skips_session_and_inbox(db_session: Any)
     assert await _count_workline_inboxes(db_session, cast("int", workline.id)) == 0
 
 
+@pytest.mark.asyncio
+async def test_phase2_recheck_expired_probe_evidence_retries_without_session_or_inbox(
+    db_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workline = _target_workline("WL-SMT-SORT-PHASE-PROBE-EXPIRED")
+    db_session.add(workline)
+    await db_session.flush()
+    base_service = SmtInboundHandoffService()
+    demand, item = await _ready_demand(db_session, base_service, rack_release_id="claim-phase-probe-expired")
+    probe_started_at = timezone.now_for_db()
+    recheck_at = probe_started_at + timedelta(seconds=6)
+    clock = {"now": probe_started_at}
+
+    class _AgingRouteService:
+        async def resolve_route(self, _db: object, **_kwargs: Any) -> object:
+            clock["now"] = recheck_at
+            return _selected_route(workline)
+
+    service = SmtInboundHandoffService(route_service=_AgingRouteService())
+    monkeypatch.setattr(timezone, "now_for_db", lambda: clock["now"])
+
+    result = await service.claim_next_source_item(db_session, trace_id="trace-claim-phase-probe-expired")
+    await db_session.refresh(demand)
+    await db_session.refresh(item)
+
+    assert result.kind == "RETRY"
+    assert result.failure_code == SmtInboundHandoffReasonCode.ECS_DEVICE_NOT_IDLE.value
+    assert demand.status == SmtInboundHandoffDemandStatus.READY_FOR_SORTING
+    assert demand.next_attempt_at == recheck_at + timedelta(seconds=30)
+    assert item.status == SmtInboundHandoffSourceItemStatus.READY
+    assert item.failure_code == SmtInboundHandoffReasonCode.ECS_DEVICE_NOT_IDLE.value
+    assert item.next_attempt_at == recheck_at + timedelta(seconds=30)
+    assert item.sorting_session_id is None
+    assert item.source_pick_inbox_id is None
+    assert await _count_workline_sessions(db_session, cast("int", workline.id)) == 0
+    assert await _count_workline_inboxes(db_session, cast("int", workline.id)) == 0
+
+
 def test_repository_ready_candidate_statement_reads_due_items_without_row_lock() -> None:
     repository = SmtInboundHandoffRepository()
 

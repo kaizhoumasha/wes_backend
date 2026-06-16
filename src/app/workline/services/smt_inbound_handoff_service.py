@@ -423,6 +423,7 @@ class SmtInboundHandoffService:
             return self._claim_result("EMPTY")
 
         candidate_worklines = await self.repository.list_sorting_candidate_worklines(db)
+        route_probe_started_at = timezone.now_for_db()
         route = await self.route_service.resolve_route(
             db,
             demand=demand,
@@ -435,6 +436,7 @@ class SmtInboundHandoffService:
             candidate=candidate,
             route=route,
             now=now,
+            route_probe_started_at=route_probe_started_at,
             trace_id=trace_id,
         )
 
@@ -446,6 +448,7 @@ class SmtInboundHandoffService:
         candidate: SmtInboundHandoffSourceItem,
         route: Any,
         now: Any,
+        route_probe_started_at: Any,
         trace_id: str | None,
     ) -> Any:
         if getattr(route, "kind", None) == "MANUAL_HOLD" or bool(getattr(route, "manual_hold", False)):
@@ -467,6 +470,7 @@ class SmtInboundHandoffService:
             workline_id=workline_id,
             workline_code=workline_code,
             now=now,
+            route_probe_started_at=route_probe_started_at,
             trace_id=trace_id,
         )
 
@@ -541,9 +545,9 @@ class SmtInboundHandoffService:
         workline_id: int,
         workline_code: Any,
         now: Any,
+        route_probe_started_at: Any,
         trace_id: str | None,
     ) -> Any:
-        route_probe_checked_at = timezone.now_for_db()
         item = await self.repository.lock_source_item_by_id(db, source_item_id=cast("int", candidate.id))
         target_workline = await self.repository.lock_target_workline_by_id(db, workline_id=workline_id)
         if item is None or target_workline is None:
@@ -553,7 +557,7 @@ class SmtInboundHandoffService:
                 "RETRY",
                 failure_code=SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value,
             )
-        if timezone.now_for_db() - route_probe_checked_at > timedelta(seconds=_CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS):
+        if timezone.now_for_db() - route_probe_started_at > timedelta(seconds=_CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS):
             return await self._release_claim_candidate_for_retry(
                 db,
                 demand=demand,
