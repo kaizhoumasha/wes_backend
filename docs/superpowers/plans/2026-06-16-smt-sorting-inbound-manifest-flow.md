@@ -526,7 +526,7 @@ rtk git commit -m "feat(workline): 实现 SMT handoff 两阶段 claim 串行保�
 - Modify: `tests/workline_runtime/test_smt_inbound_handoff_recovery.py`
 - Modify: `tests/workline_runtime/test_runtime_intent_effects.py`
 
-- [ ] **Step 1: 写 source pick ledger RED 测试**
+- [x] **Step 1: 写 source pick ledger RED 测试**
 
 Service tests:
 
@@ -547,7 +547,7 @@ monkeypatch.setattr(
 
 Assert runtime effect calls service after successful source pick effects.
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run:
 
@@ -560,7 +560,7 @@ rtk uv run pytest \
 
 Expected: FAIL because recovery directly assigns `item.status = PICKED` and runtime effect has no `record_source_pick_success` call.
 
-- [ ] **Step 3: Implement `record_source_pick_success(...)`**
+- [x] **Step 3: Implement `record_source_pick_success(...)`**
 
 Rules:
 
@@ -571,15 +571,15 @@ Rules:
 - Recalculate demand through `recalculate_demand_status`.
 - Return structured result, including `advanced` vs `already_terminal`.
 
-- [ ] **Step 4: Reuse method in recovery**
+- [x] **Step 4: Reuse method in recovery**
 
 Replace direct recovery mutation with `record_source_pick_success(...)`.
 
-- [ ] **Step 5: Wire runtime effect**
+- [x] **Step 5: Wire runtime effect**
 
 After source-pick success intents are applied without block/reconciliation, call handoff service. Do not call before resource/context effects succeed.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run:
 
@@ -592,7 +592,7 @@ rtk uv run pytest \
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Run:
 
@@ -604,6 +604,8 @@ rtk git add \
   tests/workline_runtime/test_runtime_intent_effects.py
 rtk git commit -m "feat(workline): 统一 source pick success handoff ledger"
 ```
+
+Actual: T5 implementation commits `e0e656e1`, `7a32366`, `fc76120`。RED focused tests 先出现预期失败（缺少 `record_source_pick_success`、真实 `MATERIAL_UNMOUNTED + UPDATE_CONTEXT` 未写 ledger、source item evidence mismatch 未拒绝）；最终 focused tests `20 passed, 55 deselected`。`rtk uv run ruff check ...` 通过，`rtk uv run ruff format --check ...` 显示 `4 files already formatted`。GitNexus impact：`_apply_resource_fact` / `RuntimeIntentEffectApplier.apply` 为 LOW；新增 helper 因索引 stale 未收录。`gitnexus detect-changes --scope unstaged --repo <当前 worktree>` 报 high，范围为 T5 授权的 runtime apply / handoff service 影响面。Spec re-review PASS，quality re-review Ready；无 Critical / Important 阻塞，Minor 集成测试增强留给后续 E2E 阶段。
 
 ## Task T6: Target / NG Terminal Ledger 幂等闭环
 
