@@ -426,7 +426,7 @@ rtk git commit -m "feat(workline): 将 SMT handoff route 绑定 manifest source 
 - Modify: `tests/workline_runtime/test_smt_inbound_handoff_claim.py`
 - Modify: `tests/integration/workline_runtime/test_smt_inbound_handoff_recovery_postgres.py`
 
-- [ ] **Step 1: 写 claim RED 测试**
+- [x] **Step 1: 写 claim RED 测试**
 
 Add tests:
 
@@ -447,7 +447,7 @@ IN_FLIGHT = {
 }
 ```
 
-- [ ] **Step 2: Run RED claim tests**
+- [x] **Step 2: Run RED claim tests**
 
 Run:
 
@@ -460,7 +460,7 @@ rtk uv run pytest \
 
 Expected: FAIL because current claim holds READY row through route/probe and does not lock target WorkLine for final recheck.
 
-- [ ] **Step 3: Split claim into phase 1 / phase 2**
+- [x] **Step 3: Split claim into phase 1 / phase 2**
 
 Phase 1:
 
@@ -479,7 +479,7 @@ Phase 2:
 - recheck ECS probe result has not expired.
 - create session and inbox.
 
-- [ ] **Step 4: Add repository helpers**
+- [x] **Step 4: Add repository helpers**
 
 Add focused repository methods:
 
@@ -490,7 +490,7 @@ Add focused repository methods:
 
 Keep SQL in repository layer. Service orchestrates state transitions only.
 
-- [ ] **Step 5: Run claim tests**
+- [x] **Step 5: Run claim tests**
 
 Run:
 
@@ -503,7 +503,9 @@ rtk uv run pytest \
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+Actual: T4 implementation commits `a035847d` and `d8d14c65`；focused tests `13 passed, 2 skipped`（PostgreSQL gated tests 当前环境未启用集成开关）。Spec re-review PASS，quality review Ready；GitNexus compare risk high 属于 T4 计划内 claim/recovery 影响面，无 Critical / Important 阻塞。
+
+- [x] **Step 6: Commit**
 
 Run:
 
