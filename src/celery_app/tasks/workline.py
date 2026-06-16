@@ -566,9 +566,15 @@ def scan_smt_inbound_handoff_demands_batch(
     recovery_limit: int = 100,
     claim_limit: int = 10,
     stale_after_seconds: int = 300,
+    limit: int | None = None,
 ) -> SmtInboundHandoffRecoveryResult:
     """扫描 SMT 入库 handoff 到期 demand、卡住 source item 和 READY claim 兜底。"""
 
+    legacy_limit = limit
+    if legacy_limit is not None:
+        scan_limit = legacy_limit
+        recovery_limit = legacy_limit
+        claim_limit = 0
     logger.info(
         "开始扫描 SMT 入库 handoff 恢复项, "
         f"scan_limit={scan_limit}, recovery_limit={recovery_limit}, "
@@ -583,10 +589,16 @@ def scan_smt_inbound_handoff_demands_batch(
                 "SmtInboundHandoffRecoveryResult",
                 await smt_inbound_handoff_service.scan_smt_inbound_handoff_demands_batch(
                     db,
-                    scan_limit=scan_limit,
-                    recovery_limit=recovery_limit,
-                    claim_limit=claim_limit,
                     stale_after_seconds=stale_after_seconds,
+                    **(
+                        {"limit": legacy_limit}
+                        if legacy_limit is not None
+                        else {
+                            "scan_limit": scan_limit,
+                            "recovery_limit": recovery_limit,
+                            "claim_limit": claim_limit,
+                        }
+                    ),
                 ),
             )
 

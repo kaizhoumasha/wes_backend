@@ -22,7 +22,11 @@ from src.app.workline.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItemStatus,
 )
 from src.app.workline.repositories.smt_inbound_handoff_repository import SmtInboundHandoffRepository
-from src.app.workline.services.smt_inbound_handoff_service import SmtInboundHandoffService
+from src.app.workline.services.smt_inbound_handoff_service import (
+    _CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS,
+    SmtInboundHandoffService,
+)
+from src.utils.timezone import timezone
 from src.workline_plugins.smt_sorting_inbound.constants import SMT_SORTING_INBOUND_PLUGIN_KEY
 
 
@@ -775,3 +779,61 @@ async def test_recovery_scan_deduplicates_ecs_probe_by_target_workline_during_sa
 
     assert summary["claimed"] == 1
     assert ecs_probe.calls == [(workline.id, workline.line_code)]
+
+
+@pytest.mark.asyncio
+async def test_recovery_scan_reprobes_ecs_when_cached_probe_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    demand = _demand(SmtInboundHandoffDemandStatus.READY_FOR_SORTING)
+    ready_items = [
+        _item(status=SmtInboundHandoffSourceItemStatus.READY, item_id=22),
+        _item(status=SmtInboundHandoffSourceItemStatus.READY, item_id=23),
+    ]
+    for item in ready_items:
+        item.source_pick_inbox_id = None
+    workline = _sorting_workline()
+    clock = {"now": datetime(2026, 6, 11, 10, 0, 0)}
+
+    class ExpiringProbeRepository(FakeReadyClaimRepository):
+        def __init__(self) -> None:
+            super().__init__(demand=demand, ready_items=ready_items, workline=workline)
+            self.ready_lookup_count = 0
+
+        async def list_ready_source_items_for_claim(
+            self,
+            db: Any,
+            *,
+            now: datetime,
+            limit: int,
+        ) -> list[SmtInboundHandoffSourceItem]:
+            self.ready_lookup_count += 1
+            if self.ready_lookup_count == 2:
+                clock["now"] = clock["now"] + timedelta(seconds=_CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS + 1)
+            return await super().list_ready_source_items_for_claim(db, now=now, limit=limit)
+
+    repo = ExpiringProbeRepository()
+    db = FakeClaimDb(demand=demand)
+    ecs_probe = CountingEcsProbe()
+    monkeypatch.setattr(timezone, "now_for_db", lambda: clock["now"])
+
+    summary = await SmtInboundHandoffService(
+        repository=repo,
+        route_service=SmtInboundHandoffRouteService(
+            station_lease_service=AvailableStationLeaseService(),
+            session_repository=EmptySessionRepository(),
+            ecs_status_probe=ecs_probe,
+        ),
+        inbox_service=FakeInboxService(),
+    ).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=0,
+        recovery_limit=0,
+        claim_limit=2,
+    )
+
+    assert summary["claimed"] == 1
+    assert ecs_probe.calls == [
+        (workline.id, workline.line_code),
+        (workline.id, workline.line_code),
+    ]

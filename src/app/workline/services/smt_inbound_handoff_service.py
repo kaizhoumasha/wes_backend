@@ -73,6 +73,7 @@ _CLAIMED_ITEM_STATUSES = {
     SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING,
 }
 _HANDOFF_CLAIM_IN_FLIGHT_ITEM_STATUSES = _SORTING_IN_PROGRESS_ITEM_STATUSES | _CLAIMED_ITEM_STATUSES
+_RouteProbeCache = dict[tuple[Any, ...], tuple[Any, Any]]
 _FORBIDDEN_EXTERNAL_MOVE_FIELDS = {
     "dispatch_key",
     "external_target_code",
@@ -412,7 +413,7 @@ class SmtInboundHandoffService:
         *,
         demand_id: int | None = None,
         trace_id: str | None = None,
-        route_probe_cache: dict[tuple[Any, ...], Any] | None = None,
+        route_probe_cache: _RouteProbeCache | None = None,
     ) -> Any:
         """两阶段认领下一条 READY source item，并创建内部 source-pick Inbox。"""
 
@@ -422,8 +423,7 @@ class SmtInboundHandoffService:
             return self._claim_result("EMPTY")
 
         candidate_worklines = await self.repository.list_sorting_candidate_worklines(db)
-        route_probe_started_at = timezone.now_for_db()
-        route = await self._resolve_claim_route(
+        route, route_probe_started_at = await self._resolve_claim_route(
             db,
             demand=demand,
             source_item=candidate,
@@ -480,22 +480,35 @@ class SmtInboundHandoffService:
         demand: SmtInboundHandoffDemand,
         source_item: SmtInboundHandoffSourceItem,
         candidate_worklines: Sequence[Any],
-        route_probe_cache: dict[tuple[Any, ...], Any] | None,
-    ) -> Any:
+        route_probe_cache: _RouteProbeCache | None,
+    ) -> tuple[Any, Any]:
+        route_probe_started_at = timezone.now_for_db()
         if route_probe_cache is None or not isinstance(self.route_service, SmtInboundHandoffRouteService):
-            return await self.route_service.resolve_route(
-                db,
-                demand=demand,
-                source_item=source_item,
-                candidate_worklines=candidate_worklines,
+            return (
+                await self.route_service.resolve_route(
+                    db,
+                    demand=demand,
+                    source_item=source_item,
+                    candidate_worklines=candidate_worklines,
+                ),
+                route_probe_started_at,
             )
+
+        probe_times: dict[tuple[Any, ...], Any] = {}
 
         async def cached_ecs_probe(probe_db: AsyncSession, *, workline: Any, route: Any) -> Any:
             cache_key = self._ecs_probe_cache_key(workline=workline, route=route)
-            if cache_key in route_probe_cache:
-                return route_probe_cache[cache_key]
+            now = timezone.now_for_db()
+            cached = route_probe_cache.get(cache_key)
+            if cached is not None:
+                cached_result, probed_at = cached
+                if now - probed_at <= timedelta(seconds=_CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS):
+                    probe_times[cache_key] = probed_at
+                    return cached_result
             result = await self.route_service.ecs_status_probe(probe_db, workline=workline, route=route)
-            route_probe_cache[cache_key] = result
+            probed_at = timezone.now_for_db()
+            route_probe_cache[cache_key] = (result, probed_at)
+            probe_times[cache_key] = probed_at
             return result
 
         route_service = SmtInboundHandoffRouteService(
@@ -505,12 +518,14 @@ class SmtInboundHandoffService:
             reason_catalog=self.route_service.reason_catalog,
             retry_delay_seconds=self.route_service.retry_delay_seconds,
         )
-        return await route_service.resolve_route(
+        route = await route_service.resolve_route(
             db,
             demand=demand,
             source_item=source_item,
             candidate_worklines=candidate_worklines,
         )
+        route_probe_started_at = self._route_probe_started_at_from_cache(route=route, probe_times=probe_times)
+        return route, route_probe_started_at
 
     @staticmethod
     def _ecs_probe_cache_key(*, workline: Any, route: Any) -> tuple[Any, ...]:
@@ -540,6 +555,12 @@ class SmtInboundHandoffService:
             route_context.get("source_rack_position_code") or route_context.get("source_position_code"),
             route_context.get("target_rack_position_code") or route_context.get("target_position_code"),
         )
+
+    @staticmethod
+    def _route_probe_started_at_from_cache(*, route: Any, probe_times: Mapping[tuple[Any, ...], Any]) -> Any:
+        if getattr(route, "kind", None) != "SELECTED" or not probe_times:
+            return timezone.now_for_db()
+        return min(probe_times.values())
 
     async def _claim_routed_candidate(
         self,
@@ -1263,7 +1284,7 @@ class SmtInboundHandoffService:
                 if outcome in summary:
                     summary[outcome] += 1
 
-        route_probe_cache: dict[tuple[Any, ...], Any] = {}
+        route_probe_cache: _RouteProbeCache = {}
         for _ in range(max(claim_limit, 0)):
             claim_result = await self.claim_next_source_item(
                 db,
