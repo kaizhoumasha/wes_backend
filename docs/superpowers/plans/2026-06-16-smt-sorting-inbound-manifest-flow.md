@@ -240,6 +240,8 @@ rtk uv run pytest \
 
 Expected: PASS.
 
+Actual: T1 review fix 追加验证 API runtime boundary 和 dev/test seed 合同；`tests/api/test_workline_runtime_api.py` 已确认 station lease / snapshot 查询只覆盖 `SOURCE_STATION_A`、`SOURCE_STATION_B`，`scripts/data/sync_test_workline_devices.py` 不再 seed `SORTING_NG_STATION` 设备或 `NG_STATION` / `WORKSTATION` rack positions。
+
 - [x] **Step 6: Commit**
 
 Run:

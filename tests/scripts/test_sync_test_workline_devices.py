@@ -35,7 +35,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_TARGET_PLACE,
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
-    ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
     ROLE_SORTING_TARGET_ARM,
@@ -366,14 +365,12 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
         "SORT-SOURCE-ARM-01",
         "SORT-TARGET-ARM-01",
         "SORT-SCAN-PLATFORM-01",
-        "SORT-NG-STATION-01",
         "SORT-WORKSTATION-01",
     ]
     assert [device.device_role for device in devices] == [
         ROLE_SORTING_SOURCE_ARM,
         ROLE_SORTING_TARGET_ARM,
         ROLE_SORTING_SCAN_PLATFORM,
-        ROLE_SORTING_NG_STATION,
         ROLE_SORTING_WORKSTATION,
     ]
     capabilities_by_code = {device.device_code: device.capabilities_json for device in devices}
@@ -383,8 +380,6 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
         COMMAND_NG_PLACE,
     ]
     assert capabilities_by_code["SORT-SCAN-PLATFORM-01"]["supports_event_types"] == [EVENT_WORKING_BIN_SCAN]
-    assert capabilities_by_code["SORT-NG-STATION-01"]["supports_command_types"] == []
-    assert capabilities_by_code["SORT-NG-STATION-01"]["supports_event_types"] == []
     assert capabilities_by_code["SORT-WORKSTATION-01"]["supports_event_types"] == [EVENT_SESSION_COMPLETE_REQUESTED]
     assert {device.host for device in devices} == {"mock_ecs"}
     assert {device.port for device in devices} == {8010}
@@ -407,12 +402,12 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
     )
     positions_by_code = {position.position_code: position for position in smt_rack_positions}
     assert set(positions_by_code) == {seed.position_code for seed in TEST_SMT_SORTING_INBOUND_RACK_POSITIONS}
+    assert "NG_STATION" not in positions_by_code
+    assert "WORKSTATION" not in positions_by_code
     expected_rack_kinds = {
         "SOURCE_STATION_A": RackKind.SINGLE_LAYER,
         "SOURCE_STATION_B": RackKind.SINGLE_LAYER,
         "TARGET_STATION": RackKind.FIVE_LAYER,
-        "NG_STATION": RackKind.SINGLE_LAYER,
-        "WORKSTATION": RackKind.SINGLE_LAYER,
     }
     for position_code, position in positions_by_code.items():
         assert position.workline_id == workline.id
@@ -425,19 +420,13 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
         assert position.metadata_json["seed_source"] == "local-dev"
     assert positions_by_code["SOURCE_STATION_A"].metadata_json["single_layer_boundary"] is True
     assert positions_by_code["SOURCE_STATION_B"].metadata_json["single_layer_boundary"] is True
-    assert positions_by_code["NG_STATION"].metadata_json["single_layer_boundary"] is True
-    assert positions_by_code["WORKSTATION"].metadata_json["single_layer_boundary"] is True
     assert positions_by_code["TARGET_STATION"].metadata_json["rack_boundary"] == "FIVE_LAYER"
     assert positions_by_code["SOURCE_STATION_A"].position_role == WorklineRackPositionRole.SMT_SORTER_STATION
     assert positions_by_code["SOURCE_STATION_B"].position_role == WorklineRackPositionRole.SMT_SORTER_STATION
     assert positions_by_code["TARGET_STATION"].position_role == WorklineRackPositionRole.SMT_SORTER_STATION
-    assert positions_by_code["NG_STATION"].position_role == WorklineRackPositionRole.SMT_SORTER_STATION
-    assert positions_by_code["WORKSTATION"].position_role == WorklineRackPositionRole.SMT_SORTER_STATION
     assert positions_by_code["SOURCE_STATION_A"].device_role == ROLE_SORTING_SOURCE_ARM
     assert positions_by_code["SOURCE_STATION_B"].device_role == ROLE_SORTING_SOURCE_ARM
     assert positions_by_code["TARGET_STATION"].device_role == ROLE_SORTING_TARGET_ARM
-    assert positions_by_code["NG_STATION"].device_role == ROLE_SORTING_NG_STATION
-    assert positions_by_code["WORKSTATION"].device_role == ROLE_SORTING_WORKSTATION
     assert result["summary_by_workline"][TEST_SMT_SORTING_INBOUND_LINE_CODE]["devices"]["created"] == len(
         TEST_SMT_SORTING_INBOUND_DEVICES
     )

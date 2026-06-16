@@ -3084,15 +3084,17 @@ class TestRuntimeQueryService:
         expected_single_layer_positions = [
             "SOURCE_STATION_A",
             "SOURCE_STATION_B",
-            "NG_STATION",
-            "WORKSTATION",
         ]
-        assert [
-            call.kwargs["position_code"] for call in mock_station_lease.await_args_list
-        ] == expected_single_layer_positions
-        assert [call.kwargs["context"] for call in mock_snapshot.await_args_list] == [
+        station_lease_positions = [call.kwargs["position_code"] for call in mock_station_lease.await_args_list]
+        snapshot_contexts = [call.kwargs["context"] for call in mock_snapshot.await_args_list]
+        assert station_lease_positions == expected_single_layer_positions
+        assert snapshot_contexts == [
             {"station": {"position_code": position_code}} for position_code in expected_single_layer_positions
         ]
+        assert "NG_STATION" not in station_lease_positions
+        assert "WORKSTATION" not in station_lease_positions
+        assert {"station": {"position_code": "NG_STATION"}} not in snapshot_contexts
+        assert {"station": {"position_code": "WORKSTATION"}} not in snapshot_contexts
 
     @pytest.mark.asyncio
     async def test_get_workline_detail_downgrades_boundary_when_station_config_missing(self) -> None:

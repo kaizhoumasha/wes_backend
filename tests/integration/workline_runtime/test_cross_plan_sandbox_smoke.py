@@ -55,7 +55,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     EVENT_WORKING_BIN_SCAN,
     NG_REASON_LOCAL_SORTING_NG,
     PHASE_WAITING_SCAN,
-    ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
     ROLE_SORTING_TARGET_ARM,
@@ -64,11 +63,9 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.workline_plugins.smt_sorting_inbound.plugin import (
-    POSITION_NG_STATION,
     POSITION_SOURCE_STATION_A,
     POSITION_SOURCE_STATION_B,
     POSITION_TARGET_STATION,
-    POSITION_WORKSTATION,
     SmtSortingInboundPlugin,
 )
 from src.workline_runtime.orchestrator import OrchestratorResult
@@ -288,7 +285,6 @@ async def _persist_workline_with_devices(db_session: AsyncSession, workline: Wor
             role=ROLE_SORTING_SCAN_PLATFORM,
             supports_event_types=[EVENT_WORKING_BIN_SCAN],
         ),
-        _device(device_code="SORT-NG-STATION", role=ROLE_SORTING_NG_STATION),
         _device(
             device_code="SORT-WORKSTATION",
             role=ROLE_SORTING_WORKSTATION,
@@ -302,8 +298,6 @@ async def _persist_workline_with_devices(db_session: AsyncSession, workline: Wor
         (POSITION_SOURCE_STATION_A, RackKind.SINGLE_LAYER, ROLE_SORTING_SOURCE_ARM),
         (POSITION_SOURCE_STATION_B, RackKind.SINGLE_LAYER, ROLE_SORTING_SOURCE_ARM),
         (POSITION_TARGET_STATION, RackKind.FIVE_LAYER, ROLE_SORTING_TARGET_ARM),
-        (POSITION_NG_STATION, RackKind.SINGLE_LAYER, ROLE_SORTING_NG_STATION),
-        (POSITION_WORKSTATION, RackKind.SINGLE_LAYER, ROLE_SORTING_WORKSTATION),
     )
     for priority, (position_code, rack_kind, device_role) in enumerate(position_specs, start=100):
         db_session.add(
