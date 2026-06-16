@@ -66,6 +66,7 @@ class SmtInboundHandoffRecoveryResult(TypedDict):
     """SMT 入库 handoff 恢复扫描结果。"""
 
     scanned: int
+    claimed: int
     advanced: int
     retry_scheduled: int
     manual_hold: int
@@ -98,6 +99,7 @@ def _ensure_non_empty_retry_result(task_name: str, result: dict[str, int], retri
 def _empty_smt_inbound_handoff_recovery_result() -> SmtInboundHandoffRecoveryResult:
     return {
         "scanned": 0,
+        "claimed": 0,
         "advanced": 0,
         "retry_scheduled": 0,
         "manual_hold": 0,
@@ -560,12 +562,18 @@ def scan_device_heartbeats_batch(
 )
 def scan_smt_inbound_handoff_demands_batch(
     self: WorklineTask,
-    limit: int = 100,
+    scan_limit: int = 100,
+    recovery_limit: int = 100,
+    claim_limit: int = 10,
     stale_after_seconds: int = 300,
 ) -> SmtInboundHandoffRecoveryResult:
-    """扫描 SMT 入库 handoff 到期 demand 和 claim 后卡住的 source item。"""
+    """扫描 SMT 入库 handoff 到期 demand、卡住 source item 和 READY claim 兜底。"""
 
-    logger.info(f"开始扫描 SMT 入库 handoff 恢复项, limit={limit}, stale_after_seconds={stale_after_seconds}")
+    logger.info(
+        "开始扫描 SMT 入库 handoff 恢复项, "
+        f"scan_limit={scan_limit}, recovery_limit={recovery_limit}, "
+        f"claim_limit={claim_limit}, stale_after_seconds={stale_after_seconds}"
+    )
 
     async def _scan() -> SmtInboundHandoffRecoveryResult:
         async with self.db as db:
@@ -575,7 +583,9 @@ def scan_smt_inbound_handoff_demands_batch(
                 "SmtInboundHandoffRecoveryResult",
                 await smt_inbound_handoff_service.scan_smt_inbound_handoff_demands_batch(
                     db,
-                    limit=limit,
+                    scan_limit=scan_limit,
+                    recovery_limit=recovery_limit,
+                    claim_limit=claim_limit,
                     stale_after_seconds=stale_after_seconds,
                 ),
             )

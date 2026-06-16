@@ -11,7 +11,10 @@ import pytest
 
 from src.app.device.models.command import CommandResult, CommandStatus
 from src.app.workline.domain.services.smt_inbound_handoff_reason import SmtInboundHandoffReasonCode
-from src.app.workline.models.inbox import InboxStatus
+from src.app.workline.domain.services.smt_inbound_handoff_route_service import SmtInboundHandoffRouteService
+from src.app.workline.models.inbox import InboxStatus, WorklineInbox
+from src.app.workline.models.safety import WorkLineRuntimeStatus
+from src.app.workline.models.session import WorklineSession
 from src.app.workline.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
     SmtInboundHandoffDemandStatus,
@@ -20,6 +23,7 @@ from src.app.workline.models.smt_inbound_handoff import (
 )
 from src.app.workline.repositories.smt_inbound_handoff_repository import SmtInboundHandoffRepository
 from src.app.workline.services.smt_inbound_handoff_service import SmtInboundHandoffService
+from src.workline_plugins.smt_sorting_inbound.constants import SMT_SORTING_INBOUND_PLUGIN_KEY
 
 
 def _demand(
@@ -38,11 +42,12 @@ def _item(
     *,
     status: SmtInboundHandoffSourceItemStatus = SmtInboundHandoffSourceItemStatus.PICK_REQUESTED,
     command_id: int | None = None,
+    item_id: int = 22,
 ) -> SmtInboundHandoffSourceItem:
     return SmtInboundHandoffSourceItem(
-        id=22,
+        id=item_id,
         handoff_demand_id=11,
-        item_key="11:A03",
+        item_key=f"11:A{item_id:02d}",
         status=status,
         claim_attempt_no=1,
         source_pick_inbox_id=2101,
@@ -118,6 +123,188 @@ class FakeDb:
         self.added.append(value)
 
 
+class FakeReadyClaimRepository(FakeRecoveryRepository):
+    def __init__(
+        self,
+        *,
+        demand: SmtInboundHandoffDemand,
+        ready_items: list[SmtInboundHandoffSourceItem],
+        workline: Any | None = None,
+    ) -> None:
+        super().__init__(demands=[], items=ready_items)
+        self.demand = demand
+        self.workline = workline or SimpleNamespace(id=31, line_code="SMT-SORT-01")
+        self.claimed_ids: list[int] = []
+
+    async def list_ready_source_items_for_claim(
+        self,
+        _db: Any,
+        *,
+        now: datetime,
+        limit: int,
+    ) -> list[SmtInboundHandoffSourceItem]:
+        _ = now
+        self.calls.append(("list_ready_source_items_for_claim", limit))
+        return [
+            item
+            for item in self.items
+            if item.status == SmtInboundHandoffSourceItemStatus.READY
+            and (item.next_attempt_at is None or item.next_attempt_at <= now)
+        ][:limit]
+
+    async def list_stuck_source_items_for_recovery(
+        self,
+        _db: Any,
+        *,
+        now: datetime,
+        limit: int,
+        stale_after_seconds: int,
+    ) -> list[SmtInboundHandoffSourceItem]:
+        _ = now, stale_after_seconds
+        self.calls.append(("list_stuck_source_items_for_recovery", limit))
+        return [
+            item
+            for item in self.items
+            if item.status
+            in {
+                SmtInboundHandoffSourceItemStatus.PICK_REQUESTED,
+                SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING,
+            }
+            and item.source_pick_inbox_id is not None
+        ][:limit]
+
+    async def list_sorting_candidate_worklines(self, _db: Any) -> list[Any]:
+        return [self.workline]
+
+    async def lock_source_item_by_id(self, _db: Any, *, source_item_id: int) -> SmtInboundHandoffSourceItem | None:
+        return next((item for item in self.items if item.id == source_item_id), None)
+
+    async def lock_target_workline_by_id(self, _db: Any, *, workline_id: int) -> Any | None:
+        return SimpleNamespace(id=workline_id, line_code="SMT-SORT-01")
+
+    async def list_open_sorting_sessions_with_current_material(
+        self,
+        _db: Any,
+        *,
+        workline_id: int,
+        limit: int,
+    ) -> list[Any]:
+        _ = workline_id, limit
+        return []
+
+    async def list_in_flight_source_items_by_target_workline(
+        self,
+        _db: Any,
+        *,
+        target_workline_id: int,
+        limit: int,
+    ) -> list[SmtInboundHandoffSourceItem]:
+        _ = target_workline_id, limit
+        return [
+            item
+            for item in self.items
+            if item.target_workline_id == target_workline_id
+            and item.status
+            in {
+                SmtInboundHandoffSourceItemStatus.PICK_REQUESTED,
+                SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING,
+                SmtInboundHandoffSourceItemStatus.PICKED,
+                SmtInboundHandoffSourceItemStatus.SORTING,
+            }
+        ]
+
+
+class FakeClaimDb(FakeDb):
+    def __init__(self, *, demand: SmtInboundHandoffDemand) -> None:
+        super().__init__(demand=demand)
+        self.next_session_id = 5000
+        self.flush = AsyncMock(side_effect=self._flush)
+
+    async def _flush(self) -> None:
+        for value in self.added:
+            if isinstance(value, SmtInboundHandoffSourceItem):
+                continue
+            if getattr(value, "id", None) is not None:
+                continue
+            if isinstance(value, WorklineSession):
+                value.id = self.next_session_id
+                self.next_session_id += 1
+
+
+class FakeInboxService:
+    def __init__(self) -> None:
+        self.next_inbox_id = 6000
+
+    async def create_internal_event_inbox(self, *_args: Any, **_kwargs: Any) -> Any:
+        inbox = SimpleNamespace(id=self.next_inbox_id)
+        self.next_inbox_id += 1
+        return inbox
+
+
+class ReadyClaimRouteService:
+    def __init__(self) -> None:
+        self.ecs_probe_calls = 0
+
+    async def resolve_route(
+        self,
+        db: Any,
+        *,
+        demand: SmtInboundHandoffDemand,
+        source_item: SmtInboundHandoffSourceItem,
+        candidate_worklines: list[Any],
+    ) -> Any:
+        _ = db, demand, source_item
+        self.ecs_probe_calls += 1
+        workline = candidate_worklines[0]
+        return SimpleNamespace(
+            kind="SELECTED",
+            selected_workline_id=workline.id,
+            selected_workline_code=workline.line_code,
+            route_evidence={
+                "source_station_code": "SOURCE-STATION",
+                "source_position_code": "SOURCE-STATION",
+                "target_rack_position_code": "TARGET-STATION",
+            },
+        )
+
+
+class AvailableStationLeaseService:
+    async def get_station_lease_status(self, *_args: Any, **_kwargs: Any) -> Any:
+        return SimpleNamespace(available=True)
+
+
+class EmptySessionRepository:
+    async def list_open_by_workline_id(self, *_args: Any, **_kwargs: Any) -> list[Any]:
+        return []
+
+
+class CountingEcsProbe:
+    def __init__(self) -> None:
+        self.calls: list[tuple[int | None, str | None]] = []
+
+    async def __call__(self, _db: Any, *, workline: Any, route: Any) -> Any:
+        _ = route
+        self.calls.append((getattr(workline, "id", None), getattr(workline, "line_code", None)))
+        return SimpleNamespace(available=True)
+
+
+def _sorting_workline() -> Any:
+    return SimpleNamespace(
+        id=31,
+        line_code="SMT-SORT-01",
+        plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+        is_active=True,
+        runtime_status=WorkLineRuntimeStatus.READY,
+        config={
+            "smt_inbound_handoff_route": {
+                "enabled": True,
+                "priority": 1,
+                "source_rack_position_code": "SOURCE_STATION_A",
+            }
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_retryable_source_pick_inbox_releases_item_for_retry() -> None:
     demand = _demand()
@@ -127,7 +314,12 @@ async def test_retryable_source_pick_inbox_releases_item_for_retry() -> None:
     repo = FakeRecoveryRepository(items=[item])
     db = FakeDb(demand=demand, inbox=inbox)
 
-    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=10)
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=10,
+        recovery_limit=10,
+        claim_limit=0,
+    )
 
     assert item.status == SmtInboundHandoffSourceItemStatus.READY
     assert item.claim_attempt_no == 2
@@ -145,7 +337,12 @@ async def test_dead_letter_source_pick_inbox_moves_item_and_demand_to_manual_hol
     repo = FakeRecoveryRepository(items=[item])
     db = FakeDb(demand=demand, inbox=inbox)
 
-    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=10)
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=10,
+        recovery_limit=10,
+        claim_limit=0,
+    )
 
     assert item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
     assert item.failure_code == SmtInboundHandoffReasonCode.SOURCE_PICK_INBOX_DEAD_LETTER.value
@@ -162,7 +359,12 @@ async def test_processed_source_pick_inbox_without_command_enters_manual_hold() 
     repo = FakeRecoveryRepository(items=[item])
     db = FakeDb(demand=demand, inbox=inbox)
 
-    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=10)
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=10,
+        recovery_limit=10,
+        claim_limit=0,
+    )
 
     assert item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
     assert item.failure_code == SmtInboundHandoffReasonCode.SOURCE_PICK_COMMAND_NOT_CREATED.value
@@ -178,7 +380,12 @@ async def test_processing_source_pick_inbox_is_observed_without_bypassing_token_
     repo = FakeRecoveryRepository(items=[item])
     db = FakeDb(demand=demand, inbox=inbox)
 
-    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=10)
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=10,
+        recovery_limit=10,
+        claim_limit=0,
+    )
 
     assert item.status == SmtInboundHandoffSourceItemStatus.PICK_REQUESTED
     assert db.added == []
@@ -196,7 +403,12 @@ async def test_success_source_pick_command_repairs_claimed_item_to_picked() -> N
     repo = FakeRecoveryRepository(items=[item])
     db = FakeDb(demand=demand, inbox=inbox, command=command)
 
-    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=10)
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=10,
+        recovery_limit=10,
+        claim_limit=0,
+    )
 
     assert item.status == SmtInboundHandoffSourceItemStatus.PICKED
     assert demand.status == SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS
@@ -315,7 +527,12 @@ async def test_success_source_pick_command_on_already_picked_item_is_noop_withou
     repo = FakeRecoveryRepository(items=[item])
     db = FakeDb(demand=demand, inbox=inbox, command=command)
 
-    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=10)
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=10,
+        recovery_limit=10,
+        claim_limit=0,
+    )
 
     assert item.status == SmtInboundHandoffSourceItemStatus.PICKED
     assert demand.status == SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS
@@ -342,7 +559,12 @@ async def test_late_source_pick_success_on_terminal_item_is_noop(
     repo = FakeRecoveryRepository(items=[item])
     db = FakeDb(demand=demand, inbox=inbox, command=command)
 
-    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=10)
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=10,
+        recovery_limit=10,
+        claim_limit=0,
+    )
 
     assert item.status == terminal_status
     assert demand.status == SmtInboundHandoffDemandStatus.COMPLETED
@@ -363,7 +585,12 @@ async def test_late_source_pick_success_on_manual_hold_item_keeps_controlled_hol
     repo = FakeRecoveryRepository(items=[item])
     db = FakeDb(demand=demand, inbox=inbox, command=command)
 
-    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=10)
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=10,
+        recovery_limit=10,
+        claim_limit=0,
+    )
 
     assert item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
     assert item.failure_code == SmtInboundHandoffReasonCode.SOURCE_PICK_INBOX_DEAD_LETTER.value
@@ -397,7 +624,12 @@ async def test_recovery_scan_reads_due_demands_and_stuck_source_items_with_batch
     repo = FakeRecoveryRepository(demands=[demand], items=[])
     db = FakeDb(demand=demand)
 
-    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=7)
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=7,
+        recovery_limit=7,
+        claim_limit=0,
+    )
 
     assert repo.calls == [
         ("list_due_recovery_demands", 7),
@@ -405,8 +637,141 @@ async def test_recovery_scan_reads_due_demands_and_stuck_source_items_with_batch
     ]
     assert summary == {
         "scanned": 1,
+        "claimed": 0,
         "advanced": 0,
         "retry_scheduled": 0,
         "manual_hold": 0,
         "recovery_errors": 0,
     }
+
+
+@pytest.mark.asyncio
+async def test_recovery_scan_claims_due_ready_item_with_separate_claim_limit() -> None:
+    demand = _demand(SmtInboundHandoffDemandStatus.READY_FOR_SORTING)
+    ready_item = _item(status=SmtInboundHandoffSourceItemStatus.READY)
+    ready_item.source_pick_inbox_id = None
+    repo = FakeReadyClaimRepository(demand=demand, ready_items=[ready_item])
+    db = FakeClaimDb(demand=demand)
+
+    summary = await SmtInboundHandoffService(
+        repository=repo,
+        route_service=ReadyClaimRouteService(),
+        inbox_service=FakeInboxService(),
+    ).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=0,
+        recovery_limit=0,
+        claim_limit=1,
+    )
+
+    assert summary == {
+        "scanned": 0,
+        "claimed": 1,
+        "advanced": 0,
+        "retry_scheduled": 0,
+        "manual_hold": 0,
+        "recovery_errors": 0,
+    }
+    assert ready_item.status == SmtInboundHandoffSourceItemStatus.PICK_REQUESTED
+    assert repo.calls == [("list_ready_source_items_for_claim", 1)]
+
+
+@pytest.mark.asyncio
+async def test_recovery_scan_uses_separate_scan_recovery_and_claim_limits() -> None:
+    demand = _demand(SmtInboundHandoffDemandStatus.READY_FOR_SORTING)
+    ready_items = [
+        _item(status=SmtInboundHandoffSourceItemStatus.READY, item_id=22),
+        _item(status=SmtInboundHandoffSourceItemStatus.READY, item_id=23),
+        _item(status=SmtInboundHandoffSourceItemStatus.READY, item_id=24),
+        _item(status=SmtInboundHandoffSourceItemStatus.READY, item_id=25),
+    ]
+    for item in ready_items:
+        item.source_pick_inbox_id = None
+    stuck_item = _item(status=SmtInboundHandoffSourceItemStatus.PICK_REQUESTED, item_id=23)
+    repo = FakeReadyClaimRepository(demand=demand, ready_items=[*ready_items, stuck_item])
+    repo.demands = [demand]
+    db = FakeClaimDb(demand=demand)
+
+    await SmtInboundHandoffService(
+        repository=repo,
+        route_service=ReadyClaimRouteService(),
+        inbox_service=FakeInboxService(),
+    ).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=2,
+        recovery_limit=3,
+        claim_limit=4,
+    )
+
+    assert repo.calls == [
+        ("list_due_recovery_demands", 2),
+        ("list_stuck_source_items_for_recovery", 3),
+        ("list_ready_source_items_for_claim", 1),
+        ("list_ready_source_items_for_claim", 1),
+        ("list_ready_source_items_for_claim", 1),
+        ("list_ready_source_items_for_claim", 1),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recovery_scan_claim_limit_zero_keeps_old_recovery_behavior() -> None:
+    demand = _demand(SmtInboundHandoffDemandStatus.READY_FOR_SORTING)
+    ready_item = _item(status=SmtInboundHandoffSourceItemStatus.READY)
+    ready_item.source_pick_inbox_id = None
+    repo = FakeReadyClaimRepository(demand=demand, ready_items=[ready_item])
+    db = FakeClaimDb(demand=demand)
+
+    summary = await SmtInboundHandoffService(
+        repository=repo,
+        route_service=ReadyClaimRouteService(),
+        inbox_service=FakeInboxService(),
+    ).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=0,
+        recovery_limit=0,
+        claim_limit=0,
+    )
+
+    assert summary == {
+        "scanned": 0,
+        "claimed": 0,
+        "advanced": 0,
+        "retry_scheduled": 0,
+        "manual_hold": 0,
+        "recovery_errors": 0,
+    }
+    assert ready_item.status == SmtInboundHandoffSourceItemStatus.READY
+    assert repo.calls == []
+
+
+@pytest.mark.asyncio
+async def test_recovery_scan_deduplicates_ecs_probe_by_target_workline_during_same_scan() -> None:
+    demand = _demand(SmtInboundHandoffDemandStatus.READY_FOR_SORTING)
+    ready_items = [
+        _item(status=SmtInboundHandoffSourceItemStatus.READY, item_id=22),
+        _item(status=SmtInboundHandoffSourceItemStatus.READY, item_id=23),
+    ]
+    for item in ready_items:
+        item.source_pick_inbox_id = None
+    workline = _sorting_workline()
+    repo = FakeReadyClaimRepository(demand=demand, ready_items=ready_items, workline=workline)
+    db = FakeClaimDb(demand=demand)
+    ecs_probe = CountingEcsProbe()
+
+    summary = await SmtInboundHandoffService(
+        repository=repo,
+        route_service=SmtInboundHandoffRouteService(
+            station_lease_service=AvailableStationLeaseService(),
+            session_repository=EmptySessionRepository(),
+            ecs_status_probe=ecs_probe,
+        ),
+        inbox_service=FakeInboxService(),
+    ).scan_smt_inbound_handoff_demands_batch(
+        db,
+        scan_limit=0,
+        recovery_limit=0,
+        claim_limit=2,
+    )
+
+    assert summary["claimed"] == 1
+    assert ecs_probe.calls == [(workline.id, workline.line_code)]

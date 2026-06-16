@@ -232,7 +232,10 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         now: Any,
         limit: int = 1,
     ) -> list[SmtInboundHandoffSourceItem]:
-        """读取到期 READY source item 候选；不加锁，锁定延后到 phase 2。"""
+        """读取到期 READY source item 候选。
+
+        terminal claim 与 Celery 兜底共用，锁定延后到 phase 2。
+        """
 
         result = await db.execute(self.build_ready_source_item_candidate_statement(now=now, limit=limit))
         return list(result.scalars().all())

@@ -21,6 +21,7 @@ def test_smt_inbound_handoff_recovery_task_summary_contract() -> None:
 
     assert empty_summary == {
         "scanned": 0,
+        "claimed": 0,
         "advanced": 0,
         "retry_scheduled": 0,
         "manual_hold": 0,

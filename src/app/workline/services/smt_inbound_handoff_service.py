@@ -412,6 +412,7 @@ class SmtInboundHandoffService:
         *,
         demand_id: int | None = None,
         trace_id: str | None = None,
+        route_probe_cache: dict[tuple[Any, ...], Any] | None = None,
     ) -> Any:
         """两阶段认领下一条 READY source item，并创建内部 source-pick Inbox。"""
 
@@ -422,11 +423,12 @@ class SmtInboundHandoffService:
 
         candidate_worklines = await self.repository.list_sorting_candidate_worklines(db)
         route_probe_started_at = timezone.now_for_db()
-        route = await self.route_service.resolve_route(
+        route = await self._resolve_claim_route(
             db,
             demand=demand,
             source_item=candidate,
             candidate_worklines=candidate_worklines,
+            route_probe_cache=route_probe_cache,
         )
         return await self._claim_routed_candidate(
             db,
@@ -470,6 +472,74 @@ class SmtInboundHandoffService:
             )
         )
         return demand, ready_items[0] if ready_items else None
+
+    async def _resolve_claim_route(
+        self,
+        db: AsyncSession,
+        *,
+        demand: SmtInboundHandoffDemand,
+        source_item: SmtInboundHandoffSourceItem,
+        candidate_worklines: Sequence[Any],
+        route_probe_cache: dict[tuple[Any, ...], Any] | None,
+    ) -> Any:
+        if route_probe_cache is None or not isinstance(self.route_service, SmtInboundHandoffRouteService):
+            return await self.route_service.resolve_route(
+                db,
+                demand=demand,
+                source_item=source_item,
+                candidate_worklines=candidate_worklines,
+            )
+
+        async def cached_ecs_probe(probe_db: AsyncSession, *, workline: Any, route: Any) -> Any:
+            cache_key = self._ecs_probe_cache_key(workline=workline, route=route)
+            if cache_key in route_probe_cache:
+                return route_probe_cache[cache_key]
+            result = await self.route_service.ecs_status_probe(probe_db, workline=workline, route=route)
+            route_probe_cache[cache_key] = result
+            return result
+
+        route_service = SmtInboundHandoffRouteService(
+            station_lease_service=self.route_service.station_lease_service,
+            session_repository=self.route_service.session_repository,
+            ecs_status_probe=cached_ecs_probe,
+            reason_catalog=self.route_service.reason_catalog,
+            retry_delay_seconds=self.route_service.retry_delay_seconds,
+        )
+        return await route_service.resolve_route(
+            db,
+            demand=demand,
+            source_item=source_item,
+            candidate_worklines=candidate_worklines,
+        )
+
+    @staticmethod
+    def _ecs_probe_cache_key(*, workline: Any, route: Any) -> tuple[Any, ...]:
+        route_context = dict(route) if isinstance(route, Mapping) else {}
+        host = getattr(workline, "host", None)
+        port = getattr(workline, "port", None)
+        endpoint_identity = (
+            getattr(workline, "ecs_endpoint", None)
+            or getattr(workline, "ecs_base_url", None)
+            or getattr(workline, "endpoint", None)
+            or ((host, port) if host is not None and port is not None else None)
+        )
+        workline_id = getattr(workline, "id", None)
+        workline_code = getattr(workline, "line_code", None)
+        target_identity = (
+            ("endpoint", endpoint_identity)
+            if endpoint_identity is not None
+            else (
+                "workline",
+                workline_id,
+                workline_code,
+                id(workline) if workline_id is None and workline_code is None else None,
+            )
+        )
+        return (
+            *target_identity,
+            route_context.get("source_rack_position_code") or route_context.get("source_position_code"),
+            route_context.get("target_rack_position_code") or route_context.get("target_position_code"),
+        )
 
     async def _claim_routed_candidate(
         self,
@@ -1150,41 +1220,60 @@ class SmtInboundHandoffService:
         self,
         db: AsyncSession,
         *,
-        limit: int = 100,
+        scan_limit: int = 100,
+        recovery_limit: int = 100,
+        claim_limit: int = 10,
         stale_after_seconds: int = 300,
         trace_id: str | None = None,
+        limit: int | None = None,
     ) -> dict[str, int]:
-        """扫描到期 demand 和 claim 后卡住的 source item，执行兜底恢复。"""
+        """扫描到期 demand、claim 后卡住项和 READY claim 兜底。"""
 
-        _ = trace_id
+        if limit is not None:
+            scan_limit = limit
+            recovery_limit = limit
+            claim_limit = 0
         summary = self._empty_recovery_summary()
-        if limit <= 0:
-            return summary
+        summary["claimed"] = 0
 
         now = timezone.now_for_db()
-        due_demands = await self.repository.list_due_recovery_demands(db, now=now, limit=limit)
-        for demand in due_demands:
-            summary["scanned"] += 1
-            before_status = demand.status
-            await self.recalculate_demand_status(db, demand, reason="recovery_due_demand_scan")
-            if demand.status != before_status:
-                summary["advanced"] += 1
+        if scan_limit > 0:
+            due_demands = await self.repository.list_due_recovery_demands(db, now=now, limit=scan_limit)
+            for demand in due_demands:
+                summary["scanned"] += 1
+                before_status = demand.status
+                await self.recalculate_demand_status(db, demand, reason="recovery_due_demand_scan")
+                if demand.status != before_status:
+                    summary["advanced"] += 1
 
-        stuck_items = await self.repository.list_stuck_source_items_for_recovery(
-            db,
-            now=now,
-            limit=limit,
-            stale_after_seconds=stale_after_seconds,
-        )
-        for item in stuck_items:
-            summary["scanned"] += 1
-            try:
-                outcome = await self._recover_stuck_source_item(db, item, now=now)
-            except Exception:
-                summary["recovery_errors"] += 1
-                continue
-            if outcome in summary:
-                summary[outcome] += 1
+        if recovery_limit > 0:
+            stuck_items = await self.repository.list_stuck_source_items_for_recovery(
+                db,
+                now=now,
+                limit=recovery_limit,
+                stale_after_seconds=stale_after_seconds,
+            )
+            for item in stuck_items:
+                summary["scanned"] += 1
+                try:
+                    outcome = await self._recover_stuck_source_item(db, item, now=now)
+                except Exception:
+                    summary["recovery_errors"] += 1
+                    continue
+                if outcome in summary:
+                    summary[outcome] += 1
+
+        route_probe_cache: dict[tuple[Any, ...], Any] = {}
+        for _ in range(max(claim_limit, 0)):
+            claim_result = await self.claim_next_source_item(
+                db,
+                trace_id=trace_id,
+                route_probe_cache=route_probe_cache,
+            )
+            if getattr(claim_result, "kind", None) == "CLAIMED":
+                summary["claimed"] += 1
+            elif getattr(claim_result, "kind", None) == "EMPTY":
+                break
         return summary
 
     async def list_handoff_demand_summaries(
