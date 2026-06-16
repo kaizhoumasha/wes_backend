@@ -913,6 +913,77 @@ async def test_handoff_terminal_result_rejects_source_item_bound_to_other_sessio
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("session_status", ["FAILED", "CANCELLED"])
+async def test_terminal_conflict_keeps_terminal_session_status(
+    monkeypatch: pytest.MonkeyPatch,
+    session_status: str,
+) -> None:
+    item = SimpleNamespace(
+        id=22,
+        handoff_demand_id=11,
+        status=SmtInboundHandoffSourceItemStatus.SORTED,
+        sorting_session_id=123,
+        completed_at=datetime(2026, 1, 1, 0, 3, 0),
+        failure_code=None,
+        failure_message=None,
+        next_attempt_at=None,
+    )
+    demand = SimpleNamespace(
+        id=11,
+        status=SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS,
+        failure_code=None,
+        failure_message=None,
+    )
+    session = _session(
+        id=123,
+        status=session_status,
+        failure_domain="EXISTING_TERMINAL",
+        failure_code="EXISTING_FAILURE",
+        failure_message="existing terminal failure",
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                "source_pick_request": {
+                    "handoff_demand_id": demand.id,
+                    "handoff_source_item_id": item.id,
+                },
+            }
+        },
+    )
+    service = SmtInboundHandoffService(repository=FakeTerminalRepository(item))
+    db = RecordingDb(demand)
+    persist_manual_hold = AsyncMock()
+    monkeypatch.setattr(
+        "src.app.workline.repositories.session_repository.WorklineSessionRepository.persist_manual_hold",
+        persist_manual_hold,
+    )
+
+    result = await service.record_source_item_terminal_result(
+        db,
+        session=session,
+        terminal_status="SKIPPED",
+        command_id=9002,
+        trace_id="trace-terminal-conflict",
+        terminal_evidence={"ng_command_payload": {"command_code": "NG-CMD-001"}},
+    )
+
+    assert result.outcome == "manual_hold"
+    assert item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+    assert item.failure_code == "PLUGIN_CONTRACT_INVALID"
+    assert demand.status == SmtInboundHandoffDemandStatus.MANUAL_HOLD
+    assert demand.failure_code == "PLUGIN_CONTRACT_INVALID"
+    assert session.status == session_status
+    assert session.failure_domain == "EXISTING_TERMINAL"
+    assert session.failure_code == "EXISTING_FAILURE"
+    assert session.failure_message == "existing terminal failure"
+    terminal_result = session.context_json["sorting"]["handoff_terminal_result"]
+    assert terminal_result["terminal_status"] == "SKIPPED"
+    assert terminal_result["conflict"] is True
+    assert terminal_result["evidence"]["ng_command_payload"]["command_code"] == "NG-CMD-001"
+    persist_manual_hold.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_resource_fact_syncs_waiting_rack_operation_status() -> None:
     session = _session(
         context_json={

@@ -1102,7 +1102,13 @@ class SmtInboundHandoffService:
         from src.app.workline.models.session import SessionStatus
         from src.app.workline.repositories.session_repository import WorklineSessionRepository
 
-        if self._enum_text(getattr(session, "status", None)) != SessionStatus.COMPLETED.value:
+        session_status = self._enum_text(getattr(session, "status", None))
+        terminal_session_statuses = {
+            SessionStatus.COMPLETED.value,
+            SessionStatus.FAILED.value,
+            SessionStatus.CANCELLED.value,
+        }
+        if session_status not in terminal_session_statuses:
             with suppress(InvalidSessionTransition):
                 workline_session_lifecycle_service.manual_hold(session, occurred_at=timezone.now_for_db())
             session.failure_domain = "SMT_INBOUND_HANDOFF"
