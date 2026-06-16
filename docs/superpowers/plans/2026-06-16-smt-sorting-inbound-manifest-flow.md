@@ -616,7 +616,7 @@ Actual: T5 implementation commits `e0e656e1`, `7a32366`, `fc76120`。RED focused
 - Modify: `tests/workline_runtime/test_runtime_intent_effects.py`
 - Modify: `tests/integration/workline_runtime/test_smt_inbound_handoff_e2e.py`
 
-- [ ] **Step 1: 写 terminal ledger RED 测试**
+- [x] **Step 1: 写 terminal ledger RED 测试**
 
 Cover:
 
@@ -628,7 +628,7 @@ Cover:
 - resource projection reconciling blocks `SORTED` write。
 - missing `sorting.source_pick_request` blocks ledger write。
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run:
 
@@ -641,7 +641,7 @@ rtk uv run pytest \
 
 Expected: FAIL because current plugin only updates context/resource facts and runtime effect does not write terminal handoff ledger.
 
-- [ ] **Step 3: Implement `record_source_item_terminal_result(...)`**
+- [x] **Step 3: Implement `record_source_item_terminal_result(...)`**
 
 Contract:
 
@@ -653,7 +653,7 @@ Contract:
 - Same terminal replay returns already-terminal and does not trigger next claim。
 - Conflict terminal returns controlled hold/manual block。
 
-- [ ] **Step 4: Wire runtime effect after resource/context success**
+- [x] **Step 4: Wire runtime effect after resource/context success**
 
 For target success:
 
@@ -668,11 +668,11 @@ For NG success:
 - Validate NG target evidence exists in command payload.
 - Call terminal ledger with `SKIPPED`。
 
-- [ ] **Step 5: Trigger demand-scoped next claim only after first terminal write**
+- [x] **Step 5: Trigger demand-scoped next claim only after first terminal write**
 
 After `record_source_item_terminal_result(...)` returns `advanced=True`, call `claim_next_source_item(..., demand_id=current_demand_id)` or equivalent demand-scoped claim. Replays must not call claim again.
 
-- [ ] **Step 6: Run terminal tests**
+- [x] **Step 6: Run terminal tests**
 
 Run:
 
@@ -685,7 +685,7 @@ rtk uv run pytest \
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Run:
 
@@ -698,6 +698,8 @@ rtk git add \
   tests/integration/workline_runtime/test_smt_inbound_handoff_e2e.py
 rtk git commit -m "feat(workline): 闭合 SMT handoff terminal ledger"
 ```
+
+Actual: T6 implementation commits `66cd24d3`, `f731a85f`, `b240fa0c`。RED focused tests 先暴露 target/NG terminal ledger 未写入、NG payload evidence 缺失仍成功、非 SMT `MATERIAL_MOUNTED` 误触发 ledger、source item/session 串线，以及 terminal conflict 可能改写 `FAILED/CANCELLED` session；最终修复为 `SORTED/SKIPPED` terminal ledger 幂等推进、NG evidence 非空校验、SMT/source_pick_request 限定的 runtime hook、当前 session 绑定校验和终态 session 冲突保护。最终 focused tests：`tests/workline_runtime/test_smt_sorting_inbound_plugin.py -k "ng_place"` 为 `6 passed`；`tests/workline_runtime/test_runtime_intent_effects.py -k "terminal_conflict or terminal_result or target_place or ng_place or terminal"` 为 `10 passed`；T6 combined focused tests 为 `14 passed, 6 skipped, 53 deselected`（PostgreSQL gated integration 需 `RUN_WORKLINE_INTEGRATION=1`，本地未启用）。`rtk uv run ruff check ...` 和 `rtk uv run ruff format --check ...` 通过。GitNexus impact：`record_source_item_terminal_result` 为 MEDIUM，`_manual_hold_terminal_conflict` / runtime apply / flow service 相关符号为 LOW；`detect-changes --scope compare --base-ref 008d1e04` 报 high，范围集中在 T6 runtime apply、flow service、terminal ledger。Spec re-review PASS，quality re-review Ready；无 Critical / Important 阻塞，保留 runtime/plugin 常量耦合、marker patch 清理和 NG missing payload 文案三个 Minor 观察。
 
 ## Task T7: Celery Recovery READY Claim 兜底
 
