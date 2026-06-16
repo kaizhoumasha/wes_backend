@@ -352,7 +352,7 @@ rtk git commit -m "feat(workline): 增加 SMT 分拣入库 source pick typed con
 - Modify: `src/app/workline/domain/services/smt_inbound_handoff_reason.py`
 - Modify: `tests/workline_runtime/test_smt_inbound_handoff_route_service.py`
 
-- [ ] **Step 1: 写 route RED 测试**
+- [x] **Step 1: 写 route RED 测试**
 
 Cover these cases:
 
@@ -370,7 +370,7 @@ assert result.failure_code == SmtInboundHandoffReasonCode.SOURCE_BOUNDARY_AMBIGU
 assert station_lease.calls == []
 ```
 
-- [ ] **Step 2: Run RED route tests**
+- [x] **Step 2: Run RED route tests**
 
 Run:
 
@@ -380,7 +380,7 @@ rtk uv run pytest tests/workline_runtime/test_smt_inbound_handoff_route_service.
 
 Expected: FAIL because route still reads `source_station_code` / `source_position_code` and default probe allows idle.
 
-- [ ] **Step 3: Implement manifest boundary resolver**
+- [x] **Step 3: Implement manifest boundary resolver**
 
 Add route service helpers:
 
@@ -390,11 +390,11 @@ Add route service helpers:
 - config may select only a manifest-declared source rack position code.
 - route evidence must include selected source and target rack position codes.
 
-- [ ] **Step 4: Replace default ECS stub**
+- [x] **Step 4: Replace default ECS stub**
 
 Default production behavior must call a real ECS realtime probe adapter with a short timeout. Unit tests may inject `_EcsProbe(available=True)` explicitly.
 
-- [ ] **Step 5: Run route tests**
+- [x] **Step 5: Run route tests**
 
 Run:
 
@@ -404,7 +404,9 @@ rtk uv run pytest tests/workline_runtime/test_smt_inbound_handoff_route_service.
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+Actual: T3 implementation commit `9cb9a92d`；route focused tests `11 passed`，route + reason catalog quality review verification `14 passed`。Spec review PASS，quality review Ready；无 Critical / Important 阻塞，Minor 诊断建议留给后续真实 ECS adapter/refinement。
+
+- [x] **Step 6: Commit**
 
 Run:
 
