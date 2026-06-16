@@ -35,11 +35,30 @@ class FakeStationLeaseService:
 class FakeHandoffService:
     def __init__(self) -> None:
         self.release_calls: list[dict[str, Any]] = []
-        self.result = SimpleNamespace(id=501, demand_key="smt-inbound-handoff:release-001")
+        self.evaluate_calls: list[dict[str, Any]] = []
+        self.claim_calls: list[dict[str, Any]] = []
+        self.result = SimpleNamespace(id=501, demand_key="smt-inbound-handoff:release-001", status="READY_FOR_SORTING")
+        self.claim_result = SimpleNamespace(
+            kind="CLAIMED",
+            failure_code=None,
+            failure_message=None,
+            next_attempt_at=None,
+            source_item=SimpleNamespace(id=601),
+            session=SimpleNamespace(id=701),
+            inbox=SimpleNamespace(id=801),
+        )
 
     async def create_or_get_from_release(self, db: Any, **payload: Any) -> Any:
         self.release_calls.append({"db": db, "payload": payload})
         return self.result
+
+    async def evaluate(self, db: Any, **payload: Any) -> Any:
+        self.evaluate_calls.append({"db": db, "payload": payload})
+        return self.result
+
+    async def claim_next_source_item(self, db: Any, **payload: Any) -> Any:
+        self.claim_calls.append({"db": db, "payload": payload})
+        return self.claim_result
 
 
 def ready_workline() -> SimpleNamespace:
@@ -82,6 +101,10 @@ async def test_rough_sorter_release_fact_invokes_handoff_release_producer_once()
     assert decision.decision == SingleLayerRackOrchestrationDecisionCode.WAITING
     assert decision.reason == "ROUGH_SORTER_RELEASE_FACT_RECORDED"
     assert decision.diagnostics["handoff_demand_id"] == 501
+    assert decision.diagnostics["handoff_claim_result"] == "CLAIMED"
+    assert decision.diagnostics["handoff_claim_source_item_id"] == 601
+    assert decision.diagnostics["handoff_claim_session_id"] == 701
+    assert decision.diagnostics["handoff_claim_inbox_id"] == 801
     assert decision.fact_payload is not None
     assert decision.fact_payload["business_demand_key"] == "ROUGH-SORTER-RELEASE-001"
     assert handoff.release_calls == [
@@ -97,6 +120,25 @@ async def test_rough_sorter_release_fact_invokes_handoff_release_producer_once()
                 "trace_id": "trace-release-001",
                 "business_demand_key": "ROUGH-SORTER-RELEASE-001",
                 "station_code": "SINGLE_LAYER_A",
+            },
+        }
+    ]
+    assert handoff.evaluate_calls == [
+        {
+            "db": db,
+            "payload": {
+                "demand": handoff.result,
+                "prefer_full_box_exchange": False,
+                "trace_id": "trace-release-001",
+            },
+        }
+    ]
+    assert handoff.claim_calls == [
+        {
+            "db": db,
+            "payload": {
+                "trace_id": "trace-release-001",
+                "demand_id": 501,
             },
         }
     ]
@@ -125,3 +167,5 @@ async def test_non_release_demand_does_not_invoke_handoff_release_producer() -> 
     assert decision.decision == SingleLayerRackOrchestrationDecisionCode.WAITING
     assert decision.reason == "BUSINESS_DEMAND_REQUIRED"
     assert handoff.release_calls == []
+    assert handoff.evaluate_calls == []
+    assert handoff.claim_calls == []

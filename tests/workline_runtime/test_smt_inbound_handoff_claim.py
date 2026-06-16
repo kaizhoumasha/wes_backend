@@ -46,8 +46,17 @@ class _RouteService:
 
 
 class _ReleaseClaimingHandoffService:
-    def __init__(self) -> None:
+    def __init__(self, *, claim_result: object | None = None) -> None:
         self.demand = SimpleNamespace(id=901, demand_key="handoff:release:auto-claim")
+        self.claim_result = claim_result or SimpleNamespace(
+            kind="CLAIMED",
+            failure_code=None,
+            failure_message=None,
+            next_attempt_at=None,
+            source_item=SimpleNamespace(id=301),
+            session=SimpleNamespace(id=401),
+            inbox=SimpleNamespace(id=501),
+        )
         self.create_calls: list[dict[str, Any]] = []
         self.evaluate_calls: list[dict[str, Any]] = []
         self.claim_calls: list[dict[str, Any]] = []
@@ -64,7 +73,7 @@ class _ReleaseClaimingHandoffService:
 
     async def claim_next_source_item(self, _db: object, **kwargs: Any) -> object:
         self.claim_calls.append(kwargs)
-        return SimpleNamespace(kind="CLAIMED")
+        return self.claim_result
 
 
 def _selected_route(workline: WorkLine, *, target_rack_position_code: str = "TARGET_STATION_FROM_ROUTE") -> object:
@@ -245,6 +254,70 @@ async def test_rough_sorter_release_path_evaluates_and_claims_first_source_item(
             "demand_id": 901,
         }
     ]
+    assert decision.diagnostics["handoff_claim_result"] == "CLAIMED"
+    assert decision.diagnostics["handoff_claim_source_item_id"] == 301
+    assert decision.diagnostics["handoff_claim_session_id"] == 401
+    assert decision.diagnostics["handoff_claim_inbox_id"] == 501
+
+
+@pytest.mark.asyncio
+async def test_rough_sorter_release_path_exposes_claim_failure_diagnostics() -> None:
+    next_attempt_at = datetime(2026, 1, 1, 0, 3, 0)
+    handoff_service = _ReleaseClaimingHandoffService(
+        claim_result=SimpleNamespace(
+            kind="RETRY",
+            failure_code="TARGET_WORKLINE_NOT_READY",
+            failure_message="目标分拣 WorkLine 暂未 READY",
+            next_attempt_at=next_attempt_at,
+            source_item=SimpleNamespace(id=302),
+            session=None,
+            inbox=None,
+        )
+    )
+    orchestrator = SingleLayerRackOrchestrationService(smt_inbound_handoff_service=handoff_service)
+    workline = SimpleNamespace(
+        id=101,
+        line_code="WL-SMT-ROUGH-RELEASE",
+        runtime_status=WorkLineRuntimeStatus.READY,
+    )
+
+    decision = await orchestrator.plan_single_layer_rack_dispatch(
+        object(),
+        business_demand_key="release-demand:target-busy",
+        demand_type="ROUGH_SORTER_RELEASE_FACT",
+        workline=workline,
+        station_code="SINGLE_LAYER_A",
+        fact_payload={
+            "rack_release_id": "release:target-busy",
+            "single_layer_rack_code": "RACK-TARGET-BUSY",
+            "trace_id": "trace-release-target-busy",
+            "bin_snapshots": [
+                {
+                    "slot_code": "A",
+                    "bin_code": "SRC-BIN-A",
+                    "usage": 0.25,
+                    "cells": [
+                        {
+                            "bin_code": "SRC-BIN-A",
+                            "bin_cell_index": 1,
+                            "bin_cell_code": "A01",
+                            "material_identity_key": "MAT-A",
+                            "pkg_code": "PKG-A",
+                            "reel_thickness_mm": "7.125",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert decision.diagnostics["handoff_claim_result"] == "RETRY"
+    assert decision.diagnostics["handoff_claim_failure_code"] == "TARGET_WORKLINE_NOT_READY"
+    assert decision.diagnostics["handoff_claim_failure_message"] == "目标分拣 WorkLine 暂未 READY"
+    assert decision.diagnostics["handoff_claim_next_attempt_at"] == next_attempt_at.isoformat()
+    assert decision.diagnostics["handoff_claim_source_item_id"] == 302
+    assert decision.diagnostics["handoff_claim_session_id"] is None
+    assert decision.diagnostics["handoff_claim_inbox_id"] is None
 
 
 async def _count_workline_sessions(db_session: Any, workline_id: int) -> int:

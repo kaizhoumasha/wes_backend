@@ -29,6 +29,7 @@ from src.app.workline.services.smt_inbound_handoff_service import SmtInboundHand
 from src.app.workline.services.station_lease_service import StationLeaseResult
 from src.utils.timezone import timezone
 from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
     EVENT_WORKING_BIN_SCAN,
@@ -41,7 +42,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
 )
 from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
 from src.workline_runtime.orchestrator import OrchestratorResult
-from src.workline_runtime.runtime_intent import RuntimeIntent, RuntimeIntentKind
+from src.workline_runtime.runtime_intent import RuntimeIntentKind
 from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
 from src.workline_runtime.trace_context import TraceContext
 
@@ -518,6 +519,37 @@ async def _target_place_success_inbox(
     return inbox
 
 
+async def _ng_place_success_inbox(
+    db: AsyncSession,
+    *,
+    session: Any,
+    target_arm: Device,
+    item: SmtInboundHandoffSourceItem,
+    trace_id: str,
+) -> WorklineInbox:
+    inbox = WorklineInbox(
+        kind=InboxKind.COMMAND_RESULT,
+        source_system=SourceSystem.DEVICE,
+        source_message_id=f"{trace_id}:ng-place-success:{item.id}",
+        workline_id=session.workline_id,
+        device_id=target_arm.id,
+        command_id=None,
+        session_id=session.id,
+        trace_id=trace_id,
+        payload_json={
+            "command_code": "NG-CMD-001",
+            "device_code": target_arm.device_code,
+            "task_type": COMMAND_NG_PLACE,
+            "result": "SUCCESS",
+            "data": {"ng_location": "NG-01", "ng_reason_code": "LOCAL_SORTING_NG"},
+        },
+        claim_bucket_key=f"session:{session.id}",
+    )
+    db.add(inbox)
+    await db.flush()
+    return inbox
+
+
 async def _drive_source_item_to_sorted(
     db: AsyncSession,
     *,
@@ -635,6 +667,126 @@ async def _drive_source_item_to_sorted(
             scan_platform=scan_platform,
         ),
         target_success_intents,
+    )
+    await db.flush()
+
+
+async def _drive_source_item_to_skipped(
+    db: AsyncSession,
+    *,
+    plugin: SmtSortingInboundPlugin,
+    effect_applier: RuntimeIntentEffectApplier,
+    sorting_workline: WorkLine,
+    source_arm: Device,
+    target_arm: Device,
+    scan_platform: Device,
+    item: SmtInboundHandoffSourceItem,
+    session: WorklineSession,
+    source_command: DeviceCommand,
+    trace_id: str,
+) -> None:
+    source_success_inbox = await _source_pick_success_inbox(
+        db,
+        session=session,
+        source_arm=source_arm,
+        source_command=source_command,
+        item=item,
+        trace_id=trace_id,
+    )
+    source_success_intents = await plugin.on_command_result(
+        _plugin_ctx(session, trace_id=trace_id),
+        source_success_inbox,
+    )
+    assert [intent.kind for intent in source_success_intents] == [
+        RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+    ]
+    await effect_applier.apply(
+        _runtime_ctx(
+            db=db,
+            workline=sorting_workline,
+            session=session,
+            inbox=source_success_inbox,
+            source_device=source_arm,
+            source_arm=source_arm,
+            target_arm=target_arm,
+            scan_platform=scan_platform,
+        ),
+        source_success_intents,
+    )
+    await db.flush()
+    await db.refresh(item)
+    assert item.status == SmtInboundHandoffSourceItemStatus.PICKED
+
+    scan_inbox = await _working_bin_scan_inbox(
+        db,
+        session=session,
+        scan_platform=scan_platform,
+        item=item,
+        trace_id=trace_id,
+    )
+    scan_inbox.payload_json["data"]["material_identity_key"] = f"{item.material_identity_key}:actual-other"
+    scan_intents = await plugin.on_device_event(
+        _plugin_ctx(session, trace_id=trace_id),
+        scan_inbox,
+    )
+    assert [intent.kind for intent in scan_intents] == [
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.MARK_NG,
+        RuntimeIntentKind.COMMAND,
+    ]
+    assert scan_intents[2].action == COMMAND_NG_PLACE
+    await effect_applier.apply(
+        _runtime_ctx(
+            db=db,
+            workline=sorting_workline,
+            session=session,
+            inbox=scan_inbox,
+            source_device=scan_platform,
+            source_arm=source_arm,
+            target_arm=target_arm,
+            scan_platform=scan_platform,
+        ),
+        scan_intents,
+    )
+    await db.flush()
+
+    ng_command = (
+        await db.execute(
+            select(DeviceCommand)
+            .where(DeviceCommand.session_id_int == session.id)
+            .where(DeviceCommand.task_type == COMMAND_NG_PLACE)
+        )
+    ).scalar_one()
+    ng_success_inbox = await _ng_place_success_inbox(
+        db,
+        session=session,
+        target_arm=target_arm,
+        item=item,
+        trace_id=trace_id,
+    )
+    ng_success_inbox.command_id = ng_command.id
+    ng_success_inbox.payload_json["command_code"] = ng_command.command_code
+    ng_success_intents = await plugin.on_command_result(
+        _plugin_ctx(session, trace_id=trace_id),
+        ng_success_inbox,
+    )
+    assert [intent.kind for intent in ng_success_intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    assert ng_success_intents[0].context_patch["smt_inbound_handoff_terminal_result"]["terminal_status"] == "SKIPPED"
+    assert "current_material" not in ng_success_intents[0].context_patch["sorting"]
+    assert "pending_target_placement" not in ng_success_intents[0].context_patch["sorting"]
+    await effect_applier.apply(
+        _runtime_ctx(
+            db=db,
+            workline=sorting_workline,
+            session=session,
+            inbox=ng_success_inbox,
+            source_device=target_arm,
+            source_arm=source_arm,
+            target_arm=target_arm,
+            scan_platform=scan_platform,
+        ),
+        ng_success_intents,
     )
     await db.flush()
 
@@ -776,6 +928,28 @@ async def test_smt_inbound_handoff_release_claim_plugin_effect_smoke(
             assert inbox.payload_json["event_type"] == "SORTING_SOURCE_PICK_REQUESTED"
             assert inbox.claim_bucket_key == f"session:{session.id}"
             assert inbox.claim_bucket_key != "serial:unknown"
+            session_ids = list(
+                (
+                    await db.execute(
+                        select(WorklineSession.id)
+                        .where(WorklineSession.workline_id == sorting_workline.id)
+                        .where(WorklineSession.business_key == demand.demand_key)
+                    )
+                ).scalars()
+            )
+            inbox_ids = list(
+                (
+                    await db.execute(
+                        select(WorklineInbox.id)
+                        .where(WorklineInbox.workline_id == sorting_workline.id)
+                        .where(WorklineInbox.payload_json["event_type"].as_string() == "SORTING_SOURCE_PICK_REQUESTED")
+                    )
+                ).scalars()
+            )
+            assert session_ids == [session.id]
+            assert inbox_ids == [inbox.id]
+            assert item.sorting_session_id == session.id
+            assert item.source_pick_inbox_id == inbox.id
 
             intents = await SmtSortingInboundPlugin().on_device_event(
                 SimpleNamespace(
@@ -978,43 +1152,42 @@ async def test_smt_inbound_handoff_release_terminal_serial_claims_next_item_once
             assert skipped_second.source_pick_inbox_id is None
             assert skipped_second.sorting_session_id is None
 
-            skipped_first.status = SmtInboundHandoffSourceItemStatus.SORTING
-            db.add(skipped_first)
-            await db.flush()
-            skipped_inbox = await _target_place_success_inbox(
-                db,
-                session=skipped_first_session,
-                target_arm=target_arm,
-                target_command=SimpleNamespace(id=None, command_code="NG-CMD-001"),
-                item=skipped_first,
-                trace_id=skipped_payload["trace_id"],
+            skipped_first_inbox = await db.get(WorklineInbox, skipped_first.source_pick_inbox_id)
+            assert skipped_first_inbox is not None
+            skipped_pick_intents = await plugin.on_device_event(
+                _plugin_ctx(skipped_first_session, trace_id=skipped_payload["trace_id"]),
+                skipped_first_inbox,
             )
-            await RuntimeIntentEffectApplier().apply(
+            await effect_applier.apply(
                 _runtime_ctx(
                     db=db,
                     workline=sorting_workline,
                     session=skipped_first_session,
-                    inbox=skipped_inbox,
-                    source_device=target_arm,
+                    inbox=skipped_first_inbox,
+                    source_device=source_arm,
                     source_arm=source_arm,
                     target_arm=target_arm,
                     scan_platform=scan_platform,
                 ),
-                [
-                    RuntimeIntent.update_context(
-                        {
-                            "smt_inbound_handoff_terminal_result": {
-                                "terminal_status": "SKIPPED",
-                                "terminal_evidence": {
-                                    "ng_command_payload": {
-                                        "command_code": "NG-CMD-001",
-                                        "ng_location": "NG-01",
-                                    }
-                                },
-                            }
-                        }
-                    )
-                ],
+                skipped_pick_intents,
+            )
+            await db.flush()
+            await db.refresh(skipped_first)
+            skipped_source_command = await db.get(DeviceCommand, skipped_first.source_pick_command_id)
+            assert skipped_source_command is not None
+
+            await _drive_source_item_to_skipped(
+                db,
+                plugin=plugin,
+                effect_applier=effect_applier,
+                sorting_workline=sorting_workline,
+                source_arm=source_arm,
+                target_arm=target_arm,
+                scan_platform=scan_platform,
+                item=skipped_first,
+                session=skipped_first_session,
+                source_command=skipped_source_command,
+                trace_id=skipped_payload["trace_id"],
             )
             await db.refresh(skipped_first)
             await db.refresh(skipped_second)

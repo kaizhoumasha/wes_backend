@@ -161,6 +161,17 @@ class SingleLayerRackOrchestrationService:
                 )
                 diagnostics["handoff_demand_status"] = getattr(getattr(handoff_demand, "status", None), "value", None)
                 diagnostics["handoff_claim_result"] = getattr(claim_result, "kind", None)
+                diagnostics["handoff_claim_failure_code"] = getattr(claim_result, "failure_code", None)
+                diagnostics["handoff_claim_failure_message"] = getattr(claim_result, "failure_message", None)
+                claim_next_attempt_at = getattr(claim_result, "next_attempt_at", None)
+                diagnostics["handoff_claim_next_attempt_at"] = (
+                    claim_next_attempt_at.isoformat() if hasattr(claim_next_attempt_at, "isoformat") else None
+                )
+                diagnostics["handoff_claim_source_item_id"] = getattr(
+                    getattr(claim_result, "source_item", None), "id", None
+                )
+                diagnostics["handoff_claim_session_id"] = getattr(getattr(claim_result, "session", None), "id", None)
+                diagnostics["handoff_claim_inbox_id"] = getattr(getattr(claim_result, "inbox", None), "id", None)
             return SingleLayerRackOrchestrationDecision(
                 decision=SingleLayerRackOrchestrationDecisionCode.WAITING,
                 reason="ROUGH_SORTER_RELEASE_FACT_RECORDED",
