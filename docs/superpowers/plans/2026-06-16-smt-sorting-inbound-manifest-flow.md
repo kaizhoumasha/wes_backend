@@ -711,7 +711,7 @@ Actual: T6 implementation commits `66cd24d3`, `f731a85f`, `b240fa0c`。RED focus
 - Modify: `tests/workline_runtime/test_smt_inbound_handoff_recovery.py`
 - Modify: `tests/workline_runtime/test_smt_inbound_handoff_celery.py`
 
-- [ ] **Step 1: 写 Celery RED 测试**
+- [x] **Step 1: 写 Celery RED 测试**
 
 Cover:
 
@@ -735,7 +735,7 @@ assert summary == {
 }
 ```
 
-- [ ] **Step 2: Run RED Celery tests**
+- [x] **Step 2: Run RED Celery tests**
 
 Run:
 
@@ -748,7 +748,7 @@ rtk uv run pytest \
 
 Expected: FAIL because `claimed` and `claim_limit` do not exist.
 
-- [ ] **Step 3: Implement scan parameters**
+- [x] **Step 3: Implement scan parameters**
 
 Change service signature to:
 
@@ -763,15 +763,15 @@ scan_smt_inbound_handoff_demands_batch(
 
 Keep backwards compatibility only for internal call sites if needed during the same task; final public task should pass named parameters.
 
-- [ ] **Step 4: Add READY claim loop**
+- [x] **Step 4: Add READY claim loop**
 
 After due demand recalculation and stuck item recovery, claim up to `claim_limit` due READY items. Use the same `claim_next_source_item` path and count only `CLAIMED` results.
 
-- [ ] **Step 5: Add per-scan ECS probe cache**
+- [x] **Step 5: Add per-scan ECS probe cache**
 
 Cache key should include target WorkLine or ECS endpoint identity. Cache lifetime is one scan invocation only; do not add Redis/global cache.
 
-- [ ] **Step 6: Update Celery task and Beat config**
+- [x] **Step 6: Update Celery task and Beat config**
 
 Task defaults:
 
@@ -782,7 +782,7 @@ Task defaults:
 
 Update log message and config comment to state it scans due demand, stuck item, and READY claim fallback.
 
-- [ ] **Step 7: Run Celery tests**
+- [x] **Step 7: Run Celery tests**
 
 Run:
 
@@ -795,7 +795,7 @@ rtk uv run pytest \
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 Run:
 
@@ -809,6 +809,8 @@ rtk git add \
   tests/workline_runtime/test_smt_inbound_handoff_celery.py
 rtk git commit -m "feat(workline): 增加 SMT handoff READY claim 兜底扫描"
 ```
+
+Actual: T7 implementation commits `6a19438f` and `4fbcf100`。RED focused tests 先出现预期失败（summary 缺 `claimed`、`scan_limit/claim_limit` 参数不存在、task `limit=` legacy 调用不兼容、ECS probe cache 过 TTL 未重新 probe）；最终实现 READY claim 兜底扫描、`scan_limit/recovery_limit/claim_limit` 拆分、task legacy `limit` 兼容、单次 scan 内 ECS probe cache 和 TTL freshness。最终 focused tests：`tests/workline_runtime/test_smt_inbound_handoff_recovery.py tests/workline_runtime/test_smt_inbound_handoff_celery.py -q` 为 `24 passed`；claim 回归 `tests/workline_runtime/test_smt_inbound_handoff_claim.py -q` 为 `13 passed`。`rtk uv run ruff check ...` 和 `rtk uv run ruff format --check ...` 通过。GitNexus impact：service scan 入口为 HIGH（Celery `_scan` / E2E smoke / scan flows），`claim_next_source_item` 为 MEDIUM，Celery task 和 repository READY candidate 为 LOW；`detect-changes --scope compare --base-ref 3f2823bd` 报 high，范围集中在 T7 recovery/claim/Celery flows。Spec review PASS，quality re-review Ready；无 Critical / Important 阻塞，保留真实 PostgreSQL 并发 claim 集成覆盖为剩余风险。
 
 ## Task T8: Release-to-Terminal E2E Regression Gate
 
