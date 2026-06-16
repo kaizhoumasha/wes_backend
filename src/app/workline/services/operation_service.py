@@ -858,6 +858,17 @@ class WorklineOperationService(BaseService[Any, Any]):
             ack_received_at=ack_received_at,
         )
 
+        from src.app.sys.services.event_stream_service import defer_command_status_changed_event
+
+        defer_command_status_changed_event(
+            db,
+            command=command,
+            action="acked",
+            workline_id=getattr(command, "workline_id", None),
+            device_id=getattr(command, "device_id", None),
+            session_id=getattr(command, "session_id_int", None),
+        )
+
         if auto_commit:
             await self._commit_mutation(db)
         return outbox
@@ -1019,6 +1030,18 @@ class WorklineOperationService(BaseService[Any, Any]):
         )
         if inbox is None:
             raise RuntimeError(f"创建沙箱 Result 失败: command_code={command_code}")
+
+        from src.app.sys.services.event_stream_service import defer_command_status_changed_event
+
+        defer_command_status_changed_event(
+            db,
+            command=command,
+            action="updated",
+            workline_id=workline_id,
+            device_id=device_id,
+            session_id=getattr(command, "session_id_int", None),
+        )
+
         if auto_commit:
             await self._commit_mutation(db)
         return inbox
