@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import inspect
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql
 
 from src.app.workline.domain.services.smt_inbound_handoff_reason import SmtInboundHandoffReasonCode
@@ -33,16 +32,19 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
 
 
 class _RouteService:
-    def __init__(self, result: object) -> None:
+    def __init__(self, result: object, *, call_log: list[str] | None = None) -> None:
         self.result = result
+        self.call_log = call_log
         self.calls: list[dict[str, Any]] = []
 
     async def resolve_route(self, _db: object, **kwargs: Any) -> object:
+        if self.call_log is not None:
+            self.call_log.append("route_probe")
         self.calls.append(kwargs)
         return self.result
 
 
-def _selected_route(workline: WorkLine) -> object:
+def _selected_route(workline: WorkLine, *, target_rack_position_code: str = "TARGET_STATION_FROM_ROUTE") -> object:
     return SimpleNamespace(
         kind="SELECTED",
         manual_hold=False,
@@ -53,8 +55,11 @@ def _selected_route(workline: WorkLine) -> object:
         source_station_code="SOURCE_STATION_A",
         source_position_code="SOURCE_STATION_A",
         route_evidence={
+            "manifest_contract_version": SMT_SORTING_INBOUND_CONTRACT_VERSION,
+            "source_rack_position_code": "SOURCE_STATION_A",
             "source_station_code": "SOURCE_STATION_A",
             "source_position_code": "SOURCE_STATION_A",
+            "target_rack_position_code": target_rack_position_code,
             "route_priority": 1,
         },
         failure_code=None,
@@ -162,6 +167,28 @@ def _target_workline(line_code: str = "WL-SMT-SORT-01") -> WorkLine:
     )
 
 
+async def _count_workline_sessions(db_session: Any, workline_id: int) -> int:
+    return int(
+        (
+            await db_session.execute(
+                select(func.count()).select_from(WorklineSession).where(WorklineSession.workline_id == workline_id)
+            )
+        ).scalar_one()
+        or 0
+    )
+
+
+async def _count_workline_inboxes(db_session: Any, workline_id: int) -> int:
+    return int(
+        (
+            await db_session.execute(
+                select(func.count()).select_from(WorklineInbox).where(WorklineInbox.workline_id == workline_id)
+            )
+        ).scalar_one()
+        or 0
+    )
+
+
 @pytest.mark.asyncio
 async def test_route_missing_manual_holds_claimed_source_item_and_demand(db_session: Any) -> None:
     service = SmtInboundHandoffService(route_service=_RouteService(_manual_hold_route()))
@@ -236,7 +263,14 @@ async def test_claim_creates_internal_source_pick_inbox_with_session_workline_bu
     assert sorting_context["source_pick_request"]["handoff_source_item_id"] == item.id
     assert sorting_context["source_pick_request"]["manifest_contract_version"] == SMT_SORTING_INBOUND_CONTRACT_VERSION
     assert sorting_context["source_pick_request"]["source_rack_position_code"] == "SOURCE_STATION_A"
-    assert sorting_context["source_pick_request"]["target_rack_position_code"] == "TARGET_STATION"
+    assert sorting_context["source_pick_request"]["target_rack_position_code"] == "TARGET_STATION_FROM_ROUTE"
+    assert sorting_context["source_pick_request"]["route_evidence"]["manifest_contract_version"] == (
+        SMT_SORTING_INBOUND_CONTRACT_VERSION
+    )
+    assert sorting_context["source_pick_request"]["route_evidence"]["source_rack_position_code"] == "SOURCE_STATION_A"
+    assert sorting_context["source_pick_request"]["route_evidence"]["target_rack_position_code"] == (
+        "TARGET_STATION_FROM_ROUTE"
+    )
 
     assert inbox.kind == InboxKind.INTERNAL_EVENT
     assert inbox.source_system == SourceSystem.SYSTEM
@@ -259,13 +293,137 @@ async def test_claim_creates_internal_source_pick_inbox_with_session_workline_bu
     assert data["route_evidence"]["source_station_code"] == "SOURCE_STATION_A"
 
 
-def test_repository_ready_claim_statement_uses_row_lock_skip_locked_and_stable_ordering() -> None:
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "in_flight_status",
+    [
+        SmtInboundHandoffSourceItemStatus.PICK_REQUESTED,
+        SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING,
+        SmtInboundHandoffSourceItemStatus.PICKED,
+        SmtInboundHandoffSourceItemStatus.SORTING,
+    ],
+)
+async def test_existing_in_flight_source_item_keeps_second_ready_for_retry(
+    db_session: Any,
+    in_flight_status: SmtInboundHandoffSourceItemStatus,
+) -> None:
+    workline = _target_workline("WL-SMT-SORT-IN-FLIGHT")
+    db_session.add(workline)
+    await db_session.flush()
+    service = SmtInboundHandoffService(route_service=_RouteService(_selected_route(workline)))
+    _first_demand, first_item = await _ready_demand(
+        db_session,
+        service,
+        rack_release_id=f"claim-in-flight-{in_flight_status.value}-first",
+    )
+    second_demand, second_item = await _ready_demand(
+        db_session,
+        service,
+        rack_release_id=f"claim-in-flight-{in_flight_status.value}-second",
+    )
+    first_item.status = in_flight_status
+    first_item.target_workline_id = workline.id
+    first_item.target_workline_code = workline.line_code
+    db_session.add(first_item)
+    await db_session.flush()
+
+    result = await service.claim_next_source_item(db_session, trace_id=f"trace-claim-{in_flight_status.value}")
+    await db_session.refresh(second_demand)
+    await db_session.refresh(second_item)
+
+    assert result.kind == "RETRY"
+    assert result.failure_code == SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value
+    assert second_demand.status == SmtInboundHandoffDemandStatus.READY_FOR_SORTING
+    assert second_item.status == SmtInboundHandoffSourceItemStatus.READY
+    assert second_item.failure_code == SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value
+    assert second_item.next_attempt_at is not None
+    assert second_item.sorting_session_id is None
+    assert second_item.source_pick_inbox_id is None
+    assert await _count_workline_sessions(db_session, cast("int", workline.id)) == 0
+    assert await _count_workline_inboxes(db_session, cast("int", workline.id)) == 0
+
+
+class _Phase2NotReadyRepository(SmtInboundHandoffRepository):
+    def __init__(self, item: SmtInboundHandoffSourceItem, workline: WorkLine, call_log: list[str]) -> None:
+        super().__init__()
+        self.item = item
+        self.workline = workline
+        self.call_log = call_log
+
+    async def claim_next_ready_source_item(self, *_args: Any, **_kwargs: Any) -> SmtInboundHandoffSourceItem | None:
+        pytest.fail("phase 1 must not claim or lock the READY source item before route/ECS probe")
+
+    async def list_ready_source_items_for_claim(self, *_args: Any, **_kwargs: Any) -> list[SmtInboundHandoffSourceItem]:
+        self.call_log.append("list_ready_candidates")
+        return [self.item]
+
+    async def list_sorting_candidate_worklines(self, *_args: Any, **_kwargs: Any) -> list[WorkLine]:
+        self.call_log.append("list_candidate_worklines")
+        return [self.workline]
+
+    async def lock_source_item_by_id(self, *_args: Any, **_kwargs: Any) -> SmtInboundHandoffSourceItem | None:
+        self.call_log.append("lock_source_item")
+        self.item.status = SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+        return self.item
+
+    async def lock_target_workline_by_id(self, *_args: Any, **_kwargs: Any) -> WorkLine | None:
+        self.call_log.append("lock_target_workline")
+        return self.workline
+
+
+@pytest.mark.asyncio
+async def test_claim_route_probe_happens_before_phase2_source_and_target_locks(db_session: Any) -> None:
+    workline = _target_workline("WL-SMT-SORT-PHASE-ORDER")
+    db_session.add(workline)
+    await db_session.flush()
+    base_service = SmtInboundHandoffService()
+    _demand, item = await _ready_demand(db_session, base_service, rack_release_id="claim-phase-lock-order")
+    call_log: list[str] = []
+    repository = _Phase2NotReadyRepository(item, workline, call_log)
+    service = SmtInboundHandoffService(
+        repository=repository,
+        route_service=_RouteService(_selected_route(workline), call_log=call_log),
+    )
+
+    result = await service.claim_next_source_item(db_session, trace_id="trace-claim-phase-lock-order")
+
+    assert result.kind == "RETRY"
+    assert result.failure_code == SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value
+    assert call_log == [
+        "list_ready_candidates",
+        "list_candidate_worklines",
+        "route_probe",
+        "lock_source_item",
+        "lock_target_workline",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_phase2_recheck_not_ready_skips_session_and_inbox(db_session: Any) -> None:
+    workline = _target_workline("WL-SMT-SORT-PHASE-RECHECK")
+    db_session.add(workline)
+    await db_session.flush()
+    base_service = SmtInboundHandoffService()
+    _demand, item = await _ready_demand(db_session, base_service, rack_release_id="claim-phase-recheck")
+    repository = _Phase2NotReadyRepository(item, workline, [])
+    service = SmtInboundHandoffService(repository=repository, route_service=_RouteService(_selected_route(workline)))
+
+    result = await service.claim_next_source_item(db_session, trace_id="trace-claim-phase-recheck")
+
+    assert result.kind == "RETRY"
+    assert item.sorting_session_id is None
+    assert item.source_pick_inbox_id is None
+    assert await _count_workline_sessions(db_session, cast("int", workline.id)) == 0
+    assert await _count_workline_inboxes(db_session, cast("int", workline.id)) == 0
+
+
+def test_repository_ready_candidate_statement_reads_due_items_without_row_lock() -> None:
     repository = SmtInboundHandoffRepository()
 
-    statement = repository.build_ready_source_item_claim_statement(now=timezone.now_for_db(), limit=1)
+    statement = repository.build_ready_source_item_candidate_statement(now=timezone.now_for_db(), limit=1)
     sql = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
 
-    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "FOR UPDATE" not in sql
     assert "ORDER BY" in sql
     assert "next_attempt_at" in sql
     assert "handoff_demand_id" in sql
@@ -274,11 +432,18 @@ def test_repository_ready_claim_statement_uses_row_lock_skip_locked_and_stable_o
     assert order_by.index("next_attempt_at") < order_by.index("handoff_demand_id") < order_by.rindex("id")
 
 
-def test_repository_claim_method_delegates_to_row_lock_statement() -> None:
-    source = inspect.getsource(SmtInboundHandoffRepository.claim_next_ready_source_item)
+def test_repository_phase2_lock_statements_use_row_locks() -> None:
+    repository = SmtInboundHandoffRepository()
 
-    assert "build_ready_source_item_claim_statement" in source
-    assert "with_for_update" not in source
+    source_statement = repository.build_source_item_by_id_lock_statement(source_item_id=1)
+    target_statement = repository.build_target_workline_by_id_lock_statement(workline_id=2)
+    source_sql = str(source_statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    target_sql = str(target_statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "FOR UPDATE" in source_sql
+    assert "smt_inbound_handoff_source_items" in source_sql
+    assert "FOR UPDATE" in target_sql
+    assert "work_lines" in target_sql
 
 
 @pytest.mark.asyncio
