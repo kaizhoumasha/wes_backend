@@ -820,7 +820,7 @@ Actual: T7 implementation commits `6a19438f` and `4fbcf100`。RED focused tests 
 - Modify: `tests/workline_runtime/test_smt_inbound_handoff_claim.py`
 - Modify: `tests/workline_runtime/test_runtime_intent_effects.py`
 
-- [ ] **Step 1: Expand happy-path E2E RED test**
+- [x] **Step 1: Expand happy-path E2E RED test**
 
 Extend the existing smoke from:
 
@@ -843,7 +843,7 @@ release fact
 
 Expected RED: current code stops before `PICKED/SORTED/COMPLETED`.
 
-- [ ] **Step 2: Add multi-item serial E2E**
+- [x] **Step 2: Add multi-item serial E2E**
 
 Cover:
 
@@ -852,7 +852,7 @@ Cover:
 - same behavior when first terminal is `SKIPPED`。
 - replayed terminal success does not claim third time。
 
-- [ ] **Step 3: Run RED E2E**
+- [x] **Step 3: Run RED E2E**
 
 Run:
 
@@ -862,11 +862,11 @@ rtk uv run pytest tests/integration/workline_runtime/test_smt_inbound_handoff_e2
 
 Expected: FAIL on missing automatic claim/terminal ledger until T4-T7 are complete.
 
-- [ ] **Step 4: Make release path trigger claim**
+- [x] **Step 4: Make release path trigger claim**
 
 Find the release fact producer path in `SingleLayerRackOrchestrationService` / handoff service integration. After demand becomes `READY_FOR_SORTING`, call the same handoff service claim path. Do not add an API/manual-only entrypoint.
 
-- [ ] **Step 5: Run full focused regression**
+- [x] **Step 5: Run full focused regression**
 
 Run:
 
@@ -888,7 +888,7 @@ rtk uv run pytest \
 
 Expected: PASS.
 
-- [ ] **Step 6: Run quality gates**
+- [x] **Step 6: Run quality gates**
 
 Run:
 
@@ -900,7 +900,7 @@ rtk ./scripts/git-quality-gate.sh --profile quality
 
 Expected: PASS. If full quality gate is too slow or environment-blocked, record exact failure and run the widest available targeted tests.
 
-- [ ] **Step 7: Run architecture checks**
+- [x] **Step 7: Run architecture checks**
 
 Run:
 
@@ -911,7 +911,7 @@ rtk grep -r "db.execute(" src/app/*/v1/ || true
 
 Expected: no new API-layer DB access introduced by this work.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 Run:
 
@@ -923,6 +923,8 @@ rtk git add \
   tests/workline_runtime/test_runtime_intent_effects.py
 rtk git commit -m "test(workline): 覆盖 SMT handoff release 到 terminal 闭环"
 ```
+
+Actual: T8 implementation commits `ec15740d`, `6160bd04`, `a0c21197`。Integration E2E 在本地默认 guard 下为 `7 skipped`，因此补充可执行 RED：release path focused test 先因缺 `evaluate` / `claim_next_source_item` 预期失败。最终实现 release fact 后自动 `evaluate(prefer_full_box_exchange=False)` 并按 demand scope claim，补充 claim diagnostics，扩展 release-to-terminal happy path、multi-item serial、SORTED/SKIPPED 后自动 claim、terminal replay 不 claim 第三项、duplicate release session/inbox 幂等断言。验证：focused regression 为 `252 passed, 9 skipped`；controller 复验 release producer/claim/E2E guard 命令为 `3 passed, 7 skipped`；T8 相关 ruff check / format check 和 `git diff --check` 通过；架构 grep 无 API 层 DB 访问输出；`./scripts/git-quality-gate.sh --profile quality` 通过。Spec re-review PASS；quality re-review PASS，无 Critical / Important 阻塞。剩余风险是本地缺 `INTEGRATION_DATABASE_URL`，真实 PostgreSQL E2E 只能在启用 integration 环境后执行。
 
 ## Final Gate
 
