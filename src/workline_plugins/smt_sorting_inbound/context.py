@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Mapping
 from decimal import Decimal
@@ -162,7 +163,7 @@ class SortingInboundContext:
     def get_source_pick_request(self) -> dict[str, Any]:
         """读取源站取料请求上下文；缺失时返回空 dict。"""
 
-        return _dict_copy(self.sorting.get("source_pick_request"))
+        return copy.deepcopy(_dict_copy(self.sorting.get("source_pick_request")))
 
     def write_pending_target_placement(
         self,

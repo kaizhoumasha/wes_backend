@@ -151,15 +151,20 @@ def test_source_pick_request_getter_returns_empty_dict_when_missing() -> None:
     assert context.get_source_pick_request() == {}
 
 
-def test_source_pick_request_getter_returns_copy() -> None:
+def test_source_pick_request_getter_returns_deep_copy() -> None:
     session = _session()
     context = SortingInboundContext.initialize(session)
-    context.write_source_pick_request(**_source_pick_request_kwargs())
+    context.write_source_pick_request(
+        **_source_pick_request_kwargs(route_evidence={"nested": {"usage": Decimal("0.42")}})
+    )
 
     request = context.get_source_pick_request()
     request["handoff_source_item_id"] = 999
+    request["route_evidence"]["nested"]["usage"] = "999"
 
     assert context.sorting["source_pick_request"]["handoff_source_item_id"] == 2
+    assert context.sorting["source_pick_request"]["route_evidence"]["nested"]["usage"] == "0.42"
+    assert session.context_json["sorting"]["source_pick_request"]["route_evidence"]["nested"]["usage"] == "0.42"
 
 
 @pytest.mark.parametrize("field_name", ["handoff_demand_id", "handoff_source_item_id", "claim_attempt_no"])
