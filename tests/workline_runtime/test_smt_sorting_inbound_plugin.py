@@ -937,6 +937,32 @@ async def test_target_place_success_mounts_material_and_releases_scan_platform()
 
 
 @pytest.mark.asyncio
+async def test_target_place_success_preserves_handoff_source_pick_request_for_terminal_ledger() -> None:
+    plugin = SmtSortingInboundPlugin()
+    context = _sorting_context_with_pending_target()
+    source_pick_request = {
+        "handoff_demand_id": 11,
+        "handoff_source_item_id": 22,
+        "claim_attempt_no": 1,
+        "event_id": "smt-inbound-handoff-source-item:22:claim:1",
+        "target_workline_code": "SMT-SORT-01",
+        "manifest_contract_version": "2026-06-01.p0",
+        "source_rack_position_code": "SOURCE_STATION_A",
+        "target_rack_position_code": "TARGET_STATION",
+        "route_evidence": {},
+    }
+    context["sorting"]["source_pick_request"] = source_pick_request
+
+    intents = await plugin.on_command_result(_ctx(context), _target_place_result_inbox())
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
+    sorting_patch = intents[1].context_patch["sorting"]
+    assert sorting_patch["source_pick_request"] == source_pick_request
+    assert "pending_target_placement" not in sorting_patch
+    assert "current_material" not in sorting_patch
+
+
+@pytest.mark.asyncio
 async def test_target_place_failure_with_known_location_enters_manual_suspend() -> None:
     plugin = SmtSortingInboundPlugin()
 

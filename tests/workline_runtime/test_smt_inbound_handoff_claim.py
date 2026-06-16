@@ -22,6 +22,7 @@ from src.app.workline.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItemStatus,
 )
 from src.app.workline.repositories.smt_inbound_handoff_repository import SmtInboundHandoffRepository
+from src.app.workline.services.single_layer_rack_orchestration_service import SingleLayerRackOrchestrationService
 from src.app.workline.services.smt_inbound_handoff_service import SmtInboundHandoffService
 from src.utils.timezone import timezone
 from src.workline_plugins.smt_sorting_inbound.constants import (
@@ -42,6 +43,28 @@ class _RouteService:
             self.call_log.append("route_probe")
         self.calls.append(kwargs)
         return self.result
+
+
+class _ReleaseClaimingHandoffService:
+    def __init__(self) -> None:
+        self.demand = SimpleNamespace(id=901, demand_key="handoff:release:auto-claim")
+        self.create_calls: list[dict[str, Any]] = []
+        self.evaluate_calls: list[dict[str, Any]] = []
+        self.claim_calls: list[dict[str, Any]] = []
+
+    async def create_or_get_from_release(self, _db: object, **kwargs: Any) -> object:
+        self.create_calls.append(kwargs)
+        return self.demand
+
+    async def evaluate(self, _db: object, **kwargs: Any) -> object:
+        self.evaluate_calls.append(kwargs)
+        assert kwargs["demand"] is self.demand
+        assert kwargs["prefer_full_box_exchange"] is False
+        return self.demand
+
+    async def claim_next_source_item(self, _db: object, **kwargs: Any) -> object:
+        self.claim_calls.append(kwargs)
+        return SimpleNamespace(kind="CLAIMED")
 
 
 def _selected_route(workline: WorkLine, *, target_rack_position_code: str = "TARGET_STATION_FROM_ROUTE") -> object:
@@ -165,6 +188,63 @@ def _target_workline(line_code: str = "WL-SMT-SORT-01") -> WorkLine:
             }
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_rough_sorter_release_path_evaluates_and_claims_first_source_item() -> None:
+    handoff_service = _ReleaseClaimingHandoffService()
+    orchestrator = SingleLayerRackOrchestrationService(smt_inbound_handoff_service=handoff_service)
+    workline = SimpleNamespace(
+        id=101,
+        line_code="WL-SMT-ROUGH-RELEASE",
+        runtime_status=WorkLineRuntimeStatus.READY,
+    )
+
+    decision = await orchestrator.plan_single_layer_rack_dispatch(
+        object(),
+        business_demand_key="release-demand:auto-claim",
+        demand_type="ROUGH_SORTER_RELEASE_FACT",
+        workline=workline,
+        station_code="SINGLE_LAYER_A",
+        fact_payload={
+            "rack_release_id": "release:auto-claim",
+            "single_layer_rack_code": "RACK-AUTO-CLAIM",
+            "trace_id": "trace-release-auto-claim",
+            "bin_snapshots": [
+                {
+                    "slot_code": "A",
+                    "bin_code": "SRC-BIN-A",
+                    "usage": 0.25,
+                    "cells": [
+                        {
+                            "bin_code": "SRC-BIN-A",
+                            "bin_cell_index": 1,
+                            "bin_cell_code": "A01",
+                            "material_identity_key": "MAT-A",
+                            "pkg_code": "PKG-A",
+                            "reel_thickness_mm": "7.125",
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert decision.reason == "ROUGH_SORTER_RELEASE_FACT_RECORDED"
+    assert handoff_service.create_calls
+    assert handoff_service.evaluate_calls == [
+        {
+            "demand": handoff_service.demand,
+            "prefer_full_box_exchange": False,
+            "trace_id": "trace-release-auto-claim",
+        }
+    ]
+    assert handoff_service.claim_calls == [
+        {
+            "trace_id": "trace-release-auto-claim",
+            "demand_id": 901,
+        }
+    ]
 
 
 async def _count_workline_sessions(db_session: Any, workline_id: int) -> int:

@@ -12,6 +12,7 @@ from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
 from src.app.sys.models.outbox import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
+from src.app.workline.models.inbox import InboxKind, SourceSystem, WorklineInbox
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.workline.models.smt_inbound_handoff import (
@@ -29,21 +30,23 @@ from src.app.workline.services.station_lease_service import StationLeaseResult
 from src.utils.timezone import timezone
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_SOURCE_PICK,
+    COMMAND_TARGET_PLACE,
+    EVENT_WORKING_BIN_SCAN,
+    ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
+    ROLE_SORTING_TARGET_ARM,
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
     SORTING_CONTEXT_SCHEMA_VERSION,
 )
 from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
 from src.workline_runtime.orchestrator import OrchestratorResult
-from src.workline_runtime.runtime_intent import RuntimeIntentKind
+from src.workline_runtime.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
 from src.workline_runtime.trace_context import TraceContext
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-
-    from src.app.workline.models.inbox import WorklineInbox
 
 
 class _AvailableStationLeaseService:
@@ -84,6 +87,46 @@ class _SelectedRouteService:
         )
 
 
+class _AvailableTargetStationStatusProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def station_lease_status(self, position_code: str, **kwargs: Any) -> object:
+        self.calls.append({"position_code": position_code, **kwargs})
+        return SimpleNamespace(available=True, reason_code=None)
+
+
+class _ActiveTargetRackSnapshotProvider:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any] | None] = []
+
+    async def active_bin_rack(self, *, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.calls.append(context)
+        return {
+            "snapshot_version": "target-snapshot-001",
+            "cells": [
+                {
+                    "bin_code": "TGT-BIN-01",
+                    "bin_cell_index": "B02",
+                    "bin_cell_code": "B02",
+                    "material_identity_key": None,
+                    "status": "EMPTY",
+                    "used_depth_mm": "0.000",
+                    "capacity_depth_mm": "30.000",
+                }
+            ],
+        }
+
+
+class _ProjectedResourceProjectionService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def record_resource_fact(self, **kwargs: Any) -> object:
+        self.calls.append(kwargs)
+        return SimpleNamespace(status="PROJECTED")
+
+
 def _release_fact_payload(test_prefix: str) -> dict[str, Any]:
     return {
         "rack_release_id": f"{test_prefix}:release",
@@ -108,6 +151,24 @@ def _release_fact_payload(test_prefix: str) -> dict[str, Any]:
         ],
         "trace_id": f"{test_prefix}:trace",
     }
+
+
+def _release_fact_payload_with_items(test_prefix: str, *, item_count: int) -> dict[str, Any]:
+    payload = _release_fact_payload(test_prefix)
+    cells = []
+    for index in range(1, item_count + 1):
+        cells.append(
+            {
+                "bin_code": f"{test_prefix}:SRC-BIN-A",
+                "bin_cell_index": index,
+                "bin_cell_code": f"A{index:02d}",
+                "material_identity_key": f"{test_prefix}:MAT-{index}",
+                "pkg_code": f"{test_prefix}:PKG-{index}",
+                "reel_thickness_mm": "7.125",
+            }
+        )
+    payload["bin_snapshots"][0]["cells"] = cells
+    return payload
 
 
 def _rough_workline(test_prefix: str) -> WorkLine:
@@ -147,6 +208,28 @@ def _source_arm(test_prefix: str, workline: WorkLine) -> Device:
         device_name=f"{test_prefix} source arm",
         work_line_id=workline.id,
         device_role=ROLE_SORTING_SOURCE_ARM,
+        device_status=DeviceStatus.IDLE,
+        is_active=True,
+    )
+
+
+def _target_arm(test_prefix: str, workline: WorkLine) -> Device:
+    return Device(
+        device_code=f"{test_prefix}:TARGET-ARM",
+        device_name=f"{test_prefix} target arm",
+        work_line_id=workline.id,
+        device_role=ROLE_SORTING_TARGET_ARM,
+        device_status=DeviceStatus.IDLE,
+        is_active=True,
+    )
+
+
+def _scan_platform(test_prefix: str, workline: WorkLine) -> Device:
+    return Device(
+        device_code=f"{test_prefix}:SCAN-PLATFORM",
+        device_name=f"{test_prefix} scan platform",
+        work_line_id=workline.id,
+        device_role=ROLE_SORTING_SCAN_PLATFORM,
         device_status=DeviceStatus.IDLE,
         is_active=True,
     )
@@ -284,6 +367,330 @@ def _effect_ctx(*, db: AsyncSession, workline: WorkLine, session: Any, inbox: Wo
     }
 
 
+def _runtime_ctx(
+    *,
+    db: AsyncSession,
+    workline: WorkLine,
+    session: Any,
+    inbox: WorklineInbox,
+    source_device: Device,
+    source_arm: Device,
+    target_arm: Device,
+    scan_platform: Device,
+) -> dict[str, Any]:
+    trace_id = getattr(inbox, "trace_id", None) or getattr(session, "trace_id", None) or "trace-smt-handoff-e2e"
+    return {
+        "db": db,
+        "session": session,
+        "workline": workline,
+        "inbox": inbox,
+        "devices_by_role": {
+            ROLE_SORTING_SOURCE_ARM: [source_arm],
+            ROLE_SORTING_TARGET_ARM: [target_arm],
+            ROLE_SORTING_SCAN_PLATFORM: [scan_platform],
+        },
+        "source_device": source_device,
+        "orch_result": OrchestratorResult(success=True, intents=[]),
+        "current_status": getattr(getattr(session, "status", None), "value", getattr(session, "status", None)),
+        "trace_id": trace_id,
+        "trace": TraceContext.from_runtime(session=session, inbox=inbox, trace_id=trace_id),
+        "session_ctx": dict(getattr(session, "context_json", None) or {}),
+        "now": timezone.now_for_db(),
+        "awaiting_command_id": getattr(inbox, "command_id", None),
+        "awaiting_command_code": None,
+        "next_timeline_seq_no": None,
+    }
+
+
+def _plugin_ctx(session: Any, *, services: object | None = None, trace_id: str | None = None) -> object:
+    return SimpleNamespace(
+        trace_id=trace_id or getattr(session, "trace_id", None) or "trace-smt-handoff-e2e",
+        config={},
+        logger=SimpleNamespace(info=lambda *_args: None, warning=lambda *_args: None),
+        normalized_input=None,
+        session=session,
+        services=services or SimpleNamespace(),
+    )
+
+
+async def _source_pick_success_inbox(
+    db: AsyncSession,
+    *,
+    session: Any,
+    source_arm: Device,
+    source_command: DeviceCommand,
+    item: SmtInboundHandoffSourceItem,
+    trace_id: str,
+) -> WorklineInbox:
+    inbox = WorklineInbox(
+        kind=InboxKind.COMMAND_RESULT,
+        source_system=SourceSystem.DEVICE,
+        source_message_id=f"{trace_id}:source-pick-success:{item.id}",
+        workline_id=session.workline_id,
+        device_id=source_arm.id,
+        command_id=source_command.id,
+        session_id=session.id,
+        trace_id=trace_id,
+        payload_json={
+            "command_code": source_command.command_code,
+            "device_code": source_arm.device_code,
+            "task_type": COMMAND_SOURCE_PICK,
+            "result": "SUCCESS",
+            "data": {
+                "bin_code": item.bin_code,
+                "bin_cell_index": item.bin_cell_index,
+                "bin_cell_code": item.bin_cell_code,
+                "material_identity_key": item.material_identity_key,
+                "pkg_code": item.pkg_code,
+                "reel_thickness": str(item.reel_thickness_mm),
+                "source_version": f"source-version:{item.id}",
+            },
+        },
+        claim_bucket_key=f"session:{session.id}",
+    )
+    db.add(inbox)
+    await db.flush()
+    return inbox
+
+
+async def _working_bin_scan_inbox(
+    db: AsyncSession,
+    *,
+    session: Any,
+    scan_platform: Device,
+    item: SmtInboundHandoffSourceItem,
+    trace_id: str,
+) -> WorklineInbox:
+    inbox = WorklineInbox(
+        kind=InboxKind.DEVICE_EVENT,
+        source_system=SourceSystem.DEVICE,
+        source_message_id=f"{trace_id}:working-bin-scan:{item.id}",
+        workline_id=session.workline_id,
+        device_id=scan_platform.id,
+        session_id=session.id,
+        trace_id=trace_id,
+        payload_json={
+            "event_id": f"{trace_id}:scan:{item.id}",
+            "device_code": scan_platform.device_code,
+            "event_type": EVENT_WORKING_BIN_SCAN,
+            "data": {
+                "material_identity_key": item.material_identity_key,
+                "pkg_code": item.pkg_code,
+                "reel_thickness": str(item.reel_thickness_mm),
+            },
+        },
+        claim_bucket_key=f"session:{session.id}",
+    )
+    db.add(inbox)
+    await db.flush()
+    return inbox
+
+
+async def _target_place_success_inbox(
+    db: AsyncSession,
+    *,
+    session: Any,
+    target_arm: Device,
+    target_command: DeviceCommand,
+    item: SmtInboundHandoffSourceItem,
+    trace_id: str,
+) -> WorklineInbox:
+    inbox = WorklineInbox(
+        kind=InboxKind.COMMAND_RESULT,
+        source_system=SourceSystem.DEVICE,
+        source_message_id=f"{trace_id}:target-place-success:{item.id}",
+        workline_id=session.workline_id,
+        device_id=target_arm.id,
+        command_id=target_command.id,
+        session_id=session.id,
+        trace_id=trace_id,
+        payload_json={
+            "command_code": target_command.command_code,
+            "device_code": target_arm.device_code,
+            "task_type": COMMAND_TARGET_PLACE,
+            "result": "SUCCESS",
+            "data": {},
+        },
+        claim_bucket_key=f"session:{session.id}",
+    )
+    db.add(inbox)
+    await db.flush()
+    return inbox
+
+
+async def _drive_source_item_to_sorted(
+    db: AsyncSession,
+    *,
+    plugin: SmtSortingInboundPlugin,
+    effect_applier: RuntimeIntentEffectApplier,
+    sorting_workline: WorkLine,
+    source_arm: Device,
+    target_arm: Device,
+    scan_platform: Device,
+    item: SmtInboundHandoffSourceItem,
+    session: WorklineSession,
+    source_command: DeviceCommand,
+    trace_id: str,
+) -> None:
+    source_success_inbox = await _source_pick_success_inbox(
+        db,
+        session=session,
+        source_arm=source_arm,
+        source_command=source_command,
+        item=item,
+        trace_id=trace_id,
+    )
+    source_success_intents = await plugin.on_command_result(
+        _plugin_ctx(session, trace_id=trace_id),
+        source_success_inbox,
+    )
+    assert [intent.kind for intent in source_success_intents] == [
+        RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+    ]
+    await effect_applier.apply(
+        _runtime_ctx(
+            db=db,
+            workline=sorting_workline,
+            session=session,
+            inbox=source_success_inbox,
+            source_device=source_arm,
+            source_arm=source_arm,
+            target_arm=target_arm,
+            scan_platform=scan_platform,
+        ),
+        source_success_intents,
+    )
+    await db.flush()
+    await db.refresh(item)
+    assert item.status == SmtInboundHandoffSourceItemStatus.PICKED
+
+    scan_inbox = await _working_bin_scan_inbox(
+        db,
+        session=session,
+        scan_platform=scan_platform,
+        item=item,
+        trace_id=trace_id,
+    )
+    scan_intents = await plugin.on_device_event(
+        _plugin_ctx(
+            session,
+            services=SimpleNamespace(
+                active_rack_snapshot_provider=_ActiveTargetRackSnapshotProvider(),
+                station_lease_status_provider=_AvailableTargetStationStatusProvider(),
+            ),
+            trace_id=trace_id,
+        ),
+        scan_inbox,
+    )
+    assert [intent.kind for intent in scan_intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
+    assert scan_intents[1].action == COMMAND_TARGET_PLACE
+    await effect_applier.apply(
+        _runtime_ctx(
+            db=db,
+            workline=sorting_workline,
+            session=session,
+            inbox=scan_inbox,
+            source_device=scan_platform,
+            source_arm=source_arm,
+            target_arm=target_arm,
+            scan_platform=scan_platform,
+        ),
+        scan_intents,
+    )
+    await db.flush()
+
+    target_command = (
+        await db.execute(
+            select(DeviceCommand)
+            .where(DeviceCommand.session_id_int == session.id)
+            .where(DeviceCommand.task_type == COMMAND_TARGET_PLACE)
+        )
+    ).scalar_one()
+    target_success_inbox = await _target_place_success_inbox(
+        db,
+        session=session,
+        target_arm=target_arm,
+        target_command=target_command,
+        item=item,
+        trace_id=trace_id,
+    )
+    target_success_intents = await plugin.on_command_result(
+        _plugin_ctx(session, trace_id=trace_id),
+        target_success_inbox,
+    )
+    assert [intent.kind for intent in target_success_intents] == [
+        RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+    ]
+    await effect_applier.apply(
+        _runtime_ctx(
+            db=db,
+            workline=sorting_workline,
+            session=session,
+            inbox=target_success_inbox,
+            source_device=target_arm,
+            source_arm=source_arm,
+            target_arm=target_arm,
+            scan_platform=scan_platform,
+        ),
+        target_success_intents,
+    )
+    await db.flush()
+
+
+async def _seed_release_handoff(
+    db: AsyncSession,
+    *,
+    test_prefix: str,
+    payload: dict[str, Any],
+    sorting_workline: WorkLine,
+) -> tuple[
+    SmtInboundHandoffService,
+    SingleLayerRackOrchestrationService,
+    SingleLayerRackOrchestrationDecisionCode,
+    SmtInboundHandoffDemand,
+]:
+    rough_workline = _rough_workline(test_prefix)
+    db.add(rough_workline)
+    await db.flush()
+    handoff_service = SmtInboundHandoffService(route_service=_SelectedRouteService(sorting_workline))
+    orchestrator = SingleLayerRackOrchestrationService(
+        station_lease_service=_AvailableStationLeaseService(),
+        smt_inbound_handoff_service=handoff_service,
+    )
+
+    decision = await orchestrator.plan_single_layer_rack_dispatch(
+        db,
+        business_demand_key=f"{test_prefix}:release-demand",
+        demand_type="ROUGH_SORTER_RELEASE_FACT",
+        workline=rough_workline,
+        station_code="SINGLE_LAYER_A",
+        fact_payload=payload,
+    )
+    demand = (
+        await db.execute(
+            select(SmtInboundHandoffDemand).where(SmtInboundHandoffDemand.rack_release_id == payload["rack_release_id"])
+        )
+    ).scalar_one()
+    return handoff_service, orchestrator, decision.decision, demand
+
+
+async def _source_items_for_demand(
+    db: AsyncSession,
+    demand: SmtInboundHandoffDemand,
+) -> list[SmtInboundHandoffSourceItem]:
+    return list(
+        (
+            await db.execute(
+                select(SmtInboundHandoffSourceItem)
+                .where(SmtInboundHandoffSourceItem.handoff_demand_id == demand.id)
+                .order_by(SmtInboundHandoffSourceItem.id.asc())
+            )
+        ).scalars()
+    )
+
+
 @pytest.mark.asyncio
 async def test_smt_inbound_handoff_release_claim_plugin_effect_smoke(
     integration_session_factory: async_sessionmaker[AsyncSession],
@@ -296,7 +703,9 @@ async def test_smt_inbound_handoff_release_claim_plugin_effect_smoke(
             db.add_all([rough_workline, sorting_workline])
             await db.flush()
             source_arm = _source_arm(test_prefix, sorting_workline)
-            db.add(source_arm)
+            target_arm = _target_arm(test_prefix, sorting_workline)
+            scan_platform = _scan_platform(test_prefix, sorting_workline)
+            db.add_all([source_arm, target_arm, scan_platform])
             await db.flush()
 
             handoff_service = SmtInboundHandoffService(route_service=_SelectedRouteService(sorting_workline))
@@ -347,15 +756,24 @@ async def test_smt_inbound_handoff_release_claim_plugin_effect_smoke(
             )
             assert source_item_count == 1
 
-            demand = await handoff_service.evaluate(db, demand=demand, prefer_full_box_exchange=False)
-            assert demand.status == SmtInboundHandoffDemandStatus.READY_FOR_SORTING
-
-            claim_result = await handoff_service.claim_next_source_item(db, trace_id=payload["trace_id"])
-            assert claim_result.kind == "CLAIMED"
-            item = claim_result.source_item
-            session = claim_result.session
-            inbox = claim_result.inbox
+            item = (
+                await db.execute(
+                    select(SmtInboundHandoffSourceItem).where(
+                        SmtInboundHandoffSourceItem.handoff_demand_id == demand.id
+                    )
+                )
+            ).scalar_one()
+            await db.refresh(demand)
+            assert demand.status == SmtInboundHandoffDemandStatus.CLAIMED_BY_SORTING
             assert item.status == SmtInboundHandoffSourceItemStatus.PICK_REQUESTED
+            assert item.source_pick_inbox_id is not None
+            assert item.sorting_session_id is not None
+
+            session = await db.get(WorklineSession, item.sorting_session_id)
+            inbox = await db.get(WorklineInbox, item.source_pick_inbox_id)
+            assert session is not None
+            assert inbox is not None
+            assert inbox.payload_json["event_type"] == "SORTING_SOURCE_PICK_REQUESTED"
             assert inbox.claim_bucket_key == f"session:{session.id}"
             assert inbox.claim_bucket_key != "serial:unknown"
 
@@ -391,11 +809,206 @@ async def test_smt_inbound_handoff_release_claim_plugin_effect_smoke(
             assert outbox.target_code == source_arm.device_code
             assert outbox.blocked_workline_id is None
 
+            effect_applier = RuntimeIntentEffectApplier(
+                resource_projection_service=_ProjectedResourceProjectionService()
+            )
+            await _drive_source_item_to_sorted(
+                db,
+                plugin=SmtSortingInboundPlugin(),
+                effect_applier=effect_applier,
+                sorting_workline=sorting_workline,
+                source_arm=source_arm,
+                target_arm=target_arm,
+                scan_platform=scan_platform,
+                item=item,
+                session=session,
+                source_command=command,
+                trace_id=payload["trace_id"],
+            )
+            await db.refresh(item)
+            await db.refresh(demand)
+            await db.refresh(session)
+
+            assert item.status == SmtInboundHandoffSourceItemStatus.SORTED
+            assert demand.status == SmtInboundHandoffDemandStatus.COMPLETED
+            assert session.status == SessionStatus.COMPLETED
+
             recovery_summary = await handoff_service.scan_smt_inbound_handoff_demands_batch(db, limit=10)
             assert recovery_summary["manual_hold"] == 0
             assert recovery_summary["recovery_errors"] == 0
         finally:
             await _cleanup_handoff_rows(db, test_prefix=test_prefix)
+
+
+@pytest.mark.asyncio
+async def test_smt_inbound_handoff_release_terminal_serial_claims_next_item_once(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+    test_prefix: str,
+) -> None:
+    async with integration_session_factory() as db:
+        try:
+            sorting_workline = _sorting_workline(test_prefix)
+            db.add(sorting_workline)
+            await db.flush()
+            source_arm = _source_arm(test_prefix, sorting_workline)
+            target_arm = _target_arm(test_prefix, sorting_workline)
+            scan_platform = _scan_platform(test_prefix, sorting_workline)
+            db.add_all([source_arm, target_arm, scan_platform])
+            await db.flush()
+
+            payload = _release_fact_payload_with_items(test_prefix, item_count=2)
+            _handoff_service, _orchestrator, decision_code, demand = await _seed_release_handoff(
+                db,
+                test_prefix=test_prefix,
+                payload=payload,
+                sorting_workline=sorting_workline,
+            )
+            assert decision_code == SingleLayerRackOrchestrationDecisionCode.WAITING
+
+            items = await _source_items_for_demand(db, demand)
+            assert [item.status for item in items] == [
+                SmtInboundHandoffSourceItemStatus.PICK_REQUESTED,
+                SmtInboundHandoffSourceItemStatus.READY,
+            ]
+            first_item, second_item = items
+            first_session = await db.get(WorklineSession, first_item.sorting_session_id)
+            first_inbox = await db.get(WorklineInbox, first_item.source_pick_inbox_id)
+            assert first_session is not None
+            assert first_inbox is not None
+
+            plugin = SmtSortingInboundPlugin()
+            effect_applier = RuntimeIntentEffectApplier(
+                resource_projection_service=_ProjectedResourceProjectionService()
+            )
+            first_pick_intents = await plugin.on_device_event(_plugin_ctx(first_session), first_inbox)
+            await effect_applier.apply(
+                _runtime_ctx(
+                    db=db,
+                    workline=sorting_workline,
+                    session=first_session,
+                    inbox=first_inbox,
+                    source_device=source_arm,
+                    source_arm=source_arm,
+                    target_arm=target_arm,
+                    scan_platform=scan_platform,
+                ),
+                first_pick_intents,
+            )
+            await db.flush()
+            await db.refresh(first_item)
+            first_command = await db.get(DeviceCommand, first_item.source_pick_command_id)
+            assert first_command is not None
+
+            await _drive_source_item_to_sorted(
+                db,
+                plugin=plugin,
+                effect_applier=effect_applier,
+                sorting_workline=sorting_workline,
+                source_arm=source_arm,
+                target_arm=target_arm,
+                scan_platform=scan_platform,
+                item=first_item,
+                session=first_session,
+                source_command=first_command,
+                trace_id=payload["trace_id"],
+            )
+            await db.refresh(first_item)
+            await db.refresh(second_item)
+            await db.refresh(demand)
+
+            assert first_item.status == SmtInboundHandoffSourceItemStatus.SORTED
+            assert second_item.status == SmtInboundHandoffSourceItemStatus.PICK_REQUESTED
+            assert second_item.source_pick_inbox_id is not None
+            assert demand.status == SmtInboundHandoffDemandStatus.CLAIMED_BY_SORTING
+
+            second_session = await db.get(WorklineSession, second_item.sorting_session_id)
+            second_inbox = await db.get(WorklineInbox, second_item.source_pick_inbox_id)
+            assert second_session is not None
+            assert second_inbox is not None
+            assert second_inbox.payload_json["event_type"] == "SORTING_SOURCE_PICK_REQUESTED"
+
+            claimed_item_count_before_replay = await db.scalar(
+                select(func.count())
+                .select_from(SmtInboundHandoffSourceItem)
+                .where(SmtInboundHandoffSourceItem.handoff_demand_id == demand.id)
+                .where(SmtInboundHandoffSourceItem.source_pick_inbox_id.is_not(None))
+            )
+            replay = await SmtInboundHandoffService().record_source_item_terminal_result(
+                db,
+                session=first_session,
+                terminal_status="SORTED",
+                command_id=first_command.id,
+                trace_id=payload["trace_id"],
+                terminal_evidence={"target_command_payload": {"command_code": "TARGET-CMD-REPLAY"}},
+            )
+            claimed_item_count_after_replay = await db.scalar(
+                select(func.count())
+                .select_from(SmtInboundHandoffSourceItem)
+                .where(SmtInboundHandoffSourceItem.handoff_demand_id == demand.id)
+                .where(SmtInboundHandoffSourceItem.source_pick_inbox_id.is_not(None))
+            )
+            assert replay.already_terminal is True
+            assert claimed_item_count_after_replay == claimed_item_count_before_replay
+
+            skipped_prefix = f"{test_prefix}:skipped"
+            skipped_payload = _release_fact_payload_with_items(skipped_prefix, item_count=2)
+            skipped_payload["trace_id"] = f"{skipped_prefix}:trace"
+            _handoff_service, _orchestrator, _decision_code, skipped_demand = await _seed_release_handoff(
+                db,
+                test_prefix=skipped_prefix,
+                payload=skipped_payload,
+                sorting_workline=sorting_workline,
+            )
+            skipped_items = await _source_items_for_demand(db, skipped_demand)
+            skipped_first, skipped_second = skipped_items
+            skipped_first_session = await db.get(WorklineSession, skipped_first.sorting_session_id)
+            assert skipped_first_session is not None
+
+            skipped_first.status = SmtInboundHandoffSourceItemStatus.SORTING
+            db.add(skipped_first)
+            await db.flush()
+            skipped_inbox = await _target_place_success_inbox(
+                db,
+                session=skipped_first_session,
+                target_arm=target_arm,
+                target_command=SimpleNamespace(id=None, command_code="NG-CMD-001"),
+                item=skipped_first,
+                trace_id=skipped_payload["trace_id"],
+            )
+            await RuntimeIntentEffectApplier().apply(
+                _runtime_ctx(
+                    db=db,
+                    workline=sorting_workline,
+                    session=skipped_first_session,
+                    inbox=skipped_inbox,
+                    source_device=target_arm,
+                    source_arm=source_arm,
+                    target_arm=target_arm,
+                    scan_platform=scan_platform,
+                ),
+                [
+                    RuntimeIntent.update_context(
+                        {
+                            "smt_inbound_handoff_terminal_result": {
+                                "terminal_status": "SKIPPED",
+                                "terminal_evidence": {
+                                    "ng_command_payload": {
+                                        "command_code": "NG-CMD-001",
+                                        "ng_location": "NG-01",
+                                    }
+                                },
+                            }
+                        }
+                    )
+                ],
+            )
+            await db.refresh(skipped_first)
+            await db.refresh(skipped_second)
+            assert skipped_first.status == SmtInboundHandoffSourceItemStatus.SKIPPED
+            assert skipped_second.status == SmtInboundHandoffSourceItemStatus.PICK_REQUESTED
+        finally:
+            await _cleanup_handoff_rows(db, test_prefix=test_prefix)
+            await _cleanup_handoff_rows(db, test_prefix=f"{test_prefix}:skipped")
 
 
 @pytest.mark.asyncio

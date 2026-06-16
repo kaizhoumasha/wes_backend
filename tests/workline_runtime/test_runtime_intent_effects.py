@@ -700,9 +700,10 @@ async def test_target_place_terminal_success_records_sorted_after_context_cleanu
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
     await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
     await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
 
     assert resource_projection.calls[0]["fact_type"] == "MATERIAL_MOUNTED"
-    assert [call["terminal_status"] for call in ledger_calls] == ["SORTED", "SORTED"]
+    assert [call["terminal_status"] for call in ledger_calls] == ["SORTED", "SORTED", "SORTED"]
     assert claim_calls == [{"trace_id": "trace-runtime", "demand_id": 11}]
 
 
@@ -760,8 +761,9 @@ async def test_ng_place_terminal_success_records_skipped_after_context_cleanup_a
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
     await RuntimeIntentEffectApplier().apply(ctx, intents)
     await RuntimeIntentEffectApplier().apply(ctx, intents)
+    await RuntimeIntentEffectApplier().apply(ctx, intents)
 
-    assert [call["terminal_status"] for call in ledger_calls] == ["SKIPPED", "SKIPPED"]
+    assert [call["terminal_status"] for call in ledger_calls] == ["SKIPPED", "SKIPPED", "SKIPPED"]
     assert claim_calls == [{"trace_id": "trace-runtime", "demand_id": 11}]
 
 
