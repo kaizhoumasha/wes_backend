@@ -694,11 +694,24 @@ async def test_cross_plan_sandbox_smoke(
     # 8. WORKLINE_START_REQUESTED 不是 SMT 插件普通业务事件。
     manifest = SmtSortingInboundPlugin.manifest
     manifest_roles = {requirement.role for requirement in manifest.devices}
+    rack_position_codes = {rack_position.code for rack_position in manifest.rack_positions}
+    topology_node_refs = {node.ref for edge in manifest.topology.flow_edges for node in (edge.from_node, edge.to_node)}
+    resource_boundary_positions = {boundary.rack_position_code for boundary in manifest.resource_boundaries}
+    business_demand_types = {boundary.business_demand_type for boundary in manifest.resource_boundaries}
     command_roles = {command.target_device_role for command in manifest.commands}
     commands_by_name = {command.command: command for command in manifest.commands}
     event_names = {event.event for event in manifest.events}
     assert "NG_ARM" not in manifest_roles
     assert "NG_ARM" not in command_roles
+    assert "SORTING_NG_STATION" not in manifest_roles
+    assert "NG_STATION" not in rack_position_codes
+    assert "WORKSTATION" not in rack_position_codes
+    assert "NG_STATION" not in topology_node_refs
+    assert "WORKSTATION" not in topology_node_refs
+    assert "NG_STATION" not in resource_boundary_positions
+    assert "WORKSTATION" not in resource_boundary_positions
+    assert "SORTING_INBOUND_NG" not in business_demand_types
+    assert "SORTING_INBOUND_WORK" not in business_demand_types
     assert commands_by_name[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
     assert "WORKLINE_START_REQUESTED" not in event_names
 
