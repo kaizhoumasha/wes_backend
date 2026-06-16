@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any, cast
@@ -43,6 +44,14 @@ def _require_text(field_name: str, value: str) -> str:
 def _require_positive_int(field_name: str, value: int) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise SortingInboundContextError(f"{field_name} must be a positive integer")
+    return value
+
+
+def _require_json_serializable(field_name: str, value: Any) -> Any:
+    try:
+        json.dumps(value)
+    except TypeError as exc:
+        raise SortingInboundContextError(f"{field_name} must be JSON serializable") from exc
     return value
 
 
@@ -131,6 +140,10 @@ class SortingInboundContext:
     ) -> None:
         """写入 handoff claim 触发的源站取料请求上下文。"""
 
+        safe_route_evidence = _require_json_serializable(
+            "route_evidence",
+            _json_safe(dict(route_evidence or {})),
+        )
         self._set_sorting_value(
             "source_pick_request",
             {
@@ -142,7 +155,7 @@ class SortingInboundContext:
                 "manifest_contract_version": _require_text("manifest_contract_version", manifest_contract_version),
                 "source_rack_position_code": _require_text("source_rack_position_code", source_rack_position_code),
                 "target_rack_position_code": _require_text("target_rack_position_code", target_rack_position_code),
-                "route_evidence": _json_safe(dict(route_evidence or {})),
+                "route_evidence": safe_route_evidence,
             },
         )
 
