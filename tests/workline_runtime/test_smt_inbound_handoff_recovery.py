@@ -83,6 +83,13 @@ class FakeRecoveryRepository:
     async def list_source_items(self, _db: Any, handoff_demand_id: int) -> list[SmtInboundHandoffSourceItem]:
         return [item for item in self.items if item.handoff_demand_id == handoff_demand_id]
 
+    async def get_source_item_for_update(
+        self,
+        _db: Any,
+        source_item_id: int,
+    ) -> SmtInboundHandoffSourceItem | None:
+        return next((item for item in self.items if item.id == source_item_id), None)
+
 
 class FakeDb:
     def __init__(
@@ -191,6 +198,118 @@ async def test_success_source_pick_command_repairs_claimed_item_to_picked() -> N
     assert item.status == SmtInboundHandoffSourceItemStatus.PICKED
     assert demand.status == SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS
     assert summary["advanced"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source_status",
+    [
+        SmtInboundHandoffSourceItemStatus.PICK_REQUESTED,
+        SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING,
+    ],
+)
+async def test_record_source_pick_success_advances_requested_or_claimed_item_to_picked(
+    source_status: SmtInboundHandoffSourceItemStatus,
+) -> None:
+    demand = _demand()
+    demand.failure_code = "OLD_FAILURE"
+    demand.failure_message = "old failure"
+    item = _item(status=source_status, command_id=88)
+    item.failure_code = "OLD_ITEM_FAILURE"
+    item.failure_message = "old item failure"
+    item.next_attempt_at = datetime(2026, 6, 11, 10, 5, 0)
+    repo = FakeRecoveryRepository(items=[item])
+    db = FakeDb(demand=demand)
+
+    result = await SmtInboundHandoffService(repository=repo).record_source_pick_success(
+        db,
+        handoff_demand_id=demand.id,
+        source_item_id=item.id,
+        claim_attempt_no=item.claim_attempt_no,
+        source_pick_inbox_id=item.source_pick_inbox_id,
+        command_id=item.source_pick_command_id,
+        trace_id="trace-source-pick-success",
+    )
+
+    assert result.outcome == "advanced"
+    assert result.advanced is True
+    assert result.already_terminal is False
+    assert result.source_item is item
+    assert item.status == SmtInboundHandoffSourceItemStatus.PICKED
+    assert item.failure_code is None
+    assert item.failure_message is None
+    assert item.next_attempt_at is None
+    assert demand.failure_code is None
+    assert demand.failure_message is None
+    assert demand.status == SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_success_source_pick_command_on_already_picked_item_is_noop_without_recounting_advanced() -> None:
+    demand = _demand(SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS)
+    item = _item(status=SmtInboundHandoffSourceItemStatus.PICKED, command_id=88)
+    inbox = SimpleNamespace(id=2101, status=InboxStatus.PROCESSED, error_message=None)
+    command = SimpleNamespace(id=88, status=CommandStatus.COMPLETED, result=CommandResult.SUCCESS)
+    repo = FakeRecoveryRepository(items=[item])
+    db = FakeDb(demand=demand, inbox=inbox, command=command)
+
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=10)
+
+    assert item.status == SmtInboundHandoffSourceItemStatus.PICKED
+    assert demand.status == SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS
+    assert summary["advanced"] == 0
+    assert summary["recovery_errors"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "terminal_status",
+    [
+        SmtInboundHandoffSourceItemStatus.SORTED,
+        SmtInboundHandoffSourceItemStatus.SKIPPED,
+        SmtInboundHandoffSourceItemStatus.EXCHANGED,
+    ],
+)
+async def test_late_source_pick_success_on_terminal_item_is_noop(
+    terminal_status: SmtInboundHandoffSourceItemStatus,
+) -> None:
+    demand = _demand(SmtInboundHandoffDemandStatus.COMPLETED)
+    item = _item(status=terminal_status, command_id=88)
+    inbox = SimpleNamespace(id=2101, status=InboxStatus.PROCESSED, error_message=None)
+    command = SimpleNamespace(id=88, status=CommandStatus.COMPLETED, result=CommandResult.SUCCESS)
+    repo = FakeRecoveryRepository(items=[item])
+    db = FakeDb(demand=demand, inbox=inbox, command=command)
+
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=10)
+
+    assert item.status == terminal_status
+    assert demand.status == SmtInboundHandoffDemandStatus.COMPLETED
+    assert summary["advanced"] == 0
+    assert summary["recovery_errors"] == 0
+
+
+@pytest.mark.asyncio
+async def test_late_source_pick_success_on_manual_hold_item_keeps_controlled_hold() -> None:
+    demand = _demand(SmtInboundHandoffDemandStatus.MANUAL_HOLD)
+    demand.failure_code = SmtInboundHandoffReasonCode.SOURCE_PICK_INBOX_DEAD_LETTER.value
+    demand.failure_message = "retry exhausted"
+    item = _item(status=SmtInboundHandoffSourceItemStatus.MANUAL_HOLD, command_id=88)
+    item.failure_code = SmtInboundHandoffReasonCode.SOURCE_PICK_INBOX_DEAD_LETTER.value
+    item.failure_message = "retry exhausted"
+    inbox = SimpleNamespace(id=2101, status=InboxStatus.PROCESSED, error_message=None)
+    command = SimpleNamespace(id=88, status=CommandStatus.COMPLETED, result=CommandResult.SUCCESS)
+    repo = FakeRecoveryRepository(items=[item])
+    db = FakeDb(demand=demand, inbox=inbox, command=command)
+
+    summary = await SmtInboundHandoffService(repository=repo).scan_smt_inbound_handoff_demands_batch(db, limit=10)
+
+    assert item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+    assert item.failure_code == SmtInboundHandoffReasonCode.SOURCE_PICK_INBOX_DEAD_LETTER.value
+    assert demand.status == SmtInboundHandoffDemandStatus.MANUAL_HOLD
+    assert demand.failure_code == SmtInboundHandoffReasonCode.SOURCE_PICK_INBOX_DEAD_LETTER.value
+    assert summary["manual_hold"] == 1
+    assert summary["advanced"] == 0
+    assert summary["recovery_errors"] == 0
 
 
 def test_stuck_source_item_recovery_statement_uses_post_claim_hot_path() -> None:

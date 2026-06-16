@@ -13,6 +13,7 @@ from src.app.workline.services.inbox_batch_processor import _result_requires_out
 from src.app.workline.services.inbox_service import DuplicateInboxError
 from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, ng_return_item_service
 from src.app.workline.services.runtime_hold_creation_service import runtime_hold_creation_service
+from src.workline_plugins.smt_sorting_inbound.constants import SORTING_CONTEXT_SCHEMA_VERSION
 from src.workline_runtime.effect_result import WriteBackDisposition
 from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.runtime_intent import BlockScope, Destination, RuntimeIntent, RuntimeIntentKind
@@ -289,6 +290,60 @@ async def test_resource_fact_intent_is_applied_before_completion(monkeypatch: py
     assert session.status == "COMPLETED"
     assert session.context_json["material_mounted"] is True
     record_ng_flow.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_source_pick_complete_records_handoff_success_after_completion_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                "source_pick_request": {
+                    "handoff_demand_id": 11,
+                    "handoff_source_item_id": 22,
+                    "claim_attempt_no": 1,
+                    "event_id": "source-pick-requested:11:22:1",
+                    "target_workline_code": "SMT_SORTER_01",
+                    "manifest_contract_version": "v1",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "target_rack_position_code": "TARGET_STATION",
+                    "route_evidence": {},
+                },
+            }
+        }
+    )
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    calls: list[tuple[str, Any]] = []
+
+    async def record_ng_flow(*_args: Any, **_kwargs: Any) -> None:
+        calls.append(("complete_transition", session.status))
+
+    async def record_call(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        calls.append(("source_pick_success", session.status))
+        assert _db is db
+        assert kwargs["session"] is session
+        assert kwargs["trace_id"] == "trace-runtime"
+        return SimpleNamespace(outcome="advanced", advanced=True, already_terminal=False)
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", AsyncMock())
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_pick_success",
+        record_call,
+    )
+
+    await RuntimeIntentEffectApplier().apply(ctx, [RuntimeIntent.complete({"material_mounted": True})])
+
+    assert calls == [
+        ("complete_transition", "WAITING_DEVICE_RESULT"),
+        ("source_pick_success", "COMPLETED"),
+    ]
 
 
 @pytest.mark.asyncio

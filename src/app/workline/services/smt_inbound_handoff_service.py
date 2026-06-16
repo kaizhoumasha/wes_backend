@@ -799,6 +799,93 @@ class SmtInboundHandoffService:
             await db.flush()
         return item
 
+    async def record_source_pick_success(
+        self,
+        db: AsyncSession,
+        *,
+        handoff_demand_id: int | None = None,
+        source_item_id: int | None = None,
+        claim_attempt_no: int | None = None,
+        source_pick_inbox_id: int | None = None,
+        command_id: int | None = None,
+        session: Any | None = None,
+        trace_id: str | None = None,
+    ) -> SimpleNamespace:
+        """记录 source-pick 成功账本，只允许 claimed 状态幂等推进到 PICKED。"""
+
+        _ = trace_id
+        context_request = self._source_pick_request_from_session(session)
+        resolved_source_item_id = source_item_id or self._int_or_none(context_request.get("handoff_source_item_id"))
+        if resolved_source_item_id is None:
+            raise ValueError("source pick success 缺少 source_item_id")
+
+        item = await self.repository.get_source_item_for_update(db, resolved_source_item_id)
+        if item is None:
+            raise ValueError(f"未找到 handoff source item: {resolved_source_item_id}")
+
+        resolved_demand_id = handoff_demand_id or self._int_or_none(context_request.get("handoff_demand_id"))
+        resolved_attempt_no = claim_attempt_no or self._int_or_none(context_request.get("claim_attempt_no"))
+        self._validate_source_pick_success_evidence(
+            item,
+            handoff_demand_id=resolved_demand_id,
+            claim_attempt_no=resolved_attempt_no,
+            source_pick_inbox_id=source_pick_inbox_id,
+            command_id=command_id,
+        )
+
+        if item.status in _CLAIMED_ITEM_STATUSES:
+            item.status = SmtInboundHandoffSourceItemStatus.PICKED
+            item.failure_code = None
+            item.failure_message = None
+            item.next_attempt_at = None
+            db.add(item)
+            demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
+            if demand is not None:
+                demand.failure_code = None
+                demand.failure_message = None
+                db.add(demand)
+                await self.recalculate_demand_status(db, demand, reason="source_pick_success")
+            else:
+                await db.flush()
+            return SimpleNamespace(
+                outcome="advanced",
+                advanced=True,
+                already_terminal=False,
+                source_item=item,
+            )
+
+        if item.status == SmtInboundHandoffSourceItemStatus.PICKED:
+            db.add(item)
+            await db.flush()
+            return SimpleNamespace(
+                outcome="already_picked",
+                advanced=False,
+                already_terminal=False,
+                source_item=item,
+            )
+
+        if item.status in _TERMINAL_ITEM_STATUSES:
+            db.add(item)
+            await db.flush()
+            return SimpleNamespace(
+                outcome="already_terminal",
+                advanced=False,
+                already_terminal=True,
+                source_item=item,
+            )
+
+        if item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD:
+            db.add(item)
+            await db.flush()
+            return SimpleNamespace(
+                outcome="manual_hold",
+                advanced=False,
+                already_terminal=False,
+                source_item=item,
+            )
+
+        raise ValueError(f"source pick success 状态不允许: {item.status}")
+
     async def scan_smt_inbound_handoff_demands_batch(
         self,
         db: AsyncSession,
@@ -962,13 +1049,15 @@ class SmtInboundHandoffService:
             command_status = self._enum_text(getattr(command, "status", None))
             command_result = self._enum_text(getattr(command, "result", None))
             if command_status == CommandStatus.COMPLETED.value and command_result == CommandResult.SUCCESS.value:
-                item.status = SmtInboundHandoffSourceItemStatus.PICKED
-                item.failure_code = None
-                item.failure_message = None
-                item.next_attempt_at = None
-                db.add(item)
-                await self.recalculate_demand_status(db, demand, reason="source_pick_command_success_recovery")
-                outcome = "advanced"
+                result = await self.record_source_pick_success(
+                    db,
+                    handoff_demand_id=item.handoff_demand_id,
+                    source_item_id=cast("int", item.id),
+                    claim_attempt_no=item.claim_attempt_no,
+                    source_pick_inbox_id=item.source_pick_inbox_id,
+                    command_id=item.source_pick_command_id,
+                )
+                outcome = result.outcome if result.outcome == "manual_hold" else "advanced" if result.advanced else None
             elif command_status in {
                 CommandStatus.FAILED.value,
                 CommandStatus.TIMEOUT.value,
@@ -1159,6 +1248,36 @@ class SmtInboundHandoffService:
     @staticmethod
     def _source_pick_event_id(item: SmtInboundHandoffSourceItem) -> str:
         return f"smt-inbound-handoff-source-item:{item.id}:claim:{item.claim_attempt_no}"
+
+    @staticmethod
+    def _source_pick_request_from_session(session: Any | None) -> dict[str, Any]:
+        if session is None:
+            return {}
+        context_json = getattr(session, "context_json", None)
+        if not isinstance(context_json, Mapping):
+            return {}
+        sorting = context_json.get("sorting")
+        if not isinstance(sorting, Mapping) or not isinstance(sorting.get("source_pick_request"), Mapping):
+            return {}
+        return SortingInboundContext.load_for_automatic(session).get_source_pick_request()
+
+    @staticmethod
+    def _validate_source_pick_success_evidence(
+        item: SmtInboundHandoffSourceItem,
+        *,
+        handoff_demand_id: int | None,
+        claim_attempt_no: int | None,
+        source_pick_inbox_id: int | None,
+        command_id: int | None,
+    ) -> None:
+        if handoff_demand_id is not None and item.handoff_demand_id != handoff_demand_id:
+            raise ValueError("source pick success demand/item 不匹配")
+        if claim_attempt_no is not None and item.claim_attempt_no != claim_attempt_no:
+            raise ValueError("source pick success claim_attempt_no 不匹配")
+        if source_pick_inbox_id is not None and item.source_pick_inbox_id != source_pick_inbox_id:
+            raise ValueError("source pick success inbox 不匹配")
+        if command_id is not None and item.source_pick_command_id != command_id:
+            raise ValueError("source pick success command 不匹配")
 
     def _apply_item_failure(
         self,

@@ -404,6 +404,25 @@ async def _record_source_pick_command_correlation(
     )
 
 
+async def _record_source_pick_success(ctx: Any) -> None:
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+    from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext, SortingInboundContextError
+
+    session = ctx["session"]
+    try:
+        request = SortingInboundContext.load_for_automatic(session).get_source_pick_request()
+    except SortingInboundContextError:
+        return
+    if not request:
+        return
+
+    await smt_inbound_handoff_service.record_source_pick_success(
+        ctx["db"],
+        session=session,
+        trace_id=string_value(ctx.get("trace_id"), ""),
+    )
+
+
 class RuntimeIntentEffectApplier:
     def __init__(
         self,
@@ -484,6 +503,7 @@ class RuntimeIntentEffectApplier:
                 workline_effects._clear_session_failure(ctx["session"])
                 ctx["orch_result"].complete = True
                 _ = await workline_effects._apply_completion_transition(ctx)
+                await _record_source_pick_success(ctx)
                 continue
 
             if intent.kind == RuntimeIntentKind.BLOCK:
