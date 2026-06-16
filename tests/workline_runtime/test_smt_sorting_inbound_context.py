@@ -144,7 +144,25 @@ def test_source_pick_request_is_written_with_schema_and_station_state() -> None:
     assert sorting["source_pick_request"]["route_evidence"]["usage"] == "0.42"
 
 
-@pytest.mark.parametrize("field_name", ["handoff_demand_id", "claim_attempt_no"])
+def test_source_pick_request_getter_returns_empty_dict_when_missing() -> None:
+    session = _session()
+    context = SortingInboundContext.initialize(session)
+
+    assert context.get_source_pick_request() == {}
+
+
+def test_source_pick_request_getter_returns_copy() -> None:
+    session = _session()
+    context = SortingInboundContext.initialize(session)
+    context.write_source_pick_request(**_source_pick_request_kwargs())
+
+    request = context.get_source_pick_request()
+    request["handoff_source_item_id"] = 999
+
+    assert context.sorting["source_pick_request"]["handoff_source_item_id"] == 2
+
+
+@pytest.mark.parametrize("field_name", ["handoff_demand_id", "handoff_source_item_id", "claim_attempt_no"])
 def test_source_pick_request_rejects_non_positive_integer_fields(field_name: str) -> None:
     session = _session()
     context = SortingInboundContext.initialize(session)
@@ -167,3 +185,11 @@ def test_source_pick_request_rejects_non_json_safe_route_evidence() -> None:
 
     with pytest.raises(SortingInboundContextError, match="route_evidence"):
         context.write_source_pick_request(**_source_pick_request_kwargs(route_evidence={"bad": {"x"}}))
+
+
+def test_source_pick_request_rejects_nan_route_evidence() -> None:
+    session = _session()
+    context = SortingInboundContext.initialize(session)
+
+    with pytest.raises(SortingInboundContextError, match="route_evidence"):
+        context.write_source_pick_request(**_source_pick_request_kwargs(route_evidence={"bad": float("nan")}))
