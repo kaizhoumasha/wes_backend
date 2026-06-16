@@ -40,6 +40,7 @@ _DEFAULT_RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
 _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
 _STATION_DISPATCH_LEASE_UNAVAILABLE = "station dispatch lease is not available"
 _SMT_SOURCE_PICK_COMMAND = "SORTING_SOURCE_PICK"
+_SMT_TERMINAL_RESULT_MARKER_KEY = "smt_inbound_handoff_terminal_result"
 
 
 def _all_devices(devices_by_role: dict[str, list[Any]]) -> list[Any]:
@@ -423,6 +424,68 @@ async def _record_source_pick_success(ctx: Any, *, command_id: int | None = None
     )
 
 
+def _terminal_command_id(ctx: Any) -> int | None:
+    return (
+        optional_int(getattr(ctx["inbox"], "command_id", None))
+        or optional_int(getattr(ctx["session"], "awaiting_command_id", None))
+        or optional_int(ctx.get("awaiting_command_id"))
+    )
+
+
+def _target_terminal_evidence(ctx: Any) -> dict[str, Any]:
+    return {
+        "target_command_payload": dict(getattr(ctx["inbox"], "payload_json", None) or {}),
+    }
+
+
+def _consume_terminal_result_marker(ctx: Any) -> dict[str, Any] | None:
+    session = ctx["session"]
+    context_json = getattr(session, "context_json", None)
+    if not isinstance(context_json, Mapping):
+        return None
+    marker = context_json.get(_SMT_TERMINAL_RESULT_MARKER_KEY)
+    if not isinstance(marker, Mapping):
+        return None
+
+    updated_context = dict(context_json)
+    updated_context.pop(_SMT_TERMINAL_RESULT_MARKER_KEY, None)
+    session.context_json = updated_context
+    ctx["session_ctx"] = dict(updated_context)
+    return dict(cast("Mapping[str, Any]", marker))
+
+
+def _terminal_marker_evidence(marker: Mapping[str, Any]) -> dict[str, Any]:
+    evidence = marker.get("terminal_evidence")
+    return dict(cast("Mapping[str, Any]", evidence)) if isinstance(evidence, Mapping) else {}
+
+
+async def _record_source_item_terminal_result(
+    ctx: Any,
+    *,
+    terminal_status: str,
+    command_id: int | None,
+    terminal_evidence: Mapping[str, Any] | None,
+) -> Any:
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    result = await smt_inbound_handoff_service.record_source_item_terminal_result(
+        ctx["db"],
+        session=ctx["session"],
+        terminal_status=terminal_status,
+        command_id=command_id,
+        trace_id=string_value(ctx.get("trace_id"), ""),
+        terminal_evidence=dict(terminal_evidence or {}),
+    )
+    if bool(getattr(result, "advanced", False)):
+        current_demand_id = optional_int(getattr(result, "current_demand_id", None))
+        await smt_inbound_handoff_service.claim_next_source_item(
+            ctx["db"],
+            trace_id=string_value(ctx.get("trace_id"), ""),
+            demand_id=current_demand_id,
+        )
+    return result
+
+
 class RuntimeIntentEffectApplier:
     def __init__(
         self,
@@ -449,16 +512,15 @@ class RuntimeIntentEffectApplier:
             await self._apply_noop_completion(ctx)
             return RuntimeIntentEffectResult.processed()
 
-        pending_source_pick_success = False
-        pending_source_pick_success_command_id: int | None = None
+        terminal_state = SimpleNamespace(
+            pending_source_pick_success=False,
+            pending_source_pick_success_command_id=None,
+            pending_target_terminal_success=False,
+            pending_target_terminal_command_id=None,
+        )
         for intent in intents:
             if intent.kind == RuntimeIntentKind.UPDATE_CONTEXT:
-                _merge_context_patch(ctx, intent.context_patch)
-                workline_effects._apply_context_patch(ctx)
-                if pending_source_pick_success:
-                    await _record_source_pick_success(ctx, command_id=pending_source_pick_success_command_id)
-                    pending_source_pick_success = False
-                    pending_source_pick_success_command_id = None
+                await self._apply_update_context(ctx, intent, workline_effects, terminal_state)
                 continue
 
             if intent.kind == RuntimeIntentKind.MARK_NG:
@@ -493,8 +555,11 @@ class RuntimeIntentEffectApplier:
                     await self._apply_resource_reconciliation_hold(ctx, result)
                     return RuntimeIntentEffectResult.processed()
                 if str(intent.action) == "MATERIAL_UNMOUNTED":
-                    pending_source_pick_success = True
-                    pending_source_pick_success_command_id = _source_pick_success_command_id(ctx)
+                    terminal_state.pending_source_pick_success = True
+                    terminal_state.pending_source_pick_success_command_id = _source_pick_success_command_id(ctx)
+                if str(intent.action) == "MATERIAL_MOUNTED":
+                    terminal_state.pending_target_terminal_success = True
+                    terminal_state.pending_target_terminal_command_id = _terminal_command_id(ctx)
                 continue
 
             if intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION:
@@ -525,6 +590,37 @@ class RuntimeIntentEffectApplier:
             raise ValueError(f"unsupported RuntimeIntent kind: {intent.kind.value}")
 
         return RuntimeIntentEffectResult.processed()
+
+    async def _apply_update_context(
+        self,
+        ctx: Any,
+        intent: RuntimeIntent,
+        workline_effects: Any,
+        terminal_state: SimpleNamespace,
+    ) -> None:
+        _merge_context_patch(ctx, intent.context_patch)
+        workline_effects._apply_context_patch(ctx)
+        if terminal_state.pending_source_pick_success:
+            await _record_source_pick_success(ctx, command_id=terminal_state.pending_source_pick_success_command_id)
+            terminal_state.pending_source_pick_success = False
+            terminal_state.pending_source_pick_success_command_id = None
+        if terminal_state.pending_target_terminal_success:
+            await _record_source_item_terminal_result(
+                ctx,
+                terminal_status="SORTED",
+                command_id=terminal_state.pending_target_terminal_command_id,
+                terminal_evidence=_target_terminal_evidence(ctx),
+            )
+            terminal_state.pending_target_terminal_success = False
+            terminal_state.pending_target_terminal_command_id = None
+        terminal_marker = _consume_terminal_result_marker(ctx)
+        if terminal_marker is not None:
+            await _record_source_item_terminal_result(
+                ctx,
+                terminal_status=string_value(terminal_marker.get("terminal_status"), ""),
+                command_id=optional_int(terminal_marker.get("command_id")) or _terminal_command_id(ctx),
+                terminal_evidence=_terminal_marker_evidence(terminal_marker),
+            )
 
     async def _apply_noop_completion(self, ctx: Any) -> None:
         from src.app.workline.models.timeline import (

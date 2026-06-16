@@ -350,18 +350,44 @@ class SmtSortingInboundFlowService:
         if not current_material:
             return self._block("SORTING_CURRENT_MATERIAL_MISSING", "NG 放置成功回调缺少当前物料上下文")
 
+        payload_json = _dict_copy(getattr(inbox, "payload_json", None))
+        data = _payload_data(payload_json)
+        ng_target_evidence_exists = (
+            _payload_has_any(
+                payload_json,
+                data,
+                "ng_location",
+                "ng_location_code",
+                "ng_reason_code",
+            )
+            or current_material.get("ng_status") == "MOVING_TO_NG"
+        )
+        if not ng_target_evidence_exists:
+            return self._block(
+                "SORTING_NG_PLACE_EVIDENCE_MISSING",
+                "NG 放置成功回调缺少 NG 目标位置或原因证据，拒绝写入 handoff terminal ledger",
+                payload={"missing_fields": ["ng_location"], "error_detail": data},
+            )
+
         root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
         scratch_session = SimpleNamespace(context_json=root_context)
         scratch_context = SortingInboundContext.load_for_automatic(scratch_session)
         scratch_context.clear_pending_target_placement()
         scratch_context.close_current_material()
         scratch_context.set_station_state(scan_platform=_SCAN_PLATFORM_EMPTY, business_phase=PHASE_WAITING_SOURCE_PICK)
-        payload_json = _dict_copy(getattr(inbox, "payload_json", None))
         patch = self._ng_root_patch(
             sorting=_dict_copy(scratch_session.context_json.get("sorting")),
             reason_message="本地 NG 放置成功",
             evidence={"ng_command_payload": payload_json, "current_material": current_material},
         )
+        patch["smt_inbound_handoff_terminal_result"] = {
+            "terminal_status": "SKIPPED",
+            "command_id": _positive_int(getattr(inbox, "command_id", None)),
+            "terminal_evidence": {
+                "ng_command_payload": payload_json,
+                "current_material": current_material,
+            },
+        }
         return [RuntimeIntent.update_context(patch)]
 
     async def handle_ng_place_failed(self, _ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:

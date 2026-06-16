@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
@@ -409,17 +410,14 @@ class SmtInboundHandoffService:
         self,
         db: AsyncSession,
         *,
+        demand_id: int | None = None,
         trace_id: str | None = None,
     ) -> Any:
         """两阶段认领下一条 READY source item，并创建内部 source-pick Inbox。"""
 
         now = timezone.now_for_db()
-        candidates = await self.repository.list_ready_source_items_for_claim(db, now=now, limit=1)
-        candidate = candidates[0] if candidates else None
-        if candidate is None:
-            return self._claim_result("EMPTY")
-        demand = await db.get(SmtInboundHandoffDemand, candidate.handoff_demand_id)
-        if demand is None:
+        demand, candidate = await self._next_claim_candidate(db, demand_id=demand_id, now=now)
+        if demand is None or candidate is None:
             return self._claim_result("EMPTY")
 
         candidate_worklines = await self.repository.list_sorting_candidate_worklines(db)
@@ -439,6 +437,39 @@ class SmtInboundHandoffService:
             route_probe_started_at=route_probe_started_at,
             trace_id=trace_id,
         )
+
+    async def _next_claim_candidate(
+        self,
+        db: AsyncSession,
+        *,
+        demand_id: int | None,
+        now: Any,
+    ) -> tuple[SmtInboundHandoffDemand | None, SmtInboundHandoffSourceItem | None]:
+        if demand_id is None:
+            candidates = await self.repository.list_ready_source_items_for_claim(db, now=now, limit=1)
+            candidate = candidates[0] if candidates else None
+            if candidate is None:
+                return None, None
+            demand = await db.get(SmtInboundHandoffDemand, candidate.handoff_demand_id)
+            return demand, candidate
+
+        demand = await db.get(SmtInboundHandoffDemand, demand_id)
+        if demand is None:
+            return None, None
+
+        ready_items = [
+            item
+            for item in await self.repository.list_source_items(db, demand_id)
+            if self._source_item_is_ready_and_due(item, now=now)
+        ]
+        ready_items.sort(
+            key=lambda item: (
+                getattr(item, "next_attempt_at", None) is not None,
+                getattr(item, "next_attempt_at", None) or now,
+                getattr(item, "id", 0) or 0,
+            )
+        )
+        return demand, ready_items[0] if ready_items else None
 
     async def _claim_routed_candidate(
         self,
@@ -910,6 +941,194 @@ class SmtInboundHandoffService:
 
         raise ValueError(f"source pick success 状态不允许: {item.status}")
 
+    async def record_source_item_terminal_result(
+        self,
+        db: AsyncSession,
+        *,
+        session: Any,
+        terminal_status: str | SmtInboundHandoffSourceItemStatus,
+        command_id: int | None = None,
+        trace_id: str | None = None,
+        terminal_evidence: Mapping[str, Any] | None = None,
+    ) -> SimpleNamespace:
+        """记录 target/NG 终态账本，幂等关闭当前 source item 和 sorting session。"""
+
+        status = self._terminal_source_item_status(terminal_status)
+        source_pick_request = self._source_pick_request_from_session(session)
+        if not source_pick_request:
+            raise ValueError("sorting.source_pick_request 缺失，拒绝写入 terminal handoff ledger")
+
+        source_item_id = self._int_or_none(source_pick_request.get("handoff_source_item_id"))
+        handoff_demand_id = self._int_or_none(source_pick_request.get("handoff_demand_id"))
+        if source_item_id is None:
+            raise ValueError("sorting.source_pick_request.handoff_source_item_id 缺失")
+
+        item = await self.repository.get_source_item_for_update(db, source_item_id)
+        if item is None:
+            raise ValueError(f"未找到 handoff source item: {source_item_id}")
+        if handoff_demand_id is not None and item.handoff_demand_id != handoff_demand_id:
+            raise ValueError("terminal handoff ledger demand/item 不匹配")
+
+        demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
+        if demand is None:
+            raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
+
+        if item.status == status:
+            self._write_terminal_session_evidence(
+                session,
+                item=item,
+                terminal_status=status,
+                command_id=command_id,
+                trace_id=trace_id,
+                terminal_evidence=terminal_evidence,
+                already_terminal=True,
+            )
+            db.add(session)
+            db.add(item)
+            await db.flush()
+            return SimpleNamespace(
+                outcome="already_terminal",
+                advanced=False,
+                already_terminal=True,
+                current_demand_id=item.handoff_demand_id,
+                source_item=item,
+                demand=demand,
+                session=session,
+            )
+
+        if item.status in _TERMINAL_ITEM_STATUSES:
+            return await self._manual_hold_terminal_conflict(
+                db,
+                demand=demand,
+                item=item,
+                session=session,
+                requested_status=status,
+                command_id=command_id,
+                trace_id=trace_id,
+                terminal_evidence=terminal_evidence,
+            )
+
+        if item.status not in _SORTING_IN_PROGRESS_ITEM_STATUSES:
+            raise ValueError(f"terminal handoff ledger 状态不允许: {item.status}")
+
+        item.status = status
+        item.completed_at = timezone.now_for_db()
+        item.failure_code = None
+        item.failure_message = None
+        item.next_attempt_at = None
+        demand.failure_code = None
+        demand.failure_message = None
+        self._write_terminal_session_evidence(
+            session,
+            item=item,
+            terminal_status=status,
+            command_id=command_id,
+            trace_id=trace_id,
+            terminal_evidence=terminal_evidence,
+            already_terminal=False,
+        )
+
+        from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
+        from src.app.workline.models.session import SessionStatus
+        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+
+        now = timezone.now_for_db()
+        if self._enum_text(getattr(session, "status", None)) != SessionStatus.COMPLETED.value:
+            workline_session_lifecycle_service.complete(session, occurred_at=now)
+            session.failure_domain = None
+            session.failure_code = None
+            session.failure_message = None
+            await WorklineSessionRepository().persist_completed(
+                db,
+                session_id=cast("int", getattr(session, "id", None)),
+                occurred_at=now,
+                context_json=getattr(session, "context_json", None),
+            )
+        db.add(item)
+        db.add(demand)
+        db.add(session)
+        await self.recalculate_demand_status(db, demand, reason="source_item_terminal_result")
+        return SimpleNamespace(
+            outcome="advanced",
+            advanced=True,
+            already_terminal=False,
+            current_demand_id=item.handoff_demand_id,
+            source_item=item,
+            demand=demand,
+            session=session,
+        )
+
+    async def _manual_hold_terminal_conflict(
+        self,
+        db: AsyncSession,
+        *,
+        demand: SmtInboundHandoffDemand,
+        item: SmtInboundHandoffSourceItem,
+        session: Any,
+        requested_status: SmtInboundHandoffSourceItemStatus,
+        command_id: int | None,
+        trace_id: str | None,
+        terminal_evidence: Mapping[str, Any] | None,
+    ) -> SimpleNamespace:
+        self._apply_item_failure(
+            item,
+            SmtInboundHandoffReasonCode.PLUGIN_CONTRACT_INVALID.value,
+            message=(
+                f"terminal handoff ledger 冲突: current={self._enum_text(item.status)}, "
+                f"requested={requested_status.value}"
+            ),
+        )
+        self._apply_failure(
+            demand,
+            SmtInboundHandoffReasonCode.PLUGIN_CONTRACT_INVALID.value,
+            message="terminal handoff ledger 收到冲突终态，需人工确认 source item 实际去向",
+        )
+        self._write_terminal_session_evidence(
+            session,
+            item=item,
+            terminal_status=requested_status,
+            command_id=command_id,
+            trace_id=trace_id,
+            terminal_evidence=terminal_evidence,
+            already_terminal=False,
+            conflict=True,
+        )
+
+        from src.app.workline.domain.services.session_lifecycle_service import (
+            InvalidSessionTransition,
+            workline_session_lifecycle_service,
+        )
+        from src.app.workline.models.session import SessionStatus
+        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+
+        if self._enum_text(getattr(session, "status", None)) != SessionStatus.COMPLETED.value:
+            with suppress(InvalidSessionTransition):
+                workline_session_lifecycle_service.manual_hold(session, occurred_at=timezone.now_for_db())
+            session.failure_domain = "SMT_INBOUND_HANDOFF"
+            session.failure_code = SmtInboundHandoffReasonCode.PLUGIN_CONTRACT_INVALID.value
+            session.failure_message = "terminal handoff ledger 收到冲突终态，需人工确认"
+            await WorklineSessionRepository().persist_manual_hold(
+                db,
+                session_id=cast("int", getattr(session, "id", None)),
+                occurred_at=timezone.now_for_db(),
+                failure_domain=session.failure_domain,
+                failure_code=session.failure_code,
+                failure_message=session.failure_message,
+            )
+        db.add(item)
+        db.add(demand)
+        db.add(session)
+        await self.recalculate_demand_status(db, demand, reason="source_item_terminal_conflict")
+        return SimpleNamespace(
+            outcome="manual_hold",
+            advanced=False,
+            already_terminal=False,
+            current_demand_id=item.handoff_demand_id,
+            source_item=item,
+            demand=demand,
+            session=session,
+        )
+
     async def _resolve_source_pick_success_item_for_update(
         self,
         db: AsyncSession,
@@ -1350,6 +1569,45 @@ class SmtInboundHandoffService:
         item.status = SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
         item.failure_code = reason.failure_code
         item.failure_message = self._text_or_none(message) or reason.default_message
+
+    @staticmethod
+    def _terminal_source_item_status(
+        value: str | SmtInboundHandoffSourceItemStatus,
+    ) -> SmtInboundHandoffSourceItemStatus:
+        raw = value.value if isinstance(value, SmtInboundHandoffSourceItemStatus) else str(value)
+        if raw == SmtInboundHandoffSourceItemStatus.SORTED.value:
+            return SmtInboundHandoffSourceItemStatus.SORTED
+        if raw == SmtInboundHandoffSourceItemStatus.SKIPPED.value:
+            return SmtInboundHandoffSourceItemStatus.SKIPPED
+        raise ValueError("terminal_status 仅允许 SORTED 或 SKIPPED")
+
+    def _write_terminal_session_evidence(
+        self,
+        session: Any,
+        *,
+        item: SmtInboundHandoffSourceItem,
+        terminal_status: SmtInboundHandoffSourceItemStatus,
+        command_id: int | None,
+        trace_id: str | None,
+        terminal_evidence: Mapping[str, Any] | None,
+        already_terminal: bool,
+        conflict: bool = False,
+    ) -> None:
+        root_context = self._dict_or_empty(getattr(session, "context_json", None))
+        sorting = self._dict_or_empty(root_context.get("sorting"))
+        sorting["handoff_terminal_result"] = {
+            "handoff_demand_id": item.handoff_demand_id,
+            "handoff_source_item_id": item.id,
+            "terminal_status": terminal_status.value,
+            "command_id": command_id,
+            "trace_id": self._text_or_none(trace_id),
+            "already_terminal": already_terminal,
+            "conflict": conflict,
+            "recorded_at": timezone.now_utc().isoformat(),
+            "evidence": self._dict_or_empty(terminal_evidence),
+        }
+        root_context["sorting"] = sorting
+        session.context_json = root_context
 
     @staticmethod
     def _claim_result(kind: str, **values: Any) -> SimpleNamespace:
