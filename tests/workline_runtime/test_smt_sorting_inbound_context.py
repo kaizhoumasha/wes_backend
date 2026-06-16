@@ -112,3 +112,27 @@ def test_active_target_bin_and_station_fields_are_typed_writes() -> None:
     assert sorting_context["active_target_bin_code"] == "TGT-BIN-01"
     assert sorting_context["stations"] == {"scan_platform": "OCCUPIED"}
     assert sorting_context["business_phase"] == "WAITING_SCAN"
+
+
+def test_source_pick_request_is_written_with_schema_and_station_state() -> None:
+    session = _session()
+    context = SortingInboundContext.initialize(session)
+
+    context.write_source_pick_request(
+        handoff_demand_id=1,
+        handoff_source_item_id=2,
+        claim_attempt_no=1,
+        event_id="smt-inbound-handoff-source-item:2:claim:1",
+        target_workline_code="WL-SMT-SORT-01",
+        manifest_contract_version="2026-06-01.p0",
+        source_rack_position_code="SOURCE_STATION_A",
+        target_rack_position_code="TARGET_STATION",
+        route_evidence={"usage": Decimal("0.42")},
+    )
+    context.set_station_state(scan_platform="EMPTY")
+
+    sorting = session.context_json["sorting"]
+    assert sorting["context_schema_version"] == SORTING_CONTEXT_SCHEMA_VERSION
+    assert sorting["stations"]["scan_platform"] == "EMPTY"
+    assert sorting["source_pick_request"]["handoff_source_item_id"] == 2
+    assert sorting["source_pick_request"]["route_evidence"]["usage"] == "0.42"

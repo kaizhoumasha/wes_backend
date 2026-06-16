@@ -40,6 +40,12 @@ def _require_text(field_name: str, value: str) -> str:
     return value
 
 
+def _require_positive_int(field_name: str, value: int) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise SortingInboundContextError(f"{field_name} must be a positive integer")
+    return value
+
+
 class SortingInboundContext:
     """封装 `session.context_json["sorting"]` 的 P0 typed 写入入口。"""
 
@@ -109,6 +115,41 @@ class SortingInboundContext:
         """关闭当前物料上下文。"""
 
         self._pop_sorting_value("current_material")
+
+    def write_source_pick_request(
+        self,
+        *,
+        handoff_demand_id: int,
+        handoff_source_item_id: int,
+        claim_attempt_no: int,
+        event_id: str,
+        target_workline_code: str,
+        manifest_contract_version: str,
+        source_rack_position_code: str,
+        target_rack_position_code: str,
+        route_evidence: Mapping[str, Any] | None = None,
+    ) -> None:
+        """写入 handoff claim 触发的源站取料请求上下文。"""
+
+        self._set_sorting_value(
+            "source_pick_request",
+            {
+                "handoff_demand_id": _require_positive_int("handoff_demand_id", handoff_demand_id),
+                "handoff_source_item_id": _require_positive_int("handoff_source_item_id", handoff_source_item_id),
+                "claim_attempt_no": _require_positive_int("claim_attempt_no", claim_attempt_no),
+                "event_id": _require_text("event_id", event_id),
+                "target_workline_code": _require_text("target_workline_code", target_workline_code),
+                "manifest_contract_version": _require_text("manifest_contract_version", manifest_contract_version),
+                "source_rack_position_code": _require_text("source_rack_position_code", source_rack_position_code),
+                "target_rack_position_code": _require_text("target_rack_position_code", target_rack_position_code),
+                "route_evidence": _json_safe(dict(route_evidence or {})),
+            },
+        )
+
+    def get_source_pick_request(self) -> dict[str, Any]:
+        """读取源站取料请求上下文；缺失时返回空 dict。"""
+
+        return _dict_copy(self.sorting.get("source_pick_request"))
 
     def write_pending_target_placement(
         self,

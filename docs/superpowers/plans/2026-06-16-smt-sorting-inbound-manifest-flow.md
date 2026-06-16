@@ -263,7 +263,7 @@ rtk git commit -m "fix(workline): 收敛 SMT 分拣入库 manifest 货架位合�
 - Modify: `tests/workline_runtime/test_smt_sorting_inbound_context.py`
 - Modify: `tests/workline_runtime/test_smt_inbound_handoff_claim.py`
 
-- [ ] **Step 1: 写 context helper RED 测试**
+- [x] **Step 1: 写 context helper RED 测试**
 
 Add tests for:
 
@@ -291,7 +291,7 @@ assert sorting["source_pick_request"]["handoff_source_item_id"] == 2
 assert sorting["source_pick_request"]["route_evidence"]["usage"] == "0.42"
 ```
 
-- [ ] **Step 2: Run RED context tests**
+- [x] **Step 2: Run RED context tests**
 
 Run:
 
@@ -301,7 +301,7 @@ rtk uv run pytest tests/workline_runtime/test_smt_sorting_inbound_context.py -q
 
 Expected: FAIL with missing `write_source_pick_request`.
 
-- [ ] **Step 3: Implement helper**
+- [x] **Step 3: Implement helper**
 
 Add focused methods to `SortingInboundContext`:
 
@@ -315,11 +315,11 @@ Validation rules:
 - evidence must pass `_json_safe`.
 - helper must preserve existing `sorting.context_schema_version`.
 
-- [ ] **Step 4: Route claim session through helper**
+- [x] **Step 4: Route claim session through helper**
 
 Update `_create_sorting_claim_session(...)` in `SmtInboundHandoffService` to initialize session with `SortingInboundContext.initialize(session)`, then call helper. Keep this change narrow; full claim behavior changes happen in T4.
 
-- [ ] **Step 5: Run context and claim tests**
+- [x] **Step 5: Run context and claim tests**
 
 Run:
 
@@ -332,7 +332,7 @@ rtk uv run pytest \
 
 Expected: PASS and claim-created session contains `sorting.context_schema_version=1`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 

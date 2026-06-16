@@ -37,6 +37,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
+from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,6 +81,7 @@ _FORBIDDEN_EXTERNAL_MOVE_FIELDS = {
     "retry",
 }
 _SOURCE_PICK_REQUESTED_EVENT = "SORTING_SOURCE_PICK_REQUESTED"
+_SORTING_TARGET_RACK_POSITION_CODE = "TARGET_STATION"
 
 
 class SmtInboundHandoffService:
@@ -854,23 +856,26 @@ class SmtInboundHandoffService:
             run_mode=RunMode.AUTO,
             business_key=demand.demand_key,
             status=SessionStatus.RUNNING,
-            context_json={
-                "sorting": {
-                    "source_pick_request": {
-                        "handoff_demand_id": demand.id,
-                        "handoff_source_item_id": item.id,
-                        "claim_attempt_no": item.claim_attempt_no,
-                        "event_id": event_id,
-                        "target_workline_code": self._text_or_none(workline_code),
-                        "route_evidence": self._dict_or_empty(route_evidence),
-                    }
-                }
-            },
+            context_json={},
             context_schema_version="smt-sorting-inbound.v1",
             contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
             started_at=timezone.now_for_db(),
             trace_id=self._text_or_none(trace_id) or demand.trace_id,
         )
+        route_context = self._dict_or_empty(route_evidence)
+        sorting_context = SortingInboundContext.initialize(session)
+        sorting_context.write_source_pick_request(
+            handoff_demand_id=cast("int", demand.id),
+            handoff_source_item_id=cast("int", item.id),
+            claim_attempt_no=item.claim_attempt_no,
+            event_id=event_id,
+            target_workline_code=cast("str", self._text_or_none(workline_code)),
+            manifest_contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+            source_rack_position_code=cast("str", self._text_or_none(route_context.get("source_position_code"))),
+            target_rack_position_code=_SORTING_TARGET_RACK_POSITION_CODE,
+            route_evidence=route_context,
+        )
+        sorting_context.set_station_state(scan_platform="EMPTY")
         db.add(session)
         await db.flush()
         return session

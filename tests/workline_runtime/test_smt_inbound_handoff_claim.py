@@ -28,6 +28,7 @@ from src.utils.timezone import timezone
 from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
+    SORTING_CONTEXT_SCHEMA_VERSION,
 )
 
 
@@ -229,7 +230,13 @@ async def test_claim_creates_internal_source_pick_inbox_with_session_workline_bu
     assert session.workline_id == workline.id
     assert session.plugin_key == SMT_SORTING_INBOUND_PLUGIN_KEY
     assert "current_material" not in session.context_json["sorting"]
-    assert session.context_json["sorting"]["source_pick_request"]["handoff_source_item_id"] == item.id
+    sorting_context = session.context_json["sorting"]
+    assert sorting_context["context_schema_version"] == SORTING_CONTEXT_SCHEMA_VERSION
+    assert sorting_context["stations"]["scan_platform"] == "EMPTY"
+    assert sorting_context["source_pick_request"]["handoff_source_item_id"] == item.id
+    assert sorting_context["source_pick_request"]["manifest_contract_version"] == SMT_SORTING_INBOUND_CONTRACT_VERSION
+    assert sorting_context["source_pick_request"]["source_rack_position_code"] == "SOURCE_STATION_A"
+    assert sorting_context["source_pick_request"]["target_rack_position_code"] == "TARGET_STATION"
 
     assert inbox.kind == InboxKind.INTERNAL_EVENT
     assert inbox.source_system == SourceSystem.SYSTEM
