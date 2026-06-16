@@ -278,6 +278,35 @@ async def test_record_source_pick_success_resolves_item_by_command_correlation()
 
 
 @pytest.mark.asyncio
+async def test_record_source_pick_success_rejects_mismatched_command_source_item_evidence() -> None:
+    demand = _demand()
+    item = _item(status=SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING, command_id=88)
+    repo = FakeRecoveryRepository(items=[item])
+    db = FakeDb(
+        demand=demand,
+        command=SimpleNamespace(
+            id=88,
+            params={
+                "handoff_demand_id": demand.id,
+                "handoff_source_item_id": 999,
+                "claim_attempt_no": item.claim_attempt_no,
+                "source_pick_inbox_id": item.source_pick_inbox_id,
+            },
+        ),
+    )
+
+    with pytest.raises(ValueError, match="source_item_id"):
+        await SmtInboundHandoffService(repository=repo).record_source_pick_success(
+            db,
+            source_item_id=item.id,
+            command_id=88,
+            trace_id="trace-source-pick-success",
+        )
+
+    assert item.status == SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING
+
+
+@pytest.mark.asyncio
 async def test_success_source_pick_command_on_already_picked_item_is_noop_without_recounting_advanced() -> None:
     demand = _demand(SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS)
     item = _item(status=SmtInboundHandoffSourceItemStatus.PICKED, command_id=88)

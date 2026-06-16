@@ -821,6 +821,12 @@ class SmtInboundHandoffService:
             or self._int_or_none(context_request.get("handoff_source_item_id"))
             or self._int_or_none(command_request.get("handoff_source_item_id"))
         )
+        self._validate_source_pick_success_source_item_evidence(
+            resolved_source_item_id,
+            source_item_id=source_item_id,
+            context_source_item_id=self._int_or_none(context_request.get("handoff_source_item_id")),
+            command_source_item_id=self._int_or_none(command_request.get("handoff_source_item_id")),
+        )
         item = await self._resolve_source_pick_success_item_for_update(
             db,
             source_item_id=resolved_source_item_id,
@@ -1300,6 +1306,20 @@ class SmtInboundHandoffService:
             "claim_attempt_no": self._int_or_none(params.get("claim_attempt_no")),
             "source_pick_inbox_id": self._int_or_none(params.get("source_pick_inbox_id")),
         }
+
+    @staticmethod
+    def _validate_source_pick_success_source_item_evidence(
+        resolved_source_item_id: int | None,
+        *,
+        source_item_id: int | None,
+        context_source_item_id: int | None,
+        command_source_item_id: int | None,
+    ) -> None:
+        if resolved_source_item_id is None:
+            return
+        for evidence_source_item_id in (source_item_id, context_source_item_id, command_source_item_id):
+            if evidence_source_item_id is not None and evidence_source_item_id != resolved_source_item_id:
+                raise ValueError("source pick success source_item_id 不匹配")
 
     @staticmethod
     def _validate_source_pick_success_evidence(

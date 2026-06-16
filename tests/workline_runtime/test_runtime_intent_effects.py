@@ -436,6 +436,79 @@ async def test_source_pick_resource_fact_records_handoff_success_after_context_p
 
 
 @pytest.mark.asyncio
+async def test_source_pick_resource_fact_records_handoff_success_with_command_evidence_when_request_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        awaiting_command_id=88,
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+            }
+        },
+    )
+    inbox = SimpleNamespace(
+        id=10,
+        command_id=88,
+        trace_id="trace-runtime",
+        payload_json={"canonical_event_type": "SORTING_SOURCE_PICK_RESULT"},
+    )
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["inbox"] = inbox
+    ctx["trace"] = TraceContext.from_runtime(session=session, inbox=inbox, trace_id="trace-runtime")
+    resource_projection = RecordingResourceProjectionService()
+    calls: list[dict[str, Any]] = []
+
+    async def record_call(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        calls.append(kwargs)
+        assert _db is db
+        assert kwargs["command_id"] == 88
+        assert kwargs["session"] is session
+        assert session.context_json["sorting"]["current_material"]["material_identity_key"] == "material:PKG-001"
+        return SimpleNamespace(outcome="advanced", advanced=True, already_terminal=False)
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_pick_success",
+        record_call,
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_UNMOUNTED",
+                payload={
+                    "material_identity_key": "material:PKG-001",
+                    "pkg_code": "PKG-001",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "source_pick_request_event_id": "source-pick-requested:11:22:1",
+                },
+                idempotency_key="MATERIAL_UNMOUNTED:source-pick-requested:11:22:1:PKG-001:SINGLE_LAYER_A",
+            ),
+            RuntimeIntent.update_context(
+                {
+                    "sorting": {
+                        "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                        "current_material": {
+                            "material_identity_key": "material:PKG-001",
+                            "pkg_code": "PKG-001",
+                            "source_rack_position_code": "SINGLE_LAYER_A",
+                        },
+                    }
+                }
+            ),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_UNMOUNTED"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_reconciling_source_pick_resource_fact_does_not_record_handoff_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

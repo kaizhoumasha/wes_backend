@@ -381,15 +381,6 @@ def _source_pick_command_correlation(intent: RuntimeIntent) -> dict[str, int] | 
     }
 
 
-def _has_source_pick_request(ctx: Any) -> bool:
-    from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext, SortingInboundContextError
-
-    try:
-        return bool(SortingInboundContext.load_for_automatic(ctx["session"]).get_source_pick_request())
-    except SortingInboundContextError:
-        return False
-
-
 async def _record_source_pick_command_correlation(
     ctx: Any,
     intent: RuntimeIntent,
@@ -413,21 +404,21 @@ async def _record_source_pick_command_correlation(
     )
 
 
-async def _record_source_pick_success(ctx: Any) -> None:
-    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
-    from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext, SortingInboundContextError
+def _source_pick_success_command_id(ctx: Any) -> int | None:
+    return (
+        optional_int(getattr(ctx["inbox"], "command_id", None))
+        or optional_int(getattr(ctx["session"], "awaiting_command_id", None))
+        or optional_int(ctx.get("awaiting_command_id"))
+    )
 
-    session = ctx["session"]
-    try:
-        request = SortingInboundContext.load_for_automatic(session).get_source_pick_request()
-    except SortingInboundContextError:
-        return
-    if not request:
-        return
+
+async def _record_source_pick_success(ctx: Any, *, command_id: int | None = None) -> None:
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
 
     await smt_inbound_handoff_service.record_source_pick_success(
         ctx["db"],
-        session=session,
+        session=ctx["session"],
+        command_id=command_id,
         trace_id=string_value(ctx.get("trace_id"), ""),
     )
 
@@ -459,13 +450,15 @@ class RuntimeIntentEffectApplier:
             return RuntimeIntentEffectResult.processed()
 
         pending_source_pick_success = False
+        pending_source_pick_success_command_id: int | None = None
         for intent in intents:
             if intent.kind == RuntimeIntentKind.UPDATE_CONTEXT:
                 _merge_context_patch(ctx, intent.context_patch)
                 workline_effects._apply_context_patch(ctx)
                 if pending_source_pick_success:
-                    await _record_source_pick_success(ctx)
+                    await _record_source_pick_success(ctx, command_id=pending_source_pick_success_command_id)
                     pending_source_pick_success = False
+                    pending_source_pick_success_command_id = None
                 continue
 
             if intent.kind == RuntimeIntentKind.MARK_NG:
@@ -499,8 +492,9 @@ class RuntimeIntentEffectApplier:
                 if _is_reconciling_result(result):
                     await self._apply_resource_reconciliation_hold(ctx, result)
                     return RuntimeIntentEffectResult.processed()
-                if str(intent.action) == "MATERIAL_UNMOUNTED" and _has_source_pick_request(ctx):
+                if str(intent.action) == "MATERIAL_UNMOUNTED":
                     pending_source_pick_success = True
+                    pending_source_pick_success_command_id = _source_pick_success_command_id(ctx)
                 continue
 
             if intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION:
