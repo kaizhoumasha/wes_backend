@@ -4,7 +4,7 @@ import importlib
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -261,4 +261,269 @@ async def test_active_snapshot_resource_evidence_derives_station_code_from_manif
     assert boundary["single_layer_rack_snapshot"] == RuntimeSingleLayerRackSnapshot.ACTIVE.value
     assert [(item.position_code, item.station_code) for item in boundary["resource_evidence_items"]] == [
         ("INBOUND_SLOT", "ST-01")
+    ]
+
+
+# ----------------------------------------------------------------------
+# RuntimeMonitorCommandSnapshot tests (Task 1)
+# ----------------------------------------------------------------------
+
+
+class _MonitorExecuteResult:
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def scalar_one_or_none(self) -> Any:
+        return self._value
+
+    def scalar_one(self) -> Any:
+        return self._value
+
+    def scalars(self) -> Any:
+        mock_scalars = MagicMock()
+        mock_scalars.all.return_value = self._value
+        return mock_scalars
+
+    def all(self) -> Any:
+        return self._value
+
+
+def _build_workline_stub() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=45,
+        is_deleted=False,
+        line_code="WL-45",
+        line_name="SMT 线",
+        line_type="SMT",
+        zone_name=None,
+        plugin_key=None,
+        contract_version=None,
+        is_active=True,
+        run_mode="SIMULATION",
+        runtime_status="READY",
+        active_safety_incident_id=None,
+        stopped_at=None,
+        stopped_reason=None,
+        resumed_at=None,
+    )
+
+
+def _build_db_stub(workline: SimpleNamespace) -> AsyncMock:
+    db = AsyncMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _MonitorExecuteResult(workline),  # workline lookup
+            _MonitorExecuteResult([("RUNNING", 0)]),  # active session counts
+            _MonitorExecuteResult(0),  # waiting count
+            _MonitorExecuteResult(0),  # failed count
+            _MonitorExecuteResult(0),  # completed count
+            _MonitorExecuteResult(None),  # pending reconciliation
+        ]
+    )
+    return db
+
+
+def _empty_evidence_boundary() -> dict[str, Any]:
+    return {
+        "workline_readiness": "READY",
+        "station_lease": "IDLE",
+        "single_layer_rack_snapshot": "ACTIVE",
+        "rack_operation_wait": "NONE",
+        "resource_evidence_kind": "WES_ACTIVE_SNAPSHOT",
+        "resource_evidence_items": [],
+        "resource_evidence_total_count": 0,
+        "resource_evidence_truncated": False,
+    }
+
+
+async def _run_monitor_projection_with_devices(
+    devices: list[SimpleNamespace],
+    command_rows: dict[int, Any],
+    *,
+    spy_load_command_map: AsyncMock | None = None,
+) -> tuple[Any, AsyncMock]:
+    service = RuntimeQueryService()
+    workline = _build_workline_stub()
+    db = _build_db_stub(workline)
+
+    if spy_load_command_map is None:
+        spy_load_command_map = AsyncMock(return_value=command_rows)
+
+    async def mock_build_trace_list_items(_db: Any, _sessions: Any) -> list[Any]:
+        return []
+
+    with (
+        patch(
+            "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+            new=AsyncMock(return_value=devices),
+        ),
+        patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[])),
+        patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+        patch.object(service, "_load_recent_completed_sessions_for_workline", new=AsyncMock(return_value=[])),
+        patch.object(
+            service,
+            "_load_blocked_outbox_projection",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    command_codes_by_device_id={},
+                    count_by_device_id={},
+                    summary_by_device_id={},
+                )
+            ),
+        ),
+        patch.object(service, "_load_open_command_count_map", new=AsyncMock(return_value={})),
+        patch.object(service, "_load_active_runtime_hold_ids_map", new=AsyncMock(return_value={})),
+        patch.object(service, "_load_command_map_by_ids", new=spy_load_command_map),
+        patch.object(service, "_build_trace_list_items", new=mock_build_trace_list_items),
+        patch.object(
+            service,
+            "_build_workline_runtime_boundary",
+            new=AsyncMock(return_value=_empty_evidence_boundary()),
+        ),
+    ):
+        result = await service.get_workline_monitor_projection(db, 45)
+
+    assert result is not None
+    return result, spy_load_command_map
+
+
+@pytest.mark.asyncio
+async def test_monitor_projection_emits_current_command_snapshot_when_command_row_present() -> None:
+    db_time = timezone.now_for_db()
+    devices = [
+        SimpleNamespace(
+            id=12,
+            device_code="DEV-12",
+            device_name="设备 12",
+            device_role="SORTER",
+            role_index=1,
+            upstream_device_id=None,
+            device_status="IDLE",
+            maintenance_mode=False,
+            current_command_id=777,
+            last_heartbeat_at=db_time,
+            error_code=None,
+        )
+    ]
+    command_row = SimpleNamespace(
+        id=777,
+        command_code="CMD-DEV-12-777",
+        status="SENT",
+        sent_at=db_time,
+        ack_received_at=None,
+        ack_code=None,
+        ack_message=None,
+    )
+    result, _ = await _run_monitor_projection_with_devices(devices, {777: command_row})
+
+    node = result.device_nodes[0]
+    assert node.current_command_id == 777
+    assert node.current_command is not None
+    assert node.current_command.id == 777
+    assert node.current_command.command_code == "CMD-DEV-12-777"
+    assert node.current_command.status == "SENT"
+    assert node.current_command.sent_at is not None
+    assert node.current_command.sent_at.utcoffset() == timedelta(0)
+    assert node.current_command.ack_received_at is None
+    assert node.current_command.ack_code is None
+    assert node.current_command.ack_message is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_projection_returns_null_command_when_device_has_no_current_command_id() -> None:
+    db_time = timezone.now_for_db()
+    devices = [
+        SimpleNamespace(
+            id=13,
+            device_code="DEV-13",
+            device_name="设备 13",
+            device_role="SCANNER",
+            role_index=2,
+            upstream_device_id=None,
+            device_status="IDLE",
+            maintenance_mode=False,
+            current_command_id=None,
+            last_heartbeat_at=db_time,
+            error_code=None,
+        )
+    ]
+    spy = AsyncMock(return_value={})
+    result, spy_returned = await _run_monitor_projection_with_devices(devices, {}, spy_load_command_map=spy)
+
+    node = result.device_nodes[0]
+    assert node.current_command_id is None
+    assert node.current_command is None
+    # 没有任何 device 携带 current_command_id 时仍只调用一次（传入空列表，命中早返回分支）。
+    assert spy_returned.await_count == 1
+    assert spy_returned.await_args.args[1] == []
+
+
+@pytest.mark.asyncio
+async def test_monitor_projection_handles_dangling_current_command_id_without_raising() -> None:
+    db_time = timezone.now_for_db()
+    devices = [
+        SimpleNamespace(
+            id=14,
+            device_code="DEV-14",
+            device_name="设备 14",
+            device_role="ROBOT_ARM",
+            role_index=3,
+            upstream_device_id=None,
+            device_status="IDLE",
+            maintenance_mode=False,
+            current_command_id=999,  # 指向已被删除/不存在的 command 行
+            last_heartbeat_at=db_time,
+            error_code=None,
+        )
+    ]
+    # _load_command_map_by_ids 返回空，模拟 dangling FK
+    result, _ = await _run_monitor_projection_with_devices(devices, {})
+
+    node = result.device_nodes[0]
+    # 兼容契约：保留 id，snapshot 为 None
+    assert node.current_command_id == 999
+    assert node.current_command is None
+
+
+@pytest.mark.asyncio
+async def test_monitor_projection_loads_command_map_in_a_single_batch_for_multiple_devices() -> None:
+    db_time = timezone.now_for_db()
+    devices = [
+        SimpleNamespace(
+            id=index,
+            device_code=f"DEV-{index}",
+            device_name=f"设备 {index}",
+            device_role="SORTER",
+            role_index=index,
+            upstream_device_id=None,
+            device_status="IDLE",
+            maintenance_mode=False,
+            current_command_id=1000 + index,
+            last_heartbeat_at=db_time,
+            error_code=None,
+        )
+        for index in range(1, 6)
+    ]
+    command_rows = {
+        1000 + index: SimpleNamespace(
+            id=1000 + index,
+            command_code=f"CMD-{1000 + index}",
+            status="SENT",
+            sent_at=db_time,
+            ack_received_at=None,
+            ack_code=None,
+            ack_message=None,
+        )
+        for index in range(1, 6)
+    }
+    spy = AsyncMock(return_value=command_rows)
+    result, spy_returned = await _run_monitor_projection_with_devices(devices, command_rows, spy_load_command_map=spy)
+
+    # T12 性能门禁：批量加载只应触发一次。
+    assert spy_returned.await_count == 1
+    requested_ids = spy_returned.await_args.args[1]
+    assert sorted(requested_ids) == [1001, 1002, 1003, 1004, 1005]
+    # 每个 device 都拿到对应 snapshot。
+    assert [node.current_command.command_code for node in result.device_nodes] == [
+        f"CMD-{1000 + index}" for index in range(1, 6)
     ]
