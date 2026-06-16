@@ -293,7 +293,7 @@ async def test_resource_fact_intent_is_applied_before_completion(monkeypatch: py
 
 
 @pytest.mark.asyncio
-async def test_source_pick_complete_records_handoff_success_after_completion_effects(
+async def test_source_pick_complete_does_not_record_handoff_success_without_source_pick_fact(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = _session(
@@ -318,20 +318,15 @@ async def test_source_pick_complete_records_handoff_success_after_completion_eff
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     calls: list[tuple[str, Any]] = []
 
-    async def record_ng_flow(*_args: Any, **_kwargs: Any) -> None:
-        calls.append(("complete_transition", session.status))
-
     async def record_call(_db: Any, **kwargs: Any) -> SimpleNamespace:
-        calls.append(("source_pick_success", session.status))
+        calls.append(("source_pick_success", session.status, kwargs))
         assert _db is db
-        assert kwargs["session"] is session
-        assert kwargs["trace_id"] == "trace-runtime"
         return SimpleNamespace(outcome="advanced", advanced=True, already_terminal=False)
 
     from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
 
     monkeypatch.setattr(workline_effects, "_emit_timeline", AsyncMock())
-    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", AsyncMock())
     monkeypatch.setattr(
         smt_inbound_handoff_service,
         "record_source_pick_success",
@@ -340,10 +335,172 @@ async def test_source_pick_complete_records_handoff_success_after_completion_eff
 
     await RuntimeIntentEffectApplier().apply(ctx, [RuntimeIntent.complete({"material_mounted": True})])
 
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_source_pick_resource_fact_records_handoff_success_after_context_patch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                "source_pick_request": {
+                    "handoff_demand_id": 11,
+                    "handoff_source_item_id": 22,
+                    "claim_attempt_no": 1,
+                    "event_id": "source-pick-requested:11:22:1",
+                    "target_workline_code": "SMT_SORTER_01",
+                    "manifest_contract_version": "v1",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "target_rack_position_code": "TARGET_STATION",
+                    "route_evidence": {},
+                },
+            }
+        }
+    )
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    calls: list[tuple[str, Any]] = []
+    resource_projection = RecordingResourceProjectionService()
+
+    async def record_call(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        current_material = session.context_json["sorting"].get("current_material")
+        calls.append(("source_pick_success", current_material))
+        assert _db is db
+        assert kwargs["session"] is session
+        assert kwargs["trace_id"] == "trace-runtime"
+        assert current_material["material_identity_key"] == "material:PKG-001"
+        return SimpleNamespace(outcome="advanced", advanced=True, already_terminal=False)
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_pick_success",
+        record_call,
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_UNMOUNTED",
+                payload={
+                    "material_identity_key": "material:PKG-001",
+                    "pkg_code": "PKG-001",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "source_pick_request_event_id": "source-pick-requested:11:22:1",
+                },
+                idempotency_key="MATERIAL_UNMOUNTED:source-pick-requested:11:22:1:PKG-001:SINGLE_LAYER_A",
+            ),
+            RuntimeIntent.update_context(
+                {
+                    "sorting": {
+                        "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                        "source_pick_request": {
+                            "handoff_demand_id": 11,
+                            "handoff_source_item_id": 22,
+                            "claim_attempt_no": 1,
+                            "event_id": "source-pick-requested:11:22:1",
+                            "target_workline_code": "SMT_SORTER_01",
+                            "manifest_contract_version": "v1",
+                            "source_rack_position_code": "SINGLE_LAYER_A",
+                            "target_rack_position_code": "TARGET_STATION",
+                            "route_evidence": {},
+                        },
+                        "current_material": {
+                            "material_identity_key": "material:PKG-001",
+                            "pkg_code": "PKG-001",
+                            "source_rack_position_code": "SINGLE_LAYER_A",
+                        },
+                    }
+                }
+            ),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_UNMOUNTED"
+    assert session.context_json["sorting"]["current_material"]["pkg_code"] == "PKG-001"
     assert calls == [
-        ("complete_transition", "WAITING_DEVICE_RESULT"),
-        ("source_pick_success", "COMPLETED"),
+        (
+            "source_pick_success",
+            {
+                "material_identity_key": "material:PKG-001",
+                "pkg_code": "PKG-001",
+                "source_rack_position_code": "SINGLE_LAYER_A",
+            },
+        )
     ]
+
+
+@pytest.mark.asyncio
+async def test_reconciling_source_pick_resource_fact_does_not_record_handoff_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                "source_pick_request": {
+                    "handoff_demand_id": 11,
+                    "handoff_source_item_id": 22,
+                    "claim_attempt_no": 1,
+                    "event_id": "source-pick-requested:11:22:1",
+                    "target_workline_code": "SMT_SORTER_01",
+                    "manifest_contract_version": "v1",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "target_rack_position_code": "TARGET_STATION",
+                    "route_evidence": {},
+                },
+            }
+        }
+    )
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    resource_projection = RecordingResourceProjectionService(status="RECONCILING")
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    record_call = AsyncMock(return_value=SimpleNamespace(outcome="advanced", advanced=True, already_terminal=False))
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_pick_success",
+        record_call,
+    )
+    monkeypatch.setattr(
+        "src.app.workline.repositories.session_repository.WorklineSessionRepository.persist_manual_hold",
+        AsyncMock(),
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_UNMOUNTED",
+                payload={
+                    "material_identity_key": "material:PKG-001",
+                    "pkg_code": "PKG-001",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "source_pick_request_event_id": "source-pick-requested:11:22:1",
+                },
+                idempotency_key="MATERIAL_UNMOUNTED:source-pick-requested:11:22:1:PKG-001:SINGLE_LAYER_A",
+            ),
+            RuntimeIntent.update_context(
+                {
+                    "sorting": {
+                        "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                        "current_material": {"material_identity_key": "material:PKG-001"},
+                    }
+                }
+            ),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_UNMOUNTED"
+    assert "current_material" not in session.context_json["sorting"]
+    assert session.status == "MANUAL_HOLD"
+    record_call.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -815,21 +815,39 @@ class SmtInboundHandoffService:
 
         _ = trace_id
         context_request = self._source_pick_request_from_session(session)
-        resolved_source_item_id = source_item_id or self._int_or_none(context_request.get("handoff_source_item_id"))
-        if resolved_source_item_id is None:
+        command_request = await self._source_pick_request_from_command(db, command_id)
+        resolved_source_item_id = (
+            source_item_id
+            or self._int_or_none(context_request.get("handoff_source_item_id"))
+            or self._int_or_none(command_request.get("handoff_source_item_id"))
+        )
+        item = await self._resolve_source_pick_success_item_for_update(
+            db,
+            source_item_id=resolved_source_item_id,
+        )
+        if item is None and resolved_source_item_id is None:
             raise ValueError("source pick success 缺少 source_item_id")
-
-        item = await self.repository.get_source_item_for_update(db, resolved_source_item_id)
         if item is None:
             raise ValueError(f"未找到 handoff source item: {resolved_source_item_id}")
 
-        resolved_demand_id = handoff_demand_id or self._int_or_none(context_request.get("handoff_demand_id"))
-        resolved_attempt_no = claim_attempt_no or self._int_or_none(context_request.get("claim_attempt_no"))
+        resolved_demand_id = (
+            handoff_demand_id
+            or self._int_or_none(context_request.get("handoff_demand_id"))
+            or self._int_or_none(command_request.get("handoff_demand_id"))
+        )
+        resolved_attempt_no = (
+            claim_attempt_no
+            or self._int_or_none(context_request.get("claim_attempt_no"))
+            or self._int_or_none(command_request.get("claim_attempt_no"))
+        )
+        resolved_source_pick_inbox_id = source_pick_inbox_id or self._int_or_none(
+            command_request.get("source_pick_inbox_id")
+        )
         self._validate_source_pick_success_evidence(
             item,
             handoff_demand_id=resolved_demand_id,
             claim_attempt_no=resolved_attempt_no,
-            source_pick_inbox_id=source_pick_inbox_id,
+            source_pick_inbox_id=resolved_source_pick_inbox_id,
             command_id=command_id,
         )
 
@@ -885,6 +903,16 @@ class SmtInboundHandoffService:
             )
 
         raise ValueError(f"source pick success 状态不允许: {item.status}")
+
+    async def _resolve_source_pick_success_item_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        source_item_id: int | None,
+    ) -> SmtInboundHandoffSourceItem | None:
+        if source_item_id is not None:
+            return await self.repository.get_source_item_for_update(db, source_item_id)
+        return None
 
     async def scan_smt_inbound_handoff_demands_batch(
         self,
@@ -1260,6 +1288,18 @@ class SmtInboundHandoffService:
         if not isinstance(sorting, Mapping) or not isinstance(sorting.get("source_pick_request"), Mapping):
             return {}
         return SortingInboundContext.load_for_automatic(session).get_source_pick_request()
+
+    async def _source_pick_request_from_command(self, db: AsyncSession, command_id: int | None) -> dict[str, Any]:
+        if command_id is None:
+            return {}
+        command = await self.repository.get_device_command_by_id(db, command_id)
+        params = self._dict_or_empty(getattr(command, "params", None))
+        return {
+            "handoff_demand_id": self._int_or_none(params.get("handoff_demand_id")),
+            "handoff_source_item_id": self._int_or_none(params.get("handoff_source_item_id")),
+            "claim_attempt_no": self._int_or_none(params.get("claim_attempt_no")),
+            "source_pick_inbox_id": self._int_or_none(params.get("source_pick_inbox_id")),
+        }
 
     @staticmethod
     def _validate_source_pick_success_evidence(

@@ -381,6 +381,15 @@ def _source_pick_command_correlation(intent: RuntimeIntent) -> dict[str, int] | 
     }
 
 
+def _has_source_pick_request(ctx: Any) -> bool:
+    from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext, SortingInboundContextError
+
+    try:
+        return bool(SortingInboundContext.load_for_automatic(ctx["session"]).get_source_pick_request())
+    except SortingInboundContextError:
+        return False
+
+
 async def _record_source_pick_command_correlation(
     ctx: Any,
     intent: RuntimeIntent,
@@ -449,10 +458,14 @@ class RuntimeIntentEffectApplier:
             await self._apply_noop_completion(ctx)
             return RuntimeIntentEffectResult.processed()
 
+        pending_source_pick_success = False
         for intent in intents:
             if intent.kind == RuntimeIntentKind.UPDATE_CONTEXT:
                 _merge_context_patch(ctx, intent.context_patch)
                 workline_effects._apply_context_patch(ctx)
+                if pending_source_pick_success:
+                    await _record_source_pick_success(ctx)
+                    pending_source_pick_success = False
                 continue
 
             if intent.kind == RuntimeIntentKind.MARK_NG:
@@ -486,6 +499,8 @@ class RuntimeIntentEffectApplier:
                 if _is_reconciling_result(result):
                     await self._apply_resource_reconciliation_hold(ctx, result)
                     return RuntimeIntentEffectResult.processed()
+                if str(intent.action) == "MATERIAL_UNMOUNTED" and _has_source_pick_request(ctx):
+                    pending_source_pick_success = True
                 continue
 
             if intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION:
@@ -503,7 +518,6 @@ class RuntimeIntentEffectApplier:
                 workline_effects._clear_session_failure(ctx["session"])
                 ctx["orch_result"].complete = True
                 _ = await workline_effects._apply_completion_transition(ctx)
-                await _record_source_pick_success(ctx)
                 continue
 
             if intent.kind == RuntimeIntentKind.BLOCK:

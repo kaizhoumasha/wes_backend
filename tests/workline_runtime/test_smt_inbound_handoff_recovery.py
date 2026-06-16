@@ -90,6 +90,9 @@ class FakeRecoveryRepository:
     ) -> SmtInboundHandoffSourceItem | None:
         return next((item for item in self.items if item.id == source_item_id), None)
 
+    async def get_device_command_by_id(self, db: Any, command_id: int) -> Any | None:
+        return await db.get(type("DeviceCommand", (), {}), command_id)
+
 
 class FakeDb:
     def __init__(
@@ -241,6 +244,36 @@ async def test_record_source_pick_success_advances_requested_or_claimed_item_to_
     assert item.next_attempt_at is None
     assert demand.failure_code is None
     assert demand.failure_message is None
+    assert demand.status == SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_record_source_pick_success_resolves_item_by_command_correlation() -> None:
+    demand = _demand()
+    item = _item(status=SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING, command_id=88)
+    repo = FakeRecoveryRepository(items=[item])
+    db = FakeDb(
+        demand=demand,
+        command=SimpleNamespace(
+            id=88,
+            params={
+                "handoff_demand_id": demand.id,
+                "handoff_source_item_id": item.id,
+                "claim_attempt_no": item.claim_attempt_no,
+                "source_pick_inbox_id": item.source_pick_inbox_id,
+            },
+        ),
+    )
+
+    result = await SmtInboundHandoffService(repository=repo).record_source_pick_success(
+        db,
+        command_id=88,
+        trace_id="trace-source-pick-success",
+    )
+
+    assert result.outcome == "advanced"
+    assert result.source_item is item
+    assert item.status == SmtInboundHandoffSourceItemStatus.PICKED
     assert demand.status == SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS
 
 
