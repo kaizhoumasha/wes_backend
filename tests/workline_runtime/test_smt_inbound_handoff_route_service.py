@@ -57,20 +57,59 @@ def _workline(
     priority: int = 100,
     runtime_status: WorkLineRuntimeStatus = WorkLineRuntimeStatus.READY,
     route_enabled: bool = True,
+    route_config: dict[str, Any] | None = None,
 ) -> object:
-    route_config = {
+    resolved_route_config = {
         "enabled": route_enabled,
         "priority": priority,
-        "source_station_code": "SOURCE_STATION_A",
+        "source_rack_position_code": "SOURCE_STATION_A",
     }
+    if route_config is not None:
+        resolved_route_config = {"enabled": route_enabled, "priority": priority, **route_config}
     return SimpleNamespace(
         id=workline_id,
         line_code=line_code,
         plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
         runtime_status=runtime_status,
-        config={"smt_inbound_handoff_route": route_config},
+        config={"smt_inbound_handoff_route": resolved_route_config},
         runtime_config_json={},
         is_active=True,
+    )
+
+
+def _manifest_definition(
+    *,
+    source_positions: tuple[str, ...] = ("SOURCE_STATION_A", "SOURCE_STATION_B"),
+    target_positions: tuple[str, ...] = ("TARGET_STATION",),
+    contract_version: str = "smt-sorting-inbound.v1",
+) -> object:
+    boundaries = [
+        SimpleNamespace(
+            rack_position_code=position_code,
+            rack_kind="SINGLE_LAYER",
+            business_demand_type="SORTING_INBOUND_SOURCE",
+            wms_operation_type="SUPPLY_SINGLE_LAYER_RACK",
+            snapshot_kind="ACTIVE_SOURCE_BIN_RACK",
+            lease_scope="STATION",
+        )
+        for position_code in source_positions
+    ]
+    boundaries.extend(
+        SimpleNamespace(
+            rack_position_code=position_code,
+            rack_kind="FIVE_LAYER",
+            business_demand_type="SORTING_INBOUND_TARGET",
+            wms_operation_type="ALLOCATE_SORTING_TARGET_BIN",
+            snapshot_kind="ACTIVE_TARGET_BIN_RACK",
+            lease_scope="STATION",
+        )
+        for position_code in target_positions
+    )
+    return SimpleNamespace(
+        manifest=SimpleNamespace(
+            contract_version=contract_version,
+            resource_boundaries=tuple(boundaries),
+        )
     )
 
 
@@ -154,6 +193,152 @@ async def test_route_uses_priority_workline_code_and_id_stable_order() -> None:
         {"priority": 5, "workline_code": "WL-SORT-B", "workline_id": 30},
         {"priority": 10, "workline_code": "WL-SORT-A", "workline_id": 10},
     ]
+    assert lease_service.calls[0]["position_code"] == "SOURCE_STATION_A"
+
+
+@pytest.mark.asyncio
+async def test_single_manifest_source_boundary_defaults_to_that_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _route_module()
+    monkeypatch.setattr(
+        module,
+        "get_workline_plugin_definition",
+        lambda plugin_key: _manifest_definition(source_positions=("SOURCE_STATION_A",)),
+    )
+    lease_service = _LeaseService()
+    ecs_probe = _EcsProbe(available=True)
+    service = module.SmtInboundHandoffRouteService(
+        station_lease_service=lease_service,
+        session_repository=_SessionRepository(),
+        ecs_status_probe=ecs_probe,
+    )
+    workline = _workline(workline_id=20, line_code="WL-SORT-A", route_config={})
+
+    result = await service.resolve_route(
+        object(),
+        demand=_demand(),
+        source_item=_source_item(),
+        candidate_worklines=[workline],
+    )
+
+    assert result.kind == "SELECTED"
+    assert result.source_position_code == "SOURCE_STATION_A"
+    assert result.route_evidence["manifest_contract_version"] == "smt-sorting-inbound.v1"
+    assert result.route_evidence["source_rack_position_code"] == "SOURCE_STATION_A"
+    assert result.route_evidence["source_station_code"] == "SOURCE_STATION_A"
+    assert result.route_evidence["target_rack_position_code"] == "TARGET_STATION"
+    assert result.route_evidence["source_boundary"]["rack_position_code"] == "SOURCE_STATION_A"
+    assert lease_service.calls[0]["position_code"] == "SOURCE_STATION_A"
+
+
+@pytest.mark.asyncio
+async def test_multiple_manifest_source_boundaries_without_config_returns_manual_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _route_module()
+    monkeypatch.setattr(module, "get_workline_plugin_definition", lambda plugin_key: _manifest_definition())
+    station_lease = _LeaseService()
+    ecs_probe = _EcsProbe(available=True)
+    service = module.SmtInboundHandoffRouteService(
+        station_lease_service=station_lease,
+        session_repository=_SessionRepository(),
+        ecs_status_probe=ecs_probe,
+    )
+
+    result = await service.resolve_route(
+        object(),
+        demand=_demand(),
+        source_item=_source_item(),
+        candidate_worklines=[_workline(workline_id=20, line_code="WL-SORT-A", route_config={})],
+    )
+
+    assert result.kind == "MANUAL_HOLD"
+    assert result.failure_code == SmtInboundHandoffReasonCode.SOURCE_BOUNDARY_AMBIGUOUS.value
+    assert station_lease.calls == []
+    assert ecs_probe.calls == []
+
+
+@pytest.mark.asyncio
+async def test_configured_source_boundary_must_be_declared_by_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _route_module()
+    monkeypatch.setattr(module, "get_workline_plugin_definition", lambda plugin_key: _manifest_definition())
+    station_lease = _LeaseService()
+    ecs_probe = _EcsProbe(available=True)
+    service = module.SmtInboundHandoffRouteService(
+        station_lease_service=station_lease,
+        session_repository=_SessionRepository(),
+        ecs_status_probe=ecs_probe,
+    )
+    workline = _workline(
+        workline_id=20,
+        line_code="WL-SORT-A",
+        route_config={"source_rack_position_code": "SOURCE_STATION_Z"},
+    )
+
+    result = await service.resolve_route(
+        object(),
+        demand=_demand(),
+        source_item=_source_item(),
+        candidate_worklines=[workline],
+    )
+
+    assert result.kind == "MANUAL_HOLD"
+    assert result.failure_code == SmtInboundHandoffReasonCode.SOURCE_BOUNDARY_INVALID.value
+    assert station_lease.calls == []
+    assert ecs_probe.calls == []
+
+
+@pytest.mark.asyncio
+async def test_missing_manifest_target_boundary_returns_controlled_manual_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _route_module()
+    monkeypatch.setattr(
+        module,
+        "get_workline_plugin_definition",
+        lambda plugin_key: _manifest_definition(source_positions=("SOURCE_STATION_A",), target_positions=()),
+    )
+    station_lease = _LeaseService()
+    service = module.SmtInboundHandoffRouteService(
+        station_lease_service=station_lease,
+        session_repository=_SessionRepository(),
+        ecs_status_probe=_EcsProbe(available=True),
+    )
+
+    result = await service.resolve_route(
+        object(),
+        demand=_demand(),
+        source_item=_source_item(),
+        candidate_worklines=[_workline(workline_id=20, line_code="WL-SORT-A", route_config={})],
+    )
+
+    assert result.kind == "MANUAL_HOLD"
+    assert result.failure_code == SmtInboundHandoffReasonCode.PLUGIN_CONTRACT_INVALID.value
+    assert station_lease.calls == []
+
+
+@pytest.mark.asyncio
+async def test_default_ecs_probe_does_not_silently_allow_idle(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _route_module()
+    monkeypatch.setattr(
+        module,
+        "get_workline_plugin_definition",
+        lambda plugin_key: _manifest_definition(source_positions=("SOURCE_STATION_A",)),
+    )
+    lease_service = _LeaseService()
+    service = module.SmtInboundHandoffRouteService(
+        station_lease_service=lease_service,
+        session_repository=_SessionRepository(),
+    )
+
+    result = await service.resolve_route(
+        object(),
+        demand=_demand(),
+        source_item=_source_item(),
+        candidate_worklines=[_workline(workline_id=20, line_code="WL-SORT-A", route_config={})],
+    )
+
+    assert result.kind == "RETRY"
+    assert result.failure_code == SmtInboundHandoffReasonCode.ECS_DEVICE_NOT_IDLE.value
     assert lease_service.calls[0]["position_code"] == "SOURCE_STATION_A"
 
 
