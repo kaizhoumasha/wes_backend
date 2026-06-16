@@ -38,7 +38,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_TARGET_PLACE,
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
-    ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
     ROLE_SORTING_TARGET_ARM,
@@ -47,11 +46,9 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.workline_plugins.smt_sorting_inbound.plugin import (
-    POSITION_NG_STATION,
     POSITION_SOURCE_STATION_A,
     POSITION_SOURCE_STATION_B,
     POSITION_TARGET_STATION,
-    POSITION_WORKSTATION,
 )
 
 workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
@@ -126,8 +123,6 @@ async def _add_smt_sorting_inbound_rack_positions(db_session, workline: WorkLine
         (POSITION_SOURCE_STATION_A, RackKind.SINGLE_LAYER, ROLE_SORTING_SOURCE_ARM),
         (POSITION_SOURCE_STATION_B, RackKind.SINGLE_LAYER, ROLE_SORTING_SOURCE_ARM),
         (POSITION_TARGET_STATION, RackKind.FIVE_LAYER, ROLE_SORTING_TARGET_ARM),
-        (POSITION_NG_STATION, RackKind.SINGLE_LAYER, ROLE_SORTING_NG_STATION),
-        (POSITION_WORKSTATION, RackKind.SINGLE_LAYER, ROLE_SORTING_WORKSTATION),
     )
     for priority, (position_code, rack_kind, device_role) in enumerate(specs, start=100):
         db_session.add(
@@ -193,13 +188,22 @@ def test_workline_service_returns_new_plugin_manifest_summary() -> None:
     assert summary is not None
     assert summary.plugin_key == SMT_SORTING_INBOUND_PLUGIN_KEY
     assert summary.contract_version == SMT_SORTING_INBOUND_CONTRACT_VERSION
-    assert {req.role for req in summary.devices} == {
+    device_roles = {req.role for req in summary.devices}
+    rack_position_codes = {rack_position.code for rack_position in summary.rack_positions}
+    business_demand_types = {boundary.business_demand_type for boundary in summary.resource_boundaries}
+    assert device_roles == {
         ROLE_SORTING_SOURCE_ARM,
         ROLE_SORTING_SCAN_PLATFORM,
         ROLE_SORTING_TARGET_ARM,
-        ROLE_SORTING_NG_STATION,
         ROLE_SORTING_WORKSTATION,
     }
+    assert "SORTING_NG_STATION" not in device_roles
+    assert rack_position_codes == {"SOURCE_STATION_A", "SOURCE_STATION_B", "TARGET_STATION"}
+    assert "NG_STATION" not in rack_position_codes
+    assert "WORKSTATION" not in rack_position_codes
+    assert business_demand_types == {"SORTING_INBOUND_SOURCE", "SORTING_INBOUND_TARGET"}
+    assert "SORTING_INBOUND_NG" not in business_demand_types
+    assert "SORTING_INBOUND_WORK" not in business_demand_types
     events_by_name = {event.event: event for event in summary.events}
     commands_by_name = {command.command: command for command in summary.commands}
     assert events_by_name[EVENT_WORKING_BIN_SCAN].source_device_roles == [ROLE_SORTING_SCAN_PLATFORM]
@@ -207,6 +211,10 @@ def test_workline_service_returns_new_plugin_manifest_summary() -> None:
     assert commands_by_name[COMMAND_SOURCE_PICK].target_device_role == ROLE_SORTING_SOURCE_ARM
     assert commands_by_name[COMMAND_TARGET_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
     assert commands_by_name[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
+    assert commands_by_name[COMMAND_NG_PLACE].rack_position_args == []
+    target_place_target = commands_by_name[COMMAND_TARGET_PLACE].rack_position_args[0]
+    assert target_place_target.rack_position_ref == "TARGET_STATION"
+    assert target_place_target.source is None
 
 
 def test_plugin_options_do_not_expose_manifest_capabilities() -> None:
@@ -520,7 +528,6 @@ def test_smt_sorting_inbound_plugin_assignment_accepts_required_roles() -> None:
             make_device(1, ROLE_SORTING_SOURCE_ARM),
             make_device(2, ROLE_SORTING_TARGET_ARM),
             make_device(4, ROLE_SORTING_SCAN_PLATFORM),
-            make_device(5, ROLE_SORTING_NG_STATION),
             make_device(6, ROLE_SORTING_WORKSTATION),
         ],
     )
@@ -553,7 +560,6 @@ async def test_smt_sorting_inbound_configuration_status_does_not_require_event_c
             {"supports_command_types": [COMMAND_TARGET_PLACE, COMMAND_NG_PLACE], "supports_event_types": ["ARM_READY"]},
         ),
         (ROLE_SORTING_SCAN_PLATFORM, {"supports_event_types": [EVENT_WORKING_BIN_SCAN]}),
-        (ROLE_SORTING_NG_STATION, {}),
         (ROLE_SORTING_WORKSTATION, {"supports_event_types": [EVENT_SESSION_COMPLETE_REQUESTED]}),
     )
     for index, (role, capabilities_json) in enumerate(device_specs, start=1):
@@ -591,7 +597,6 @@ def test_smt_sorting_inbound_plugin_assignment_rejects_missing_required_role() -
             [
                 make_device(1, ROLE_SORTING_SOURCE_ARM),
                 make_device(2, ROLE_SORTING_TARGET_ARM),
-                make_device(5, ROLE_SORTING_NG_STATION),
                 make_device(6, ROLE_SORTING_WORKSTATION),
             ],
         )

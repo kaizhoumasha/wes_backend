@@ -175,7 +175,7 @@ Expected: 不提交业务代码。若只新增 plan，可等 T1 后一起提交�
 - Modify: `tests/workline_runtime/test_plugin_manifest_and_topology.py`
 - Modify: `tests/test_workline_service_plugin_validation.py`
 
-- [ ] **Step 1: 写 manifest RED 测试**
+- [x] **Step 1: 写 manifest RED 测试**
 
 Add/adjust assertions:
 
@@ -196,7 +196,7 @@ assert target_place_target.rack_position_ref == "TARGET_STATION"
 assert target_place_target.source is None
 ```
 
-- [ ] **Step 2: Run RED tests**
+- [x] **Step 2: Run RED tests**
 
 Run:
 
@@ -210,7 +210,7 @@ rtk uv run pytest \
 
 Expected: FAIL because current manifest still exposes NG/WORK station positions and tests still expect old roles.
 
-- [ ] **Step 3: Update manifest**
+- [x] **Step 3: Update manifest**
 
 Implement these exact contract changes:
 
@@ -222,11 +222,11 @@ Implement these exact contract changes:
 - `SORTING_NG_PLACE`: no `RackPositionArg`; NG target remains command payload evidence.
 - `resource_boundaries`: keep only `SORTING_INBOUND_SOURCE` and `SORTING_INBOUND_TARGET`.
 
-- [ ] **Step 4: Update old tests that asserted legacy manifest**
+- [x] **Step 4: Update old tests that asserted legacy manifest**
 
 Change expected summaries in `tests/test_workline_service_plugin_validation.py` and plugin tests so they match the new contract. Do not weaken tests to only check count; assert forbidden role/position strings are absent.
 
-- [ ] **Step 5: Run manifest tests**
+- [x] **Step 5: Run manifest tests**
 
 Run:
 
@@ -240,7 +240,7 @@ rtk uv run pytest \
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 

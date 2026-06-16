@@ -30,7 +30,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_SOURCE_PICK_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
-    ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
     ROLE_SORTING_TARGET_ARM,
@@ -699,16 +698,20 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
 
     _assert_real_manifest_surface(manifest)
     _assert_topology_uses_node_refs(manifest)
-    assert {device.role for device in manifest.devices} == {
+    device_roles = {device.role for device in manifest.devices}
+    rack_position_codes = {rack_position.code for rack_position in manifest.rack_positions}
+    business_demand_types = {boundary.business_demand_type for boundary in manifest.resource_boundaries}
+
+    assert device_roles == {
         ROLE_SORTING_SOURCE_ARM,
         ROLE_SORTING_TARGET_ARM,
         ROLE_SORTING_SCAN_PLATFORM,
-        ROLE_SORTING_NG_STATION,
         ROLE_SORTING_WORKSTATION,
     }
-    assert {"SOURCE_STATION_A", "SOURCE_STATION_B", "TARGET_STATION", "NG_STATION", "WORKSTATION"} <= {
-        rack_position.code for rack_position in manifest.rack_positions
-    }
+    assert "SORTING_NG_STATION" not in device_roles
+    assert rack_position_codes == {"SOURCE_STATION_A", "SOURCE_STATION_B", "TARGET_STATION"}
+    assert "NG_STATION" not in rack_position_codes
+    assert "WORKSTATION" not in rack_position_codes
 
     events = _events_by_name(manifest)
     assert events[EVENT_WORKING_BIN_SCAN].source_device_roles == (ROLE_SORTING_SCAN_PLATFORM,)
@@ -721,8 +724,11 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
     assert commands[COMMAND_SOURCE_PICK].target_device_role == ROLE_SORTING_SOURCE_ARM
     assert commands[COMMAND_TARGET_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
     assert commands[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
+    assert commands[COMMAND_NG_PLACE].rack_position_args == ()
+    target_place_target = commands[COMMAND_TARGET_PLACE].rack_position_args[0]
+    assert target_place_target.rack_position_ref == "TARGET_STATION"
+    assert target_place_target.source is None
     for command in commands.values():
-        assert command.rack_position_args
         assert command.result_bindings
     _assert_material_flow_edges_are_rack_position_to_rack_position(manifest)
     assert all(
@@ -736,14 +742,9 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
     assert boundaries["SOURCE_STATION_A"].rack_kind == "SINGLE_LAYER"
     assert boundaries["TARGET_STATION"].business_demand_type == "SORTING_INBOUND_TARGET"
     assert boundaries["TARGET_STATION"].rack_kind == "FIVE_LAYER"
-    assert boundaries["NG_STATION"].business_demand_type == "SORTING_INBOUND_NG"
-    assert boundaries["WORKSTATION"].business_demand_type == "SORTING_INBOUND_WORK"
-    assert {
-        boundary.rack_kind for boundary in manifest.resource_boundaries if boundary.rack_position_code == "WORKSTATION"
-    } == {
-        "SINGLE_LAYER",
-        "FIVE_LAYER",
-    }
+    assert business_demand_types == {"SORTING_INBOUND_SOURCE", "SORTING_INBOUND_TARGET"}
+    assert "SORTING_INBOUND_NG" not in business_demand_types
+    assert "SORTING_INBOUND_WORK" not in business_demand_types
 
 
 def test_smt_sorting_inbound_topology_connects_declared_source_stations() -> None:
