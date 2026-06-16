@@ -856,7 +856,7 @@ async def test_smt_inbound_handoff_release_terminal_serial_claims_next_item_once
             db.add_all([source_arm, target_arm, scan_platform])
             await db.flush()
 
-            payload = _release_fact_payload_with_items(test_prefix, item_count=2)
+            payload = _release_fact_payload_with_items(test_prefix, item_count=3)
             _handoff_service, _orchestrator, decision_code, demand = await _seed_release_handoff(
                 db,
                 test_prefix=test_prefix,
@@ -869,8 +869,11 @@ async def test_smt_inbound_handoff_release_terminal_serial_claims_next_item_once
             assert [item.status for item in items] == [
                 SmtInboundHandoffSourceItemStatus.PICK_REQUESTED,
                 SmtInboundHandoffSourceItemStatus.READY,
+                SmtInboundHandoffSourceItemStatus.READY,
             ]
-            first_item, second_item = items
+            first_item, second_item, third_item = items
+            assert third_item.source_pick_inbox_id is None
+            assert third_item.sorting_session_id is None
             first_session = await db.get(WorklineSession, first_item.sorting_session_id)
             first_inbox = await db.get(WorklineInbox, first_item.source_pick_inbox_id)
             assert first_session is not None
@@ -914,11 +917,15 @@ async def test_smt_inbound_handoff_release_terminal_serial_claims_next_item_once
             )
             await db.refresh(first_item)
             await db.refresh(second_item)
+            await db.refresh(third_item)
             await db.refresh(demand)
 
             assert first_item.status == SmtInboundHandoffSourceItemStatus.SORTED
             assert second_item.status == SmtInboundHandoffSourceItemStatus.PICK_REQUESTED
             assert second_item.source_pick_inbox_id is not None
+            assert third_item.status == SmtInboundHandoffSourceItemStatus.READY
+            assert third_item.source_pick_inbox_id is None
+            assert third_item.sorting_session_id is None
             assert demand.status == SmtInboundHandoffDemandStatus.CLAIMED_BY_SORTING
 
             second_session = await db.get(WorklineSession, second_item.sorting_session_id)
@@ -949,6 +956,10 @@ async def test_smt_inbound_handoff_release_terminal_serial_claims_next_item_once
             )
             assert replay.already_terminal is True
             assert claimed_item_count_after_replay == claimed_item_count_before_replay
+            await db.refresh(third_item)
+            assert third_item.status == SmtInboundHandoffSourceItemStatus.READY
+            assert third_item.source_pick_inbox_id is None
+            assert third_item.sorting_session_id is None
 
             skipped_prefix = f"{test_prefix}:skipped"
             skipped_payload = _release_fact_payload_with_items(skipped_prefix, item_count=2)
@@ -963,6 +974,9 @@ async def test_smt_inbound_handoff_release_terminal_serial_claims_next_item_once
             skipped_first, skipped_second = skipped_items
             skipped_first_session = await db.get(WorklineSession, skipped_first.sorting_session_id)
             assert skipped_first_session is not None
+            assert skipped_second.status == SmtInboundHandoffSourceItemStatus.READY
+            assert skipped_second.source_pick_inbox_id is None
+            assert skipped_second.sorting_session_id is None
 
             skipped_first.status = SmtInboundHandoffSourceItemStatus.SORTING
             db.add(skipped_first)
