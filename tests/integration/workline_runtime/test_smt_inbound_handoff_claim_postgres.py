@@ -50,6 +50,48 @@ async def _seed_ready_items(db: AsyncSession, *, test_prefix: str) -> list[int]:
     return [int(item.id) for item in items if isinstance(item.id, int)]
 
 
+async def _seed_waiting_and_ready_items(db: AsyncSession, *, test_prefix: str) -> tuple[int, int]:
+    waiting_demand = SmtInboundHandoffDemand(
+        demand_key=f"{test_prefix}:waiting:smt-inbound-handoff",
+        rack_release_id=f"{test_prefix}:waiting:release",
+        single_layer_rack_code=f"{test_prefix}:waiting:rack",
+        status=SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE,
+        trace_id=f"{test_prefix}:waiting:claim",
+        bin_snapshots_json={"bins": []},
+    )
+    ready_demand = SmtInboundHandoffDemand(
+        demand_key=f"{test_prefix}:ready:smt-inbound-handoff",
+        rack_release_id=f"{test_prefix}:ready:release",
+        single_layer_rack_code=f"{test_prefix}:ready:rack",
+        status=SmtInboundHandoffDemandStatus.READY_FOR_SORTING,
+        trace_id=f"{test_prefix}:ready:claim",
+        bin_snapshots_json={"bins": []},
+    )
+    db.add_all([waiting_demand, ready_demand])
+    await db.flush()
+    waiting_item = SmtInboundHandoffSourceItem(
+        handoff_demand_id=waiting_demand.id,
+        item_key=f"{test_prefix}:waiting:item",
+        bin_code=f"{test_prefix}:WAITING-BIN",
+        bin_cell_code="A01",
+        material_identity_key=f"{test_prefix}:WAITING-MAT",
+        pkg_code=f"{test_prefix}:WAITING-PKG",
+        status=SmtInboundHandoffSourceItemStatus.READY,
+    )
+    ready_item = SmtInboundHandoffSourceItem(
+        handoff_demand_id=ready_demand.id,
+        item_key=f"{test_prefix}:ready:item",
+        bin_code=f"{test_prefix}:READY-BIN",
+        bin_cell_code="A02",
+        material_identity_key=f"{test_prefix}:READY-MAT",
+        pkg_code=f"{test_prefix}:READY-PKG",
+        status=SmtInboundHandoffSourceItemStatus.READY,
+    )
+    db.add_all([waiting_item, ready_item])
+    await db.commit()
+    return int(waiting_item.id), int(ready_item.id)
+
+
 async def _cleanup_handoff_rows(db: AsyncSession, *, test_prefix: str) -> None:
     demand_ids = select(SmtInboundHandoffDemand.id).where(
         SmtInboundHandoffDemand.rack_release_id.like(f"{test_prefix}%")
@@ -113,3 +155,27 @@ async def test_concurrent_claim_does_not_duplicate_source_item(
     assert first_id is not None
     assert second_id is not None
     assert first_id != second_id
+
+
+@pytest.mark.asyncio
+async def test_claim_next_ready_source_item_skips_waiting_full_box_exchange_demand(
+    integration_session_factory: async_sessionmaker[AsyncSession],
+    test_prefix: str,
+) -> None:
+    repository = SmtInboundHandoffRepository()
+    async with integration_session_factory() as db:
+        waiting_item_id, ready_item_id = await _seed_waiting_and_ready_items(db, test_prefix=test_prefix)
+
+    async with integration_session_factory() as db:
+        transaction = await db.begin()
+        try:
+            item = await repository.claim_next_ready_source_item(db, now=timezone.now_for_db())
+            claimed_id = None if item is None else int(item.id)
+        finally:
+            await transaction.rollback()
+
+    async with integration_session_factory() as cleanup_db:
+        await _cleanup_handoff_rows(cleanup_db, test_prefix=test_prefix)
+
+    assert claimed_id == ready_item_id
+    assert claimed_id != waiting_item_id

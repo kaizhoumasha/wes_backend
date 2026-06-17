@@ -677,17 +677,20 @@ class SmtInboundHandoffService:
         route_probe_started_at: Any,
         trace_id: str | None,
     ) -> Any:
+        demand = await self.repository.lock_demand_by_id(db, demand_id=candidate.handoff_demand_id)
+        if demand is None or not self._demand_is_claimable(demand):
+            return self._claim_result("EMPTY")
+
         item = await self.repository.lock_source_item_by_id(db, source_item_id=cast("int", candidate.id))
-        target_workline = await self.repository.lock_target_workline_by_id(db, workline_id=workline_id)
-        if item is None or target_workline is None:
+        if item is None:
             return self._claim_result("EMPTY")
         if not self._source_item_is_ready_and_due(item, now=now):
             return self._claim_result(
                 "RETRY",
                 failure_code=SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value,
             )
-        demand = await self.repository.lock_demand_by_id(db, demand_id=item.handoff_demand_id)
-        if demand is None or not self._demand_is_claimable(demand):
+        target_workline = await self.repository.lock_target_workline_by_id(db, workline_id=workline_id)
+        if target_workline is None:
             return self._claim_result("EMPTY")
         if timezone.now_for_db() - route_probe_started_at > timedelta(seconds=_CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS):
             return await self._release_claim_candidate_for_retry(

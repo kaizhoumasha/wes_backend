@@ -598,11 +598,19 @@ async def test_existing_in_flight_source_item_keeps_second_ready_for_retry(
 
 
 class _Phase2NotReadyRepository(SmtInboundHandoffRepository):
-    def __init__(self, item: SmtInboundHandoffSourceItem, workline: WorkLine, call_log: list[str]) -> None:
+    def __init__(
+        self,
+        item: SmtInboundHandoffSourceItem,
+        workline: WorkLine,
+        call_log: list[str],
+        *,
+        mark_not_ready: bool = True,
+    ) -> None:
         super().__init__()
         self.item = item
         self.workline = workline
         self.call_log = call_log
+        self.mark_not_ready = mark_not_ready
 
     async def claim_next_ready_source_item(self, *_args: Any, **_kwargs: Any) -> SmtInboundHandoffSourceItem | None:
         pytest.fail("phase 1 must not claim or lock the READY source item before route/ECS probe")
@@ -615,9 +623,14 @@ class _Phase2NotReadyRepository(SmtInboundHandoffRepository):
         self.call_log.append("list_candidate_worklines")
         return [self.workline]
 
+    async def lock_demand_by_id(self, *_args: Any, **_kwargs: Any) -> SmtInboundHandoffDemand | None:
+        self.call_log.append("lock_demand")
+        return await super().lock_demand_by_id(*_args, **_kwargs)
+
     async def lock_source_item_by_id(self, *_args: Any, **_kwargs: Any) -> SmtInboundHandoffSourceItem | None:
         self.call_log.append("lock_source_item")
-        self.item.status = SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+        if self.mark_not_ready:
+            self.item.status = SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
         return self.item
 
     async def lock_target_workline_by_id(self, *_args: Any, **_kwargs: Any) -> WorkLine | None:
@@ -626,17 +639,24 @@ class _Phase2NotReadyRepository(SmtInboundHandoffRepository):
 
 
 class _Phase2DemandWaitingRepository(SmtInboundHandoffRepository):
-    def __init__(self, item: SmtInboundHandoffSourceItem, demand: SmtInboundHandoffDemand) -> None:
+    def __init__(self, item: SmtInboundHandoffSourceItem, demand: SmtInboundHandoffDemand, call_log: list[str]) -> None:
         super().__init__()
         self.item = item
         self.demand = demand
+        self.call_log = call_log
 
     async def lock_source_item_by_id(self, *_args: Any, **_kwargs: Any) -> SmtInboundHandoffSourceItem | None:
-        self.demand.status = SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
+        self.call_log.append("lock_source_item")
         return self.item
 
     async def lock_demand_by_id(self, *_args: Any, **_kwargs: Any) -> SmtInboundHandoffDemand | None:
+        self.call_log.append("lock_demand")
+        self.demand.status = SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
         return self.demand
+
+    async def lock_target_workline_by_id(self, *_args: Any, **_kwargs: Any) -> WorkLine | None:
+        self.call_log.append("lock_target_workline")
+        return None
 
 
 @pytest.mark.asyncio
@@ -647,7 +667,7 @@ async def test_claim_route_probe_happens_before_phase2_source_and_target_locks(d
     base_service = SmtInboundHandoffService()
     _demand, item = await _ready_demand(db_session, base_service, rack_release_id="claim-phase-lock-order")
     call_log: list[str] = []
-    repository = _Phase2NotReadyRepository(item, workline, call_log)
+    repository = _Phase2NotReadyRepository(item, workline, call_log, mark_not_ready=False)
     service = SmtInboundHandoffService(
         repository=repository,
         route_service=_RouteService(_selected_route(workline), call_log=call_log),
@@ -655,12 +675,12 @@ async def test_claim_route_probe_happens_before_phase2_source_and_target_locks(d
 
     result = await service.claim_next_source_item(db_session, trace_id="trace-claim-phase-lock-order")
 
-    assert result.kind == "RETRY"
-    assert result.failure_code == SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value
+    assert result.kind == "CLAIMED"
     assert call_log == [
         "list_ready_candidates",
         "list_candidate_worklines",
         "route_probe",
+        "lock_demand",
         "lock_source_item",
         "lock_target_workline",
     ]
@@ -694,11 +714,11 @@ async def test_phase2_recheck_demand_waiting_full_box_exchange_skips_session_and
     await db_session.flush()
     base_service = SmtInboundHandoffService()
     demand, item = await _ready_demand(db_session, base_service, rack_release_id="claim-phase-demand-waiting")
-    repository = _Phase2DemandWaitingRepository(item, demand)
+    call_log: list[str] = []
+    repository = _Phase2DemandWaitingRepository(item, demand, call_log)
     service = SmtInboundHandoffService(repository=repository, route_service=_RouteService(_selected_route(workline)))
 
     result = await service.claim_next_source_item(db_session, trace_id="trace-claim-phase-demand-waiting")
-    await db_session.refresh(demand)
     await db_session.refresh(item)
 
     assert result.kind == "EMPTY"
@@ -706,6 +726,7 @@ async def test_phase2_recheck_demand_waiting_full_box_exchange_skips_session_and
     assert item.status == SmtInboundHandoffSourceItemStatus.READY
     assert item.sorting_session_id is None
     assert item.source_pick_inbox_id is None
+    assert call_log == ["lock_demand"]
     assert await _count_workline_sessions(db_session, cast("int", workline.id)) == 0
     assert await _count_workline_inboxes(db_session, cast("int", workline.id)) == 0
 
@@ -766,6 +787,20 @@ def test_repository_ready_candidate_statement_reads_due_items_without_row_lock()
     assert "id" in sql
     order_by = sql.split("ORDER BY", maxsplit=1)[1]
     assert order_by.index("next_attempt_at") < order_by.index("handoff_demand_id") < order_by.rindex("id")
+
+
+def test_repository_ready_claim_statement_filters_claimable_demand_status() -> None:
+    repository = SmtInboundHandoffRepository()
+
+    statement = repository.build_ready_source_item_claim_statement(now=timezone.now_for_db(), limit=1)
+    sql = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "FOR UPDATE" in sql
+    assert "SKIP LOCKED" in sql
+    assert "JOIN" in sql
+    assert "smt_inbound_handoff_demands" in sql
+    assert "READY_FOR_SORTING" in sql
+    assert "WAITING_FULL_BOX_EXCHANGE" not in sql
 
 
 def test_repository_phase2_lock_statements_use_row_locks() -> None:

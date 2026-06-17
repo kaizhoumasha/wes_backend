@@ -201,11 +201,7 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
 
         columns = cast("Any", SmtInboundHandoffSourceItem).__table__.c
         return (
-            select(SmtInboundHandoffSourceItem)
-            .where(
-                columns.status == SmtInboundHandoffSourceItemStatus.READY.value,
-                or_(columns.next_attempt_at.is_(None), columns.next_attempt_at <= now),
-            )
+            self._ready_source_item_claimable_demand_statement(now=now)
             .order_by(columns.next_attempt_at.asc().nullsfirst(), columns.handoff_demand_id.asc(), columns.id.asc())
             .limit(limit)
             .with_for_update(skip_locked=True)
@@ -213,6 +209,16 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
 
     def build_ready_source_item_candidate_statement(self, *, now: Any, limit: int = 1) -> Any:
         """构建 READY source item 候选 SQL；phase 1 不持有行锁跨 ECS probe。"""
+
+        columns = cast("Any", SmtInboundHandoffSourceItem).__table__.c
+        return (
+            self._ready_source_item_claimable_demand_statement(now=now)
+            .order_by(columns.next_attempt_at.asc().nullsfirst(), columns.handoff_demand_id.asc(), columns.id.asc())
+            .limit(limit)
+        )
+
+    def _ready_source_item_claimable_demand_statement(self, *, now: Any) -> Any:
+        """构建 READY source item + 可 claim demand 的基础查询。"""
 
         columns = cast("Any", SmtInboundHandoffSourceItem).__table__.c
         demand_columns = cast("Any", SmtInboundHandoffDemand).__table__.c
@@ -224,8 +230,6 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
                 demand_columns.status.in_([SmtInboundHandoffDemandStatus.READY_FOR_SORTING.value]),
                 or_(columns.next_attempt_at.is_(None), columns.next_attempt_at <= now),
             )
-            .order_by(columns.next_attempt_at.asc().nullsfirst(), columns.handoff_demand_id.asc(), columns.id.asc())
-            .limit(limit)
         )
 
     async def list_ready_source_items_for_claim(
