@@ -2,8 +2,8 @@
 
 > Legacy notes: 本文件索引存在历史条目，涉及旧插件 builder 的说明仅供定位旧文档；当前运行时以 `RuntimeIntent` 为准。
 
-**最后更新**: 2026年5月27日
-**同步状态**: ⚠️ 已同步 WMS 对接辅助域入口；其余内容请以实际仓库结构为准
+**最后更新**: 2026年6月17日
+**同步状态**: ⚠️ 已同步 WMS 对接辅助域入口和 SMT 分拣入库 handoff/manifest 闭环入口；其余内容请以实际仓库结构为准
 
 ---
 
@@ -11,6 +11,7 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-06-17 | docs-smt-handoff-manifest-flow | 补充 SMT 分拣入库 handoff/manifest 闭环、插件、Celery 兜底和测试索引入口 |
 | 2026-05-27 | docs-wms-integration | 补充 WMS 对接辅助域、迁移、测试和接入 checklist 索引入口 |
 | 2026-04-16 | docs-hotfix | 修正文档入口路径与失效链接，并为历史提案类文档补充状态说明 |
 | 2026-03-31 | v0.1.1.0 | 文档清理：删除 36 个过程文档，补全 callback/device 模块，修复 Mixin 继承示例 |
@@ -81,6 +82,9 @@
 | `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` | WES/WMS/RCS 运行时资源、库存权责和回调入口 ADR | 📖 必读文档 |
 | `docs/architecture/adr/2026-05-26-wms-integration-domain.md` | WMS 对接辅助域 ADR：反腐层边界、证据留痕、熔断和调用方合同 | 📖 必读文档 |
 | `docs/integration/wms_caller_checklist.md` | WMS 同步调用方接入 checklist：RuntimeHold/诊断、错误处理和证据传播要求 | 📖 必读文档 |
+| `docs/business/smt_sorter_inbound_workflow_guide.md` | SMT 分拣入库工作流指南，含 v0.7.0.0 后端 handoff/manifest P0 闭环状态 | 📖 必读文档 |
+| `docs/superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md` | SMT 分拣入库 handoff/manifest 后端闭环合同：两阶段 claim、ledger、READY recovery | 📖 必读文档 |
+| `docs/superpowers/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md` | SMT 分拣入库 handoff/manifest 后端闭环 T0-T8 实施和验证记录 | 📚 参考资料 |
 | `docs/devops/prod-release-deploy.md` | 生产环境手动发布与回滚 Runbook | 📖 必读文档 |
 
 #### 🚀 应用入口
@@ -329,18 +333,23 @@
 | | `timeline.py` | WorklineTimeline 时间轴模型 | 🔧 架构核心 |
 | | `runtime.py` | 运行监控 / Trace 查询响应模型（overview / workline / device / trace） | 🔧 架构核心 |
 | | `workline.py` | WorkLine 模型（插件容器、运行时配置、诊断归属） | 🔧 架构核心 |
+| | `smt_inbound_handoff.py` | SMT 入库 handoff demand/source item 账本模型，记录 claim、source-pick、terminal ledger 和恢复证据 | 🔧 架构核心 |
 | `repositories/` | `inbox_repository.py` | Inbox Repository（幂等键计算） | 🔧 架构核心 |
 | | `outbox_repository.py` | Outbox Repository（派发状态与重试管理） | 🔧 架构核心 |
 | | `session_repository.py` | Session Repository（按 business_key / trace_id / awaiting_command_id 查询） | 🔧 架构核心 |
 | | `workline_repository.py` | WorkLine Repository（按 line_code 查询） | 🔧 架构核心 |
+| | `smt_inbound_handoff_repository.py` | SMT 入库 handoff Repository：READY claim 候选、phase 2 re-lock、target WorkLine 串行查询和 post-claim recovery 查询 | 🔧 架构核心 |
 | | `__init__.py` | Repository 导出（workline / inbox / outbox / session） | 🔧 架构核心 |
 | `services/` | `inbox_service.py` | Inbox Service（创建 Inbox 消息） | 🔧 架构核心 |
 | | `trace_query_service.py` | TraceQueryService（只读 TRACE 聚合查询：callback / inbox / session / command / outbox / timeline） | 🔧 架构核心 |
 | | `runtime_query_service.py` | RuntimeQueryService（运行监控总览、工作线/设备运行态、Trace 列表聚合） | 🔧 架构核心 |
+| | `single_layer_rack_orchestration_service.py` | 单层货架 release fact 编排入口，接入 SMT handoff demand evaluate 与 demand-scoped claim | 🔧 架构核心 |
+| | `smt_inbound_handoff_service.py` | SMT 入库 handoff service：release/evaluate、两阶段 claim、source-pick/terminal ledger、demand 聚合和 READY recovery | 🔧 架构核心 |
 | | `__init__.py` | Service 导出（inbox_service / trace_query_service / runtime_query_service） | 🔧 架构核心 |
 | `v1/` | `workline.py` | WorkLine CRUD 路由 | 🔧 架构核心 |
 | | `trace.py` | Trace 详情与 Trace 列表查询路由 | 🔧 架构核心 |
 | | `runtime.py` | 运行监控 overview / workline / device 只读路由 | 🔧 架构核心 |
+| | `inbound_handoff.py` | SMT 入库 handoff 查询与处置路由，API 层只调用 service，不直接访问 Repository 或 DB | 🔧 架构核心 |
 | | `__init__.py` | v1 路由聚合（workline / trace / runtime） | 🔧 架构核心 |
 
 **核心设计模式**：
@@ -351,6 +360,9 @@
 **相关文档**：
 - 运行时语义 SSOT：`docs/business/workline_business_data_event_flow_spec.md` v0.1
 - 架构设计：`docs/business/workline_plugin_architecture_design.md` v3.2
+- SMT 分拣入库工作流：`docs/business/smt_sorter_inbound_workflow_guide.md`
+- SMT handoff/manifest 闭环合同：`docs/superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md`
+- SMT handoff/manifest 实施记录：`docs/superpowers/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md`
 - 历史 SMT 粗分机资料：`docs/archive/legacy-smt-classifier/`
 
 #### 🔧 作业线运行时 (src/workline_runtime/)
@@ -371,6 +383,7 @@
 | `enums.py` | 运行时枚举（FailureCode, DecisionType 等） | 🔄 常用功能 |
 | `plugin_sdk/` | 插件 SDK（标准化输入、运行时配置、分类器） | 🔧 架构核心 |
 | `diagnostics/` | 统一诊断模型、错误码、软件/硬件问题分类 | 🔧 架构核心 |
+| `runtime_intent_effects.py` | RuntimeIntent effect 落地器；SMT 分拣入库在 source-pick/terminal success 后通过 handoff service 写 ledger | 🔧 架构核心 |
 
 #### 🧩 作业线插件实现 (src/workline_plugins/)
 
@@ -379,6 +392,10 @@
 | `rough_sorter/plugin.py` | 粗分机工作线插件：按真实物理流程产出 RuntimeIntent，覆盖扫码、测量、WMS 校验、搬运、入箱、货架补给和 NG 闭环 | 🔄 常用功能 |
 | `rough_sorter/contract.py` | 粗分机插件合同：插件 key、事件/命令/phase/角色常量、命令 payload builder、业务键解析和结果分类 | 🔄 常用功能 |
 | `rough_sorter/context.py` | 粗分机 Session context 快照模型 | 🔄 常用功能 |
+| `smt_sorting_inbound/plugin.py` | SMT 分拣入库插件 manifest 与 handler 入口；manifest 只声明 source 单层货架位和 target 五层货架位 | 🔧 架构核心 |
+| `smt_sorting_inbound/context.py` | SMT 分拣入库 typed context，含 `source_pick_request`、扫码平台状态和当前物料快照 helper | 🔧 架构核心 |
+| `smt_sorting_inbound/flow_service.py` | SMT 分拣入库 RuntimeIntent 业务流，产生命令、context/resource intents 和 terminal ledger marker | 🔧 架构核心 |
+| `smt_sorting_inbound/constants.py` | SMT 分拣入库插件 key、合同版本、角色、命令、事件和 phase 常量 | 🔄 常用功能 |
 
 **插件开发文档**：
 - **插件开发指南**：`docs/plugin_development_guide.md` 📖 必读文档
@@ -486,6 +503,12 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 |------|------|------|
 | `workline_runtime/test_enums.py` | 枚举类单元测试（InboxKind, Status 等） | 🔧 架构核心 |
 | `workline_runtime/test_inbox_service.py` | Inbox Service 幂等键计算测试 | 🔧 架构核心 |
+| `workline_runtime/test_smt_sorting_inbound_plugin.py` | SMT 分拣入库插件 manifest、source-pick、target/ng terminal intent 合同测试 | 🔧 架构核心 |
+| `workline_runtime/test_smt_sorting_inbound_context.py` | SMT 分拣入库 typed context 和 `source_pick_request` JSON-safe 测试 | 🔧 架构核心 |
+| `workline_runtime/test_smt_inbound_handoff_claim.py` | SMT handoff 两阶段 claim、target WorkLine 串行保护和 release fact claim 入口测试 | 🔧 架构核心 |
+| `workline_runtime/test_smt_inbound_handoff_recovery.py` | SMT handoff due scan、post-claim recovery、source-pick ledger 和 READY claim fallback 测试 | 🔧 架构核心 |
+| `workline_runtime/test_smt_inbound_handoff_celery.py` | SMT handoff Celery recovery task 注册、参数和 summary 合同测试 | 🔧 架构核心 |
+| `workline_runtime/test_runtime_intent_effects.py` | RuntimeIntent effects 回归测试，覆盖 SMT source-pick、target/ng terminal ledger 和 no-double-claim | 🔧 架构核心 |
 
 **WMS 对接辅助域测试文件**：
 
@@ -505,6 +528,9 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 |------|------|------|
 | `e2e/__init__.py` | E2E 测试模块导出 | 🔧 架构核心 |
 | `e2e/test_conveyor_robot_arm.py` | 流水线料盘搬运 E2E 测试（使用 ECS Mock 事件 API） | 🔄 常用功能 |
+| `integration/workline_runtime/test_smt_inbound_handoff_e2e.py` | SMT handoff release-to-terminal、多 item 串行和 terminal replay E2E 回归 | 🔧 架构核心 |
+| `integration/workline_runtime/test_smt_inbound_handoff_claim_postgres.py` | PostgreSQL READY claim / SKIP LOCKED 并发保护集成测试 | 🔧 架构核心 |
+| `integration/workline_runtime/test_smt_inbound_handoff_recovery_postgres.py` | PostgreSQL post-claim recovery 和索引执行计划保护测试 | 🔧 架构核心 |
 
 #### 🎭 Mock 设备服务
 
@@ -543,6 +569,9 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `integration/callback_event_validation_principles.md` | callback/event 前置校验边界说明 | 📖 必读文档 |
 | `integration/wms_caller_checklist.md` | WMS 同步调用方接入 checklist：错误处理、RuntimeHold/诊断和 evidence_key 传播 | 📖 必读文档 |
 | `integration/workline_device_error_code_standardization.md` | Workline 插件体系硬件错误码统一规划与迁移表 | 📖 必读文档 |
+| `business/smt_sorter_inbound_workflow_guide.md` | SMT 分拣入库业务流程、资源边界、事件口径和 v0.7.0.0 后端 handoff/manifest 落地状态 | 📖 必读文档 |
+| `superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md` | SMT 分拣入库 handoff/manifest 后端闭环合同 | 📖 必读文档 |
+| `superpowers/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md` | SMT 分拣入库 handoff/manifest 后端闭环实施计划与验证记录 | 📚 参考资料 |
 | `architecture/adr/2026-05-26-wms-integration-domain.md` | WMS 对接辅助域 ADR | 📖 必读文档 |
 | `api_authentication_design.md` | API 认证设计文档 | 📚 参考资料 |
 | `api_authentication_summary.md` | API 认证功能摘要 | 📚 参考资料 |
