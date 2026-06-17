@@ -73,6 +73,9 @@ _CLAIMED_ITEM_STATUSES = {
     SmtInboundHandoffSourceItemStatus.CLAIMED_BY_SORTING,
 }
 _HANDOFF_CLAIM_IN_FLIGHT_ITEM_STATUSES = _SORTING_IN_PROGRESS_ITEM_STATUSES | _CLAIMED_ITEM_STATUSES
+_CLAIMABLE_DEMAND_STATUSES = {
+    SmtInboundHandoffDemandStatus.READY_FOR_SORTING,
+}
 _RouteProbeCache = dict[tuple[Any, ...], tuple[Any, Any]]
 _FORBIDDEN_EXTERNAL_MOVE_FIELDS = {
     "dispatch_key",
@@ -453,10 +456,14 @@ class SmtInboundHandoffService:
             if candidate is None:
                 return None, None
             demand = await db.get(SmtInboundHandoffDemand, candidate.handoff_demand_id)
+            if demand is None or not self._demand_is_claimable(demand):
+                return None, None
             return demand, candidate
 
         demand = await db.get(SmtInboundHandoffDemand, demand_id)
         if demand is None:
+            return None, None
+        if not self._demand_is_claimable(demand):
             return None, None
 
         ready_items = [
@@ -679,6 +686,9 @@ class SmtInboundHandoffService:
                 "RETRY",
                 failure_code=SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value,
             )
+        demand = await self.repository.lock_demand_by_id(db, demand_id=item.handoff_demand_id)
+        if demand is None or not self._demand_is_claimable(demand):
+            return self._claim_result("EMPTY")
         if timezone.now_for_db() - route_probe_started_at > timedelta(seconds=_CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS):
             return await self._release_claim_candidate_for_retry(
                 db,
@@ -807,6 +817,10 @@ class SmtInboundHandoffService:
         return item.status == SmtInboundHandoffSourceItemStatus.READY and (
             item.next_attempt_at is None or item.next_attempt_at <= now
         )
+
+    @staticmethod
+    def _demand_is_claimable(demand: SmtInboundHandoffDemand) -> bool:
+        return demand.status in _CLAIMABLE_DEMAND_STATUSES
 
     async def _target_has_open_current_material(
         self,

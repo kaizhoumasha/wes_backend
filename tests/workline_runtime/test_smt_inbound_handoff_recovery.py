@@ -183,6 +183,9 @@ class FakeReadyClaimRepository(FakeRecoveryRepository):
     async def lock_source_item_by_id(self, _db: Any, *, source_item_id: int) -> SmtInboundHandoffSourceItem | None:
         return next((item for item in self.items if item.id == source_item_id), None)
 
+    async def lock_demand_by_id(self, _db: Any, *, demand_id: int) -> SmtInboundHandoffDemand | None:
+        return self.demand if self.demand.id == demand_id else None
+
     async def lock_target_workline_by_id(self, _db: Any, *, workline_id: int) -> Any | None:
         return SimpleNamespace(id=workline_id, line_code="SMT-SORT-01")
 
@@ -711,10 +714,10 @@ async def test_recovery_scan_uses_separate_scan_recovery_and_claim_limits() -> N
         ("list_due_recovery_demands", 2),
         ("list_stuck_source_items_for_recovery", 3),
         ("list_ready_source_items_for_claim", 1),
-        ("list_ready_source_items_for_claim", 1),
-        ("list_ready_source_items_for_claim", 1),
-        ("list_ready_source_items_for_claim", 1),
     ]
+    assert demand.status == SmtInboundHandoffDemandStatus.MANUAL_HOLD
+    assert ready_items[0].status == SmtInboundHandoffSourceItemStatus.READY
+    assert ready_items[1].status == SmtInboundHandoffSourceItemStatus.READY
 
 
 @pytest.mark.asyncio
@@ -834,6 +837,5 @@ async def test_recovery_scan_reprobes_ecs_when_cached_probe_expires(
 
     assert summary["claimed"] == 1
     assert ecs_probe.calls == [
-        (workline.id, workline.line_code),
         (workline.id, workline.line_code),
     ]

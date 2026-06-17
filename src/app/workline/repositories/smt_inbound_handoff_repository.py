@@ -215,10 +215,13 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         """构建 READY source item 候选 SQL；phase 1 不持有行锁跨 ECS probe。"""
 
         columns = cast("Any", SmtInboundHandoffSourceItem).__table__.c
+        demand_columns = cast("Any", SmtInboundHandoffDemand).__table__.c
         return (
             select(SmtInboundHandoffSourceItem)
+            .join(SmtInboundHandoffDemand, demand_columns.id == columns.handoff_demand_id)
             .where(
                 columns.status == SmtInboundHandoffSourceItemStatus.READY.value,
+                demand_columns.status.in_([SmtInboundHandoffDemandStatus.READY_FOR_SORTING.value]),
                 or_(columns.next_attempt_at.is_(None), columns.next_attempt_at <= now),
             )
             .order_by(columns.next_attempt_at.asc().nullsfirst(), columns.handoff_demand_id.asc(), columns.id.asc())
@@ -271,6 +274,23 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         """按 ID 加锁读取 source item，用于 claim phase 2。"""
 
         result = await db.execute(self.build_source_item_by_id_lock_statement(source_item_id=source_item_id))
+        return result.scalar_one_or_none()
+
+    async def lock_demand_by_id(
+        self,
+        db: AsyncSession,
+        *,
+        demand_id: int,
+    ) -> SmtInboundHandoffDemand | None:
+        """按 ID 加锁读取 handoff demand，用于 claim phase 2 demand 状态复查。"""
+
+        columns = cast("Any", SmtInboundHandoffDemand).__table__.c
+        result = await db.execute(
+            select(SmtInboundHandoffDemand)
+            .where(columns.id == demand_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         return result.scalar_one_or_none()
 
     def build_target_workline_by_id_lock_statement(self, *, workline_id: int) -> Any:

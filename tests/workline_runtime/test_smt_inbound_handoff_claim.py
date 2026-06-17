@@ -179,6 +179,38 @@ async def _ready_demand(
     return demand, item
 
 
+async def _demand_with_ready_item(
+    db_session: Any,
+    *,
+    rack_release_id: str,
+    status: SmtInboundHandoffDemandStatus,
+) -> tuple[SmtInboundHandoffDemand, SmtInboundHandoffSourceItem]:
+    demand = SmtInboundHandoffDemand(
+        demand_key=f"smt-inbound-handoff:{rack_release_id}",
+        rack_release_id=rack_release_id,
+        single_layer_rack_code=f"RACK-{rack_release_id}",
+        source_workline_code="WL-SMT-ROUGH-01",
+        status=status,
+        bin_snapshots_json={"snapshots": [_release_bin("A")]},
+    )
+    db_session.add(demand)
+    await db_session.flush()
+
+    item = SmtInboundHandoffSourceItem(
+        handoff_demand_id=cast("int", demand.id),
+        item_key=f"{rack_release_id}:BIN-A:A01",
+        bin_code="BIN-A",
+        bin_cell_index=1,
+        bin_cell_code="A01",
+        material_identity_key=f"MAT-{rack_release_id}",
+        pkg_code=f"PKG-{rack_release_id}",
+        status=SmtInboundHandoffSourceItemStatus.READY,
+    )
+    db_session.add(item)
+    await db_session.flush()
+    return demand, item
+
+
 def _target_workline(line_code: str = "WL-SMT-SORT-01") -> WorkLine:
     return WorkLine(
         line_code=line_code,
@@ -379,6 +411,75 @@ async def test_config_candidate_runtime_busy_releases_ready_item_for_retry(db_se
 
 
 @pytest.mark.asyncio
+async def test_demand_scoped_claim_waiting_full_box_exchange_returns_empty_without_route_probe(
+    db_session: Any,
+) -> None:
+    workline = _target_workline("WL-SMT-SORT-WAITING-SCOPED")
+    db_session.add(workline)
+    await db_session.flush()
+    demand, item = await _demand_with_ready_item(
+        db_session,
+        rack_release_id="claim-waiting-scoped",
+        status=SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE,
+    )
+    route_service = _RouteService(_selected_route(workline))
+    service = SmtInboundHandoffService(route_service=route_service)
+
+    result = await service.claim_next_source_item(
+        db_session,
+        demand_id=cast("int", demand.id),
+        trace_id="trace-claim-waiting-scoped",
+    )
+    await db_session.refresh(demand)
+    await db_session.refresh(item)
+
+    assert result.kind == "EMPTY"
+    assert route_service.calls == []
+    assert demand.status == SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
+    assert item.status == SmtInboundHandoffSourceItemStatus.READY
+    assert item.sorting_session_id is None
+    assert item.source_pick_inbox_id is None
+    assert await _count_workline_sessions(db_session, cast("int", workline.id)) == 0
+    assert await _count_workline_inboxes(db_session, cast("int", workline.id)) == 0
+
+
+@pytest.mark.asyncio
+async def test_global_claim_skips_waiting_full_box_exchange_item_and_claims_ready_demand(
+    db_session: Any,
+) -> None:
+    workline = _target_workline("WL-SMT-SORT-WAITING-GLOBAL")
+    db_session.add(workline)
+    await db_session.flush()
+    waiting_demand, waiting_item = await _demand_with_ready_item(
+        db_session,
+        rack_release_id="claim-waiting-global",
+        status=SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE,
+    )
+    ready_demand, ready_item = await _demand_with_ready_item(
+        db_session,
+        rack_release_id="claim-ready-global",
+        status=SmtInboundHandoffDemandStatus.READY_FOR_SORTING,
+    )
+    service = SmtInboundHandoffService(route_service=_RouteService(_selected_route(workline)))
+
+    result = await service.claim_next_source_item(db_session, trace_id="trace-claim-ready-global")
+    await db_session.refresh(waiting_demand)
+    await db_session.refresh(waiting_item)
+    await db_session.refresh(ready_demand)
+    await db_session.refresh(ready_item)
+
+    assert result.kind == "CLAIMED"
+    assert result.demand.id == ready_demand.id
+    assert result.source_item.id == ready_item.id
+    assert waiting_demand.status == SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
+    assert waiting_item.status == SmtInboundHandoffSourceItemStatus.READY
+    assert waiting_item.sorting_session_id is None
+    assert waiting_item.source_pick_inbox_id is None
+    assert ready_demand.status == SmtInboundHandoffDemandStatus.CLAIMED_BY_SORTING
+    assert ready_item.status == SmtInboundHandoffSourceItemStatus.PICK_REQUESTED
+
+
+@pytest.mark.asyncio
 async def test_claim_creates_internal_source_pick_inbox_with_session_workline_bucket(db_session: Any) -> None:
     workline = _target_workline()
     db_session.add(workline)
@@ -524,6 +625,20 @@ class _Phase2NotReadyRepository(SmtInboundHandoffRepository):
         return self.workline
 
 
+class _Phase2DemandWaitingRepository(SmtInboundHandoffRepository):
+    def __init__(self, item: SmtInboundHandoffSourceItem, demand: SmtInboundHandoffDemand) -> None:
+        super().__init__()
+        self.item = item
+        self.demand = demand
+
+    async def lock_source_item_by_id(self, *_args: Any, **_kwargs: Any) -> SmtInboundHandoffSourceItem | None:
+        self.demand.status = SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
+        return self.item
+
+    async def lock_demand_by_id(self, *_args: Any, **_kwargs: Any) -> SmtInboundHandoffDemand | None:
+        return self.demand
+
+
 @pytest.mark.asyncio
 async def test_claim_route_probe_happens_before_phase2_source_and_target_locks(db_session: Any) -> None:
     workline = _target_workline("WL-SMT-SORT-PHASE-ORDER")
@@ -564,6 +679,31 @@ async def test_phase2_recheck_not_ready_skips_session_and_inbox(db_session: Any)
     result = await service.claim_next_source_item(db_session, trace_id="trace-claim-phase-recheck")
 
     assert result.kind == "RETRY"
+    assert item.sorting_session_id is None
+    assert item.source_pick_inbox_id is None
+    assert await _count_workline_sessions(db_session, cast("int", workline.id)) == 0
+    assert await _count_workline_inboxes(db_session, cast("int", workline.id)) == 0
+
+
+@pytest.mark.asyncio
+async def test_phase2_recheck_demand_waiting_full_box_exchange_skips_session_and_inbox(
+    db_session: Any,
+) -> None:
+    workline = _target_workline("WL-SMT-SORT-PHASE-DEMAND-WAITING")
+    db_session.add(workline)
+    await db_session.flush()
+    base_service = SmtInboundHandoffService()
+    demand, item = await _ready_demand(db_session, base_service, rack_release_id="claim-phase-demand-waiting")
+    repository = _Phase2DemandWaitingRepository(item, demand)
+    service = SmtInboundHandoffService(repository=repository, route_service=_RouteService(_selected_route(workline)))
+
+    result = await service.claim_next_source_item(db_session, trace_id="trace-claim-phase-demand-waiting")
+    await db_session.refresh(demand)
+    await db_session.refresh(item)
+
+    assert result.kind == "EMPTY"
+    assert demand.status == SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
+    assert item.status == SmtInboundHandoffSourceItemStatus.READY
     assert item.sorting_session_id is None
     assert item.source_pick_inbox_id is None
     assert await _count_workline_sessions(db_session, cast("int", workline.id)) == 0
@@ -616,6 +756,10 @@ def test_repository_ready_candidate_statement_reads_due_items_without_row_lock()
     sql = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
 
     assert "FOR UPDATE" not in sql
+    assert "JOIN" in sql
+    assert "smt_inbound_handoff_demands" in sql
+    assert "READY_FOR_SORTING" in sql
+    assert "WAITING_FULL_BOX_EXCHANGE" not in sql
     assert "ORDER BY" in sql
     assert "next_attempt_at" in sql
     assert "handoff_demand_id" in sql
