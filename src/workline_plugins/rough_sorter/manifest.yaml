@@ -1,0 +1,78 @@
+plugin_key: rough_sorter
+contract_version: rough_sorter.v1
+
+device_roles:
+  ROUGH_SORTER_INPUT_ARM:
+    min_count: 1
+    max_count: 1
+    commands:
+      - PICK_AND_PUT
+      - MOVE_TO_NG
+    events:
+      - event: SCAN_COMPLETED
+        category: ENTRY_DEVICE
+      - event: ROUGH_SORTER_PICK_AND_PUT_RESULT
+        category: COMMAND_RESULT
+      - event: ROUGH_SORTER_MOVE_TO_NG_RESULT
+        category: COMMAND_RESULT
+  ROUGH_SORTER_CONVEYOR:
+    min_count: 1
+    max_count: 1
+    commands:
+      - MOVE_FORWARD
+    events:
+      - event: ROUGH_SORTER_MOVE_FORWARD_RESULT
+        category: COMMAND_RESULT
+  ROUGH_SORTER_OUTPUT_ARM:
+    min_count: 1
+    max_count: 1
+    commands:
+      - PUT_TO_BIN
+    events:
+      - event: ROUGH_SORTER_PUT_TO_BIN_RESULT
+        category: COMMAND_RESULT
+      - event: ROUGH_SORTER_STORAGE_RETRY
+        category: INTERNAL
+
+rack_positions:
+  - code: SINGLE_LAYER_A
+    role: CLASSIFIER_WORK
+    station_code: CLASSIFIER_WORK_POSITION
+    carrier_capability:
+      allowed_rack_kinds:
+        - SINGLE_LAYER
+      allowed_slot_kinds: []
+      min_capacity: 1
+      max_capacity: 1
+
+topology:
+  flow_edges:
+    - from:
+        kind: DEVICE_ROLE
+        ref: ROUGH_SORTER_INPUT_ARM
+      to:
+        kind: DEVICE_ROLE
+        ref: ROUGH_SORTER_CONVEYOR
+      type: OPERATION
+    - from:
+        kind: DEVICE_ROLE
+        ref: ROUGH_SORTER_CONVEYOR
+      to:
+        kind: DEVICE_ROLE
+        ref: ROUGH_SORTER_OUTPUT_ARM
+      type: OPERATION
+    - from:
+        kind: DEVICE_ROLE
+        ref: ROUGH_SORTER_OUTPUT_ARM
+      to:
+        kind: RACK_POSITION
+        ref: SINGLE_LAYER_A
+      type: OPERATION
+
+resource_boundaries:
+  - rack_position_code: SINGLE_LAYER_A
+    rack_kind: SINGLE_LAYER
+    business_demand_type: ROUGH_SORTER_BIN_ALLOCATION
+    wms_operation_type: REPLACE_CLASSIFIER_WORK_RACK
+    snapshot_kind: ACTIVE_CLASSIFIER_BIN_RACK
+    lease_scope: STATION

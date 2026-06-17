@@ -68,7 +68,6 @@ def _event_binding():
         event="ENTRY_SCAN",
         source_device_roles=("ENTRY_SCANNER",),
         category=_contract("EventCategory").ENTRY_DEVICE,
-        payload_schema_ref=None,
     )
 
 

@@ -25,18 +25,14 @@ def _event_binding(event: str):
         event=event,
         source_device_roles=("ENTRY_SCANNER",),
         category=_contract("EventCategory").ENTRY_DEVICE,
-        payload_schema_ref=None,
     )
 
 
-def _command_result_binding(event: str, *, next_event: str | None = None):
-    return _contract("CommandResultBinding")(
-        result="SUCCESS",
+def _command_result_event_binding(event: str):
+    return _contract("EventBinding")(
         event=event,
+        source_device_roles=("ENTRY_SCANNER",),
         category=_contract("EventCategory").COMMAND_RESULT,
-        classification="success",
-        terminal=False,
-        next_event=next_event,
     )
 
 
@@ -94,12 +90,7 @@ def test_manifest_rejects_reserved_runtime_event_binding_event() -> None:
 
 def test_manifest_rejects_reserved_runtime_command_result_event() -> None:
     with pytest.raises(ValueError, match="WORKLINE_START_REQUESTED"):
-        _command_result_binding("WORKLINE_START_REQUESTED")
-
-
-def test_manifest_rejects_reserved_runtime_command_result_next_event() -> None:
-    with pytest.raises(ValueError, match="next_event"):
-        _command_result_binding("TOTE_WEIGHED", next_event="WORKLINE_START_REQUESTED")
+        _command_result_event_binding("WORKLINE_START_REQUESTED")
 
 
 def test_on_event_rejects_reserved_event() -> None:

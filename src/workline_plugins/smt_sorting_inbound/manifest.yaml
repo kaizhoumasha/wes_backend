@@ -1,0 +1,122 @@
+plugin_key: SMT_SORTING_INBOUND
+contract_version: "2026-06-01.p0"
+
+device_roles:
+  SORTING_SOURCE_ARM:
+    min_count: 1
+    max_count: 1
+    commands:
+      - SORTING_SOURCE_PICK
+    events:
+      - event: SORTING_SOURCE_PICK_RESULT
+        category: COMMAND_RESULT
+  SORTING_SCAN_PLATFORM:
+    min_count: 1
+    max_count: 1
+    events:
+      - event: WORKING_BIN_SCAN
+        category: ENTRY_DEVICE
+  SORTING_TARGET_ARM:
+    min_count: 1
+    max_count: 1
+    commands:
+      - SORTING_TARGET_PLACE
+      - SORTING_NG_PLACE
+    events:
+      - event: SORTING_TARGET_PLACE_RESULT
+        category: COMMAND_RESULT
+      - event: SORTING_NG_PLACE_RESULT
+        category: COMMAND_RESULT
+  SORTING_WORKSTATION:
+    min_count: 1
+    max_count: 1
+    events:
+      - event: SORTING_SESSION_COMPLETE_REQUESTED
+        category: ENTRY_DEVICE
+
+rack_positions:
+  - code: SOURCE_STATION_A
+    role: SOURCE
+    station_code: SOURCE_STATION_A
+    carrier_capability:
+      allowed_rack_kinds:
+        - SINGLE_LAYER
+      allowed_slot_kinds: []
+      min_capacity: 1
+      max_capacity: 1
+  - code: SOURCE_STATION_B
+    role: SOURCE
+    station_code: SOURCE_STATION_B
+    carrier_capability:
+      allowed_rack_kinds:
+        - SINGLE_LAYER
+      allowed_slot_kinds: []
+      min_capacity: 1
+      max_capacity: 1
+  - code: TARGET_STATION
+    role: TARGET
+    station_code: TARGET_STATION
+    carrier_capability:
+      allowed_rack_kinds:
+        - FIVE_LAYER
+      allowed_slot_kinds: []
+      min_capacity: 1
+      max_capacity: 1
+
+topology:
+  flow_edges:
+    - from:
+        kind: RACK_POSITION
+        ref: SOURCE_STATION_A
+      to:
+        kind: DEVICE_ROLE
+        ref: SORTING_SOURCE_ARM
+      type: OPERATION
+    - from:
+        kind: RACK_POSITION
+        ref: SOURCE_STATION_B
+      to:
+        kind: DEVICE_ROLE
+        ref: SORTING_SOURCE_ARM
+      type: OPERATION
+    - from:
+        kind: DEVICE_ROLE
+        ref: SORTING_SOURCE_ARM
+      to:
+        kind: DEVICE_ROLE
+        ref: SORTING_SCAN_PLATFORM
+      type: OPERATION
+    - from:
+        kind: DEVICE_ROLE
+        ref: SORTING_SCAN_PLATFORM
+      to:
+        kind: DEVICE_ROLE
+        ref: SORTING_TARGET_ARM
+      type: OPERATION
+    - from:
+        kind: DEVICE_ROLE
+        ref: SORTING_TARGET_ARM
+      to:
+        kind: RACK_POSITION
+        ref: TARGET_STATION
+      type: OPERATION
+
+resource_boundaries:
+  - rack_position_code: SOURCE_STATION_A
+    rack_kind: SINGLE_LAYER
+    business_demand_type: SORTING_INBOUND_SOURCE
+    wms_operation_type: SUPPLY_SINGLE_LAYER_RACK
+    snapshot_kind: ACTIVE_SOURCE_BIN_RACK
+    lease_scope: STATION
+  - rack_position_code: SOURCE_STATION_B
+    rack_kind: SINGLE_LAYER
+    business_demand_type: SORTING_INBOUND_SOURCE
+    wms_operation_type: SUPPLY_SINGLE_LAYER_RACK
+    snapshot_kind: ACTIVE_SOURCE_BIN_RACK
+    lease_scope: STATION
+  - rack_position_code: TARGET_STATION
+    rack_kind: FIVE_LAYER
+    business_demand_type: SORTING_INBOUND_TARGET
+    wms_operation_type: ALLOCATE_SORTING_TARGET_BIN
+    snapshot_kind: ACTIVE_TARGET_BIN_RACK
+    lease_scope: STATION

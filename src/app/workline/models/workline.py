@@ -288,46 +288,13 @@ class EventBinding(BaseModel):
     event: str = Field(description="事件类型")
     source_device_roles: list[str] = Field(default_factory=list, description="来源设备角色")
     category: str = Field(description="事件分类")
-    payload_schema_ref: str | None = Field(default=None, description="事件 payload schema 引用")
-
-
-class RackPositionArgSource(BaseModel):
-    """命令货架位参数的动态解析来源。"""
-
-    kind: str = Field(description="参数来源类型")
-    path: str = Field(description="参数来源路径")
-    fallback_rack_position_ref: str | None = Field(default=None, description="兜底静态货架位引用")
-
-
-class RackPositionArg(BaseModel):
-    """命令中的货架位参数声明。"""
-
-    name: str = Field(description="参数名")
-    role: str = Field(description="参数业务角色")
-    required: bool = Field(default=True, description="是否必填")
-    rack_position_ref: str | None = Field(default=None, description="静态货架位引用")
-    source: RackPositionArgSource | None = Field(default=None, description="动态来源")
-
-
-class CommandResultBinding(BaseModel):
-    """命令结果到事件的静态绑定。"""
-
-    result: str = Field(description="命令结果")
-    event: str = Field(description="派生事件")
-    category: str = Field(description="事件分类")
-    classification: str | None = Field(default=None, description="结果分类")
-    terminal: bool = Field(default=False, description="是否终止当前流程")
-    next_event: str | None = Field(default=None, description="后续事件")
 
 
 class CommandBinding(BaseModel):
-    """插件命令及目标设备/结果绑定。"""
+    """插件命令及目标设备角色。"""
 
     command: str = Field(description="命令类型")
     target_device_role: str = Field(description="目标设备角色")
-    rack_position_args: list[RackPositionArg] = Field(default_factory=list, description="货架位参数声明")
-    payload_schema_ref: str | None = Field(default=None, description="命令 payload schema 引用")
-    result_bindings: list[CommandResultBinding] = Field(default_factory=list, description="命令结果绑定")
 
 
 class ResourceBoundary(BaseModel):

@@ -48,33 +48,12 @@ def _manifest_summary(plugin_key: str = "demo_plugin") -> WorkLinePluginManifest
                 "event": "EVENT_A",
                 "source_device_roles": ["SCANNER"],
                 "category": "ENTRY_DEVICE",
-                "payload_schema_ref": "schemas.EventA",
             }
         ],
         commands=[
             {
                 "command": "COMMAND_A",
                 "target_device_role": "SCANNER",
-                "rack_position_args": [
-                    {
-                        "name": "target_position",
-                        "role": "TARGET",
-                        "required": True,
-                        "rack_position_ref": "SCAN_POSITION",
-                        "source": None,
-                    }
-                ],
-                "payload_schema_ref": "schemas.CommandA",
-                "result_bindings": [
-                    {
-                        "result": "OK",
-                        "event": "COMMAND_A_OK",
-                        "category": "COMMAND_RESULT",
-                        "classification": "SUCCESS",
-                        "terminal": True,
-                        "next_event": None,
-                    }
-                ],
             }
         ],
         resource_boundaries=[
