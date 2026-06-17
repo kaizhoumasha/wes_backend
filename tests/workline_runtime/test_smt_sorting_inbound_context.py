@@ -18,6 +18,22 @@ def _session(context_json: dict[str, object] | None = None) -> SimpleNamespace:
     return SimpleNamespace(context_json=context_json or {})
 
 
+def _source_pick_request_kwargs(**overrides: object) -> dict[str, object]:
+    kwargs: dict[str, object] = {
+        "handoff_demand_id": 1,
+        "handoff_source_item_id": 2,
+        "claim_attempt_no": 1,
+        "event_id": "smt-inbound-handoff-source-item:2:claim:1",
+        "target_workline_code": "WL-SMT-SORT-01",
+        "manifest_contract_version": "2026-06-01.p0",
+        "source_rack_position_code": "SOURCE_STATION_A",
+        "target_rack_position_code": "TARGET_STATION",
+        "route_evidence": {"usage": Decimal("0.42")},
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
 def test_load_for_automatic_refuses_missing_sorting_schema() -> None:
     session = _session()
 
@@ -112,3 +128,73 @@ def test_active_target_bin_and_station_fields_are_typed_writes() -> None:
     assert sorting_context["active_target_bin_code"] == "TGT-BIN-01"
     assert sorting_context["stations"] == {"scan_platform": "OCCUPIED"}
     assert sorting_context["business_phase"] == "WAITING_SCAN"
+
+
+def test_source_pick_request_is_written_with_schema_and_station_state() -> None:
+    session = _session()
+    context = SortingInboundContext.initialize(session)
+
+    context.write_source_pick_request(**_source_pick_request_kwargs())
+    context.set_station_state(scan_platform="EMPTY")
+
+    sorting = session.context_json["sorting"]
+    assert sorting["context_schema_version"] == SORTING_CONTEXT_SCHEMA_VERSION
+    assert sorting["stations"]["scan_platform"] == "EMPTY"
+    assert sorting["source_pick_request"]["handoff_source_item_id"] == 2
+    assert sorting["source_pick_request"]["route_evidence"]["usage"] == "0.42"
+
+
+def test_source_pick_request_getter_returns_empty_dict_when_missing() -> None:
+    session = _session()
+    context = SortingInboundContext.initialize(session)
+
+    assert context.get_source_pick_request() == {}
+
+
+def test_source_pick_request_getter_returns_deep_copy() -> None:
+    session = _session()
+    context = SortingInboundContext.initialize(session)
+    context.write_source_pick_request(
+        **_source_pick_request_kwargs(route_evidence={"nested": {"usage": Decimal("0.42")}})
+    )
+
+    request = context.get_source_pick_request()
+    request["handoff_source_item_id"] = 999
+    request["route_evidence"]["nested"]["usage"] = "999"
+
+    assert context.sorting["source_pick_request"]["handoff_source_item_id"] == 2
+    assert context.sorting["source_pick_request"]["route_evidence"]["nested"]["usage"] == "0.42"
+    assert session.context_json["sorting"]["source_pick_request"]["route_evidence"]["nested"]["usage"] == "0.42"
+
+
+@pytest.mark.parametrize("field_name", ["handoff_demand_id", "handoff_source_item_id", "claim_attempt_no"])
+def test_source_pick_request_rejects_non_positive_integer_fields(field_name: str) -> None:
+    session = _session()
+    context = SortingInboundContext.initialize(session)
+
+    with pytest.raises(SortingInboundContextError, match=field_name):
+        context.write_source_pick_request(**_source_pick_request_kwargs(**{field_name: 0}))
+
+
+def test_source_pick_request_rejects_empty_required_string() -> None:
+    session = _session()
+    context = SortingInboundContext.initialize(session)
+
+    with pytest.raises(SortingInboundContextError, match="event_id"):
+        context.write_source_pick_request(**_source_pick_request_kwargs(event_id=""))
+
+
+def test_source_pick_request_rejects_non_json_safe_route_evidence() -> None:
+    session = _session()
+    context = SortingInboundContext.initialize(session)
+
+    with pytest.raises(SortingInboundContextError, match="route_evidence"):
+        context.write_source_pick_request(**_source_pick_request_kwargs(route_evidence={"bad": {"x"}}))
+
+
+def test_source_pick_request_rejects_nan_route_evidence() -> None:
+    session = _session()
+    context = SortingInboundContext.initialize(session)
+
+    with pytest.raises(SortingInboundContextError, match="route_evidence"):
+        context.write_source_pick_request(**_source_pick_request_kwargs(route_evidence={"bad": float("nan")}))

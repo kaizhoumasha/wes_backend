@@ -22,6 +22,8 @@ class SmtInboundHandoffReasonCode(str, Enum):
     WMS_RCS_RACK_RELEASE_ID_MISMATCH = "WMS_RCS_RACK_RELEASE_ID_MISMATCH"
     POST_EXCHANGE_RELATIONS_MISSING = "POST_EXCHANGE_RELATIONS_MISSING"
     ROUTE_NOT_FOUND = "ROUTE_NOT_FOUND"
+    SOURCE_BOUNDARY_AMBIGUOUS = "SOURCE_BOUNDARY_AMBIGUOUS"
+    SOURCE_BOUNDARY_INVALID = "SOURCE_BOUNDARY_INVALID"
     TARGET_WORKLINE_NOT_READY = "TARGET_WORKLINE_NOT_READY"
     SOURCE_STATION_BUSY = "SOURCE_STATION_BUSY"
     TARGET_SESSION_BUSY = "TARGET_SESSION_BUSY"
@@ -142,6 +144,20 @@ _BUILTIN_REASONS: tuple[SmtInboundHandoffReasonDefinition, ...] = (
         code=SmtInboundHandoffReasonCode.ROUTE_NOT_FOUND,
         category=SmtInboundHandoffReasonCategory.ROUTE,
         default_message="未找到可承接 source item 的 SMT 入库分拣 WorkLine 配置候选",
+        available_actions=("REEVALUATE", "RELEASE_HOLD"),
+        recoverability=SmtInboundHandoffRecoverability.MANUAL,
+    ),
+    SmtInboundHandoffReasonDefinition(
+        code=SmtInboundHandoffReasonCode.SOURCE_BOUNDARY_AMBIGUOUS,
+        category=SmtInboundHandoffReasonCategory.ROUTE,
+        default_message="目标分拣 WorkLine manifest 声明多个 source boundary，需显式配置来源站点",
+        available_actions=("REEVALUATE", "RELEASE_HOLD"),
+        recoverability=SmtInboundHandoffRecoverability.MANUAL,
+    ),
+    SmtInboundHandoffReasonDefinition(
+        code=SmtInboundHandoffReasonCode.SOURCE_BOUNDARY_INVALID,
+        category=SmtInboundHandoffReasonCategory.ROUTE,
+        default_message="目标分拣 WorkLine 配置的 source boundary 不在插件 manifest 声明范围内",
         available_actions=("REEVALUATE", "RELEASE_HOLD"),
         recoverability=SmtInboundHandoffRecoverability.MANUAL,
     ),

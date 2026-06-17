@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from src.app.resource.models import RackKind
 from src.app.workline.domain.services.smt_inbound_handoff_reason import (
     SMT_INBOUND_HANDOFF_REASON_CATALOG,
     SmtInboundHandoffReasonCatalog,
@@ -13,7 +14,11 @@ from src.app.workline.domain.services.smt_inbound_handoff_reason import (
 )
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.utils.timezone import timezone
-from src.workline_plugins.smt_sorting_inbound.constants import SMT_SORTING_INBOUND_PLUGIN_KEY
+from src.workline_plugin_registry import get_workline_plugin_definition
+from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_SOURCE_PICK,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -39,6 +44,25 @@ class SmtInboundHandoffRouteResult:
     next_attempt_at: datetime | None = None
 
 
+@dataclass(frozen=True)
+class _BoundaryResolution:
+    contract_version: str | None
+    source_boundary: object
+    target_boundary: object
+
+    @property
+    def source_rack_position_code(self) -> str:
+        return str(self.source_boundary.rack_position_code)
+
+    @property
+    def target_rack_position_code(self) -> str:
+        return str(self.target_boundary.rack_position_code)
+
+    @property
+    def source_station_code(self) -> str:
+        return self.source_rack_position_code
+
+
 class SmtInboundHandoffRouteService:
     """选择并准入可承接 SMT inbound handoff 的分拣 WorkLine。"""
 
@@ -53,7 +77,7 @@ class SmtInboundHandoffRouteService:
     ) -> None:
         self.station_lease_service = station_lease_service
         self.session_repository = session_repository
-        self.ecs_status_probe = ecs_status_probe or _allow_idle_ecs_probe
+        self.ecs_status_probe = ecs_status_probe or _real_ecs_status_probe
         self.reason_catalog = reason_catalog
         self.retry_delay_seconds = retry_delay_seconds
 
@@ -67,6 +91,7 @@ class SmtInboundHandoffRouteService:
     ) -> SmtInboundHandoffRouteResult:
         """按配置候选与运行态准入选择目标 WorkLine。"""
 
+        _ = demand, source_item
         ordered_candidates = self._ordered_config_candidates(candidate_worklines)
         candidate_order = [self._candidate_order_item(workline) for workline in ordered_candidates]
         if not ordered_candidates:
@@ -74,12 +99,14 @@ class SmtInboundHandoffRouteService:
 
         workline = ordered_candidates[0]
         route_config = self._route_config(workline)
+        boundary_resolution = _resolve_boundary_selection(workline, route_config)
         route_evidence = {
             "candidate_order": candidate_order,
             "route_priority": self._route_priority(workline),
-            "source_station_code": self._source_station_code(route_config),
-            "source_position_code": self._source_position_code(route_config),
+            **boundary_resolution.evidence,
         }
+        if boundary_resolution.failure_code is not None:
+            return self._manual_hold(boundary_resolution.failure_code, route_evidence)
 
         if getattr(workline, "runtime_status", None) != WorkLineRuntimeStatus.READY:
             return self._retry(SmtInboundHandoffReasonCode.TARGET_WORKLINE_NOT_READY, route_evidence)
@@ -87,9 +114,9 @@ class SmtInboundHandoffRouteService:
         lease_result = await self._station_lease_service().get_station_lease_status(
             db,
             workline_id=getattr(workline, "id", None),
-            position_code=route_evidence["source_position_code"],
-            source_workline_code=getattr(demand, "source_workline_code", None),
-            handoff_source_item_id=getattr(source_item, "id", None),
+            workline_code=getattr(workline, "line_code", None),
+            position_code=route_evidence["source_rack_position_code"],
+            rack_kind=RackKind.SINGLE_LAYER,
         )
         if not bool(getattr(lease_result, "available", False)):
             evidence = {**route_evidence, "station_lease_reason_code": getattr(lease_result, "reason_code", None)}
@@ -220,17 +247,181 @@ class SmtInboundHandoffRouteService:
 
     @classmethod
     def _source_position_code(cls, route_config: dict[str, Any]) -> str | None:
-        value = route_config.get("source_position_code") or route_config.get("position_code")
+        value = (
+            route_config.get("source_rack_position_code")
+            or route_config.get("source_position_code")
+            or route_config.get("position_code")
+        )
         if value is not None and str(value).strip():
             return str(value).strip()
         return cls._source_station_code(route_config)
 
 
-async def _allow_idle_ecs_probe(db: AsyncSession, *, workline: object, route: object) -> object:
-    """默认 ECS probe：当前阶段只提供可注入准入点。"""
+@dataclass(frozen=True)
+class _BoundaryResolutionResult:
+    failure_code: SmtInboundHandoffReasonCode | None
+    evidence: dict[str, Any]
 
-    _ = db, workline, route
+
+def _boundary_to_evidence(boundary: object) -> dict[str, Any]:
+    return {
+        "rack_position_code": getattr(boundary, "rack_position_code", None),
+        "rack_kind": getattr(boundary, "rack_kind", None),
+        "business_demand_type": getattr(boundary, "business_demand_type", None),
+        "wms_operation_type": getattr(boundary, "wms_operation_type", None),
+        "snapshot_kind": getattr(boundary, "snapshot_kind", None),
+        "lease_scope": getattr(boundary, "lease_scope", None),
+    }
+
+
+def _matching_boundaries(manifest: object, *, business_demand_type: str, rack_kind: str) -> list[object]:
+    return [
+        boundary
+        for boundary in getattr(manifest, "resource_boundaries", ()) or ()
+        if getattr(boundary, "business_demand_type", None) == business_demand_type
+        and getattr(boundary, "rack_kind", None) == rack_kind
+        and isinstance(getattr(boundary, "rack_position_code", None), str)
+        and bool(str(boundary.rack_position_code).strip())
+    ]
+
+
+def _manifest_boundary_evidence(
+    *,
+    contract_version: str | None,
+    source_boundaries: list[object],
+    target_boundaries: list[object],
+) -> dict[str, Any]:
+    return {
+        "manifest_contract_version": contract_version,
+        "manifest_source_boundaries": [_boundary_to_evidence(boundary) for boundary in source_boundaries],
+        "manifest_target_boundaries": [_boundary_to_evidence(boundary) for boundary in target_boundaries],
+    }
+
+
+def _selected_boundary_evidence(resolution: _BoundaryResolution) -> dict[str, Any]:
+    return {
+        "manifest_contract_version": resolution.contract_version,
+        "source_rack_position_code": resolution.source_rack_position_code,
+        "source_station_code": resolution.source_station_code,
+        "source_position_code": resolution.source_rack_position_code,
+        "target_rack_position_code": resolution.target_rack_position_code,
+        "source_boundary": _boundary_to_evidence(resolution.source_boundary),
+    }
+
+
+def _resolve_configured_source_boundary(route_config: dict[str, Any]) -> str | None:
+    return SmtInboundHandoffRouteService._source_position_code(route_config)
+
+
+def _source_boundary_by_position(boundaries: list[object]) -> dict[str, object]:
+    return {str(boundary.rack_position_code).strip(): boundary for boundary in boundaries}
+
+
+def _resolve_boundary_selection(workline: object, route_config: dict[str, Any]) -> _BoundaryResolutionResult:
+    definition = get_workline_plugin_definition(getattr(workline, "plugin_key", None))
+    manifest = getattr(definition, "manifest", None)
+    if manifest is None:
+        return _BoundaryResolutionResult(
+            failure_code=SmtInboundHandoffReasonCode.PLUGIN_CONTRACT_INVALID,
+            evidence={"manifest_contract_version": None},
+        )
+
+    contract_version = getattr(manifest, "contract_version", None)
+    source_boundaries = _matching_boundaries(
+        manifest,
+        business_demand_type="SORTING_INBOUND_SOURCE",
+        rack_kind="SINGLE_LAYER",
+    )
+    target_boundaries = _matching_boundaries(
+        manifest,
+        business_demand_type="SORTING_INBOUND_TARGET",
+        rack_kind="FIVE_LAYER",
+    )
+    boundary_evidence = _manifest_boundary_evidence(
+        contract_version=contract_version,
+        source_boundaries=source_boundaries,
+        target_boundaries=target_boundaries,
+    )
+    if not source_boundaries or len(target_boundaries) != 1:
+        return _BoundaryResolutionResult(
+            failure_code=SmtInboundHandoffReasonCode.PLUGIN_CONTRACT_INVALID,
+            evidence=boundary_evidence,
+        )
+
+    configured_source = _resolve_configured_source_boundary(route_config)
+    source_by_position = _source_boundary_by_position(source_boundaries)
+    if configured_source is not None:
+        source_boundary = source_by_position.get(configured_source)
+        if source_boundary is None:
+            return _BoundaryResolutionResult(
+                failure_code=SmtInboundHandoffReasonCode.SOURCE_BOUNDARY_INVALID,
+                evidence={
+                    **boundary_evidence,
+                    "configured_source_rack_position_code": configured_source,
+                },
+            )
+    elif len(source_boundaries) == 1:
+        source_boundary = source_boundaries[0]
+    else:
+        return _BoundaryResolutionResult(
+            failure_code=SmtInboundHandoffReasonCode.SOURCE_BOUNDARY_AMBIGUOUS,
+            evidence=boundary_evidence,
+        )
+
+    selected = _BoundaryResolution(
+        contract_version=str(contract_version) if contract_version is not None else None,
+        source_boundary=source_boundary,
+        target_boundary=target_boundaries[0],
+    )
+    return _BoundaryResolutionResult(failure_code=None, evidence=_selected_boundary_evidence(selected))
+
+
+async def _real_ecs_status_probe(db: AsyncSession, *, workline: object, route: object) -> object:
+    """默认 ECS probe：复用设备命令派发前的实时状态预检，缺设备/配置时失败关闭。"""
+
+    workline_id = getattr(workline, "id", None)
+    if not isinstance(workline_id, int):
+        return _ProbeResult(available=False, reason_code="WORKLINE_ID_MISSING")
+
+    from src.app.device.repositories.device_repository import device_repository
+    from src.app.workline.services.device_command_gateway import _ensure_realtime_device_status_ready
+
+    try:
+        devices = await device_repository.get_by_work_line_id(db, workline_id)
+    except Exception as exc:
+        return _ProbeResult(available=False, reason_code=getattr(exc, "code", type(exc).__name__))
+    source_pick_role = _source_pick_device_role(workline)
+    source_devices = [
+        device
+        for device in devices
+        if source_pick_role is not None and getattr(device, "device_role", None) == source_pick_role
+    ]
+    if len(source_devices) != 1:
+        return _ProbeResult(available=False, reason_code="ECS_SOURCE_DEVICE_UNAVAILABLE")
+
+    device = source_devices[0]
+    device_code = getattr(device, "device_code", None)
+    if not device_code or not getattr(device, "host", None) or not getattr(device, "port", None):
+        return _ProbeResult(available=False, reason_code="ECS_SOURCE_DEVICE_CONFIG_INVALID")
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient() as client:
+            await _ensure_realtime_device_status_ready(client=client, device=device, device_code=str(device_code))
+    except Exception as exc:
+        return _ProbeResult(available=False, reason_code=getattr(exc, "code", type(exc).__name__))
     return _ProbeResult()
+
+
+def _source_pick_device_role(workline: object) -> str | None:
+    definition = get_workline_plugin_definition(getattr(workline, "plugin_key", None))
+    manifest = getattr(definition, "manifest", None)
+    for command in getattr(manifest, "commands", ()) or ():
+        if getattr(command, "command", None) == COMMAND_SOURCE_PICK:
+            target_role = getattr(command, "target_device_role", None)
+            return str(target_role) if target_role else None
+    return None
 
 
 @dataclass(frozen=True)
