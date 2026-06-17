@@ -45,6 +45,27 @@ class _RouteService:
         return self.result
 
 
+class _NonSelectedPhase2DemandWaitingRepository(SmtInboundHandoffRepository):
+    def __init__(self, item: SmtInboundHandoffSourceItem, demand: SmtInboundHandoffDemand, call_log: list[str]) -> None:
+        super().__init__()
+        self.item = item
+        self.demand = demand
+        self.call_log = call_log
+
+    async def lock_demand_by_id(self, *_args: Any, **_kwargs: Any) -> SmtInboundHandoffDemand | None:
+        self.call_log.append("lock_demand")
+        self.demand.status = SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
+        return self.demand
+
+    async def lock_source_item_by_id(self, *_args: Any, **_kwargs: Any) -> SmtInboundHandoffSourceItem | None:
+        self.call_log.append("lock_source_item")
+        return self.item
+
+    async def lock_target_workline_by_id(self, *_args: Any, **_kwargs: Any) -> WorkLine | None:
+        self.call_log.append("lock_target_workline")
+        return None
+
+
 class _ReleaseClaimingHandoffService:
     def __init__(self, *, claim_result: object | None = None) -> None:
         self.demand = SimpleNamespace(id=901, demand_key="handoff:release:auto-claim")
@@ -408,6 +429,58 @@ async def test_config_candidate_runtime_busy_releases_ready_item_for_retry(db_se
     assert item.status == SmtInboundHandoffSourceItemStatus.READY
     assert item.next_attempt_at == next_attempt_at
     assert item.failure_code == SmtInboundHandoffReasonCode.TARGET_WORKLINE_NOT_READY.value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route",
+    [
+        _manual_hold_route(),
+        _retry_route(datetime(2026, 1, 1, 0, 5, 0)),
+        SimpleNamespace(
+            kind="SELECTED",
+            manual_hold=False,
+            retryable=False,
+            selected_workline_id=None,
+            selected_workline_code=None,
+            failure_code=None,
+            failure_message=None,
+            next_attempt_at=None,
+        ),
+    ],
+    ids=["manual_hold", "retry", "invalid_selected_workline"],
+)
+async def test_non_selected_route_phase2_demand_waiting_returns_empty_without_item_mutation(
+    db_session: Any,
+    route: object,
+) -> None:
+    base_service = SmtInboundHandoffService()
+    demand, item = await _ready_demand(
+        db_session,
+        base_service,
+        rack_release_id=f"claim-non-selected-demand-waiting-{getattr(route, 'kind', 'unknown')}",
+    )
+    call_log: list[str] = []
+    repository = _NonSelectedPhase2DemandWaitingRepository(item, demand, call_log)
+    service = SmtInboundHandoffService(
+        repository=repository,
+        route_service=_RouteService(route, call_log=call_log),
+    )
+
+    result = await service.claim_next_source_item(db_session, trace_id="trace-claim-non-selected-demand-waiting")
+    await db_session.refresh(item)
+
+    assert result.kind == "EMPTY"
+    assert demand.status == SmtInboundHandoffDemandStatus.WAITING_FULL_BOX_EXCHANGE
+    assert item.status == SmtInboundHandoffSourceItemStatus.READY
+    assert item.failure_code is None
+    assert item.next_attempt_at is None
+    assert item.sorting_session_id is None
+    assert item.source_pick_inbox_id is None
+    assert call_log == [
+        "route_probe",
+        "lock_demand",
+    ]
 
 
 @pytest.mark.asyncio
@@ -796,6 +869,8 @@ def test_repository_ready_claim_statement_filters_claimable_demand_status() -> N
     sql = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
 
     assert "FOR UPDATE" in sql
+    assert "FOR UPDATE OF" in sql
+    assert "smt_inbound_handoff_source_items" in sql.split("FOR UPDATE OF", maxsplit=1)[1]
     assert "SKIP LOCKED" in sql
     assert "JOIN" in sql
     assert "smt_inbound_handoff_demands" in sql

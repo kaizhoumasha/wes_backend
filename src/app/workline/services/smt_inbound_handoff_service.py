@@ -612,8 +612,12 @@ class SmtInboundHandoffService:
         route: Any,
         now: Any,
     ) -> Any:
-        item, blocked_result = await self._lock_ready_candidate_or_retry(db, candidate=candidate, now=now)
-        if blocked_result is not None or item is None:
+        demand, item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
+            db,
+            candidate=candidate,
+            now=now,
+        )
+        if blocked_result is not None or demand is None or item is None:
             return blocked_result or self._claim_result("EMPTY")
 
         self._apply_item_failure(item, str(route.failure_code), message=getattr(route, "failure_message", None))
@@ -631,8 +635,12 @@ class SmtInboundHandoffService:
         route: Any,
         now: Any,
     ) -> Any:
-        item, blocked_result = await self._lock_ready_candidate_or_retry(db, candidate=candidate, now=now)
-        if blocked_result is not None or item is None:
+        demand, item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
+            db,
+            candidate=candidate,
+            now=now,
+        )
+        if blocked_result is not None or demand is None or item is None:
             return blocked_result or self._claim_result("EMPTY")
 
         await self._release_claim_candidate_for_retry(
@@ -654,8 +662,12 @@ class SmtInboundHandoffService:
         candidate: SmtInboundHandoffSourceItem,
         now: Any,
     ) -> Any:
-        item, blocked_result = await self._lock_ready_candidate_or_retry(db, candidate=candidate, now=now)
-        if blocked_result is not None or item is None:
+        demand, item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
+            db,
+            candidate=candidate,
+            now=now,
+        )
+        if blocked_result is not None or demand is None or item is None:
             return blocked_result or self._claim_result("EMPTY")
 
         self._apply_item_failure(item, SmtInboundHandoffReasonCode.ROUTE_NOT_FOUND.value)
@@ -677,18 +689,13 @@ class SmtInboundHandoffService:
         route_probe_started_at: Any,
         trace_id: str | None,
     ) -> Any:
-        demand = await self.repository.lock_demand_by_id(db, demand_id=candidate.handoff_demand_id)
-        if demand is None or not self._demand_is_claimable(demand):
-            return self._claim_result("EMPTY")
-
-        item = await self.repository.lock_source_item_by_id(db, source_item_id=cast("int", candidate.id))
-        if item is None:
-            return self._claim_result("EMPTY")
-        if not self._source_item_is_ready_and_due(item, now=now):
-            return self._claim_result(
-                "RETRY",
-                failure_code=SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value,
-            )
+        demand, item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
+            db,
+            candidate=candidate,
+            now=now,
+        )
+        if blocked_result is not None or demand is None or item is None:
+            return blocked_result or self._claim_result("EMPTY")
         target_workline = await self.repository.lock_target_workline_by_id(db, workline_id=workline_id)
         if target_workline is None:
             return self._claim_result("EMPTY")
@@ -782,6 +789,20 @@ class SmtInboundHandoffService:
                 failure_code=SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value,
             )
         return item, None
+
+    async def _lock_claimable_demand_and_ready_candidate_or_retry(
+        self,
+        db: AsyncSession,
+        *,
+        candidate: SmtInboundHandoffSourceItem,
+        now: Any,
+    ) -> tuple[SmtInboundHandoffDemand | None, SmtInboundHandoffSourceItem | None, Any | None]:
+        demand = await self.repository.lock_demand_by_id(db, demand_id=candidate.handoff_demand_id)
+        if demand is None or not self._demand_is_claimable(demand):
+            return demand, None, self._claim_result("EMPTY")
+
+        item, blocked_result = await self._lock_ready_candidate_or_retry(db, candidate=candidate, now=now)
+        return demand, item, blocked_result
 
     async def _release_claim_candidate_for_retry(
         self,

@@ -204,7 +204,7 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
             self._ready_source_item_claimable_demand_statement(now=now)
             .order_by(columns.next_attempt_at.asc().nullsfirst(), columns.handoff_demand_id.asc(), columns.id.asc())
             .limit(limit)
-            .with_for_update(skip_locked=True)
+            .with_for_update(skip_locked=True, of=SmtInboundHandoffSourceItem)
         )
 
     def build_ready_source_item_candidate_statement(self, *, now: Any, limit: int = 1) -> Any:
