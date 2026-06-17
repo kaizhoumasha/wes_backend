@@ -1,11 +1,32 @@
 # SMT 分拣入库工作流指南
 
 > **日期**: 2026-05-21
-> **状态**: Draft
-> **版本**: v0.1
+> **状态**: Draft；v0.7.0.0 已落地后端 handoff/manifest P0 闭环
+> **版本**: v0.2
 > **适用范围**: `smt_sorter_inbound` 复合 WORKLINE、SMT 分拣机入库、单层货架零散料盘归集入五层货架
 
 本文定义 SMT 分拣入库的业务流程、资源边界、事件口径和恢复原则。本文基于 21 轮逐条确认的业务决策，不替代硬件接口原文、SRS 或插件开发指南。
+
+## 0. 当前后端落地状态
+
+v0.7.0.0 已完成 SMT 分拣入库后端 handoff/manifest P0 闭环，范围是粗分机 release fact 到 source item `PICKED/SORTED/SKIPPED`、demand `COMPLETED` 的本地后端自动推进。
+
+已落地合同：
+
+- `SMT_SORTING_INBOUND` manifest 只声明 WES 管理的 source 单层货架位和 target 五层货架位；NG 区、工作站、扫码平台、料箱码和料格码不再作为 manifest `RackPosition` 或 `ResourceBoundary`。
+- Handoff route 从 manifest `SORTING_INBOUND_SOURCE` / `SORTING_INBOUND_TARGET` boundary 解析 source/target rack position，并默认使用真实 ECS realtime probe 作为 source-pick admission。
+- 粗分机 release fact 创建或更新 handoff demand 后，会先 `evaluate`，再按 demand scope 尝试 claim 一条 READY source item。
+- Claim 使用两阶段短锁：外部 route/ECS probe 不持有 source item 或 target WorkLine 行锁，最终短事务内重锁 source item、demand 和 target WorkLine 后再创建 sorting session 与内部 Inbox。
+- Claim 创建的 `SMT_SORTING_INBOUND` session 通过 `SortingInboundContext` 写入 `sorting.context_schema_version=1`、`source_pick_request`、source/target rack position evidence 和 `stations.scan_platform=EMPTY`。
+- `SORTING_SOURCE_PICK SUCCESS` 通过 handoff service 统一写 `PICKED` ledger；`SORTING_TARGET_PLACE SUCCESS` / `SORTING_NG_PLACE SUCCESS` 统一写 `SORTED` / `SKIPPED` terminal ledger，并在首次 terminal success 后按 demand scope claim 下一条 READY item。
+- Celery 兜底扫描覆盖 due demand 重算、post-claim recovery 和 READY claim fallback，summary 增加 `claimed`，并将 `scan_limit` / `recovery_limit` / `claim_limit` 拆分。
+
+未落地范围仍按本文后续章节和 `TODOS.md` 跟踪：完整 CTU/WMS/NG 对账、运营看板、告警阈值、现场 Runbook、供应商硬件协议补充和同一 target WorkLine 多 item 并发处理。
+
+详细合同与验收记录见：
+
+- `docs/superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md`
+- `docs/superpowers/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md`
 
 ## 1. 文档定位
 

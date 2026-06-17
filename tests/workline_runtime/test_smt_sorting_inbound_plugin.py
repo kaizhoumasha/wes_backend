@@ -24,7 +24,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     PHASE_WAITING_SOURCE_PICK,
     PHASE_WAITING_TARGET_BIN_SWITCH,
     PHASE_WAITING_TARGET_PLACE,
-    ROLE_SORTING_NG_STATION,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
     ROLE_SORTING_TARGET_ARM,
@@ -91,20 +90,22 @@ def _topology_device(
 
 def test_smt_sorting_inbound_manifest_declares_required_roles() -> None:
     manifest = SmtSortingInboundPlugin.manifest
+    device_roles = {requirement.role for requirement in manifest.devices}
 
-    assert {requirement.role for requirement in manifest.devices} == {
+    assert device_roles == {
         ROLE_SORTING_SOURCE_ARM,
         ROLE_SORTING_TARGET_ARM,
         ROLE_SORTING_SCAN_PLATFORM,
-        ROLE_SORTING_NG_STATION,
         ROLE_SORTING_WORKSTATION,
     }
+    assert "SORTING_NG_STATION" not in device_roles
     assert all(requirement.min_count == 1 for requirement in manifest.devices)
 
 
 def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None:
     manifest = SmtSortingInboundPlugin.manifest
     command_roles = _command_role_map(manifest)
+    command_by_name = _command_by_name(manifest)
     event_roles = _event_role_map(manifest)
     event_categories = _event_category_map(manifest)
     result_events = {
@@ -122,6 +123,24 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
     assert event_categories[EVENT_SESSION_COMPLETE_REQUESTED] == EventCategory.ENTRY_DEVICE
     assert EVENT_SOURCE_PICK_REQUESTED not in event_roles
     assert {EVENT_SOURCE_PICK_RESULT, EVENT_TARGET_PLACE_RESULT, EVENT_NG_PLACE_RESULT} <= result_events
+    assert command_by_name[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
+    assert command_by_name[COMMAND_NG_PLACE].rack_position_args == ()
+    target_place_target = command_by_name[COMMAND_TARGET_PLACE].rack_position_args[0]
+    assert target_place_target.rack_position_ref == "TARGET_STATION"
+    assert target_place_target.source is None
+
+
+def test_smt_sorting_inbound_manifest_uses_only_managed_rack_positions_and_resource_boundaries() -> None:
+    manifest = SmtSortingInboundPlugin.manifest
+    rack_position_codes = {rack_position.code for rack_position in manifest.rack_positions}
+    business_demand_types = {boundary.business_demand_type for boundary in manifest.resource_boundaries}
+
+    assert rack_position_codes == {"SOURCE_STATION_A", "SOURCE_STATION_B", "TARGET_STATION"}
+    assert "NG_STATION" not in rack_position_codes
+    assert "WORKSTATION" not in rack_position_codes
+    assert business_demand_types == {"SORTING_INBOUND_SOURCE", "SORTING_INBOUND_TARGET"}
+    assert "SORTING_INBOUND_NG" not in business_demand_types
+    assert "SORTING_INBOUND_WORK" not in business_demand_types
 
 
 def test_smt_sorting_inbound_material_flow_edges_are_rack_position_to_rack_position() -> None:
@@ -162,7 +181,6 @@ def test_smt_sorting_inbound_real_manifest_validates_seed_like_device_capabiliti
                 role=ROLE_SORTING_SCAN_PLATFORM,
                 supports_event_types=[EVENT_WORKING_BIN_SCAN],
             ),
-            _topology_device(4, code="SORT-NG-STATION", role=ROLE_SORTING_NG_STATION),
             _topology_device(
                 5,
                 code="SORT-WORKSTATION",
@@ -919,6 +937,32 @@ async def test_target_place_success_mounts_material_and_releases_scan_platform()
 
 
 @pytest.mark.asyncio
+async def test_target_place_success_preserves_handoff_source_pick_request_for_terminal_ledger() -> None:
+    plugin = SmtSortingInboundPlugin()
+    context = _sorting_context_with_pending_target()
+    source_pick_request = {
+        "handoff_demand_id": 11,
+        "handoff_source_item_id": 22,
+        "claim_attempt_no": 1,
+        "event_id": "smt-inbound-handoff-source-item:22:claim:1",
+        "target_workline_code": "SMT-SORT-01",
+        "manifest_contract_version": "2026-06-01.p0",
+        "source_rack_position_code": "SOURCE_STATION_A",
+        "target_rack_position_code": "TARGET_STATION",
+        "route_evidence": {},
+    }
+    context["sorting"]["source_pick_request"] = source_pick_request
+
+    intents = await plugin.on_command_result(_ctx(context), _target_place_result_inbox())
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
+    sorting_patch = intents[1].context_patch["sorting"]
+    assert sorting_patch["source_pick_request"] == source_pick_request
+    assert "pending_target_placement" not in sorting_patch
+    assert "current_material" not in sorting_patch
+
+
+@pytest.mark.asyncio
 async def test_target_place_failure_with_known_location_enters_manual_suspend() -> None:
     plugin = SmtSortingInboundPlugin()
 
@@ -953,7 +997,8 @@ async def test_ng_place_success_closes_material_and_keeps_ng_return_context() ->
     plugin = SmtSortingInboundPlugin()
 
     intents = await plugin.on_command_result(
-        _ctx(_sorting_context_with_ng_current_material()), _ng_place_result_inbox()
+        _ctx(_sorting_context_with_ng_current_material()),
+        _ng_place_result_inbox(data={"ng_location": "NG-01", "ng_reason_code": "LOCAL_SORTING_NG"}),
     )
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
@@ -962,6 +1007,64 @@ async def test_ng_place_success_closes_material_and_keeps_ng_return_context() ->
     assert patch["ng_reason"] == "LOCAL_SORTING_NG"
     assert "current_material" not in patch["sorting"]
     assert patch["sorting"]["stations"]["scan_platform"] == "EMPTY"
+    assert "smt_inbound_handoff_terminal_result" not in patch
+
+
+@pytest.mark.asyncio
+async def test_ng_place_success_writes_terminal_marker_for_handoff_session() -> None:
+    plugin = SmtSortingInboundPlugin()
+    context = _sorting_context_with_ng_current_material()
+    context["sorting"]["source_pick_request"] = {
+        "handoff_demand_id": 11,
+        "handoff_source_item_id": 22,
+        "claim_attempt_no": 1,
+        "event_id": "source-pick-requested:11:22:1",
+        "target_workline_code": "SMT_SORTER_01",
+        "manifest_contract_version": "v1",
+        "source_rack_position_code": "SINGLE_LAYER_A",
+        "target_rack_position_code": "TARGET_STATION",
+        "route_evidence": {},
+    }
+
+    intents = await plugin.on_command_result(
+        _ctx(context),
+        _ng_place_result_inbox(data={"ng_location": "NG-01", "ng_reason_code": "LOCAL_SORTING_NG"}),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    patch = intents[0].context_patch
+    assert patch["smt_inbound_handoff_terminal_result"]["terminal_status"] == "SKIPPED"
+    terminal_evidence = patch["smt_inbound_handoff_terminal_result"]["terminal_evidence"]
+    assert terminal_evidence["ng_command_payload"]["data"]["ng_location"] == "NG-01"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("data", [{}, {"ng_location": "", "ng_location_code": None, "ng_reason_code": " "}])
+async def test_ng_place_success_without_payload_evidence_blocks_terminal_marker(
+    data: dict[str, Any],
+) -> None:
+    plugin = SmtSortingInboundPlugin()
+    context = _sorting_context_with_ng_current_material()
+    context["sorting"]["source_pick_request"] = {
+        "handoff_demand_id": 11,
+        "handoff_source_item_id": 22,
+        "claim_attempt_no": 1,
+        "event_id": "source-pick-requested:11:22:1",
+        "target_workline_code": "SMT_SORTER_01",
+        "manifest_contract_version": "v1",
+        "source_rack_position_code": "SINGLE_LAYER_A",
+        "target_rack_position_code": "TARGET_STATION",
+        "route_evidence": {},
+    }
+
+    intents = await plugin.on_command_result(
+        _ctx(context),
+        _ng_place_result_inbox(data=data),
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_NG_PLACE_EVIDENCE_MISSING"
+    assert "smt_inbound_handoff_terminal_result" not in intents[0].context_patch
 
 
 @pytest.mark.asyncio

@@ -8,11 +8,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.app.wms_integration.services import WmsTransportContractService
+from src.app.workline.models.smt_inbound_handoff import (
+    SmtInboundHandoffDemandStatus,
+    SmtInboundHandoffSourceItemStatus,
+)
 from src.app.workline.services import write_back_service as workline_effects
 from src.app.workline.services.inbox_batch_processor import _result_requires_outbox_dispatch
 from src.app.workline.services.inbox_service import DuplicateInboxError
 from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, ng_return_item_service
 from src.app.workline.services.runtime_hold_creation_service import runtime_hold_creation_service
+from src.app.workline.services.smt_inbound_handoff_service import SmtInboundHandoffService
+from src.workline_plugins.smt_sorting_inbound.constants import SORTING_CONTEXT_SCHEMA_VERSION
+from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
 from src.workline_runtime.effect_result import WriteBackDisposition
 from src.workline_runtime.orchestrator import OrchestratorResult
 from src.workline_runtime.runtime_intent import BlockScope, Destination, RuntimeIntent, RuntimeIntentKind
@@ -130,6 +137,36 @@ class RecordingHandlingOperationService:
         )
 
 
+class RecordingDb:
+    def __init__(self, demand: Any) -> None:
+        self.demand = demand
+        self.added: list[Any] = []
+        self.flushed = False
+
+    def add(self, value: Any) -> None:
+        self.added.append(value)
+
+    async def flush(self) -> None:
+        self.flushed = True
+
+    async def get(self, model: Any, identity: Any) -> Any:
+        _ = model, identity
+        return self.demand
+
+
+class FakeTerminalRepository:
+    def __init__(self, item: Any) -> None:
+        self.item = item
+
+    async def get_source_item_for_update(self, _db: Any, source_item_id: int) -> Any:
+        assert source_item_id == self.item.id
+        return self.item
+
+    async def list_source_items(self, _db: Any, demand_id: int) -> list[Any]:
+        assert demand_id == self.item.handoff_demand_id
+        return [self.item]
+
+
 class RecordingRackOperationStatusService:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -137,6 +174,41 @@ class RecordingRackOperationStatusService:
     async def sync_operation_status(self, db: Any, *, operation_key: str) -> str:
         self.calls.append({"db": db, "operation_key": operation_key})
         return "SUCCEEDED"
+
+
+def _handoff_sorting_context(*, include_source_pick_request: bool = True) -> dict[str, Any]:
+    sorting: dict[str, Any] = {
+        "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+        "current_material": {
+            "source_bin_code": "SRC-BIN-A",
+            "source_cell_code": "A01",
+            "material_identity_key": "material:PKG-001",
+            "reel_thickness_mm": "7.125",
+            "evidence": {"pkg_code": "PKG-001", "source_event_id": "source-pick-requested:11:22:1"},
+        },
+        "pending_target_placement": {
+            "target_bin_code": "TARGET-BIN-A",
+            "target_cell_code": "1",
+            "material_identity_key": "material:PKG-001",
+            "reel_thickness_mm": "7.125",
+            "allocation_snapshot_version": 3,
+            "capacity_evidence": {"capacity_depth_mm": "30"},
+        },
+        "stations": {"scan_platform": "OCCUPIED"},
+    }
+    if include_source_pick_request:
+        sorting["source_pick_request"] = {
+            "handoff_demand_id": 11,
+            "handoff_source_item_id": 22,
+            "claim_attempt_no": 1,
+            "event_id": "source-pick-requested:11:22:1",
+            "target_workline_code": "SMT_SORTER_01",
+            "manifest_contract_version": "v1",
+            "source_rack_position_code": "SINGLE_LAYER_A",
+            "target_rack_position_code": "TARGET_STATION",
+            "route_evidence": {},
+        }
+    return sorting
 
 
 @pytest.mark.asyncio
@@ -289,6 +361,684 @@ async def test_resource_fact_intent_is_applied_before_completion(monkeypatch: py
     assert session.status == "COMPLETED"
     assert session.context_json["material_mounted"] is True
     record_ng_flow.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_source_pick_complete_does_not_record_handoff_success_without_source_pick_fact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                "source_pick_request": {
+                    "handoff_demand_id": 11,
+                    "handoff_source_item_id": 22,
+                    "claim_attempt_no": 1,
+                    "event_id": "source-pick-requested:11:22:1",
+                    "target_workline_code": "SMT_SORTER_01",
+                    "manifest_contract_version": "v1",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "target_rack_position_code": "TARGET_STATION",
+                    "route_evidence": {},
+                },
+            }
+        }
+    )
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    calls: list[tuple[str, Any]] = []
+
+    async def record_call(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        calls.append(("source_pick_success", session.status, kwargs))
+        assert _db is db
+        return SimpleNamespace(outcome="advanced", advanced=True, already_terminal=False)
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", AsyncMock())
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", AsyncMock())
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_pick_success",
+        record_call,
+    )
+
+    await RuntimeIntentEffectApplier().apply(ctx, [RuntimeIntent.complete({"material_mounted": True})])
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_source_pick_resource_fact_records_handoff_success_after_context_patch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                "source_pick_request": {
+                    "handoff_demand_id": 11,
+                    "handoff_source_item_id": 22,
+                    "claim_attempt_no": 1,
+                    "event_id": "source-pick-requested:11:22:1",
+                    "target_workline_code": "SMT_SORTER_01",
+                    "manifest_contract_version": "v1",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "target_rack_position_code": "TARGET_STATION",
+                    "route_evidence": {},
+                },
+            }
+        }
+    )
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    calls: list[tuple[str, Any]] = []
+    resource_projection = RecordingResourceProjectionService()
+
+    async def record_call(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        current_material = session.context_json["sorting"].get("current_material")
+        calls.append(("source_pick_success", current_material))
+        assert _db is db
+        assert kwargs["session"] is session
+        assert kwargs["trace_id"] == "trace-runtime"
+        assert current_material["material_identity_key"] == "material:PKG-001"
+        return SimpleNamespace(outcome="advanced", advanced=True, already_terminal=False)
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_pick_success",
+        record_call,
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_UNMOUNTED",
+                payload={
+                    "material_identity_key": "material:PKG-001",
+                    "pkg_code": "PKG-001",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "source_pick_request_event_id": "source-pick-requested:11:22:1",
+                },
+                idempotency_key="MATERIAL_UNMOUNTED:source-pick-requested:11:22:1:PKG-001:SINGLE_LAYER_A",
+            ),
+            RuntimeIntent.update_context(
+                {
+                    "sorting": {
+                        "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                        "source_pick_request": {
+                            "handoff_demand_id": 11,
+                            "handoff_source_item_id": 22,
+                            "claim_attempt_no": 1,
+                            "event_id": "source-pick-requested:11:22:1",
+                            "target_workline_code": "SMT_SORTER_01",
+                            "manifest_contract_version": "v1",
+                            "source_rack_position_code": "SINGLE_LAYER_A",
+                            "target_rack_position_code": "TARGET_STATION",
+                            "route_evidence": {},
+                        },
+                        "current_material": {
+                            "material_identity_key": "material:PKG-001",
+                            "pkg_code": "PKG-001",
+                            "source_rack_position_code": "SINGLE_LAYER_A",
+                        },
+                    }
+                }
+            ),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_UNMOUNTED"
+    assert session.context_json["sorting"]["current_material"]["pkg_code"] == "PKG-001"
+    assert calls == [
+        (
+            "source_pick_success",
+            {
+                "material_identity_key": "material:PKG-001",
+                "pkg_code": "PKG-001",
+                "source_rack_position_code": "SINGLE_LAYER_A",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_source_pick_resource_fact_records_handoff_success_with_command_evidence_when_request_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        awaiting_command_id=88,
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+            }
+        },
+    )
+    inbox = SimpleNamespace(
+        id=10,
+        command_id=88,
+        trace_id="trace-runtime",
+        payload_json={"canonical_event_type": "SORTING_SOURCE_PICK_RESULT"},
+    )
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["inbox"] = inbox
+    ctx["trace"] = TraceContext.from_runtime(session=session, inbox=inbox, trace_id="trace-runtime")
+    resource_projection = RecordingResourceProjectionService()
+    calls: list[dict[str, Any]] = []
+
+    async def record_call(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        calls.append(kwargs)
+        assert _db is db
+        assert kwargs["command_id"] == 88
+        assert kwargs["session"] is session
+        assert session.context_json["sorting"]["current_material"]["material_identity_key"] == "material:PKG-001"
+        return SimpleNamespace(outcome="advanced", advanced=True, already_terminal=False)
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_pick_success",
+        record_call,
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_UNMOUNTED",
+                payload={
+                    "material_identity_key": "material:PKG-001",
+                    "pkg_code": "PKG-001",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "source_pick_request_event_id": "source-pick-requested:11:22:1",
+                },
+                idempotency_key="MATERIAL_UNMOUNTED:source-pick-requested:11:22:1:PKG-001:SINGLE_LAYER_A",
+            ),
+            RuntimeIntent.update_context(
+                {
+                    "sorting": {
+                        "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                        "current_material": {
+                            "material_identity_key": "material:PKG-001",
+                            "pkg_code": "PKG-001",
+                            "source_rack_position_code": "SINGLE_LAYER_A",
+                        },
+                    }
+                }
+            ),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_UNMOUNTED"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_source_pick_resource_fact_without_handoff_evidence_does_not_record_handoff_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        awaiting_command_id=None,
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+            }
+        },
+    )
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    resource_projection = RecordingResourceProjectionService()
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    record_call = AsyncMock()
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_pick_success",
+        record_call,
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_UNMOUNTED",
+                payload={
+                    "material_identity_key": "material:PKG-001",
+                    "pkg_code": "PKG-001",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                },
+                idempotency_key="MATERIAL_UNMOUNTED:manual:PKG-001:SINGLE_LAYER_A",
+            ),
+            RuntimeIntent.update_context(
+                {
+                    "sorting": {
+                        "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                        "current_material": {
+                            "material_identity_key": "material:PKG-001",
+                            "pkg_code": "PKG-001",
+                            "source_rack_position_code": "SINGLE_LAYER_A",
+                        },
+                    }
+                }
+            ),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_UNMOUNTED"
+    record_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconciling_source_pick_resource_fact_does_not_record_handoff_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                "source_pick_request": {
+                    "handoff_demand_id": 11,
+                    "handoff_source_item_id": 22,
+                    "claim_attempt_no": 1,
+                    "event_id": "source-pick-requested:11:22:1",
+                    "target_workline_code": "SMT_SORTER_01",
+                    "manifest_contract_version": "v1",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "target_rack_position_code": "TARGET_STATION",
+                    "route_evidence": {},
+                },
+            }
+        }
+    )
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    resource_projection = RecordingResourceProjectionService(status="RECONCILING")
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    record_call = AsyncMock(return_value=SimpleNamespace(outcome="advanced", advanced=True, already_terminal=False))
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_pick_success",
+        record_call,
+    )
+    monkeypatch.setattr(
+        "src.app.workline.repositories.session_repository.WorklineSessionRepository.persist_manual_hold",
+        AsyncMock(),
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_UNMOUNTED",
+                payload={
+                    "material_identity_key": "material:PKG-001",
+                    "pkg_code": "PKG-001",
+                    "source_rack_position_code": "SINGLE_LAYER_A",
+                    "source_pick_request_event_id": "source-pick-requested:11:22:1",
+                },
+                idempotency_key="MATERIAL_UNMOUNTED:source-pick-requested:11:22:1:PKG-001:SINGLE_LAYER_A",
+            ),
+            RuntimeIntent.update_context(
+                {
+                    "sorting": {
+                        "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                        "current_material": {"material_identity_key": "material:PKG-001"},
+                    }
+                }
+            ),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_UNMOUNTED"
+    assert "current_material" not in session.context_json["sorting"]
+    assert session.status == "MANUAL_HOLD"
+    record_call.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_target_place_terminal_success_records_sorted_after_context_cleanup_and_claims_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(context_json={"sorting": _handoff_sorting_context()})
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["inbox"].payload_json = {
+        "command_code": "TARGET-CMD-001",
+        "canonical_event_type": "SORTING_TARGET_PLACE_RESULT",
+    }
+    resource_projection = RecordingResourceProjectionService()
+    ledger_calls: list[dict[str, Any]] = []
+    claim_calls: list[dict[str, Any]] = []
+
+    async def record_terminal(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        ledger_calls.append(kwargs)
+        assert _db is db
+        assert kwargs["session"] is session
+        assert kwargs["terminal_status"] == "SORTED"
+        assert "current_material" not in session.context_json["sorting"]
+        assert "pending_target_placement" not in session.context_json["sorting"]
+        return SimpleNamespace(
+            outcome="advanced",
+            advanced=len(ledger_calls) == 1,
+            already_terminal=len(ledger_calls) > 1,
+            current_demand_id=11,
+        )
+
+    async def claim_next(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        claim_calls.append(kwargs)
+        assert _db is db
+        assert kwargs["demand_id"] == 11
+        return SimpleNamespace(kind="EMPTY")
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_item_terminal_result",
+        record_terminal,
+        raising=False,
+    )
+    monkeypatch.setattr(smt_inbound_handoff_service, "claim_next_source_item", claim_next)
+
+    intents = await SmtSortingInboundFlowService().handle_target_place_success(
+        SimpleNamespace(session=session),
+        ctx["inbox"],
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_MOUNTED"
+    assert [call["terminal_status"] for call in ledger_calls] == ["SORTED", "SORTED", "SORTED"]
+    assert claim_calls == [{"trace_id": "trace-runtime", "demand_id": 11}]
+
+
+@pytest.mark.asyncio
+async def test_ng_place_terminal_success_records_skipped_after_context_cleanup_and_claims_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sorting = _handoff_sorting_context()
+    sorting.pop("pending_target_placement", None)
+    sorting["current_material"]["ng_status"] = "MOVING_TO_NG"
+    session = _session(context_json={"sorting": sorting})
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["inbox"].payload_json = {
+        "command_code": "NG-CMD-001",
+        "canonical_event_type": "SORTING_NG_PLACE_RESULT",
+        "ng_location": "NG-01",
+        "ng_reason_code": "LOCAL_SORTING_NG",
+    }
+    ledger_calls: list[dict[str, Any]] = []
+    claim_calls: list[dict[str, Any]] = []
+
+    async def record_terminal(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        ledger_calls.append(kwargs)
+        assert _db is db
+        assert kwargs["session"] is session
+        assert kwargs["terminal_status"] == "SKIPPED"
+        assert kwargs["terminal_evidence"]["ng_command_payload"]["ng_location"] == "NG-01"
+        assert "current_material" not in session.context_json["sorting"]
+        return SimpleNamespace(
+            outcome="advanced",
+            advanced=len(ledger_calls) == 1,
+            already_terminal=len(ledger_calls) > 1,
+            current_demand_id=11,
+        )
+
+    async def claim_next(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        claim_calls.append(kwargs)
+        return SimpleNamespace(kind="EMPTY")
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_item_terminal_result",
+        record_terminal,
+        raising=False,
+    )
+    monkeypatch.setattr(smt_inbound_handoff_service, "claim_next_source_item", claim_next)
+
+    intents = await SmtSortingInboundFlowService().handle_ng_place_success(
+        SimpleNamespace(session=session), ctx["inbox"]
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    await RuntimeIntentEffectApplier().apply(ctx, intents)
+    await RuntimeIntentEffectApplier().apply(ctx, intents)
+    await RuntimeIntentEffectApplier().apply(ctx, intents)
+
+    assert [call["terminal_status"] for call in ledger_calls] == ["SKIPPED", "SKIPPED", "SKIPPED"]
+    assert claim_calls == [{"trace_id": "trace-runtime", "demand_id": 11}]
+
+
+@pytest.mark.asyncio
+async def test_reconciling_target_place_resource_fact_does_not_record_sorted_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(context_json={"sorting": _handoff_sorting_context()})
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    ctx["inbox"].payload_json = {"command_code": "TARGET-CMD-RECONCILING"}
+    resource_projection = RecordingResourceProjectionService(status="RECONCILING")
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    record_terminal = AsyncMock()
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_item_terminal_result",
+        record_terminal,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "src.app.workline.repositories.session_repository.WorklineSessionRepository.persist_manual_hold",
+        AsyncMock(),
+    )
+
+    intents = await SmtSortingInboundFlowService().handle_target_place_success(
+        SimpleNamespace(session=session),
+        ctx["inbox"],
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_MOUNTED"
+    assert session.status == "MANUAL_HOLD"
+    assert session.context_json["sorting"]["current_material"]["material_identity_key"] == "material:PKG-001"
+    record_terminal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_non_smt_material_mounted_does_not_record_smt_terminal_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(context_json={"material_flow": {"context_schema_version": 1}})
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    resource_projection = RecordingResourceProjectionService()
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    record_terminal = AsyncMock()
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_item_terminal_result",
+        record_terminal,
+        raising=False,
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_MOUNTED",
+                payload={"resource_kind": "BIN_CELL", "resource_key": "generic:cell:1"},
+            ),
+            RuntimeIntent.update_context({"sorting": {"current_material": {"material_identity_key": "material:GEN"}}}),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_MOUNTED"
+    record_terminal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_smt_material_mounted_without_source_pick_request_does_not_record_terminal_ledger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(context_json={"sorting": _handoff_sorting_context(include_source_pick_request=False)})
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    resource_projection = RecordingResourceProjectionService()
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    record_terminal = AsyncMock()
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_item_terminal_result",
+        record_terminal,
+        raising=False,
+    )
+
+    intents = await SmtSortingInboundFlowService().handle_target_place_success(
+        SimpleNamespace(session=session),
+        ctx["inbox"],
+    )
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_MOUNTED"
+    record_terminal.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handoff_terminal_result_rejects_source_item_bound_to_other_session() -> None:
+    item = SimpleNamespace(
+        id=22,
+        handoff_demand_id=11,
+        status=SmtInboundHandoffSourceItemStatus.PICKED,
+        sorting_session_id=999,
+        completed_at=None,
+        failure_code="OLD_FAILURE",
+        failure_message="旧失败",
+        next_attempt_at=datetime(2026, 1, 1, 0, 3, 0),
+    )
+    demand = SimpleNamespace(
+        id=11,
+        status=SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS,
+        failure_code=None,
+        failure_message=None,
+    )
+    session = _session(
+        id=123,
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                "source_pick_request": {
+                    "handoff_demand_id": demand.id,
+                    "handoff_source_item_id": item.id,
+                },
+            }
+        },
+    )
+    service = SmtInboundHandoffService(repository=FakeTerminalRepository(item))
+    db = RecordingDb(demand)
+
+    with pytest.raises(ValueError, match="sorting_session"):
+        await service.record_source_item_terminal_result(
+            db,
+            session=session,
+            terminal_status="SORTED",
+            trace_id="trace-session-mismatch",
+            terminal_evidence={"target_command_payload": {"command_code": "TARGET-CMD-001"}},
+        )
+
+    assert item.status == SmtInboundHandoffSourceItemStatus.PICKED
+    assert item.completed_at is None
+    assert item.failure_code == "OLD_FAILURE"
+    assert "handoff_terminal_result" not in session.context_json["sorting"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_status", ["FAILED", "CANCELLED"])
+async def test_terminal_conflict_keeps_terminal_session_status(
+    monkeypatch: pytest.MonkeyPatch,
+    session_status: str,
+) -> None:
+    item = SimpleNamespace(
+        id=22,
+        handoff_demand_id=11,
+        status=SmtInboundHandoffSourceItemStatus.SORTED,
+        sorting_session_id=123,
+        completed_at=datetime(2026, 1, 1, 0, 3, 0),
+        failure_code=None,
+        failure_message=None,
+        next_attempt_at=None,
+    )
+    demand = SimpleNamespace(
+        id=11,
+        status=SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS,
+        failure_code=None,
+        failure_message=None,
+    )
+    session = _session(
+        id=123,
+        status=session_status,
+        failure_domain="EXISTING_TERMINAL",
+        failure_code="EXISTING_FAILURE",
+        failure_message="existing terminal failure",
+        context_json={
+            "sorting": {
+                "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
+                "source_pick_request": {
+                    "handoff_demand_id": demand.id,
+                    "handoff_source_item_id": item.id,
+                },
+            }
+        },
+    )
+    service = SmtInboundHandoffService(repository=FakeTerminalRepository(item))
+    db = RecordingDb(demand)
+    persist_manual_hold = AsyncMock()
+    monkeypatch.setattr(
+        "src.app.workline.repositories.session_repository.WorklineSessionRepository.persist_manual_hold",
+        persist_manual_hold,
+    )
+
+    result = await service.record_source_item_terminal_result(
+        db,
+        session=session,
+        terminal_status="SKIPPED",
+        command_id=9002,
+        trace_id="trace-terminal-conflict",
+        terminal_evidence={"ng_command_payload": {"command_code": "NG-CMD-001"}},
+    )
+
+    assert result.outcome == "manual_hold"
+    assert item.status == SmtInboundHandoffSourceItemStatus.MANUAL_HOLD
+    assert item.failure_code == "PLUGIN_CONTRACT_INVALID"
+    assert demand.status == SmtInboundHandoffDemandStatus.MANUAL_HOLD
+    assert demand.failure_code == "PLUGIN_CONTRACT_INVALID"
+    assert session.status == session_status
+    assert session.failure_domain == "EXISTING_TERMINAL"
+    assert session.failure_code == "EXISTING_FAILURE"
+    assert session.failure_message == "existing terminal failure"
+    terminal_result = session.context_json["sorting"]["handoff_terminal_result"]
+    assert terminal_result["terminal_status"] == "SKIPPED"
+    assert terminal_result["conflict"] is True
+    assert terminal_result["evidence"]["ng_command_payload"]["command_code"] == "NG-CMD-001"
+    persist_manual_hold.assert_not_awaited()
 
 
 @pytest.mark.asyncio

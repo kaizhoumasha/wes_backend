@@ -40,7 +40,7 @@ beat_schedule: dict[str, dict[str, str | float]] = {
         "task": "src.celery_app.tasks.workline.scan_device_heartbeats_batch",
         "schedule": 300.0,  # 每 5 分钟扫描一次
     },
-    # SMT 入库 handoff 兜底恢复 - 扫描到期 demand 和 claim 后卡住的 source item
+    # SMT 入库 handoff 兜底恢复 - 扫描到期 demand、claim 后卡住项和 READY claim 兜底
     "scan-smt-inbound-handoff-demands-batch": {
         "task": "src.celery_app.tasks.workline.scan_smt_inbound_handoff_demands_batch",
         "schedule": 30.0,
