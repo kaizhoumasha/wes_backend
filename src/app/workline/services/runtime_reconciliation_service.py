@@ -324,6 +324,18 @@ class WorklineRuntimeReconciliationService:
                     "error_message": error_message,
                     "outbox_id": _resolve_id(outbox),
                 }
+                from src.app.sys.services.event_stream_service import (
+                    defer_command_status_changed_event,
+                )
+
+                defer_command_status_changed_event(
+                    db,
+                    command=command,
+                    action="updated",
+                    workline_id=getattr(command, "workline_id", None),
+                    device_id=getattr(command, "device_id", None),
+                    session_id=getattr(command, "session_id_int", None),
+                )
             _ = await self.runtime_hold_creation_service.create_for_dispatch_ack_exhausted(
                 db,
                 session=session,
@@ -357,6 +369,16 @@ class WorklineRuntimeReconciliationService:
                 "error_message": error_message,
                 "outbox_id": _resolve_id(outbox),
             }
+            from src.app.sys.services.event_stream_service import defer_command_status_changed_event
+
+            defer_command_status_changed_event(
+                db,
+                command=command,
+                action="updated",
+                workline_id=getattr(command, "workline_id", None),
+                device_id=getattr(command, "device_id", None),
+                session_id=getattr(command, "session_id_int", None),
+            )
 
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
         if workline is not None:

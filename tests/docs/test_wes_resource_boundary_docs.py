@@ -3,8 +3,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SRS = ROOT / "docs/architecture/SRS.md"
 ADR = ROOT / "docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md"
-SPEC = ROOT / "docs/superpowers/specs/2026-06-06-wes-single-layer-rack-orchestration-boundary-spec.md"
-SMT_HANDOFF_SPEC = ROOT / "docs/superpowers/specs/2026-06-10-smt-inbound-handoff-business-spec.md"
+SPEC = ROOT / "docs/superpowers/archive/specs/2026-06-06-wes-single-layer-rack-orchestration-boundary-spec.md"
+SMT_HANDOFF_SPEC = ROOT / "docs/superpowers/archive/specs/2026-06-10-smt-inbound-handoff-business-spec.md"
 
 
 def read(path: Path) -> str:

@@ -12,6 +12,7 @@ DEFERRED_SSE_EVENTS_KEY = "_deferred_sse_events_after_commit"
 
 DEVICE_STATUS_CHANGED_EVENT = "device.status.changed"
 WORKLINE_RUNTIME_CHANGED_EVENT = "workline.runtime.changed"
+COMMAND_STATUS_CHANGED_EVENT = "command.status.changed"
 
 
 class EventStreamService:
@@ -82,3 +83,41 @@ async def publish_deferred_sse_events(db: Any) -> None:
     for event_type, payload in raw_events:
         if isinstance(event_type, str) and isinstance(payload, dict):
             _ = await event_stream_service.publish(event_type, payload)
+
+
+def defer_command_status_changed_event(
+    db: Any,
+    *,
+    command: Any,
+    action: str,
+    workline_id: int | None,
+    device_id: int | None,
+    session_id: int | None = None,
+) -> None:
+    """登记 command 状态变更 SSE 事件，作为唯一的 command SSE 入口。"""
+
+    command_id = getattr(command, "id", None)
+    command_code = getattr(command, "command_code", None)
+    keys: dict[str, Any] = {
+        "workline_id": workline_id,
+        "device_id": device_id,
+        "command_id": command_id,
+        "command_code": command_code,
+    }
+    if session_id is not None:
+        keys["session_id"] = session_id
+
+    payload: dict[str, Any] = {
+        "domain": "workline_runtime",
+        "entity": "command",
+        "action": action,
+        "keys": keys,
+        "command_id": command_id,
+        "command_code": command_code,
+        "workline_id": workline_id,
+        "device_id": device_id,
+        "session_id": session_id,
+        "status": getattr(getattr(command, "status", None), "value", getattr(command, "status", None)),
+        "timestamp": timezone.now_utc().isoformat(),
+    }
+    defer_sse_event(db, COMMAND_STATUS_CHANGED_EVENT, payload)

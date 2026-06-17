@@ -1,6 +1,6 @@
 # SMT 入库 Handoff 业务 SPEC
 
-> 状态：已按工程复审 D2-D11 决策收紧 SPEC 合同；execution plan 已同步并通过实施前工程复审；可进入代码实施
+> 状态：已实现并归档 - 后端闭环已在 `c62066b9 v0.6.0.0 feat: SMT 入库 handoff 后端闭环` 落地
 > 日期：2026-06-10
 > 兼容策略：当前系统未发布，按破坏性优化处理；不保留旧 `smt_full_box_exchange` 插件、旧候选扫描任务或兼容 alias。
 > 关联背景：

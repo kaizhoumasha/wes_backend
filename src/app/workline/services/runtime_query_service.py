@@ -29,6 +29,7 @@ from src.app.workline.models.runtime import (
     RuntimeDeviceHealthSummary,
     RuntimeDeviceSummary,
     RuntimeMonitorActionCandidates,
+    RuntimeMonitorCommandSnapshot,
     RuntimeMonitorDeviceNode,
     RuntimeMonitorEvidenceSection,
     RuntimeMonitorReconciliationCandidate,
@@ -662,6 +663,21 @@ class RuntimeQueryService(BaseService[Any, Any]):
         active_hold_ids_map = await self._load_active_runtime_hold_ids_map(
             db, [item.id for item in devices if item.id is not None]
         )
+        current_command_ids = [
+            device.current_command_id for device in devices if getattr(device, "current_command_id", None) is not None
+        ]
+        current_command_rows = await self._load_command_map_by_ids(db, current_command_ids)
+        current_command_snapshots: dict[int, RuntimeMonitorCommandSnapshot] = {}
+        for command_id, command_row in current_command_rows.items():
+            current_command_snapshots[command_id] = RuntimeMonitorCommandSnapshot(
+                id=command_id,
+                command_code=command_row.command_code,
+                status=_status_str(command_row.status),
+                sent_at=_api_utc_datetime(command_row.sent_at),
+                ack_received_at=_api_utc_datetime(command_row.ack_received_at),
+                ack_code=command_row.ack_code,
+                ack_message=command_row.ack_message,
+            )
         summary = self._build_workline_summary(workline, devices, all_sessions)
         summary.active_session_count = sum(
             active_status_counts.get(status, 0) for status in _IN_PROGRESS_SESSION_STATUSES
@@ -680,6 +696,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 blocked_outbox_count=blocked_outbox_projection.count_by_device_id.get(device.id or 0, 0),
                 blocked_outbox_summary=blocked_outbox_projection.summary_by_device_id.get(device.id or 0),
                 active_runtime_hold_ids=active_hold_ids_map.get(device.id or 0, []),
+                current_command=(
+                    current_command_snapshots.get(device.current_command_id)
+                    if getattr(device, "current_command_id", None) is not None
+                    else None
+                ),
             )
             for device in devices
         ]
@@ -1927,6 +1948,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         blocked_outbox_count: int = 0,
         blocked_outbox_summary: dict[str, Any] | None = None,
         active_runtime_hold_ids: list[int] | None = None,
+        current_command: RuntimeMonitorCommandSnapshot | None = None,
     ) -> RuntimeMonitorDeviceNode:
         hold_ids = active_runtime_hold_ids or []
         blocked_summary = blocked_outbox_summary or {}
@@ -1940,6 +1962,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             device_status=_status_str(device.device_status),
             maintenance_mode=device.maintenance_mode,
             current_command_id=device.current_command_id,
+            current_command=current_command,
             open_command_count=open_command_count,
             pending_command_count=open_command_count,
             blocked_outbox_count=blocked_outbox_count,

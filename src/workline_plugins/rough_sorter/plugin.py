@@ -306,6 +306,16 @@ class RoughSorterPlugin(WorklinePlugin):
         topology=TopologySpec(
             flow_edges=(
                 FlowEdge(
+                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_INPUT_ARM),
+                    to_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_CONVEYOR),
+                    type=FlowEdgeType.OPERATION,
+                ),
+                FlowEdge(
+                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_CONVEYOR),
+                    to_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_OUTPUT_ARM),
+                    type=FlowEdgeType.OPERATION,
+                ),
+                FlowEdge(
                     from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_OUTPUT_ARM),
                     to_node=_node(NodeRefKind.RACK_POSITION, POSITION_WORK_SINGLE_LAYER),
                     type=FlowEdgeType.OPERATION,

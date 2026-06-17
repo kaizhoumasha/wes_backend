@@ -10,6 +10,8 @@
 
 **Tech Stack:** Python 3.13, dataclasses, Pydantic/FastAPI, pytest, GitNexus impact analysis, Vue 3, TypeScript, Vitest, OpenAPI generated types/zod schemas.
 
+**Acceptance Audit (2026-06-15):** 本计划已由 `aeeb9d48 v0.6.1.0 feat(workline): 重构插件 manifest 合同 (#33)` 与后续 `abe0e750 v0.6.2.0 fix(workline): 重命名 manifest 货架位合同 (#34)` 完成。下方 checkbox 按归档验收口径勾选：当前后端 manifest/RackPosition focused pytest 151 passed，前端 targeted Vitest 88 passed，`pnpm type:check` 与 `pnpm contract:test` 通过；RED 阶段不重放，只确认对应回归测试和清理门禁已存在并通过。
+
 ---
 
 ## 项目约束
@@ -172,7 +174,7 @@ STATIC source  -> invalid; static position uses position_ref
 - Read: `AGENTS.md`
 - No code changes
 
-- [ ] **Step 1: 确认当前分支和脏工作区**
+- [x] **Step 1: 确认当前分支和脏工作区**
 
 Run:
 
@@ -190,7 +192,7 @@ implementation worktree: feature/workline-plugin-manifest-refactor
 
 已有 `.gitignore`、`AGENTS.md`、`CLAUDE.md` 等非本计划改动不得回滚；只操作本任务列出的文件。
 
-- [ ] **Step 2: 建议为实施创建隔离 worktree**
+- [x] **Step 2: 建议为实施创建隔离 worktree**
 
 Run from backend repo root when isolation is needed:
 
@@ -204,7 +206,7 @@ uv sync --dev
 
 Expected: worktree 创建成功，后续所有后端命令在该 worktree 内执行。
 
-- [ ] **Step 3: 记录必须先跑的 GitNexus impact targets**
+- [x] **Step 3: 记录必须先跑的 GitNexus impact targets**
 
 Before editing symbols, run impact analysis for these targets in the agent environment:
 
@@ -250,7 +252,7 @@ Task 1 may proceed because it only updates tests. Before Task 3 or any edit to `
 - Modify: `tests/workline_runtime/test_plugin_single_layer_rack_boundary.py`
 - Create: `tests/workline_runtime/test_plugin_manifest_cleanup_gate.py`
 
-- [ ] **Step 1: Run impact analysis for manifest/topology symbols**
+- [x] **Step 1: Run impact analysis for manifest/topology symbols**
 
 Run in agent environment:
 
@@ -261,7 +263,7 @@ gitnexus_impact({target: "validate_topology_manifest", direction: "upstream"})
 
 Expected: impact is understood and no unreported HIGH/CRITICAL risk remains.
 
-- [ ] **Step 2: Replace old manifest-shape tests with new contract tests**
+- [x] **Step 2: Replace old manifest-shape tests with new contract tests**
 
 In `tests/workline_runtime/test_plugin_manifest_and_topology.py`, keep `_device(...)` helper and rewrite manifest tests to cover these names and assertions:
 
@@ -285,7 +287,7 @@ In `tests/workline_runtime/test_plugin_manifest_and_topology.py`, keep `_device(
 
 Use short fixture builders in the test file; do not keep assertions against `required_device_roles`, `event_source_roles`, `command_target_roles`, `supported_events`, `supported_commands`, or `single_layer_boundaries`. Cleanup/negative tests that need removed token names must build them from fragments (for example `("supported", "_events")`) or be excluded from explicit `rg` scans, so the cleanup gate does not match itself.
 
-- [ ] **Step 3: Rewrite reserved runtime event tests to use `events`**
+- [x] **Step 3: Rewrite reserved runtime event tests to use `events`**
 
 In `tests/workline_runtime/test_reserved_runtime_events.py`, replace old `supported_events` / `event_source_roles` cases with:
 
@@ -294,7 +296,7 @@ In `tests/workline_runtime/test_reserved_runtime_events.py`, replace old `suppor
 | `test_manifest_rejects_reserved_runtime_event_binding_event` | `EventBinding(event="ESTOP_PRESSED", ...)` fails |
 | `test_manifest_rejects_reserved_runtime_command_result_event` | `CommandResultBinding(event="WORKLINE_START_REQUESTED", ...)` fails |
 
-- [ ] **Step 4: Convert old single-layer boundary tests into generic resource boundary tests**
+- [x] **Step 4: Convert old single-layer boundary tests into generic resource boundary tests**
 
 In `tests/workline_runtime/test_plugin_single_layer_rack_boundary.py`, replace `SingleLayerRackBoundary` tests with:
 
@@ -305,7 +307,7 @@ In `tests/workline_runtime/test_plugin_single_layer_rack_boundary.py`, replace `
 | `test_registered_plugins_declare_resource_boundaries_for_rack_operations` | rough/smt plugins expose non-empty `resource_boundaries` where needed |
 | `test_smt_manifest_declares_five_layer_resource_boundary` | SMT inbound includes `FIVE_LAYER` boundary coverage |
 
-- [ ] **Step 5: Add cleanup gate test**
+- [x] **Step 5: Add cleanup gate test**
 
 Create `tests/workline_runtime/test_plugin_manifest_cleanup_gate.py` with one test that scans active paths only:
 
@@ -329,7 +331,7 @@ ng_reason_catalog, BusinessKeyResolver, ResultClassifier, _looks_like_manifest,
 _ALLOWED_SINGLE_LAYER_, _requires_single_layer_boundaries, 旧 __all__ 导出项
 ```
 
-- [ ] **Step 6: Run red tests**
+- [x] **Step 6: Run red tests**
 
 Run:
 
@@ -355,7 +357,7 @@ Expected: FAIL before implementation with missing new symbols, old field asserti
 - Test: `tests/workline_runtime/test_plugin_manifest_and_topology.py`
 - Test: `tests/workline_runtime/test_reserved_runtime_events.py`
 
-- [ ] **Step 1: Run impact analysis**
+- [x] **Step 1: Run impact analysis**
 
 Run:
 
@@ -366,7 +368,7 @@ gitnexus_impact({target: "validate_topology_manifest", direction: "upstream"})
 
 Expected: proceed only after risks are understood.
 
-- [ ] **Step 2: Replace old manifest dataclasses**
+- [x] **Step 2: Replace old manifest dataclasses**
 
 In `src/workline_runtime/plugin_manifest.py`, remove old callable/type/boundary definitions and define only these public contracts:
 
@@ -389,7 +391,7 @@ WorklinePluginManifest
 
 `__all__` must contain only the new symbols. Delete `BusinessKeyResolver`, `ResultClassifier`, `DeviceRoleRequirement`, `SingleLayerRackBoundary`, `MaterialIdentityResolver` re-export, and old helper constants.
 
-- [ ] **Step 3: Implement validation invariants**
+- [x] **Step 3: Implement validation invariants**
 
 In `WorklinePluginManifest.__post_init__`, enforce:
 
@@ -413,7 +415,7 @@ resource boundary has no station_code/station_role fields
 reserved runtime events are rejected through EventBinding and CommandResultBinding
 ```
 
-- [ ] **Step 4: Update topology validation to read new fields**
+- [x] **Step 4: Update topology validation to read new fields**
 
 In `src/workline_runtime/topology.py`, change `validate_topology_manifest` to:
 
@@ -427,11 +429,11 @@ reuse manifest's own static topology validation rather than mutating manifest fi
 
 No line may assign `manifest.event_source_roles = {}` or `manifest.command_target_roles = {}`.
 
-- [ ] **Step 5: Update runtime package exports**
+- [x] **Step 5: Update runtime package exports**
 
 In `src/workline_runtime/__init__.py`, export the new contract symbols and remove old ones. Keep existing unrelated exports untouched.
 
-- [ ] **Step 6: Run focused manifest tests**
+- [x] **Step 6: Run focused manifest tests**
 
 Run:
 
@@ -444,7 +446,7 @@ uv run pytest \
 
 Expected: PASS for manifest/topology/reserved-event tests.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Run:
 
@@ -472,7 +474,7 @@ Expected: commit succeeds after focused tests pass.
 - Test: `tests/workline_runtime/test_material_identity.py`
 - Test: `tests/workline_runtime/test_ng_reason_catalog.py`
 
-- [ ] **Step 1: Run impact analysis**
+- [x] **Step 1: Run impact analysis**
 
 Run:
 
@@ -485,7 +487,7 @@ gitnexus_impact({target: "_load_plugin", direction: "upstream"})
 
 Expected: proceed only after risk review.
 
-- [ ] **Step 2: Add registry helper tests**
+- [x] **Step 2: Add registry helper tests**
 
 Add or update tests with these assertions:
 
@@ -496,7 +498,7 @@ Add or update tests with these assertions:
 | `tests/workline_runtime/test_material_identity.py` | `test_registry_material_identity_helper_returns_missing_default` | missing plugin capability returns existing MISSING material identity semantics |
 | `tests/workline_runtime/test_ng_reason_catalog.py` | `test_registry_ng_reason_helper_returns_empty_catalog_default` | plugin without catalog returns empty tuple |
 
-- [ ] **Step 3: Implement `WorklinePluginDefinition.plugin_instance`**
+- [x] **Step 3: Implement `WorklinePluginDefinition.plugin_instance`**
 
 In `src/workline_plugin_registry.py`:
 
@@ -509,7 +511,7 @@ _looks_like_manifest is deleted
 
 Use a private module-level cache keyed by `plugin_key` or a cached attribute on `WorklinePluginDefinition`; choose one stable registry-owned location, not orchestrator.
 
-- [ ] **Step 4: Add registry runtime helpers**
+- [x] **Step 4: Add registry runtime helpers**
 
 In `src/workline_plugin_registry.py`, provide helpers with these names:
 
@@ -530,7 +532,7 @@ unknown plugin or no NG reason catalog -> empty tuple
 helper calls Plugin instance capability, never manifest callable
 ```
 
-- [ ] **Step 5: Remove orchestrator plugin cache**
+- [x] **Step 5: Remove orchestrator plugin cache**
 
 In `src/workline_runtime/orchestrator.py`:
 
@@ -541,11 +543,11 @@ preserve null_plugin opt-in behavior
 update comments that mention cached plugin_class map
 ```
 
-- [ ] **Step 6: Update session resolver and SDK comments/imports**
+- [x] **Step 6: Update session resolver and SDK comments/imports**
 
 In `src/workline_runtime/session_resolver.py`, update comments to say registry Plugin runtime resolves business keys. In SDK classifier/normalizer modules, remove imports/types that reference old manifest callable aliases.
 
-- [ ] **Step 7: Run focused registry tests**
+- [x] **Step 7: Run focused registry tests**
 
 Run:
 
@@ -560,7 +562,7 @@ uv run pytest \
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 Run:
 
@@ -586,7 +588,7 @@ Expected: commit succeeds after focused tests pass.
 - Test: `tests/workline_runtime/test_smt_sorting_inbound_plugin.py`
 - Test: `tests/workline_plugins/test_rough_sorter_plugin.py`
 
-- [ ] **Step 1: Run impact analysis**
+- [x] **Step 1: Run impact analysis**
 
 Run:
 
@@ -597,7 +599,7 @@ gitnexus_impact({target: "SmtSortingInboundPlugin", direction: "upstream"})
 
 Expected: plugin blast radius is understood.
 
-- [ ] **Step 2: Add golden sample tests for both plugins**
+- [x] **Step 2: Add golden sample tests for both plugins**
 
 In manifest/topology plugin tests, assert:
 
@@ -616,7 +618,7 @@ rough sorter PUT_TO_BIN keeps only the WES rack-position/resource-overlay positi
 SMT MATERIAL_FLOW edges are POSITION to POSITION; device relationships use OPERATION
 ```
 
-- [ ] **Step 3: Migrate rough sorter manifest**
+- [x] **Step 3: Migrate rough sorter manifest**
 
 In `src/workline_plugins/rough_sorter/plugin.py`:
 
@@ -633,7 +635,7 @@ set rough sorter PICK_AND_PUT, MOVE_FORWARD, and MOVE_TO_NG position_args to emp
 
 Keep existing business methods and action behavior; do not rewrite plugin workflow logic in this task.
 
-- [ ] **Step 4: Migrate SMT sorting inbound manifest**
+- [x] **Step 4: Migrate SMT sorting inbound manifest**
 
 In `src/workline_plugins/smt_sorting_inbound/plugin.py`:
 
@@ -648,11 +650,11 @@ ensure NG place command target remains TARGET_ARM when current behavior requires
 convert device-role -> target/NG MATERIAL_FLOW edges to OPERATION and add explicit POSITION -> POSITION business material flows where inventory movement is modeled
 ```
 
-- [ ] **Step 5: Update plugin-local manifest references**
+- [x] **Step 5: Update plugin-local manifest references**
 
 Replace `self.manifest.single_layer_boundaries` access in rough sorter allocation context with a helper that reads `manifest.resource_boundaries` by business role/snapshot kind and derives `position_code` / `rack_kind`.
 
-- [ ] **Step 6: Run focused plugin tests**
+- [x] **Step 6: Run focused plugin tests**
 
 Run:
 
@@ -666,7 +668,7 @@ uv run pytest \
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 Run:
 
@@ -690,7 +692,7 @@ Expected: commit succeeds after focused tests pass.
 - Modify: `tests/test_workline_service_plugin_validation.py`
 - Modify: `tests/test_workline_routes.py`
 
-- [ ] **Step 1: Run impact analysis**
+- [x] **Step 1: Run impact analysis**
 
 Run:
 
@@ -703,7 +705,7 @@ gitnexus_impact({target: "get_plugin_manifest_summary", direction: "upstream"})
 
 Expected: API/generated contract impact understood.
 
-- [ ] **Step 2: Update API schema tests first**
+- [x] **Step 2: Update API schema tests first**
 
 In `tests/test_workline_service_plugin_validation.py`, replace old summary assertions with:
 
@@ -725,7 +727,7 @@ OpenAPI component WorkLinePluginOption has no old ability fields
 OpenAPI component WorkLinePluginManifestSummary has new manifest fields
 ```
 
-- [ ] **Step 3: Change `WorkLinePluginOption` to selector-only**
+- [x] **Step 3: Change `WorkLinePluginOption` to selector-only**
 
 In `src/app/workline/models/workline.py`, keep only:
 
@@ -744,7 +746,7 @@ supported_events
 supported_commands
 ```
 
-- [ ] **Step 4: Replace API summary schema**
+- [x] **Step 4: Replace API summary schema**
 
 In `src/app/workline/models/workline.py`, replace old summary fields with generated-friendly Pydantic schemas for:
 
@@ -765,7 +767,7 @@ WorkLinePluginManifestSummary
 
 Field names must match backend manifest field names.
 
-- [ ] **Step 5: Update `list_plugin_options`**
+- [x] **Step 5: Update `list_plugin_options`**
 
 In `src/app/workline/services/workline_service.py`, build `WorkLinePluginOption` without reading manifest capabilities:
 
@@ -776,7 +778,7 @@ contract_versions = [definition.manifest.contract_version]
 default_contract_version = definition.manifest.contract_version
 ```
 
-- [ ] **Step 6: Update `get_plugin_manifest_summary`**
+- [x] **Step 6: Update `get_plugin_manifest_summary`**
 
 Replace old helper usage:
 
@@ -800,7 +802,7 @@ manifest.resource_boundaries
 
 Keep helper functions small and local to `WorkLineService`; delete helpers that only support old fields after tests are migrated.
 
-- [ ] **Step 7: Update configuration checks**
+- [x] **Step 7: Update configuration checks**
 
 In `WorkLineService.build_configuration_status` and helpers:
 
@@ -813,7 +815,7 @@ _command_target_device_map reads command.target_device_role
 carrier capability checks compare manifest.positions[].carrier_capability to WorklineRackPosition config
 ```
 
-- [ ] **Step 8: Run focused API/service tests**
+- [x] **Step 8: Run focused API/service tests**
 
 Run:
 
@@ -823,7 +825,7 @@ uv run pytest tests/test_workline_service_plugin_validation.py tests/test_workli
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 Run:
 
@@ -854,7 +856,7 @@ Expected: commit succeeds after focused tests pass.
 - Test: `tests/workline_runtime/test_ng_return_item_service.py`
 - Test: `tests/api/test_runtime_hold_api.py`
 
-- [ ] **Step 1: Run impact analysis**
+- [x] **Step 1: Run impact analysis**
 
 Run:
 
@@ -869,7 +871,7 @@ gitnexus_impact({target: "list_ng_reasons", direction: "upstream"})
 
 Expected: consumer blast radius understood.
 
-- [ ] **Step 2: Update entry event filtering tests**
+- [x] **Step 2: Update entry event filtering tests**
 
 In `tests/workline_runtime/test_inbox_batch_processor.py`, assert `_entry_event_types_for_workline` returns:
 
@@ -879,7 +881,7 @@ fallback _ENTRY_DEVICE_EVENT_TYPES for unknown plugin
 no INTERNAL / COMMAND_RESULT / OPERATOR / SAFETY events
 ```
 
-- [ ] **Step 3: Update inbox batch implementation**
+- [x] **Step 3: Update inbox batch implementation**
 
 In `src/app/workline/services/inbox_batch_processor.py`, replace `event_source_roles` lookup with:
 
@@ -889,7 +891,7 @@ filter category == EventCategory.ENTRY_DEVICE
 return event names as frozenset
 ```
 
-- [ ] **Step 4: Update sandbox event template tests**
+- [x] **Step 4: Update sandbox event template tests**
 
 In `tests/workline_runtime/test_workline_operation_service.py`, assert:
 
@@ -900,11 +902,11 @@ ENTRY_DEVICE and other operator-visible event categories are handled by explicit
 old supported_events/event_source_roles absence does not break template generation
 ```
 
-- [ ] **Step 5: Update operation service implementation**
+- [x] **Step 5: Update operation service implementation**
 
 In `src/app/workline/services/operation_service.py`, rename `_generate_event_templates_from_supported_events` only if all callers are updated; otherwise keep name temporarily but change internals to read `manifest.events`. Remove `_event_allows_device_role` only after no caller uses old role map shape.
 
-- [ ] **Step 6: Update runtime query resource boundary tests**
+- [x] **Step 6: Update runtime query resource boundary tests**
 
 In `tests/workline_runtime/test_runtime_query_service.py`, assert:
 
@@ -915,7 +917,7 @@ FIVE_LAYER boundary is not ignored in generic resource evidence
 station_code/station_role derive from Position
 ```
 
-- [ ] **Step 7: Update runtime query implementation**
+- [x] **Step 7: Update runtime query implementation**
 
 In `src/app/workline/services/runtime_query_service.py`, replace `_single_layer_boundary_positions` old field access with helper logic over:
 
@@ -926,7 +928,7 @@ boundary.position_code
 manifest.positions lookup for station derivation
 ```
 
-- [ ] **Step 8: Update hold release / NG return tests**
+- [x] **Step 8: Update hold release / NG return tests**
 
 In runtime hold and NG tests, assert services call registry helpers rather than manifest methods:
 
@@ -938,7 +940,7 @@ ng_return_item_service uses list_workline_ng_reasons
 runtime_hold_query_service uses list_workline_ng_reasons
 ```
 
-- [ ] **Step 9: Update hold release / NG return implementations**
+- [x] **Step 9: Update hold release / NG return implementations**
 
 Replace:
 
@@ -955,7 +957,7 @@ ng_return_item_service.py
 runtime_hold_query_service.py
 ```
 
-- [ ] **Step 10: Run focused runtime tests**
+- [x] **Step 10: Run focused runtime tests**
 
 Run:
 
@@ -972,7 +974,7 @@ uv run pytest \
 
 Expected: PASS.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 Run:
 
@@ -1001,7 +1003,7 @@ Expected: commit succeeds after focused tests pass.
 - Modify: `docs/plugin_development_guide.md`
 - Modify: `tests/workline_plugins/test_plugin_template_assets.py`
 
-- [ ] **Step 1: Update template asset tests first**
+- [x] **Step 1: Update template asset tests first**
 
 In `tests/workline_plugins/test_plugin_template_assets.py`, assert template files:
 
@@ -1016,11 +1018,11 @@ document positions as rack docking positions only
 assert template MATERIAL_FLOW edges are POSITION to POSITION
 ```
 
-- [ ] **Step 2: Update plugin template**
+- [x] **Step 2: Update plugin template**
 
 In `docs/templates/workline_plugin/plugin.py.tmpl`, rewrite manifest example to use new pure-data fields and move runtime capabilities to Plugin class members. Keep snippets short and omit unrelated business implementation.
 
-- [ ] **Step 3: Update template tests**
+- [x] **Step 3: Update template tests**
 
 In `docs/templates/workline_plugin/tests.py.tmpl`, update assertions to check:
 
@@ -1031,7 +1033,7 @@ plugin runtime helper methods exist
 old fields absent
 ```
 
-- [ ] **Step 4: Update docs**
+- [x] **Step 4: Update docs**
 
 In `docs/templates/workline_plugin/README.md`, `docs/templates/workline_plugin/sandbox_happy_path.md`, and `docs/plugin_development_guide.md`, replace old manifest-field guidance with:
 
@@ -1045,7 +1047,7 @@ PositionArg static source uses position_ref
 PositionArgSource does not support STATIC
 ```
 
-- [ ] **Step 5: Run template tests**
+- [x] **Step 5: Run template tests**
 
 Run:
 
@@ -1055,7 +1057,7 @@ uv run pytest tests/workline_plugins/test_plugin_template_assets.py -q
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -1077,7 +1079,7 @@ Expected: commit succeeds after template tests pass.
 - Modify: `tests/workline_runtime/test_plugin_manifest_cleanup_gate.py`
 - Modify: any backend active source/test/template/doc file reported by the explicit scan in Step 2
 
-- [ ] **Step 1: Run cleanup gate test**
+- [x] **Step 1: Run cleanup gate test**
 
 Run:
 
@@ -1087,7 +1089,7 @@ uv run pytest tests/workline_runtime/test_plugin_manifest_cleanup_gate.py -q
 
 Expected: PASS.
 
-- [ ] **Step 2: Run explicit backend old-field scan**
+- [x] **Step 2: Run explicit backend old-field scan**
 
 Run:
 
@@ -1120,7 +1122,7 @@ rg -n "ROUGH_SORTER_SCAN_POINT|PIPELINE-IN-01|PIPELINE-OUT-01|NG-01|SCAN_POSITIO
 
 Expected: review any hits manually; passing/failing is determined by the structured pytest golden assertions above, not by zero output from this scan.
 
-- [ ] **Step 3: Run backend focused suite**
+- [x] **Step 3: Run backend focused suite**
 
 Run:
 
@@ -1143,7 +1145,7 @@ uv run pytest \
 
 Expected: PASS.
 
-- [ ] **Step 4: Run backend formatting/lint**
+- [x] **Step 4: Run backend formatting/lint**
 
 Run:
 
@@ -1154,7 +1156,7 @@ uv run ruff check src tests
 
 Expected: both commands exit 0.
 
-- [ ] **Step 5: Commit cleanup**
+- [x] **Step 5: Commit cleanup**
 
 Run:
 
@@ -1179,7 +1181,7 @@ Expected: commit succeeds after cleanup gate and focused suite pass.
 - Test: `/Users/kaizhou/SynologyDrive/works/wes_frontend/tests/unit/api/runtime.test.ts`
 - Test: `/Users/kaizhou/SynologyDrive/works/wes_frontend/tests/unit/composables/useRuntimeSceneManifest.test.ts`
 
-- [ ] **Step 1: Start backend OpenAPI source**
+- [x] **Step 1: Start backend OpenAPI source**
 
 From backend repo:
 
@@ -1189,7 +1191,7 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8001
 
 Expected: server starts and `/openapi.json` reflects new Workline plugin schemas.
 
-- [ ] **Step 2: Regenerate frontend contract**
+- [x] **Step 2: Regenerate frontend contract**
 
 From frontend repo:
 
@@ -1202,7 +1204,7 @@ pnpm contract:verify
 
 Expected: all commands exit 0.
 
-- [ ] **Step 3: Update runtime aliases**
+- [x] **Step 3: Update runtime aliases**
 
 In `/Users/kaizhou/SynologyDrive/works/wes_frontend/src/types/runtime.ts`, remove local runtime manifest compatibility fields:
 
@@ -1217,7 +1219,7 @@ single_layer_boundaries
 
 Keep aliases tied to generated `components['schemas']` where available.
 
-- [ ] **Step 4: Add contract tests**
+- [x] **Step 4: Add contract tests**
 
 In frontend tests, assert:
 
@@ -1228,7 +1230,7 @@ useRuntimeSceneManifest cache key still uses plugin_key + contract_version
 manifest route still accepts plugin_key path parameter
 ```
 
-- [ ] **Step 5: Run frontend contract tests**
+- [x] **Step 5: Run frontend contract tests**
 
 From frontend repo:
 
@@ -1239,7 +1241,7 @@ pnpm type:check
 
 Expected: PASS and type check exits 0.
 
-- [ ] **Step 6: Commit frontend generated contract**
+- [x] **Step 6: Commit frontend generated contract**
 
 From frontend repo:
 
@@ -1262,7 +1264,7 @@ Expected: commit succeeds after contract tests pass.
 - Modify: `/Users/kaizhou/SynologyDrive/works/wes_frontend/tests/unit/utils/runtime-scene.test.ts`
 - Modify: `/Users/kaizhou/SynologyDrive/works/wes_frontend/tests/unit/utils/runtime-scene.regression-1.test.ts`
 
-- [ ] **Step 1: Add config page tests first**
+- [x] **Step 1: Add config page tests first**
 
 Create `tests/unit/views/admin/worklines/config/WorkLineConfigPage.test.ts` with Vue Test Utils/Vitest style matching existing tests. Required tests:
 
@@ -1275,7 +1277,7 @@ test commands display reads manifest.commands
 test page still works when options contain only selector fields
 ```
 
-- [ ] **Step 2: Update config page data flow**
+- [x] **Step 2: Update config page data flow**
 
 In `WorkLineConfigPage.vue`:
 
@@ -1291,7 +1293,7 @@ watch workline.plugin_key and contract_version to reload manifest detail
 
 Do not duplicate devices/events/commands in `WorkLinePluginOption`.
 
-- [ ] **Step 3: Add runtime scene tests first**
+- [x] **Step 3: Add runtime scene tests first**
 
 In `tests/unit/utils/runtime-scene.test.ts` and regression file, replace old `single_layer_boundaries` fixtures with new manifest fixtures:
 
@@ -1306,7 +1308,7 @@ manifestLoadFailed still falls back to generic evidence
 contract_version mismatch still fails closed through caller
 ```
 
-- [ ] **Step 4: Update runtime scene implementation**
+- [x] **Step 4: Update runtime scene implementation**
 
 In `src/utils/runtime-scene.ts`:
 
@@ -1319,7 +1321,7 @@ semantic fallback messages mention manifest/resource boundaries, not single_laye
 no code references WorkLineSingleLayerRackBoundarySummary
 ```
 
-- [ ] **Step 5: Run frontend focused tests**
+- [x] **Step 5: Run frontend focused tests**
 
 From frontend repo:
 
@@ -1333,7 +1335,7 @@ pnpm type:check
 
 Expected: PASS and type check exits 0.
 
-- [ ] **Step 6: Commit frontend consumers**
+- [x] **Step 6: Commit frontend consumers**
 
 From frontend repo:
 
@@ -1354,7 +1356,7 @@ Expected: commit succeeds after focused tests pass.
 **Files:**
 - Backend and frontend active files changed by previous tasks
 
-- [ ] **Step 1: Run backend old-field scan**
+- [x] **Step 1: Run backend old-field scan**
 
 From backend repo:
 
@@ -1367,7 +1369,7 @@ rg -n -P "(?<![A-Za-z0-9_])(required_device_roles|DeviceRoleRequirement|event_so
 
 Expected: no output.
 
-- [ ] **Step 2: Run frontend old-field scan**
+- [x] **Step 2: Run frontend old-field scan**
 
 From frontend repo:
 
@@ -1380,7 +1382,7 @@ rg -n -P "(?<![A-Za-z0-9_])(required_device_roles|event_source_roles|command_tar
 
 Expected: no output.
 
-- [ ] **Step 3: Run backend verification**
+- [x] **Step 3: Run backend verification**
 
 From backend repo:
 
@@ -1404,7 +1406,7 @@ uv run ruff check src tests
 
 Expected: all commands exit 0.
 
-- [ ] **Step 4: Run frontend verification**
+- [x] **Step 4: Run frontend verification**
 
 From frontend repo:
 
@@ -1422,7 +1424,7 @@ pnpm type:check
 
 Expected: all commands exit 0.
 
-- [ ] **Step 5: Run GitNexus detect changes before final commit or PR**
+- [x] **Step 5: Run GitNexus detect changes before final commit or PR**
 
 Run in agent environment:
 
@@ -1432,7 +1434,7 @@ gitnexus_detect_changes()
 
 Expected: detected symbol changes match this plan: manifest/topology, registry helpers, plugin manifests, workline service/runtime consumers, template docs/tests, frontend generated contract and consumers.
 
-- [ ] **Step 6: Final commit if there are remaining unstaged cleanup changes**
+- [x] **Step 6: Final commit if there are remaining unstaged cleanup changes**
 
 From each repo with remaining intended changes:
 

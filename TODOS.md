@@ -121,7 +121,7 @@
 
 **Why**: 本轮只落地后端 handoff 账本、结构化查询、恢复 evidence 和兜底扫描；生产现场还需要按真实失败分布配置告警、人工处置 SOP 和恢复时长指标，避免过早定义阈值造成误报。
 
-**Context**: `docs/superpowers/specs/2026-06-10-smt-inbound-handoff-business-spec.md` 明确将运营看板、告警阈值和 Runbook 列为 P2 follow-up，不阻塞首版后端闭环发布。
+**Context**: `docs/superpowers/archive/specs/2026-06-10-smt-inbound-handoff-business-spec.md` 明确将运营看板、告警阈值和 Runbook 列为 P2 follow-up，不阻塞首版后端闭环发布。
 
 **Scope**:
 - Handoff demand/source item 状态分布、MANUAL_HOLD 原因、dead-letter 和 command correlation 缺失监控
@@ -433,7 +433,7 @@
 - 在 runtime detail 增加稳定资源证据 view
 - 补 contract/schema tests，防止前端回到 raw JSON 推断
 
-**Dependencies**: 与 `docs/superpowers/plans/2026-06-06-wes-single-layer-rack-orchestration-boundary-plan.md` 的 runtime detail 合同同步实施。
+**Dependencies**: 与 `docs/superpowers/archive/plans/2026-06-06-wes-single-layer-rack-orchestration-boundary-plan.md` 的 runtime detail 合同同步实施。
 
 **Effort**: M (human: ~1-2 days / CC: ~2-3 hours)
 

@@ -509,6 +509,7 @@ async def submit_sandbox_ack(
         )
     except ValueError as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
+    await publish_deferred_sse_events(db)
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_outbox_response(outbox)))
 
 
@@ -566,6 +567,7 @@ async def submit_sandbox_result(
         )
     except ValueError as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
+    await publish_deferred_sse_events(db)
     _enqueue_workline_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 

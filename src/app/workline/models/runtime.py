@@ -675,6 +675,21 @@ class RuntimeDeviceDetailResponse(BaseModel):
     active_sessions: list[RuntimeTraceListItem] = Field(default_factory=list)
 
 
+class RuntimeMonitorCommandSnapshot(BaseModel):
+    """运行监控视图中的设备当前指令快照。
+
+    字段固定，专供 dashboard ECS ACK 链消费；不引入业务流转字段。
+    """
+
+    id: int
+    command_code: str
+    status: str
+    sent_at: datetime | None = None
+    ack_received_at: datetime | None = None
+    ack_code: int | None = None
+    ack_message: str | None = None
+
+
 class RuntimeMonitorDeviceNode(BaseModel):
     id: int
     device_code: str
@@ -685,6 +700,7 @@ class RuntimeMonitorDeviceNode(BaseModel):
     device_status: str
     maintenance_mode: bool = False
     current_command_id: int | None = None
+    current_command: RuntimeMonitorCommandSnapshot | None = None
     open_command_count: int = 0
     pending_command_count: int = 0
     blocked_outbox_count: int = 0

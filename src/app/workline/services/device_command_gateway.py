@@ -696,6 +696,18 @@ class DeviceCommandGateway:
                                 command_id=command_id,
                                 ack_received_at=ack_received_at,
                             )
+                            from src.app.sys.services.event_stream_service import (
+                                defer_command_status_changed_event,
+                            )
+
+                            defer_command_status_changed_event(
+                                db,
+                                command=command,
+                                action="acked",
+                                workline_id=getattr(command, "workline_id", None),
+                                device_id=device_id,
+                                session_id=getattr(command, "session_id_int", None),
+                            )
                     else:
                         logger.warning(
                             "设备指令已 ACK，但 WES 侧设备运行态未更新: "

@@ -10,6 +10,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.7.1.0] - 2026-06-17
+
+### Added
+
+- 运行监控设备节点现在返回当前指令快照，前端可直接展示当前 command code、状态、发送时间和 ACK 信息。
+- Command 状态变更新增统一 SSE 通知，真实 ECS ACK、沙箱 ACK、沙箱 Result 和 ACK 重试耗尽路径都会触发运行监控刷新。
+
+### Changed
+
+- 粗分机 manifest 拓扑补充输入机械臂、输送线和输出机械臂之间的 operation edge，让设备动作链路在拓扑视图中更完整。
+- 已完成的 superpowers 规格和计划统一归档，并同步更新相关文档、TODO 和测试引用路径。
+- Agent 项目入口文档同步到当前 GitNexus 工具命名和索引规模。
+
+### Fixed
+
+- 沙箱 ACK 和 Result API 现在会在提交后发布延迟登记的 SSE 事件，避免前端错过手动联调中的 command 状态刷新。
+
 ## [0.7.0.0] - 2026-06-17
 
 ### Added
