@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.7.0.0] - 2026-06-17
+
+### Added
+
+- SMT 分拣入库现在可以承接粗分机释放后的 handoff 闭环，按 manifest source boundary 选择目标分拣线，并生成 typed source-pick context、内部 Inbox 和可追踪 route evidence。
+- SMT handoff source item 支持两阶段 claim、目标 WorkLine 串行保护、ECS probe freshness 复查和 Celery READY claim 兜底扫描，避免重复物理取盘或提前进入分拣。
+- Source-pick 成功、目标投放成功和 NG 投放成功会写入 handoff ledger，自动推进 SORTED/SKIPPED 终态，并在可继续分拣时按 demand scope 认领下一盘料。
+- 新增 SMT handoff release-to-terminal、runtime intent effects、PostgreSQL claim/recovery guard 和 Celery recovery contract 回归覆盖。
+
+### Changed
+
+- SMT 分拣入库 manifest 货架位合同收敛为单层 source station 和五层 target station，移除旧 NG/WORK station 边界，运行时与测试 seed 同步使用新合同。
+- SMT handoff recovery task 拆分 `scan_limit`、`recovery_limit` 和 `claim_limit`，保留旧 `limit` 调用的兼容行为。
+
+### Fixed
+
+- 修复 `WAITING_FULL_BOX_EXCHANGE` demand 的 READY source item 可能在满箱交换完成前被全局 claim 或 recovery claim 推入物理分拣的问题。
+- 修复 source-pick success 和 terminal ledger 的 evidence 串线、终态冲突、replay 重复 claim 和非 SMT session 误触发风险。
+
 ## [0.6.2.0] - 2026-06-15
 
 ### Added
