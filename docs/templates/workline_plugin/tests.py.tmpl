@@ -23,7 +23,6 @@ from src.workline_runtime.plugin_next import PluginNext
 from src.workline_runtime.plugin_manifest import (
     CommandBinding,
     EventBinding,
-    RackPositionArgSourceKind,
     ResourceBoundary,
 )
 from src.workline_runtime.plugin_sdk.contracts import NormalizedCommandResult
@@ -70,8 +69,7 @@ def test_manifest_contract() -> None:
     assert isinstance(manifest.commands[0], CommandBinding)
     assert manifest.commands[0].command == "MEASURE_ITEM"
     assert manifest.commands[0].target_device_role == "MEASURE_DEVICE"
-    assert manifest.commands[0].rack_position_args[0].rack_position_ref == "MEASURE_POSITION"
-    assert manifest.commands[0].rack_position_args[1].source.kind is RackPositionArgSourceKind.EVENT_PAYLOAD
+    assert set(manifest.commands[0].__dataclass_fields__) == {"command", "target_device_role"}
     assert isinstance(manifest.resource_boundaries[0], ResourceBoundary)
     assert manifest.resource_boundaries[0].rack_position_code == "MEASURE_POSITION"
 

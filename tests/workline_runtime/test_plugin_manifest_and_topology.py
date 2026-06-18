@@ -27,8 +27,11 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
+    EVENT_NG_PLACE_RESULT,
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_SOURCE_PICK_REQUESTED,
+    EVENT_SOURCE_PICK_RESULT,
+    EVENT_TARGET_PLACE_RESULT,
     EVENT_WORKING_BIN_SCAN,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
@@ -141,56 +144,6 @@ def _event_binding(
         event=event,
         source_device_roles=source_device_roles,
         category=category or EventCategory.ENTRY_DEVICE,
-        payload_schema_ref=None,
-    )
-
-
-def _rack_position_arg_source(
-    *,
-    kind=None,
-    path: str = "data.position_code",
-    fallback_rack_position_ref: str | None = None,
-):
-    RackPositionArgSourceKind = _contract("RackPositionArgSourceKind")
-    return _contract("RackPositionArgSource")(
-        kind=kind or RackPositionArgSourceKind.EVENT_PAYLOAD,
-        path=path,
-        fallback_rack_position_ref=fallback_rack_position_ref,
-    )
-
-
-def _rack_position_arg(
-    *,
-    name: str = "target_position",
-    role=None,
-    required: bool = True,
-    rack_position_ref: str | None = "ENTRY_POSITION",
-    source=None,
-):
-    RackPositionArgRole = _contract("RackPositionArgRole")
-    return _contract("RackPositionArg")(
-        name=name,
-        role=role or RackPositionArgRole.TARGET,
-        required=required,
-        rack_position_ref=rack_position_ref,
-        source=source,
-    )
-
-
-def _command_result_binding(
-    *,
-    result: str = "SUCCESS",
-    event: str = "TOTE_WEIGHED",
-    category=None,
-):
-    EventCategory = _contract("EventCategory")
-    return _contract("CommandResultBinding")(
-        result=result,
-        event=event,
-        category=category or EventCategory.COMMAND_RESULT,
-        classification="success",
-        terminal=False,
-        next_event=None,
     )
 
 
@@ -198,15 +151,10 @@ def _command_binding(
     command: str = "WEIGH_TOTE",
     *,
     target_device_role: str = "ENTRY_SCANNER",
-    rack_position_args=None,
-    result_bindings=None,
 ):
     return _contract("CommandBinding")(
         command=command,
         target_device_role=target_device_role,
-        rack_position_args=tuple(rack_position_args or (_rack_position_arg(),)),
-        payload_schema_ref=None,
-        result_bindings=tuple(result_bindings or (_command_result_binding(),)),
     )
 
 
@@ -318,7 +266,6 @@ def test_event_binding_rejects_mapping_source_roles() -> None:
             event="TOTE_ARRIVED",
             source_device_roles={"ENTRY_SCANNER": "bad"},
             category=EventCategory.ENTRY_DEVICE,
-            payload_schema_ref=None,
         )
 
 
@@ -354,33 +301,18 @@ def test_command_binding_rejects_unknown_target_role() -> None:
         _manifest(commands=(command,))
 
 
-def test_command_result_binding_requires_command_result_category() -> None:
-    EventCategory = _contract("EventCategory")
+def test_payload_binding_types_are_removed_from_manifest_contract() -> None:
+    removed_symbols = {
+        "RackPositionArgRole",
+        "RackPositionArgSourceKind",
+        "RackPositionArgSource",
+        "RackPositionArg",
+        "CommandResultBinding",
+    }
 
-    with pytest.raises(ValueError, match=r"COMMAND_RESULT|category"):
-        command = _command_binding(result_bindings=(_command_result_binding(category=EventCategory.INTERNAL),))
-        _manifest(commands=(command,))
-
-
-def test_rack_position_arg_ref_and_source_are_mutually_exclusive() -> None:
-    source = _rack_position_arg_source()
-
-    with pytest.raises(ValueError, match=r"rack_position_ref|source"):
-        _rack_position_arg(rack_position_ref="ENTRY_POSITION", source=source)
-    with pytest.raises(ValueError, match=r"rack_position_ref|source|required"):
-        _rack_position_arg(required=True, rack_position_ref=None, source=None)
-
-    optional_arg = _rack_position_arg(required=False, rack_position_ref=None, source=None)
-    assert optional_arg.rack_position_ref is None
-    assert optional_arg.source is None
-
-
-def test_rack_position_arg_source_rejects_static_kind() -> None:
-    RackPositionArgSourceKind = _contract("RackPositionArgSourceKind")
-
-    assert "STATIC" not in {kind.value for kind in RackPositionArgSourceKind}
-    with pytest.raises(ValueError, match="STATIC"):
-        _rack_position_arg_source(kind="STATIC")
+    assert removed_symbols.isdisjoint(set(manifest_contract.__all__))
+    for symbol in removed_symbols:
+        assert not hasattr(manifest_contract, symbol)
 
 
 def test_rack_position_carrier_capability_validates_capacity_and_rack_kind() -> None:
@@ -616,8 +548,6 @@ def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
 
     manifest = RoughSorterPlugin.manifest
     EventCategory = _contract("EventCategory")
-    RackPositionArgRole = _contract("RackPositionArgRole")
-    RackPositionArgSourceKind = _contract("RackPositionArgSourceKind")
     FlowEdgeType = _contract("FlowEdgeType")
     NodeRefKind = _contract("NodeRefKind")
 
@@ -632,31 +562,35 @@ def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
     assert events[EVENT_SCAN_COMPLETED].category == EventCategory.ENTRY_DEVICE
     assert events[EVENT_ROUGH_SORTER_STORAGE_RETRY].source_device_roles == (ROLE_OUTPUT_ARM,)
     assert events[EVENT_ROUGH_SORTER_STORAGE_RETRY].category == EventCategory.INTERNAL
+    assert events["ROUGH_SORTER_PICK_AND_PUT_RESULT"].category == EventCategory.COMMAND_RESULT
+    assert events["ROUGH_SORTER_MOVE_FORWARD_RESULT"].category == EventCategory.COMMAND_RESULT
+    assert events["ROUGH_SORTER_PUT_TO_BIN_RESULT"].category == EventCategory.COMMAND_RESULT
+    assert events["ROUGH_SORTER_MOVE_TO_NG_RESULT"].category == EventCategory.COMMAND_RESULT
 
     commands = _commands_by_name(manifest)
     assert commands[ACTION_PICK_AND_PUT].target_device_role == ROLE_INPUT_ARM
     assert commands[ACTION_MOVE_FORWARD].target_device_role == ROLE_CONVEYOR
     assert commands[ACTION_PUT_TO_BIN].target_device_role == ROLE_OUTPUT_ARM
     assert commands[ACTION_MOVE_TO_NG].target_device_role == ROLE_INPUT_ARM
-    for command in commands.values():
-        assert command.result_bindings
-    assert commands[ACTION_PICK_AND_PUT].rack_position_args == ()
-    assert commands[ACTION_MOVE_FORWARD].rack_position_args == ()
-    assert commands[ACTION_MOVE_TO_NG].rack_position_args == ()
-
-    assert len(commands[ACTION_PUT_TO_BIN].rack_position_args) == 1
-    bin_location = commands[ACTION_PUT_TO_BIN].rack_position_args[0]
-    assert bin_location.name == "bin_location"
-    assert bin_location.role == RackPositionArgRole.TARGET
-    assert bin_location.rack_position_ref is None
-    assert bin_location.source is not None
-    assert bin_location.source.kind == RackPositionArgSourceKind.RESOURCE_OVERLAY
-    assert bin_location.source.path == "target_bin_location.bin_cell_location"
-    assert bin_location.source.fallback_rack_position_ref == POSITION_WORK_SINGLE_LAYER
+    assert all(set(command.__dataclass_fields__) == {"command", "target_device_role"} for command in commands.values())
 
     for edge in manifest.topology.flow_edges:
         if NodeRefKind.DEVICE_ROLE in {edge.from_node.kind, edge.to_node.kind}:
             assert edge.type == FlowEdgeType.OPERATION
+    assert {
+        (edge.from_node.kind, edge.from_node.ref, edge.to_node.kind, edge.to_node.ref, edge.type)
+        for edge in manifest.topology.flow_edges
+    } == {
+        (NodeRefKind.DEVICE_ROLE, ROLE_INPUT_ARM, NodeRefKind.DEVICE_ROLE, ROLE_CONVEYOR, FlowEdgeType.OPERATION),
+        (NodeRefKind.DEVICE_ROLE, ROLE_CONVEYOR, NodeRefKind.DEVICE_ROLE, ROLE_OUTPUT_ARM, FlowEdgeType.OPERATION),
+        (
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_OUTPUT_ARM,
+            NodeRefKind.RACK_POSITION,
+            POSITION_WORK_SINGLE_LAYER,
+            FlowEdgeType.OPERATION,
+        ),
+    }
 
     boundary = _boundaries_by_rack_position(manifest)[POSITION_WORK_SINGLE_LAYER]
     assert boundary.rack_kind == "SINGLE_LAYER"
@@ -664,7 +598,7 @@ def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
     assert boundary.snapshot_kind == "ACTIVE_CLASSIFIER_BIN_RACK"
 
 
-def test_rough_sorter_internal_physical_points_do_not_enter_manifest_rack_positions_or_rack_position_args() -> None:
+def test_rough_sorter_internal_physical_points_do_not_enter_manifest_rack_positions() -> None:
     from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
 
     manifest = RoughSorterPlugin.manifest
@@ -675,17 +609,8 @@ def test_rough_sorter_internal_physical_points_do_not_enter_manifest_rack_positi
         DEFAULT_NG_LOCATION,
     }
     rack_position_codes = {rack_position.code for rack_position in manifest.rack_positions}
-    rack_position_arg_refs: set[str] = set()
-
-    for command in manifest.commands:
-        for rack_position_arg in command.rack_position_args:
-            if rack_position_arg.rack_position_ref is not None:
-                rack_position_arg_refs.add(rack_position_arg.rack_position_ref)
-            if rack_position_arg.source is not None and rack_position_arg.source.fallback_rack_position_ref is not None:
-                rack_position_arg_refs.add(rack_position_arg.source.fallback_rack_position_ref)
 
     assert internal_physical_points.isdisjoint(rack_position_codes)
-    assert internal_physical_points.isdisjoint(rack_position_arg_refs)
 
 
 def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None:
@@ -719,23 +644,63 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
     assert events[EVENT_SESSION_COMPLETE_REQUESTED].source_device_roles == (ROLE_SORTING_WORKSTATION,)
     assert events[EVENT_SESSION_COMPLETE_REQUESTED].category == EventCategory.ENTRY_DEVICE
     assert EVENT_SOURCE_PICK_REQUESTED not in events
+    assert events[EVENT_SOURCE_PICK_RESULT].source_device_roles == (ROLE_SORTING_SOURCE_ARM,)
+    assert events[EVENT_SOURCE_PICK_RESULT].category == EventCategory.COMMAND_RESULT
+    assert events[EVENT_TARGET_PLACE_RESULT].source_device_roles == (ROLE_SORTING_TARGET_ARM,)
+    assert events[EVENT_TARGET_PLACE_RESULT].category == EventCategory.COMMAND_RESULT
+    assert events[EVENT_NG_PLACE_RESULT].source_device_roles == (ROLE_SORTING_TARGET_ARM,)
+    assert events[EVENT_NG_PLACE_RESULT].category == EventCategory.COMMAND_RESULT
 
     commands = _commands_by_name(manifest)
     assert commands[COMMAND_SOURCE_PICK].target_device_role == ROLE_SORTING_SOURCE_ARM
     assert commands[COMMAND_TARGET_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
     assert commands[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
-    assert commands[COMMAND_NG_PLACE].rack_position_args == ()
-    target_place_target = commands[COMMAND_TARGET_PLACE].rack_position_args[0]
-    assert target_place_target.rack_position_ref == "TARGET_STATION"
-    assert target_place_target.source is None
-    for command in commands.values():
-        assert command.result_bindings
-    _assert_material_flow_edges_are_rack_position_to_rack_position(manifest)
+    assert all(set(command.__dataclass_fields__) == {"command", "target_device_role"} for command in commands.values())
     assert all(
         edge.type == FlowEdgeType.OPERATION
         for edge in manifest.topology.flow_edges
         if NodeRefKind.DEVICE_ROLE in {edge.from_node.kind, edge.to_node.kind}
     )
+    assert {
+        (edge.from_node.kind, edge.from_node.ref, edge.to_node.kind, edge.to_node.ref, edge.type)
+        for edge in manifest.topology.flow_edges
+    } == {
+        (
+            NodeRefKind.RACK_POSITION,
+            "SOURCE_STATION_A",
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_SOURCE_ARM,
+            FlowEdgeType.OPERATION,
+        ),
+        (
+            NodeRefKind.RACK_POSITION,
+            "SOURCE_STATION_B",
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_SOURCE_ARM,
+            FlowEdgeType.OPERATION,
+        ),
+        (
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_SOURCE_ARM,
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_SCAN_PLATFORM,
+            FlowEdgeType.OPERATION,
+        ),
+        (
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_SCAN_PLATFORM,
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_TARGET_ARM,
+            FlowEdgeType.OPERATION,
+        ),
+        (
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_TARGET_ARM,
+            NodeRefKind.RACK_POSITION,
+            "TARGET_STATION",
+            FlowEdgeType.OPERATION,
+        ),
+    }
 
     boundaries = _boundaries_by_rack_position(manifest)
     assert boundaries["SOURCE_STATION_A"].business_demand_type == "SORTING_INBOUND_SOURCE"
@@ -757,26 +722,12 @@ def test_smt_sorting_inbound_topology_connects_declared_source_stations() -> Non
         rack_position.code for rack_position in manifest.rack_positions if rack_position.role == "SOURCE"
     }
 
-    operation_targets = {
-        edge.to_node.ref
-        for edge in manifest.topology.flow_edges
-        if edge.type == FlowEdgeType.OPERATION
-        and edge.from_node.kind == NodeRefKind.DEVICE_ROLE
-        and edge.to_node.kind == NodeRefKind.RACK_POSITION
-    }
-    material_flow_sources = {
+    operation_sources = {
         edge.from_node.ref
         for edge in manifest.topology.flow_edges
-        if edge.type == FlowEdgeType.MATERIAL_FLOW
+        if edge.type == FlowEdgeType.OPERATION
         and edge.from_node.kind == NodeRefKind.RACK_POSITION
-        and edge.to_node.kind == NodeRefKind.RACK_POSITION
+        and edge.to_node.kind == NodeRefKind.DEVICE_ROLE
     }
 
-    assert source_station_codes <= operation_targets
-    assert source_station_codes <= material_flow_sources
-
-
-def test_smt_sorting_inbound_material_flow_edges_are_rack_position_to_rack_position() -> None:
-    from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
-
-    _assert_material_flow_edges_are_rack_position_to_rack_position(SmtSortingInboundPlugin.manifest)
+    assert source_station_codes <= operation_sources

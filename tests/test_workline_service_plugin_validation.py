@@ -211,10 +211,12 @@ def test_workline_service_returns_new_plugin_manifest_summary() -> None:
     assert commands_by_name[COMMAND_SOURCE_PICK].target_device_role == ROLE_SORTING_SOURCE_ARM
     assert commands_by_name[COMMAND_TARGET_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
     assert commands_by_name[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
-    assert commands_by_name[COMMAND_NG_PLACE].rack_position_args == []
-    target_place_target = commands_by_name[COMMAND_TARGET_PLACE].rack_position_args[0]
-    assert target_place_target.rack_position_ref == "TARGET_STATION"
-    assert target_place_target.source is None
+    assert set(commands_by_name[COMMAND_TARGET_PLACE].model_dump()) == {"command", "target_device_role"}
+    assert set(events_by_name[EVENT_WORKING_BIN_SCAN].model_dump()) == {
+        "event",
+        "source_device_roles",
+        "category",
+    }
 
 
 def test_plugin_options_do_not_expose_manifest_capabilities() -> None:
@@ -253,6 +255,12 @@ def test_manifest_summary_exposes_devices_rack_positions_topology_events_command
     assert summary.commands
     assert summary.resource_boundaries
     assert summary.rack_positions[0].carrier_capability.allowed_rack_kinds
+    assert "device_roles" not in summary.model_dump()
+    assert set(summary.commands[0].model_dump()) == {"command", "target_device_role"}
+    assert set(summary.events[0].model_dump()) == {"event", "source_device_roles", "category"}
+    assert set(summary.topology.flow_edges[0].model_dump()) == {"from_node", "to_node", "type"}
+    assert "from" not in summary.topology.flow_edges[0].model_dump()
+    assert "to" not in summary.topology.flow_edges[0].model_dump()
 
 
 def test_smt_sorting_inbound_manifest_summary_does_not_expose_ng_arm_role() -> None:
@@ -287,16 +295,12 @@ def test_configuration_checks_use_event_and_command_bindings(monkeypatch) -> Non
                 event="NEW_EVENT",
                 source_device_roles=("SCANNER",),
                 category="ENTRY_DEVICE",
-                payload_schema_ref=None,
             ),
         ),
         commands=(
             SimpleNamespace(
                 command="NEW_COMMAND",
                 target_device_role="ARM",
-                rack_position_args=(),
-                payload_schema_ref=None,
-                result_bindings=(),
             ),
         ),
         resource_boundaries=(),
@@ -342,13 +346,11 @@ def test_configuration_checks_only_require_entry_device_event_capability(monkeyp
                 event="ENTRY_SCAN",
                 source_device_roles=("SCANNER",),
                 category="ENTRY_DEVICE",
-                payload_schema_ref=None,
             ),
             SimpleNamespace(
                 event="INTERNAL_RETRY",
                 source_device_roles=("ARM",),
                 category="INTERNAL",
-                payload_schema_ref=None,
             ),
         ),
         commands=(),

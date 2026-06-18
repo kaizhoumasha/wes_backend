@@ -108,9 +108,6 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
     command_by_name = _command_by_name(manifest)
     event_roles = _event_role_map(manifest)
     event_categories = _event_category_map(manifest)
-    result_events = {
-        result_binding.event for command in manifest.commands for result_binding in command.result_bindings
-    }
 
     assert command_roles == {
         COMMAND_SOURCE_PICK: (ROLE_SORTING_SOURCE_ARM,),
@@ -122,12 +119,14 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
     assert event_categories[EVENT_WORKING_BIN_SCAN] == EventCategory.ENTRY_DEVICE
     assert event_categories[EVENT_SESSION_COMPLETE_REQUESTED] == EventCategory.ENTRY_DEVICE
     assert EVENT_SOURCE_PICK_REQUESTED not in event_roles
-    assert {EVENT_SOURCE_PICK_RESULT, EVENT_TARGET_PLACE_RESULT, EVENT_NG_PLACE_RESULT} <= result_events
+    assert event_roles[EVENT_SOURCE_PICK_RESULT] == (ROLE_SORTING_SOURCE_ARM,)
+    assert event_roles[EVENT_TARGET_PLACE_RESULT] == (ROLE_SORTING_TARGET_ARM,)
+    assert event_roles[EVENT_NG_PLACE_RESULT] == (ROLE_SORTING_TARGET_ARM,)
+    assert event_categories[EVENT_SOURCE_PICK_RESULT] == EventCategory.COMMAND_RESULT
+    assert event_categories[EVENT_TARGET_PLACE_RESULT] == EventCategory.COMMAND_RESULT
+    assert event_categories[EVENT_NG_PLACE_RESULT] == EventCategory.COMMAND_RESULT
     assert command_by_name[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
-    assert command_by_name[COMMAND_NG_PLACE].rack_position_args == ()
-    target_place_target = command_by_name[COMMAND_TARGET_PLACE].rack_position_args[0]
-    assert target_place_target.rack_position_ref == "TARGET_STATION"
-    assert target_place_target.source is None
+    assert set(command_by_name[COMMAND_TARGET_PLACE].__dataclass_fields__) == {"command", "target_device_role"}
 
 
 def test_smt_sorting_inbound_manifest_uses_only_managed_rack_positions_and_resource_boundaries() -> None:
@@ -143,20 +142,49 @@ def test_smt_sorting_inbound_manifest_uses_only_managed_rack_positions_and_resou
     assert "SORTING_INBOUND_WORK" not in business_demand_types
 
 
-def test_smt_sorting_inbound_material_flow_edges_are_rack_position_to_rack_position() -> None:
+def test_smt_sorting_inbound_topology_edges_follow_physical_process() -> None:
     manifest = SmtSortingInboundPlugin.manifest
 
-    material_flow_edges = [edge for edge in manifest.topology.flow_edges if edge.type == FlowEdgeType.MATERIAL_FLOW]
-    assert material_flow_edges
-    assert all(
-        edge.from_node.kind == NodeRefKind.RACK_POSITION and edge.to_node.kind == NodeRefKind.RACK_POSITION
-        for edge in material_flow_edges
-    )
-    assert all(
-        edge.type == FlowEdgeType.OPERATION
+    assert {
+        (edge.from_node.kind, edge.from_node.ref, edge.to_node.kind, edge.to_node.ref, edge.type)
         for edge in manifest.topology.flow_edges
-        if NodeRefKind.DEVICE_ROLE in {edge.from_node.kind, edge.to_node.kind}
-    )
+    } == {
+        (
+            NodeRefKind.RACK_POSITION,
+            "SOURCE_STATION_A",
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_SOURCE_ARM,
+            FlowEdgeType.OPERATION,
+        ),
+        (
+            NodeRefKind.RACK_POSITION,
+            "SOURCE_STATION_B",
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_SOURCE_ARM,
+            FlowEdgeType.OPERATION,
+        ),
+        (
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_SOURCE_ARM,
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_SCAN_PLATFORM,
+            FlowEdgeType.OPERATION,
+        ),
+        (
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_SCAN_PLATFORM,
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_TARGET_ARM,
+            FlowEdgeType.OPERATION,
+        ),
+        (
+            NodeRefKind.DEVICE_ROLE,
+            ROLE_SORTING_TARGET_ARM,
+            NodeRefKind.RACK_POSITION,
+            "TARGET_STATION",
+            FlowEdgeType.OPERATION,
+        ),
+    }
 
 
 def test_smt_sorting_inbound_real_manifest_validates_seed_like_device_capabilities() -> None:

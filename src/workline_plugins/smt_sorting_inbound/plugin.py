@@ -3,23 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
-    EVENT_NG_PLACE_RESULT,
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_SOURCE_PICK_REQUESTED,
-    EVENT_SOURCE_PICK_RESULT,
-    EVENT_TARGET_PLACE_RESULT,
     EVENT_WORKING_BIN_SCAN,
     NG_REASON_LOCAL_SORTING_NG,
-    ROLE_SORTING_SCAN_PLATFORM,
-    ROLE_SORTING_SOURCE_ARM,
-    ROLE_SORTING_TARGET_ARM,
-    ROLE_SORTING_WORKSTATION,
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
@@ -33,26 +27,7 @@ from src.workline_runtime.material_identity import (
 )
 from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
 from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
-from src.workline_runtime.plugin_manifest import (
-    CommandBinding,
-    CommandResultBinding,
-    DeviceRequirement,
-    EventBinding,
-    EventCategory,
-    FlowEdge,
-    FlowEdgeType,
-    NodeRef,
-    NodeRefKind,
-    RackPosition,
-    RackPositionArg,
-    RackPositionArgRole,
-    RackPositionArgSource,
-    RackPositionArgSourceKind,
-    RackPositionCarrierCapability,
-    ResourceBoundary,
-    TopologySpec,
-    WorklinePluginManifest,
-)
+from src.workline_runtime.plugin_manifest import WorklinePluginManifest
 
 if TYPE_CHECKING:
     from src.app.workline.models import WorklineInbox
@@ -62,12 +37,6 @@ if TYPE_CHECKING:
 POSITION_SOURCE_STATION_A = "SOURCE_STATION_A"
 POSITION_SOURCE_STATION_B = "SOURCE_STATION_B"
 POSITION_TARGET_STATION = "TARGET_STATION"
-
-COMMAND_RESULT_EVENTS = {
-    COMMAND_SOURCE_PICK: EVENT_SOURCE_PICK_RESULT,
-    COMMAND_TARGET_PLACE: EVENT_TARGET_PLACE_RESULT,
-    COMMAND_NG_PLACE: EVENT_NG_PLACE_RESULT,
-}
 
 
 def _payload_data(payload_json: dict[str, Any]) -> dict[str, Any]:
@@ -112,73 +81,6 @@ def _ng_reason(canonical_code: str, label: str) -> NgReasonDefinition:
     )
 
 
-def _carrier(*rack_kinds: str, min_capacity: int = 0, max_capacity: int = 1) -> RackPositionCarrierCapability:
-    return RackPositionCarrierCapability(
-        allowed_rack_kinds=rack_kinds,
-        min_capacity=min_capacity,
-        max_capacity=max_capacity,
-    )
-
-
-def _position(
-    code: str,
-    *,
-    role: str,
-    station_code: str,
-    rack_kinds: tuple[str, ...],
-    min_capacity: int = 0,
-    max_capacity: int = 1,
-) -> RackPosition:
-    return RackPosition(
-        code=code,
-        role=role,
-        station_code=station_code,
-        carrier_capability=_carrier(*rack_kinds, min_capacity=min_capacity, max_capacity=max_capacity),
-    )
-
-
-def _node(kind: NodeRefKind, ref: str) -> NodeRef:
-    return NodeRef(kind=kind, ref=ref)
-
-
-def _command_result_bindings(command: str) -> tuple[CommandResultBinding, ...]:
-    event = COMMAND_RESULT_EVENTS[command]
-    return (
-        CommandResultBinding(
-            result="SUCCESS",
-            event=event,
-            category=EventCategory.COMMAND_RESULT,
-            classification="success",
-        ),
-        CommandResultBinding(
-            result="FAILED",
-            event=event,
-            category=EventCategory.COMMAND_RESULT,
-            classification="hardware_failure",
-            terminal=True,
-        ),
-    )
-
-
-def _static_position_arg(name: str, *, role: RackPositionArgRole, rack_position_ref: str) -> RackPositionArg:
-    return RackPositionArg(name=name, role=role, rack_position_ref=rack_position_ref)
-
-
-def _position_arg_from_source(
-    name: str,
-    *,
-    role: RackPositionArgRole,
-    kind: RackPositionArgSourceKind,
-    path: str,
-    fallback_rack_position_ref: str,
-) -> RackPositionArg:
-    return RackPositionArg(
-        name=name,
-        role=role,
-        source=RackPositionArgSource(kind=kind, path=path, fallback_rack_position_ref=fallback_rack_position_ref),
-    )
-
-
 def _sorting_ng_reasons() -> tuple[NgReasonDefinition, ...]:
     return (_ng_reason(NG_REASON_LOCAL_SORTING_NG, "本地分拣 NG"),)
 
@@ -196,140 +98,7 @@ class SmtSortingInboundPlugin(WorklinePlugin):
     plugin_key = SMT_SORTING_INBOUND_PLUGIN_KEY
     contract_version = SMT_SORTING_INBOUND_CONTRACT_VERSION
 
-    manifest = WorklinePluginManifest(
-        plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
-        contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
-        devices=(
-            DeviceRequirement(role=ROLE_SORTING_SOURCE_ARM, min_count=1, max_count=1),
-            DeviceRequirement(role=ROLE_SORTING_TARGET_ARM, min_count=1, max_count=1),
-            DeviceRequirement(role=ROLE_SORTING_SCAN_PLATFORM, min_count=1, max_count=1),
-            DeviceRequirement(role=ROLE_SORTING_WORKSTATION, min_count=1, max_count=1),
-        ),
-        rack_positions=(
-            _position(
-                POSITION_SOURCE_STATION_A,
-                role="SOURCE",
-                station_code=POSITION_SOURCE_STATION_A,
-                rack_kinds=("SINGLE_LAYER",),
-                min_capacity=1,
-            ),
-            _position(
-                POSITION_SOURCE_STATION_B,
-                role="SOURCE",
-                station_code=POSITION_SOURCE_STATION_B,
-                rack_kinds=("SINGLE_LAYER",),
-                min_capacity=1,
-            ),
-            _position(
-                POSITION_TARGET_STATION,
-                role="TARGET",
-                station_code=POSITION_TARGET_STATION,
-                rack_kinds=("FIVE_LAYER",),
-                min_capacity=1,
-            ),
-        ),
-        topology=TopologySpec(
-            flow_edges=(
-                FlowEdge(
-                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_SOURCE_ARM),
-                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_SOURCE_STATION_A),
-                    type=FlowEdgeType.OPERATION,
-                ),
-                FlowEdge(
-                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_SOURCE_ARM),
-                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_SOURCE_STATION_B),
-                    type=FlowEdgeType.OPERATION,
-                ),
-                FlowEdge(
-                    from_node=_node(NodeRefKind.RACK_POSITION, POSITION_SOURCE_STATION_B),
-                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_TARGET_STATION),
-                    type=FlowEdgeType.MATERIAL_FLOW,
-                ),
-                FlowEdge(
-                    from_node=_node(NodeRefKind.RACK_POSITION, POSITION_SOURCE_STATION_A),
-                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_TARGET_STATION),
-                    type=FlowEdgeType.MATERIAL_FLOW,
-                ),
-                FlowEdge(
-                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_SORTING_TARGET_ARM),
-                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_TARGET_STATION),
-                    type=FlowEdgeType.OPERATION,
-                ),
-            )
-        ),
-        commands=(
-            CommandBinding(
-                command=COMMAND_SOURCE_PICK,
-                target_device_role=ROLE_SORTING_SOURCE_ARM,
-                rack_position_args=(
-                    _position_arg_from_source(
-                        "source_position_code",
-                        role=RackPositionArgRole.SOURCE,
-                        kind=RackPositionArgSourceKind.EVENT_PAYLOAD,
-                        path="data.source_position_code",
-                        fallback_rack_position_ref=POSITION_SOURCE_STATION_A,
-                    ),
-                ),
-                result_bindings=_command_result_bindings(COMMAND_SOURCE_PICK),
-            ),
-            CommandBinding(
-                command=COMMAND_TARGET_PLACE,
-                target_device_role=ROLE_SORTING_TARGET_ARM,
-                rack_position_args=(
-                    _static_position_arg(
-                        "target_position_code",
-                        role=RackPositionArgRole.TARGET,
-                        rack_position_ref=POSITION_TARGET_STATION,
-                    ),
-                ),
-                result_bindings=_command_result_bindings(COMMAND_TARGET_PLACE),
-            ),
-            CommandBinding(
-                command=COMMAND_NG_PLACE,
-                target_device_role=ROLE_SORTING_TARGET_ARM,
-                rack_position_args=(),
-                result_bindings=_command_result_bindings(COMMAND_NG_PLACE),
-            ),
-        ),
-        events=(
-            EventBinding(
-                event=EVENT_WORKING_BIN_SCAN,
-                source_device_roles=(ROLE_SORTING_SCAN_PLATFORM,),
-                category=EventCategory.ENTRY_DEVICE,
-            ),
-            EventBinding(
-                event=EVENT_SESSION_COMPLETE_REQUESTED,
-                source_device_roles=(ROLE_SORTING_WORKSTATION,),
-                category=EventCategory.ENTRY_DEVICE,
-            ),
-        ),
-        resource_boundaries=(
-            ResourceBoundary(
-                rack_position_code=POSITION_SOURCE_STATION_A,
-                rack_kind="SINGLE_LAYER",
-                business_demand_type="SORTING_INBOUND_SOURCE",
-                wms_operation_type="SUPPLY_SINGLE_LAYER_RACK",
-                snapshot_kind="ACTIVE_SOURCE_BIN_RACK",
-                lease_scope="STATION",
-            ),
-            ResourceBoundary(
-                rack_position_code=POSITION_SOURCE_STATION_B,
-                rack_kind="SINGLE_LAYER",
-                business_demand_type="SORTING_INBOUND_SOURCE",
-                wms_operation_type="SUPPLY_SINGLE_LAYER_RACK",
-                snapshot_kind="ACTIVE_SOURCE_BIN_RACK",
-                lease_scope="STATION",
-            ),
-            ResourceBoundary(
-                rack_position_code=POSITION_TARGET_STATION,
-                rack_kind="FIVE_LAYER",
-                business_demand_type="SORTING_INBOUND_TARGET",
-                wms_operation_type="ALLOCATE_SORTING_TARGET_BIN",
-                snapshot_kind="ACTIVE_TARGET_BIN_RACK",
-                lease_scope="STATION",
-            ),
-        ),
-    )
+    manifest = WorklinePluginManifest.from_yaml_file(Path(__file__).with_name("manifest.yaml"))
 
     def __init__(self, flow_service: SmtSortingInboundFlowService | None = None) -> None:
         self._flow_service = flow_service or SmtSortingInboundFlowService()

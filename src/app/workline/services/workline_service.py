@@ -20,14 +20,11 @@ from src.app.workline.models import (
 from src.app.workline.models.rack_position import WorklineRackPosition
 from src.app.workline.models.workline import (
     CommandBinding,
-    CommandResultBinding,
     DeviceRequirement,
     EventBinding,
     FlowEdge,
     NodeRef,
     RackPosition,
-    RackPositionArg,
-    RackPositionArgSource,
     RackPositionCarrierCapability,
     ResourceBoundary,
     TopologySpec,
@@ -170,38 +167,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             event=event.event,
             source_device_roles=cls._string_list(getattr(event, "source_device_roles", ())),
             category=str(cls._manifest_value(event.category)),
-            payload_schema_ref=getattr(event, "payload_schema_ref", None),
-        )
-
-    @classmethod
-    def _build_rack_position_arg_source_summary(cls, source: object | None) -> RackPositionArgSource | None:
-        if source is None:
-            return None
-        return RackPositionArgSource(
-            kind=str(cls._manifest_value(source.kind)),
-            path=source.path,
-            fallback_rack_position_ref=getattr(source, "fallback_rack_position_ref", None),
-        )
-
-    @classmethod
-    def _build_rack_position_arg_summary(cls, arg: object) -> RackPositionArg:
-        return RackPositionArg(
-            name=arg.name,
-            role=str(cls._manifest_value(arg.role)),
-            required=getattr(arg, "required", True),
-            rack_position_ref=getattr(arg, "rack_position_ref", None),
-            source=cls._build_rack_position_arg_source_summary(getattr(arg, "source", None)),
-        )
-
-    @classmethod
-    def _build_command_result_binding_summary(cls, binding: object) -> CommandResultBinding:
-        return CommandResultBinding(
-            result=binding.result,
-            event=binding.event,
-            category=str(cls._manifest_value(binding.category)),
-            classification=getattr(binding, "classification", None),
-            terminal=getattr(binding, "terminal", False),
-            next_event=getattr(binding, "next_event", None),
         )
 
     @classmethod
@@ -210,14 +175,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             {
                 "command": command.command,
                 "target_device_role": command.target_device_role,
-                "rack_position_args": [
-                    cls._build_rack_position_arg_summary(arg) for arg in getattr(command, "rack_position_args", ())
-                ],
-                "payload_schema_ref": getattr(command, "payload_schema_ref", None),
-                "result_bindings": [
-                    cls._build_command_result_binding_summary(binding)
-                    for binding in getattr(command, "result_bindings", ())
-                ],
             }
         )
 

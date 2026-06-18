@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import re
 from pathlib import Path
+
+import yaml
+
+from src.workline_runtime.plugin_manifest import FlowEdgeType, NodeRefKind, WorklinePluginManifest
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "docs" / "templates" / "workline_plugin"
 
@@ -32,10 +35,7 @@ REMOVED_MANIFEST_RUNTIME_FIELDS = (
 RACK_POSITION_CONTRACT_SENTENCE = (
     "`rack_positions` 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。"
 )
-POSITION_ARG_CONTRACT_SENTENCE = (
-    "`RackPositionArg` 静态货架位使用 `rack_position_ref`，"
-    "`rack_position_ref` 与 `source` 互斥；`RackPositionArgSource` 不支持 `STATIC`。"
-)
+POSITION_ARG_CONTRACT_SENTENCE = "设备 payload 由插件业务代码、设备 profile、设备网关或 PLC 理解，不进入 manifest。"
 
 
 def _read_json(name: str) -> dict:
@@ -61,64 +61,14 @@ def _render_python_template(content: str) -> str:
     return content
 
 
-def _call_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
-
-
-def _keyword(call: ast.Call, name: str) -> ast.AST:
-    for keyword in call.keywords:
-        if keyword.arg == name:
-            return keyword.value
-    raise AssertionError(f"missing keyword: {name}")
-
-
-def _tuple_items(node: ast.AST) -> list[ast.AST]:
-    if isinstance(node, ast.Tuple):
-        return list(node.elts)
-    return [node]
-
-
-def _manifest_call(tree: ast.AST) -> ast.Call:
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _call_name(node.func) == "WorklinePluginManifest":
-            return node
-    raise AssertionError("missing WorklinePluginManifest call")
-
-
-def _flow_edges_from_template() -> list[ast.Call]:
-    plugin_template = (TEMPLATE_DIR / "plugin.py.tmpl").read_text(encoding="utf-8")
-    tree = ast.parse(_render_python_template(plugin_template))
-    manifest = _manifest_call(tree)
-    topology = _keyword(manifest, "topology")
-    assert isinstance(topology, ast.Call)
-    return [
-        edge
-        for edge in _tuple_items(_keyword(topology, "flow_edges"))
-        if isinstance(edge, ast.Call) and _call_name(edge.func) == "FlowEdge"
-    ]
-
-
-def _node_ref_kind(node_ref: ast.AST) -> str:
-    assert isinstance(node_ref, ast.Call)
-    assert _call_name(node_ref.func) == "NodeRef"
-    kind = node_ref.args[0]
-    assert isinstance(kind, ast.Attribute)
-    return kind.attr
-
-
-def _flow_edge_type(edge: ast.Call) -> str:
-    edge_type = _keyword(edge, "type")
-    assert isinstance(edge_type, ast.Attribute)
-    return edge_type.attr
+def _render_manifest_yaml_template() -> str:
+    return _render_python_template((TEMPLATE_DIR / "manifest.yaml.tmpl").read_text(encoding="utf-8"))
 
 
 def test_template_assets_cover_required_files() -> None:
     expected_files = {
         "README.md",
+        "manifest.yaml.tmpl",
         "plugin.py.tmpl",
         "contract.py.tmpl",
         "context.py.tmpl",
@@ -223,30 +173,26 @@ def test_plugin_template_failed_result_binding_has_runtime_handler() -> None:
 
 def test_plugin_template_uses_pure_data_manifest_contract() -> None:
     plugin_template = (TEMPLATE_DIR / "plugin.py.tmpl").read_text(encoding="utf-8")
+    manifest_template = _render_manifest_yaml_template()
 
-    for name in (
-        "DeviceRequirement",
-        "EventBinding",
-        "CommandBinding",
-        "ResourceBoundary",
-        "RackPosition",
-        "RackPositionCarrierCapability",
-        "TopologySpec",
-        "NodeRef",
-        "NodeRefKind",
-        "FlowEdge",
-        "FlowEdgeType",
+    assert "from pathlib import Path" in plugin_template
+    assert 'WorklinePluginManifest.from_yaml_file(Path(__file__).with_name("manifest.yaml"))' in plugin_template
+
+    removed_device_requirement = "Device" + "RoleRequirement"
+    removed_resource_boundary = "Single" + "LayerRackBoundary"
+    removed_payload_symbols = (
         "RackPositionArg",
         "RackPositionArgRole",
         "RackPositionArgSource",
         "RackPositionArgSourceKind",
-    ):
-        assert name in plugin_template
-
-    removed_device_requirement = "Device" + "RoleRequirement"
-    removed_resource_boundary = "Single" + "LayerRackBoundary"
-    assert removed_device_requirement not in plugin_template
-    assert removed_resource_boundary not in plugin_template
+        "CommandResultBinding",
+        "payload_schema_ref",
+        "rack_position_args",
+        "result_bindings",
+    )
+    for removed_text in (removed_device_requirement, removed_resource_boundary, *removed_payload_symbols):
+        assert removed_text not in plugin_template
+        assert removed_text not in manifest_template
 
     for field_name in REMOVED_MANIFEST_RUNTIME_FIELDS:
         assert f"{field_name}=" not in plugin_template
@@ -262,34 +208,51 @@ def test_plugin_template_uses_pure_data_manifest_contract() -> None:
     assert "context_model = {{CONTEXT_CLASS}}" not in plugin_template
     assert "def get_context_model(self) -> type[{{CONTEXT_CLASS}}]:" in plugin_template
 
-    for manifest_field, binding_name in (
-        ("devices", "DeviceRequirement("),
-        ("events", "EventBinding("),
-        ("commands", "CommandBinding("),
-        ("resource_boundaries", "ResourceBoundary("),
-    ):
-        assert f"{manifest_field}=(" in plugin_template
-        assert binding_name in plugin_template
-
-    assert RACK_POSITION_CONTRACT_SENTENCE in plugin_template
+    assert "device_roles:" in manifest_template
+    assert "rack_positions:" in manifest_template
+    assert "topology:" in manifest_template
+    assert "resource_boundaries:" in manifest_template
 
 
-def test_plugin_template_material_flow_edges_are_position_to_position() -> None:
-    flow_edges = _flow_edges_from_template()
+def test_manifest_yaml_template_loads_as_runtime_manifest() -> None:
+    manifest_data = yaml.safe_load(_render_manifest_yaml_template())
+    manifest = WorklinePluginManifest.from_yaml_dict(manifest_data)
 
-    material_flow_edges = [edge for edge in flow_edges if _flow_edge_type(edge) == "MATERIAL_FLOW"]
-    assert material_flow_edges
-    assert all(
-        _node_ref_kind(_keyword(edge, "from_node")) == "RACK_POSITION"
-        and _node_ref_kind(_keyword(edge, "to_node")) == "RACK_POSITION"
-        for edge in material_flow_edges
-    )
+    assert tuple(field.name for field in manifest.__dataclass_fields__.values()) == MANIFEST_TOP_LEVEL_FIELDS
+    assert [device.role for device in manifest.devices] == ["ENTRY_SENSOR", "MEASURE_DEVICE"]
+    assert {command.command: command.target_device_role for command in manifest.commands} == {
+        "MEASURE_ITEM": "MEASURE_DEVICE"
+    }
+    assert {event.event: event.category for event in manifest.events}["MEASURE_ITEM_RESULT"].value == "COMMAND_RESULT"
+    assert manifest.rack_positions[0].code == "ENTRY_POSITION"
+    assert manifest.resource_boundaries[0].rack_position_code == "MEASURE_POSITION"
 
-    operation_edges = [edge for edge in flow_edges if _flow_edge_type(edge) == "OPERATION"]
-    assert operation_edges
+    assert {
+        (edge.from_node.kind, edge.from_node.ref, edge.to_node.kind, edge.to_node.ref, edge.type)
+        for edge in manifest.topology.flow_edges
+    } == {
+        (NodeRefKind.RACK_POSITION, "ENTRY_POSITION", NodeRefKind.DEVICE_ROLE, "ENTRY_SENSOR", FlowEdgeType.OPERATION),
+        (NodeRefKind.DEVICE_ROLE, "ENTRY_SENSOR", NodeRefKind.DEVICE_ROLE, "MEASURE_DEVICE", FlowEdgeType.OPERATION),
+        (
+            NodeRefKind.DEVICE_ROLE,
+            "MEASURE_DEVICE",
+            NodeRefKind.RACK_POSITION,
+            "MEASURE_POSITION",
+            FlowEdgeType.OPERATION,
+        ),
+    }
+
+
+def test_manifest_yaml_template_uses_authoring_edge_shape() -> None:
+    manifest_data = yaml.safe_load(_render_manifest_yaml_template())
+    flow_edges = manifest_data["topology"]["flow_edges"]
+
+    assert flow_edges
+    assert all(set(edge) == {"from", "to", "type"} for edge in flow_edges)
+    assert all("from_node" not in edge and "to_node" not in edge for edge in flow_edges)
     assert any(
-        "DEVICE_ROLE" in {_node_ref_kind(_keyword(edge, "from_node")), _node_ref_kind(_keyword(edge, "to_node"))}
-        for edge in operation_edges
+        "DEVICE_ROLE" in {edge["from"]["kind"], edge["to"]["kind"]} and edge["type"] == "OPERATION"
+        for edge in flow_edges
     )
 
 
@@ -304,11 +267,8 @@ def test_template_tests_assert_new_manifest_and_runtime_contract() -> None:
     assert "isinstance(manifest.commands[0], CommandBinding)" in tests_template
     assert "isinstance(manifest.resource_boundaries[0], ResourceBoundary)" in tests_template
     assert 'manifest.rack_positions[0].code == "ENTRY_POSITION"' in tests_template
-    assert 'manifest.commands[0].rack_position_args[0].rack_position_ref == "MEASURE_POSITION"' in tests_template
-    assert (
-        "manifest.commands[0].rack_position_args[1].source.kind is RackPositionArgSourceKind.EVENT_PAYLOAD"
-        in tests_template
-    )
+    assert 'manifest.commands[0].target_device_role == "MEASURE_DEVICE"' in tests_template
+    assert 'set(manifest.commands[0].__dataclass_fields__) == {"command", "target_device_role"}' in tests_template
 
     for helper_name in (
         "resolve_business_key",
@@ -347,8 +307,7 @@ def test_template_docs_explain_position_arg_static_contract() -> None:
         content = (TEMPLATE_DIR / relative_path).resolve().read_text(encoding="utf-8")
         assert POSITION_ARG_CONTRACT_SENTENCE in content
         assert RACK_POSITION_CONTRACT_SENTENCE in content
-        assert "MATERIAL_FLOW 只表达 rack position 到 rack position" in content
-        assert "设备动作边使用 `FlowEdgeType.OPERATION`" in content
+        assert "设备相关物理连线使用 `OPERATION`" in content
 
 
 def test_template_docs_do_not_document_legacy_context_model_or_empty_registry() -> None:

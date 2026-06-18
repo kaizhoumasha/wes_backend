@@ -4,19 +4,20 @@
 
 ## 使用方式
 
-1. 复制 `contract.py.tmpl`、`context.py.tmpl`、`plugin.py.tmpl` 到 `src/workline_plugins/<plugin_key>/`，去掉 `.tmpl` 后缀。
+1. 复制 `contract.py.tmpl`、`context.py.tmpl`、`plugin.py.tmpl`、`manifest.yaml.tmpl` 到 `src/workline_plugins/<plugin_key>/`，去掉 `.tmpl` 后缀。
 2. 把 `{{PLUGIN_KEY}}`、`{{PLUGIN_CLASS}}`、`{{CONTRACT_VERSION}}` 等占位符替换成业务值。
 3. 先落 `contract.py`，确保事件和结果业务字段只在 `data`，命令业务字段只在 `params`。
 4. 再落 `context.py`、`plugin.py` 和测试。
 5. 在现有 registry 中显式新增/合并 `WorklinePluginDefinition` 条目，位置是 `src/workline_plugin_registry.py`。
-6. manifest 只写八类可序列化静态事实：`plugin_key`、`contract_version`、`devices`、`rack_positions`、`topology`、`commands`、`events`、`resource_boundaries`。
+6. `manifest.yaml` 使用 `device_roles` authoring，loader 会投影为 `devices`、`commands`、`events` 等运行时合同字段。
 7. registry helper 只负责读取运行时行为；运行时能力写在插件类成员或方法上：`resolve_business_key`、`classify_result`、必须实现 `get_context_model()`、`resolve_material_identity`、`list_ng_reasons`。
 8. 用 `fixtures/` 里的 happy path、业务 NG、已建模异常流、系统错误、timeout 和 invalid envelope 示例扩展本业务测试。
 9. 开发/测试环境用 `WorkLine.run_mode=SIMULATION` 跑 sandbox 闭环；消息 payload 不增加 sandbox 标志。
 
 ## 模板文件
 
-- `plugin.py.tmpl`：插件入口、pure-data manifest 和 handler 结构。
+- `plugin.py.tmpl`：插件入口、manifest YAML 加载和 handler 结构。
+- `manifest.yaml.tmpl`：设备角色能力、货架位、物理拓扑和资源边界 authoring 模板。
 - `contract.py.tmpl`：Pydantic payload、业务键解析、结果分类、物料身份解析、NG 原因目录、命令 params helper。
 - `context.py.tmpl`：类型化业务 context。
 - `registry_entry.py.tmpl`：注册到 `src/workline_plugin_registry.py` 的片段。
@@ -27,13 +28,13 @@
 ## Manifest 合同
 
 - manifest 是 pure data，不保存 callable、Pydantic 类型或运行态对象。
-- `devices` 使用 `DeviceRequirement`，只声明设备角色、数量和硬件能力。
+- YAML 中 `device_roles` 合并声明设备角色、数量、硬件能力、COMMAND 和 EVENT 能力。
 - `rack_positions` 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。
-- `topology` 中 MATERIAL_FLOW 只表达 rack position 到 rack position；设备动作边使用 `FlowEdgeType.OPERATION`。
-- `events` 使用 `EventBinding`，声明事件名、来源设备角色、事件分类和 payload schema 引用。
-- `commands` 使用 `CommandBinding`，声明命令名、目标设备角色、货架位参数和结果事件绑定。
+- `topology` 是前端 CANVAS 可直接渲染的物理流程；设备相关物理连线使用 `OPERATION`。
+- 命令结果事件写入 `events`，category 使用 `COMMAND_RESULT`。
+- `commands` 只声明命令名和目标设备角色。
 - `resource_boundaries` 使用 `ResourceBoundary`，声明 rack/WMS/snapshot/lease 等资源编排边界。
-- `RackPositionArg` 静态货架位使用 `rack_position_ref`，`rack_position_ref` 与 `source` 互斥；`RackPositionArgSource` 不支持 `STATIC`。
+- 设备 payload 由插件业务代码、设备 profile、设备网关或 PLC 理解，不进入 manifest。
 
 ## 错误定义硬规则
 

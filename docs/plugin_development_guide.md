@@ -79,19 +79,19 @@ tests/workline_plugins/test_<plugin_key>_plugin.py
 
 ## Manifest 与 runtime helper
 
-manifest 是 pure data，只保留八类可序列化静态事实：
+manifest 是 pure data，只表达四类静态事实：
 
 ```text
-plugin_key, contract_version, devices, rack_positions, topology, commands, events, resource_boundaries
+设备角色及 COMMAND/EVENT 能力、货架位、物理拓扑、资源边界
 ```
 
-- `devices` 使用 `DeviceRequirement`，声明设备角色、数量和硬件能力。
+- 插件目录维护 `manifest.yaml`，使用 `device_roles` 合并声明设备角色、数量、硬件能力、COMMAND 和 EVENT 能力。
 - `rack_positions` 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。
-- `topology` 中 MATERIAL_FLOW 只表达 rack position 到 rack position；设备动作边使用 `FlowEdgeType.OPERATION`。
-- `events` 使用 `EventBinding`，声明事件名、来源设备角色、事件分类和 payload schema 引用。
-- `commands` 使用 `CommandBinding`，声明命令名、目标设备角色、货架位参数和结果事件绑定。
+- `topology` 是前端 CANVAS 可直接渲染的物理流程；设备相关物理连线使用 `OPERATION`。
+- `events` 声明事件名、来源设备角色和事件分类；命令结果事件使用 `category: COMMAND_RESULT`。
+- `commands` 只声明命令名和目标设备角色。
 - `resource_boundaries` 使用 `ResourceBoundary`，声明 rack/WMS/snapshot/lease 等资源编排边界。
-- `RackPositionArg` 静态货架位使用 `rack_position_ref`，`rack_position_ref` 与 `source` 互斥；`RackPositionArgSource` 不支持 `STATIC`。
+- 设备 payload 由插件业务代码、设备 profile、设备网关或 PLC 理解，不进入 manifest。
 
 运行时行为不进入 manifest。registry helper 通过插件实例读取以下成员：
 
@@ -190,31 +190,77 @@ class ExampleContext(BaseModel):
 
 ## plugin.py
 
-插件入口必须把 pure-data manifest、runtime helper 和 handler 写清楚。示例只展示合同形状，完整业务判断放在插件自己的 handler 或 service 中。
+插件入口必须加载 `manifest.yaml`，并把 runtime helper 和 handler 写清楚。示例只展示合同形状，完整业务判断放在插件自己的 handler 或 service 中。
+
+`manifest.yaml` 最小形状：
+
+```yaml
+plugin_key: example_plugin
+contract_version: "2026.04"
+
+device_roles:
+  ENTRY_SENSOR:
+    min_count: 1
+    max_count: 1
+    hardware_capabilities: [scan_item]
+    events:
+      - event: ITEM_ARRIVED
+        category: ENTRY_DEVICE
+  MEASURE_DEVICE:
+    min_count: 1
+    max_count: 1
+    commands: [MEASURE_ITEM]
+    events:
+      - event: MEASURE_ITEM_RESULT
+        category: COMMAND_RESULT
+
+rack_positions:
+  - code: ENTRY_POSITION
+    role: ENTRY
+    station_code: ENTRY_STATION
+    carrier_capability:
+      allowed_rack_kinds: [SINGLE_LAYER]
+      allowed_slot_kinds: []
+      min_capacity: 1
+      max_capacity: 1
+  - code: MEASURE_POSITION
+    role: WORK
+    station_code: MEASURE_STATION
+    carrier_capability:
+      allowed_rack_kinds: [SINGLE_LAYER]
+      allowed_slot_kinds: []
+      min_capacity: 1
+      max_capacity: 1
+
+topology:
+  flow_edges:
+    - from: {kind: RACK_POSITION, ref: ENTRY_POSITION}
+      to: {kind: DEVICE_ROLE, ref: ENTRY_SENSOR}
+      type: OPERATION
+    - from: {kind: DEVICE_ROLE, ref: ENTRY_SENSOR}
+      to: {kind: DEVICE_ROLE, ref: MEASURE_DEVICE}
+      type: OPERATION
+    - from: {kind: DEVICE_ROLE, ref: MEASURE_DEVICE}
+      to: {kind: RACK_POSITION, ref: MEASURE_POSITION}
+      type: OPERATION
+
+resource_boundaries:
+  - rack_position_code: MEASURE_POSITION
+    rack_kind: SINGLE_LAYER
+    business_demand_type: MEASURE_WORK_RACK
+    wms_operation_type: SUPPLY_MEASURE_RACK
+    snapshot_kind: ACTIVE_MEASURE_RACK
+    lease_scope: STATION
+```
 
 ```python
+from pathlib import Path
 from typing import Any
 
 from src.workline_runtime.material_identity import MaterialIdentity, MaterialIdentityInput
 from src.workline_runtime.ng_reason import NgReasonDefinition
 from src.workline_runtime.plugin_base import WorklinePlugin, on_event
-from src.workline_runtime.plugin_manifest import (
-    CommandBinding,
-    DeviceRequirement,
-    EventBinding,
-    EventCategory,
-    FlowEdge,
-    FlowEdgeType,
-    NodeRef,
-    NodeRefKind,
-    RackPosition,
-    RackPositionArg,
-    RackPositionArgRole,
-    RackPositionCarrierCapability,
-    ResourceBoundary,
-    TopologySpec,
-    WorklinePluginManifest,
-)
+from src.workline_runtime.plugin_manifest import WorklinePluginManifest
 
 from .context import ExampleContext
 from .contract import (
@@ -230,74 +276,7 @@ class ExamplePlugin(WorklinePlugin):
     plugin_key = "example_plugin"
     contract_version = "2026.04"
 
-    manifest = WorklinePluginManifest(
-        plugin_key=plugin_key,
-        contract_version=contract_version,
-        devices=(
-            DeviceRequirement(role="ENTRY_SENSOR", min_count=1, max_count=1, hardware_capabilities=("scan_item",)),
-            DeviceRequirement(role="MEASURE_DEVICE", min_count=1, max_count=1),
-        ),
-        rack_positions=(
-            RackPosition(
-                code="ENTRY_POSITION",
-                role="ENTRY",
-                station_code="ENTRY_STATION",
-                carrier_capability=RackPositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
-            ),
-            RackPosition(
-                code="MEASURE_POSITION",
-                role="WORK",
-                station_code="MEASURE_STATION",
-                carrier_capability=RackPositionCarrierCapability(allowed_rack_kinds=("SINGLE_LAYER",)),
-            ),
-        ),
-        topology=TopologySpec(
-            flow_edges=(
-                FlowEdge(
-                    from_node=NodeRef(NodeRefKind.DEVICE_ROLE, "ENTRY_SENSOR"),
-                    to_node=NodeRef(NodeRefKind.RACK_POSITION, "ENTRY_POSITION"),
-                    type=FlowEdgeType.OPERATION,
-                ),
-                FlowEdge(
-                    from_node=NodeRef(NodeRefKind.RACK_POSITION, "ENTRY_POSITION"),
-                    to_node=NodeRef(NodeRefKind.RACK_POSITION, "MEASURE_POSITION"),
-                    type=FlowEdgeType.MATERIAL_FLOW,
-                ),
-            )
-        ),
-        events=(
-            EventBinding(
-                event="ITEM_ARRIVED",
-                source_device_roles=("ENTRY_SENSOR",),
-                category=EventCategory.ENTRY_DEVICE,
-                payload_schema_ref="ItemArrivedPayload",
-            ),
-        ),
-        commands=(
-            CommandBinding(
-                command="MEASURE_ITEM",
-                target_device_role="MEASURE_DEVICE",
-                rack_position_args=(
-                    RackPositionArg(
-                        name="work_position",
-                        role=RackPositionArgRole.TARGET,
-                        rack_position_ref="MEASURE_POSITION",
-                    ),
-                ),
-                payload_schema_ref="MeasureParams",
-            ),
-        ),
-        resource_boundaries=(
-            ResourceBoundary(
-                rack_position_code="MEASURE_POSITION",
-                rack_kind="SINGLE_LAYER",
-                business_demand_type="MEASURE_WORK_RACK",
-                wms_operation_type="SUPPLY_MEASURE_RACK",
-                snapshot_kind="ACTIVE_MEASURE_RACK",
-                lease_scope="STATION",
-            ),
-        ),
-    )
+    manifest = WorklinePluginManifest.from_yaml_file(Path(__file__).with_name("manifest.yaml"))
 
     def resolve_business_key(self, payload_json: dict[str, Any]) -> str | None:
         return resolve_business_key(payload_json)
@@ -386,7 +365,7 @@ WORKLINE 级调试必须用 sandbox，因为只有 sandbox 覆盖事件输入、
 
 每个新插件至少覆盖：
 
-- manifest：八个顶层静态字段、`DeviceRequirement`、`EventBinding`、`CommandBinding`、`ResourceBoundary` 和位置参数引用完整性。
+- manifest：`manifest.yaml` 可被 loader 加载，设备角色能力、货架位、拓扑边和资源边界引用完整。
 - 包络：event/result 业务字段只在 `data`，下发命令业务字段只在 `params`。
 - 业务键：插件实例 `resolve_business_key` 不依赖 runtime 私有逻辑。
 - 当前事实：handler 只根据 Session context、设备事件和命令结果生成下一步 `RuntimeIntent`。

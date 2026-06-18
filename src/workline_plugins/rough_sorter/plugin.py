@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from src.app.wms_integration.models import QueryInventoryRequest, QueryInventoryResponse, WmsInventoryItem
@@ -31,9 +32,6 @@ from src.workline_plugins.rough_sorter.contract import (
     PHASE_PICK_TO_PIPELINE,
     PHASE_PUTTING_TO_BIN,
     PHASE_WAITING_RACK,
-    ROLE_CONVEYOR,
-    ROLE_INPUT_ARM,
-    ROLE_OUTPUT_ARM,
     ROUGH_SORTER_CONTRACT_VERSION,
     ROUGH_SORTER_PLUGIN_KEY,
     build_move_forward_payload,
@@ -52,26 +50,7 @@ from src.workline_runtime.material_identity import (
 )
 from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
 from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
-from src.workline_runtime.plugin_manifest import (
-    CommandBinding,
-    CommandResultBinding,
-    DeviceRequirement,
-    EventBinding,
-    EventCategory,
-    FlowEdge,
-    FlowEdgeType,
-    NodeRef,
-    NodeRefKind,
-    RackPosition,
-    RackPositionArg,
-    RackPositionArgRole,
-    RackPositionArgSource,
-    RackPositionArgSourceKind,
-    RackPositionCarrierCapability,
-    ResourceBoundary,
-    TopologySpec,
-    WorklinePluginManifest,
-)
+from src.workline_runtime.plugin_manifest import ResourceBoundary, WorklinePluginManifest
 from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntent
 
 if TYPE_CHECKING:
@@ -83,12 +62,6 @@ DEFAULT_PIPELINE_INPUT_LOCATION = "PIPELINE-IN-01"
 DEFAULT_PIPELINE_OUTPUT_LOCATION = "PIPELINE-OUT-01"
 POSITION_SCAN_POINT = "ROUGH_SORTER_SCAN_POINT"
 POSITION_WORK_SINGLE_LAYER = "SINGLE_LAYER_A"
-ROUGH_SORTER_COMMAND_RESULT_EVENTS = {
-    ACTION_PICK_AND_PUT: "ROUGH_SORTER_PICK_AND_PUT_RESULT",
-    ACTION_MOVE_FORWARD: "ROUGH_SORTER_MOVE_FORWARD_RESULT",
-    ACTION_PUT_TO_BIN: "ROUGH_SORTER_PUT_TO_BIN_RESULT",
-    ACTION_MOVE_TO_NG: "ROUGH_SORTER_MOVE_TO_NG_RESULT",
-}
 
 
 def _ng_reason(canonical_code: str, label: str) -> NgReasonDefinition:
@@ -183,94 +156,6 @@ def _dict_or_empty(value: Any) -> dict[str, Any]:
     return dict(cast("Mapping[str, Any]", value)) if isinstance(value, Mapping) else {}
 
 
-def _carrier(*rack_kinds: str, min_capacity: int = 0, max_capacity: int = 1) -> RackPositionCarrierCapability:
-    return RackPositionCarrierCapability(
-        allowed_rack_kinds=rack_kinds,
-        min_capacity=min_capacity,
-        max_capacity=max_capacity,
-    )
-
-
-def _position(
-    code: str,
-    *,
-    role: str,
-    station_code: str,
-    rack_kinds: tuple[str, ...] = ("SINGLE_LAYER",),
-    min_capacity: int = 0,
-    max_capacity: int = 1,
-) -> RackPosition:
-    return RackPosition(
-        code=code,
-        role=role,
-        station_code=station_code,
-        carrier_capability=_carrier(*rack_kinds, min_capacity=min_capacity, max_capacity=max_capacity),
-    )
-
-
-def _node(kind: NodeRefKind, ref: str) -> NodeRef:
-    return NodeRef(kind=kind, ref=ref)
-
-
-def _command_result_bindings(action: str) -> tuple[CommandResultBinding, ...]:
-    event = ROUGH_SORTER_COMMAND_RESULT_EVENTS[action]
-    return (
-        CommandResultBinding(
-            result="SUCCESS",
-            event=event,
-            category=EventCategory.COMMAND_RESULT,
-            classification="success",
-        ),
-        CommandResultBinding(
-            result="FAILED",
-            event=event,
-            category=EventCategory.COMMAND_RESULT,
-            classification="hardware_failure",
-            terminal=True,
-        ),
-    )
-
-
-def _static_position_arg(name: str, *, role: RackPositionArgRole, rack_position_ref: str) -> RackPositionArg:
-    return RackPositionArg(name=name, role=role, rack_position_ref=rack_position_ref)
-
-
-def _payload_position_arg(
-    name: str,
-    *,
-    role: RackPositionArgRole,
-    path: str,
-    fallback_rack_position_ref: str,
-) -> RackPositionArg:
-    return RackPositionArg(
-        name=name,
-        role=role,
-        source=RackPositionArgSource(
-            kind=RackPositionArgSourceKind.EVENT_PAYLOAD,
-            path=path,
-            fallback_rack_position_ref=fallback_rack_position_ref,
-        ),
-    )
-
-
-def _resource_position_arg(
-    name: str,
-    *,
-    role: RackPositionArgRole,
-    path: str,
-    fallback_rack_position_ref: str,
-) -> RackPositionArg:
-    return RackPositionArg(
-        name=name,
-        role=role,
-        source=RackPositionArgSource(
-            kind=RackPositionArgSourceKind.RESOURCE_OVERLAY,
-            path=path,
-            fallback_rack_position_ref=fallback_rack_position_ref,
-        ),
-    )
-
-
 def _rough_sorter_ng_reasons() -> tuple[NgReasonDefinition, ...]:
     return (
         _ng_reason(NG_REASON_BARCODE_INVALID, "条码无效"),
@@ -287,94 +172,7 @@ class RoughSorterPlugin(WorklinePlugin):
     plugin_key = ROUGH_SORTER_PLUGIN_KEY
     contract_version = ROUGH_SORTER_CONTRACT_VERSION
 
-    manifest = WorklinePluginManifest(
-        plugin_key=ROUGH_SORTER_PLUGIN_KEY,
-        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
-        devices=(
-            DeviceRequirement(role=ROLE_INPUT_ARM, min_count=1, max_count=1),
-            DeviceRequirement(role=ROLE_CONVEYOR, min_count=1, max_count=1),
-            DeviceRequirement(role=ROLE_OUTPUT_ARM, min_count=1, max_count=1),
-        ),
-        rack_positions=(
-            _position(
-                POSITION_WORK_SINGLE_LAYER,
-                role="CLASSIFIER_WORK",
-                station_code="CLASSIFIER_WORK_POSITION",
-                min_capacity=1,
-            ),
-        ),
-        topology=TopologySpec(
-            flow_edges=(
-                FlowEdge(
-                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_INPUT_ARM),
-                    to_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_CONVEYOR),
-                    type=FlowEdgeType.OPERATION,
-                ),
-                FlowEdge(
-                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_CONVEYOR),
-                    to_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_OUTPUT_ARM),
-                    type=FlowEdgeType.OPERATION,
-                ),
-                FlowEdge(
-                    from_node=_node(NodeRefKind.DEVICE_ROLE, ROLE_OUTPUT_ARM),
-                    to_node=_node(NodeRefKind.RACK_POSITION, POSITION_WORK_SINGLE_LAYER),
-                    type=FlowEdgeType.OPERATION,
-                ),
-            )
-        ),
-        commands=(
-            CommandBinding(
-                command=ACTION_PICK_AND_PUT,
-                target_device_role=ROLE_INPUT_ARM,
-                result_bindings=_command_result_bindings(ACTION_PICK_AND_PUT),
-            ),
-            CommandBinding(
-                command=ACTION_MOVE_FORWARD,
-                target_device_role=ROLE_CONVEYOR,
-                result_bindings=_command_result_bindings(ACTION_MOVE_FORWARD),
-            ),
-            CommandBinding(
-                command=ACTION_PUT_TO_BIN,
-                target_device_role=ROLE_OUTPUT_ARM,
-                rack_position_args=(
-                    _resource_position_arg(
-                        "bin_location",
-                        role=RackPositionArgRole.TARGET,
-                        path="target_bin_location.bin_cell_location",
-                        fallback_rack_position_ref=POSITION_WORK_SINGLE_LAYER,
-                    ),
-                ),
-                result_bindings=_command_result_bindings(ACTION_PUT_TO_BIN),
-            ),
-            CommandBinding(
-                command=ACTION_MOVE_TO_NG,
-                target_device_role=ROLE_INPUT_ARM,
-                result_bindings=_command_result_bindings(ACTION_MOVE_TO_NG),
-            ),
-        ),
-        events=(
-            EventBinding(
-                event=EVENT_SCAN_COMPLETED,
-                source_device_roles=(ROLE_INPUT_ARM,),
-                category=EventCategory.ENTRY_DEVICE,
-            ),
-            EventBinding(
-                event=EVENT_ROUGH_SORTER_STORAGE_RETRY,
-                source_device_roles=(ROLE_OUTPUT_ARM,),
-                category=EventCategory.INTERNAL,
-            ),
-        ),
-        resource_boundaries=(
-            ResourceBoundary(
-                rack_position_code=POSITION_WORK_SINGLE_LAYER,
-                rack_kind="SINGLE_LAYER",
-                business_demand_type="ROUGH_SORTER_BIN_ALLOCATION",
-                wms_operation_type="REPLACE_CLASSIFIER_WORK_RACK",
-                snapshot_kind="ACTIVE_CLASSIFIER_BIN_RACK",
-                lease_scope="STATION",
-            ),
-        ),
-    )
+    manifest = WorklinePluginManifest.from_yaml_file(Path(__file__).with_name("manifest.yaml"))
 
     def resolve_business_key(self, payload_json: dict[str, Any]) -> str | None:
         return resolve_rough_sorter_business_key(payload_json)
