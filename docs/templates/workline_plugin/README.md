@@ -31,7 +31,7 @@
 - YAML 中 `device_roles` 合并声明设备角色、数量、硬件能力、COMMAND 和 EVENT 能力。
 - `rack_positions` 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。
 - `topology` 是前端 CANVAS 可直接渲染的物理流程；设备相关物理连线使用 `OPERATION`。
-- 命令结果事件写入 `events`，category 使用 `COMMAND_RESULT`。
+- 命令结果不写入 `events`；设备执行结果通过 `/callback/result` 进入 `COMMAND_RESULT` Inbox。
 - `commands` 只声明命令名和目标设备角色。
 - `resource_boundaries` 使用 `ResourceBoundary`，声明 rack/WMS/snapshot/lease 等资源编排边界。
 - 设备 payload 由插件业务代码、设备 profile、设备网关或 PLC 理解，不进入 manifest。

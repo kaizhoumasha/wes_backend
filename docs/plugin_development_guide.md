@@ -88,7 +88,7 @@ manifest 是 pure data，只表达四类静态事实：
 - 插件目录维护 `manifest.yaml`，使用 `device_roles` 合并声明设备角色、数量、硬件能力、COMMAND 和 EVENT 能力。
 - `rack_positions` 只声明 WES-managed rack docking positions / inventory-fact anchors，不枚举所有物理点位。
 - `topology` 是前端 CANVAS 可直接渲染的物理流程；设备相关物理连线使用 `OPERATION`。
-- `events` 声明事件名、来源设备角色和事件分类；命令结果事件使用 `category: COMMAND_RESULT`。
+- `events` 声明 manifest 可识别的事件名、来源设备角色和事件分类，可包含设备通过 `/callback/event` 主动上报的事件以及 `INTERNAL` / `OPERATOR` / `SAFETY` 等运行时可见事件；命令结果通过 `/callback/result` 进入 `COMMAND_RESULT` Inbox，不写入 manifest events。
 - `commands` 只声明命令名和目标设备角色。
 - `resource_boundaries` 使用 `ResourceBoundary`，声明 rack/WMS/snapshot/lease 等资源编排边界。
 - 设备 payload 由插件业务代码、设备 profile、设备网关或 PLC 理解，不进入 manifest。
@@ -210,9 +210,6 @@ device_roles:
     min_count: 1
     max_count: 1
     commands: [MEASURE_ITEM]
-    events:
-      - event: MEASURE_ITEM_RESULT
-        category: COMMAND_RESULT
 
 rack_positions:
   - code: ENTRY_POSITION

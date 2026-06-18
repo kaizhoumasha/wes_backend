@@ -14,11 +14,8 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
-    EVENT_NG_PLACE_RESULT,
     EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_SOURCE_PICK_REQUESTED,
-    EVENT_SOURCE_PICK_RESULT,
-    EVENT_TARGET_PLACE_RESULT,
     EVENT_WORKING_BIN_SCAN,
     PHASE_WAITING_SCAN,
     PHASE_WAITING_SOURCE_PICK,
@@ -119,12 +116,12 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
     assert event_categories[EVENT_WORKING_BIN_SCAN] == EventCategory.ENTRY_DEVICE
     assert event_categories[EVENT_SESSION_COMPLETE_REQUESTED] == EventCategory.ENTRY_DEVICE
     assert EVENT_SOURCE_PICK_REQUESTED not in event_roles
-    assert event_roles[EVENT_SOURCE_PICK_RESULT] == (ROLE_SORTING_SOURCE_ARM,)
-    assert event_roles[EVENT_TARGET_PLACE_RESULT] == (ROLE_SORTING_TARGET_ARM,)
-    assert event_roles[EVENT_NG_PLACE_RESULT] == (ROLE_SORTING_TARGET_ARM,)
-    assert event_categories[EVENT_SOURCE_PICK_RESULT] == EventCategory.COMMAND_RESULT
-    assert event_categories[EVENT_TARGET_PLACE_RESULT] == EventCategory.COMMAND_RESULT
-    assert event_categories[EVENT_NG_PLACE_RESULT] == EventCategory.COMMAND_RESULT
+    assert all(category is not EventCategory.COMMAND_RESULT for category in event_categories.values())
+    assert {
+        "SORTING_SOURCE_PICK_RESULT",
+        "SORTING_TARGET_PLACE_RESULT",
+        "SORTING_NG_PLACE_RESULT",
+    }.isdisjoint(event_roles)
     assert command_by_name[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
     assert set(command_by_name[COMMAND_TARGET_PLACE].__dataclass_fields__) == {"command", "target_device_role"}
 

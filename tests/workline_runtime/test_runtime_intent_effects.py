@@ -18,7 +18,12 @@ from src.app.workline.services.inbox_service import DuplicateInboxError
 from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, ng_return_item_service
 from src.app.workline.services.runtime_hold_creation_service import runtime_hold_creation_service
 from src.app.workline.services.smt_inbound_handoff_service import SmtInboundHandoffService
-from src.workline_plugins.smt_sorting_inbound.constants import SORTING_CONTEXT_SCHEMA_VERSION
+from src.workline_plugins.smt_sorting_inbound.constants import (
+    COMMAND_NG_PLACE,
+    COMMAND_SOURCE_PICK,
+    COMMAND_TARGET_PLACE,
+    SORTING_CONTEXT_SCHEMA_VERSION,
+)
 from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
 from src.workline_runtime.effect_result import WriteBackDisposition
 from src.workline_runtime.orchestrator import OrchestratorResult
@@ -522,7 +527,12 @@ async def test_source_pick_resource_fact_records_handoff_success_with_command_ev
         id=10,
         command_id=88,
         trace_id="trace-runtime",
-        payload_json={"canonical_event_type": "SORTING_SOURCE_PICK_RESULT"},
+        payload_json={
+            "command_code": "SOURCE-CMD-001",
+            "command_type": COMMAND_SOURCE_PICK,
+            "result": "SUCCESS",
+            "data": {},
+        },
     )
     db = SimpleNamespace(execute=AsyncMock())
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
@@ -712,7 +722,9 @@ async def test_target_place_terminal_success_records_sorted_after_context_cleanu
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["inbox"].payload_json = {
         "command_code": "TARGET-CMD-001",
-        "canonical_event_type": "SORTING_TARGET_PLACE_RESULT",
+        "command_type": COMMAND_TARGET_PLACE,
+        "result": "SUCCESS",
+        "data": {},
     }
     resource_projection = RecordingResourceProjectionService()
     ledger_calls: list[dict[str, Any]] = []
@@ -775,7 +787,9 @@ async def test_ng_place_terminal_success_records_skipped_after_context_cleanup_a
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["inbox"].payload_json = {
         "command_code": "NG-CMD-001",
-        "canonical_event_type": "SORTING_NG_PLACE_RESULT",
+        "command_type": COMMAND_NG_PLACE,
+        "result": "SUCCESS",
+        "data": {},
         "ng_location": "NG-01",
         "ng_reason_code": "LOCAL_SORTING_NG",
     }

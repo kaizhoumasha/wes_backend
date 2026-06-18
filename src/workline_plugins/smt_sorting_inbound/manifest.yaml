@@ -7,9 +7,6 @@ device_roles:
     max_count: 1
     commands:
       - SORTING_SOURCE_PICK
-    events:
-      - event: SORTING_SOURCE_PICK_RESULT
-        category: COMMAND_RESULT
   SORTING_SCAN_PLATFORM:
     min_count: 1
     max_count: 1
@@ -22,11 +19,6 @@ device_roles:
     commands:
       - SORTING_TARGET_PLACE
       - SORTING_NG_PLACE
-    events:
-      - event: SORTING_TARGET_PLACE_RESULT
-        category: COMMAND_RESULT
-      - event: SORTING_NG_PLACE_RESULT
-        category: COMMAND_RESULT
   SORTING_WORKSTATION:
     min_count: 1
     max_count: 1
