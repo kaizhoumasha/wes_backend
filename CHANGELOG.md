@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.7.3.0] - 2026-06-18
+
+### Changed
+
+- WorkLine 插件 manifest 不再把命令执行结果声明为 `events`，插件作者和沙箱调试现在按 `/callback/result` 理解命令结果链路。
+- 插件开发指南和 WorkLine 插件模板同步澄清 manifest events 的边界：保留设备主动事件和 `INTERNAL` / `OPERATOR` / `SAFETY` 等运行时可见事件，命令结果进入 `COMMAND_RESULT` Inbox。
+
+### Removed
+
+- 移除粗分机和 SMT 分拣入库真实 manifest 中误建模的 `_RESULT/category: COMMAND_RESULT` 事件定义。
+- 移除 SMT 分拣入库未再使用的 `_RESULT` event 常量，避免后续测试或插件实现继续引用错误事件合同。
+
 ## [0.7.2.0] - 2026-06-18
 
 ### Added
