@@ -223,7 +223,10 @@ def test_manifest_yaml_template_loads_as_runtime_manifest() -> None:
     assert {command.command: command.target_device_role for command in manifest.commands} == {
         "MEASURE_ITEM": "MEASURE_DEVICE"
     }
-    assert {event.event: event.category for event in manifest.events}["MEASURE_ITEM_RESULT"].value == "COMMAND_RESULT"
+    event_categories = {event.event: event.category for event in manifest.events}
+    assert set(event_categories) == {"ITEM_ARRIVED"}
+    assert event_categories["ITEM_ARRIVED"].value == "ENTRY_DEVICE"
+    assert all(category.value != "COMMAND_RESULT" for category in event_categories.values())
     assert manifest.rack_positions[0].code == "ENTRY_POSITION"
     assert manifest.resource_boundaries[0].rack_position_code == "MEASURE_POSITION"
 

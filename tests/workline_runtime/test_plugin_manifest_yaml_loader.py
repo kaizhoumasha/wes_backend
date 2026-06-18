@@ -26,12 +26,11 @@ def _manifest_yaml_dict(**overrides):
                 "commands": ["SCAN_TOTE"],
                 "events": [
                     {"event": "TOTE_ARRIVED", "category": "ENTRY_DEVICE"},
-                    {"event": "SCAN_DONE", "category": "COMMAND_RESULT"},
                 ],
             },
             "EXIT_ARM": {
                 "commands": ["PUT_TOTE"],
-                "events": [{"event": "SCAN_DONE", "category": "COMMAND_RESULT"}],
+                "events": [{"event": "TOTE_PLACED", "category": "ENTRY_DEVICE"}],
             },
         },
         "rack_positions": [
@@ -124,9 +123,11 @@ def test_from_yaml_dict_projects_device_roles_to_runtime_manifest() -> None:
     assert [command.command for command in manifest.commands] == ["SCAN_TOTE", "PUT_TOTE"]
     assert {command.target_device_role for command in manifest.commands} == {"ENTRY_SCANNER", "EXIT_ARM"}
 
-    scan_done = {event.event: event for event in manifest.events}["SCAN_DONE"]
-    assert scan_done.source_device_roles == ("ENTRY_SCANNER", "EXIT_ARM")
-    assert scan_done.category is EventCategory.COMMAND_RESULT
+    events_by_name = {event.event: event for event in manifest.events}
+    assert events_by_name["TOTE_ARRIVED"].source_device_roles == ("ENTRY_SCANNER",)
+    assert events_by_name["TOTE_ARRIVED"].category is EventCategory.ENTRY_DEVICE
+    assert events_by_name["TOTE_PLACED"].source_device_roles == ("EXIT_ARM",)
+    assert events_by_name["TOTE_PLACED"].category is EventCategory.ENTRY_DEVICE
 
     first_edge = manifest.topology.flow_edges[0]
     assert first_edge.from_node.kind is NodeRefKind.RACK_POSITION
@@ -134,6 +135,20 @@ def test_from_yaml_dict_projects_device_roles_to_runtime_manifest() -> None:
     assert first_edge.to_node.kind is NodeRefKind.DEVICE_ROLE
     assert first_edge.to_node.ref == "ENTRY_SCANNER"
     assert first_edge.type is FlowEdgeType.OPERATION
+
+
+def test_yaml_loader_accepts_command_result_event_category_for_compatibility() -> None:
+    """loader 保持 enum 兼容；真实 manifest 和模板层负责清理命令结果事件。"""
+
+    data = _manifest_yaml_dict()
+    data["device_roles"]["ENTRY_SCANNER"]["events"][0]["event"] = "SCAN_TOTE_RESULT"
+    data["device_roles"]["ENTRY_SCANNER"]["events"][0]["category"] = "COMMAND_RESULT"
+
+    manifest = WorklinePluginManifest.from_yaml_dict(data)
+
+    events_by_name = {event.event: event for event in manifest.events}
+    assert events_by_name["SCAN_TOTE_RESULT"].category is EventCategory.COMMAND_RESULT
+    assert events_by_name["SCAN_TOTE_RESULT"].source_device_roles == ("ENTRY_SCANNER",)
 
 
 def test_from_yaml_file_reports_path_for_invalid_manifest(tmp_path: Path) -> None:
@@ -214,9 +229,10 @@ def test_yaml_loader_rejects_duplicate_command_across_roles() -> None:
 
 def test_yaml_loader_rejects_event_category_conflict_across_roles() -> None:
     data = _manifest_yaml_dict()
+    data["device_roles"]["EXIT_ARM"]["events"][0]["event"] = "TOTE_ARRIVED"
     data["device_roles"]["EXIT_ARM"]["events"][0]["category"] = "INTERNAL"
 
-    with pytest.raises(ValueError, match=r"SCAN_DONE|category"):
+    with pytest.raises(ValueError, match=r"TOTE_ARRIVED|category"):
         WorklinePluginManifest.from_yaml_dict(data)
 
 

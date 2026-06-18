@@ -173,6 +173,7 @@ def test_sandbox_event_templates_derive_from_manifest_events_and_filter_roles() 
         "OPERATOR_OVERRIDE",
         "SAFETY_RESET",
     ]
+    assert "COMMAND_DONE" not in {template.event_type for template in templates}
     assert {template.payload_template["device_code"] for template in templates} == {"SCAN-01"}
 
 

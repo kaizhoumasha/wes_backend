@@ -11,26 +11,17 @@ device_roles:
     events:
       - event: SCAN_COMPLETED
         category: ENTRY_DEVICE
-      - event: ROUGH_SORTER_PICK_AND_PUT_RESULT
-        category: COMMAND_RESULT
-      - event: ROUGH_SORTER_MOVE_TO_NG_RESULT
-        category: COMMAND_RESULT
   ROUGH_SORTER_CONVEYOR:
     min_count: 1
     max_count: 1
     commands:
       - MOVE_FORWARD
-    events:
-      - event: ROUGH_SORTER_MOVE_FORWARD_RESULT
-        category: COMMAND_RESULT
   ROUGH_SORTER_OUTPUT_ARM:
     min_count: 1
     max_count: 1
     commands:
       - PUT_TO_BIN
     events:
-      - event: ROUGH_SORTER_PUT_TO_BIN_RESULT
-        category: COMMAND_RESULT
       - event: ROUGH_SORTER_STORAGE_RETRY
         category: INTERNAL
 
