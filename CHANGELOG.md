@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.7.2.0] - 2026-06-18
+
+### Added
+
+- WorkLine 插件现在可以通过插件目录内的 `manifest.yaml` 声明设备角色能力、货架位、物理拓扑和资源边界，插件作者不再需要在 Python 代码里拼装 manifest dataclass。
+- YAML manifest loader 新增严格校验，覆盖重复 key、未知字段、旧 payload binding 字段、重复 command、event category 冲突、拓扑引用和资源边界引用错误。
+- SMT 分拣入库和粗分机内置插件新增静态 YAML manifest，API summary 可直接返回面向物理流程的拓扑边。
+
+### Changed
+
+- WorkLine manifest 合同清理为静态能力目录，`CommandBinding` 只保留命令和目标设备角色，`EventBinding` 只保留事件、来源设备角色和分类。
+- 插件开发指南和插件模板改为 YAML authoring，并移除旧 Python manifest、payload schema、result binding 和货架位参数绑定示例。
+- `pyyaml` 作为后端直接依赖纳入锁文件，避免 manifest loader 依赖传递安装。
+
+### Removed
+
+- 移除 `RackPositionArg*`、`CommandResultBinding`、`rack_position_args`、`result_bindings` 和 `payload_schema_ref` 等未发布旧 manifest 合同字段。
+
 ## [0.7.1.0] - 2026-06-17
 
 ### Added
