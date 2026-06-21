@@ -57,10 +57,10 @@ from src.workline_plugins.rough_sorter.contract import (
     PHASE_MOVING_FORWARD,
     PHASE_PICK_TO_PIPELINE,
     PHASE_PUTTING_TO_BIN,
-    PHASE_WAITING_RACK,
     ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
+    ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE,
 )
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_SOURCE_PICK,
@@ -482,7 +482,7 @@ async def _rough_sorter_reaches_rack_wait(
         session = await db.get(WorklineSession, session_id)
         assert session is not None
         context = cast("dict[str, Any]", session.context_json)
-        assert context["phase"] == PHASE_WAITING_RACK
+        assert context["phase"] == ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE
         assert session.status == SessionStatus.WAITING_EXTERNAL
         assert session.current_wait_type == "RACK_OPERATION"
         operation_key = cast("str", context["rack_operation"]["operation_key"])

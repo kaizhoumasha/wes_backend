@@ -11,7 +11,15 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql
 
 from src.app.workline.domain.services.smt_inbound_handoff_reason import SmtInboundHandoffReasonCode
-from src.app.workline.models import LineType, WorkLine, WorklineInbox, WorkLineRunMode, WorklineSession
+from src.app.workline.models import (
+    LineType,
+    MaterialUnit,
+    MaterialUnitStatus,
+    WorkLine,
+    WorklineInbox,
+    WorkLineRunMode,
+    WorklineSession,
+)
 from src.app.workline.models.inbox import InboxKind, SourceSystem
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.models.session import SessionStatus
@@ -618,6 +626,40 @@ async def test_claim_creates_internal_source_pick_inbox_with_session_workline_bu
     assert data["material_identity_key"] == "MAT-A"
     assert data["pkg_code"] == "PKG-A"
     assert data["route_evidence"]["source_station_code"] == "SOURCE_STATION_A"
+
+
+@pytest.mark.asyncio
+async def test_claim_reuses_material_unit_by_pkg_code_and_links_smt_session(db_session: Any) -> None:
+    workline = _target_workline("WL-SMT-SORT-MATERIAL-UNIT")
+    material_unit = MaterialUnit(
+        pkg_code="PKG-A",
+        material_identity_key="MAT-A",
+        six_in_one={"PkgID": "PKG-A"},
+        status=MaterialUnitStatus.IN_TRANSIT,
+        current_location="ROUGH-SORTER-01",
+        current_session_id=501,
+    )
+    db_session.add(workline)
+    db_session.add(material_unit)
+    await db_session.flush()
+    service = SmtInboundHandoffService(route_service=_RouteService(_selected_route(workline)))
+    _demand, item = await _ready_demand(db_session, service, rack_release_id="claim-material-unit")
+
+    result = await service.claim_next_source_item(db_session, trace_id="trace-claim-material-unit")
+    await db_session.refresh(material_unit)
+    await db_session.refresh(item)
+    session = (
+        await db_session.execute(select(WorklineSession).where(WorklineSession.id == item.sorting_session_id))
+    ).scalar_one()
+
+    assert result.kind == "CLAIMED"
+    assert session.current_material_unit_id == material_unit.id
+    assert material_unit.current_session_id == session.id
+    assert material_unit.current_location == "ROUGH-SORTER-01"
+    assert material_unit.status == MaterialUnitStatus.IN_TRANSIT
+    assert (
+        await db_session.execute(select(func.count()).select_from(MaterialUnit).where(MaterialUnit.pkg_code == "PKG-A"))
+    ).scalar_one() == 1
 
 
 @pytest.mark.asyncio

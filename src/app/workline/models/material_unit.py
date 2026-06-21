@@ -1,7 +1,8 @@
 """料盘根实体模型。
 
 material_units 是料盘（REEL）的根域实体表，扫码时建立，
-状态/位置变化时更新。NG 搬运成功后清理该记录，长期记录归 ng_return_items。
+状态/位置变化时更新。NG 料盘保留在根实体中支持当前追溯，
+长期处置/回流记录由 ng_return_items 承载。
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from sqlalchemy import JSON, CheckConstraint, Column, Index
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.schema_conf import SchemaType
 
 
@@ -36,12 +38,10 @@ class MaterialUnitBase(BaseMixin):
 
     pkg_code: str = Field(
         max_length=200,
-        index=True,
         description="PkgID，单盘物理唯一业务键",
     )
     material_identity_key: str = Field(
         max_length=300,
-        index=True,
         description="物料属性键（MAT:code:vendor:date:lot，同批次共享）",
     )
     six_in_one: dict[str, Any] = Field(
@@ -51,7 +51,6 @@ class MaterialUnitBase(BaseMixin):
     )
     status: MaterialUnitStatus = Field(
         default=MaterialUnitStatus.IN_TRANSIT,
-        index=True,
         description="料盘状态（IN_TRANSIT/STORED/COMPLETED/NG/RECONCILING）",
     )
     current_location: str | None = Field(
@@ -61,7 +60,7 @@ class MaterialUnitBase(BaseMixin):
     )
     current_session_id: int | None = Field(
         default=None,
-        index=True,
+        sa_type=SQL_COMPAT_BIGINT,
         description="当前处理 Session ID（引用 workline_sessions.id，无外键遵循辅助追溯字段规范）",
     )
     reconciliation_from_state: MaterialUnitStatus | None = Field(
@@ -74,8 +73,8 @@ class MaterialUnit(MaterialUnitBase, DataTableMixin, table=True):
     """料盘根实体表。
 
     自主主键（BaseMixin），pkg_code 为业务键。
-    只记有效料盘（IN_TRANSIT/STORED/COMPLETED/RECONCILING）；
-    NG 搬运成功后清理该记录，长期记录归 ng_return_items。
+    记录当前料盘状态（IN_TRANSIT/STORED/COMPLETED/NG/RECONCILING）；
+    NG 处置和回流的长期记录归 ng_return_items。
     """
 
     __tablename__: ClassVar[str] = "material_units"  # pyright: ignore[reportIncompatibleVariableOverride]
@@ -85,7 +84,7 @@ class MaterialUnit(MaterialUnitBase, DataTableMixin, table=True):
             "status IN ('IN_TRANSIT', 'STORED', 'COMPLETED', 'NG', 'RECONCILING')",
             name="ck_material_units_status",
         ),
-        Index("ix_material_units_pkg_code", "pkg_code"),
+        Index("ix_material_units_pkg_code", "pkg_code", unique=True),
         Index("ix_material_units_status", "status"),
         Index("ix_material_units_current_session_id", "current_session_id"),
         {"schema": SchemaType.BIZ.value},

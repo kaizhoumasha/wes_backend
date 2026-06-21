@@ -150,6 +150,40 @@ def test_resource_wait_intent_preserves_reason_and_evidence():
     }
 
 
+def test_create_material_unit_intent_defaults_to_in_transit_and_preserves_payload() -> None:
+    six_in_one = {"PkgID": "PKG-001", "HHPN": "HH-001"}
+
+    intent = RuntimeIntent.create_material_unit(
+        pkg_code="PKG-001",
+        material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+        six_in_one=six_in_one,
+    )
+    six_in_one["PkgID"] = "CHANGED"
+
+    assert intent.kind == RuntimeIntentKind.CREATE_MATERIAL_UNIT
+    assert intent.payload_json == {
+        "pkg_code": "PKG-001",
+        "material_identity_key": "MAT:HH-001:MFR-001:260528:LOT-A",
+        "six_in_one": {"PkgID": "PKG-001", "HHPN": "HH-001"},
+        "status": "IN_TRANSIT",
+    }
+
+
+def test_update_material_unit_status_intent_describes_status_and_location() -> None:
+    intent = RuntimeIntent.update_material_unit_status(
+        material_unit_id=1001,
+        status="STORED",
+        current_location="BIN-001:4",
+    )
+
+    assert intent.kind == RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS
+    assert intent.payload_json == {
+        "material_unit_id": 1001,
+        "status": "STORED",
+        "current_location": "BIN-001:4",
+    }
+
+
 def test_rack_operation_request_intent_describes_rack_operation():
     intent = RuntimeIntent.rack_operation_request(
         operation_type="REPLACE_CLASSIFIER_WORK_RACK",

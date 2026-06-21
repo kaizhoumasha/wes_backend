@@ -51,7 +51,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
-    EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
     NG_REASON_LOCAL_SORTING_NG,
     PHASE_WAITING_SCAN,
@@ -69,7 +68,7 @@ from src.workline_plugins.smt_sorting_inbound.plugin import (
     SmtSortingInboundPlugin,
 )
 from src.workline_runtime.orchestrator import OrchestratorResult
-from src.workline_runtime.runtime_intent import RuntimeIntentKind
+from src.workline_runtime.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
 from src.workline_runtime.trace_context import TraceContext
 
@@ -288,7 +287,7 @@ async def _persist_workline_with_devices(db_session: AsyncSession, workline: Wor
         _device(
             device_code="SORT-WORKSTATION",
             role=ROLE_SORTING_WORKSTATION,
-            supports_event_types=[EVENT_SESSION_COMPLETE_REQUESTED],
+            supports_event_types=[],
         ),
     ]
     for device in devices:
@@ -544,10 +543,11 @@ async def test_cross_plan_sandbox_smoke(
 
     assert [intent.kind for intent in source_intents] == [
         RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
         RuntimeIntentKind.UPDATE_CONTEXT,
     ]
     assert source_intents[0].action == "MATERIAL_UNMOUNTED"
-    session_context = _merge_plugin_context_patch_for_smoke(session_context, source_intents[1].context_patch)
+    session_context = _merge_plugin_context_patch_for_smoke(session_context, source_intents[2].context_patch)
     assert session_context["sorting"]["current_material"]["material_identity_key"] == "mid:pkg-001"
 
     replay_intents = await plugin.on_command_result(_ctx(session_context), _source_pick_result(source_data))
@@ -628,7 +628,7 @@ async def test_cross_plan_sandbox_smoke(
 
     assert [intent.kind for intent in target_intents] == [
         RuntimeIntentKind.RESOURCE_FACT,
-        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.COMPLETE,
     ]
     assert target_intents[0].action == "MATERIAL_MOUNTED"
     session_context = _merge_plugin_context_patch_for_smoke(session_context, target_intents[1].context_patch)
@@ -668,28 +668,11 @@ async def test_cross_plan_sandbox_smoke(
 
     ng_place_intents = await plugin.on_command_result(_ctx(ng_context), _ng_place_result())
 
-    assert [intent.kind for intent in ng_place_intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
+    assert [intent.kind for intent in ng_place_intents] == [RuntimeIntentKind.COMPLETE]
     ng_context = _merge_plugin_context_patch_for_smoke(ng_context, ng_place_intents[0].context_patch)
     assert ng_place_intents[0].context_patch["ng_reason"] == "LOCAL_SORTING_NG"
     assert "current_material" not in ng_context["sorting"]
     assert ng_context["sorting"]["stations"]["scan_platform"] == "EMPTY"
-
-    complete_intents = await plugin.on_device_event(
-        _ctx(ng_context),
-        _inbox_with_claim_bucket(
-            kind="DEVICE_EVENT",
-            source_system="DEVICE",
-            payload_json={
-                "event_id": "COMPLETE-EVENT-SMOKE",
-                "device_code": "SORT-WORKSTATION",
-                "event_type": EVENT_SESSION_COMPLETE_REQUESTED,
-                "data": {},
-            },
-        ),
-    )
-
-    assert [intent.kind for intent in complete_intents] == [RuntimeIntentKind.COMPLETE]
-    assert complete_intents[0].context_patch["sorting"]["business_phase"] == "COMPLETED"
 
     # 8. WORKLINE_START_REQUESTED 不是 SMT 插件普通业务事件。
     manifest = SmtSortingInboundPlugin.manifest
@@ -823,6 +806,7 @@ async def test_cross_plan_runtime_effect_stitching_persists_context_resource_fac
 
     assert [intent.kind for intent in source_intents] == [
         RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
         RuntimeIntentKind.UPDATE_CONTEXT,
     ]
     assert source_intents[0].action == ResourceStateEventType.MATERIAL_UNMOUNTED.value
@@ -949,11 +933,11 @@ async def test_cross_plan_ng_material_conflict_blocks_session_completion(
         source_system="DEVICE",
         workline_id=workline.id,
         trace_id="trace-cross-plan-ng-conflict",
-        event_id="COMPLETE-EVENT-NG-CONFLICT",
+        event_id="NG-CONFLICT-COMPLETE-CHECK",
         payload_json={
-            "event_id": "COMPLETE-EVENT-NG-CONFLICT",
+            "event_id": "NG-CONFLICT-COMPLETE-CHECK",
             "device_code": "SORT-WORKSTATION",
-            "event_type": EVENT_SESSION_COMPLETE_REQUESTED,
+            "event_type": "NG_CONFLICT_COMPLETE_CHECK",
             "data": {},
         },
     )
@@ -1036,7 +1020,7 @@ async def test_cross_plan_ng_material_conflict_blocks_session_completion(
     await db_session.refresh(inbox)
     await db_session.refresh(existing_ng_item)
 
-    complete_intents = await SmtSortingInboundPlugin().on_device_event(_ctx(dict(session.context_json or {})), inbox)
+    complete_intents = [RuntimeIntent.complete()]
 
     assert [intent.kind for intent in complete_intents] == [RuntimeIntentKind.COMPLETE]
 
@@ -1063,7 +1047,7 @@ async def test_cross_plan_ng_material_conflict_blocks_session_completion(
     assert runtime_hold.source_kind == "RESOURCE_RECONCILIATION"
     assert runtime_hold.source_reason == "NG_MATERIAL_CONFLICT"
     assert (
-        runtime_hold.source_idempotency_key == "resource-reconciliation:NG_MATERIAL_CONFLICT:COMPLETE-EVENT-NG-CONFLICT"
+        runtime_hold.source_idempotency_key == "resource-reconciliation:NG_MATERIAL_CONFLICT:NG-CONFLICT-COMPLETE-CHECK"
     )
     assert runtime_hold.session_id == session.id
     assert runtime_hold.workline_id == workline.id
@@ -1075,5 +1059,5 @@ async def test_cross_plan_ng_material_conflict_blocks_session_completion(
     assert evidence["existing_source_command_id"] == existing_command.id
     assert evidence["new_source_session_id"] == session.id
     assert evidence["new_source_command_id"] is None
-    assert evidence["new_source_event_id"] == "COMPLETE-EVENT-NG-CONFLICT"
-    assert evidence["source_event_id"] == "COMPLETE-EVENT-NG-CONFLICT"
+    assert evidence["new_source_event_id"] == "NG-CONFLICT-COMPLETE-CHECK"
+    assert evidence["source_event_id"] == "NG-CONFLICT-COMPLETE-CHECK"

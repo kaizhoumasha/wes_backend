@@ -18,6 +18,7 @@ from src.app.resource.services.active_rack_snapshot_service import smt_active_ra
 from src.app.sys.models import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import (
     InboxKind,
+    MaterialUnit,
     WorkLine,
     WorklineInbox,
     WorklineSession,
@@ -1475,6 +1476,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 rack_operation_wait=rack_operation_wait,
             )
         resource_evidence_kind = resource_evidence_projection.kind
+        resource_evidence_projection = await self._with_material_unit_locations(db, resource_evidence_projection)
         if (
             single_layer_rack_snapshot == RuntimeSingleLayerRackSnapshot.MISSING
             and resource_evidence_projection.has_non_single_layer
@@ -1612,6 +1614,65 @@ class RuntimeQueryService(BaseService[Any, Any]):
             total_count=total_count,
             truncated=total_count > _RUNTIME_RESOURCE_EVIDENCE_ITEM_LIMIT,
             has_non_single_layer=has_non_single_layer,
+        )
+
+    async def _with_material_unit_locations(
+        self,
+        db: Any,
+        projection: _RuntimeResourceEvidenceProjection,
+    ) -> _RuntimeResourceEvidenceProjection:
+        pkg_codes = {
+            item.pkg_code or item.resource_code
+            for item in projection.items
+            if item.resource_kind == RuntimeResourceKind.PKG and (item.pkg_code or item.resource_code)
+        }
+        if not pkg_codes:
+            return projection
+        columns = cast("Any", MaterialUnit).__table__.c
+        try:
+            result = await db.execute(
+                select(MaterialUnit).where(
+                    columns.pkg_code.in_(sorted(pkg_codes)), columns.current_location.isnot(None)
+                )
+            )
+        except StopAsyncIteration:
+            return projection
+        if not hasattr(result, "scalars"):
+            return projection
+        scalars_result = result.scalars()
+        if hasattr(scalars_result, "__await__"):
+            close = getattr(scalars_result, "close", None)
+            if callable(close):
+                close()
+            return projection
+        rows = scalars_result.all()
+        if hasattr(rows, "__await__"):
+            close = getattr(rows, "close", None)
+            if callable(close):
+                close()
+            return projection
+        location_by_pkg = {
+            material_unit.pkg_code: material_unit.current_location
+            for material_unit in rows
+            if material_unit.pkg_code and material_unit.current_location
+        }
+        if not location_by_pkg:
+            return projection
+        return _RuntimeResourceEvidenceProjection(
+            kind=projection.kind,
+            items=[
+                item.model_copy(update={"position_code": location_by_pkg.get(item.pkg_code or item.resource_code)})
+                if (
+                    item.resource_kind == RuntimeResourceKind.PKG
+                    and item.position_code is None
+                    and location_by_pkg.get(item.pkg_code or item.resource_code)
+                )
+                else item
+                for item in projection.items
+            ],
+            total_count=projection.total_count,
+            truncated=projection.truncated,
+            has_non_single_layer=projection.has_non_single_layer,
         )
 
     @staticmethod

@@ -1,5 +1,44 @@
 plugin_key: rough_sorter
-contract_version: rough_sorter.v1
+contract_version: rough_sorter.v2
+
+session_subject:
+  type: MATERIAL_UNIT
+  physical_form: REEL
+  identity_sources:
+    - PkgID
+    - material_identity_key
+
+state_machines:
+  - id: rough_sorter_material_unit_reel
+    subject:
+      category: MATERIAL_UNIT
+      type: MATERIAL_UNIT
+      physical_form: REEL
+    state_owner:
+      model: MaterialUnit
+      field: status
+    granularity: MATERIAL_LIFECYCLE
+    transitions:
+      - from: IN_TRANSIT
+        to: [STORED, COMPLETED, NG, RECONCILING]
+      - from: STORED
+        to: [IN_TRANSIT, NG, RECONCILING]
+      - from: RECONCILING
+        to: [IN_TRANSIT, STORED, COMPLETED, NG]
+      - from: NG
+        to: []
+      - from: COMPLETED
+        to: []
+
+pipeline_queues:
+  - code: SCAN_WORKSTATION
+    role: WORKSTATION
+    capacity: 1
+    order_policy: FIFO
+  - code: OUTPUT_BUFFER
+    role: BUFFER
+    capacity: MANY
+    order_policy: FIFO
 
 device_roles:
   ROUGH_SORTER_INPUT_ARM:

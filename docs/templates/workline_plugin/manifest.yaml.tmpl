@@ -1,6 +1,45 @@
 plugin_key: "{{PLUGIN_KEY}}"
 contract_version: "{{CONTRACT_VERSION}}"
 
+session_subject:
+  type: MATERIAL_UNIT
+  physical_form: REEL
+  identity_sources:
+    - PkgID
+    - material_identity_key
+
+state_machines:
+  - id: "{{PLUGIN_MODULE}}_material_unit_reel"
+    subject:
+      category: MATERIAL_UNIT
+      type: MATERIAL_UNIT
+      physical_form: REEL
+    state_owner:
+      model: MaterialUnit
+      field: status
+    granularity: MATERIAL_LIFECYCLE
+    transitions:
+      - from: IN_TRANSIT
+        to: [STORED, COMPLETED, NG, RECONCILING]
+      - from: STORED
+        to: [IN_TRANSIT, NG, RECONCILING]
+      - from: RECONCILING
+        to: [IN_TRANSIT, STORED, COMPLETED, NG]
+      - from: NG
+        to: []
+      - from: COMPLETED
+        to: []
+
+pipeline_queues:
+  - code: ENTRY_SCAN_QUEUE
+    role: SCAN
+    capacity: 1
+    order_policy: FIFO
+  - code: WORKSTATION_ACTIVE
+    role: WORKSTATION
+    capacity: 1
+    order_policy: FIFO
+
 device_roles:
   ENTRY_SENSOR:
     min_count: 1

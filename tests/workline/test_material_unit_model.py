@@ -8,11 +8,13 @@
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, select
 
 from src.app.workline.models import MaterialUnit, MaterialUnitStatus
+from src.app.workline.models.session import WorklineSession
 from src.database.sqlite_schema import configure_sqlite_schemas
 
 
@@ -73,6 +75,50 @@ async def test_material_unit_crud(material_unit_session):
     await material_unit_session.commit()
     result = await material_unit_session.execute(select(MaterialUnit).where(MaterialUnit.pkg_code == "PKG-TEST-001"))
     assert result.scalar_one_or_none() is None
+
+
+def test_workline_session_current_material_unit_id_uses_sql_compatible_bigint() -> None:
+    """current_material_unit_id 与迁移保持 BigInteger 兼容，并保留 SQLite 内存库兼容性。"""
+    column = WorklineSession.__table__.c.current_material_unit_id
+
+    assert column.type.compile(dialect=postgresql.dialect()) == "BIGINT"
+    assert column.type.compile(dialect=sqlite.dialect()) == "INTEGER"
+
+
+def test_material_unit_current_session_id_uses_sql_compatible_bigint() -> None:
+    """current_session_id 与 WorklineSession 主键宽度一致，并兼容 SQLite。"""
+    column = MaterialUnit.__table__.c.current_session_id
+
+    assert column.type.compile(dialect=postgresql.dialect()) == "BIGINT"
+    assert column.type.compile(dialect=sqlite.dialect()) == "INTEGER"
+
+
+def test_material_unit_pkg_code_has_unique_index() -> None:
+    """pkg_code 是单盘物理唯一业务键，模型层必须声明唯一索引/约束。"""
+    pkg_code_indexes = [
+        index for index in MaterialUnit.__table__.indexes if "pkg_code" in [column.name for column in index.columns]
+    ]
+
+    assert len(pkg_code_indexes) == 1
+    assert pkg_code_indexes[0].name == "ix_material_units_pkg_code"
+    assert [column.name for column in pkg_code_indexes[0].columns] == ["pkg_code"]
+    assert pkg_code_indexes[0].unique is True
+
+
+def test_material_unit_declares_only_expected_indexes() -> None:
+    """索引声明集中在 __table_args__，避免 Field(index=True) 生成重复索引。"""
+    expected_indexes = {
+        ("ix_material_units_pkg_code", ("pkg_code",), True),
+        ("ix_material_units_status", ("status",), False),
+        ("ix_material_units_current_session_id", ("current_session_id",), False),
+    }
+    actual_indexes = {
+        (index.name, tuple(column.name for column in index.columns), bool(index.unique))
+        for index in MaterialUnit.__table__.indexes
+        if tuple(column.name for column in index.columns) != ("id",)
+    }
+
+    assert actual_indexes == expected_indexes
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -13,6 +14,8 @@ from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 
 from src.workline_runtime.runtime_events import assert_not_reserved_runtime_event
+
+logger = logging.getLogger(__name__)
 
 
 class NodeRefKind(str, Enum):
@@ -40,6 +43,13 @@ class EventCategory(str, Enum):
 
 
 _ALLOWED_RACK_KINDS = frozenset({"SINGLE_LAYER", "FIVE_LAYER"})
+_ALLOWED_PIPELINE_ORDER_POLICIES = frozenset({"FIFO", "LIFO", "PRIORITY"})
+_MATERIAL_UNIT_SESSION_TYPE = "MATERIAL_UNIT"
+_MATERIAL_UNIT_PHYSICAL_FORM = "REEL"
+_MATERIAL_UNIT_OWNER_MODEL = "MaterialUnit"
+_MATERIAL_UNIT_OWNER_FIELD = "status"
+_MATERIAL_UNIT_STATUS_VALUES = frozenset({"IN_TRANSIT", "STORED", "COMPLETED", "NG", "RECONCILING"})
+_TERMINAL_EXCEPTION_STATES = frozenset({"NG", "RECONCILING"})
 _MISSING_TOPOLOGY = object()
 _EnumT = TypeVar("_EnumT", bound=Enum)
 _YAML_LEGACY_FIELDS = frozenset(
@@ -146,6 +156,12 @@ def _ensure_unique(values: tuple[str, ...], *, field_name: str) -> None:
     duplicates = sorted({value for value in values if values.count(value) > 1})
     if duplicates:
         raise ValueError(f"{field_name} must be unique: {', '.join(duplicates)}")
+
+
+def _ensure_material_unit_status(value: str, *, field_name: str) -> None:
+    if value not in _MATERIAL_UNIT_STATUS_VALUES:
+        allowed = ", ".join(sorted(_MATERIAL_UNIT_STATUS_VALUES))
+        raise ValueError(f"{field_name} value {value!r} must be one of: {allowed}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +353,143 @@ class ResourceBoundary:
                 raise ValueError(f"ResourceBoundary.{field_name} must be a non-empty string")
         if self.rack_kind not in _ALLOWED_RACK_KINDS:
             raise ValueError(f"ResourceBoundary.rack_kind must be one of: {', '.join(sorted(_ALLOWED_RACK_KINDS))}")
+
+
+@dataclass(frozen=True, slots=True)
+class SessionSubject:
+    """插件运行会话的业务主体。"""
+
+    type: str
+    physical_form: str
+    identity_sources: tuple[str, ...] | list[str] | set[str] | frozenset[str]
+
+    def __post_init__(self) -> None:
+        if not _non_empty_str(self.type):
+            raise ValueError("SessionSubject.type must be a non-empty string")
+        if not _non_empty_str(self.physical_form):
+            raise ValueError("SessionSubject.physical_form must be a non-empty string")
+        identity_sources = _string_tuple(self.identity_sources, field_name="SessionSubject.identity_sources")
+        if not identity_sources:
+            raise ValueError("SessionSubject.identity_sources must not be empty")
+        object.__setattr__(self, "identity_sources", identity_sources)
+
+
+@dataclass(frozen=True, slots=True)
+class StateMachineSubject:
+    """状态机绑定的业务主体。"""
+
+    category: str
+    type: str
+    physical_form: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("category", "type", "physical_form"):
+            if not _non_empty_str(getattr(self, field_name)):
+                raise ValueError(f"StateMachineSubject.{field_name} must be a non-empty string")
+
+
+@dataclass(frozen=True, slots=True)
+class StateMachineOwner:
+    """状态机状态字段归属。"""
+
+    model: str
+    field: str
+
+    def __post_init__(self) -> None:
+        if self.model != _MATERIAL_UNIT_OWNER_MODEL:
+            raise ValueError(f"StateMachineOwner.model must be {_MATERIAL_UNIT_OWNER_MODEL}")
+        if self.field != _MATERIAL_UNIT_OWNER_FIELD:
+            raise ValueError(f"StateMachineOwner.field must be {_MATERIAL_UNIT_OWNER_FIELD}")
+
+
+@dataclass(frozen=True, slots=True)
+class StateMachineTransition:
+    """状态机允许的状态流转。"""
+
+    from_state: str
+    to_states: tuple[str, ...] | list[str] | set[str] | frozenset[str]
+
+    def __post_init__(self) -> None:
+        if not _non_empty_str(self.from_state):
+            raise ValueError("StateMachineTransition.from_state must be a non-empty string")
+        _ensure_material_unit_status(self.from_state, field_name="StateMachineTransition.from_state")
+        to_states = _string_tuple(self.to_states, field_name="StateMachineTransition.to_states")
+        for index, to_state in enumerate(to_states):
+            _ensure_material_unit_status(to_state, field_name=f"StateMachineTransition.to_states[{index}]")
+        object.__setattr__(
+            self,
+            "to_states",
+            to_states,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StateMachine:
+    """插件声明的业务状态机。"""
+
+    id: str
+    subject: StateMachineSubject
+    state_owner: StateMachineOwner
+    granularity: str
+    transitions: tuple[StateMachineTransition, ...] | list[StateMachineTransition]
+
+    def __post_init__(self) -> None:
+        if not _non_empty_str(self.id):
+            raise ValueError("StateMachine.id must be a non-empty string")
+        if not isinstance(self.subject, StateMachineSubject):
+            raise TypeError("StateMachine.subject must be StateMachineSubject")
+        if not isinstance(self.state_owner, StateMachineOwner):
+            raise TypeError("StateMachine.state_owner must be StateMachineOwner")
+        if not _non_empty_str(self.granularity):
+            raise ValueError("StateMachine.granularity must be a non-empty string")
+
+        transitions = tuple(self.transitions)
+        if not transitions:
+            raise ValueError("StateMachine.transitions must not be empty")
+        if not all(isinstance(transition, StateMachineTransition) for transition in transitions):
+            raise TypeError("StateMachine.transitions must contain only StateMachineTransition")
+        _ensure_unique(
+            tuple(transition.from_state for transition in transitions),
+            field_name="StateMachine.transitions.from_state",
+        )
+        self._warn_missing_terminal_exception_exits(transitions)
+        object.__setattr__(self, "transitions", transitions)
+
+    def _warn_missing_terminal_exception_exits(self, transitions: tuple[StateMachineTransition, ...]) -> None:
+        declared_exit_states = {state for transition in transitions for state in transition.to_states}
+        missing_exit_states = sorted(_TERMINAL_EXCEPTION_STATES - declared_exit_states)
+        if missing_exit_states:
+            logger.warning(
+                "StateMachine %s missing material unit status exits: %s",
+                self.id,
+                ", ".join(missing_exit_states),
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineQueue:
+    """插件声明的管线队列。"""
+
+    code: str
+    role: str
+    capacity: int | str
+    order_policy: str = "FIFO"
+
+    def __post_init__(self) -> None:
+        if not _non_empty_str(self.code):
+            raise ValueError("PipelineQueue.code must be a non-empty string")
+        if not _non_empty_str(self.role):
+            raise ValueError("PipelineQueue.role must be a non-empty string")
+        if isinstance(self.capacity, bool):
+            raise TypeError("PipelineQueue.capacity must be a positive integer or MANY")
+        if isinstance(self.capacity, int):
+            if self.capacity <= 0:
+                raise ValueError("PipelineQueue.capacity must be a positive integer or MANY")
+        elif self.capacity != "MANY":
+            raise ValueError("PipelineQueue.capacity must be a positive integer or MANY")
+        if self.order_policy not in _ALLOWED_PIPELINE_ORDER_POLICIES:
+            allowed = ", ".join(sorted(_ALLOWED_PIPELINE_ORDER_POLICIES))
+            raise ValueError(f"PipelineQueue.order_policy must be one of: {allowed}")
 
 
 def _yaml_path(parent: str, key: str | int) -> str:
@@ -596,6 +749,138 @@ def _project_yaml_resource_boundaries(value: Any) -> tuple[ResourceBoundary, ...
     return tuple(boundaries)
 
 
+def _project_yaml_session_subject(value: Any) -> SessionSubject:
+    subject = _yaml_mapping(value, path="session_subject")
+    _expect_yaml_keys(subject, {"type", "physical_form", "identity_sources"}, path="session_subject")
+    return SessionSubject(
+        type=_yaml_required_str(subject, "type", path="session_subject"),
+        physical_form=_yaml_required_str(subject, "physical_form", path="session_subject"),
+        identity_sources=_yaml_str_list(
+            subject.get("identity_sources", []),
+            path="session_subject.identity_sources",
+        ),
+    )
+
+
+def _project_yaml_state_machine_subject(value: Any, *, path: str) -> StateMachineSubject:
+    subject = _yaml_mapping(value, path=path)
+    _expect_yaml_keys(subject, {"category", "type", "physical_form"}, path=path)
+    return StateMachineSubject(
+        category=_yaml_required_str(subject, "category", path=path),
+        type=_yaml_required_str(subject, "type", path=path),
+        physical_form=_yaml_required_str(subject, "physical_form", path=path),
+    )
+
+
+def _project_yaml_state_machine_owner(value: Any, *, path: str) -> StateMachineOwner:
+    owner = _yaml_mapping(value, path=path)
+    _expect_yaml_keys(owner, {"model", "field"}, path=path)
+    try:
+        return StateMachineOwner(
+            model=_yaml_required_str(owner, "model", path=path),
+            field=_yaml_required_str(owner, "field", path=path),
+        )
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+
+
+def _project_yaml_state_machine_transitions(value: Any, *, path: str) -> tuple[StateMachineTransition, ...]:
+    items = _yaml_sequence(value, path=path)
+    transitions: list[StateMachineTransition] = []
+    for index, raw_item in enumerate(items):
+        item_path = _yaml_path(path, index)
+        item = _yaml_mapping(raw_item, path=item_path)
+        _expect_yaml_keys(item, {"from", "to"}, path=item_path)
+        try:
+            transitions.append(
+                StateMachineTransition(
+                    from_state=_yaml_required_str(item, "from", path=item_path),
+                    to_states=_yaml_str_list(item.get("to", []), path=_yaml_path(item_path, "to")),
+                )
+            )
+        except ValueError as exc:
+            raise ValueError(str(exc).replace("from_state", "from").replace("to_states", "to")) from exc
+
+    from_states = tuple(transition.from_state for transition in transitions)
+    duplicates = sorted({from_state for from_state in from_states if from_states.count(from_state) > 1})
+    if duplicates:
+        raise ValueError(f"{path}.from must be unique: {', '.join(duplicates)}")
+    return tuple(transitions)
+
+
+def _project_yaml_state_machines(value: Any) -> tuple[StateMachine, ...]:
+    items = _yaml_sequence(value, path="state_machines")
+    state_machines: list[StateMachine] = []
+    for index, raw_item in enumerate(items):
+        path = _yaml_path("state_machines", index)
+        item = _yaml_mapping(raw_item, path=path)
+        _expect_yaml_keys(
+            item,
+            {"id", "subject", "state_owner", "granularity", "transitions"},
+            path=path,
+        )
+        try:
+            state_machines.append(
+                StateMachine(
+                    id=_yaml_required_str(item, "id", path=path),
+                    subject=_project_yaml_state_machine_subject(item.get("subject"), path=_yaml_path(path, "subject")),
+                    state_owner=_project_yaml_state_machine_owner(
+                        item.get("state_owner"),
+                        path=_yaml_path(path, "state_owner"),
+                    ),
+                    granularity=_yaml_required_str(item, "granularity", path=path),
+                    transitions=_project_yaml_state_machine_transitions(
+                        item.get("transitions"),
+                        path=_yaml_path(path, "transitions"),
+                    ),
+                )
+            )
+        except ValueError as exc:
+            raise ValueError(
+                str(exc).replace("StateMachine.transitions.from_state", f"{path}.transitions.from")
+            ) from exc
+    return tuple(state_machines)
+
+
+def _yaml_pipeline_capacity(mapping: Mapping[str, Any], *, path: str) -> int | str:
+    value = mapping.get("capacity")
+    field_path = _yaml_path(path, "capacity")
+    if isinstance(value, bool):
+        raise TypeError(f"{field_path} must be a positive integer or MANY")
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError(f"{field_path} must be a positive integer or MANY")
+        return value
+    if value == "MANY":
+        return "MANY"
+    raise ValueError(f"{field_path} must be a positive integer or MANY")
+
+
+def _project_yaml_pipeline_queues(value: Any) -> tuple[PipelineQueue, ...]:
+    items = _yaml_sequence(value, path="pipeline_queues")
+    queues: list[PipelineQueue] = []
+    for index, raw_item in enumerate(items):
+        path = _yaml_path("pipeline_queues", index)
+        item = _yaml_mapping(raw_item, path=path)
+        _expect_yaml_keys(item, {"code", "role", "capacity", "order_policy"}, path=path)
+        order_policy = _yaml_required_str(item, "order_policy", path=path) if "order_policy" in item else "FIFO"
+        if order_policy not in _ALLOWED_PIPELINE_ORDER_POLICIES:
+            allowed = ", ".join(sorted(_ALLOWED_PIPELINE_ORDER_POLICIES))
+            raise ValueError(f"{_yaml_path(path, 'order_policy')} must be one of: {allowed}")
+        try:
+            queues.append(
+                PipelineQueue(
+                    code=_yaml_required_str(item, "code", path=path),
+                    role=_yaml_required_str(item, "role", path=path),
+                    capacity=_yaml_pipeline_capacity(item, path=path),
+                    order_policy=order_policy,
+                )
+            )
+        except ValueError as exc:
+            raise ValueError(f"{path}: {exc}") from exc
+    return tuple(queues)
+
+
 def _validate_yaml_topology_refs(
     topology: TopologySpec,
     *,
@@ -659,6 +944,9 @@ class WorklinePluginManifest:
     commands: tuple[CommandBinding, ...] | list[CommandBinding] = field(default_factory=tuple)
     events: tuple[EventBinding, ...] | list[EventBinding] = field(default_factory=tuple)
     resource_boundaries: tuple[ResourceBoundary, ...] | list[ResourceBoundary] = field(default_factory=tuple)
+    session_subject: SessionSubject | None = None
+    state_machines: tuple[StateMachine, ...] | list[StateMachine] = field(default_factory=tuple)
+    pipeline_queues: tuple[PipelineQueue, ...] | list[PipelineQueue] = field(default_factory=tuple)
 
     @classmethod
     def from_yaml_file(cls, path: str | Path) -> WorklinePluginManifest:
@@ -685,7 +973,17 @@ class WorklinePluginManifest:
         _reject_legacy_yaml_fields(root)
         _expect_yaml_keys(
             root,
-            {"plugin_key", "contract_version", "device_roles", "rack_positions", "topology", "resource_boundaries"},
+            {
+                "plugin_key",
+                "contract_version",
+                "device_roles",
+                "rack_positions",
+                "topology",
+                "resource_boundaries",
+                "session_subject",
+                "state_machines",
+                "pipeline_queues",
+            },
             path="<root>",
         )
 
@@ -699,6 +997,9 @@ class WorklinePluginManifest:
         rack_positions = _project_yaml_rack_positions(root.get("rack_positions"))
         topology = _project_yaml_topology(root.get("topology"))
         resource_boundaries = _project_yaml_resource_boundaries(root.get("resource_boundaries"))
+        session_subject = _project_yaml_session_subject(root["session_subject"]) if "session_subject" in root else None
+        state_machines = _project_yaml_state_machines(root.get("state_machines", []))
+        pipeline_queues = _project_yaml_pipeline_queues(root.get("pipeline_queues", []))
         device_role_set = {device.role for device in devices}
         rack_positions_by_code = {rack_position.code: rack_position for rack_position in rack_positions}
         rack_position_code_set = set(rack_positions_by_code)
@@ -721,6 +1022,9 @@ class WorklinePluginManifest:
             commands=commands,
             events=events,
             resource_boundaries=resource_boundaries,
+            session_subject=session_subject,
+            state_machines=state_machines,
+            pipeline_queues=pipeline_queues,
         )
 
     def __post_init__(self) -> None:
@@ -761,6 +1065,18 @@ class WorklinePluginManifest:
         resource_boundaries = tuple(self.resource_boundaries)
         if not all(isinstance(boundary, ResourceBoundary) for boundary in resource_boundaries):
             raise TypeError("manifest.resource_boundaries must contain only ResourceBoundary")
+        if self.session_subject is not None and not isinstance(self.session_subject, SessionSubject):
+            raise TypeError("manifest.session_subject must be SessionSubject")
+        state_machines = tuple(self.state_machines)
+        if not all(isinstance(state_machine, StateMachine) for state_machine in state_machines):
+            raise TypeError("manifest.state_machines must contain only StateMachine")
+        _ensure_unique(
+            tuple(state_machine.id for state_machine in state_machines), field_name="manifest.state_machines.id"
+        )
+        pipeline_queues = tuple(self.pipeline_queues)
+        if not all(isinstance(queue, PipelineQueue) for queue in pipeline_queues):
+            raise TypeError("manifest.pipeline_queues must contain only PipelineQueue")
+        _ensure_unique(tuple(queue.code for queue in pipeline_queues), field_name="manifest.pipeline_queues.code")
 
         device_role_set = set(device_roles)
         rack_positions_by_code = {rack_position.code: rack_position for rack_position in rack_positions}
@@ -769,6 +1085,7 @@ class WorklinePluginManifest:
         self._validate_commands(commands, device_role_set)
         self._validate_resource_boundaries(resource_boundaries, rack_positions_by_code)
         self._validate_topology_refs(topology, device_role_set, rack_position_code_set)
+        self._validate_state_machines(state_machines, self.session_subject)
 
         object.__setattr__(self, "devices", devices)
         object.__setattr__(self, "rack_positions", rack_positions)
@@ -776,6 +1093,8 @@ class WorklinePluginManifest:
         object.__setattr__(self, "commands", commands)
         object.__setattr__(self, "events", events)
         object.__setattr__(self, "resource_boundaries", resource_boundaries)
+        object.__setattr__(self, "state_machines", state_machines)
+        object.__setattr__(self, "pipeline_queues", pipeline_queues)
 
     @staticmethod
     def _validate_events(events: tuple[EventBinding, ...], device_roles: set[str]) -> None:
@@ -822,6 +1141,39 @@ class WorklinePluginManifest:
                 )
 
     @staticmethod
+    def _validate_state_machines(
+        state_machines: tuple[StateMachine, ...],
+        session_subject: SessionSubject | None,
+    ) -> None:
+        if state_machines and session_subject is None:
+            raise ValueError("manifest.session_subject must be declared when manifest.state_machines is declared")
+        if session_subject is not None:
+            if session_subject.type != _MATERIAL_UNIT_SESSION_TYPE:
+                raise ValueError(f"manifest.session_subject.type must be {_MATERIAL_UNIT_SESSION_TYPE}")
+            if session_subject.physical_form != _MATERIAL_UNIT_PHYSICAL_FORM:
+                raise ValueError(f"manifest.session_subject.physical_form must be {_MATERIAL_UNIT_PHYSICAL_FORM}")
+
+        for state_machine in state_machines:
+            if session_subject is None:
+                continue
+            if state_machine.subject.category != session_subject.type:
+                raise ValueError(
+                    "manifest.state_machines.subject.category must match manifest.session_subject.type: "
+                    f"{state_machine.subject.category} != {session_subject.type}"
+                )
+            if state_machine.subject.type != session_subject.type:
+                raise ValueError(
+                    "manifest.state_machines.subject.type must match manifest.session_subject.type: "
+                    f"{state_machine.subject.type} != {session_subject.type}"
+                )
+            if state_machine.subject.physical_form != session_subject.physical_form:
+                raise ValueError(
+                    "manifest.state_machines.subject.physical_form must match "
+                    "manifest.session_subject.physical_form: "
+                    f"{state_machine.subject.physical_form} != {session_subject.physical_form}"
+                )
+
+    @staticmethod
     def _validate_topology_refs(
         topology: TopologySpec,
         device_roles: set[str],
@@ -861,9 +1213,15 @@ __all__ = [
     "FlowEdgeType",
     "NodeRef",
     "NodeRefKind",
+    "PipelineQueue",
     "RackPosition",
     "RackPositionCarrierCapability",
     "ResourceBoundary",
+    "SessionSubject",
+    "StateMachine",
+    "StateMachineOwner",
+    "StateMachineSubject",
+    "StateMachineTransition",
     "TopologySpec",
     "WorklinePluginManifest",
 ]

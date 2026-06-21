@@ -11,6 +11,8 @@ from decimal import Decimal, InvalidOperation
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+from sqlalchemy import select
+
 from src.app.workline.domain.services.smt_inbound_handoff_reason import (
     SMT_INBOUND_HANDOFF_REASON_CATALOG,
     SmtInboundHandoffReasonCatalog,
@@ -21,6 +23,7 @@ from src.app.workline.domain.services.smt_inbound_handoff_route_service import (
     smt_inbound_handoff_route_service,
 )
 from src.app.workline.domain.services.smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy
+from src.app.workline.models.material_unit import MaterialUnit
 from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.workline.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
@@ -1607,7 +1610,29 @@ class SmtInboundHandoffService:
         sorting_context.set_station_state(scan_platform="EMPTY")
         db.add(session)
         await db.flush()
+        await self._link_claim_session_material_unit(db, session=session, item=item)
         return session
+
+    async def _link_claim_session_material_unit(
+        self,
+        db: AsyncSession,
+        *,
+        session: WorklineSession,
+        item: SmtInboundHandoffSourceItem,
+    ) -> None:
+        pkg_code = self._text_or_none(getattr(item, "pkg_code", None))
+        session_id = getattr(session, "id", None)
+        if pkg_code is None or not isinstance(session_id, int):
+            return
+        result = await db.execute(select(MaterialUnit).where(MaterialUnit.pkg_code == pkg_code).limit(1))
+        material_unit = result.scalar_one_or_none()
+        if material_unit is None:
+            return
+        session.current_material_unit_id = cast("int", material_unit.id)
+        material_unit.current_session_id = session_id
+        db.add(session)
+        db.add(material_unit)
+        await db.flush()
 
     async def _create_source_pick_request_inbox(
         self,

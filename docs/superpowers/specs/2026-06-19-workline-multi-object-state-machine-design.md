@@ -101,7 +101,7 @@ material_units (自主主键, 复用 BaseMixin)
 关键约束（设计文档已定，实施时落地）：
 - **主键是自主 ID（BaseMixin），不是 `pkg_code`**——`pkg_code` 是业务键可变/可复用，不做主键。
 - **全局料盘 ID 用 `pkg_code`**（非 `material_identity_key`，后者同批次共享，是物料属性不是料盘身份）。
-- **material_units 只记有效料盘**——NG 判定且搬运成功后清理该记录，长期记录归 `ng_return_items`（已存在表，`runtime_hold.py:215`）。
+- **material_units 保留当前料盘根实体**——NG 判定且搬运成功后写入 `ng_return_items`（已存在表，`runtime_hold.py:215`），并清空当前 Session 绑定；`material_units` 中保留 NG 状态用于当前追溯。
 - **与 resource 投影叠加非替换**——`resource_bin_material_mounts` 等仍承载料箱格容量/冲突/对账，通过 `pkg_code` 关联 material_unit。
 
 ### 料盘状态机 material_units.status
@@ -113,7 +113,7 @@ material_units (自主主键, 复用 BaseMixin)
 | `IN_TRANSIT` | 料盘在途（扫码建实体→流水线/扫码平台/搬运/分配/放盘） | SCAN_COMPLETED 建实体；状态变化停留本态 | 自动流转 |
 | `STORED` | 粗分上架（单层箱暂存，待 SMT 分拣） | 粗分 MATERIAL_MOUNTED 成功 | 自动（SMT 取出回 IN_TRANSIT） |
 | `COMPLETED` | 最终上架（五层箱，端到端完成） | SMT MATERIAL_MOUNTED 成功 | 终态 |
-| `NG` | **业务问题**——料盘不合格，进 NG 域（单向，不回正常流） | 扫码NG/测量NG/WMS拒绝/身份不一致 | 自动进 NG 域（搬运成功→写 ng_return_items + 清理 material_unit） |
+| `NG` | **业务问题**——料盘不合格，进 NG 域（单向，不回正常流） | 扫码NG/测量NG/WMS拒绝/身份不一致 | 自动进 NG 域（搬运成功→写 ng_return_items + 清空 Session 绑定，保留 material_unit） |
 | `RECONCILING` | **功能问题**——系统状态不可信，必须对账确认 | 现有触发源保留（见下） | 对账后回正常态（不预设分类，上线后按需） |
 
 **NG vs RECONCILING 本质区别**：NG 是**业务问题**（料盘本身不合格，业务判定进 NG 域，单向不回正常流）；RECONCILING 是**功能问题**（系统状态不可信，如超时/ACK耗尽/投影冲突，对账后可回正常态）。两者不重叠。
@@ -129,8 +129,8 @@ IN_TRANSIT  -> STORED | COMPLETED | NG | RECONCILING
 STORED       -> IN_TRANSIT | NG | RECONCILING
               # IN_TRANSIT: SMT 取出分拣
               # NG/RECONCILING: 同上
-NG           -> (终态: 清理 material_unit + 写 ng_return_items, 不回正常流)
-              # NG 搬运命令成功后清理
+NG           -> (终态: 写 ng_return_items + 清空 Session 绑定, 不回正常流)
+              # NG 搬运命令成功后保留 material_unit 供当前追溯
 RECONCILING  -> IN_TRANSIT | STORED | COMPLETED | NG
               # 对账结论决定回哪个正常态(或转NG)
               # 受约束恢复集: 回对账前状态或合法后继, 不跳任意状态
@@ -152,9 +152,9 @@ COMPLETED    -> (终态)
 ### NG 自动记账（决策2 安全阀）
 
 SMT complete 移除 `SORTING_SESSION_COMPLETE_REQUESTED` 后，安全阀用"自动转 NG"替代（NG 是业务问题，自动进 NG 域）：
-- 放置成功后若检测到异常（如下游确认失败）→ 自动 `material_units.status=NG` + 写 `ng_return_items` + 清理 material_unit
+- 放置成功后若检测到异常（如下游确认失败）→ 自动 `material_units.status=NG` + 写 `ng_return_items` + 清空 Session 绑定
 - **不进 RECONCILING**（RECONCILING 是功能问题，留给现有机制）
-- NG 搬运命令成功后才清理 material_unit（避免料盘物理在途但记录消失）
+- NG 搬运命令成功后才清空 Session 绑定，`material_units` 保留 NG 状态（避免料盘物理在途但记录消失，并支持当前追溯）
 
 ### 不做的（对比原 backlog）
 
@@ -285,7 +285,7 @@ WES 料盘状态（material_units.status）          │
 
 > **重塑（决策3）**：原"仅 NG/RECONCILING 人工"收窄。NG 是业务问题（料盘不合格，自动进 NG 域，单向不回正常流）；RECONCILING 是功能问题（系统状态不可信，对账后可回正常态），但前期不预设触发分类与自动/人工边界。
 
-**NG 是业务问题，全自动**：料盘不合格（扫码NG/测量NG/WMS拒绝/身份不一致）→ 自动进 NG 域（搬运 + 记账 ng_return_items + 清理 material_unit）。单向，不回正常流，不人工。
+**NG 是业务问题，全自动**：料盘不合格（扫码NG/测量NG/WMS拒绝/身份不一致）→ 自动进 NG 域（搬运 + 记账 ng_return_items + 清空 Session 绑定，保留 material_unit）。单向，不回正常流，不人工。
 
 **RECONCILING 是功能问题，不可自动恢复**：系统状态不可信（超时/ACK耗尽/分发失败/投影冲突），必须对账确认。前期保持现状触发源，不预设"哪些自动/哪些人工"——上线后遇到实际问题再优化。
 
@@ -936,7 +936,7 @@ current_activity = waiting command SORTING_TARGET_PLACE result on SORTING_TARGET
 
 - 进入 `RECONCILING` 时记录 `from_state`（对账前状态）。
 - 对账结论明确：回到 `from_state` 或其合法后继状态（见「第一阶段决策」的料盘 5 态 transition 合同 `RECONCILING -> IN_TRANSIT | STORED | COMPLETED | NG`），不能跳到与对账前处境无关的状态。
-- 对账确认 NG：`material_units.status` 转为 `NG`，后续按 NG 域流程搬运、写 `ng_return_items` 并清理 material_unit；若 Session 处理无法闭环，再由 Session lifecycle 标记 `FAILED`。
+- 对账确认 NG：`material_units.status` 转为 `NG`，后续按 NG 域流程搬运、写 `ng_return_items` 并清空 Session 绑定；若 Session 处理无法闭环，再由 Session lifecycle 标记 `FAILED`。
 - 对账无法闭环：维持 `RECONCILING`，升级人工处理。
 
 **关联现有字段**：`WorklineSession` 已有 10+ 个 `reconciliation_*` 字段（`session.py:267-332`）记录对账触发源，第一阶段继续消费这些字段作为对账证据和进度载体，不另起一套对账触发数据结构。**`from_state` 落库**：现有字段无对账前料盘状态，第一阶段在 `material_units.reconciliation_from_state` 记录进入 RECONCILING 前的 `material_units.status`，C 阶段强校验据此校验恢复集合法性。
@@ -1137,7 +1137,7 @@ Performance-sensitive constraints to keep in the implementation plan:
 | 状态写面迁移 | 某处旧 `phase/business_phase` 仍写 context_json，导致诊断读到旧态。 | 已列 13 处写面迁移。 | grep 断言 + 流程集成测试。 |
 | 双写投影 | `material_units.current_location` 与 resource 投影不同事务导致漂移。 | 已补同事务与权威边界。 | mount/unmount 事务失败回滚测试。 |
 | SMT complete | target place 成功后 Session 仍 RUNNING。 | 已明确自动 complete。 | target place success 集成测试。 |
-| NG 安全阀 | NG 搬运前清理 material_unit，物理在途但系统无记录。 | 已明确搬运成功后清理。 | NG 搬运成功/失败两分支测试。 |
+| NG 安全阀 | NG 搬运前清空 Session 绑定或删除 material_unit，物理在途但系统无记录。 | 已明确搬运成功后清空绑定且保留根实体。 | NG 搬运成功/失败两分支测试。 |
 | manifest 合同 | YAML 接受错拼 `state_owner`，软告警永远不生效。 | 已列校验。 | invalid manifest 单测。 |
 | soft warn | 非法 transition 被误阻断，影响生产流程。 | 已明确 WARN 不阻断。 | 非法 transition 写成功 + 日志断言。 |
 

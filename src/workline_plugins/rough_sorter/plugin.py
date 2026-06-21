@@ -12,6 +12,7 @@ from src.app.wms_integration.models import QueryInventoryRequest, QueryInventory
 from src.app.wms_integration.services.exceptions import WmsBusinessRejectedError, WmsIntegrationError
 from src.app.workline.domain.models import BarcodeDecisionType
 from src.app.workline.domain.services.barcode_decision_service import barcode_decision_service
+from src.app.workline.models.material_unit import MaterialUnitStatus
 from src.workline_plugins.rough_sorter.context import RoughSorterContext
 from src.workline_plugins.rough_sorter.contract import (
     ACTION_MOVE_FORWARD,
@@ -31,9 +32,9 @@ from src.workline_plugins.rough_sorter.contract import (
     PHASE_NG_MOVING,
     PHASE_PICK_TO_PIPELINE,
     PHASE_PUTTING_TO_BIN,
-    PHASE_WAITING_RACK,
     ROUGH_SORTER_CONTRACT_VERSION,
     ROUGH_SORTER_PLUGIN_KEY,
+    ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE,
     build_move_forward_payload,
     build_move_to_ng_payload,
     build_pick_and_put_payload,
@@ -571,7 +572,7 @@ class RoughSorterPlugin(WorklinePlugin):
             phase=PHASE_NG_MOVING,
         ).model_dump(mode="json", exclude_none=True)
 
-        return [
+        intents: list[RuntimeIntent] = [
             RuntimeIntent.update_context(context_patch),
             RuntimeIntent.mark_ng(
                 reason_code=reason_code,
@@ -593,6 +594,16 @@ class RoughSorterPlugin(WorklinePlugin):
                 ),
             ),
         ]
+        current_material_unit_id = getattr(ctx.session, "current_material_unit_id", None)
+        if current_material_unit_id is not None:
+            intents.insert(
+                0,
+                RuntimeIntent.update_material_unit_status(
+                    material_unit_id=int(current_material_unit_id),
+                    status=MaterialUnitStatus.NG.value,
+                ),
+            )
+        return intents
 
     def _measurement_ng_by_payload(
         self,
@@ -708,12 +719,30 @@ class RoughSorterPlugin(WorklinePlugin):
         }
 
         if decision.decision == BarcodeDecisionType.OK:
+            pkg_code = _non_empty_str(six_in_one_payload.get("PkgID"))
+            if pkg_code is None:
+                return self._block(
+                    "ROUGH_SORTER_CONTEXT_MISSING",
+                    "粗分机扫码成功但缺少 PkgID，无法建立料盘实体",
+                )
+            material_identity_key = self._material_identity_key(six_in_one_payload)
+            if material_identity_key is None:
+                return self._block(
+                    "ROUGH_SORTER_CONTEXT_MISSING",
+                    "粗分机扫码成功但缺少物料身份键，无法建立料盘实体",
+                )
             context_patch = RoughSorterContext(
                 six_in_one=six_in_one_payload,
                 business_key=decision.business_key,
                 phase=PHASE_PICK_TO_PIPELINE,
             ).model_dump(mode="json", exclude_none=True)
             return [
+                RuntimeIntent.create_material_unit(
+                    pkg_code=pkg_code,
+                    material_identity_key=material_identity_key,
+                    six_in_one=six_in_one_payload,
+                    status=MaterialUnitStatus.IN_TRANSIT.value,
+                ),
                 RuntimeIntent.update_context(context_patch),
                 RuntimeIntent.command(
                     device_role=ACTION_TARGET_ROLES[ACTION_PICK_AND_PUT],
@@ -740,24 +769,39 @@ class RoughSorterPlugin(WorklinePlugin):
             phase=PHASE_NG_MOVING,
         ).model_dump(mode="json", exclude_none=True)
 
-        return [
-            RuntimeIntent.update_context(context_patch),
-            RuntimeIntent.mark_ng(
-                reason_code=reason_code,
-                message=reason_message,
-                payload={"six_in_one": six_in_one_payload},
-            ),
-            RuntimeIntent.command(
-                device_role=ACTION_TARGET_ROLES[ACTION_MOVE_TO_NG],
-                action=ACTION_MOVE_TO_NG,
-                payload=build_move_to_ng_payload(
-                    business_key=decision.business_key,
-                    source_location=self._scan_source_location(payload_json),
-                    ng_location=self._ng_location(ctx),
+        intents: list[RuntimeIntent] = []
+        pkg_code = _non_empty_str(six_in_one_payload.get("PkgID"))
+        material_identity_key = self._material_identity_key(six_in_one_payload)
+        if material_identity_key is not None and pkg_code is not None:
+            intents.append(
+                RuntimeIntent.create_material_unit(
+                    pkg_code=pkg_code,
+                    material_identity_key=material_identity_key,
+                    six_in_one=six_in_one_payload,
+                    status=MaterialUnitStatus.NG.value,
+                )
+            )
+        intents.extend(
+            [
+                RuntimeIntent.update_context(context_patch),
+                RuntimeIntent.mark_ng(
                     reason_code=reason_code,
+                    message=reason_message,
+                    payload={"six_in_one": six_in_one_payload},
                 ),
-            ),
-        ]
+                RuntimeIntent.command(
+                    device_role=ACTION_TARGET_ROLES[ACTION_MOVE_TO_NG],
+                    action=ACTION_MOVE_TO_NG,
+                    payload=build_move_to_ng_payload(
+                        business_key=decision.business_key,
+                        source_location=self._scan_source_location(payload_json),
+                        ng_location=self._ng_location(ctx),
+                        reason_code=reason_code,
+                    ),
+                ),
+            ]
+        )
+        return intents
 
     @on_event(EVENT_ROUGH_SORTER_STORAGE_RETRY)
     async def handle_storage_retry(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
@@ -766,7 +810,7 @@ class RoughSorterPlugin(WorklinePlugin):
         payload_json = inbox.payload_json or {}
         payload_data = _payload_data(payload_json)
         rough_context = _session_context(ctx)
-        if rough_context.phase != PHASE_WAITING_RACK:
+        if rough_context.phase != ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE:
             return self._block(
                 "ROUGH_SORTER_PHASE_INVALID",
                 f"粗分机 storage retry 处于非法阶段: {rough_context.phase}",
@@ -1043,6 +1087,9 @@ class RoughSorterPlugin(WorklinePlugin):
         material_identity_key = material_identity_key or self._material_identity_key(rough_context.six_in_one)
         if material_identity_key is None:
             return self._block("ROUGH_SORTER_CONTEXT_MISSING", "粗分机上下文缺少物料身份键，无法记录入箱事实")
+        current_material_unit_id = getattr(ctx.session, "current_material_unit_id", None)
+        if current_material_unit_id is None:
+            return self._block("ROUGH_SORTER_CONTEXT_MISSING", "粗分机上下文缺少当前料盘实体，无法更新入箱状态")
 
         source_event_id = _non_empty_str(payload_json.get("command_code")) or f"PUT_TO_BIN:{business_key}"
         consume_payload = {
@@ -1078,6 +1125,11 @@ class RoughSorterPlugin(WorklinePlugin):
                 fact_type="MATERIAL_MOUNTED",
                 payload={key: value for key, value in mounted_payload.items() if value is not None},
                 idempotency_key=f"MATERIAL_MOUNTED:{resource_pkg_code}:{bin_code}:{bin_cell_index}",
+            ),
+            RuntimeIntent.update_material_unit_status(
+                material_unit_id=int(current_material_unit_id),
+                status=MaterialUnitStatus.STORED.value,
+                current_location=f"{bin_code}:{bin_cell_index}",
             ),
             RuntimeIntent.complete({"phase": PHASE_COMPLETED}),
         ]
@@ -1256,7 +1308,7 @@ class RoughSorterPlugin(WorklinePlugin):
             measurement=rough_context.measurement,
             wms_validation=rough_context.wms_validation,
             rack_operation=rack_operation_context,
-            phase=PHASE_WAITING_RACK,
+            phase=ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE,
         ).model_dump(mode="json", exclude_none=True)
         context_patch["resume_source_device_code"] = source_device_code
         return [

@@ -1,5 +1,52 @@
 plugin_key: SMT_SORTING_INBOUND
-contract_version: "2026-06-01.p0"
+contract_version: "2026-06-21.p1"
+
+session_subject:
+  type: MATERIAL_UNIT
+  physical_form: REEL
+  identity_sources:
+    - PkgID
+    - material_identity_key
+
+state_machines:
+  - id: smt_material_unit_reel
+    subject:
+      category: MATERIAL_UNIT
+      type: MATERIAL_UNIT
+      physical_form: REEL
+    state_owner:
+      model: MaterialUnit
+      field: status
+    granularity: MATERIAL_LIFECYCLE
+    transitions:
+      - from: IN_TRANSIT
+        to: [STORED, COMPLETED, NG, RECONCILING]
+      - from: STORED
+        to: [IN_TRANSIT, NG, RECONCILING]
+      - from: RECONCILING
+        to: [IN_TRANSIT, STORED, COMPLETED, NG]
+      - from: NG
+        to: []
+      - from: COMPLETED
+        to: []
+
+pipeline_queues:
+  - code: INFEED_BUFFER_QUEUE
+    role: BUFFER
+    capacity: MANY
+    order_policy: FIFO
+  - code: ENTRY_SCAN_QUEUE
+    role: SCAN
+    capacity: 1
+    order_policy: FIFO
+  - code: WORKSTATION_ACTIVE
+    role: WORKSTATION
+    capacity: 1
+    order_policy: FIFO
+  - code: EXIT_ROUTING_SCAN_QUEUE
+    role: SCAN
+    capacity: 1
+    order_policy: FIFO
 
 device_roles:
   SORTING_SOURCE_ARM:
@@ -22,9 +69,6 @@ device_roles:
   SORTING_WORKSTATION:
     min_count: 1
     max_count: 1
-    events:
-      - event: SORTING_SESSION_COMPLETE_REQUESTED
-        category: ENTRY_DEVICE
 
 rack_positions:
   - code: SOURCE_STATION_A

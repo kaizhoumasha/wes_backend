@@ -37,6 +37,9 @@ MANIFEST_TOP_LEVEL_FIELDS = (
     "commands",
     "events",
     "resource_boundaries",
+    "session_subject",
+    "state_machines",
+    "pipeline_queues",
 )
 REMOVED_MANIFEST_RUNTIME_FIELDS = (
     "business_key_resolver",
@@ -72,6 +75,11 @@ def test_manifest_contract() -> None:
     assert set(manifest.commands[0].__dataclass_fields__) == {"command", "target_device_role"}
     assert isinstance(manifest.resource_boundaries[0], ResourceBoundary)
     assert manifest.resource_boundaries[0].rack_position_code == "MEASURE_POSITION"
+    assert manifest.session_subject.type == "MATERIAL_UNIT"
+    assert manifest.session_subject.physical_form == "REEL"
+    assert manifest.state_machines[0].state_owner.model == "MaterialUnit"
+    assert manifest.state_machines[0].state_owner.field == "status"
+    assert {queue.code for queue in manifest.pipeline_queues} >= {"ENTRY_SCAN_QUEUE", "WORKSTATION_ACTIVE"}
 
     for field_name in REMOVED_MANIFEST_RUNTIME_FIELDS:
         assert not hasattr(manifest, field_name)

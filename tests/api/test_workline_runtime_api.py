@@ -3472,6 +3472,175 @@ class TestRuntimeQueryService:
         )
 
     @pytest.mark.asyncio
+    async def test_get_workline_detail_prefers_material_unit_current_location_for_pkg_evidence(self) -> None:
+        from src.app.workline.models import MaterialUnit, MaterialUnitStatus
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        now = timezone.now_for_db()
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key="smt_sorting_inbound",
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+        session = SimpleNamespace(
+            id=20,
+            status="RUNNING",
+            trace_id="trace-20",
+            context_json={
+                "resource_evidence": {
+                    "resource_kind": "PKG",
+                    "resource_code": "PKG-001",
+                    "pkg_code": "PKG-001",
+                    "evidence_kind": "TRACE_RESOURCE_EVIDENCE",
+                    "trace_id": "trace-20",
+                    "occurred_at": now.isoformat(),
+                }
+            },
+            last_ingress_at=now,
+            waiting_since=None,
+            deadline_at=None,
+            started_at=now,
+            created_at=now,
+        )
+        material_unit = MaterialUnit(
+            id=9001,
+            pkg_code="PKG-001",
+            material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+            six_in_one={},
+            status=MaterialUnitStatus.STORED,
+            current_location="BIN-ROOT:4",
+            current_session_id=20,
+        )
+        execute_results = [
+            SimpleNamespace(scalar_one_or_none=lambda: workline),
+            SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [material_unit])),
+        ]
+        db = AsyncMock()
+        db.execute.side_effect = execute_results
+
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[session])),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_completed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+            patch(
+                "src.app.workline.services.runtime_query_service.station_lease_service.get_station_lease_status",
+                new=AsyncMock(return_value=SimpleNamespace(available=True, reason_code=None)),
+            ),
+            patch(
+                "src.app.workline.services.runtime_query_service.smt_active_rack_snapshot_service.get_active_bin_rack",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await service.get_workline_detail(db, 45)
+
+        assert result is not None
+        pkg_item = next(item for item in result.resource_evidence_items if item.resource_code == "PKG-001")
+        assert pkg_item.position_code == "BIN-ROOT:4"
+        assert pkg_item.evidence_kind == "TRACE_RESOURCE_EVIDENCE"
+
+    @pytest.mark.asyncio
+    async def test_get_workline_detail_keeps_projection_position_when_material_unit_cache_differs(self) -> None:
+        from src.app.workline.models import MaterialUnit, MaterialUnitStatus
+        from src.app.workline.services.runtime_query_service import RuntimeQueryService
+
+        service = RuntimeQueryService()
+        now = timezone.now_for_db()
+        workline = SimpleNamespace(
+            id=45,
+            is_deleted=False,
+            line_code="WL-45",
+            line_name="SMT 线",
+            line_type="SMT",
+            zone_name=None,
+            plugin_key="smt_sorting_inbound",
+            contract_version=None,
+            is_active=True,
+            run_mode="SIMULATION",
+            runtime_status="READY",
+            active_safety_incident_id=None,
+            stopped_at=None,
+            stopped_reason=None,
+            resumed_at=None,
+        )
+        session = SimpleNamespace(
+            id=20,
+            status="RUNNING",
+            trace_id="trace-20",
+            context_json={
+                "resource_evidence": {
+                    "resource_kind": "PKG",
+                    "resource_code": "PKG-001",
+                    "pkg_code": "PKG-001",
+                    "position_code": "PROJECTION-AUTHORITY",
+                    "evidence_kind": "TRACE_RESOURCE_EVIDENCE",
+                    "trace_id": "trace-20",
+                    "occurred_at": now.isoformat(),
+                }
+            },
+            last_ingress_at=now,
+            waiting_since=None,
+            deadline_at=None,
+            started_at=now,
+            created_at=now,
+        )
+        material_unit = MaterialUnit(
+            id=9001,
+            pkg_code="PKG-001",
+            material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+            six_in_one={},
+            status=MaterialUnitStatus.STORED,
+            current_location="STALE-CACHE:9",
+            current_session_id=20,
+        )
+        db = AsyncMock()
+        db.execute.side_effect = [
+            SimpleNamespace(scalar_one_or_none=lambda: workline),
+            SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [material_unit])),
+        ]
+
+        with (
+            patch(
+                "src.app.workline.services.runtime_query_service.device_repository.get_by_work_line_id",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(service, "_load_active_sessions_for_workline", new=AsyncMock(return_value=[session])),
+            patch.object(service, "_load_recent_failed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_load_recent_completed_sessions_for_workline", new=AsyncMock(return_value=[])),
+            patch.object(service, "_build_trace_list_items", new=AsyncMock(return_value=[])),
+            patch(
+                "src.app.workline.services.runtime_query_service.station_lease_service.get_station_lease_status",
+                new=AsyncMock(return_value=SimpleNamespace(available=True, reason_code=None)),
+            ),
+            patch(
+                "src.app.workline.services.runtime_query_service.smt_active_rack_snapshot_service.get_active_bin_rack",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = await service.get_workline_detail(db, 45)
+
+        assert result is not None
+        pkg_item = next(item for item in result.resource_evidence_items if item.resource_code == "PKG-001")
+        assert pkg_item.position_code == "PROJECTION-AUTHORITY"
+
+    @pytest.mark.asyncio
     async def test_get_workline_detail_projects_timed_out_rack_operation_wait(self) -> None:
         from src.app.workline.services.runtime_query_service import RuntimeQueryService
 

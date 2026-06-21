@@ -5,6 +5,7 @@ Revises: fb02178f9772
 Create Date: 2026-06-21 10:18:01.805419+08:00
 
 """
+
 from collections.abc import Sequence
 from typing import Union
 
@@ -21,7 +22,13 @@ depends_on: Union[str, Sequence[str], None] = None
 def _data_columns() -> list[sa.Column]:
     """DataTableMixin 标准列：created_at + updated_at + id。"""
     return [
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP"), comment="创建时间 (UTC)"),
+        sa.Column(
+            "created_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+            comment="创建时间 (UTC)",
+        ),
         sa.Column("updated_at", sa.DateTime(), nullable=True, comment="更新时间 (UTC)"),
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True, nullable=False, comment="主键 ID"),
     ]
@@ -43,7 +50,7 @@ def upgrade() -> None:
             comment="料盘状态",
         ),
         sa.Column("current_location", sa.String(200), nullable=True, comment="当前格位/工位"),
-        sa.Column("current_session_id", sa.Integer(), nullable=True, comment="当前处理 Session ID"),
+        sa.Column("current_session_id", sa.BigInteger(), nullable=True, comment="当前处理 Session ID"),
         sa.Column("reconciliation_from_state", sa.String(50), nullable=True, comment="对账前 status"),
         sa.CheckConstraint(
             "status IN ('IN_TRANSIT', 'STORED', 'COMPLETED', 'NG', 'RECONCILING')",
@@ -51,7 +58,7 @@ def upgrade() -> None:
         ),
         schema="wes_biz",
     )
-    op.create_index("ix_material_units_pkg_code", "material_units", ["pkg_code"], schema="wes_biz")
+    op.create_index("ix_material_units_pkg_code", "material_units", ["pkg_code"], unique=True, schema="wes_biz")
     op.create_index("ix_material_units_status", "material_units", ["status"], schema="wes_biz")
     op.create_index(
         "ix_material_units_current_session_id",

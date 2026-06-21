@@ -14,6 +14,7 @@ from src.app.resource.services.smt_rack_bin_scheduling_service import (
 from src.app.wms_integration.models import QueryInventoryResponse, WmsInventoryItem
 from src.app.wms_integration.services.exceptions import WmsBusinessRejectedError, WmsUnavailableError
 from src.app.workline.models.inbox import WorklineInbox
+from src.app.workline.models.material_unit import MaterialUnitStatus
 from src.workline_plugins.rough_sorter.context import RoughSorterContext
 from src.workline_plugins.rough_sorter.contract import (
     ACTION_MOVE_FORWARD,
@@ -26,10 +27,10 @@ from src.workline_plugins.rough_sorter.contract import (
     PHASE_NG_MOVING,
     PHASE_PICK_TO_PIPELINE,
     PHASE_PUTTING_TO_BIN,
-    PHASE_WAITING_RACK,
     ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
+    ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE,
 )
 from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
 from src.workline_runtime.plugin_context import PluginContext
@@ -201,7 +202,8 @@ def _external_http_ctx(
 ) -> PluginContext:
     return _ctx(
         session=SimpleNamespace(
-            id=session_id, context_json=session_context or _rough_sorter_context_for_phase(PHASE_WAITING_RACK)
+            id=session_id,
+            context_json=session_context or _rough_sorter_context_for_phase(ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE),
         ),
         services=services or WorklineRuntimeServices(),
     )
@@ -263,14 +265,22 @@ def _wms_response(*, sku: str = "HH-001", lot_no: str | None = "LOT-A") -> Query
 async def test_scan_ok_updates_context_and_dispatches_pick_and_put_command() -> None:
     intents = await RoughSorterPlugin().on_device_event(_ctx(), _inbox(_scan_payload()))
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
-    assert intents[0].context_patch["phase"] == PHASE_PICK_TO_PIPELINE
-    assert intents[0].context_patch["six_in_one"]["PkgID"] == "PKG-ROUGH-001"
-    assert intents[1].action == ACTION_PICK_AND_PUT
-    assert intents[1].device_role == ROLE_INPUT_ARM
-    assert intents[1].payload_json["task_type"] == ACTION_PICK_AND_PUT
-    assert "action" not in intents[1].payload_json["params"]
-    assert intents[1].payload_json["params"]["six_in_one"]["PkgID"] == "PKG-ROUGH-001"
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.COMMAND,
+    ]
+    assert intents[0].payload_json["pkg_code"] == "PKG-ROUGH-001"
+    assert intents[0].payload_json["material_identity_key"] == "MAT:HH-001:MFR-001:260528:LOT-A"
+    assert intents[0].payload_json["status"] == MaterialUnitStatus.IN_TRANSIT.value
+    assert intents[0].payload_json["six_in_one"]["PkgID"] == "PKG-ROUGH-001"
+    assert intents[1].context_patch["phase"] == PHASE_PICK_TO_PIPELINE
+    assert intents[1].context_patch["six_in_one"]["PkgID"] == "PKG-ROUGH-001"
+    assert intents[2].action == ACTION_PICK_AND_PUT
+    assert intents[2].device_role == ROLE_INPUT_ARM
+    assert intents[2].payload_json["task_type"] == ACTION_PICK_AND_PUT
+    assert "action" not in intents[2].payload_json["params"]
+    assert intents[2].payload_json["params"]["six_in_one"]["PkgID"] == "PKG-ROUGH-001"
 
 
 @pytest.mark.asyncio
@@ -281,13 +291,19 @@ async def test_catalog_scan_payload_dispatches_pick_and_put_command() -> None:
 
     intents = await RoughSorterPlugin().on_device_event(_ctx(), _inbox(payload))
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
-    assert intents[0].context_patch["phase"] == PHASE_PICK_TO_PIPELINE
-    assert intents[0].context_patch["six_in_one"]["HHPN"] == payload["data"]["HHPN"]
-    assert intents[0].context_patch["six_in_one"]["PkgID"] == payload["data"]["PkgID"]
-    assert "location" not in intents[0].context_patch["six_in_one"]
-    assert intents[1].action == ACTION_PICK_AND_PUT
-    assert intents[1].payload_json["params"]["source_location"] == payload["data"]["location"]
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.COMMAND,
+    ]
+    assert intents[0].payload_json["pkg_code"] == payload["data"]["PkgID"]
+    assert intents[0].payload_json["status"] == MaterialUnitStatus.IN_TRANSIT.value
+    assert intents[1].context_patch["phase"] == PHASE_PICK_TO_PIPELINE
+    assert intents[1].context_patch["six_in_one"]["HHPN"] == payload["data"]["HHPN"]
+    assert intents[1].context_patch["six_in_one"]["PkgID"] == payload["data"]["PkgID"]
+    assert "location" not in intents[1].context_patch["six_in_one"]
+    assert intents[2].action == ACTION_PICK_AND_PUT
+    assert intents[2].payload_json["params"]["source_location"] == payload["data"]["location"]
 
 
 @pytest.mark.asyncio
@@ -295,18 +311,21 @@ async def test_scan_ng_marks_material_ng_and_dispatches_move_to_ng() -> None:
     intents = await RoughSorterPlugin().on_device_event(_ctx(), _inbox(_scan_payload(pkg_id="PKG-SIZENG-001")))
 
     assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
         RuntimeIntentKind.UPDATE_CONTEXT,
         RuntimeIntentKind.MARK_NG,
         RuntimeIntentKind.COMMAND,
     ]
-    assert intents[0].context_patch["phase"] == PHASE_NG_MOVING
-    assert intents[0].context_patch["ng_reason"]["reason_code"] == "SCAN_NG_BY_RULE"
-    assert intents[1].reason_code == "SCAN_NG_BY_RULE"
-    assert intents[2].action == ACTION_MOVE_TO_NG
-    assert intents[2].device_role == ROLE_INPUT_ARM
-    assert intents[2].payload_json["task_type"] == ACTION_MOVE_TO_NG
-    assert "action" not in intents[2].payload_json["params"]
-    assert intents[2].payload_json["params"]["source_location"] == "RS-SCAN-01"
+    assert intents[0].payload_json["pkg_code"] == "PKG-SIZENG-001"
+    assert intents[0].payload_json["status"] == MaterialUnitStatus.NG.value
+    assert intents[1].context_patch["phase"] == PHASE_NG_MOVING
+    assert intents[1].context_patch["ng_reason"]["reason_code"] == "SCAN_NG_BY_RULE"
+    assert intents[2].reason_code == "SCAN_NG_BY_RULE"
+    assert intents[3].action == ACTION_MOVE_TO_NG
+    assert intents[3].device_role == ROLE_INPUT_ARM
+    assert intents[3].payload_json["task_type"] == ACTION_MOVE_TO_NG
+    assert "action" not in intents[3].payload_json["params"]
+    assert intents[3].payload_json["params"]["source_location"] == "RS-SCAN-01"
 
 
 @pytest.mark.asyncio
@@ -341,19 +360,23 @@ async def test_pick_and_put_callback_validates_measurement_and_wms_before_move_f
 @pytest.mark.asyncio
 async def test_measurement_success_with_wms_no_match_marks_ng_and_moves_to_ng() -> None:
     ctx = _measurement_ctx(wms_client=FakeWmsInventoryClient(response=QueryInventoryResponse(items=[])))
+    ctx.session.current_material_unit_id = 42
 
     intents = await RoughSorterPlugin().on_command_result(ctx, _measurement_inbox())
 
     assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
         RuntimeIntentKind.UPDATE_CONTEXT,
         RuntimeIntentKind.MARK_NG,
         RuntimeIntentKind.COMMAND,
     ]
-    assert intents[0].context_patch["phase"] == PHASE_NG_MOVING
-    assert intents[0].context_patch["wms_validation"]["matched"] is False
-    assert intents[1].reason_code == "WMS_REJECTED"
-    assert intents[2].action == ACTION_MOVE_TO_NG
-    assert intents[2].device_role == ROLE_INPUT_ARM
+    assert intents[0].payload_json["material_unit_id"] == 42
+    assert intents[0].payload_json["status"] == MaterialUnitStatus.NG.value
+    assert intents[1].context_patch["phase"] == PHASE_NG_MOVING
+    assert intents[1].context_patch["wms_validation"]["matched"] is False
+    assert intents[2].reason_code == "WMS_REJECTED"
+    assert intents[3].action == ACTION_MOVE_TO_NG
+    assert intents[3].device_role == ROLE_INPUT_ARM
 
 
 @pytest.mark.asyncio
@@ -465,18 +488,22 @@ async def test_measurement_success_with_wms_unavailable_blocks_material() -> Non
 )
 async def test_pick_and_put_success_with_missing_or_invalid_measurement_marks_ng(data: dict[str, Any]) -> None:
     ctx = _measurement_ctx(wms_client=FakeWmsInventoryClient(response=_wms_response()), data=data)
+    ctx.session.current_material_unit_id = 42
 
     intents = await RoughSorterPlugin().on_command_result(ctx, _measurement_inbox(data=data))
 
     assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
         RuntimeIntentKind.UPDATE_CONTEXT,
         RuntimeIntentKind.MARK_NG,
         RuntimeIntentKind.COMMAND,
     ]
-    assert intents[0].context_patch["phase"] == PHASE_NG_MOVING
-    assert intents[1].reason_code == "MEASUREMENT_NG"
-    assert intents[2].action == ACTION_MOVE_TO_NG
-    assert intents[2].payload_json["params"]["source_location"] == "PIPELINE-IN-01"
+    assert intents[0].payload_json["material_unit_id"] == 42
+    assert intents[0].payload_json["status"] == MaterialUnitStatus.NG.value
+    assert intents[1].context_patch["phase"] == PHASE_NG_MOVING
+    assert intents[2].reason_code == "MEASUREMENT_NG"
+    assert intents[3].action == ACTION_MOVE_TO_NG
+    assert intents[3].payload_json["params"]["source_location"] == "PIPELINE-IN-01"
 
 
 @pytest.mark.asyncio
@@ -670,7 +697,7 @@ async def test_move_forward_success_with_rack_operation_required_stores_resume_a
         RuntimeIntentKind.UPDATE_CONTEXT,
         RuntimeIntentKind.RACK_OPERATION_REQUEST,
     ]
-    assert intents[0].context_patch["phase"] == PHASE_WAITING_RACK
+    assert intents[0].context_patch["phase"] == ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE
     assert intents[0].context_patch["resume_source_device_code"] == "RS-CONVEYOR-01"
     assert intents[0].context_patch["rack_operation"]["operation_key"] == rack_operation_request.operation_key
     assert intents[1].action == "REPLACE_CLASSIFIER_WORK_RACK"
@@ -749,7 +776,7 @@ def test_rack_tasks_from_actions_marks_move_out_source_position() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("callback_type", ["WMS_RACK_ARRIVED", "RCS_RACK_ARRIVED"])
 async def test_rack_arrived_external_http_emits_resource_facts_and_stable_retry_event(callback_type: str) -> None:
-    session_context = _rough_sorter_context_for_phase(PHASE_WAITING_RACK)
+    session_context = _rough_sorter_context_for_phase(ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE)
     session_context["rack_operation"] = {
         "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
         "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
@@ -804,7 +831,7 @@ async def test_rack_arrived_external_http_emits_resource_facts_and_stable_retry_
 
 @pytest.mark.asyncio
 async def test_rack_arrived_external_http_uses_operation_stable_retry_id_for_callback_redelivery() -> None:
-    session_context = _rough_sorter_context_for_phase(PHASE_WAITING_RACK)
+    session_context = _rough_sorter_context_for_phase(ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE)
     session_context["rack_operation"] = {
         "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
         "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
@@ -844,7 +871,7 @@ async def test_rack_arrived_external_http_uses_operation_stable_retry_id_for_cal
 
 @pytest.mark.asyncio
 async def test_rack_arrived_external_http_without_active_rack_template_still_creates_retry() -> None:
-    session_context = _rough_sorter_context_for_phase(PHASE_WAITING_RACK)
+    session_context = _rough_sorter_context_for_phase(ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE)
     session_context["rack_operation"] = {
         "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
         "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
@@ -878,7 +905,7 @@ async def test_rack_arrived_external_http_without_active_rack_template_still_cre
 
 @pytest.mark.asyncio
 async def test_rack_arrived_external_http_with_bin_mounts_creates_retry_without_cell_template() -> None:
-    session_context = _rough_sorter_context_for_phase(PHASE_WAITING_RACK)
+    session_context = _rough_sorter_context_for_phase(ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE)
     session_context["rack_operation"] = {
         "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
         "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
@@ -912,7 +939,7 @@ async def test_rack_arrived_external_http_with_bin_mounts_creates_retry_without_
 
 @pytest.mark.asyncio
 async def test_rack_arrived_external_http_with_empty_active_rack_cells_creates_retry() -> None:
-    session_context = _rough_sorter_context_for_phase(PHASE_WAITING_RACK)
+    session_context = _rough_sorter_context_for_phase(ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE)
     session_context["rack_operation"] = {
         "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
         "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
@@ -945,7 +972,7 @@ async def test_rack_arrived_external_http_with_empty_active_rack_cells_creates_r
 
 @pytest.mark.asyncio
 async def test_rack_arrived_external_http_derives_projection_fields_from_session_context() -> None:
-    session_context = _rough_sorter_context_for_phase(PHASE_WAITING_RACK)
+    session_context = _rough_sorter_context_for_phase(ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE)
     session_context["rack_operation"] = {
         "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
         "operation_type": "REPLACE_CLASSIFIER_WORK_RACK",
@@ -991,7 +1018,7 @@ async def test_rough_sorter_storage_retry_event_replans_allocation_after_resourc
     )
     allocator = FakeBinAllocator(decision=decision)
     active_rack_provider = FakeActiveRackSnapshotProvider(snapshot={"rack_id": "RACK-001", "cells": []})
-    session_context = _rough_sorter_context_for_phase(PHASE_WAITING_RACK)
+    session_context = _rough_sorter_context_for_phase(ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE)
     session_context["rack_operation"] = {
         "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
         "status": "REQUESTED",
@@ -1043,7 +1070,7 @@ async def test_rough_sorter_storage_retry_uses_callback_active_bin_rack_without_
         }
     )
     allocator = FakeBinAllocator(decision=decision)
-    session_context = _rough_sorter_context_for_phase(PHASE_WAITING_RACK)
+    session_context = _rough_sorter_context_for_phase(ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE)
     session_context["rack_operation"] = {
         "operation_key": "external:smt_rack_bin:trace-rough-sorter-001:RACK_OPERATION",
         "status": "REQUESTED",
@@ -1101,6 +1128,8 @@ async def test_put_to_bin_success_consumes_reservation_records_material_and_comp
         device_code="RS-OUTPUT-01",
         session_context=session_context,
     )
+    ctx.session.id = 123
+    ctx.session.current_material_unit_id = 42
 
     intents = await RoughSorterPlugin().on_command_result(
         ctx,
@@ -1110,6 +1139,7 @@ async def test_put_to_bin_success_consumes_reservation_records_material_and_comp
     assert [intent.kind for intent in intents] == [
         RuntimeIntentKind.RESOURCE_RESERVATION,
         RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
         RuntimeIntentKind.COMPLETE,
     ]
     assert intents[0].action == "CONSUME_BIN_CELL"
@@ -1130,7 +1160,10 @@ async def test_put_to_bin_success_consumes_reservation_records_material_and_comp
     assert intents[1].payload_json["reel_thickness"] == "15.0"
     assert intents[1].payload_json["cell_capacity_depth_mm"] == 10.0
     assert intents[1].idempotency_key == "MATERIAL_MOUNTED:PKG-ROUGH-001:BIN-001:4"
-    assert intents[2].context_patch["phase"] == PHASE_COMPLETED
+    assert intents[2].payload_json["material_unit_id"] == 42
+    assert intents[2].payload_json["status"] == MaterialUnitStatus.STORED.value
+    assert intents[2].payload_json["current_location"] == "BIN-001:4"
+    assert intents[3].context_patch["phase"] == PHASE_COMPLETED
 
 
 @pytest.mark.asyncio
@@ -1148,6 +1181,7 @@ async def test_put_to_bin_success_records_pkg_id_when_business_key_is_hashed() -
         device_code="RS-OUTPUT-01",
         session_context=session_context,
     )
+    ctx.session.current_material_unit_id = 42
 
     intents = await RoughSorterPlugin().on_command_result(
         ctx,

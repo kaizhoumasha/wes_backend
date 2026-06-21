@@ -27,7 +27,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
-    EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_SOURCE_PICK_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
     ROLE_SORTING_SCAN_PLATFORM,
@@ -47,7 +46,18 @@ EXPECTED_MANIFEST_FIELDS = (
     "commands",
     "events",
     "resource_boundaries",
+    "session_subject",
+    "state_machines",
+    "pipeline_queues",
 )
+
+EXPECTED_MATERIAL_UNIT_STATUS_TRANSITIONS = {
+    "IN_TRANSIT": ("STORED", "COMPLETED", "NG", "RECONCILING"),
+    "STORED": ("IN_TRANSIT", "NG", "RECONCILING"),
+    "RECONCILING": ("IN_TRANSIT", "STORED", "COMPLETED", "NG"),
+    "NG": (),
+    "COMPLETED": (),
+}
 
 
 def _contract(name: str):
@@ -488,7 +498,7 @@ def test_validate_topology_manifest_rejects_unsupported_event_or_command(
 
 def _assert_real_manifest_surface(manifest) -> None:
     assert tuple(field.name for field in fields(manifest)) == EXPECTED_MANIFEST_FIELDS
-    assert len(fields(manifest)) == 8
+    assert len(fields(manifest)) == 11
     for field_name in EXPECTED_MANIFEST_FIELDS:
         value = getattr(manifest, field_name)
         assert not callable(value)
@@ -540,6 +550,28 @@ def _boundaries_by_rack_position(manifest):
     return {boundary.rack_position_code: boundary for boundary in manifest.resource_boundaries}
 
 
+def _assert_material_unit_status_manifest_contract(manifest, *, queue_codes: set[str]) -> None:
+    assert manifest.session_subject.type == "MATERIAL_UNIT"
+    assert manifest.session_subject.physical_form == "REEL"
+    assert "PkgID" in manifest.session_subject.identity_sources
+    assert "material_identity_key" in manifest.session_subject.identity_sources
+
+    assert len(manifest.state_machines) == 1
+    state_machine = manifest.state_machines[0]
+    assert state_machine.subject.category == "MATERIAL_UNIT"
+    assert state_machine.subject.type == manifest.session_subject.type
+    assert state_machine.subject.physical_form == manifest.session_subject.physical_form
+    assert state_machine.state_owner.model == "MaterialUnit"
+    assert state_machine.state_owner.field == "status"
+    assert state_machine.granularity == "MATERIAL_LIFECYCLE"
+    assert {transition.from_state: transition.to_states for transition in state_machine.transitions} == (
+        EXPECTED_MATERIAL_UNIT_STATUS_TRANSITIONS
+    )
+
+    assert {queue.code for queue in manifest.pipeline_queues} == queue_codes
+    assert all(queue.order_policy in {"FIFO", "LIFO", "PRIORITY"} for queue in manifest.pipeline_queues)
+
+
 def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
     from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
 
@@ -550,6 +582,10 @@ def test_rough_sorter_real_manifest_declares_new_contract_shape() -> None:
 
     _assert_real_manifest_surface(manifest)
     _assert_topology_uses_node_refs(manifest)
+    _assert_material_unit_status_manifest_contract(
+        manifest,
+        queue_codes={"SCAN_WORKSTATION", "OUTPUT_BUFFER"},
+    )
     assert {device.role for device in manifest.devices} == {ROLE_INPUT_ARM, ROLE_CONVEYOR, ROLE_OUTPUT_ARM}
     assert {rack_position.code for rack_position in manifest.rack_positions} == {POSITION_WORK_SINGLE_LAYER}
     assert manifest.rack_positions[0].role == "CLASSIFIER_WORK"
@@ -623,6 +659,10 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
 
     _assert_real_manifest_surface(manifest)
     _assert_topology_uses_node_refs(manifest)
+    _assert_material_unit_status_manifest_contract(
+        manifest,
+        queue_codes={"INFEED_BUFFER_QUEUE", "ENTRY_SCAN_QUEUE", "WORKSTATION_ACTIVE", "EXIT_ROUTING_SCAN_QUEUE"},
+    )
     device_roles = {device.role for device in manifest.devices}
     rack_position_codes = {rack_position.code for rack_position in manifest.rack_positions}
     business_demand_types = {boundary.business_demand_type for boundary in manifest.resource_boundaries}
@@ -641,9 +681,8 @@ def test_smt_sorting_inbound_real_manifest_declares_new_contract_shape() -> None
     events = _events_by_name(manifest)
     assert events[EVENT_WORKING_BIN_SCAN].source_device_roles == (ROLE_SORTING_SCAN_PLATFORM,)
     assert events[EVENT_WORKING_BIN_SCAN].category == EventCategory.ENTRY_DEVICE
-    assert events[EVENT_SESSION_COMPLETE_REQUESTED].source_device_roles == (ROLE_SORTING_WORKSTATION,)
-    assert events[EVENT_SESSION_COMPLETE_REQUESTED].category == EventCategory.ENTRY_DEVICE
     assert EVENT_SOURCE_PICK_REQUESTED not in events
+    assert "SORTING_SESSION_COMPLETE_REQUESTED" not in events
     assert all(event.category is not EventCategory.COMMAND_RESULT for event in events.values())
     assert {
         "SORTING_SOURCE_PICK_RESULT",

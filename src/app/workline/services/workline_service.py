@@ -24,9 +24,15 @@ from src.app.workline.models.workline import (
     EventBinding,
     FlowEdge,
     NodeRef,
+    PipelineQueue,
     RackPosition,
     RackPositionCarrierCapability,
     ResourceBoundary,
+    SessionSubject,
+    StateMachine,
+    StateMachineOwner,
+    StateMachineSubject,
+    StateMachineTransition,
     TopologySpec,
 )
 from src.app.workline.repositories import WorkLineRepository, workline_repository
@@ -189,6 +195,60 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             lease_scope=boundary.lease_scope,
         )
 
+    @classmethod
+    def _build_session_subject_summary(cls, subject: object | None) -> SessionSubject | None:
+        if subject is None:
+            return None
+        return SessionSubject(
+            type=subject.type,
+            physical_form=subject.physical_form,
+            identity_sources=cls._string_list(getattr(subject, "identity_sources", ())),
+        )
+
+    @staticmethod
+    def _build_state_machine_subject_summary(subject: object) -> StateMachineSubject:
+        return StateMachineSubject(
+            category=subject.category,
+            type=subject.type,
+            physical_form=subject.physical_form,
+        )
+
+    @staticmethod
+    def _build_state_machine_owner_summary(owner: object) -> StateMachineOwner:
+        return StateMachineOwner(
+            model=owner.model,
+            field=owner.field,
+        )
+
+    @classmethod
+    def _build_state_machine_transition_summary(cls, transition: object) -> StateMachineTransition:
+        return StateMachineTransition(
+            from_state=transition.from_state,
+            to_states=cls._string_list(getattr(transition, "to_states", ())),
+        )
+
+    @classmethod
+    def _build_state_machine_summary(cls, state_machine: object) -> StateMachine:
+        return StateMachine(
+            id=state_machine.id,
+            subject=cls._build_state_machine_subject_summary(state_machine.subject),
+            state_owner=cls._build_state_machine_owner_summary(state_machine.state_owner),
+            granularity=state_machine.granularity,
+            transitions=[
+                cls._build_state_machine_transition_summary(transition)
+                for transition in getattr(state_machine, "transitions", ())
+            ],
+        )
+
+    @staticmethod
+    def _build_pipeline_queue_summary(queue: object) -> PipelineQueue:
+        return PipelineQueue(
+            code=queue.code,
+            role=queue.role,
+            capacity=queue.capacity,
+            order_policy=queue.order_policy,
+        )
+
     def list_plugin_options(self) -> list[WorkLinePluginOption]:
         """从插件注册表导出作业线插件/契约版本选项。"""
 
@@ -245,6 +305,16 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             resource_boundaries=[
                 self._build_resource_boundary_summary(boundary)
                 for boundary in self._manifest_sequence(manifest, plugin_key, "resource_boundaries")
+            ],
+            session_subject=self._build_session_subject_summary(
+                getattr(manifest, "session_subject", None),
+            ),
+            state_machines=[
+                self._build_state_machine_summary(state_machine)
+                for state_machine in getattr(manifest, "state_machines", ())
+            ],
+            pipeline_queues=[
+                self._build_pipeline_queue_summary(queue) for queue in getattr(manifest, "pipeline_queues", ())
             ],
         )
 

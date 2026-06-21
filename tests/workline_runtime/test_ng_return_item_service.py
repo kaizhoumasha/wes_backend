@@ -14,10 +14,10 @@ from src.utils.timezone import timezone
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     NG_REASON_LOCAL_SORTING_NG,
-    PHASE_WAITING_SOURCE_PICK,
     ROLE_SORTING_TARGET_ARM,
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
+    SMT_SOURCE_PICK_WAIT_CONTEXT_STATE,
     SORTING_CONTEXT_SCHEMA_VERSION,
 )
 from src.workline_runtime.material_identity import MaterialIdentity, MaterialIdentityResolutionStatus
@@ -221,7 +221,7 @@ async def _create_smt_local_ng_fixture(db_session):
             "sorting": {
                 "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
                 "stations": {"scan_platform": "EMPTY"},
-                "business_phase": PHASE_WAITING_SOURCE_PICK,
+                "business_phase": SMT_SOURCE_PICK_WAIT_CONTEXT_STATE,
             },
             "ng_reason": NG_REASON_LOCAL_SORTING_NG,
             "pick_place_reason": NG_REASON_LOCAL_SORTING_NG,

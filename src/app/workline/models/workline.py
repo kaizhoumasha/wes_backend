@@ -308,6 +308,55 @@ class ResourceBoundary(BaseModel):
     lease_scope: str = Field(description="WES 业务预占范围")
 
 
+class SessionSubject(BaseModel):
+    """插件运行会话的业务主体。"""
+
+    type: str = Field(description="业务主体类型")
+    physical_form: str = Field(description="业务主体物理形态")
+    identity_sources: list[str] = Field(default_factory=list, description="主体身份来源字段")
+
+
+class StateMachineSubject(BaseModel):
+    """状态机绑定的业务主体。"""
+
+    category: str = Field(description="主体类别")
+    type: str = Field(description="主体类型")
+    physical_form: str = Field(description="主体物理形态")
+
+
+class StateMachineOwner(BaseModel):
+    """状态机状态字段归属。"""
+
+    model: str = Field(description="状态归属模型")
+    field: str = Field(description="状态归属字段")
+
+
+class StateMachineTransition(BaseModel):
+    """状态机允许的状态流转。"""
+
+    from_state: str = Field(description="起始状态")
+    to_states: list[str] = Field(default_factory=list, description="允许到达状态")
+
+
+class StateMachine(BaseModel):
+    """插件声明的业务状态机。"""
+
+    id: str = Field(description="状态机标识")
+    subject: StateMachineSubject = Field(description="状态机业务主体")
+    state_owner: StateMachineOwner = Field(description="状态字段归属")
+    granularity: str = Field(description="状态机粒度")
+    transitions: list[StateMachineTransition] = Field(default_factory=list, description="状态流转声明")
+
+
+class PipelineQueue(BaseModel):
+    """插件声明的管线队列。"""
+
+    code: str = Field(description="队列编码")
+    role: str = Field(description="队列角色")
+    capacity: int | str = Field(description="队列容量，支持正整数或 MANY")
+    order_policy: str = Field(default="FIFO", description="队列排序策略")
+
+
 class WorkLinePluginOption(BaseModel):
     """作业线插件下拉选项。"""
 
@@ -328,6 +377,9 @@ class WorkLinePluginManifestSummary(BaseModel):
     events: list[EventBinding] = Field(default_factory=list, description="事件绑定")
     commands: list[CommandBinding] = Field(default_factory=list, description="命令绑定")
     resource_boundaries: list[ResourceBoundary] = Field(default_factory=list, description="资源边界")
+    session_subject: SessionSubject | None = Field(default=None, description="插件运行会话业务主体")
+    state_machines: list[StateMachine] = Field(default_factory=list, description="业务状态机声明")
+    pipeline_queues: list[PipelineQueue] = Field(default_factory=list, description="管线队列声明")
 
 
 class WorkLineConfigurationCheck(BaseModel):

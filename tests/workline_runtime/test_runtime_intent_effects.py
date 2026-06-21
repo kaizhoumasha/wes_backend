@@ -6,18 +6,26 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+from sqlmodel import SQLModel, select
 
 from src.app.wms_integration.services import WmsTransportContractService
+from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
+from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.workline.models.smt_inbound_handoff import (
     SmtInboundHandoffDemandStatus,
     SmtInboundHandoffSourceItemStatus,
 )
+from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.services import write_back_service as workline_effects
 from src.app.workline.services.inbox_batch_processor import _result_requires_outbox_dispatch
 from src.app.workline.services.inbox_service import DuplicateInboxError
 from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, ng_return_item_service
 from src.app.workline.services.runtime_hold_creation_service import runtime_hold_creation_service
 from src.app.workline.services.smt_inbound_handoff_service import SmtInboundHandoffService
+from src.database.sqlite_schema import configure_sqlite_schemas
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
@@ -33,6 +41,8 @@ from src.workline_runtime.runtime_intent_effects import (
     _resolve_command_result_timeout_seconds,
 )
 from src.workline_runtime.trace_context import TraceContext
+
+_MATERIAL_UNIT_STATUS_TRANSITION_WARNING = "material unit status transition is outside manifest contract"
 
 
 def _session(**overrides: Any) -> SimpleNamespace:
@@ -147,6 +157,7 @@ class RecordingDb:
         self.demand = demand
         self.added: list[Any] = []
         self.flushed = False
+        self.completed_persists: list[dict[str, Any]] = []
 
     def add(self, value: Any) -> None:
         self.added.append(value)
@@ -157,6 +168,69 @@ class RecordingDb:
     async def get(self, model: Any, identity: Any) -> Any:
         _ = model, identity
         return self.demand
+
+    async def execute(self, statement: Any) -> Any:
+        _ = statement
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=list))
+
+
+@pytest_asyncio.fixture(scope="function")
+async def material_unit_effect_session():
+    """独立内存 DB，只建本组回归测试需要的 Session/MaterialUnit 表。"""
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        echo=False,
+        poolclass=StaticPool,
+    )
+    configure_sqlite_schemas(engine.sync_engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            SQLModel.metadata.create_all,
+            tables=[WorkLine.__table__, WorklineSession.__table__, MaterialUnit.__table__],
+        )
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as session:
+        yield session
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            SQLModel.metadata.drop_all,
+            tables=[MaterialUnit.__table__, WorklineSession.__table__, WorkLine.__table__],
+        )
+    await engine.dispose()
+
+
+class MaterialUnitDb:
+    def __init__(self, material_unit: Any | None = None, material_units: list[Any] | None = None) -> None:
+        self.added: list[Any] = []
+        self.deleted: list[Any] = []
+        self.flushed = False
+        self.material_unit = material_unit
+        self.material_units = material_units
+
+    def add(self, value: Any) -> None:
+        self.added.append(value)
+
+    async def delete(self, value: Any) -> None:
+        self.deleted.append(value)
+
+    async def flush(self) -> None:
+        self.flushed = True
+        for index, value in enumerate(self.added, start=1):
+            if getattr(value, "id", None) is None:
+                value.id = index
+
+    async def get(self, model: Any, identity: Any) -> Any:
+        _ = model
+        if self.material_unit is not None and identity == self.material_unit.id:
+            return self.material_unit
+        return None
+
+    async def execute(self, statement: Any) -> Any:
+        _ = statement
+        material_units = self.material_units
+        if material_units is None:
+            material_units = [] if self.material_unit is None else [self.material_unit]
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: material_units))
 
 
 class FakeTerminalRepository:
@@ -249,6 +323,467 @@ async def test_empty_intents_complete_new_event_session_as_noop(monkeypatch: pyt
     assert captured[0]["from_status"] == "NEW"
     assert captured[0]["to_status"] == "COMPLETED"
     assert captured[0]["payload"]["completion_reason"] == "NO_RUNTIME_INTENT"
+
+
+@pytest.mark.asyncio
+async def test_create_material_unit_effect_persists_entity_and_links_session() -> None:
+    session = _session(id=901, current_material_unit_id=None)
+    db = MaterialUnitDb()
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.create_material_unit(
+                pkg_code="PKG-001",
+                material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+                six_in_one={"PkgID": "PKG-001", "HHPN": "HH-001"},
+            )
+        ],
+    )
+
+    assert db.flushed is True
+    assert len(db.added) == 1
+    material_unit = db.added[0]
+    assert material_unit.pkg_code == "PKG-001"
+    assert material_unit.material_identity_key == "MAT:HH-001:MFR-001:260528:LOT-A"
+    assert material_unit.six_in_one == {"PkgID": "PKG-001", "HHPN": "HH-001"}
+    assert material_unit.status == MaterialUnitStatus.IN_TRANSIT
+    assert material_unit.current_session_id == 901
+    assert session.current_material_unit_id == material_unit.id
+
+
+@pytest.mark.asyncio
+async def test_create_material_unit_effect_reuses_existing_pkg_code_without_add() -> None:
+    existing = SimpleNamespace(
+        id=1002,
+        pkg_code="PKG-001",
+        material_identity_key="old-key",
+        six_in_one={"PkgID": "PKG-001"},
+        status=MaterialUnitStatus.STORED,
+        current_location="OLD-BIN:1",
+        current_session_id=800,
+    )
+    session = _session(id=903, current_material_unit_id=None)
+    db = MaterialUnitDb(material_unit=existing)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.create_material_unit(
+                pkg_code="PKG-001",
+                material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+                six_in_one={"PkgID": "PKG-001", "HHPN": "HH-001"},
+                status=MaterialUnitStatus.IN_TRANSIT.value,
+            )
+        ],
+    )
+
+    assert db.added == []
+    assert db.flushed is True
+    assert existing.material_identity_key == "MAT:HH-001:MFR-001:260528:LOT-A"
+    assert existing.six_in_one == {"PkgID": "PKG-001", "HHPN": "HH-001"}
+    assert existing.status == MaterialUnitStatus.IN_TRANSIT
+    assert existing.current_session_id == 903
+    assert session.current_material_unit_id == 1002
+
+
+@pytest.mark.asyncio
+async def test_create_material_unit_effect_rejects_duplicate_pkg_code_with_clear_error() -> None:
+    duplicates = [
+        SimpleNamespace(
+            id=1002,
+            pkg_code="PKG-001",
+            material_identity_key="old-key-1",
+            six_in_one={"PkgID": "PKG-001"},
+            status=MaterialUnitStatus.STORED,
+            current_session_id=800,
+        ),
+        SimpleNamespace(
+            id=1003,
+            pkg_code="PKG-001",
+            material_identity_key="old-key-2",
+            six_in_one={"PkgID": "PKG-001"},
+            status=MaterialUnitStatus.IN_TRANSIT,
+            current_session_id=801,
+        ),
+    ]
+    session = _session(id=904, current_material_unit_id=None)
+    db = MaterialUnitDb(material_units=duplicates)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+
+    with pytest.raises(ValueError, match="multiple material units found for pkg_code: PKG-001"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.create_material_unit(
+                    pkg_code="PKG-001",
+                    material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+                    six_in_one={"PkgID": "PKG-001", "HHPN": "HH-001"},
+                    status=MaterialUnitStatus.IN_TRANSIT.value,
+                )
+            ],
+        )
+
+    assert db.added == []
+    assert db.flushed is False
+    assert session.current_material_unit_id is None
+
+
+@pytest.mark.asyncio
+async def test_create_material_unit_effect_persists_session_link_in_db(
+    material_unit_effect_session: AsyncSession,
+) -> None:
+    material_unit_effect_session.add(
+        WorkLine(
+            id=1,
+            line_code="WL-MU-001",
+            line_name="Material Unit Test Line",
+            line_type=LineType.AUTO,
+            plugin_key="smt_sorting_inbound",
+        )
+    )
+    session = WorklineSession(
+        session_code="SESSION-MU-001",
+        workline_id=1,
+        plugin_key="smt_sorting_inbound",
+        run_mode=RunMode.AUTO,
+        status=SessionStatus.RUNNING,
+        context_json={},
+    )
+    material_unit_effect_session.add(session)
+    await material_unit_effect_session.commit()
+    await material_unit_effect_session.refresh(session)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=material_unit_effect_session)
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.create_material_unit(
+                pkg_code="PKG-DB-001",
+                material_identity_key="MAT:HH-DB:MFR-001:260528:LOT-A",
+                six_in_one={"PkgID": "PKG-DB-001", "HHPN": "HH-DB"},
+            )
+        ],
+    )
+    await material_unit_effect_session.commit()
+
+    persisted_session = await material_unit_effect_session.get(WorklineSession, session.id)
+    result = await material_unit_effect_session.execute(
+        select(MaterialUnit).where(MaterialUnit.pkg_code == "PKG-DB-001")
+    )
+    persisted_unit = result.scalar_one()
+
+    assert persisted_session is not None
+    assert persisted_session.current_material_unit_id == persisted_unit.id
+    assert persisted_unit.current_session_id == session.id
+
+
+@pytest.mark.asyncio
+async def test_create_material_unit_effect_recovers_unique_conflict_and_links_session(
+    material_unit_effect_session: AsyncSession,
+) -> None:
+    material_unit_effect_session.add(
+        WorkLine(
+            id=1,
+            line_code="WL-MU-RACE",
+            line_name="Material Unit Race Test Line",
+            line_type=LineType.AUTO,
+            plugin_key="smt_sorting_inbound",
+        )
+    )
+    session = WorklineSession(
+        session_code="SESSION-MU-RACE",
+        workline_id=1,
+        plugin_key="smt_sorting_inbound",
+        run_mode=RunMode.AUTO,
+        status=SessionStatus.RUNNING,
+        context_json={},
+    )
+    material_unit_effect_session.add(session)
+    await material_unit_effect_session.commit()
+    await material_unit_effect_session.refresh(session)
+
+    class ConcurrentInsertSession:
+        def __init__(self, wrapped: AsyncSession) -> None:
+            self.wrapped = wrapped
+            self.injected_material_unit_id: int | None = None
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.wrapped, name)
+
+        async def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+            if self.injected_material_unit_id is None:
+                result = await self.wrapped.execute(statement, *args, **kwargs)
+                assert result.scalars().all() == []
+                existing = MaterialUnit(
+                    pkg_code="PKG-DB-RACE",
+                    material_identity_key="old-key",
+                    six_in_one={"PkgID": "PKG-DB-RACE"},
+                    status=MaterialUnitStatus.STORED,
+                    current_session_id=777,
+                )
+                self.wrapped.add(existing)
+                await self.wrapped.flush()
+                self.injected_material_unit_id = existing.id
+                return SimpleNamespace(scalars=lambda: SimpleNamespace(all=list))
+            return await self.wrapped.execute(statement, *args, **kwargs)
+
+    db = ConcurrentInsertSession(material_unit_effect_session)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.create_material_unit(
+                pkg_code="PKG-DB-RACE",
+                material_identity_key="MAT:HH-RACE:MFR-001:260528:LOT-A",
+                six_in_one={"PkgID": "PKG-DB-RACE", "HHPN": "HH-RACE"},
+                status=MaterialUnitStatus.IN_TRANSIT.value,
+            )
+        ],
+    )
+    await material_unit_effect_session.commit()
+
+    persisted_session = await material_unit_effect_session.get(WorklineSession, session.id)
+    result = await material_unit_effect_session.execute(
+        select(MaterialUnit).where(MaterialUnit.pkg_code == "PKG-DB-RACE")
+    )
+    persisted_unit = result.scalar_one()
+
+    assert persisted_session is not None
+    assert db.injected_material_unit_id == persisted_unit.id
+    assert persisted_session.current_material_unit_id == persisted_unit.id
+    assert persisted_unit.material_identity_key == "MAT:HH-RACE:MFR-001:260528:LOT-A"
+    assert persisted_unit.six_in_one == {"PkgID": "PKG-DB-RACE", "HHPN": "HH-RACE"}
+    assert persisted_unit.status == MaterialUnitStatus.IN_TRANSIT
+    assert persisted_unit.current_session_id == session.id
+
+
+@pytest.mark.asyncio
+async def test_update_material_unit_status_effect_updates_entity_and_links_session() -> None:
+    material_unit = SimpleNamespace(
+        id=1001,
+        status=MaterialUnitStatus.IN_TRANSIT,
+        current_location=None,
+        current_session_id=None,
+    )
+    session = _session(id=902, current_material_unit_id=None)
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.update_material_unit_status(
+                material_unit_id=1001,
+                status="STORED",
+                current_location="BIN-001:4",
+            )
+        ],
+    )
+
+    assert material_unit.status == MaterialUnitStatus.STORED
+    assert material_unit.current_location == "BIN-001:4"
+    assert material_unit.current_session_id == 902
+    assert session.current_material_unit_id == 1001
+
+
+@pytest.mark.asyncio
+async def test_update_material_unit_status_warns_for_transition_outside_manifest_contract(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    material_unit = SimpleNamespace(
+        id=1001,
+        pkg_code="PKG-001",
+        status=MaterialUnitStatus.STORED,
+        current_location=None,
+        current_session_id=None,
+    )
+    session = _session(id=902, current_material_unit_id=None, plugin_key="rough_sorter")
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+    ctx["workline"].plugin_key = "rough_sorter"
+
+    with caplog.at_level("WARNING", logger="src.workline_runtime.runtime_intent_effects"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.update_material_unit_status(
+                    material_unit_id=1001,
+                    status=MaterialUnitStatus.COMPLETED.value,
+                )
+            ],
+        )
+
+    assert material_unit.status == MaterialUnitStatus.COMPLETED
+    warning_text = caplog.text
+    assert _MATERIAL_UNIT_STATUS_TRANSITION_WARNING in warning_text
+    assert "object_type=REEL" in warning_text
+    assert "object_id=1001" in warning_text
+    assert "from_state=STORED" in warning_text
+    assert "to_state=COMPLETED" in warning_text
+    assert "pkg_code=PKG-001" in warning_text
+    assert "plugin_key=rough_sorter" in warning_text
+    assert "suggestion=" in warning_text
+
+
+@pytest.mark.asyncio
+async def test_update_material_unit_status_does_not_warn_for_manifest_transition(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    material_unit = SimpleNamespace(
+        id=1001,
+        pkg_code="PKG-001",
+        status=MaterialUnitStatus.IN_TRANSIT,
+        current_location=None,
+        current_session_id=None,
+    )
+    session = _session(id=902, current_material_unit_id=None, plugin_key="rough_sorter")
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+    ctx["workline"].plugin_key = "rough_sorter"
+
+    with caplog.at_level("WARNING", logger="src.workline_runtime.runtime_intent_effects"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.update_material_unit_status(
+                    material_unit_id=1001,
+                    status=MaterialUnitStatus.STORED.value,
+                )
+            ],
+        )
+
+    assert material_unit.status == MaterialUnitStatus.STORED
+    assert _MATERIAL_UNIT_STATUS_TRANSITION_WARNING not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_update_material_unit_status_checks_reconciling_exits_against_manifest(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    material_unit = SimpleNamespace(
+        id=1001,
+        pkg_code="PKG-001",
+        status=MaterialUnitStatus.RECONCILING,
+        current_location=None,
+        current_session_id=None,
+    )
+    session = _session(id=902, current_material_unit_id=None, plugin_key="rough_sorter")
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+    ctx["workline"].plugin_key = "rough_sorter"
+
+    with caplog.at_level("WARNING", logger="src.workline_runtime.runtime_intent_effects"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.update_material_unit_status(
+                    material_unit_id=1001,
+                    status=MaterialUnitStatus.NG.value,
+                )
+            ],
+        )
+
+    assert material_unit.status == MaterialUnitStatus.NG
+    assert _MATERIAL_UNIT_STATUS_TRANSITION_WARNING not in caplog.text
+
+    caplog.clear()
+    material_unit.status = MaterialUnitStatus.RECONCILING
+    with caplog.at_level("WARNING", logger="src.workline_runtime.runtime_intent_effects"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.update_material_unit_status(
+                    material_unit_id=1001,
+                    status=MaterialUnitStatus.RECONCILING.value,
+                )
+            ],
+        )
+
+    assert material_unit.status == MaterialUnitStatus.RECONCILING
+    assert _MATERIAL_UNIT_STATUS_TRANSITION_WARNING in caplog.text
+    assert "from_state=RECONCILING" in caplog.text
+    assert "to_state=RECONCILING" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_update_material_unit_status_missing_plugin_manifest_does_not_warn(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    material_unit = SimpleNamespace(
+        id=1001,
+        pkg_code="PKG-001",
+        status=MaterialUnitStatus.STORED,
+        current_location=None,
+        current_session_id=None,
+    )
+    session = _session(id=902, current_material_unit_id=None, plugin_key="unknown_plugin")
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+    ctx["workline"].plugin_key = "unknown_plugin"
+
+    with caplog.at_level("WARNING", logger="src.workline_runtime.runtime_intent_effects"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.update_material_unit_status(
+                    material_unit_id=1001,
+                    status=MaterialUnitStatus.COMPLETED.value,
+                )
+            ],
+        )
+
+    assert material_unit.status == MaterialUnitStatus.COMPLETED
+    assert _MATERIAL_UNIT_STATUS_TRANSITION_WARNING not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_update_material_unit_status_unavailable_manifest_does_not_block_or_warn(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    material_unit = SimpleNamespace(
+        id=1001,
+        pkg_code="PKG-001",
+        status=MaterialUnitStatus.STORED,
+        current_location=None,
+        current_session_id=None,
+    )
+    session = _session(id=902, current_material_unit_id=None, plugin_key="broken_plugin")
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+    ctx["workline"].plugin_key = "broken_plugin"
+
+    class BrokenDefinition:
+        @property
+        def manifest(self) -> object:
+            raise ValueError("broken manifest")
+
+    def get_broken_definition(plugin_key: str | None) -> BrokenDefinition | None:
+        assert plugin_key == "broken_plugin"
+        return BrokenDefinition()
+
+    monkeypatch.setattr(
+        "src.workline_runtime.runtime_intent_effects.get_workline_plugin_definition",
+        get_broken_definition,
+    )
+
+    with caplog.at_level("WARNING", logger="src.workline_runtime.runtime_intent_effects"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.update_material_unit_status(
+                    material_unit_id=1001,
+                    status=MaterialUnitStatus.COMPLETED.value,
+                )
+            ],
+        )
+
+    assert material_unit.status == MaterialUnitStatus.COMPLETED
+    assert _MATERIAL_UNIT_STATUS_TRANSITION_WARNING not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -759,20 +1294,96 @@ async def test_target_place_terminal_success_records_sorted_after_context_cleanu
         raising=False,
     )
     monkeypatch.setattr(smt_inbound_handoff_service, "claim_next_source_item", claim_next)
+    monkeypatch.setattr(workline_effects, "_add_timeline", AsyncMock(return_value=1))
 
     intents = await SmtSortingInboundFlowService().handle_target_place_success(
         SimpleNamespace(session=session),
         ctx["inbox"],
     )
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
-    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
-    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.COMPLETE]
     await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
 
+    assert session.status == "COMPLETED"
     assert resource_projection.calls[0]["fact_type"] == "MATERIAL_MOUNTED"
-    assert [call["terminal_status"] for call in ledger_calls] == ["SORTED", "SORTED", "SORTED"]
+    assert [call["terminal_status"] for call in ledger_calls] == ["SORTED"]
     assert claim_calls == [{"trace_id": "trace-runtime", "demand_id": 11}]
+
+
+@pytest.mark.asyncio
+async def test_target_place_terminal_success_does_not_complete_session_twice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    item = SimpleNamespace(
+        id=22,
+        handoff_demand_id=11,
+        status=SmtInboundHandoffSourceItemStatus.PICKED,
+        sorting_session_id=123,
+        completed_at=None,
+        failure_code="OLD_FAILURE",
+        failure_message="旧失败",
+        next_attempt_at=datetime(2026, 1, 1, 0, 3, 0),
+    )
+    demand = SimpleNamespace(
+        id=11,
+        status=SmtInboundHandoffDemandStatus.SORTING_IN_PROGRESS,
+        failure_code=None,
+        failure_message=None,
+    )
+    session = _session(
+        id=123,
+        context_json={"sorting": _handoff_sorting_context()},
+    )
+    db = RecordingDb(demand)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["inbox"].payload_json = {
+        "command_code": "TARGET-CMD-001",
+        "command_type": COMMAND_TARGET_PLACE,
+        "result": "SUCCESS",
+        "data": {},
+    }
+    resource_projection = RecordingResourceProjectionService()
+    handoff_service = SmtInboundHandoffService(repository=FakeTerminalRepository(item))
+    persisted_completions: list[dict[str, Any]] = []
+    emitted_timelines: list[dict[str, Any]] = []
+
+    async def persist_completed(_repo: Any, _db: Any, **kwargs: Any) -> None:
+        persisted_completions.append(kwargs)
+
+    async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
+        emitted_timelines.append(kwargs)
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_item_terminal_result",
+        handoff_service.record_source_item_terminal_result,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        smt_inbound_handoff_service, "claim_next_source_item", AsyncMock(return_value=SimpleNamespace())
+    )
+    monkeypatch.setattr(
+        "src.app.workline.repositories.session_repository.WorklineSessionRepository.persist_completed",
+        persist_completed,
+    )
+    monkeypatch.setattr(workline_effects, "_emit_timeline", capture_timeline)
+
+    intents = await SmtSortingInboundFlowService().handle_target_place_success(
+        SimpleNamespace(session=session),
+        ctx["inbox"],
+    )
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
+
+    assert session.status == "COMPLETED"
+    assert item.status == SmtInboundHandoffSourceItemStatus.SORTED
+    assert item.completed_at is not None
+    assert item.failure_code is None
+    assert demand.failure_code is None
+    assert len(persisted_completions) == 1
+    assert [timeline["action_type"].value for timeline in emitted_timelines] == ["SESSION_COMPLETED"]
 
 
 @pytest.mark.asyncio
@@ -782,8 +1393,14 @@ async def test_ng_place_terminal_success_records_skipped_after_context_cleanup_a
     sorting = _handoff_sorting_context()
     sorting.pop("pending_target_placement", None)
     sorting["current_material"]["ng_status"] = "MOVING_TO_NG"
-    session = _session(context_json={"sorting": sorting})
-    db = SimpleNamespace(execute=AsyncMock())
+    session = _session(context_json={"sorting": sorting}, current_material_unit_id=1001)
+    material_unit = SimpleNamespace(
+        id=1001,
+        status=MaterialUnitStatus.IN_TRANSIT,
+        current_location=None,
+        current_session_id=123,
+    )
+    db = MaterialUnitDb(material_unit=material_unit)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["inbox"].payload_json = {
         "command_code": "NG-CMD-001",
@@ -823,18 +1440,162 @@ async def test_ng_place_terminal_success_records_skipped_after_context_cleanup_a
         raising=False,
     )
     monkeypatch.setattr(smt_inbound_handoff_service, "claim_next_source_item", claim_next)
+    record_ng_flow = AsyncMock()
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+    monkeypatch.setattr(workline_effects, "_add_timeline", AsyncMock(return_value=1))
 
     intents = await SmtSortingInboundFlowService().handle_ng_place_success(
         SimpleNamespace(session=session), ctx["inbox"]
     )
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
-    await RuntimeIntentEffectApplier().apply(ctx, intents)
-    await RuntimeIntentEffectApplier().apply(ctx, intents)
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
+        RuntimeIntentKind.COMPLETE,
+    ]
     await RuntimeIntentEffectApplier().apply(ctx, intents)
 
-    assert [call["terminal_status"] for call in ledger_calls] == ["SKIPPED", "SKIPPED", "SKIPPED"]
+    assert material_unit.status == MaterialUnitStatus.NG
+    assert material_unit not in db.deleted
+    assert material_unit.current_session_id is None
+    assert session.current_material_unit_id is None
+    assert session.status == "COMPLETED"
+    record_ng_flow.assert_awaited_once()
+    assert [call["terminal_status"] for call in ledger_calls] == ["SKIPPED"]
     assert claim_calls == [{"trace_id": "trace-runtime", "demand_id": 11}]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_completed_material_unit_only_clears_current_ng_unit_session_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(id=123, status="COMPLETED", current_material_unit_id=1001)
+    completed_unit = SimpleNamespace(
+        id=1001,
+        status=MaterialUnitStatus.COMPLETED,
+        current_location="TARGET:1",
+        current_session_id=123,
+    )
+    db = MaterialUnitDb(material_unit=completed_unit)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    monkeypatch.setattr(workline_effects, "_add_timeline", AsyncMock(return_value=1))
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.update_material_unit_status(
+                material_unit_id=1001,
+                status=MaterialUnitStatus.COMPLETED.value,
+                clear_session_reference=True,
+            ),
+            RuntimeIntent.complete({}),
+        ],
+    )
+
+    assert completed_unit not in db.deleted
+    assert completed_unit.current_session_id == 123
+    assert session.current_material_unit_id == 1001
+
+
+@pytest.mark.asyncio
+async def test_clear_session_reference_does_not_take_over_other_session_material_unit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(id=123, current_material_unit_id=None)
+    other_session_unit = SimpleNamespace(
+        id=1001,
+        status=MaterialUnitStatus.NG,
+        current_location=None,
+        current_session_id=999,
+    )
+    db = MaterialUnitDb(material_unit=other_session_unit)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", AsyncMock())
+    monkeypatch.setattr(workline_effects, "_add_timeline", AsyncMock(return_value=1))
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.update_material_unit_status(
+                material_unit_id=1001,
+                status=MaterialUnitStatus.NG.value,
+                clear_session_reference=True,
+            ),
+            RuntimeIntent.complete({}),
+        ],
+    )
+
+    assert other_session_unit.current_session_id == 999
+    assert other_session_unit not in db.deleted
+    assert session.current_material_unit_id is None
+
+
+@pytest.mark.asyncio
+async def test_ng_place_completion_conflict_keeps_material_unit_for_manual_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sorting = _handoff_sorting_context()
+    sorting.pop("pending_target_placement", None)
+    sorting["current_material"]["ng_status"] = "MOVING_TO_NG"
+    session = _session(context_json={"sorting": sorting}, current_material_unit_id=1001)
+    material_unit = SimpleNamespace(
+        id=1001,
+        status=MaterialUnitStatus.IN_TRANSIT,
+        current_location=None,
+        current_session_id=123,
+    )
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["inbox"].payload_json = {
+        "command_code": "NG-CMD-CONFLICT",
+        "command_type": COMMAND_NG_PLACE,
+        "result": "SUCCESS",
+        "data": {},
+        "ng_location": "NG-01",
+        "ng_reason_code": "LOCAL_SORTING_NG",
+    }
+    long_identity = f"test-material:{'X' * 300}"
+
+    async def raise_conflict(*_args: Any, **_kwargs: Any) -> None:
+        raise NgMaterialConflictError(
+            material_identity_key=long_identity,
+            existing_item=SimpleNamespace(id=8801, created_from_runtime_hold_id=9901),
+            evidence={
+                "reason_code": "NG_MATERIAL_CONFLICT",
+                "material_identity_key": long_identity,
+                "new_source_command_id": 8802,
+            },
+        )
+
+    async def create_hold(_db: Any, **kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(id=7701, **kwargs)
+
+    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+
+    monkeypatch.setattr(
+        smt_inbound_handoff_service,
+        "record_source_item_terminal_result",
+        AsyncMock(),
+        raising=False,
+    )
+    monkeypatch.setattr(smt_inbound_handoff_service, "claim_next_source_item", AsyncMock())
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", raise_conflict)
+    monkeypatch.setattr(runtime_hold_creation_service, "create_for_resource_reconciliation", create_hold)
+    monkeypatch.setattr(workline_effects, "_add_timeline", AsyncMock(return_value=1))
+
+    intents = await SmtSortingInboundFlowService().handle_ng_place_success(
+        SimpleNamespace(session=session), ctx["inbox"]
+    )
+
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
+        RuntimeIntentKind.COMPLETE,
+    ]
+    await RuntimeIntentEffectApplier().apply(ctx, intents)
+
+    assert session.status == "MANUAL_HOLD"
+    assert session.current_material_unit_id == 1001
+    assert material_unit.current_session_id == 123
+    assert db.deleted == []
 
 
 @pytest.mark.asyncio
@@ -929,9 +1690,11 @@ async def test_smt_material_mounted_without_source_pick_request_does_not_record_
         ctx["inbox"],
     )
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.COMPLETE]
+    monkeypatch.setattr(workline_effects, "_add_timeline", AsyncMock(return_value=1))
     await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(ctx, intents)
 
+    assert session.status == "COMPLETED"
     assert resource_projection.calls[0]["fact_type"] == "MATERIAL_MOUNTED"
     record_terminal.assert_not_awaited()
 
@@ -1116,6 +1879,138 @@ async def test_reconciling_resource_fact_stops_following_intents(monkeypatch: py
     assert session.status == "MANUAL_HOLD"
     assert session.failure_code == "RESOURCE_PROJECTION_RECONCILING"
     record_ng_flow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_resource_fact_skips_following_material_unit_status_update() -> None:
+    material_unit = SimpleNamespace(
+        id=1001,
+        status=MaterialUnitStatus.IN_TRANSIT,
+        current_location="LATEST-BIN:1",
+        current_session_id=801,
+    )
+    session = _session(id=902, current_material_unit_id=1001, context_json={})
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    resource_projection = RecordingResourceProjectionService(status="DUPLICATE")
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_MOUNTED",
+                payload={
+                    "bin_code": "OLD-BIN",
+                    "bin_cell_index": "9",
+                    "material_identity_key": "MAT:OLD",
+                    "pkg_code": "PKG-OLD",
+                },
+                idempotency_key="MATERIAL_MOUNTED:old",
+            ),
+            RuntimeIntent.update_material_unit_status(
+                material_unit_id=1001,
+                status=MaterialUnitStatus.STORED.value,
+                current_location="OLD-BIN:9",
+            ),
+            RuntimeIntent.update_context({"resource_fact_replayed": True}),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_MOUNTED"
+    assert material_unit.status == MaterialUnitStatus.IN_TRANSIT
+    assert material_unit.current_location == "LATEST-BIN:1"
+    assert material_unit.current_session_id == 801
+    assert session.context_json == {"resource_fact_replayed": True}
+
+
+@pytest.mark.asyncio
+async def test_duplicate_resource_fact_skips_following_material_unit_creation() -> None:
+    existing = SimpleNamespace(
+        id=1002,
+        pkg_code="PKG-001",
+        material_identity_key="latest-key",
+        six_in_one={"PkgID": "PKG-001", "latest": True},
+        status=MaterialUnitStatus.STORED,
+        current_location="LATEST-BIN:1",
+        current_session_id=800,
+    )
+    session = _session(id=903, current_material_unit_id=1002, context_json={})
+    db = MaterialUnitDb(material_unit=existing)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    resource_projection = RecordingResourceProjectionService(status="DUPLICATE")
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_UNMOUNTED",
+                payload={
+                    "bin_code": "OLD-BIN",
+                    "bin_cell_index": "9",
+                    "material_identity_key": "MAT:OLD",
+                    "pkg_code": "PKG-001",
+                },
+                idempotency_key="MATERIAL_UNMOUNTED:old",
+            ),
+            RuntimeIntent.create_material_unit(
+                pkg_code="PKG-001",
+                material_identity_key="old-key",
+                six_in_one={"PkgID": "PKG-001", "old": True},
+                status=MaterialUnitStatus.IN_TRANSIT.value,
+            ),
+            RuntimeIntent.update_context({"source_pick_replayed": True}),
+        ],
+    )
+
+    assert resource_projection.calls[0]["fact_type"] == "MATERIAL_UNMOUNTED"
+    assert db.added == []
+    assert existing.material_identity_key == "latest-key"
+    assert existing.six_in_one == {"PkgID": "PKG-001", "latest": True}
+    assert existing.status == MaterialUnitStatus.STORED
+    assert existing.current_location == "LATEST-BIN:1"
+    assert existing.current_session_id == 800
+    assert session.context_json == {"source_pick_replayed": True}
+
+
+@pytest.mark.asyncio
+async def test_duplicate_resource_fact_skip_only_applies_to_immediate_material_unit_intent() -> None:
+    material_unit = SimpleNamespace(
+        id=1001,
+        status=MaterialUnitStatus.IN_TRANSIT,
+        current_location=None,
+        current_session_id=None,
+    )
+    session = _session(id=902, current_material_unit_id=1001, context_json={})
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    resource_projection = RecordingResourceProjectionService(status="DUPLICATE")
+
+    await RuntimeIntentEffectApplier(resource_projection_service=resource_projection).apply(
+        ctx,
+        [
+            RuntimeIntent.resource_fact(
+                fact_type="MATERIAL_MOUNTED",
+                payload={
+                    "bin_code": "OLD-BIN",
+                    "bin_cell_index": "9",
+                    "material_identity_key": "MAT:OLD",
+                    "pkg_code": "PKG-OLD",
+                },
+                idempotency_key="MATERIAL_MOUNTED:old",
+            ),
+            RuntimeIntent.update_context({"resource_fact_replayed": True}),
+            RuntimeIntent.update_material_unit_status(
+                material_unit_id=1001,
+                status=MaterialUnitStatus.STORED.value,
+                current_location="NEW-BIN:1",
+            ),
+        ],
+    )
+
+    assert session.context_json == {"resource_fact_replayed": True}
+    assert material_unit.status == MaterialUnitStatus.STORED
+    assert material_unit.current_location == "NEW-BIN:1"
+    assert material_unit.current_session_id == 902
 
 
 @pytest.mark.asyncio

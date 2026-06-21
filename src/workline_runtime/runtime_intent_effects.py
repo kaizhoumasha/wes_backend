@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import urlparse
 
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import select
+
 from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
+from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_PLUGIN_KEY,
     SORTING_CONTEXT_SCHEMA_VERSION,
@@ -22,6 +27,8 @@ from src.workline_runtime.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
 )
+
+logger = logging.getLogger(__name__)
 
 _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.UPDATE_CONTEXT,
@@ -38,6 +45,8 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.COMPLETE,
     RuntimeIntentKind.BLOCK,
     RuntimeIntentKind.CONTINUE_NEXT,
+    RuntimeIntentKind.CREATE_MATERIAL_UNIT,
+    RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
 }
 _TERMINAL_INTENT_KINDS = {RuntimeIntentKind.COMPLETE, RuntimeIntentKind.BLOCK, RuntimeIntentKind.RESOURCE_WAIT}
 _DEFAULT_RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
@@ -331,8 +340,81 @@ def _result_status_value(result: Any) -> str | None:
     return raw if isinstance(raw, str) else None
 
 
+def _state_value(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    return string_value(raw, "")
+
+
+def _ctx_plugin_key(ctx: Mapping[str, Any]) -> str | None:
+    for source_name in ("session", "workline"):
+        plugin_key = string_value(getattr(ctx.get(source_name), "plugin_key", None), "")
+        if plugin_key:
+            return plugin_key
+    return None
+
+
+def _material_unit_status_transition_targets(
+    ctx: Mapping[str, Any], *, from_state: str
+) -> tuple[str, tuple[str, ...]] | None:
+    plugin_key = _ctx_plugin_key(ctx)
+    definition = get_workline_plugin_definition(plugin_key)
+    if definition is None:
+        return None
+
+    try:
+        manifest = getattr(definition, "manifest", None)
+    except (ImportError, AttributeError, TypeError, ValueError):
+        logger.debug(
+            "skip material unit status transition warning because plugin manifest is unavailable: plugin_key=%s",
+            plugin_key,
+            exc_info=True,
+        )
+        return None
+    for state_machine in getattr(manifest, "state_machines", ()) or ():
+        state_owner = getattr(state_machine, "state_owner", None)
+        if getattr(state_owner, "model", None) != "MaterialUnit" or getattr(state_owner, "field", None) != "status":
+            continue
+        for transition in getattr(state_machine, "transitions", ()) or ():
+            if _state_value(getattr(transition, "from_state", None)) == from_state:
+                return plugin_key or "", tuple(_state_value(state) for state in getattr(transition, "to_states", ()))
+    return None
+
+
+def _warn_material_unit_status_transition_if_outside_manifest(
+    ctx: Mapping[str, Any],
+    material_unit: Any,
+    *,
+    from_state: str,
+    to_state: str,
+) -> None:
+    transition_contract = _material_unit_status_transition_targets(ctx, from_state=from_state)
+    if transition_contract is None:
+        return
+
+    plugin_key, allowed_to_states = transition_contract
+    if to_state in allowed_to_states:
+        return
+
+    material_unit_id = getattr(material_unit, "id", None)
+    pkg_code = string_value(getattr(material_unit, "pkg_code", None), "")
+    logger.warning(
+        "material unit status transition is outside manifest contract "
+        "object_type=REEL object_id=%s from_state=%s to_state=%s pkg_code=%s plugin_key=%s suggestion=%s",
+        material_unit_id,
+        from_state,
+        to_state,
+        pkg_code,
+        plugin_key,
+        "check whether the plugin is missing a transition or the manifest transitions contract lacks this from->to move",
+    )
+
+
 def _is_reconciling_result(result: Any) -> bool:
     return _result_status_value(result) == "RECONCILING"
+
+
+def _is_duplicate_result(result: Any) -> bool:
+    return _result_status_value(result) == "DUPLICATE"
 
 
 def _resolve_target_device(ctx: Any, intent: RuntimeIntent) -> Any:
@@ -555,7 +637,7 @@ class RuntimeIntentEffectApplier:
         self._resource_projection_service = resource_projection_service
         self._bin_cell_reservation_service = bin_cell_reservation_service
 
-    async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> RuntimeIntentEffectResult:
+    async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> RuntimeIntentEffectResult:  # noqa: PLR0912
         _validate_runtime_intents(intents)
 
         from src.app.workline.services import write_back_service as workline_effects
@@ -570,8 +652,16 @@ class RuntimeIntentEffectApplier:
             pending_source_pick_success_command_id=None,
             pending_target_terminal_success=False,
             pending_target_terminal_command_id=None,
+            skip_next_material_unit_intent=False,
         )
         for intent in intents:
+            skip_material_unit_intent = terminal_state.skip_next_material_unit_intent and intent.kind in {
+                RuntimeIntentKind.CREATE_MATERIAL_UNIT,
+                RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
+            }
+            if terminal_state.skip_next_material_unit_intent and not skip_material_unit_intent:
+                terminal_state.skip_next_material_unit_intent = False
+
             if intent.kind == RuntimeIntentKind.UPDATE_CONTEXT:
                 await self._apply_update_context(ctx, intent, workline_effects, terminal_state)
                 continue
@@ -607,6 +697,7 @@ class RuntimeIntentEffectApplier:
                 if _is_reconciling_result(result):
                     await self._apply_resource_reconciliation_hold(ctx, result)
                     return RuntimeIntentEffectResult.processed()
+                terminal_state.skip_next_material_unit_intent = _is_duplicate_result(result)
                 if str(intent.action) == "MATERIAL_UNMOUNTED":
                     terminal_state.pending_source_pick_success = True
                     terminal_state.pending_source_pick_success_command_id = _source_pick_success_command_id(ctx)
@@ -624,12 +715,44 @@ class RuntimeIntentEffectApplier:
             if intent.kind == RuntimeIntentKind.RESOURCE_WAIT:
                 return await self._apply_resource_wait(ctx, intent)
 
+            if intent.kind == RuntimeIntentKind.CREATE_MATERIAL_UNIT:
+                if skip_material_unit_intent:
+                    terminal_state.skip_next_material_unit_intent = False
+                    continue
+                await self._apply_create_material_unit(ctx, intent)
+                continue
+
+            if intent.kind == RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS:
+                if skip_material_unit_intent:
+                    terminal_state.skip_next_material_unit_intent = False
+                    continue
+                await self._apply_update_material_unit_status(ctx, intent)
+                continue
+
             if intent.kind == RuntimeIntentKind.COMPLETE:
                 _merge_context_patch(ctx, intent.context_patch)
                 workline_effects._apply_context_patch(ctx)
+                if terminal_state.pending_target_terminal_success:
+                    await _record_source_item_terminal_result(
+                        ctx,
+                        terminal_status="SORTED",
+                        command_id=terminal_state.pending_target_terminal_command_id,
+                        terminal_evidence=_target_terminal_evidence(ctx),
+                    )
+                    terminal_state.pending_target_terminal_success = False
+                    terminal_state.pending_target_terminal_command_id = None
+                terminal_marker = _consume_terminal_result_marker(ctx)
+                if terminal_marker is not None:
+                    await _record_source_item_terminal_result(
+                        ctx,
+                        terminal_status=string_value(terminal_marker.get("terminal_status"), ""),
+                        command_id=optional_int(terminal_marker.get("command_id")) or _terminal_command_id(ctx),
+                        terminal_evidence=_terminal_marker_evidence(terminal_marker),
+                    )
                 workline_effects._clear_session_failure(ctx["session"])
                 ctx["orch_result"].complete = True
                 _ = await workline_effects._apply_completion_transition(ctx)
+                await self._cleanup_completed_material_unit(ctx)
                 continue
 
             if intent.kind == RuntimeIntentKind.BLOCK:
@@ -643,6 +766,121 @@ class RuntimeIntentEffectApplier:
             raise ValueError(f"unsupported RuntimeIntent kind: {intent.kind.value}")
 
         return RuntimeIntentEffectResult.processed()
+
+    async def _apply_create_material_unit(self, ctx: Any, intent: RuntimeIntent) -> None:
+        from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
+
+        session = ctx["session"]
+        db = ctx["db"]
+        pkg_code = string_value(intent.payload_json.get("pkg_code"), "")
+        material_identity_key = string_value(intent.payload_json.get("material_identity_key"), "")
+        six_in_one = dict(cast("Mapping[str, Any]", intent.payload_json.get("six_in_one") or {}))
+        status = MaterialUnitStatus(string_value(intent.payload_json.get("status"), ""))
+        current_session_id = resolve_required_pk(session, "session")
+        flush = getattr(db, "flush", None)
+
+        async def get_material_unit_by_pkg_code() -> Any | None:
+            result = await db.execute(
+                select(MaterialUnit).where(MaterialUnit.pkg_code == pkg_code).order_by(MaterialUnit.id.asc()).limit(2)
+            )
+            material_units = list(result.scalars().all())
+            if len(material_units) > 1:
+                raise ValueError(f"multiple material units found for pkg_code: {pkg_code}")
+            return material_units[0] if material_units else None
+
+        material_unit = await get_material_unit_by_pkg_code()
+        if material_unit is None:
+            begin_nested = getattr(db, "begin_nested", None)
+            if callable(begin_nested):
+                try:
+                    # 唯一索引竞争回滚到 savepoint，避免污染外层事务。
+                    async with cast("Any", begin_nested)():
+                        material_unit = MaterialUnit(
+                            pkg_code=pkg_code,
+                            material_identity_key=material_identity_key,
+                            six_in_one=six_in_one,
+                            status=status,
+                            current_session_id=current_session_id,
+                        )
+                        db.add(material_unit)
+                        if flush is not None:
+                            await flush()
+                except IntegrityError:
+                    material_unit = await get_material_unit_by_pkg_code()
+                    if material_unit is None:
+                        raise
+            else:
+                material_unit = MaterialUnit(pkg_code=pkg_code)
+                db.add(material_unit)
+
+        material_unit.material_identity_key = material_identity_key
+        material_unit.six_in_one = six_in_one
+        material_unit.status = status
+        material_unit.current_session_id = current_session_id
+        if flush is not None:
+            await flush()
+        session.current_material_unit_id = resolve_required_pk(material_unit, "material_unit")
+
+    async def _apply_update_material_unit_status(self, ctx: Any, intent: RuntimeIntent) -> None:
+        from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
+
+        material_unit_id = int(intent.payload_json["material_unit_id"])
+        material_unit = await ctx["db"].get(MaterialUnit, material_unit_id)
+        if material_unit is None:
+            raise ValueError(f"material unit not found: {material_unit_id}")
+
+        session = ctx["session"]
+        current_session_id = resolve_required_pk(session, "session")
+        if intent.payload_json.get("clear_session_reference") is True and (
+            getattr(material_unit, "current_session_id", None) != current_session_id
+            or getattr(session, "current_material_unit_id", None) != material_unit_id
+        ):
+            return
+
+        from_status = _state_value(getattr(material_unit, "status", None))
+        to_status = MaterialUnitStatus(string_value(intent.payload_json.get("status"), ""))
+        _warn_material_unit_status_transition_if_outside_manifest(
+            ctx,
+            material_unit,
+            from_state=from_status,
+            to_state=to_status.value,
+        )
+
+        material_unit.status = to_status
+        if "current_location" in intent.payload_json:
+            material_unit.current_location = intent.payload_json.get("current_location")
+        material_unit.current_session_id = current_session_id
+        if intent.payload_json.get("clear_session_reference") is True:
+            ctx.setdefault("_runtime_material_unit_cleanup_ids", set()).add(material_unit_id)
+            return
+        session.current_material_unit_id = material_unit_id
+
+    async def _cleanup_completed_material_unit(self, ctx: Any) -> None:
+        from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
+        from src.app.workline.models.session import SessionStatus
+
+        session = ctx["session"]
+        if getattr(session, "status", None) != SessionStatus.COMPLETED.value:
+            return
+        cleanup_ids = set(ctx.pop("_runtime_material_unit_cleanup_ids", set()) or set())
+        if not cleanup_ids:
+            return
+        db = ctx["db"]
+        for material_unit_id in cleanup_ids:
+            material_unit = await db.get(MaterialUnit, material_unit_id)
+            if material_unit is None:
+                continue
+            if getattr(material_unit, "status", None) != MaterialUnitStatus.NG:
+                continue
+            if getattr(material_unit, "current_session_id", None) != resolve_required_pk(session, "session"):
+                continue
+            if getattr(session, "current_material_unit_id", None) != material_unit_id:
+                continue
+            session.current_material_unit_id = None
+            material_unit.current_session_id = None
+        flush = getattr(db, "flush", None)
+        if flush is not None:
+            await flush()
 
     async def _apply_update_context(
         self,

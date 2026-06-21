@@ -24,6 +24,9 @@ MANIFEST_TOP_LEVEL_FIELDS = (
     "commands",
     "events",
     "resource_boundaries",
+    "session_subject",
+    "state_machines",
+    "pipeline_queues",
 )
 REMOVED_MANIFEST_RUNTIME_FIELDS = (
     "business_key_resolver",
@@ -212,6 +215,9 @@ def test_plugin_template_uses_pure_data_manifest_contract() -> None:
     assert "rack_positions:" in manifest_template
     assert "topology:" in manifest_template
     assert "resource_boundaries:" in manifest_template
+    assert "session_subject:" in manifest_template
+    assert "state_machines:" in manifest_template
+    assert "pipeline_queues:" in manifest_template
 
 
 def test_manifest_yaml_template_loads_as_runtime_manifest() -> None:
@@ -229,6 +235,12 @@ def test_manifest_yaml_template_loads_as_runtime_manifest() -> None:
     assert all(category.value != "COMMAND_RESULT" for category in event_categories.values())
     assert manifest.rack_positions[0].code == "ENTRY_POSITION"
     assert manifest.resource_boundaries[0].rack_position_code == "MEASURE_POSITION"
+    assert manifest.session_subject is not None
+    assert manifest.session_subject.type == "MATERIAL_UNIT"
+    assert manifest.session_subject.physical_form == "REEL"
+    assert manifest.state_machines[0].state_owner.model == "MaterialUnit"
+    assert manifest.state_machines[0].state_owner.field == "status"
+    assert {queue.code for queue in manifest.pipeline_queues} == {"ENTRY_SCAN_QUEUE", "WORKSTATION_ACTIVE"}
 
     assert {
         (edge.from_node.kind, edge.from_node.ref, edge.to_node.kind, edge.to_node.ref, edge.type)

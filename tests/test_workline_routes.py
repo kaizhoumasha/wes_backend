@@ -66,6 +66,41 @@ def _manifest_summary(plugin_key: str = "demo_plugin") -> WorkLinePluginManifest
                 "lease_scope": "STATION",
             }
         ],
+        session_subject={
+            "type": "MATERIAL_UNIT",
+            "physical_form": "REEL",
+            "identity_sources": ["PkgID", "material_identity_key"],
+        },
+        state_machines=[
+            {
+                "id": "smt_material_unit_reel",
+                "subject": {
+                    "category": "MATERIAL_UNIT",
+                    "type": "MATERIAL_UNIT",
+                    "physical_form": "REEL",
+                },
+                "state_owner": {
+                    "model": "MaterialUnit",
+                    "field": "status",
+                },
+                "granularity": "MATERIAL_LIFECYCLE",
+                "transitions": [
+                    {"from_state": "IN_TRANSIT", "to_states": ["STORED", "COMPLETED", "NG", "RECONCILING"]},
+                    {"from_state": "STORED", "to_states": ["IN_TRANSIT", "NG", "RECONCILING"]},
+                    {"from_state": "RECONCILING", "to_states": ["IN_TRANSIT", "STORED", "COMPLETED", "NG"]},
+                    {"from_state": "NG", "to_states": []},
+                    {"from_state": "COMPLETED", "to_states": []},
+                ],
+            }
+        ],
+        pipeline_queues=[
+            {
+                "code": "WORKSTATION_ACTIVE",
+                "role": "WORKSTATION",
+                "capacity": 1,
+                "order_policy": "FIFO",
+            }
+        ],
     )
 
 
@@ -181,6 +216,9 @@ async def test_get_plugin_manifest_returns_registered_plugin_summary(monkeypatch
         "events",
         "commands",
         "resource_boundaries",
+        "session_subject",
+        "state_machines",
+        "pipeline_queues",
     }
 
 
@@ -257,6 +295,9 @@ def test_openapi_workline_plugin_manifest_summary_includes_new_manifest_fields()
         "events",
         "commands",
         "resource_boundaries",
+        "session_subject",
+        "state_machines",
+        "pipeline_queues",
     }
 
 
