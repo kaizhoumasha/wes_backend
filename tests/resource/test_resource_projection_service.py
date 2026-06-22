@@ -22,6 +22,7 @@ from src.app.resource.models import (
 )
 from src.app.resource.services import ResourceProjectionStatus
 from src.app.resource.services.projection_service import ResourceProjectionService
+from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
 
 
 class RecordingStateEventRepo:
@@ -318,6 +319,24 @@ class RecordingResourceSnapshotService:
     async def record_material_mounted_snapshot(self, _db: object, **kwargs: Any) -> SimpleNamespace:
         self.material_calls.append(kwargs)
         return SimpleNamespace(id=9901, **kwargs)
+
+
+class MaterialUnitDb:
+    def __init__(self, material_units: list[MaterialUnit]) -> None:
+        self.material_units = material_units
+        self.added: list[Any] = []
+
+    async def execute(self, statement: Any) -> Any:
+        pkg_code = (
+            str(statement.compile(compile_kwargs={"literal_binds": True}))
+            .split("material_units.pkg_code = '", 1)[1]
+            .split("'", 1)[0]
+        )
+        matches = [unit for unit in self.material_units if unit.pkg_code == pkg_code]
+        return SimpleNamespace(scalar_one_or_none=lambda: matches[0] if matches else None)
+
+    def add(self, instance: Any) -> None:
+        self.added.append(instance)
 
 
 def _mount(**overrides: Any) -> BinMaterialMount:
@@ -814,6 +833,48 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
 
 
 @pytest.mark.asyncio
+async def test_record_material_mounted_to_bin_cell_updates_material_unit_location_cache_without_status() -> None:
+    material_unit = MaterialUnit(
+        pkg_code="PKG-001",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        six_in_one={},
+        status=MaterialUnitStatus.NG,
+        current_location=None,
+    )
+    db = MaterialUnitDb([material_unit])
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
+        snapshot_service=RecordingResourceSnapshotService(),
+    )
+
+    result = await service.record_material_mounted_to_bin_cell(
+        db,
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-001",
+        material_code="620100L00-011-G",
+        lot_code="8904936031",
+        date_code="122625",
+        wms_inventory_id="INV-001",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-PICK-001",
+        idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 5, 0),
+        reel_thickness="2.5",
+        cell_capacity_depth_mm=10.0,
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert material_unit.current_location == "BIN-001:4"
+    assert material_unit.status == MaterialUnitStatus.NG
+    assert db.added == [material_unit]
+
+
+@pytest.mark.asyncio
 async def test_record_material_mounted_to_bin_cell_preserves_decimal_depth_values() -> None:
     events = RecordingStateEventRepo()
     occupancies = RecordingBinCellOccupancyRepo()
@@ -912,6 +973,59 @@ async def test_record_material_unmounted_from_bin_cell_closes_top_mount_and_upda
     assert occupancies.saved[0]["occupancy_status"] == "OCCUPIED"
     assert occupancies.saved[0]["ended_at"] is None
     assert events.created[0]["workline_id"] == 1001
+
+
+@pytest.mark.asyncio
+async def test_record_material_unmounted_from_bin_cell_clears_location_cache_without_status() -> None:
+    material_unit = MaterialUnit(
+        pkg_code="PKG-TOP",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        six_in_one={},
+        status=MaterialUnitStatus.RECONCILING,
+        current_location="BIN-001:4",
+    )
+    db = MaterialUnitDb([material_unit])
+    service = ResourceProjectionService(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(
+            active_by_cell=_mount(
+                cell_stack_position=1,
+                pkg_code="PKG-TOP",
+                wms_inventory_id="INV-TOP",
+                reel_thickness="0.10",
+                source_version="7",
+            )
+        ),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(
+            active_by_cell=_occupancy(
+                reel_count=1,
+                used_depth_mm=Decimal("0.10"),
+                capacity_depth_mm=Decimal("0.30"),
+                remaining_depth_mm=Decimal("0.20"),
+            )
+        ),
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        db,
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id="INV-TOP",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-001",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-001:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        source_version="8",
+        reel_thickness="0.10",
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert material_unit.current_location is None
+    assert material_unit.status == MaterialUnitStatus.RECONCILING
+    assert db.added == [material_unit]
 
 
 @pytest.mark.asyncio

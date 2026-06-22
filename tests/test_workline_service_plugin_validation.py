@@ -30,13 +30,13 @@ from src.workline_plugins.rough_sorter.contract import (
     ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
+    ROUGH_SORTER_CONTRACT_VERSION,
 )
 from src.workline_plugins.rough_sorter.plugin import POSITION_WORK_SINGLE_LAYER
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
-    EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
@@ -172,7 +172,7 @@ def test_workline_service_lists_selector_only_plugin_options() -> None:
         set(option.model_dump()) == {"plugin_key", "label", "contract_versions", "default_contract_version"}
         for option in options
     )
-    assert options_by_key["rough_sorter"].default_contract_version == "rough_sorter.v1"
+    assert options_by_key["rough_sorter"].default_contract_version == ROUGH_SORTER_CONTRACT_VERSION
     assert options_by_key[SMT_SORTING_INBOUND_PLUGIN_KEY].default_contract_version == (
         SMT_SORTING_INBOUND_CONTRACT_VERSION
     )
@@ -207,7 +207,7 @@ def test_workline_service_returns_new_plugin_manifest_summary() -> None:
     events_by_name = {event.event: event for event in summary.events}
     commands_by_name = {command.command: command for command in summary.commands}
     assert events_by_name[EVENT_WORKING_BIN_SCAN].source_device_roles == [ROLE_SORTING_SCAN_PLATFORM]
-    assert events_by_name[EVENT_SESSION_COMPLETE_REQUESTED].source_device_roles == [ROLE_SORTING_WORKSTATION]
+    assert "SORTING_SESSION_COMPLETE_REQUESTED" not in events_by_name
     assert commands_by_name[COMMAND_SOURCE_PICK].target_device_role == ROLE_SORTING_SOURCE_ARM
     assert commands_by_name[COMMAND_TARGET_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
     assert commands_by_name[COMMAND_NG_PLACE].target_device_role == ROLE_SORTING_TARGET_ARM
@@ -247,12 +247,21 @@ def test_manifest_summary_exposes_devices_rack_positions_topology_events_command
         "events",
         "commands",
         "resource_boundaries",
+        "session_subject",
+        "state_machines",
+        "pipeline_queues",
     }
     assert summary.devices
     assert summary.rack_positions
     assert summary.topology.flow_edges
     assert summary.events
     assert summary.commands
+    assert summary.session_subject is not None
+    assert summary.session_subject.type == "MATERIAL_UNIT"
+    assert summary.state_machines
+    assert summary.state_machines[0].state_owner.model == "MaterialUnit"
+    assert summary.state_machines[0].state_owner.field == "status"
+    assert summary.pipeline_queues
     assert summary.resource_boundaries
     assert summary.rack_positions[0].carrier_capability.allowed_rack_kinds
     assert "device_roles" not in summary.model_dump()
@@ -562,7 +571,7 @@ async def test_smt_sorting_inbound_configuration_status_does_not_require_event_c
             {"supports_command_types": [COMMAND_TARGET_PLACE, COMMAND_NG_PLACE], "supports_event_types": ["ARM_READY"]},
         ),
         (ROLE_SORTING_SCAN_PLATFORM, {"supports_event_types": [EVENT_WORKING_BIN_SCAN]}),
-        (ROLE_SORTING_WORKSTATION, {"supports_event_types": [EVENT_SESSION_COMPLETE_REQUESTED]}),
+        (ROLE_SORTING_WORKSTATION, {}),
     )
     for index, (role, capabilities_json) in enumerate(device_specs, start=1):
         db_session.add(
@@ -810,7 +819,7 @@ async def test_workline_service_create_keeps_rough_sorter_as_inactive_draft_with
 
     assert workline is not None
     assert workline.is_active is False
-    assert workline.contract_version == "rough_sorter.v1"
+    assert workline.contract_version == ROUGH_SORTER_CONTRACT_VERSION
 
 
 @pytest.mark.asyncio
@@ -835,7 +844,7 @@ async def test_workline_service_update_allows_rough_sorter_draft_without_topolog
 
     assert updated is not None
     assert updated.plugin_key == "rough_sorter"
-    assert updated.contract_version == "rough_sorter.v1"
+    assert updated.contract_version == ROUGH_SORTER_CONTRACT_VERSION
 
 
 @pytest.mark.asyncio
@@ -865,7 +874,7 @@ async def test_workline_service_rejects_plugin_config_update_when_active(db_sess
         line_name="粗分机启用配置",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     db_session.add(workline)
@@ -890,7 +899,7 @@ async def test_workline_service_rejects_line_code_update_when_active(db_session)
         line_name="粗分机启用编码",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     db_session.add(workline)
@@ -921,7 +930,7 @@ async def test_workline_service_active_line_name_update_keeps_existing_contract_
         line_name="粗分机启用重命名",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     db_session.add(workline)
@@ -934,7 +943,7 @@ async def test_workline_service_active_line_name_update_keeps_existing_contract_
             "src.app.sys.services.audit_service.audit_log_service.create_operation_log",
             AsyncMock(return_value=None),
         ),
-        patch("src.app.workline.services.workline_service.get_plugin_contract_version", return_value="rough_sorter.v2"),
+        patch("src.app.workline.services.workline_service.get_plugin_contract_version", return_value="rough_sorter.v3"),
     ):
         updated = await service.update(
             db_session,
@@ -944,7 +953,7 @@ async def test_workline_service_active_line_name_update_keeps_existing_contract_
 
     assert updated is not None
     assert updated.line_name == "粗分机启用重命名后"
-    assert updated.contract_version == "rough_sorter.v1"
+    assert updated.contract_version == ROUGH_SORTER_CONTRACT_VERSION
 
 
 @pytest.mark.asyncio
@@ -956,7 +965,7 @@ async def test_workline_service_locks_workline_before_plugin_config_update_guard
         line_name="粗分机配置锁",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     db_session.add(workline)
@@ -994,7 +1003,7 @@ async def test_configuration_status_reports_missing_plugin_and_role_blockers(db_
     assert status.checks[0].severity == "BLOCKER"
 
     workline.plugin_key = "rough_sorter"
-    workline.contract_version = "rough_sorter.v1"
+    workline.contract_version = ROUGH_SORTER_CONTRACT_VERSION
     await db_session.commit()
 
     status = await service.configuration_status(db_session, workline.id)  # type: ignore[arg-type]
@@ -1014,7 +1023,7 @@ async def test_configuration_status_reports_incomplete_command_target_communicat
         line_name="粗分机通信检查",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
     )
     db_session.add(workline)
     await db_session.commit()
@@ -1059,7 +1068,7 @@ async def test_configuration_status_reports_invalid_command_target_capabilities_
         line_name="粗分机能力配置错误",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
     )
     db_session.add(workline)
     await db_session.commit()
@@ -1107,7 +1116,7 @@ async def test_activate_simulation_does_not_block_on_command_target_communicatio
         line_name="粗分机 SIM 通信检查",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         run_mode=WorkLineRunMode.SIMULATION,
     )
     db_session.add(workline)
@@ -1157,7 +1166,7 @@ async def test_activate_succeeds_only_after_configuration_checks_pass(db_session
         line_name="粗分机启用",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
     )
     db_session.add(workline)
     await db_session.commit()
@@ -1199,7 +1208,7 @@ async def test_activate_locks_workline_before_configuration_checks(db_session) -
         line_name="粗分机启用锁",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
     )
     db_session.add(workline)
     await db_session.commit()
@@ -1239,7 +1248,7 @@ async def test_deactivate_blocks_when_workline_has_unfinished_sessions(db_sessio
         line_name="粗分机停用",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     db_session.add(workline)
@@ -1274,7 +1283,7 @@ async def test_deactivate_blocks_when_workline_has_active_command(db_session) ->
         line_name="粗分机停用指令",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     device = Device(
@@ -1319,7 +1328,7 @@ async def test_deactivate_blocks_when_workline_has_active_outbox(db_session) -> 
         line_name="粗分机停用发件箱",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     db_session.add(workline)
@@ -1359,7 +1368,7 @@ async def test_deactivate_allows_sent_outbox_history(db_session) -> None:
         line_name="粗分机停用已派发历史",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     db_session.add(workline)
@@ -1397,7 +1406,7 @@ async def test_deactivate_blocks_when_workline_has_active_inbox(db_session) -> N
         line_name="粗分机停用收件箱",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     db_session.add(workline)
@@ -1435,7 +1444,7 @@ async def test_deactivate_blocks_when_workline_has_active_runtime_hold(db_sessio
         line_name="粗分机停用 Hold",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     db_session.add(workline)
@@ -1471,7 +1480,7 @@ async def test_deactivate_locks_workline_before_workload_checks(db_session) -> N
         line_name="粗分机停用锁",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     db_session.add(workline)
@@ -1495,7 +1504,7 @@ async def test_delete_rejects_active_workline(db_session) -> None:
         line_name="粗分机删除启用线",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=True,
     )
     db_session.add(workline)
@@ -1516,7 +1525,7 @@ async def test_delete_rejects_workline_with_unfinished_workload(db_session) -> N
         line_name="粗分机删除负载线",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=False,
     )
     db_session.add(workline)
@@ -1552,7 +1561,7 @@ async def test_delete_rejects_workline_with_active_runtime_hold(db_session) -> N
         line_name="粗分机删除 Hold",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
-        contract_version="rough_sorter.v1",
+        contract_version=ROUGH_SORTER_CONTRACT_VERSION,
         is_active=False,
     )
     db_session.add(workline)

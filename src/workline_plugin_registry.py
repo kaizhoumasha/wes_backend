@@ -20,6 +20,9 @@ _WORKLINE_PLUGIN_MANIFEST_FIELDS = (
     "commands",
     "events",
     "resource_boundaries",
+    "session_subject",
+    "state_machines",
+    "pipeline_queues",
 )
 
 
@@ -50,7 +53,7 @@ class WorklinePluginDefinition:
         manifest_fields = tuple(item.name for item in fields(manifest))
         if manifest_fields != _WORKLINE_PLUGIN_MANIFEST_FIELDS:
             raise TypeError(
-                f"工作线插件 {self.plugin_key} manifest 必须只声明 8 个静态字段: "
+                f"工作线插件 {self.plugin_key} manifest 必须只声明 {len(_WORKLINE_PLUGIN_MANIFEST_FIELDS)} 个静态字段: "
                 f"{', '.join(_WORKLINE_PLUGIN_MANIFEST_FIELDS)}"
             )
         if getattr(manifest, "plugin_key", None) != self.plugin_key:

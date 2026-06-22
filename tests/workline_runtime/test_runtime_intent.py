@@ -150,6 +150,52 @@ def test_resource_wait_intent_preserves_reason_and_evidence():
     }
 
 
+def test_create_material_unit_intent_defaults_to_in_transit_and_preserves_payload() -> None:
+    six_in_one = {"PkgID": "PKG-001", "HHPN": "HH-001"}
+
+    intent = RuntimeIntent.create_material_unit(
+        pkg_code="PKG-001",
+        material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+        six_in_one=six_in_one,
+    )
+    six_in_one["PkgID"] = "CHANGED"
+
+    assert intent.kind == RuntimeIntentKind.CREATE_MATERIAL_UNIT
+    assert intent.payload_json == {
+        "pkg_code": "PKG-001",
+        "material_identity_key": "MAT:HH-001:MFR-001:260528:LOT-A",
+        "six_in_one": {"PkgID": "PKG-001", "HHPN": "HH-001"},
+        "status": "IN_TRANSIT",
+    }
+
+
+def test_create_material_unit_intent_preserves_optional_current_location() -> None:
+    intent = RuntimeIntent.create_material_unit(
+        pkg_code="PKG-001",
+        material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+        six_in_one={"PkgID": "PKG-001", "HHPN": "HH-001"},
+        status="STORED",
+        current_location="BIN-001:4",
+    )
+
+    assert intent.payload_json["current_location"] == "BIN-001:4"
+
+
+def test_update_material_unit_status_intent_describes_status_and_location() -> None:
+    intent = RuntimeIntent.update_material_unit_status(
+        material_unit_id=1001,
+        status="STORED",
+        current_location="BIN-001:4",
+    )
+
+    assert intent.kind == RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS
+    assert intent.payload_json == {
+        "material_unit_id": 1001,
+        "status": "STORED",
+        "current_location": "BIN-001:4",
+    }
+
+
 def test_rack_operation_request_intent_describes_rack_operation():
     intent = RuntimeIntent.rack_operation_request(
         operation_type="REPLACE_CLASSIFIER_WORK_RACK",
@@ -394,3 +440,24 @@ def test_handling_operation_request_requires_operation_key_moves_carrier_and_tim
             payload_json={"carrier_type": "CTU", "moves": [{"sequence_no": 1}]},
             timeout_seconds=0,
         )
+
+
+def test_create_material_unit_intent_rejects_invalid_status():
+    """非法 status 在 intent 构造时即被拒绝，fail-fast 对齐 manifest loader。"""
+    with pytest.raises(ValueError, match="must be a valid MaterialUnitStatus"):
+        RuntimeIntent.create_material_unit(
+            pkg_code="PKG-001",
+            material_identity_key="MAT:HH-001",
+            six_in_one={"PkgID": "PKG-001"},
+            status="BOGUS",
+        )
+
+
+def test_update_material_unit_status_intent_rejects_invalid_status():
+    with pytest.raises(ValueError, match="must be a valid MaterialUnitStatus"):
+        RuntimeIntent.update_material_unit_status(material_unit_id=1, status="BOGUS")
+
+
+def test_update_material_unit_status_intent_rejects_missing_material_unit_id():
+    with pytest.raises(ValueError, match="requires material_unit_id"):
+        RuntimeIntent.update_material_unit_status(material_unit_id=0, status="IN_TRANSIT")

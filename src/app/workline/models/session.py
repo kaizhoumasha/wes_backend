@@ -17,6 +17,7 @@ from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
 from src.core.mixins import BaseMixin, DataTableMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
@@ -261,6 +262,11 @@ class WorklineSessionBase(BaseMixin):
         default=None,
         description="最后处理的 Inbox ID（便于重放）",
     )
+    current_material_unit_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+        description="当前在途料盘 ID（引用 material_units.id，无外键遵循辅助追溯字段规范）",
+    )
 
     # runtime reconciliation 一等字段；guard/CAS/resolve 只读取这些字段，
     # 不从 context_json 推断控制状态。
@@ -377,6 +383,7 @@ class WorklineSession(
                 "('NEW', 'RUNNING', 'WAITING_DEVICE_RESULT', 'WAITING_EXTERNAL', 'MANUAL_HOLD')"
             ),
         ),
+        Index("ix_workline_sessions_current_material_unit_id", "current_material_unit_id"),
         {"schema": SchemaType.BIZ.value},
     )
 

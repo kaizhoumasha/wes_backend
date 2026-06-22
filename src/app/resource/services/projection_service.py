@@ -7,6 +7,7 @@ from hashlib import sha256
 from math import isfinite
 from typing import TYPE_CHECKING, Any, cast
 
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from src.app.resource.models import (
@@ -39,6 +40,7 @@ from src.app.resource.repositories import (
 from src.app.resource.services.material_identity import material_identity_keys_match, material_identity_lookup_keys
 from src.app.resource.services.relation_service import ResourceProjectionResult, ResourceProjectionStatus
 from src.app.resource.services.snapshot_service import ResourceSnapshotService, resource_snapshot_service
+from src.app.workline.models.material_unit import MaterialUnit
 from src.app.workline.services.rack_position_service import (
     WorklineRackPositionService,
     workline_rack_position_service,
@@ -759,6 +761,11 @@ class ResourceProjectionService:
             },
         )
         _ = await self.snapshot_service.record_material_mounted_snapshot(db, **snapshot_kwargs)
+        await self._update_material_unit_location_cache(
+            db,
+            pkg_code=pkg_code,
+            current_location=self._material_unit_location_code(bin_code=bin_code, bin_cell_index=bin_cell_index),
+        )
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
 
     async def record_material_unmounted_from_bin_cell(
@@ -912,7 +919,32 @@ class ResourceProjectionService:
         active_cell.session_id = session_id
         _ = await self.bin_cell_occupancy_repo.save(db, active_cell)
 
+        await self._update_material_unit_location_cache(
+            db,
+            pkg_code=pkg_code,
+            current_location=None,
+        )
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
+
+    @staticmethod
+    def _material_unit_location_code(*, bin_code: str, bin_cell_index: str) -> str:
+        return f"{bin_code}:{bin_cell_index}"
+
+    async def _update_material_unit_location_cache(
+        self,
+        db: AsyncSession,
+        *,
+        pkg_code: str | None,
+        current_location: str | None,
+    ) -> None:
+        if not pkg_code or not hasattr(db, "execute"):
+            return
+        result = await db.execute(select(MaterialUnit).where(MaterialUnit.pkg_code == pkg_code).limit(1))
+        material_unit = result.scalar_one_or_none()
+        if material_unit is None:
+            return
+        material_unit.current_location = current_location
+        db.add(material_unit)
 
     async def record_bin_arrived_at_position(
         self,

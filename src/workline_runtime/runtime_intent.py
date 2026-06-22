@@ -42,6 +42,8 @@ class RuntimeIntentKind(str, Enum):
     MARK_NG = "MARK_NG"
     CONTINUE_NEXT = "CONTINUE_NEXT"
     UPDATE_CONTEXT = "UPDATE_CONTEXT"
+    CREATE_MATERIAL_UNIT = "CREATE_MATERIAL_UNIT"
+    UPDATE_MATERIAL_UNIT_STATUS = "UPDATE_MATERIAL_UNIT_STATUS"
 
 
 class DestinationKind(str, Enum):
@@ -335,6 +337,51 @@ class RuntimeIntent(BaseModel):
         )
 
     @classmethod
+    def create_material_unit(
+        cls,
+        *,
+        pkg_code: str,
+        material_identity_key: str,
+        six_in_one: dict[str, Any],
+        status: str = "IN_TRANSIT",
+        current_location: str | None = None,
+    ) -> RuntimeIntent:
+        payload_json: dict[str, Any] = {
+            "pkg_code": pkg_code,
+            "material_identity_key": material_identity_key,
+            "six_in_one": deepcopy(six_in_one),
+            "status": status,
+        }
+        if current_location is not None:
+            payload_json["current_location"] = current_location
+        return cls(
+            kind=RuntimeIntentKind.CREATE_MATERIAL_UNIT,
+            payload_json=payload_json,
+        )
+
+    @classmethod
+    def update_material_unit_status(
+        cls,
+        *,
+        material_unit_id: int,
+        status: str,
+        current_location: str | None = None,
+        clear_session_reference: bool = False,
+    ) -> RuntimeIntent:
+        payload_json: dict[str, Any] = {
+            "material_unit_id": material_unit_id,
+            "status": status,
+        }
+        if current_location is not None:
+            payload_json["current_location"] = current_location
+        if clear_session_reference:
+            payload_json["clear_session_reference"] = True
+        return cls(
+            kind=RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
+            payload_json=payload_json,
+        )
+
+    @classmethod
     def complete(cls, patch: dict[str, Any] | None = None) -> RuntimeIntent:
         return cls(
             kind=RuntimeIntentKind.COMPLETE,
@@ -424,6 +471,18 @@ class RuntimeIntent(BaseModel):
                 raise ValueError("RESOURCE_RESERVATION intent requires action")
             if not self.payload_json:
                 raise ValueError("RESOURCE_RESERVATION intent requires payload")
+        if self.kind == RuntimeIntentKind.CREATE_MATERIAL_UNIT:
+            if not self.payload_json.get("pkg_code"):
+                raise ValueError("CREATE_MATERIAL_UNIT intent requires pkg_code")
+            if not self.payload_json.get("material_identity_key"):
+                raise ValueError("CREATE_MATERIAL_UNIT intent requires material_identity_key")
+            if not isinstance(self.payload_json.get("six_in_one"), dict):
+                raise ValueError("CREATE_MATERIAL_UNIT intent requires six_in_one")
+            self._ensure_material_unit_status("status")
+        if self.kind == RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS:
+            if not self.payload_json.get("material_unit_id"):
+                raise ValueError("UPDATE_MATERIAL_UNIT_STATUS intent requires material_unit_id")
+            self._ensure_material_unit_status("status")
         if self.kind == RuntimeIntentKind.RESOURCE_WAIT:
             if not self.reason_code:
                 raise ValueError("RESOURCE_WAIT intent requires reason_code")
@@ -448,6 +507,20 @@ class RuntimeIntent(BaseModel):
             if not self.message:
                 raise ValueError("MARK_NG intent requires message")
         return self
+
+    def _ensure_material_unit_status(self, field_name: str) -> None:
+        """校验料盘状态为合法 MaterialUnitStatus 枚举值，fail-fast 对齐 manifest loader。"""
+        raw = self.payload_json.get(field_name)
+        if not raw:
+            raise ValueError(f"{self.kind.value} intent requires {field_name}")
+        from src.app.workline.models.material_unit import MaterialUnitStatus
+
+        try:
+            MaterialUnitStatus(raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"{self.kind.value} intent {field_name} must be a valid MaterialUnitStatus, got: {raw!r}"
+            ) from exc
 
     def _validate_handling_operation_request(self) -> None:
         kind = self.kind.value

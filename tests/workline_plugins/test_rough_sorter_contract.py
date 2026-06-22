@@ -14,11 +14,11 @@ from src.workline_plugins.rough_sorter.contract import (
     PHASE_NG_MOVING,
     PHASE_PICK_TO_PIPELINE,
     PHASE_PUTTING_TO_BIN,
-    PHASE_SCANNED,
-    PHASE_WAITING_RACK,
     ROLE_CONVEYOR,
     ROLE_INPUT_ARM,
     ROLE_OUTPUT_ARM,
+    ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE,
+    ROUGH_SORTER_SCANNED_CONTEXT_STATE,
     build_move_forward_payload,
     build_move_to_ng_payload,
     build_pick_and_put_payload,
@@ -80,10 +80,10 @@ def test_business_key_returns_none_when_data_pkg_id_missing() -> None:
 
 def test_phase_and_role_contracts_are_declared() -> None:
     assert {
-        PHASE_SCANNED,
+        ROUGH_SORTER_SCANNED_CONTEXT_STATE,
         PHASE_PICK_TO_PIPELINE,
         PHASE_MOVING_FORWARD,
-        PHASE_WAITING_RACK,
+        ROUGH_SORTER_RACK_WAIT_CONTEXT_STATE,
         PHASE_PUTTING_TO_BIN,
         PHASE_NG_MOVING,
         PHASE_COMPLETED,
@@ -214,13 +214,13 @@ def test_rough_sorter_context_is_serializable() -> None:
         target_bin_location="RACK-A-01",
         rack_operation={"operation_key": "op-001"},
         ng_reason={"reason_code": "BARCODE_INVALID"},
-        phase=PHASE_SCANNED,
+        phase=ROUGH_SORTER_SCANNED_CONTEXT_STATE,
     )
 
     dumped = context.model_dump(mode="json")
 
     assert dumped["six_in_one"]["PkgID"] == "PKG-001"
-    assert dumped["phase"] == PHASE_SCANNED
+    assert dumped["phase"] == ROUGH_SORTER_SCANNED_CONTEXT_STATE
 
 
 @pytest.mark.asyncio
@@ -239,6 +239,10 @@ async def test_registered_scan_event_dispatches_after_task2_handler_ships() -> N
 
     intents = await plugin.on_device_event(ctx, inbox)
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
-    assert intents[0].context_patch["phase"] == PHASE_PICK_TO_PIPELINE
-    assert intents[1].action == ACTION_PICK_AND_PUT
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.COMMAND,
+    ]
+    assert intents[1].context_patch["phase"] == PHASE_PICK_TO_PIPELINE
+    assert intents[2].action == ACTION_PICK_AND_PUT

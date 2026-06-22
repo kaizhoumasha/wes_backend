@@ -577,7 +577,22 @@ async def _apply_manual_cancel_transition(ctx: EffectApplyContext) -> bool:
     return True
 
 
+async def _emit_completion_timeline(ctx: EffectApplyContext) -> None:
+    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
+
+    await _emit_timeline(
+        ctx,
+        stage=TimelineStage.COMPLETE,
+        action_type=TimelineActionType.SESSION_COMPLETED,
+        from_status=ctx["current_status"],
+        to_status="COMPLETED",
+        actor_type=TimelineActorType.ORCHESTRATOR,
+        related_inbox_id=_timeline_inbox_id(ctx),
+    )
+
+
 async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
+    from src.app.workline.models.session import SessionStatus
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
     from src.app.workline.repositories.session_repository import WorklineSessionRepository
     from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, ng_return_item_service
@@ -587,6 +602,7 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
     if not getattr(ctx["orch_result"], "complete", False):
         return False
     session = ctx["session"]
+    session_already_completed = string_value(getattr(session, "status", None)) == SessionStatus.COMPLETED.value
     try:
         _ = await ng_return_item_service.record_completed_ng_flow(
             ctx["db"],
@@ -597,6 +613,9 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
             occurred_at=ctx["now"],
         )
     except NgMaterialConflictError as exc:
+        if session_already_completed:
+            await _emit_completion_timeline(ctx)
+            return True
         evidence = dict(exc.evidence)
         source_event_id = _ng_material_conflict_source_event_id(
             exc=exc,
@@ -640,6 +659,9 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
             message="NG 物料已存在不同来源回流项，进入人工处理",
         )
         return True
+    if session_already_completed:
+        await _emit_completion_timeline(ctx)
+        return True
     workline_session_lifecycle_service.complete(session, occurred_at=ctx["now"])
     await WorklineSessionRepository().persist_completed(
         ctx["db"],
@@ -647,15 +669,7 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
         occurred_at=ctx["now"],
         context_json=getattr(session, "context_json", None),
     )
-    await _emit_timeline(
-        ctx,
-        stage=TimelineStage.COMPLETE,
-        action_type=TimelineActionType.SESSION_COMPLETED,
-        from_status=ctx["current_status"],
-        to_status="COMPLETED",
-        actor_type=TimelineActorType.ORCHESTRATOR,
-        related_inbox_id=_timeline_inbox_id(ctx),
-    )
+    await _emit_completion_timeline(ctx)
     return True
 
 

@@ -86,6 +86,12 @@ def _ctx(session_context: dict[str, Any] | None = None) -> PluginContext:
     )
 
 
+def _ctx_with_session(session: Any) -> PluginContext:
+    ctx = _ctx(cast("dict[str, Any]", getattr(session, "context_json", {})))
+    ctx.session = session
+    return ctx
+
+
 def _device_inbox(payload: dict[str, Any]) -> WorklineInbox:
     return cast("WorklineInbox", SimpleNamespace(id=1, kind="DEVICE_EVENT", payload_json=payload))
 
@@ -116,9 +122,10 @@ def _apply_context(session_context: dict[str, Any], patch: dict[str, Any]) -> di
 async def test_rough_sorter_physical_flow_smoke_reaches_material_mounted_completion() -> None:
     plugin = RoughSorterPlugin()
     session_context: dict[str, Any] = {}
+    session = SimpleNamespace(id=321, context_json=session_context, current_material_unit_id=None)
 
     scan_intents = await plugin.on_device_event(
-        _ctx(session_context),
+        _ctx_with_session(session),
         _device_inbox(
             {
                 "device_code": "RS-SCAN-01",
@@ -134,13 +141,20 @@ async def test_rough_sorter_physical_flow_smoke_reaches_material_mounted_complet
             }
         ),
     )
-    assert [intent.kind for intent in scan_intents] == [RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.COMMAND]
-    assert scan_intents[1].action == ACTION_PICK_AND_PUT
-    session_context = _apply_context(session_context, scan_intents[0].context_patch)
+    assert [intent.kind for intent in scan_intents] == [
+        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.COMMAND,
+    ]
+    assert scan_intents[0].payload_json["status"] == "IN_TRANSIT"
+    assert scan_intents[2].action == ACTION_PICK_AND_PUT
+    session_context = _apply_context(session_context, scan_intents[1].context_patch)
+    session.context_json = session_context
+    session.current_material_unit_id = 42
     assert session_context["phase"] == PHASE_PICK_TO_PIPELINE
 
     pick_intents = await plugin.on_command_result(
-        _ctx(session_context),
+        _ctx_with_session(session),
         _command_inbox(
             ACTION_PICK_AND_PUT,
             data={"reel_diameter": "178.0", "reel_thickness": "15.0"},
@@ -152,9 +166,10 @@ async def test_rough_sorter_physical_flow_smoke_reaches_material_mounted_complet
     ]
     assert pick_intents[1].action == ACTION_MOVE_FORWARD
     session_context = _apply_context(session_context, pick_intents[0].context_patch)
+    session.context_json = session_context
     assert session_context["phase"] == PHASE_MOVING_FORWARD
 
-    move_intents = await plugin.on_command_result(_ctx(session_context), _command_inbox(ACTION_MOVE_FORWARD))
+    move_intents = await plugin.on_command_result(_ctx_with_session(session), _command_inbox(ACTION_MOVE_FORWARD))
     assert [intent.kind for intent in move_intents] == [
         RuntimeIntentKind.UPDATE_CONTEXT,
         RuntimeIntentKind.RESOURCE_RESERVATION,
@@ -162,16 +177,20 @@ async def test_rough_sorter_physical_flow_smoke_reaches_material_mounted_complet
     ]
     assert move_intents[2].action == ACTION_PUT_TO_BIN
     session_context = _apply_context(session_context, move_intents[0].context_patch)
+    session.context_json = session_context
     assert session_context["phase"] == PHASE_PUTTING_TO_BIN
 
-    put_intents = await plugin.on_command_result(_ctx(session_context), _command_inbox(ACTION_PUT_TO_BIN))
+    put_intents = await plugin.on_command_result(_ctx_with_session(session), _command_inbox(ACTION_PUT_TO_BIN))
     assert [intent.kind for intent in put_intents] == [
         RuntimeIntentKind.RESOURCE_RESERVATION,
         RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
         RuntimeIntentKind.COMPLETE,
     ]
     assert put_intents[0].action == "CONSUME_BIN_CELL"
     assert put_intents[1].action == "MATERIAL_MOUNTED"
     assert put_intents[1].payload_json["pkg_code"] == session_context["six_in_one"]["PkgID"]
     assert put_intents[1].payload_json["bin_code"] == "BIN-001"
-    assert put_intents[2].context_patch["phase"] == PHASE_COMPLETED
+    assert put_intents[2].payload_json["material_unit_id"] == 42
+    assert put_intents[2].payload_json["current_location"] == "BIN-001:4"
+    assert put_intents[3].context_patch["phase"] == PHASE_COMPLETED

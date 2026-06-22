@@ -55,7 +55,7 @@ def _make_workline(**overrides: Any) -> WorkLine:
         "line_name": "START 准入线",
         "line_type": LineType.AUTO,
         "plugin_key": "rough_sorter",
-        "contract_version": "rough_sorter.v1",
+        "contract_version": "rough_sorter.v2",
         "run_mode": WorkLineRunMode.AUTO,
         "runtime_status": WorkLineRuntimeStatus.STOPPED,
         "is_active": True,

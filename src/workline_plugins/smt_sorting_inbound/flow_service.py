@@ -11,19 +11,19 @@ from typing import TYPE_CHECKING, Any, cast
 from src.app.resource.models import RackKind
 from src.app.resource.services.material_identity import material_identity_keys_match
 from src.app.resource.services.smt_bin_cell_allocation_policy import SmtBinCellAllocationPolicy
+from src.app.workline.models.material_unit import MaterialUnitStatus
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
     NG_REASON_LOCAL_SORTING_NG,
-    PHASE_COMPLETED,
     PHASE_WAITING_NG_PLACE,
     PHASE_WAITING_SCAN,
-    PHASE_WAITING_SOURCE_PICK,
     PHASE_WAITING_TARGET_BIN_SWITCH,
     PHASE_WAITING_TARGET_PLACE,
     ROLE_SORTING_SOURCE_ARM,
     ROLE_SORTING_TARGET_ARM,
+    SMT_SOURCE_PICK_WAIT_CONTEXT_STATE,
 )
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext, SortingInboundContextError
 from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntent
@@ -91,6 +91,7 @@ class SmtSortingInboundFlowService:
                 "bin_code",
                 "bin_cell_index",
                 "material_identity_key",
+                "pkg_code",
                 "reel_thickness",
             )
             if command_payload.get(field_name) is None
@@ -137,7 +138,7 @@ class SmtSortingInboundFlowService:
         source_payload = self._source_pick_payload(payload_json, data, source_event_id)
         missing_fields = [
             field_name
-            for field_name in ("bin_code", "bin_cell_index", "material_identity_key", "reel_thickness")
+            for field_name in ("bin_code", "bin_cell_index", "material_identity_key", "pkg_code", "reel_thickness")
             if source_payload.get(field_name) is None
         ]
         if missing_fields:
@@ -150,7 +151,7 @@ class SmtSortingInboundFlowService:
         context_patch = self._source_pick_context_patch(ctx, source_payload)
         fact_payload = {key: value for key, value in source_payload.items() if value is not None}
         idempotency_key = (
-            f"MATERIAL_UNMOUNTED:{source_event_id}:{fact_payload.get('pkg_code') or fact_payload['material_identity_key']}:"
+            f"MATERIAL_UNMOUNTED:{source_event_id}:{fact_payload['pkg_code']}:"
             f"{fact_payload['bin_code']}:{fact_payload['bin_cell_index']}"
         )
         return [
@@ -158,6 +159,22 @@ class SmtSortingInboundFlowService:
                 fact_type="MATERIAL_UNMOUNTED",
                 payload=fact_payload,
                 idempotency_key=idempotency_key,
+            ),
+            RuntimeIntent.create_material_unit(
+                pkg_code=str(fact_payload["pkg_code"]),
+                material_identity_key=str(fact_payload["material_identity_key"]),
+                six_in_one={
+                    key: value
+                    for key, value in {
+                        "PkgID": fact_payload.get("pkg_code"),
+                        "material_identity_key": fact_payload.get("material_identity_key"),
+                        "reel_thickness": fact_payload.get("reel_thickness"),
+                        "source_bin_code": fact_payload.get("bin_code"),
+                        "source_cell_code": fact_payload.get("bin_cell_code") or fact_payload.get("bin_cell_index"),
+                    }.items()
+                    if value is not None
+                },
+                status=MaterialUnitStatus.IN_TRANSIT.value,
             ),
             RuntimeIntent.update_context(context_patch),
         ]
@@ -207,19 +224,31 @@ class SmtSortingInboundFlowService:
                     "scan_event_payload": payload_json,
                 },
             )
-            return [
-                RuntimeIntent.update_context(context_patch),
-                RuntimeIntent.mark_ng(
-                    reason_code=NG_REASON_LOCAL_SORTING_NG,
-                    message="扫码物料身份与源格出账物料身份不一致",
-                    payload=context_patch,
-                ),
-                RuntimeIntent.command(
-                    device_role=ROLE_SORTING_TARGET_ARM,
-                    action=COMMAND_NG_PLACE,
-                    payload=self._ng_place_command_payload(context_patch["sorting"]),
-                ),
-            ]
+            intents: list[RuntimeIntent] = []
+            current_material_unit_id = getattr(ctx.session, "current_material_unit_id", None)
+            if current_material_unit_id is not None:
+                intents.append(
+                    RuntimeIntent.update_material_unit_status(
+                        material_unit_id=int(current_material_unit_id),
+                        status=MaterialUnitStatus.NG.value,
+                    )
+                )
+            intents.extend(
+                [
+                    RuntimeIntent.update_context(context_patch),
+                    RuntimeIntent.mark_ng(
+                        reason_code=NG_REASON_LOCAL_SORTING_NG,
+                        message="扫码物料身份与源格出账物料身份不一致",
+                        payload=context_patch,
+                    ),
+                    RuntimeIntent.command(
+                        device_role=ROLE_SORTING_TARGET_ARM,
+                        action=COMMAND_NG_PLACE,
+                        payload=self._ng_place_command_payload(context_patch["sorting"]),
+                    ),
+                ]
+            )
+            return intents
 
         expected_thickness = _non_empty_str(current_material.get("reel_thickness_mm"))
         scan_thickness_was_provided = _payload_has_any(payload_json, data, "reel_thickness", "reel_thickness_mm")
@@ -288,14 +317,24 @@ class SmtSortingInboundFlowService:
             f"MATERIAL_MOUNTED:{source_event_id}:{mounted_payload.get('pkg_code') or mounted_payload['material_identity_key']}:"
             f"{mounted_payload['bin_code']}:{mounted_payload['bin_cell_index']}"
         )
-        return [
+        intents = [
             RuntimeIntent.resource_fact(
                 fact_type="MATERIAL_MOUNTED",
                 payload={key: value for key, value in mounted_payload.items() if value is not None},
                 idempotency_key=idempotency_key,
             ),
-            RuntimeIntent.update_context(self._target_success_context_patch(ctx)),
         ]
+        current_material_unit_id = getattr(ctx.session, "current_material_unit_id", None)
+        if current_material_unit_id is not None:
+            intents.append(
+                RuntimeIntent.update_material_unit_status(
+                    material_unit_id=int(current_material_unit_id),
+                    status=MaterialUnitStatus.COMPLETED.value,
+                    current_location=f"{pending_target.get('target_bin_code')}:{pending_target.get('target_cell_code')}",
+                )
+            )
+        intents.append(RuntimeIntent.complete(self._target_success_context_patch(ctx)))
+        return intents
 
     async def handle_target_place_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
         """目标端放盘失败后，按物理位置确定性进入人工处理或对账。"""
@@ -372,7 +411,9 @@ class SmtSortingInboundFlowService:
         scratch_context = SortingInboundContext.load_for_automatic(scratch_session)
         scratch_context.clear_pending_target_placement()
         scratch_context.close_current_material()
-        scratch_context.set_station_state(scan_platform=_SCAN_PLATFORM_EMPTY, business_phase=PHASE_WAITING_SOURCE_PICK)
+        scratch_context.set_station_state(
+            scan_platform=_SCAN_PLATFORM_EMPTY, business_phase=SMT_SOURCE_PICK_WAIT_CONTEXT_STATE
+        )
         patch = self._ng_root_patch(
             sorting=_dict_copy(scratch_session.context_json.get("sorting")),
             reason_message="本地 NG 放置成功",
@@ -387,7 +428,18 @@ class SmtSortingInboundFlowService:
                     "current_material": current_material,
                 },
             }
-        return [RuntimeIntent.update_context(patch)]
+        intents = []
+        current_material_unit_id = getattr(ctx.session, "current_material_unit_id", None)
+        if current_material_unit_id is not None:
+            intents.append(
+                RuntimeIntent.update_material_unit_status(
+                    material_unit_id=int(current_material_unit_id),
+                    status=MaterialUnitStatus.NG.value,
+                    clear_session_reference=True,
+                )
+            )
+        intents.append(RuntimeIntent.complete(patch))
+        return intents
 
     async def handle_ng_place_failed(self, _ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:
         """本地 NG 放置失败后，按物理位置确定性进入人工处理或对账。"""
@@ -414,24 +466,6 @@ class SmtSortingInboundFlowService:
             _payload_text(payload_json, data, "error_message", "message") or "NG 放置失败，需人工确认",
             payload={"ng_location_known": True, "error_detail": data},
         )
-
-    async def handle_session_complete_requested(self, ctx: PluginContext, _inbox: WorklineInbox) -> list[RuntimeIntent]:
-        """Session 完成前确认所有在途物料均已闭环。"""
-
-        try:
-            sorting_context = SortingInboundContext.load_for_automatic(getattr(ctx, "session", None))
-        except SortingInboundContextError as exc:
-            return self._block("SORTING_CONTEXT_INVALID", str(exc))
-        if _dict_copy(sorting_context.sorting.get("pending_target_placement")):
-            return self._block("SORTING_PENDING_TARGET_OPEN", "目标放盘尚未闭环，拒绝完成 Session")
-        if _dict_copy(sorting_context.sorting.get("current_material")):
-            return self._block("SORTING_CURRENT_MATERIAL_OPEN", "当前物料尚未关闭，拒绝完成 Session")
-
-        root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
-        scratch_session = SimpleNamespace(context_json=root_context)
-        scratch_context = SortingInboundContext.load_for_automatic(scratch_session)
-        scratch_context.set_station_state(business_phase=PHASE_COMPLETED)
-        return [RuntimeIntent.complete({"sorting": _dict_copy(scratch_session.context_json.get("sorting"))})]
 
     def _source_pick_context_patch(self, ctx: PluginContext, source_payload: dict[str, Any]) -> dict[str, Any]:
         root_context = _dict_copy(getattr(getattr(ctx, "session", None), "context_json", None))
@@ -513,15 +547,27 @@ class SmtSortingInboundFlowService:
             return [RuntimeIntent.update_context({"sorting": _dict_copy(scratch_session.context_json.get("sorting"))})]
 
         if reason_code == "PROJECTION_INCONSISTENT":
-            return self._block(
-                "SORTING_TARGET_CELL_RECONCILING",
-                "目标料格投影不一致，拒绝自动放盘",
-                payload={
-                    "current_material": current_material,
-                    "allocation_reason_code": reason_code,
-                    "capacity_evidence": _dict_copy(getattr(allocation, "capacity_evidence", None)),
-                },
+            intents: list[RuntimeIntent] = []
+            current_material_unit_id = getattr(getattr(ctx, "session", None), "current_material_unit_id", None)
+            if current_material_unit_id is not None:
+                intents.append(
+                    RuntimeIntent.update_material_unit_status(
+                        material_unit_id=int(current_material_unit_id),
+                        status=MaterialUnitStatus.RECONCILING.value,
+                    )
+                )
+            intents.extend(
+                self._block(
+                    "SORTING_TARGET_CELL_RECONCILING",
+                    "目标料格投影不一致，拒绝自动放盘",
+                    payload={
+                        "current_material": current_material,
+                        "allocation_reason_code": reason_code,
+                        "capacity_evidence": _dict_copy(getattr(allocation, "capacity_evidence", None)),
+                    },
+                )
             )
+            return intents
 
         return self._block(
             "SORTING_TARGET_ALLOCATION_REJECTED",
@@ -624,7 +670,7 @@ class SmtSortingInboundFlowService:
         sorting_context.clear_pending_target_placement()
         sorting_context.close_current_material()
         sorting_context.clear_allocation_rejection()
-        sorting_context.set_station_state(scan_platform=_SCAN_PLATFORM_EMPTY, business_phase=PHASE_WAITING_SOURCE_PICK)
+        sorting_context.set_station_state(scan_platform=_SCAN_PLATFORM_EMPTY)
         return {"sorting": _dict_copy(scratch_session.context_json.get("sorting"))}
 
     async def _active_target_snapshot(

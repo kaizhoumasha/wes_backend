@@ -9,16 +9,15 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 from src.app.resource.models import RackKind
+from src.app.workline.models.material_unit import MaterialUnitStatus
 from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
-    EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_SOURCE_PICK_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
     PHASE_WAITING_SCAN,
-    PHASE_WAITING_SOURCE_PICK,
     PHASE_WAITING_TARGET_BIN_SWITCH,
     PHASE_WAITING_TARGET_PLACE,
     ROLE_SORTING_SCAN_PLATFORM,
@@ -26,6 +25,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     ROLE_SORTING_TARGET_ARM,
     ROLE_SORTING_WORKSTATION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
+    SMT_SOURCE_PICK_WAIT_CONTEXT_STATE,
 )
 from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
 from src.workline_plugins.smt_sorting_inbound.plugin import SmtSortingInboundPlugin
@@ -112,10 +112,9 @@ def test_smt_sorting_inbound_manifest_declares_command_and_event_roles() -> None
         COMMAND_NG_PLACE: (ROLE_SORTING_TARGET_ARM,),
     }
     assert event_roles[EVENT_WORKING_BIN_SCAN] == (ROLE_SORTING_SCAN_PLATFORM,)
-    assert event_roles[EVENT_SESSION_COMPLETE_REQUESTED] == (ROLE_SORTING_WORKSTATION,)
     assert event_categories[EVENT_WORKING_BIN_SCAN] == EventCategory.ENTRY_DEVICE
-    assert event_categories[EVENT_SESSION_COMPLETE_REQUESTED] == EventCategory.ENTRY_DEVICE
     assert EVENT_SOURCE_PICK_REQUESTED not in event_roles
+    assert "SORTING_SESSION_COMPLETE_REQUESTED" not in event_roles
     assert all(category is not EventCategory.COMMAND_RESULT for category in event_categories.values())
     assert {
         "SORTING_SOURCE_PICK_RESULT",
@@ -185,7 +184,6 @@ def test_smt_sorting_inbound_topology_edges_follow_physical_process() -> None:
 
 
 def test_smt_sorting_inbound_real_manifest_validates_seed_like_device_capabilities() -> None:
-    workstation_supported_events = [EVENT_SESSION_COMPLETE_REQUESTED]
     topology = WorklineTopologyView.from_devices(
         [
             _topology_device(
@@ -210,12 +208,11 @@ def test_smt_sorting_inbound_real_manifest_validates_seed_like_device_capabiliti
                 5,
                 code="SORT-WORKSTATION",
                 role=ROLE_SORTING_WORKSTATION,
-                supports_event_types=workstation_supported_events,
+                supports_event_types=[],
             ),
         ]
     )
 
-    assert EVENT_SOURCE_PICK_REQUESTED not in workstation_supported_events
     validate_topology_manifest(SmtSortingInboundPlugin.manifest, topology)
 
 
@@ -433,22 +430,6 @@ def _working_bin_scan_inbox(data: dict[str, Any] | None = None) -> WorklineInbox
     )
 
 
-def _session_complete_inbox() -> WorklineInbox:
-    return cast(
-        "WorklineInbox",
-        SimpleNamespace(
-            id=2005,
-            kind="DEVICE_EVENT",
-            payload_json={
-                "event_id": "COMPLETE-EVENT-001",
-                "device_code": "SORT-WORKSTATION",
-                "event_type": EVENT_SESSION_COMPLETE_REQUESTED,
-                "data": {},
-            },
-        ),
-    )
-
-
 def _target_place_result_inbox(
     *,
     result: str = "SUCCESS",
@@ -611,7 +592,11 @@ async def test_source_pick_success_emits_unmounted_fact_before_opening_current_m
 
     intents = await plugin.on_command_result(_ctx(), _source_pick_success_inbox())
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+    ]
     unmounted_intent = intents[0]
     assert unmounted_intent.action == "MATERIAL_UNMOUNTED"
     assert unmounted_intent.payload_json == {
@@ -626,13 +611,29 @@ async def test_source_pick_success_emits_unmounted_fact_before_opening_current_m
         "source_event_id": "CMD-SOURCE-PICK-001",
     }
 
-    sorting_patch = intents[1].context_patch["sorting"]
+    assert intents[1].payload_json["pkg_code"] == "PKG-001"
+    assert intents[1].payload_json["material_identity_key"] == "mid:pkg-001"
+    assert intents[1].payload_json["status"] == MaterialUnitStatus.IN_TRANSIT.value
+
+    sorting_patch = intents[2].context_patch["sorting"]
     assert sorting_patch["current_material"]["source_bin_code"] == "SRC-BIN-01"
     assert sorting_patch["current_material"]["source_cell_code"] == "A01"
     assert sorting_patch["current_material"]["material_identity_key"] == "mid:pkg-001"
     assert sorting_patch["current_material"]["reel_thickness_mm"] == "7.125"
     assert sorting_patch["stations"]["scan_platform"] == "OCCUPIED"
     assert sorting_patch["business_phase"] == PHASE_WAITING_SCAN
+
+
+@pytest.mark.asyncio
+async def test_source_pick_success_without_pkg_code_blocks_material_unit_creation() -> None:
+    plugin = SmtSortingInboundPlugin()
+    inbox = _source_pick_success_inbox({"pkg_code": None})
+
+    intents = await plugin.on_command_result(_ctx(), inbox)
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_SOURCE_PICK_PAYLOAD_INVALID"
+    assert intents[0].payload_json["missing_fields"] == ["pkg_code"]
 
 
 @pytest.mark.asyncio
@@ -691,6 +692,17 @@ async def test_source_pick_requested_invalid_payload_returns_plugin_contract_blo
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
     assert intents[0].reason_code == "PLUGIN_CONTRACT_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_source_pick_requested_without_pkg_code_blocks_command_dispatch() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_device_event(_ctx(), _source_pick_requested_inbox({"pkg_code": None}))
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "PLUGIN_CONTRACT_INVALID"
+    assert intents[0].payload_json["missing_fields"] == ["pkg_code"]
 
 
 @pytest.mark.asyncio
@@ -892,37 +904,49 @@ async def test_working_bin_scan_missing_or_invalid_thickness_blocks_automatic_pl
 async def test_working_bin_scan_projection_inconsistent_blocks_target_cell() -> None:
     policy = RecordingAllocationPolicy(_rejected_result("PROJECTION_INCONSISTENT"))
     plugin = _plugin_with_policy_and_snapshot(policy, {"snapshot_version": "snap-target-001", "cells": []})
+    ctx = _ctx(_sorting_context_with_current_material())
+    ctx.session.current_material_unit_id = 77
 
-    intents = await plugin.on_device_event(_ctx(_sorting_context_with_current_material()), _working_bin_scan_inbox())
+    intents = await plugin.on_device_event(ctx, _working_bin_scan_inbox())
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
-    assert intents[0].reason_code == "SORTING_TARGET_CELL_RECONCILING"
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
+        RuntimeIntentKind.BLOCK,
+    ]
+    assert intents[0].payload_json["material_unit_id"] == 77
+    assert intents[0].payload_json["status"] == MaterialUnitStatus.RECONCILING.value
+    assert intents[1].reason_code == "SORTING_TARGET_CELL_RECONCILING"
 
 
 @pytest.mark.asyncio
 async def test_working_bin_scan_identity_mismatch_sends_reel_to_local_ng() -> None:
     plugin = SmtSortingInboundPlugin()
+    ctx = _ctx(_sorting_context_with_current_material())
+    ctx.session.current_material_unit_id = 77
 
     intents = await plugin.on_device_event(
-        _ctx(_sorting_context_with_current_material()),
+        ctx,
         _working_bin_scan_inbox({"material_identity_key": "mid:actual-other"}),
     )
 
     assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
         RuntimeIntentKind.UPDATE_CONTEXT,
         RuntimeIntentKind.MARK_NG,
         RuntimeIntentKind.COMMAND,
     ]
-    sorting_patch = intents[0].context_patch["sorting"]
+    assert intents[0].payload_json["material_unit_id"] == 77
+    assert intents[0].payload_json["status"] == MaterialUnitStatus.NG.value
+    sorting_patch = intents[1].context_patch["sorting"]
     assert "pending_target_placement" not in sorting_patch
     assert sorting_patch["current_material"]["ng_status"] == "MOVING_TO_NG"
     assert sorting_patch["current_material"]["actual_material_identity_key"] == "mid:actual-other"
-    assert intents[0].context_patch["scan_ng_reason_code"] == "LOCAL_SORTING_NG"
-    assert intents[1].reason_code == "LOCAL_SORTING_NG"
-    assert intents[2].action == COMMAND_NG_PLACE
-    assert intents[2].device_role == ROLE_SORTING_TARGET_ARM
+    assert intents[1].context_patch["scan_ng_reason_code"] == "LOCAL_SORTING_NG"
+    assert intents[2].reason_code == "LOCAL_SORTING_NG"
+    assert intents[3].action == COMMAND_NG_PLACE
+    assert intents[3].device_role == ROLE_SORTING_TARGET_ARM
     assert "NG_ARM" not in {
-        intents[2].device_role,
+        intents[3].device_role,
         *_command_role_map(SmtSortingInboundPlugin.manifest)[COMMAND_NG_PLACE],
     }
 
@@ -942,10 +966,16 @@ async def test_target_place_success_requires_pending_target_placement() -> None:
 @pytest.mark.asyncio
 async def test_target_place_success_mounts_material_and_releases_scan_platform() -> None:
     plugin = SmtSortingInboundPlugin()
+    ctx = _ctx(_sorting_context_with_pending_target())
+    ctx.session.current_material_unit_id = 77
 
-    intents = await plugin.on_command_result(_ctx(_sorting_context_with_pending_target()), _target_place_result_inbox())
+    intents = await plugin.on_command_result(ctx, _target_place_result_inbox())
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
+        RuntimeIntentKind.COMPLETE,
+    ]
     mounted_intent = intents[0]
     assert mounted_intent.action == "MATERIAL_MOUNTED"
     assert mounted_intent.payload_json["bin_code"] == "TGT-BIN-01"
@@ -954,11 +984,15 @@ async def test_target_place_success_mounts_material_and_releases_scan_platform()
     assert mounted_intent.payload_json["pkg_code"] == "PKG-001"
     assert mounted_intent.payload_json["reel_thickness"] == "7.125"
 
-    sorting_patch = intents[1].context_patch["sorting"]
+    assert intents[1].payload_json["material_unit_id"] == 77
+    assert intents[1].payload_json["status"] == MaterialUnitStatus.COMPLETED.value
+    assert intents[1].payload_json["current_location"] == "TGT-BIN-01:B02"
+
+    sorting_patch = intents[2].context_patch["sorting"]
     assert "pending_target_placement" not in sorting_patch
     assert "current_material" not in sorting_patch
     assert sorting_patch["stations"]["scan_platform"] == "EMPTY"
-    assert sorting_patch["business_phase"] == PHASE_WAITING_SOURCE_PICK
+    assert sorting_patch.get("business_phase") != SMT_SOURCE_PICK_WAIT_CONTEXT_STATE
 
 
 @pytest.mark.asyncio
@@ -977,11 +1011,19 @@ async def test_target_place_success_preserves_handoff_source_pick_request_for_te
         "route_evidence": {},
     }
     context["sorting"]["source_pick_request"] = source_pick_request
+    ctx = _ctx(context)
+    ctx.session.current_material_unit_id = 77
 
-    intents = await plugin.on_command_result(_ctx(context), _target_place_result_inbox())
+    intents = await plugin.on_command_result(ctx, _target_place_result_inbox())
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
-    sorting_patch = intents[1].context_patch["sorting"]
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
+        RuntimeIntentKind.COMPLETE,
+    ]
+    assert intents[1].payload_json["material_unit_id"] == 77
+    assert intents[1].payload_json["status"] == MaterialUnitStatus.COMPLETED.value
+    sorting_patch = intents[2].context_patch["sorting"]
     assert sorting_patch["source_pick_request"] == source_pick_request
     assert "pending_target_placement" not in sorting_patch
     assert "current_material" not in sorting_patch
@@ -1020,14 +1062,22 @@ async def test_target_place_failure_with_unknown_location_enters_reconciliation(
 @pytest.mark.asyncio
 async def test_ng_place_success_closes_material_and_keeps_ng_return_context() -> None:
     plugin = SmtSortingInboundPlugin()
+    ctx = _ctx(_sorting_context_with_ng_current_material())
+    ctx.session.current_material_unit_id = 88
 
     intents = await plugin.on_command_result(
-        _ctx(_sorting_context_with_ng_current_material()),
+        ctx,
         _ng_place_result_inbox(data={"ng_location": "NG-01", "ng_reason_code": "LOCAL_SORTING_NG"}),
     )
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
-    patch = intents[0].context_patch
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
+        RuntimeIntentKind.COMPLETE,
+    ]
+    assert intents[0].payload_json["material_unit_id"] == 88
+    assert intents[0].payload_json["status"] == MaterialUnitStatus.NG.value
+    assert intents[0].payload_json["clear_session_reference"] is True
+    patch = intents[1].context_patch
     assert patch["scan_ng_reason_code"] == "LOCAL_SORTING_NG"
     assert patch["ng_reason"] == "LOCAL_SORTING_NG"
     assert "current_material" not in patch["sorting"]
@@ -1050,14 +1100,22 @@ async def test_ng_place_success_writes_terminal_marker_for_handoff_session() -> 
         "target_rack_position_code": "TARGET_STATION",
         "route_evidence": {},
     }
+    ctx = _ctx(context)
+    ctx.session.current_material_unit_id = 88
 
     intents = await plugin.on_command_result(
-        _ctx(context),
+        ctx,
         _ng_place_result_inbox(data={"ng_location": "NG-01", "ng_reason_code": "LOCAL_SORTING_NG"}),
     )
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.UPDATE_CONTEXT]
-    patch = intents[0].context_patch
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
+        RuntimeIntentKind.COMPLETE,
+    ]
+    assert intents[0].payload_json["material_unit_id"] == 88
+    assert intents[0].payload_json["status"] == MaterialUnitStatus.NG.value
+    assert intents[0].payload_json["clear_session_reference"] is True
+    patch = intents[1].context_patch
     assert patch["smt_inbound_handoff_terminal_result"]["terminal_status"] == "SKIPPED"
     terminal_evidence = patch["smt_inbound_handoff_terminal_result"]["terminal_evidence"]
     assert terminal_evidence["ng_command_payload"]["data"]["ng_location"] == "NG-01"
@@ -1120,38 +1178,8 @@ async def test_ng_place_failure_with_unknown_location_enters_reconciliation() ->
 
 
 @pytest.mark.asyncio
-async def test_session_completion_blocks_when_current_material_is_open() -> None:
+async def test_smt_sorting_inbound_plugin_has_no_manual_session_complete_handler() -> None:
     plugin = SmtSortingInboundPlugin()
 
-    intents = await plugin.on_device_event(_ctx(_sorting_context_with_current_material()), _session_complete_inbox())
-
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
-    assert intents[0].reason_code == "SORTING_CURRENT_MATERIAL_OPEN"
-
-
-@pytest.mark.asyncio
-async def test_session_completion_blocks_when_pending_target_exists() -> None:
-    plugin = SmtSortingInboundPlugin()
-
-    intents = await plugin.on_device_event(_ctx(_sorting_context_with_pending_target()), _session_complete_inbox())
-
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
-    assert intents[0].reason_code == "SORTING_PENDING_TARGET_OPEN"
-
-
-@pytest.mark.asyncio
-async def test_session_completion_allows_closed_target_or_local_ng_context() -> None:
-    plugin = SmtSortingInboundPlugin()
-    closed_context = {
-        "sorting": {
-            "context_schema_version": 1,
-            "stations": {"scan_platform": "EMPTY"},
-            "business_phase": PHASE_WAITING_SOURCE_PICK,
-        },
-        "ng_reason": "LOCAL_SORTING_NG",
-    }
-
-    intents = await plugin.on_device_event(_ctx(closed_context), _session_complete_inbox())
-
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.COMPLETE]
-    assert intents[0].context_patch["sorting"]["business_phase"] == "COMPLETED"
+    assert not hasattr(plugin, "handle_session_complete_requested")
+    assert "SORTING_SESSION_COMPLETE_REQUESTED" not in _event_role_map(SmtSortingInboundPlugin.manifest)

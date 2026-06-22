@@ -146,3 +146,71 @@ def test_workline_activation_default_migration_downgrade_restores_previous_serve
 
     assert "server_default=None" in downgrade_body
     assert "server_default=sa.true()" not in downgrade_body
+
+
+def test_workline_contract_version_migration_syncs_persisted_plugin_snapshots() -> None:
+    migration_paths = sorted(Path("migrations/versions").glob("*_sync_workline_plugin_contract_versions.py"))
+
+    assert len(migration_paths) == 1
+    migration_text = migration_paths[0].read_text(encoding="utf-8")
+    upgrade_body = migration_text.split("def upgrade() -> None:", maxsplit=1)[1].split(
+        "def downgrade() -> None:", maxsplit=1
+    )[0]
+    downgrade_body = migration_text.split("def downgrade() -> None:", maxsplit=1)[1]
+
+    assert "UPDATE wes_biz.work_lines" in upgrade_body
+    assert "UPDATE wes_biz.workline_sessions" in upgrade_body
+    assert "contract_version = 'rough_sorter.v2'" in upgrade_body
+    assert "contract_version = '2026-06-21.p1'" in upgrade_body
+    assert "contract_version = 'rough_sorter.v1'" in downgrade_body
+    assert "contract_version = '2026-06-01.p0'" in downgrade_body
+    assert "status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')" in migration_text
+
+
+def test_material_units_migration_upgrade_creates_table_column_and_indexes() -> None:
+    """material_units 迁移 upgrade 必须建表 + CHECK + 3 索引 + workline_sessions 追溯列。"""
+    migration = Path("migrations/versions/20260621_1018_e680301d30c8_add_material_units_reel_root_entity.py")
+    migration_text = migration.read_text(encoding="utf-8")
+    upgrade_body = migration_text.split("def upgrade() -> None:", maxsplit=1)[1].split(
+        "def downgrade() -> None:", maxsplit=1
+    )[0]
+
+    # 建表与字段
+    assert 'op.create_table(\n        "material_units"' in upgrade_body
+    assert 'sa.Column("pkg_code", sa.String(200), nullable=False' in upgrade_body
+    assert 'sa.Column("material_identity_key", sa.String(300), nullable=False' in upgrade_body
+    assert 'sa.Column("six_in_one", sa.JSON()' in upgrade_body
+    assert 'sa.Column(\n            "status",\n            sa.String(50)' in upgrade_body
+    assert 'server_default="IN_TRANSIT"' in upgrade_body
+    assert 'sa.Column("current_location", sa.String(200)' in upgrade_body
+    assert 'sa.Column("current_session_id", sa.BigInteger()' in upgrade_body
+    assert 'sa.Column("reconciliation_from_state", sa.String(50)' in upgrade_body
+    # CHECK 约束（命名约定渲染后与 model 一致：ck_material_units_status）
+    assert "ck_material_units_status" in upgrade_body
+    assert "status IN ('IN_TRANSIT', 'STORED', 'COMPLETED', 'NG', 'RECONCILING')" in upgrade_body
+    # 3 个索引（pkg_code 唯一）
+    assert 'op.create_index("ix_material_units_pkg_code", "material_units", ["pkg_code"], unique=True' in upgrade_body
+    assert 'op.create_index("ix_material_units_status"' in upgrade_body
+    assert 'op.create_index(\n        "ix_material_units_current_session_id"' in upgrade_body
+    # workline_sessions 追溯列 + 索引
+    assert 'op.add_column(\n        "workline_sessions",\n        sa.Column("current_material_unit_id"' in upgrade_body
+    assert 'op.create_index(\n        "ix_workline_sessions_current_material_unit_id"' in upgrade_body
+
+
+def test_material_units_migration_downgrade_drops_table_and_column_without_context_json_damage() -> None:
+    """material_units 迁移 downgrade 必须 drop 表 + 列 + 索引，且不触碰 context_json。"""
+    migration = Path("migrations/versions/20260621_1018_e680301d30c8_add_material_units_reel_root_entity.py")
+    migration_text = migration.read_text(encoding="utf-8")
+    downgrade_body = migration_text.split("def downgrade() -> None:", maxsplit=1)[1]
+
+    # 先 drop session 列/索引，再 drop material_units 索引/表（顺序正确）
+    assert 'op.drop_index("ix_workline_sessions_current_material_unit_id"' in downgrade_body
+    assert 'op.drop_column("workline_sessions", "current_material_unit_id"' in downgrade_body
+    assert 'op.drop_index("ix_material_units_current_session_id"' in downgrade_body
+    assert 'op.drop_index("ix_material_units_status"' in downgrade_body
+    assert 'op.drop_index("ix_material_units_pkg_code"' in downgrade_body
+    assert 'op.drop_table("material_units"' in downgrade_body
+    # 不丢 context_json 原始信息
+    assert "context_json" not in downgrade_body
+    # downgrade 不得误删 material_units 之外的表
+    assert downgrade_body.count("op.drop_table(") == 1

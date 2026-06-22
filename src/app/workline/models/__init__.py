@@ -45,6 +45,11 @@ from .integration_debug import (
     IntegrationDebugNextAction,
     IntegrationDebugStageCheck,
 )
+from .material_unit import (
+    MaterialUnit,
+    MaterialUnitBase,
+    MaterialUnitStatus,
+)
 from .rack_position import (
     WorklineRackPosition,
     WorklineRackPositionBase,
@@ -170,6 +175,9 @@ __all__ = [
     "IntegrationDebugStageCheck",
     "LineType",
     "MaterialDisposition",
+    "MaterialUnit",
+    "MaterialUnitBase",
+    "MaterialUnitStatus",
     "NgReasonSource",
     "NgReturnItem",
     "NgReturnItemStatus",
