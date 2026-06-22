@@ -602,9 +602,7 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
     if not getattr(ctx["orch_result"], "complete", False):
         return False
     session = ctx["session"]
-    if string_value(getattr(session, "status", None)) == SessionStatus.COMPLETED.value:
-        await _emit_completion_timeline(ctx)
-        return True
+    session_already_completed = string_value(getattr(session, "status", None)) == SessionStatus.COMPLETED.value
     try:
         _ = await ng_return_item_service.record_completed_ng_flow(
             ctx["db"],
@@ -615,6 +613,9 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
             occurred_at=ctx["now"],
         )
     except NgMaterialConflictError as exc:
+        if session_already_completed:
+            await _emit_completion_timeline(ctx)
+            return True
         evidence = dict(exc.evidence)
         source_event_id = _ng_material_conflict_source_event_id(
             exc=exc,
@@ -657,6 +658,9 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
             status=TimelineStatus.PENDING,
             message="NG 物料已存在不同来源回流项，进入人工处理",
         )
+        return True
+    if session_already_completed:
+        await _emit_completion_timeline(ctx)
         return True
     workline_session_lifecycle_service.complete(session, occurred_at=ctx["now"])
     await WorklineSessionRepository().persist_completed(

@@ -33,7 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 修复料盘 `six_in_one` 跨 Session handoff 复用时被 SMT 瘦构造 dict 覆盖的数据丢失，改为合并保留已有字段。
 - 修复 NG 料盘在 `NgMaterialConflictError` 进 MANUAL_HOLD 后跨 inbox 批次恢复到 COMPLETE 时的永久孤儿，待清理 ID 持久化到 `session.context_json`。
 - 新增跨线并发 CREATE_MATERIAL_UNIT 所有权拒绝：料盘仍被另一非终态 Session 持有时拒绝静默窃取，复用路径 `select ... with_for_update()` 行锁消除 TOCTOU。
-- 已 COMPLETED 的 Session 重入完成收尾时跳过 `record_completed_ng_flow`，避免重复 NG 记账。
+- 已 COMPLETED 的 Session 重入完成收尾时仍调用 `record_completed_ng_flow` 记账（NG 料盘完成需写 `ng_return_items`），仅在 `NgMaterialConflictError` 冲突或正常完成分支按已 COMPLETED 标志早退，避免重复 lifecycle/持久化。
+- SMT handoff claim 路径补料盘所有权检查：claim 时若料盘仍被另一非终态 Session 持有则拒绝静默窃取，与 `CREATE_MATERIAL_UNIT` 路径对称；`select ... with_for_update()` 锁行消除 TOCTOU。
 - `RuntimeIntent` 的料盘状态在构造时 fail-fast 预检 `MaterialUnitStatus`，畸形 `material_unit_id` 不再崩整个意图批次。
 
 ## [0.7.3.0] - 2026-06-18

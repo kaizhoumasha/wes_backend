@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from src.app.resource.models import RackKind
 from src.app.workline.domain.services.smt_inbound_handoff_reason import (
@@ -24,6 +24,12 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class EcsStatusProbe(Protocol):
+    """ECS 状态探测依赖。"""
+
+    async def __call__(self, db: AsyncSession, /, *, workline: object, route: object) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -71,7 +77,7 @@ class SmtInboundHandoffRouteService:
         *,
         station_lease_service: object | None = None,
         session_repository: object | None = None,
-        ecs_status_probe: object | None = None,
+        ecs_status_probe: EcsStatusProbe | None = None,
         reason_catalog: SmtInboundHandoffReasonCatalog = SMT_INBOUND_HANDOFF_REASON_CATALOG,
         retry_delay_seconds: int = 30,
     ) -> None:

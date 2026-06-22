@@ -631,15 +631,25 @@ async def test_claim_creates_internal_source_pick_inbox_with_session_workline_bu
 @pytest.mark.asyncio
 async def test_claim_reuses_material_unit_by_pkg_code_and_links_smt_session(db_session: Any) -> None:
     workline = _target_workline("WL-SMT-SORT-MATERIAL-UNIT")
+    owner_session = WorklineSession(
+        session_code="SESSION-ROUGH-SORT-MATERIAL-UNIT",
+        workline_id=1,
+        plugin_key="rough_sorter",
+        run_mode="AUTO",
+        status=SessionStatus.COMPLETED,
+        context_json={},
+    )
     material_unit = MaterialUnit(
         pkg_code="PKG-A",
         material_identity_key="MAT-A",
         six_in_one={"PkgID": "PKG-A"},
         status=MaterialUnitStatus.IN_TRANSIT,
         current_location="ROUGH-SORTER-01",
-        current_session_id=501,
     )
     db_session.add(workline)
+    db_session.add(owner_session)
+    await db_session.flush()
+    material_unit.current_session_id = owner_session.id
     db_session.add(material_unit)
     await db_session.flush()
     service = SmtInboundHandoffService(route_service=_RouteService(_selected_route(workline)))
@@ -660,6 +670,70 @@ async def test_claim_reuses_material_unit_by_pkg_code_and_links_smt_session(db_s
     assert (
         await db_session.execute(select(func.count()).select_from(MaterialUnit).where(MaterialUnit.pkg_code == "PKG-A"))
     ).scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_claim_rejects_material_unit_owned_by_active_session(db_session: Any) -> None:
+    workline = _target_workline("WL-SMT-SORT-MATERIAL-UNIT-ACTIVE")
+    owner_session = WorklineSession(
+        session_code="SESSION-ROUGH-SORT-MATERIAL-UNIT-ACTIVE",
+        workline_id=1,
+        plugin_key="rough_sorter",
+        run_mode="AUTO",
+        status=SessionStatus.RUNNING,
+        context_json={},
+    )
+    material_unit = MaterialUnit(
+        pkg_code="PKG-A",
+        material_identity_key="MAT-A",
+        six_in_one={"PkgID": "PKG-A"},
+        status=MaterialUnitStatus.IN_TRANSIT,
+        current_location="ROUGH-SORTER-01",
+    )
+    db_session.add(workline)
+    db_session.add(owner_session)
+    await db_session.flush()
+    material_unit.current_session_id = owner_session.id
+    db_session.add(material_unit)
+    await db_session.flush()
+    service = SmtInboundHandoffService(route_service=_RouteService(_selected_route(workline)))
+    _demand, item = await _ready_demand(db_session, service, rack_release_id="claim-material-unit-active-owner")
+
+    with pytest.raises(ValueError, match="refuse silent takeover"):
+        await service.claim_next_source_item(db_session, trace_id="trace-claim-material-unit-active-owner")
+
+    await db_session.refresh(material_unit)
+    await db_session.refresh(item)
+
+    assert material_unit.current_session_id == owner_session.id
+    assert item.sorting_session_id is None
+
+
+@pytest.mark.asyncio
+async def test_claim_rejects_material_unit_with_unknown_owner_session(db_session: Any) -> None:
+    workline = _target_workline("WL-SMT-SORT-MATERIAL-UNIT-UNKNOWN-OWNER")
+    material_unit = MaterialUnit(
+        pkg_code="PKG-A",
+        material_identity_key="MAT-A",
+        six_in_one={"PkgID": "PKG-A"},
+        status=MaterialUnitStatus.IN_TRANSIT,
+        current_location="ROUGH-SORTER-01",
+        current_session_id=999999,
+    )
+    db_session.add(workline)
+    db_session.add(material_unit)
+    await db_session.flush()
+    service = SmtInboundHandoffService(route_service=_RouteService(_selected_route(workline)))
+    _demand, item = await _ready_demand(db_session, service, rack_release_id="claim-material-unit-unknown-owner")
+
+    with pytest.raises(ValueError, match="refuse silent takeover"):
+        await service.claim_next_source_item(db_session, trace_id="trace-claim-material-unit-unknown-owner")
+
+    await db_session.refresh(material_unit)
+    await db_session.refresh(item)
+
+    assert material_unit.current_session_id == 999999
+    assert item.sorting_session_id is None
 
 
 @pytest.mark.asyncio

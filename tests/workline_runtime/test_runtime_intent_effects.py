@@ -1357,7 +1357,39 @@ async def test_complete_intent_skips_ng_flow_for_already_completed_session(
     await RuntimeIntentEffectApplier().apply(ctx, [RuntimeIntent.complete({"material_moved": True})])
 
     assert session.status == SessionStatus.COMPLETED.value
-    record_ng_flow.assert_not_awaited()
+    record_ng_flow.assert_awaited_once()
+    create_hold.assert_not_awaited()
+    emit_timeline.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_complete_intent_records_ng_flow_for_already_completed_ng_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(
+        status=SessionStatus.COMPLETED.value,
+        context_json={
+            "ng_reason": "LOCAL_SORTING_NG",
+            "source_payload": {
+                "current_material": {"pkg_code": "PKG-001", "material_identity_key": "MAT:PKG-001"},
+                "ng_command_payload": {"command_code": "CMD-NG-001", "result": "SUCCESS"},
+            },
+        },
+    )
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    emit_timeline = AsyncMock()
+    record_ng_flow = AsyncMock(return_value=SimpleNamespace(id=8801))
+    create_hold = AsyncMock()
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+    monkeypatch.setattr(runtime_hold_creation_service, "create_for_resource_reconciliation", create_hold)
+
+    await RuntimeIntentEffectApplier().apply(ctx, [RuntimeIntent.complete({"material_moved": True})])
+
+    assert session.status == SessionStatus.COMPLETED.value
+    record_ng_flow.assert_awaited_once()
     create_hold.assert_not_awaited()
     emit_timeline.assert_awaited_once()
 

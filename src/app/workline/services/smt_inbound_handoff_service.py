@@ -44,6 +44,12 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
 )
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext
 
+_TERMINAL_MATERIAL_OWNER_SESSION_STATUSES = {
+    SessionStatus.COMPLETED.value,
+    SessionStatus.FAILED.value,
+    SessionStatus.CANCELLED.value,
+}
+
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1624,10 +1630,25 @@ class SmtInboundHandoffService:
         session_id = getattr(session, "id", None)
         if pkg_code is None or not isinstance(session_id, int):
             return
-        result = await db.execute(select(MaterialUnit).where(MaterialUnit.pkg_code == pkg_code).limit(1))
+        material_columns = cast("Any", MaterialUnit).__table__.c
+        result = await db.execute(
+            select(MaterialUnit).where(material_columns.pkg_code == pkg_code).limit(1).with_for_update()
+        )
         material_unit = result.scalar_one_or_none()
         if material_unit is None:
             return
+        owner_session_id = getattr(material_unit, "current_session_id", None)
+        if isinstance(owner_session_id, int) and owner_session_id != session_id:
+            session_columns = cast("Any", WorklineSession).__table__.c
+            owner_status_result = await db.execute(
+                select(session_columns.status).where(session_columns.id == owner_session_id).limit(1)
+            )
+            owner_status = enum_value(owner_status_result.scalars().first())
+            if owner_status not in _TERMINAL_MATERIAL_OWNER_SESSION_STATUSES:
+                raise ValueError(
+                    f"material unit {getattr(material_unit, 'id', None)} (pkg_code={pkg_code}) is still owned by "
+                    f"non-terminal session {owner_session_id} (status={owner_status}), refuse silent takeover"
+                )
         session.current_material_unit_id = cast("int", material_unit.id)
         material_unit.current_session_id = session_id
         db.add(session)
