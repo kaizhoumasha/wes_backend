@@ -33,7 +33,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
-    EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
@@ -380,7 +379,7 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
         COMMAND_NG_PLACE,
     ]
     assert capabilities_by_code["SORT-SCAN-PLATFORM-01"]["supports_event_types"] == [EVENT_WORKING_BIN_SCAN]
-    assert capabilities_by_code["SORT-WORKSTATION-01"]["supports_event_types"] == [EVENT_SESSION_COMPLETE_REQUESTED]
+    assert capabilities_by_code["SORT-WORKSTATION-01"]["supports_event_types"] == []
     assert {device.host for device in devices} == {"mock_ecs"}
     assert {device.port for device in devices} == {8010}
     assert {device.protocol for device in devices} == {DeviceProtocol.HTTP}

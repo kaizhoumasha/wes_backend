@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import JSON, Column, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
@@ -355,6 +355,20 @@ class PipelineQueue(BaseModel):
     role: str = Field(description="队列角色")
     capacity: int | str = Field(description="队列容量，支持正整数或 MANY")
     order_policy: str = Field(default="FIFO", description="队列排序策略")
+
+    @field_validator("capacity")
+    @classmethod
+    def _validate_capacity(cls, value: int | str) -> int | str:
+        """收紧契约：仅接受正整数或字面量 MANY，拒绝 bool/0/负数/其它字符串。"""
+        if isinstance(value, bool):
+            raise TypeError("capacity must be a positive integer or 'MANY'")
+        if isinstance(value, int):
+            if value <= 0:
+                raise ValueError("capacity must be a positive integer or 'MANY'")
+            return value
+        if value == "MANY":
+            return value
+        raise ValueError("capacity must be a positive integer or 'MANY'")
 
 
 class WorkLinePluginOption(BaseModel):

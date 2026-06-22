@@ -13,6 +13,7 @@ import yaml
 from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 
+from src.app.workline.models.material_unit import MaterialUnitStatus
 from src.workline_runtime.runtime_events import assert_not_reserved_runtime_event
 
 logger = logging.getLogger(__name__)
@@ -44,11 +45,23 @@ class EventCategory(str, Enum):
 
 _ALLOWED_RACK_KINDS = frozenset({"SINGLE_LAYER", "FIVE_LAYER"})
 _ALLOWED_PIPELINE_ORDER_POLICIES = frozenset({"FIFO", "LIFO", "PRIORITY"})
+# pipeline_queues.role 白名单：覆盖设计文档队列角色（Buffer/Gate/Wait/Workstation/Exception）
+# 与现有 manifest/template 使用的 ENTRY/SCAN/WORK 等同义角色。
+_ALLOWED_PIPELINE_QUEUE_ROLES = frozenset(
+    {"BUFFER", "GATE", "WAIT", "WORKSTATION", "EXCEPTION", "ENTRY", "SCAN", "WORK"}
+)
+# state_machines.granularity 白名单：当前唯一合法值，新增需同步设计文档。
+_ALLOWED_STATE_MACHINE_GRANULARITIES = frozenset({"MATERIAL_LIFECYCLE"})
 _MATERIAL_UNIT_SESSION_TYPE = "MATERIAL_UNIT"
 _MATERIAL_UNIT_PHYSICAL_FORM = "REEL"
 _MATERIAL_UNIT_OWNER_MODEL = "MaterialUnit"
 _MATERIAL_UNIT_OWNER_FIELD = "status"
-_MATERIAL_UNIT_STATUS_VALUES = frozenset({"IN_TRANSIT", "STORED", "COMPLETED", "NG", "RECONCILING"})
+# 从 MaterialUnitStatus 枚举派生，避免硬编码副本与枚举漂移。
+_MATERIAL_UNIT_STATUS_VALUES = frozenset({status.value for status in MaterialUnitStatus})
+if frozenset({"IN_TRANSIT", "STORED", "COMPLETED", "NG", "RECONCILING"}) != _MATERIAL_UNIT_STATUS_VALUES:
+    raise RuntimeError(
+        f"MaterialUnitStatus 枚举与 manifest 合同状态集漂移，需同步设计文档: {sorted(_MATERIAL_UNIT_STATUS_VALUES)}"
+    )
 _TERMINAL_EXCEPTION_STATES = frozenset({"NG", "RECONCILING"})
 _MISSING_TOPOLOGY = object()
 _EnumT = TypeVar("_EnumT", bound=Enum)
@@ -442,6 +455,9 @@ class StateMachine:
             raise TypeError("StateMachine.state_owner must be StateMachineOwner")
         if not _non_empty_str(self.granularity):
             raise ValueError("StateMachine.granularity must be a non-empty string")
+        if self.granularity not in _ALLOWED_STATE_MACHINE_GRANULARITIES:
+            allowed = ", ".join(sorted(_ALLOWED_STATE_MACHINE_GRANULARITIES))
+            raise ValueError(f"StateMachine.granularity must be one of: {allowed}, got: {self.granularity!r}")
 
         transitions = tuple(self.transitions)
         if not transitions:
@@ -456,8 +472,8 @@ class StateMachine:
         object.__setattr__(self, "transitions", transitions)
 
     def _warn_missing_terminal_exception_exits(self, transitions: tuple[StateMachineTransition, ...]) -> None:
-        declared_exit_states = {state for transition in transitions for state in transition.to_states}
-        missing_exit_states = sorted(_TERMINAL_EXCEPTION_STATES - declared_exit_states)
+        declared_from_states = {transition.from_state for transition in transitions}
+        missing_exit_states = sorted(_TERMINAL_EXCEPTION_STATES - declared_from_states)
         if missing_exit_states:
             logger.warning(
                 "StateMachine %s missing material unit status exits: %s",
@@ -480,6 +496,9 @@ class PipelineQueue:
             raise ValueError("PipelineQueue.code must be a non-empty string")
         if not _non_empty_str(self.role):
             raise ValueError("PipelineQueue.role must be a non-empty string")
+        if self.role not in _ALLOWED_PIPELINE_QUEUE_ROLES:
+            allowed = ", ".join(sorted(_ALLOWED_PIPELINE_QUEUE_ROLES))
+            raise ValueError(f"PipelineQueue.role must be one of: {allowed}, got: {self.role!r}")
         if isinstance(self.capacity, bool):
             raise TypeError("PipelineQueue.capacity must be a positive integer or MANY")
         if isinstance(self.capacity, int):
@@ -515,9 +534,10 @@ def _yaml_sequence(value: Any, *, path: str) -> Sequence[Any]:
 def _yaml_required_str(mapping: Mapping[str, Any], key: str, *, path: str) -> str:
     value = mapping.get(key)
     field_path = _yaml_path(path, key)
-    if not _non_empty_str(value):
+    required_value = _non_empty_str(value)
+    if required_value is None:
         raise ValueError(f"{field_path} must be a non-empty string")
-    return value
+    return required_value
 
 
 def _yaml_int_field(

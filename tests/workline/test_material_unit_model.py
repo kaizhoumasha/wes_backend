@@ -8,6 +8,7 @@
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import CheckConstraint
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
@@ -91,6 +92,23 @@ def test_material_unit_current_session_id_uses_sql_compatible_bigint() -> None:
 
     assert column.type.compile(dialect=postgresql.dialect()) == "BIGINT"
     assert column.type.compile(dialect=sqlite.dialect()) == "INTEGER"
+
+
+def test_material_unit_status_columns_use_varchar_enum_mapping() -> None:
+    """status 字段必须与迁移保持 VARCHAR+CHECK，避免 PostgreSQL 原生 ENUM 漂移。"""
+    status_column = MaterialUnit.__table__.c.status
+    from_state_column = MaterialUnit.__table__.c.reconciliation_from_state
+
+    assert status_column.type.compile(dialect=postgresql.dialect()) == "VARCHAR(50)"
+    assert from_state_column.type.compile(dialect=postgresql.dialect()) == "VARCHAR(50)"
+    assert getattr(status_column.type, "native_enum", None) is False
+    assert getattr(from_state_column.type, "native_enum", None) is False
+    status_checks = [
+        constraint
+        for constraint in MaterialUnit.__table__.constraints
+        if isinstance(constraint, CheckConstraint) and "status" in str(constraint.sqltext)
+    ]
+    assert [constraint.name for constraint in status_checks] == ["ck_material_units_status"]
 
 
 def test_material_unit_pkg_code_has_unique_index() -> None:

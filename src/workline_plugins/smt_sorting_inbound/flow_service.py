@@ -91,6 +91,7 @@ class SmtSortingInboundFlowService:
                 "bin_code",
                 "bin_cell_index",
                 "material_identity_key",
+                "pkg_code",
                 "reel_thickness",
             )
             if command_payload.get(field_name) is None
@@ -137,7 +138,7 @@ class SmtSortingInboundFlowService:
         source_payload = self._source_pick_payload(payload_json, data, source_event_id)
         missing_fields = [
             field_name
-            for field_name in ("bin_code", "bin_cell_index", "material_identity_key", "reel_thickness")
+            for field_name in ("bin_code", "bin_cell_index", "material_identity_key", "pkg_code", "reel_thickness")
             if source_payload.get(field_name) is None
         ]
         if missing_fields:
@@ -150,7 +151,7 @@ class SmtSortingInboundFlowService:
         context_patch = self._source_pick_context_patch(ctx, source_payload)
         fact_payload = {key: value for key, value in source_payload.items() if value is not None}
         idempotency_key = (
-            f"MATERIAL_UNMOUNTED:{source_event_id}:{fact_payload.get('pkg_code') or fact_payload['material_identity_key']}:"
+            f"MATERIAL_UNMOUNTED:{source_event_id}:{fact_payload['pkg_code']}:"
             f"{fact_payload['bin_code']}:{fact_payload['bin_cell_index']}"
         )
         return [
@@ -160,7 +161,7 @@ class SmtSortingInboundFlowService:
                 idempotency_key=idempotency_key,
             ),
             RuntimeIntent.create_material_unit(
-                pkg_code=str(fact_payload.get("pkg_code") or fact_payload["material_identity_key"]),
+                pkg_code=str(fact_payload["pkg_code"]),
                 material_identity_key=str(fact_payload["material_identity_key"]),
                 six_in_one={
                     key: value
@@ -546,15 +547,27 @@ class SmtSortingInboundFlowService:
             return [RuntimeIntent.update_context({"sorting": _dict_copy(scratch_session.context_json.get("sorting"))})]
 
         if reason_code == "PROJECTION_INCONSISTENT":
-            return self._block(
-                "SORTING_TARGET_CELL_RECONCILING",
-                "目标料格投影不一致，拒绝自动放盘",
-                payload={
-                    "current_material": current_material,
-                    "allocation_reason_code": reason_code,
-                    "capacity_evidence": _dict_copy(getattr(allocation, "capacity_evidence", None)),
-                },
+            intents: list[RuntimeIntent] = []
+            current_material_unit_id = getattr(getattr(ctx, "session", None), "current_material_unit_id", None)
+            if current_material_unit_id is not None:
+                intents.append(
+                    RuntimeIntent.update_material_unit_status(
+                        material_unit_id=int(current_material_unit_id),
+                        status=MaterialUnitStatus.RECONCILING.value,
+                    )
+                )
+            intents.extend(
+                self._block(
+                    "SORTING_TARGET_CELL_RECONCILING",
+                    "目标料格投影不一致，拒绝自动放盘",
+                    payload={
+                        "current_material": current_material,
+                        "allocation_reason_code": reason_code,
+                        "capacity_evidence": _dict_copy(getattr(allocation, "capacity_evidence", None)),
+                    },
+                )
             )
+            return intents
 
         return self._block(
             "SORTING_TARGET_ALLOCATION_REJECTED",

@@ -1024,7 +1024,18 @@ class RoughSorterPlugin(WorklinePlugin):
             return self._block("ROUGH_SORTER_CONTEXT_MISSING", "粗分机上下文缺少业务主键，无法继续搬运流程")
 
         if rough_context.phase == PHASE_NG_MOVING:
-            return [RuntimeIntent.complete({"phase": PHASE_COMPLETED})]
+            intents: list[RuntimeIntent] = []
+            current_material_unit_id = getattr(getattr(ctx, "session", None), "current_material_unit_id", None)
+            if current_material_unit_id is not None:
+                intents.append(
+                    RuntimeIntent.update_material_unit_status(
+                        material_unit_id=int(current_material_unit_id),
+                        status=MaterialUnitStatus.NG.value,
+                        clear_session_reference=True,
+                    )
+                )
+            intents.append(RuntimeIntent.complete({"phase": PHASE_COMPLETED}))
+            return intents
 
         if rough_context.phase != PHASE_PICK_TO_PIPELINE:
             return self._block(

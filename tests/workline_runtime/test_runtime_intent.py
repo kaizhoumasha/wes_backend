@@ -428,3 +428,24 @@ def test_handling_operation_request_requires_operation_key_moves_carrier_and_tim
             payload_json={"carrier_type": "CTU", "moves": [{"sequence_no": 1}]},
             timeout_seconds=0,
         )
+
+
+def test_create_material_unit_intent_rejects_invalid_status():
+    """非法 status 在 intent 构造时即被拒绝，fail-fast 对齐 manifest loader。"""
+    with pytest.raises(ValueError, match="must be a valid MaterialUnitStatus"):
+        RuntimeIntent.create_material_unit(
+            pkg_code="PKG-001",
+            material_identity_key="MAT:HH-001",
+            six_in_one={"PkgID": "PKG-001"},
+            status="BOGUS",
+        )
+
+
+def test_update_material_unit_status_intent_rejects_invalid_status():
+    with pytest.raises(ValueError, match="must be a valid MaterialUnitStatus"):
+        RuntimeIntent.update_material_unit_status(material_unit_id=1, status="BOGUS")
+
+
+def test_update_material_unit_status_intent_rejects_missing_material_unit_id():
+    with pytest.raises(ValueError, match="requires material_unit_id"):
+        RuntimeIntent.update_material_unit_status(material_unit_id=0, status="IN_TRANSIT")

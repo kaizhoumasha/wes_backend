@@ -230,7 +230,12 @@ class MaterialUnitDb:
         material_units = self.material_units
         if material_units is None:
             material_units = [] if self.material_unit is None else [self.material_unit]
-        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: material_units))
+        return SimpleNamespace(
+            scalars=lambda: SimpleNamespace(
+                all=lambda: material_units,
+                first=lambda: material_units[0] if material_units else None,
+            )
+        )
 
 
 class FakeTerminalRepository:
@@ -387,6 +392,185 @@ async def test_create_material_unit_effect_reuses_existing_pkg_code_without_add(
     assert existing.status == MaterialUnitStatus.IN_TRANSIT
     assert existing.current_session_id == 903
     assert session.current_material_unit_id == 1002
+
+
+@pytest.mark.asyncio
+async def test_create_material_unit_effect_merges_six_in_one_without_losing_existing_fields() -> None:
+    """跨 Session handoff 复用时，SMT 的瘦构造 six_in_one 不得覆盖粗分机写入的完整六合一码。"""
+    existing = SimpleNamespace(
+        id=1002,
+        pkg_code="PKG-001",
+        material_identity_key="old-key",
+        six_in_one={"PkgID": "PKG-001", "HHPN": "HH-001", "LotCode": "LOT-A", "Vendor": "V1"},
+        status=MaterialUnitStatus.STORED,
+        current_location="OLD-BIN:1",
+        current_session_id=800,
+    )
+    session = _session(id=903, current_material_unit_id=None)
+    db = MaterialUnitDb(material_unit=existing)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.create_material_unit(
+                pkg_code="PKG-001",
+                material_identity_key="MAT:HH-001:V1:260528:LOT-A",
+                # SMT 仅构造 5 字段瘦 dict，缺 HHPN/LotCode/Vendor。
+                six_in_one={
+                    "PkgID": "PKG-001",
+                    "material_identity_key": "MAT:HH-001:V1:260528:LOT-A",
+                    "reel_thickness": "7.125",
+                    "source_bin_code": "SRC-BIN-A",
+                    "source_cell_code": "A01",
+                },
+                status=MaterialUnitStatus.IN_TRANSIT.value,
+            )
+        ],
+    )
+
+    # 已有字段保留，新字段补充，无字段被丢弃。
+    assert existing.six_in_one == {
+        "PkgID": "PKG-001",
+        "HHPN": "HH-001",
+        "LotCode": "LOT-A",
+        "Vendor": "V1",
+        "material_identity_key": "MAT:HH-001:V1:260528:LOT-A",
+        "reel_thickness": "7.125",
+        "source_bin_code": "SRC-BIN-A",
+        "source_cell_code": "A01",
+    }
+    assert existing.current_session_id == 903
+
+
+@pytest.mark.asyncio
+async def test_create_material_unit_effect_rejects_reuse_when_owned_by_active_session() -> None:
+    """料盘仍被另一非终态 Session 持有时，复用必须拒绝，避免静默窃取所有权。"""
+    existing = SimpleNamespace(
+        id=1002,
+        pkg_code="PKG-001",
+        material_identity_key="old-key",
+        six_in_one={"PkgID": "PKG-001"},
+        status=MaterialUnitStatus.IN_TRANSIT,
+        current_location=None,
+        current_session_id=800,  # 属于另一活跃 Session
+    )
+
+    class ActiveOwnerDb(MaterialUnitDb):
+        async def execute(self, statement: Any) -> Any:
+            # 复用路径先按 pkg_code 查 MaterialUnit（走父类逻辑），
+            # 再按 owner_session_id 查 WorklineSession.status，返回活跃态 RUNNING。
+            return SimpleNamespace(
+                scalars=lambda: SimpleNamespace(
+                    all=lambda: [existing],
+                    first=lambda: "RUNNING",
+                )
+            )
+
+    session = _session(id=903, current_material_unit_id=None)
+    db = ActiveOwnerDb(material_unit=existing)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+
+    with pytest.raises(ValueError, match="refuse silent takeover"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.create_material_unit(
+                    pkg_code="PKG-001",
+                    material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+                    six_in_one={"PkgID": "PKG-001"},
+                    status=MaterialUnitStatus.IN_TRANSIT.value,
+                )
+            ],
+        )
+
+    # 被拒绝时不得改写所有权。
+    assert existing.current_session_id == 800
+    assert session.current_material_unit_id is None
+
+
+@pytest.mark.asyncio
+async def test_create_material_unit_effect_allows_reuse_when_owned_by_terminal_session() -> None:
+    """料盘被终态 Session 持有时（正常 handoff），复用应放行并转移所有权。"""
+    existing = SimpleNamespace(
+        id=1002,
+        pkg_code="PKG-001",
+        material_identity_key="old-key",
+        six_in_one={"PkgID": "PKG-001", "HHPN": "HH-001"},
+        status=MaterialUnitStatus.STORED,
+        current_location="OLD-BIN:1",
+        current_session_id=800,  # 粗分机 Session 已 COMPLETED
+    )
+
+    class TerminalOwnerDb(MaterialUnitDb):
+        async def execute(self, statement: Any) -> Any:
+            return SimpleNamespace(
+                scalars=lambda: SimpleNamespace(
+                    all=lambda: [existing],
+                    first=lambda: "COMPLETED",
+                )
+            )
+
+    session = _session(id=903, current_material_unit_id=None)
+    db = TerminalOwnerDb(material_unit=existing)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.create_material_unit(
+                pkg_code="PKG-001",
+                material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+                six_in_one={"PkgID": "PKG-001"},
+                status=MaterialUnitStatus.IN_TRANSIT.value,
+            )
+        ],
+    )
+
+    assert existing.current_session_id == 903
+    assert session.current_material_unit_id == 1002
+
+
+@pytest.mark.asyncio
+async def test_create_material_unit_effect_warns_when_reusing_pkg_code_outside_manifest_contract(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    existing = SimpleNamespace(
+        id=1002,
+        pkg_code="PKG-001",
+        material_identity_key="old-key",
+        six_in_one={"PkgID": "PKG-001"},
+        status=MaterialUnitStatus.NG,
+        current_location="NG-BIN:1",
+        current_session_id=800,
+    )
+    session = _session(id=903, current_material_unit_id=None, plugin_key="rough_sorter")
+    db = MaterialUnitDb(material_unit=existing)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+    ctx["workline"].plugin_key = "rough_sorter"
+
+    with caplog.at_level("WARNING", logger="src.workline_runtime.runtime_intent_effects"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.create_material_unit(
+                    pkg_code="PKG-001",
+                    material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+                    six_in_one={"PkgID": "PKG-001", "HHPN": "HH-001"},
+                    status=MaterialUnitStatus.IN_TRANSIT.value,
+                )
+            ],
+        )
+
+    assert existing.status == MaterialUnitStatus.IN_TRANSIT
+    warning_text = caplog.text
+    assert _MATERIAL_UNIT_STATUS_TRANSITION_WARNING in warning_text
+    assert "object_type=REEL" in warning_text
+    assert "object_id=1002" in warning_text
+    assert "from_state=NG" in warning_text
+    assert "to_state=IN_TRANSIT" in warning_text
+    assert "pkg_code=PKG-001" in warning_text
+    assert "plugin_key=rough_sorter" in warning_text
 
 
 @pytest.mark.asyncio
@@ -562,6 +746,89 @@ async def test_create_material_unit_effect_recovers_unique_conflict_and_links_se
 
 
 @pytest.mark.asyncio
+async def test_create_material_unit_effect_warns_after_unique_conflict_recovery(
+    caplog: pytest.LogCaptureFixture,
+    material_unit_effect_session: AsyncSession,
+) -> None:
+    material_unit_effect_session.add(
+        WorkLine(
+            id=1,
+            line_code="WL-MU-RACE-WARN",
+            line_name="Material Unit Race Warn Test Line",
+            line_type=LineType.AUTO,
+            plugin_key="rough_sorter",
+        )
+    )
+    session = WorklineSession(
+        session_code="SESSION-MU-RACE-WARN",
+        workline_id=1,
+        plugin_key="rough_sorter",
+        run_mode=RunMode.AUTO,
+        status=SessionStatus.RUNNING,
+        context_json={},
+    )
+    material_unit_effect_session.add(session)
+    await material_unit_effect_session.commit()
+    await material_unit_effect_session.refresh(session)
+
+    class ConcurrentInsertSession:
+        def __init__(self, wrapped: AsyncSession) -> None:
+            self.wrapped = wrapped
+            self.injected_material_unit_id: int | None = None
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.wrapped, name)
+
+        async def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+            if self.injected_material_unit_id is None:
+                result = await self.wrapped.execute(statement, *args, **kwargs)
+                assert result.scalars().all() == []
+                existing = MaterialUnit(
+                    pkg_code="PKG-DB-RACE-WARN",
+                    material_identity_key="old-key",
+                    six_in_one={"PkgID": "PKG-DB-RACE-WARN"},
+                    status=MaterialUnitStatus.NG,
+                    current_session_id=777,
+                )
+                self.wrapped.add(existing)
+                await self.wrapped.flush()
+                self.injected_material_unit_id = existing.id
+                return SimpleNamespace(scalars=lambda: SimpleNamespace(all=list))
+            return await self.wrapped.execute(statement, *args, **kwargs)
+
+    db = ConcurrentInsertSession(material_unit_effect_session)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+    ctx["workline"].plugin_key = "rough_sorter"
+
+    with caplog.at_level("WARNING", logger="src.workline_runtime.runtime_intent_effects"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.create_material_unit(
+                    pkg_code="PKG-DB-RACE-WARN",
+                    material_identity_key="MAT:HH-RACE:MFR-001:260528:LOT-A",
+                    six_in_one={"PkgID": "PKG-DB-RACE-WARN", "HHPN": "HH-RACE"},
+                    status=MaterialUnitStatus.IN_TRANSIT.value,
+                )
+            ],
+        )
+    await material_unit_effect_session.commit()
+
+    result = await material_unit_effect_session.execute(
+        select(MaterialUnit).where(MaterialUnit.pkg_code == "PKG-DB-RACE-WARN")
+    )
+    persisted_unit = result.scalar_one()
+
+    assert db.injected_material_unit_id == persisted_unit.id
+    assert persisted_unit.status == MaterialUnitStatus.IN_TRANSIT
+    warning_text = caplog.text
+    assert _MATERIAL_UNIT_STATUS_TRANSITION_WARNING in warning_text
+    assert f"object_id={persisted_unit.id}" in warning_text
+    assert "from_state=NG" in warning_text
+    assert "to_state=IN_TRANSIT" in warning_text
+
+
+@pytest.mark.asyncio
 async def test_update_material_unit_status_effect_updates_entity_and_links_session() -> None:
     material_unit = SimpleNamespace(
         id=1001,
@@ -658,6 +925,89 @@ async def test_update_material_unit_status_does_not_warn_for_manifest_transition
 
     assert material_unit.status == MaterialUnitStatus.STORED
     assert _MATERIAL_UNIT_STATUS_TRANSITION_WARNING not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_update_material_unit_status_records_reconciling_from_state() -> None:
+    material_unit = SimpleNamespace(
+        id=1001,
+        pkg_code="PKG-001",
+        status=MaterialUnitStatus.IN_TRANSIT,
+        reconciliation_from_state=None,
+        current_location=None,
+        current_session_id=None,
+    )
+    session = _session(id=902, current_material_unit_id=None, plugin_key="rough_sorter")
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+    ctx["workline"].plugin_key = "rough_sorter"
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.update_material_unit_status(
+                material_unit_id=1001,
+                status=MaterialUnitStatus.RECONCILING.value,
+            )
+        ],
+    )
+
+    assert material_unit.status == MaterialUnitStatus.RECONCILING
+    assert material_unit.reconciliation_from_state == MaterialUnitStatus.IN_TRANSIT
+
+
+@pytest.mark.asyncio
+async def test_update_material_unit_status_persists_reconciling_from_state(
+    material_unit_effect_session: AsyncSession,
+) -> None:
+    material_unit_effect_session.add(
+        WorkLine(
+            id=1,
+            line_code="WL-MU-RECONCILE",
+            line_name="Material Unit Reconcile Test Line",
+            line_type=LineType.AUTO,
+            plugin_key="rough_sorter",
+        )
+    )
+    session = WorklineSession(
+        session_code="SESSION-MU-RECONCILE",
+        workline_id=1,
+        plugin_key="rough_sorter",
+        run_mode=RunMode.AUTO,
+        status=SessionStatus.RUNNING,
+        context_json={},
+    )
+    material_unit = MaterialUnit(
+        pkg_code="PKG-RECONCILE-001",
+        material_identity_key="MAT:HH-RECONCILE:MFR-001:260528:LOT-A",
+        six_in_one={"PkgID": "PKG-RECONCILE-001", "HHPN": "HH-RECONCILE"},
+        status=MaterialUnitStatus.IN_TRANSIT,
+        current_session_id=None,
+    )
+    material_unit_effect_session.add(session)
+    material_unit_effect_session.add(material_unit)
+    await material_unit_effect_session.commit()
+    await material_unit_effect_session.refresh(session)
+    await material_unit_effect_session.refresh(material_unit)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=material_unit_effect_session)
+    ctx["workline"].plugin_key = "rough_sorter"
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.update_material_unit_status(
+                material_unit_id=material_unit.id,
+                status=MaterialUnitStatus.RECONCILING.value,
+            )
+        ],
+    )
+    await material_unit_effect_session.commit()
+
+    persisted_unit = await material_unit_effect_session.get(MaterialUnit, material_unit.id)
+
+    assert persisted_unit is not None
+    assert persisted_unit.status == MaterialUnitStatus.RECONCILING
+    assert persisted_unit.reconciliation_from_state == MaterialUnitStatus.IN_TRANSIT
 
 
 @pytest.mark.asyncio
@@ -1497,6 +1847,59 @@ async def test_cleanup_completed_material_unit_only_clears_current_ng_unit_sessi
 
 
 @pytest.mark.asyncio
+async def test_ng_cleanup_survives_cross_batch_recovery_from_manual_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """NG 冲突进 MANUAL_HOLD 后跨 inbox 批次恢复到 COMPLETE 时清理 NG 料盘引用。
+
+    待清理 ID 持久化在 session.context_json，不依赖 ctx 跨批次存活。
+    """
+    # 第一批次：NG 搬运成功，登记清理 ID 并持久化；Session 尚未 COMPLETED（将被 manual_hold）。
+    session = _session(id=123, status="WAITING_DEVICE_RESULT", current_material_unit_id=1001)
+    ng_unit = SimpleNamespace(
+        id=1001,
+        pkg_code="PKG-NG-001",
+        material_identity_key="MAT-NG",
+        six_in_one={"PkgID": "PKG-NG-001"},
+        status=MaterialUnitStatus.NG,
+        current_location=None,
+        current_session_id=123,
+    )
+    db = MaterialUnitDb(material_unit=ng_unit)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.update_material_unit_status(
+                material_unit_id=1001,
+                status=MaterialUnitStatus.NG.value,
+                clear_session_reference=True,
+            ),
+        ],
+    )
+
+    # 清理 ID 已持久化到 context_json（本批次未 COMPLETE，不触发清理）。
+    assert session.context_json["_runtime_pending_material_unit_cleanup_ids"] == [1001]
+    assert ng_unit.current_session_id == 123
+    assert session.current_material_unit_id == 1001
+
+    # 第二批次：跨 inbox 恢复，ctx 全新，Session 进入 COMPLETED。
+    session.status = "COMPLETED"
+    ctx2 = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    monkeypatch.setattr(workline_effects, "_add_timeline", AsyncMock(return_value=1))
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx2,
+        [RuntimeIntent.complete({})],
+    )
+
+    # 跨批次恢复后仍清理 NG 料盘的 Session 引用，不残留永久孤儿。
+    assert ng_unit.current_session_id is None
+    assert session.current_material_unit_id is None
+    # 持久化登记清空，避免重复处理。
+    assert session.context_json["_runtime_pending_material_unit_cleanup_ids"] == []
+
+
+@pytest.mark.asyncio
 async def test_clear_session_reference_does_not_take_over_other_session_material_unit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1602,8 +2005,18 @@ async def test_ng_place_completion_conflict_keeps_material_unit_for_manual_hold(
 async def test_reconciling_target_place_resource_fact_does_not_record_sorted_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    material_unit = SimpleNamespace(
+        id=1001,
+        pkg_code="PKG-001",
+        status=MaterialUnitStatus.IN_TRANSIT,
+        reconciliation_from_state=None,
+        current_location="SORTING:SCAN",
+        current_session_id=123,
+    )
     session = _session(context_json={"sorting": _handoff_sorting_context()})
-    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    session.current_material_unit_id = 1001
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["inbox"].payload_json = {"command_code": "TARGET-CMD-RECONCILING"}
     resource_projection = RecordingResourceProjectionService(status="RECONCILING")
 
@@ -1631,6 +2044,8 @@ async def test_reconciling_target_place_resource_fact_does_not_record_sorted_ter
     assert resource_projection.calls[0]["fact_type"] == "MATERIAL_MOUNTED"
     assert session.status == "MANUAL_HOLD"
     assert session.context_json["sorting"]["current_material"]["material_identity_key"] == "material:PKG-001"
+    assert material_unit.status == MaterialUnitStatus.RECONCILING
+    assert material_unit.reconciliation_from_state == MaterialUnitStatus.IN_TRANSIT
     record_terminal.assert_not_awaited()
 
 
@@ -2015,8 +2430,17 @@ async def test_duplicate_resource_fact_skip_only_applies_to_immediate_material_u
 
 @pytest.mark.asyncio
 async def test_reconciling_resource_fact_moves_session_to_manual_hold(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _session(context_json={"pkg_id": "PKG-001"})
-    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    material_unit = SimpleNamespace(
+        id=1001,
+        pkg_code="PKG-001",
+        status=MaterialUnitStatus.STORED,
+        reconciliation_from_state=None,
+        current_location="BIN-001:1",
+        current_session_id=123,
+    )
+    session = _session(context_json={"pkg_id": "PKG-001"}, current_material_unit_id=1001)
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     emit_timeline = AsyncMock()
     persist_manual_hold = AsyncMock()
     resource_projection = RecordingResourceProjectionService(status="RECONCILING")
@@ -2044,6 +2468,8 @@ async def test_reconciling_resource_fact_moves_session_to_manual_hold(monkeypatc
     assert session.failure_domain == "RESOURCE_RECONCILIATION"
     assert session.failure_code == "RESOURCE_PROJECTION_RECONCILING"
     assert session.failure_message == "资源事实投影进入调和状态，等待人工处理 RuntimeHold"
+    assert material_unit.status == MaterialUnitStatus.RECONCILING
+    assert material_unit.reconciliation_from_state == MaterialUnitStatus.STORED
     persist_manual_hold.assert_awaited_once_with(
         ctx["db"],
         session_id=session.id,
@@ -2107,8 +2533,17 @@ async def test_resource_reservation_intent_is_applied_before_command(monkeypatch
 async def test_reconciling_resource_reservation_stops_following_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = _session(context_json={"pkg_id": "PKG-001"})
-    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
+    material_unit = SimpleNamespace(
+        id=1001,
+        pkg_code="PKG-001",
+        status=MaterialUnitStatus.IN_TRANSIT,
+        reconciliation_from_state=None,
+        current_location="SORTING:SCAN",
+        current_session_id=123,
+    )
+    session = _session(context_json={"pkg_id": "PKG-001"}, current_material_unit_id=1001)
+    db = MaterialUnitDb(material_unit=material_unit)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     emit_timeline = AsyncMock()
     record_ng_flow = AsyncMock()
     reservation_service = RecordingBinCellReservationService(status="RECONCILING")
@@ -2131,6 +2566,8 @@ async def test_reconciling_resource_reservation_stops_following_completion(
     assert reservation_service.calls[0]["operation"] == "CONSUME_BIN_CELL"
     assert session.context_json == {"pkg_id": "PKG-001"}
     assert session.status == "WAITING_DEVICE_RESULT"
+    assert material_unit.status == MaterialUnitStatus.RECONCILING
+    assert material_unit.reconciliation_from_state == MaterialUnitStatus.IN_TRANSIT
     record_ng_flow.assert_not_awaited()
 
 

@@ -523,7 +523,7 @@ BEGIN
             'WL-ROUGH-SORTER-TEST', '粗分机作业线', 'AUTO', '生产区',
             '生产初始化创建的粗分机基础作业线；上线前请按现场编码复核设备和位置。',
             false,
-            'rough_sorter', 'rough_sorter.v1', '{}'::json,
+            'rough_sorter', 'rough_sorter.v2', '{}'::json,
             '{"run_mode":"AUTO","sandbox_enabled":false,"device_status_timeout_seconds":2.0}'::json,
             '{"owner":"WES 生产环境","seed_source":"production-init"}'::json,
             'AUTO', 'STOPPED'
@@ -535,7 +535,7 @@ BEGIN
             line_type = 'AUTO',
             zone_name = '生产区',
             plugin_key = 'rough_sorter',
-            contract_version = 'rough_sorter.v1',
+            contract_version = 'rough_sorter.v2',
             config = '{}'::json,
             runtime_config_json = '{"run_mode":"AUTO","sandbox_enabled":false,"device_status_timeout_seconds":2.0}'::json,
             diagnostic_profile = '{"owner":"WES 生产环境","seed_source":"production-init"}'::json,

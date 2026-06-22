@@ -1629,28 +1629,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
         if not pkg_codes:
             return projection
         columns = cast("Any", MaterialUnit).__table__.c
-        try:
-            result = await db.execute(
-                select(MaterialUnit).where(
-                    columns.pkg_code.in_(sorted(pkg_codes)), columns.current_location.isnot(None)
-                )
-            )
-        except StopAsyncIteration:
-            return projection
-        if not hasattr(result, "scalars"):
-            return projection
-        scalars_result = result.scalars()
-        if hasattr(scalars_result, "__await__"):
-            close = getattr(scalars_result, "close", None)
-            if callable(close):
-                close()
-            return projection
-        rows = scalars_result.all()
-        if hasattr(rows, "__await__"):
-            close = getattr(rows, "close", None)
-            if callable(close):
-                close()
-            return projection
+        result = await db.execute(
+            select(MaterialUnit).where(columns.pkg_code.in_(sorted(pkg_codes)), columns.current_location.isnot(None))
+        )
+        rows = result.scalars().all()
         location_by_pkg = {
             material_unit.pkg_code: material_unit.current_location
             for material_unit in rows

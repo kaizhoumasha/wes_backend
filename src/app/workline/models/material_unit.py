@@ -8,9 +8,10 @@ material_units 是料盘（REEL）的根域实体表，扫码时建立，
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from sqlalchemy import JSON, CheckConstraint, Column, Index
+from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin
@@ -51,6 +52,7 @@ class MaterialUnitBase(BaseMixin):
     )
     status: MaterialUnitStatus = Field(
         default=MaterialUnitStatus.IN_TRANSIT,
+        sa_type=cast("Any", SQLAEnum(MaterialUnitStatus, native_enum=False, create_constraint=False, length=50)),
         description="料盘状态（IN_TRANSIT/STORED/COMPLETED/NG/RECONCILING）",
     )
     current_location: str | None = Field(
@@ -65,6 +67,7 @@ class MaterialUnitBase(BaseMixin):
     )
     reconciliation_from_state: MaterialUnitStatus | None = Field(
         default=None,
+        sa_type=cast("Any", SQLAEnum(MaterialUnitStatus, native_enum=False, create_constraint=False, length=50)),
         description="进入 RECONCILING 前的 status，对账后据此校验恢复集",
     )
 
@@ -82,7 +85,7 @@ class MaterialUnit(MaterialUnitBase, DataTableMixin, table=True):
     __table_args__ = (
         CheckConstraint(
             "status IN ('IN_TRANSIT', 'STORED', 'COMPLETED', 'NG', 'RECONCILING')",
-            name="ck_material_units_status",
+            name="status",
         ),
         Index("ix_material_units_pkg_code", "pkg_code", unique=True),
         Index("ix_material_units_status", "status"),

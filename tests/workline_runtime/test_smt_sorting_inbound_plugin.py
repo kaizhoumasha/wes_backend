@@ -625,6 +625,18 @@ async def test_source_pick_success_emits_unmounted_fact_before_opening_current_m
 
 
 @pytest.mark.asyncio
+async def test_source_pick_success_without_pkg_code_blocks_material_unit_creation() -> None:
+    plugin = SmtSortingInboundPlugin()
+    inbox = _source_pick_success_inbox({"pkg_code": None})
+
+    intents = await plugin.on_command_result(_ctx(), inbox)
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "SORTING_SOURCE_PICK_PAYLOAD_INVALID"
+    assert intents[0].payload_json["missing_fields"] == ["pkg_code"]
+
+
+@pytest.mark.asyncio
 async def test_source_pick_failure_enters_manual_suspend_instead_of_empty_intents() -> None:
     plugin = SmtSortingInboundPlugin()
     inbox = _source_pick_success_inbox({"error_code": "ARM_JAM", "error_message": "source arm jam"})
@@ -680,6 +692,17 @@ async def test_source_pick_requested_invalid_payload_returns_plugin_contract_blo
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
     assert intents[0].reason_code == "PLUGIN_CONTRACT_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_source_pick_requested_without_pkg_code_blocks_command_dispatch() -> None:
+    plugin = SmtSortingInboundPlugin()
+
+    intents = await plugin.on_device_event(_ctx(), _source_pick_requested_inbox({"pkg_code": None}))
+
+    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
+    assert intents[0].reason_code == "PLUGIN_CONTRACT_INVALID"
+    assert intents[0].payload_json["missing_fields"] == ["pkg_code"]
 
 
 @pytest.mark.asyncio
@@ -881,11 +904,18 @@ async def test_working_bin_scan_missing_or_invalid_thickness_blocks_automatic_pl
 async def test_working_bin_scan_projection_inconsistent_blocks_target_cell() -> None:
     policy = RecordingAllocationPolicy(_rejected_result("PROJECTION_INCONSISTENT"))
     plugin = _plugin_with_policy_and_snapshot(policy, {"snapshot_version": "snap-target-001", "cells": []})
+    ctx = _ctx(_sorting_context_with_current_material())
+    ctx.session.current_material_unit_id = 77
 
-    intents = await plugin.on_device_event(_ctx(_sorting_context_with_current_material()), _working_bin_scan_inbox())
+    intents = await plugin.on_device_event(ctx, _working_bin_scan_inbox())
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.BLOCK]
-    assert intents[0].reason_code == "SORTING_TARGET_CELL_RECONCILING"
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
+        RuntimeIntentKind.BLOCK,
+    ]
+    assert intents[0].payload_json["material_unit_id"] == 77
+    assert intents[0].payload_json["status"] == MaterialUnitStatus.RECONCILING.value
+    assert intents[1].reason_code == "SORTING_TARGET_CELL_RECONCILING"
 
 
 @pytest.mark.asyncio

@@ -474,13 +474,11 @@ class RuntimeIntent(BaseModel):
                 raise ValueError("CREATE_MATERIAL_UNIT intent requires material_identity_key")
             if not isinstance(self.payload_json.get("six_in_one"), dict):
                 raise ValueError("CREATE_MATERIAL_UNIT intent requires six_in_one")
-            if not self.payload_json.get("status"):
-                raise ValueError("CREATE_MATERIAL_UNIT intent requires status")
+            self._ensure_material_unit_status("status")
         if self.kind == RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS:
             if not self.payload_json.get("material_unit_id"):
                 raise ValueError("UPDATE_MATERIAL_UNIT_STATUS intent requires material_unit_id")
-            if not self.payload_json.get("status"):
-                raise ValueError("UPDATE_MATERIAL_UNIT_STATUS intent requires status")
+            self._ensure_material_unit_status("status")
         if self.kind == RuntimeIntentKind.RESOURCE_WAIT:
             if not self.reason_code:
                 raise ValueError("RESOURCE_WAIT intent requires reason_code")
@@ -505,6 +503,20 @@ class RuntimeIntent(BaseModel):
             if not self.message:
                 raise ValueError("MARK_NG intent requires message")
         return self
+
+    def _ensure_material_unit_status(self, field_name: str) -> None:
+        """校验料盘状态为合法 MaterialUnitStatus 枚举值，fail-fast 对齐 manifest loader。"""
+        raw = self.payload_json.get(field_name)
+        if not raw:
+            raise ValueError(f"{self.kind.value} intent requires {field_name}")
+        from src.app.workline.models.material_unit import MaterialUnitStatus
+
+        try:
+            MaterialUnitStatus(raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"{self.kind.value} intent {field_name} must be a valid MaterialUnitStatus, got: {raw!r}"
+            ) from exc
 
     def _validate_handling_operation_request(self) -> None:
         kind = self.kind.value

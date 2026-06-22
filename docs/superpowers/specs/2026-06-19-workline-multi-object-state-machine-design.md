@@ -573,13 +573,13 @@ P1/P2/P3 同源：**缺料盘实体表（P3）→ 身份散落 → 定位链长�
             INTAKE_HANDLING ────NG判定────► NG_HANDLING
                 │   │  │                     │
                 │   │  └──资源/位置不可信──► RECONCILING
-       分配ALLOCATED(直连)                    
+       分配ALLOCATED(直连)
                 │   └──RACK_OPERATION_REQUIRED─┐
                 ▼                              ▼
           STORING_TO_BIN  ◄──────── AWAITING_STORAGE_RESOURCE ◄──资源再次不满足
                 │                          WMS/RCS货架到位重试
-        入单层格成功│                          
-                ▼                          
+        入单层格成功│
+                ▼
           粗分 Session 闭环 / material_units.status=STORED
           Session.status=COMPLETED 只是粗分会话收尾确认, 非最终入库完成判定点
           任何状态可在不可信时切到 RECONCILING（对账完成后回到对应业务状态）
@@ -607,12 +607,12 @@ RECONCILING              -> AWAITING_STORAGE_RESOURCE | STORING_TO_BIN | NG_HAND
               │ 源格出账
               ▼
         AWAITING_SCAN ────身份不一致──► NG_HANDLING
-              │ │                         
+              │ │
    目标资源就绪│ └──位置/证据不可信──► RECONCILING
-              ▼                          
+              ▼
       AWAITING_TARGET_RESOURCE ◄──目标资源再次不满足
-              │ 目标落点确定              
-              ▼                          
+              │ 目标落点确定
+              ▼
         TARGET_PLACING ──放盘成功+MATERIAL_MOUNTED 入五层目标格──► 料盘状态机终结
               │                          （入库上架完成；详见「入库上架完成 = 料盘状态机终结点」）
               └──任何状态可在不可信时切到 RECONCILING（受约束恢复集，见下）

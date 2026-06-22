@@ -575,11 +575,18 @@ async def test_pick_and_put_success_at_ng_moving_completes_session() -> None:
         command_type=ACTION_MOVE_TO_NG,
         session_context=_rough_sorter_context_for_phase(PHASE_NG_MOVING),
     )
+    ctx.session.current_material_unit_id = 42
 
     intents = await RoughSorterPlugin().on_command_result(ctx, _command_inbox(command_type=ACTION_MOVE_TO_NG))
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.COMPLETE]
-    assert intents[0].context_patch["phase"] == "COMPLETED"
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
+        RuntimeIntentKind.COMPLETE,
+    ]
+    assert intents[0].payload_json["material_unit_id"] == 42
+    assert intents[0].payload_json["status"] == MaterialUnitStatus.NG.value
+    assert intents[0].payload_json["clear_session_reference"] is True
+    assert intents[1].context_patch["phase"] == "COMPLETED"
 
 
 @pytest.mark.asyncio

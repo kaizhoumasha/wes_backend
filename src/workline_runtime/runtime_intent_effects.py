@@ -409,6 +409,85 @@ def _warn_material_unit_status_transition_if_outside_manifest(
     )
 
 
+def _apply_material_unit_status_write(
+    ctx: Mapping[str, Any],
+    material_unit: Any,
+    *,
+    from_state: str | None,
+    to_status: Any,
+) -> None:
+    to_state = _state_value(to_status)
+    if from_state is not None:
+        _warn_material_unit_status_transition_if_outside_manifest(
+            ctx,
+            material_unit,
+            from_state=from_state,
+            to_state=to_state,
+        )
+        if to_state == "RECONCILING" and from_state and from_state != "RECONCILING":
+            try:
+                material_unit.reconciliation_from_state = type(to_status)(from_state)
+            except (TypeError, ValueError):
+                material_unit.reconciliation_from_state = from_state
+
+    material_unit.status = to_state
+
+
+# 终态 Session 可被其它 Session 回收其料盘所有权（正常 handoff）；
+# 非终态 Session 仍持有料盘时，复用属于跨线并发或重复 claim，必须拒绝。
+_ACTIVE_SESSION_STATUSES = (
+    "NEW",
+    "RUNNING",
+    "WAITING_DEVICE_RESULT",
+    "WAITING_EXTERNAL",
+    "MANUAL_HOLD",
+)
+
+
+async def _reject_reuse_when_owned_by_active_session(
+    db: Any,
+    material_unit: Any,
+    *,
+    current_session_id: int,
+) -> None:
+    owner_session_id = optional_int(getattr(material_unit, "current_session_id", None))
+    if owner_session_id is None or owner_session_id == current_session_id:
+        return
+    if not hasattr(db, "execute"):
+        return
+    from src.app.workline.models.session import WorklineSession
+
+    result = await db.execute(select(WorklineSession.status).where(WorklineSession.id == owner_session_id).limit(1))
+    scalars = getattr(result, "scalars", None)
+    if not callable(scalars):
+        return
+    row = scalars().first()
+    owner_status = string_value(row, "")
+    if owner_status in _ACTIVE_SESSION_STATUSES:
+        raise ValueError(
+            f"material unit {getattr(material_unit, 'id', None)} (pkg_code="
+            f"{getattr(material_unit, 'pkg_code', None)}) is still owned by active session "
+            f"{owner_session_id} (status={owner_status}), refuse silent takeover"
+        )
+
+
+_PENDING_CLEANUP_IDS_CONTEXT_KEY = "_runtime_pending_material_unit_cleanup_ids"
+
+
+def _pending_cleanup_ids_from_session(session: Any) -> set[int]:
+    context = getattr(session, "context_json", None) or {}
+    raw = context.get("_runtime_pending_material_unit_cleanup_ids") if isinstance(context, Mapping) else None
+    if not raw:
+        return set()
+    return {int(value) for value in raw if optional_int(value) is not None}
+
+
+def _persist_pending_cleanup_ids(session: Any, cleanup_ids: set[int]) -> None:
+    context = dict(getattr(session, "context_json", None) or {})
+    context["_runtime_pending_material_unit_cleanup_ids"] = sorted(cleanup_ids)
+    session.context_json = context
+
+
 def _is_reconciling_result(result: Any) -> bool:
     return _result_status_value(result) == "RECONCILING"
 
@@ -481,7 +560,7 @@ async def _record_source_pick_command_correlation(
 
     from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
 
-    await smt_inbound_handoff_service.record_source_pick_command_correlation(
+    _ = await smt_inbound_handoff_service.record_source_pick_command_correlation(
         ctx["db"],
         command_id=resolve_required_pk(command, "source_pick_command"),
         command_code=string_value(getattr(command, "command_code", None), ""),
@@ -512,7 +591,7 @@ async def _record_source_pick_success(ctx: Any, *, command_id: int | None = None
     from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
 
     try:
-        await smt_inbound_handoff_service.record_source_pick_success(
+        _ = await smt_inbound_handoff_service.record_source_pick_success(
             ctx["db"],
             session=ctx["session"],
             command_id=command_id,
@@ -709,6 +788,7 @@ class RuntimeIntentEffectApplier:
             if intent.kind == RuntimeIntentKind.RESOURCE_RESERVATION:
                 result = await self._apply_resource_reservation(ctx, intent)
                 if _is_reconciling_result(result):
+                    await self._apply_current_material_unit_reconciliation_status(ctx)
                     return RuntimeIntentEffectResult.processed()
                 continue
 
@@ -780,15 +860,19 @@ class RuntimeIntentEffectApplier:
         flush = getattr(db, "flush", None)
 
         async def get_material_unit_by_pkg_code() -> Any | None:
-            result = await db.execute(
-                select(MaterialUnit).where(MaterialUnit.pkg_code == pkg_code).order_by(MaterialUnit.id.asc()).limit(2)
-            )
+            result = await db.execute(select(MaterialUnit).where(MaterialUnit.pkg_code == pkg_code).limit(1))
             material_units = list(result.scalars().all())
             if len(material_units) > 1:
                 raise ValueError(f"multiple material units found for pkg_code: {pkg_code}")
             return material_units[0] if material_units else None
 
         material_unit = await get_material_unit_by_pkg_code()
+        status_from_state = _state_value(getattr(material_unit, "status", None)) if material_unit is not None else None
+        if material_unit is not None:
+            # 复用已存在的料盘实体（跨 Session handoff 的正常路径）。
+            # 若该实体仍被另一个非终态 Session 持有，说明出现跨线并发或重复 claim，
+            # 拒绝静默窃取所有权，避免双 Session 指向同一料盘造成状态分裂。
+            await _reject_reuse_when_owned_by_active_session(db, material_unit, current_session_id=current_session_id)
         if material_unit is None:
             begin_nested = getattr(db, "begin_nested", None)
             if callable(begin_nested):
@@ -809,13 +893,26 @@ class RuntimeIntentEffectApplier:
                     material_unit = await get_material_unit_by_pkg_code()
                     if material_unit is None:
                         raise
+                    status_from_state = _state_value(getattr(material_unit, "status", None))
             else:
-                material_unit = MaterialUnit(pkg_code=pkg_code)
+                material_unit = MaterialUnit(
+                    pkg_code=pkg_code,
+                    material_identity_key=material_identity_key,
+                    six_in_one=six_in_one,
+                    status=status,
+                    current_session_id=current_session_id,
+                )
                 db.add(material_unit)
 
         material_unit.material_identity_key = material_identity_key
-        material_unit.six_in_one = six_in_one
-        material_unit.status = status
+        # six_in_one 合并而非覆盖：保留已有字段（如粗分机扫码的完整六合一码），
+        # 仅用本次 payload 的非空值更新，避免 SMT 接管时用瘦构造 dict 丢数据。
+        merged_six_in_one = {
+            **dict(material_unit.six_in_one or {}),
+            **{key: value for key, value in six_in_one.items() if value is not None},
+        }
+        material_unit.six_in_one = merged_six_in_one
+        _apply_material_unit_status_write(ctx, material_unit, from_state=status_from_state, to_status=status)
         material_unit.current_session_id = current_session_id
         if flush is not None:
             await flush()
@@ -824,7 +921,12 @@ class RuntimeIntentEffectApplier:
     async def _apply_update_material_unit_status(self, ctx: Any, intent: RuntimeIntent) -> None:
         from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
 
-        material_unit_id = int(intent.payload_json["material_unit_id"])
+        material_unit_id = optional_int(intent.payload_json.get("material_unit_id"))
+        if material_unit_id is None:
+            raise ValueError(
+                f"UPDATE_MATERIAL_UNIT_STATUS intent requires valid integer material_unit_id, "
+                f"got: {intent.payload_json.get('material_unit_id')!r}"
+            )
         material_unit = await ctx["db"].get(MaterialUnit, material_unit_id)
         if material_unit is None:
             raise ValueError(f"material unit not found: {material_unit_id}")
@@ -839,21 +941,39 @@ class RuntimeIntentEffectApplier:
 
         from_status = _state_value(getattr(material_unit, "status", None))
         to_status = MaterialUnitStatus(string_value(intent.payload_json.get("status"), ""))
-        _warn_material_unit_status_transition_if_outside_manifest(
-            ctx,
-            material_unit,
-            from_state=from_status,
-            to_state=to_status.value,
-        )
-
-        material_unit.status = to_status
+        _apply_material_unit_status_write(ctx, material_unit, from_state=from_status, to_status=to_status)
         if "current_location" in intent.payload_json:
             material_unit.current_location = intent.payload_json.get("current_location")
         material_unit.current_session_id = current_session_id
         if intent.payload_json.get("clear_session_reference") is True:
-            ctx.setdefault("_runtime_material_unit_cleanup_ids", set()).add(material_unit_id)
+            # 同批次清理登记在 ctx；同时持久化到 session.context_json，
+            # 以便 NG 冲突进 MANUAL_HOLD 后跨 inbox 批次恢复到 COMPLETE 时仍能清理。
+            cleanup_ids = ctx.setdefault("_runtime_material_unit_cleanup_ids", set())
+            cleanup_ids.add(material_unit_id)
+            _persist_pending_cleanup_ids(session, set(cleanup_ids))
             return
         session.current_material_unit_id = material_unit_id
+
+    async def _apply_current_material_unit_reconciliation_status(self, ctx: Any) -> None:
+        from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
+
+        session = ctx["session"]
+        material_unit_id = optional_int(getattr(session, "current_material_unit_id", None))
+        if material_unit_id is None:
+            return
+
+        material_unit = await ctx["db"].get(MaterialUnit, material_unit_id)
+        if material_unit is None:
+            return
+
+        from_status = _state_value(getattr(material_unit, "status", None))
+        _apply_material_unit_status_write(
+            ctx,
+            material_unit,
+            from_state=from_status,
+            to_status=MaterialUnitStatus.RECONCILING,
+        )
+        # material_unit 来自 db.get，已在 identity map 中，status 写入即脏标记，无需 add。
 
     async def _cleanup_completed_material_unit(self, ctx: Any) -> None:
         from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
@@ -862,7 +982,11 @@ class RuntimeIntentEffectApplier:
         session = ctx["session"]
         if getattr(session, "status", None) != SessionStatus.COMPLETED.value:
             return
+        # 清理登记可能来自本批次 ctx（同 inbox 直达 COMPLETE），
+        # 也可能来自跨批次恢复（NG 冲突 MANUAL_HOLD → 后续 inbox COMPLETE），
+        # 后者从 session.context_json 恢复待清理集合。
         cleanup_ids = set(ctx.pop("_runtime_material_unit_cleanup_ids", set()) or set())
+        cleanup_ids |= _pending_cleanup_ids_from_session(session)
         if not cleanup_ids:
             return
         db = ctx["db"]
@@ -878,6 +1002,8 @@ class RuntimeIntentEffectApplier:
                 continue
             session.current_material_unit_id = None
             material_unit.current_session_id = None
+        # 清理完成后清空持久化登记，避免重复处理。
+        _persist_pending_cleanup_ids(session, set())
         flush = getattr(db, "flush", None)
         if flush is not None:
             await flush()
@@ -1446,7 +1572,7 @@ class RuntimeIntentEffectApplier:
 
             service = rack_operation_service
 
-        await service.sync_operation_status(ctx["db"], operation_key=operation_key)
+        _ = await service.sync_operation_status(ctx["db"], operation_key=operation_key)
 
     async def _apply_resource_reconciliation_hold(self, ctx: Any, result: Any) -> None:
         from src.app.workline.repositories.session_repository import WorklineSessionRepository
@@ -1456,6 +1582,7 @@ class RuntimeIntentEffectApplier:
         reason_code = string_value(getattr(result, "reason_code", None)) or "RESOURCE_PROJECTION_RECONCILING"
         message = string_value(getattr(result, "message", None)) or "资源事实投影进入调和状态，等待人工处理 RuntimeHold"
 
+        await self._apply_current_material_unit_reconciliation_status(ctx)
         workline_effects.workline_session_lifecycle_service.manual_hold(session, occurred_at=ctx["now"])
         session.failure_domain = "RESOURCE_RECONCILIATION"
         session.failure_code = reason_code
@@ -1544,7 +1671,7 @@ class RuntimeIntentEffectApplier:
             timeout_seconds=None,
             context_json=getattr(session, "context_json", None),
         )
-        await workline_diagnostic_service.record_resource_wait(
+        _ = await workline_diagnostic_service.record_resource_wait(
             ctx["db"],
             evidence=evidence,
             inbox=inbox,

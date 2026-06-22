@@ -261,6 +261,59 @@ def test_from_yaml_dict_keeps_legacy_manifest_compatible() -> None:
     assert manifest.pipeline_queues == ()
 
 
+def test_yaml_loader_rejects_invalid_pipeline_queue_role() -> None:
+    """PipelineQueue.role 必须在白名单内，拼写错误 fail-fast。"""
+    data = _manifest_yaml_dict()
+    data["pipeline_queues"][0]["role"] = "WORKSTTION"  # 拼写错误
+
+    with pytest.raises(ValueError, match=r"PipelineQueue\.role must be one of"):
+        WorklinePluginManifest.from_yaml_dict(data)
+
+
+def test_yaml_loader_rejects_invalid_state_machine_granularity() -> None:
+    """StateMachine.granularity 必须在白名单内。"""
+    data = _manifest_yaml_dict()
+    data["state_machines"][0]["granularity"] = "BOGUS_GRANULARITY"
+
+    with pytest.raises(ValueError, match=r"StateMachine\.granularity must be one of"):
+        WorklinePluginManifest.from_yaml_dict(data)
+
+
+def test_yaml_loader_rejects_invalid_pipeline_queue_capacity() -> None:
+    """PipelineQueue.capacity 仅接受正整数或 MANY。"""
+    data = _manifest_yaml_dict()
+    data["pipeline_queues"][0]["capacity"] = "UNLIMITED"
+
+    with pytest.raises(ValueError, match="capacity must be a positive integer or MANY"):
+        WorklinePluginManifest.from_yaml_dict(data)
+
+
+def test_yaml_loader_rejects_zero_pipeline_queue_capacity() -> None:
+    data = _manifest_yaml_dict()
+    data["pipeline_queues"][0]["capacity"] = 0
+
+    with pytest.raises(ValueError, match="capacity must be a positive integer or MANY"):
+        WorklinePluginManifest.from_yaml_dict(data)
+
+
+def test_yaml_loader_accepts_many_pipeline_queue_capacity() -> None:
+    data = _manifest_yaml_dict()
+    data["pipeline_queues"][0]["capacity"] = "MANY"
+
+    manifest = WorklinePluginManifest.from_yaml_dict(data)
+
+    assert manifest.pipeline_queues[0].capacity == "MANY"
+
+
+def test_yaml_loader_accepts_all_documented_pipeline_queue_roles() -> None:
+    """设计文档队列角色（Buffer/Gate/Wait/Workstation/Exception）均应通过白名单。"""
+    for role in ("BUFFER", "GATE", "WAIT", "WORKSTATION", "EXCEPTION", "ENTRY", "SCAN", "WORK"):
+        data = _manifest_yaml_dict()
+        data["pipeline_queues"][0]["role"] = role
+        manifest = WorklinePluginManifest.from_yaml_dict(data)
+        assert manifest.pipeline_queues[0].role == role
+
+
 def test_yaml_loader_accepts_command_result_event_category_for_compatibility() -> None:
     """loader 保持 enum 兼容；真实 manifest 和模板层负责清理命令结果事件。"""
 
@@ -511,7 +564,7 @@ def test_yaml_loader_validates_material_unit_status_contract(mutate, message: st
         WorklinePluginManifest.from_yaml_dict(data)
 
 
-def test_yaml_loader_warns_when_terminal_exception_exits_are_missing(caplog) -> None:
+def test_yaml_loader_does_not_warn_when_terminal_exception_exit_rows_are_declared(caplog) -> None:
     data = _manifest_yaml_dict()
     data["state_machines"][0]["transitions"][0]["to"] = ["STORED"]
     data["state_machines"][0]["transitions"][1]["to"] = ["IN_TRANSIT"]
@@ -519,5 +572,23 @@ def test_yaml_loader_warns_when_terminal_exception_exits_are_missing(caplog) -> 
     manifest = WorklinePluginManifest.from_yaml_dict(data)
 
     assert manifest.state_machines[0].transitions[0].to_states == ("STORED",)
+    assert caplog.text == ""
+
+
+def test_yaml_loader_warns_when_terminal_exception_exit_rows_are_missing(caplog) -> None:
+    data = _manifest_yaml_dict()
+    data["state_machines"][0]["transitions"] = [
+        {"from": "IN_TRANSIT", "to": ["STORED", "COMPLETED", "NG", "RECONCILING"]},
+        {"from": "STORED", "to": ["IN_TRANSIT", "NG", "RECONCILING"]},
+        {"from": "COMPLETED", "to": []},
+    ]
+
+    manifest = WorklinePluginManifest.from_yaml_dict(data)
+
+    assert {transition.from_state for transition in manifest.state_machines[0].transitions} == {
+        "IN_TRANSIT",
+        "STORED",
+        "COMPLETED",
+    }
     assert "NG" in caplog.text
     assert "RECONCILING" in caplog.text

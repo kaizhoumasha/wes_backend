@@ -42,7 +42,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,
-    EVENT_SESSION_COMPLETE_REQUESTED,
     EVENT_WORKING_BIN_SCAN,
     ROLE_SORTING_SCAN_PLATFORM,
     ROLE_SORTING_SOURCE_ARM,
@@ -230,7 +229,7 @@ TEST_SMT_SORTING_INBOUND_DEVICES: tuple[TestDeviceSeed, ...] = (
         sort_order=40,
         capabilities_json={
             "supports_command_types": [],
-            "supports_event_types": [EVENT_SESSION_COMPLETE_REQUESTED],
+            "supports_event_types": [],
             "supports_ack_response": True,
             "supports_result_callback": True,
             "status_path": MOCK_ECS_STATUS_PATH,
