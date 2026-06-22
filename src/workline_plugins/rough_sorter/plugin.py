@@ -1139,6 +1139,8 @@ class RoughSorterPlugin(WorklinePlugin):
         if current_material_unit_id is None:
             # 兼容部署前已在 PUT_TO_BIN 等待回调的 Session：旧流程没有先创建料盘根实体，
             # 入箱成功后补建 STORED 实体，避免物理已入箱但 Session 被阻断。
+            # 此路径预期 pkg_code 不会与活跃 Session 冲突；若冲突，_apply_create_material_unit
+            # 的所有权检查会抛 ValueError 使整个回调失败（fail-loud），不静默继续。
             intents.append(
                 RuntimeIntent.create_material_unit(
                     pkg_code=resource_pkg_code,

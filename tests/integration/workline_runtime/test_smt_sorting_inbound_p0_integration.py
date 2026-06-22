@@ -140,9 +140,15 @@ async def test_source_pick_smoke_unmounts_source_and_opens_current_material_once
         ),
     )
 
-    assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_FACT, RuntimeIntentKind.UPDATE_CONTEXT]
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+    ]
     assert intents[0].action == "MATERIAL_UNMOUNTED"
-    session_context = _apply_context(session_context, intents[1].context_patch)
+    assert intents[1].payload_json["pkg_code"] == "PKG-001"
+    assert intents[1].payload_json["status"] == "IN_TRANSIT"
+    session_context = _apply_context(session_context, intents[2].context_patch)
     assert session_context["sorting"]["current_material"]["material_identity_key"] == "mid:pkg-001"
 
     replay_intents = await plugin.on_command_result(
@@ -212,7 +218,7 @@ async def test_scan_smoke_allocates_pending_target_placement_from_active_snapsho
 
     assert [intent.kind for intent in target_intents] == [
         RuntimeIntentKind.RESOURCE_FACT,
-        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.COMPLETE,
     ]
     assert target_intents[0].action == "MATERIAL_MOUNTED"
     session_context = _apply_context(session_context, target_intents[1].context_patch)
