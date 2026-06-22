@@ -444,7 +444,6 @@ class SmtInboundHandoffService:
         )
         return await self._claim_routed_candidate(
             db,
-            demand=demand,
             candidate=candidate,
             route=route,
             now=now,
@@ -582,7 +581,6 @@ class SmtInboundHandoffService:
         self,
         db: AsyncSession,
         *,
-        demand: SmtInboundHandoffDemand,
         candidate: SmtInboundHandoffSourceItem,
         route: Any,
         now: Any,
@@ -590,19 +588,18 @@ class SmtInboundHandoffService:
         trace_id: str | None,
     ) -> Any:
         if getattr(route, "kind", None) == "MANUAL_HOLD" or bool(getattr(route, "manual_hold", False)):
-            return await self._manual_hold_claim_candidate(db, demand=demand, candidate=candidate, route=route, now=now)
+            return await self._manual_hold_claim_candidate(db, candidate=candidate, route=route, now=now)
 
         if getattr(route, "kind", None) == "RETRY" or bool(getattr(route, "retryable", False)):
-            return await self._retry_claim_candidate(db, demand=demand, candidate=candidate, route=route, now=now)
+            return await self._retry_claim_candidate(db, candidate=candidate, route=route, now=now)
 
         workline_id = getattr(route, "selected_workline_id", None)
         workline_code = getattr(route, "selected_workline_code", None)
         if not isinstance(workline_id, int):
-            return await self._manual_hold_invalid_claim_candidate(db, demand=demand, candidate=candidate, now=now)
+            return await self._manual_hold_invalid_claim_candidate(db, candidate=candidate, now=now)
 
         return await self._claim_selected_route_source_item(
             db,
-            demand=demand,
             candidate=candidate,
             route=route,
             workline_id=workline_id,
@@ -616,46 +613,44 @@ class SmtInboundHandoffService:
         self,
         db: AsyncSession,
         *,
-        demand: SmtInboundHandoffDemand,
         candidate: SmtInboundHandoffSourceItem,
         route: Any,
         now: Any,
     ) -> Any:
-        demand, item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
+        locked_demand, locked_item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
             db,
             candidate=candidate,
             now=now,
         )
-        if blocked_result is not None or demand is None or item is None:
+        if blocked_result is not None or locked_demand is None or locked_item is None:
             return blocked_result or self._claim_result("EMPTY")
 
-        self._apply_item_failure(item, str(route.failure_code), message=getattr(route, "failure_message", None))
-        self._apply_failure(demand, str(route.failure_code), message=getattr(route, "failure_message", None))
-        db.add(item)
-        await self.recalculate_demand_status(db, demand, reason="claim_route_manual_hold")
+        self._apply_item_failure(locked_item, str(route.failure_code), message=getattr(route, "failure_message", None))
+        self._apply_failure(locked_demand, str(route.failure_code), message=getattr(route, "failure_message", None))
+        db.add(locked_item)
+        await self.recalculate_demand_status(db, locked_demand, reason="claim_route_manual_hold")
         return route
 
     async def _retry_claim_candidate(
         self,
         db: AsyncSession,
         *,
-        demand: SmtInboundHandoffDemand,
         candidate: SmtInboundHandoffSourceItem,
         route: Any,
         now: Any,
     ) -> Any:
-        demand, item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
+        locked_demand, locked_item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
             db,
             candidate=candidate,
             now=now,
         )
-        if blocked_result is not None or demand is None or item is None:
+        if blocked_result is not None or locked_demand is None or locked_item is None:
             return blocked_result or self._claim_result("EMPTY")
 
         await self._release_claim_candidate_for_retry(
             db,
-            demand=demand,
-            item=item,
+            demand=locked_demand,
+            item=locked_item,
             failure_code=cast("str", getattr(route, "failure_code", None)),
             failure_message=getattr(route, "failure_message", None),
             next_attempt_at=getattr(route, "next_attempt_at", None),
@@ -667,29 +662,27 @@ class SmtInboundHandoffService:
         self,
         db: AsyncSession,
         *,
-        demand: SmtInboundHandoffDemand,
         candidate: SmtInboundHandoffSourceItem,
         now: Any,
     ) -> Any:
-        demand, item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
+        locked_demand, locked_item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
             db,
             candidate=candidate,
             now=now,
         )
-        if blocked_result is not None or demand is None or item is None:
+        if blocked_result is not None or locked_demand is None or locked_item is None:
             return blocked_result or self._claim_result("EMPTY")
 
-        self._apply_item_failure(item, SmtInboundHandoffReasonCode.ROUTE_NOT_FOUND.value)
-        self._apply_failure(demand, SmtInboundHandoffReasonCode.ROUTE_NOT_FOUND.value)
-        db.add(item)
-        await self.recalculate_demand_status(db, demand, reason="claim_route_invalid")
+        self._apply_item_failure(locked_item, SmtInboundHandoffReasonCode.ROUTE_NOT_FOUND.value)
+        self._apply_failure(locked_demand, SmtInboundHandoffReasonCode.ROUTE_NOT_FOUND.value)
+        db.add(locked_item)
+        await self.recalculate_demand_status(db, locked_demand, reason="claim_route_invalid")
         return self._claim_result("MANUAL_HOLD", failure_code=SmtInboundHandoffReasonCode.ROUTE_NOT_FOUND.value)
 
     async def _claim_selected_route_source_item(
         self,
         db: AsyncSession,
         *,
-        demand: SmtInboundHandoffDemand,
         candidate: SmtInboundHandoffSourceItem,
         route: Any,
         workline_id: int,
@@ -698,12 +691,12 @@ class SmtInboundHandoffService:
         route_probe_started_at: Any,
         trace_id: str | None,
     ) -> Any:
-        demand, item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
+        locked_demand, locked_item, blocked_result = await self._lock_claimable_demand_and_ready_candidate_or_retry(
             db,
             candidate=candidate,
             now=now,
         )
-        if blocked_result is not None or demand is None or item is None:
+        if blocked_result is not None or locked_demand is None or locked_item is None:
             return blocked_result or self._claim_result("EMPTY")
         target_workline = await self.repository.lock_target_workline_by_id(db, workline_id=workline_id)
         if target_workline is None:
@@ -711,8 +704,8 @@ class SmtInboundHandoffService:
         if timezone.now_for_db() - route_probe_started_at > timedelta(seconds=_CLAIM_ROUTE_PROBE_EVIDENCE_TTL_SECONDS):
             return await self._release_claim_candidate_for_retry(
                 db,
-                demand=demand,
-                item=item,
+                demand=locked_demand,
+                item=locked_item,
                 failure_code=SmtInboundHandoffReasonCode.ECS_DEVICE_NOT_IDLE.value,
                 failure_message="ECS realtime probe evidence 已过期，等待下一轮 claim 重新准入",
                 next_attempt_at=timezone.now_for_db() + timedelta(seconds=30),
@@ -721,18 +714,20 @@ class SmtInboundHandoffService:
         if await self._target_has_open_current_material(db, workline_id=workline_id):
             return await self._release_claim_candidate_for_retry(
                 db,
-                demand=demand,
-                item=item,
+                demand=locked_demand,
+                item=locked_item,
                 failure_code=SmtInboundHandoffReasonCode.TARGET_SESSION_BUSY.value,
                 failure_message=None,
                 next_attempt_at=timezone.now_for_db() + timedelta(seconds=30),
                 reason="claim_phase2_current_material_busy",
             )
-        if await self._target_has_in_flight_handoff_source_item(db, workline_id=workline_id, source_item_id=item.id):
+        if await self._target_has_in_flight_handoff_source_item(
+            db, workline_id=workline_id, source_item_id=locked_item.id
+        ):
             return await self._release_claim_candidate_for_retry(
                 db,
-                demand=demand,
-                item=item,
+                demand=locked_demand,
+                item=locked_item,
                 failure_code=SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value,
                 failure_message=None,
                 next_attempt_at=timezone.now_for_db() + timedelta(seconds=30),
@@ -743,41 +738,41 @@ class SmtInboundHandoffService:
             db,
             workline_id=workline_id,
             workline_code=workline_code,
-            demand=demand,
-            item=item,
+            demand=locked_demand,
+            item=locked_item,
             trace_id=trace_id,
             route_evidence=getattr(route, "route_evidence", None),
         )
         inbox = await self._create_source_pick_request_inbox(
             db,
-            demand=demand,
-            item=item,
+            demand=locked_demand,
+            item=locked_item,
             session=session,
             workline_id=workline_id,
             trace_id=trace_id,
             route_evidence=getattr(route, "route_evidence", None),
         )
 
-        item.status = SmtInboundHandoffSourceItemStatus.PICK_REQUESTED
-        item.target_workline_id = workline_id
-        item.target_workline_code = self._text_or_none(workline_code)
-        item.sorting_session_id = cast("int", session.id)
-        item.source_pick_inbox_id = cast("int", inbox.id)
-        item.claimed_at = now
-        item.failure_code = None
-        item.failure_message = None
-        item.next_attempt_at = None
-        demand.target_workline_id = workline_id
-        demand.target_workline_code = self._text_or_none(workline_code)
-        demand.failure_code = None
-        demand.failure_message = None
-        db.add(item)
-        db.add(demand)
-        await self.recalculate_demand_status(db, demand, reason="claim_source_item")
+        locked_item.status = SmtInboundHandoffSourceItemStatus.PICK_REQUESTED
+        locked_item.target_workline_id = workline_id
+        locked_item.target_workline_code = self._text_or_none(workline_code)
+        locked_item.sorting_session_id = cast("int", session.id)
+        locked_item.source_pick_inbox_id = cast("int", inbox.id)
+        locked_item.claimed_at = now
+        locked_item.failure_code = None
+        locked_item.failure_message = None
+        locked_item.next_attempt_at = None
+        locked_demand.target_workline_id = workline_id
+        locked_demand.target_workline_code = self._text_or_none(workline_code)
+        locked_demand.failure_code = None
+        locked_demand.failure_message = None
+        db.add(locked_item)
+        db.add(locked_demand)
+        await self.recalculate_demand_status(db, locked_demand, reason="claim_source_item")
         return self._claim_result(
             "CLAIMED",
-            demand=demand,
-            source_item=item,
+            demand=locked_demand,
+            source_item=locked_item,
             inbox=inbox,
             session=session,
         )
