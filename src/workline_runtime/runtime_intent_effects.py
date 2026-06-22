@@ -860,7 +860,12 @@ class RuntimeIntentEffectApplier:
         flush = getattr(db, "flush", None)
 
         async def get_material_unit_by_pkg_code() -> Any | None:
-            result = await db.execute(select(MaterialUnit).where(MaterialUnit.pkg_code == pkg_code).limit(1))
+            # with_for_update 锁住已存在料盘行直到事务结束，消除复用路径的 TOCTOU 窗口：
+            # 并发事务同时读到同一 material_unit 后盲目覆盖 current_session_id。
+            # SQLite 静默忽略 FOR UPDATE；Postgres 行锁串行化所有权转移。
+            result = await db.execute(
+                select(MaterialUnit).where(MaterialUnit.pkg_code == pkg_code).limit(1).with_for_update()
+            )
             material_units = list(result.scalars().all())
             if len(material_units) > 1:
                 raise ValueError(f"multiple material units found for pkg_code: {pkg_code}")

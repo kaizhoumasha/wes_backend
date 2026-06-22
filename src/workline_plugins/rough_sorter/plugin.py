@@ -1141,9 +1141,17 @@ class RoughSorterPlugin(WorklinePlugin):
             # 入箱成功后补建 STORED 实体，避免物理已入箱但 Session 被阻断。
             # 此路径预期 pkg_code 不会与活跃 Session 冲突；若冲突，_apply_create_material_unit
             # 的所有权检查会抛 ValueError 使整个回调失败（fail-loud），不静默继续。
+            # pkg_code 必须用真实 PkgID（与扫码路径一致），不得回退 business_key 哈希——
+            # 否则 SMT 后续用真实 PkgID claim 会创建第二行，造成同一物理盘双实体。
+            legacy_pkg_code = _non_empty_str(rough_context.six_in_one.get("PkgID"))
+            if legacy_pkg_code is None:
+                return self._block(
+                    "ROUGH_SORTER_CONTEXT_MISSING",
+                    "粗分机补建料盘实体缺少 PkgID，无法用 business_key 哈希作为 pkg_code",
+                )
             intents.append(
                 RuntimeIntent.create_material_unit(
-                    pkg_code=resource_pkg_code,
+                    pkg_code=legacy_pkg_code,
                     material_identity_key=material_identity_key,
                     six_in_one=dict(rough_context.six_in_one),
                     status=MaterialUnitStatus.STORED.value,
