@@ -431,6 +431,20 @@
 
 ## Completed
 
+## P0 - 修复 test_start_admission_service 预存失败
+
+**What**: `tests/workline_runtime/test_start_admission_service.py` 19 个测试在 develop base 即失败（`START_ADMISSION_CONFIGURATION_INVALID` 等断言过时），与料盘根域分支无关。
+
+**Why**: /ship 第五轮验收发现，pre-existing 失败需单独排查，避免污染后续 PR 的测试信号。
+
+**Context**: 2026-06-22 在 `feature/material-unit-root-domain` 分支 `/ship` 时确认 develop base `ee1f3b67` 同样失败，非本分支回归。
+
+**Scope**:
+- 排查 `start_admission_service` 启动准入逻辑与测试 fixture 的 contract version / 配置漂移
+- 修复或同步测试断言
+
+**Completed:** v0.8.0.0 (2026-06-22) — fixture `rough_sorter.v1` → `v2` (合同版本同步迁移)，随 `df97828` 提交。
+
 ## P1 - Runtime scene 结构化运行资源证据契约
 
 **What**: 为 Rack、Bin、PKG、Slot、Part SN、Magazine 等现场资源证据提供稳定结构化运行字段。
