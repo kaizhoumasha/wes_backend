@@ -10,6 +10,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.8.0.0] - 2026-06-22
+
+### Added
+
+- 新增料盘根实体表 `material_units`，料盘（REEL）从粗分机扫码起即建立独立实体记录，后续插件操作都是对该料盘状态及位置的变化，取代原散落在 `context_json` 的料盘身份记录。
+- 料盘状态机 `material_units.status` 落地 5 态物视角（`IN_TRANSIT`/`STORED`/`COMPLETED`/`NG`/`RECONCILING`）：NG 是业务问题单向进 NG 域，RECONCILING 是功能问题对账后可回正常态，两者不重叠。
+- 新增 `RuntimeIntent.create_material_unit` / `update_material_unit_status` 两个意图，插件作者通过 RuntimeIntent 显式表达建/更新料盘实体，状态/位置变化由 Runtime 统一写入并校验。
+- WorkLine 插件 manifest 顶层新增 `session_subject` / `state_machines` / `pipeline_queues` 三字段合同，粗分机与 SMT 分拣机 manifest 已填充料盘状态机 transition 合同与管线队列声明，`state_owner` 指向 `material_units.status`。
+- 非法料盘状态转移在写入时输出 WARN 软告警（不阻断业务），日志含 `object_type/object_id/from_state/to_state/pkg_code/plugin_key`，为 C 阶段 Runtime 强校验预热。
+- 跨 Session 料盘身份关联改为 `pkg_code` + `current_session_id` 直连，handoff claim、resource mount/unmount、诊断查询改用 material_unit 直连，料盘定位一次查询 `current_location` 即得。
+
+### Changed
+
+- SMT 分拣机目标放盘成功后改为 `RuntimeIntent.complete()` 自动收尾，移除 `SORTING_SESSION_COMPLETE_REQUESTED` 人工完成事件，与粗分机行为一致；放置成功后异常自动转 NG（写 `ng_return_items` + 清空 Session 绑定，保留 material_unit 支持追溯）。
+- 粗分机与 SMT 分拣机 manifest `contract_version` bump（`rough_sorter.v2` / `2026-06-21.p1`），orchestrator 拒绝旧 contract_version 的 Session，强制对齐。
+- 粗分机扫码缺 PkgID、补建料盘实体缺 PkgID 时统一 fail-fast 阻断，不再回退 `business_key` 哈希作为 `pkg_code`。
+- manifest loader 对 `PipelineQueue.role` / `StateMachine.granularity` 加白名单校验，`PipelineQueue.capacity` 收紧为正整数或 `MANY`，`_MATERIAL_UNIT_STATUS_VALUES` 从 `MaterialUnitStatus` 枚举派生并加漂移校验。
+
+### Fixed
+
+- 修复料盘 `six_in_one` 跨 Session handoff 复用时被 SMT 瘦构造 dict 覆盖的数据丢失，改为合并保留已有字段。
+- 修复 NG 料盘在 `NgMaterialConflictError` 进 MANUAL_HOLD 后跨 inbox 批次恢复到 COMPLETE 时的永久孤儿，待清理 ID 持久化到 `session.context_json`。
+- 新增跨线并发 CREATE_MATERIAL_UNIT 所有权拒绝：料盘仍被另一非终态 Session 持有时拒绝静默窃取，复用路径 `select ... with_for_update()` 行锁消除 TOCTOU。
+- 已 COMPLETED 的 Session 重入完成收尾时跳过 `record_completed_ng_flow`，避免重复 NG 记账。
+- `RuntimeIntent` 的料盘状态在构造时 fail-fast 预检 `MaterialUnitStatus`，畸形 `material_unit_id` 不再崩整个意图批次。
+
 ## [0.7.3.0] - 2026-06-18
 
 ### Changed
