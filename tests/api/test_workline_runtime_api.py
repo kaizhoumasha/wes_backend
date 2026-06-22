@@ -1633,6 +1633,11 @@ class TestRuntimeQueryService:
                     )
                 ),
             ),
+            patch.object(
+                service,
+                "_with_material_unit_locations",
+                new=AsyncMock(side_effect=lambda db, projection: projection),
+            ),
         ):
             boundary = await service._build_workline_runtime_boundary(AsyncMock(), workline, [session])
 
@@ -1788,6 +1793,9 @@ class TestRuntimeQueryService:
             def scalar_one(self):
                 return self._value
 
+            def scalars(self):
+                return self
+
             def all(self):
                 return self._value
 
@@ -1797,6 +1805,7 @@ class TestRuntimeQueryService:
                 MockExecuteResult([("WAITING_EXTERNAL", 250)]),
                 MockExecuteResult(250),
                 MockExecuteResult(0),
+                MockExecuteResult([]),
             ]
         )
 
@@ -3404,7 +3413,10 @@ class TestRuntimeQueryService:
             created_at=now,
         )
         db = AsyncMock()
-        db.execute.return_value = SimpleNamespace(scalar_one_or_none=lambda: workline)
+        db.execute.return_value = SimpleNamespace(
+            scalar_one_or_none=lambda: workline,
+            scalars=lambda: SimpleNamespace(all=list),
+        )
         active_snapshot = {
             "rack_code": "RACK-ACTIVE",
             "rack_kind": "SINGLE_LAYER",
