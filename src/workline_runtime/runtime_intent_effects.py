@@ -893,6 +893,9 @@ class RuntimeIntentEffectApplier:
                     material_unit = await get_material_unit_by_pkg_code()
                     if material_unit is None:
                         raise
+                    await _reject_reuse_when_owned_by_active_session(
+                        db, material_unit, current_session_id=current_session_id
+                    )
                     status_from_state = _state_value(getattr(material_unit, "status", None))
             else:
                 material_unit = MaterialUnit(
@@ -912,6 +915,8 @@ class RuntimeIntentEffectApplier:
             **{key: value for key, value in six_in_one.items() if value is not None},
         }
         material_unit.six_in_one = merged_six_in_one
+        if "current_location" in intent.payload_json:
+            material_unit.current_location = intent.payload_json.get("current_location")
         _apply_material_unit_status_write(ctx, material_unit, from_state=status_from_state, to_status=status)
         material_unit.current_session_id = current_session_id
         if flush is not None:

@@ -169,6 +169,18 @@ def test_create_material_unit_intent_defaults_to_in_transit_and_preserves_payloa
     }
 
 
+def test_create_material_unit_intent_preserves_optional_current_location() -> None:
+    intent = RuntimeIntent.create_material_unit(
+        pkg_code="PKG-001",
+        material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+        six_in_one={"PkgID": "PKG-001", "HHPN": "HH-001"},
+        status="STORED",
+        current_location="BIN-001:4",
+    )
+
+    assert intent.payload_json["current_location"] == "BIN-001:4"
+
+
 def test_update_material_unit_status_intent_describes_status_and_location() -> None:
     intent = RuntimeIntent.update_material_unit_status(
         material_unit_id=1001,

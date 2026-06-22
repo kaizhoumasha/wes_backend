@@ -1099,8 +1099,6 @@ class RoughSorterPlugin(WorklinePlugin):
         if material_identity_key is None:
             return self._block("ROUGH_SORTER_CONTEXT_MISSING", "粗分机上下文缺少物料身份键，无法记录入箱事实")
         current_material_unit_id = getattr(ctx.session, "current_material_unit_id", None)
-        if current_material_unit_id is None:
-            return self._block("ROUGH_SORTER_CONTEXT_MISSING", "粗分机上下文缺少当前料盘实体，无法更新入箱状态")
 
         source_event_id = _non_empty_str(payload_json.get("command_code")) or f"PUT_TO_BIN:{business_key}"
         consume_payload = {
@@ -1126,7 +1124,7 @@ class RoughSorterPlugin(WorklinePlugin):
             "cell_capacity_depth_mm": bin_location.get("cell_capacity_depth_mm")
             or bin_location.get("capacity_depth_mm"),
         }
-        return [
+        intents = [
             RuntimeIntent.resource_reservation(
                 operation="CONSUME_BIN_CELL",
                 payload=consume_payload,
@@ -1137,13 +1135,29 @@ class RoughSorterPlugin(WorklinePlugin):
                 payload={key: value for key, value in mounted_payload.items() if value is not None},
                 idempotency_key=f"MATERIAL_MOUNTED:{resource_pkg_code}:{bin_code}:{bin_cell_index}",
             ),
-            RuntimeIntent.update_material_unit_status(
-                material_unit_id=int(current_material_unit_id),
-                status=MaterialUnitStatus.STORED.value,
-                current_location=f"{bin_code}:{bin_cell_index}",
-            ),
-            RuntimeIntent.complete({"phase": PHASE_COMPLETED}),
         ]
+        if current_material_unit_id is None:
+            # 兼容部署前已在 PUT_TO_BIN 等待回调的 Session：旧流程没有先创建料盘根实体，
+            # 入箱成功后补建 STORED 实体，避免物理已入箱但 Session 被阻断。
+            intents.append(
+                RuntimeIntent.create_material_unit(
+                    pkg_code=resource_pkg_code,
+                    material_identity_key=material_identity_key,
+                    six_in_one=dict(rough_context.six_in_one),
+                    status=MaterialUnitStatus.STORED.value,
+                    current_location=f"{bin_code}:{bin_cell_index}",
+                )
+            )
+        else:
+            intents.append(
+                RuntimeIntent.update_material_unit_status(
+                    material_unit_id=int(current_material_unit_id),
+                    status=MaterialUnitStatus.STORED.value,
+                    current_location=f"{bin_code}:{bin_cell_index}",
+                )
+            )
+        intents.append(RuntimeIntent.complete({"phase": PHASE_COMPLETED}))
+        return intents
 
     @on_command(ACTION_PUT_TO_BIN, result="FAILED")
     async def handle_put_to_bin_failed(self, ctx: PluginContext, inbox: WorklineInbox) -> list[RuntimeIntent]:

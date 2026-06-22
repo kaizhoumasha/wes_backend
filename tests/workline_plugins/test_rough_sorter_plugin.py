@@ -1174,6 +1174,44 @@ async def test_put_to_bin_success_consumes_reservation_records_material_and_comp
 
 
 @pytest.mark.asyncio
+async def test_put_to_bin_success_creates_material_unit_for_legacy_session_without_current_unit() -> None:
+    session_context = _rough_sorter_context_for_phase(PHASE_PUTTING_TO_BIN)
+    session_context["target_bin_location"] = {
+        "bin_id": "BIN-001",
+        "bin_cell_index": "4",
+        "bin_cell_location": "BIN-001-4",
+        "material_identity_key": "MAT:HH-001:MFR-001:260528:LOT-A",
+    }
+    ctx = _command_ctx(
+        command_type=ACTION_PUT_TO_BIN,
+        device_code="RS-OUTPUT-01",
+        session_context=session_context,
+    )
+    ctx.session.id = 123
+    ctx.session.current_material_unit_id = None
+
+    intents = await RoughSorterPlugin().on_command_result(
+        ctx,
+        _command_inbox(command_type=ACTION_PUT_TO_BIN, device_code="RS-OUTPUT-01"),
+    )
+
+    assert [intent.kind for intent in intents] == [
+        RuntimeIntentKind.RESOURCE_RESERVATION,
+        RuntimeIntentKind.RESOURCE_FACT,
+        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
+        RuntimeIntentKind.COMPLETE,
+    ]
+    assert intents[0].action == "CONSUME_BIN_CELL"
+    assert intents[1].action == "MATERIAL_MOUNTED"
+    assert intents[2].payload_json["pkg_code"] == "PKG-ROUGH-001"
+    assert intents[2].payload_json["material_identity_key"] == "MAT:HH-001:MFR-001:260528:LOT-A"
+    assert intents[2].payload_json["six_in_one"] == session_context["six_in_one"]
+    assert intents[2].payload_json["status"] == MaterialUnitStatus.STORED.value
+    assert intents[2].payload_json["current_location"] == "BIN-001:4"
+    assert intents[3].context_patch["phase"] == PHASE_COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_put_to_bin_success_records_pkg_id_when_business_key_is_hashed() -> None:
     session_context = _rough_sorter_context_for_phase(PHASE_PUTTING_TO_BIN)
     session_context["business_key"] = "29c900591c055bc6"

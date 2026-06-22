@@ -359,6 +359,28 @@ async def test_create_material_unit_effect_persists_entity_and_links_session() -
 
 
 @pytest.mark.asyncio
+async def test_create_material_unit_effect_persists_optional_current_location() -> None:
+    session = _session(id=901, current_material_unit_id=None)
+    db = MaterialUnitDb()
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.create_material_unit(
+                pkg_code="PKG-001",
+                material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+                six_in_one={"PkgID": "PKG-001", "HHPN": "HH-001"},
+                status=MaterialUnitStatus.STORED.value,
+                current_location="BIN-001:4",
+            )
+        ],
+    )
+
+    assert db.added[0].current_location == "BIN-001:4"
+
+
+@pytest.mark.asyncio
 async def test_create_material_unit_effect_reuses_existing_pkg_code_without_add() -> None:
     existing = SimpleNamespace(
         id=1002,
@@ -743,6 +765,93 @@ async def test_create_material_unit_effect_recovers_unique_conflict_and_links_se
     assert persisted_unit.six_in_one == {"PkgID": "PKG-DB-RACE", "HHPN": "HH-RACE"}
     assert persisted_unit.status == MaterialUnitStatus.IN_TRANSIT
     assert persisted_unit.current_session_id == session.id
+
+
+@pytest.mark.asyncio
+async def test_create_material_unit_effect_rejects_unique_conflict_when_owner_is_active(
+    material_unit_effect_session: AsyncSession,
+) -> None:
+    """唯一键竞争回收已存在料盘后，仍要校验活跃 Session 所有权。"""
+    material_unit_effect_session.add(
+        WorkLine(
+            id=1,
+            line_code="WL-MU-RACE-ACTIVE",
+            line_name="Material Unit Race Active Owner Test Line",
+            line_type=LineType.AUTO,
+            plugin_key="smt_sorting_inbound",
+        )
+    )
+    owner_session = WorklineSession(
+        id=777,
+        session_code="SESSION-MU-RACE-OWNER",
+        workline_id=1,
+        plugin_key="smt_sorting_inbound",
+        run_mode=RunMode.AUTO,
+        status=SessionStatus.RUNNING,
+        context_json={},
+    )
+    session = WorklineSession(
+        session_code="SESSION-MU-RACE-STEALER",
+        workline_id=1,
+        plugin_key="smt_sorting_inbound",
+        run_mode=RunMode.AUTO,
+        status=SessionStatus.RUNNING,
+        context_json={},
+    )
+    material_unit_effect_session.add(owner_session)
+    material_unit_effect_session.add(session)
+    await material_unit_effect_session.commit()
+    await material_unit_effect_session.refresh(session)
+
+    class ConcurrentActiveOwnerInsertSession:
+        def __init__(self, wrapped: AsyncSession) -> None:
+            self.wrapped = wrapped
+            self.injected_material_unit_id: int | None = None
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.wrapped, name)
+
+        async def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+            if self.injected_material_unit_id is None:
+                result = await self.wrapped.execute(statement, *args, **kwargs)
+                assert result.scalars().all() == []
+                existing = MaterialUnit(
+                    pkg_code="PKG-DB-RACE-ACTIVE",
+                    material_identity_key="old-key",
+                    six_in_one={"PkgID": "PKG-DB-RACE-ACTIVE"},
+                    status=MaterialUnitStatus.IN_TRANSIT,
+                    current_session_id=777,
+                )
+                self.wrapped.add(existing)
+                await self.wrapped.flush()
+                self.injected_material_unit_id = existing.id
+                return SimpleNamespace(scalars=lambda: SimpleNamespace(all=list))
+            return await self.wrapped.execute(statement, *args, **kwargs)
+
+    db = ConcurrentActiveOwnerInsertSession(material_unit_effect_session)
+    ctx = _ctx(OrchestratorResult(success=True), session=session, db=db)
+
+    with pytest.raises(ValueError, match="refuse silent takeover"):
+        await RuntimeIntentEffectApplier().apply(
+            ctx,
+            [
+                RuntimeIntent.create_material_unit(
+                    pkg_code="PKG-DB-RACE-ACTIVE",
+                    material_identity_key="MAT:HH-RACE:MFR-001:260528:LOT-A",
+                    six_in_one={"PkgID": "PKG-DB-RACE-ACTIVE", "HHPN": "HH-RACE"},
+                    status=MaterialUnitStatus.IN_TRANSIT.value,
+                )
+            ],
+        )
+
+    result = await material_unit_effect_session.execute(
+        select(MaterialUnit).where(MaterialUnit.pkg_code == "PKG-DB-RACE-ACTIVE")
+    )
+    persisted_unit = result.scalar_one()
+
+    assert db.injected_material_unit_id == persisted_unit.id
+    assert persisted_unit.current_session_id == 777
+    assert session.current_material_unit_id is None
 
 
 @pytest.mark.asyncio
@@ -1218,6 +1327,38 @@ async def test_complete_intent_turns_ng_material_conflict_into_runtime_hold(
     assert created_holds[0]["evidence"]["material_identity_key"] == long_identity
     assert created_holds[0]["source_event_id"].startswith("ng-material-conflict:123:8802:")
     assert len(created_holds[0]["source_event_id"]) < 80
+    emit_timeline.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_complete_intent_skips_ng_flow_for_already_completed_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session(status=SessionStatus.COMPLETED.value, context_json={"pkg_id": "PKG-001"})
+    db = SimpleNamespace(execute=AsyncMock())
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    emit_timeline = AsyncMock()
+    record_ng_flow = AsyncMock(
+        side_effect=NgMaterialConflictError(
+            material_identity_key="MAT:HH-001:MFR-001:260528:LOT-A",
+            existing_item=SimpleNamespace(id=8801, created_from_runtime_hold_id=9901),
+            evidence={
+                "reason_code": "NG_MATERIAL_CONFLICT",
+                "material_identity_key": "MAT:HH-001:MFR-001:260528:LOT-A",
+            },
+        )
+    )
+    create_hold = AsyncMock()
+
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    monkeypatch.setattr(ng_return_item_service, "record_completed_ng_flow", record_ng_flow)
+    monkeypatch.setattr(runtime_hold_creation_service, "create_for_resource_reconciliation", create_hold)
+
+    await RuntimeIntentEffectApplier().apply(ctx, [RuntimeIntent.complete({"material_moved": True})])
+
+    assert session.status == SessionStatus.COMPLETED.value
+    record_ng_flow.assert_not_awaited()
+    create_hold.assert_not_awaited()
     emit_timeline.assert_awaited_once()
 
 

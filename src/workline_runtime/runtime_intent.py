@@ -344,15 +344,19 @@ class RuntimeIntent(BaseModel):
         material_identity_key: str,
         six_in_one: dict[str, Any],
         status: str = "IN_TRANSIT",
+        current_location: str | None = None,
     ) -> RuntimeIntent:
+        payload_json: dict[str, Any] = {
+            "pkg_code": pkg_code,
+            "material_identity_key": material_identity_key,
+            "six_in_one": deepcopy(six_in_one),
+            "status": status,
+        }
+        if current_location is not None:
+            payload_json["current_location"] = current_location
         return cls(
             kind=RuntimeIntentKind.CREATE_MATERIAL_UNIT,
-            payload_json={
-                "pkg_code": pkg_code,
-                "material_identity_key": material_identity_key,
-                "six_in_one": deepcopy(six_in_one),
-                "status": status,
-            },
+            payload_json=payload_json,
         )
 
     @classmethod
