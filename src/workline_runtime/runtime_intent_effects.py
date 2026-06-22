@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
+from src.app.workline.models.session import SessionStatus
 from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
 from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_plugins.smt_sorting_inbound.constants import (
@@ -435,12 +436,15 @@ def _apply_material_unit_status_write(
 
 # 终态 Session 可被其它 Session 回收其料盘所有权（正常 handoff）；
 # 非终态 Session 仍持有料盘时，复用属于跨线并发或重复 claim，必须拒绝。
-_ACTIVE_SESSION_STATUSES = (
-    "NEW",
-    "RUNNING",
-    "WAITING_DEVICE_RESULT",
-    "WAITING_EXTERNAL",
-    "MANUAL_HOLD",
+# 从 SessionStatus 枚举派生，避免硬编码字符串与枚举漂移；漂移校验在模块加载时执行。
+_ACTIVE_SESSION_STATUSES: frozenset[str] = frozenset(
+    {
+        SessionStatus.NEW.value,
+        SessionStatus.RUNNING.value,
+        SessionStatus.WAITING_DEVICE_RESULT.value,
+        SessionStatus.WAITING_EXTERNAL.value,
+        SessionStatus.MANUAL_HOLD.value,
+    }
 )
 
 
@@ -450,6 +454,14 @@ async def _reject_reuse_when_owned_by_active_session(
     *,
     current_session_id: int,
 ) -> None:
+    """create 路径所有权检查：白名单语义（仅当 owner 明确非终态才拒绝）。
+
+    与 SMT handoff claim 路径（smt_inbound_handoff_service._link_claim_session_material_unit）
+    的黑名单语义有意区分：
+    - 本函数处理"扫码新建/补建"场景。owner_session 不存在（已硬删）= 孤儿料盘，放行回收，
+      避免历史数据让 SCAN_COMPLETED 永远卡死。
+    - claim 路径处理"跨线 handoff 接管"场景，owner 未知时风险更高（接管错的料盘）→ 保守拒绝。
+    """
     owner_session_id = optional_int(getattr(material_unit, "current_session_id", None))
     if owner_session_id is None or owner_session_id == current_session_id:
         return

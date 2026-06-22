@@ -1626,6 +1626,14 @@ class SmtInboundHandoffService:
         session: WorklineSession,
         item: SmtInboundHandoffSourceItem,
     ) -> None:
+        """SMT claim 路径所有权检查：黑名单语义（仅当 owner 明确终态才放行）。
+
+        与 create 路径（runtime_intent_effects._reject_reuse_when_owned_by_active_session）
+        的白名单语义有意区分：
+        - 本函数处理"跨线 handoff 接管"场景，owner 未知（已硬删/未注册 ID）→ 保守拒绝，
+          避免 SMT 接管错的料盘造成跨产线状态分裂。
+        - create 路径处理"扫码新建/补建"场景，owner 不存在视为孤儿料盘，放行回收。
+        """
         pkg_code = self._text_or_none(getattr(item, "pkg_code", None))
         session_id = getattr(session, "id", None)
         if pkg_code is None or not isinstance(session_id, int):
