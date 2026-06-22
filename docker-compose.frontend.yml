@@ -10,6 +10,10 @@ services:
     env_file:
       - ${FRONTEND_ENV_FILE:-.env.frontend.dev}
     environment:
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      http_proxy: ""
+      https_proxy: ""
       FRONTEND_APP_DIR: /app
       PNPM_HOME: /pnpm
       PNPM_STORE_DIR: /pnpm/store

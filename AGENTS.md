@@ -187,7 +187,7 @@ user_api = BaseAPI(
 ---
 
 ## Project Structure & Module Organization
-Core code lives in `src/`. Domain modules sit under `src/app/`; infrastructure lives in `src/core/`, `src/database/`, `src/middleware/`, `src/utils/`, and `src/celery_app/`. The FastAPI entrypoint is [`main.py`](/Users/kaizhou/SynologyDrive/works/wes_backend/main.py), and Alembic revisions live in `migrations/versions/`. Tests are grouped under `tests/`, including `api/`, `auth/`, `e2e/`, `resilience/`, `load/`, and `mock/`.
+Core code lives in `src/`. Domain modules sit under `src/app/`; infrastructure lives in `src/core/`, `src/database/`, `src/middleware/`, `src/utils/`, and `src/celery_app/`. The FastAPI entrypoint is [`main.py`](/Users/kaizhou/codeDev/wes_backend/main.py), and Alembic revisions live in `migrations/versions/`. Tests are grouped under `tests/`, including `api/`, `auth/`, `e2e/`, `resilience/`, `load/`, and `mock/`.
 
 ## Build, Test, and Development Commands
 Use `uv` locally.
@@ -215,10 +215,10 @@ Use `uv` locally.
 
 使用 worktree 时，每个 worktree 必须维护自己的本地运行状态。不要复用其它 worktree 的 `.venv`、`.env`、`.pytest_cache` 或其它本地临时文件。
 
-- 后端主仓库路径：`/Users/kaizhou/SynologyDrive/works/wes_backend`
-- 前端主仓库路径：`/Users/kaizhou/SynologyDrive/works/wes_frontend`
-- 后端 Worktree 根目录：`/Users/kaizhou/SynologyDrive/works/worktrees/wes_backend`
-- 前端 Worktree 根目录：`/Users/kaizhou/SynologyDrive/works/worktrees/wes_frontend`
+- 后端主仓库路径：`/Users/kaizhou/codeDev/wes_backend`
+- 前端主仓库路径：`/Users/kaizhou/codeDev/wes_frontend`
+- 后端 Worktree 根目录：`/Users/kaizhou/codeDev/wes_backend-worktrees`
+- 前端 Worktree 根目录：`/Users/kaizhou/codeDev/wes_frontend-worktrees`
 - Worktree 目录名使用 branch slug：把分支名里的 `/` 替换成 `-`，例如 `feature/handling-core` → `feature-handling-core`。
 - 创建示例：`mkdir -p ../worktrees/wes_backend && git worktree add ../worktrees/wes_backend/<branch-slug> -b <branch> develop`
 - 进入 worktree 后先运行 `./scripts/init-env.sh dev`。
@@ -291,7 +291,7 @@ use Chinese to Write document and Communication and Commit Comment
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **wes_backend** (30835 symbols, 57217 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **wes_backend** (30932 symbols, 57468 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
