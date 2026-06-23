@@ -185,7 +185,7 @@ async def test_record_resource_wait_updates_existing_diagnostic_evidence() -> No
     repo = _DiagnosticRepoStub()
     repo.existing = SimpleNamespace(
         id=41,
-        diagnostic_key="RESOURCE_WAIT:11:station:TARGET_STATION",
+        diagnostic_key="RESOURCE_WAIT:11:TARGET_STATION:ACTIVE_TARGET_BIN_RACK:station:TARGET_STATION",
         evidence_json={
             "first_seen_at": "2026-01-01T00:00:00",
             "last_seen_at": "2026-01-01T00:00:00",
@@ -198,8 +198,9 @@ async def test_record_resource_wait_updates_existing_diagnostic_evidence() -> No
         object(),
         evidence=ResourceWaitEvidence.build(
             inbox_id=11,
-            resource_kind="STATION",
-            resource_key="station:TARGET_STATION",
+            subject_type="TARGET_STATION",
+            subject_key="station:TARGET_STATION",
+            projection_type="ACTIVE_TARGET_BIN_RACK",
             reason_code="STATION_BUSY",
             message="目标 Station 忙",
             occurred_at="2026-01-01T00:00:10",
@@ -235,8 +236,9 @@ async def test_record_resource_wait_resolves_other_active_waits_for_same_inbox()
         db,
         evidence=ResourceWaitEvidence.build(
             inbox_id=11,
-            resource_kind="STATION",
-            resource_key="station:TARGET_STATION_B",
+            subject_type="TARGET_STATION_B",
+            subject_key="station:TARGET_STATION_B",
+            projection_type="ACTIVE_TARGET_BIN_RACK",
             reason_code="STATION_BUSY",
             message="目标 Station B 忙",
             occurred_at="2026-01-01T00:00:10",
@@ -250,7 +252,7 @@ async def test_record_resource_wait_resolves_other_active_waits_for_same_inbox()
     repo.resolve_other_active_resource_waits_for_inbox.assert_awaited_once_with(
         db,
         inbox_id=11,
-        keep_diagnostic_key="RESOURCE_WAIT:11:station:TARGET_STATION_B",
+        keep_diagnostic_key="RESOURCE_WAIT:11:TARGET_STATION_B:ACTIVE_TARGET_BIN_RACK:station:TARGET_STATION_B",
     )
 
 

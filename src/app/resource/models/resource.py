@@ -15,6 +15,7 @@ from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
 from src.core.mixins import BaseMixin, DataTableMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
@@ -368,7 +369,13 @@ class ResourceStateEventBase(BaseMixin):
     source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
     trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
-    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+    workline_session_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+        index=True,
+        foreign_key="wes_biz.workline_sessions.id",
+        description="关联 workline_sessions.id",
+    )
     workline_id: int | None = Field(default=None, index=True, description="关联 WorkLine.id")
     workline_code: str | None = Field(default=None, max_length=50, index=True, description="工作线编码")
     position_code: str | None = Field(default=None, max_length=80, index=True, description="工作线停靠位编码")
@@ -426,7 +433,13 @@ class RackPlacementBase(BaseMixin):
     source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
     trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
-    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+    workline_session_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+        index=True,
+        foreign_key="wes_biz.workline_sessions.id",
+        description="关联 workline_sessions.id",
+    )
     started_at: datetime = Field(description="进入该关系的时间")
     ended_at: datetime | None = Field(default=None, index=True, description="离开该关系的时间")
 
@@ -471,7 +484,13 @@ class RackBinMountBase(BaseMixin):
     source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
     trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
-    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+    workline_session_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+        index=True,
+        foreign_key="wes_biz.workline_sessions.id",
+        description="关联 workline_sessions.id",
+    )
     started_at: datetime = Field(description="挂载确认时间")
     ended_at: datetime | None = Field(default=None, index=True, description="解除挂载时间")
 
@@ -519,7 +538,13 @@ class BinPlacementBase(BaseMixin):
     source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
     trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
-    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+    workline_session_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+        index=True,
+        foreign_key="wes_biz.workline_sessions.id",
+        description="关联 workline_sessions.id",
+    )
     started_at: datetime = Field(description="进入该位置的时间")
     ended_at: datetime | None = Field(default=None, index=True, description="离开该位置的时间")
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展证据")
@@ -550,16 +575,40 @@ class BinPlacement(BinPlacementBase, DataTableMixin, table=True):
 class BinMaterialMountBase(BaseMixin):
     """料盘/PKG 料箱格位明细基础字段。"""
 
-    bin_cell_occupancy_id: int | None = Field(default=None, index=True, description="关联料箱格位聚合占用 ID")
+    bin_cell_occupancy_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+        index=True,
+        foreign_key="wes_biz.resource_bin_cell_occupancies.id",
+        description="关联料箱格位聚合占用 ID",
+    )
     cell_stack_position: int = Field(default=1, ge=1, index=True, description="同一料格内入格顺序，1 为最早入格")
     bin_code: str = Field(min_length=1, max_length=80, index=True, description="料箱编码")
     bin_cell_code: str | None = Field(default=None, max_length=80, index=True, description="料箱内部格位编码")
     bin_cell_index: str = Field(min_length=1, max_length=20, index=True, description="料箱内部格位序号")
-    material_identity_key: str = Field(min_length=1, max_length=300, index=True, description="物料属性身份键")
+    material_identity_key: str = Field(
+        min_length=1,
+        max_length=300,
+        index=True,
+        description="事件证据快照；料盘属性主源以 material_units 为准",
+    )
     pkg_code: str | None = Field(default=None, max_length=200, index=True, description="PKG 展示字段")
-    material_code: str | None = Field(default=None, max_length=120, index=True, description="物料编码引用")
-    lot_code: str | None = Field(default=None, max_length=120, description="批次展示字段")
-    date_code: str | None = Field(default=None, max_length=80, description="Date Code")
+    material_code: str | None = Field(
+        default=None,
+        max_length=120,
+        index=True,
+        description="事件证据快照；料盘属性主源以 material_units 为准",
+    )
+    lot_code: str | None = Field(
+        default=None,
+        max_length=120,
+        description="事件证据快照；料盘属性主源以 material_units 为准",
+    )
+    date_code: str | None = Field(
+        default=None,
+        max_length=80,
+        description="事件证据快照；料盘属性主源以 material_units 为准",
+    )
     qty_snapshot: float | None = Field(default=None, ge=0, description="当时执行过程看到的数量")
     reel_diameter: str | None = Field(default=None, max_length=80, description="料盘直径")
     reel_thickness: str | None = Field(default=None, max_length=80, description="料盘厚度")
@@ -583,7 +632,13 @@ class BinMaterialMountBase(BaseMixin):
     source_event_id: str = Field(min_length=1, max_length=200, index=True, description="来源事件 ID")
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
     trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
-    session_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine Session")
+    workline_session_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+        index=True,
+        foreign_key="wes_biz.workline_sessions.id",
+        description="关联 workline_sessions.id",
+    )
     started_at: datetime = Field(description="占用确认时间")
     ended_at: datetime | None = Field(default=None, index=True, description="离开料箱格位时间")
 
@@ -594,10 +649,28 @@ class BinCellOccupancyBase(BaseMixin):
     bin_code: str = Field(min_length=1, max_length=80, index=True, description="料箱编码")
     bin_cell_code: str | None = Field(default=None, max_length=80, index=True, description="料箱内部格位编码")
     bin_cell_index: str = Field(min_length=1, max_length=20, index=True, description="料箱内部格位序号")
-    material_identity_key: str = Field(min_length=1, max_length=300, index=True, description="物料属性身份键")
-    material_code: str | None = Field(default=None, max_length=120, index=True, description="物料编码引用")
-    lot_code: str | None = Field(default=None, max_length=120, description="批次展示字段")
-    date_code: str | None = Field(default=None, max_length=80, description="Date Code")
+    material_identity_key: str = Field(
+        min_length=1,
+        max_length=300,
+        index=True,
+        description="格位聚合键；料盘属性权威以 material_units 为准",
+    )
+    material_code: str | None = Field(
+        default=None,
+        max_length=120,
+        index=True,
+        description="格位聚合键引用；料盘属性权威以 material_units 为准",
+    )
+    lot_code: str | None = Field(
+        default=None,
+        max_length=120,
+        description="格位聚合键快照；料盘属性权威以 material_units 为准",
+    )
+    date_code: str | None = Field(
+        default=None,
+        max_length=80,
+        description="格位聚合键快照；料盘属性权威以 material_units 为准",
+    )
     reel_count: int = Field(default=0, ge=0, description="当前格位内 active 料盘数量")
     used_depth_mm: Decimal = Field(
         default=Decimal("0"),
@@ -629,7 +702,13 @@ class BinCellOccupancyBase(BaseMixin):
     source_event_id: str = Field(min_length=1, max_length=200, index=True, description="最近来源事件 ID")
     source_version: str | None = Field(default=None, max_length=100, description="来源版本")
     trace_id: str | None = Field(default=None, max_length=100, index=True, description="WorkLine trace")
-    session_id: str | None = Field(default=None, max_length=100, index=True, description="最近 WorkLine Session")
+    workline_session_id: int | None = Field(
+        default=None,
+        sa_type=SQL_COMPAT_BIGINT,
+        index=True,
+        foreign_key="wes_biz.workline_sessions.id",
+        description="最近关联 workline_sessions.id",
+    )
     started_at: datetime = Field(description="首次占用确认时间")
     ended_at: datetime | None = Field(default=None, index=True, description="格位占用结束时间")
     metadata_json: dict[str, Any] = Field(

@@ -7,7 +7,6 @@ from hashlib import sha256
 from math import isfinite
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from src.app.resource.models import (
@@ -40,7 +39,12 @@ from src.app.resource.repositories import (
 from src.app.resource.services.material_identity import material_identity_keys_match, material_identity_lookup_keys
 from src.app.resource.services.relation_service import ResourceProjectionResult, ResourceProjectionStatus
 from src.app.resource.services.snapshot_service import ResourceSnapshotService, resource_snapshot_service
-from src.app.workline.models.material_unit import MaterialUnit
+from src.app.workline.models.object_transition_event import ObjectTransitionDomain
+from src.app.workline.repositories import MaterialUnitRepository, material_unit_repository
+from src.app.workline.services.object_transition_event_service import (
+    ObjectTransitionEventService,
+    object_transition_event_service,
+)
 from src.app.workline.services.rack_position_service import (
     WorklineRackPositionService,
     workline_rack_position_service,
@@ -174,6 +178,8 @@ class ResourceProjectionService:
         rack_position_service: WorklineRackPositionService = workline_rack_position_service,
         runtime_hold_creator: Any = default_runtime_hold_creation_service,
         snapshot_service: ResourceSnapshotService = resource_snapshot_service,
+        object_transition_event_service: ObjectTransitionEventService = object_transition_event_service,
+        material_unit_repository: MaterialUnitRepository = material_unit_repository,
     ) -> None:
         self.state_event_repo = state_event_repo
         self.rack_placement_repo = rack_placement_repo
@@ -184,6 +190,8 @@ class ResourceProjectionService:
         self.rack_position_service = rack_position_service
         self.runtime_hold_creator = runtime_hold_creator
         self.snapshot_service = snapshot_service
+        self.object_transition_event_service = object_transition_event_service
+        self.material_unit_repository = material_unit_repository
 
     @staticmethod
     def _event_code(
@@ -230,7 +238,6 @@ class ResourceProjectionService:
         source_task_id: str | None = None,
         external_location_code: str | None = None,
         trace_id: str | None = None,
-        session_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
         plugin_key: str | None = None,
@@ -274,7 +281,7 @@ class ResourceProjectionService:
                     "source_event_id": source_event_id,
                     "source_version": source_version,
                     "trace_id": trace_id,
-                    "session_id": session_id,
+                    "workline_session_id": workline_session_id,
                     "workline_id": workline_id,
                     "workline_code": workline_code,
                     "position_code": position_code,
@@ -309,6 +316,30 @@ class ResourceProjectionService:
                 contract_version=contract_version,
                 evidence={"validation_error": str(exc)},
             )
+            await self._record_resource_transition(
+                db,
+                object_type="RACK",
+                object_key=rack_code,
+                projection_type="RACK_PLACEMENT",
+                from_state=None,
+                to_state="RECONCILING",
+                reason_code=reason_code,
+                source_event_id=source_event_id,
+                source_ref_json={
+                    "resource_state_event_type": ResourceStateEventType.RACK_ARRIVED.value,
+                    "rack_code": rack_code,
+                },
+                evidence_json={
+                    "trusted": False,
+                    "workline_code": workline_code,
+                    "position_code": position_code,
+                    "rack_kind": rack_kind.value,
+                    "validation_error": str(exc),
+                },
+                workline_session_id=workline_session_id,
+                trace_id=trace_id,
+                occurred_at=occurred_at_for_db,
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
@@ -336,7 +367,7 @@ class ResourceProjectionService:
                 "source_event_id": source_event_id,
                 "source_version": source_version,
                 "trace_id": trace_id,
-                "session_id": session_id,
+                "workline_session_id": workline_session_id,
                 "workline_id": resolved_workline_id,
                 "workline_code": workline_code,
                 "position_code": position_code,
@@ -360,6 +391,28 @@ class ResourceProjectionService:
         if active_by_rack is not None and (
             active_by_rack.workline_code == workline_code and active_by_rack.position_code == position_code
         ):
+            await self._record_resource_transition(
+                db,
+                object_type="RACK",
+                object_key=rack_code,
+                projection_type="RACK_PLACEMENT",
+                from_state=enum_str(getattr(active_by_rack, "placement_status", None)),
+                to_state="ARRIVED",
+                reason_code=ResourceStateEventType.RACK_ARRIVED.value,
+                source_event_id=source_event_id,
+                source_ref_json={
+                    "resource_state_event_type": ResourceStateEventType.RACK_ARRIVED.value,
+                    "rack_code": rack_code,
+                },
+                evidence_json={
+                    "workline_code": workline_code,
+                    "position_code": position_code,
+                    "rack_kind": rack_kind.value,
+                },
+                workline_session_id=workline_session_id,
+                trace_id=trace_id,
+                occurred_at=occurred_at_for_db,
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.PROJECTED,
                 event=event,
@@ -380,6 +433,7 @@ class ResourceProjectionService:
                     active_placement_id = getattr(active_placement, "id", None)
                     if active_placement_id is None:
                         raise ValueError(f"active rack placement missing id: {active_rack_code}")
+                    previous_status = enum_str(getattr(active_placement, "placement_status", None))
                     await self.rack_placement_repo.update(
                         db,
                         active_placement_id,
@@ -387,6 +441,29 @@ class ResourceProjectionService:
                             "placement_status": RackPlacementStatus.DEPARTED.value,
                             "ended_at": occurred_at_for_db,
                         },
+                    )
+                    await self._record_resource_transition(
+                        db,
+                        object_type="RACK",
+                        object_key=active_rack_code,
+                        projection_type="RACK_PLACEMENT",
+                        from_state=previous_status,
+                        to_state=RackPlacementStatus.DEPARTED.value,
+                        reason_code="RACK_RELEASED_BY_NEW_ARRIVAL",
+                        source_event_id=source_event_id,
+                        source_ref_json={
+                            "resource_state_event_type": ResourceStateEventType.RACK_ARRIVED.value,
+                            "rack_code": rack_code,
+                            "released_rack_code": active_rack_code,
+                        },
+                        evidence_json={
+                            "workline_code": workline_code,
+                            "position_code": position_code,
+                            "rack_kind": enum_str(getattr(active_placement, "rack_kind", None)),
+                        },
+                        workline_session_id=workline_session_id,
+                        trace_id=trace_id,
+                        occurred_at=occurred_at_for_db,
                     )
                     continue
                 remaining_active_placements.append(active_placement)
@@ -408,6 +485,32 @@ class ResourceProjectionService:
                 plugin_key=plugin_key,
                 contract_version=contract_version,
                 evidence={"capacity": capacity, "active_count": active_count},
+            )
+            await self._record_resource_transition(
+                db,
+                object_type="RACK",
+                object_key=rack_code,
+                projection_type="RACK_PLACEMENT",
+                from_state=None,
+                to_state="RECONCILING",
+                reason_code=reason_code,
+                source_event_id=source_event_id,
+                source_ref_json={
+                    "resource_state_event_type": ResourceStateEventType.RACK_ARRIVED.value,
+                    "rack_code": rack_code,
+                },
+                evidence_json={
+                    "trusted": False,
+                    "workline_code": workline_code,
+                    "position_code": position_code,
+                    "rack_kind": rack_kind.value,
+                    "capacity": capacity,
+                    "active_count": active_count,
+                    "active_rack_codes": [placement.rack_code for placement in active_placements],
+                },
+                workline_session_id=workline_session_id,
+                trace_id=trace_id,
+                occurred_at=occurred_at_for_db,
             )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
@@ -449,10 +552,32 @@ class ResourceProjectionService:
                 "source_event_id": source_event_id,
                 "source_version": source_version,
                 "trace_id": trace_id,
-                "session_id": session_id,
+                "workline_session_id": workline_session_id,
                 "started_at": occurred_at_for_db,
                 "ended_at": None,
             },
+        )
+        await self._record_resource_transition(
+            db,
+            object_type="RACK",
+            object_key=rack_code,
+            projection_type="RACK_PLACEMENT",
+            from_state=None,
+            to_state="ARRIVED",
+            reason_code=ResourceStateEventType.RACK_ARRIVED.value,
+            source_event_id=source_event_id,
+            source_ref_json={
+                "resource_state_event_type": ResourceStateEventType.RACK_ARRIVED.value,
+                "rack_code": rack_code,
+            },
+            evidence_json={
+                "workline_code": workline_code,
+                "position_code": position_code,
+                "rack_kind": rack_kind.value,
+            },
+            workline_session_id=workline_session_id,
+            trace_id=trace_id,
+            occurred_at=occurred_at_for_db,
         )
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event, projection=projection)
 
@@ -468,7 +593,6 @@ class ResourceProjectionService:
         occurred_at: datetime,
         source_version: str | None = None,
         trace_id: str | None = None,
-        session_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
         plugin_key: str | None = None,
@@ -501,7 +625,7 @@ class ResourceProjectionService:
                 "source_event_id": source_event_id,
                 "source_version": source_version,
                 "trace_id": trace_id,
-                "session_id": session_id,
+                "workline_session_id": workline_session_id,
                 "payload_json": {"rack_code": rack_code, "bin_mounts": normalized_mounts},
                 "occurred_at": occurred_at_for_db,
                 "received_at": timezone.now_for_db(),
@@ -538,6 +662,34 @@ class ResourceProjectionService:
                     plugin_key=plugin_key,
                     contract_version=contract_version,
                 )
+                await self._record_resource_transition(
+                    db,
+                    object_type="BIN",
+                    object_key=bin_code,
+                    projection_type="RACK_BIN_MOUNT",
+                    from_state=None,
+                    to_state="RECONCILING",
+                    reason_code="RACK_BIN_MOUNT_CONFLICT",
+                    source_event_id=source_event_id,
+                    source_ref_json={
+                        "resource_state_event_type": ResourceStateEventType.BIN_MOUNTED.value,
+                        "rack_code": rack_code,
+                        "rack_slot_code": rack_slot_code,
+                        "bin_code": bin_code,
+                    },
+                    evidence_json={
+                        "trusted": False,
+                        "rack_code": rack_code,
+                        "rack_slot_code": rack_slot_code,
+                        "bin_code": bin_code,
+                        "active_slot_bin_code": getattr(active_slot, "bin_code", None),
+                        "active_bin_rack_code": getattr(active_bin, "rack_code", None),
+                        "active_bin_slot_code": getattr(active_bin, "rack_slot_code", None),
+                    },
+                    workline_session_id=workline_session_id,
+                    trace_id=trace_id,
+                    occurred_at=occurred_at_for_db,
+                )
                 return ResourceProjectionResult(
                     status=ResourceProjectionStatus.RECONCILING,
                     event=event,
@@ -554,6 +706,30 @@ class ResourceProjectionService:
                 rack_slot_code=rack_slot_code,
             )
             if active_slot is not None and getattr(active_slot, "bin_code", None) == bin_code:
+                await self._record_resource_transition(
+                    db,
+                    object_type="BIN",
+                    object_key=bin_code,
+                    projection_type="RACK_BIN_MOUNT",
+                    from_state=enum_str(getattr(active_slot, "mount_status", None)),
+                    to_state="MOUNTED",
+                    reason_code=ResourceStateEventType.BIN_MOUNTED.value,
+                    source_event_id=source_event_id,
+                    source_ref_json={
+                        "resource_state_event_type": ResourceStateEventType.BIN_MOUNTED.value,
+                        "rack_code": rack_code,
+                        "rack_slot_code": rack_slot_code,
+                        "bin_code": bin_code,
+                    },
+                    evidence_json={
+                        "rack_code": rack_code,
+                        "rack_slot_code": rack_slot_code,
+                        "bin_code": bin_code,
+                    },
+                    workline_session_id=workline_session_id,
+                    trace_id=trace_id,
+                    occurred_at=occurred_at_for_db,
+                )
                 continue
             _ = await self.rack_bin_mount_repo.create(
                 db,
@@ -566,10 +742,34 @@ class ResourceProjectionService:
                     "source_event_id": source_event_id,
                     "source_version": source_version,
                     "trace_id": trace_id,
-                    "session_id": session_id,
+                    "workline_session_id": workline_session_id,
                     "started_at": occurred_at_for_db,
                     "ended_at": None,
                 },
+            )
+            await self._record_resource_transition(
+                db,
+                object_type="BIN",
+                object_key=bin_code,
+                projection_type="RACK_BIN_MOUNT",
+                from_state=None,
+                to_state="MOUNTED",
+                reason_code=ResourceStateEventType.BIN_MOUNTED.value,
+                source_event_id=source_event_id,
+                source_ref_json={
+                    "resource_state_event_type": ResourceStateEventType.BIN_MOUNTED.value,
+                    "rack_code": rack_code,
+                    "rack_slot_code": rack_slot_code,
+                    "bin_code": bin_code,
+                },
+                evidence_json={
+                    "rack_code": rack_code,
+                    "rack_slot_code": rack_slot_code,
+                    "bin_code": bin_code,
+                },
+                workline_session_id=workline_session_id,
+                trace_id=trace_id,
+                occurred_at=occurred_at_for_db,
             )
         _ = await self.snapshot_service.record_empty_bin_snapshots_from_arrived_rack(
             db,
@@ -604,7 +804,6 @@ class ResourceProjectionService:
         reel_thickness: str | None = None,
         cell_capacity_depth_mm: Any | None = None,
         trace_id: str | None = None,
-        session_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
         plugin_key: str | None = None,
@@ -634,7 +833,7 @@ class ResourceProjectionService:
                 "source_event_id": source_event_id,
                 "source_version": source_version,
                 "trace_id": trace_id,
-                "session_id": session_id,
+                "workline_session_id": workline_session_id,
                 "workline_id": workline_id,
                 "payload_json": {
                     "bin_code": bin_code,
@@ -703,6 +902,36 @@ class ResourceProjectionService:
                 plugin_key=plugin_key,
                 contract_version=contract_version,
             )
+            await self._record_resource_transition(
+                db,
+                object_type="MATERIAL",
+                object_key=pkg_code or material_identity_key,
+                projection_type="BIN_CELL_MOUNT",
+                from_state=None,
+                to_state="RECONCILING",
+                reason_code=conflict["reason_code"],
+                source_event_id=source_event_id,
+                source_ref_json={
+                    "resource_state_event_type": ResourceStateEventType.MATERIAL_MOUNTED.value,
+                    "bin_code": bin_code,
+                    "bin_cell_index": bin_cell_index,
+                    "pkg_code": pkg_code,
+                    "wms_inventory_id": wms_inventory_id,
+                },
+                evidence_json={
+                    "trusted": False,
+                    "bin_code": bin_code,
+                    "bin_cell_code": bin_cell_code,
+                    "bin_cell_index": bin_cell_index,
+                    "material_identity_key": material_identity_key,
+                    "pkg_code": pkg_code,
+                    "wms_inventory_id": wms_inventory_id,
+                    **(conflict.get("evidence") or {}),
+                },
+                workline_session_id=workline_session_id,
+                trace_id=trace_id,
+                occurred_at=occurred_at_for_db,
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
@@ -727,7 +956,7 @@ class ResourceProjectionService:
             source_event_id=source_event_id,
             source_version=source_version,
             trace_id=trace_id,
-            session_id=session_id,
+            workline_session_id=workline_session_id,
             occurred_at_for_db=occurred_at_for_db,
         )
         occupancy_id = getattr(occupancy, "id", None)
@@ -755,7 +984,7 @@ class ResourceProjectionService:
                 "source_event_id": source_event_id,
                 "source_version": source_version,
                 "trace_id": trace_id,
-                "session_id": session_id,
+                "workline_session_id": workline_session_id,
                 "started_at": occurred_at_for_db,
                 "ended_at": None,
             },
@@ -765,6 +994,37 @@ class ResourceProjectionService:
             db,
             pkg_code=pkg_code,
             current_location=self._material_unit_location_code(bin_code=bin_code, bin_cell_index=bin_cell_index),
+        )
+        await self._record_resource_transition(
+            db,
+            object_type="MATERIAL",
+            object_key=pkg_code or material_identity_key,
+            projection_type="BIN_CELL_MOUNT",
+            from_state=None,
+            to_state="MOUNTED",
+            reason_code=ResourceStateEventType.MATERIAL_MOUNTED.value,
+            source_event_id=source_event_id,
+            source_ref_json={
+                "resource_state_event_type": ResourceStateEventType.MATERIAL_MOUNTED.value,
+                "bin_code": bin_code,
+                "bin_cell_index": bin_cell_index,
+                "pkg_code": pkg_code,
+                "wms_inventory_id": wms_inventory_id,
+            },
+            evidence_json={
+                "bin_code": bin_code,
+                "bin_cell_code": bin_cell_code,
+                "bin_cell_index": bin_cell_index,
+                "material_identity_key": material_identity_key,
+                "pkg_code": pkg_code,
+                "material_code": material_code,
+                "lot_code": lot_code,
+                "date_code": date_code,
+                "wms_inventory_id": wms_inventory_id,
+            },
+            workline_session_id=workline_session_id,
+            trace_id=trace_id,
+            occurred_at=occurred_at_for_db,
         )
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
 
@@ -784,7 +1044,6 @@ class ResourceProjectionService:
         occurred_at: datetime,
         source_version: str | None = None,
         trace_id: str | None = None,
-        session_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
         plugin_key: str | None = None,
@@ -815,7 +1074,7 @@ class ResourceProjectionService:
                 "source_event_id": source_event_id,
                 "source_version": source_version,
                 "trace_id": trace_id,
-                "session_id": session_id,
+                "workline_session_id": workline_session_id,
                 "workline_id": workline_id,
                 "payload_json": {
                     "bin_code": bin_code,
@@ -874,6 +1133,36 @@ class ResourceProjectionService:
                 contract_version=contract_version,
                 evidence=conflict.get("evidence"),
             )
+            await self._record_resource_transition(
+                db,
+                object_type="MATERIAL",
+                object_key=pkg_code or material_identity_key,
+                projection_type="BIN_CELL_MOUNT",
+                from_state="MOUNTED",
+                to_state="RECONCILING",
+                reason_code=conflict["reason_code"],
+                source_event_id=source_event_id,
+                source_ref_json={
+                    "resource_state_event_type": ResourceStateEventType.MATERIAL_UNMOUNTED.value,
+                    "bin_code": bin_code,
+                    "bin_cell_index": bin_cell_index,
+                    "pkg_code": pkg_code,
+                    "wms_inventory_id": wms_inventory_id,
+                },
+                evidence_json={
+                    "trusted": False,
+                    "bin_code": bin_code,
+                    "bin_cell_code": bin_cell_code,
+                    "bin_cell_index": bin_cell_index,
+                    "material_identity_key": material_identity_key,
+                    "pkg_code": pkg_code,
+                    "wms_inventory_id": wms_inventory_id,
+                    **(conflict.get("evidence") or {}),
+                },
+                workline_session_id=workline_session_id,
+                trace_id=trace_id,
+                occurred_at=occurred_at_for_db,
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
@@ -890,7 +1179,7 @@ class ResourceProjectionService:
         active_mount.source_event_id = source_event_id
         active_mount.source_version = source_version
         active_mount.trace_id = trace_id
-        active_mount.session_id = session_id
+        active_mount.workline_session_id = workline_session_id
         _ = await self.bin_material_mount_repo.save(db, active_mount)
 
         outgoing_depth = _non_negative_decimal(reel_thickness) or _non_negative_decimal(
@@ -916,7 +1205,7 @@ class ResourceProjectionService:
         active_cell.source_event_id = source_event_id
         active_cell.source_version = source_version
         active_cell.trace_id = trace_id
-        active_cell.session_id = session_id
+        active_cell.workline_session_id = workline_session_id
         _ = await self.bin_cell_occupancy_repo.save(db, active_cell)
 
         await self._update_material_unit_location_cache(
@@ -924,7 +1213,70 @@ class ResourceProjectionService:
             pkg_code=pkg_code,
             current_location=None,
         )
+        await self._record_resource_transition(
+            db,
+            object_type="MATERIAL",
+            object_key=pkg_code or material_identity_key,
+            projection_type="BIN_CELL_MOUNT",
+            from_state="MOUNTED",
+            to_state="UNMOUNTED",
+            reason_code=ResourceStateEventType.MATERIAL_UNMOUNTED.value,
+            source_event_id=source_event_id,
+            source_ref_json={
+                "resource_state_event_type": ResourceStateEventType.MATERIAL_UNMOUNTED.value,
+                "bin_code": bin_code,
+                "bin_cell_index": bin_cell_index,
+                "pkg_code": pkg_code,
+                "wms_inventory_id": wms_inventory_id,
+            },
+            evidence_json={
+                "bin_code": bin_code,
+                "bin_cell_code": bin_cell_code,
+                "bin_cell_index": bin_cell_index,
+                "material_identity_key": material_identity_key,
+                "pkg_code": pkg_code,
+                "wms_inventory_id": wms_inventory_id,
+            },
+            workline_session_id=workline_session_id,
+            trace_id=trace_id,
+            occurred_at=occurred_at_for_db,
+        )
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
+
+    async def _record_resource_transition(
+        self,
+        db: Any,
+        *,
+        object_type: str,
+        object_key: str,
+        projection_type: str,
+        from_state: str | None,
+        to_state: str,
+        reason_code: str,
+        source_event_id: str,
+        source_ref_json: dict[str, Any],
+        evidence_json: dict[str, Any],
+        workline_session_id: int | None,
+        trace_id: str | None,
+        occurred_at: datetime,
+    ) -> None:
+        await self.object_transition_event_service.record_transition(
+            db,
+            domain=ObjectTransitionDomain.RESOURCE,
+            object_type=object_type,
+            object_key=object_key,
+            projection_type=projection_type,
+            from_state=from_state,
+            to_state=to_state,
+            reason_code=reason_code,
+            source_event_id=source_event_id,
+            source_ref_json=source_ref_json,
+            evidence_json=evidence_json,
+            workline_session_id=workline_session_id,
+            trace_id=trace_id,
+            occurred_at=occurred_at,
+            auto_commit=False,
+        )
 
     @staticmethod
     def _material_unit_location_code(*, bin_code: str, bin_cell_index: str) -> str:
@@ -937,14 +1289,13 @@ class ResourceProjectionService:
         pkg_code: str | None,
         current_location: str | None,
     ) -> None:
-        if not pkg_code or not hasattr(db, "execute"):
+        if not pkg_code:
             return
-        result = await db.execute(select(MaterialUnit).where(MaterialUnit.pkg_code == pkg_code).limit(1))
-        material_unit = result.scalar_one_or_none()
-        if material_unit is None:
-            return
-        material_unit.current_location = current_location
-        db.add(material_unit)
+        await self.material_unit_repository.update_current_location_by_pkg_code(
+            db,
+            pkg_code=pkg_code,
+            current_location=current_location,
+        )
 
     async def record_bin_arrived_at_position(
         self,
@@ -962,7 +1313,6 @@ class ResourceProjectionService:
         workline_code: str | None = None,
         source_version: str | None = None,
         trace_id: str | None = None,
-        session_id: str | None = None,
         workline_session_id: int | None = None,
         plugin_key: str | None = None,
         contract_version: str | None = None,
@@ -994,7 +1344,7 @@ class ResourceProjectionService:
                 "source_event_id": source_event_id,
                 "source_version": source_version,
                 "trace_id": trace_id,
-                "session_id": session_id,
+                "workline_session_id": workline_session_id,
                 "workline_id": workline_id,
                 "workline_code": workline_code,
                 "position_code": position_code,
@@ -1028,6 +1378,31 @@ class ResourceProjectionService:
                 plugin_key=plugin_key,
                 contract_version=contract_version,
             )
+            await self._record_resource_transition(
+                db,
+                object_type="BIN",
+                object_key=resource_code,
+                projection_type="BIN_PLACEMENT",
+                from_state=enum_str(getattr(active_by_bin, "placement_status", None)),
+                to_state="RECONCILING",
+                reason_code="BIN_ACTIVE_PLACEMENT_CONFLICT",
+                source_event_id=source_event_id,
+                source_ref_json={
+                    "resource_state_event_type": ResourceStateEventType.BIN_ARRIVED.value,
+                    "bin_code": bin_code,
+                    "placeholder_key": placeholder_key,
+                },
+                evidence_json={
+                    "trusted": False,
+                    "incoming_position_type": position_type,
+                    "incoming_position_code": position_code,
+                    "active_position_type": getattr(active_by_bin, "position_type", None),
+                    "active_position_code": getattr(active_by_bin, "position_code", None),
+                },
+                workline_session_id=workline_session_id,
+                trace_id=trace_id,
+                occurred_at=occurred_at_for_db,
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
@@ -1057,6 +1432,31 @@ class ResourceProjectionService:
                 plugin_key=plugin_key,
                 contract_version=contract_version,
             )
+            await self._record_resource_transition(
+                db,
+                object_type="BIN",
+                object_key=resource_code,
+                projection_type="BIN_PLACEMENT",
+                from_state=enum_str(getattr(active_by_placeholder, "placement_status", None)),
+                to_state="RECONCILING",
+                reason_code="BIN_ACTIVE_PLACEMENT_CONFLICT",
+                source_event_id=source_event_id,
+                source_ref_json={
+                    "resource_state_event_type": ResourceStateEventType.BIN_ARRIVED.value,
+                    "bin_code": bin_code,
+                    "placeholder_key": placeholder_key,
+                },
+                evidence_json={
+                    "trusted": False,
+                    "incoming_position_type": position_type,
+                    "incoming_position_code": position_code,
+                    "active_position_type": getattr(active_by_placeholder, "position_type", None),
+                    "active_position_code": getattr(active_by_placeholder, "position_code", None),
+                },
+                workline_session_id=workline_session_id,
+                trace_id=trace_id,
+                occurred_at=occurred_at_for_db,
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
@@ -1077,7 +1477,7 @@ class ResourceProjectionService:
             "source_event_id": source_event_id,
             "source_version": source_version,
             "trace_id": trace_id,
-            "session_id": session_id,
+            "workline_session_id": workline_session_id,
             "started_at": occurred_at_for_db,
             "ended_at": None,
             "metadata_json": {},
@@ -1100,6 +1500,30 @@ class ResourceProjectionService:
                 contract_version=contract_version,
                 evidence={"integrity_error": str(getattr(exc, "orig", exc))},
             )
+            await self._record_resource_transition(
+                db,
+                object_type="BIN",
+                object_key=resource_code,
+                projection_type="BIN_PLACEMENT",
+                from_state=None,
+                to_state="RECONCILING",
+                reason_code="BIN_ACTIVE_PLACEMENT_CONCURRENT_CONFLICT",
+                source_event_id=source_event_id,
+                source_ref_json={
+                    "resource_state_event_type": ResourceStateEventType.BIN_ARRIVED.value,
+                    "bin_code": bin_code,
+                    "placeholder_key": placeholder_key,
+                },
+                evidence_json={
+                    "trusted": False,
+                    "incoming_position_type": position_type,
+                    "incoming_position_code": position_code,
+                    "integrity_error": str(getattr(exc, "orig", exc)),
+                },
+                workline_session_id=workline_session_id,
+                trace_id=trace_id,
+                occurred_at=occurred_at_for_db,
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
@@ -1107,6 +1531,29 @@ class ResourceProjectionService:
                 reason_code="BIN_ACTIVE_PLACEMENT_CONCURRENT_CONFLICT",
                 message="料箱 active 位置投影发生并发唯一冲突",
             )
+        await self._record_resource_transition(
+            db,
+            object_type="BIN",
+            object_key=resource_code,
+            projection_type="BIN_PLACEMENT",
+            from_state=None,
+            to_state="ARRIVED",
+            reason_code=ResourceStateEventType.BIN_ARRIVED.value,
+            source_event_id=source_event_id,
+            source_ref_json={
+                "resource_state_event_type": ResourceStateEventType.BIN_ARRIVED.value,
+                "bin_code": bin_code,
+                "placeholder_key": placeholder_key,
+            },
+            evidence_json={
+                "position_type": position_type,
+                "position_code": position_code,
+                "workline_code": workline_code,
+            },
+            workline_session_id=workline_session_id,
+            trace_id=trace_id,
+            occurred_at=occurred_at_for_db,
+        )
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
 
     async def record_bin_departed_from_position(
@@ -1123,7 +1570,6 @@ class ResourceProjectionService:
         position_code: str | None = None,
         source_version: str | None = None,
         trace_id: str | None = None,
-        session_id: str | None = None,
         workline_id: int | None = None,
         workline_session_id: int | None = None,
         plugin_key: str | None = None,
@@ -1156,7 +1602,7 @@ class ResourceProjectionService:
                 "source_event_id": source_event_id,
                 "source_version": source_version,
                 "trace_id": trace_id,
-                "session_id": session_id,
+                "workline_session_id": workline_session_id,
                 "payload_json": {
                     "bin_code": bin_code,
                     "placeholder_key": placeholder_key,
@@ -1177,6 +1623,34 @@ class ResourceProjectionService:
                 placeholder_key,
                 for_update=True,
             )
+
+        async def record_departure_transition(
+            *,
+            from_state: str | None,
+            to_state: str,
+            reason_code: str,
+            evidence_json: dict[str, Any],
+        ) -> None:
+            await self._record_resource_transition(
+                db,
+                object_type="BIN",
+                object_key=resource_code,
+                projection_type="BIN_PLACEMENT",
+                from_state=from_state,
+                to_state=to_state,
+                reason_code=reason_code,
+                source_event_id=source_event_id,
+                source_ref_json={
+                    "resource_state_event_type": ResourceStateEventType.BIN_DEPARTED.value,
+                    "bin_code": bin_code,
+                    "placeholder_key": placeholder_key,
+                },
+                evidence_json=evidence_json,
+                workline_session_id=workline_session_id,
+                trace_id=trace_id,
+                occurred_at=occurred_at_for_db,
+            )
+
         if active_placement is None:
             runtime_hold = await self._create_bin_placement_reconciliation_hold(
                 db,
@@ -1191,6 +1665,16 @@ class ResourceProjectionService:
                 workline_id=workline_id,
                 plugin_key=plugin_key,
                 contract_version=contract_version,
+            )
+            await record_departure_transition(
+                from_state=None,
+                to_state="RECONCILING",
+                reason_code="BIN_ACTIVE_PLACEMENT_MISSING",
+                evidence_json={
+                    "trusted": False,
+                    "position_type": position_type,
+                    "position_code": position_code,
+                },
             )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
@@ -1215,6 +1699,18 @@ class ResourceProjectionService:
                 plugin_key=plugin_key,
                 contract_version=contract_version,
             )
+            await record_departure_transition(
+                from_state=enum_str(getattr(active_placement, "placement_status", None)),
+                to_state="RECONCILING",
+                reason_code="BIN_PLACEMENT_POSITION_MISMATCH",
+                evidence_json={
+                    "trusted": False,
+                    "position_type": position_type,
+                    "position_code": position_code,
+                    "active_position_type": getattr(active_placement, "position_type", None),
+                    "active_position_code": getattr(active_placement, "position_code", None),
+                },
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
@@ -1238,6 +1734,20 @@ class ResourceProjectionService:
                 contract_version=contract_version,
                 evidence={"incoming_source_version": source_version},
             )
+            await record_departure_transition(
+                from_state=enum_str(getattr(active_placement, "placement_status", None)),
+                to_state="RECONCILING",
+                reason_code="BIN_PLACEMENT_SOURCE_VERSION_STALE",
+                evidence_json={
+                    "trusted": False,
+                    "position_type": position_type,
+                    "position_code": position_code,
+                    "active_position_type": getattr(active_placement, "position_type", None),
+                    "active_position_code": getattr(active_placement, "position_code", None),
+                    "incoming_source_version": source_version,
+                    "active_source_version": getattr(active_placement, "source_version", None),
+                },
+            )
             return ResourceProjectionResult(
                 status=ResourceProjectionStatus.RECONCILING,
                 event=event,
@@ -1260,6 +1770,17 @@ class ResourceProjectionService:
                 ended_at=occurred_at_for_db,
                 source_event_id=source_event_id,
             )
+        await record_departure_transition(
+            from_state=enum_str(getattr(active_placement, "placement_status", None)),
+            to_state=BinPlacementStatus.DEPARTED.value,
+            reason_code=ResourceStateEventType.BIN_DEPARTED.value,
+            evidence_json={
+                "position_type": position_type,
+                "position_code": position_code,
+                "active_position_type": getattr(active_placement, "position_type", None),
+                "active_position_code": getattr(active_placement, "position_code", None),
+            },
+        )
         return ResourceProjectionResult(status=ResourceProjectionStatus.PROJECTED, event=event)
 
     async def record_resource_fact(
@@ -1278,7 +1799,6 @@ class ResourceProjectionService:
         occurred_at = payload_json.get("occurred_at") or timezone.now_for_db()
         source_system = _as_source_system(payload_json.get("source_system") or ResourceSourceSystem.WES_RUNTIME.value)
         source_event_id = str(payload_json.get("source_event_id") or idempotency_key or fact_type)
-        session_id = str(getattr(session, "id", "")) if getattr(session, "id", None) is not None else None
         workline_id = getattr(workline, "id", None)
         workline_code = str(payload_json.get("workline_code") or getattr(workline, "line_code", ""))
 
@@ -1299,7 +1819,6 @@ class ResourceProjectionService:
                 external_location_code=payload_json.get("external_location_code"),
                 released_rack_codes=payload_json.get("released_rack_codes"),
                 trace_id=trace_id,
-                session_id=session_id,
                 workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
                 plugin_key=getattr(workline, "plugin_key", None),
@@ -1322,7 +1841,6 @@ class ResourceProjectionService:
                 occurred_at=occurred_at,
                 source_version=payload_json.get("source_version"),
                 trace_id=trace_id,
-                session_id=session_id,
                 workline_session_id=getattr(session, "id", None),
                 plugin_key=getattr(workline, "plugin_key", None),
                 contract_version=getattr(workline, "contract_version", None),
@@ -1342,7 +1860,6 @@ class ResourceProjectionService:
                 occurred_at=occurred_at,
                 source_version=payload_json.get("source_version"),
                 trace_id=trace_id,
-                session_id=session_id,
                 workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
                 plugin_key=getattr(workline, "plugin_key", None),
@@ -1360,7 +1877,6 @@ class ResourceProjectionService:
                 occurred_at=occurred_at,
                 source_version=payload_json.get("source_version"),
                 trace_id=trace_id,
-                session_id=session_id,
                 workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
                 plugin_key=getattr(workline, "plugin_key", None),
@@ -1391,7 +1907,6 @@ class ResourceProjectionService:
                 cell_capacity_depth_mm=payload_json.get("cell_capacity_depth_mm")
                 or payload_json.get("capacity_depth_mm"),
                 trace_id=trace_id,
-                session_id=session_id,
                 workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
                 plugin_key=getattr(workline, "plugin_key", None),
@@ -1415,7 +1930,6 @@ class ResourceProjectionService:
                 source_version=payload_json.get("source_version"),
                 reel_thickness=payload_json.get("reel_thickness"),
                 trace_id=trace_id,
-                session_id=session_id,
                 workline_id=workline_id,
                 workline_session_id=getattr(session, "id", None),
                 plugin_key=getattr(workline, "plugin_key", None),
@@ -1652,7 +2166,7 @@ class ResourceProjectionService:
         source_event_id: str,
         source_version: str | None,
         trace_id: str | None,
-        session_id: str | None,
+        workline_session_id: int | None,
         occurred_at_for_db: datetime,
     ) -> Any:
         incoming_depth = _non_negative_decimal(reel_thickness) or Decimal("0")
@@ -1681,7 +2195,7 @@ class ResourceProjectionService:
                     "source_event_id": source_event_id,
                     "source_version": source_version,
                     "trace_id": trace_id,
-                    "session_id": session_id,
+                    "workline_session_id": workline_session_id,
                     "started_at": occurred_at_for_db,
                     "ended_at": None,
                     "metadata_json": {},
@@ -1704,7 +2218,7 @@ class ResourceProjectionService:
         active_cell.source_event_id = source_event_id
         active_cell.source_version = source_version
         active_cell.trace_id = trace_id
-        active_cell.session_id = session_id
+        active_cell.workline_session_id = workline_session_id
         return await self.bin_cell_occupancy_repo.save(db, active_cell)
 
     async def _list_active_by_material_identity_variants(

@@ -10,6 +10,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.8.1.0] - 2026-06-23
+
+### Added
+
+- 建立 WorkLine C0 resource projection 基座：resource active projection 统一切到 `workline_session_id`，补齐 FK、清理报告、integrity check 和 material location drift 诊断，后续 Trace 和强校验不再依赖 string session 双轨。
+- 新增统一 `object_transition_events` 事件账本，resource projection 与 handling queue membership 可按 trace、session、object 和 source event 回放 from/to transition，并通过派生幂等键避免重复写入。
+- 新增 `BinTransitMembership` active/history 投影，支持真实 bin、placeholder、队列切换、离队、冲突 RECONCILING 和 handling callback best-effort 写入。
+- `RESOURCE_WAIT` 等待合同升级为 manifest 声明的 subject 语义，context、diagnostic 和 timeline evidence 都带 `subject_type`、`subject_key`、`projection_type`，便于前端和后续强校验准确归类等待资源。
+- 补充 WES 领域边界与调度 Adapter 设计，明确 WMS 是货架、料箱、库位、库存规划和首版搬运调度权威，WES 通过 Adapter port 发出调度意图并保留 evidence。
+
+### Changed
+
+- Docker compose 和 mock Dockerfile 同步代理/no-proxy 配置，构建和本地联调环境在公司网络下更稳定。
+- Agent 项目入口文档同步当前仓库路径、GitNexus 索引规模和团队入口规则，减少跨工具规则漂移。
+
+### Fixed
+
+- 修正 resource projection、handling lifecycle 和 WorkLine runtime 的回归覆盖，确保迁移、导出合同、幂等重放、冲突路径和 RESOURCE_WAIT subject 合同都有对应测试。
+
 ## [0.8.0.0] - 2026-06-22
 
 ### Added

@@ -721,12 +721,15 @@ class SmtSortingInboundFlowService:
             reason_code = str(getattr(target_station_status, "reason_code", None) or "STATION_BUSY")
             return None, [
                 RuntimeIntent.resource_wait(
-                    resource_kind="STATION",
-                    resource_key=f"station:{_TARGET_STATION_CODE}",
+                    subject_type=_TARGET_STATION_CODE,
+                    subject_key=f"station:{_TARGET_STATION_CODE}",
+                    projection_type="ACTIVE_TARGET_BIN_RACK",
                     reason_code="SORTING_TARGET_STATION_LEASE_BUSY",
                     message="目标 Station 当前不可用，等待资源释放后自动重试",
                     suggested_action="等待目标 Station 释放，或检查当前 active rack/session/dispatch 占用",
                     payload={
+                        "resource_kind": "STATION",
+                        "resource_key": f"station:{_TARGET_STATION_CODE}",
                         "position_code": _TARGET_STATION_CODE,
                         "status_reason_code": reason_code,
                         "active_rack_code": getattr(target_station_status, "active_rack_code", None),

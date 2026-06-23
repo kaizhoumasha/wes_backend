@@ -1223,6 +1223,39 @@ class WorklinePluginManifest:
                         f"Topology NodeRef RACK_POSITION ref is not declared in manifest.rack_positions: {node_ref.ref}"
                     )
 
+    def validate_resource_wait_subject(self, *, subject_type: str, projection_type: str) -> None:
+        """校验 RESOURCE_WAIT 指向 manifest 已声明的主体/投影类型。"""
+
+        if not _non_empty_str(subject_type):
+            raise ValueError("RESOURCE_WAIT subject_type must be a non-empty string")
+        if not _non_empty_str(projection_type):
+            raise ValueError("RESOURCE_WAIT projection_type must be a non-empty string")
+
+        declared_subjects: set[tuple[str, str]] = set()
+        if self.session_subject is not None:
+            declared_subjects.add((self.session_subject.type, "SESSION_SUBJECT"))
+        for state_machine in self.state_machines:
+            declared_subjects.add((state_machine.subject.type, state_machine.granularity))
+        for queue in self.pipeline_queues:
+            declared_subjects.add((queue.code, "QUEUE_MEMBERSHIP"))
+        for boundary in self.resource_boundaries:
+            declared_subjects.add((boundary.rack_position_code, boundary.snapshot_kind))
+            declared_subjects.add((boundary.rack_kind, boundary.snapshot_kind))
+            declared_subjects.add((f"{boundary.rack_position_code}:{boundary.rack_kind}", boundary.snapshot_kind))
+            declared_subjects.add((boundary.rack_position_code, f"{boundary.lease_scope}_LEASE"))
+
+        if (subject_type, projection_type) in declared_subjects:
+            return
+
+        declared_text = ", ".join(
+            f"{declared_subject}/{declared_projection}"
+            for declared_subject, declared_projection in sorted(declared_subjects)
+        )
+        raise ValueError(
+            "RESOURCE_WAIT subject is not declared in manifest: "
+            f"subject_type={subject_type}, projection_type={projection_type}, declared={declared_text}"
+        )
+
 
 __all__ = [
     "CommandBinding",

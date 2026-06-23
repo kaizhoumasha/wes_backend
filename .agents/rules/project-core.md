@@ -10,10 +10,10 @@
 
 ## Project Shape
 
-- 后端主仓库：`/Users/kaizhou/SynologyDrive/works/wes_backend`
-- 前端主仓库：`/Users/kaizhou/SynologyDrive/works/wes_frontend`
-- 后端 worktree 根目录：`/Users/kaizhou/SynologyDrive/works/worktrees/wes_backend`
-- 前端 worktree 根目录：`/Users/kaizhou/SynologyDrive/works/worktrees/wes_frontend`
+- 后端主仓库：`/Users/kaizhou/codeDev/wes_backend`
+- 前端主仓库：`/Users/kaizhou/codeDev/wes_frontend`
+- 后端 worktree 根目录：`/Users/kaizhou/codeDev/wes_backend-worktrees`
+- 前端 worktree 根目录：`/Users/kaizhou/codeDev/wes_frontend-worktrees`
 - 核心代码在 `src/`，领域模块在 `src/app/`。
 - Alembic 迁移在 `migrations/versions/`。
 - 测试在 `tests/`。

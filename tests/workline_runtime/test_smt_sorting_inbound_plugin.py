@@ -806,6 +806,9 @@ async def test_working_bin_scan_waits_when_target_station_lease_is_busy() -> Non
 
     assert [intent.kind for intent in intents] == [RuntimeIntentKind.RESOURCE_WAIT]
     assert intents[0].reason_code == "SORTING_TARGET_STATION_LEASE_BUSY"
+    assert intents[0].payload_json["subject_type"] == "TARGET_STATION"
+    assert intents[0].payload_json["subject_key"] == "station:TARGET_STATION"
+    assert intents[0].payload_json["projection_type"] == "ACTIVE_TARGET_BIN_RACK"
     assert intents[0].payload_json["resource_kind"] == "STATION"
     assert intents[0].payload_json["resource_key"] == "station:TARGET_STATION"
     assert intents[0].payload_json["position_code"] == "TARGET_STATION"

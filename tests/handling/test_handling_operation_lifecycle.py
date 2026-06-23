@@ -64,6 +64,39 @@ class FakeSessionRepository:
         return self.session
 
 
+class FakeMembershipService:
+    def __init__(self) -> None:
+        self.switch_calls: list[dict[str, Any]] = []
+        self.leave_calls: list[dict[str, Any]] = []
+        self.reconciling_calls: list[dict[str, Any]] = []
+
+    async def switch_queue(self, _db: Any, **kwargs: Any) -> Any:
+        self.switch_calls.append(kwargs)
+        return SimpleNamespace(id=9001, **kwargs)
+
+    async def leave_queue(self, _db: Any, **kwargs: Any) -> Any:
+        self.leave_calls.append(kwargs)
+        return SimpleNamespace(id=9001, **kwargs)
+
+    async def mark_reconciling(self, _db: Any, **kwargs: Any) -> Any:
+        self.reconciling_calls.append(kwargs)
+        return SimpleNamespace(id=9001, **kwargs)
+
+
+class FailingMembershipService(FakeMembershipService):
+    async def switch_queue(self, _db: Any, **kwargs: Any) -> Any:
+        _ = kwargs
+        raise RuntimeError("membership projection failed")
+
+    async def leave_queue(self, _db: Any, **kwargs: Any) -> Any:
+        _ = kwargs
+        raise RuntimeError("membership projection failed")
+
+    async def mark_reconciling(self, _db: Any, **kwargs: Any) -> Any:
+        _ = kwargs
+        raise RuntimeError("membership projection failed")
+
+
 @pytest.mark.asyncio
 async def test_record_callback_updates_step_operation_and_waiting_session() -> None:
     operation = SimpleNamespace(
@@ -135,6 +168,398 @@ async def test_record_callback_updates_step_operation_and_waiting_session() -> N
     assert session.current_wait_type is None
     assert session.context_json["waiting_handling_operation_key"] is None
     assert session.context_json["handling_operation"]["status"] == "SUCCEEDED"
+
+
+@pytest.mark.asyncio
+async def test_record_callback_projects_membership_when_payload_exposes_queue() -> None:
+    operation = SimpleNamespace(
+        id=700,
+        operation_key="bin-operation:trace-queue",
+        operation_status=HandlingOperationStatus.REQUESTED,
+        workline_id=45,
+        workline_code="SMT_SORTER_01",
+        material_session_id=301,
+        error_code=None,
+        error_message=None,
+        completed_at=None,
+    )
+    step = SimpleNamespace(
+        id=701,
+        operation_id=700,
+        operation_key="bin-operation:trace-queue",
+        move_id=801,
+        dispatch_key="handling:bin-operation:trace-queue:move:1",
+        step_status=HandlingStepStatus.REQUESTED,
+        callback_json={},
+        result_json={},
+        error_code=None,
+        error_message=None,
+        started_at=None,
+        completed_at=None,
+    )
+    move = SimpleNamespace(
+        id=801,
+        move_status=HandlingMoveStatus.REQUESTED,
+        bin_code="BIN-001",
+        placeholder_key=None,
+        target_code="WORKSTATION_WAIT_QUEUE",
+        metadata_json={},
+    )
+    session = SimpleNamespace(
+        id=301,
+        workline_id=45,
+        status="WAITING_EXTERNAL",
+        current_wait_type="HANDLING_OPERATION",
+        waiting_since=object(),
+        deadline_at=object(),
+        current_wait_timeout_seconds=1800,
+        awaiting_command_id=None,
+        failure_domain=None,
+        failure_code=None,
+        failure_message=None,
+        ended_at=None,
+        context_json={
+            "waiting_handling_operation_key": "bin-operation:trace-queue",
+            "handling_operation": {"operation_key": "bin-operation:trace-queue", "status": "PENDING"},
+        },
+    )
+    membership_service = FakeMembershipService()
+    service = HandlingOperationLifecycleService(
+        operation_repository=FakeOperationRepository(operation),
+        move_repository=FakeMoveRepository([move]),
+        step_repository=FakeStepRepository([step]),
+        session_repository=FakeSessionRepository(session),
+        membership_service=membership_service,
+    )
+
+    await service.record_callback_from_external_http(
+        SimpleNamespace(add=lambda _obj: None),
+        payload_json={
+            "callback_type": "CTU_BIN_MOVE_PROGRESS",
+            "dispatch_key": "handling:bin-operation:trace-queue:move:1",
+            "status": "IN_PROGRESS",
+            "target_queue": "WORKSTATION_WAIT_QUEUE",
+        },
+        trace_id="trace-bin-queue",
+    )
+
+    assert membership_service.switch_calls == [
+        {
+            "bin_code": "BIN-001",
+            "placeholder_key": None,
+            "to_queue": "WORKSTATION_WAIT_QUEUE",
+            "workline_id": 45,
+            "workline_code": "SMT_SORTER_01",
+            "workline_session_id": 301,
+            "handling_operation_id": 700,
+            "handling_move_id": 801,
+            "trace_id": "trace-bin-queue",
+            "reason_code": "HANDLING_CALLBACK_IN_PROGRESS",
+            "source_event_id": "handling:bin-operation:trace-queue:move:1:IN_PROGRESS",
+            "evidence_json": {
+                "callback_type": "CTU_BIN_MOVE_PROGRESS",
+                "dispatch_key": "handling:bin-operation:trace-queue:move:1",
+                "status": "IN_PROGRESS",
+                "target_queue": "WORKSTATION_WAIT_QUEUE",
+            },
+            "auto_commit": False,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_record_callback_projects_membership_from_move_target_code_when_payload_queue_missing() -> None:
+    operation = SimpleNamespace(
+        id=700,
+        operation_key="bin-operation:trace-target-code",
+        operation_status=HandlingOperationStatus.REQUESTED,
+        workline_id=45,
+        workline_code="SMT_SORTER_01",
+        material_session_id=301,
+        error_code=None,
+        error_message=None,
+        completed_at=None,
+    )
+    step = SimpleNamespace(
+        id=701,
+        operation_id=700,
+        operation_key="bin-operation:trace-target-code",
+        move_id=801,
+        dispatch_key="handling:bin-operation:trace-target-code:move:1",
+        step_status=HandlingStepStatus.REQUESTED,
+        callback_json={},
+        result_json={},
+        error_code=None,
+        error_message=None,
+        started_at=None,
+        completed_at=None,
+    )
+    move = SimpleNamespace(
+        id=801,
+        move_status=HandlingMoveStatus.REQUESTED,
+        bin_code="BIN-001",
+        placeholder_key=None,
+        target_code="WORKSTATION_WAIT_QUEUE",
+        metadata_json={},
+    )
+    membership_service = FakeMembershipService()
+    service = HandlingOperationLifecycleService(
+        operation_repository=FakeOperationRepository(operation),
+        move_repository=FakeMoveRepository([move]),
+        step_repository=FakeStepRepository([step]),
+        session_repository=FakeSessionRepository(None),
+        membership_service=membership_service,
+    )
+
+    await service.record_callback_from_external_http(
+        SimpleNamespace(add=lambda _obj: None),
+        payload_json={
+            "callback_type": "CTU_BIN_MOVE_PROGRESS",
+            "dispatch_key": "handling:bin-operation:trace-target-code:move:1",
+            "status": "IN_PROGRESS",
+        },
+        trace_id="trace-bin-queue",
+    )
+
+    assert membership_service.switch_calls[0]["to_queue"] == "WORKSTATION_WAIT_QUEUE"
+
+
+@pytest.mark.asyncio
+async def test_record_callback_keeps_lifecycle_state_when_membership_projection_fails() -> None:
+    operation = SimpleNamespace(
+        id=700,
+        operation_key="bin-operation:trace-projection-fail",
+        operation_status=HandlingOperationStatus.REQUESTED,
+        workline_id=45,
+        workline_code="SMT_SORTER_01",
+        material_session_id=301,
+        error_code=None,
+        error_message=None,
+        completed_at=None,
+    )
+    step = SimpleNamespace(
+        id=701,
+        operation_id=700,
+        operation_key="bin-operation:trace-projection-fail",
+        move_id=801,
+        dispatch_key="handling:bin-operation:trace-projection-fail:move:1",
+        step_status=HandlingStepStatus.REQUESTED,
+        callback_json={},
+        result_json={},
+        error_code=None,
+        error_message=None,
+        started_at=None,
+        completed_at=None,
+    )
+    move = SimpleNamespace(
+        id=801,
+        move_status=HandlingMoveStatus.REQUESTED,
+        bin_code="BIN-001",
+        placeholder_key=None,
+        target_code="WORKSTATION_WAIT_QUEUE",
+        metadata_json={},
+    )
+    session = SimpleNamespace(
+        id=301,
+        workline_id=45,
+        status="WAITING_EXTERNAL",
+        current_wait_type="HANDLING_OPERATION",
+        waiting_since=object(),
+        deadline_at=object(),
+        current_wait_timeout_seconds=1800,
+        awaiting_command_id=None,
+        failure_domain=None,
+        failure_code=None,
+        failure_message=None,
+        ended_at=None,
+        context_json={
+            "waiting_handling_operation_key": "bin-operation:trace-projection-fail",
+            "handling_operation": {"operation_key": "bin-operation:trace-projection-fail", "status": "PENDING"},
+        },
+    )
+    service = HandlingOperationLifecycleService(
+        operation_repository=FakeOperationRepository(operation),
+        move_repository=FakeMoveRepository([move]),
+        step_repository=FakeStepRepository([step]),
+        session_repository=FakeSessionRepository(session),
+        membership_service=FailingMembershipService(),
+    )
+
+    result = await service.record_callback_from_external_http(
+        SimpleNamespace(add=lambda _obj: None),
+        payload_json={
+            "callback_type": "CTU_BIN_MOVE_PROGRESS",
+            "dispatch_key": "handling:bin-operation:trace-projection-fail:move:1",
+            "status": "IN_PROGRESS",
+            "target_queue": "WORKSTATION_WAIT_QUEUE",
+        },
+        trace_id="trace-bin-projection-fail",
+    )
+
+    assert result is step
+    assert step.step_status == HandlingStepStatus.IN_PROGRESS
+    assert move.move_status == HandlingMoveStatus.IN_PROGRESS
+    assert operation.operation_status == HandlingOperationStatus.IN_PROGRESS
+    assert session.status == "WAITING_EXTERNAL"
+    assert session.context_json["handling_operation"]["status"] == "IN_PROGRESS"
+
+
+@pytest.mark.asyncio
+async def test_record_callback_leaves_membership_on_success_terminal_callback() -> None:
+    operation = SimpleNamespace(
+        id=700,
+        operation_key="bin-operation:trace-leave",
+        operation_status=HandlingOperationStatus.REQUESTED,
+        workline_id=45,
+        workline_code="SMT_SORTER_01",
+        material_session_id=301,
+        error_code=None,
+        error_message=None,
+        completed_at=None,
+    )
+    step = SimpleNamespace(
+        id=701,
+        operation_id=700,
+        operation_key="bin-operation:trace-leave",
+        move_id=801,
+        dispatch_key="handling:bin-operation:trace-leave:move:1",
+        step_status=HandlingStepStatus.IN_PROGRESS,
+        callback_json={},
+        result_json={},
+        error_code=None,
+        error_message=None,
+        started_at=None,
+        completed_at=None,
+    )
+    move = SimpleNamespace(
+        id=801,
+        move_status=HandlingMoveStatus.IN_PROGRESS,
+        bin_code="BIN-001",
+        placeholder_key=None,
+        target_code="WORKSTATION_WAIT_QUEUE",
+        metadata_json={},
+    )
+    membership_service = FakeMembershipService()
+    service = HandlingOperationLifecycleService(
+        operation_repository=FakeOperationRepository(operation),
+        move_repository=FakeMoveRepository([move]),
+        step_repository=FakeStepRepository([step]),
+        session_repository=FakeSessionRepository(None),
+        membership_service=membership_service,
+    )
+
+    await service.record_callback_from_external_http(
+        SimpleNamespace(add=lambda _obj: None),
+        payload_json={
+            "callback_type": "CTU_BIN_MOVE_COMPLETED",
+            "dispatch_key": "handling:bin-operation:trace-leave:move:1",
+            "status": "SUCCEEDED",
+        },
+        trace_id="trace-bin-leave",
+    )
+
+    assert membership_service.leave_calls == [
+        {
+            "bin_code": "BIN-001",
+            "placeholder_key": None,
+            "handling_operation_id": 700,
+            "handling_move_id": 801,
+            "trace_id": "trace-bin-leave",
+            "reason_code": "HANDLING_CALLBACK_SUCCEEDED",
+            "source_event_id": "handling:bin-operation:trace-leave:move:1:SUCCEEDED",
+            "evidence_json": {
+                "callback_type": "CTU_BIN_MOVE_COMPLETED",
+                "dispatch_key": "handling:bin-operation:trace-leave:move:1",
+                "status": "SUCCEEDED",
+            },
+            "auto_commit": False,
+            "ignore_missing": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_record_callback_marks_membership_reconciling_when_business_context_mismatch() -> None:
+    operation = SimpleNamespace(
+        id=700,
+        operation_key="full-box:trace-reconcile",
+        operation_status=HandlingOperationStatus.REQUESTED,
+        workline_id=45,
+        workline_code="SMT_SORTER_01",
+        material_session_id=301,
+        error_code=None,
+        error_message=None,
+        completed_at=None,
+    )
+    step = SimpleNamespace(
+        id=701,
+        operation_id=700,
+        operation_key="full-box:trace-reconcile",
+        move_id=801,
+        dispatch_key="handling:full-box:trace-reconcile:move:1",
+        step_status=HandlingStepStatus.IN_PROGRESS,
+        callback_json={},
+        result_json={},
+        error_code=None,
+        error_message=None,
+        started_at=None,
+        completed_at=None,
+    )
+    move = SimpleNamespace(
+        id=801,
+        move_status=HandlingMoveStatus.IN_PROGRESS,
+        bin_code="BIN-001",
+        placeholder_key=None,
+        target_code="WORKSTATION_WAIT_QUEUE",
+        metadata_json={},
+    )
+    session = SimpleNamespace(
+        id=301,
+        workline_id=45,
+        status="WAITING_EXTERNAL",
+        current_wait_type="HANDLING_OPERATION",
+        waiting_since=object(),
+        deadline_at=object(),
+        current_wait_timeout_seconds=1800,
+        awaiting_command_id=None,
+        failure_domain=None,
+        failure_code=None,
+        failure_message=None,
+        ended_at=None,
+        context_json={
+            "waiting_handling_operation_key": "full-box:trace-reconcile",
+            "handling_operation": {
+                "operation_key": "full-box:trace-reconcile",
+                "status": "IN_PROGRESS",
+                "rack_release_id": "release-expected",
+            },
+        },
+    )
+    membership_service = FakeMembershipService()
+    service = HandlingOperationLifecycleService(
+        operation_repository=FakeOperationRepository(operation),
+        move_repository=FakeMoveRepository([move]),
+        step_repository=FakeStepRepository([step]),
+        session_repository=FakeSessionRepository(session),
+        membership_service=membership_service,
+    )
+
+    await service.record_callback_from_external_http(
+        SimpleNamespace(add=lambda _obj: None),
+        payload_json={
+            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "dispatch_key": "handling:full-box:trace-reconcile:move:1",
+            "exchange_status": "PHYSICAL_COMPLETED",
+            "rack_release_id": "release-actual",
+            "post_exchange_relations": [{"rack_code": "RACK-001"}],
+        },
+        trace_id="trace-bin-reconcile",
+    )
+
+    assert membership_service.reconciling_calls[0]["reason_code"] == "RACK_RELEASE_ID_MISMATCH"
+    assert membership_service.reconciling_calls[0]["source_event_id"] == (
+        "handling:full-box:trace-reconcile:move:1:RECONCILING"
+    )
 
 
 @pytest.mark.asyncio

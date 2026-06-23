@@ -10,8 +10,18 @@ FROM python:3.13-slim
 LABEL maintainer="WES Backend Team"
 LABEL description="Mock 外部系统服务（ECS、WMS）用于 E2E 测试"
 
+ARG DEBIAN_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian
+ARG DEBIAN_SECURITY_MIRROR=http://mirrors.tuna.tsinghua.edu.cn/debian-security
+ARG PYPI_MIRROR=https://pypi.tuna.tsinghua.edu.cn/simple
+
+ENV PIP_INDEX_URL=${PYPI_MIRROR}
+
 # 安装系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i \
+    -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+    -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+    /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

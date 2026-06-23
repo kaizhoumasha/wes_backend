@@ -125,7 +125,7 @@ _DEFAULTS: dict[ErrorCode, tuple[Severity, Recoverability, ProblemClass, str, li
         Recoverability.AUTO_RETRYABLE,
         ProblemClass.SOFTWARE,
         "目标资源暂不可用，系统会等待资源释放后自动重试。",
-        ["检查 resource_kind/resource_key 等待证据", "确认目标资源释放事件是否到达"],
+        ["检查 subject_type/subject_key/projection_type 等待证据", "确认目标 subject 的释放事件是否到达"],
     ),
     ErrorCode.WMS_TIMEOUT: (
         Severity.ERROR,

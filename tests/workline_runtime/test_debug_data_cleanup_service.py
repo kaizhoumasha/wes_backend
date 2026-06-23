@@ -7,6 +7,11 @@ from sqlalchemy import select
 
 from src.app.callback.models.callback_log import CallbackLog
 from src.app.device.models import CommandStatus, Device, DeviceCommand, DeviceStatus
+from src.app.handling.models import (
+    BinTransitMembership,
+    BinTransitMembershipStatus,
+    BinTransitQueue,
+)
 from src.app.handling.models.operation import (
     HandlingMove,
     HandlingObjectType,
@@ -34,6 +39,7 @@ from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOut
 from src.app.wms_integration.models.evidence import WmsCallEvidence
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode, WorkLineRuntimeStatus
 from src.app.workline.models.inbox import InboxKind, SourceSystem, WorklineInbox
+from src.app.workline.models.object_transition_event import ObjectTransitionDomain, ObjectTransitionEvent
 from src.app.workline.models.operation import DebugDataCleanupRequest, DebugDataCleanupResponse
 from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.workline.services import DebugDataCleanupService, debug_data_cleanup_service
@@ -214,6 +220,37 @@ async def _create_debug_cleanup_graph(db_session):
         trace_id=session.trace_id,
     )
     db_session.add_all([handling_move, handling_step])
+    await db_session.flush()
+
+    bin_transit_membership = BinTransitMembership(
+        bin_code="BIN-DEBUG-CLEANUP",
+        workline_id=workline.id,
+        workline_code=workline.line_code,
+        current_queue=BinTransitQueue.WORKSTATION_WAIT_QUEUE,
+        membership_status=BinTransitMembershipStatus.ACTIVE,
+        handling_operation_id=handling_operation.id,
+        handling_move_id=handling_move.id,
+        trace_id=session.trace_id,
+        workline_session_id=session.id,
+        entered_at=timezone.now_for_db(),
+        evidence_json={"source": "debug-cleanup-test"},
+    )
+    object_transition_event = ObjectTransitionEvent(
+        domain=ObjectTransitionDomain.HANDLING,
+        object_type="BIN_TRANSIT",
+        object_key="BIN-DEBUG-CLEANUP",
+        projection_type="QUEUE_MEMBERSHIP",
+        from_state=None,
+        to_state=BinTransitQueue.WORKSTATION_WAIT_QUEUE.value,
+        reason_code="DEBUG_CLEANUP_TEST",
+        source_event_id="debug-cleanup-transition",
+        source_ref_json={"handling_operation_id": handling_operation.id, "handling_move_id": handling_move.id},
+        evidence_json={"trace_id": session.trace_id},
+        workline_session_id=session.id,
+        trace_id=session.trace_id,
+        occurred_at=timezone.now_for_db(),
+        idempotency_key="debug-cleanup-transition-key",
+    )
 
     resource_event = ResourceStateEvent(
         event_code="debug-cleanup-resource-event",
@@ -223,12 +260,30 @@ async def _create_debug_cleanup_graph(db_session):
         source_system=ResourceSourceSystem.WES_RUNTIME,
         source_event_id="resource-event-debug-cleanup",
         trace_id=session.trace_id,
-        session_id=str(session.id),
+        workline_session_id=session.id,
         workline_id=workline.id,
         workline_code=workline.line_code,
         payload_json={},
         occurred_at=timezone.now_for_db(),
         received_at=timezone.now_for_db(),
+    )
+    db_session.add(resource_event)
+    await db_session.flush()
+    resource_transition_event = ObjectTransitionEvent(
+        domain=ObjectTransitionDomain.RESOURCE,
+        object_type="BIN",
+        object_key="BIN-DEBUG-CLEANUP",
+        projection_type="BIN_PLACEMENT",
+        from_state=None,
+        to_state="ARRIVED",
+        reason_code=ResourceStateEventType.BIN_ARRIVED.value,
+        source_event_id="resource-event-debug-cleanup",
+        source_ref_json={"resource_state_event_type": ResourceStateEventType.BIN_ARRIVED.value},
+        evidence_json={"source": "debug-cleanup-resource-transition"},
+        workline_session_id=None,
+        trace_id=None,
+        occurred_at=timezone.now_for_db(),
+        idempotency_key="debug-cleanup-resource-transition-key",
     )
     rack_bin_mount = RackBinMount(
         rack_code="RACK-DEBUG-CLEANUP",
@@ -238,7 +293,7 @@ async def _create_debug_cleanup_graph(db_session):
         source_system=ResourceSourceSystem.WMS,
         source_event_id="resource-rack-bin-mount-debug-cleanup",
         trace_id=session.trace_id,
-        session_id=str(session.id),
+        workline_session_id=session.id,
         started_at=timezone.now_for_db(),
     )
     bin_cell_occupancy = BinCellOccupancy(
@@ -255,7 +310,7 @@ async def _create_debug_cleanup_graph(db_session):
         source_system=ResourceSourceSystem.WES_RUNTIME,
         source_event_id="resource-bin-cell-occupancy-debug-cleanup",
         trace_id=session.trace_id,
-        session_id=str(session.id),
+        workline_session_id=session.id,
         started_at=timezone.now_for_db(),
     )
     bin_material_mount = BinMaterialMount(
@@ -270,7 +325,7 @@ async def _create_debug_cleanup_graph(db_session):
         source_system=ResourceSourceSystem.WES_RUNTIME,
         source_event_id="resource-bin-material-mount-debug-cleanup",
         trace_id=session.trace_id,
-        session_id=str(session.id),
+        workline_session_id=session.id,
         started_at=timezone.now_for_db(),
     )
     snapshot = BinContentSnapshot(
@@ -319,7 +374,9 @@ async def _create_debug_cleanup_graph(db_session):
     db_session.add_all(
         [
             pending_inbox,
-            resource_event,
+            bin_transit_membership,
+            object_transition_event,
+            resource_transition_event,
             rack_bin_mount,
             bin_cell_occupancy,
             bin_material_mount,
@@ -347,6 +404,8 @@ async def _create_debug_cleanup_graph(db_session):
             HandlingOperation: handling_operation.id,
             HandlingMove: handling_move.id,
             HandlingStep: handling_step.id,
+            BinTransitMembership: bin_transit_membership.id,
+            ObjectTransitionEvent: object_transition_event.id,
             ResourceStateEvent: resource_event.id,
             RackBinMount: rack_bin_mount.id,
             BinMaterialMount: bin_material_mount.id,
@@ -356,6 +415,7 @@ async def _create_debug_cleanup_graph(db_session):
             CallbackLog: callback_log.id,
             WmsCallEvidence: wms_evidence.id,
         },
+        "resource_transition_event_id": resource_transition_event.id,
         "pending_inbox_id": pending_inbox.id,
         "pending_callback_log_id": pending_callback_log.id,
         "other_session_id": other_session.id,
@@ -408,6 +468,8 @@ async def test_preview_workline_counts_non_simulation_process_data(db_session) -
     assert result.counts["handling_operations"] == 1
     assert result.counts["handling_moves"] == 1
     assert result.counts["handling_steps"] == 1
+    assert result.counts["bin_transit_memberships"] == 1
+    assert result.counts["object_transition_events"] == 2
     assert result.counts["resource_state_events"] == 1
     assert result.counts["bin_content_snapshots"] == 1
     assert result.counts["bin_content_snapshot_items"] == 1
@@ -432,6 +494,7 @@ async def test_cleanup_workline_deletes_process_data_and_preserves_source_data(d
     assert await db_session.get(WorkLine, graph["other_workline_id"]) is not None
     for model, item_id in graph["ids"].items():
         assert await db_session.get(model, item_id) is None
+    assert await db_session.get(ObjectTransitionEvent, graph["resource_transition_event_id"]) is None
     assert await db_session.get(WorklineInbox, graph["pending_inbox_id"]) is None
     assert await db_session.get(CallbackLog, graph["pending_callback_log_id"]) is None
     assert await db_session.get(WorklineSession, graph["other_session_id"]) is not None

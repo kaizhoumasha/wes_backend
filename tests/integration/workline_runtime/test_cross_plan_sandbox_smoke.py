@@ -839,7 +839,7 @@ async def test_cross_plan_runtime_effect_stitching_persists_context_resource_fac
     assert resource_event.event_type == ResourceStateEventType.MATERIAL_UNMOUNTED
     assert resource_event.idempotency_key == expected_idempotency_key
     assert resource_event.trace_id == "trace-cross-plan-effect"
-    assert resource_event.session_id == str(session.id)
+    assert resource_event.workline_session_id == session.id
     assert resource_event.workline_id == workline.id
 
     scan_inbox = _scan_event(

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import delete, or_, select, update
 
 from src.app.device.models import Device, DeviceCommand
-from src.app.handling.models import HandlingMove, HandlingOperation, HandlingStep
+from src.app.handling.models import BinTransitMembership, HandlingMove, HandlingOperation, HandlingStep
 from src.app.rack.models import RackOperation, RackTask
 from src.app.resource.models import (
     BinCellOccupancy,
@@ -27,6 +27,7 @@ from src.app.workline.models.bin_cell_reservation import WorklineBinCellReservat
 from src.app.workline.models.diagnostic import WorklineDiagnostic
 from src.app.workline.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.workline.models.inbox import WorklineInbox
+from src.app.workline.models.object_transition_event import ObjectTransitionEvent
 from src.app.workline.models.runtime_hold import NgReturnItem, RuntimeHold
 from src.app.workline.models.safety import WorklineSafetyIncident
 from src.app.workline.models.session import WorklineSession
@@ -48,12 +49,14 @@ COUNT_KEYS = (
     "handling_operations",
     "handling_moves",
     "handling_steps",
+    "bin_transit_memberships",
     "bin_cell_reservations",
     "timelines",
     "diagnostics",
     "dispatch_attempts",
     "safety_incidents",
     "resource_state_events",
+    "object_transition_events",
     "rack_placements",
     "rack_bin_mounts",
     "bin_placements",
@@ -83,12 +86,14 @@ class DebugDataCleanupSelection:
     handling_operations: list[int]
     handling_moves: list[int]
     handling_steps: list[int]
+    bin_transit_memberships: list[int]
     bin_cell_reservations: list[int]
     timelines: list[int]
     diagnostics: list[int]
     dispatch_attempts: list[int]
     safety_incidents: list[int]
     resource_state_events: list[int]
+    object_transition_events: list[int]
     rack_placements: list[int]
     rack_bin_mounts: list[int]
     bin_placements: list[int]
@@ -194,6 +199,17 @@ class DebugDataCleanupRepository:
             db,
             self._handling_step_ids_stmt(handling_operation_ids, outbox_ids, command_ids, trace_ids, dispatch_keys),
         )
+        bin_transit_membership_ids = await self._collect_ids(
+            db,
+            self._bin_transit_membership_ids_stmt(
+                workline_ids,
+                workline_codes,
+                session_ids,
+                trace_ids,
+                handling_operation_ids,
+                handling_move_ids,
+            ),
+        )
         bin_cell_reservation_ids = await self._collect_ids(
             db, self._bin_cell_reservation_ids_stmt(workline_ids, workline_codes, session_ids)
         )
@@ -209,18 +225,32 @@ class DebugDataCleanupRepository:
         )
 
         resource_state_event_ids = await self._collect_ids(
-            db, self._resource_state_event_ids_stmt(workline_ids, workline_codes, session_keys, trace_ids)
+            db, self._resource_state_event_ids_stmt(workline_ids, workline_codes, session_ids, trace_ids)
+        )
+        resource_state_event_source_ids = await self._collect_strings(
+            db, self._resource_state_event_source_ids_stmt(resource_state_event_ids)
+        )
+        object_transition_event_ids = await self._collect_ids(
+            db,
+            self._object_transition_event_ids_stmt(
+                session_ids,
+                trace_ids,
+                handling_operation_ids,
+                handling_move_ids,
+                resource_state_event_ids,
+                resource_state_event_source_ids,
+            ),
         )
         rack_placement_ids = await self._collect_ids(
-            db, self._rack_placement_ids_stmt(workline_ids, workline_codes, session_keys, trace_ids)
+            db, self._rack_placement_ids_stmt(workline_ids, workline_codes, session_ids, trace_ids)
         )
-        rack_bin_mount_ids = await self._collect_ids(db, self._rack_bin_mount_ids_stmt(session_keys, trace_ids))
+        rack_bin_mount_ids = await self._collect_ids(db, self._rack_bin_mount_ids_stmt(session_ids, trace_ids))
         bin_placement_ids = await self._collect_ids(
-            db, self._bin_placement_ids_stmt(workline_ids, workline_codes, session_keys, trace_ids)
+            db, self._bin_placement_ids_stmt(workline_ids, workline_codes, session_ids, trace_ids)
         )
-        bin_material_mount_ids = await self._collect_ids(db, self._bin_material_mount_ids_stmt(session_keys, trace_ids))
-        bin_cell_occupancy_ids = await self._collect_ids(db, self._bin_cell_occupancy_ids_stmt(session_keys, trace_ids))
-        resource_trace_ids, resource_session_keys = await self._collect_resource_link_keys(
+        bin_material_mount_ids = await self._collect_ids(db, self._bin_material_mount_ids_stmt(session_ids, trace_ids))
+        bin_cell_occupancy_ids = await self._collect_ids(db, self._bin_cell_occupancy_ids_stmt(session_ids, trace_ids))
+        resource_trace_ids, resource_session_ids = await self._collect_resource_link_keys(
             db,
             resource_state_event_ids=resource_state_event_ids,
             rack_placement_ids=rack_placement_ids,
@@ -230,19 +260,34 @@ class DebugDataCleanupRepository:
             bin_cell_occupancy_ids=bin_cell_occupancy_ids,
         )
         trace_ids = sorted({*trace_ids, *resource_trace_ids})
-        session_keys = sorted({*session_keys, *resource_session_keys})
+        session_ids = sorted({*session_ids, *resource_session_ids})
+        session_keys = sorted({*(str(item_id) for item_id in session_ids), *session_codes})
         resource_state_event_ids = await self._collect_ids(
-            db, self._resource_state_event_ids_stmt(workline_ids, workline_codes, session_keys, trace_ids)
+            db, self._resource_state_event_ids_stmt(workline_ids, workline_codes, session_ids, trace_ids)
+        )
+        resource_state_event_source_ids = await self._collect_strings(
+            db, self._resource_state_event_source_ids_stmt(resource_state_event_ids)
+        )
+        object_transition_event_ids = await self._collect_ids(
+            db,
+            self._object_transition_event_ids_stmt(
+                session_ids,
+                trace_ids,
+                handling_operation_ids,
+                handling_move_ids,
+                resource_state_event_ids,
+                resource_state_event_source_ids,
+            ),
         )
         rack_placement_ids = await self._collect_ids(
-            db, self._rack_placement_ids_stmt(workline_ids, workline_codes, session_keys, trace_ids)
+            db, self._rack_placement_ids_stmt(workline_ids, workline_codes, session_ids, trace_ids)
         )
-        rack_bin_mount_ids = await self._collect_ids(db, self._rack_bin_mount_ids_stmt(session_keys, trace_ids))
+        rack_bin_mount_ids = await self._collect_ids(db, self._rack_bin_mount_ids_stmt(session_ids, trace_ids))
         bin_placement_ids = await self._collect_ids(
-            db, self._bin_placement_ids_stmt(workline_ids, workline_codes, session_keys, trace_ids)
+            db, self._bin_placement_ids_stmt(workline_ids, workline_codes, session_ids, trace_ids)
         )
-        bin_material_mount_ids = await self._collect_ids(db, self._bin_material_mount_ids_stmt(session_keys, trace_ids))
-        bin_cell_occupancy_ids = await self._collect_ids(db, self._bin_cell_occupancy_ids_stmt(session_keys, trace_ids))
+        bin_material_mount_ids = await self._collect_ids(db, self._bin_material_mount_ids_stmt(session_ids, trace_ids))
+        bin_cell_occupancy_ids = await self._collect_ids(db, self._bin_cell_occupancy_ids_stmt(session_ids, trace_ids))
         bin_content_snapshot_ids = await self._collect_ids(db, self._bin_content_snapshot_ids_stmt(session_ids))
         snapshot_ids = await self._collect_strings(
             db, self._bin_content_snapshot_business_ids_stmt(bin_content_snapshot_ids)
@@ -257,7 +302,31 @@ class DebugDataCleanupRepository:
                 {
                     *resource_state_event_ids,
                     *await self._collect_ids(
-                        db, self._orphan_process_resource_ids_stmt(ResourceStateEvent, session_keys, trace_ids)
+                        db, self._orphan_process_resource_ids_stmt(ResourceStateEvent, session_ids, trace_ids)
+                    ),
+                }
+            )
+            resource_state_event_source_ids = sorted(
+                {
+                    *resource_state_event_source_ids,
+                    *await self._collect_strings(
+                        db, self._resource_state_event_source_ids_stmt(resource_state_event_ids)
+                    ),
+                }
+            )
+            object_transition_event_ids = sorted(
+                {
+                    *object_transition_event_ids,
+                    *await self._collect_ids(
+                        db,
+                        self._object_transition_event_ids_stmt(
+                            session_ids,
+                            trace_ids,
+                            handling_operation_ids,
+                            handling_move_ids,
+                            resource_state_event_ids,
+                            resource_state_event_source_ids,
+                        ),
                     ),
                 }
             )
@@ -265,7 +334,7 @@ class DebugDataCleanupRepository:
                 {
                     *rack_bin_mount_ids,
                     *await self._collect_ids(
-                        db, self._orphan_process_resource_ids_stmt(RackBinMount, session_keys, trace_ids)
+                        db, self._orphan_process_resource_ids_stmt(RackBinMount, session_ids, trace_ids)
                     ),
                 }
             )
@@ -273,7 +342,7 @@ class DebugDataCleanupRepository:
                 {
                     *bin_material_mount_ids,
                     *await self._collect_ids(
-                        db, self._orphan_process_resource_ids_stmt(BinMaterialMount, session_keys, trace_ids)
+                        db, self._orphan_process_resource_ids_stmt(BinMaterialMount, session_ids, trace_ids)
                     ),
                 }
             )
@@ -281,7 +350,7 @@ class DebugDataCleanupRepository:
                 {
                     *bin_cell_occupancy_ids,
                     *await self._collect_ids(
-                        db, self._orphan_process_resource_ids_stmt(BinCellOccupancy, session_keys, trace_ids)
+                        db, self._orphan_process_resource_ids_stmt(BinCellOccupancy, session_ids, trace_ids)
                     ),
                 }
             )
@@ -307,12 +376,14 @@ class DebugDataCleanupRepository:
             handling_operations=handling_operation_ids,
             handling_moves=handling_move_ids,
             handling_steps=handling_step_ids,
+            bin_transit_memberships=bin_transit_membership_ids,
             bin_cell_reservations=bin_cell_reservation_ids,
             timelines=timeline_ids,
             diagnostics=diagnostic_ids,
             dispatch_attempts=dispatch_attempt_ids,
             safety_incidents=safety_incident_ids,
             resource_state_events=resource_state_event_ids,
+            object_transition_events=object_transition_event_ids,
             rack_placements=rack_placement_ids,
             rack_bin_mounts=rack_bin_mount_ids,
             bin_placements=bin_placement_ids,
@@ -334,6 +405,8 @@ class DebugDataCleanupRepository:
         await db.flush()
 
         await self._delete_by_ids(db, BinContentSnapshotItem, selection.bin_content_snapshot_items)
+        await self._delete_by_ids(db, ObjectTransitionEvent, selection.object_transition_events)
+        await self._delete_by_ids(db, BinTransitMembership, selection.bin_transit_memberships)
         await self._delete_by_ids(db, HandlingStep, selection.handling_steps)
         await self._delete_by_ids(db, HandlingMove, selection.handling_moves)
         await self._delete_by_ids(db, WorklineTimeline, selection.timelines)
@@ -433,12 +506,14 @@ class DebugDataCleanupRepository:
             handling_operations=[],
             handling_moves=[],
             handling_steps=[],
+            bin_transit_memberships=[],
             bin_cell_reservations=[],
             timelines=[],
             diagnostics=[],
             dispatch_attempts=[],
             safety_incidents=[],
             resource_state_events=[],
+            object_transition_events=[],
             rack_placements=[],
             rack_bin_mounts=[],
             bin_placements=[],
@@ -465,22 +540,26 @@ class DebugDataCleanupRepository:
     def _orphan_process_resource_ids_stmt(
         self,
         model: type[Any],
-        session_keys: list[str],
+        session_ids: list[int],
         trace_ids: list[str],
     ) -> Any:
         columns = cast("Any", model).__table__.c
+        known_process_condition = cast(
+            "Any",
+            self._where_any(
+                columns.trace_id.is_not(None),
+                columns.workline_session_id.is_not(None),
+            ),
+        )
         exclusion_conditions = [
             self._outside_known_values(columns.trace_id, trace_ids),
-            self._outside_known_values(columns.session_id, session_keys),
+            self._outside_known_values(columns.workline_session_id, session_ids),
         ]
         return (
             select(columns.id)
             .where(
                 columns.source_system == ResourceSourceSystem.WES_RUNTIME,
-                self._where_any(
-                    columns.trace_id.is_not(None),
-                    columns.session_id.is_not(None),
-                ),
+                known_process_condition,
                 *[condition for condition in exclusion_conditions if condition is not None],
             )
             .order_by(columns.id)
@@ -488,6 +567,13 @@ class DebugDataCleanupRepository:
 
     def _orphan_process_callback_log_ids_stmt(self, trace_ids: list[str], event_ids: list[str]) -> Any:
         columns = cast("Any", self._callback_log_model()).__table__.c
+        known_process_condition = cast(
+            "Any",
+            self._where_any(
+                columns.trace_id.is_not(None),
+                columns.event_id.is_not(None),
+            ),
+        )
         exclusion_conditions = [
             self._outside_known_values(columns.trace_id, trace_ids),
             self._outside_known_values(columns.event_id, event_ids),
@@ -495,10 +581,7 @@ class DebugDataCleanupRepository:
         return (
             select(columns.id)
             .where(
-                self._where_any(
-                    columns.trace_id.is_not(None),
-                    columns.event_id.is_not(None),
-                ),
+                known_process_condition,
                 *[condition for condition in exclusion_conditions if condition is not None],
             )
             .order_by(columns.id)
@@ -517,9 +600,9 @@ class DebugDataCleanupRepository:
         bin_placement_ids: list[int],
         bin_material_mount_ids: list[int],
         bin_cell_occupancy_ids: list[int],
-    ) -> tuple[list[str], list[str]]:
+    ) -> tuple[list[str], list[int]]:
         trace_ids: set[str] = set()
-        session_keys: set[str] = set()
+        session_ids: set[int] = set()
         for model, ids in (
             (ResourceStateEvent, resource_state_event_ids),
             (RackPlacement, rack_placement_ids),
@@ -529,8 +612,8 @@ class DebugDataCleanupRepository:
             (BinCellOccupancy, bin_cell_occupancy_ids),
         ):
             trace_ids.update(await self._collect_strings(db, self._trace_ids_by_ids_stmt(model, ids)))
-            session_keys.update(await self._collect_strings(db, self._session_ids_by_ids_stmt(model, ids)))
-        return sorted(trace_ids), sorted(session_keys)
+            session_ids.update(await self._collect_ids(db, self._session_ids_by_ids_stmt(model, ids)))
+        return sorted(trace_ids), sorted(session_ids)
 
     def _trace_ids_by_ids_stmt(self, model: type[Any], ids: list[int]) -> Any | None:
         columns = cast("Any", model).__table__.c
@@ -538,7 +621,7 @@ class DebugDataCleanupRepository:
 
     def _session_ids_by_ids_stmt(self, model: type[Any], ids: list[int]) -> Any | None:
         columns = cast("Any", model).__table__.c
-        return select(columns.session_id).where(columns.id.in_(ids)) if ids else None
+        return select(columns.workline_session_id).where(columns.id.in_(ids)) if ids else None
 
     def _workline_code_stmt(self, workline_ids: list[int]) -> Any:
         columns = cast("Any", WorkLine).__table__.c
@@ -719,6 +802,26 @@ class DebugDataCleanupRepository:
         )
         return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None
 
+    def _bin_transit_membership_ids_stmt(
+        self,
+        workline_ids: list[int],
+        workline_codes: list[str],
+        session_ids: list[int],
+        trace_ids: list[str],
+        handling_operation_ids: list[int],
+        handling_move_ids: list[int],
+    ) -> Any | None:
+        columns = cast("Any", BinTransitMembership).__table__.c
+        condition = self._where_any(
+            self._in_condition(columns.workline_id, workline_ids),
+            self._in_condition(columns.workline_code, workline_codes),
+            self._in_condition(columns.workline_session_id, session_ids),
+            self._in_condition(columns.trace_id, trace_ids),
+            self._in_condition(columns.handling_operation_id, handling_operation_ids),
+            self._in_condition(columns.handling_move_id, handling_move_ids),
+        )
+        return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None
+
     def _bin_cell_reservation_ids_stmt(
         self,
         workline_ids: list[int],
@@ -793,15 +896,52 @@ class DebugDataCleanupRepository:
         self,
         workline_ids: list[int],
         workline_codes: list[str],
-        session_keys: list[str],
+        session_ids: list[int],
         trace_ids: list[str],
     ) -> Any | None:
         columns = cast("Any", ResourceStateEvent).__table__.c
         condition = self._where_any(
             self._in_condition(columns.workline_id, workline_ids),
             self._in_condition(columns.workline_code, workline_codes),
-            self._in_condition(columns.session_id, session_keys),
+            self._in_condition(columns.workline_session_id, session_ids),
             self._in_condition(columns.trace_id, trace_ids),
+        )
+        return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None
+
+    def _resource_state_event_source_ids_stmt(self, resource_state_event_ids: list[int]) -> Any | None:
+        columns = cast("Any", ResourceStateEvent).__table__.c
+        condition = self._in_condition(columns.id, resource_state_event_ids)
+        return (
+            select(columns.source_event_id).where(condition).order_by(columns.source_event_id)
+            if condition is not None
+            else None
+        )
+
+    def _object_transition_event_ids_stmt(
+        self,
+        session_ids: list[int],
+        trace_ids: list[str],
+        handling_operation_ids: list[int],
+        handling_move_ids: list[int],
+        resource_state_event_ids: list[int],
+        resource_state_event_source_ids: list[str],
+    ) -> Any | None:
+        columns = cast("Any", ObjectTransitionEvent).__table__.c
+        source_ref = columns.source_ref_json
+        json_conditions = [
+            source_ref["handling_operation_id"].as_integer().in_(handling_operation_ids)
+            if handling_operation_ids
+            else None,
+            source_ref["handling_move_id"].as_integer().in_(handling_move_ids) if handling_move_ids else None,
+            source_ref["resource_state_event_id"].as_integer().in_(resource_state_event_ids)
+            if resource_state_event_ids
+            else None,
+        ]
+        condition = self._where_any(
+            self._in_condition(columns.workline_session_id, session_ids),
+            self._in_condition(columns.trace_id, trace_ids),
+            self._in_condition(columns.source_event_id, resource_state_event_source_ids),
+            *json_conditions,
         )
         return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None
 
@@ -809,22 +949,22 @@ class DebugDataCleanupRepository:
         self,
         workline_ids: list[int],
         workline_codes: list[str],
-        session_keys: list[str],
+        session_ids: list[int],
         trace_ids: list[str],
     ) -> Any | None:
         columns = cast("Any", RackPlacement).__table__.c
         condition = self._where_any(
             self._in_condition(columns.workline_id, workline_ids),
             self._in_condition(columns.workline_code, workline_codes),
-            self._in_condition(columns.session_id, session_keys),
+            self._in_condition(columns.workline_session_id, session_ids),
             self._in_condition(columns.trace_id, trace_ids),
         )
         return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None
 
-    def _rack_bin_mount_ids_stmt(self, session_keys: list[str], trace_ids: list[str]) -> Any | None:
+    def _rack_bin_mount_ids_stmt(self, session_ids: list[int], trace_ids: list[str]) -> Any | None:
         columns = cast("Any", RackBinMount).__table__.c
         condition = self._where_any(
-            self._in_condition(columns.session_id, session_keys),
+            self._in_condition(columns.workline_session_id, session_ids),
             self._in_condition(columns.trace_id, trace_ids),
         )
         return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None
@@ -833,30 +973,30 @@ class DebugDataCleanupRepository:
         self,
         workline_ids: list[int],
         workline_codes: list[str],
-        session_keys: list[str],
+        session_ids: list[int],
         trace_ids: list[str],
     ) -> Any | None:
         columns = cast("Any", BinPlacement).__table__.c
         condition = self._where_any(
             self._in_condition(columns.workline_id, workline_ids),
             self._in_condition(columns.workline_code, workline_codes),
-            self._in_condition(columns.session_id, session_keys),
+            self._in_condition(columns.workline_session_id, session_ids),
             self._in_condition(columns.trace_id, trace_ids),
         )
         return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None
 
-    def _bin_material_mount_ids_stmt(self, session_keys: list[str], trace_ids: list[str]) -> Any | None:
+    def _bin_material_mount_ids_stmt(self, session_ids: list[int], trace_ids: list[str]) -> Any | None:
         columns = cast("Any", BinMaterialMount).__table__.c
         condition = self._where_any(
-            self._in_condition(columns.session_id, session_keys),
+            self._in_condition(columns.workline_session_id, session_ids),
             self._in_condition(columns.trace_id, trace_ids),
         )
         return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None
 
-    def _bin_cell_occupancy_ids_stmt(self, session_keys: list[str], trace_ids: list[str]) -> Any | None:
+    def _bin_cell_occupancy_ids_stmt(self, session_ids: list[int], trace_ids: list[str]) -> Any | None:
         columns = cast("Any", BinCellOccupancy).__table__.c
         condition = self._where_any(
-            self._in_condition(columns.session_id, session_keys),
+            self._in_condition(columns.workline_session_id, session_ids),
             self._in_condition(columns.trace_id, trace_ids),
         )
         return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None
