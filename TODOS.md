@@ -76,6 +76,96 @@
 
 ---
 
+## P0 - WES 调度 Adapter 顶层抽象与外部 WMS 调度首版适配
+
+**What**: 按 `docs/superpowers/specs/2026-06-23-wes-domain-boundary-and-dispatch-adapter-design.md` 建立 WES 调度 Adapter port，首版对接外部 WMS 调度接口，后续支持直接调度 AGV/CTU。
+
+**Why**: WES 不维护货架/料箱/库位基础资料，AGV/CTU 当前确定通过外部 WMS 间接调度。但调度层不能写死 WMS HTTP client，也不能把 WMS 内部能力纳入本系统规划，否则后续直连 AGV/CTU 会污染 WorkLine、Handling 和插件上层语义。
+
+**Context**: 2026-06-23 顶层领域边界讨论确认：WMS 是货架、料箱、库位、库存规划和搬运调度决策权威；WES 只维护运行投影、搬运请求生命周期和 evidence。调度层必须是 Adapter。
+
+**Scope**:
+- 定义 `DispatchAdapter` port 和标准调度意图：补空单层货架、移出载料单层货架、五层货架定位、原地换面、料箱送入滚筒线入口、料箱从滚筒线出口取回。
+- 实现外部 WMS 调度 Adapter，所有 AGV/CTU 调度首版通过外部 WMS 调度接口发出。
+- 统一请求状态、幂等键、trace/correlation key、业务拒绝/技术失败/异步接受分类。
+- 禁止插件和 Handling 直接 import WMS HTTP client。
+- 只定义 WES 侧 port、请求/evidence/回调处理，不规划 WMS 如何选择货架、计算箱位、规划库位或调度 AGV/CTU。
+- 为未来 `DirectAgvAdapter`、`DirectCtuAdapter`、`HybridDispatchRouter` 保留协议边界。
+
+**Dependencies**: WMS typed port/evidence 基础能力、HandlingOperation 请求生命周期、WorkLine 入口/出口配置语义稳定。
+
+**Effort**: L
+
+**Priority**: P0
+
+---
+
+## P1 - WorkLine Conveyor Queue Membership 7 队列完整 Runtime Writer
+
+**What**: 将当前 handling 下的 `BinTransitMembership` 抽象迁移为 WorkLine conveyor queue membership 后，补齐 SMT 料箱流水线 Gate3/Gate4、多扫码点和完整队列 runtime writer。
+
+**Why**: 料箱在滚筒线队列中的当前位置属于 WorkLine/Conveyor active projection，不属于 Handling。完整物理流水线需要覆盖入口缓冲、扫码队列、工位队列、出口队列、回收等待和异常队列，才能支撑多料箱并发、转线判断和完整 Trace。
+
+**Context**: 2026-06-23 顶层领域边界讨论确认：滚筒线下有一个或多个队列，队列为动态配置；`BinTransitQueue` 不应是系统级 enum，`BinTransitMembership` 不应归 handling。当前 SMT 插件主要建模单扫码平台和 `WORKING_BIN_SCAN`，扫码点 3/4、出口路由、回收扫码、多料箱并发队列不塞进当前 C0。
+
+**Scope**:
+- 新增或迁移为 `WorklineQueueMembership` / `ConveyorQueueOccupancy` 模型、repository、service。
+- 队列字段使用 `queue_code` 字符串并校验 manifest/WorkLine 配置，不使用系统级 queue enum。
+- 扩展 SMT runtime 事件到 Gate3/Gate4、出口路由扫码、回收扫码和多扫码点。
+- 为每次队列进入、离开、切换写入统一 `object_transition_events`。
+- 覆盖同一 bin 多队列冲突、placeholder 解析、Gate 拒绝、NG 队列和回收等待。
+- 补 integration/E2E 测试，验证多料箱并发队列不会污染料盘 `material_units.status`。
+
+**Dependencies**: 顶层领域边界文档、C0 队列投影重构、`object_transition_events`、`RESOURCE_WAIT` subject 合同落地；SMT 现场多扫码点事件合同明确。
+
+**Effort**: L (human: 3-5 days / CC: ~1 day after C0 is stable)
+
+**Priority**: P1
+
+---
+
+## P1 - WorkLine Conveyor Queue Membership 并发幂等与锁策略
+
+**What**: 为 WorkLine conveyor queue membership 补充并发回调下的原子 upsert / 行级锁 / IntegrityError 重读策略，并建立并发压测用例。
+
+**Why**: 队列 active/history 投影会受到设备事件、WMS/CTU 回调和 runtime 重放共同驱动。并发回调同一 bin/placeholder 时需要保证唯一冲突不会回滚主 callback，并明确冲突进入 RECONCILING 还是幂等重读。
+
+**Context**: 当前 C0 实现曾以 handling `BinTransitMembership` 建模，后续需迁移为 WorkLine conveyor queue projection。完整并发策略需结合真实 PostgreSQL 行级锁语义和多扫码点 writer 一起做。
+
+**Scope**:
+- Repository 支持 active membership `SELECT ... FOR UPDATE` 或 PostgreSQL savepoint/upsert。
+- queue enter/switch/leave 对唯一冲突做幂等重读或受控 RECONCILING。
+- 覆盖同一 bin、同一 placeholder、placeholder resolve 与 terminal leave 并发回调。
+- 增加 PostgreSQL 集成/压力测试，区分 SQLite 单测与真实锁语义。
+
+**Dependencies**: WorkLine conveyor queue membership 模型落地；完整 runtime writer 或至少明确多扫码点回调合同。
+
+**Effort**: M
+
+**Priority**: P1
+
+---
+
+## P1 - WorkLine Queue Membership 投影失败诊断与严格模式
+
+**What**: 为 WorkLine queue membership best-effort 投影补充可查询诊断 evidence，并提供测试/预发环境可开启的严格模式。
+
+**Why**: 队列投影失败不应默认打断外部搬运请求或设备回调主状态提交；但长期只依赖 warning 日志会降低投影缺口的可见性。后续需要把预期冲突、字段合同错误和代码 bug 分层记录，并在测试/预发环境快速暴露。
+
+**Scope**:
+- 为 membership projection failure 写入可查询 diagnostic 或 RuntimeHold/RECONCILING evidence。
+- 区分预期并发/唯一冲突、外部合同缺字段、内部编程错误。
+- 支持环境开关：生产保持 best-effort，测试/预发可对非预期异常 re-raise。
+- 增加失败分类、诊断查询和严格模式单测。
+
+**Dependencies**: WorkLine conveyor queue membership best-effort 投影、并发幂等策略落地后统一整理异常分类。
+
+**Effort**: M
+
+**Priority**: P1
+
+---
+
 ## P2 - WorkLine 角色优先设备绑定向导
 
 **What**: 为 WorkLine 配置台补充按插件角色引导绑定设备的向导，优先按 manifest 角色和能力缺口组织现场配置。
@@ -109,7 +199,7 @@
 **Scope**:
 - 设备状态监控：IDLE/RUNNING/ERROR/OFFLINE 状态分布
 - Session 处理延迟：P99 延迟、超时率
-- RESOURCE_WAIT active 数、等待时长、retry 次数和 batch result `resource_wait` 计数，按 `resource_kind/resource_key` 分组
+- RESOURCE_WAIT active 数、等待时长、retry 次数和 batch result `resource_wait` 计数，按 C0 subject 合同的 `subject_type/subject_key/projection_type` 分组；旧 `resource_kind/resource_key` 只作为历史 evidence 维度
 - 区分 Inbox `RESOURCE_WAIT` 与 Outbox `BLOCKED_RESOURCE`，避免把设备 dispatch 忙误读成入口阻塞
 - 区分本地设备投影 IDLE 与 ECS 实时 `IDLE` probe，避免把诊断投影误读成 dispatch 放行事实
 - 错误率追踪：按 error_code 分类统计
@@ -162,7 +252,7 @@
 - 评估 Celery worker concurrency 与队列隔离策略
 - 评估 batch limit 对延迟、锁竞争和重试的影响
 - 评估应用层普通列物化的 `claim_bucket_key` hot queue 索引、claim 返回排序，以及 claimable 队列排序、同 bucket 队首围栏、到期 `RETRY`、stale `PROCESSING` 回收四类 PostgreSQL EXPLAIN gate 在热队列下是否稳定
-- 评估 RESOURCE_WAIT 默认 10 秒 retry、env 调优、batch result `resource_wait` 计数和诊断幂等更新的写入频率
+- 评估 RESOURCE_WAIT 默认 10 秒 retry、env 调优、batch result `resource_wait` 计数和诊断幂等更新的写入频率，统计维度使用 C0 subject 合同的 `subject_type/subject_key/projection_type`
 - 分别统计 Inbox `RESOURCE_WAIT` 与 Outbox `BLOCKED_RESOURCE` 对 worker 延迟和资源释放后恢复时间的影响
 - 统计本地 command terminal / DeviceStatus 投影时间与 ECS `IDLE` probe 放行时间的差异，防止后续调优绕过实时 admission source
 - 评估设备 HTTP client 复用、超时和连接池策略，覆盖实时 status GET + command POST 双 HTTP 路径
