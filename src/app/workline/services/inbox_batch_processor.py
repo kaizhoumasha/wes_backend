@@ -1126,13 +1126,15 @@ class InboxBatchProcessor:
                             resource_wait_context = payload_dict(session_context.get("resource_wait"))
                             if optional_int(
                                 resource_wait_context.get("inbox_id")
-                            ) == _inbox_pk and resource_wait_context.get("resource_key"):
+                            ) == _inbox_pk and resource_wait_context.get("subject_key"):
                                 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 
                                 _ = await workline_diagnostic_service.resolve_resource_wait_diagnostics(
                                     db,
                                     inbox_id=_inbox_pk,
-                                    resource_key=str(resource_wait_context["resource_key"]),
+                                    subject_type=str(resource_wait_context["subject_type"]),
+                                    subject_key=str(resource_wait_context["subject_key"]),
+                                    projection_type=str(resource_wait_context["projection_type"]),
                                     auto_commit=False,
                                 )
                                 session_context.pop("resource_wait", None)

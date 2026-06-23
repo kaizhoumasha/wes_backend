@@ -28,16 +28,16 @@ def _positive_int(value: Any, default: int) -> int:
     return resolved
 
 
-def _fit_resource_wait_diagnostic_key(prefix: str, resource_key: str) -> str:
-    raw_key = f"{prefix}{resource_key}"
+def _fit_resource_wait_diagnostic_key(prefix: str, subject_key: str) -> str:
+    raw_key = f"{prefix}{subject_key}"
     if len(raw_key) <= DIAGNOSTIC_KEY_MAX_LENGTH:
         return raw_key
 
     digest = sha256(raw_key.encode("utf-8")).hexdigest()[:_DIAGNOSTIC_KEY_DIGEST_LENGTH]
     digest_suffix = f":{digest}"
-    resource_budget = DIAGNOSTIC_KEY_MAX_LENGTH - len(prefix) - len(digest_suffix)
-    if resource_budget > 0:
-        return f"{prefix}{resource_key[:resource_budget]}{digest_suffix}"
+    subject_budget = DIAGNOSTIC_KEY_MAX_LENGTH - len(prefix) - len(digest_suffix)
+    if subject_budget > 0:
+        return f"{prefix}{subject_key[:subject_budget]}{digest_suffix}"
 
     head_budget = DIAGNOSTIC_KEY_MAX_LENGTH - len(digest_suffix)
     return f"{raw_key[:head_budget]}{digest_suffix}"
@@ -48,8 +48,9 @@ class ResourceWaitEvidence:
     """Single source for RESOURCE_WAIT key, session context, and diagnostic evidence."""
 
     inbox_id: int
-    resource_kind: str
-    resource_key: str
+    subject_type: str
+    subject_key: str
+    projection_type: str
     reason_code: str
     message: str
     first_seen_at: str
@@ -65,8 +66,9 @@ class ResourceWaitEvidence:
         cls,
         *,
         inbox_id: int,
-        resource_kind: str,
-        resource_key: str,
+        subject_type: str,
+        subject_key: str,
+        projection_type: str,
         reason_code: str,
         message: str,
         occurred_at: datetime | str,
@@ -82,8 +84,9 @@ class ResourceWaitEvidence:
         previous_count = _positive_int(existing_data.get("wait_count"), 0)
         return cls(
             inbox_id=inbox_id,
-            resource_kind=resource_kind,
-            resource_key=resource_key,
+            subject_type=subject_type,
+            subject_key=subject_key,
+            projection_type=projection_type,
             reason_code=reason_code,
             message=message,
             first_seen_at=first_seen_at,
@@ -96,10 +99,22 @@ class ResourceWaitEvidence:
         )
 
     @property
+    def resource_kind(self) -> str:
+        """旧诊断服务只读兼容入口；新 evidence 主体使用 subject_type。"""
+
+        return self.subject_type
+
+    @property
+    def resource_key(self) -> str:
+        """旧诊断服务只读兼容入口；新诊断 key 使用 subject_key。"""
+
+        return self.subject_key
+
+    @property
     def diagnostic_key(self) -> str:
         return _fit_resource_wait_diagnostic_key(
-            f"RESOURCE_WAIT:{self.inbox_id}:",
-            self.resource_key,
+            f"RESOURCE_WAIT:{self.inbox_id}:{self.subject_type}:{self.projection_type}:",
+            self.subject_key,
         )
 
     def to_session_context(self) -> dict[str, Any]:
@@ -113,8 +128,9 @@ class ResourceWaitEvidence:
             "session_id": self.session_id,
             "workline_id": self.workline_id,
             "trace_id": self.trace_id,
-            "resource_kind": self.resource_kind,
-            "resource_key": self.resource_key,
+            "subject_type": self.subject_type,
+            "subject_key": self.subject_key,
+            "projection_type": self.projection_type,
             "reason_code": self.reason_code,
             "message": self.message,
             "first_seen_at": self.first_seen_at,

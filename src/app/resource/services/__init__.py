@@ -5,6 +5,18 @@ from .active_rack_snapshot_service import (
     SmtActiveRackSnapshotService,
     smt_active_rack_snapshot_service,
 )
+from .material_location_consistency_service import (
+    MaterialLocationConsistencyIssue,
+    MaterialLocationConsistencyService,
+    MaterialLocationRepairResult,
+    material_location_consistency_service,
+)
+from .projection_integrity_service import (
+    ResourceProjectionIntegrityIssue,
+    ResourceProjectionIntegrityReport,
+    ResourceProjectionIntegrityService,
+    resource_projection_integrity_service,
+)
 from .projection_service import ResourceProjectionService, resource_projection_service
 from .relation_service import (
     ResourceProjectionResult,
@@ -62,11 +74,17 @@ __all__ = [
     "BinService",
     "BinSlotTemplateService",
     "BinTypeService",
+    "MaterialLocationConsistencyIssue",
+    "MaterialLocationConsistencyService",
+    "MaterialLocationRepairResult",
     "RackBinMountService",
     "RackPlacementService",
     "RackService",
     "RackSlotTemplateService",
     "RackTypeService",
+    "ResourceProjectionIntegrityIssue",
+    "ResourceProjectionIntegrityReport",
+    "ResourceProjectionIntegrityService",
     "ResourceProjectionResult",
     "ResourceProjectionService",
     "ResourceProjectionStatus",
@@ -89,11 +107,13 @@ __all__ = [
     "bin_service",
     "bin_slot_template_service",
     "bin_type_service",
+    "material_location_consistency_service",
     "rack_bin_mount_service",
     "rack_placement_service",
     "rack_service",
     "rack_slot_template_service",
     "rack_type_service",
+    "resource_projection_integrity_service",
     "resource_projection_service",
     "resource_relation_service",
     "resource_snapshot_service",

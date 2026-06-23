@@ -733,7 +733,15 @@ async def test_processed_resource_wait_resolves_diagnostic_and_clears_session_co
         workline_id=20,
         plugin_key="test_plugin",
         status=SessionStatus.RUNNING,
-        context_json={"resource_wait": {"inbox_id": 1, "resource_key": "station:S1"}, "keep": "value"},
+        context_json={
+            "resource_wait": {
+                "inbox_id": 1,
+                "subject_type": "TARGET_STATION",
+                "subject_key": "station:S1",
+                "projection_type": "ACTIVE_TARGET_BIN_RACK",
+            },
+            "keep": "value",
+        },
     )
     db_session.add(session)
     await db_session.commit()
@@ -803,7 +811,9 @@ async def test_processed_resource_wait_resolves_diagnostic_and_clears_session_co
     resolve_diagnostic.assert_awaited_once_with(
         db_session,
         inbox_id=1,
-        resource_key="station:S1",
+        subject_type="TARGET_STATION",
+        subject_key="station:S1",
+        projection_type="ACTIVE_TARGET_BIN_RACK",
         auto_commit=False,
     )
     await db_session.refresh(session)

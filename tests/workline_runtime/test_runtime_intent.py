@@ -94,10 +94,11 @@ def test_resource_reservation_intent_describes_planned_bin_cell_claim():
     assert intent.payload_json["bin_code"] == "BIN-001"
 
 
-def test_resource_wait_intent_requires_resource_kind_and_key():
+def test_resource_wait_intent_requires_subject_contract():
     intent = RuntimeIntent.resource_wait(
-        resource_kind="STATION",
-        resource_key="station:TARGET_STATION",
+        subject_type="TARGET_STATION",
+        subject_key="station:TARGET_STATION",
+        projection_type="ACTIVE_TARGET_BIN_RACK",
         reason_code="STATION_BUSY",
         message="目标工位正在处理其它物料",
     )
@@ -105,21 +106,24 @@ def test_resource_wait_intent_requires_resource_kind_and_key():
     assert intent.kind == RuntimeIntentKind.RESOURCE_WAIT
     assert intent.reason_code == "STATION_BUSY"
     assert intent.message == "目标工位正在处理其它物料"
-    assert intent.payload_json["resource_kind"] == "STATION"
-    assert intent.payload_json["resource_key"] == "station:TARGET_STATION"
+    assert intent.payload_json["subject_type"] == "TARGET_STATION"
+    assert intent.payload_json["subject_key"] == "station:TARGET_STATION"
+    assert intent.payload_json["projection_type"] == "ACTIVE_TARGET_BIN_RACK"
 
-    with pytest.raises(ValueError, match="RESOURCE_WAIT intent requires resource_kind"):
+    with pytest.raises(ValueError, match="RESOURCE_WAIT intent requires subject_type"):
         RuntimeIntent.resource_wait(
-            resource_kind="",
-            resource_key="station:TARGET_STATION",
+            subject_type="",
+            subject_key="station:TARGET_STATION",
+            projection_type="ACTIVE_TARGET_BIN_RACK",
             reason_code="STATION_BUSY",
             message="目标工位正在处理其它物料",
         )
 
-    with pytest.raises(ValueError, match="RESOURCE_WAIT intent requires resource_key"):
+    with pytest.raises(ValueError, match="RESOURCE_WAIT intent requires subject_key"):
         RuntimeIntent.resource_wait(
-            resource_kind="STATION",
-            resource_key="",
+            subject_type="TARGET_STATION",
+            subject_key="",
+            projection_type="ACTIVE_TARGET_BIN_RACK",
             reason_code="STATION_BUSY",
             message="目标工位正在处理其它物料",
         )
@@ -129,8 +133,9 @@ def test_resource_wait_intent_preserves_reason_and_evidence():
     evidence = {"station_code": "TARGET_STATION", "active_session_id": 1001}
 
     intent = RuntimeIntent.resource_wait(
-        resource_kind="STATION",
-        resource_key="station:TARGET_STATION",
+        subject_type="TARGET_STATION",
+        subject_key="station:TARGET_STATION",
+        projection_type="ACTIVE_TARGET_BIN_RACK",
         reason_code="STATION_BUSY",
         message="目标工位正在处理其它物料",
         suggested_action="等待资源释放后自动重试",
@@ -143,8 +148,9 @@ def test_resource_wait_intent_preserves_reason_and_evidence():
     assert intent.message == "目标工位正在处理其它物料"
     assert intent.suggested_action == "等待资源释放后自动重试"
     assert intent.payload_json == {
-        "resource_kind": "STATION",
-        "resource_key": "station:TARGET_STATION",
+        "subject_type": "TARGET_STATION",
+        "subject_key": "station:TARGET_STATION",
+        "projection_type": "ACTIVE_TARGET_BIN_RACK",
         "station_code": "TARGET_STATION",
         "active_session_id": 1001,
     }

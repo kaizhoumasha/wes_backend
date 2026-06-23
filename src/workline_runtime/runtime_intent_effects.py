@@ -55,6 +55,7 @@ _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
 _STATION_DISPATCH_LEASE_UNAVAILABLE = "station dispatch lease is not available"
 _SMT_SOURCE_PICK_COMMAND = "SORTING_SOURCE_PICK"
 _SMT_TERMINAL_RESULT_MARKER_KEY = "smt_inbound_handoff_terminal_result"
+_RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID = "RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID"
 
 
 def _all_devices(devices_by_role: dict[str, list[Any]]) -> list[Any]:
@@ -1319,8 +1320,9 @@ class RuntimeIntentEffectApplier:
             return await self._apply_resource_wait(
                 ctx,
                 RuntimeIntent.resource_wait(
-                    resource_kind="STATION",
-                    resource_key=f"station:{position_code}",
+                    subject_type=position_code,
+                    subject_key=f"station:{position_code}",
+                    projection_type="STATION_LEASE",
                     reason_code="STATION_LEASE_CLAIM_FAILED",
                     message="目标 Station dispatch lease 已被其它会话占用，等待资源释放后自动重试",
                     suggested_action="等待目标 Station dispatch lease 释放，或检查当前 rack operation/session 占用",
@@ -1651,19 +1653,55 @@ class RuntimeIntentEffectApplier:
         inbox = ctx["inbox"]
         workline = ctx["workline"]
         payload_json = dict(intent.payload_json)
-        resource_kind = str(payload_json["resource_kind"])
-        resource_key = str(payload_json["resource_key"])
+        subject_type = str(payload_json["subject_type"])
+        subject_key = str(payload_json["subject_key"])
+        projection_type = str(payload_json["projection_type"])
+        plugin_key = (
+            _non_empty_text(getattr(workline, "plugin_key", None))
+            or _non_empty_text(getattr(session, "plugin_key", None))
+            or _non_empty_text(payload_json.get("plugin_key"))
+        )
+        plugin_definition = get_workline_plugin_definition(plugin_key)
+        if plugin_definition is None:
+            return await self._reject_resource_wait_subject_contract(
+                ctx,
+                intent,
+                subject_type=subject_type,
+                subject_key=subject_key,
+                projection_type=projection_type,
+                plugin_key=plugin_key,
+                contract_error="RESOURCE_WAIT manifest is missing or unknown",
+            )
+        try:
+            plugin_definition.manifest.validate_resource_wait_subject(
+                subject_type=subject_type,
+                projection_type=projection_type,
+            )
+        except ValueError as exc:
+            return await self._reject_resource_wait_subject_contract(
+                ctx,
+                intent,
+                subject_type=subject_type,
+                subject_key=subject_key,
+                projection_type=projection_type,
+                plugin_key=plugin_key,
+                contract_error=str(exc),
+            )
         context_json = dict(getattr(session, "context_json", None) or {})
         existing_wait = context_json.get("resource_wait")
         existing_wait_evidence = (
             cast("dict[str, Any]", existing_wait)
-            if isinstance(existing_wait, Mapping) and existing_wait.get("resource_key") == resource_key
+            if isinstance(existing_wait, Mapping)
+            and existing_wait.get("subject_type") == subject_type
+            and existing_wait.get("subject_key") == subject_key
+            and existing_wait.get("projection_type") == projection_type
             else None
         )
         evidence = ResourceWaitEvidence.build(
             inbox_id=resolve_required_pk(inbox, "inbox"),
-            resource_kind=resource_kind,
-            resource_key=resource_key,
+            subject_type=subject_type,
+            subject_key=subject_key,
+            projection_type=projection_type,
             reason_code=str(intent.reason_code),
             message=str(intent.message),
             occurred_at=ctx["now"],
@@ -1671,7 +1709,11 @@ class RuntimeIntentEffectApplier:
             workline_id=optional_int(getattr(workline, "id", None))
             or optional_int(getattr(session, "workline_id", None)),
             trace_id=_non_empty_text(_ctx_trace_id(cast("Mapping[str, Any]", ctx))),
-            details={key: value for key, value in payload_json.items() if key not in {"resource_kind", "resource_key"}},
+            details={
+                key: value
+                for key, value in payload_json.items()
+                if key not in {"subject_type", "subject_key", "projection_type"}
+            },
             existing=existing_wait_evidence,
         )
 
@@ -1709,11 +1751,12 @@ class RuntimeIntentEffectApplier:
                 **workline_effects._wait_timeline_payload(
                     ctx,
                     wait_type="RESOURCE_WAIT",
-                    wait_token=resource_key,
+                    wait_token=subject_key,
                     deadline_seconds=0,
                 ),
-                "resource_kind": resource_kind,
-                "resource_key": resource_key,
+                "subject_type": subject_type,
+                "subject_key": subject_key,
+                "projection_type": projection_type,
                 "reason_code": intent.reason_code,
                 "message": intent.message,
                 "suggested_action": intent.suggested_action,
@@ -1725,6 +1768,79 @@ class RuntimeIntentEffectApplier:
             status=TimelineStatus.PENDING,
         )
         return RuntimeIntentEffectResult.resource_retry()
+
+    async def _reject_resource_wait_subject_contract(
+        self,
+        ctx: Any,
+        intent: RuntimeIntent,
+        *,
+        subject_type: str,
+        subject_key: str,
+        projection_type: str,
+        plugin_key: str | None,
+        contract_error: str,
+    ) -> RuntimeIntentEffectResult:
+        from src.app.workline.services.diagnostic_service import workline_diagnostic_service
+        from src.workline_runtime.diagnostics import ErrorCode, build_diagnostic_context, build_diagnostic_event
+
+        session = ctx["session"]
+        inbox = ctx["inbox"]
+        workline = ctx["workline"]
+        payload_json = dict(intent.payload_json)
+        details = {
+            key: value
+            for key, value in payload_json.items()
+            if key not in {"subject_type", "subject_key", "projection_type"}
+        }
+        details.update(
+            {
+                "contract_error": contract_error,
+                "plugin_key": plugin_key,
+                "original_reason_code": intent.reason_code,
+                "original_message": intent.message,
+                "suggested_action": intent.suggested_action,
+            }
+        )
+        evidence = ResourceWaitEvidence.build(
+            inbox_id=resolve_required_pk(inbox, "inbox"),
+            subject_type=subject_type,
+            subject_key=subject_key,
+            projection_type=projection_type,
+            reason_code=_RESOURCE_WAIT_SUBJECT_CONTRACT_INVALID,
+            message=f"RESOURCE_WAIT subject contract invalid: {contract_error}",
+            occurred_at=ctx["now"],
+            session_id=optional_int(getattr(session, "id", None)),
+            workline_id=optional_int(getattr(workline, "id", None))
+            or optional_int(getattr(session, "workline_id", None)),
+            trace_id=_non_empty_text(_ctx_trace_id(cast("Mapping[str, Any]", ctx))),
+            details=details,
+        )
+        context = build_diagnostic_context(
+            trace_id=evidence.trace_id,
+            session=session,
+            inbox=inbox,
+            workline=workline,
+            extra={
+                "subject_type": subject_type,
+                "subject_key": subject_key,
+                "projection_type": projection_type,
+                "reason_code": evidence.reason_code,
+            },
+        )
+        event = build_diagnostic_event(
+            error_code=ErrorCode.RESOURCE_WAIT,
+            context=context,
+            message=evidence.message,
+            operator_action="检查 RESOURCE_WAIT subject 是否已声明在插件 manifest 中",
+        )
+        _ = await workline_diagnostic_service.record_event(
+            ctx["db"],
+            event=event,
+            evidence=evidence.to_diagnostic_evidence(),
+            diagnostic_key_override=f"{evidence.diagnostic_key}:SUBJECT_CONTRACT",
+            auto_commit=False,
+        )
+        return RuntimeIntentEffectResult.processed()
 
     async def _apply_command_wait(self, ctx: Any, intent: RuntimeIntent) -> None:
         from src.app.workline.models.timeline import (

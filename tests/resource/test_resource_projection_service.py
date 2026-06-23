@@ -3,13 +3,19 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
+from sqlmodel import SQLModel
 
 from src.app.resource.models import (
     BinMaterialMount,
     BinMaterialMountStatus,
+    BinPlacement,
+    BinPlacementStatus,
     RackBinMount,
     RackBinMountStatus,
     RackKind,
@@ -22,7 +28,30 @@ from src.app.resource.models import (
 )
 from src.app.resource.services import ResourceProjectionStatus
 from src.app.resource.services.projection_service import ResourceProjectionService
+from src.app.workline.models import ObjectTransitionDomain, ObjectTransitionEvent
 from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
+from src.app.workline.services import ObjectTransitionEventService, object_transition_event_service
+from src.database.sqlite_schema import configure_sqlite_schemas
+
+
+@pytest_asyncio.fixture(scope="function")
+async def transition_session():
+    """独立内存 DB，用默认共享 transition service 验证真实落库链路。"""
+
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        echo=False,
+        poolclass=StaticPool,
+    )
+    configure_sqlite_schemas(engine.sync_engine)
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.create_all, tables=[cast("Any", ObjectTransitionEvent).__table__])
+    session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with session_factory() as session:
+        yield session
+    async with engine.begin() as conn:
+        await conn.run_sync(SQLModel.metadata.drop_all, tables=[cast("Any", ObjectTransitionEvent).__table__])
+    await engine.dispose()
 
 
 class RecordingStateEventRepo:
@@ -37,6 +66,88 @@ class RecordingStateEventRepo:
     async def create(self, _db: object, data: dict[str, Any]) -> ResourceStateEvent:
         self.created.append(data)
         return ResourceStateEvent(**data)
+
+
+class RecordingObjectTransitionEventService:
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+        self.keys: set[str] = set()
+
+    @staticmethod
+    def build_idempotency_key(
+        *,
+        source_event_id: str,
+        domain: ObjectTransitionDomain | str,
+        object_type: str,
+        object_key: str,
+        projection_type: str,
+        to_state: str,
+        reason_code: str,
+    ) -> str:
+        domain_value = domain.value if isinstance(domain, ObjectTransitionDomain) else str(domain)
+        return (
+            f"object-transition:{source_event_id}:{domain_value}:{object_type}:"
+            f"{object_key}:{projection_type}:{to_state}:{reason_code}"
+        )
+
+    async def record_transition(self, _db: object, **kwargs: Any) -> SimpleNamespace:
+        idempotency_key = kwargs.get("idempotency_key") or self.build_idempotency_key(
+            source_event_id=kwargs["source_event_id"],
+            domain=kwargs["domain"],
+            object_type=kwargs["object_type"],
+            object_key=kwargs["object_key"],
+            projection_type=kwargs["projection_type"],
+            to_state=kwargs["to_state"],
+            reason_code=kwargs["reason_code"],
+        )
+        if idempotency_key not in self.keys:
+            self.keys.add(idempotency_key)
+            self.created.append({**kwargs, "idempotency_key": idempotency_key})
+        return SimpleNamespace(id=len(self.created), **kwargs, idempotency_key=idempotency_key)
+
+
+class NoopObjectTransitionEventService:
+    async def record_transition(self, _db: object, **_kwargs: Any) -> None:
+        return None
+
+
+class AsyncSessionProxy:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.session, name)
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+        return await self.session.execute(*args, **kwargs)
+
+    def get_bind(self, *args: Any, **kwargs: Any) -> Any:
+        return self.session.get_bind(*args, **kwargs)
+
+    async def commit(self) -> None:
+        await self.session.commit()
+
+    async def rollback(self) -> None:
+        await self.session.rollback()
+
+
+def _db() -> AsyncSession:
+    return cast("AsyncSession", SimpleNamespace())
+
+
+def _session_proxy(session: AsyncSession) -> AsyncSession:
+    return cast("AsyncSession", AsyncSessionProxy(session))
+
+
+def _occurred_at(value: object) -> datetime:
+    return cast("datetime", value)
+
+
+def _projection_service(*, use_default_transition_service: bool = False, **kwargs: Any) -> ResourceProjectionService:
+    if not use_default_transition_service:
+        kwargs.setdefault("object_transition_event_service", NoopObjectTransitionEventService())
+    kwargs.setdefault("material_unit_repository", NoopMaterialUnitRepository())
+    return ResourceProjectionService(**kwargs)
 
 
 class RecordingRackPlacementRepo:
@@ -106,6 +217,46 @@ class RecordingRackPlacementRepo:
         for key, value in data.items():
             setattr(placement, key, value)
         return placement
+
+
+class RecordingBinPlacementRepo:
+    def __init__(
+        self,
+        *,
+        active_by_bin: BinPlacement | None = None,
+        active_by_placeholder: BinPlacement | None = None,
+    ) -> None:
+        self.active_by_bin = active_by_bin
+        self.active_by_placeholder = active_by_placeholder
+        self.created: list[dict[str, Any]] = []
+
+    async def get_active_by_bin_code(
+        self,
+        _db: object,
+        bin_code: str,
+        *,
+        for_update: bool = False,
+    ) -> BinPlacement | None:
+        assert for_update is True
+        if self.active_by_bin is not None and self.active_by_bin.bin_code == bin_code:
+            return self.active_by_bin
+        return None
+
+    async def get_active_by_placeholder_key(
+        self,
+        _db: object,
+        placeholder_key: str,
+        *,
+        for_update: bool = False,
+    ) -> BinPlacement | None:
+        assert for_update is True
+        if self.active_by_placeholder is not None and self.active_by_placeholder.placeholder_key == placeholder_key:
+            return self.active_by_placeholder
+        return None
+
+    async def create(self, _db: object, data: dict[str, Any]) -> BinPlacement:
+        self.created.append(data)
+        return BinPlacement(**data)
 
 
 class RecordingRackPositionService:
@@ -321,22 +472,35 @@ class RecordingResourceSnapshotService:
         return SimpleNamespace(id=9901, **kwargs)
 
 
-class MaterialUnitDb:
+class NoopMaterialUnitRepository:
+    async def update_current_location_by_pkg_code(
+        self,
+        _db: object,
+        *,
+        pkg_code: str,
+        current_location: str | None,
+    ) -> None:
+        return None
+
+
+class RecordingMaterialUnitRepository:
     def __init__(self, material_units: list[MaterialUnit]) -> None:
-        self.material_units = material_units
-        self.added: list[Any] = []
+        self.material_units = {unit.pkg_code: unit for unit in material_units}
+        self.location_updates: list[tuple[str, str | None]] = []
 
-    async def execute(self, statement: Any) -> Any:
-        pkg_code = (
-            str(statement.compile(compile_kwargs={"literal_binds": True}))
-            .split("material_units.pkg_code = '", 1)[1]
-            .split("'", 1)[0]
-        )
-        matches = [unit for unit in self.material_units if unit.pkg_code == pkg_code]
-        return SimpleNamespace(scalar_one_or_none=lambda: matches[0] if matches else None)
-
-    def add(self, instance: Any) -> None:
-        self.added.append(instance)
+    async def update_current_location_by_pkg_code(
+        self,
+        _db: object,
+        *,
+        pkg_code: str,
+        current_location: str | None,
+    ) -> MaterialUnit | None:
+        self.location_updates.append((pkg_code, current_location))
+        material_unit = self.material_units.get(pkg_code)
+        if material_unit is None:
+            return None
+        material_unit.current_location = current_location
+        return material_unit
 
 
 def _mount(**overrides: Any) -> BinMaterialMount:
@@ -416,6 +580,26 @@ def _rack_placement(**overrides: Any) -> RackPlacement:
     return RackPlacement(**values)
 
 
+def _bin_placement(**overrides: Any) -> BinPlacement:
+    values: dict[str, Any] = {
+        "id": 7201,
+        "bin_code": "BIN-001",
+        "placeholder_key": None,
+        "position_type": "BUFFER",
+        "position_code": "BUFFER-01",
+        "workline_id": 1001,
+        "workline_code": "SMT_SORTER_01",
+        "placement_status": BinPlacementStatus.ARRIVED,
+        "source_system": ResourceSourceSystem.WMS,
+        "source_event_id": "old-event",
+        "started_at": datetime(2026, 5, 18, 8, 0, 0),
+        "ended_at": None,
+        "metadata_json": {},
+    }
+    values.update(overrides)
+    return BinPlacement(**values)
+
+
 def test_event_code_distinguishes_long_source_event_ids_by_resource_code() -> None:
     source_event_id = "WMS-RACK-ARRIVED-" + ("X" * 190)
 
@@ -438,19 +622,46 @@ def test_event_code_distinguishes_long_source_event_ids_by_resource_code() -> No
     assert first.startswith("BIN_MOUNTED:WMS:")
 
 
+def test_resource_transition_idempotency_keys_are_per_derived_sibling() -> None:
+    service = RecordingObjectTransitionEventService()
+
+    rack_key = service.build_idempotency_key(
+        source_event_id="fact-001",
+        domain=ObjectTransitionDomain.RESOURCE,
+        object_type="RACK",
+        object_key="RACK-001",
+        projection_type="RACK_PLACEMENT",
+        to_state="ARRIVED",
+        reason_code="RACK_ARRIVED",
+    )
+    bin_key = service.build_idempotency_key(
+        source_event_id="fact-001",
+        domain=ObjectTransitionDomain.RESOURCE,
+        object_type="BIN",
+        object_key="BIN-001",
+        projection_type="RACK_BIN_MOUNT",
+        to_state="MOUNTED",
+        reason_code="BIN_MOUNTED",
+    )
+
+    assert rack_key != bin_key
+    assert "fact-001" in rack_key
+    assert "fact-001" in bin_key
+
+
 @pytest.mark.asyncio
 async def test_record_rack_arrived_at_workline_position_projects_active_placement() -> None:
     events = RecordingStateEventRepo()
     placements = RecordingRackPlacementRepo()
     positions = RecordingRackPositionService()
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=events,
         rack_placement_repo=placements,
         rack_position_service=positions,
     )
 
     result = await service.record_rack_arrived_at_workline_position(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-001",
         rack_kind=RackKind.SINGLE_LAYER,
         workline_code="SMT_SORTER_01",
@@ -460,7 +671,6 @@ async def test_record_rack_arrived_at_workline_position_projects_active_placemen
         idempotency_key="RACK_ARRIVED:wms-event-001:RACK-001",
         occurred_at=datetime(2026, 5, 18, 9, 0, 0),
         trace_id="trace-001",
-        session_id="2001",
     )
 
     assert result.status == ResourceProjectionStatus.PROJECTED
@@ -476,17 +686,70 @@ async def test_record_rack_arrived_at_workline_position_projects_active_placemen
 
 
 @pytest.mark.asyncio
+async def test_record_rack_arrived_at_workline_position_records_transition_event() -> None:
+    transitions = RecordingObjectTransitionEventService()
+    service = _projection_service(
+        state_event_repo=RecordingStateEventRepo(),
+        rack_placement_repo=RecordingRackPlacementRepo(),
+        rack_position_service=RecordingRackPositionService(),
+        object_transition_event_service=transitions,
+    )
+
+    result = await service.record_rack_arrived_at_workline_position(
+        _db(),
+        rack_code="RACK-001",
+        rack_kind=RackKind.SINGLE_LAYER,
+        workline_code="SMT_SORTER_01",
+        position_code="SINGLE_LAYER_A",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-001",
+        idempotency_key="RACK_ARRIVED:wms-event-001:RACK-001",
+        occurred_at=datetime(2026, 5, 18, 9, 0, 0),
+        trace_id="trace-001",
+        workline_session_id=2001,
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert transitions.created == [
+        {
+            "domain": ObjectTransitionDomain.RESOURCE,
+            "object_type": "RACK",
+            "object_key": "RACK-001",
+            "projection_type": "RACK_PLACEMENT",
+            "from_state": None,
+            "to_state": "ARRIVED",
+            "reason_code": "RACK_ARRIVED",
+            "source_event_id": "wms-event-001",
+            "source_ref_json": {
+                "resource_state_event_type": "RACK_ARRIVED",
+                "rack_code": "RACK-001",
+            },
+            "evidence_json": {
+                "workline_code": "SMT_SORTER_01",
+                "position_code": "SINGLE_LAYER_A",
+                "rack_kind": "SINGLE_LAYER",
+            },
+            "workline_session_id": 2001,
+            "trace_id": "trace-001",
+            "occurred_at": datetime(2026, 5, 18, 9, 0, 0),
+            "auto_commit": False,
+            "idempotency_key": "object-transition:wms-event-001:RESOURCE:RACK:RACK-001:RACK_PLACEMENT:ARRIVED:RACK_ARRIVED",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_record_rack_arrived_accepts_millisecond_timestamp() -> None:
     events = RecordingStateEventRepo()
     placements = RecordingRackPlacementRepo()
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=events,
         rack_placement_repo=placements,
         rack_position_service=RecordingRackPositionService(),
     )
 
     result = await service.record_rack_arrived_at_workline_position(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-001",
         rack_kind=RackKind.SINGLE_LAYER,
         workline_code="SMT_SORTER_01",
@@ -494,7 +757,7 @@ async def test_record_rack_arrived_accepts_millisecond_timestamp() -> None:
         source_system=ResourceSourceSystem.WMS,
         source_event_id="wms-event-ms-001",
         idempotency_key="RACK_ARRIVED:wms-event-ms-001:RACK-001",
-        occurred_at=1780457720161,
+        occurred_at=_occurred_at(1780457720161),
     )
 
     assert result.status == ResourceProjectionStatus.PROJECTED
@@ -511,14 +774,14 @@ async def test_record_rack_arrived_falls_back_for_invalid_numeric_timestamp(monk
     )
     events = RecordingStateEventRepo()
     placements = RecordingRackPlacementRepo()
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=events,
         rack_placement_repo=placements,
         rack_position_service=RecordingRackPositionService(),
     )
 
     result = await service.record_rack_arrived_at_workline_position(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-001",
         rack_kind=RackKind.SINGLE_LAYER,
         workline_code="SMT_SORTER_01",
@@ -526,7 +789,7 @@ async def test_record_rack_arrived_falls_back_for_invalid_numeric_timestamp(monk
         source_system=ResourceSourceSystem.WMS,
         source_event_id="wms-event-invalid-time-001",
         idempotency_key="RACK_ARRIVED:wms-event-invalid-time-001:RACK-001",
-        occurred_at=float("inf"),
+        occurred_at=_occurred_at(float("inf")),
     )
 
     assert result.status == ResourceProjectionStatus.PROJECTED
@@ -543,14 +806,14 @@ async def test_record_rack_arrived_falls_back_for_huge_integer_timestamp(monkeyp
     )
     events = RecordingStateEventRepo()
     placements = RecordingRackPlacementRepo()
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=events,
         rack_placement_repo=placements,
         rack_position_service=RecordingRackPositionService(),
     )
 
     result = await service.record_rack_arrived_at_workline_position(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-001",
         rack_kind=RackKind.SINGLE_LAYER,
         workline_code="SMT_SORTER_01",
@@ -558,7 +821,7 @@ async def test_record_rack_arrived_falls_back_for_huge_integer_timestamp(monkeyp
         source_system=ResourceSourceSystem.WMS,
         source_event_id="wms-event-huge-time-001",
         idempotency_key="RACK_ARRIVED:wms-event-huge-time-001:RACK-001",
-        occurred_at=10**1000,
+        occurred_at=_occurred_at(10**1000),
     )
 
     assert result.status == ResourceProjectionStatus.PROJECTED
@@ -569,7 +832,7 @@ async def test_record_rack_arrived_falls_back_for_huge_integer_timestamp(monkeyp
 @pytest.mark.asyncio
 async def test_record_rack_arrived_allows_second_rack_when_position_capacity_two() -> None:
     placements = RecordingRackPlacementRepo(active_by_position_list=[_rack_placement()])
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         rack_placement_repo=placements,
         rack_position_service=RecordingRackPositionService(capacity=2),
@@ -577,7 +840,7 @@ async def test_record_rack_arrived_allows_second_rack_when_position_capacity_two
     )
 
     result = await service.record_rack_arrived_at_workline_position(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-002",
         rack_kind=RackKind.SINGLE_LAYER,
         workline_code="SMT_SORTER_01",
@@ -597,7 +860,7 @@ async def test_record_rack_arrived_allows_second_rack_when_position_capacity_two
 async def test_record_rack_arrived_reconciles_when_capacity_exhausted() -> None:
     runtime_holds = RecordingRuntimeHoldCreator()
     placements = RecordingRackPlacementRepo(active_by_position_list=[_rack_placement()])
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         rack_placement_repo=placements,
         rack_position_service=RecordingRackPositionService(capacity=1),
@@ -605,7 +868,7 @@ async def test_record_rack_arrived_reconciles_when_capacity_exhausted() -> None:
     )
 
     result = await service.record_rack_arrived_at_workline_position(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-002",
         rack_kind=RackKind.SINGLE_LAYER,
         workline_code="SMT_SORTER_01",
@@ -626,18 +889,62 @@ async def test_record_rack_arrived_reconciles_when_capacity_exhausted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_record_rack_arrived_reconciling_capacity_records_transition_evidence() -> None:
+    transitions = RecordingObjectTransitionEventService()
+    service = _projection_service(
+        state_event_repo=RecordingStateEventRepo(),
+        rack_placement_repo=RecordingRackPlacementRepo(active_by_position_list=[_rack_placement()]),
+        rack_position_service=RecordingRackPositionService(capacity=1),
+        runtime_hold_creator=RecordingRuntimeHoldCreator(),
+        object_transition_event_service=transitions,
+    )
+
+    result = await service.record_rack_arrived_at_workline_position(
+        _db(),
+        rack_code="RACK-002",
+        rack_kind=RackKind.SINGLE_LAYER,
+        workline_code="SMT_SORTER_01",
+        position_code="SINGLE_LAYER_A",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="wms-event-capacity",
+        idempotency_key="RACK_ARRIVED:wms-event-capacity:RACK-002",
+        occurred_at=datetime(2026, 5, 18, 9, 1, 0),
+        workline_id=1001,
+        workline_session_id=2001,
+        trace_id="trace-capacity",
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    transition = transitions.created[0]
+    assert transition["object_type"] == "RACK"
+    assert transition["object_key"] == "RACK-002"
+    assert transition["projection_type"] == "RACK_PLACEMENT"
+    assert transition["to_state"] == "RECONCILING"
+    assert transition["reason_code"] == "WORKLINE_POSITION_CAPACITY_EXHAUSTED"
+    assert transition["evidence_json"]["trusted"] is False
+    assert transition["evidence_json"]["capacity"] == 1
+    assert transition["evidence_json"]["active_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_record_rack_arrived_releases_declared_old_rack_before_capacity_check() -> None:
-    old_placement = _rack_placement(id=7101, rack_code="RACK-OLD")
+    transitions = RecordingObjectTransitionEventService()
+    old_placement = _rack_placement(
+        id=7101,
+        rack_code="RACK-OLD",
+        placement_status=RackPlacementStatus.ARRIVED,
+    )
     placements = RecordingRackPlacementRepo(active_by_position_list=[old_placement])
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         rack_placement_repo=placements,
         rack_position_service=RecordingRackPositionService(capacity=1),
         runtime_hold_creator=RecordingRuntimeHoldCreator(),
+        object_transition_event_service=transitions,
     )
 
     result = await service.record_rack_arrived_at_workline_position(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-NEW",
         rack_kind=RackKind.SINGLE_LAYER,
         workline_code="SMT_SORTER_01",
@@ -647,6 +954,8 @@ async def test_record_rack_arrived_releases_declared_old_rack_before_capacity_ch
         idempotency_key="RACK_ARRIVED:wms-event-replace-001:RACK-NEW",
         occurred_at=datetime(2026, 5, 18, 9, 1, 0),
         released_rack_codes=["RACK-OLD"],
+        workline_session_id=2001,
+        trace_id="trace-release-old-rack",
     )
 
     assert result.status == ResourceProjectionStatus.PROJECTED
@@ -662,6 +971,24 @@ async def test_record_rack_arrived_releases_declared_old_rack_before_capacity_ch
     assert old_placement.placement_status == RackPlacementStatus.DEPARTED.value
     assert placements.created[0]["rack_code"] == "RACK-NEW"
     assert placements.created[0]["position_code"] == "SINGLE_LAYER_A"
+    assert [transition["object_key"] for transition in transitions.created] == ["RACK-OLD", "RACK-NEW"]
+    release_transition = transitions.created[0]
+    assert release_transition["domain"] == ObjectTransitionDomain.RESOURCE
+    assert release_transition["object_type"] == "RACK"
+    assert release_transition["projection_type"] == "RACK_PLACEMENT"
+    assert release_transition["from_state"] == RackPlacementStatus.ARRIVED.value
+    assert release_transition["to_state"] == RackPlacementStatus.DEPARTED.value
+    assert release_transition["reason_code"] == "RACK_RELEASED_BY_NEW_ARRIVAL"
+    assert release_transition["source_event_id"] == "wms-event-replace-001"
+    assert release_transition["source_ref_json"] == {
+        "resource_state_event_type": ResourceStateEventType.RACK_ARRIVED.value,
+        "rack_code": "RACK-NEW",
+        "released_rack_code": "RACK-OLD",
+    }
+    assert release_transition["evidence_json"]["workline_code"] == "SMT_SORTER_01"
+    assert release_transition["evidence_json"]["position_code"] == "SINGLE_LAYER_A"
+    assert release_transition["workline_session_id"] == 2001
+    assert release_transition["trace_id"] == "trace-release-old-rack"
 
 
 @pytest.mark.asyncio
@@ -669,7 +996,7 @@ async def test_record_rack_arrived_reconciles_when_position_disabled() -> None:
     events = RecordingStateEventRepo()
     runtime_holds = RecordingRuntimeHoldCreator()
     placements = RecordingRackPlacementRepo()
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=events,
         rack_placement_repo=placements,
         rack_position_service=RecordingRackPositionService(enabled=False),
@@ -677,7 +1004,7 @@ async def test_record_rack_arrived_reconciles_when_position_disabled() -> None:
     )
 
     result = await service.record_rack_arrived_at_workline_position(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-002",
         rack_kind=RackKind.SINGLE_LAYER,
         workline_code="SMT_SORTER_01",
@@ -702,7 +1029,7 @@ async def test_record_rack_arrived_reconciles_when_position_disabled() -> None:
 async def test_record_rack_arrived_is_idempotent_for_same_rack_same_position() -> None:
     active = _rack_placement()
     placements = RecordingRackPlacementRepo(active_by_rack=active, active_by_position_list=[active])
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         rack_placement_repo=placements,
         rack_position_service=RecordingRackPositionService(capacity=1),
@@ -710,7 +1037,7 @@ async def test_record_rack_arrived_is_idempotent_for_same_rack_same_position() -
     )
 
     result = await service.record_rack_arrived_at_workline_position(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-001",
         rack_kind=RackKind.SINGLE_LAYER,
         workline_code="SMT_SORTER_01",
@@ -736,7 +1063,7 @@ async def test_record_rack_arrived_moves_same_rack_from_old_position() -> None:
         location_code="OLD_POSITION",
     )
     placements = RecordingRackPlacementRepo(active_by_rack=active, active_by_position_list=[])
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         rack_placement_repo=placements,
         rack_position_service=RecordingRackPositionService(capacity=1),
@@ -744,7 +1071,7 @@ async def test_record_rack_arrived_moves_same_rack_from_old_position() -> None:
     )
 
     result = await service.record_rack_arrived_at_workline_position(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-001",
         rack_kind=RackKind.SINGLE_LAYER,
         workline_code="SMT_SORTER_01",
@@ -768,7 +1095,7 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
     mounts = RecordingBinMaterialMountRepo()
     occupancies = RecordingBinCellOccupancyRepo()
     snapshots = RecordingResourceSnapshotService()
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=events,
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=occupancies,
@@ -776,7 +1103,7 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
     )
 
     result = await service.record_material_mounted_to_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -791,7 +1118,6 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
         idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
-        session_id="2001",
         workline_session_id=2001,
         workline_id=1001,
         reel_thickness="2.5",
@@ -833,6 +1159,54 @@ async def test_record_material_mounted_to_bin_cell_projects_active_mount() -> No
 
 
 @pytest.mark.asyncio
+async def test_record_material_mounted_to_bin_cell_records_transition_event() -> None:
+    transitions = RecordingObjectTransitionEventService()
+    service = _projection_service(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
+        snapshot_service=RecordingResourceSnapshotService(),
+        object_transition_event_service=transitions,
+    )
+
+    result = await service.record_material_mounted_to_bin_cell(
+        _db(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-001",
+        material_code="620100L00-011-G",
+        lot_code="8904936031",
+        date_code="122625",
+        wms_inventory_id="INV-001",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-PICK-001",
+        idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 5, 0),
+        trace_id="trace-001",
+        workline_session_id=2001,
+        reel_thickness="2.5",
+        cell_capacity_depth_mm=10.0,
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    transition = transitions.created[0]
+    assert transition["domain"] == ObjectTransitionDomain.RESOURCE
+    assert transition["object_type"] == "MATERIAL"
+    assert transition["object_key"] == "PKG-001"
+    assert transition["projection_type"] == "BIN_CELL_MOUNT"
+    assert transition["to_state"] == "MOUNTED"
+    assert transition["reason_code"] == "MATERIAL_MOUNTED"
+    assert transition["source_event_id"] == "CMD-PICK-001"
+    assert transition["workline_session_id"] == 2001
+    assert transition["trace_id"] == "trace-001"
+    assert transition["source_ref_json"]["bin_code"] == "BIN-001"
+    assert transition["source_ref_json"]["bin_cell_index"] == "4"
+    assert transition["evidence_json"]["material_identity_key"] == "MAT:620100L00-011-G:122625:8904936031"
+
+
+@pytest.mark.asyncio
 async def test_record_material_mounted_to_bin_cell_updates_material_unit_location_cache_without_status() -> None:
     material_unit = MaterialUnit(
         pkg_code="PKG-001",
@@ -841,12 +1215,14 @@ async def test_record_material_mounted_to_bin_cell_updates_material_unit_locatio
         status=MaterialUnitStatus.NG,
         current_location=None,
     )
-    db = MaterialUnitDb([material_unit])
-    service = ResourceProjectionService(
+    material_units = RecordingMaterialUnitRepository([material_unit])
+    db = _db()
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=RecordingBinMaterialMountRepo(),
         bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(),
         snapshot_service=RecordingResourceSnapshotService(),
+        material_unit_repository=material_units,
     )
 
     result = await service.record_material_mounted_to_bin_cell(
@@ -871,14 +1247,14 @@ async def test_record_material_mounted_to_bin_cell_updates_material_unit_locatio
     assert result.status == ResourceProjectionStatus.PROJECTED
     assert material_unit.current_location == "BIN-001:4"
     assert material_unit.status == MaterialUnitStatus.NG
-    assert db.added == [material_unit]
+    assert material_units.location_updates == [("PKG-001", "BIN-001:4")]
 
 
 @pytest.mark.asyncio
 async def test_record_material_mounted_to_bin_cell_preserves_decimal_depth_values() -> None:
     events = RecordingStateEventRepo()
     occupancies = RecordingBinCellOccupancyRepo()
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=events,
         bin_material_mount_repo=RecordingBinMaterialMountRepo(),
         bin_cell_occupancy_repo=occupancies,
@@ -886,7 +1262,7 @@ async def test_record_material_mounted_to_bin_cell_preserves_decimal_depth_value
     )
 
     result = await service.record_material_mounted_to_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -901,7 +1277,6 @@ async def test_record_material_mounted_to_bin_cell_preserves_decimal_depth_value
         idempotency_key="MATERIAL_MOUNTED:CMD-PICK-DECIMAL:PKG-001:BIN-001:4",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-decimal",
-        session_id="2001",
         workline_session_id=2001,
         reel_thickness="0.10",
         cell_capacity_depth_mm=Decimal("0.30"),
@@ -938,14 +1313,14 @@ async def test_record_material_unmounted_from_bin_cell_closes_top_mount_and_upda
     )
     events = RecordingStateEventRepo()
     occupancies = RecordingBinCellOccupancyRepo(active_by_cell=occupancy)
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=events,
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=occupancies,
     )
 
     result = await service.record_material_unmounted_from_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -958,7 +1333,6 @@ async def test_record_material_unmounted_from_bin_cell_closes_top_mount_and_upda
         occurred_at=datetime(2026, 5, 18, 9, 10, 0),
         source_version="8",
         trace_id="trace-unmount",
-        session_id="2001",
         workline_session_id=2001,
         workline_id=1001,
         reel_thickness="0.10",
@@ -976,6 +1350,60 @@ async def test_record_material_unmounted_from_bin_cell_closes_top_mount_and_upda
 
 
 @pytest.mark.asyncio
+async def test_record_material_unmounted_from_bin_cell_records_transition_event() -> None:
+    transitions = RecordingObjectTransitionEventService()
+    service = _projection_service(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(
+            active_by_cell=_mount(
+                cell_stack_position=1,
+                pkg_code="PKG-TOP",
+                wms_inventory_id="INV-TOP",
+                reel_thickness="0.10",
+            )
+        ),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(
+            active_by_cell=_occupancy(
+                reel_count=1,
+                used_depth_mm=Decimal("0.10"),
+                capacity_depth_mm=Decimal("0.30"),
+                remaining_depth_mm=Decimal("0.20"),
+            )
+        ),
+        object_transition_event_service=transitions,
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        _db(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id="INV-TOP",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-001",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-001:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        trace_id="trace-unmount",
+        workline_session_id=2001,
+        reel_thickness="0.10",
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    transition = transitions.created[0]
+    assert transition["object_type"] == "MATERIAL"
+    assert transition["object_key"] == "PKG-TOP"
+    assert transition["projection_type"] == "BIN_CELL_MOUNT"
+    assert transition["from_state"] == "MOUNTED"
+    assert transition["to_state"] == "UNMOUNTED"
+    assert transition["reason_code"] == "MATERIAL_UNMOUNTED"
+    assert transition["source_ref_json"]["bin_code"] == "BIN-001"
+    assert transition["source_ref_json"]["bin_cell_index"] == "4"
+    assert transition["evidence_json"]["material_identity_key"] == "MAT:620100L00-011-G:122625:8904936031"
+
+
+@pytest.mark.asyncio
 async def test_record_material_unmounted_from_bin_cell_clears_location_cache_without_status() -> None:
     material_unit = MaterialUnit(
         pkg_code="PKG-TOP",
@@ -984,8 +1412,9 @@ async def test_record_material_unmounted_from_bin_cell_clears_location_cache_wit
         status=MaterialUnitStatus.RECONCILING,
         current_location="BIN-001:4",
     )
-    db = MaterialUnitDb([material_unit])
-    service = ResourceProjectionService(
+    material_units = RecordingMaterialUnitRepository([material_unit])
+    db = _db()
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=RecordingBinMaterialMountRepo(
             active_by_cell=_mount(
@@ -1004,6 +1433,7 @@ async def test_record_material_unmounted_from_bin_cell_clears_location_cache_wit
                 remaining_depth_mm=Decimal("0.20"),
             )
         ),
+        material_unit_repository=material_units,
     )
 
     result = await service.record_material_unmounted_from_bin_cell(
@@ -1025,7 +1455,7 @@ async def test_record_material_unmounted_from_bin_cell_clears_location_cache_wit
     assert result.status == ResourceProjectionStatus.PROJECTED
     assert material_unit.current_location is None
     assert material_unit.status == MaterialUnitStatus.RECONCILING
-    assert db.added == [material_unit]
+    assert material_units.location_updates == [("PKG-TOP", None)]
 
 
 @pytest.mark.asyncio
@@ -1033,8 +1463,8 @@ async def test_record_material_unmounted_duplicate_event_does_not_double_decreme
     existing_event = ResourceStateEvent(
         event_code="WES_RUNTIME:CMD-UNMOUNT-001",
         idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-001:PKG-TOP:BIN-001:4",
-        event_type=ResourceStateEventType.MATERIAL_UNMOUNTED.value,
-        resource_type=ResourceType.MATERIAL.value,
+        event_type=ResourceStateEventType.MATERIAL_UNMOUNTED,
+        resource_type=ResourceType.MATERIAL,
         resource_code="PKG-TOP",
         source_system=ResourceSourceSystem.WES_RUNTIME,
         source_event_id="CMD-UNMOUNT-001",
@@ -1044,14 +1474,14 @@ async def test_record_material_unmounted_duplicate_event_does_not_double_decreme
     )
     mounts = RecordingBinMaterialMountRepo(active_by_cell=_mount(pkg_code="PKG-TOP"))
     occupancies = RecordingBinCellOccupancyRepo(active_by_cell=_occupancy(reel_count=1))
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(existing_event),
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=occupancies,
     )
 
     result = await service.record_material_unmounted_from_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1070,9 +1500,49 @@ async def test_record_material_unmounted_duplicate_event_does_not_double_decreme
 
 
 @pytest.mark.asyncio
+async def test_duplicate_resource_state_event_does_not_record_transition_event() -> None:
+    existing_event = ResourceStateEvent(
+        event_code="WES_RUNTIME:CMD-UNMOUNT-001",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-001:PKG-TOP:BIN-001:4",
+        event_type=ResourceStateEventType.MATERIAL_UNMOUNTED,
+        resource_type=ResourceType.MATERIAL,
+        resource_code="PKG-TOP",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-001",
+        payload_json={},
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        received_at=datetime(2026, 5, 18, 9, 10, 1),
+    )
+    transitions = RecordingObjectTransitionEventService()
+    service = _projection_service(
+        state_event_repo=RecordingStateEventRepo(existing_event),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(active_by_cell=_mount(pkg_code="PKG-TOP")),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy(reel_count=1)),
+        object_transition_event_service=transitions,
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        _db(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id=None,
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-001",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-001:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+    )
+
+    assert result.status == ResourceProjectionStatus.DUPLICATE
+    assert transitions.created == []
+
+
+@pytest.mark.asyncio
 async def test_record_material_unmounted_missing_top_mount_creates_reconciliation_hold() -> None:
     runtime_holds = RecordingRuntimeHoldCreator()
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=RecordingBinMaterialMountRepo(active_by_cell=None),
         bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy()),
@@ -1080,7 +1550,7 @@ async def test_record_material_unmounted_missing_top_mount_creates_reconciliatio
     )
 
     result = await service.record_material_unmounted_from_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1092,7 +1562,6 @@ async def test_record_material_unmounted_missing_top_mount_creates_reconciliatio
         idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-MISSING:PKG-TOP:BIN-001:4",
         occurred_at=datetime(2026, 5, 18, 9, 10, 0),
         trace_id="trace-unmount",
-        session_id="2001",
         workline_session_id=2001,
         workline_id=1001,
     )
@@ -1107,6 +1576,43 @@ async def test_record_material_unmounted_missing_top_mount_creates_reconciliatio
 
 
 @pytest.mark.asyncio
+async def test_record_material_unmounted_reconciling_records_transition_evidence() -> None:
+    transitions = RecordingObjectTransitionEventService()
+    service = _projection_service(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_material_mount_repo=RecordingBinMaterialMountRepo(active_by_cell=None),
+        bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy()),
+        runtime_hold_creator=RecordingRuntimeHoldCreator(),
+        object_transition_event_service=transitions,
+    )
+
+    result = await service.record_material_unmounted_from_bin_cell(
+        _db(),
+        bin_code="BIN-001",
+        bin_cell_code="BIN-001-4",
+        bin_cell_index="4",
+        material_identity_key="MAT:620100L00-011-G:122625:8904936031",
+        pkg_code="PKG-TOP",
+        wms_inventory_id="INV-TOP",
+        source_system=ResourceSourceSystem.WES_RUNTIME,
+        source_event_id="CMD-UNMOUNT-MISSING",
+        idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-MISSING:PKG-TOP:BIN-001:4",
+        occurred_at=datetime(2026, 5, 18, 9, 10, 0),
+        trace_id="trace-unmount",
+        workline_session_id=2001,
+        workline_id=1001,
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    transition = transitions.created[0]
+    assert transition["to_state"] == "RECONCILING"
+    assert transition["reason_code"] == "MATERIAL_UNMOUNTED_ACTIVE_MOUNT_MISSING"
+    assert transition["evidence_json"]["trusted"] is False
+    assert transition["evidence_json"]["bin_code"] == "BIN-001"
+    assert transition["evidence_json"]["bin_cell_index"] == "4"
+
+
+@pytest.mark.asyncio
 async def test_record_material_unmounted_identity_mismatch_creates_reconciliation_hold() -> None:
     runtime_holds = RecordingRuntimeHoldCreator()
     mounts = RecordingBinMaterialMountRepo(
@@ -1116,7 +1622,7 @@ async def test_record_material_unmounted_identity_mismatch_creates_reconciliatio
             wms_inventory_id="INV-DIFFERENT",
         )
     )
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy()),
@@ -1124,7 +1630,7 @@ async def test_record_material_unmounted_identity_mismatch_creates_reconciliatio
     )
 
     result = await service.record_material_unmounted_from_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1136,7 +1642,6 @@ async def test_record_material_unmounted_identity_mismatch_creates_reconciliatio
         idempotency_key="MATERIAL_UNMOUNTED:CMD-UNMOUNT-MISMATCH:PKG-TOP:BIN-001:4",
         occurred_at=datetime(2026, 5, 18, 9, 10, 0),
         trace_id="trace-unmount",
-        session_id="2001",
         workline_session_id=2001,
         workline_id=1001,
     )
@@ -1153,7 +1658,7 @@ async def test_record_material_unmounted_identity_mismatch_creates_reconciliatio
 async def test_record_material_unmounted_missing_active_pkg_when_expected_creates_reconciliation_hold() -> None:
     runtime_holds = RecordingRuntimeHoldCreator()
     mounts = RecordingBinMaterialMountRepo(active_by_cell=_mount(pkg_code=None, wms_inventory_id=None))
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy()),
@@ -1161,7 +1666,7 @@ async def test_record_material_unmounted_missing_active_pkg_when_expected_create
     )
 
     result = await service.record_material_unmounted_from_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1188,7 +1693,7 @@ async def test_record_material_unmounted_missing_active_pkg_when_expected_create
 async def test_record_material_unmounted_source_version_mismatch_creates_reconciliation_hold() -> None:
     runtime_holds = RecordingRuntimeHoldCreator()
     mounts = RecordingBinMaterialMountRepo(active_by_cell=_mount(pkg_code="PKG-TOP", source_version="9"))
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy()),
@@ -1196,7 +1701,7 @@ async def test_record_material_unmounted_source_version_mismatch_creates_reconci
     )
 
     result = await service.record_material_unmounted_from_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1224,7 +1729,7 @@ async def test_record_material_unmounted_source_version_mismatch_creates_reconci
 async def test_record_material_unmounted_inconsistent_occupancy_creates_reconciliation_hold() -> None:
     runtime_holds = RecordingRuntimeHoldCreator()
     mounts = RecordingBinMaterialMountRepo(active_by_cell=_mount(pkg_code="PKG-TOP", bin_cell_occupancy_id=9901))
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(active_by_cell=_occupancy(id=7701)),
@@ -1232,7 +1737,7 @@ async def test_record_material_unmounted_inconsistent_occupancy_creates_reconcil
     )
 
     result = await service.record_material_unmounted_from_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1261,7 +1766,7 @@ async def test_record_material_unmounted_used_depth_less_than_outgoing_depth_rec
     mounts = RecordingBinMaterialMountRepo(
         active_by_cell=_mount(pkg_code="PKG-TOP", reel_thickness="0.10", bin_cell_occupancy_id=7701)
     )
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=RecordingBinCellOccupancyRepo(
@@ -1277,7 +1782,7 @@ async def test_record_material_unmounted_used_depth_less_than_outgoing_depth_rec
     )
 
     result = await service.record_material_unmounted_from_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1307,14 +1812,14 @@ async def test_record_bin_mounted_to_rack_records_empty_bin_snapshots() -> None:
     events = RecordingStateEventRepo()
     rack_bins = RecordingRackBinMountRepo(active_by_slot_map={}, active_by_bin_map={})
     snapshots = RecordingResourceSnapshotService()
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=events,
         rack_bin_mount_repo=rack_bins,
         snapshot_service=snapshots,
     )
 
     result = await service.record_bin_mounted_to_rack(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-001",
         bin_mounts=[
             {"rack_slot_code": "A", "bin_code": "BIN-A"},
@@ -1327,7 +1832,6 @@ async def test_record_bin_mounted_to_rack_records_empty_bin_snapshots() -> None:
         idempotency_key="BIN_MOUNTED:RACK-001:WMS-BIN-MOUNTED-001",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
-        session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",
@@ -1364,7 +1868,7 @@ async def test_record_material_mounted_to_occupied_bin_cell_creates_hold() -> No
             source_event_id="old-event",
         )
     )
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=RecordingBinMaterialMountRepo(),
         bin_cell_occupancy_repo=occupancies,
@@ -1372,7 +1876,7 @@ async def test_record_material_mounted_to_occupied_bin_cell_creates_hold() -> No
     )
 
     result = await service.record_material_mounted_to_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1387,7 +1891,6 @@ async def test_record_material_mounted_to_occupied_bin_cell_creates_hold() -> No
         idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
-        session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",
@@ -1407,7 +1910,7 @@ async def test_record_material_mounted_to_same_identity_same_cell_projects_as_ag
     snapshots = RecordingResourceSnapshotService()
     mounts = RecordingBinMaterialMountRepo()
     occupancies = RecordingBinCellOccupancyRepo(active_by_cell=_occupancy())
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=occupancies,
@@ -1416,7 +1919,7 @@ async def test_record_material_mounted_to_same_identity_same_cell_projects_as_ag
     )
 
     result = await service.record_material_mounted_to_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1431,7 +1934,6 @@ async def test_record_material_mounted_to_same_identity_same_cell_projects_as_ag
         idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
-        session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",
@@ -1461,7 +1963,7 @@ async def test_record_material_mounted_to_legacy_identity_same_cell_projects_as_
     occupancies = RecordingBinCellOccupancyRepo(
         active_by_cell=_occupancy(material_identity_key="MAT:620100L00-011-G:122625:8904936031")
     )
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=occupancies,
@@ -1470,7 +1972,7 @@ async def test_record_material_mounted_to_legacy_identity_same_cell_projects_as_
     )
 
     result = await service.record_material_mounted_to_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1485,7 +1987,6 @@ async def test_record_material_mounted_to_legacy_identity_same_cell_projects_as_
         idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
-        session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",
@@ -1515,7 +2016,7 @@ async def test_record_material_mounted_to_same_identity_same_cell_rejects_over_r
             occupancy_status="OCCUPIED",
         )
     )
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=occupancies,
@@ -1524,7 +2025,7 @@ async def test_record_material_mounted_to_same_identity_same_cell_rejects_over_r
     )
 
     result = await service.record_material_mounted_to_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1539,7 +2040,6 @@ async def test_record_material_mounted_to_same_identity_same_cell_rejects_over_r
         idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
-        session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",
@@ -1583,7 +2083,7 @@ async def test_record_material_mounted_to_same_identity_other_nonfull_cell_creat
             )
         ]
     )
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=RecordingBinMaterialMountRepo(),
         bin_cell_occupancy_repo=occupancies,
@@ -1591,7 +2091,7 @@ async def test_record_material_mounted_to_same_identity_other_nonfull_cell_creat
     )
 
     result = await service.record_material_mounted_to_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1606,7 +2106,6 @@ async def test_record_material_mounted_to_same_identity_other_nonfull_cell_creat
         idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
-        session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",
@@ -1637,7 +2136,7 @@ async def test_record_material_mounted_to_new_cell_when_existing_identity_cell_c
             )
         ]
     )
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         bin_material_mount_repo=mounts,
         bin_cell_occupancy_repo=occupancies,
@@ -1646,7 +2145,7 @@ async def test_record_material_mounted_to_new_cell_when_existing_identity_cell_c
     )
 
     result = await service.record_material_mounted_to_bin_cell(
-        SimpleNamespace(),
+        _db(),
         bin_code="BIN-001",
         bin_cell_code="BIN-001-4",
         bin_cell_index="4",
@@ -1661,7 +2160,6 @@ async def test_record_material_mounted_to_new_cell_when_existing_identity_cell_c
         idempotency_key="MATERIAL_MOUNTED:CMD-PICK-001:PKG-001:BIN-001:4",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
-        session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",
@@ -1681,17 +2179,179 @@ async def test_record_material_mounted_to_new_cell_when_existing_identity_cell_c
 
 
 @pytest.mark.asyncio
+async def test_record_bin_arrived_at_position_records_transition_event() -> None:
+    transitions = RecordingObjectTransitionEventService()
+    placements = RecordingBinPlacementRepo()
+    service = _projection_service(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_placement_repo=placements,
+        object_transition_event_service=transitions,
+    )
+
+    result = await service.record_bin_arrived_at_position(
+        _db(),
+        bin_code="BIN-001",
+        position_type="BUFFER",
+        position_code="BUFFER-01",
+        workline_id=1001,
+        workline_code="SMT_SORTER_01",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="WMS-BIN-ARRIVED-001",
+        idempotency_key="BIN_ARRIVED:WMS-BIN-ARRIVED-001:BIN-001",
+        occurred_at=datetime(2026, 5, 18, 9, 4, 0),
+        trace_id="trace-bin",
+        workline_session_id=2001,
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    assert placements.created[0]["bin_code"] == "BIN-001"
+    transition = transitions.created[0]
+    assert transition["domain"] == ObjectTransitionDomain.RESOURCE
+    assert transition["object_type"] == "BIN"
+    assert transition["object_key"] == "BIN-001"
+    assert transition["projection_type"] == "BIN_PLACEMENT"
+    assert transition["to_state"] == "ARRIVED"
+    assert transition["reason_code"] == "BIN_ARRIVED"
+    assert transition["source_event_id"] == "WMS-BIN-ARRIVED-001"
+    assert transition["workline_session_id"] == 2001
+    assert transition["trace_id"] == "trace-bin"
+    assert transition["source_ref_json"]["resource_state_event_type"] == "BIN_ARRIVED"
+    assert transition["evidence_json"]["position_type"] == "BUFFER"
+    assert transition["evidence_json"]["position_code"] == "BUFFER-01"
+
+
+@pytest.mark.asyncio
+async def test_record_bin_arrived_with_default_transition_service_persists_event(
+    transition_session: AsyncSession,
+) -> None:
+    placements = RecordingBinPlacementRepo()
+    service = _projection_service(
+        use_default_transition_service=True,
+        state_event_repo=RecordingStateEventRepo(),
+        bin_placement_repo=placements,
+    )
+
+    result = await service.record_bin_arrived_at_position(
+        transition_session,
+        bin_code="BIN-001",
+        position_type="BUFFER",
+        position_code="BUFFER-01",
+        workline_id=1001,
+        workline_code="SMT_SORTER_01",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="WMS-BIN-ARRIVED-DB-001",
+        idempotency_key="BIN_ARRIVED:WMS-BIN-ARRIVED-DB-001:BIN-001",
+        occurred_at=datetime(2026, 5, 18, 9, 4, 0),
+        trace_id="trace-bin-db",
+        workline_session_id=2001,
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    by_source = await object_transition_event_service.get_by_source_event(
+        transition_session,
+        domain=ObjectTransitionDomain.RESOURCE,
+        source_event_id="WMS-BIN-ARRIVED-DB-001",
+    )
+    by_object = await object_transition_event_service.get_by_object(
+        transition_session,
+        domain=ObjectTransitionDomain.RESOURCE,
+        object_type="BIN",
+        object_key="BIN-001",
+    )
+    assert len(by_source) == 1
+    assert by_source[0].id == by_object[0].id
+    assert by_source[0].projection_type == "BIN_PLACEMENT"
+    assert by_source[0].to_state == "ARRIVED"
+    assert by_source[0].reason_code == "BIN_ARRIVED"
+    assert by_source[0].workline_session_id == 2001
+    assert by_source[0].trace_id == "trace-bin-db"
+
+
+@pytest.mark.asyncio
+async def test_default_transition_service_does_not_skip_async_session_proxy(
+    transition_session: AsyncSession,
+) -> None:
+    placements = RecordingBinPlacementRepo()
+    service = _projection_service(
+        use_default_transition_service=True,
+        state_event_repo=RecordingStateEventRepo(),
+        bin_placement_repo=placements,
+    )
+
+    result = await service.record_bin_arrived_at_position(
+        _session_proxy(transition_session),
+        bin_code="BIN-PROXY",
+        position_type="BUFFER",
+        position_code="BUFFER-01",
+        workline_id=1001,
+        workline_code="SMT_SORTER_01",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="WMS-BIN-ARRIVED-PROXY",
+        idempotency_key="BIN_ARRIVED:WMS-BIN-ARRIVED-PROXY:BIN-PROXY",
+        occurred_at=datetime(2026, 5, 18, 9, 4, 0),
+        trace_id="trace-bin-proxy",
+        workline_session_id=2001,
+    )
+
+    assert result.status == ResourceProjectionStatus.PROJECTED
+    transitions = await object_transition_event_service.get_by_source_event(
+        transition_session,
+        domain=ObjectTransitionDomain.RESOURCE,
+        source_event_id="WMS-BIN-ARRIVED-PROXY",
+    )
+    assert len(transitions) == 1
+    assert transitions[0].object_key == "BIN-PROXY"
+
+
+@pytest.mark.asyncio
+async def test_record_bin_arrived_reconciling_records_transition_evidence() -> None:
+    transitions = RecordingObjectTransitionEventService()
+    service = _projection_service(
+        state_event_repo=RecordingStateEventRepo(),
+        bin_placement_repo=RecordingBinPlacementRepo(active_by_bin=_bin_placement()),
+        runtime_hold_creator=RecordingRuntimeHoldCreator(),
+        object_transition_event_service=transitions,
+    )
+
+    result = await service.record_bin_arrived_at_position(
+        _db(),
+        bin_code="BIN-001",
+        position_type="BUFFER",
+        position_code="BUFFER-02",
+        workline_id=1001,
+        workline_code="SMT_SORTER_01",
+        source_system=ResourceSourceSystem.WMS,
+        source_event_id="WMS-BIN-ARRIVED-CONFLICT",
+        idempotency_key="BIN_ARRIVED:WMS-BIN-ARRIVED-CONFLICT:BIN-001",
+        occurred_at=datetime(2026, 5, 18, 9, 4, 0),
+        trace_id="trace-bin-conflict",
+        workline_session_id=2001,
+    )
+
+    assert result.status == ResourceProjectionStatus.RECONCILING
+    transition = transitions.created[0]
+    assert transition["object_type"] == "BIN"
+    assert transition["object_key"] == "BIN-001"
+    assert transition["projection_type"] == "BIN_PLACEMENT"
+    assert transition["to_state"] == "RECONCILING"
+    assert transition["reason_code"] == "BIN_ACTIVE_PLACEMENT_CONFLICT"
+    assert transition["evidence_json"]["trusted"] is False
+    assert transition["evidence_json"]["active_position_code"] == "BUFFER-01"
+    assert transition["evidence_json"]["incoming_position_code"] == "BUFFER-02"
+
+
+@pytest.mark.asyncio
 async def test_record_bin_mounted_to_rack_conflict_creates_hold() -> None:
     runtime_holds = RecordingRuntimeHoldCreator()
     rack_bins = RecordingRackBinMountRepo(active_by_slot=_rack_bin_mount())
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         rack_bin_mount_repo=rack_bins,
         runtime_hold_creator=runtime_holds,
     )
 
     result = await service.record_bin_mounted_to_rack(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-001",
         bin_mounts=[{"rack_slot_code": "A", "bin_code": "BIN-001"}],
         source_system=ResourceSourceSystem.WMS,
@@ -1699,7 +2359,6 @@ async def test_record_bin_mounted_to_rack_conflict_creates_hold() -> None:
         idempotency_key="BIN_MOUNTED:RACK-001:WMS-BIN-MOUNTED-001",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
-        session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",
@@ -1719,7 +2378,7 @@ async def test_record_bin_mounted_to_rack_same_active_mount_is_idempotent() -> N
     snapshots = RecordingResourceSnapshotService()
     active_mount = _rack_bin_mount(rack_code="RACK-001", rack_slot_code="A", bin_code="BIN-001")
     rack_bins = RecordingRackBinMountRepo(active_by_slot=active_mount, active_by_bin=active_mount)
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         rack_bin_mount_repo=rack_bins,
         runtime_hold_creator=runtime_holds,
@@ -1727,7 +2386,7 @@ async def test_record_bin_mounted_to_rack_same_active_mount_is_idempotent() -> N
     )
 
     result = await service.record_bin_mounted_to_rack(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-001",
         bin_mounts=[{"rack_slot_code": "A", "bin_code": "BIN-001"}],
         source_system=ResourceSourceSystem.WMS,
@@ -1735,7 +2394,6 @@ async def test_record_bin_mounted_to_rack_same_active_mount_is_idempotent() -> N
         idempotency_key="BIN_MOUNTED:RACK-001:WMS-BIN-MOUNTED-001",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
-        session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",
@@ -1756,14 +2414,14 @@ async def test_record_bin_mounted_to_rack_conflict_on_later_mount_does_not_creat
             ("RACK-001", "B"): _rack_bin_mount(rack_slot_code="B", bin_code="BIN-OLD"),
         }
     )
-    service = ResourceProjectionService(
+    service = _projection_service(
         state_event_repo=RecordingStateEventRepo(),
         rack_bin_mount_repo=rack_bins,
         runtime_hold_creator=runtime_holds,
     )
 
     result = await service.record_bin_mounted_to_rack(
-        SimpleNamespace(),
+        _db(),
         rack_code="RACK-001",
         bin_mounts=[
             {"rack_slot_code": "A", "bin_code": "BIN-001"},
@@ -1774,7 +2432,6 @@ async def test_record_bin_mounted_to_rack_conflict_on_later_mount_does_not_creat
         idempotency_key="BIN_MOUNTED:RACK-001:WMS-BIN-MOUNTED-001",
         occurred_at=datetime(2026, 5, 18, 9, 5, 0),
         trace_id="trace-001",
-        session_id="2001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",

@@ -144,8 +144,9 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
         merged_evidence = (
             ResourceWaitEvidence.build(
                 inbox_id=evidence.inbox_id,
-                resource_kind=evidence.resource_kind,
-                resource_key=evidence.resource_key,
+                subject_type=evidence.subject_type,
+                subject_key=evidence.subject_key,
+                projection_type=evidence.projection_type,
                 reason_code=evidence.reason_code,
                 message=evidence.message,
                 occurred_at=evidence.last_seen_at,
@@ -176,8 +177,9 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
             inbox=inbox,
             workline=workline,
             extra={
-                "resource_kind": merged_evidence.resource_kind,
-                "resource_key": merged_evidence.resource_key,
+                "subject_type": merged_evidence.subject_type,
+                "subject_key": merged_evidence.subject_key,
+                "projection_type": merged_evidence.projection_type,
                 "reason_code": merged_evidence.reason_code,
             },
         )
@@ -200,17 +202,20 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
         db: Any,
         *,
         inbox_id: int,
-        resource_key: str,
+        subject_type: str,
+        subject_key: str,
+        projection_type: str,
         auto_commit: bool = True,
     ) -> int:
-        """成功推进后关闭当前 Inbox + resource_key 的 ACTIVE RESOURCE_WAIT 诊断。"""
+        """成功推进后关闭当前 Inbox + subject 的 ACTIVE RESOURCE_WAIT 诊断。"""
 
         resolved = await self.repo.resolve_resource_wait_by_key(
             db,
             diagnostic_key=ResourceWaitEvidence(
                 inbox_id=inbox_id,
-                resource_kind="RESOURCE",
-                resource_key=resource_key,
+                subject_type=subject_type,
+                subject_key=subject_key,
+                projection_type=projection_type,
                 reason_code="RESOURCE_WAIT_RESOLVED",
                 message="RESOURCE_WAIT resolved",
                 first_seen_at="",

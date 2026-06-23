@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from src.app.handling.models import HandlingMoveStatus, HandlingOperationStatus, HandlingStepStatus
+from src.app.handling.models import BinTransitQueue, HandlingMoveStatus, HandlingOperationStatus, HandlingStepStatus
 from src.app.handling.repositories import (
     HandlingMoveRepository,
     HandlingOperationRepository,
@@ -13,6 +13,10 @@ from src.app.handling.repositories import (
     handling_move_repository,
     handling_operation_repository,
     handling_step_repository,
+)
+from src.app.handling.services.bin_transit_membership_service import (
+    BinTransitMembershipService,
+    bin_transit_membership_service,
 )
 from src.app.workline.models.session import SessionStatus
 from src.app.workline.repositories.session_repository import (
@@ -24,7 +28,24 @@ from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_str, optional_int
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class _AsyncTransactionContext(Protocol):
+    async def __aenter__(self) -> Any: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None: ...
+
+
+class _BeginNestedCallable(Protocol):
+    def __call__(self) -> _AsyncTransactionContext: ...
 
 
 _FULL_BOX_EXCHANGE_CALLBACK_TYPES = {"WMS_FULL_BOX_EXCHANGE_RESULT", "RCS_FULL_BOX_EXCHANGE_RESULT"}
@@ -54,11 +75,13 @@ class HandlingOperationLifecycleService:
         move_repository: HandlingMoveRepository = handling_move_repository,
         step_repository: HandlingStepRepository = handling_step_repository,
         session_repository: WorklineSessionRepository = workline_session_repository,
+        membership_service: BinTransitMembershipService = bin_transit_membership_service,
     ) -> None:
         self.operation_repository = operation_repository
         self.move_repository = move_repository
         self.step_repository = step_repository
         self.session_repository = session_repository
+        self.membership_service = membership_service
 
     async def record_callback_from_external_http(
         self,
@@ -122,14 +145,65 @@ class HandlingOperationLifecycleService:
         step.error_message = error_message
         db.add(step)
         await self._sync_move_for_step(db, step=step, step_status=status)
-        await self._sync_operation_and_session(
+        final_status, final_error_code = await self._sync_operation_and_session(
             db,
             step=step,
             payload_json=payload_json,
             error_code=error_code,
             error_message=error_message,
         )
+        await self._project_queue_membership_best_effort(
+            db,
+            step=step,
+            step_status=final_status,
+            payload_json=payload_json,
+            trace_id=trace_id,
+            reason_code=final_error_code,
+        )
         return step
+
+    async def _project_queue_membership_best_effort(
+        self,
+        db: AsyncSession,
+        *,
+        step: Any,
+        step_status: HandlingStepStatus,
+        payload_json: Mapping[str, Any],
+        trace_id: str | None,
+        reason_code: str | None = None,
+    ) -> None:
+        dispatch_key = coerce_optional_str(getattr(step, "dispatch_key", None))
+        begin_nested = getattr(db, "begin_nested", None)
+        has_nested_transaction = callable(begin_nested)
+        if has_nested_transaction:
+            await db.flush()
+        try:
+            if has_nested_transaction:
+                nested_transaction = cast("_BeginNestedCallable", begin_nested)
+                async with nested_transaction():
+                    await self._project_queue_membership_from_callback(
+                        db,
+                        step=step,
+                        step_status=step_status,
+                        payload_json=payload_json,
+                        trace_id=trace_id,
+                        reason_code=reason_code,
+                    )
+            else:
+                await self._project_queue_membership_from_callback(
+                    db,
+                    step=step,
+                    step_status=step_status,
+                    payload_json=payload_json,
+                    trace_id=trace_id,
+                    reason_code=reason_code,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Handling queue membership projection failed; lifecycle state update is kept for reconciliation: "
+                f"dispatch_key={dispatch_key}, "
+                f"step_status={step_status.value}, error={exc}"
+            )
 
     async def _sync_move_for_step(self, db: AsyncSession, *, step: Any, step_status: HandlingStepStatus) -> None:
         move_id = optional_int(getattr(step, "move_id", None))
@@ -140,6 +214,92 @@ class HandlingOperationLifecycleService:
             return
         move.move_status = _move_status_for_step(step_status)
         db.add(move)
+
+    async def _project_queue_membership_from_callback(
+        self,
+        db: AsyncSession,
+        *,
+        step: Any,
+        step_status: HandlingStepStatus,
+        payload_json: Mapping[str, Any],
+        trace_id: str | None,
+        reason_code: str | None = None,
+    ) -> None:
+        move_id = optional_int(getattr(step, "move_id", None))
+        if move_id is None:
+            return
+        move = await self.move_repository.get_by_id(db, move_id)
+        if move is None:
+            return
+
+        target_queue = _callback_target_queue(payload_json) or _move_target_queue(move)
+
+        bin_code = coerce_optional_str(getattr(move, "bin_code", None))
+        placeholder_key = coerce_optional_str(getattr(move, "placeholder_key", None))
+        if bin_code is None and placeholder_key is None:
+            logger.debug(
+                "Skipping handling queue membership projection without bin_code/placeholder_key: "
+                f"move_id={move_id}, target_queue={target_queue.value if target_queue is not None else None}"
+            )
+            return
+
+        operation_key = coerce_optional_str(getattr(step, "operation_key", None))
+        operation = await self.operation_repository.get_by_operation_key(db, operation_key) if operation_key else None
+        common_kwargs = {
+            "bin_code": bin_code,
+            "placeholder_key": placeholder_key,
+            "handling_operation_id": optional_int(getattr(operation, "id", None)) if operation is not None else None,
+            "handling_move_id": move_id,
+            "trace_id": trace_id,
+            "reason_code": reason_code or f"HANDLING_CALLBACK_{step_status.value}",
+            "source_event_id": f"{coerce_optional_str(getattr(step, 'dispatch_key', None)) or move_id}:{step_status.value}",
+            "evidence_json": dict(payload_json),
+            "auto_commit": False,
+        }
+
+        if step_status == HandlingStepStatus.RECONCILING:
+            await self.membership_service.mark_reconciling(db, ignore_missing=True, **common_kwargs)
+            return
+
+        if step_status in {
+            HandlingStepStatus.SUCCEEDED,
+            HandlingStepStatus.FAILED,
+            HandlingStepStatus.TIMEOUT,
+            HandlingStepStatus.CANCELLED,
+        }:
+            if target_queue is not None:
+                await self.membership_service.switch_queue(
+                    db,
+                    to_queue=target_queue,
+                    workline_id=optional_int(getattr(operation, "workline_id", None))
+                    if operation is not None
+                    else None,
+                    workline_code=coerce_optional_str(getattr(operation, "workline_code", None))
+                    if operation is not None
+                    else None,
+                    workline_session_id=(
+                        optional_int(getattr(operation, "material_session_id", None)) if operation is not None else None
+                    ),
+                    **common_kwargs,
+                )
+            await self.membership_service.leave_queue(db, ignore_missing=True, **common_kwargs)
+            return
+
+        if target_queue is None:
+            return
+
+        await self.membership_service.switch_queue(
+            db,
+            to_queue=target_queue,
+            workline_id=optional_int(getattr(operation, "workline_id", None)) if operation is not None else None,
+            workline_code=coerce_optional_str(getattr(operation, "workline_code", None))
+            if operation is not None
+            else None,
+            workline_session_id=(
+                optional_int(getattr(operation, "material_session_id", None)) if operation is not None else None
+            ),
+            **common_kwargs,
+        )
 
     async def derive_operation_status(self, db: AsyncSession, *, operation_key: str) -> str:
         operation = await self.operation_repository.get_by_operation_key(db, operation_key)
@@ -157,14 +317,14 @@ class HandlingOperationLifecycleService:
         payload_json: Mapping[str, Any],
         error_code: str | None,
         error_message: str | None,
-    ) -> None:
+    ) -> tuple[HandlingStepStatus, str | None]:
         operation_key = coerce_optional_str(getattr(step, "operation_key", None))
         if operation_key is None:
-            return
+            return _as_step_status(getattr(step, "step_status", None)), error_code
 
         operation = await self.operation_repository.get_by_operation_key(db, operation_key)
         if operation is None:
-            return
+            return _as_step_status(getattr(step, "step_status", None)), error_code
 
         workline_id = optional_int(getattr(operation, "workline_id", None))
         session = None
@@ -207,7 +367,7 @@ class HandlingOperationLifecycleService:
         db.add(operation)
 
         if session is None:
-            return
+            return _as_step_status(getattr(step, "step_status", None)), error_code
 
         _apply_operation_status_to_session(
             session,
@@ -217,6 +377,7 @@ class HandlingOperationLifecycleService:
             error_message=error_message,
         )
         db.add(session)
+        return _as_step_status(getattr(step, "step_status", None)), error_code
 
 
 def _derive_operation_status(steps: list[Any]) -> HandlingOperationStatus:
@@ -245,6 +406,15 @@ def _move_status_for_step(step_status: HandlingStepStatus) -> HandlingMoveStatus
         if step_status == HandlingStepStatus.READY:
             return HandlingMoveStatus.PLANNED
         return HandlingMoveStatus.REQUESTED
+
+
+def _as_step_status(value: Any) -> HandlingStepStatus:
+    if isinstance(value, HandlingStepStatus):
+        return value
+    try:
+        return HandlingStepStatus(str(value))
+    except ValueError:
+        return HandlingStepStatus.IN_PROGRESS
 
 
 def _allows_terminal_override(current_status: Any, incoming_status: HandlingStepStatus) -> bool:
@@ -333,6 +503,31 @@ def _callback_step_status(payload_json: Mapping[str, Any]) -> tuple[HandlingStep
         return HandlingStepStatus.IN_PROGRESS, None, None
 
     return _resolve_step_status(status), _raw_error_code(payload_json), _raw_error_message(payload_json)
+
+
+def _callback_target_queue(payload_json: Mapping[str, Any]) -> BinTransitQueue | None:
+    raw_queue = (
+        coerce_optional_str(payload_json.get("target_queue"))
+        or coerce_optional_str(payload_json.get("current_queue"))
+        or coerce_optional_str(payload_json.get("queue"))
+    )
+    if raw_queue is None:
+        return None
+    try:
+        return BinTransitQueue(raw_queue)
+    except ValueError:
+        logger.warning(f"Ignoring unknown handling target queue from callback: target_queue={raw_queue}")
+        return None
+
+
+def _move_target_queue(move: Any) -> BinTransitQueue | None:
+    raw_queue = coerce_optional_str(getattr(move, "target_code", None))
+    if raw_queue is None:
+        return None
+    try:
+        return BinTransitQueue(raw_queue)
+    except ValueError:
+        return None
 
 
 def _resolve_step_status(status: str | None) -> HandlingStepStatus:

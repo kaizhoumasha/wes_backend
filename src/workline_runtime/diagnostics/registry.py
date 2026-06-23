@@ -142,7 +142,7 @@ _REGISTRY: dict[ErrorCode, DiagnosticCodeDefinition] = {
         owner="workflow",
         cause="Session 下一步所需的真实资源暂不可用，系统已进入自动等待重试。",
         operator_action="等待目标资源释放后系统自动重试；如长时间未恢复，请检查诊断证据中的资源状态。",
-        fix="检查 resource_kind、resource_key、当前占用 Session 和现场资源释放事件，确认资源释放后观察下一轮重试。",
+        fix="检查 subject_type、subject_key、projection_type、当前占用 Session 和现场 subject 释放事件，确认释放后观察下一轮重试。",
         recoverability=Recoverability.AUTO_RETRYABLE,
         docs_anchor="RESOURCE_WAIT",
     ),

@@ -167,7 +167,6 @@ async def test_record_rack_arrived_appends_fact_and_creates_active_placement() -
         source_task_id="wms-task-001",
         occurred_at=datetime(2026, 5, 16, 8, 0, 0),
         trace_id="trace-001",
-        session_id="session-001",
     )
 
     assert result.status == ResourceProjectionStatus.PROJECTED
@@ -211,7 +210,6 @@ async def test_record_rack_arrived_conflict_does_not_overwrite_active_placement(
         source_event_id="wms-event-002",
         occurred_at=datetime(2026, 5, 16, 8, 0, 0),
         trace_id="trace-001",
-        session_id="session-001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",
@@ -254,7 +252,6 @@ async def test_record_empty_rack_verified_projects_four_bin_mounts() -> None:
         source_task_id="ecs-task-001",
         occurred_at=datetime(2026, 5, 16, 10, 0, 0),
         trace_id="trace-ecs-001",
-        session_id="session-ecs-001",
     )
 
     assert result.status == ResourceProjectionStatus.PROJECTED
@@ -305,7 +302,6 @@ async def test_record_empty_rack_verified_conflict_creates_runtime_hold() -> Non
         source_task_id="ecs-task-001",
         occurred_at=datetime(2026, 5, 16, 10, 0, 0),
         trace_id="trace-ecs-001",
-        session_id="session-ecs-001",
         workline_id=1001,
         workline_session_id=2001,
         plugin_key="test_workline_plugin",

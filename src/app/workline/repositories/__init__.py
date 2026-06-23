@@ -9,6 +9,11 @@ from .bin_cell_reservation_repository import (
 from .diagnostic_repository import WorklineDiagnosticRepository, workline_diagnostic_repository
 from .dispatch_attempt_repository import WorklineDispatchAttemptRepository, workline_dispatch_attempt_repository
 from .inbox_repository import WorklineInboxRepository, inbox_repository
+from .material_unit_repository import MaterialUnitRepository, material_unit_repository
+from .object_transition_event_repository import (
+    ObjectTransitionEventRepository,
+    object_transition_event_repository,
+)
 from .rack_position_repository import WorklineRackPositionRepository, workline_rack_position_repository
 from .runtime_hold_repository import RuntimeHoldRepository, runtime_hold_repository
 from .safety_incident_repository import WorklineSafetyIncidentRepository, workline_safety_incident_repository
@@ -25,6 +30,8 @@ from .smt_inbound_handoff_repository import SmtInboundHandoffRepository, smt_inb
 from .workline_repository import WorkLineRepository, workline_repository
 
 __all__ = [
+    "MaterialUnitRepository",
+    "ObjectTransitionEventRepository",
     "RackTaskRepository",
     "RuntimeHoldRepository",
     "SandboxCleanupRepository",
@@ -39,6 +46,8 @@ __all__ = [
     "WorklineSafetyIncidentRepository",
     "WorklineSessionRepository",
     "inbox_repository",
+    "material_unit_repository",
+    "object_transition_event_repository",
     "rack_task_repository",
     "runtime_hold_repository",
     "sandbox_cleanup_repository",

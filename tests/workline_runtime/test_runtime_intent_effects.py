@@ -3355,6 +3355,7 @@ async def test_rack_operation_station_lease_race_returns_resource_retry(
     session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None, context_json={})
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["workline"].plugin_key = "rough_sorter"
     emit_timeline = AsyncMock()
     persist_external_wait = AsyncMock()
     record_resource_wait = AsyncMock()
@@ -3401,8 +3402,9 @@ async def test_rack_operation_station_lease_race_returns_resource_retry(
     assert result.disposition == WriteBackDisposition.RESOURCE_RETRY
     assert session.status == "WAITING_EXTERNAL"
     assert session.current_wait_type == "RESOURCE_WAIT"
-    assert session.context_json["resource_wait"]["resource_kind"] == "STATION"
-    assert session.context_json["resource_wait"]["resource_key"] == "station:SINGLE_LAYER_A"
+    assert session.context_json["resource_wait"]["subject_type"] == "SINGLE_LAYER_A"
+    assert session.context_json["resource_wait"]["subject_key"] == "station:SINGLE_LAYER_A"
+    assert session.context_json["resource_wait"]["projection_type"] == "STATION_LEASE"
     assert session.context_json["resource_wait"]["reason_code"] == "STATION_LEASE_CLAIM_FAILED"
     assert "rack_operation" not in session.context_json
     persist_external_wait.assert_awaited_once()
@@ -4398,6 +4400,7 @@ async def test_apply_resource_wait_sets_waiting_external_and_returns_resource_re
     )
     db = SimpleNamespace(execute=AsyncMock())
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["workline"].plugin_key = "SMT_SORTING_INBOUND"
     emit_timeline = AsyncMock()
     persist_external_wait = AsyncMock()
     record_resource_wait = AsyncMock()
@@ -4416,8 +4419,9 @@ async def test_apply_resource_wait_sets_waiting_external_and_returns_resource_re
         ctx,
         [
             RuntimeIntent.resource_wait(
-                resource_kind="STATION",
-                resource_key="station:TARGET_STATION",
+                subject_type="TARGET_STATION",
+                subject_key="station:TARGET_STATION",
+                projection_type="ACTIVE_TARGET_BIN_RACK",
                 reason_code="STATION_BUSY",
                 message="目标 Station 忙",
                 payload={"active_session_id": 456},
@@ -4429,8 +4433,9 @@ async def test_apply_resource_wait_sets_waiting_external_and_returns_resource_re
     assert session.status == "WAITING_EXTERNAL"
     assert session.current_wait_type == "RESOURCE_WAIT"
     assert session.context_json["resource_wait"]["inbox_id"] == 10
-    assert session.context_json["resource_wait"]["resource_kind"] == "STATION"
-    assert session.context_json["resource_wait"]["resource_key"] == "station:TARGET_STATION"
+    assert session.context_json["resource_wait"]["subject_type"] == "TARGET_STATION"
+    assert session.context_json["resource_wait"]["subject_key"] == "station:TARGET_STATION"
+    assert session.context_json["resource_wait"]["projection_type"] == "ACTIVE_TARGET_BIN_RACK"
     assert session.context_json["resource_wait"]["wait_count"] == 1
     persist_external_wait.assert_awaited_once()
     record_resource_wait.assert_awaited_once()
@@ -4449,8 +4454,9 @@ async def test_resource_wait_must_be_final_intent(monkeypatch: pytest.MonkeyPatc
             ctx,
             [
                 RuntimeIntent.resource_wait(
-                    resource_kind="STATION",
-                    resource_key="station:TARGET_STATION",
+                    subject_type="TARGET_STATION",
+                    subject_key="station:TARGET_STATION",
+                    projection_type="ACTIVE_TARGET_BIN_RACK",
                     reason_code="STATION_BUSY",
                     message="目标 Station 忙",
                 ),
@@ -4476,8 +4482,9 @@ async def test_resource_wait_cannot_follow_command_producing_intent(monkeypatch:
             [
                 RuntimeIntent.command(action="MOVE_FORWARD", payload={}, destination=Destination.current()),
                 RuntimeIntent.resource_wait(
-                    resource_kind="STATION",
-                    resource_key="station:TARGET_STATION",
+                    subject_type="TARGET_STATION",
+                    subject_key="station:TARGET_STATION",
+                    projection_type="ACTIVE_TARGET_BIN_RACK",
                     reason_code="STATION_BUSY",
                     message="目标 Station 忙",
                 ),

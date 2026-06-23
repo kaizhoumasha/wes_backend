@@ -16,6 +16,7 @@ from src.app.resource.models import (
 )
 from src.app.resource.services import ResourceProjectionStatus
 from src.app.resource.services.projection_service import ResourceProjectionService
+from src.app.workline.models import ObjectTransitionDomain
 
 
 class RecordingStateEventRepo:
@@ -96,16 +97,32 @@ class RecordingRuntimeHoldCreator:
         return SimpleNamespace(id=8801, **kwargs)
 
 
+class NoopObjectTransitionEventService:
+    async def record_transition(self, _db: object, **_kwargs: Any) -> None:
+        return None
+
+
+class RecordingObjectTransitionEventService:
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+
+    async def record_transition(self, _db: object, **kwargs: Any) -> SimpleNamespace:
+        self.created.append(kwargs)
+        return SimpleNamespace(id=len(self.created), **kwargs)
+
+
 def _service(
     *,
     state_events: RecordingStateEventRepo | None = None,
     placements: RecordingBinPlacementRepo | None = None,
     runtime_holds: RecordingRuntimeHoldCreator | None = None,
+    object_transition_event_service: Any | None = None,
 ) -> ResourceProjectionService:
     return ResourceProjectionService(
         state_event_repo=state_events or RecordingStateEventRepo(),
         bin_placement_repo=placements or RecordingBinPlacementRepo(),
         runtime_hold_creator=runtime_holds or RecordingRuntimeHoldCreator(),
+        object_transition_event_service=object_transition_event_service or NoopObjectTransitionEventService(),
     )
 
 
@@ -210,6 +227,7 @@ async def test_bin_arrived_unique_constraint_race_enters_reconciling() -> None:
 
 @pytest.mark.asyncio
 async def test_bin_departed_closes_active_bin_placement() -> None:
+    transitions = RecordingObjectTransitionEventService()
     placements = RecordingBinPlacementRepo(
         active_by_bin=BinPlacement(
             bin_code="BIN-001",
@@ -221,7 +239,7 @@ async def test_bin_departed_closes_active_bin_placement() -> None:
             started_at=datetime(2026, 5, 22, 8, 0, 0),
         )
     )
-    service = _service(placements=placements)
+    service = _service(placements=placements, object_transition_event_service=transitions)
     occurred_at = datetime(2026, 5, 22, 9, 0, 0)
 
     result = await service.record_resource_fact(
@@ -246,13 +264,45 @@ async def test_bin_departed_closes_active_bin_placement() -> None:
             "source_event_id": "wms-bin-departed-001",
         }
     ]
+    assert transitions.created == [
+        {
+            "domain": ObjectTransitionDomain.RESOURCE,
+            "object_type": "BIN",
+            "object_key": "BIN-001",
+            "projection_type": "BIN_PLACEMENT",
+            "from_state": BinPlacementStatus.ARRIVED.value,
+            "to_state": BinPlacementStatus.DEPARTED.value,
+            "reason_code": ResourceStateEventType.BIN_DEPARTED.value,
+            "source_event_id": "wms-bin-departed-001",
+            "source_ref_json": {
+                "resource_state_event_type": ResourceStateEventType.BIN_DEPARTED.value,
+                "bin_code": "BIN-001",
+                "placeholder_key": None,
+            },
+            "evidence_json": {
+                "position_type": None,
+                "position_code": None,
+                "active_position_type": "SORTER_STATION",
+                "active_position_code": "SORTER-01",
+            },
+            "workline_session_id": 301,
+            "trace_id": "trace-bin-001",
+            "occurred_at": occurred_at,
+            "auto_commit": False,
+        }
+    ]
 
 
 @pytest.mark.asyncio
 async def test_bin_departed_without_active_placement_enters_reconciling() -> None:
+    transitions = RecordingObjectTransitionEventService()
     runtime_holds = RecordingRuntimeHoldCreator()
     placements = RecordingBinPlacementRepo()
-    service = _service(placements=placements, runtime_holds=runtime_holds)
+    service = _service(
+        placements=placements,
+        runtime_holds=runtime_holds,
+        object_transition_event_service=transitions,
+    )
 
     result = await service.record_resource_fact(
         db=SimpleNamespace(),
@@ -273,6 +323,15 @@ async def test_bin_departed_without_active_placement_enters_reconciling() -> Non
     assert result.runtime_hold is not None
     assert runtime_holds.created[0]["source_reason"] == "BIN_ACTIVE_PLACEMENT_MISSING"
     assert placements.closed_by_bin == []
+    transition = transitions.created[0]
+    assert transition["object_type"] == "BIN"
+    assert transition["object_key"] == "BIN-404"
+    assert transition["projection_type"] == "BIN_PLACEMENT"
+    assert transition["from_state"] is None
+    assert transition["to_state"] == "RECONCILING"
+    assert transition["reason_code"] == "BIN_ACTIVE_PLACEMENT_MISSING"
+    assert transition["evidence_json"]["trusted"] is False
+    assert transition["evidence_json"]["position_code"] is None
 
 
 @pytest.mark.asyncio
