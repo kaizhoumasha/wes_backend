@@ -2,8 +2,8 @@
 
 > Legacy notes: 本文件索引存在历史条目，涉及旧插件 builder 的说明仅供定位旧文档；当前运行时以 `RuntimeIntent` 为准。
 
-**最后更新**: 2026年6月17日
-**同步状态**: ⚠️ 已同步 WMS 对接辅助域入口和 SMT 分拣入库 handoff/manifest 闭环入口；其余内容请以实际仓库结构为准
+**最后更新**: 2026年6月23日（v4.1 概要/详细设计：模块命名采用 `wms_integration`，不重命名为 `external/wms`）
+**同步状态**: ⚠️ WORKLINE + PLUGIN 体系全面重构顶层设计采用 GB/T 8567 概要设计说明书 + 详细设计 13 章结构（`docs/architecture/workline-and-plugin-restructuring.md`），1,800+ 行；含数据模型、状态机图、模块 API、接口设计、Phase 实施 roadmap；不预先拆 SPEC；关键决策 8 个 ADR；autoplan 评审存档；其余内容请以实际仓库结构为准
 
 ---
 
@@ -11,6 +11,9 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-06-23 | docs-workline-plugin-restructuring-v4 | WORKLINE + PLUGIN 重构顶层设计改用 GB/T 8567 概要/详细设计 13 章结构：1.引言 2.系统概述 3.体系结构 4.数据设计 5.接口设计 6.状态机 7.安全设计 8.非功能性 9.模块设计 10.实施计划 11.执行规范 12.风险 13.附录；1,800+ 行含数据模型 / 状态机 / 模块 API / Phase roadmap |
+| 2026-06-23 | docs-workline-plugin-restructuring-v3 | WORKLINE + PLUGIN 重构顶层设计采用 4 章结构（总体设计目标 / 约束条件 / 执行规范 / 实施阶段），645 行自包含；不预先拆 SPEC，Phase 启动时按需展开；autoplan 28 decision 存档 reviews/ |
+| 2026-06-23 | docs-workline-plugin-restructuring | 新增 WORKLINE + PLUGIN 体系全面重构顶层设计（`docs/architecture/workline-and-plugin-restructuring.md`），父目标 + 6 个子目标 + 25 implementation task + capability freeze + authority matrix + 4 方案决策表 |
 | 2026-06-17 | docs-smt-handoff-manifest-flow | 补充 SMT 分拣入库 handoff/manifest 闭环、插件、Celery 兜底和测试索引入口 |
 | 2026-05-27 | docs-wms-integration | 补充 WMS 对接辅助域、迁移、测试和接入 checklist 索引入口 |
 | 2026-04-16 | docs-hotfix | 修正文档入口路径与失效链接，并为历史提案类文档补充状态说明 |
@@ -322,6 +325,15 @@
 | | `events.py` | 事件系统路由 | 📚 参考资料 |
 
 #### 🔧 作业线模块 (src/app/workline/)
+
+> 📐 **WORKLINE + PLUGIN 体系全面重构顶层设计**（父目标：对当前 WORKLINE + PLUGIN 体系进行全面重构/重做）：
+> - 顶层设计（GB/T 8567 概要/详细设计 13 章）：[`docs/architecture/workline-and-plugin-restructuring.md`](./workline-and-plugin-restructuring.md)（1,800+ 行：1.引言 2.系统概述 3.体系结构 4.数据设计 5.接口设计 6.状态机 7.安全设计 8.非功能性 9.模块设计 10.实施计划 11.执行规范 12.风险 13.附录）
+> - 关键决策（ADR）：`docs/architecture/adr/workline-restructuring/`（8 个 ADR）
+> - 评审存档：`docs/architecture/reviews/`（autoplan CEO/Design/Eng 评审全文 + 28 决策记录）
+> - 实施细节（SPEC）暂不拆，对应 Phase 启动时按需展开
+>
+> 包含 WES 顶层领域边界、WMS 反腐层 (wms_integration ACL 6 套 port)、Authority Matrix、Capability Freeze、4 方案决策表、5 Phase 实施 roadmap、数据模型、状态机图、模块 API 设计。
+
 
 作业线运行时系统，遵循白皮书 v3.1 架构设计（插件化、状态机、幂等性）
 
