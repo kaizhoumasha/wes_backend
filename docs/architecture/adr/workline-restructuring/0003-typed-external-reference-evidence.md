@@ -17,7 +17,7 @@ resource 域的 `rack_code / bin_code / location_code` 等外部引用当前是�
 2. **typed `EvidenceEnvelope`**：`evidence_json` 升级为 Pydantic envelope：
    - `schema_version / source_system / source_event_id / source_version / validated_at / request_hash / payload`
 3. **GIN 索引**：`ExternalReference.code` + `EvidenceEnvelope.source_event_id` 等结构化字段加 GIN 索引。
-4. **WMS master-data drift 对账**：`WmsReconciliationPort.reconcile_*` 定期对账；未验证或漂移的外部引用**不得**驱动关键履约动作。
+4. **WMS master-data drift 对账**：`WmsReconciliationQueryPort.check_*_drift` 定期只读拉取 WMS 权威事实；未验证或漂移的外部引用**不得**驱动关键履约动作。
 5. **evidence schema 变更日志**：`docs/contracts/evidence-catalog.md` 维护每次 schema 升级的 source/target 映射。
 
 ## 后果
@@ -32,7 +32,7 @@ resource 域的 `rack_code / bin_code / location_code` 等外部引用当前是�
 - `docs/architecture/specs/workline-restructuring/40-resource-projection.md` 发布。
 - `src/app/resource/models/` 引入 `ExternalReference` + `EvidenceEnvelope` Pydantic 模型。
 - Alembic 迁移加 GIN 索引。
-- `WmsReconciliationPort` 实现 + 单元测试。
+- `WmsReconciliationQueryPort` 只读实现 + 单元测试；任何 WMS 写入确认或补偿动作必须归入 `WmsInventoryTransactionPort` / `WmsFulfillmentPort`。
 - evidence-catalog.md 初始版发布。
 
 ## 引用

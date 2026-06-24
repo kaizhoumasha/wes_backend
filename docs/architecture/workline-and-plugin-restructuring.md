@@ -44,7 +44,7 @@ review_summary: |
 - 给出**安全设计**（威胁模型、plane RBAC、External callback HMAC、idempotency 跨域审计、关键不变量）（§7）
 - 给出**非功能性设计**（性能、容量、可靠性、可观测性、可维护性）（§8）
 - 给出**模块设计**（workline 配置域、runtime/orchestration 执行域、handling、resource、material、device、wms_integration、reconciliation 8 个模块的详细设计）（§9）
-- 给出**实施计划**（5 Phase 路线图 + critical path + 总 Effort 估算）（§10）
+- 给出**实施计划**（Phase 0-5 六阶段路线图 + critical path + 总 Effort 估算）（§10）
 - 给出**执行规范**（TDD 纪律、破坏性迁移规范、评审制度、命名规范、Legacy 清理规范、工具与命令规范）（§11）
 - 列出**风险与对策**（4 CRITICAL、1 TASTE、2 事实修正、3 跨阶段主题）（§12）
 - **附录**：实施细节 SPEC 触发清单、ADR 索引、现有相关文档、评审存档（§13）
@@ -55,8 +55,8 @@ review_summary: |
 
 - WORKLINE + PLUGIN 体系全面重构的**顶层设计**（含概要 + 详细）
 - 8 个域的边界与责任：workline（配置域）/ runtime/orchestration（执行域）/ handling（搬运意图）/ resource（运行投影）/ material（WES 根实体）/ device（设备接入）/ wms_integration（WMS ACL）/ reconciliation（对账）
-- 7 个目标 WMS port（MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / Reconciliation）
-- 5 Phase 实施路线图
+- 7 个目标 WMS port（MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery）
+- Phase 0-5 六阶段实施路线图
 
 **本文档不包含**（实施 SPEC 阶段展开）：
 
@@ -73,15 +73,17 @@ review_summary: |
 | --- | --- |
 | WES | Warehouse Execution System，本系统，仓储现场自动化执行中台 |
 | WMS | Warehouse Management System，外部权威系统，持有库存/单据/库位主数据 |
-| RCS | Robot Control System，当前阶段由 WMS 统一调度；WES 只消费 WMS/RCS 履约回调 evidence，未来直连时才通过 provider adapter 引入状态权威 |
+| RCS | Robot Control System，当前阶段由 WMS 统一调度；WES 只消费 WMS/RCS 履约回调 evidence；直连能力仅作条件触发扩展，生产前默认不做 |
 | AGV / CTU | Automated Guided Vehicle / Container Transfer Unit，外部搬运设备 |
 | PLC | Programmable Logic Controller，ECS 内部控制组件；WES 不与 PLC 通讯 |
 | WorkLine | 工作线配置域的根实体；只拥有配置，不拥有运行状态 |
 | Runtime | 工作线执行域（重构后）；拥有 ExecutionSession 等状态 |
 | ExecutionSession | runtime/orchestration 的会话聚合根；一次作业的执行会话 |
+| ExecutionWorkItem | runtime/orchestration 的对象级执行令牌；一个料盘、物料、料箱或外部履约子项在会话内独立推进 |
 | RuntimeIntentLog | 运行时输出的下一步意图记录（effect proposal / outbox log，**不是**状态源） |
 | ExecutionCorrelation | 跨域 correlation key，替代 `execution_session.id` 跨域 FK |
 | EffectPort | Runtime 向 handling/device/resource/material/wms_integration 分发副作用的稳定接口 |
+| InboundEventPort | 外部 callback/event 入站标准接口；负责 normalizer、原始归档、typed evidence，写入 `RuntimeInbox`，不是 effect ledger |
 | ConveyorQueueMembership | 料箱在滚筒线队列中的 runtime active 投影；队列由 WorkLine manifest 动态定义 |
 | WmsFulfillmentPort | WMS 履约能力 port（11 态机） |
 | PlaneSceneView | WorkLine 平面态势场景读模型（manifest 派生） |
@@ -172,11 +174,12 @@ P0 必须支撑以下能力（每条都是验收项）：
 
 - Start admission：启动前必须校验 WorkLine manifest 有效、设备角色能力满足、必要 WMS/ECS port 可用、active projection 不存在阻塞冲突。
 - Runtime monitor：任一 active session 必须可查询当前 state、最近 timeline、未处理 inbox、active hold、pending intent 和关联 correlation。
+- Pipeline concurrency：`ExecutionSession` 不能成为整条 WorkLine 的串行锁；料盘、物料、料箱和履约子项必须以 `ExecutionWorkItem` 或等价对象级令牌独立推进。某设备完成当前对象步骤并回调后，该设备即可接收下一对象命令，不等待该对象完整业务流结束。
 - Handoff：任何物料/料箱/货架交接必须以 External callback 或 RuntimeIntentLog evidence 推进，禁止 API 层直接改投影。
 - Resource projection：同一 object 在同一 WorkLine 内只能有一个可解释的 active 归属；瞬态冲突必须带 `transient_until`，超时进入 `RECONCILING`。
 - Device command：每个物理动作必须有 `command_code + idempotency_key + request_hash + callback result` 闭环。
-- WMS fulfillment：任何外部履约必须有 11 态机状态、timeout、callback/evidence 和失败恢复路径。
-- Inbound flow baseline：分拣机/粗分机入库链路的业务语义必须被行为契约测试覆盖，包括扫码、测量或识别、WMS 校验、箱格分配、满箱/换架、NG、投箱和完成；旧插件接口、旧 context 字段和旧 fake allocator 不进入目标态合同。
+- WMS fulfillment：任何外部履约必须有 11 态机状态、timeout、callback/evidence 和失败恢复路径；批量履约必须显式区分父批次请求、逐对象 evidence 和批次完成 evidence。
+- Inbound flow baseline：分拣机/粗分机入库链路的业务语义必须被行为契约测试覆盖，包括对象级流水并发、扫码、测量或识别、WMS 校验、箱格分配/预约、滚筒线路由、满箱/换架、NG、投箱和完成；旧插件接口、旧 context 字段和旧 fake allocator 不进入目标态合同。
 - Full-box exchange：满箱、满货架、换空箱、换货架属于外部履约 + 对账闭环，必须走 callback + reconciliation 完成语义，不能按普通 `CALLBACK_TRUSTED` 搬运完成处理。
 
 ### 2.3 明确不做
@@ -191,7 +194,7 @@ P0 必须支撑以下能力（每条都是验收项）：
 | 6 | 沿用旧 WorkLine 插件执行体系作为新架构基础 | 旧 plugin 只作为业务事实样本，新能力在 runtime 域以 port/capability 重建 |
 | 7 | 为旧 API、旧表名、旧插件形态做向后兼容 | 系统未发布，重构以清爽目标态为准；旧入口允许删除或破坏性替换 |
 | 8 | 用本地 active projection 冒充 WMS 全局库存 | 影子 WMS 风险（Authority Matrix） |
-| 9 | 本阶段直接调度 RCS / AGV / CTU | `wms_rcs_interface_requirements.md` 明确 RCS 仍由 WMS 统一调度；直连能力只作为未来 provider adapter |
+| 9 | 本阶段直接调度 RCS / AGV / CTU | `wms_rcs_interface_requirements.md` 明确 RCS 仍由 WMS 统一调度；直连能力仅作条件触发 provider adapter，生产前默认不做 |
 | 10 | 让 WMS 直连自动化设备 | 自动化设备只通过 WES 接入，WMS 不直连设备 |
 | 11 | 让 WES 承接 PDA 应用交互 | PDA 仅对接 WMS；WES 如需感知 PDA 结果，由 WMS 事件推送或同步 |
 | 12 | WES 直接控制 PLC、下发物理坐标、关节角度或安全回路指令 | `third_party_integration_whitepaper.md` 明确 WES 与 ECS/设备上位机通过 API 交互；ECS 自主完成物理控制、坐标映射和硬件防呆 |
@@ -215,7 +218,7 @@ P0 必须支撑以下能力（每条都是验收项）：
 | # | 子目标 | 关键产出 |
 | --- | --- | --- |
 | 1 | WES 顶层领域边界 | 拆 workline（配置域）+ runtime/orchestration（执行域）+ handling + resource + material + device + wms_integration |
-| 2 | WMS 反腐层 (wms_integration ACL) | 7 个目标 port：MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / Reconciliation |
+| 2 | WMS 反腐层 (wms_integration ACL) | 7 个目标 port：MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery |
 | 3 | Authority Matrix | 外部事实按事实类型拆分权威来源；WES material 域是唯一自有根实体 |
 | 4 | 目标态契约 | 锁定目标业务能力、域边界、状态所有权和外部 port；不锁定旧 API/旧表 |
 | 5 | 4 方案决策表 | A（workline 单体）/ B（本设计）/ C（增量 ACL）/ D（port-only）；选择 B，C 的可复用部分并入 B |
@@ -269,7 +272,7 @@ P0 必须支撑以下能力（每条都是验收项）：
 | 域 | 路径 | 角色 | 状态所有权 |
 | --- | --- | --- | --- |
 | `workline`（配置域） | `src/app/workline/` | 滚筒线/队列/入口/出口/设备角色/资源边界/平面布局/启停配置生命周期 | 仅配置（无运行状态） |
-| `runtime/orchestration`（执行域） | `src/app/runtime/orchestration/`（新建） | ExecutionSession/Inbox/Timeline/Hold、EffectPort、RuntimeIntentLog effect ledger | **唯一 session PK 拥有者** |
+| `runtime/orchestration`（执行域） | `src/app/runtime/orchestration/`（新建） | ExecutionSession/Inbox/Timeline/Hold、RuntimeIntentLog effect ledger、EffectPort dispatcher | **唯一 session PK 拥有者** |
 | `handling` | `src/app/handling/` | 搬运意图、请求生命周期、幂等、超时、重试 | 搬运请求状态 |
 | `resource` | `src/app/resource/` | 作业期运行投影（不复制 WMS 主数据） | active projection 状态 |
 | `material` | `src/app/material/`（新建；旧 `workline/models/material_unit.py` 迁出或删除） | 料盘/物料 WES 作业期根实体 | material_units 身份 + 作业期业务状态 + current_session correlation；位置摘要只读投影 |
@@ -285,11 +288,11 @@ P0 必须支撑以下能力（每条都是验收项）：
 
 1. **现有 ADR 已经确立** `wms_integration` 是 ACL：`2026-05-26-wms-integration-domain.md` 第二条："该域是 Anti-Corruption Layer，不是 WES 主数据域"。"integration" 命名的语义早就被升级为 ACL。
 2. **语义已经足够清楚**：本轮允许破坏性重构，但 `wms_integration` 已被现有 ADR 定义为 ACL。重命名收益低，保留名称能减少无价值 churn。
-3. **Python 习惯**：包名=具体名词（`wms_integration`），不是分类前缀（`external.wms`）。镜像命名（未来加 `rcs_integration/`、`agv_integration/`）比父目录命名更 Pythonic。
+3. **Python 习惯**：包名=具体名词（`wms_integration`），不是分类前缀（`external.wms`）。若 §10.5 的 RCS/AGV/CTU 直连触发条件成立，镜像命名（`rcs_integration/`、`agv_integration/`）比父目录命名更 Pythonic。
 4. **现有结构已经是 ACL 模式**：`services/typed_ports.py`（609 行）+ `models/ports.py`（151 行）已经是 typed port 抽象；`circuit_breaker_service.py` + `callback_normalizer.py` + `evidence.py` 都是 ACL 概念。
 5. **与同目录其他域对齐**：`src/app/wms_integration/` 与 `src/app/handling/`、`src/app/resource/`、`src/app/device/` 同级（都是"外部接口/执行域"），不需要 `external/` 父目录。
 
-**未来外部系统命名**：如 RCS / AGV / CTU provider 出现，使用**镜像命名**：
+**条件触发外部系统命名**：以下只是命名规则，不代表当前阶段建目录或预留代码骨架；只有 §10.5 触发条件满足并形成独立 SPEC 后才使用**镜像命名**：
 
 - `src/app/rcs_integration/`（RCS 对接辅助域）
 - `src/app/agv_integration/`（AGV provider adapter）
@@ -342,13 +345,13 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 | 设备业务命令结果（机械臂取放、滚筒线动作） | ECS/device runtime | 接收 + 诊断 | RESULT + 设备诊断状态 |
 | 硬件防呆、安全回路、急停、复位、物理坐标/关节控制 | ECS/现场安全系统 | 只感知，不控制 | 只写 event/evidence/hold，不下发安全控制或坐标级指令 |
 | 设备事件/任务结果回调 | ECS/device callback | normalize + dispatch | typed evidence + RuntimeInbox + device projection |
-| AGV/CTU 履约状态与位置 evidence | WMS/RCS fulfillment callback（未来 direct provider adapter） | 引用履约回调 evidence | 触发 handling 派生状态，不复制实时位置或 SDK 状态 |
+| AGV/CTU 履约状态与位置 evidence | WMS/RCS fulfillment callback（直连 provider adapter 仅作条件触发扩展） | 引用履约回调 evidence | 触发 handling 派生状态，不复制实时位置或 SDK 状态 |
 | 货架/料箱/库位主数据 | WMS | 引用 + 作业期投影 | 不复制主数据，只维护 active projection |
 | WMS 回调事件（WMS 主动推送） | WMS callback | normalize + dispatch | typed evidence + correlation key |
 | 冲突、对账、RECONCILING 决议 | WES ReconciliationManager | 冲突记录 + 决议权威 | RECONCILING evidence + resolution_decision；恢复动作由各 owner 按 evidence 执行 |
 | WES 作业期料盘/物料根实体 | WES material 域 | **WES 自有** | material_units 身份 + 作业期业务状态 + current_session correlation；位置只读摘要只能由 `RuntimeLocationEvent` 投影更新 |
 
-**不变量**：WES 内部域（workline / runtime / handling / resource / material / device）**不能**直接依赖 PLC/RCS/AGV-CTU SDK 或 WMS HTTP client。设备事实经 `device` 域，搬运事实经 `wms_integration` 端口或未来 `rcs_integration` / `agv_integration` / `ctu_integration` 端口。WES 与固定式自动化设备只按 `third_party_integration_whitepaper.md` 通过 ECS/设备上位机 API 交互，不与 PLC 通讯，不控制坐标、关节、安全回路或硬件防呆。
+**不变量**：WES 内部域（workline / runtime / handling / resource / material / device）**不能**直接依赖 PLC/RCS/AGV-CTU SDK 或 WMS HTTP client。设备事实经 `device` 域，搬运事实经 `wms_integration` 端口；只有满足 §10.5 条件触发直连扩展时，才允许新增 `rcs_integration` / `agv_integration` / `ctu_integration` ACL 端口。WES 与固定式自动化设备只按 `third_party_integration_whitepaper.md` 通过 ECS/设备上位机 API 交互，不与 PLC 通讯，不控制坐标、关节、安全回路或硬件防呆。
 
 ### 3.5 WMS/RCS 集成约束映射
 
@@ -368,9 +371,9 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 **接口口径调整**：旧文档中的 `WorklineInbox` 对应目标态 `RuntimeInbox`；旧 `WorklineOrchestrator` 对应目标态 `runtime/orchestration`；旧 plugin 决策对应目标态 runtime capability + EffectPort。
 
-**未来直连 RCS/AGV/CTU**：当前阶段不实现。若后续绕过 WMS 直接对接 RCS/AGV/CTU，只能通过 `FulfillmentPort` provider adapter 替换，不允许内部域直接调用 SDK。
+**条件触发直连 RCS/AGV/CTU**：当前阶段不实现，生产前默认不触发、不预留代码骨架。只有满足 §10.5 触发条件并形成独立 SPEC 后，才允许通过 `FulfillmentPort` provider adapter 替换 WMS 履约 provider；内部域仍不允许直接调用 SDK。
 
-**未来 provider 差异化原则**：
+**条件触发 provider 差异化原则**：本段只定义触发后的隔离边界，不构成当前阶段建目录、建 API、建配置项或预留代码骨架的任务。
 
 - `RCS` provider 代表调度系统能力，可能同时调度 AGV/CTU/其他搬运设备；WES 只提交履约意图和接收状态。
 - `AGV` provider 代表货架搬运能力，核心对象是 rack/work_position/location，不承载料箱格位操作。
@@ -381,21 +384,43 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 
 **结论**：`wms_integration` 应进入 Runtime capability 注入体系，但只能作为 **ACL provider** 注册到端口注册表；Runtime capability / plugin 只能依赖领域级 port contract，不能直接依赖 `wms_integration` 的实现对象、HTTP client、DTO、异常或 service locator。
 
-注入边界分两类：
+注入边界分三类：
 
 | 类型 | 允许能力 | 约束 |
 | --- | --- | --- |
-| QueryPort | `WmsMasterDataPort` / `WmsDocumentPort` / `WmsInventoryQueryPort` 只读查询 | 用于作业决策前的外部事实查询；响应必须带 `scope/authority/source/evidence_at`；允许短 TTL 缓存，不产生外部状态变更 |
-| EffectPort | `WmsInventoryTransactionPort` / `WmsFulfillmentPort` / `WmsEventPort` / `DeviceCommandPort` / `DeviceEventPort` / `WmsReconciliationPort` 及未来 provider adapter | 所有会改变外部状态、触发履约或确认事件的动作必须先写 `RuntimeIntentLog`，再经 EffectPort dispatch；必须有幂等、evidence、timeline 和 callback 闭环 |
+| QueryPort | `WmsMasterDataPort` / `WmsDocumentPort` / `WmsInventoryQueryPort` / `WmsReconciliationQueryPort` 只读查询 | 用于作业决策前的外部事实查询、WMS 权威事实拉取和 drift 检测；响应必须带 `scope/authority/source/evidence_at/source_version`；允许短 TTL 缓存，不产生外部状态变更，不写 `RuntimeIntentLog` |
+| EffectPort | `WmsInventoryTransactionPort` / `WmsFulfillmentPort` / `DeviceCommandPort` | 所有会改变外部状态、触发履约或确认事件的出站动作必须先写 `RuntimeIntentLog`，再经 EffectPort dispatch；必须有幂等、evidence、timeline 和 callback 闭环。RCS/AGV/CTU 直连若被 §10.5 触发，也只能隐藏在 fulfillment provider 实现内，不新增 capability 可见端口 |
+| InboundEventPort | `WmsEventPort` / `DeviceEventPort` | 只负责外部 callback/event 的 normalizer、原始归档和 typed evidence 生成；必须写 `RuntimeInbox`，不得经 `RuntimeIntentLog` dispatch；不得注入 `RuntimeCapabilityContext` 给业务 capability 调用 |
 
 禁止规则：
 
-- `runtime capability` / `plugin` 直接 import `src.app.wms_integration.*` 的 DTO、异常、HTTP client 或 `service_locator`
-- Runtime 直接调用 WMS HTTP client 绕过 `RuntimeIntentLog` / EffectPort
+- `runtime capability` / `plugin` 直接 import `src.app.wms_integration.*` / `src.app.device.*` 的 DTO、异常、HTTP client、service locator、`WmsEventPort`、`DeviceEventPort` 或 `RuntimeInbox` consumer
+- Runtime 直接调用 WMS HTTP client 绕过 QueryPort、`RuntimeIntentLog` 或 EffectPort
 - `wms_integration` adapter 反向调用 Runtime domain service 修改 session/projection
 - WMS/RCS/ECS/device callback 在 API 层直接修改 session/projection；callback 只能 normalize、校验、ACK、写 `RuntimeInbox`
+- Runtime capability 直接调用 `WmsEventPort` / `DeviceEventPort`、自行消费 `RuntimeInbox` 或把入站 event 当作出站 effect 处理
 
-**外部系统 ACL 命名约束（M7 回归）**：未来任何外部系统（`rcs_integration` / `agv_integration` / `ctu_integration` / provider-specific integration）一律以 `src/app/<system>_integration/` 镜像命名建立 ACL 域；禁止建立 `src/app/external/` 父目录，避免外部协议对象跨系统混放。
+**外部系统 ACL 命名约束（M7 回归）**：条件触发后新增的外部系统（`rcs_integration` / `agv_integration` / `ctu_integration` / provider-specific integration）一律以 `src/app/<system>_integration/` 镜像命名建立 ACL 域；禁止建立 `src/app/external/` 父目录，避免外部协议对象跨系统混放。本规则不代表当前阶段提前建包或占位。
+
+#### 3.5.1 外部合同支撑（联调灵活性）
+
+硬件、ECS 与 WMS 均处于并行开发期，WES 目标态把"外部系统会变"作为一等约束处理，但不退回旧 WorkLine/plugin 兼容模式。落地为 5 类能力（字段定义详见 §5.1 ExternalContractProfile 表）：
+
+| 能力 | 设计约束 | 禁止事项 |
+| --- | --- | --- |
+| `ExternalContractProfile` | 按 `provider_code + contract_version` 描述 WMS/ECS/RCS provider 的能力、字段映射、超时、重试、fixture set 和不支持动作 | 在 runtime / handling / workline 中按 provider 写分支 |
+| `RuntimeCapabilityProfile` | 描述 provider 支持且可注入 `RuntimeCapabilityContext` 的 query/effect 能力；Runtime 只通过 port contract 和 capability profile 做 admission | 让 capability 直接读取供应商 DTO、SDK、HTTP client、callback/event/result port 或 `RuntimeInbox` consumer |
+| `InboundNormalizerProfile` | 描述 provider 支持的 callback/event/result normalizer 能力；只服务 callback API、normalizer 和 `RuntimeInbox` 写入 | 把入站 normalizer 能力暴露给业务 capability 或当作 effect dispatch |
+| `IntegrationLab` | 提供 WMS/ECS simulator、scenario runner、sandbox provider profile 和合同测试集；用于硬件未到位、WMS 未稳定、现场联调前验证 | 把 simulator 写成生产 fallback 或影子 WMS |
+| `ScenarioRecorder` / `ScenarioReplayRunner` | 从 RuntimeInbox、RuntimeIntentLog、DeviceCommand、WMS fulfillment、projection evidence 脱敏录制联调场景，并支持 deterministic replay | 用人工数据库改数替代事件回放 |
+| 受控 toggle | 仅允许 typed、审计、短生命周期的 release/ops toggle，用于 provider version、adapter、新调度策略或场景流切换 | 通过裸配置动态改状态机、跳过幂等/HMAC/evidence 或绕过 IDLE 准入 |
+
+**联调不变量**：
+
+- simulator 与 sandbox provider 只能通过正式 port contract 进入系统；不得引入测试专用 domain service。
+- contract version 必须写入 evidence、trace attributes 和 callback envelope；同一 execution session 固定 provider profile，不热切。
+- 场景回放必须验证 active projection diff、RuntimeTimeline 顺序、outbox/effect 幂等和 ReconciliationRecord 结果。
+- toggle 默认关闭，必须有 owner、expiry、影响范围、回滚方式和测试矩阵；过期 toggle 必须在同一 Phase 清理。
 
 ### 3.6 总体架构图
 
@@ -405,14 +430,16 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
                                 │  ┌──────────────────────────────────────┐  │
                                 │  │  WmsMasterDataPort    WmsDocumentPort │  │
                                 │  │  WmsInventoryQueryPort WmsInventoryTxPort │
-                                │  │  WmsFulfillmentPort WmsEventPort WmsRecon │
+                                │  │  WmsFulfillmentPort  WmsReconciliationQueryPort │
                                 │  └──────────────────────────────────────┘  │
+                                │  InboundEventPort: WmsEventPort -> Inbox     │
                                 │  reuse/clean src/app/wms_integration/        │
                                 │  + 7 WMS port target-state ACL               │
                                 │  + HMAC body 签名 / nonce TTL / typed envelope│
-                                └─────────────────┬───────────────────────────┘
-                                                  │ capability/query + effect port
-                                                  ▼
+                                └───────────────┬─────────────┬───────────────┘
+                                                │             │
+                               query/effect port│             │inbound callback
+                                                ▼             ▼
 ┌────────────────────┐   ┌──────────────────────────────────────┐
 │ frontend           │   │  runtime/orchestration (执行域)      │
 │                    │   │  ┌────────────────────────────────┐   │
@@ -422,7 +449,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 │   {id}/plane/      │   │  │    RuntimeHold                 │   │
 │   snapshot         │   │  │  - ExecutionCorrelation        │   │
 │  + 行级 + 脱敏 +   │   │  │    correlation_id (跨域唯一)   │   │
-│  audit log         │   │  └────────────────────────────────┘   │
+│  audit log         │   │  └───────────────▲────────────────┘   │
 └────────────────────┘   │  ┌────────────────────────────────┐   │
                          │  │ RuntimeIntentLog              │   │
                          │  │  (effect proposal, NOT state) │   │
@@ -502,50 +529,7 @@ WES 不是所有外部事实的唯一权威。**按事实类型拆分权威来�
 - ENG-001 ExecutionCorrelation migration matrix 发布
 - ENG-007 plane 接口 RBAC + 脱敏 + 审计已上线
 
-### 3.9 状态所有权图（域间引用关系）
-
-```text
-WES 域间状态所有权图（按 ExecutionCorrelation 修复后）
-
-runtime/orchestration
-  +-- ExecutionSession (session aggregate / 状态 owner / 域内强 FK 根)
-  |     +-- RuntimeInbox / RuntimeTimeline / RuntimeHold
-  |     +-- ExecutionCorrelation.correlation_id (跨域唯一)
-  |     +-- ExecutionCorrelation.execution_session_id (域内强 FK)
-  +-- RuntimeIntentLog   (effect proposal / outbox log, NOT state)
-        |
-        v  EffectPort fan-out
-        +--> wms_integration / WmsFulfillmentPort
-        +--> device / DeviceCommandPort
-        +--> handling / resource / material owner service
-
-wms_integration  (760 行 typed port + 5 套新 port)
-  +-- WmsMasterDataPort / WmsDocumentPort (新)
-  +-- WmsInventoryQueryPort / WmsInventoryTransactionPort (由现有 Inventory port 拆分)
-  +-- WmsFulfillmentPort / WmsEventPort / WmsReconciliationPort (新)
-  +-- WmsFulfillmentRequest (外部履约 11 态机 owner)
-
-handling
-  +-- HandlingOperation / HandlingMove (业务意图状态 owner)
-  |     correlation_id -> ExecutionCorrelation  (无 execution_session.id FK)
-  |     通过 WmsFulfillmentRequest evidence 派生粗粒度状态，不双写 11 态机
-
-resource  (active projection only)
-  +-- correlation_id -> ExecutionCorrelation
-  +-- typed ExternalReference (rack_code / bin_code / location_code, no FK)
-  +-- typed evidence envelope (schema_version/source_system/...)
-
-material  (WES-owned root entity)
-  +-- material_units.current_session_correlation_id (correlation key, NOT FK)
-  +-- 不允许 material 域作为 session 域的强 FK 来源
-
-reconciliation  (RECONCILING 冲突决议模型)
-  +-- ReconciliationManager
-        +-- 触发矩阵: 投影冲突 / External callback 不一致 / 设备状态矛盾 / drift
-        +-- 强制动作: evidence + RuntimeHold + 通知
-        +-- 决议输出: resolution_decision + owner_scope + allowed_next_effect_scope
-        +-- owner 自行转移: fulfillment / handling / session / projection
-```
+> **状态所有权图**：详见 §13.8 域间引用关系 ASCII 图（单一真源）；§3.3 已给出 runtime/orchestration 内部聚合视图。
 
 ---
 
@@ -563,12 +547,14 @@ runtime 域内表可使用 `execution_session_id` 作为 `ExecutionSession` FK�
 | workline | EntryPoint / ExitPoint | id, workline_id, code, conveyor_code, queue_code, external_handler |
 | workline | Device (配置) | id, workline_id, role, code, capabilities |
 | runtime | ExecutionSession | id, workline_id, state, started_at, ended_at |
+| runtime | ExecutionWorkItem | id, execution_session_id（仅 runtime 域内 FK）, correlation_id, object_type, object_key, current_step, status, parent_correlation_id, concurrency_scope, deadline_at, lease_expires_at, idempotency_key |
 | runtime | RuntimeInbox | id, execution_session_id（仅 runtime 域内 FK，可为空）, correlation_resolution_status, source, provider_code, event_type, source_event_id, payload_hash, status, attempt_count, next_retry_at, dead_letter_at |
 | runtime | RuntimeTimeline | id, execution_session_id（仅 runtime 域内 FK）, event_type, trace_id, occurred_at |
-| runtime | RuntimeHold | id, execution_session_id（仅 runtime 域内 FK）, reason, hold_type, created_at, resolved_at |
+| runtime | RuntimeHold | id, execution_session_id（仅 runtime 域内 FK）, reason, hold_type, scope_type, scope_key, affected_work_item_id, affected_device_code, affected_resource_key, allowed_next_effect_scope, created_at, resolved_at |
 | runtime | RuntimeIntentLog | id, execution_session_id（仅 runtime 域内 FK）, correlation_id, target_domain, target_action, request_hash, provider_code, idempotency_key, dispatch_status, attempt_count |
 | runtime | ExecutionCorrelation | correlation_id, execution_session_id, trace_id, source_event_id, business_owner_key, created_at |
-| runtime | EffectPort (log table) | id, correlation_id, target_domain, target_action, payload, status |
+| runtime | EffectPort（仅契约/dispatcher） | 不建表；从 RuntimeIntentLog 读取待派发 effect，返回 dispatch 结果 |
+| runtime | InboundEventPort（仅契约） | 外部 callback/event normalizer 契约；不建表；只写 RuntimeInbox |
 | handling | HandlingOperation | id, workline_id, kind, coarse_business_status, source, target |
 | handling | HandlingMove | id, handling_operation_id, from_location, to_location, kind, status |
 | runtime | ConveyorQueueMembership | id, bin_code/placeholder_key, workline_id, conveyor_code, queue_code, status, entered_at, left_at |
@@ -647,6 +633,17 @@ runtime 域内表可使用 `execution_session_id` 作为 `ExecutionSession` FK�
 - placeholder resolve、terminal leave、queue switch 必须在同一事务内保证 active membership 收敛；跨事务重复事件依靠 `idempotency_key + request_hash` 识别。
 - 投影失败分三类记录：预期并发冲突、外部合同缺字段、内部编程错误。生产默认 best-effort + diagnostic；测试/预发可启用严格模式，对非预期异常 re-raise。
 
+**滚筒线扫描点路由契约**：
+
+分拣机 `SCAN1 / SCAN2 / SCAN3`、粗分机入口/出口等点位不作为系统级 enum 固化；它们是 WorkLine manifest 中的设备角色、队列和节点配置。Runtime capability 必须按 pinned manifest 把“到位/扫码事件”解释成显式路由决策：
+
+- SCAN 事件只来自 ECS/device callback，进入 `RuntimeInbox` 后由 worker 解析 correlation，不允许 callback API 同步返回下一步动作。
+- 路由决策必须写 `RuntimeTimeline` 和 `RuntimeIntentLog`，再通过 `DeviceCommandPort` 下发滚筒线业务命令，例如进入工作位、进入 NG、进入退料线或等待换箱。
+- 队列 membership 的变化必须由 DeviceResult、WMS/CTU callback 或可信 RuntimeLocationEvent evidence 推进，不能由“已下发命令”直接假定成功。
+- CTU/WMS 授权进入滚筒线的料箱必须先记录 `expected_authorized_bin_ids`；SCAN1 扫码结果写入 `actual_scanned_bin_ids`，只有命中授权集合时才允许 placeholder resolve 为 `bin_code` 并进入后续队列。未授权、重复、缺失或码制冲突的料箱进入 NG / RuntimeHold / RECONCILING，不得被静默接收。
+- NG、退料、换箱、等待下一料箱都必须是可观测状态；等待状态必须有 deadline 或解除条件，不能无限等待。
+- 行为契约测试必须覆盖 SCAN1 授权料箱入工作位/未授权进 NG、SCAN2 工作位到位、SCAN3 退料线/NG、重复扫码、乱序扫码、placeholder resolve 和 queue_code typo 不污染 active projection。
+
 ### 4.5 数据迁移策略
 
 **Alembic migration 规范**：
@@ -686,12 +683,16 @@ runtime 域内表可使用 `execution_session_id` 作为 `ExecutionSession` FK�
 | Port | 职责 | 现状 | 关键方法 |
 | --- | --- | --- | --- |
 | `WmsMasterDataPort` | 查询/校验货架、料箱、库位、物料、区域、地码等元数据 | **新增** | `get_material` / `list_materials` / `get_zone` / `list_locations` / `get_rack` / `get_bin` / `validate_rack_bin` |
-| `WmsDocumentPort` | 查询/接收 GRN、入库单、出库单、批次单、波次、业务任务 | **新增** | `get_grn` / `list_grn_packages` / `get_inbound_order` / `get_outbound_order` / `get_batch_order` / `subscribe_task_changes` |
+| `WmsDocumentPort` | 只读查询 GRN、入库单、出库单、批次单、波次、业务任务快照 | **新增** | `get_grn` / `list_grn_packages` / `get_inbound_order` / `get_outbound_order` / `get_batch_order` / `get_task_snapshot` |
 | `WmsInventoryQueryPort` | 查询库存、箱位、货架占用、可用容器等外部事实 | **由现有 `WmsInventoryPort` 只读能力迁出** | `query_inventory` / `query_empty_bins` |
 | `WmsInventoryTransactionPort` | 库存预留、释放、转移确认等会改变 WMS 事务状态的能力 | **由现有 `WmsInventoryPort` mutation 能力迁出** | `reserve_inventory` / `release_reservation` / `confirm_transfer` |
-| `WmsFulfillmentPort` | 请求外部系统执行搬运、补给、移出、换面、投箱、取箱 | **新增** | `request_rack_supply` / `request_rack_transport` / `notify_pkg_binding` / `move_bin_to_conveyor_entry` / `move_bin_from_conveyor_exit` |
+| `WmsFulfillmentPort` | 请求外部系统执行搬运、补给、移出、换面、投箱、取箱和满箱交换 | **新增** | `request_rack_supply` / `request_rack_transport` / `change_rack_face` / `full_box_exchange` / `notify_pkg_binding` / `move_bin_to_conveyor_entry` / `move_bin_from_conveyor_exit` |
 | `WmsEventPort` | 接收 WMS 状态变化、RCS 结果、任务结果、异常通知 | **新增**（部分实现于 callback_normalizer） | `WMS_GRN_RECEIVED` / `WMS_PALLET_ARRIVED` / `WMS_RACK_ARRIVED` / `WMS_TRANSPORT_COMPLETED` / `WMS_EXCHANGE_COMPLETED` |
-| `WmsReconciliationPort` | 对账 WES 作业期投影与 WMS 权威事实 | **新增** | `reconcile_bin` / `reconcile_rack` / `reconcile_workline` / `reconcile_full` |
+| `WmsReconciliationQueryPort` | 只读拉取 WMS 权威事实、版本和 drift snapshot，用于对账 WES 作业期投影 | **新增** | `check_bin_drift` / `check_rack_drift` / `check_workline_drift` / `check_full_drift` |
+
+**任务变化边界**：WMS 任务变化推送（如 `WMS_TASK_CHANGE`）属于 `WmsEventPort` / `InboundNormalizerProfile`，只能经 callback API 写 `RuntimeInbox`；`WmsDocumentPort` 只提供当前单据/任务快照查询，不提供订阅、push 或入站事件入口。
+
+**对账端口边界**：`WmsReconciliationQueryPort` 是只读 QueryPort，不是 EffectPort。它只返回 WMS 权威事实、`source_version` 和 drift snapshot，不创建 `RuntimeIntentLog`，不向 WMS 写入确认/修正，不直接写 `ReconciliationRecord`。本地冲突登记、`RuntimeHold`、`resolution_decision` 和 audit log 归 `reconciliation` 域的 `ReconciliationManager`。若未来确需向 WMS 发起对账确认、库存更正或履约补偿，必须归入明确的 `WmsInventoryTransactionPort` 或 `WmsFulfillmentPort` action，并走 `RuntimeIntentLog + EffectPort`，不得把只读对账查询端口升级成通用副作用端口。
 
 **`wms_rcs_interface_requirements.md` 到 port 的映射**：
 
@@ -703,23 +704,62 @@ runtime 域内表可使用 `execution_session_id` 作为 `ExecutionSession` FK�
 | `GET /api/wms/grn/{id}` / `GET /api/wms/grn/{id}/packages` | `WmsDocumentPort` | GRN 与料盘归属用于作业上下文和 PKG 校验 |
 | `GET /api/wms/inventory/query` | `WmsInventoryQueryPort` | 库存查询实时透传 WMS；WES 只可短 TTL 缓存 |
 | `POST /api/wes/rack-supply-request` / `POST /api/wes/transport-request` | `WmsFulfillmentPort` | WES 生成搬运需求；WMS 统一调度 RCS |
-| `POST /api/wms/kitting/pkg-binding` | `WmsFulfillmentPort` 或 `WmsDocumentPort` | 按最终 WMS 合同归类；目标语义是 WES 作业结果通知 WMS |
+| `POST /api/wms/kitting/pkg-binding` | `WmsFulfillmentPort` | WES 作业结果通知 WMS；属于出站 effect，必须走 `RuntimeIntentLog` + EffectPort，不允许进入只读 `WmsDocumentPort` |
 | `POST /api/wms/inventory/reserve` / `DELETE /api/wms/inventory/reserve/{id}` / `POST /api/wms/inventory/transfer` | `WmsInventoryTransactionPort` | 库存预留、释放、转移确认必须以 WMS 事务结果为准；必须走 `RuntimeIntentLog` + EffectPort，不允许作为查询能力直调 |
 | `POST /api/v1/callback/event` / `POST /api/v1/callback/result` | `WmsEventPort` / `DeviceEventPort` → `RuntimeInbox` | 统一回调入口；按 source 路由到 WMS/RCS/ECS/device normalizer；ACK 后写 inbox，不直接改 session |
+
+**ExternalContractProfile（外部合同 profile）**：
+
+| 字段 | 语义 |
+| --- | --- |
+| `provider_code` | WMS / ECS / RCS / provider-specific code |
+| `contract_version` | 外部合同版本；必须写入 evidence、callback envelope 和 trace attributes |
+| `runtime_capabilities` | provider 支持且可注入 `RuntimeCapabilityContext` 的 query/effect 能力集合 |
+| `inbound_normalizers` | provider 支持的 callback/event/result normalizer 能力集合；只允许写 `RuntimeInbox` |
+| `field_mapping` | 外部字段到 WES typed port DTO 的声明式映射；只存在于 adapter/normalizer |
+| `unsupported_actions` | 明确不支持动作；admission 必须 fail fast，不得运行中隐式降级 |
+| `timeout_policy` | provider 级 timeout、retry、breaker、backoff 约束 |
+| `fixture_set` | contract tests 与 simulator 使用的 fixture 集 |
+
+**合同版本规则**：
+
+- WES 内部域只识别 typed port contract；外部合同变化只能落在 `ExternalContractProfile` 和 adapter/normalizer。
+- 合同 profile 可破坏性替换，不保留旧中台兼容入口；但同一 `ExecutionSession` 固定 `provider_code + contract_version`，不在 RUNNING 期间热切。
+- 每个 provider profile 必须配套 contract tests、sample callback、error fixture 和 replay scenario。
+- 未声明的 `runtime_capabilities` 不得进入 `RuntimeCapabilityContext`；未声明的 `inbound_normalizers` 不得被 callback API 接收。
+- profile 未声明的字段不得进入 runtime capability；必须被 normalizer 丢弃或写入诊断 evidence。
+- `field_mapping` 不承载业务分支、计算规则或流程决策；复杂转换必须在 adapter/normalizer 代码中实现，并由 contract tests 覆盖。
 
 **标准履约意图**：
 
 | 意图 | 当前执行方式 | 说明 |
 | --- | --- | --- |
 | `SUPPLY_EMPTY_SINGLE_LAYER_RACK` | 请求 WMS 履约接口 | 为粗分机补充带空料箱的单层货架；对应 `/api/wes/rack-supply-request` |
-| `REMOVE_LOADED_SINGLE_LAYER_RACK` | 请求 WMS 履约接口 | 将粗分机上已载有料盘/物料的单层货架移出；对应 `/api/wes/transport-request` |
+| `REMOVE_LOADED_SINGLE_LAYER_RACK` | 请求 WMS 履约接口 | 将粗分机上已载有料盘/物料的单层货架移出到满箱交换区、交换决策点、分拣机 STATION 或排队区；对应 `/api/wes/transport-request` |
 | `POSITION_FIVE_LAYER_RACK` | 请求 WMS 履约接口 | 将五层货架从原料仓移动到分拣机工作位，或从工作位移出 |
 | `CHANGE_RACK_FACE` | 请求 WMS 履约接口 | 请求货架原地换面 |
+| `FULL_BOX_EXCHANGE` | 请求 WMS 履约接口 | 满箱交换区内由 WMS 调度 CTU 执行箱级入库交换；WES 只提交履约意图和接收 evidence |
 | `MOVE_BIN_TO_CONVEYOR_ENTRY` | 请求 WMS 履约接口 | 从工作位货架取指定料箱，送入分拣机入口 |
 | `MOVE_BIN_FROM_CONVEYOR_EXIT` | 请求 WMS 履约接口 | 从分拣机出口取料箱，送回工作位货架指定位置 |
 | `NOTIFY_PKG_BINDING` | 通知 WMS 作业结果 | 将 PKG 与料箱/料格/货架绑定结果通知 WMS；对应 `/api/wms/kitting/pkg-binding` |
 
 **WES 只定义本系统侧的履约意图、请求字段、幂等证据、回调接收和状态处理**。外部 WMS 如何选择货架、计算箱位、规划库位或调度 AGV/CTU，不在本系统规划内。
+
+**物理事实与 WMS 业务确认顺序**：
+
+设备/ECS callback `SUCCESS` 是现场物理事实，WES 必须先基于该 evidence 消费预约、写入 `RuntimeLocationEvent`、更新 `BinMaterialMount / BinCellOccupancy / MaterialUnit.location_summary` 等作业期投影，再通过 `RuntimeIntentLog + WmsFulfillmentPort / WmsInventoryTransactionPort` 通知 WMS PKG 绑定或库存事务。WMS effect 失败不允许抹掉已确认的本地物理位置事实；必须进入 WMS 同步 `RuntimeHold` / `ReconciliationRecord`，等待 WMS 重试、人工 reconcile 或外部更正。
+
+**批量履约语义**：
+
+CTU 入线、退线和货架补给这类外部动作可能表现为“一次请求、多对象、多阶段回调”。目标态只建一个 `WmsFulfillmentRequest`
+父请求，但必须为每个被搬运对象生成可追踪的子 evidence，并把子 evidence 投影为 `RuntimeLocationEvent`：
+
+- 父请求记录批次级约束、幂等键、请求 hash、WMS/RCS 接收状态和批次完成结果。
+- 子 evidence 的 owner 是对应对象的 `ExecutionWorkItem`；不另建与 runtime 并列的子履约状态源。每个 CTU 子 work item 必须记录批次序号、placeholder_key、resolved_bin_id、阶段状态和 evidence。
+- 子 evidence 记录单个料箱/货架/料盘的阶段结果，例如从五层货架取出、进入 CTU 背篓、移动到入口、投入滚筒线、从退料线取出、放回货架。
+- 批次完成 callback 只能证明外部系统声明批次完成；Runtime 仍必须校验所有子对象 evidence、active projection 和队列 membership 已收敛后，才能关闭本地 `HandlingOperation`。
+- 子对象 evidence 缺失、重复、乱序或与 active projection 冲突时，父请求不得被本地标记为业务完成，必须进入 `RECONCILING` 或 `RuntimeHold`。
+- 批次约束由 WES 按作业期投影和 WMS 查询结果计算，例如 `min(入口线空位, CTU 背篓容量, 五层货架可用料箱数)`；WMS/RCS 如何规划路径与调度车辆仍归外部系统。
 
 ### 5.2 plane 接口（运营敏感数据入口）
 
@@ -975,8 +1015,19 @@ REQUESTED -> SENT -> ACCEPTED -> RUNNING -> SUCCEEDED
 **BLOCKED_BY_CB 语义（M2 回归）**：
 
 - `BLOCKED_BY_CB` 是 circuit breaker open 期间的系统侧延迟状态，不代表 WMS/RCS/ECS 已接收或拒绝业务请求。
+- `BLOCKED_BY_CB` 只适用于出站 effect dispatch，不适用于已到达 WES 的 callback/event。
 - 业务查询 API 默认不把 `BLOCKED_BY_CB` 计入 in-flight fulfillment 列表；运维视图可单独展示 CB 阻塞队列。
 - `BLOCKED_BY_CB` 不计入履约 P95 指标；但必须计入可观测性指标 `effect_blocked_by_cb_total` 与告警。
+
+**CB 恢复期入站 callback 规则**：
+
+Circuit breaker 只保护 WES 主动调用外部系统的出站链路。WMS/RCS/ECS/device callback 是现场或外部履约
+evidence，不能因为出站 breaker 处于 `open/half-open` 被标成 `BLOCKED_BY_CB` 或丢弃：
+
+- callback API 仍必须先做 HMAC、nonce、schema normalize、幂等检查，写入 `RuntimeInbox` 后 ACK。
+- 同 `source_event_id + provider_code + event_type` 且同 `payload_hash` 的旧 callback 合并为既有 evidence。
+- 同 key 不同 hash、callback 与 active projection 冲突、或无法解释的乱序回调进入 `RECONCILING` / `RuntimeHold`。
+- 出站 `BLOCKED_BY_CB` 请求在恢复重试前，必须先重读 inbox/evidence，避免已完成的物理事实被重复下发。
 
 ### 6.4 RECONCILING 冲突决议模型（ReconciliationManager）
 
@@ -987,12 +1038,12 @@ REQUESTED -> SENT -> ACCEPTED -> RUNNING -> SUCCEEDED
 | 投影冲突 | 同 object 在 2+ 投影源 | `RECONCILING` + `RuntimeHold` |
 | External callback 与本地 projection 不一致 | callback normalize + drift detector | `RECONCILING` + audit log |
 | device 事件与 handling 业务意图状态不一致 | runtime event monitor | `RECONCILING` + `RuntimeHold` |
-| CB 半开期间收到旧 callback | circuit breaker state | `BLOCKED_BY_CB` |
-| WMS master-data drift | `WmsReconciliationPort` | `RECONCILING` 分类处理（详见 §6.5） |
+| WMS master-data drift | `WmsReconciliationQueryPort` + `ReconciliationManager` | `RECONCILING` 分类处理（详见 §6.5） |
 | `RuntimeHold` 关联的现场异常 | runtime intent effects | 创建 `RECONCILING` evidence |
 | 传感器抖动 | ECS/device event 去抖窗口 | N 秒内同 sensor 同 object 合并 evidence；超阈值 `RuntimeHold` |
 | 通信丢包或 callback 延迟 | deadline + provider query | 超过 TTL 后主动 query WMS/ECS；不可确认时 `RECONCILING` |
 | 重复上报 | idempotency + payload_hash | 同 key 同 hash 合并 evidence；同 key 不同 hash 409 + 安全审计 |
+| CB 恢复期收到旧 callback | callback 幂等 + payload_hash + projection drift detector | 同 hash 合并 evidence；冲突或无法解释的乱序进入 `RECONCILING` |
 
 **强制动作**：
 
@@ -1042,7 +1093,7 @@ REQUESTED -> SENT -> ACCEPTED -> RUNNING -> SUCCEEDED
 
 ### 6.5 WMS master-data drift 分类
 
-`WmsReconciliationPort.reconcile_*` 定期对账：
+`WmsReconciliationQueryPort.check_*_drift` 定期只读拉取 WMS 权威事实，并由 `ReconciliationManager` 分类处理：
 
 | drift 类型 | WES 处理 |
 | --- | --- |
@@ -1090,8 +1141,8 @@ REQUESTED -> SENT -> ACCEPTED -> RUNNING -> SUCCEEDED
 | External callback body 篡改 | 修改 payload 但保持 signature 头 | 业务逻辑走错路径 | §5.3 HMAC body hash 包含 sha256(body) |
 | 跨 session 幂等键复用 | 同 `idempotency_key` 被 2 个不同 WES session submit | 业务证据混淆 + 攻击信号 | §5.4 复合主键 + `request_hash` 校验，409 + 审计 |
 | 时钟偏差攻击 | 篡改 timestamp 绕过 nonce TTL | replay 攻击窗口扩大 | §5.3 时钟偏差 > 30s 拒绝 |
-| 内部域直接 import WMS DTO | 跨层强耦合，WMS schema 变化穿透 | WES 主数据污染风险 | §2.5 不变量 1：WMS DTO 只能存在于 `wms_integration` |
-| 影子 WMS | 本地 active projection 冒充 WMS 全局库存 | 业务决策错误 + WMS 不可信 | §3.4 Authority Matrix + §2.5 不变量 5 |
+| 内部域直接 import WMS DTO | 跨层强耦合，WMS schema 变化穿透 | WES 主数据污染风险 | §2.5 不变量 C1：WMS DTO 只能存在于 `wms_integration` |
+| 影子 WMS | 本地 active projection 冒充 WMS 全局库存 | 业务决策错误 + WMS 不可信 | §3.4 Authority Matrix + §2.5 不变量 C3 |
 | 设备到位信号伪造 | 攻击 ECS 事件或 device callback 接口 | 现场状态误判 | §3.4 Authority Matrix：设备到位归 ECS/device，WES 只接收 |
 | 设备命令越界 | WES 下发 PLC/坐标/关节/安全回路指令，绕过 ECS | 现场安全边界被软件业务层污染 | §9.6：WES 不与 PLC 通讯，只通过 ECS API 下发业务命令 |
 | 事件响应体偷渡动作 | 在 Event_Push ACK 中返回下一步动作 | 指令不可追踪、无法幂等、绕过 effect ledger | §9.6：Event_Push 只 ACK，动作必须走 DeviceCommand |
@@ -1112,27 +1163,47 @@ REQUESTED -> SENT -> ACCEPTED -> RUNNING -> SUCCEEDED
 
 详见 §5.4。
 
-### 7.5 关键不变量（17 条）
+### 7.5 关键不变量（17 条 / 三级分类）
+
+按强制等级分三档：**核心 5 条**（CI/pre-commit 必须自动检查，违反立即阻塞 PR）、**重要 8 条**（强制门禁检查，违反阻塞 Phase 完成）、**设计 4 条**（评审检查，违反需评审决议）。
+
+**核心 5 条（强制自动检查）**：
+
+| # | 不变量 | 出处 | 检查手段 |
+| --- | --- | --- | --- |
+| C1 | WMS DTO / client / 状态码 / 供应商字段只能存在于 `wms_integration` adapter/ACL 层——内部域直接 import WMS 类型立即拒绝 | §2.5 | import 静态检查 |
+| C2 | 跨域 session FK 收敛为 `ExecutionCorrelation` correlation key | §3.3 | FK 引用扫描 + schema lint |
+| C3 | 查询响应强制带 `scope/authority/source/evidence_at`——不允许本地 active projection 冒充 WMS 全局库存 | §3.4 | schema 校验测试 |
+| C4 | WES 不与 PLC 通讯，不下发坐标/关节/安全回路指令；设备控制只能经 ECS/设备上位机标准 API | §9.6 | DeviceCommand 字段白名单 |
+| C5 | RuntimeInbox 必须支持 `RECEIVED -> PROCESSING -> PROCESSED/FAILED/DEAD_LETTER`，callback ACK 后处理失败必须可重试、死信和人工重放 | §9.2 | 状态机契约测试 |
+
+**重要 8 条（强制门禁检查）**：
 
 | # | 不变量 | 出处 |
 | --- | --- | --- |
-| 1 | WMS DTO / client / 状态码 / 供应商字段只能存在于 `wms_integration` adapter/ACL 层——内部域直接 import WMS 类型立即拒绝 | §2.5 |
-| 2 | 目标态契约优先：旧 API / 旧表 / 旧插件形态不得反向约束新架构 | §3.7 |
-| 3 | B 方案以目标态边界 + 行为契约测试 + 破坏性清理清单为前置 | §3.8 |
-| 4 | 跨域 session FK 收敛为 `ExecutionCorrelation` correlation key | §3.3 |
-| 5 | 查询响应强制带 `scope/authority/source/evidence_at`——不允许本地 active projection 冒充 WMS 全局库存 | §3.4 |
-| 6 | plane 接口不允许全员可读全量运营数据 | §5.2 |
-| 7 | WMS/RCS/ECS/device External callback 必须 body HMAC + nonce TTL + path canonical | §5.3 |
-| 8 | idempotency_key 复合主键 `(provider_code, operation_kind, idempotency_key)`——跨 session 同 key 不同 hash 返回 409 + 安全审计 | §5.4 |
-| 9 | 当前阶段 RCS/AGV/CTU 调度只能经 WMS 履约 port；未来直连必须通过 provider adapter 替换，不允许内部域直连 SDK | §3.5 |
-| 10 | Runtime capability 只能通过注入的 port contract 使用 WMS 能力；不能注入 `wms_integration` 实现对象、HTTP client、DTO、provider exception 或 service locator | §3.5 |
-| 11 | WES 不与 PLC 通讯，不下发坐标/关节/安全回路指令；设备控制只能经 ECS/设备上位机标准 API | §9.6 |
-| 12 | 设备 Event_Push 只能 ACK；任何后续动作必须经 RuntimeIntentLog + DeviceCommand 下发 | §9.6 |
-| 13 | WorkLine manifest 在 ExecutionSession 创建时 pin 版本；运行中 session 不热切 manifest | §9.1 |
-| 14 | DeviceCommand dispatch 前必须确认 ECS 设备状态为 IDLE；RUNNING 有界等待，ERROR/OFFLINE/查询超时短退避后 RuntimeHold | §9.6 |
-| 15 | RuntimeInbox 必须支持 `RECEIVED -> PROCESSING -> PROCESSED/FAILED/DEAD_LETTER`，callback ACK 后处理失败必须可重试、死信和人工重放 | §9.2 |
-| 16 | 作业期位置只能通过 evidence/RuntimeLocationEvent 投影，不允许裸写 location summary 覆盖冲突事实 | §9.4 |
-| 17 | Event_Push HTTP 响应 schema 固定为 ACK；任何 command-like 字段都必须由响应拦截器拒绝并告警 | §7.1 / §9.6 |
+| I1 | WMS/RCS/ECS/device External callback 必须 body HMAC + nonce TTL + path canonical | §5.3 |
+| I2 | idempotency_key 复合主键 `(provider_code, operation_kind, idempotency_key)`——跨 session 同 key 不同 hash 返回 409 + 安全审计 | §5.4 |
+| I3 | Runtime capability 只能通过注入的 port contract 使用 WMS/设备出站能力；不能注入 `wms_integration` / `device` 实现对象、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort` 或 `RuntimeInbox` consumer | §3.5 |
+| I4 | 设备 Event_Push 只能 ACK；任何后续动作必须经 RuntimeIntentLog + DeviceCommand 下发 | §9.6 |
+| I5 | WorkLine manifest 在 ExecutionSession 创建时 pin 版本；运行中 session 不热切 manifest | §9.1 |
+| I6 | DeviceCommand dispatch 前必须确认 ECS 设备状态为 IDLE；RUNNING 有界等待，ERROR/OFFLINE/查询超时短退避后 RuntimeHold | §9.6 |
+| I7 | 作业期位置只能通过 evidence/RuntimeLocationEvent 投影，不允许裸写 location summary 覆盖冲突事实 | §9.4 |
+| I8 | Event_Push HTTP 响应 schema 固定为 ACK；任何 command-like 字段都必须由响应拦截器拒绝并告警 | §7.1 / §9.6 |
+
+**设计 4 条（评审决议级）**：
+
+| # | 不变量 | 出处 |
+| --- | --- | --- |
+| D1 | 目标态契约优先：旧 API / 旧表 / 旧插件形态不得反向约束新架构 | §3.7 |
+| D2 | B 方案以目标态边界 + 行为契约测试 + 破坏性清理清单为前置 | §3.8 |
+| D3 | plane 接口不允许全员可读全量运营数据 | §5.2 |
+| D4 | 当前阶段 RCS/AGV/CTU 调度只能经 WMS 履约 port；直连能力仅作条件触发扩展，必须通过 provider adapter 替换，不允许内部域直连 SDK | §3.5 / §10.5 |
+
+**分级使用约定**：
+
+- 核心 5 条由 CI / pre-commit hook 自动校验，违反立即阻塞 PR；不允许任何 review override。
+- 重要 8 条由 Phase 完成门禁强制检查，违反阻塞对应 Phase 验收；仅 architecture lead 可批准临时豁免并必须同步开 follow-up issue。
+- 设计 4 条由 PR review + ADR 决议管理，违反需重新评审并更新 ADR。
 
 ---
 
@@ -1178,6 +1249,8 @@ REQUESTED -> SENT -> ACCEPTED -> RUNNING -> SUCCEEDED
 | **Backup & restore** | WMS 主数据不在 WES（WMS 是权威）；WES active projection 可从 WMS 事件、查询和本地 evidence 重放恢复 |
 | **WMS evidence retention** | WMS evidence 必须支持 retention/archive 策略；保护 active trace、人工对账中 evidence 和安全审计，不允许无界增长 |
 | **Benchmark gate** | Runtime worker、RuntimeInbox claim、ConveyorQueueMembership writer、ECS status GET + command POST 必须有基准场景；优化不得绕过 ECS 实时 IDLE 准入事实 |
+| **Integration lab** | WMS/ECS simulator、scenario runner、sandbox provider profile 和 contract fixture 必须先于现场联调完成；simulator 只能走正式 port contract |
+| **Replay recovery** | RuntimeInbox、RuntimeIntentLog、DeviceCommand、WMS fulfillment 与 projection evidence 必须支持脱敏录制和 deterministic replay，用于复现乱序、重复、超时和拒绝 |
 
 **Benchmark gate 最小验收**：
 
@@ -1187,6 +1260,7 @@ REQUESTED -> SENT -> ACCEPTED -> RUNNING -> SUCCEEDED
 | RuntimeInbox claim | 1,000 unprocessed inbox、4 worker 并发 claim | 不重复 claim；dead-letter 可重放；claim P95 需记录基线 | 阻塞 runtime/orchestration 完成 |
 | ConveyorQueueMembership writer | 同 WorkLine 200 active memberships、同 bin/placeholder 并发写入 | 唯一冲突只幂等重读或 RECONCILING；主 callback 不回滚 | 阻塞动态队列模型完成 |
 | ECS status + command POST | status GET + command POST 串行/限流/timeout/mock failure | dispatch 前必须验证实时 IDLE 或有效快照；ERROR/OFFLINE/UNKNOWN 短退避耗尽进入 RuntimeHold | 阻塞 DeviceCommand contract 完成 |
+| WMS/ECS simulator | 1 条完整入库链路 + 乱序/重复/超时/拒绝/断网 fixture | 正式 port contract 通过；projection diff、timeline、reconciliation 结果可断言 | 阻塞 IntegrationLab 完成 |
 
 基准命令必须随对应任务固化到 `tests/load/` 或等价脚本：RuntimeInbox claim 随 CEO-007，ConveyorQueueMembership writer 随 CEO-008/ENG-016，ECS status + command POST 随 CEO-010，Plane snapshot 随 Phase 3 `plane-read-model-spec.md`。任何性能优化不得删除 ECS 实时 IDLE 准入、idempotency、HMAC 或 evidence 写入。
 
@@ -1199,12 +1273,15 @@ REQUESTED -> SENT -> ACCEPTED -> RUNNING -> SUCCEEDED
 | **Logging** | 结构化日志；统一 `payload` schema |
 | **Alerting** | 5/30 分钟 RECONCILING 超时升级；10x load 触发降级告警；HMAC 失败 401 告警；idempotency 409 告警；WMS breaker OPEN/HALF_OPEN；evidence 写入失败；DeviceCommand ACK 前假死 |
 | **Dashboard** | 平面态势（scene + snapshot）；冲突视图（conflicts[]）；恢复决议视图（resolution decisions） |
+| **Semantic attributes** | 观测属性统一包含 `trace_id`, `correlation_id`, `provider_code`, `contract_version`, `operation_kind`, `command_code`, `source_event_id`, `workline_code`, `execution_session_id?` |
 
 **观测口径**：
 
 - 必须区分 RuntimeInbox `RESOURCE_WAIT` 与 Outbox `BLOCKED_RESOURCE`，避免把入口阻塞、外部履约等待和设备 dispatch busy 混成一个指标。
 - 必须区分本地 `DeviceRuntime.diagnostic_state=IDLE` 与 ECS 实时 status probe `IDLE`；后者才是 dispatch admission 的放行事实。
 - WMS timeout、5xx、business reject、breaker open、evidence 写入失败按 operation/provider 聚合，阈值在现场数据稳定后配置，不在首版硬编码。
+- WMS/ECS HTTP 调用、callback normalize、RuntimeInbox claim、RuntimeIntentLog dispatch、DeviceCommand ACK/RESULT、ScenarioReplayRunner 都必须按 OpenTelemetry 风格定义 span name、metric name 和稳定 attributes；禁止临时日志字段替代观测合同。
+- **Trace backend 与 sampling 策略**：具体 trace backend（Jaeger / Tempo / SkyWalking 等）由 Phase 3 ENG-021 SPEC 决策；首版现场运行默认 sampling 100%（现场数据量小）。压测、scenario replay 和 simulator 批量回放可在 ENG-021 SPEC 中使用独立采样策略，但异常 trace（RECONCILING / RuntimeHold / 409 / HMAC 失败）必须 100% 保留，不受采样率影响。
 
 ### 8.5 可维护性设计
 
@@ -1215,6 +1292,7 @@ REQUESTED -> SENT -> ACCEPTED -> RUNNING -> SUCCEEDED
 | **Documentation** | 顶层设计（本文件）+ 8 个 ADR（关键决策）+ 2 个 review 存档（autoplan 评审）；详细 SPEC 不在本文展开，Phase 启动前或启动时按需生成 |
 | **Migration discipline** | 可逆 schema 走 Alembic upgrade + downgrade；数据重塑和破坏性清理必须说明 dry-run、快照回滚和清理矩阵 |
 | **Naming discipline** | 目标态命名优先；跨域 correlation key 替代 session FK；typed Pydantic 模型替代裸字符串/JSON |
+| **Toggle discipline** | 仅允许 typed release/ops toggle；每个 toggle 必须有 owner、expiry、scope、default、rollback 和测试矩阵；禁止 toggle 跳过安全/幂等/evidence |
 
 ---
 
@@ -1234,6 +1312,30 @@ REQUESTED -> SENT -> ACCEPTED -> RUNNING -> SUCCEEDED
 | `EntryPoint` / `ExitPoint` | `conveyor_code`, `queue_code`, `external_handler` | 表达 CTU/AGV/WMS 等外部交接点，不直接调度外部设备 |
 | `Device`（配置） | `role`, `code`, `capabilities` | 只声明设备角色和能力；运行时状态归 device 域 |
 | `SafetyZone` | `affected_workline_codes`, `affected_device_codes`, `affected_conveyor_codes`, `recovery_policy` | 定义故障影响范围；不包含 PLC/坐标/安全回路控制字段 |
+
+**Manifest 扩展示意（非实现 schema）**：
+
+```yaml
+manifest_version: "2026-06-p0"
+capabilities:
+  - code: sorter_inbound
+    requires:
+      wms_ports: [master_data, inventory_query, fulfillment, event]
+      device_roles: [scanner, sorter_host, conveyor_host]
+      queues: [entry_buffer, scan_station, sorting_station, exit_buffer]
+workflow_steps:
+  - code: scan_bin
+    capability: sorter_inbound
+    input_queue: entry_buffer
+    device_role: scanner
+    emits: [bin_scanned]
+  - code: request_sorting
+    capability: sorter_inbound
+    effect_port: wms_fulfillment
+    waits_for: [bin_scanned]
+```
+
+该示意只表达配置边界：capability 声明“需要哪些 port / 设备角色 / 队列”，workflow steps 声明“Runtime 如何解释步骤和 effect”。`workflow_steps` 只能声明 capability 模板的步骤绑定、队列、设备角色和 effect port；不得包含条件表达式、脚本、provider 字段映射或状态机逻辑。复杂流程留在 runtime capability 代码和 Phase SPEC 中。WorkLine manifest 不保存运行状态，不直接调用 WMS/ECS，也不把 provider DTO、HTTP client 或状态机实现写入配置。
 
 **API**（v1 router，`src/app/workline/v1/`）：
 
@@ -1282,6 +1384,14 @@ WorkLine 激活时**必须**运行：
 
 **职责**：ExecutionSession/Inbox/Timeline/Hold/EffectPort；RuntimeIntentLog；ExecutionCorrelation
 
+**域演化预留**：当前 7 个核心实体集中在 runtime/orchestration 单域，Phase 2 完整迁移时若发现职责密度过高（worker 抢占、claim 锁竞争、Outbox dispatch 与 session 聚合事务冲突），允许按以下边界拆分为子域，**不视为破坏目标态契约**：
+
+- `runtime/orchestration` 保留 ExecutionSession + ExecutionCorrelation + RuntimeTimeline + RuntimeHold（session 聚合根 + 状态源）
+- `runtime/messaging` 承担 RuntimeInbox + dead-letter + 人工重放（入站消息边界）
+- `runtime/intent_ledger` 承担 RuntimeIntentLog + EffectPort + 崩溃重放（出站效果边界）
+
+拆分触发条件由 Phase 2 benchmark gate（§8.1 RuntimeInbox claim、Outbox dispatch 基准）决定；不拆分时三类实体仍在单域 + 单 ADR 描述。拆分发生后跨子域引用通过 `execution_session_id`（runtime/orchestration 内部）或 `ExecutionCorrelation.correlation_id`（messaging/intent_ledger ↔ 业务域），不引入新跨域 FK。
+
 **核心实体**：
 
 runtime 域内表使用 `execution_session_id` 作为 `ExecutionSession` FK；跨域实体只允许持有 `ExecutionCorrelation.correlation_id`。
@@ -1291,9 +1401,19 @@ runtime 域内表使用 `execution_session_id` 作为 `ExecutionSession` FK；�
 | `ExecutionSession` | `workline_id`, `manifest_version`, `state`, lifecycle timestamps | 唯一 session 聚合根；创建时 pin WorkLine manifest version |
 | `RuntimeInbox` | `execution_session_id?`, `correlation_id?`, `provider_code`, `event_type`, `source_event_id`, `payload_hash`, `status`, retry fields | ACK-before-processing 边界；未解析入站事件允许暂时无 session/correlation |
 | `RuntimeTimeline` | `execution_session_id`, `trace_id`, `correlation_id?`, `event_type`, `occurred_at` | append-only 执行轨迹；不作为 owner 状态源 |
-| `RuntimeHold` | `execution_session_id`, `correlation_id?`, `reason`, `hold_type`, `resolved_at` | 暂停新 effect 的运行时闸门；解除必须有 evidence |
+| `RuntimeHold` | `execution_session_id`, `correlation_id?`, `reason`, `hold_type`, scope fields, `resolved_at` | 暂停新 effect 的运行时闸门；必须有 object/device/resource scope，解除必须有 evidence |
 | `RuntimeIntentLog` | `execution_session_id`, `correlation_id`, `provider_code`, `target_domain`, `target_action`, `request_hash`, `idempotency_key`, `dispatch_status`, retry fields | outbox/effect ledger；不是下游状态源 |
 | `ExecutionCorrelation` | `correlation_id`, `execution_session_id?`, `trace_id`, `source_event_id`, `business_owner_key` | 跨域唯一 correlation key；`execution_session_id` 仅 runtime 域内强 FK |
+| `ExecutionWorkItem` | `execution_session_id`, `correlation_id`, object identity, current step, step status, parent correlation, concurrency scope | 对象级执行令牌；表达某个料盘/物料/料箱/履约子项在会话内的独立推进状态 |
+
+**对象级流水并发契约**：
+
+- `ExecutionSession` 表示一条 WorkLine 或一次作业上下文的运行会话，不代表同一时间只能处理一个料盘、物料或料箱。
+- `ExecutionWorkItem` 或等价模型是 runtime capability 的最小推进单位；粗分机单个料盘、分拣机单个物料、滚筒线单个料箱、CTU 批次中的单个料箱都必须有独立 correlation。
+- 设备串行只按 `DeviceDispatchPolicy` 和设备 `concurrency_limit` 控制；它不能把业务流串成“物料 N 完成入格后才允许处理 N+1”。
+- step 完成以对应 DeviceResult / WMS callback / RuntimeLocationEvent evidence 为准。某设备完成当前 step 并释放后，Runtime 可以为同一设备派发下一个 work item 的命令，即使前一个 work item 仍在下游设备或 WMS 履约中。
+- 父子 work item 只用于追溯和批次收敛，不允许子项失败静默污染父项成功；父项关闭必须校验子项终态、投影收敛和冲突状态。
+- WorkLine manifest 的 `workflow_steps` 只声明 capability 模板绑定；具体 step 转移、并发窗口、等待条件和异常恢复由 runtime capability 与 Phase SPEC 定义，并由行为契约测试锁定。
 
 **RuntimeInbox 处理契约**：
 
@@ -1304,6 +1424,14 @@ runtime 域内表使用 `execution_session_id` 作为 `ExecutionSession` FK；�
 - 人工重放只能从 `DEAD_LETTER` 复制生成新的 inbox 记录，保留原 `payload_hash/source_event_id/idempotency_key` 作为审计链；不得原地改写历史 payload。
 - `source_event_id + provider_code + event_type` 必须唯一；同 key 同 hash 直接返回既有 ACK，同 key 不同 hash 返回 409 并写安全审计。
 - RuntimeInbox 积压超过阈值时停止创建新 effect，但 callback 仍可在鉴权通过后 ACK + 持久化 evidence，防止外部系统重试风暴。
+
+**RuntimeHold scope 契约**：
+
+- `RuntimeHold` 默认必须限定作用域，至少声明 `scope_type + scope_key`；优先使用 work item / object / device / resource / queue scope，只有明确影响整线安全或共享设备不可用时才使用 session / workline scope。
+- `scope_type` 只允许显式枚举：`WORK_ITEM / OBJECT / DEVICE / RESOURCE / QUEUE / SESSION / WORKLINE`。
+- 单个料盘、料箱、格位、扫码结果或 WMS 同步失败只能 hold 对应 `ExecutionWorkItem`、对象或资源，不得默认停止整条 WorkLine。
+- Hold 解除必须声明 `allowed_next_effect_scope`，Runtime 只能释放该 scope 内的下一步 effect；不允许用一个人工解除动作恢复所有 pending effect。
+- `ReconciliationRecord.owner_scope` 与 `RuntimeHold.scope` 必须一致或可解释地包含，避免 reconciliation 决议和运行时禁发范围不一致。
 
 **API**（v1 router，`src/app/runtime/orchestration/v1/`）：
 
@@ -1329,16 +1457,20 @@ runtime 域内表使用 `execution_session_id` 作为 `ExecutionSession` FK；�
 | 状态 | `ACCEPTED` / `REJECTED` / `BLOCKED_BY_CB` / `FAILED` |
 | 不变量 | dispatch 前必须完成 admission、幂等和状态门禁；不得由 API 层直接调用 provider client |
 
+**状态命名边界**：`EffectPort` 返回的是 provider dispatch result，不是 ledger 状态源。`RuntimeIntentLog.dispatch_status`
+只允许使用 `PENDING -> DISPATCHING -> DISPATCHED/ACKED/FAILED`；provider 返回 `ACCEPTED` 时映射为
+`DISPATCHED` 或等待 callback 后写 `ACKED`，返回 `REJECTED/BLOCKED_BY_CB/FAILED` 时写入对应失败原因和重试字段。
+
 **RuntimeCapabilityContext 接口**：
 
 | 能力 | 用途 |
 | --- | --- |
-| `readonly_facts` | 只读事实查询 port，可注入 WMS 主数据/单据/库存查询或测试 fake provider |
-| `effects` | 唯一允许触发 WMS/RCS/设备副作用的出口 |
+| `readonly_facts` | 只读事实查询 port，可注入 WMS 主数据/单据/库存/对账 drift snapshot 查询或测试 fake provider |
+| `effects` | 唯一允许触发 WMS 履约/库存事务和设备命令副作用的出口；RCS/AGV/CTU 直连若触发，也只作为 fulfillment provider 实现隐藏在该出口之后 |
 | `clock` | 统一时间来源 |
 | `idempotency` | 跨域幂等检查与审计 |
 
-`readonly_facts` 可注入 WMS 主数据/单据/库存查询端口，也可在测试中替换为 fake provider；`effects` 是唯一允许触发 WMS/RCS/设备副作用的出口。Capability 不允许持有 `wms_integration` service locator、HTTP client、供应商 DTO 或 provider exception。
+`readonly_facts` 可注入 WMS 主数据/单据/库存查询端口和 `WmsReconciliationQueryPort`，也可在测试中替换为 fake provider。`WmsReconciliationQueryPort` 只能返回 drift snapshot / `source_version` / WMS 权威事实，不创建 `RuntimeIntentLog`，不写 `ReconciliationRecord`，不触发 WMS 写入确认或补偿动作。`effects` 是唯一允许触发 WMS 履约/库存事务和设备命令副作用的出口。`InboundEventPort` 不属于 `RuntimeCapabilityContext`：capability 不允许持有 `WmsEventPort`、`DeviceEventPort`、`RuntimeInbox` consumer、`wms_integration` service locator、HTTP client、供应商 DTO 或 provider exception。
 
 **Effect ledger 约束**：
 
@@ -1389,6 +1521,15 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 - 若外部 callback 成功但本地投影冲突，operation 进入 `RECONCILING`，不得覆盖 active projection 或直接标记完成。
 - 目标态不要求保留旧 `completion_policy` 字段名；可以用枚举、状态机或 policy object 表达，但语义必须可查询、可测试、可审计。
 
+**满箱交换前置分流契约**：
+
+- 满箱交换区是独立 `work_position_code`，不等同于分拣机 `STATION A/B`；WorkLine manifest 必须能声明满箱交换区、交换决策点、分拣机 STATION 和排队区的不同角色。
+- 粗分机移出的单层货架必须先进入满箱交换区或交换决策点；满箱交换完成前，该货架不得进入分拣机 `STATION A/B`，北向机械臂也不得对该货架取料。
+- 若无满箱交换需求，Runtime 可创建进入分拣机 `STATION A/B` 或排队区的 WMS fulfillment；若有满箱交换需求，必须先创建箱级 `ExecutionWorkItem` 和 `FULL_BOX_EXCHANGE` operation。
+- CTU 满箱交换批次必须按 `rack_code + rack_side` 分组；同一批次不得混合处理同一货架两面的源料箱。
+- 若另一货架面仍有满箱，`CHANGE_RACK_FACE` 必须作为独立 WMS/AGV fulfillment 建模；换面期间锁定该货架、当前货架面和对应 exchange work items，不影响其它货架或其它 WorkLine。
+- 已完成满箱交换并进入箱级入库物理完成/WMS 同步状态的物料，不得再次进入分拣机逐件入库候选集；剩余未满箱料箱的物料才允许进入分拣机 `STATION A/B` 或排队区。
+
 ### 9.4 resource 运行投影域
 
 **职责**：作业期运行投影（不复制 WMS 主数据）
@@ -1397,10 +1538,11 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 
 | 实体 | 关键字段组 | 设计约束 |
 | --- | --- | --- |
-| `RackPlacement` | `workline_id`, rack `ExternalReference`, `work_position_code`, `status`, `correlation_id`, `evidence_json` | 表达货架在 WES 工作位的作业期投影 |
+| `RackPlacement` | `workline_id`, rack `ExternalReference`, `work_position_code`, `current_operable_side`, `status`, `correlation_id`, `evidence_json` | 表达货架在 WES 工作位的作业期投影；`current_operable_side` 支撑满箱交换按货架面分批和换面校验 |
 | `RackBinMount` | `rack_placement_id`, bin `ExternalReference`, `cell_code`, `status`, `correlation_id`, `evidence_json` | 表达料箱与货架格位的作业期挂载关系 |
 | `BinPlacement` | `work_position_code`, bin `ExternalReference`, `status`, `correlation_id`, `evidence_json` | 表达料箱在工作线/工作位的作业期投影 |
 | `BinMaterialMount` / `BinCellOccupancy` | `pkg_code`, `material_identity_key`, `cell_code`, occupancy metrics, `correlation_id` | 表达 WES 作业期物料与箱格占用，不复制库存主数据 |
+| `CellReservation` | reservation key, target cell, object identity, `correlation_id`, status, expires_at, evidence_json | 下发机械臂投放前的作业期格位预约；防止并发双占 |
 | `ResourceStateEvent` | `workline_id`, `event_type`, `source_event_id`, payload, `occurred_at` | 资源投影事件记录；按 `source_event_id` 幂等 |
 | `RuntimeLocationEvent` | `object_type`, `object_key`, `location_scope`, `location_code`, `business_step`, `source`, `evidence_json`, `correlation_id` | append-only 位置事实；active projection 和查询视图均由它派生 |
 
@@ -1433,6 +1575,17 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 - WMS 仍是货架、料箱、物料、库存和单据主数据权威；WES 只拥有作业期位置事实与 active projection，不创建 WMS 主数据副本。
 - 查询“某个料箱/料盘/物料在哪里”必须返回 `location_scope/location_code/source/evidence_at/correlation_id`，不能只返回裸位置字符串。
 - 位置事实冲突时不覆盖旧值，必须写冲突 evidence 并进入 `RECONCILING` 或 `RuntimeHold`。
+
+**格位分配与预约契约**：
+
+粗分机出料入单层货架格位、分拣机南向机械臂投料入五层货架料箱格位，均属于 WES 作业期内的局部分配决策。WMS 仍是主数据、库存和业务单据权威，但 WES 必须基于 pinned manifest、WMS 查询 evidence、active projection 和当前 work item 选择目标格位：
+
+- `CellAllocationPolicy` 只在 WES 作业期 projection 内选择候选格位，不做全局库存规划、波次规划或货架选择。
+- 分配前必须读取 `RackPlacement`、`RackBinMount`、`BinPlacement`、`BinCellOccupancy`、相关 `ConveyorQueueMembership` 和必要 WMS 只读 facts；缺少关键事实时进入 `RuntimeHold`，不得猜测投放。
+- 下发机械臂投放命令前必须创建 `CellReservation` 或等价预约记录，唯一约束覆盖 `workline_id + target_cell + active_status` 与 `object_identity + correlation_id`。
+- 同一预约重复请求必须按 `idempotency_key + request_hash` 返回既有预约；不同对象竞争同一格位必须失败并重新分配，无法重新分配时进入 `RECONCILING`。
+- 机械臂成功回调后，预约转为 `BinMaterialMount / BinCellOccupancy` 事实；机械臂失败、超时或人工取消时，预约必须释放或进入 `RECONCILING`，不能长期占用。
+- 粗分机出料货架位没有单层货架、没有可用料箱或没有可用格位时，Runtime 只能请求 `SUPPLY_EMPTY_SINGLE_LAYER_RACK` 等 WMS fulfillment，并等待 callback/evidence 后重新计算。
 
 ### 9.5 material 物料根实体域
 
@@ -1516,11 +1669,29 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 - session 进入 `HOLD` / `RECONCILING` / `CLOSED` 时，未下发命令必须取消或冻结；已下发命令只能等待 ECS callback 或人工 reconcile。
 - Runtime 不做 PLC 级抢占、急停复位或运动控制；这些只能由 ECS/现场安全系统处理后以事件形式回传 WES。
 
+**扫码平台互锁与预取约束**：
+
+分拣机北向机械臂把物料放到扫码平台后，Runtime 默认不允许立即下发下一条取料命令。`source_arm_prefetch_capacity` 默认为 0：只有扫码平台状态为 `FREE`、上一物料已被扫码平台或南向机械臂接管，且相关 work item 未处于 HOLD/RECONCILING 时，才允许北向机械臂取下一件。若现场 ECS 明确支持平台外暂存、手持等待或预取缓存，必须在 WorkLine manifest 中显式声明 `source_arm_prefetch_capacity > 0`，并通过 capability admission、设备状态、超时和行为契约测试验证；禁止靠经验默认开启预取。
+
 **WorkLine 启停门禁**：
 
 - manifest 中标记为 `required=true` 的设备若处于 `OFFLINE` / `UNKNOWN` / `MAINTENANCE`，WorkLine 不允许从 `INACTIVE` 切到 `ACTIVE`。
 - manifest 中标记为 `optional=true` 的设备不可用时，WorkLine 可启动，但对应 capability 从候选设备集中剔除，并在 `PlaneSnapshot.warnings[]` 中展示。
 - RUNNING session 期间 required 设备变为 `OFFLINE` / `MAINTENANCE` 时，Runtime 进入 `RuntimeHold`，停止新 effect，等待 ECS 恢复或人工 reconcile。
+
+**业务资源 admission**：
+
+设备在线只证明物理能力可用，不证明业务流可推进。Runtime 创建入库类 `ExecutionSession` 前必须按 capability 的 admission rule 校验作业期资源：
+
+- 粗分机启动/入口 admission：只校验入口检测、扫码、测量设备可用，粗分机流水线入口队列无硬阻塞，入口到出料缓冲路径容量未超过 manifest 上限；不要求出料货架位或可用料格在 session 创建时已存在。
+- 粗分机出料 step admission：物料到达出料分配 step 时才校验出料货架位、可用料箱和可用格位；若无可用格位，只 hold 当前出料 `ExecutionWorkItem` 并请求 WMS 补充空箱货架或换架。入口侧是否继续放行由流水线缓冲容量自然反压，不因单个出料 work item 缺格位直接阻断整条入口流程。
+- 满箱交换前置分流 admission：粗分机移出的单层货架进入分拣机前，必须先校验是否存在满箱交换需求；有需求时目标只能是满箱交换区或交换决策点，不得直接进入分拣机 `STATION A/B`。
+- 满箱交换区 admission：按 `rack_code + rack_side` 校验当前可操作货架面、CTU 可用性、满箱可取集合、五层货架空箱和可用空储位；跨货架面满箱必须等待 `CHANGE_RACK_FACE` fulfillment 完成后再释放下一面 exchange work items。
+- 分拣机：STATION A/B 至少一个单层货架位可进入取料流程；FIVE STATION 有可解释五层货架投影，或已创建 WMS 补架 fulfillment；滚筒线入口线、工作位、退料线容量可由 manifest + active projection 计算。
+- 分拣机取料 admission：只允许选择已通过满箱交换前置分流且仍需逐件分拣的物料；已满箱交换入库的物料必须从候选集中排除。
+- CTU 入线批次创建前必须计算 `min(入口线空位, CTU 背篓容量, 五层货架可用料箱数)`；退线批次创建前必须计算 `min(退料线料箱数, CTU 背篓容量, 五层货架可用空储位)`。
+- admission 只能基于 WES active projection、pinned manifest 和 WMS QueryPort evidence；缺事实时写 `RuntimeHold` 或创建 WMS fulfillment，不能用本地默认值假装资源可用。
+- admission 失败不得污染 active projection；已创建但未派发的 effect 必须取消或冻结，并保留 timeline/evidence 供调试回放。
 
 **Authority**：device 到位信号、硬件防呆和设备忙闲状态归 ECS/device；WES 只接收并转换为业务事件。WES 不拥有 PLC 通讯、安全回路、坐标映射或运动控制权。
 
@@ -1545,7 +1716,7 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 | `/wms-integration/fulfillment/requests/{id}` | GET | 履约请求详情 |
 | `/wms-integration/callback-envelopes` | GET | 查询已归档 WMS callback envelope（只读，外部不写入） |
 | `/wms-integration/inventory/query` | POST | 查询库存 |
-| `/wms-integration/reconciliation/reconcile` | POST | 触发对账 |
+| `/wms-integration/reconciliation/drift-check` | POST | 只读触发 WMS 权威事实拉取并返回 drift snapshot；不得写 WMS 或跨域 owner 状态 |
 
 **入口约束**：外部 callback 写入口只允许 §5.3 的统一 callback API；`wms_integration` 不提供第二个外部 POST 入口，只提供 normalizer、port 和只读 envelope 查询。
 
@@ -1589,9 +1760,9 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 
 ## 10. 实施计划
 
-5 个 Phase，按 critical path 严格串行；Phase 内任务可并行。实施默认允许破坏性清理，不设置旧 API / 旧表 / 旧插件兼容目标。
+Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行。实施默认允许破坏性清理，不设置旧 API / 旧表 / 旧插件兼容目标。
 
-### 10.1 Phase 0: 目标态锁定（5 项必做）
+### 10.1 Phase 0: 目标态锁定（7 项必做）
 
 **目标**：锁定 P0 系统目标和目标态边界，防止后续实现被旧 WorkLine/plugin 形态反向约束。
 
@@ -1599,18 +1770,23 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 | --- | --- | --- | --- | --- |
 | 1 | **P0-001 目标态契约文档** | M | 本文档 + `docs/architecture/target-state-contract.md` | 明确业务能力语义、域边界、状态所有权、允许破坏性删除范围 |
 | 2 | **P0-002 Legacy 清理矩阵** | M | `docs/architecture/legacy-cleanup-matrix.md` | 每个旧模块标记 delete / rebuild / move / keep-contract |
-| 3 | **P0-003 行为契约测试基线** | L | `tests/` | 覆盖 start admission、runtime snapshot、handoff、resource projection、分拣机/粗分机入库业务基线的目标语义 |
+| 3 | **P0-003 行为契约测试基线** | L | `tests/` | 覆盖 start admission、runtime snapshot、handoff、resource projection、粗分机正常入库、满箱交换前置分流、分拣机入库三场景业务基线的目标语义 |
 | 4 | **P0-004 ExecutionCorrelation 迁移矩阵** | L | `docs/architecture/session-correlation-matrix.md` | per-file 迁移路径发布；跨域 FK 收敛策略明确 |
 | 5 | **P0-005 ECS 设备接入边界合同** | M | `docs/integration/third_party_integration_whitepaper.md`, `docs/architecture/device-command-contract.md` | 明确 WES 只经 ECS API 下发业务命令；Event_Push 只 ACK；不与 PLC 通讯；RUNNING 有界等待；ERROR/OFFLINE 短退避 |
+| 6 | **P0-006 IntegrationLab / 外部合同联调基线** | M | `docs/architecture/integration-lab-and-simulator.md`, `docs/contracts/external-contract-profile.md` | WMS/ECS simulator、sandbox provider profile、contract fixture、scenario runner 基线发布；只允许走正式 port contract |
+| 7 | **P0-007 Architecture guardrails 基线** | M | `docs/architecture/architecture-guardrails-spec.md`, `scripts/architecture-guardrails.sh`, `tests/architecture/` | §7.5 核心 5 条 + I3 capability 注入/import 边界扫描、跨域 FK 扫描、DeviceCommand 字段白名单、schema 字段校验、RuntimeInbox 状态机契约测试可运行 |
 
 **Phase 0 完成门禁**：
 
 - [ ] `target-state-contract.md` 发布，不含旧 API/旧表兼容承诺
 - [ ] `legacy-cleanup-matrix.md` 发布，旧 WorkLine/plugin/runtime 每个入口都有处理策略
 - [ ] 行为契约测试可运行，保护业务语义而非旧代码形态
-- [ ] 分拣机/粗分机入库基线被描述为目标态能力，不引用旧 plugin 接口、旧 context schema 或 fake allocator
+- [ ] 粗分机正常入库、满箱交换前置分流、分拣机入库三场景基线被描述为目标态能力，不引用旧 plugin 接口、旧 context schema 或 fake allocator
 - [ ] `session-correlation-matrix.md` 发布
 - [ ] `device-command-contract.md` 发布，字段与白皮书 Command-Ack-Callback 一致
+- [ ] `external-contract-profile.md` 与 `integration-lab-and-simulator.md` 发布，明确 simulator/sandbox/replay/profile 不进入生产 fallback、不绕过正式 port contract
+- [ ] `architecture-guardrails-spec.md` 发布，逐条映射 §7.5 核心 5 条不变量 + I3 capability 注入/import 边界到脚本/测试/失败示例
+- [ ] `scripts/architecture-guardrails.sh` 可本地运行并纳入后续 Phase 门禁；核心 5 条不变量 + I3 capability 注入/import 边界有自动检查路径
 
 ### 10.2 Phase 1: 目标态骨架与 WMS ACL
 
@@ -1622,19 +1798,20 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 | **CEO-002** 4 方案决策表归档 | S | 本文档 §3.8 | 已归档 |
 | **CEO-005** 查询响应 schema 增加 `scope/authority/source/evidence_at` 强制字段 | S | `src/app/*/schemas/` | schema 校验 + 测试 |
 | **CEO-006** Authority Matrix 文档发布 | S | `docs/architecture/authority-matrix.md` | 9 类事实类型 + 权威来源 |
-| **CEO-007** runtime/orchestration 最小骨架 | M | `src/app/runtime/orchestration/`, `docs/architecture/runtime-orchestration-spec.md` | ExecutionSession / RuntimeInbox / RuntimeIntentLog / ExecutionCorrelation 类型分离；最小 worker + 单元测试 |
+| **CEO-007** runtime/orchestration 最小骨架 | M | `src/app/runtime/orchestration/`, `docs/architecture/runtime-orchestration-spec.md` | ExecutionSession / ExecutionWorkItem / RuntimeInbox / RuntimeIntentLog / ExecutionCorrelation 类型分离；对象级 work item 不被 session 串行锁阻塞；最小 worker + 单元测试 |
 | **CEO-008** `ConveyorQueueMembership` 目标模型 | M | `src/app/runtime/orchestration/`, `src/app/workline/` | manifest queue_code 校验 + active 唯一约束测试 |
-| **CEO-009** `RuntimeCapabilityContext` / `CapabilityPortRegistry` | M | `src/app/runtime/` | capability 只能拿到 port contract；静态检查拒绝 `src.app.wms_integration.*` DTO/client/异常 import |
+| **CEO-009** `RuntimeCapabilityContext` / `CapabilityPortRegistry` | M | `src/app/runtime/` | capability 只能拿到 query/effect port contract；静态检查拒绝 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort`、`RuntimeInbox` consumer |
 | **CEO-010** `DeviceCommand` ECS API contract + manifest concurrency limit | M | `src/app/device/`, `docs/architecture/device-command-contract.md` | command_code 幂等、dispatch 前 IDLE 校验、RUNNING 有界等待、ERROR/OFFLINE 短退避、Event_Push 只 ACK、缺 event_id 不推进、in-flight 限制测试 |
 | **CEO-011** WorkLine manifest version pin | M | `src/app/workline/`, `src/app/runtime/orchestration/` | RUNNING session 固定 manifest_version；新 manifest 只影响新 session；activation-time validator 测试 |
 | **CEO-012** WorkLine SafetyZone / shared-device manifest schema | M | `src/app/workline/`, `src/app/device/` | shared device 影响范围、required/optional role、SafetyZone validator 测试 |
+| **CEO-013** ExternalContractProfile + provider simulator registry | M | `src/app/wms_integration/`, `src/app/device/`, `docs/contracts/external-contract-profile.md` | WMS/ECS provider profile、contract tests、fixture set 与 simulator registry 可运行；adapter/normalizer 不泄漏外部 DTO |
 
 **Phase 1 完成门禁**：
 
-- [ ] `wms_integration` MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / Reconciliation 7 个目标 port 全部实现
+- [ ] `wms_integration` MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery 7 个目标 port 全部实现
 - [ ] `wms_rcs_interface_requirements.md` P0 基础数据、业务指令、回调事件均映射到目标 port
 - [ ] 内部域无代码直接 import WMS 类型
-- [ ] Runtime capability 注入仅暴露 port contract，不暴露 `wms_integration` 实现对象、HTTP client、DTO、异常或 service locator
+- [ ] Runtime capability 注入仅暴露 query/effect port contract，不暴露 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort` 或 `RuntimeInbox` consumer；inbound normalizer 不进入业务 capability
 - [ ] Authority Matrix 文档发布
 - [ ] runtime/orchestration 最小骨架完成，RuntimeIntentLog 含 effect ledger 字段并支持崩溃重放
 - [ ] DeviceCommand 只面向 ECS API，不包含 PLC/坐标/关节/安全回路字段；dispatch 前必须校验 ECS 设备状态为 IDLE
@@ -1642,6 +1819,9 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 - [ ] ExecutionSession 已 pin `manifest_version`
 - [ ] 动态队列 membership 模型替代旧 8 enum 方案
 - [ ] WorkLine manifest 能表达 SafetyZone、共享设备和影响范围；WES 不包含 PLC 直连字段
+- [ ] ExternalContractProfile 覆盖 WMS/ECS 初始 provider，contract fixture 可被 simulator 与 adapter contract tests 复用
+- [ ] provider 未声明的 query/effect 能力无法进入 `RuntimeCapabilityContext`
+- [ ] provider 未声明的 callback/event/result normalizer 能力无法进入 callback API；`WmsEventPort` / `DeviceEventPort` / `RuntimeInbox` consumer 不会注入业务 capability
 
 ### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空
 
@@ -1649,7 +1829,7 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 
 **启动条件**（满足全部才能启动 Phase 2）：
 
-- Phase 0 全部 5 项完成
+- Phase 0 全部 7 项完成
 - Phase 1 全部任务完成
 - 重新跑 autoplan 或同等深度评审，确认 B 方案可执行
 
@@ -1692,7 +1872,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | --- | --- | --- | --- |
 | **ENG-002** `ReconciliationManager` + RECONCILING 决议模型 | M | `src/app/reconciliation/` | owner-scoped resolution decision + 5/30 分钟升级 + unit test |
 | **ENG-003** WorkLine 启动 manifest validator | M | `src/app/workline/` | 集合差检测 + RuntimeHold 拒写 |
-| **ENG-004** 11 态机补 4 条 timeout + CB `BLOCKED_BY_CB` | M | `src/app/wms_integration/state_machine.py` | 4 timeout 转移 + CB 集成测试 |
+| **ENG-004** 11 态机补 4 条 timeout + CB `BLOCKED_BY_CB` | M | `src/app/wms_integration/state_machine.py` | 4 timeout 转移 + CB 出站阻塞集成测试；CB `open/half-open` 期间 late callback 仍写 RuntimeInbox、合并 evidence 或进入 RECONCILING |
 | **ENG-006** `ActiveObjectRegistry` 跨投影 active 归属仲裁读模型 | M | `src/app/active_objects/` | 3 路 UNION 冲突 policy 单元测试 |
 | **ENG-008** External callback body HMAC + nonce TTL + allow-list | M | `src/app/callback/`, `src/app/wms_integration/`, `src/app/device/`, `src/core/api_security.py` | WMS/RCS/ECS/device 重放 + 篡改 + 时钟偏差 + allow-list 测试 |
 | **ENG-009** idempotency_key 复合主键 + request_hash + session 审计 | M | `src/app/runtime/`, `src/app/wms_integration/`, `src/app/device/` | callback / fulfillment / device_command / device_event / reconciliation 409 + 安全审计事件 |
@@ -1704,14 +1884,18 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | **ENG-017** 满箱/换箱/换架 callback + reconciliation 语义 | M | `src/app/handling/`, `src/app/reconciliation/` | FULL_BOX/RACK_BIN exchange 外部成功但本地冲突进入 RECONCILING 的合同测试 |
 | **ENG-018** WMS evidence retention + breaker observability | M | `src/app/wms_integration/`, observability 配置 | retention/archive、breaker OPEN/HALF_OPEN、evidence 写入失败指标测试 |
 | **ENG-019** Runtime worker / queue / ECS HTTP benchmark gate | M | `tests/load/`, docs | RuntimeInbox claim、queue writer、status GET、command POST 基准报告 |
+| **ENG-020** ScenarioRecorder / ScenarioReplayRunner | M | `src/app/runtime/`, `src/app/reconciliation/`, `tests/resilience/` | 脱敏场景录制、deterministic replay、projection diff、timeline/outbox/reconciliation 断言 |
+| **ENG-021** Observability contract + OpenTelemetry attributes | M | observability 配置, `docs/contracts/observability-contract.md` | span/metric/log name 与稳定 attributes 通过契约测试；禁止临时日志字段替代观测合同 |
+| **ENG-022** Typed ops/release toggle governance | S | `src/core/`, `docs/contracts/runtime-toggle-governance.md` | toggle owner/expiry/scope/default/rollback/test matrix 校验；过期 toggle 阻塞发布；禁止绕过安全/幂等/evidence |
 | **DESIGN-001..005** 5 项 design 修复（schema_version、scene/snapshot 独立、目标态枚举、label/code 分离、极态清单） | 4×S + 1×M | `src/app/workline/v1/plane.py`, `src/app/workline/schemas/` | 单元测试 |
 
 **Phase 3 完成门禁**：
 
-- [ ] P0 最小可运行闭环完成：WorkLine manifest -> ExecutionSession -> RuntimeInbox -> RuntimeIntentLog -> DeviceCommand / WMS fulfillment -> PlaneSnapshot -> RECONCILING 可跑通一条受控作业链路
+- [ ] P0 最小可运行闭环：以「分拣机入料 1 个料箱 → ECS 扫码 → WES 决策投箱 → 通知 WMS PKG 绑定 → PlaneSnapshot 可观察」为验证锚点，跑通 WorkLine manifest -> ExecutionSession -> RuntimeInbox -> RuntimeIntentLog -> DeviceCommand / WMS fulfillment -> PlaneSnapshot -> RECONCILING 链路；端到端 P95 < 30s；任一异常路径（ECS 超时、WMS 拒绝、callback 乱序）必须落入 RECONCILING 而非静默失败
 - [ ] RECONCILING 不再是黑洞状态；owner-scoped resolution decision 有测试覆盖，且 ReconciliationManager 不直接写 owner 状态
 - [ ] WorkLine 启动时已知 queue_code typo 不会污染 active projection
 - [ ] 11 态机覆盖所有可观察转移
+- [ ] CB `open/half-open` 只阻断出站 effect；late callback 不得被标记为 `BLOCKED_BY_CB`，必须经 RuntimeInbox 幂等合并 evidence，冲突时进入 RECONCILING
 - [ ] External callback 鉴权从"字段级"升级为"body 完整性级"，覆盖 WMS/RCS/ECS/device
 - [ ] idempotency 跨域语义统一，覆盖 callback / fulfillment / device_command / device_event / reconciliation
 - [ ] RECONCILING 具备软件禁发、投影冻结和人工恢复审计
@@ -1720,6 +1904,10 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 - [ ] Conveyor queue writer 并发、幂等、诊断和严格模式已覆盖 PostgreSQL 语义
 - [ ] 满箱/换箱/换架不再按普通 trusted callback 完成处理
 - [ ] WMS breaker/evidence、DeviceCommand ACK age、RuntimeInbox/Outbox 等关键指标已纳入观测口径
+- [ ] IntegrationLab 能跑通 WMS/ECS simulator 的完整链路和乱序、重复、超时、拒绝、断网 fixture
+- [ ] ScenarioReplayRunner 能 deterministic 复现关键异常并断言 active projection diff、timeline、outbox/effect 幂等和 reconciliation 结果
+- [ ] Observability contract 覆盖 WMS/ECS HTTP、callback normalize、RuntimeInbox claim、RuntimeIntentLog dispatch、DeviceCommand ACK/RESULT 和 replay runner
+- [ ] Typed toggle 清单无过期项；任何 toggle 都不能绕过 IDLE 准入、HMAC、idempotency、evidence 和 RuntimeHold
 
 ### 10.5 Phase 4: 后续子领域
 
@@ -1729,17 +1917,35 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | --- | --- | --- | --- |
 | `MaterialLocationQuery` 查询服务 | M | `src/app/material/` | 6 入口 + 5 来源位置优先级 |
 | `WorklineActiveObjects` / `WorklineCurrentWorkView` 查询服务（配合 ActiveObjectRegistry） | M | `src/app/active_objects/` | 3 路 UNION 归一化 |
-| 分拣机/粗分机入库能力目标态重建 | L | Phase 4 SPEC | 按行为契约重建扫码、识别/WMS 校验、箱格分配、NG、投箱、完成；不复用旧 plugin 入口 |
-| SMT/NG/WMS 对账闭环 | L | `src/app/reconciliation/`, `src/app/wms_integration/` | NG evidence、WMS 确认/拒绝、目标箱回写失败、版本冲突恢复测试 |
-| 未来直连 RCS/AGV/CTU provider adapter 设计 | L | `src/app/rcs_integration/` / `src/app/agv_integration/` / `src/app/ctu_integration/` | `FulfillmentPort` provider 差异化接口 + HybridFulfillmentRouter |
+| 粗分机/满箱交换/分拣机入库能力目标态重建 | L | `sorter-inbound-capability-spec.md` | 按行为契约重建粗分机正常入库、满箱交换前置分流、分拣机入库、对象级流水并发、WMS 校验、箱格分配/预约、滚筒线路由、NG、投箱、本地物理事实先落与 WMS 同步对账；不复用旧 plugin 入口 |
+| SMT/NG/WMS 对账闭环 | L | `smt-ng-wms-reconciliation-spec.md`, `src/app/reconciliation/`, `src/app/wms_integration/` | NG evidence、WMS 确认/拒绝、目标箱回写失败、版本冲突恢复测试 |
+
+**按需触发任务**（YAGNI 隔离，不在 Phase 4 时间表内强制执行）：
+
+| Task | 触发条件 | 关联文件 | 备注 |
+| --- | --- | --- | --- |
+| RCS/AGV/CTU 直连 provider adapter 设计 | 生产前默认不触发；仅当 (1) 客户明确要求绕过 WMS 直连；或 (2) WMS 履约经实测无法满足实时性需求时触发 | `src/app/rcs_integration/` / `src/app/agv_integration/` / `src/app/ctu_integration/`、`fulfillment-provider-adapter-spec.md` | 当前阶段 §2.3 不做 #9 已锁定 RCS/AGV/CTU 调度由 WMS 中转统一执行；该能力是后续扩展，不进入 Phase 4 常规交付，不预先写 SPEC、不预留代码骨架 |
 
 **Phase 4 完成门禁**：
 
 - [ ] `MaterialLocationQuery` 6 入口全部支持
 - [ ] `WorklineActiveObjects` 与 `ActiveObjectRegistry` 协同
+- [ ] `CellReservation` 目标模型、唯一约束、TTL 释放、投放成功转占用和失败释放/RECONCILING 测试全部通过
+- [ ] 粗分机正常流通过行为契约测试：入料机械臂扫码/测量 -> WMS GRN 绑定与测量校验 -> 入料机械臂投流水线 -> 粗分机流水线到出料口 -> 出料格位分配/预约 -> 必要时 WMS 补空箱货架 -> 出料机械臂投格 -> 本地位置事实与格位占用落库 -> WMS PKG 绑定/库存事务通知；WMS 失败进入同步 hold/reconciliation，不抹掉本地物理事实；入料机械臂在当前对象进入流水线后即可处理下一个对象
+- [ ] 满箱交换前置分流通过行为契约测试：粗分机移出单层货架 -> 满箱交换区或交换决策点 -> 无满箱需求进入分拣机 STATION/排队区；有满箱需求创建 `FULL_BOX_EXCHANGE` -> 按 `rack_code + rack_side` 分批 -> 必要时 `CHANGE_RACK_FACE` 独立履约 -> 满箱物料箱级入库完成/同步，剩余未满箱物料才进入分拣机逐件流程
+- [ ] 满箱交换区与分拣机 `STATION A/B` 不得混用；满箱交换完成前，分拣机北向机械臂不得对该单层货架取料
+- [ ] 分拣机入库正常流通过行为契约测试：STATION A/B 与 FIVE STATION admission -> WMS/CTU 批量投箱入线与逐箱 callback -> SCAN1 授权料箱 resolve / 未授权 NG -> SCAN2/SCAN3 路由与退料线 -> 北向机械臂取料到扫码平台 -> 扫码后格位分配/预约 -> 必要时换箱/等待 -> 南向机械臂投料 -> 本地位置事实与格位占用落库 -> WMS PKG 绑定/库存事务通知；WMS 失败进入同步 hold/reconciliation，不抹掉本地物理事实
+- [ ] 已满箱交换入库的物料不得再次进入分拣机逐件分拣候选集；剩余未满箱料箱的物料可继续进入 `STATION A/B` 或排队区
+- [ ] 分拣机物料 work item 与料箱 work item 的 join 条件明确：南向机械臂投料前必须同时满足目标料箱处于滚筒线工作位、目标格位可预约、`CellReservation` 创建成功、相关等待有 deadline 或换箱触发条件
+- [ ] CTU 批量履约通过父批次、逐对象 evidence 和批次完成收敛测试；缺子项、乱序、重复或投影冲突必须进入 `RECONCILING`
+- [ ] CTU 父请求查询视图必须聚合子 `ExecutionWorkItem` 状态，展示子项缺失、乱序、未 resolve placeholder、部分失败和批次收敛结果；禁止运维界面只显示父批次成功
+- [ ] 扫码平台默认 `source_arm_prefetch_capacity=0`；未显式声明预取能力时，北向机械臂必须等待扫码平台 FREE 后才能取下一件
+- [ ] `source_arm_prefetch_capacity` 进入 WorkLine manifest schema 与 validator；未声明时默认 0，声明大于 0 时必须校验 ECS 能力、缓存容量和超时策略
+- [ ] 本地物理完成与 WMS 同步状态显式拆分：`LOCAL_PHYSICAL_COMPLETED` 不等于业务完全完成；WMS 通知或库存事务失败时进入 `WMS_SYNC_PENDING` 或 `RECONCILING`
+- [ ] `RuntimeHold` 具备 object/device/resource/queue scope；单对象异常不得默认停整条 WorkLine，人工解除只释放声明的 `allowed_next_effect_scope`
 - [ ] 分拣机/粗分机入库能力按目标态 capability / port 重建，不保留旧插件兼容入口
 - [ ] SMT/NG/WMS 对账闭环不复制 WMS/NG/PDA 主数据，只保留 evidence、ExternalReference 和 RuntimeHold 解除条件
-- [ ] RCS / AGV / CTU provider adapter 的能力差异、幂等、callback、状态权威边界已形成 SPEC
+- [ ] 按需触发任务未达到触发条件时保持不实施，不写预先 SPEC、不预留代码骨架
 
 ### 10.6 Phase 5: Legacy 删除与收尾
 
@@ -1763,12 +1969,14 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | Phase | Effort | Human-team | CC + gstack |
 | --- | --- | --- | --- |
 | Phase 0 | M | ~1-2 周 | ~2-3 天 |
-| Phase 1 | M | ~4-6 周 | ~1-2 周 |
+| Phase 1 | M-L | ~5-7 周 | ~1.5-2.5 周 |
 | Phase 2 | XL | ~8-10 周 | ~2-3 周 |
-| Phase 3 | M | ~10 周 | ~2 周 |
+| Phase 3 | L | ~12-14 周 | ~2.5-3.5 周 |
 | Phase 4 | L | ~6 周 | ~1 周 |
 | Phase 5 | L | ~1-3 周 | ~2-4 天 |
-| **总计** | **XL** | **~30-39 周** | **~7-10 周** |
+| **总计** | **XL** | **~33-44 周** | **~8-12 周** |
+
+该估算已包含 P0-006/P0-007、CEO-013、ENG-020/021/022。RCS/AGV/CTU 直连 provider adapter 是条件触发扩展，不计入常规交付总量；触发后需单独评估。
 
 ### 10.8 实施阶段依赖图
 
@@ -1778,7 +1986,9 @@ Phase 0 ────────────────────────
   ├── P0-002 Legacy 清理矩阵                  │
   ├── P0-003 行为契约测试                    │
   ├── P0-004 ExecutionCorrelation 矩阵        │
-  └── P0-005 ECS 设备边界合同                │
+  ├── P0-005 ECS 设备边界合同                │
+  ├── P0-006 IntegrationLab/合同基线          │
+  └── P0-007 Architecture guardrails          │
                                               │
 Phase 1 ──────────────────────────────────────┤
   ├── CEO-001 wms_integration 能力面 ports   │
@@ -1789,6 +1999,7 @@ Phase 1 ────────────────────────
   ├── CEO-010 DeviceCommand ECS contract      │
   ├── CEO-011 manifest version pin            │
   ├── CEO-012 SafetyZone/shared-device         │
+  ├── CEO-013 ExternalContractProfile          │
   └── CEO-002 4 方案决策表归档                │
                                               │
 Phase 2 ──────────────────────────────────────┤
@@ -1810,14 +2021,17 @@ Phase 3 ────────────────────────
   ├── ENG-017 满箱交换对账语义                │
   ├── ENG-018 WMS evidence/CB observability   │
   ├── ENG-019 worker/HTTP benchmark           │
+  ├── ENG-020 scenario recorder/replay        │
+  ├── ENG-021 observability contract          │
+  ├── ENG-022 typed toggle governance         │
   └── DESIGN-001..005 plane 修复             │
                                               │
 Phase 4 ──────────────────────────────────────┤
   ├── MaterialLocationQuery                  │
   ├── WorklineActiveObjects                  │
   ├── 入库能力目标态重建                     │
-  ├── SMT/NG/WMS 对账闭环                    │
-  └── RCS/AGV/CTU provider adapter 设计      │
+  └── SMT/NG/WMS 对账闭环                    │
+      (RCS/AGV/CTU direct provider: 条件触发扩展)
                                               │
 Phase 5 ──────────────────────────────────────┘
   ├── ENG-014 Legacy 清理矩阵                │
@@ -1840,6 +2054,7 @@ Phase 5 ────────────────────────
 ### 11.2 迁移规范
 
 - **可逆 Alembic upgrade + downgrade 都必须可执行**——任何新表/字段必须包含完整 downgrade；不可逆清理必须依赖快照回滚，不写假 downgrade
+- **Schema 兼容性自动校验**：每个 schema migration PR 必须生成并校验目标态 DDL 快照、SQLModel/DTO schema snapshot 和 Alembic upgrade/downgrade 结构差异；破坏性变更允许不兼容旧 schema，但必须证明新 model、repository、service、contract tests 与目标态一致。
 - **破坏性迁移默认允许**：表名、字段名、API 路径、enum、包路径都可按目标态重建。
 - **不保留旧兼容入口**：例如 `session_id: str` → `workline_session_id: int` 不保留 string 兼容入口；其他类似迁移同样执行。
 - **过渡脚本必须短生命周期**：若数据搬迁需要临时脚本，必须在同一 Phase 给出清理 PR。
@@ -1855,11 +2070,12 @@ Phase 5 ────────────────────────
 
 - **目标态命名优先**：旧 `BinTransitMembership` / `BinTransitQueue` 不冻结；目标态使用 `ConveyorQueueMembership` + manifest `queue_code`
 - **跨域 correlation key 替代 session FK**：不允许新代码用 `execution_session.id` 作为强 FK 跨域引用；必须用 `ExecutionCorrelation.correlation_id`
-- **Runtime vs Execution 前缀（M8 回归）**：包名使用 `runtime/orchestration`；会话聚合根使用 `ExecutionSession`；跨域关联使用 `ExecutionCorrelation`；运行时记录使用 `RuntimeInbox` / `RuntimeTimeline` / `RuntimeHold`；effect ledger 使用 `RuntimeIntentLog` / `EffectPort`。
+- **Runtime vs Execution 前缀（M8 回归）**：包名使用 `runtime/orchestration`；会话聚合根使用 `ExecutionSession`；跨域关联使用 `ExecutionCorrelation`；运行时记录使用 `RuntimeInbox` / `RuntimeTimeline` / `RuntimeHold`；effect ledger 只使用 `RuntimeIntentLog`，出站副作用通过 `EffectPort` dispatcher 派发。
 - **禁止 WorklineSession 前缀**：新代码不得新增 `WorklineSession` / `WorkLineRuntimeSession` / `WorklineExecution` 等会把配置域和执行域混在一起的命名。
 - **typed Pydantic 模型替代裸字符串/裸 JSON**：`ExternalReference`、`EvidenceEnvelope`、`PlaneSceneView`、`PlaneSnapshot` 等必须用 Pydantic BaseModel，不允许裸 dict
-- **WMS DTO 不出 wms_integration 域**：内部域不允许 import WMS 类型；只允许通过 `WmsMasterDataPort` / `WmsDocumentPort` / `WmsInventoryQueryPort` / `WmsInventoryTransactionPort` / `WmsFulfillmentPort` / `WmsEventPort` / `WmsReconciliationPort` 访问
-- **Runtime capability 注入 contract**：capability/plugin 只接收 `RuntimeCapabilityContext` 中的 port contract，不允许接收 `wms_integration` service、HTTP client、service locator、DTO 或 provider exception
+- **WMS DTO 不出 wms_integration 域**：内部域不允许 import WMS 类型；只允许通过 `WmsMasterDataPort` / `WmsDocumentPort` / `WmsInventoryQueryPort` / `WmsInventoryTransactionPort` / `WmsFulfillmentPort` / `WmsEventPort` / `WmsReconciliationQueryPort` 访问；其中 `WmsEventPort` 属于 `InboundEventPort`，只写 `RuntimeInbox`，不进入 `RuntimeIntentLog` / `EffectPort`；`WmsReconciliationQueryPort` 属于 QueryPort，只读拉取 drift snapshot，不进入 `RuntimeIntentLog` / `EffectPort`
+- **设备 callback DTO 不出 device 域**：`DeviceEventPort` 属于 `InboundEventPort`，只负责 ECS/device callback normalizer 与 typed evidence 生成；业务 capability 不允许直接依赖设备 callback DTO、provider exception 或 RuntimeInbox consumer。
+- **Runtime capability 注入 contract**：capability/plugin 只接收 `RuntimeCapabilityContext` 中的 query/effect port contract；不允许接收 `wms_integration` / `device` service、HTTP client、service locator、DTO、provider exception、`WmsEventPort`、`DeviceEventPort` 或 `RuntimeInbox` consumer
 
 ### 11.5 Legacy 清理规范
 
@@ -1894,7 +2110,28 @@ Phase 5 ────────────────────────
 - **测试**：`uv run pytest` + `uv run pytest --cov=...`
 - **Lint/Format**：`uv run ruff format . && uv run ruff check .`
 - **migration**：可逆 schema migration 执行 `uv run alembic upgrade head` / `uv run alembic downgrade -1`；data reshape / destructive cleanup 执行 dry-run、快照校验、upgrade，不要求 downgrade
+- **architecture guardrails**：`scripts/architecture-guardrails.sh` 必须聚合 §7.5 核心 5 条 + I3 capability 注入/import 边界自动检查，并可被 pre-commit / CI 复用
 - **不在 main 上直接开发**：日常单任务开发从 `develop` 切 `feature/*`、`fix/*`、`chore/*` 等分支
+
+### 11.7 IntegrationLab / simulator / replay 规范
+
+- **正式 port contract 优先**：WMS/ECS simulator、sandbox profile、scenario runner 只能通过正式 port contract、callback normalizer 和 RuntimeInbox 进入系统；禁止测试专用 service 直写 runtime 状态。
+- **合同 profile 固定**：每次联调 session 必须记录 `provider_code + contract_version + fixture_set`；RUNNING session 不允许热切 profile。
+- **回放可断言**：ScenarioReplayRunner 必须校验 active projection diff、RuntimeTimeline 顺序、RuntimeIntentLog 幂等、DeviceCommand 终态和 ReconciliationRecord；禁止只看日志判断通过。
+- **RuntimeInbox 人工重放**：人工重放只能面向 `DEAD_LETTER` 或明确标记为可重放的 `FAILED` 记录；必须生成新的 `replay_inbox_id`、记录 `replay_of_inbox_id`、操作者、原因、payload_hash、source_event_id 和 idempotency_key；不得原地修改历史 payload、attempt_count、status 或 source evidence。
+- **联调数据可清理**：recording、fixture、sandbox evidence 必须有环境标签、保留期和脱敏规则，不得混入生产 evidence 统计。
+
+### 11.8 Toggle 管理规范
+
+- **只允许 typed toggle**：toggle 只用于 release/ops 调试、provider version、adapter path 或调度策略切换；禁止裸字符串配置改变状态机语义。
+- **必须短生命周期**：每个 toggle 必须声明 owner、expiry、scope、default、rollback 和测试矩阵；过期 toggle 在同一 Phase 清理。
+- **不能绕过安全门禁**：toggle 不得关闭 HMAC、nonce、idempotency、ECS IDLE 准入、RuntimeHold、evidence 写入或 reconciliation 隔离。
+
+### 11.9 Observability contract 规范
+
+- **稳定命名**：WMS/ECS HTTP、callback normalize、RuntimeInbox claim、RuntimeIntentLog dispatch、DeviceCommand ACK/RESULT、ScenarioReplayRunner 必须有稳定 span name、metric name、log event name。
+- **稳定属性**：`trace_id`、`correlation_id`、`provider_code`、`contract_version`、`operation_kind`、`command_code`、`source_event_id`、`workline_code`、`execution_session_id?` 使用统一命名，不随 provider DTO 改动。
+- **日志不是合同**：临时 debug log 不能替代 metric/span/evidence；生产问题复盘必须能从 trace、metric、evidence 和 replay scenario 交叉验证。
 
 ---
 
@@ -1952,10 +2189,11 @@ Phase 5 ────────────────────────
 
 实施细节（字段定义、状态机转移表、HMAC 合同、typed envelope schema、PlaneSceneView/Snapshot schema 等）**不在本文展开为独立 SPEC**。当对应 Phase 启动前或启动时，按需生成独立 SPEC：
 
-- **Phase 1 启动时** → 写 `wms-integration-ports-spec.md`（MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / Reconciliation 各 port 详细字段，并引用 `docs/integration/wms_rcs_interface_requirements.md` 的 P0/P1 接口清单）、`runtime-orchestration-spec.md`（ExecutionSession / RuntimeInbox / RuntimeIntentLog / ExecutionCorrelation 最小骨架）
+- **Phase 0 启动时** → 写 `external-contract-profile-spec.md`（provider_code、contract_version、runtime_capabilities、inbound_normalizers、field mapping、timeout/retry、fixture set、unsupported actions）、`integration-lab-and-simulator-spec.md`（WMS/ECS simulator、sandbox provider profile、scenario runner、contract fixture 与环境隔离）、`architecture-guardrails-spec.md`（§7.5 核心 5 条不变量 + I3 capability 注入/import 边界的脚本入口、测试目录、失败示例、CI/pre-commit 接入方式）
+- **Phase 1 启动时** → 写 `wms-integration-ports-spec.md`（MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery 各 port 详细字段，并引用 `docs/integration/wms_rcs_interface_requirements.md` 的 P0/P1 接口清单）、`runtime-orchestration-spec.md`（ExecutionSession / ExecutionWorkItem / RuntimeInbox / RuntimeIntentLog / ExecutionCorrelation 最小骨架；统一 §4.1 与 §9.2 的字段、索引、lease、deadline、idempotency 和对象级 work item 与 session 的并发边界）
 - **Phase 2 启动时** → 写 `legacy-runtime-migration-spec.md`（旧 WorkLine/plugin/runtime 执行能力迁移、删除和 WorkLine 清空顺序）
-- **Phase 3 启动时** → 写 `fulfillment-state-machine-spec.md`（11 态机完整转移图 + 4 timeout 时长表 + BLOCKED_BY_CB 集成）、`reconciliation-manager-spec.md`（触发矩阵 + 隔离动作 + owner-scoped resolution decision + 5/30 分钟升级）、`plane-read-model-spec.md`（PlaneSceneView/Snapshot 字段 + 容量上限 + RBAC 矩阵）、`external-callback-auth-spec.md`（HMAC canonical + nonce TTL + allow-list）、`device-dispatch-policy-spec.md`（能力选择 + deadline + 状态快照 TTL）
-- **Phase 4 启动时** → 写 `material-location-query-spec.md`、`workline-active-objects-spec.md`、`fulfillment-provider-adapter-spec.md`
+- **Phase 3 启动时** → 写 `fulfillment-state-machine-spec.md`（11 态机完整转移图 + 4 timeout 时长表 + BLOCKED_BY_CB 出站阻塞 + CB 恢复期 late callback 入站 evidence 合同）、`reconciliation-manager-spec.md`（触发矩阵 + 隔离动作 + owner-scoped resolution decision + 5/30 分钟升级）、`plane-read-model-spec.md`（PlaneSceneView/Snapshot 字段 + 容量上限 + RBAC 矩阵）、`external-callback-auth-spec.md`（HMAC canonical + nonce TTL + allow-list）、`device-dispatch-policy-spec.md`（能力选择 + deadline + 状态快照 TTL）、`scenario-replay-spec.md`（录制、脱敏、deterministic replay、断言矩阵）、`observability-contract.md`（span/metric/log 命名与稳定 attributes）、`runtime-toggle-governance.md`（typed toggle 分类、owner/expiry/scope/default/rollback/test matrix）
+- **Phase 4 启动时** → 写 `material-location-query-spec.md`、`workline-active-objects-spec.md`、`sorter-inbound-capability-spec.md`（必须展开粗分机正常流、满箱交换前置分流、分拣机正常流、满箱交换区/分拣机 STATION 边界、`rack_code + rack_side` 批次分组、`CHANGE_RACK_FACE` 独立履约、已交换物料排除逐件分拣、`CellReservation`、授权料箱 resolve、扫码平台预取互锁及 manifest validator、物料 work item 与料箱 work item join 条件、本地物理事实先落与 WMS 同步/对账状态、CTU 父请求聚合子 work item 查询视图）、`smt-ng-wms-reconciliation-spec.md`；`fulfillment-provider-adapter-spec.md` 仅在 §10.5 RCS/AGV/CTU 直连触发条件满足时生成，生产前默认不写
 - **Phase 5 启动时** → 写 `legacy-cleanup-execution-plan.md`，逐文件列出 delete / rebuild / move / keep-contract、是否承载 Phase 4 业务语义、对应 capability/port/contract tests、允许 drop 的前置条件和数据库 drop 顺序
 
 **为何不在本文展开**：
@@ -1973,9 +2211,11 @@ Phase 5 ────────────────────────
 | 3 | typed `ExternalReference` + `EvidenceEnvelope` | [`0003-typed-external-reference-evidence.md`](adr/workline-restructuring/0003-typed-external-reference-evidence.md) |
 | 4 | plane 接口 RBAC + 容量上限 + 极态 | [`0004-plane-rbac-bounded-snapshot.md`](adr/workline-restructuring/0004-plane-rbac-bounded-snapshot.md) |
 | 5 | idempotency_key 复合主键 + request_hash | [`0005-idempotency-composite-key.md`](adr/workline-restructuring/0005-idempotency-composite-key.md) |
-| 6 | External callback body HMAC + nonce TTL | [`0006-external-callback-hmac.md`](adr/workline-restructuring/0006-external-callback-hmac.md) |
+| 6 | External callback body HMAC + nonce TTL | [`0006-wms-callback-hmac.md`](adr/workline-restructuring/0006-wms-callback-hmac.md) |
 | 7 | ExecutionCorrelation correlation key | [`0007-execution-correlation-key.md`](adr/workline-restructuring/0007-execution-correlation-key.md) |
 | 8 | Authority Matrix | [`0008-authority-matrix.md`](adr/workline-restructuring/0008-authority-matrix.md) |
+
+**ADR 编号约定**：ADR 是"已做出的决策记录"，不预先占位编号。Phase 1 CEO-013 与 Phase 3 ENG-020 / ENG-021 / ENG-022 任务完成时会产生对应 ADR，ID 在写入时按下一个可用编号分配，不在本表预留行。
 
 ### 13.3 现有相关文档
 
@@ -1993,8 +2233,18 @@ Phase 5 ────────────────────────
 | --- | --- |
 | AutoStore, [Warehouse Execution System: Enhancing Efficiency](https://www.autostoresystem.com/insights/warehouse-execution-system-enhancing-efficiency) | WES 位于 WMS 与现场自动化之间，承担执行编排、自动化衔接和效率优化；支撑本设计中 WMS 权威 + WES 编排 + ECS 执行边界 |
 | Blue Yonder, [Warehouse Execution](https://blueyonder.com/solutions/warehouse-management/warehouse-execution) | WES 需要做实时执行、资源协调和自动化设备协同；支撑 DeviceDispatchPolicy、Runtime/Orchestration 和 plane snapshot 的目标 |
+| Warehouse Automation, [Warehouse Execution Software Implementation](https://www.warehouseautomation.org/2024/10/01/warehouse-execution-software-implementation/) | WES 实施应在上线前使用 emulator 做高性能测试和缺陷暴露；支撑 IntegrationLab、WMS/ECS simulator、scenario runner 与现场联调前门禁 |
+| Conveyco, [Horizon WES Incorporates Emulators to Reduce Implementation Time & Cost](https://www.conveyco.com/news/horizon-warehouse-execution-software-wes-incorporates-emulators-to-reduce-implementation-time-cost/) | WES emulator 可在安装前测试系统并支持系统修改、容量增长、SKU 增长等场景；支撑硬件/WMS 未稳定时的 sandbox 联调与 replay fixture |
+| Martin Fowler, [Feature Toggles](https://martinfowler.com/articles/feature-toggles.html) | Feature toggle 可支持持续交付和运行时切换，但必须分类和治理；支撑 typed release/ops toggle、owner/expiry/scope/default/rollback/test matrix |
+| OpenTelemetry, [Trace Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/general/trace/) | OpenTelemetry 为 span 和跨技术操作定义通用语义属性；支撑 WMS/ECS/provider 调用、callback、runtime、device command 和 replay 的 observability contract |
 | GS1, [EPCIS and CBV Implementation Guideline](https://www.gs1.org/standards/epcis-and-cbv-implementation-guideline/current-standard) | 可观察对象事件应表达 what/where/when/why/source；支撑 `RuntimeLocationEvent` 与位置事实投影契约 |
 | Webhooks.fyi, [Replay Prevention](https://webhooks.fyi/security/replay-prevention) | 外部 callback 应使用 timestamp/nonce/body hash 防重放；支撑 External callback HMAC、nonce TTL 和 payload hash |
+| Software Engineering Institute, [Architecture Tradeoff Analysis Method (ATAM)](https://www.sei.cmu.edu/our-work/projects/display.cfm?customel_datapageid_4050=21328) | 架构评审应基于场景驱动覆盖 maintainability/performance/scalability/security 多维度质量属性；支撑 §8 非功能性设计、§7.5 不变量分级和 §10.4 Phase 3 完成门禁的具体场景 |
+| Martin Fowler, [Strangler Fig Application](https://martinfowler.com/bliki/StranglerFigApplication.html) | 通过逐步替换遗留能力降低一次性重写风险；支撑 §3.8 目标态契约、§10.3.1 B 方案回退路径与 §11.5 Legacy 清理规范的分阶段破坏性切换 |
+| Microsoft Architecture Center, [Anti-Corruption Layer pattern](https://learn.microsoft.com/en-us/azure/architecture/patterns/anti-corruption-layer) | ACL 通过 facade/adapter 隔离不同子系统模型，防止外部模型污染内部领域；支撑 §3.4 Authority Matrix、§3.5 capability 注入边界与 §7.5 不变量 C1/I3 |
+| Refactoring.Guru, [Refactoring Techniques](https://refactoring.guru/refactoring/techniques) | 大型重构必须分阶段、可逆、用测试保护行为；支撑 §10 五阶段 critical path、§10.3.1 B 方案回退路径、§11.1 行为契约测试 |
+| Spotify Engineering, [How We Improved Developer Productivity](https://engineering.atspotify.com/2023/03/how-we-improved-developer-productivity-for-our-deployment-engineers) | 架构评审应聚焦避免过早抽象、对齐团队容量、降低实施摩擦；支撑 §3.1 KISS/YAGNI 应用、§10.7 Effort 估算与 §3.5.1 ExternalContractProfile 的"按需触发"原则 |
+| OpenTelemetry, [Sampling](https://opentelemetry.io/docs/concepts/sampling/) | trace sampling 策略需在数据量、可观测性与成本间平衡；支撑 §8.4 现场运行默认 100%、压测/replay 可独立采样、异常 trace 必留的 Phase 3 决策点 |
 
 ### 13.5 评审存档
 
@@ -2006,7 +2256,7 @@ Phase 5 ────────────────────────
 
 | ID | 回归结果 | 本文落点 |
 | --- | --- | --- |
-| C1 | 选择破坏性方案 B：`ConveyorQueueMembership` + `conveyor_queue_memberships`，旧 enum/table 删除 | §3.7 |
+| C1 | 选择破坏性方案 B：`ConveyorQueueMembership` + `conveyor_queue_memberships`，旧 enum/table 删除 | §3.8 |
 | C2 | 补 B 方案暂停/回退条件，不恢复旧兼容，只缩小重构范围 | §10.3.1 |
 | C3 | 补 WES 内部 idempotency key 命名空间与 operation_kind 细分 | §5.4 |
 | M1 | plane 实时性分级：scene 1 Hz，snapshot SSE + 250ms fallback，events SSE | §5.2 |
@@ -2030,7 +2280,7 @@ Phase 5 ────────────────────────
 | Q4 | B 方案失败时按 §10.3.1 暂停或降级到 C/D，不恢复旧兼容 | §10.3.1 |
 | Q5 | required 设备 OFFLINE/UNKNOWN/MAINTENANCE 阻塞 WorkLine 启动；optional 设备只降级能力 | §9.6 |
 | Q6 | 物理现场 RECONCILING 采用 ECS/device push + WES pull 双通道 | §6.4 |
-| Q7 | 未来直连 RCS/AGV/CTU 在 provider adapter 层差异化，不扩散到 runtime/handling | §3.5 / §10.5 |
+| Q7 | RCS/AGV/CTU 直连仅作条件触发扩展；触发后在 provider adapter 层差异化，不扩散到 runtime/handling | §3.5 / §10.5 |
 | Q8 | WES 内部 idempotency key 使用 `WES-{OPERATION_KIND}-{HASH}` 命名空间 | §5.4 |
 | Q9 | Event_Push 响应体固定 ACK，响应拦截器拒绝 command-like 字段 | §7.1 / §7.5 |
 | Q10 | Legacy 清理矩阵移入 Phase 5，Phase 4 聚焦后续子领域能力 | §10.5 / §10.6 |
@@ -2043,6 +2293,15 @@ WorkLine 配置
   |
   | manifest/config pin
   v
+inbound callback lane
+  WMS/RCS/ECS/device callback
+        |
+        v
+  InboundEventPort (WmsEventPort / DeviceEventPort normalizer)
+        |
+        v
+  RuntimeInbox
+
 runtime/orchestration
   +-- ExecutionSession (session aggregate / PK owner)
   |     +-- RuntimeInbox        <- WMS/RCS/ECS/device callback evidence
@@ -2063,13 +2322,11 @@ runtime/orchestration
         |      +-- ResourceStateEvent (ExternalReference + EvidenceEnvelope)
         |
         +--> wms_integration (ACL)
-        |      +-- WmsFulfillmentPort / WmsEventPort / WmsReconciliationPort
+        |      +-- WmsFulfillmentPort
         |      +-- WmsFulfillmentRequest (11 态机 + 4 timeout owner)
-        |      +-- WMS/RCS callback -> RuntimeInbox
         |
         +--> device / DeviceCommandPort
                +-- DeviceCommand -> ECS/device upper system
-               +-- ECS/device event/result callback -> RuntimeInbox
 
 material (WES 根实体)
   +-- material_units.current_session_correlation_id (correlation key)
