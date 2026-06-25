@@ -51,6 +51,7 @@ cd "$REPO_ROOT"
 VIOLATIONS=0
 WARNINGS=0
 ALLOWLIST_KEYS=""
+TODAY="${ARCHITECTURE_GUARDRAILS_TODAY:-$(date +%F)}"
 
 # allowlist 读取: 缓存为 "rule:path" 换行分隔的字符串
 load_allowlist() {
@@ -58,7 +59,7 @@ load_allowlist() {
     if [[ ! -f "$ALLOWLIST" ]]; then
         return
     fi
-    # 格式: rule_id|path|reason|expires_at|legacy_entry_id
+    # 格式: rule_id|path|reason|expires_at|legacy_entry_id|drop_phase
     ALLOWLIST_KEYS="$(awk -F'|' 'NF>=2 && $1 !~ /^#/ {print $1":"$2}' "$ALLOWLIST" 2>/dev/null || true)"
 }
 
@@ -66,14 +67,18 @@ is_allowlisted() {
     local rule="$1" path="$2"
     local key="$rule:$path"
     [[ -z "$ALLOWLIST_KEYS" ]] && return 1
-    # 精确或前缀匹配
-    if echo "$ALLOWLIST_KEYS" | grep -qF "$key"; then
+    # 精确匹配
+    if printf '%s\n' "$ALLOWLIST_KEYS" | grep -qxF "$key"; then
         return 0
+    fi
+    # R-I3b 只能逐文件枚举，不能靠目录前缀覆盖未来 capability import。
+    if [[ "$rule" == "R-I3b" ]]; then
+        return 1
     fi
     # 前缀匹配 (allowlist path 可为目录前缀)
     local k
     for k in $ALLOWLIST_KEYS; do
-        if [[ "$key" == "$k"* ]]; then
+        if [[ "$k" == "$rule:"* && "$key" == "$k"* ]]; then
             return 0
         fi
     done
@@ -92,6 +97,52 @@ emit_violation() {
     echo "  fix: $fix" >&2
     echo "" >&2
     VIOLATIONS=$((VIOLATIONS + 1))
+}
+
+run_python() {
+    if command -v uv >/dev/null 2>&1; then
+        uv run python "$@"
+        return
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 "$@"
+        return
+    fi
+    if command -v python >/dev/null 2>&1 && python -c 'import sys; sys.exit(0 if sys.version_info[0] == 3 else 1)' >/dev/null 2>&1; then
+        python "$@"
+        return
+    fi
+    echo "[ALLOWLIST] 未找到 Python 3 解释器，无法解析 legacy-cleanup-matrix.csv" >&2
+    return 127
+}
+
+matrix_drop_phase_for_entry() {
+    local legacy_entry_id="$1"
+    [[ -z "$legacy_entry_id" || ! -f docs/architecture/legacy-cleanup-matrix.csv ]] && return 1
+    run_python - "$legacy_entry_id" <<'PY'
+import csv
+import sys
+
+legacy_entry_id = sys.argv[1]
+with open("docs/architecture/legacy-cleanup-matrix.csv", newline="", encoding="utf-8") as f:
+    for row in csv.DictReader(f):
+        if row["entry_id"] == legacy_entry_id:
+            print(row["drop_phase"])
+            sys.exit(0)
+sys.exit(1)
+PY
+}
+
+is_valid_date() {
+    local value="$1"
+    local parsed=""
+    [[ "$value" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+    if parsed="$(date -j -f "%Y-%m-%d" "$value" "+%F" 2>/dev/null)"; then
+        [[ "$parsed" == "$value" ]]
+        return
+    fi
+    parsed="$(date -d "$value" "+%F" 2>/dev/null)" || return 1
+    [[ "$parsed" == "$value" ]]
 }
 
 # --- C1: 内部域不得 import WMS DTO/client/provider ---
@@ -174,20 +225,47 @@ validate_allowlist() {
         lineno=$((lineno + 1))
         [[ "$row" =~ ^# ]] && continue
         [[ -z "$row" ]] && continue
-        IFS='|' read -r rule_id path reason expires_at legacy_entry_id <<<"$row"
+        IFS='|' read -r rule_id path reason expires_at legacy_entry_id drop_phase <<<"$row"
         if [[ -z "$rule_id" || -z "$path" ]]; then
             echo "[ALLOWLIST] 行 $lineno: 缺 rule_id 或 path" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
             continue
         fi
+        if [[ -z "$legacy_entry_id" ]]; then
+            echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 legacy_entry_id" >&2
+            VIOLATIONS=$((VIOLATIONS + 1))
+        fi
+        if [[ -z "$drop_phase" ]]; then
+            echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 drop_phase" >&2
+            VIOLATIONS=$((VIOLATIONS + 1))
+        fi
+        if [[ "$rule_id" == "R-I3b" && ( "$path" == */ || -d "$path" ) ]]; then
+            echo "[ALLOWLIST] 行 $lineno ($rule_id $path): R-I3b 必须逐文件枚举, 禁止目录前缀" >&2
+            VIOLATIONS=$((VIOLATIONS + 1))
+        fi
         if [[ -z "$expires_at" ]]; then
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 expires_at (无过期视为失败)" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
+        elif ! is_valid_date "$expires_at"; then
+            echo "[ALLOWLIST] 行 $lineno ($rule_id $path): expires_at 日期无效 '$expires_at'" >&2
+            VIOLATIONS=$((VIOLATIONS + 1))
+        elif [[ "$expires_at" < "$TODAY" ]]; then
+            if [[ "$PHASE" == "phase2" ]]; then
+                echo "[ALLOWLIST] 行 $lineno ($rule_id $path): allowlist 已过期 $expires_at" >&2
+                VIOLATIONS=$((VIOLATIONS + 1))
+            else
+                echo "[ALLOWLIST] 行 $lineno ($rule_id $path): allowlist 已过期 $expires_at (phase1 warning)" >&2
+                WARNINGS=$((WARNINGS + 1))
+            fi
         fi
         # legacy_entry_id 必须能在 legacy-cleanup-matrix.csv 找到
         if [[ -n "$legacy_entry_id" && -f docs/architecture/legacy-cleanup-matrix.csv ]]; then
-            if ! grep -qF "$legacy_entry_id" docs/architecture/legacy-cleanup-matrix.csv 2>/dev/null; then
-                echo "[ALLOWLIST] 行 $lineno ($rule_id $path): legacy_entry_id '$legacy_entry_id' 未在 legacy-cleanup-matrix.csv 找到" >&2
+            matrix_drop_phase="$(matrix_drop_phase_for_entry "$legacy_entry_id" || true)"
+            if [[ -z "$matrix_drop_phase" ]]; then
+                echo "[ALLOWLIST] 行 $lineno ($rule_id $path): legacy_entry_id 精确匹配失败 '$legacy_entry_id'" >&2
+                VIOLATIONS=$((VIOLATIONS + 1))
+            elif [[ -n "$drop_phase" && "$drop_phase" != "$matrix_drop_phase" ]]; then
+                echo "[ALLOWLIST] 行 $lineno ($rule_id $path): drop_phase 不一致 allowlist=$drop_phase matrix=$matrix_drop_phase" >&2
                 VIOLATIONS=$((VIOLATIONS + 1))
             fi
         fi

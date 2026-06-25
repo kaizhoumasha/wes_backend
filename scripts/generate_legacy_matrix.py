@@ -10,6 +10,7 @@ strategy / drop_phase / risk。发现命令对齐 SPEC §Proposed Change 的入�
 
 from __future__ import annotations
 
+import ast
 import csv
 import re
 import subprocess
@@ -106,7 +107,9 @@ class Entry:
     strategy: str = ""
     drop_phase: str = ""
     risk: str = "LOW"
+    target_path: str = ""
     target_capability: str = ""
+    blocking_tests: str = ""
     notes: str = field(default="", repr=False)
 
 
@@ -149,6 +152,227 @@ def assign_strategy(business_semantics: str, entry_type: str) -> tuple[str, str,
     return "keep-contract", "phase5-tech", "LOW"
 
 
+def _target_runtime_path(entry_type: str, path: str) -> str:
+    """按入口类型给 runtime/orchestration 迁移目标目录。"""
+    type_targets = {
+        "model": "src/app/runtime/orchestration/models/",
+        "repository": "src/app/runtime/orchestration/repositories/",
+        "api_route": "src/app/runtime/orchestration/v1/",
+        "test": "tests/contracts/workline/",
+    }
+    if entry_type in type_targets:
+        return type_targets[entry_type]
+    return "src/app/runtime/orchestration/" if "workline_runtime" in path else "src/app/runtime/orchestration/services/"
+
+
+def _first_matching_value(text: str, rules: list[tuple[tuple[str, ...], str]], default: str) -> str:
+    """按 marker 顺序返回第一个匹配值。"""
+    return next((value for markers, value in rules if any(marker in text for marker in markers)), default)
+
+
+def _target_move_path(entry_type: str, path: str) -> str:
+    move_targets = [
+        (("model",), "src/app/workline/models/"),
+        (("repositories",), "src/app/workline/repositories/"),
+        (("services",), "src/app/workline/services/"),
+    ]
+    if entry_type == "api_route":
+        return "src/app/workline/v1/"
+    if entry_type == "test":
+        return "tests/contracts/workline/"
+    return _first_matching_value(path, move_targets, "src/app/workline/")
+
+
+def _target_phase4_capability(text: str) -> tuple[str, str]:
+    phase4_targets = [
+        (("rough_sorter", "粗分机"), "RoughSorterInboundCapability.run"),
+        (("full_box", "满箱"), "FullBoxExchangeCapability.execute"),
+        (("sorter_inbound", "smt_sorting", "分拣机"), "SorterInboundCapability.run"),
+        (("smt_inbound",), "SmtInboundHandoffCapability.execute"),
+        (("ng_return", "ng"), "NgReturnCapability.process"),
+        (("single_layer_rack", "单层机架"), "SingleLayerRackCapability.orchestrate"),
+        (("station_lease",), "StationLeaseCapability.reserve"),
+        (("bin_cell_reservation",), "BinCellReservationCapability.reserve"),
+        (("material_identity",), "MaterialIdentityCapability.resolve"),
+        (("six_in_one",), "SixInOneContractCapability.validate"),
+        (("start_admission", "admission"), "StartAdmissionCapability.evaluate"),
+        (("smt_usage",), "SmtUsagePolicyCapability.evaluate"),
+    ]
+    capability = _first_matching_value(text, phase4_targets, "Phase4BusinessCapability.execute")
+    return "src/app/runtime/capabilities/phase4/", capability
+
+
+def _target_runtime_capability(entry_type: str, path: str, text: str) -> tuple[str, str]:
+    runtime_targets = [
+        (("inbox",), "RuntimeInboxService.process_one"),
+        (("outbox", "dispatch", "effect"), "RuntimeIntentLog.dispatch_effect"),
+        (("timeline", "trace"), "RuntimeTimelineQueryService.query"),
+        (("hold",), "RuntimeHoldService.evaluate"),
+        (("session", "orchestrat"), "RuntimeSessionService.advance"),
+    ]
+    capability = _first_matching_value(text, runtime_targets, "RuntimeOrchestrationService.execute")
+    return _target_runtime_path(entry_type, path), capability
+
+
+def resolve_migration_target(
+    business_semantics: str,
+    entry_type: str,
+    path: str,
+    symbol: str,
+    strategy: str,
+) -> tuple[str, str]:
+    """返回 (target_path, target_capability)。
+
+    Phase 0 不生成新 runtime 代码，但矩阵必须给后续 destructive cleanup 一个明确承载者。
+    """
+    text = f"{business_semantics} {path} {symbol}".lower()
+    if strategy == "move":
+        return _target_move_path(entry_type, path), ""
+
+    if strategy != "rebuild":
+        return "", ""
+
+    if "跨域 session" in business_semantics:
+        return "src/app/runtime/orchestration/models/execution_correlation.py", "ExecutionCorrelation.correlation_id"
+    if "跨域 WMS import" in business_semantics or "wms_integration" in text:
+        return "src/app/runtime/orchestration/ports/wms_fulfillment.py", "WmsFulfillmentPort.request_transport"
+    if "import device" in text or "device." in text or "device_" in text or "device command" in text:
+        return "src/app/runtime/orchestration/ports/device_command.py", "DeviceCommandPort.dispatch"
+    if "执行状态" in business_semantics:
+        return _target_runtime_capability(entry_type, path, text)
+    if "[phase4]" in business_semantics:
+        return _target_phase4_capability(text)
+    return _target_runtime_path(entry_type, path), "RuntimeOrchestrationService.execute"
+
+
+def resolve_blocking_tests(business_semantics: str, entry_type: str, path: str, strategy: str) -> str:
+    """返回删除/迁移前必须通过的测试清单，CSV 用分号分隔。"""
+    text = f"{business_semantics} {path}".lower()
+    if entry_type == "test":
+        return path
+    rules = [
+        (
+            ("rough_sorter", "粗分机"),
+            "tests/characterization/workline_legacy/test_business_semantics_characterization.py;"
+            "tests/contracts/workline/test_rough_sorter_inbound_contract.py",
+        ),
+        (
+            ("full_box", "满箱"),
+            "tests/characterization/workline_legacy/test_business_semantics_characterization.py;"
+            "tests/contracts/workline/test_full_box_exchange_contract.py",
+        ),
+        (
+            ("sorter_inbound", "smt_sorting", "分拣机"),
+            "tests/characterization/workline_legacy/test_business_semantics_characterization.py",
+        ),
+        (
+            ("执行状态",),
+            "tests/architecture/test_c5_runtime_inbox_state_machine.py;"
+            "tests/contracts/workline/test_runtime_snapshot_contract.py",
+        ),
+        (("跨域 session",), "tests/architecture/test_c2_cross_domain_fk_guardrail.py"),
+        (
+            ("跨域 WMS import",),
+            "tests/architecture/test_c1_wms_import_guardrail.py;"
+            "tests/contracts/workline/test_external_contract_profile_fixtures.py",
+        ),
+        (
+            ("WorkLine 配置",),
+            "tests/contracts/workline/test_start_admission_contract.py;"
+            "tests/workline_runtime/test_plugin_manifest_and_topology.py",
+        ),
+        (("技术残留",), "tests/characterization/workline_legacy/test_business_semantics_characterization.py"),
+    ]
+    default = (
+        "tests/characterization/workline_legacy/test_business_semantics_characterization.py"
+        if strategy == "delete"
+        else "tests/contracts/workline/;tests/architecture/"
+    )
+    return _first_matching_value(f"{business_semantics} {text}", rules, default)
+
+
+SeedPath = tuple[str, str, str, str, str, str]
+
+
+def _ri3b_business_semantics(line: str) -> str:
+    if "src.app.wms_integration." in line:
+        return "capability import wms_integration 实现 (R-I3b seed)"
+    return "capability import device 实现 (R-I3b seed)"
+
+
+def _append_ri3b_seed_paths(seed_paths: list[SeedPath]) -> None:
+    ri3b_pattern = r"from src\.app\.(wms_integration|device)\.(services|models)\..* import"
+    for line in git_grep(ri3b_pattern, ["src/app/workline/services", "src/app/workline/repositories"]):
+        m = re.match(r"([^:]+):(\d+):", line)
+        if not m:
+            continue
+        path = m.group(1)
+        etype = "repository" if "/repositories/" in path else "service"
+        seed_paths.append(
+            (
+                path,
+                "workline",
+                etype,
+                _ri3b_business_semantics(line),
+                "phase2",
+                "MEDIUM",
+            )
+        )
+
+
+def _exported_symbols_from_all(path: Path) -> list[str]:
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return []
+
+    symbols: list[str] = []
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets):
+            continue
+        if not isinstance(node.value, ast.List | ast.Tuple):
+            continue
+        symbols.extend(
+            item.value for item in node.value.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        )
+    return symbols
+
+
+def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths: list[SeedPath]) -> None:
+    for path, owner, etype, bs, phase, risk in seed_paths:
+        full = REPO_ROOT / path
+        if not full.exists():
+            continue
+        sym = "<file>#R-I3b" if "R-I3b seed" in bs else "<file>"
+        eid = f"legacy:{path}:{sym}"
+        if eid in seen:
+            continue
+        seen.add(eid)
+        target_path, target_capability = resolve_migration_target(bs, etype, path, sym, "rebuild")
+        blocking_tests = resolve_blocking_tests(bs, etype, path, "rebuild")
+        entries.append(
+            Entry(
+                entry_id=eid,
+                entry_type=etype,
+                relative_path=path,
+                symbol_or_route=sym,
+                current_owner=owner,
+                business_semantics=bs,
+                phase4_carrier=False,
+                classification_status="final",
+                strategy="rebuild",
+                target_path=target_path,
+                target_capability=target_capability,
+                blocking_tests=blocking_tests,
+                drop_phase=phase,
+                risk=risk,
+                notes="guardrail_seed_scope",
+            )
+        )
+
+
 def parse_entries() -> list[Entry]:
     entries: list[Entry] = []
     seen: set[str] = set()
@@ -162,6 +386,8 @@ def parse_entries() -> list[Entry]:
         seen.add(eid)
         bs, p4 = classify_business_semantics(sym, rel)
         strat, phase, risk = assign_strategy(bs, entry_type)
+        target_path, target_capability = resolve_migration_target(bs, entry_type, rel, sym, strat)
+        blocking_tests = resolve_blocking_tests(bs, entry_type, rel, strat)
         entries.append(
             Entry(
                 entry_id=eid,
@@ -172,6 +398,9 @@ def parse_entries() -> list[Entry]:
                 business_semantics=bs,
                 phase4_carrier=p4,
                 strategy=strat,
+                target_path=target_path,
+                target_capability=target_capability,
+                blocking_tests=blocking_tests,
                 drop_phase=phase,
                 risk=risk,
             )
@@ -189,10 +418,13 @@ def parse_entries() -> list[Entry]:
         if m:
             add(m.group(1), m.group(3), "model", "workline")
 
-    # 3. Services (class)
-    for line in git_grep(r"^class [A-Za-z_]", ["src/app/workline/services"]):
-        m = re.match(r"([^:]+):(\d+):class ([A-Za-z_][A-Za-z0-9_]*)", line)
-        if m and "Service" in m.group(3):
+    # 3. Services (class + def + async def)
+    for line in git_grep(
+        r"^class [A-Za-z_]|^def [a-z_]|^async def [a-z_]",
+        ["src/app/workline/services"],
+    ):
+        m = re.match(r"([^:]+):(\d+):(?:class |def |async def )([A-Za-z_][A-Za-z0-9_]*)", line)
+        if m:
             add(m.group(1), m.group(3), "service", "workline")
 
     # 4. Repositories
@@ -217,6 +449,15 @@ def parse_entries() -> list[Entry]:
             owner = "workline_plugins" if "workline_plugins" in path else "workline_runtime"
             etype = "plugin" if "plugin" in path.lower() else "runtime_helper"
             add(path, m.group(3), etype, owner)
+
+    # 6b. plugin/runtime artifact public exports (__all__)
+    for export_root in ("src/workline_runtime", "src/workline_plugins"):
+        for path in sorted((REPO_ROOT / export_root).rglob("*.py")):
+            rel = path.relative_to(REPO_ROOT).as_posix()
+            owner = "workline_plugins" if "workline_plugins" in rel else "workline_runtime"
+            etype = "plugin" if "workline_plugins" in rel else "runtime_helper"
+            for symbol in _exported_symbols_from_all(path):
+                add(rel, symbol, etype, owner)
 
     # 7. tests
     for line in git_grep(
@@ -411,30 +652,9 @@ def parse_entries() -> list[Entry]:
             "MEDIUM",
         ),
     ]
-    for path, owner, etype, bs, phase, risk in seed_paths:
-        full = REPO_ROOT / path
-        if full.exists():
-            sym = "<file>"
-            eid = f"legacy:{path}:{sym}"
-            if eid not in seen:
-                seen.add(eid)
-                entries.append(
-                    Entry(
-                        entry_id=eid,
-                        entry_type=etype,
-                        relative_path=path,
-                        symbol_or_route=sym,
-                        current_owner=owner,
-                        business_semantics=bs,
-                        phase4_carrier=False,
-                        classification_status="final",
-                        strategy="rebuild",
-                        target_capability="",
-                        drop_phase=phase,
-                        risk=risk,
-                        notes="guardrail_seed_scope",
-                    )
-                )
+
+    _append_ri3b_seed_paths(seed_paths)
+    _add_guardrail_seed_entries(entries, seen, seed_paths)
 
     return entries
 
@@ -456,13 +676,15 @@ def main() -> int:
         "phase4_carrier",
         "classification_status",
         "strategy",
+        "target_path",
         "target_capability",
+        "blocking_tests",
         "drop_phase",
         "risk",
         "notes",
     ]
     with out_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
+        writer = csv.DictWriter(f, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         for e in entries:
             writer.writerow(
@@ -476,7 +698,9 @@ def main() -> int:
                     "phase4_carrier": e.phase4_carrier,
                     "classification_status": e.classification_status,
                     "strategy": e.strategy,
+                    "target_path": e.target_path,
                     "target_capability": e.target_capability,
+                    "blocking_tests": e.blocking_tests,
                     "drop_phase": e.drop_phase,
                     "risk": e.risk,
                     "notes": e.notes,

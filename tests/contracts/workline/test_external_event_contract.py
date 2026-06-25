@@ -6,6 +6,8 @@ BC-10: Event_Push HTTP 响应只 ACK, 拦截 command-like 字段。必须通过�
 
 from __future__ import annotations
 
+import pytest
+
 from tests.support.workline_contracts import (
     event_can_advance_correlation,
     validate_event_push_response,
@@ -40,6 +42,13 @@ def test_event_push_response_ack_only_accepted():
     ok, reason = validate_event_push_response({"status": "ACK"})
     assert ok
     assert reason is None
+
+
+@pytest.mark.parametrize("response", [{}, {"status": "OK"}])
+def test_event_push_response_rejects_missing_or_non_ack_status(response):
+    ok, reason = validate_event_push_response(response)
+    assert not ok
+    assert reason == "NON_ACK_STATUS"
 
 
 def test_event_push_response_rejects_command_like_field():

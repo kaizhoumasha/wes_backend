@@ -61,6 +61,13 @@ def test_processing_to_received_on_lease_expiry():
     assert entry.status == "RECEIVED"
 
 
+def test_processing_to_received_rejects_active_lease():
+    """lease_until 尚未过期, 禁止 crash replay 回 RECEIVED。"""
+    entry = RuntimeInboxEntry(status="PROCESSING", lease_until=130.0)
+    with pytest.raises(ValueError, match="lease"):
+        transition(entry, "RECEIVED", now=120.0)
+
+
 @pytest.mark.parametrize(
     "from_status,to_status",
     [

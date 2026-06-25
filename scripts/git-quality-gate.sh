@@ -20,6 +20,7 @@ Checks:
   format    Run only Ruff format check.
   lint      Run only Ruff lint.
   security  Run only Bandit security scan.
+  architecture  Run only architecture guardrails.
 
 Examples:
   ./scripts/git-quality-gate.sh
@@ -122,6 +123,7 @@ run_quality_profile() {
     run_format_check
     run_lint_check
     run_security_check
+    run_architecture_check
 }
 
 run_ci_smoke_profile() {

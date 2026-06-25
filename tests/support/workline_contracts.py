@@ -121,7 +121,7 @@ def validate_event_push_response(response: dict[str, Any]) -> tuple[bool, str | 
     for field_name in COMMAND_LIKE_FIELDS:
         if field_name in response:
             return False, f"COMMAND_LIKE_FIELD_{field_name}"
-    if response.get("status") not in (None, "ACK", "OK"):
+    if response.get("status") != "ACK":
         return False, "NON_ACK_STATUS"
     return True, None
 

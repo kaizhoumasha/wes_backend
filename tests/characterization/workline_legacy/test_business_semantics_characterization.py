@@ -6,6 +6,20 @@ BC-07 分拣机入库 Phase 0 可 pending, 但必须有 fixture draft。
 
 from __future__ import annotations
 
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _assert_characterization_sources_exist(sources: list[str]) -> None:
+    for src in sources:
+        source_path = REPO_ROOT / src
+        assert source_path.exists(), f"characterization 来源缺失: {src}"
+        if source_path.is_file():
+            assert source_path.stat().st_size > 0, f"characterization 来源为空文件: {src}"
+        else:
+            assert any(source_path.iterdir()), f"characterization 来源为空目录: {src}"
+
 
 def test_rough_sorter_inbound_characterization_inputs_extracted():
     """BC-05 输入提取: 粗分机正常入库的旧业务输入已被识别为 characterization 来源。
@@ -19,8 +33,7 @@ def test_rough_sorter_inbound_characterization_inputs_extracted():
         "tests/workline_plugins/test_rough_sorter_contract.py",
         "tests/workline_plugins/test_rough_sorter_plugin.py",
     ]
-    for src in sources:
-        assert src, f"characterization 来源缺失: {src}"
+    _assert_characterization_sources_exist(sources)
 
 
 def test_full_box_exchange_characterization_inputs_extracted():
@@ -34,8 +47,7 @@ def test_full_box_exchange_characterization_inputs_extracted():
         "src/app/workline/domain/services/smt_inbound_handoff_route_service.py",
         "docs/integration/wms_rcs_interface_requirements.md",
     ]
-    for src in sources:
-        assert src, f"characterization 来源缺失: {src}"
+    _assert_characterization_sources_exist(sources)
 
 
 def test_sorter_inbound_characterization_fixture_draft():
@@ -50,5 +62,4 @@ def test_sorter_inbound_characterization_fixture_draft():
         "src/workline_plugins/smt_sorting_inbound/flow_service.py",
         "tests/workline_runtime",  # 分拣机入库相关测试目录
     ]
-    for src in draft_sources:
-        assert src, f"分拣机入库 fixture draft 来源缺失: {src}"
+    _assert_characterization_sources_exist(draft_sources)

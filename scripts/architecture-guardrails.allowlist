@@ -1,11 +1,12 @@
 # Architecture guardrails seed allowlist (Phase 0)
 #
-# 格式: rule_id|path|reason|expires_at|legacy_entry_id
+# 格式: rule_id|path|reason|expires_at|legacy_entry_id|drop_phase
 #   rule_id          C1/C2/C3/C4/R-I3a/R-I3b
-#   path             违规文件路径 (可为目录前缀)
+#   path             违规文件路径 (非 R-I3b 可为目录前缀；R-I3b 必须逐文件枚举)
 #   reason           豁免原因
 #   expires_at       过期日期 YYYY-MM-DD (无过期视为失败)
 #   legacy_entry_id  关联 docs/architecture/legacy-cleanup-matrix.csv 的 entry_id
+#   drop_phase       必须与 legacy-cleanup-matrix.csv 对应 entry 的 drop_phase 一致
 #
 # Phase 0 门禁: 所有 seed 条目引用存在的 legacy_entry_id, drop_phase 与 matrix 一致
 # Phase 1: enforced, allowlist 之外违规阻塞 PR
@@ -14,43 +15,56 @@
 # 删除任意一行后, --phase phase1 必须对对应历史违规返回非零 (证明 enforcement 生效)
 
 # C1: 跨域 WMS import (5 文件, drop_phase=phase2/phase5-tech)
-C1|src/app/callback/services/callback_ingress_service.py|legacy WMS normalizer import, Phase 2 迁 runtime|2026-09-30|legacy:src/app/callback/services/callback_ingress_service.py:<file>
-C1|src/app/rack/services/gateway.py|legacy WMS transport_contract import, rack 域 Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/gateway.py:<file>
-C1|src/app/handling/services/gateway.py|legacy WMS transport_contract import, handling 域 Phase 2 迁移|2026-09-30|legacy:src/app/handling/services/gateway.py:<file>
-C1|src/app/workline/services/single_layer_rack_orchestration_service.py|legacy WMS import, Phase 4 重建|2026-12-31|legacy:src/app/workline/services/single_layer_rack_orchestration_service.py:<file>
-C1|src/app/workline/repositories/debug_data_cleanup_repository.py|legacy WMS evidence import, 调试残留 Phase 5 删除|2026-12-31|legacy:src/app/workline/repositories/debug_data_cleanup_repository.py:<file>
+C1|src/app/callback/services/callback_ingress_service.py|legacy WMS normalizer import, Phase 2 迁 runtime|2026-09-30|legacy:src/app/callback/services/callback_ingress_service.py:<file>|phase2
+C1|src/app/rack/services/gateway.py|legacy WMS transport_contract import, rack 域 Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/gateway.py:<file>|phase2
+C1|src/app/handling/services/gateway.py|legacy WMS transport_contract import, handling 域 Phase 2 迁移|2026-09-30|legacy:src/app/handling/services/gateway.py:<file>|phase2
+C1|src/app/workline/services/single_layer_rack_orchestration_service.py|legacy WMS import, Phase 4 重建|2026-12-31|legacy:src/app/workline/services/single_layer_rack_orchestration_service.py:<file>|phase2
+C1|src/app/workline/repositories/debug_data_cleanup_repository.py|legacy WMS evidence import, 调试残留 Phase 5 删除|2026-12-31|legacy:src/app/workline/repositories/debug_data_cleanup_repository.py:<file>|phase5-tech
 
 # C2 补充: 同时含 C2 跨域 session FK 的 C1 文件
-C2|src/app/rack/services/gateway.py|legacy session FK, rack 域 Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/gateway.py:<file>
-C2|src/app/workline/repositories/debug_data_cleanup_repository.py|legacy session FK, 调试残留 Phase 5 删除|2026-12-31|legacy:src/app/workline/repositories/debug_data_cleanup_repository.py:<file>
+C2|src/app/rack/services/gateway.py|legacy session FK, rack 域 Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/gateway.py:<file>|phase2
+C2|src/app/workline/repositories/debug_data_cleanup_repository.py|legacy session FK, 调试残留 Phase 5 删除|2026-12-31|legacy:src/app/workline/repositories/debug_data_cleanup_repository.py:<file>|phase5-tech
 
 # C2: 跨域 session FK (handling/rack, drop_phase=phase1/phase2)
-C2|src/app/handling/models/bin_transit_membership.py|legacy session FK, Phase 2 删除重建 ConveyorQueueMembership|2026-09-30|legacy:src/app/handling/models/bin_transit_membership.py:<file>
-C2|src/app/handling/models/operation.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/models/operation.py:<file>
-C2|src/app/handling/services/bin_transit_membership_service.py|legacy session FK, Phase 2 随模型删除|2026-09-30|legacy:src/app/handling/services/bin_transit_membership_service.py:<file>
-C2|src/app/handling/services/lifecycle_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/services/lifecycle_service.py:<file>
-C2|src/app/handling/services/operation_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/services/operation_service.py:<file>
-C2|src/app/rack/models/operation.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/models/operation.py:<file>
-C2|src/app/rack/repositories/operation_repository.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/repositories/operation_repository.py:<file>
-C2|src/app/rack/services/operation_service.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/operation_service.py:<file>
-C2|src/app/rack/services/task_lifecycle_service.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/task_lifecycle_service.py:<file>
+C2|src/app/handling/models/bin_transit_membership.py|legacy session FK, Phase 2 删除重建 ConveyorQueueMembership|2026-09-30|legacy:src/app/handling/models/bin_transit_membership.py:<file>|phase2
+C2|src/app/handling/models/operation.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/models/operation.py:<file>|phase1
+C2|src/app/handling/services/bin_transit_membership_service.py|legacy session FK, Phase 2 随模型删除|2026-09-30|legacy:src/app/handling/services/bin_transit_membership_service.py:<file>|phase2
+C2|src/app/handling/services/lifecycle_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/services/lifecycle_service.py:<file>|phase1
+C2|src/app/handling/services/operation_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/services/operation_service.py:<file>|phase1
+C2|src/app/rack/models/operation.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/models/operation.py:<file>|phase2
+C2|src/app/rack/repositories/operation_repository.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/repositories/operation_repository.py:<file>|phase2
+C2|src/app/rack/services/operation_service.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/operation_service.py:<file>|phase2
+C2|src/app/rack/services/task_lifecycle_service.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/task_lifecycle_service.py:<file>|phase2
 
 # C2: 跨域 session FK (resource/wms_integration, drop_phase=phase1)
-C2|src/app/resource/services/projection_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/projection_service.py:<file>
-C2|src/app/resource/services/projection_integrity_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/projection_integrity_service.py:<file>
-C2|src/app/resource/services/relation_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/relation_service.py:<file>
-C2|src/app/resource/services/smt_rack_bin_scheduling_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/smt_rack_bin_scheduling_service.py:<file>
-C2|src/app/resource/models/resource.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/models/resource.py:<file>
-C2|src/app/wms_integration/services/transport_contract.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/wms_integration/services/transport_contract.py:<file>
+C2|src/app/resource/services/projection_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/projection_service.py:<file>|phase1
+C2|src/app/resource/services/projection_integrity_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/projection_integrity_service.py:<file>|phase1
+C2|src/app/resource/services/relation_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/relation_service.py:<file>|phase1
+C2|src/app/resource/services/smt_rack_bin_scheduling_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/services/smt_rack_bin_scheduling_service.py:<file>|phase1
+C2|src/app/resource/models/resource.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/resource/models/resource.py:<file>|phase1
+C2|src/app/wms_integration/services/transport_contract.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/wms_integration/services/transport_contract.py:<file>|phase1
 
 # C2: 跨域 session FK (workline runtime, drop_phase=phase2)
-C2|src/app/workline/models/object_transition_event.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/models/object_transition_event.py:<file>
-C2|src/app/workline/repositories/object_transition_event_repository.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/object_transition_event_repository.py:<file>
-C2|src/app/workline/repositories/sandbox_cleanup_repository.py|legacy session FK, Phase 2 迁移|2026-09-30|legacy:src/app/workline/repositories/sandbox_cleanup_repository.py:<file>
-C2|src/app/workline/services/object_transition_event_service.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/object_transition_event_service.py:<file>
-C2|src/app/workline/services/runtime_reconciliation_service.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/runtime_reconciliation_service.py:<file>
+C2|src/app/workline/models/object_transition_event.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/models/object_transition_event.py:<file>|phase2
+C2|src/app/workline/repositories/object_transition_event_repository.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/object_transition_event_repository.py:<file>|phase2
+C2|src/app/workline/repositories/sandbox_cleanup_repository.py|legacy session FK, Phase 2 迁移|2026-09-30|legacy:src/app/workline/repositories/sandbox_cleanup_repository.py:<file>|phase2
+C2|src/app/workline/services/object_transition_event_service.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/object_transition_event_service.py:<file>|phase2
+C2|src/app/workline/services/runtime_reconciliation_service.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/runtime_reconciliation_service.py:<file>|phase2
 
 # R-I3a/R-I3b: Phase 0 时 src/app/runtime/ 不存在, 预期 0 命中
-# workline 域 legacy capability import wms_integration/device services/models, Phase 2 迁 runtime 时消除
-R-I3b|src/app/workline/services/|legacy capability import wms_integration/device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/single_layer_rack_orchestration_service.py:<file>
-R-I3b|src/app/workline/repositories/|legacy capability import wms_integration/device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/debug_data_cleanup_repository.py:<file>
+# workline 域 legacy capability import wms_integration/device services/models, Phase 2 迁 runtime 时消除。
+# 必须逐文件枚举，禁止目录前缀吞掉未来新增违规。
+R-I3b|src/app/workline/repositories/debug_data_cleanup_repository.py|legacy capability import wms_integration 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/debug_data_cleanup_repository.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/repositories/session_repository.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/session_repository.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/repositories/smt_inbound_handoff_repository.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/smt_inbound_handoff_repository.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/repositories/workline_repository.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/workline_repository.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/services/device_command_gateway.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/device_command_gateway.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/services/operation_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/operation_service.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/services/runtime_hold_query_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/runtime_hold_query_service.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/services/runtime_hold_release_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/runtime_hold_release_service.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/services/runtime_reconciliation_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/runtime_reconciliation_service.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/services/safety_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/safety_service.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/services/single_layer_rack_orchestration_service.py|legacy capability import wms_integration 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/single_layer_rack_orchestration_service.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/services/smt_inbound_handoff_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/smt_inbound_handoff_service.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/services/start_admission_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/start_admission_service.py:<file>#R-I3b|phase2
+R-I3b|src/app/workline/services/trace_query_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/trace_query_service.py:<file>#R-I3b|phase2

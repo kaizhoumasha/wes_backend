@@ -95,27 +95,34 @@ Phase 0 建立 seed allowlist 覆盖已知 legacy 违规，确保 Phase 1 切 en
 ### 6.1 格式
 
 ```
-rule_id|path|reason|expires_at|legacy_entry_id
+rule_id|path|reason|expires_at|legacy_entry_id|drop_phase
 ```
 
 | 字段 | 要求 |
 | --- | --- |
 | `rule_id` | C1/C2/C3/C4/R-I3a/R-I3b |
-| `path` | 违规文件路径（可为目录前缀） |
+| `path` | 违规文件路径；R-I3b 必须逐文件枚举，禁止目录前缀 |
 | `reason` | 豁免原因 |
 | `expires_at` | 过期日期 YYYY-MM-DD（**无过期视为失败**） |
-| `legacy_entry_id` | 关联 `legacy-cleanup-matrix.csv` 的 entry_id（便于随 Phase 5 清理自动过期） |
+| `legacy_entry_id` | 精确关联 `legacy-cleanup-matrix.csv` 第一列 entry_id（便于随 Phase 5 清理自动过期） |
+| `drop_phase` | 必须与 `legacy-cleanup-matrix.csv` 对应 entry 的 `drop_phase` 一致 |
 
 ### 6.2 校验规则（脚本内置，非人工核对）
 
-1. `legacy_entry_id` 必须能在 `legacy-cleanup-matrix.csv` 中找到
-2. `expires_at` 必须存在且可解析；过期行在 phase1 先 warning，phase2+ 失败
-3. 删除任意 seed allowlist 行后，`--phase phase1` 必须对对应历史违规返回非零（证明 enforcement 不是空跑）
+1. `legacy_entry_id` 必须精确匹配 `legacy-cleanup-matrix.csv` 第一列
+2. `drop_phase` 必须与 matrix 对应 entry 一致
+3. `expires_at` 必须存在且可解析；过期行在 phase1 先 warning，phase2+ 失败
+4. R-I3b allowlist 不允许 `src/app/workline/services/`、`src/app/workline/repositories/` 等目录前缀，避免未来违规被历史 seed 覆盖
+5. 删除任意 seed allowlist 行后，`--phase phase1` 必须对对应历史违规返回非零（证明 enforcement 不是空跑）
 
 ## 7. CI/Jenkins 接入
 
-`scripts/git-quality-gate.sh --check architecture`：
-- 调用 `architecture-guardrails.sh --phase ${ARCHITECTURE_PHASE:-phase0}`
+`scripts/git-quality-gate.sh --profile quality` 与 `--check architecture` 均会调用：
+
+```bash
+architecture-guardrails.sh --phase ${ARCHITECTURE_PHASE:-phase0}
+```
+
 - Phase 0 默认 phase0（warn-only）
 - Phase 1 起设 `ARCHITECTURE_PHASE=phase1` 切 enforced
 
@@ -129,7 +136,7 @@ Jenkinsfile `Quality Checks` stage 新增 `Architecture Guardrails` 并行步骤
 4. ✅ 后续 Phase 门禁能以 `--phase` 切换模式
 5. ✅ `scripts/git-quality-gate.sh --check architecture` 已接入
 6. ✅ CI/Jenkins 已接入 architecture guardrails 步骤
-7. ✅ `tests/architecture/` 覆盖 C1-C5 + R-I3a/R-I3b（24 tests passed）
+7. ✅ `tests/architecture/` 覆盖 C1-C5 + R-I3a/R-I3b
 8. ✅ C5 使用 `tests/support/runtime_inbox_contract.py` 目标态模型，不 import legacy `WorklineInbox`
 
 ## 9. 后续 Phase 落地

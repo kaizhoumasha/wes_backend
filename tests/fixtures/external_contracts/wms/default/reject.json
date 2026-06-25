@@ -1,0 +1,24 @@
+{
+  "case_id": "reject",
+  "provider_code": "WMS",
+  "contract_version": "2026-06-25",
+  "expected_port": "WmsFulfillmentPort.request_transport",
+  "direction": "effect",
+  "raw_request": {
+    "transport_request_id": "tr-reject-001",
+    "source_location": "INBOUND_A",
+    "target_location": "BLOCKED_CELL"
+  },
+  "raw_response": {
+    "accepted": false,
+    "reason_code": "TARGET_UNAVAILABLE"
+  },
+  "expected_typed": {
+    "accepted": false,
+    "reason_code": "TARGET_UNAVAILABLE"
+  },
+  "expected_error": {
+    "code": "WMS_REJECTED",
+    "retryable": false
+  }
+}

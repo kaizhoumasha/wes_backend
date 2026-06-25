@@ -45,6 +45,11 @@ def transition(entry: RuntimeInboxEntry, to_status: InboxStatus, *, now: float) 
     legal = LEGAL_TRANSITIONS.get(entry.status, set())
     if to_status not in legal:
         raise ValueError(f"非法转移: {entry.status} -> {to_status}")
+    if entry.status == "PROCESSING" and to_status == "RECEIVED":
+        if entry.lease_until is None:
+            raise ValueError("PROCESSING -> RECEIVED 需要 lease_until")
+        if now < entry.lease_until:
+            raise ValueError("PROCESSING -> RECEIVED 只能在 lease 过期后执行")
 
     entry.status = to_status
     if to_status == "PROCESSING":
