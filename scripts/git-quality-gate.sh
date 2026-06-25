@@ -110,6 +110,14 @@ run_security_check() {
     run_tool bandit -r src/ -f screen
 }
 
+run_architecture_check() {
+    # Phase 0 默认 warn-only; Phase 1 起切 enforced。
+    # 通过 ARCHITECTURE_PHASE 环境变量覆盖 (默认 phase0)。
+    local phase="${ARCHITECTURE_PHASE:-phase0}"
+    log_step "architecture" "architecture-guardrails.sh --phase $phase"
+    bash "$REPO_ROOT/scripts/architecture-guardrails.sh" --phase "$phase"
+}
+
 run_quality_profile() {
     run_format_check
     run_lint_check
@@ -138,6 +146,9 @@ if [[ -n "$CHECK" ]]; then
             ;;
         security)
             run_security_check
+            ;;
+        architecture)
+            run_architecture_check
             ;;
         *)
             echo "Unsupported check: $CHECK" >&2

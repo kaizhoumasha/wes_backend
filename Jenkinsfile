@@ -203,6 +203,23 @@ pipeline {
                         }
                     }
                 }
+
+                stage('Architecture Guardrails') {
+                    steps {
+                        script {
+                            echo '🔍 架构护栏检查 (§7.5 不变量)...'
+                            // Phase 0 默认 warn-only; Phase 1 起设 ARCHITECTURE_PHASE=phase1 切 enforced
+                            sh '''
+                                set -e
+                                docker run --rm \
+                                    -e ARCHITECTURE_PHASE=${ARCHITECTURE_PHASE:-phase0} \
+                                    ${CI_IMAGE} \
+                                    sh -c './scripts/git-quality-gate.sh --check architecture --ci'
+                            '''
+                            echo '✅ 架构护栏检查完成'
+                        }
+                    }
+                }
             }
         }
 
