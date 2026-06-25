@@ -1712,13 +1712,13 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 
 | Endpoint | Method | 用途 |
 | --- | --- | --- |
-| `/wms-integration/fulfillment/requests` | POST | 创建履约请求 |
+| `/wms-integration/fulfillment/requests` | GET | 查询履约请求列表（只读） |
 | `/wms-integration/fulfillment/requests/{id}` | GET | 履约请求详情 |
 | `/wms-integration/callback-envelopes` | GET | 查询已归档 WMS callback envelope（只读，外部不写入） |
 | `/wms-integration/inventory/query` | POST | 查询库存 |
 | `/wms-integration/reconciliation/drift-check` | POST | 只读触发 WMS 权威事实拉取并返回 drift snapshot；不得写 WMS 或跨域 owner 状态 |
 
-**入口约束**：外部 callback 写入口只允许 §5.3 的统一 callback API；`wms_integration` 不提供第二个外部 POST 入口，只提供 normalizer、port 和只读 envelope 查询。
+**入口约束**：外部 callback 写入口只允许 §5.3 的统一 callback API；出站 WMS 履约、库存事务、PKG 绑定和补偿动作只能由 runtime/orchestration 在 admission、幂等和状态门禁通过后写 `RuntimeIntentLog`，再经 EffectPort dispatcher 调用 `WmsFulfillmentPort` / `WmsInventoryTransactionPort`。`wms_integration` 不提供公开创建履约请求的 POST API，不提供第二个外部 POST 写入口，只提供 normalizer、port 和只读查询。若调试期确需人工重放或补发 effect，入口必须放在受控 internal/admin runtime 路由，默认关闭并写审计，不得绕过 `RuntimeIntentLog`。
 
 **目标态优先**：可复用 `src/app/wms_integration/` 已有 ACL 实现，但允许破坏性整理目录、模型和 import。
 
