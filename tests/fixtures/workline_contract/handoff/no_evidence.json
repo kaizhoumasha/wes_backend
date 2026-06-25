@@ -1,0 +1,12 @@
+{
+  "case_id": "handoff_no_evidence",
+  "scenario": "无 callback 或 intent evidence 时 handoff HOLD/拒绝",
+  "inputs": {
+    "has_callback": false,
+    "has_intent_evidence": false
+  },
+  "expected": {
+    "advance": false,
+    "reason": "NO_EVIDENCE"
+  }
+}

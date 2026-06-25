@@ -1,0 +1,20 @@
+{
+  "case_id": "duplicate",
+  "provider_code": "WMS",
+  "contract_version": "2026-06-25",
+  "expected_port": "WmsEventPort.normalize_event",
+  "direction": "event",
+  "raw_callback": {
+    "event_type": "WMS_TRANSPORT_COMPLETED",
+    "data": {
+      "event_id": "evt-duplicate-001",
+      "transport_request_id": "tr-success-001",
+      "duplicate": true
+    }
+  },
+  "expected_typed": {
+    "source_event_id": "evt-duplicate-001",
+    "external_ref": "tr-success-001",
+    "dedupe_action": "ACK_ONLY"
+  }
+}

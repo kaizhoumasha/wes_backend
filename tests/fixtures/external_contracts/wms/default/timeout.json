@@ -1,0 +1,24 @@
+{
+  "case_id": "timeout",
+  "provider_code": "WMS",
+  "contract_version": "2026-06-25",
+  "expected_port": "WmsFulfillmentPort.request_transport",
+  "direction": "effect",
+  "raw_request": {
+    "transport_request_id": "tr-timeout-001",
+    "source_location": "INBOUND_A",
+    "target_location": "SORTER_01"
+  },
+  "raw_response": {
+    "timeout": true,
+    "elapsed_seconds": 30
+  },
+  "expected_typed": {
+    "accepted": false,
+    "status": "TIMEOUT"
+  },
+  "expected_error": {
+    "code": "WMS_TIMEOUT",
+    "retryable": true
+  }
+}

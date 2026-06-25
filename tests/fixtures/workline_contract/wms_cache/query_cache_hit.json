@@ -1,0 +1,15 @@
+{
+  "case_id": "wms_cache_query_cache_hit",
+  "scenario": "cache hit response 仍含 authority=WMS / source / evidence_at",
+  "inputs": {
+    "authority": {
+      "scope": "WORKLINE_LOCAL",
+      "authority": "WMS",
+      "source": "wms_inventory_query",
+      "evidence_at": "2026-06-25T10:00:00Z"
+    }
+  },
+  "expected": {
+    "valid": true
+  }
+}

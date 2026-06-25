@@ -1,0 +1,16 @@
+{
+  "case_id": "start_admission_blocked_projection",
+  "scenario": "active projection 阻塞时 admission 拒绝",
+  "inputs": {
+    "manifest_valid": true,
+    "device_roles_satisfied": true,
+    "external_ports_available": true,
+    "projection_blocked": true
+  },
+  "expected": {
+    "accepted": false,
+    "reason_code": "PROJECTION_BLOCKED",
+    "session_created": false,
+    "intent_created": false
+  }
+}

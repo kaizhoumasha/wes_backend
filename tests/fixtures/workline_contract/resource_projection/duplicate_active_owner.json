@@ -1,0 +1,14 @@
+{
+  "case_id": "resource_projection_duplicate_active_owner",
+  "scenario": "同一 object 同一 WorkLine 第二个 active 归属失败, 瞬态窗口外进 RECONCILING",
+  "inputs": {
+    "existing": {"object_key": "BIN-001", "workline_id": "WL-1", "is_active": true, "transient_until": 150.0},
+    "new_claim": {"object_key": "BIN-001", "workline_id": "WL-1"},
+    "now_in_window": 100.0,
+    "now_after_window": 200.0
+  },
+  "expected": {
+    "in_window": {"accepted": true, "reason": "TRANSIENT_WINDOW"},
+    "after_window": {"accepted": false, "reason": "DUPLICATE_ACTIVE_OWNER"}
+  }
+}
