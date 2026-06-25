@@ -1,0 +1,11 @@
+{
+  "case_id": "event_push_command_like_response",
+  "scenario": "Event_Push 响应含 command-like 字段必须被拒绝",
+  "inputs": {
+    "response": {"status": "ACK", "action": "MOVE_BIN"}
+  },
+  "expected": {
+    "valid": false,
+    "reason_contains": "COMMAND_LIKE_FIELD"
+  }
+}

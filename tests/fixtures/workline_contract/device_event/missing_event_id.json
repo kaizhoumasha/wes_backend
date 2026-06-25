@@ -1,0 +1,12 @@
+{
+  "case_id": "device_event_missing_event_id",
+  "scenario": "缺 event_id 的离散事件 ACK 但不推进 correlation",
+  "inputs": {
+    "event": {"data": {}}
+  },
+  "expected": {
+    "ack": true,
+    "advance_correlation": false,
+    "reason": "MISSING_EVENT_ID"
+  }
+}
