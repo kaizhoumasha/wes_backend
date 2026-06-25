@@ -1,0 +1,218 @@
+---
+status: Phase 0 legacy 清理矩阵
+created_at: 2026-06-25
+parent: docs/architecture/workline-and-plugin-restructuring.md
+spec: docs/superpowers/specs/2026-06-25-workline-restructuring-phase-0-spec.md
+related: docs/architecture/target-state-contract.md, docs/architecture/session-correlation-matrix.md
+data: docs/architecture/legacy-cleanup-matrix.csv
+generator: scripts/generate_legacy_matrix.py
+note: |
+  逐入口数据在 legacy-cleanup-matrix.csv（1686 条，由脚本生成，可复现）。
+  本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
+  刷新: uv run python scripts/generate_legacy_matrix.py
+---
+
+# Legacy 清理矩阵（P0-002）
+
+> 父设计：主计划 §3.7 目标态契约与 Legacy 处理
+> 目标态合同：`target-state-contract.md` §8
+> 逐条数据：`docs/architecture/legacy-cleanup-matrix.csv`（脚本生成）
+
+## 1. 编写目的
+
+按实际路径列出旧 WorkLine/plugin/runtime 每个入口的处理策略，禁止写"清理旧代码"这类泛化条目。供后续 Phase 1-5 实施者判断每个 legacy 入口的去留。
+
+## 2. 数据来源与刷新
+
+逐条数据由 `scripts/generate_legacy_matrix.py` 扫描生成，落到 `docs/architecture/legacy-cleanup-matrix.csv`。
+
+```bash
+# 刷新基线（对齐 SPEC §Proposed Change 入口粒度）
+uv run python scripts/generate_legacy_matrix.py
+```
+
+扫描覆盖：`src/app/workline/`、`src/workline_runtime/`、`src/workline_plugins/`、`tests/workline_runtime/`、`tests/workline_plugins/`、`docs/templates/workline_plugin/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。
+
+## 3. 汇总（截至 develop @ 2026-06-25）
+
+| 指标 | 数值 |
+| --- | ---: |
+| **total_entries** | **1686** |
+| phase4_carrier（承载 Phase 4 业务语义） | 417 |
+| pending-review | 0 |
+
+### total_entries_by_type
+
+| entry_type | count |
+| --- | ---: |
+| test | 1017 |
+| runtime_helper | 195 |
+| model | 194 |
+| plugin | 154 |
+| api_route | 43 |
+| service | 32 |
+| domain_object | 28 |
+| repository | 15 |
+| doc_template | 8 |
+
+### total_entries_by_strategy
+
+| strategy | count |
+| --- | ---: |
+| rebuild | 992 |
+| keep-contract | 313 |
+| delete | 334 |
+| move | 47 |
+
+### total_entries_by_drop_phase
+
+| drop_phase | count |
+| --- | ---: |
+| phase5-tech | 648 |
+| phase2 | 617 |
+| phase4 | 417 |
+| phase1 | 4 |
+
+### total_entries_by_owner
+
+| current_owner | count |
+| --- | ---: |
+| workline_runtime | 1259 |
+| workline | 305 |
+| workline_plugins | 115 |
+| resource | 3 |
+| callback | 1 |
+| rack | 1 |
+| handling | 1 |
+| wms_integration | 1 |
+
+## 4. 矩阵字段
+
+CSV 列（对齐 SPEC P0-002 矩阵字段表）：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `entry_id` | string | yes | 稳定 ID，格式 `legacy:<relative_path>:<symbol_or_route>` |
+| `entry_type` | enum | yes | api_route / service / repository / model / plugin / runtime_helper / test / doc_template / domain_object / value_object / utility / config_module / other |
+| `relative_path` | string | yes | 仓库根目录相对路径 |
+| `symbol_or_route` | string | yes | 类/函数/route/测试名；文件级用 `<file>` |
+| `current_owner` | enum | yes | workline / workline_runtime / workline_plugins / callback / rack / handling / device / resource / wms_integration |
+| `business_semantics` | string | yes | 保留的业务语义，若无则 `none` |
+| `phase4_carrier` | bool | yes | 是否承载 Phase 4 才能重建的业务语义 |
+| `classification_status` | enum | yes | `final`（Phase 0 PR merge 前 pending-review 归零） |
+| `strategy` | enum | yes | delete / rebuild / move / keep-contract |
+| `target_capability` | string | conditional | rebuild 时必填（Phase 1+ 实施时补全） |
+| `drop_phase` | enum | yes | phase1 / phase2 / phase3 / phase4 / phase5-tech / phase5-business |
+| `risk` | enum | yes | LOW / MEDIUM / HIGH |
+| `notes` | string | optional | 说明；seed_scope 条目标 `guardrail_seed_scope` |
+
+## 5. 处理策略枚举
+
+| 策略 | 定义 |
+| --- | --- |
+| `delete` | Phase 5 可删除，无业务语义承载 |
+| `rebuild` | 业务语义保留，但按目标态 port/capability 重建 |
+| `move` | 可迁入新域，需记录目标路径和依赖条件 |
+| `keep-contract` | 保留为 characterization/contract 来源，不作为目标态入口 |
+
+## 6. 判定规则（脚本内嵌，可复现）
+
+### 6.1 business_semantics 判定（顺序敏感，先匹配更具体类别）
+
+1. 旧 plugin 框架（plugin_base/plugin_context/plugin_manifest/plugin_sdk 等）→ "旧 plugin 框架，目标删除"
+2. phase4 业务流程（rough_sorter/full_box/sorter_inbound/smt_inbound/ng_return/single_layer_rack/station_lease/bin_cell_reservation/material_identity/six_in_one/start_admission/smt_usage）→ "[phase4] xxx 业务流程"
+3. WorkLine 配置域（WorkLine 主配置类/manifest/topology/safety_zone/plane/rack_position/pipeline_queue/event_binding/command_binding/state_machine/device_requirement）→ "WorkLine 配置域能力"
+4. 执行状态（session/inbox/timeline/runtime_hold/intent/effect/outbox/orchestrat/dispatch/runtime.py/trace_）→ "执行状态，目标迁 runtime/orchestration"
+5. 跨域 session（workline_session_id/material_session_id/current_session_id/sorting_session_id）→ "跨域 session 引用"
+6. 技术残留（debug/sandbox/fake/mock/cleanup/diagnostic/integration_debug）→ "技术残留/调试"
+7. 默认按 owner：test→"测试"，plugin→"旧 plugin 框架"，其余→"none"
+
+### 6.2 strategy + drop_phase + risk 判定
+
+| business_semantics 类别 | strategy | drop_phase | risk |
+| --- | --- | --- | --- |
+| 旧 plugin 框架 | delete | phase5-tech | MEDIUM |
+| 技术残留/调试 | delete | phase5-tech | LOW |
+| 执行状态 | rebuild | phase2 | HIGH |
+| 跨域 session 引用 | rebuild | phase1 | MEDIUM |
+| [phase4] 业务流程 | rebuild | phase4 | HIGH |
+| WorkLine 配置域能力 | move | phase2 | MEDIUM |
+| 测试 | keep-contract | phase5-tech | LOW |
+| doc_template / 默认 | delete / keep-contract | phase5-tech | LOW |
+
+## 7. 按域说明
+
+### 7.1 workline（305 entries）
+
+| 类别 | 处理 | 说明 |
+| --- | --- | --- |
+| WorkLine 配置类（`models/workline.py:WorkLine/WorkLineBase`、manifest/topology/safety/rack_position） | move | 保留为配置域目标，Phase 2 调整 schema 对齐目标态 WorkLine manifest |
+| 执行状态模型（`models/session.py`、`inbox.py`、`timeline.py`、`runtime_hold*.py`、`runtime.py`） | rebuild | 整体 move 到 `src/app/runtime/orchestration/models/`，内部 session_id 保留为 execution_session_id（见 P0-004 §4.6） |
+| 业务流程模型（`smt_inbound_handoff.py`、`object_transition_event.py`） | rebuild | Phase 4 按目标态 capability 重建 |
+| API routes（43 个，`v1/`） | rebuild | runtime 监控/handoff/trace/hold 路由迁 runtime 域；workline 配置 CRUD 路由保留 |
+| Services（inbox_batch_processor/outbox_dispatch/device_command_gateway 等） | rebuild | 执行状态服务迁 runtime 域，按 EffectPort/RuntimeInbox 重建 |
+| `single_layer_rack_orchestration_service` | rebuild | [phase4] 单层机架编排，Phase 4 重建（C1 seed 关联） |
+
+### 7.2 workline_runtime（1259 entries，含 1017 tests）
+
+| 类别 | 处理 | 说明 |
+| --- | --- | --- |
+| 执行状态（orchestrator/runtime_intent/runtime_intent_effects/session_resolver/timeline_generator） | rebuild | 迁 runtime/orchestration 域 |
+| 旧 plugin 框架（plugin_base/plugin_context/plugin_manifest/plugin_sdk/plugin_next/null_plugin） | delete | Phase 5 删除，能力以 port/capability 重建 |
+| 诊断（diagnostics/*） | keep-contract | characterization 来源，Phase 5 评估 |
+| payloads/contracts（DeviceEventPayload/CommandResultPayload 等 typed 模型） | rebuild | 迁 device 域 typed contract |
+| 业务流程（sandbox_catalog 粗分机/WMS seed） | rebuild | Phase 4 重建为 fixture |
+| tests（1017） | keep-contract | characterization 候选；提取业务语义后标记可迁移或废弃 |
+
+### 7.3 workline_plugins（115 entries）
+
+| 类别 | 处理 | 说明 |
+| --- | --- | --- |
+| `rough_sorter/`（plugin/contract/context） | rebuild | [phase4] 粗分机业务流程，Phase 4 重建 |
+| `smt_sorting_inbound/`（plugin/flow_service/context） | rebuild | [phase4] SMT 分拣入库，Phase 4 重建 |
+| manifest.yaml | keep-contract | characterization 输入 |
+
+### 7.4 docs/templates/workline_plugin（8 entries）
+
+| 类别 | 处理 | 说明 |
+| --- | --- | --- |
+| 全部模板（README/context.py.tmpl/contract.py.tmpl 等） | delete | 只描述旧 plugin，删除前确保新目标态 docs 已覆盖使用者入口 |
+
+### 7.5 guardrail_seed_scope（11 entries）
+
+跨域路径登记，供 P0-007 seed allowlist 追溯 `legacy_entry_id`：
+
+| seed rule | 路径 | owner | drop_phase |
+| --- | --- | --- | --- |
+| C1（WMS import） | callback_ingress_service.py、rack/gateway.py、handling/gateway.py、single_layer_rack_orchestration_service.py、debug_data_cleanup_repository.py | callback/rack/handling/workline | phase2/phase5-tech |
+| C2（session FK） | resource/projection_service.py、projection_integrity_service.py、resource.py、wms_integration/transport_contract.py | resource/wms_integration | phase1 |
+
+> seed_scope 非对应域完整清理矩阵，仅为 P0-007 seed allowlist 建立可追踪 `legacy_entry_id`。每条 seed allowlist 违规必须能反查本矩阵 entry，且 `drop_phase` 一致。
+
+## 8. 高风险项
+
+| 风险项 | phase | 说明 |
+| --- | --- | --- |
+| 执行状态模型迁移（session/inbox/timeline/hold，992 rebuild） | phase2 | 整体迁 runtime/orchestration，须保证崩溃重放不丢 intent；旧 `WorklineInbox` 只作 characterization（C5 约束） |
+| phase4 业务流程（417 entries） | phase4 | 粗分机/满箱交换/分拣机/SMT/NG 语义重建，须 characterization + contract test 先行 |
+| `single_layer_rack_orchestration_service`（C1 seed） | phase2 | 跨域 WMS import，Phase 2 迁移时消除 |
+| device `session_id_int` ↔ session `awaiting_command_id` 外键环 | phase1 | 见 P0-004 §4.4，Phase 1 CEO-010 同步处理 |
+
+## 9. 验收（SPEC P0-002）
+
+1. ✅ 每个旧入口都有且只有一个主策略（CSV 1686 条，strategy 字段非空）
+2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，417 条）
+3. ✅ 标记删除前置条件（delete 项 business_semantics=none 或技术残留；`blocking_tests` 在 Phase 1+ 实施时补全）
+4. ✅ pending-review 归零（全部 final）
+5. ✅ `total_entries_by_type` 汇总存在，由脚本输出
+6. ✅ seed allowlist 违规可反查 `guardrail_seed_scope` 条目（§7.5）
+
+## 10. 待补字段（Phase 1+ 实施）
+
+脚本生成的 CSV 中以下字段在 Phase 0 标记为空或默认，由实施 PR 逐项补全：
+
+| 字段 | Phase 0 状态 | 补全时机 |
+| --- | --- | --- |
+| `target_capability` | 空 | rebuild 项在 Phase 1+ 实施时填（如 `WmsFulfillmentPort.request_transport`） |
+| `blocking_tests` | 未在 CSV（Phase 0 用 keep-contract 标记替代） | delete 项删除前填对应 contract test |
+| `target_path` | 空（move 项由 §7.1 说明） | Phase 2 迁移时填具体目标路径 |
