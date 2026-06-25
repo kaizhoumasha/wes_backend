@@ -10,6 +10,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.9.0.0] - 2026-06-25
+
+### Added
+
+- WorkLine 重构 **Phase 0：目标态锁定与架构护栏** 全部 7 任务交付完成。Phase 0 是整个 WorkLine + plugin 体系重构（主计划 `docs/architecture/workline-and-plugin-restructuring.md`）的目标态基线，锁定后续 Phase 1-5 实施边界。
+- **P0-001 Target State Contract** (`docs/architecture/target-state-contract.md`)：抽取主计划可执行合同，含 P0 系统能力 10 项、域边界 8 域、状态所有权矩阵 7 类对象、Authority Matrix 11 类事实权威来源、Plane 读模型边界、不做清单 14 条。
+- **P0-002 Legacy Cleanup Matrix** (`docs/architecture/legacy-cleanup-matrix.{md,csv}`，2191 entries / 0 pending-review)：逐入口标记 delete/rebuild/move/keep-contract 策略，含 service module-level def + `__all__` 导出符号穷尽覆盖。生成器 `scripts/generate_legacy_matrix.py` 可复现。
+- **P0-003 Behavior Contract Baseline** (`tests/contracts/workline/`, `tests/characterization/workline_legacy/`, `tests/fixtures/workline_contract/`)：10 BC 全覆盖（强制 5 contract + 1 characterization + 4 strict xfail 壳），覆盖 start admission / runtime snapshot / handoff / resource projection / 粗分机入库 / 满箱交换 / 分拣机入库 / 缺 event_id / WMS authority cache / Event_Push 响应。28 pass + 3 strict xfail。
+- **P0-004 ExecutionCorrelation Migration Matrix** (`docs/architecture/session-correlation-matrix.md`)：逐文件列 39 个跨域 session FK 迁移路径（0 遗漏），按 resource/handling/rack/device/wms_integration/workline-runtime/material/sys 域分组。发现 device `session_id_int` ↔ session `awaiting_command_id` 外键环（HIGH 风险，进入 Phase 1 CEO-010）。ExecutionCorrelation schema 字段对齐主计划 §9.2（trace_id / source_event_id / business_owner_key），idempotency 引用主计划 §5.4 独立 idempotency_keys 表。
+- **P0-005 Device Command Contract** (`docs/architecture/device-command-contract.md`)：以第三方设备白皮书为权威输入，锁定 Command-Ack-Callback 异步闭环、设备 6 态（IDLE/RUNNING/ERROR/OFFLINE/UNKNOWN/MAINTENANCE）、Event_Push 固定 ACK、DeviceCommand 顶层字段白名单 + 禁止字段（PLC/坐标/关节/安全回路）、扫码平台互锁与预取约束。
+- **P0-006 External Contract Profile + IntegrationLab** (`docs/contracts/external-contract-profile.md`, `docs/architecture/integration-lab-and-simulator.md`, `tests/support/external_contract_profile.py`, `tests/fixtures/external_contracts/wms/default/`)：按 `provider_code + contract_version` 描述 WMS/ECS provider 外部合同；Pydantic schema 落 tests/support/（禁止 src/app/ import，Phase 1 CEO-013 升级到生产路径）；WMS fixture 5 个必填 case（success/reject/timeout/duplicate/missing_event_id）。
+- **P0-007 Architecture Guardrails** (`scripts/architecture-guardrails.sh`, `scripts/architecture-guardrails.allowlist`, `tests/architecture/`, `docs/architecture/architecture-guardrails-spec.md`)：将主计划 §7.5 核心 5 条不变量（C1-C5）+ I3 capability 注入（R-I3a/R-I3b）映射为可执行扫描脚本。phase-aware 模式（phase0 warn-only / phase1 enforced / phase2 缩减 allowlist）；seed allowlist 31 条全部关联 `legacy_entry_id`（C1×5 + C2×22 + R-I3b×4 含 device 实现）。删任意 seed 行后 phase1 退出码 1（enforcement 真生效）。
+- `scripts/git-quality-gate.sh --check architecture` 新增。Jenkinsfile `Quality Checks` stage 新增 `Architecture Guardrails` 并行步骤，默认 phase0，可通过 `ARCHITECTURE_PHASE` 环境变量切 phase1。
+- `tests/architecture/` 6 个测试文件（C1-C5 + R-I3a/R-I3b，24 tests）；C5 使用 `tests/support/runtime_inbox_contract.py` 目标态状态机（RECEIVED/PROCESSING/PROCESSED/FAILED/DEAD_LETTER 6 转移），不 import legacy `WorklineInbox`。
+- 3 个测试锁定 SPEC 验收为不变量：`test_phase0_legacy_matrix_contract.py`（service inventory + rebuild/move 必填 target/blocking + CSV 与生成器一致防漂移 + `__all__` 入矩阵 + R-I3b seed 指向具体 port）、`test_external_contract_profile_fixtures.py`（P0-006 5 fixture 真实可校验）、`test_git_quality_gate_architecture_profile.py`（quality profile 真执行 guardrails）。
+
+### Changed
+
+- 主计划 `docs/architecture/workline-and-plugin-restructuring.md` §9.7 `wms_integration` API 入口边界收口：履约请求端点从 POST 改为 GET 只读；补充 effect 出口约束（出站 WMS 履约/库存事务/PKG 绑定只能由 runtime/orchestration 经 RuntimeIntentLog + EffectPort 调用，wms_integration 不提供公开创建履约请求的 POST API）。
+
+### Notes
+
+- Phase 0 不修改任何生产代码（`src/app/**`、`src/workline_runtime/**`、`src/workline_plugins/**` 零变更），符合 Phase 0 硬边界 T8。
+- 后续 Phase 1 启动条件：本 PR merge + 重新评审（autoplan）确认 B 方案可执行，然后启动 CEO-001 wms_integration 7 ports / CEO-007 runtime/orchestration 骨架 / CEO-010 DeviceCommand contract。
+
 ## [0.8.1.0] - 2026-06-23
 
 ### Added
