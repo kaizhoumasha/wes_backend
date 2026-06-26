@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Environment = Literal["sandbox", "staging", "production"]
+Direction = Literal["query", "effect", "event", "result"]
 
 
 class SecurityProfile(BaseModel):
@@ -118,17 +119,12 @@ class ExternalContractProfile(BaseModel):
     security_profile: SecurityProfile = Field(default_factory=SecurityProfile)
     notes: str | None = Field(default=None, max_length=2000)
 
-    @field_validator("runtime_capabilities_effect")
-    @classmethod
-    def _effect_timeout_required(cls, v: list[str], info) -> list[str]:
-        """effect 非空时 effect_timeout_seconds 必填。
-
-        跨字段校验: model_validator(mode="after") 在下个版本补, 这里先
-        用 field_validator 拿到 info.data 校验。
-        """
-        if v and not info.data.get("timeout_retry_effect_timeout_seconds"):
+    @model_validator(mode="after")
+    def _effect_timeout_required_after(self) -> ExternalContractProfile:
+        """effect 非空时 effect_timeout_seconds 必填 (model_validator 访问完整实例)。"""
+        if self.runtime_capabilities_effect and self.timeout_retry_effect_timeout_seconds is None:
             raise ValueError("effect_timeout_seconds 必填当 runtime_capabilities_effect 非空")
-        return v
+        return self
 
     @field_validator("runtime_capabilities_query")
     @classmethod
@@ -189,9 +185,54 @@ class InboundNormalizerProfile(BaseModel):
     )
 
 
+class FixtureSet(BaseModel):
+    """contract tests 与 simulator 使用的 fixture 集声明 (Phase 0 SPEC §P0-006)。
+
+    Phase 1 CEO-013 升级从 tests/support/external_contract_profile.py 到共享层,
+    供 wms_integration / device / runtime 域 import (不再是测试专用)。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str = Field(
+        min_length=1,
+        description="tests/fixtures/external_contracts/<provider>/<profile>",
+    )
+    required_cases: list[str] = Field(
+        min_length=1,
+        description="至少覆盖 success/reject/timeout/duplicate/missing_event_id",
+    )
+
+
+class FixtureCase(BaseModel):
+    """单个 contract test fixture (Phase 0 SPEC §P0-006)。
+
+    Phase 1 CEO-013 升级到共享层, 供 wms_integration simulator registry
+    和 contract tests 共同使用。
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    case_id: str = Field(min_length=1)
+    provider_code: str = Field(min_length=1)
+    contract_version: str = Field(min_length=1)
+    expected_port: str = Field(
+        min_length=1,
+        description="Port.method 格式, 如 WmsFulfillmentPort.request_transport",
+    )
+    direction: Direction  # forward ref, defined below
+    raw_request: dict | None = None
+    raw_response: dict | None = None
+    raw_callback: dict | None = None
+    expected_typed: dict = Field(default_factory=dict)
+    expected_error: dict | None = None
+
+
 __all__ = [
     "Environment",
     "ExternalContractProfile",
+    "FixtureCase",
+    "FixtureSet",
     "InboundNormalizerProfile",
     "RuntimeCapabilityProfile",
     "SecurityProfile",
