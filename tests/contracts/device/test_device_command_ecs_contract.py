@@ -155,6 +155,14 @@ def test_device_command_command_code_unique():
     assert field.unique is True, "command_code 必须 unique=True (DB 层幂等)"
 
 
+def test_device_command_has_internal_correlation_id_without_session_fk():
+    """DeviceCommand 内部只持 correlation_id, 不暴露旧 session_id/session_id_int。"""
+    assert "correlation_id" in DeviceCommand.model_fields
+    assert "session_id" not in DeviceCommand.model_fields
+    assert "session_id_int" not in DeviceCommand.model_fields
+    assert "correlation_id" not in CommandRequest.model_fields
+
+
 def test_command_callback_result_required_fields():
     """CommandCallbackResult 必含 command_code/device_code/result/finish_time (白皮书 §3.1)。"""
     with pytest.raises(ValidationError):
@@ -203,11 +211,8 @@ def test_command_request_params_default_empty_dict():
     assert cmd.params == {}
 
 
-def test_command_request_params_typed_dict_still_supported():
-    """H4 现状: params 仍为 dict[str, Any] (Phase 1 后续替换为 typed Pydantic union)。
-
-    Phase 0 backward compat, 不在 H4 落地时强切。
-    """
+def test_command_request_params_typed_json_still_supports_business_fields():
+    """H4: params 是 typed JSON union, 仍支持业务参数对象。"""
     cmd = CommandRequest(
         device_id=1,
         command_code="CMD-001",
@@ -218,3 +223,33 @@ def test_command_request_params_typed_dict_still_supported():
     )
     assert cmd.params["quantity"] == 10
     assert cmd.params["source_loc"] == "BIN-01"
+
+
+def test_command_request_params_typed_json_supports_nested_business_payload():
+    """H4: typed JSON union 支持对象数组和多层业务参数。"""
+    cmd = CommandRequest(
+        device_id=1,
+        command_code="CMD-001",
+        task_type="PUT",
+        priority=10,
+        timeout_ms=30000,
+        params={
+            "items": [{"pkg_code": "PKG-1", "qty": 1}],
+            "route": {"segments": [{"from": "A", "to": "B"}]},
+        },
+    )
+    assert cmd.params["items"] == [{"pkg_code": "PKG-1", "qty": 1}]
+    assert cmd.params["route"] == {"segments": [{"from": "A", "to": "B"}]}
+
+
+def test_command_request_params_rejects_forbidden_nested_fields():
+    """禁止字段不能通过 params 嵌套透传。"""
+    with pytest.raises(ValidationError):
+        CommandRequest(
+            device_id=1,
+            command_code="CMD-001",
+            task_type="PUT",
+            priority=10,
+            timeout_ms=30000,
+            params={"motion": {"axis": "X"}},
+        )

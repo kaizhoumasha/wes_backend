@@ -21,23 +21,67 @@ from src.app.device.models.command import (
     CommandCallbackResult,
     CommandResult,
     DeviceCommand,
+    DeviceCommandParamValue,
 )
 
 # ---- typed params union (按 task_type 区分) ----
 
 
-def test_command_base_rejects_untyped_dict_params():
-    """H4: 当前 params 是 dict[str, Any] (Phase 0 向后兼容); typed union 迁移在 Phase 1 迭代中替换。
+def test_command_base_params_use_typed_json_union():
+    """H4: params 使用 typed JSON union, 不再是 dict[str, Any]。"""
+    field = CommandBase.model_fields["params"]
+    annotation = str(field.annotation)
+    assert "Any" not in annotation
+    assert annotation == "dict[str, DeviceCommandParamValue]"
+    alias_value = str(DeviceCommandParamValue.__value__)
+    assert "list[" in alias_value
+    assert "dict[str" in alias_value
 
-    本测试建基线: dict[str, Any] 仍允许 (Phase 0 兼容性),
-    但 typed model (新 task_type) 须在 Phase 1 后续替换。
-    """
     cmd = CommandBase(
         device_id=1,
         task_type="PUT",
         params={"source_loc": "BIN-01", "target_loc": "CONVEYOR-02"},
     )
     assert cmd.params == {"source_loc": "BIN-01", "target_loc": "CONVEYOR-02"}
+
+
+def test_command_base_params_accepts_recursive_json_payload():
+    """H4: typed params 允许真实业务 JSON: 嵌套对象、对象数组和嵌套数组。"""
+    cmd = CommandBase(
+        device_id=1,
+        task_type="PUT",
+        params={
+            "items": [{"sku": "A", "qty": 1}, {"sku": "B", "qty": 2}],
+            "matrix": [[1, 2], [3, 4]],
+            "metadata": {"batch": {"lot": "L1", "flags": [True, None]}},
+        },
+    )
+
+    assert cmd.params["items"] == [{"sku": "A", "qty": 1}, {"sku": "B", "qty": 2}]
+    assert cmd.params["matrix"] == [[1, 2], [3, 4]]
+    assert cmd.params["metadata"] == {"batch": {"lot": "L1", "flags": [True, None]}}
+
+
+def test_command_base_rejects_forbidden_nested_params():
+    """H4: 禁止字段不能藏在 params 嵌套对象里透传给 ECS。"""
+    with pytest.raises(ValidationError) as exc_info:
+        CommandBase(
+            device_id=1,
+            task_type="PUT",
+            params={"business": {"coordinate": {"x": 1, "y": 2}}},
+        )
+    assert "coordinate" in str(exc_info.value)
+
+
+def test_command_base_rejects_forbidden_key_inside_object_array():
+    """H4: 禁止字段也不能藏在对象数组深层。"""
+    with pytest.raises(ValidationError) as exc_info:
+        CommandBase(
+            device_id=1,
+            task_type="PUT",
+            params={"items": [{"name": "safe"}, {"axis": "x"}]},
+        )
+    assert "axis" in str(exc_info.value)
 
 
 def test_command_base_extra_forbid_rejects_unknown_field():
