@@ -16,12 +16,7 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MIGRATION_FILE = (
-    REPO_ROOT
-    / "migrations"
-    / "versions"
-    / "20260626_1200_a1b2c3d4e5f6_phase1_device_fk_ring_dissolve.py"
-)
+MIGRATION_FILE = REPO_ROOT / "migrations" / "versions" / "20260626_1200_0e9de1e6c7e3_phase1_device_fk_ring_dissolve.py"
 
 
 def test_migration_file_exists():
@@ -39,7 +34,7 @@ def test_migration_drops_old_device_fk():
 
 
 def test_migration_renames_awaiting_command_id_to_code():
-    """upgrade 必把 workline_sessions.awaiting_command_id 改为 awaiting_device_command_code (VARCHAR)。"""
+    """upgrade 必把 awaiting_command_id 改为 awaiting_device_command_code (VARCHAR)。"""
     content = MIGRATION_FILE.read_text()
     # RENAME TO awaiting_device_command_code (不是 awaiting_command_id_code)
     assert re.search(r"RENAME\s+TO\s+awaiting_device_command_code\b", content), (
@@ -69,9 +64,7 @@ def test_migration_downgrade_restores_original_fk():
     assert downgrade, "downgrade() 函数缺失"
     body = downgrade.group(0)
     # FK 名通过常量引用 f-string, 不字面出现在源码; 验证常量 + ADD CONSTRAINT 模板
-    assert "OLD_DEVICE_FK_NAME" in body and "OLD_SESSION_FK_NAME" in body, (
-        "downgrade 必须引用 FK 名常量"
-    )
+    assert "OLD_DEVICE_FK_NAME" in body and "OLD_SESSION_FK_NAME" in body, "downgrade 必须引用 FK 名常量"
     assert "ADD CONSTRAINT" in body, "downgrade 必须 ADD CONSTRAINT 加回 FK"
     # DEFERRABLE INITIALLY DEFERRED (use_alter 等价)
     assert "DEFERRABLE INITIALLY DEFERRED" in body
@@ -106,15 +99,13 @@ def test_model_device_command_no_longer_has_session_id_int():
     """模型 DeviceCommand 不再有旧 session_id_int (int FK 字段已消解)。"""
     from src.app.device.models.command import CommandBase
 
-    assert "session_id_int" not in CommandBase.model_fields, (
-        "DeviceCommand 不应再有 session_id_int int FK 字段"
-    )
+    assert "session_id_int" not in CommandBase.model_fields, "DeviceCommand 不应再有 session_id_int int FK 字段"
 
 
 def test_migration_has_revision_chain():
     """迁移文件有正确的 revision chain (挂载到 Phase 0 最后一个迁移)。"""
     content = MIGRATION_FILE.read_text()
-    assert re.search(r"^revision:\s*str\s*=\s*\"a1b2c3d4e5f6\"", content, re.MULTILINE)
-    assert re.search(r"^down_revision:\s*Union\[str,\s*Sequence\[str\],\s*None\]\s*=\s*\"9b660037b4bb\"", content, re.MULTILINE), (
-        "down_revision 必须挂载 9b660037b4bb (Phase 0 最后一个迁移)"
+    assert re.search(r'^revision:\s*str\s*=\s*"0e9de1e6c7e3"', content, re.MULTILINE)
+    assert re.search(r'^down_revision:\s*Union\[str,\s*Sequence\[str\],\s*None\]\s*=\s*"', content, re.MULTILINE), (
+        "down_revision 必须挂载到前一个迁移"
     )

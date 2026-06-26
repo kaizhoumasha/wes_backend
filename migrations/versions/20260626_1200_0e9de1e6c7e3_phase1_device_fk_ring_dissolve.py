@@ -1,7 +1,7 @@
 """phase1 device fk ring dissolve
 
-Revision ID: a1b2c3d4e5f6
-Revises: 9b660037b4bb
+Revision ID: 0e9de1e6c7e3
+Revises: 8a1b17cba3db
 Create Date: 2026-06-26 12:00:00.000000+08:00
 
 Phase 1 AP2 + AP4(slice) 消解 P0-004 §4.4 device session FK 环:
@@ -28,8 +28,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "a1b2c3d4e5f6"
-down_revision: Union[str, Sequence[str], None] = "9b660037b4bb"
+revision: str = "0e9de1e6c7e3"
+down_revision: Union[str, Sequence[str], None] = "8a1b17cba3db"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

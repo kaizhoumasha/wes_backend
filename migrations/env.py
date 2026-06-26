@@ -52,6 +52,8 @@ from src.app.resource.models import (  # noqa: F401
     RackType,
     ResourceStateEvent,
 )
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
+from src.app.runtime.orchestration.execution_session import ExecutionSession  # noqa: F401
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 from src.app.wms_integration.models import WmsCallEvidence, WmsCircuitBreakerState  # noqa: F401
 
