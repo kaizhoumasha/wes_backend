@@ -3,7 +3,7 @@
 import importlib
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -281,6 +281,30 @@ class TestCallbackIngressRouteContracts:
 
 class TestCallbackEnqueueFallback:
     @pytest.mark.asyncio
+    async def test_load_command_session_does_not_fallback_to_trace_id(self) -> None:
+        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+        class RepoStub:
+            instances: ClassVar[list["RepoStub"]] = []
+
+            def __init__(self) -> None:
+                self.get_by_trace_id = AsyncMock(return_value=SimpleNamespace(id=99))
+                self.get_open_session_by_awaiting_device_command_code = AsyncMock(return_value=None)
+                self.__class__.instances.append(self)
+
+        service = CallbackOrchestrationService()
+        command = SimpleNamespace(command_code="CMD-404", trace_id="trace-same-but-wrong-session")
+        db = SimpleNamespace()
+
+        with patch("src.app.workline.repositories.session_repository.WorklineSessionRepository", RepoStub):
+            session = await service._load_command_session(db, command)  # type: ignore[arg-type]
+
+        assert session is None
+        repo = RepoStub.instances[0]
+        repo.get_open_session_by_awaiting_device_command_code.assert_awaited_once_with(db, "CMD-404")
+        repo.get_by_trace_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_commit_succeeds_when_enqueue_is_unavailable(self, db_session: AsyncSession) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
@@ -534,7 +558,6 @@ class TestCallbackResultAPI:
         handled_command.status.value = "SUCCESS"
         handled_command.get_duration_ms = MagicMock(return_value=100)
         handled_command.trace_id = "trace-001"
-        handled_command.session_id = None
 
         with (
             patch(
@@ -656,7 +679,6 @@ class TestCallbackResultAPI:
         handled_command.status.value = "SUCCESS"
         handled_command.get_duration_ms = MagicMock(return_value=100)
         handled_command.trace_id = "trace-vendor-001"
-        handled_command.session_id = None
 
         call_order: list[str] = []
 

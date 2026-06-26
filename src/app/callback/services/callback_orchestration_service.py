@@ -179,13 +179,17 @@ class CallbackOrchestrationService:
         return trace
 
     async def _load_command_session(self, db: AsyncSession, command: object) -> object | None:
-        from src.app.workline.models.session import WorklineSession
+        from src.app.workline.repositories.session_repository import WorklineSessionRepository
 
-        session_id = getattr(command, "session_id_int", None)
-        if not isinstance(session_id, int):
+        command_code = getattr(command, "command_code", None)
+        if not isinstance(command_code, str) or not command_code:
             return None
 
-        return await db.get(WorklineSession, session_id)
+        session = await WorklineSessionRepository().get_open_session_by_awaiting_device_command_code(db, command_code)
+        if session is not None:
+            return session
+
+        return None
 
     async def _append_command_acked_timeline(
         self,

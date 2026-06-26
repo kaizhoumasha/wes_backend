@@ -101,7 +101,6 @@ class TestCallbackResultIdempotency:
         handled_command.status.value = "SUCCESS"
         handled_command.get_duration_ms = MagicMock(return_value=100)
         handled_command.trace_id = "trace-001"
-        handled_command.session_id = None
 
         with (
             patch(

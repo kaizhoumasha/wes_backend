@@ -458,7 +458,7 @@ def _session() -> SimpleNamespace:
         status=SessionStatus.RUNNING,
         current_wait_type=None,
         context_json={"kept": "value"},
-        awaiting_command_id=99,
+        awaiting_device_command_code=99,
         ended_at="ended",
         failure_domain="PLUGIN",
         failure_code="OLD_FAILURE",
@@ -640,7 +640,7 @@ async def test_request_operation_tasks_creates_plugin_defined_tasks_without_muta
     assert session.status == SessionStatus.RUNNING
     assert session.current_wait_type is None
     assert session.context_json == {"kept": "value"}
-    assert session.awaiting_command_id == 99
+    assert session.awaiting_device_command_code == 99
     assert session.ended_at == "ended"
     assert session.failure_domain == "PLUGIN"
 
@@ -808,7 +808,7 @@ async def test_request_operation_tasks_creates_move_out_and_supply_tasks_with_sa
     ]
     assert session.status == SessionStatus.RUNNING
     assert session.context_json == {"kept": "value"}
-    assert session.awaiting_command_id == 99
+    assert session.awaiting_device_command_code == 99
 
 
 @pytest.mark.asyncio
