@@ -2,7 +2,7 @@
 
 入站消息统一入口: callback API 在鉴权 + normalize + 幂等校验通过后
 立即写入 RuntimeInbox(status=RECEIVED) 并 ACK; 异步 worker 以
-RECEIVED -> PROCESSING -> PROCESCED 为唯一成功路径。
+RECEIVED -> PROCESSING -> PROCESSED 为唯一成功路径。
 
 状态机 5 态 (P0-007 C5 锁定):
   RECEIVED -> PROCESSING -> PROCESSED
