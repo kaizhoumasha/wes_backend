@@ -182,14 +182,21 @@ rule_c3() {
 }
 
 # --- C4: DeviceCommand/manifest/runtime 不含禁止字段 ---
+# 只匹配 "字段声明" 语义 (Pydantic 风格):
+#   plc_address: str = Field(...)        <- catch
+#   coordinate: float = ...              <- catch
+# 不匹配:
+#   "plc",                               <- ignore (黑名单字面量, H4 反注入实现)
+#   plc_address / coordinate 等禁止字段   <- ignore (docstring/注释)
+#   if key in _FORBIDDEN_PARAM_KEYS:     <- ignore (变量引用)
 rule_c4() {
-    local pattern='plc|coordinate|joint_angle|x_coord|y_coord|safety_loop'
+    local pattern='^[[:space:]]+(plc|coordinate|joint_angle|x_coord|y_coord|safety_loop)[a-z_]*[[:space:]]*[:=]'
     while IFS=: read -r file line _content; do
         [[ -z "$file" ]] && continue
         emit_violation "C4" "$file" "$line" \
             "DeviceCommand/manifest/runtime 出现禁止字段 (PLC/坐标/关节/安全回路)" \
             "WES 不与 PLC 通讯, 不下发坐标/关节/安全回路指令"
-    done < <(grep -rniE "$pattern" src/app/device src/app/workline src/app/runtime --include='*.py' 2>/dev/null || true)
+    done < <(grep -rnE "$pattern" src/app/device src/app/workline src/app/runtime --include='*.py' 2>/dev/null || true)
 }
 
 # --- R-I3a: capability 注入禁用关键词 ---
