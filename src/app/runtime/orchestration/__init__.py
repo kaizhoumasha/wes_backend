@@ -21,6 +21,28 @@
 - InboundEventPort / WmsEventPort / DeviceEventPort / RuntimeInbox consumer
   不在业务 capability 注册表 (R-I3a/R-I3b)
 
-Phase 1 起步: ExecutionSession + ExecutionCorrelation 模型 (2/7), 后续
-会话按依赖顺序加 WorkItem / Inbox / Timeline / Hold / IntentLog。
+Phase 1: runtime core 实体已落地, ConveyorQueueMembership 作为 CEO-008
+动态队列 active/history 投影随 runtime schema 管理。
 """
+
+from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
+from src.app.runtime.orchestration.runtime_hold import RuntimeHold
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
+
+__all__ = [
+    "ConveyorQueueMembership",
+    "ExecutionCorrelation",
+    "ExecutionSession",
+    "ExecutionWorkItem",
+    "IdempotencyKey",
+    "RuntimeHold",
+    "RuntimeInbox",
+    "RuntimeIntentLog",
+    "RuntimeTimeline",
+]

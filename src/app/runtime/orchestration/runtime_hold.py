@@ -11,19 +11,32 @@ RuntimeHold scope 契约 (主计划 §9.2):
 
 from __future__ import annotations
 
+from sqlalchemy import BigInteger
 from sqlmodel import Field, SQLModel
+
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
+from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
 
 
 class RuntimeHold(SQLModel, table=True):
     """运行时闸门 (主计划 §9.2)。"""
 
     __tablename__ = "runtime_holds"
-    __schema__ = "wes_runtime"
+    __schema__ = RUNTIME_SCHEMA
+    __table_args__ = {"schema": RUNTIME_SCHEMA}
 
     id: int | None = Field(default=None, primary_key=True)
 
-    execution_session_id: int = Field(index=True)
-    correlation_id: str | None = Field(default=None, max_length=120, index=True)
+    execution_session_id: int = Field(
+        foreign_key=f"{RUNTIME_SCHEMA}.execution_sessions.id",
+        index=True,
+    )
+    correlation_id: str | None = Field(
+        default=None,
+        foreign_key=f"{RUNTIME_SCHEMA}.execution_correlations.correlation_id",
+        max_length=120,
+        index=True,
+    )
 
     reason: str = Field(max_length=200)
     hold_type: str = Field(
@@ -40,7 +53,7 @@ class RuntimeHold(SQLModel, table=True):
     scope_key: str = Field(max_length=160, index=True)
 
     # 解除
-    resolved_at: int | None = Field(default=None, description="Unix timestamp ms")
+    resolved_at: int | None = Field(default=None, sa_type=BigInteger, description="Unix timestamp ms")
     allowed_next_effect_scope: str | None = Field(
         default=None,
         max_length=200,

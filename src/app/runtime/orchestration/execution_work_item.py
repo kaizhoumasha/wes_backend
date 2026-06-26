@@ -11,19 +11,33 @@
 
 from __future__ import annotations
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
+
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
+from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
 
 
 class ExecutionWorkItem(SQLModel, table=True):
     """对象级执行令牌 (主计划 §9.2)。"""
 
     __tablename__ = "execution_work_items"
-    __schema__ = "wes_runtime"
+    __schema__ = RUNTIME_SCHEMA
+    __table_args__ = (
+        UniqueConstraint("correlation_id", name="uq_wes_runtime_execution_work_items_correlation_id"),
+        {"schema": RUNTIME_SCHEMA},
+    )
 
     id: int | None = Field(default=None, primary_key=True)
 
-    execution_session_id: int = Field(index=True)
-    correlation_id: str = Field(max_length=120, index=True)
+    execution_session_id: int = Field(
+        foreign_key=f"{RUNTIME_SCHEMA}.execution_sessions.id",
+        index=True,
+    )
+    correlation_id: str = Field(
+        foreign_key=f"{RUNTIME_SCHEMA}.execution_correlations.correlation_id",
+        max_length=120,
+    )
 
     # 对象身份
     object_type: str = Field(max_length=60, description="bin / material / pkg / rack")
@@ -38,7 +52,12 @@ class ExecutionWorkItem(SQLModel, table=True):
     )
 
     # 父子关系
-    parent_correlation_id: str | None = Field(default=None, max_length=120, index=True)
+    parent_correlation_id: str | None = Field(
+        default=None,
+        foreign_key=f"{RUNTIME_SCHEMA}.execution_work_items.correlation_id",
+        max_length=120,
+        index=True,
+    )
 
     # 并发控制
     lease_expires_at: int | None = Field(default=None, description="Unix timestamp")

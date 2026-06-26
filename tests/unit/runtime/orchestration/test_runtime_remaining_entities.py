@@ -6,16 +6,174 @@ RuntimeHold (运行时闸门) + IdempotencyKey (H5 幂等键表)。
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+from sqlalchemy import BigInteger, create_engine
+from sqlalchemy.exc import NoReferencedTableError
+from sqlmodel import SQLModel
+
+from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
 from src.app.runtime.orchestration.runtime_hold import RuntimeHold
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
+from src.database.schema_conf import get_all_schemas, validate_schema
+from src.database.sqlite_schema import configure_sqlite_schemas
+
+REMAINING_RUNTIME_MODELS = (
+    ExecutionWorkItem,
+    RuntimeInbox,
+    RuntimeIntentLog,
+    RuntimeTimeline,
+    RuntimeHold,
+    ConveyorQueueMembership,
+    IdempotencyKey,
+)
+REMAINING_RUNTIME_TABLES = {
+    "execution_work_items",
+    "runtime_inbox",
+    "runtime_intent_logs",
+    "runtime_timelines",
+    "runtime_holds",
+    "conveyor_queue_memberships",
+    "idempotency_keys",
+}
 
 # ---- ExecutionWorkItem ----
 
 
 def test_execution_work_item_table_name():
     assert ExecutionWorkItem.__tablename__ == "execution_work_items"
+
+
+def test_remaining_runtime_tables_use_runtime_schema():
+    """剩余 runtime/orchestration 表必须注册到 wes_runtime schema。"""
+    for model in REMAINING_RUNTIME_MODELS:
+        assert model.__table__.schema == "wes_runtime"
+
+
+def _foreign_key_targets(model: type, column_name: str) -> set[str]:
+    return {fk.target_fullname for fk in model.__table__.c[column_name].foreign_keys}
+
+
+def test_remaining_runtime_tables_use_runtime_foreign_keys():
+    """剩余 runtime/orchestration 表必须用 wes_runtime 域内 FK 串联聚合根和 correlation。"""
+    assert _foreign_key_targets(ExecutionWorkItem, "execution_session_id") == {"wes_runtime.execution_sessions.id"}
+    assert _foreign_key_targets(ExecutionWorkItem, "correlation_id") == {
+        "wes_runtime.execution_correlations.correlation_id"
+    }
+    assert _foreign_key_targets(ExecutionWorkItem, "parent_correlation_id") == {
+        "wes_runtime.execution_work_items.correlation_id"
+    }
+    assert _foreign_key_targets(RuntimeInbox, "execution_session_id") == {"wes_runtime.execution_sessions.id"}
+    assert _foreign_key_targets(RuntimeInbox, "correlation_id") == {"wes_runtime.execution_correlations.correlation_id"}
+    assert _foreign_key_targets(RuntimeIntentLog, "execution_session_id") == {"wes_runtime.execution_sessions.id"}
+    assert _foreign_key_targets(RuntimeIntentLog, "correlation_id") == {
+        "wes_runtime.execution_correlations.correlation_id"
+    }
+    assert _foreign_key_targets(RuntimeTimeline, "execution_session_id") == {"wes_runtime.execution_sessions.id"}
+    assert _foreign_key_targets(RuntimeTimeline, "correlation_id") == {
+        "wes_runtime.execution_correlations.correlation_id"
+    }
+    assert _foreign_key_targets(RuntimeHold, "execution_session_id") == {"wes_runtime.execution_sessions.id"}
+    assert _foreign_key_targets(RuntimeHold, "correlation_id") == {"wes_runtime.execution_correlations.correlation_id"}
+    assert _foreign_key_targets(ConveyorQueueMembership, "correlation_id") == {
+        "wes_runtime.execution_correlations.correlation_id"
+    }
+    assert _foreign_key_targets(IdempotencyKey, "execution_correlation_id") == {
+        "wes_runtime.execution_correlations.correlation_id"
+    }
+
+
+def test_execution_work_item_correlation_id_is_table_unique_constraint():
+    """parent_correlation_id 自引用 FK 需要 correlation_id 在 CREATE TABLE 阶段已唯一。"""
+    constraints = {
+        constraint.name: [column.name for column in constraint.columns]
+        for constraint in ExecutionWorkItem.__table__.constraints
+        if constraint.name
+    }
+    assert constraints["uq_wes_runtime_execution_work_items_correlation_id"] == ["correlation_id"]
+
+
+def test_remaining_runtime_models_can_create_all_after_single_model_import():
+    """单独导入 remaining runtime 模型时也必须带入 FK 目标表元数据。"""
+    engine = create_engine("sqlite:///:memory:")
+    configure_sqlite_schemas(engine)
+    try:
+        SQLModel.metadata.create_all(engine)
+    except NoReferencedTableError as exc:  # pragma: no cover - assertion path includes original error
+        pytest.fail(f"runtime model FK target was not registered: {exc}")
+    finally:
+        SQLModel.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def test_runtime_inbox_source_event_identity_is_unique_when_present():
+    """provider_code + event_type + source_event_id 是入站事件幂等身份。"""
+    index = next(
+        index for index in RuntimeInbox.__table__.indexes if index.name == "ux_wes_runtime_runtime_inbox_source_event"
+    )
+    assert index.unique is True
+    assert [column.name for column in index.columns] == ["provider_code", "event_type", "source_event_id"]
+    assert str(index.dialect_options["postgresql"]["where"]) == "source_event_id IS NOT NULL"
+
+
+def test_runtime_schema_registered_for_database_initialization():
+    """wes_runtime 必须进入 central schema 列表, 供 PostgreSQL 初始化和 SQLite attach 使用。"""
+    assert "wes_runtime" in get_all_schemas()
+    assert validate_schema("wes_runtime")
+
+
+def test_remaining_runtime_migration_creates_all_tables():
+    """Alembic revision 必须覆盖剩余 runtime/orchestration 表和 wes_runtime schema。"""
+    migration_files = list(Path("migrations/versions").glob("*_add_remaining_runtime_orchestration_.py"))
+    assert len(migration_files) == 1
+
+    migration = migration_files[0].read_text(encoding="utf-8")
+    assert 'SCHEMA = "wes_runtime"' in migration
+    assert "CREATE SCHEMA IF NOT EXISTS" in migration
+    for table_name in REMAINING_RUNTIME_TABLES:
+        assert f'"{table_name}"' in migration
+
+    assert 'sa.PrimaryKeyConstraint("provider_code", "operation_kind", "idempotency_key")' in migration
+    assert 'f"ix_wes_runtime_runtime_inbox_{column_name}"' in migration
+    assert '"status"' in migration
+    assert "ux_wes_runtime_runtime_inbox_source_event" in migration
+    assert "source_event_id IS NOT NULL" in migration
+    assert "ux_wes_runtime_conveyor_queue_memberships_active_bin" in migration
+    assert "ux_wes_runtime_conveyor_queue_memberships_active_placeholder" in migration
+    assert "membership_status = 'ACTIVE'" in migration
+    assert 'f"ix_wes_runtime_runtime_intent_logs_{column_name}"' in migration
+    assert '"idempotency_key"' in migration
+    assert "ix_wes_runtime_idempotency_keys_execution_correlation_id" in migration
+    assert (
+        'sa.UniqueConstraint("correlation_id", name="uq_wes_runtime_execution_work_items_correlation_id")' in migration
+    )
+    assert "sa.ForeignKeyConstraint" in migration
+    assert "{SCHEMA}.execution_sessions.id" in migration
+    assert "{SCHEMA}.execution_correlations.correlation_id" in migration
+
+
+def test_millisecond_epoch_columns_use_bigint():
+    """毫秒 epoch 字段必须用 BIGINT, 避免 PostgreSQL 32-bit INTEGER 溢出。"""
+    expected = {
+        RuntimeTimeline: ("occurred_at",),
+        RuntimeHold: ("resolved_at",),
+        ConveyorQueueMembership: ("entered_at", "left_at"),
+        IdempotencyKey: ("created_at",),
+    }
+    for model, column_names in expected.items():
+        for column_name in column_names:
+            assert isinstance(model.__table__.c[column_name].type, BigInteger)
+
+    migration_files = list(Path("migrations/versions").glob("*_add_remaining_runtime_orchestration_.py"))
+    migration = migration_files[0].read_text(encoding="utf-8")
+    for column_name in ("occurred_at", "resolved_at", "entered_at", "left_at", "created_at"):
+        assert f'sa.Column("{column_name}", sa.BigInteger()' in migration
+        assert f'sa.Column("{column_name}", sa.Integer()' not in migration
 
 
 def test_execution_work_item_required_fields():
@@ -133,3 +291,67 @@ def test_idempotency_key_request_hash_immutable():
         created_at=1700000000000,
     )
     assert key.request_hash == "sha256-xyz"
+
+
+# ---- ConveyorQueueMembership (CEO-008) ----
+
+
+def test_conveyor_queue_membership_table_name():
+    assert ConveyorQueueMembership.__tablename__ == "conveyor_queue_memberships"
+
+
+def test_conveyor_queue_membership_required_fields():
+    membership = ConveyorQueueMembership(
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="ENTRY_SCAN_QUEUE",
+        queue_role="SCAN",
+        entered_at=1700000000000,
+        bin_code="BIN-01",
+    )
+    assert membership.membership_status == "ACTIVE"
+    assert membership.left_at is None
+    assert membership.evidence_json == {}
+
+
+def test_conveyor_queue_membership_placeholder_identity_supported():
+    membership = ConveyorQueueMembership(
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="ENTRY_SCAN_QUEUE",
+        queue_role="SCAN",
+        entered_at=1700000000000,
+        placeholder_key="placeholder:scan:1",
+    )
+    assert membership.placeholder_key == "placeholder:scan:1"
+    assert membership.bin_code is None
+
+
+def test_conveyor_queue_membership_active_bin_unique_per_workline():
+    index = next(
+        index
+        for index in ConveyorQueueMembership.__table__.indexes
+        if index.name == "ux_wes_runtime_conveyor_queue_memberships_active_bin"
+    )
+    assert index.unique is True
+    assert [column.name for column in index.columns] == ["workline_id", "bin_code"]
+    assert str(index.dialect_options["postgresql"]["where"]) == "bin_code IS NOT NULL AND membership_status = 'ACTIVE'"
+
+
+def test_conveyor_queue_membership_active_placeholder_unique_per_workline():
+    index = next(
+        index
+        for index in ConveyorQueueMembership.__table__.indexes
+        if index.name == "ux_wes_runtime_conveyor_queue_memberships_active_placeholder"
+    )
+    assert index.unique is True
+    assert [column.name for column in index.columns] == ["workline_id", "placeholder_key"]
+    assert (
+        str(index.dialect_options["postgresql"]["where"])
+        == "placeholder_key IS NOT NULL AND membership_status = 'ACTIVE'"
+    )
+
+
+def test_conveyor_queue_membership_manifest_queue_code_is_string_not_enum():
+    field = ConveyorQueueMembership.model_fields["queue_code"]
+    assert field.annotation is str

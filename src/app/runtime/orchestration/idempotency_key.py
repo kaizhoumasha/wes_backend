@@ -12,14 +12,19 @@ H5 (Phase 1 最小版本):
 
 from __future__ import annotations
 
+from sqlalchemy import BigInteger
 from sqlmodel import Field, SQLModel
+
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
+from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
 
 
 class IdempotencyKey(SQLModel, table=True):
     """幂等键表 (主计划 §5.4)。"""
 
     __tablename__ = "idempotency_keys"
-    __schema__ = "wes_runtime"
+    __schema__ = RUNTIME_SCHEMA
+    __table_args__ = {"schema": RUNTIME_SCHEMA}
 
     # 复合主键 (provider_code, operation_kind, idempotency_key)
     provider_code: str = Field(max_length=60, primary_key=True)
@@ -28,6 +33,7 @@ class IdempotencyKey(SQLModel, table=True):
 
     # 引用 ExecutionCorrelation
     execution_correlation_id: str = Field(
+        foreign_key=f"{RUNTIME_SCHEMA}.execution_correlations.correlation_id",
         max_length=120,
         index=True,
         description="引用 ExecutionCorrelation.correlation_id",
@@ -37,4 +43,4 @@ class IdempotencyKey(SQLModel, table=True):
     business_owner_key: str | None = Field(default=None, max_length=160)
 
     # TTL 30 天 (主计划 §5.4)
-    created_at: int = Field(index=True, description="Unix timestamp ms")
+    created_at: int = Field(index=True, sa_type=BigInteger, description="Unix timestamp ms")

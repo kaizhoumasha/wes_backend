@@ -19,7 +19,11 @@ RECEIVED -> PROCESSING -> PROCESSED 为唯一成功路径。
 
 from __future__ import annotations
 
+from sqlalchemy import Index, text
 from sqlmodel import Field, SQLModel
+
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
+from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
 
 
 class RuntimeInbox(SQLModel, table=True):
@@ -30,14 +34,30 @@ class RuntimeInbox(SQLModel, table=True):
     """
 
     __tablename__ = "runtime_inbox"
-    __schema__ = "wes_runtime"
+    __schema__ = RUNTIME_SCHEMA
+    __table_args__ = (
+        Index(
+            "ux_wes_runtime_runtime_inbox_source_event",
+            "provider_code",
+            "event_type",
+            "source_event_id",
+            unique=True,
+            postgresql_where=text("source_event_id IS NOT NULL"),
+        ),
+        {"schema": RUNTIME_SCHEMA},
+    )
 
     id: int | None = Field(default=None, primary_key=True)
 
     # runtime 域内强 FK (可空: callback 未解析前先 ACK)
-    execution_session_id: int | None = Field(default=None, index=True)
+    execution_session_id: int | None = Field(
+        default=None,
+        foreign_key=f"{RUNTIME_SCHEMA}.execution_sessions.id",
+        index=True,
+    )
     correlation_id: str | None = Field(
         default=None,
+        foreign_key=f"{RUNTIME_SCHEMA}.execution_correlations.correlation_id",
         max_length=120,
         index=True,
         description="引用 ExecutionCorrelation.correlation_id",

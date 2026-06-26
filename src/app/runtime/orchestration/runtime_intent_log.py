@@ -18,6 +18,9 @@ from __future__ import annotations
 
 from sqlmodel import Field, SQLModel
 
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
+from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
+
 
 class RuntimeIntentLog(SQLModel, table=True):
     """outbox/effect ledger (主计划 §9.2)。
@@ -27,13 +30,21 @@ class RuntimeIntentLog(SQLModel, table=True):
     """
 
     __tablename__ = "runtime_intent_logs"
-    __schema__ = "wes_runtime"
+    __schema__ = RUNTIME_SCHEMA
+    __table_args__ = {"schema": RUNTIME_SCHEMA}
 
     id: int | None = Field(default=None, primary_key=True)
 
     # runtime 域内强 FK
-    execution_session_id: int = Field(index=True)
-    correlation_id: str = Field(max_length=120, index=True)
+    execution_session_id: int = Field(
+        foreign_key=f"{RUNTIME_SCHEMA}.execution_sessions.id",
+        index=True,
+    )
+    correlation_id: str = Field(
+        foreign_key=f"{RUNTIME_SCHEMA}.execution_correlations.correlation_id",
+        max_length=120,
+        index=True,
+    )
 
     # effect 元数据
     provider_code: str = Field(max_length=60, index=True)
