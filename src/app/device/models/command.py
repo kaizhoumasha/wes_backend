@@ -80,7 +80,14 @@ class CommandResult(str, Enum):
 
 
 class CommandBase(BaseMixin):
-    """指令基础字段 - 用于 Schema 复用"""
+    """指令基础字段 - 用于 Schema 复用
+
+    H4: extra="forbid" 禁止未声明字段透传, 阻断 attacker 通过 params 注入
+    plc_address / coordinate 等禁止字段; 同 key 不同 hash 拒绝 (Phase 1 实现
+    RuntimeIntentLog outbound 最小版本, 完整 409 审计留 Phase 3 ENG-009)。
+    """
+
+    model_config = SQLModelConfig(from_attributes=True, extra="forbid")
 
     device_id: int = Field(
         index=True,
