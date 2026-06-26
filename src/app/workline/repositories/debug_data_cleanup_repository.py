@@ -163,7 +163,7 @@ class DebugDataCleanupRepository:
         inbox_ids = await self._collect_ids(db, self._inbox_ids_stmt(workline_ids, session_ids, trace_ids))
         trace_ids = sorted({*trace_ids, *await self._collect_strings(db, self._inbox_trace_ids_stmt(inbox_ids))})
         outbox_ids = await self._collect_ids(db, self._outbox_ids_stmt(workline_ids, session_ids, trace_ids))
-        command_ids = await self._collect_ids(db, self._command_ids_stmt(workline_ids, session_ids, trace_ids))
+        command_ids = await self._collect_ids(db, self._command_ids_stmt(workline_ids, trace_ids))
 
         trace_ids = sorted({*trace_ids, *await self._collect_strings(db, self._outbox_trace_ids_stmt(outbox_ids))})
         dispatch_keys = await self._collect_strings(db, self._outbox_dispatch_keys_stmt(outbox_ids))
@@ -470,7 +470,9 @@ class DebugDataCleanupRepository:
         session_columns = cast("Any", WorklineSession).__table__.c
         for session_ids in self._chunks(selection.sessions):
             _ = await db.execute(
-                update(WorklineSession).where(session_columns.id.in_(session_ids)).values(awaiting_command_id=None)
+                update(WorklineSession)
+                .where(session_columns.id.in_(session_ids))
+                .values(awaiting_device_command_code=None)
             )
 
         workline_columns = cast("Any", WorkLine).__table__.c
@@ -661,11 +663,10 @@ class DebugDataCleanupRepository:
         )
         return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None
 
-    def _command_ids_stmt(self, workline_ids: list[int], session_ids: list[int], trace_ids: list[str]) -> Any | None:
+    def _command_ids_stmt(self, workline_ids: list[int], trace_ids: list[str]) -> Any | None:
         columns = cast("Any", DeviceCommand).__table__.c
         condition = self._where_any(
             self._in_condition(columns.workline_id, workline_ids),
-            self._in_condition(columns.session_id_int, session_ids),
             self._in_condition(columns.trace_id, trace_ids),
         )
         return select(columns.id).where(condition).order_by(columns.id) if condition is not None else None

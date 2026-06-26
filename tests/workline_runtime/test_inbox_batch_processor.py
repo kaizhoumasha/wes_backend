@@ -608,7 +608,7 @@ async def test_process_batch_uses_injected_write_back_service(mock_db, mock_inbo
     inbox.id = 1
     inbox.trace_id = "trace-1"
     inbox.payload_json = {"event_type": "SOME_EVENT"}
-    session = SimpleNamespace(id=10, status="RUNNING", awaiting_command_id=None)
+    session = SimpleNamespace(id=10, status="RUNNING", awaiting_device_command_code=None)
     workline = SimpleNamespace(id=20)
     injected_write_back = SimpleNamespace(write_back=AsyncMock(return_value=RuntimeIntentEffectResult.processed()))
     mock_inbox_service.pending_messages = [inbox]
@@ -672,7 +672,7 @@ async def test_resource_retry_disposition_parks_inbox_and_does_not_mark_processe
     inbox.trace_id = "trace-resource-wait"
     inbox.payload_json = {"event_type": "SOME_EVENT"}
     session = SimpleNamespace(
-        id=10, status="WAITING_EXTERNAL", current_wait_type="RESOURCE_WAIT", awaiting_command_id=None
+        id=10, status="WAITING_EXTERNAL", current_wait_type="RESOURCE_WAIT", awaiting_device_command_code=None
     )
     workline = SimpleNamespace(id=20)
     injected_write_back = SimpleNamespace(write_back=AsyncMock(return_value=RuntimeIntentEffectResult.resource_retry()))
@@ -827,7 +827,7 @@ async def test_process_batch_sse_payload_uses_precommit_identity_snapshot(mock_i
     inbox.id = 1
     inbox.trace_id = "trace-1"
     inbox.payload_json = {"event_type": "SOME_EVENT"}
-    session = _CommitExpiredEntity(db, entity_id=10, status="RUNNING", awaiting_command_id=None)
+    session = _CommitExpiredEntity(db, entity_id=10, status="RUNNING", awaiting_device_command_code=None)
     workline = _CommitExpiredEntity(db, entity_id=20)
     injected_write_back = SimpleNamespace(write_back=AsyncMock(return_value=RuntimeIntentEffectResult.processed()))
     mock_inbox_service.pending_messages = [inbox]
@@ -947,7 +947,7 @@ async def test_process_batch_orchestrator_failure_records_diagnostic_with_snapsh
     inbox.id = 1
     inbox.trace_id = "trace-orchestrator-failure"
     inbox.payload_json = {"event_type": "COMMAND_RESULT", "command_code": "CMD-1"}
-    session = SimpleNamespace(id=10, status="RUNNING", awaiting_command_id=None)
+    session = SimpleNamespace(id=10, status="RUNNING", awaiting_device_command_code=None)
     workline = SimpleNamespace(id=20)
     mock_inbox_service.pending_messages = [inbox]
     mock_inbox_service.repo.get_by_id.return_value = inbox

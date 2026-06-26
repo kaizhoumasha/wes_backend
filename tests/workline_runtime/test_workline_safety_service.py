@@ -55,7 +55,7 @@ async def test_handle_estop_freezes_workline_and_drains_open_work(db_session) ->
     command = DeviceCommand(
         device_id=cast("int", device.id),
         workline_id=cast("int", workline.id),
-        session_id_int=cast("int", session.id),
+        correlation_id=session.session_code,
         command_code="CMD-ESTOP-1",
         task_type="PICK_AND_PUT",
         status=CommandStatus.ACK_RECEIVED,

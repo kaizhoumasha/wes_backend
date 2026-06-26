@@ -437,7 +437,6 @@ def _effect_ctx(
         "trace": TraceContext.from_runtime(session=session, workline=workline, inbox=inbox, trace_id=session.trace_id),
         "session_ctx": dict(session.context_json or {}),
         "now": datetime(2026, 1, 1, 0, 2, 0),
-        "awaiting_command_id": None,
         "awaiting_command_code": None,
         "next_timeline_seq_no": None,
     }
@@ -878,13 +877,16 @@ async def test_cross_plan_runtime_effect_stitching_persists_context_resource_fac
     assert session.status == SessionStatus.WAITING_DEVICE_RESULT
     assert session.context_json["sorting"]["current_material"]["material_identity_key"] == "mid:pkg-001"
     assert session.context_json["sorting"]["pending_target_placement"]["target_cell_code"] == "B02"
-    assert session.awaiting_command_id is not None
+    assert session.awaiting_device_command_code is not None
 
-    command = await db_session.get(DeviceCommand, session.awaiting_command_id)
+    command = (
+        await db_session.execute(
+            select(DeviceCommand).where(DeviceCommand.command_code == session.awaiting_device_command_code)
+        )
+    ).scalar_one()
     assert command is not None
     assert command.task_type == COMMAND_TARGET_PLACE
     assert command.trace_id == "trace-cross-plan-effect"
-    assert command.session_id_int == session.id
 
     outboxes = (
         (
@@ -954,8 +956,7 @@ async def test_cross_plan_ng_material_conflict_blocks_session_completion(
         command_code="CMD-SMT-NG-CONFLICT-EXISTING",
         device_id=ng_device.id,
         workline_id=workline.id,
-        session_id=session.session_code,
-        session_id_int=session.id,
+        correlation_id=session.trace_id,
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
         task_type=COMMAND_NG_PLACE,

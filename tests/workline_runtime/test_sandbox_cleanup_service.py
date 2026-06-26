@@ -213,8 +213,7 @@ async def _create_executable_cleanup_graph(db_session):
         command_code="CMD-SANDBOX-CLEANUP-EXEC",
         device_id=sandbox_device.id,
         workline_id=simulation_workline.id,
-        session_id=sandbox_session.session_code,
-        session_id_int=sandbox_session.id,
+        correlation_id=sandbox_session.session_code,
         plugin_key="test_workline_plugin",
         contract_version="1.0",
         task_type="PICK_AND_PUT",
@@ -226,8 +225,7 @@ async def _create_executable_cleanup_graph(db_session):
         command_code="CMD-AUTO-CLEANUP-EXEC",
         device_id=auto_device.id,
         workline_id=auto_workline.id,
-        session_id=auto_session.session_code,
-        session_id_int=auto_session.id,
+        correlation_id=auto_session.session_code,
         plugin_key="test_workline_plugin",
         contract_version="1.0",
         task_type="PICK_AND_PUT",
@@ -239,8 +237,7 @@ async def _create_executable_cleanup_graph(db_session):
         command_code="CMD-SANDBOX-CLEANUP-MAINTENANCE",
         device_id=maintenance_device.id,
         workline_id=simulation_workline.id,
-        session_id=sandbox_session.session_code,
-        session_id_int=sandbox_session.id,
+        correlation_id=sandbox_session.session_code,
         plugin_key="test_workline_plugin",
         contract_version="1.0",
         task_type="PICK_AND_PUT",
@@ -252,8 +249,7 @@ async def _create_executable_cleanup_graph(db_session):
         command_code="CMD-SANDBOX-CLEANUP-IDLE",
         device_id=idle_command_device.id,
         workline_id=simulation_workline.id,
-        session_id=sandbox_session.session_code,
-        session_id_int=sandbox_session.id,
+        correlation_id=sandbox_session.session_code,
         plugin_key="test_workline_plugin",
         contract_version="1.0",
         task_type="PICK_AND_PUT",
@@ -265,8 +261,7 @@ async def _create_executable_cleanup_graph(db_session):
         command_code="CMD-SANDBOX-CLEANUP-IDLE-UNSELECTED",
         device_id=idle_unselected_command_device.id,
         workline_id=simulation_workline.id,
-        session_id="non-sandbox-unselected-session",
-        session_id_int=None,
+        correlation_id="non-sandbox-unselected-session",
         plugin_key="test_workline_plugin",
         contract_version="1.0",
         task_type="PICK_AND_PUT",
@@ -278,8 +273,7 @@ async def _create_executable_cleanup_graph(db_session):
         command_code="CMD-SANDBOX-CLEANUP-RUNNING-UNSELECTED",
         device_id=running_unselected_command_device.id,
         workline_id=simulation_workline.id,
-        session_id="non-sandbox-running-unselected-session",
-        session_id_int=None,
+        correlation_id="non-sandbox-running-unselected-session",
         plugin_key="test_workline_plugin",
         contract_version="1.0",
         task_type="PICK_AND_PUT",
@@ -291,8 +285,7 @@ async def _create_executable_cleanup_graph(db_session):
         command_code="CMD-SANDBOX-CLEANUP-OFFLINE",
         device_id=offline_device.id,
         workline_id=simulation_workline.id,
-        session_id=sandbox_session.session_code,
-        session_id_int=sandbox_session.id,
+        correlation_id=sandbox_session.session_code,
         plugin_key="test_workline_plugin",
         contract_version="1.0",
         task_type="PICK_AND_PUT",
@@ -334,8 +327,8 @@ async def _create_executable_cleanup_graph(db_session):
     idle_unselected_command_device.current_command_id = idle_unselected_command.id
     running_unselected_command_device.current_command_id = running_unselected_command.id
     offline_device.current_command_id = offline_command.id
-    sandbox_session.awaiting_command_id = sandbox_command.id
-    auto_session.awaiting_command_id = auto_command.id
+    sandbox_session.awaiting_device_command_code = sandbox_command.command_code
+    auto_session.awaiting_device_command_code = auto_command.command_code
 
     sandbox_hold = RuntimeHold(
         hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION,
@@ -662,8 +655,7 @@ async def test_preview_cleanup_counts_only_simulation_workline_sandbox_data(db_s
         command_code="CMD-SANDBOX-CLEANUP",
         device_id=sandbox_device.id,
         workline_id=simulation_workline.id,
-        session_id=sandbox_session.session_code,
-        session_id_int=sandbox_session.id,
+        correlation_id=sandbox_session.session_code,
         plugin_key="test_workline_plugin",
         contract_version="1.0",
         task_type="PICK_AND_PUT",
@@ -675,8 +667,7 @@ async def test_preview_cleanup_counts_only_simulation_workline_sandbox_data(db_s
         command_code="CMD-AUTO-CLEANUP",
         device_id=auto_device.id,
         workline_id=auto_workline.id,
-        session_id=auto_session.session_code,
-        session_id_int=auto_session.id,
+        correlation_id=auto_session.session_code,
         plugin_key="test_workline_plugin",
         contract_version="1.0",
         task_type="PICK_AND_PUT",
@@ -1018,7 +1009,8 @@ async def test_cleanup_workline_deletes_sandbox_runtime_graph_and_resets_runtime
     assert auto_device.current_command_id == auto_command_id
     assert auto_device.device_status == DeviceStatus.RUNNING
     auto_session = await db_session.get(WorklineSession, graph["auto_ids"][WorklineSession])
-    assert auto_session.awaiting_command_id == auto_command_id
+    auto_command = await db_session.get(DeviceCommand, auto_command_id)
+    assert auto_session.awaiting_device_command_code == auto_command.command_code
 
 
 @pytest.mark.asyncio

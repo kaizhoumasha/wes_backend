@@ -584,10 +584,8 @@ async def _record_source_pick_command_correlation(
 
 
 def _source_pick_success_command_id(ctx: Any) -> int | None:
-    return (
-        optional_int(getattr(ctx["inbox"], "command_id", None))
-        or optional_int(getattr(ctx["session"], "awaiting_command_id", None))
-        or optional_int(ctx.get("awaiting_command_id"))
+    return optional_int(getattr(ctx["inbox"], "command_id", None)) or optional_int(
+        ctx.get("awaiting_device_command_pk")
     )
 
 
@@ -617,10 +615,8 @@ async def _record_source_pick_success(ctx: Any, *, command_id: int | None = None
 
 
 def _terminal_command_id(ctx: Any) -> int | None:
-    return (
-        optional_int(getattr(ctx["inbox"], "command_id", None))
-        or optional_int(getattr(ctx["session"], "awaiting_command_id", None))
-        or optional_int(ctx.get("awaiting_command_id"))
+    return optional_int(getattr(ctx["inbox"], "command_id", None)) or optional_int(
+        ctx.get("awaiting_device_command_pk")
     )
 
 
@@ -1076,7 +1072,7 @@ class RuntimeIntentEffectApplier:
         if (
             getattr(session, "status", None) != "NEW"
             or getattr(session, "current_wait_type", None) is not None
-            or getattr(session, "awaiting_command_id", None) is not None
+            or getattr(session, "awaiting_device_command_code", None) is not None
         ):
             return
 
@@ -1183,7 +1179,7 @@ class RuntimeIntentEffectApplier:
         if command is None:
             raise RuntimeError("Failed to create device command from RuntimeIntent")
 
-        ctx["awaiting_command_id"] = command.id
+        ctx["awaiting_device_command_pk"] = command.id
         ctx["awaiting_command_code"] = command.command_code
 
         command_outbox = workline_effects._build_command_outbox_model(ctx, command=command, device_code=device_code)
@@ -1858,14 +1854,14 @@ class RuntimeIntentEffectApplier:
             session,
             wait_type="COMMAND_RESULT",
             occurred_at=ctx["now"],
-            awaiting_command_id=ctx["awaiting_command_id"],
+            awaiting_device_command_code=ctx["awaiting_command_code"],
             deadline_seconds=timeout_seconds,
         )
         await WorklineSessionRepository().persist_command_result_wait(
             ctx["db"],
             session_id=resolve_required_pk(session, "session"),
             occurred_at=ctx["now"],
-            command_id=ctx["awaiting_command_id"],
+            command_code=ctx["awaiting_command_code"],
             timeout_seconds=timeout_seconds,
         )
         await workline_effects._emit_timeline(
@@ -1882,7 +1878,7 @@ class RuntimeIntentEffectApplier:
             to_status=session.status,
             actor_type=TimelineActorType.ORCHESTRATOR,
             related_inbox_id=workline_effects._timeline_inbox_id(ctx),
-            related_command_id=ctx["awaiting_command_id"],
+            related_command_id=ctx["awaiting_device_command_pk"],
             status=TimelineStatus.PENDING,
         )
 

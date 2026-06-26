@@ -2057,7 +2057,7 @@ class TestRuntimeQueryService:
             id=20,
             workline_id=45,
             current_wait_type=None,
-            awaiting_command_id=None,
+            awaiting_device_command_code=None,
             failure_domain=None,
             failure_message=None,
         )
@@ -2214,7 +2214,7 @@ class TestRuntimeQueryService:
             current_wait_timeout_seconds=None,
             waiting_since=None,
             deadline_at=None,
-            awaiting_command_id=None,
+            awaiting_device_command_code=None,
             failure_domain=None,
             failure_code=None,
             failure_message=None,
@@ -2319,7 +2319,7 @@ class TestRuntimeQueryService:
             id=20,
             workline_id=45,
             current_wait_type=None,
-            awaiting_command_id=None,
+            awaiting_device_command_code=None,
             failure_domain=None,
             failure_message=None,
         )
@@ -3791,7 +3791,8 @@ class TestRuntimeQueryService:
         executed_query = db.execute.await_args.args[0]
         assert result == [active_session]
         assert db.execute.await_count == 1
-        assert "session_id_int" in str(executed_query)
+        assert "workline_sessions" in str(executed_query)
+        assert "device_commands.session_id_int" not in str(executed_query)
 
     @pytest.mark.asyncio
     async def test_load_latest_command_by_session_uses_window_query(self) -> None:
@@ -3799,10 +3800,11 @@ class TestRuntimeQueryService:
 
         service = RuntimeQueryService()
         db = AsyncMock()
-        latest_command = SimpleNamespace(id=2, session_id="SES-11", session_id_int=11)
+        session = SimpleNamespace(id=11, trace_id="trace-11")
+        latest_command = SimpleNamespace(id=2, trace_id="trace-11")
         db.execute.return_value = SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [latest_command]))
 
-        result = await service._load_latest_command_by_session(db, [11])
+        result = await service._load_latest_command_by_session(db, [session])
 
         executed_query = db.execute.await_args.args[0]
         assert "row_number" in str(executed_query).lower()
@@ -3827,7 +3829,7 @@ class TestRuntimeQueryService:
                 context_json={},
                 workline_id=5,
                 status="RUNNING",
-                awaiting_command_id=None,
+                awaiting_device_command_code=None,
                 current_wait_type=None,
                 failure_domain=None,
                 failure_code=None,

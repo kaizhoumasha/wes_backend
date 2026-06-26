@@ -37,7 +37,7 @@ class WorklineSessionLifecycleService:
         session.waiting_since = None
         session.deadline_at = None
         session.current_wait_timeout_seconds = None
-        session.awaiting_command_id = None
+        session.awaiting_device_command_code = None
 
     def clear_failure(self, session: Any) -> None:
         """清理失败字段。"""
@@ -87,7 +87,7 @@ class WorklineSessionLifecycleService:
         *,
         wait_type: str,
         occurred_at: datetime,
-        awaiting_command_id: int | None = None,
+        awaiting_device_command_code: str | None = None,
         deadline_seconds: int | None = None,
     ) -> None:
         """进入等待态。"""
@@ -96,7 +96,7 @@ class WorklineSessionLifecycleService:
         session.status = self.wait_status(wait_type)
         session.current_wait_type = wait_type
         session.waiting_since = occurred_at
-        session.awaiting_command_id = awaiting_command_id
+        session.awaiting_device_command_code = awaiting_device_command_code
         session.current_wait_timeout_seconds = deadline_seconds
         session.deadline_at = (
             None if wait_type == "COMMAND_RESULT" else self._deadline_at(occurred_at, deadline_seconds)
@@ -148,7 +148,7 @@ class WorklineSessionLifecycleService:
             return
         raise InvalidSessionTransition(f"Unsupported runtime hold resolution: {resolution.value}")
 
-    def replay_command_result_wait(self, session: Any, *, command_id: int, occurred_at: datetime) -> None:
+    def replay_command_result_wait(self, session: Any, *, command_code: str, occurred_at: datetime) -> None:
         """解除 Hold 后回到等待设备结果回放态。"""
 
         self._ensure_not_terminal(session, target=SessionStatus.WAITING_DEVICE_RESULT)
@@ -158,7 +158,7 @@ class WorklineSessionLifecycleService:
         session.waiting_since = occurred_at
         session.deadline_at = None
         session.current_wait_timeout_seconds = None
-        session.awaiting_command_id = command_id
+        session.awaiting_device_command_code = command_code
         self.clear_failure(session)
 
     def wait_status(self, wait_type: str) -> SessionStatus:

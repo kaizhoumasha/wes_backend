@@ -351,7 +351,7 @@ class WorklineSession(
     - plugin_key: 执行的插件标识
     - status: 会话状态（由 Runtime 根据 RuntimeIntent 和外部事实推进）
     - context_json: Runtime 与插件共享的业务上下文快照
-    - awaiting_command_id: 当前等待的设备指令
+    - awaiting_device_command_code: 当前等待的设备指令编码
     - last_inbox_id: 追溯辅助字段
 
     Runtime lifecycle:

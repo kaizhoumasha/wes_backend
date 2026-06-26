@@ -28,7 +28,7 @@ def test_process_intents_rejects_context_patch_with_reserved_runtime_key() -> No
     orchestrator = OrchestratorService()
     intents = [
         RuntimeIntent.update_context({"pkg_id": "L0001-1"}),
-        RuntimeIntent.update_context({"awaiting_command_id": 42}),
+        RuntimeIntent.update_context({"awaiting_device_command_code": "CMD-42"}),
     ]
 
     result = orchestrator._process_intents(intents, session=SimpleNamespace())

@@ -26,6 +26,22 @@ class _Db:
     async def get(self, _model: object, _pk: int) -> object | None:
         return self.command
 
+    async def execute(self, _statement: object) -> object:
+        command = self.command
+
+        class _Scalars:
+            def first(self) -> object | None:
+                return command
+
+        class _Result:
+            def scalars(self) -> _Scalars:
+                return _Scalars()
+
+            def scalar_one_or_none(self) -> object | None:
+                return command
+
+        return _Result()
+
 
 def _rack_task_repo_stub(return_value: int = 0) -> SimpleNamespace:
     return SimpleNamespace(cancel_active_by_material_session=AsyncMock(return_value=return_value))
@@ -40,8 +56,8 @@ async def test_activate_execution_deadline_after_ack_uses_wait_timeout_seconds()
         current_wait_timeout_seconds=180,
         deadline_at=None,
     )
-    session_repo = SimpleNamespace(get_open_session_by_awaiting_command_id=AsyncMock(return_value=session))
-    db = _Db()
+    session_repo = SimpleNamespace(get_open_session_by_awaiting_device_command_code=AsyncMock(return_value=session))
+    db = _Db(command=SimpleNamespace(id=9, command_code="CMD-00009"))
     service = WorklineRuntimeReconciliationService(session_repository=session_repo)
 
     updated = await service.activate_execution_deadline_after_ack(
@@ -64,6 +80,7 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
         device_id=7,
         status=CommandStatus.ACK_RECEIVED,
         ack_received_at=ack_received_at,
+        command_code="CMD-001",
     )
     session = SimpleNamespace(
         id=530,
@@ -73,7 +90,7 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
         current_wait_timeout_seconds=180,
         waiting_since=ack_received_at,
         deadline_at=deadline_at,
-        awaiting_command_id=9,
+        awaiting_device_command_code="CMD-001",
         reconciliation_state=None,
     )
     inbox = SimpleNamespace(
@@ -82,7 +99,7 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
         payload_json={
             "deadline_at": deadline_at.isoformat(),
             "command_code": "CMD-001",
-            "awaiting_command_id": 9,
+            "awaiting_device_command_code": "CMD-001",
         },
     )
     workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)
@@ -134,7 +151,7 @@ async def test_timer_timeout_enters_runtime_reconciliation_and_clears_wait() -> 
     assert session.current_wait_type is None
     assert session.current_wait_timeout_seconds is None
     assert session.deadline_at is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
     assert workline.stopped_reason == RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value
     device_service.mark_callback_deadline_expired.assert_awaited_once_with(db, device_id=7, auto_commit=False)
@@ -175,7 +192,7 @@ async def test_timer_timeout_cancels_active_rack_tasks_for_session() -> None:
         current_wait_timeout_seconds=1800,
         waiting_since=deadline_at - timedelta(seconds=1800),
         deadline_at=deadline_at,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         reconciliation_state=None,
     )
     inbox = SimpleNamespace(
@@ -184,7 +201,7 @@ async def test_timer_timeout_cancels_active_rack_tasks_for_session() -> None:
         payload_json={
             "deadline_at": deadline_at.isoformat(),
             "wait_type": "RACK_OPERATION",
-            "awaiting_command_id": None,
+            "awaiting_device_command_code": None,
         },
     )
     workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)
@@ -244,6 +261,7 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
         device_id=7,
         status=CommandStatus.ACK_RECEIVED,
         ack_received_at=ack_received_at,
+        command_code="CMD-20260508-MEASUREMENT_REEL-0EF06E0F",
     )
     session = SimpleNamespace(
         id=545,
@@ -254,7 +272,7 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
         current_wait_timeout_seconds=300,
         waiting_since=None,
         deadline_at=None,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         reconciliation_state=None,
     )
     inbox = SimpleNamespace(
@@ -263,7 +281,7 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
         payload_json={
             "deadline_at": deadline_at.isoformat(),
             "command_code": "CMD-20260508-MEASUREMENT_REEL-0EF06E0F",
-            "awaiting_command_id": 9,
+            "awaiting_device_command_code": "CMD-20260508-MEASUREMENT_REEL-0EF06E0F",
             "ack_received_at": ack_received_at.isoformat(),
         },
     )
@@ -310,7 +328,7 @@ async def test_timer_timeout_uses_payload_claim_when_live_wait_fields_were_clear
     assert session.reconciliation_wait_token == "CMD-20260508-MEASUREMENT_REEL-0EF06E0F"
     assert session.reconciliation_ack_received_at == ack_received_at
     assert session.reconciliation_deadline_at == deadline_at
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert session.deadline_at is None
     assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
     outbox_repo.cancel_active_by_session.assert_awaited_once_with(
@@ -347,7 +365,7 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
         current_wait_timeout_seconds=300,
         waiting_since=deadline_at - timedelta(seconds=300),
         deadline_at=deadline_at,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         reconciliation_state=None,
     )
     inbox = SimpleNamespace(
@@ -356,7 +374,7 @@ async def test_external_wait_timeout_enters_runtime_reconciliation_without_comma
         payload_json={
             "deadline_at": deadline_at.isoformat(),
             "wait_type": "EXTERNAL_HTTP",
-            "awaiting_command_id": None,
+            "awaiting_device_command_code": None,
         },
     )
     workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)
@@ -455,7 +473,7 @@ async def test_dispatch_ack_exhausted_marks_sent_outbox_and_command_failed() -> 
         current_wait_timeout_seconds=300,
         waiting_since=timezone.now_for_db() - timedelta(seconds=400),
         deadline_at=None,
-        awaiting_command_id=881,
+        awaiting_device_command_code="CMD-20260509-MOVE_FORWARD-AB5F1A76",
         reconciliation_state=None,
     )
     workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)
@@ -516,7 +534,7 @@ async def test_dispatch_ack_exhausted_marks_sent_outbox_and_command_failed() -> 
     assert session.reconciliation_device_id == 7
     assert session.reconciliation_wait_token == "CMD-20260509-MOVE_FORWARD-AB5F1A76"
     assert session.current_wait_type is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
     assert workline.stopped_reason == RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value
     device_service.mark_dispatch_ack_exhausted.assert_awaited_once_with(db, device_id=7, auto_commit=False)
@@ -569,7 +587,7 @@ async def test_dispatch_ack_exhausted_keeps_terminal_session_status_and_starts_r
         current_wait_timeout_seconds=None,
         waiting_since=None,
         deadline_at=None,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         reconciliation_state=None,
     )
     workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)
@@ -649,7 +667,7 @@ async def test_dispatch_ack_exhausted_preserves_outbox_dispatch_failed_source_re
         current_wait_timeout_seconds=300,
         waiting_since=timezone.now_for_db() - timedelta(seconds=400),
         deadline_at=None,
-        awaiting_command_id=882,
+        awaiting_device_command_code="CMD-OUTBOX-DISPATCH-FAILED",
         reconciliation_state=None,
     )
     workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)

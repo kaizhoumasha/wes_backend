@@ -669,7 +669,7 @@ class RuntimeHoldReleaseService:
             raise ValueError(f"DeviceCommand 缺少主键: {command.command_code}")
         workline_session_lifecycle_service.replay_command_result_wait(
             session,
-            command_id=command.id,
+            command_code=command.command_code,
             occurred_at=resolved_at,
         )
         self._mark_reconciliation_resolved(session, request=request, resolved_at=resolved_at)

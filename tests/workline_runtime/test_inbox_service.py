@@ -696,14 +696,14 @@ async def test_create_timeout_inbox_uses_idempotent_insert_without_rollback() ->
         workline_id=7,
         deadline_at=datetime(2026, 5, 8, 8, 0, 0),
         wait_token="CMD-1",
-        awaiting_command_id=9,
+        awaiting_device_command_code="CMD-1",
         auto_commit=False,
     )
 
     assert result.id == 100
     assert fake_repo.create_idempotent_calls
     assert fake_repo.created_data is not None
-    assert fake_repo.created_data["idempotency_key"] == "timeout:42:2026-05-08T08:00:00:CMD-1:9"
+    assert fake_repo.created_data["idempotency_key"] == "timeout:42:2026-05-08T08:00:00:CMD-1:CMD-1"
     db.commit.assert_not_awaited()
     db.rollback.assert_not_awaited()
 

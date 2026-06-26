@@ -147,7 +147,12 @@ class WorklineRuntimeReconciliationService:
     ) -> WorklineSession | None:
         """ACK 后按 session.current_wait_timeout_seconds 激活执行等待 deadline。"""
 
-        session = await self.session_repository.get_open_session_by_awaiting_command_id(db, command_id)
+        command = await db.get(DeviceCommand, command_id)
+        command_code = getattr(command, "command_code", None)
+        if not isinstance(command_code, str) or not command_code:
+            return None
+
+        session = await self.session_repository.get_open_session_by_awaiting_device_command_code(db, command_code)
         if session is None:
             return None
         if session.status != SessionStatus.WAITING_DEVICE_RESULT:
@@ -292,7 +297,7 @@ class WorklineRuntimeReconciliationService:
     ) -> WorklineSession | None:
         """HTTP no-ACK retry exhausted 后进入通信 ACK 对账隔离。"""
 
-        session_id = outbox.session_id or getattr(command, "session_id_int", None)
+        session_id = outbox.session_id
         if not isinstance(session_id, int):
             return None
 
@@ -334,7 +339,7 @@ class WorklineRuntimeReconciliationService:
                     action="updated",
                     workline_id=getattr(command, "workline_id", None),
                     device_id=getattr(command, "device_id", None),
-                    session_id=getattr(command, "session_id_int", None),
+                    session_id=session.id,
                 )
             _ = await self.runtime_hold_creation_service.create_for_dispatch_ack_exhausted(
                 db,
@@ -377,7 +382,7 @@ class WorklineRuntimeReconciliationService:
                 action="updated",
                 workline_id=getattr(command, "workline_id", None),
                 device_id=getattr(command, "device_id", None),
-                session_id=getattr(command, "session_id_int", None),
+                session_id=session.id,
             )
 
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
@@ -643,12 +648,15 @@ class WorklineRuntimeReconciliationService:
         session: WorklineSession,
         payload: dict[str, Any],
     ) -> DeviceCommand | None:
-        command_id = session.awaiting_command_id
-        if not isinstance(command_id, int):
-            command_id = _payload_int(payload, "awaiting_command_id")
-        if not isinstance(command_id, int):
+        command_code = getattr(session, "awaiting_device_command_code", None)
+        if not isinstance(command_code, str) or not command_code:
+            candidate = payload.get("awaiting_device_command_code") or payload.get("command_code")
+            command_code = candidate if isinstance(candidate, str) and candidate else None
+        if not command_code:
             return None
-        return await db.get(DeviceCommand, command_id)
+        from src.app.device.repositories.command_repository import DeviceCommandRepository
+
+        return await DeviceCommandRepository().get_by_command_code(db, command_code)
 
     async def _load_reconciliation_command(self, db: Any, session: WorklineSession) -> DeviceCommand | None:
         command_id = session.reconciliation_command_id
@@ -745,20 +753,21 @@ class WorklineRuntimeReconciliationService:
         payload_deadline = timezone.to_db_datetime(payload.get("deadline_at"))
         if session.deadline_at is not None and payload_deadline is not None and payload_deadline != session.deadline_at:
             return False
-        payload_command_id = _payload_int(payload, "awaiting_command_id")
+        payload_command_code = payload.get("awaiting_device_command_code") or payload.get("command_code")
+        if payload_command_code is not None and not isinstance(payload_command_code, str):
+            return False
+        session_command_code = getattr(session, "awaiting_device_command_code", None)
         if (
-            isinstance(payload_command_id, int)
-            and payload_command_id != session.awaiting_command_id
-            and session.awaiting_command_id is not None
+            isinstance(payload_command_code, str)
+            and isinstance(session_command_code, str)
+            and payload_command_code != session_command_code
         ):
             return False
-        effective_command_id = (
-            session.awaiting_command_id if isinstance(session.awaiting_command_id, int) else payload_command_id
-        )
-        command_id = _resolve_id(command)
-        if effective_command_id is not None and command_id != effective_command_id:
+        effective_command_code = session_command_code if isinstance(session_command_code, str) else payload_command_code
+        command_code = getattr(command, "command_code", None)
+        if effective_command_code is not None and command_code != effective_command_code:
             return False
-        if effective_command_id is None:
+        if effective_command_code is None:
             return session.status == SessionStatus.WAITING_EXTERNAL
         return (
             command is not None
@@ -777,7 +786,7 @@ class WorklineRuntimeReconciliationService:
         session.waiting_since = None
         session.deadline_at = None
         session.current_wait_timeout_seconds = None
-        session.awaiting_command_id = None
+        session.awaiting_device_command_code = None
 
     def _dispatch_ack_hold_source_reason(self, error_message: str) -> str:
         if error_message == RuntimeReconciliationReason.OUTBOX_DISPATCH_FAILED.value:

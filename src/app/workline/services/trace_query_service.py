@@ -640,8 +640,10 @@ class TraceQueryService(BaseService[Any, Any]):
         existing: list[DeviceCommand],
     ) -> list[DeviceCommand]:
         columns = cast("Any", DeviceCommand).__table__.c
+        if not isinstance(session.trace_id, str) or not session.trace_id:
+            return existing
         result = await db.execute(
-            select(DeviceCommand).where(columns.session_id_int == session.id).order_by(columns.created_at.asc())
+            select(DeviceCommand).where(columns.trace_id == session.trace_id).order_by(columns.created_at.asc())
         )
         return _merge_unique_by_id(existing, list(result.scalars().all()))
 
@@ -782,7 +784,7 @@ class TraceQueryService(BaseService[Any, Any]):
                     "source": "session_snapshot",
                     "status": getattr(session, "status", None),
                     "current_wait_type": getattr(session, "current_wait_type", None),
-                    "awaiting_command_id": getattr(session, "awaiting_command_id", None),
+                    "awaiting_device_command_code": getattr(session, "awaiting_device_command_code", None),
                 },
             )
         ]

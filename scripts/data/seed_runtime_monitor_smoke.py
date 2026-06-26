@@ -230,7 +230,7 @@ async def _upsert_session(
         "waiting_since": now,
         "deadline_at": now + timedelta(hours=1),
         "current_wait_timeout_seconds": 3600,
-        "awaiting_command_id": None,
+        "awaiting_device_command_code": None,
         "failure_domain": None,
         "failure_code": None,
         "failure_message": None,

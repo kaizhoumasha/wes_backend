@@ -240,7 +240,7 @@ def _is_payload_invalid_entry_replay(
         return False
     if string_value(getattr(session, "failure_code", None)) != "PAYLOAD_INVALID":
         return False
-    if getattr(session, "awaiting_command_id", None) is not None:
+    if getattr(session, "awaiting_device_command_code", None) is not None:
         return False
     return not bool(string_value(getattr(session, "current_wait_type", None)))
 
@@ -268,7 +268,7 @@ def _is_duplicate_entry_event_for_session(
     status = _session_status_value(session)
     if status in _TERMINAL_SESSION_STATUSES or status in _BUSY_SESSION_STATUSES:
         return True
-    if getattr(session, "awaiting_command_id", None) is not None:
+    if getattr(session, "awaiting_device_command_code", None) is not None:
         return True
     current_wait_type = string_value(getattr(session, "current_wait_type", None))
     return bool(current_wait_type)
@@ -277,9 +277,9 @@ def _is_duplicate_entry_event_for_session(
 def _is_current_wait_command_result(*, session: Any, command: Any, payload: dict[str, Any]) -> bool:
     """判断 COMMAND_RESULT 是否仍对应 session 当前声明的等待锚点。"""
     _ = payload
-    command_id = resolve_entity_id(command)
-    awaiting_command_id = optional_int(getattr(session, "awaiting_command_id", None))
-    return command_id is not None and awaiting_command_id == command_id
+    command_code = getattr(command, "command_code", None)
+    awaiting_command_code = getattr(session, "awaiting_device_command_code", None)
+    return isinstance(command_code, str) and command_code == awaiting_command_code
 
 
 def _is_late_or_duplicate_command_result_for_session(
@@ -415,7 +415,7 @@ async def _record_duplicate_entry_archive_timeline(
             "event_type": canonical_event_type(payload),
             "inbox_id": resolve_entity_id(inbox),
             "session_status": _session_status_value(session),
-            "awaiting_command_id": optional_int(getattr(session, "awaiting_command_id", None)),
+            "awaiting_device_command_code": getattr(session, "awaiting_device_command_code", None),
         },
         related_inbox_id=resolve_entity_id(inbox),
     )
@@ -466,7 +466,7 @@ async def _record_late_command_result_archive_timeline(
             "command_status": _command_status_value(command),
             "inbox_id": resolve_entity_id(inbox),
             "session_status": _session_status_value(session),
-            "awaiting_command_id": optional_int(getattr(session, "awaiting_command_id", None)),
+            "awaiting_device_command_code": getattr(session, "awaiting_device_command_code", None),
             "current_wait_type": string_value(getattr(session, "current_wait_type", None)),
         },
         related_inbox_id=resolve_entity_id(inbox),
@@ -522,7 +522,7 @@ def _session_write_snapshot(session: Any) -> tuple[Any, Any]:
     """提取写入前的最小 session 快照，用于锁内防止 stale write。"""
     return (
         getattr(session, "status", None),
-        getattr(session, "awaiting_command_id", None),
+        getattr(session, "awaiting_device_command_code", None),
     )
 
 
@@ -570,9 +570,6 @@ def _hydrate_inbox_from_command(inbox: Any, command: Any | None) -> None:
     command_pk = resolve_entity_id(command)
     if command_pk is not None and not getattr(inbox, "command_id", None):
         inbox.command_id = command_pk
-    session_id = getattr(command, "session_id", None)
-    if isinstance(session_id, int) and not getattr(inbox, "session_id", None):
-        inbox.session_id = session_id
     workline_id = getattr(command, "workline_id", None)
     if isinstance(workline_id, int) and not getattr(inbox, "workline_id", None):
         inbox.workline_id = workline_id
@@ -1003,7 +1000,7 @@ class InboxBatchProcessor:
                         f"Inbox {inbox_pk} archived duplicate entry event: "
                         f"session_id={resolve_entity_id(session)}, "
                         f"status={_session_status_value(session)}, "
-                        f"awaiting_command_id={getattr(session, 'awaiting_command_id', None)}"
+                        f"awaiting_device_command_code={getattr(session, 'awaiting_device_command_code', None)}"
                     )
                     continue
 
@@ -1033,7 +1030,7 @@ class InboxBatchProcessor:
                         f"session_id={resolve_entity_id(session)}, "
                         f"command_id={resolve_entity_id(entities['command'])}, "
                         f"status={_session_status_value(session)}, "
-                        f"awaiting_command_id={getattr(session, 'awaiting_command_id', None)}"
+                        f"awaiting_device_command_code={getattr(session, 'awaiting_device_command_code', None)}"
                     )
                     continue
 

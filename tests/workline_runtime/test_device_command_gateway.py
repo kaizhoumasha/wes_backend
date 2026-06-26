@@ -70,7 +70,6 @@ class SameSessionCommandRepository:
     async def get_by_command_code(self, _db, _command_code):
         return SimpleNamespace(
             id=321,
-            session_id_int=10,
             status=None,
             sent_at=None,
             ack_received_at=None,

@@ -860,7 +860,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
                         "id": session.id,
                         "session_code": session.session_code,
                         "status": session.status.value if hasattr(session.status, "value") else session.status,
-                        "awaiting_command_id": session.awaiting_command_id,
+                        "awaiting_device_command_code": session.awaiting_device_command_code,
                         "barcode": session.barcode,
                         "created_at": session.created_at.isoformat() if session.created_at else None,
                         "started_at": session.started_at.isoformat() if session.started_at else None,

@@ -104,7 +104,7 @@ class NgReturnItemService:
             db,
             material_identity_key,
         )
-        source_command_id = self._source_command_id(session=session, inbox=inbox)
+        source_command_id = self._source_command_id(inbox=inbox)
         if existing_item is not None:
             if self._is_same_source(existing_item, session=session, source_command_id=source_command_id):
                 return existing_item
@@ -225,12 +225,11 @@ class NgReturnItemService:
             raise ValueError(f"NG reason is not mapped: {raw_code}")
         return reason
 
-    def _source_command_id(self, *, session: Any, inbox: Any) -> int | None:
+    def _source_command_id(self, *, inbox: Any) -> int | None:
         command_id = getattr(inbox, "command_id", None)
         if isinstance(command_id, int):
             return command_id
-        awaiting_command_id = getattr(session, "awaiting_command_id", None)
-        return awaiting_command_id if isinstance(awaiting_command_id, int) else None
+        return None
 
     def _is_same_source(self, item: NgReturnItem, *, session: Any, source_command_id: int | None) -> bool:
         return item.source_session_id == getattr(session, "id", None) and item.source_command_id == source_command_id

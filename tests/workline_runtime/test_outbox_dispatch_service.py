@@ -1389,7 +1389,7 @@ class TestOutboxDispatchService:
         mock_outbox_repo.get_pending_messages.return_value = []
         command_repo = MagicMock()
         command_repo.get_by_command_code = AsyncMock(
-            return_value=_mock_command_record(id=883, device_id=39, session_id_int=555, status=CommandStatus.SENT)
+            return_value=_mock_command_record(id=883, device_id=39, status=CommandStatus.SENT)
         )
         device = _mock_device_record(
             id=39,
@@ -1705,7 +1705,7 @@ class TestOutboxDispatchService:
             )
         )
         mock_command_repo = MagicMock()
-        mock_command_repo.get_by_command_code = AsyncMock(return_value=_mock_command_record(id=777, session_id_int=530))
+        mock_command_repo.get_by_command_code = AsyncMock(return_value=_mock_command_record(id=777))
         runtime_service = SimpleNamespace(handle_dispatch_ack_exhausted=AsyncMock(return_value=SimpleNamespace(id=530)))
 
         with (
@@ -1779,9 +1779,7 @@ class TestOutboxDispatchService:
         mock_device_repo = MagicMock()
         mock_device_repo.get_by_device_code = AsyncMock(return_value=device)
         mock_command_repo = MagicMock()
-        mock_command_repo.get_by_command_code = AsyncMock(
-            return_value=_mock_command_record(id=777, device_id=18, session_id_int=530)
-        )
+        mock_command_repo.get_by_command_code = AsyncMock(return_value=_mock_command_record(id=777, device_id=18))
         runtime_service = SimpleNamespace(handle_dispatch_ack_exhausted=AsyncMock(return_value=SimpleNamespace(id=530)))
         mock_device_service = SimpleNamespace(
             repo=SimpleNamespace(get_by_id=AsyncMock(return_value=device)),

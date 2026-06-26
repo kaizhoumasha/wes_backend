@@ -145,8 +145,7 @@ async def _create_debug_cleanup_graph(db_session):
         command_code="CMD-DEBUG-CLEANUP-AUTO",
         device_id=device.id,
         workline_id=workline.id,
-        session_id=session.session_code,
-        session_id_int=session.id,
+        correlation_id=session.trace_id,
         plugin_key="test_workline_plugin",
         contract_version="1.0",
         task_type="PICK_AND_PUT",
@@ -157,7 +156,7 @@ async def _create_debug_cleanup_graph(db_session):
     db_session.add(command)
     await db_session.flush()
     device.current_command_id = command.id
-    session.awaiting_command_id = command.id
+    session.awaiting_device_command_code = command.command_code
 
     rack_operation = RackOperation(
         operation_key="debug-cleanup-rack-op",

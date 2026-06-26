@@ -44,7 +44,7 @@ def _session(**overrides: Any) -> SimpleNamespace:
         "waiting_since": datetime(2026, 1, 1, 0, 0, 0),
         "deadline_at": datetime(2026, 1, 1, 0, 1, 0),
         "current_wait_timeout_seconds": 60,
-        "awaiting_command_id": 99,
+        "awaiting_device_command_code": 99,
         "ended_at": None,
         "failure_domain": None,
         "failure_code": None,
@@ -75,7 +75,7 @@ def _ctx(
         "trace": TraceContext.from_runtime(session=resolved_session, trace_id="trace-runtime"),
         "session_ctx": dict(getattr(resolved_session, "context_json", {}) or {}),
         "now": datetime(2026, 1, 1, 0, 2, 0),
-        "awaiting_command_id": None,
+        "awaiting_device_command_code": None,
         "awaiting_command_code": None,
         "next_timeline_seq_no": None,
     }
@@ -156,7 +156,7 @@ async def test_apply_resource_wait_timeline_and_context_use_subject(monkeypatch:
     session = _session(
         status=SessionStatus.RUNNING,
         current_wait_type=None,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         context_json={},
     )
     db = SimpleNamespace(execute=AsyncMock())
@@ -210,7 +210,7 @@ async def test_resource_wait_with_missing_or_unknown_manifest_records_contract_d
     session = _session(
         status=SessionStatus.RUNNING,
         current_wait_type=None,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         context_json={},
         plugin_key=plugin_key,
     )
@@ -272,7 +272,7 @@ async def test_resource_wait_with_registered_manifest_undeclared_subject_records
     session = _session(
         status=SessionStatus.RUNNING,
         current_wait_type=None,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         context_json={},
         plugin_key="SMT_SORTING_INBOUND",
     )

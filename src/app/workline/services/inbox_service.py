@@ -665,7 +665,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
         trace_id: str | None = None,
         wait_token: str | None = None,
         wait_type: str | None = None,
-        awaiting_command_id: int | None = None,
+        awaiting_device_command_code: str | None = None,
         command_code: str | None = None,
         device_id: int | None = None,
         device_code: str | None = None,
@@ -688,7 +688,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             创建的 Inbox 消息
         """
         timeout_key = _format_deadline(deadline_at)
-        command_key = awaiting_command_id if awaiting_command_id is not None else "no-command"
+        command_key = awaiting_device_command_code or command_code or "no-command"
         wait_key = wait_token or "no-wait-token"
         idempotency_key = f"timeout:{session_id}:{timeout_key}:{wait_key}:{command_key}"
         existing = await self.repo.get_by_idempotency_key(db, idempotency_key)
@@ -703,7 +703,7 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             "deadline_at": timeout_key,
             "wait_token": wait_token,
             "wait_type": wait_type,
-            "awaiting_command_id": awaiting_command_id,
+            "awaiting_device_command_code": awaiting_device_command_code,
             "command_code": command_code,
             "device_id": device_id,
             "device_code": device_code,
