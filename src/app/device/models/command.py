@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Any, ClassVar, cast
 
 from pydantic import field_validator
-from sqlalchemy import JSON, Column, ForeignKey
+from sqlalchemy import JSON, Column
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 from sqlmodel._compat import SQLModelConfig
@@ -273,20 +273,9 @@ class DeviceCommand(
         index=True,
         description="会话 ID（跟踪单个任务会话）",
     )
-    session_id_int: int | None = Field(
-        default=None,
-        index=True,
-        # 标记与 WorklineSession.awaiting_command_id 的已知外键环，
-        # 避免测试库 drop_all 清理排序 warning。
-        sa_column_args=(
-            ForeignKey(
-                "wes_biz.workline_sessions.id",
-                name="fk_device_commands_session_id_int_workline_sessions",
-                use_alter=True,
-            ),
-        ),
-        description="会话 ID 数值投影（兼容历史字符串 session_id）",
-    )
+    # Phase 1 AP2 消解: 旧 session_id_int (int FK -> workline_sessions.id) 已删除,
+    # session 引用改通过 WorklineSession.awaiting_device_command_code
+    # (Phase 0 P0-004 §4.4 外键环消解)
 
     # 作业线 ID（关联到 WorkLine）
     workline_id: int | None = Field(

@@ -135,7 +135,7 @@ class ExternalContractProfile(BaseModel):
     def _query_method_format(cls, v: list[str]) -> list[str]:
         """query 元素必须匹配 'ClassName.method' 格式 (Port.method 合同)。
 
-        字符类含下划线 (Port.method 允许 snake_case 方法名, 如 WmsFulfillmentPort.request_transport)。
+        字符类含下划线, 支持 snake_case 方法名 (如 WmsFulfillmentPort.request_transport)。
         """
         import re
 
