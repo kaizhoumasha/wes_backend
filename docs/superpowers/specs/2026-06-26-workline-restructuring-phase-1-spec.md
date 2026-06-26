@@ -6,7 +6,7 @@
 
 直接读者是后端实现 agent 和 reviewer。本 SPEC 必须让实现者能按 Packet + CEO 任务包启动 Phase 1，不需要回到顶层设计或 autoplan 评审报告重新判断边界。
 
-本 SPEC 综合 autoplan 评审（system-architect + backend-architect + security-engineer + quality-engineer 四维独立评审）的一致结论：**GO with conditions**——任务定义清晰、依赖可解，但 11 项 prerequisites 必须在 Phase 1 实施 PR 启动前 Sprint 0 完成。
+本 SPEC 综合 autoplan 评审（system-architect + backend-architect + security-engineer + quality-engineer 四维独立评审）的一致结论：**GO with conditions**——任务定义清晰、依赖可解，但 11 项 gate 必须在同一个 Phase 1 PR 内按 Packet 顺序完成，并作为 Phase 1 PR 合并门禁。
 
 ## Current State
 
@@ -44,19 +44,19 @@ Phase 1 按 **一个 PR** 交付（v0.9.1.0），完整范围不裁剪。11 任�
 | **Packet C: Runtime Skeleton** | CEO-007 + CEO-008 + CEO-011 + AP3/AP4 + H5 | runtime/orchestration 域可独立 worker；ExecutionSession.manifest_version pin；ConveyorQueueMembership active 唯一约束；7 张 runtime core 表 + 1 张 ConveyorQueueMembership 表 + 1 张 idempotency_keys 表 Alembic upgrade/downgrade；H5 安全任务交付 |
 | **Packet D: Capability Boundary** | CEO-009 + H2/H3 + Phase 2 go/no-go 准备 | capability 注入静态检查（R-I3a/R-I3b）零违规；inbound normalizer 不进入 capability；H2/H3 安全任务交付；准备 Phase 2 启动评审 |
 
-### Phase 1 Prerequisites（共 11 项，Sprint 0 启动前必做）
+### Phase 1 Gate Matrix（共 11 项，单 PR 内完成）
 
-本节 11 项是 Phase 1 实施 PR 启动前的强制前置（Sprint 0）。为避免形成大而全前置 PR，11 项在 Sprint 0 内一次性完成并随 Phase 1 PR 一起提交：AP5 在 Packet A 开发前完成切 enforced；AP1/AP2 在 Packet B 开发前完成（AP2 关闭 DeviceCommand ↔ session FK 环，Packet C 只做 architecture guardrail 与迁移序列回归验证）；AP3 必须在 CEO-007 model/migration 开发前完成并随 Packet C 保持同步；AP4 的 DeviceCommand slice 在 Packet B 完成，完整 runtime 迁移序列在 Packet C 完成。11 项全部完成后，Phase 1 实施 PR 才可合并。
+本节 11 项是同一个 Phase 1 PR 内的强制 gate，不再拆出独立 Sprint 0 或前置 PR。为避免单 PR 失控，gate 按 Packet 顺序完成并随 Phase 1 PR 一起提交：AP5 在 Packet A 开发前完成切 enforced；AP1/AP2 在 Packet B 开发前完成（AP2 关闭 DeviceCommand ↔ session FK 环，Packet C 只做 architecture guardrail 与迁移序列回归验证）；AP3 必须在 CEO-007 model/migration 开发前完成并随 Packet C 保持同步；AP4 的 DeviceCommand slice 在 Packet B 完成，完整 runtime 迁移序列在 Packet C 完成。11 项全部完成后，Phase 1 PR 才可合并。
 
 #### Architectural (5 项)
 
 | # | 任务 | Owner | Effort | 完成门禁 |
 | --- | --- | --- | --- | --- |
-| AP1 | **决定 `src/app/contracts/` 共享层** + 形成 ADR（避免 R-I3b 误报 + 避免反向 ACL） | architect | 0.5 day | Sprint 0；Packet B 开发前 |
-| AP2 | **P0-004 device FK 环消解列入 CEO-007/CEO-010 显式子任务** + 更新主计划 §10.2 验证栏；Packet B 关闭 DeviceCommand ↔ session FK 环，Packet C 只做 guardrail/迁移序列回归 | architect | 0.5 day | Sprint 0；Packet B 开发前 |
-| AP3 | **发布 `docs/architecture/runtime-orchestration-spec.md` 完整子 SPEC** + 7 实体 schema freeze（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog）；CEO-007 model/migration 实现前必须覆盖字段、索引、lease、deadline、idempotency 和对象级 work item 与 session 并发边界 | architect | 1 day | Sprint 0；CEO-007 model/migration 开发前；Packet C 合并前保持同步 |
-| AP4 | **Phase 1 数据库迁移序列文档** + Alembic 顺序 + downgrade 策略；分两段交付：Packet B Alembic slice 仅覆盖 DeviceCommand FK 环消解，Packet C 完整序列覆盖 7 张 runtime core 表 + 1 张 ConveyorQueueMembership 表 + 1 张 idempotency_keys 表；manifest/schema 扩展为 Pydantic/schema validator 变更，只有实际存储结构变化时才单独新增 migration | architect | 0.5 day | Sprint 0；Packet B slice 在 Packet B 开发前；完整序列在 Packet C 开发前 |
-| AP5 | **Seed allowlist 完整性回归** + 删任意 seed 行失败验证 + 切 `ARCHITECTURE_PHASE=phase1` enforced 模式 | dev ops | 0.5 day | Sprint 0；Packet A 开发前 |
+| AP1 | **决定 `src/app/contracts/` 共享层** + 形成 ADR（避免 R-I3b 误报 + 避免反向 ACL） | architect | 0.5 day | Packet B 开发前 |
+| AP2 | **P0-004 device FK 环消解列入 CEO-007/CEO-010 显式子任务** + 更新主计划 §10.2 验证栏；Packet B 关闭 DeviceCommand ↔ session FK 环，Packet C 只做 guardrail/迁移序列回归 | architect | 0.5 day | Packet B 开发前 |
+| AP3 | **发布 `docs/architecture/runtime-orchestration-spec.md` 完整子 SPEC** + 7 实体 schema freeze（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog）；CEO-007 model/migration 实现前必须覆盖字段、索引、lease、deadline、idempotency 和对象级 work item 与 session 并发边界 | architect | 1 day | CEO-007 model/migration 开发前；Phase 1 PR 合并前保持同步 |
+| AP4 | **Phase 1 数据库迁移序列文档** + Alembic 顺序 + downgrade 策略；分两段交付：Packet B Alembic slice 仅覆盖 DeviceCommand FK 环消解，Packet C 完整序列覆盖 7 张 runtime core 表 + 1 张 ConveyorQueueMembership 表 + 1 张 idempotency_keys 表；manifest/schema 扩展为 Pydantic/schema validator 变更，只有实际存储结构变化时才单独新增 migration | architect | 0.5 day | Packet B slice 在 Packet B 开发前；完整序列在 Packet C 开发前 |
+| AP5 | **Seed allowlist 完整性回归** + 删任意 seed 行失败验证 + 切 `ARCHITECTURE_PHASE=phase1` enforced 模式 | dev ops | 0.5 day | Packet A 开发前 |
 
 #### Security HIGH (6 项，必须并入各 Packet)
 
@@ -109,7 +109,7 @@ Phase 1 按 **一个 PR** 交付（v0.9.1.0），完整范围不裁剪。11 任�
 | 测试 | shared device 影响范围 / required/optional role / SafetyZone validator 测试 |
 | 验收 | manifest schema 校验测试全过；与 P0-005 device-command-contract.md §7 启停门禁一致 |
 
-#### Phase 1 Prerequisites 落地（Packet A 完成）
+#### Phase 1 Gate Matrix 落地（Packet A 完成）
 
 - AP5: Seed allowlist 回归 + 切 phase1 enforced
 - H1: C3 schema inventory 测试
@@ -184,11 +184,11 @@ Phase 1 按 **一个 PR** 交付（v0.9.1.0），完整范围不裁剪。11 任�
 | 测试 | simulator 行为与 adapter contract 等价；profile 切换不影响已加载 session；fixture set 与 adapter contract 共享（~10 case） |
 | 验收 | adapter/normalizer 不泄漏外部 DTO；未声明的 query/effect 能力被拒；未声明的 callback/event/result normalizer 被拒；R-I3b guardrail 不误报 |
 
-#### Phase 1 Prerequisites 落地（Packet B 完成）
+#### Phase 1 Gate Matrix 落地（Packet B 完成）
 
 - AP1: `src/app/contracts/` 共享层 ADR + 实施
-- AP2: device FK 环消解（1b 关闭；1c 只做 architecture guardrail / 迁移序列回归验证）
-- AP4: 1b Alembic slice（DeviceCommand FK 环消解）写入迁移序列文档；manifest/schema 扩展随 Pydantic/schema validator 回滚
+- AP2: device FK 环消解（Packet B 关闭；Packet C 只做 architecture guardrail / 迁移序列回归验证）
+- AP4: Packet B Alembic slice（DeviceCommand FK 环消解）写入迁移序列文档；manifest/schema 扩展随 Pydantic/schema validator 回滚
 - H4: DeviceCommand typed params + 同 key 不同 hash 拒绝
 
 ### Packet C: Runtime Skeleton
@@ -260,7 +260,7 @@ Phase 1 按 **一个 PR** 交付（v0.9.1.0），完整范围不裁剪。11 任�
 | 实施 | ExecutionSession 创建时 pin `manifest_version`；RUNNING session 不热切 manifest；activation-time validator |
 | 测试 | RUNNING session 固定 manifest_version + 新 manifest 只影响新 session + activation-time validator（~4 case） |
 
-#### Phase 1 Prerequisites 落地（Packet C 完成）
+#### Phase 1 Gate Matrix 落地（Packet C 完成）
 
 - AP3: runtime-orchestration-spec.md 子 SPEC 先行撰写；完成后才允许开始 CEO-007 model/migration，且随 Packet C 保持同步
 - AP4: Phase 1 数据库迁移序列文档
@@ -280,7 +280,7 @@ Phase 1 按 **一个 PR** 交付（v0.9.1.0），完整范围不裁剪。11 任�
 | 测试 | capability 只能拿 query/effect port contract；静态检查拒绝 `wms_integration` / `device` service / HTTP client / DTO/schema / provider exception / service locator / WmsEventPort / DeviceEventPort / inbound callback/result/event port / RuntimeInbox consumer |
 | 验收 | R-I3a / R-I3b enforced 零违规；inbound normalizer 不进入 capability 上下文；import-linter 通过 |
 
-#### Phase 1 Prerequisites 落地（Packet D 完成）
+#### Phase 1 Gate Matrix 落地（Packet D 完成）
 
 - H2: RuntimeCapabilityContext type guard
 - H3: import-linter capability-isolation contract
@@ -352,10 +352,10 @@ Phase 1 按 **一个 PR** 交付（v0.9.1.0），完整范围不裁剪。11 任�
 | 风险 | 失效表现 | Phase 1 门禁 |
 | --- | --- | --- |
 | ExternalContractProfile 归属包错误（落 wms_integration/models 触发 R-I3b 误报） | Runtime capability 无法 import profile；CEO-009 阻塞 | AP1 ADR 强制落 `src/app/contracts/` 共享层；Packet B 开发前完成 |
-| P0-004 device FK 环未消解 → Phase 2 污染 | 跨域 session FK 顺势带到 ExecutionSession；目标态污染 | AP2 列入 CEO-007/010 显式子任务；1b Alembic 迁移验收关闭 FK 环，1c guardrail / 迁移序列回归验证 |
+| P0-004 device FK 环未消解 → Phase 2 污染 | 跨域 session FK 顺势带到 ExecutionSession；目标态污染 | AP2 列入 CEO-007/010 显式子任务；Packet B Alembic 迁移验收关闭 FK 环，Packet C guardrail / 迁移序列回归验证 |
 | CEO-009 在 CEO-007 之前实施 | capability registry 先于 runtime 宿主存在，接口 over-engineer | Packet D 严格在 Packet C 之后；PR 描述声明依赖 |
 | CEO-005 cascade 影响面失控 | 所有 query response schema 需同步改造，PR 巨大 | 先做 C3 inventory 测试枚举，再批量加 authority block；分文件粒度提交 |
-| 切 phase1 enforced 后旧违规阻塞新 PR | seed allowlist 过期或 legacy_entry_id 失效 | AP5 在 Sprint 0 完成完整回归；Phase 1 PR 合并前跑 `--phase phase1` |
+| 切 phase1 enforced 后旧违规阻塞新 PR | seed allowlist 过期或 legacy_entry_id 失效 | AP5 在 Packet A 完成完整回归；Phase 1 PR 合并前跑 `--phase phase1` |
 | BC-05/06 strict xfail 意外变绿（Phase 1 不应解除） | 说明契约边界判断有误 | Phase 1 → 2 go/no-go 硬门禁：BC-05/06 保持 xfail；意外变绿 → 触发 SPEC 重审 |
 | Phase 1 runtime 状态机测试覆盖不足 | RuntimeInbox / RuntimeIntentLog recovery 分支错误，崩溃恢复丢 intent | 强制 Phase 1 新增 RuntimeInbox / RuntimeIntentLog recovery / runtime-orchestration state machine 100% 行 + 100% 分支；11 态机完整覆盖留 Phase 3 |
 
@@ -437,7 +437,7 @@ Phase 1 按**一个 PR** 交付，回滚以整体 revert 对应 PR 为主。PR �
 
 ## Effort Estimate
 
-Phase 1 单 PR 交付，按 Packet 分组估算（prerequisites 已并入对应 Packet）：
+Phase 1 单 PR 交付，按 Packet 分组估算（gate effort 已并入对应 Packet）：
 
 | Packet | Effort | CC + gstack 估计 | Human 估计 |
 | --- | --- | --- | --- |
@@ -495,7 +495,7 @@ Phase 1 单 PR 交付，按 Packet 分组估算（prerequisites 已并入对应 
 | File | Change |
 | --- | --- |
 | `docs/architecture/workline-and-plugin-restructuring.md` | 更新主计划 §10.2 CEO-001 验收门禁措辞；CEO-005 QueryPort `source_version` 验证栏；CEO-006 11 类事实类型；CEO-007 7 core entities；CEO-010 验证栏与完成门禁（AP2 FK 环消解）；CEO-013 `src/app/contracts/` 共享层；§13.1 Packet SPEC 触发清单 |
-| `docs/architecture/wms-integration-ports-spec.md` | 新增子 SPEC（CEO-001，1b 实现前发布） |
+| `docs/architecture/wms-integration-ports-spec.md` | 新增子 SPEC（CEO-001，Packet B 代码实现前发布） |
 | `docs/architecture/authority-matrix.md` | 新增（CEO-006） |
 | `docs/architecture/runtime-orchestration-spec.md` | 新增子 SPEC（AP3） |
 | `docs/architecture/phase-1-alembic-migration-sequence.md` | 新增（AP4） |
@@ -609,11 +609,11 @@ Phase 1 单 PR 交付，按 Packet 分组估算（prerequisites 已并入对应 
 
 | Review | Trigger | Why | Status | Findings |
 |--------|---------|-----|--------|----------|
-| Architecture Review | system-architect subagent | Phase 1 go/no-go + 关键路径 + Packet 分组 | **GO with conditions** | 5 项 architectural prerequisites + 4 Packet review 分组 |
+| Architecture Review | system-architect subagent | Phase 1 go/no-go + 关键路径 + Packet 分组 | **GO with conditions** | 5 项 architectural gates + 4 Packet review 分组 |
 | Backend Implementation Review | backend-architect subagent | wms_integration 拆分 + Alembic 顺序 + C1 实际清理范围 | **GO with conditions** | 2649 LOC 盘点 + 7 runtime core + 1 idempotency_keys 迁移顺序 + C1 5 处实际只能 Phase 1 清理 2 处 |
 | Security Review | security-engineer subagent | Phase 1 进入 enforced 模式就绪度 + I1-I3 推进 + 攻击面变化 | **READY-WITH-CONDITIONS** | 6 项 security HIGH 任务必须并入 Phase 1 |
 | Quality Engineering Review | quality-engineer subagent | strict xfail 解除路径 + 新测试预估 + 覆盖率目标 + go/no-go 基线 | **GO** | BC-02 唯一可解除；~127-130 case / ~26 新增测试文件 + 1 修改测试文件；Phase 1 整体完成门禁对齐主计划 §10.2 + BC-07 |
 
-- **VERDICT:** GO with conditions — 4 维评审一致认可 Phase 1 范围、依赖、风险均清晰可解；11 项 prerequisites 在 Sprint 0 完成后按 Packet A→B→C→D 顺序实施单 PR；AP5/H1/H6 在 Packet A，AP1/AP2/AP4(DeviceCommand slice)/H4 在 Packet B，AP3/AP4(完整序列)/H5 在 Packet C，H2/H3 在 Packet D。
+- **VERDICT:** GO with conditions — 4 维评审一致认可 Phase 1 范围、依赖、风险均清晰可解；11 项 gate 在同一个 Phase 1 PR 内按 Packet A→B→C→D 顺序完成；AP5/H1/H6 在 Packet A，AP1/AP2/AP4(DeviceCommand slice)/H4 在 Packet B，AP3/AP4(完整序列)/H5 在 Packet C，H2/H3 在 Packet D。
 
 NO UNRESOLVED DECISIONS（autoplan 评审已就 4 大风险给出明确路径）
