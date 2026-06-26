@@ -6,20 +6,24 @@ Create Date: 2026-06-26 12:00:00.000000+08:00
 
 Phase 1 AP2 + AP4(slice) 消解 P0-004 §4.4 device session FK 环:
 
-Phase 0 现状:
+- Phase 0 现状:
+- device_commands.session_id (VARCHAR, legacy session trace)
 - device_commands.session_id_int (INT, FK -> workline_sessions.id, use_alter=True)
 - workline_sessions.awaiting_command_id (INT, FK -> device_commands.id, use_alter=True)
 - 双向 use_alter=True 形成外键环, 测试库 drop_all 清理顺序 warning
 
 Phase 1 消解 (主计划 §10.2 CEO-010 验证栏, 外部 review 时已落地):
-1. device_commands.session_id_int 删除 (command_code 已有幂等键)
+1. device_commands.session_id/session_id_int 删除, 新增 correlation_id
+   (DeviceCommand 只持 ExecutionCorrelation.correlation_id, 无 session FK)
 2. workline_sessions.awaiting_command_id -> awaiting_device_command_code
-   (VARCHAR 100, 引用 device_commands.command_code, 去掉 use_alter FK
-   仅保留普通 index; command_code UniqueConstraint 提供幂等性)
+   (VARCHAR 100, 通过旧 device_commands.id 回填 device_commands.command_code,
+   去掉 use_alter FK, 仅保留普通 index; command_code UniqueConstraint 提供幂等性)
 
-data migration: session_id_int (int) 不可直接转 awaiting_device_command_code
-(VARCHAR); 迁移填充 NULL + 警告, 需 WES owner 确认完整 data migration 策略。
+data migration: 升级时先按 awaiting_command_id -> device_commands.command_code
+回填 awaiting_device_command_code, 再删除旧整型 FK 列, 避免在途会话丢失等待锚点。
 """
+
+# ruff: noqa: S608
 
 from collections.abc import Sequence
 from typing import Union
@@ -46,21 +50,43 @@ def upgrade() -> None:
     # 2. 清理 device_commands.session_id_int 旧 FK
     op.execute(f"ALTER TABLE {SCHEMA}.device_commands DROP CONSTRAINT IF EXISTS {OLD_DEVICE_FK_NAME}")
 
-    # 3. device_commands.session_id_int 字段删除 (model 同步删除)
-    op.drop_column("session_id_int", table_name="device_commands", schema=SCHEMA)
-
-    # 4. workline_sessions.awaiting_command_id -> awaiting_device_command_code
-    #    类型 INTEGER -> VARCHAR(100), data migration 全部填 NULL (int -> str 不可转)
+    # 3. 先把旧 awaiting_command_id 指向的 DeviceCommand.command_code 回填到目标列。
+    #    之后才能删除 device_commands.session_id/session_id_int,
+    #    但 device_commands.id/command_code 需保留。
+    op.add_column(
+        "workline_sessions",
+        sa.Column("awaiting_device_command_code", sa.String(length=100), nullable=True),
+        schema=SCHEMA,
+    )
     op.execute(
         f"""
-        ALTER TABLE {SCHEMA}.workline_sessions
-        ALTER COLUMN awaiting_command_id DROP DEFAULT,
-        ALTER COLUMN awaiting_command_id TYPE VARCHAR(100) USING NULL,
-        ALTER COLUMN awaiting_command_id RENAME TO awaiting_device_command_code
+        UPDATE {SCHEMA}.workline_sessions AS ws
+        SET awaiting_device_command_code = dc.command_code
+        FROM {SCHEMA}.device_commands AS dc
+        WHERE ws.awaiting_command_id = dc.id
         """
     )
 
-    # 5. 新增 awaiting_device_command_code 普通 index (无 FK, command_code 已有 UniqueConstraint)
+    # 4. 删除 device_commands 旧 session FK 字段，改用 correlation_id。
+    op.execute(f"DROP INDEX IF EXISTS {SCHEMA}.ix_wes_biz_device_commands_session_id")
+    op.drop_column("device_commands", "session_id", schema=SCHEMA)
+    op.drop_column("device_commands", "session_id_int", schema=SCHEMA)
+    op.add_column(
+        "device_commands",
+        sa.Column("correlation_id", sa.String(length=120), nullable=True),
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_wes_biz_device_commands_correlation_id",
+        "device_commands",
+        ["correlation_id"],
+        schema=SCHEMA,
+    )
+
+    # 5. 删除旧 awaiting_command_id 整型 FK 列。
+    op.drop_column("workline_sessions", "awaiting_command_id", schema=SCHEMA)
+
+    # 6. 新增 awaiting_device_command_code 普通 index (无 FK, command_code 已有 UniqueConstraint)
     op.create_index(
         "ix_workline_sessions_awaiting_device_command_code",
         "workline_sessions",
@@ -70,30 +96,52 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema: 反向消解 (回滚到 Phase 0 状态, data loss 接受)。"""
+    """Downgrade schema: 反向消解 (回滚到 Phase 0 状态, 尽量按 command_code 回填旧锚点)。"""
     # 1. 删 index
+    op.drop_index(
+        "ix_wes_biz_device_commands_correlation_id",
+        table_name="device_commands",
+        schema=SCHEMA,
+    )
+    op.drop_column("device_commands", "correlation_id", schema=SCHEMA)
     op.drop_index(
         "ix_workline_sessions_awaiting_device_command_code",
         table_name="workline_sessions",
         schema=SCHEMA,
     )
 
-    # 2. awaiting_device_command_code -> awaiting_command_id (VARCHAR -> INTEGER, 全 NULL)
+    # 2. 恢复 awaiting_command_id, 按 awaiting_device_command_code -> device_commands.id 尽量回填。
+    op.add_column(
+        "workline_sessions",
+        sa.Column("awaiting_command_id", sa.Integer(), nullable=True),
+        schema=SCHEMA,
+    )
     op.execute(
         f"""
-        ALTER TABLE {SCHEMA}.workline_sessions
-        ALTER COLUMN awaiting_device_command_code TYPE INTEGER USING NULL,
-        ALTER COLUMN awaiting_device_command_code RENAME TO awaiting_command_id
+        UPDATE {SCHEMA}.workline_sessions AS ws
+        SET awaiting_command_id = dc.id
+        FROM {SCHEMA}.device_commands AS dc
+        WHERE ws.awaiting_device_command_code = dc.command_code
         """
     )
+    op.drop_column("workline_sessions", "awaiting_device_command_code", schema=SCHEMA)
 
-    # 3. 加回 device_commands.session_id_int (INT, NULL)
+    # 3. 加回 device_commands.session_id/session_id_int (legacy, NULL)
     op.add_column(
-        "session_id_int",
-        sa.Integer(),
-        nullable=True,
+        "device_commands",
+        sa.Column("session_id", sa.String(length=100), nullable=True),
         schema=SCHEMA,
-        table_name="device_commands",
+    )
+    op.create_index(
+        "ix_wes_biz_device_commands_session_id",
+        "device_commands",
+        ["session_id"],
+        schema=SCHEMA,
+    )
+    op.add_column(
+        "device_commands",
+        sa.Column("session_id_int", sa.Integer(), nullable=True),
+        schema=SCHEMA,
     )
 
     # 4. 加回 use_alter 双向 FK

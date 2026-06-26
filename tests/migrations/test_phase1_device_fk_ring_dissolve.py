@@ -1,8 +1,9 @@
 """AP2 + AP4(slice) device FK 环消解迁移双向测试。
 
 Phase 1 实施: 破坏性迁移消解 P0-004 §4.4 device session FK 环
-(device_commands.session_id_int ↔ workline_sessions.awaiting_command_id
-双向 use_alter=True), 改为 workline_sessions.awaiting_device_command_code
+(device_commands.session_id/session_id_int ↔ workline_sessions.awaiting_command_id
+双向 use_alter=True), 改为 DeviceCommand.correlation_id +
+workline_sessions.awaiting_device_command_code
 (VARCHAR, 引用 device_commands.command_code, 无强 FK)。
 
 测试不依赖真实数据库 schema (避免 CI Alembic 启动慢); 改为检查
@@ -25,22 +26,57 @@ def test_migration_file_exists():
 
 
 def test_migration_drops_old_device_fk():
-    """upgrade 必删 device_commands.session_id_int 的旧 FK。"""
+    """upgrade 必删除旧 FK 约束和 device_commands.session_id/session_id_int 列。"""
     content = MIGRATION_FILE.read_text()
-    # drop column session_id_int
-    assert re.search(r"drop_column\([^)]*session_id_int", content) or re.search(
-        r"DROP\s+COLUMN[^;]*session_id_int", content, re.IGNORECASE
-    ), "upgrade 必须 drop device_commands.session_id_int 字段"
+    assert "DROP CONSTRAINT IF EXISTS" in content
+    assert "DROP INDEX IF EXISTS" in content
+    assert "ix_wes_biz_device_commands_session_id" in content, "drop session_id 前必须先幂等删除旧 index"
+    assert re.search(
+        r'op\.drop_column\(\s*["\']device_commands["\']\s*,\s*["\']session_id["\']\s*,\s*schema=SCHEMA\s*\)',
+        content,
+        re.DOTALL,
+    ), "DeviceCommand 不应保留旧 session_id 字段"
+    assert re.search(
+        r'op\.drop_column\(\s*["\']device_commands["\']\s*,\s*["\']session_id_int["\']\s*,\s*schema=SCHEMA\s*\)',
+        content,
+        re.DOTALL,
+    ), "op.drop_column 必须按 table_name, column_name 顺序调用"
+    assert "session_id_int" in content
 
 
-def test_migration_renames_awaiting_command_id_to_code():
-    """upgrade 必把 awaiting_command_id 改为 awaiting_device_command_code (VARCHAR)。"""
+def test_migration_adds_device_command_correlation_id():
+    """upgrade 必新增 DeviceCommand.correlation_id 目标态字段和索引。"""
     content = MIGRATION_FILE.read_text()
-    # RENAME TO awaiting_device_command_code (不是 awaiting_command_id_code)
-    assert re.search(r"RENAME\s+TO\s+awaiting_device_command_code\b", content), (
-        "迁移必须 RENAME 字段到 awaiting_device_command_code"
+    assert "correlation_id" in content
+    assert re.search(
+        r'sa\.Column\(\s*["\']correlation_id["\']\s*,\s*sa\.String\(length=120\)',
+        content,
+        re.DOTALL,
+    ), "DeviceCommand.correlation_id 必须是 VARCHAR(120)"
+    assert "ix_wes_biz_device_commands_correlation_id" in content
+
+
+def test_migration_backfills_awaiting_device_command_code_before_dropping_old_column():
+    """upgrade 必先按 awaiting_command_id -> device_commands.command_code 回填等待锚点。"""
+    content = MIGRATION_FILE.read_text()
+    upgrade = re.search(r"def upgrade.*?(?=\ndef |\Z)", content, re.DOTALL).group(0)
+
+    assert "USING NULL" not in upgrade, "upgrade 不能清空在途 session 的等待锚点"
+    assert re.search(
+        r'sa\.Column\(\s*["\']awaiting_device_command_code["\']\s*,\s*sa\.String\(length=100\)',
+        upgrade,
+        re.DOTALL,
+    ), "upgrade 必须先新增 awaiting_device_command_code VARCHAR(100)"
+    assert "UPDATE" in upgrade and "FROM" in upgrade, "upgrade 必须通过 UPDATE ... FROM 回填"
+    assert "ws.awaiting_command_id = dc.id" in upgrade, "upgrade 必须用旧 awaiting_command_id 匹配 device_commands.id"
+    assert "awaiting_device_command_code = dc.command_code" in upgrade, (
+        "upgrade 必须回填 DeviceCommand.command_code, 不能直接 cast 旧 int"
     )
-    assert "VARCHAR(100)" in content, "awaiting_device_command_code 必须是 VARCHAR(100)"
+    assert re.search(
+        r'op\.drop_column\(\s*["\']workline_sessions["\']\s*,\s*["\']awaiting_command_id["\']\s*,\s*schema=SCHEMA\s*\)',
+        upgrade,
+        re.DOTALL,
+    ), "回填完成后才能删除旧 awaiting_command_id 列"
 
 
 def test_migration_drops_old_fk_constraints():
@@ -71,10 +107,21 @@ def test_migration_downgrade_restores_original_fk():
 
 
 def test_migration_downgrade_restores_int_type():
-    """downgrade 必把 awaiting_device_command_code 改回 INTEGER (VARCHAR->INT USING NULL)。"""
+    """downgrade 必恢复 awaiting_command_id 并尽量按 command_code 回填旧 int 锚点。"""
     content = MIGRATION_FILE.read_text()
     downgrade = re.search(r"def downgrade.*?(?=\ndef |\Z)", content, re.DOTALL).group(0)
-    assert "TYPE INTEGER USING NULL" in downgrade or "TYPE INTEGER" in downgrade
+    assert re.search(
+        r'sa\.Column\(\s*["\']awaiting_command_id["\']\s*,\s*sa\.Integer\(\)',
+        downgrade,
+        re.DOTALL,
+    ), "downgrade 必须加回 awaiting_command_id INTEGER"
+    assert "ws.awaiting_device_command_code = dc.command_code" in downgrade
+    assert "awaiting_command_id = dc.id" in downgrade
+    assert re.search(
+        r'op\.drop_column\(\s*["\']workline_sessions["\']\s*,\s*["\']awaiting_device_command_code["\']\s*,\s*schema=SCHEMA\s*\)',
+        downgrade,
+        re.DOTALL,
+    ), "downgrade 回填后应删除 awaiting_device_command_code"
 
 
 def test_model_workline_session_has_awaiting_device_command_code():
@@ -87,19 +134,34 @@ def test_model_workline_session_has_awaiting_device_command_code():
 
 
 def test_model_workline_session_no_longer_has_awaiting_command_id():
-    """模型 WorklineSession 不再有旧 awaiting_command_id (int FK 字段已消解)。"""
+    """模型 WorklineSession 不再暴露旧 awaiting_command_id 字段。"""
     from src.app.workline.models.session import WorklineSession
 
-    assert "awaiting_command_id" not in WorklineSession.model_fields, (
-        "WorklineSession 不应再有 awaiting_command_id int FK 字段"
-    )
+    assert "awaiting_command_id" not in WorklineSession.model_fields
 
 
 def test_model_device_command_no_longer_has_session_id_int():
-    """模型 DeviceCommand 不再有旧 session_id_int (int FK 字段已消解)。"""
-    from src.app.device.models.command import CommandBase
+    """模型 DeviceCommand 不再暴露旧 session_id_int 字段。"""
+    from src.app.device.models.command import CommandBase, DeviceCommand
 
-    assert "session_id_int" not in CommandBase.model_fields, "DeviceCommand 不应再有 session_id_int int FK 字段"
+    assert "session_id_int" not in CommandBase.model_fields
+    assert "session_id_int" not in DeviceCommand.model_fields
+
+
+def test_model_device_command_no_longer_has_session_id():
+    """模型 DeviceCommand 不再暴露旧 session_id 字段。"""
+    from src.app.device.models.command import DeviceCommand
+
+    assert "session_id" not in DeviceCommand.model_fields
+
+
+def test_model_device_command_has_correlation_id():
+    """模型 DeviceCommand 只持跨域 correlation_id, 无 session FK。"""
+    from src.app.device.models.command import DeviceCommand
+
+    field = DeviceCommand.model_fields.get("correlation_id")
+    assert field is not None, "DeviceCommand 必须含 correlation_id 字段"
+    assert str(field.annotation).startswith("str"), f"应 str | None, 实际 {field.annotation}"
 
 
 def test_migration_has_revision_chain():
