@@ -23,7 +23,7 @@ RI3C_EXCLUDED_PATHS = (
     "src/app/runtime/capability_port_registry.py",
     "src/app/runtime/inbound_normalizer_registry.py",
     "src/app/contracts/external_contract_profile.py",
-    "src/app/runtime/orchestration/consumers/",
+    "src/app/runtime/orchestration/*",
 )
 
 

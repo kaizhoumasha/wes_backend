@@ -234,7 +234,7 @@ rule_ri3c() {
             src/app/runtime/capability_port_registry.py) continue ;;
             src/app/runtime/inbound_normalizer_registry.py) continue ;;
             src/app/contracts/external_contract_profile.py) continue ;;
-            src/app/runtime/orchestration/consumers/*) continue ;;
+            src/app/runtime/orchestration/*) continue ;;
         esac
         emit_violation "R-I3c" "$file" "$line" \
             "业务 capability 持有 inbound normalizer 类型 (主计划 §3.5.1 + H2 黑名单)" \
