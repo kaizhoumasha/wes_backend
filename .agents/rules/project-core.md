@@ -17,6 +17,7 @@
 - 核心代码在 `src/`，领域模块在 `src/app/`。
 - Alembic 迁移在 `migrations/versions/`。
 - 测试在 `tests/`。
+- 新增、移动、拆分或删除测试时，先遵循 `AGENTS.md` 的 `Test Suite Governance`；不要在 `tests/` 根目录新增测试，不要把重测试目录混入默认快速回归集。
 
 ## Commands
 

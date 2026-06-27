@@ -46,4 +46,5 @@ uv sync --dev
 - 使用 Conventional Commits。
 - Commit Message 和 Commit Comment 使用中文。
 - 提交前运行与变更相关的测试或质量门禁。
+- 涉及测试文件时，按 `AGENTS.md` 的 `Test Suite Governance` 归位并运行测试拓扑 guardrail，避免默认回归集膨胀或根目录测试回流。
 - 如果变更涉及 callback、device event 或 scheduled task，说明是否验证了 Celery worker。

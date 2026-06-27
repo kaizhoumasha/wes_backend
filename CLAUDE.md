@@ -146,6 +146,8 @@ uv run ruff format . && uv run ruff check . # 格式化和检查
 uv run pytest --cov=src       # 测试和覆盖率
 ```
 
+测试文件新增、移动、拆分或删除时，必须遵循 `AGENTS.md` 的 `Test Suite Governance`；不要在 `tests/` 根目录新增测试，不要把重测试目录混入默认快速回归集，提交前运行测试拓扑 guardrail。
+
 ### Alembic 迁移规则
 
 - 新增 Alembic 迁移必须通过 Alembic revision generator 创建，例如 `uv run alembic revision -m "<message>"`，或使用仓库已有的等价 wrapper。
