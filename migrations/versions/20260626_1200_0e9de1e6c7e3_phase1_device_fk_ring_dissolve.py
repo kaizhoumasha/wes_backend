@@ -21,6 +21,13 @@ Phase 1 消解 (主计划 §10.2 CEO-010 验证栏, 外部 review 时已落地):
 
 data migration: 升级时先按 awaiting_command_id -> device_commands.command_code
 回填 awaiting_device_command_code, 再删除旧整型 FK 列, 避免在途会话丢失等待锚点。
+
+注意: device_commands.correlation_id 是 Phase 1 全新列, Phase 0 不存在
+execution_correlations 表, 因此升级后所有历史 DeviceCommand 行的
+correlation_id = NULL。Application 层必须把 NULL 视为 "uninitialized",
+不要隐式 join `WHERE dc.correlation_id = ec.correlation_id` 期待 0 行结果。
+Phase 1 之后新建的 DeviceCommand 由 caller 通过 device_command_gateway 写入
+正确 correlation_id。
 """
 
 # ruff: noqa: S608
@@ -45,10 +52,47 @@ OLD_SESSION_FK_NAME = "fk_workline_sessions_awaiting_command_id_device_commands"
 def upgrade() -> None:
     """Upgrade schema: 消解 device ↔ session FK 环。"""
     # 1. 清理 workline_sessions.awaiting_command_id 旧 FK (避免 drop column 冲突)
-    op.execute(f"ALTER TABLE {SCHEMA}.workline_sessions DROP CONSTRAINT IF EXISTS {OLD_SESSION_FK_NAME}")
+    #    Phase 0 用 use_alter=True 可能产生不同命名 (workline_sessions_awaiting_command_id_fkey
+    #    / fk_workline_sessions_awaiting_command_id_device_commands 等), 因此用 pg_constraint
+    #    动态发现所有指向 device_commands 的 FK 并一次性 DROP, 避免硬编码名 silent no-op。
+    op.execute(
+        f"""
+        DO $$
+        DECLARE
+            c record;
+        BEGIN
+            FOR c IN
+                SELECT conname
+                FROM pg_constraint
+                WHERE conrelid = '{SCHEMA}.workline_sessions'::regclass
+                  AND contype = 'f'
+                  AND pg_get_constraintdef(oid) LIKE '%device_commands%'
+            LOOP
+                EXECUTE format('ALTER TABLE {SCHEMA}.workline_sessions DROP CONSTRAINT %I', c.conname);
+            END LOOP;
+        END$$;
+        """
+    )
 
-    # 2. 清理 device_commands.session_id_int 旧 FK
-    op.execute(f"ALTER TABLE {SCHEMA}.device_commands DROP CONSTRAINT IF EXISTS {OLD_DEVICE_FK_NAME}")
+    # 2. 清理 device_commands.session_id_int 旧 FK (同样用 pg_constraint 动态发现)
+    op.execute(
+        f"""
+        DO $$
+        DECLARE
+            c record;
+        BEGIN
+            FOR c IN
+                SELECT conname
+                FROM pg_constraint
+                WHERE conrelid = '{SCHEMA}.device_commands'::regclass
+                  AND contype = 'f'
+                  AND pg_get_constraintdef(oid) LIKE '%workline_sessions%'
+            LOOP
+                EXECUTE format('ALTER TABLE {SCHEMA}.device_commands DROP CONSTRAINT %I', c.conname);
+            END LOOP;
+        END$$;
+        """
+    )
 
     # 3. 先把旧 awaiting_command_id 指向的 DeviceCommand.command_code 回填到目标列。
     #    之后才能删除 device_commands.session_id/session_id_int,

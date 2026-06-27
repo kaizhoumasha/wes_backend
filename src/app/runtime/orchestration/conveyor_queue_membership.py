@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, Column, Index, text
+from sqlalchemy import JSON, BigInteger, CheckConstraint, Column, Index, text
 from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
@@ -43,6 +43,13 @@ class ConveyorQueueMembership(BaseMixin, table=True):
             "workline_id",
             "queue_code",
         ),
+        # DB 端 membership_status 强约束: 防止 case/whitespace 漂移导致
+        # partial unique index 的 postgresql_where='membership_status = ''ACTIVE'''
+        # 漏匹配, 破坏 ACTIVE 唯一性。
+        CheckConstraint(
+            "membership_status IN ('ACTIVE', 'LEFT', 'RECONCILING')",
+            name="ck_wes_runtime_conveyor_queue_memberships_status",
+        ),
         {"schema": RUNTIME_SCHEMA},
     )
 
@@ -58,7 +65,7 @@ class ConveyorQueueMembership(BaseMixin, table=True):
         default="ACTIVE",
         max_length=20,
         index=True,
-        description="ACTIVE / LEFT / RECONCILING",
+        description="ACTIVE / LEFT / RECONCILING (DB CheckConstraint 强约束)",
     )
 
     entered_at: int = Field(sa_type=BigInteger, description="Unix timestamp ms")

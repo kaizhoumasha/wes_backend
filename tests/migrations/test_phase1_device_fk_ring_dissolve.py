@@ -28,7 +28,11 @@ def test_migration_file_exists():
 def test_migration_drops_old_device_fk():
     """upgrade 必删除旧 FK 约束和 device_commands.session_id/session_id_int 列。"""
     content = MIGRATION_FILE.read_text()
-    assert "DROP CONSTRAINT IF EXISTS" in content
+    # 兼容两种模式: 显式 DROP CONSTRAINT IF EXISTS 或动态 pg_constraint 发现
+    assert (
+        "DROP CONSTRAINT IF EXISTS" in content
+        or re.search(r"DROP\s+CONSTRAINT\s+%I", content, re.IGNORECASE) is not None
+    ), "upgrade 必须 drop FK 约束 (显式或动态发现)"
     assert "DROP INDEX IF EXISTS" in content
     assert "ix_wes_biz_device_commands_session_id" in content, "drop session_id 前必须先幂等删除旧 index"
     assert re.search(
@@ -84,13 +88,15 @@ def test_migration_drops_old_fk_constraints():
     content = MIGRATION_FILE.read_text()
     assert "fk_device_commands_session_id_int_workline_sessions" in content
     assert "fk_workline_sessions_awaiting_command_id_device_commands" in content
-    # drop constraint IF EXISTS
-    assert "DROP CONSTRAINT IF EXISTS" in content, "upgrade 必须 drop FK 约束"
+    # drop constraint: 兼容显式 DROP CONSTRAINT IF EXISTS 或动态 pg_constraint 发现
+    has_explicit = "DROP CONSTRAINT IF EXISTS" in content
+    has_dynamic = re.search(r"DROP\s+CONSTRAINT\s+%I", content, re.IGNORECASE) is not None
+    assert has_explicit or has_dynamic, "upgrade 必须 drop FK 约束 (显式或动态发现)"
     assert re.search(
-        r"DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+",
+        r"DROP\s+CONSTRAINT\s+(IF\s+EXISTS\s+|\%I)",
         content,
         re.IGNORECASE,
-    ), "upgrade 必须用 DROP CONSTRAINT IF EXISTS"
+    ), "upgrade 必须用 DROP CONSTRAINT (IF EXISTS 或动态 %I)"
 
 
 def test_migration_downgrade_restores_original_fk():

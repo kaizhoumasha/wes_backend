@@ -200,6 +200,10 @@ def upgrade() -> None:
         sa.Column("evidence_json", sa.JSON(), nullable=False),
         sa.ForeignKeyConstraint(["correlation_id"], [f"{SCHEMA}.execution_correlations.correlation_id"]),
         sa.PrimaryKeyConstraint("id"),
+        sa.CheckConstraint(
+            "membership_status IN ('ACTIVE', 'LEFT', 'RECONCILING')",
+            name="ck_wes_runtime_conveyor_queue_memberships_status",
+        ),
         schema=SCHEMA,
     )
     op.create_index(
