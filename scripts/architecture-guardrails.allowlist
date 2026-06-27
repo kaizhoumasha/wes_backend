@@ -1,7 +1,7 @@
 # Architecture guardrails seed allowlist (Phase 0)
 #
 # 格式: rule_id|path|reason|expires_at|legacy_entry_id|drop_phase
-#   rule_id          C1/C2/C3/C4/R-I3a/R-I3b
+#   rule_id          C1/C2/C3/C4/R-I3a/R-I3b/R-I3c
 #   path             违规文件路径 (非 R-I3b 可为目录前缀；R-I3b 必须逐文件枚举)
 #   reason           豁免原因
 #   expires_at       过期日期 YYYY-MM-DD (无过期视为失败)

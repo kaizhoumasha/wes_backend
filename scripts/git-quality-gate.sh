@@ -21,6 +21,7 @@ Checks:
   lint      Run only Ruff lint.
   security  Run only Bandit security scan.
   architecture  Run only architecture guardrails.
+  import-linter  Run only import-linter capability-isolation contract check.
 
 Examples:
   ./scripts/git-quality-gate.sh
@@ -119,6 +120,11 @@ run_architecture_check() {
     bash "$REPO_ROOT/scripts/architecture-guardrails.sh" --phase "$phase"
 }
 
+run_import_linter_check() {
+    log_step "import-linter" "import-linter-check.sh (capability-isolation contract)"
+    bash "$REPO_ROOT/scripts/import-linter-check.sh"
+}
+
 run_test_topology_check() {
     log_step "tests" "pytest tests/architecture/test_test_suite_topology_guardrail.py -q"
     run_tool pytest tests/architecture/test_test_suite_topology_guardrail.py -q
@@ -128,6 +134,7 @@ run_quality_profile() {
     run_format_check
     run_lint_check
     run_security_check
+    run_import_linter_check
     run_architecture_check
     run_test_topology_check
 }
@@ -157,6 +164,9 @@ if [[ -n "$CHECK" ]]; then
             ;;
         architecture)
             run_architecture_check
+            ;;
+        import-linter)
+            run_import_linter_check
             ;;
         *)
             echo "Unsupported check: $CHECK" >&2

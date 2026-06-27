@@ -14,6 +14,7 @@
 #   C5   RuntimeInbox 状态机契约 (tests/architecture/ 覆盖)
 #   R-I3a capability 注入禁用关键词
 #   R-I3b capability 不得 import wms_integration/device services/models
+#   R-I3c capability 不得持有 inbound normalizer (WmsEventPort 等, 主计划 §3.5.1 + H2)
 set -euo pipefail
 
 PHASE=""
@@ -27,7 +28,7 @@ Usage: scripts/architecture-guardrails.sh --phase phase0|phase1|phase2 [--allowl
   --phase      phase0=warn-only, phase1=enforced, phase2=enforced+expired 清理
   --allowlist  allowlist 文件路径 (默认 scripts/architecture-guardrails.allowlist)
 
-规则: C1 C2 C3 C4 C5 R-I3a R-I3b (主计划 §7.5)
+规则: C1 C2 C3 C4 C5 R-I3a R-I3b R-I3c (主计划 §7.5)
 EOF
 }
 
@@ -221,6 +222,26 @@ rule_ri3b() {
     done < <(grep -rnE "$pattern" src/app/runtime src/app/workline --include='*.py' 2>/dev/null || true)
 }
 
+# --- R-I3c: capability 不得持有 inbound normalizer 类型 (主计划 §3.5.1 + H2) ---
+rule_ri3c() {
+    local pattern='WmsEventPort|DeviceEventPort|InboundEventPort|RuntimeInbox|RuntimeInboxConsumer'
+    while IFS=: read -r file line _content; do
+        [[ -z "$file" ]] && continue
+        # 排除合法的 inbound normalizer 持有者 (定义/注册/允许路径)
+        case "$file" in
+            src/app/wms_integration/ports/event.py) continue ;;
+            src/app/wms_integration/ports/__init__.py) continue ;;
+            src/app/runtime/capability_port_registry.py) continue ;;
+            src/app/runtime/inbound_normalizer_registry.py) continue ;;
+            src/app/contracts/external_contract_profile.py) continue ;;
+            src/app/runtime/orchestration/consumers/*) continue ;;
+        esac
+        emit_violation "R-I3c" "$file" "$line" \
+            "业务 capability 持有 inbound normalizer 类型 (主计划 §3.5.1 + H2 黑名单)" \
+            "inbound normalizer 仅 RuntimeInboxConsumer 允许; capability 走 query/effect port contract"
+    done < <(grep -rnE "$pattern" src/app/runtime src/app/workline --include='*.py' 2>/dev/null || true)
+}
+
 # --- allowlist 校验 ---
 validate_allowlist() {
     if [[ ! -f "$ALLOWLIST" ]]; then
@@ -288,6 +309,7 @@ rule_c3
 rule_c4
 rule_ri3a
 rule_ri3b
+rule_ri3c
 
 if [[ "$PHASE" != "phase0" ]]; then
     validate_allowlist
