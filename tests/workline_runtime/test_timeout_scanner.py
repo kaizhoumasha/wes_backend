@@ -42,26 +42,6 @@ class TestTimeoutScanner:
     """TimeoutScanner 任务测试"""
 
     @pytest.fixture
-    def mock_db(self):
-        """创建模拟数据库会话"""
-        db = AsyncMock()
-        db.commit = AsyncMock()
-        db.rollback = AsyncMock()
-        execute_result = MagicMock()
-        execute_result.scalars.return_value.all.return_value = []
-        db.execute = AsyncMock(return_value=execute_result)
-        db.get = AsyncMock(
-            return_value=SimpleNamespace(
-                id=9,
-                command_code="CMD-001",
-                device_id=7,
-                status="ACK_RECEIVED",
-                ack_received_at=datetime.now(UTC) - timedelta(minutes=4),
-            )
-        )
-        return db
-
-    @pytest.fixture
     def mock_session_repo(self):
         """创建模拟 SessionRepository"""
         repo = MagicMock()
@@ -97,7 +77,7 @@ class TestTimeoutScanner:
         return repo
 
     @pytest.mark.asyncio
-    async def test_scan_no_timed_out_sessions(self, mock_db, mock_session_repo):
+    async def test_scan_no_timed_out_sessions(self, workline_runtime_mock_db, mock_session_repo):
         """测试无超时 Session 时正常退出"""
         from src.celery_app.tasks.workline import TimeoutScanner
 
@@ -105,7 +85,7 @@ class TestTimeoutScanner:
             "src.app.workline.repositories.session_repository.WorklineSessionRepository",
             return_value=mock_session_repo,
         ):
-            result = await TimeoutScanner._scan(mock_db)
+            result = await TimeoutScanner._scan(workline_runtime_mock_db)
 
         assert result["scanned"] == 0
         assert result["timeouts_created"] == 0
@@ -115,7 +95,7 @@ class TestTimeoutScanner:
     @pytest.mark.asyncio
     async def test_scan_single_timed_out_session(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         mock_inbox_service,
         mock_device_repo,
@@ -153,7 +133,7 @@ class TestTimeoutScanner:
                 return_value=mock_command_repo,
             ),
         ):
-            result = await TimeoutScanner._scan(mock_db)
+            result = await TimeoutScanner._scan(workline_runtime_mock_db)
 
         assert result["scanned"] == 1
         assert result["timeouts_created"] == 1
@@ -169,7 +149,7 @@ class TestTimeoutScanner:
     @pytest.mark.asyncio
     async def test_scan_ack_timed_out_command_enters_runtime_reconciliation(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
     ):
         """SENT 指令 ACK 等待超时后必须进入通信 ACK 对账隔离。"""
@@ -209,17 +189,17 @@ class TestTimeoutScanner:
                 runtime_service,
             ),
         ):
-            result = await TimeoutScanner._scan(mock_db)
+            result = await TimeoutScanner._scan(workline_runtime_mock_db)
 
         assert result["scanned"] == 1
         assert result["timeouts_created"] == 0
         assert result["ack_timeouts_reconciled"] == 1
         outbox_repo.get_by_dispatch_key.assert_awaited_once_with(
-            mock_db,
+            workline_runtime_mock_db,
             "device-command:CMD-20260509-MOVE_FORWARD-AB5F1A76",
         )
         runtime_service.handle_dispatch_ack_exhausted.assert_awaited_once_with(
-            mock_db,
+            workline_runtime_mock_db,
             outbox=outbox,
             command=command,
             error_message="COMMAND_ACK_TIMEOUT",
@@ -228,7 +208,7 @@ class TestTimeoutScanner:
     @pytest.mark.asyncio
     async def test_scan_external_wait_creates_timeout_inbox_without_command(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         mock_inbox_service,
         mock_device_repo,
@@ -247,7 +227,7 @@ class TestTimeoutScanner:
             awaiting_device_command_code=None,
         )
         mock_session_repo.get_timed_out_sessions.return_value = [session]
-        mock_db.get = AsyncMock(return_value=None)
+        workline_runtime_mock_db.get = AsyncMock(return_value=None)
 
         with (
             patch(
@@ -263,12 +243,12 @@ class TestTimeoutScanner:
                 mock_device_repo,
             ),
         ):
-            result = await TimeoutScanner._scan(mock_db)
+            result = await TimeoutScanner._scan(workline_runtime_mock_db)
 
         assert result["scanned"] == 1
         assert result["timeouts_created"] == 1
         assert result["errors"] == 0
-        mock_db.get.assert_not_awaited()
+        workline_runtime_mock_db.get.assert_not_awaited()
         mock_device_repo.get_by_id.assert_not_awaited()
         call_kwargs = mock_inbox_service.create_timeout_inbox.call_args.kwargs
         assert call_kwargs["wait_token"] is None
@@ -279,7 +259,7 @@ class TestTimeoutScanner:
     @pytest.mark.asyncio
     async def test_scan_multiple_timed_out_sessions(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         mock_inbox_service,
         mock_device_repo,
@@ -319,7 +299,7 @@ class TestTimeoutScanner:
                 return_value=mock_command_repo,
             ),
         ):
-            result = await TimeoutScanner._scan(mock_db)
+            result = await TimeoutScanner._scan(workline_runtime_mock_db)
 
         assert result["scanned"] == 3
         assert result["timeouts_created"] == 3
@@ -328,7 +308,7 @@ class TestTimeoutScanner:
     @pytest.mark.asyncio
     async def test_scan_skips_non_waiting_status(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
     ):
         """测试跳过非等待状态的 Session（仅扫描等待状态）"""
@@ -341,7 +321,7 @@ class TestTimeoutScanner:
             "src.app.workline.repositories.session_repository.WorklineSessionRepository",
             return_value=mock_session_repo,
         ):
-            result = await TimeoutScanner._scan(mock_db)
+            result = await TimeoutScanner._scan(workline_runtime_mock_db)
 
         assert result["scanned"] == 0
         # 验证查询参数：只扫描等待状态
@@ -350,7 +330,7 @@ class TestTimeoutScanner:
     @pytest.mark.asyncio
     async def test_scan_handles_inbox_creation_error(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         mock_inbox_service,
         mock_device_repo,
@@ -384,7 +364,7 @@ class TestTimeoutScanner:
                 mock_device_repo,
             ),
         ):
-            result = await TimeoutScanner._scan(mock_db)
+            result = await TimeoutScanner._scan(workline_runtime_mock_db)
 
         # 应该记录错误但继续处理
         assert result["scanned"] == 1

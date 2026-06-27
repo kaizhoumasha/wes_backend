@@ -30,57 +30,31 @@ class TestPluginContextBuilder:
         return PluginContextBuilder()
 
     @pytest.fixture
-    def mock_workline(self):
-        """创建模拟的工作线"""
-        workline = MagicMock()
-        workline.id = 1
-        workline.line_code = "SMT-001"
-        workline.run_mode = "SIMULATION"
-        workline.config = {"scan_timeout": 30, "retry_count": 3}
-        return workline
-
-    @pytest.fixture
-    def mock_session(self):
-        """创建模拟的 Session"""
-        session = MagicMock()
-        session.id = 123
-        session.status = "RUNNING"
-        session.run_mode = "SIMULATION"
-        session.context_json = {"barcode": "ABC123"}
-        return session
-
-    @pytest.fixture
-    def mock_devices_by_role(self):
-        """创建模拟的设备映射"""
-        scanner1 = MagicMock(id=1, device_code="SCAN-001", device_role="SCANNER")
-        scanner2 = MagicMock(id=2, device_code="SCAN-002", device_role="SCANNER")
-        conveyor = MagicMock(id=3, device_code="CONV-001", device_role="CONVEYOR")
-        return {
-            "SCANNER": [scanner1, scanner2],
-            "CONVEYOR": [conveyor],
-        }
-
-    @pytest.fixture
     def mock_services(self):
         """创建运行时服务容器"""
         return WorklineRuntimeServices()
 
     def test_build_creates_context_with_all_fields(
-        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
+        self,
+        builder,
+        workline_runtime_session,
+        workline_runtime_workline,
+        workline_runtime_devices_by_role,
+        mock_services,
     ):
         """测试构建的上下文包含所有必需字段"""
         ctx = builder.build(
-            session=mock_session,
-            workline=mock_workline,
-            devices_by_role=mock_devices_by_role,
+            session=workline_runtime_session,
+            workline=workline_runtime_workline,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             trace_id="trace-123",
         )
 
         # 验证核心实体
-        assert ctx.workline == mock_workline
-        assert ctx.session == mock_session
-        assert ctx.devices_by_role == mock_devices_by_role
+        assert ctx.workline == workline_runtime_workline
+        assert ctx.session == workline_runtime_session
+        assert ctx.devices_by_role == workline_runtime_devices_by_role
         assert ctx.topology.devices_for_role("SCANNER")[0].device_code == "SCAN-001"
 
         # 验证追踪信息
@@ -99,13 +73,18 @@ class TestPluginContextBuilder:
         assert callable(ctx.clock)
 
     def test_build_extracts_config_from_workline(
-        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
+        self,
+        builder,
+        workline_runtime_session,
+        workline_runtime_workline,
+        workline_runtime_devices_by_role,
+        mock_services,
     ):
         """测试从 WorkLine 提取 config"""
         ctx = builder.build(
-            session=mock_session,
-            workline=mock_workline,
-            devices_by_role=mock_devices_by_role,
+            session=workline_runtime_session,
+            workline=workline_runtime_workline,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             trace_id="trace-456",
         )
@@ -113,15 +92,17 @@ class TestPluginContextBuilder:
         # config 应该从 workline.config 提取
         assert ctx.config == {"scan_timeout": 30, "retry_count": 3}
 
-    def test_build_with_empty_workline_config(self, builder, mock_session, mock_devices_by_role, mock_services):
+    def test_build_with_empty_workline_config(
+        self, builder, workline_runtime_session, workline_runtime_devices_by_role, mock_services
+    ):
         """测试 WorkLine config 为空时使用空字典"""
         workline = MagicMock()
         workline.config = None
 
         ctx = builder.build(
-            session=mock_session,
+            session=workline_runtime_session,
             workline=workline,
-            devices_by_role=mock_devices_by_role,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             trace_id="trace-789",
         )
@@ -130,16 +111,21 @@ class TestPluginContextBuilder:
         assert ctx.config == {}
 
     def test_build_uses_session_run_mode_snapshot(
-        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
+        self,
+        builder,
+        workline_runtime_session,
+        workline_runtime_workline,
+        workline_runtime_devices_by_role,
+        mock_services,
     ):
         """插件上下文运行模式应优先使用 Session 快照。"""
-        mock_workline.run_mode = "AUTO"
-        mock_session.run_mode = "SIMULATION"
+        workline_runtime_workline.run_mode = "AUTO"
+        workline_runtime_session.run_mode = "SIMULATION"
 
         ctx = builder.build(
-            session=mock_session,
-            workline=mock_workline,
-            devices_by_role=mock_devices_by_role,
+            session=workline_runtime_session,
+            workline=workline_runtime_workline,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             trace_id="trace-run-mode",
         )
@@ -149,13 +135,18 @@ class TestPluginContextBuilder:
         assert ctx.runtime.workline.run_mode == "SIMULATION"
 
     def test_get_device_by_role_returns_correct_device(
-        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
+        self,
+        builder,
+        workline_runtime_session,
+        workline_runtime_workline,
+        workline_runtime_devices_by_role,
+        mock_services,
     ):
         """测试 get_device_by_role 返回正确的设备"""
         ctx = builder.build(
-            session=mock_session,
-            workline=mock_workline,
-            devices_by_role=mock_devices_by_role,
+            session=workline_runtime_session,
+            workline=workline_runtime_workline,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             trace_id="trace-123",
         )
@@ -173,13 +164,18 @@ class TestPluginContextBuilder:
         assert device.id == 3
 
     def test_get_device_by_role_returns_none_for_missing_role(
-        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
+        self,
+        builder,
+        workline_runtime_session,
+        workline_runtime_workline,
+        workline_runtime_devices_by_role,
+        mock_services,
     ):
         """测试 get_device_by_role 对不存在的角色返回 None"""
         ctx = builder.build(
-            session=mock_session,
-            workline=mock_workline,
-            devices_by_role=mock_devices_by_role,
+            session=workline_runtime_session,
+            workline=workline_runtime_workline,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             trace_id="trace-123",
         )
@@ -193,13 +189,18 @@ class TestPluginContextBuilder:
         assert device is None
 
     def test_context_has_logger_and_clock(
-        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
+        self,
+        builder,
+        workline_runtime_session,
+        workline_runtime_workline,
+        workline_runtime_devices_by_role,
+        mock_services,
     ):
         """测试上下文有 logger 和 clock"""
         ctx = builder.build(
-            session=mock_session,
-            workline=mock_workline,
-            devices_by_role=mock_devices_by_role,
+            session=workline_runtime_session,
+            workline=workline_runtime_workline,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             trace_id="trace-123",
         )
@@ -216,13 +217,18 @@ class TestPluginContextBuilder:
         assert isinstance(result, datetime)
 
     def test_build_with_default_trace_id(
-        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
+        self,
+        builder,
+        workline_runtime_session,
+        workline_runtime_workline,
+        workline_runtime_devices_by_role,
+        mock_services,
     ):
         """测试 trace_id 默认值为空字符串"""
         ctx = builder.build(
-            session=mock_session,
-            workline=mock_workline,
-            devices_by_role=mock_devices_by_role,
+            session=workline_runtime_session,
+            workline=workline_runtime_workline,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             # 不传 trace_id
         )
@@ -230,13 +236,18 @@ class TestPluginContextBuilder:
         assert ctx.trace_id == ""
 
     def test_build_binding_config_default_empty(
-        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
+        self,
+        builder,
+        workline_runtime_session,
+        workline_runtime_workline,
+        workline_runtime_devices_by_role,
+        mock_services,
     ):
         """测试 binding_config 默认为空字典"""
         ctx = builder.build(
-            session=mock_session,
-            workline=mock_workline,
-            devices_by_role=mock_devices_by_role,
+            session=workline_runtime_session,
+            workline=workline_runtime_workline,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             trace_id="trace-123",
         )
@@ -244,14 +255,21 @@ class TestPluginContextBuilder:
         # binding_config 应该默认为空字典
         assert ctx.binding_config == {}
 
-    def test_build_with_custom_logger(self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services):
+    def test_build_with_custom_logger(
+        self,
+        builder,
+        workline_runtime_session,
+        workline_runtime_workline,
+        workline_runtime_devices_by_role,
+        mock_services,
+    ):
         """测试使用自定义 logger"""
         custom_logger = logging.getLogger("custom_plugin_logger")
 
         ctx = builder.build(
-            session=mock_session,
-            workline=mock_workline,
-            devices_by_role=mock_devices_by_role,
+            session=workline_runtime_session,
+            workline=workline_runtime_workline,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             trace_id="trace-123",
             logger=custom_logger,
@@ -259,14 +277,21 @@ class TestPluginContextBuilder:
 
         assert ctx.logger == custom_logger
 
-    def test_build_with_custom_clock(self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services):
+    def test_build_with_custom_clock(
+        self,
+        builder,
+        workline_runtime_session,
+        workline_runtime_workline,
+        workline_runtime_devices_by_role,
+        mock_services,
+    ):
         """测试使用自定义 clock"""
         fixed_time = datetime(2026, 1, 1, 12, 0, 0)
 
         ctx = builder.build(
-            session=mock_session,
-            workline=mock_workline,
-            devices_by_role=mock_devices_by_role,
+            session=workline_runtime_session,
+            workline=workline_runtime_workline,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             trace_id="trace-123",
             clock=lambda: fixed_time,
@@ -275,13 +300,18 @@ class TestPluginContextBuilder:
         assert ctx.clock() == fixed_time
 
     def test_build_returns_plugin_context_instance(
-        self, builder, mock_session, mock_workline, mock_devices_by_role, mock_services
+        self,
+        builder,
+        workline_runtime_session,
+        workline_runtime_workline,
+        workline_runtime_devices_by_role,
+        mock_services,
     ):
         """测试 build 返回 PluginContext 实例"""
         ctx = builder.build(
-            session=mock_session,
-            workline=mock_workline,
-            devices_by_role=mock_devices_by_role,
+            session=workline_runtime_session,
+            workline=workline_runtime_workline,
+            devices_by_role=workline_runtime_devices_by_role,
             services=mock_services,
             trace_id="trace-123",
         )

@@ -36,18 +36,16 @@ class TestTimelineGenerator:
         return TimelineGenerator()
 
     @pytest.fixture
-    def mock_session(self):
+    def timeline_session(self):
         """创建模拟的 WorklineSession"""
-        session = MagicMock()
-        session.id = 1001
-        session.workline_id = 2001
-        session.trace_id = "trace-abc-123"
-        return session
+        from tests.workline_runtime.support.runtime_builders import make_mock_session
 
-    def test_generate_creates_timeline_with_session_info(self, generator, mock_session):
+        return make_mock_session(id=1001, workline_id=2001, trace_id="trace-abc-123")
+
+    def test_generate_creates_timeline_with_session_info(self, generator, timeline_session):
         """测试生成 Timeline 记录包含 Session 信息"""
         timeline = generator.generate(
-            session=mock_session,
+            session=timeline_session,
             stage=TimelineStage.INGEST,
             action_type=TimelineActionType.SESSION_CREATED,
         )
@@ -57,10 +55,10 @@ class TestTimelineGenerator:
         assert timeline.workline_id == 2001
         assert timeline.trace_id == "trace-abc-123"
 
-    def test_generate_includes_from_and_to_status(self, generator, mock_session):
+    def test_generate_includes_from_and_to_status(self, generator, timeline_session):
         """测试生成 Timeline 记录包含状态转换信息"""
         timeline = generator.generate(
-            session=mock_session,
+            session=timeline_session,
             stage=TimelineStage.ROUTE,
             action_type=TimelineActionType.STATUS_CHANGED,
             from_status="NEW",
@@ -70,11 +68,11 @@ class TestTimelineGenerator:
         assert timeline.from_status == "NEW"
         assert timeline.to_status == "RUNNING"
 
-    def test_generate_sets_occurred_at(self, generator, mock_session):
+    def test_generate_sets_occurred_at(self, generator, timeline_session):
         """测试生成 Timeline 记录自动设置发生时间"""
         before = timezone.now_for_db()
         timeline = generator.generate(
-            session=mock_session,
+            session=timeline_session,
             stage=TimelineStage.INGEST,
             action_type=TimelineActionType.SESSION_STARTED,
         )
@@ -83,7 +81,7 @@ class TestTimelineGenerator:
         assert timeline.occurred_at is not None
         assert before <= timeline.occurred_at <= after
 
-    def test_generate_with_payload(self, generator, mock_session):
+    def test_generate_with_payload(self, generator, timeline_session):
         """测试生成 Timeline 记录包含 payload 数据"""
         payload = {
             "device_code": "DEV-001",
@@ -92,7 +90,7 @@ class TestTimelineGenerator:
         }
 
         timeline = generator.generate(
-            session=mock_session,
+            session=timeline_session,
             stage=TimelineStage.DISPATCH_PREPARE,
             action_type=TimelineActionType.COMMAND_SENT,
             payload=payload,
@@ -100,7 +98,7 @@ class TestTimelineGenerator:
 
         assert timeline.payload_json == payload
 
-    def test_generate_with_different_stages(self, generator, mock_session):
+    def test_generate_with_different_stages(self, generator, timeline_session):
         """测试生成不同阶段的 Timeline 记录"""
         test_cases = [
             (TimelineStage.INGEST, TimelineActionType.EVENT_RECEIVED),
@@ -115,37 +113,37 @@ class TestTimelineGenerator:
 
         for stage, action_type in test_cases:
             timeline = generator.generate(
-                session=mock_session,
+                session=timeline_session,
                 stage=stage,
                 action_type=action_type,
             )
             assert timeline.stage == stage
             assert timeline.action_type == action_type
 
-    def test_generate_sets_default_actor_type(self, generator, mock_session):
+    def test_generate_sets_default_actor_type(self, generator, timeline_session):
         """测试生成 Timeline 记录设置默认参与者类型为编排器"""
         timeline = generator.generate(
-            session=mock_session,
+            session=timeline_session,
             stage=TimelineStage.ROUTE,
             action_type=TimelineActionType.DECISION_MADE,
         )
 
         assert timeline.actor_type == TimelineActorType.ORCHESTRATOR
 
-    def test_generate_sets_default_status(self, generator, mock_session):
+    def test_generate_sets_default_status(self, generator, timeline_session):
         """测试生成 Timeline 记录设置默认状态为成功"""
         timeline = generator.generate(
-            session=mock_session,
+            session=timeline_session,
             stage=TimelineStage.ROUTE,
             action_type=TimelineActionType.DECISION_MADE,
         )
 
         assert timeline.status == TimelineStatus.SUCCESS
 
-    def test_generate_seq_no_defaults_to_zero_for_atomic_writer(self, generator, mock_session):
+    def test_generate_seq_no_defaults_to_zero_for_atomic_writer(self, generator, timeline_session):
         """测试生成的 Timeline 记录 seq_no 默认为 0（由 AtomicWriter 从序列获取并替换）"""
         timeline = generator.generate(
-            session=mock_session,
+            session=timeline_session,
             stage=TimelineStage.INGEST,
             action_type=TimelineActionType.SESSION_CREATED,
         )
@@ -153,10 +151,10 @@ class TestTimelineGenerator:
         # seq_no 由 AtomicWriter 从数据库序列获取并替换，这里默认为 0
         assert timeline.seq_no == 0
 
-    def test_generate_with_optional_fields(self, generator, mock_session):
+    def test_generate_with_optional_fields(self, generator, timeline_session):
         """测试生成 Timeline 记录包含可选字段"""
         timeline = generator.generate(
-            session=mock_session,
+            session=timeline_session,
             stage=TimelineStage.DISPATCH_PREPARE,
             action_type=TimelineActionType.COMMAND_SENT,
             payload={"command": "move"},
@@ -185,10 +183,10 @@ class TestTimelineGenerator:
         assert timeline.workline_id == 2001
         assert timeline.trace_id is None
 
-    def test_generate_with_none_payload(self, generator, mock_session):
+    def test_generate_with_none_payload(self, generator, timeline_session):
         """测试处理 payload 为 None 的情况"""
         timeline = generator.generate(
-            session=mock_session,
+            session=timeline_session,
             stage=TimelineStage.INGEST,
             action_type=TimelineActionType.SESSION_STARTED,
             payload=None,

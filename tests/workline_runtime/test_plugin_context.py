@@ -25,33 +25,6 @@ class TestPluginContextCreation:
     """PluginContext 创建测试"""
 
     @pytest.fixture
-    def mock_workline(self):
-        """创建模拟的工作线"""
-        workline = MagicMock()
-        workline.id = 1
-        workline.line_code = "SMT-001"
-        workline.config = {"scan_timeout": 30}
-        return workline
-
-    @pytest.fixture
-    def mock_session(self):
-        """创建模拟的 Session"""
-        session = MagicMock()
-        session.id = 123
-        session.status = "RUNNING"
-        session.context_json = {"barcode": "ABC123"}
-        return session
-
-    @pytest.fixture
-    def mock_device(self):
-        """创建模拟的设备"""
-        device = MagicMock()
-        device.id = 1
-        device.device_code = "SCAN-001"
-        device.device_role = "SCANNER"
-        return device
-
-    @pytest.fixture
     def mock_services(self):
         """创建运行时服务容器"""
         return WorklineRuntimeServices()
@@ -61,13 +34,15 @@ class TestPluginContextCreation:
         """创建模拟的运行时上下文"""
         return ResolvedExecutionContext()
 
-    def test_create_plugin_context(self, mock_workline, mock_session, mock_device, mock_services, mock_runtime):
+    def test_create_plugin_context(
+        self, workline_runtime_workline, workline_runtime_session, workline_runtime_device, mock_services, mock_runtime
+    ):
         """测试创建插件上下文"""
-        devices_by_role = {"SCANNER": [mock_device]}
+        devices_by_role = {"SCANNER": [workline_runtime_device]}
 
         ctx = PluginContext(
-            workline=mock_workline,
-            session=mock_session,
+            workline=workline_runtime_workline,
+            session=workline_runtime_session,
             devices_by_role=devices_by_role,
             trace_id="trace-123",
             config={"scan_timeout": 30},
@@ -78,21 +53,23 @@ class TestPluginContextCreation:
             clock=lambda: datetime(2026, 1, 1, 12, 0, 0),
         )
 
-        assert ctx.workline == mock_workline
-        assert ctx.session == mock_session
-        assert ctx.devices_by_role["SCANNER"][0] == mock_device
+        assert ctx.workline == workline_runtime_workline
+        assert ctx.session == workline_runtime_session
+        assert ctx.devices_by_role["SCANNER"][0] == workline_runtime_device
         assert ctx.trace_id == "trace-123"
         assert ctx.config["scan_timeout"] == 30
 
-    def test_get_device_by_role_found(self, mock_workline, mock_session, mock_services, mock_runtime):
+    def test_get_device_by_role_found(
+        self, workline_runtime_workline, workline_runtime_session, mock_services, mock_runtime
+    ):
         """测试按角色获取设备 - 找到"""
         device1 = MagicMock(id=1, device_role="SCANNER")
         device2 = MagicMock(id=2, device_role="SCANNER")
         devices_by_role = {"SCANNER": [device1, device2]}
 
         ctx = PluginContext(
-            workline=mock_workline,
-            session=mock_session,
+            workline=workline_runtime_workline,
+            session=workline_runtime_session,
             devices_by_role=devices_by_role,
             trace_id="trace-123",
             config={},
@@ -111,11 +88,13 @@ class TestPluginContextCreation:
         found = ctx.get_device_by_role("SCANNER", index=1)
         assert found == device2
 
-    def test_get_device_by_role_not_found(self, mock_workline, mock_session, mock_services, mock_runtime):
+    def test_get_device_by_role_not_found(
+        self, workline_runtime_workline, workline_runtime_session, mock_services, mock_runtime
+    ):
         """测试按角色获取设备 - 未找到"""
         ctx = PluginContext(
-            workline=mock_workline,
-            session=mock_session,
+            workline=workline_runtime_workline,
+            session=workline_runtime_session,
             devices_by_role={},
             trace_id="trace-123",
             config={},
@@ -130,14 +109,16 @@ class TestPluginContextCreation:
         found = ctx.get_device_by_role("CONVEYOR")
         assert found is None
 
-    def test_get_device_by_role_index_out_of_range(self, mock_workline, mock_session, mock_services, mock_runtime):
+    def test_get_device_by_role_index_out_of_range(
+        self, workline_runtime_workline, workline_runtime_session, mock_services, mock_runtime
+    ):
         """测试按角色获取设备 - 索引越界"""
         device = MagicMock(id=1, device_role="SCANNER")
         devices_by_role = {"SCANNER": [device]}
 
         ctx = PluginContext(
-            workline=mock_workline,
-            session=mock_session,
+            workline=workline_runtime_workline,
+            session=workline_runtime_session,
             devices_by_role=devices_by_role,
             trace_id="trace-123",
             config={},
@@ -152,12 +133,14 @@ class TestPluginContextCreation:
         found = ctx.get_device_by_role("SCANNER", index=5)
         assert found is None
 
-    def test_logger_is_logging_logger(self, mock_workline, mock_session, mock_services, mock_runtime):
+    def test_logger_is_logging_logger(
+        self, workline_runtime_workline, workline_runtime_session, mock_services, mock_runtime
+    ):
         """测试 logger 是 logging.Logger 类型"""
         logger = logging.getLogger("test_plugin")
         ctx = PluginContext(
-            workline=mock_workline,
-            session=mock_session,
+            workline=workline_runtime_workline,
+            session=workline_runtime_session,
             devices_by_role={},
             trace_id="trace-123",
             config={},
@@ -170,12 +153,14 @@ class TestPluginContextCreation:
 
         assert isinstance(ctx.logger, logging.Logger)
 
-    def test_clock_returns_datetime(self, mock_workline, mock_session, mock_services, mock_runtime):
+    def test_clock_returns_datetime(
+        self, workline_runtime_workline, workline_runtime_session, mock_services, mock_runtime
+    ):
         """测试 clock 返回 datetime"""
         fixed_time = datetime(2026, 1, 1, 12, 0, 0)
         ctx = PluginContext(
-            workline=mock_workline,
-            session=mock_session,
+            workline=workline_runtime_workline,
+            session=workline_runtime_session,
             devices_by_role={},
             trace_id="trace-123",
             config={},
@@ -190,13 +175,15 @@ class TestPluginContextCreation:
         assert isinstance(result, datetime)
         assert result == fixed_time
 
-    def test_arbitrary_types_allowed(self, mock_workline, mock_session, mock_services, mock_runtime):
+    def test_arbitrary_types_allowed(
+        self, workline_runtime_workline, workline_runtime_session, mock_services, mock_runtime
+    ):
         """测试 arbitrary_types_allowed 配置允许任意类型"""
         # MagicMock 不是 Pydantic 默认支持的类型
         # 但 Config.arbitrary_types_allowed = True 应该允许业务实体字段
         ctx = PluginContext(
-            workline=mock_workline,  # MagicMock
-            session=mock_session,  # MagicMock
+            workline=workline_runtime_workline,  # MagicMock
+            session=workline_runtime_session,  # MagicMock
             devices_by_role={},  # dict[str, list[MagicMock]]
             trace_id="trace-123",
             config={},

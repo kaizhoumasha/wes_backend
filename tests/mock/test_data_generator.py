@@ -20,7 +20,7 @@ DEFAULT_MFR_PN = "MFR002"
 DEFAULT_PO_NUMBER = "PO2026040901"
 
 
-class TestDataScenario(str, Enum):
+class DataScenario(str, Enum):
     """测试数据场景"""
 
     VALID_BARCODE_OK = "valid_barcode_ok"  # 有效条码，扫码OK
@@ -150,7 +150,7 @@ class TestDataGenerator:
             case _:
                 return "X"
 
-    def generate_scan_event(self, scenario: TestDataScenario = TestDataScenario.VALID_BARCODE_OK) -> ScanEventData:
+    def generate_scan_event(self, scenario: DataScenario = DataScenario.VALID_BARCODE_OK) -> ScanEventData:
         """
         生成扫码事件数据
 
@@ -161,30 +161,30 @@ class TestDataGenerator:
             扫码事件数据
         """
         match scenario:
-            case TestDataScenario.VALID_BARCODE_OK:
+            case DataScenario.VALID_BARCODE_OK:
                 return ScanEventData(
                     LotCode=self.generate_barcode(valid=True),
                     ProductNo="PN" + self.generate_barcode(valid=True)[:6],  # 添加产品PN码
                 )
-            case TestDataScenario.VALID_BARCODE_NG:
+            case DataScenario.VALID_BARCODE_NG:
                 return ScanEventData(
                     LotCode=self.generate_barcode(valid=True),
                 )
-            case TestDataScenario.BARCODE_TOO_SHORT:
+            case DataScenario.BARCODE_TOO_SHORT:
                 return ScanEventData(
                     LotCode=self.generate_barcode(valid=False)[:2],
                 )
-            case TestDataScenario.BARCODE_SPECIAL_CHARS:
+            case DataScenario.BARCODE_SPECIAL_CHARS:
                 # 注意：SixInOne 字段不支持特殊字符，这个场景会被验证为有效条码
                 # 如果需要测试特殊字符，应该在插件层面修改验证逻辑
                 return ScanEventData(
                     LotCode="ABC123",  # 改为有效条码
                 )
-            case TestDataScenario.BARCODE_EMPTY:
+            case DataScenario.BARCODE_EMPTY:
                 return ScanEventData(
                     LotCode="",
                 )
-            case TestDataScenario.RANDOM_MIXED:
+            case DataScenario.RANDOM_MIXED:
                 is_valid = random.random() < 0.8
                 lot_code = self.generate_barcode(valid=is_valid)
                 return ScanEventData(
@@ -256,17 +256,17 @@ class ScenarioPresets:
     @staticmethod
     def scenario_s001_normal_ok() -> ScanEventData:
         """S001: 正常扫码OK流程"""
-        return TestDataGenerator().generate_scan_event(TestDataScenario.VALID_BARCODE_OK)
+        return TestDataGenerator().generate_scan_event(DataScenario.VALID_BARCODE_OK)
 
     @staticmethod
     def scenario_s002_normal_ng() -> ScanEventData:
         """S002: 正常扫码NG流程"""
-        return TestDataGenerator().generate_scan_event(TestDataScenario.VALID_BARCODE_NG)
+        return TestDataGenerator().generate_scan_event(DataScenario.VALID_BARCODE_NG)
 
     @staticmethod
     def scenario_s004_barcode_too_short() -> ScanEventData:
         """S004: 条码过短"""
-        return TestDataGenerator().generate_scan_event(TestDataScenario.BARCODE_TOO_SHORT)
+        return TestDataGenerator().generate_scan_event(DataScenario.BARCODE_TOO_SHORT)
 
 
 # ========== 批量生成 ==========
@@ -317,10 +317,10 @@ def generate_batch_scan_events(
 
 __all__ = [
     "CommandResultData",
+    "DataScenario",
     "InspectionEventData",
     "ScanEventData",
     "ScenarioPresets",
     "TestDataGenerator",
-    "TestDataScenario",
     "generate_batch_scan_events",
 ]

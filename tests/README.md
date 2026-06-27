@@ -15,13 +15,9 @@
 当前默认快速回归集的收集规则：
 
 - 收集范围：`tests/` 下符合 `test_*.py` 的测试文件
-- 默认包含：
-  - `tests/` 根目录中的单元/服务/仓储测试
-  - `tests/api/` 中的接口测试
-  - `tests/auth/` 中的鉴权测试
-  - `tests/workline_runtime/` 中的纯逻辑测试
-- 默认不包含：
+- 除以下重测试目录外，默认收集所有未被忽略的测试目录：
   - `tests/e2e/`
+  - `tests/integration/`
   - `tests/resilience/`
   - `tests/load/`
   - `tests/mock/`
@@ -29,15 +25,54 @@
 放置新测试时建议遵循：
 
 - 日常回归价值高、执行快、依赖少的测试：放入默认快速回归集
-- 需要真实服务、多组件联调、降级/断连、压测或人工参与的测试：放到重测试目录
+- 需要真实服务、多组件联调、降级/断连、压测或人工参与的测试：放到重测试目录并显式运行
 
-### 运行所有测试
+### 目录归属矩阵
+
+新增测试优先按业务边界和执行成本归位，不要继续把领域测试放在 `tests/` 根目录。
+
+| 目录 | 放置内容 |
+| --- | --- |
+| `tests/api/` | FastAPI route、permission、response model、API facade 测试 |
+| `tests/workline_runtime/` | runtime service、orchestrator、intent、diagnostic、session resolver 纯逻辑测试 |
+| `tests/workline_plugins/` | plugin contract、plugin behavior、template asset 测试 |
+| `tests/contracts/` | 跨系统/跨模块契约测试 |
+| `tests/core/` | 核心框架、异常处理、RBAC、schema loader、BaseAPI/BaseService 测试 |
+| `tests/database/` | Repository、TreeRepository、Redis client、relation metadata 测试 |
+| `tests/sys/` | 系统域服务、审计日志、事件流、outbox 测试 |
+| `tests/api_auth/` | API application、开放接口授权与缓存测试 |
+| `tests/deployment/` | docker-compose、nginx、开发 worker/beat 配置测试 |
+| `tests/utils/` | 工具函数、时间、请求解析测试 |
+| `tests/integration/` | 多组件集成测试，默认快速回归不收集 |
+| `tests/e2e/` | 显式运行的端到端测试，默认快速回归不收集 |
+| `tests/resilience/` | 降级、断连、恢复类测试，默认快速回归不收集 |
+| `tests/mock/` | mock server 和模拟器测试，默认快速回归不收集 |
+
+### 当前治理约束
+
+本轮测试套件治理后的当前基线：
+
+- `tests/` 下共有 `271` 个 `test_*.py` 文件。
+- `tests/` 根目录下没有 `test_*.py` 文件。
+- 默认快速回归 collect 为 `2669` 个测试。
+- 原 `tests/api/test_callback_api.py` 已按 route contract、result、event、external 和共享支撑拆分。
+- 当前没有超过 `3000` 行的测试文件，最大测试文件为 `tests/rack/test_rack_operation_service.py`（`2898` 行）。
+
+后续新增或调整测试时遵循以下约束：
+
+- 新增领域测试默认不要放在 `tests/` 根目录，优先按上方目录归属矩阵归位。
+- 单个测试文件目标低于 `1000` 行；超过 `3000` 行会触发测试拓扑 guardrail。
+- API 测试文件只覆盖 route、permission、response contract 和 API facade 行为。
+- service、projection、builder、orchestrator、runtime intent 等测试放回对应领域目录。
+- 共享 fixture 和 mock builder 优先放到领域内 `conftest.py` 或 `support/`，避免跨文件复制同名 `mock_db`、`mock_session`、`mock_workline`。
+
+### 运行默认快速回归
 
 ```bash
-# 默认快速回归（不包含 e2e / resilience / mock / load）
+# 默认快速回归（不包含 e2e / integration / resilience / mock / load）
 pytest
 
-# 生成 HTML 报告 + 覆盖率
+# 默认快速回归 + HTML 报告 + 覆盖率
 pytest --html=reports/report.html --self-contained-html --cov=src --cov-report=html:reports/coverage --cov-report=term-missing
 ```
 
@@ -50,7 +85,8 @@ pytest tests/e2e/
 # 韧性/降级测试（默认不会被 pytest 自动收集）
 pytest tests/resilience/
 
-# 指定运行负载测试或 mock 相关测试
+# 集成、负载或 mock 相关测试（默认不会被 pytest 自动收集）
+pytest tests/integration/
 pytest tests/load/
 pytest tests/mock/
 ```
@@ -64,9 +100,10 @@ pytest
 # 2) 改动集中在某个模块：跑对应文件/目录
 pytest tests/auth/
 pytest tests/api/
-pytest tests/test_menu_service_tree.py
+pytest tests/admin/test_menu_service_tree.py
 
 # 3) 改动涉及系统稳定性或多服务联调：显式补跑重测试
+pytest tests/integration/
 pytest tests/resilience/
 pytest tests/e2e/
 ```
@@ -103,17 +140,18 @@ xdg-open reports/coverage/index.html
 
 ```bash
 # 只运行某个测试文件
-pytest tests/test_relation_metadata.py
+pytest tests/database/test_relation_metadata.py
 
-# 显式运行 E2E 或韧性测试目录
+# 显式运行集成、E2E 或韧性测试目录
+pytest tests/integration/
 pytest tests/e2e/test_conveyor_robot_arm.py
 pytest tests/resilience/test_redis_degradation.py
 
 # 只运行某个测试类
-pytest tests/test_relation_metadata.py::TestRelationMetadata
+pytest tests/database/test_relation_metadata.py::TestRelationMetadata
 
 # 只运行某个测试方法
-pytest tests/test_relation_metadata.py::TestRelationMetadata::test_get_relation_info_one_to_many
+pytest tests/database/test_relation_metadata.py::TestRelationMetadata::test_get_relation_info_one_to_many
 
 # 运行并显示详细输出
 pytest -v -s

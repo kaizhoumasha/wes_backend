@@ -118,7 +118,7 @@ class TestOutboxDispatchService:
     async def _assert_rough_sorter_command_waits_for_ecs_idle(
         self,
         *,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         target_code: str,
         device_id: int,
@@ -169,12 +169,12 @@ class TestOutboxDispatchService:
         ):
             _configure_status_busy(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
-            first = await OutboxDispatchService().dispatch(mock_db, limit=5)
+            first = await OutboxDispatchService().dispatch(workline_runtime_mock_db, limit=5)
 
         assert first == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
         mock_client.return_value.__aenter__.return_value.post.assert_not_awaited()
         block_call = mock_outbox_repo.mark_as_blocked_by_device_busy.await_args
-        assert block_call.args == (mock_db, head.id)
+        assert block_call.args == (workline_runtime_mock_db, head.id)
         assert block_call.kwargs["reason"] == "DEVICE_BUSY"
 
         head.status = SystemOutboxStatus.BLOCKED_RESOURCE
@@ -192,7 +192,7 @@ class TestOutboxDispatchService:
         ):
             _configure_status_busy(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
-            second = await OutboxDispatchService().dispatch(mock_db, limit=5)
+            second = await OutboxDispatchService().dispatch(workline_runtime_mock_db, limit=5)
 
         assert second == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 2}
         mock_client.return_value.__aenter__.return_value.post.assert_not_awaited()
@@ -213,11 +213,11 @@ class TestOutboxDispatchService:
             mock_response = MagicMock(status_code=200)
             _configure_status_ok(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            third = await OutboxDispatchService().dispatch(mock_db, limit=5)
+            third = await OutboxDispatchService().dispatch(workline_runtime_mock_db, limit=5)
 
         assert third == {"dispatched": 1, "success": 1, "failed": 0, "skipped": 0}
         assert mock_client.return_value.__aenter__.return_value.post.await_count == 1
-        mock_outbox_repo.mark_as_sent.assert_awaited_with(mock_db, head.id)
+        mock_outbox_repo.mark_as_sent.assert_awaited_with(workline_runtime_mock_db, head.id)
 
     @pytest.mark.asyncio
     async def test_dispatcher_only_loads_workline_domain_outbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -245,17 +245,6 @@ class TestOutboxDispatchService:
         assert instances[0].pending_filters == [{"limit": 7, "operation_domains": ("WORKLINE", "RACK")}]
 
     @pytest.fixture
-    def mock_db(self):
-        """创建模拟数据库会话"""
-        db = AsyncMock()
-        db.commit = AsyncMock()
-        db.rollback = AsyncMock()
-        execute_result = MagicMock()
-        execute_result.scalars.return_value.all.return_value = []
-        db.execute = AsyncMock(return_value=execute_result)
-        return db
-
-    @pytest.fixture
     def mock_outbox_repo(self):
         """创建模拟 OutboxRepository"""
         repo = MagicMock()
@@ -277,7 +266,7 @@ class TestOutboxDispatchService:
         return repo
 
     @pytest.mark.asyncio
-    async def test_dispatch_no_pending_messages(self, mock_db, mock_outbox_repo):
+    async def test_dispatch_no_pending_messages(self, workline_runtime_mock_db, mock_outbox_repo):
         """测试无待派发消息时正常退出"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
 
@@ -285,7 +274,7 @@ class TestOutboxDispatchService:
             "src.app.sys.repositories.SystemOutboxRepository",
             return_value=mock_outbox_repo,
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 0
         assert result["success"] == 0
@@ -295,7 +284,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_single_device_command(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -327,18 +316,18 @@ class TestOutboxDispatchService:
             mock_response = MagicMock(status_code=200)
             _configure_status_ok(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 1
         assert result["failed"] == 0
-        mock_device_repo.get_by_device_code.assert_awaited_once_with(mock_db, "SCANNER_001")
+        mock_device_repo.get_by_device_code.assert_awaited_once_with(workline_runtime_mock_db, "SCANNER_001")
         mock_client.return_value.__aenter__.return_value.post.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_dispatch_parks_status_precheck_wait_without_retry_exhaustion(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -367,7 +356,7 @@ class TestOutboxDispatchService:
         ):
             _configure_status_unavailable(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
@@ -377,7 +366,7 @@ class TestOutboxDispatchService:
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
         mock_outbox_repo.mark_as_blocked_by_device_busy.assert_awaited_once()
         call = mock_outbox_repo.mark_as_blocked_by_device_busy.await_args
-        assert call.args == (mock_db, 1)
+        assert call.args == (workline_runtime_mock_db, 1)
         assert call.kwargs["reason"] == "DEVICE_STATUS_PRECHECK_WAIT"
         assert call.kwargs["last_error"] == "设备 SCANNER_001 实时状态查询返回 HTTP 503，等待下次预检"
         assert call.kwargs["detail"]["device_code"] == "SCANNER_001"
@@ -385,9 +374,9 @@ class TestOutboxDispatchService:
         assert call.kwargs["detail"]["http_status"] == 503
 
     @pytest.mark.asyncio
-    async def test_rough_sorter_conveyor_command_waits_for_ecs_idle(self, mock_db, mock_outbox_repo):
+    async def test_rough_sorter_conveyor_command_waits_for_ecs_idle(self, workline_runtime_mock_db, mock_outbox_repo):
         await self._assert_rough_sorter_command_waits_for_ecs_idle(
-            mock_db=mock_db,
+            workline_runtime_mock_db=workline_runtime_mock_db,
             mock_outbox_repo=mock_outbox_repo,
             target_code="RS-CONVEYOR-01",
             device_id=201,
@@ -397,9 +386,9 @@ class TestOutboxDispatchService:
         )
 
     @pytest.mark.asyncio
-    async def test_rough_sorter_output_arm_command_waits_for_ecs_idle(self, mock_db, mock_outbox_repo):
+    async def test_rough_sorter_output_arm_command_waits_for_ecs_idle(self, workline_runtime_mock_db, mock_outbox_repo):
         await self._assert_rough_sorter_command_waits_for_ecs_idle(
-            mock_db=mock_db,
+            workline_runtime_mock_db=workline_runtime_mock_db,
             mock_outbox_repo=mock_outbox_repo,
             target_code="RS-OUTPUT-ARM-01",
             device_id=202,
@@ -411,7 +400,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_parks_device_busy_without_retry_exhaustion(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -440,14 +429,14 @@ class TestOutboxDispatchService:
         ):
             _configure_status_busy(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
         mock_client.return_value.__aenter__.return_value.post.assert_not_awaited()
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
         mock_outbox_repo.mark_as_blocked_by_device_busy.assert_awaited_once()
         call = mock_outbox_repo.mark_as_blocked_by_device_busy.await_args
-        assert call.args == (mock_db, 11)
+        assert call.args == (workline_runtime_mock_db, 11)
         assert call.kwargs["reason"] == "DEVICE_BUSY"
         assert call.kwargs["detail"]["device_code"] == "SCANNER_001"
         assert call.kwargs["detail"]["last_probe_result"] == "BUSY"
@@ -457,7 +446,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_records_blocked_resource_attempt_response(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -494,7 +483,7 @@ class TestOutboxDispatchService:
         ):
             _configure_status_busy(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
-            await OutboxDispatchService().dispatch(mock_db)
+            await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         attempt_service.finalize_attempt_record.assert_awaited_once()
         attempt_call = attempt_service.finalize_attempt_record.await_args.kwargs
@@ -509,7 +498,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_probes_blocked_head_and_posts_when_ecs_idle(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -561,7 +550,7 @@ class TestOutboxDispatchService:
             mock_response = MagicMock(status_code=200)
             _configure_status_ok(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await OutboxDispatchService().dispatch(mock_db, limit=5)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db, limit=5)
 
         assert result["success"] == 1
         assert result["dispatched"] == 1
@@ -571,18 +560,20 @@ class TestOutboxDispatchService:
             "RACK",
         )
         mock_outbox_repo.claim_blocked_resource_wait_for_dispatch.assert_awaited_once_with(
-            mock_db,
+            workline_runtime_mock_db,
             31,
             "DEVICE_BUSY",
             min_probe_interval_seconds=2,
             operation_domains=("WORKLINE", "RACK"),
         )
-        mock_outbox_repo.mark_as_sent.assert_awaited_once_with(mock_db, 31)
+        mock_outbox_repo.mark_as_sent.assert_awaited_once_with(workline_runtime_mock_db, 31)
         mock_outbox_repo.mark_as_dispatching.assert_not_awaited()
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
         assert mock_client.return_value.__aenter__.return_value.post.await_count == 1
-        safety_service.assert_accepting_work.assert_awaited_once_with(mock_db, workline_id=45)
-        attempt_service.create_attempt.assert_awaited_once_with(mock_db, outbox=blocked_head, auto_commit=False)
+        safety_service.assert_accepting_work.assert_awaited_once_with(workline_runtime_mock_db, workline_id=45)
+        attempt_service.create_attempt.assert_awaited_once_with(
+            workline_runtime_mock_db, outbox=blocked_head, auto_commit=False
+        )
         attempt_service.finalize_attempt_record.assert_awaited_once()
         attempt_call = attempt_service.finalize_attempt_record.await_args.kwargs
         assert attempt_call["attempt"].id == 91
@@ -593,7 +584,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_blocked_head_final_guard_blocks_workline_before_side_effect(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -639,17 +630,19 @@ class TestOutboxDispatchService:
             _configure_status_ok(mock_client)
             client = mock_client.return_value.__aenter__.return_value
             client.post = AsyncMock()
-            result = await OutboxDispatchService().dispatch(mock_db, limit=5)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db, limit=5)
 
         assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
         client.post.assert_not_awaited()
-        safety_service.assert_accepting_work.assert_awaited_once_with(mock_db, workline_id=45)
+        safety_service.assert_accepting_work.assert_awaited_once_with(workline_runtime_mock_db, workline_id=45)
         runtime_service.park_outbox_for_reconciliation.assert_awaited_once_with(
-            mock_db,
+            workline_runtime_mock_db,
             outbox=blocked_head,
             reason="CALLBACK_DEADLINE_EXPIRED",
         )
-        attempt_service.create_attempt.assert_awaited_once_with(mock_db, outbox=blocked_head, auto_commit=False)
+        attempt_service.create_attempt.assert_awaited_once_with(
+            workline_runtime_mock_db, outbox=blocked_head, auto_commit=False
+        )
         attempt_service.finalize_attempt_record.assert_awaited_once()
         attempt_call = attempt_service.finalize_attempt_record.await_args.kwargs
         assert attempt_call["attempt"].id == 92
@@ -662,7 +655,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_keeps_blocked_head_when_ecs_still_busy(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -695,7 +688,7 @@ class TestOutboxDispatchService:
         ):
             _configure_status_busy(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
         mock_client.return_value.__aenter__.return_value.post.assert_not_awaited()
@@ -703,14 +696,14 @@ class TestOutboxDispatchService:
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
         mock_outbox_repo.mark_as_blocked_by_device_busy.assert_awaited_once()
         block_call = mock_outbox_repo.mark_as_blocked_by_device_busy.await_args
-        assert block_call.args == (mock_db, 33)
+        assert block_call.args == (workline_runtime_mock_db, 33)
         assert block_call.kwargs["reason"] == "DEVICE_BUSY"
         assert block_call.kwargs["detail"]["observed_status"] == "RUNNING"
 
     @pytest.mark.asyncio
     async def test_status_precheck_wait_under_ttl_stays_blocked(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -755,7 +748,7 @@ class TestOutboxDispatchService:
         ):
             _configure_status_unavailable(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
         record.assert_not_awaited()
@@ -770,7 +763,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_blocked_head_missing_device_config_updates_status_wait_metadata(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
     ):
         """blocked probe 缺通信配置时，应写入 status wait 观测并递增检查次数。"""
@@ -813,7 +806,7 @@ class TestOutboxDispatchService:
             patch("src.app.device.repositories.device_repository.device_repository", device_repo),
             patch("httpx.AsyncClient") as mock_client,
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
         mock_client.return_value.__aenter__.return_value.post.assert_not_awaited()
@@ -821,7 +814,7 @@ class TestOutboxDispatchService:
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
         mock_outbox_repo.mark_as_blocked_by_device_busy.assert_awaited_once()
         block_call = mock_outbox_repo.mark_as_blocked_by_device_busy.await_args
-        assert block_call.args == (mock_db, 42)
+        assert block_call.args == (workline_runtime_mock_db, 42)
         assert block_call.kwargs["blocked_device_id"] == 18
         assert block_call.kwargs["blocked_workline_id"] == 45
         assert block_call.kwargs["reason"] == "DEVICE_STATUS_PRECHECK_WAIT"
@@ -834,7 +827,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_blocked_head_probe_exception_updates_observation_without_claim(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
     ):
         """blocked probe 异常未 claim 时，应保留资源等待并持久化失败观测。"""
@@ -877,14 +870,14 @@ class TestOutboxDispatchService:
                 new=AsyncMock(side_effect=RuntimeError("status probe exploded")),
             ),
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
         mock_outbox_repo.claim_blocked_resource_wait_for_dispatch.assert_not_awaited()
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
         mock_outbox_repo.mark_as_blocked_by_device_busy.assert_awaited_once()
         block_call = mock_outbox_repo.mark_as_blocked_by_device_busy.await_args
-        assert block_call.args == (mock_db, 43)
+        assert block_call.args == (workline_runtime_mock_db, 43)
         assert block_call.kwargs["reason"] == "DEVICE_STATUS_PRECHECK_WAIT"
         assert block_call.kwargs["last_error"] == "status probe exploded"
         assert block_call.kwargs["detail"]["last_probe_result"] == "exception"
@@ -894,7 +887,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_status_precheck_wait_over_ttl_escalates_runtime_diagnostic(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -945,8 +938,8 @@ class TestOutboxDispatchService:
         ):
             _configure_status_unavailable(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
-            first = await OutboxDispatchService().dispatch(mock_db)
-            second = await OutboxDispatchService().dispatch(mock_db)
+            first = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
+            second = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert first == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
         assert second == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
@@ -971,7 +964,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_reblocks_claimed_head_when_final_precheck_turns_busy(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -1016,7 +1009,7 @@ class TestOutboxDispatchService:
             client = mock_client.return_value.__aenter__.return_value
             client.get = AsyncMock(side_effect=[ready_response, busy_response])
             client.post = AsyncMock()
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 1}
         assert client.get.await_count == 2
@@ -1026,7 +1019,7 @@ class TestOutboxDispatchService:
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
         mock_outbox_repo.mark_as_blocked_by_device_busy.assert_awaited_once()
         block_call = mock_outbox_repo.mark_as_blocked_by_device_busy.await_args
-        assert block_call.args == (mock_db, 34)
+        assert block_call.args == (workline_runtime_mock_db, 34)
         assert block_call.kwargs["reason"] == "DEVICE_BUSY"
         assert block_call.kwargs["detail"]["last_probe_result"] == "BUSY"
         assert block_call.kwargs["detail"]["observed_status"] == "RUNNING"
@@ -1035,7 +1028,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_blocked_head_probe_respects_workline_operation_domains(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
     ):
         """blocked head 查询只处理 WORKLINE/RACK 域，不接管 OTHER/HANDLING。"""
@@ -1048,11 +1041,11 @@ class TestOutboxDispatchService:
             "src.app.sys.repositories.SystemOutboxRepository",
             return_value=mock_outbox_repo,
         ):
-            result = await OutboxDispatchService().dispatch(mock_db, limit=9)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db, limit=9)
 
         assert result == {"dispatched": 0, "success": 0, "failed": 0, "skipped": 0}
         mock_outbox_repo.get_probeable_blocked_device_heads.assert_awaited_once_with(
-            mock_db,
+            workline_runtime_mock_db,
             limit=9,
             min_probe_interval_seconds=2,
             operation_domains=("WORKLINE", "RACK"),
@@ -1062,7 +1055,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_skips_pending_same_physical_device_after_blocked_head_alias_probe(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
     ):
         """blocked head 使用 legacy target_code 时，pending 真实 device_code 不能越过队首。"""
@@ -1100,16 +1093,16 @@ class TestOutboxDispatchService:
         ):
             _configure_status_busy(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
-            result = await OutboxDispatchService().dispatch(mock_db, limit=5)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db, limit=5)
 
         assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 2}
-        device_repo.get_by_device_code.assert_any_await(mock_db, "ARM01")
+        device_repo.get_by_device_code.assert_any_await(workline_runtime_mock_db, "ARM01")
         mock_outbox_repo.mark_as_dispatching.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_dispatch_skips_pending_device_id_when_blocked_head_only_has_target_code(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
     ):
         """blocked head 只有 target_code 时，也要解析物理设备并阻止同轮后续 device_id outbox。"""
@@ -1144,14 +1137,16 @@ class TestOutboxDispatchService:
         ):
             _configure_status_busy(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock()
-            result = await OutboxDispatchService().dispatch(mock_db, limit=5)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db, limit=5)
 
         assert result == {"dispatched": 1, "success": 0, "failed": 0, "skipped": 2}
-        device_repo.get_by_device_code.assert_any_await(mock_db, "ARM01")
+        device_repo.get_by_device_code.assert_any_await(workline_runtime_mock_db, "ARM01")
         mock_outbox_repo.mark_as_dispatching.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_dispatch_blocks_estopped_workline_before_side_effect(self, mock_db, mock_outbox_repo):
+    async def test_dispatch_blocks_estopped_workline_before_side_effect(
+        self, workline_runtime_mock_db, mock_outbox_repo
+    ):
         """WorkLine 已急停时，outbox 派发应在真实副作用前被阻断。"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
         from src.app.workline.services.safety_service import WorkLineSafetyBlocked
@@ -1181,19 +1176,19 @@ class TestOutboxDispatchService:
                 new=AsyncMock(),
             ) as dispatch_single,
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
         assert result["failed"] == 1
-        safety_service.assert_accepting_work.assert_awaited_once_with(mock_db, workline_id=7)
-        mock_outbox_repo.mark_as_blocked_by_workline_estop.assert_awaited_once_with(mock_db, 1)
+        safety_service.assert_accepting_work.assert_awaited_once_with(workline_runtime_mock_db, workline_id=7)
+        mock_outbox_repo.mark_as_blocked_by_workline_estop.assert_awaited_once_with(workline_runtime_mock_db, 1)
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
         # record_diagnostic.assert_awaited_once()  # TODO: fix mock
         dispatch_single.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_dispatch_parks_outbox_when_workline_reconciling(self, mock_db, mock_outbox_repo):
+    async def test_dispatch_parks_outbox_when_workline_reconciling(self, workline_runtime_mock_db, mock_outbox_repo):
         """WorkLine 对账中时，待派发 outbox 进入 BLOCKED_RESOURCE，不走普通失败重试。"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
         from src.app.workline.services.safety_service import WorkLineSafetyBlocked
@@ -1228,14 +1223,14 @@ class TestOutboxDispatchService:
                 new=AsyncMock(),
             ) as dispatch_single,
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
         assert result["failed"] == 0
         assert result["skipped"] == 1
         runtime_service.park_outbox_for_reconciliation.assert_awaited_once_with(
-            mock_db,
+            workline_runtime_mock_db,
             outbox=outbox,
             reason="CALLBACK_DEADLINE_EXPIRED",
         )
@@ -1245,7 +1240,7 @@ class TestOutboxDispatchService:
         dispatch_single.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_dispatch_parks_outbox_when_workline_stopped(self, mock_db, mock_outbox_repo):
+    async def test_dispatch_parks_outbox_when_workline_stopped(self, workline_runtime_mock_db, mock_outbox_repo):
         """WorkLine 处于 STOPPED 态时，待派发 outbox 进入 BLOCKED_RESOURCE 停放区。"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
         from src.app.workline.services.safety_service import WorkLineSafetyBlocked
@@ -1277,13 +1272,13 @@ class TestOutboxDispatchService:
                 new=AsyncMock(),
             ) as dispatch_single,
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
         assert result["failed"] == 0
         assert result["skipped"] == 1
-        mock_outbox_repo.mark_as_blocked_by_workline_stopped.assert_awaited_once_with(mock_db, 3)
+        mock_outbox_repo.mark_as_blocked_by_workline_stopped.assert_awaited_once_with(workline_runtime_mock_db, 3)
         mock_outbox_repo.mark_as_blocked_by_workline_estop.assert_not_awaited()
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
         dispatch_single.assert_not_awaited()
@@ -1291,7 +1286,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_repairs_orphaned_device_busy_dispatching_without_local_release(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
     ):
         """设备忙残留 DISPATCHING 只恢复为资源等待，不因本地 IDLE 投影自动回到 NEW。"""
@@ -1346,16 +1341,16 @@ class TestOutboxDispatchService:
             patch("src.app.device.repositories.device_repository.device_repository", device_repo),
             patch("src.app.workline.services.safety_service.workline_safety_service", safety_service),
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 0
         mock_outbox_repo.get_dispatching_device_messages.assert_awaited_once_with(
-            mock_db,
+            workline_runtime_mock_db,
             limit=50,
             operation_domains=("WORKLINE", "RACK"),
         )
         mock_outbox_repo.mark_as_blocked_by_device_busy.assert_awaited_once_with(
-            mock_db,
+            workline_runtime_mock_db,
             864,
             blocked_device_id=39,
             blocked_workline_id=45,
@@ -1368,7 +1363,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_keeps_self_blocked_device_busy_outbox_waiting_for_ecs_probe(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
     ):
         """同命令本地占用不能绕过 ECS admission 直接完成 blocked outbox。"""
@@ -1412,7 +1407,7 @@ class TestOutboxDispatchService:
             ),
             patch("src.app.device.repositories.device_repository.device_repository", device_repo),
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 0
         mock_outbox_repo.get_blocked_device_busy_messages.assert_not_awaited()
@@ -1420,7 +1415,9 @@ class TestOutboxDispatchService:
         mock_outbox_repo.get_pending_messages.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_dispatch_releases_claim_transaction_before_side_effect(self, mock_db, mock_outbox_repo):
+    async def test_dispatch_releases_claim_transaction_before_side_effect(
+        self, workline_runtime_mock_db, mock_outbox_repo
+    ):
         """Outbox 领取、账本和最终 guard 都应在物理副作用前短事务提交。"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
 
@@ -1438,7 +1435,7 @@ class TestOutboxDispatchService:
         safety_service.assert_accepting_work = AsyncMock(return_value=None)
 
         async def fake_dispatch_single(_db, _outbox):
-            assert mock_db.commit.await_count >= 4
+            assert workline_runtime_mock_db.commit.await_count >= 4
             return True
 
         with (
@@ -1452,13 +1449,15 @@ class TestOutboxDispatchService:
                 new=AsyncMock(side_effect=fake_dispatch_single),
             ),
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["success"] == 1
         assert safety_service.assert_accepting_work.await_count == 3
 
     @pytest.mark.asyncio
-    async def test_dispatch_success_is_fenced_when_outbox_changes_during_side_effect(self, mock_db, mock_outbox_repo):
+    async def test_dispatch_success_is_fenced_when_outbox_changes_during_side_effect(
+        self, workline_runtime_mock_db, mock_outbox_repo
+    ):
         """物理派发返回后若 timeout 已接管 outbox，不应把安全终态改回 SENT。"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
 
@@ -1481,7 +1480,7 @@ class TestOutboxDispatchService:
         )
 
         async def fake_dispatch_single(_db, _outbox):
-            assert mock_db.commit.await_count >= 4
+            assert workline_runtime_mock_db.commit.await_count >= 4
             return True
 
         with (
@@ -1499,20 +1498,22 @@ class TestOutboxDispatchService:
                 new=AsyncMock(side_effect=fake_dispatch_single),
             ),
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
         assert result["failed"] == 0
         assert result["skipped"] == 1
-        mock_outbox_repo.mark_as_sent.assert_awaited_once_with(mock_db, 4)
+        mock_outbox_repo.mark_as_sent.assert_awaited_once_with(workline_runtime_mock_db, 4)
         mock_outbox_repo.mark_as_failed.assert_not_awaited()
         attempt_service.finalize_attempt_record.assert_awaited_once()
         response = attempt_service.finalize_attempt_record.await_args.kwargs["response"]
         assert response == {"result": "sent", "outbox_finalization": "fenced"}
 
     @pytest.mark.asyncio
-    async def test_dispatch_final_guard_blocks_reconciling_workline_before_side_effect(self, mock_db, mock_outbox_repo):
+    async def test_dispatch_final_guard_blocks_reconciling_workline_before_side_effect(
+        self, workline_runtime_mock_db, mock_outbox_repo
+    ):
         """派发尝试创建后、真实副作用前必须再次锁定 WorkLine 并阻断 RECONCILING。"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
         from src.app.workline.services.safety_service import WorkLineSafetyBlocked
@@ -1557,7 +1558,7 @@ class TestOutboxDispatchService:
                 new=AsyncMock(),
             ) as dispatch_single,
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 1
         assert result["success"] == 0
@@ -1572,7 +1573,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_multiple_messages(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -1605,7 +1606,7 @@ class TestOutboxDispatchService:
             mock_response = MagicMock(status_code=200)
             _configure_status_ok(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 3
         assert result["success"] == 3
@@ -1616,7 +1617,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_handles_failure_with_retry(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -1655,7 +1656,7 @@ class TestOutboxDispatchService:
         ):
             _configure_status_ok(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=Exception("Device offline"))
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         # 应该记录失败并设置重试
         assert result["dispatched"] == 1
@@ -1668,7 +1669,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_enters_runtime_reconciliation_when_outbox_exhausted(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
     ):
         """Outbox 永久失败后进入通信 ACK 对账隔离。"""
@@ -1731,7 +1732,7 @@ class TestOutboxDispatchService:
             mock_response = MagicMock(status_code=400, text="Unsupported command")
             _configure_status_ok(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_response)
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["failed"] == 1
         runtime_service.handle_dispatch_ack_exhausted.assert_awaited_once()
@@ -1743,7 +1744,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_does_not_release_reserved_command_when_outbox_exhausted(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
     ):
         """通信 ACK 耗尽进入对账，不在派发层自动释放设备占用。"""
@@ -1810,7 +1811,7 @@ class TestOutboxDispatchService:
             _configure_status_ok(mock_client)
             post_response = MagicMock(status_code=500, text="ack failed")
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(return_value=post_response)
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["failed"] == 1
         mock_client.return_value.__aenter__.return_value.get.assert_awaited_once()
@@ -1821,7 +1822,7 @@ class TestOutboxDispatchService:
     @pytest.mark.asyncio
     async def test_dispatch_marks_failed_after_max_retries(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_outbox_repo,
         mock_device_repo,
     ):
@@ -1863,7 +1864,7 @@ class TestOutboxDispatchService:
         ):
             _configure_status_ok(mock_client)
             mock_client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=Exception("Device offline"))
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 1
         assert result["failed"] == 1
@@ -1871,7 +1872,7 @@ class TestOutboxDispatchService:
         assert outbox.status == SystemOutboxStatus.FAILED
 
     @pytest.mark.asyncio
-    async def test_dispatch_logs_diagnostic_with_outbox_trace_fields(self, mock_db, mock_outbox_repo):
+    async def test_dispatch_logs_diagnostic_with_outbox_trace_fields(self, workline_runtime_mock_db, mock_outbox_repo):
         """测试 Outbox 派发失败时会输出稳定 trace 字段，便于 replay/debug。"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
 
@@ -1899,7 +1900,7 @@ class TestOutboxDispatchService:
                 "src.app.workline.services.diagnostic_service.workline_diagnostic_service.record_event", new=AsyncMock()
             ),
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 1
         assert result["failed"] == 1
@@ -1914,7 +1915,7 @@ class TestOutboxDispatchService:
         }
 
     @pytest.mark.asyncio
-    async def test_dispatch_logs_warning_with_outbox_trace_suffix(self, mock_db, mock_outbox_repo):
+    async def test_dispatch_logs_warning_with_outbox_trace_suffix(self, workline_runtime_mock_db, mock_outbox_repo):
         """测试 Outbox 派发失败 warning 日志也带稳定 trace 字段。"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
 
@@ -1943,7 +1944,7 @@ class TestOutboxDispatchService:
             ),
             patch("src.app.workline.services.outbox_dispatch_service.logger.warning"),
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         assert result["dispatched"] == 1
         assert result["failed"] == 1
@@ -2115,7 +2116,7 @@ class TestOutboxDispatchService:
         assert session.contract_version == "1.0"
 
     @pytest.mark.asyncio
-    async def test_dispatch_skips_dispatching_status(self, mock_db, mock_outbox_repo):
+    async def test_dispatch_skips_dispatching_status(self, workline_runtime_mock_db, mock_outbox_repo):
         """测试跳过正在派发中的消息（并发安全）"""
         from src.app.workline.services.outbox_dispatch_service import OutboxDispatchService
 
@@ -2133,7 +2134,7 @@ class TestOutboxDispatchService:
             "src.app.sys.repositories.SystemOutboxRepository",
             return_value=mock_outbox_repo,
         ):
-            result = await OutboxDispatchService().dispatch(mock_db)
+            result = await OutboxDispatchService().dispatch(workline_runtime_mock_db)
 
         # 应该跳过这条消息
         assert result["dispatched"] == 0

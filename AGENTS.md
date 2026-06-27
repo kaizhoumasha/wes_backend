@@ -258,7 +258,36 @@ When modifying existing code, **preserve all valuable comments** — they are cr
 ```
 
 ## Testing Guidelines
-Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. Add unit tests near the affected domain and use `tests/e2e/` or `tests/resilience/` for flows that span APIs, queues, or device integrations. CI publishes coverage reports; changes should cover both success and failure paths.
+Pytest uses `test_*.py`, `Test*`, and `test_*` discovery from `pyproject.toml`. Add unit tests near the affected domain and cover both success and failure paths.
+
+### Test Suite Governance
+
+所有 Agent 新增、移动、拆分或删除测试时，必须遵守 [`tests/README.md`](tests/README.md) 的目录归属、默认快速回归和重测试边界。
+
+**STRICTLY FORBIDDEN**:
+- ❌ 在 `tests/` 根目录新增 `test_*.py`
+- ❌ 把 integration / e2e / resilience / load / mock 测试混入默认快速回归集
+- ❌ 为了快速通过门禁删除有业务价值的断言或失败路径覆盖
+- ❌ 把 API facade 测试写成 service / repository / projection / orchestrator 大杂烩
+- ❌ 新增超过 `3000` 行的测试文件；单文件超过 `1000` 行必须优先拆分或说明原因
+
+**Required placement**:
+- `tests/api/`: route、permission、response model、API facade 行为
+- `tests/workline_runtime/`: runtime service、orchestrator、intent、diagnostic、session resolver 纯逻辑
+- `tests/workline_plugins/`: plugin contract、plugin behavior、template asset
+- `tests/contracts/`: 跨系统/跨模块契约
+- `tests/core/`, `tests/database/`, `tests/sys/`, `tests/api_auth/`, `tests/deployment/`, `tests/utils/`: 对应基础设施或领域边界
+- `tests/integration/`, `tests/e2e/`, `tests/resilience/`, `tests/load/`, `tests/mock/`: 显式运行的重测试目录，默认 pytest 不收集
+
+**Required verification for test changes**:
+```bash
+uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q
+uv run pytest <changed-test-files-or-domain> -q
+uv run pytest --collect-only -q -o addopts='' | tail -5
+./scripts/git-quality-gate.sh --profile quality
+```
+
+If a change intentionally touches integration / e2e / resilience / load / mock behavior, explicitly run the affected heavy-test directory and mention it in the PR. Do not rely on default pytest collection for those suites.
 
 ## Commit & Pull Request Guidelines
 Recent history follows Conventional Commits with scopes, for example `feat(auth,menu): ...` and `fix(user,tree): ...`. Keep subjects imperative and concise, and mention migrations when schema changes are included. PRs should summarize behavior changes, list local verification steps, link the issue, and call out config, migration, or API contract impacts.

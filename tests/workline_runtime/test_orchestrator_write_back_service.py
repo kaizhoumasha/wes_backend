@@ -22,13 +22,8 @@ def test_runtime_write_back_does_not_depend_on_celery_task_facade() -> None:
     assert celery_imports == []
 
 
-@pytest.fixture
-def mock_db():
-    return MagicMock()
-
-
 @pytest.mark.asyncio
-async def test_write_back_calls_applier(mock_db):
+async def test_write_back_calls_applier(workline_runtime_mock_db):
     session = MagicMock()
     session.trace_id = "test-trace"
     session.context_json = {"key": "value"}
@@ -45,7 +40,7 @@ async def test_write_back_calls_applier(mock_db):
         mock_applier_class.return_value = mock_applier
 
         result = await orchestrator_write_back_service.write_back(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             session=session,
             workline=workline,
             inbox=inbox,
@@ -60,7 +55,7 @@ async def test_write_back_calls_applier(mock_db):
         ctx = call_args[0][0]
         intents = call_args[0][1]
 
-        assert ctx["db"] == mock_db
+        assert ctx["db"] == workline_runtime_mock_db
         assert ctx["session"] == session
         assert ctx["workline"] == workline
         assert ctx["inbox"] == inbox

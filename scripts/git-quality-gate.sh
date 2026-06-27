@@ -119,11 +119,17 @@ run_architecture_check() {
     bash "$REPO_ROOT/scripts/architecture-guardrails.sh" --phase "$phase"
 }
 
+run_test_topology_check() {
+    log_step "tests" "pytest tests/architecture/test_test_suite_topology_guardrail.py -q"
+    run_tool pytest tests/architecture/test_test_suite_topology_guardrail.py -q
+}
+
 run_quality_profile() {
     run_format_check
     run_lint_check
     run_security_check
     run_architecture_check
+    run_test_topology_check
 }
 
 run_ci_smoke_profile() {
