@@ -248,7 +248,7 @@ async def test_real_ecs_ack_path_defers_command_status_changed_event(monkeypatch
         command_code="CMD-GW-ACK",
         workline_id=45,
         device_id=101,
-        session_id_int=530,
+        correlation_id="session-530",
         status=CommandStatus.SENT,
         sent_at=None,
         ack_received_at=None,
@@ -318,6 +318,14 @@ class _SandboxSessionRepoStub:
     def __init__(self, session: Any) -> None:
         self.session = session
         self.get_by_id = AsyncMock(return_value=session)
+        self.get_open_session_by_awaiting_device_command_code = AsyncMock(
+            side_effect=self._get_by_awaiting_device_command_code
+        )
+
+    async def _get_by_awaiting_device_command_code(self, _db: Any, command_code: str) -> Any | None:
+        if getattr(self.session, "awaiting_device_command_code", None) == command_code:
+            return self.session
+        return None
 
 
 class _SandboxSingleRepoStub:
@@ -366,14 +374,18 @@ async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
         command_code="CMD-001",
         workline_id=45,
         device_id=101,
-        session_id_int=530,
+        correlation_id="trace-001",
         status=CommandStatus.SENT,
         sent_at=None,
         ack_received_at=None,
         ack_code=None,
         ack_message=None,
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    session = SimpleNamespace(
+        id=530,
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+        awaiting_device_command_code="CMD-001",
+    )
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
 
     service = WorklineOperationService(
@@ -422,12 +434,15 @@ async def test_sandbox_result_path_defers_command_status_changed_event() -> None
         task_type="PICK_AND_PUT",
         params={"business_key": "PKG-001"},
         workline_id=45,
-        session_id=530,
-        session_id_int=530,
+        correlation_id="trace-001",
         device_id=7,
         trace_id="trace-001",
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    session = SimpleNamespace(
+        id=530,
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+        awaiting_device_command_code="CMD-001",
+    )
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
 
     service = WorklineOperationService(
@@ -494,7 +509,7 @@ def _build_ack_exhausted_fixtures(
         command_code="CMD-ACK-EXHAUSTED",
         workline_id=45,
         device_id=7,
-        session_id_int=553,
+        correlation_id="sandbox-session-553",
         status=command_status,
         completed_at=None,
         error_detail=None,
@@ -523,7 +538,7 @@ def _build_ack_exhausted_fixtures(
         current_wait_timeout_seconds=300,
         waiting_since=timezone.now_for_db() - timedelta(seconds=400),
         deadline_at=None,
-        awaiting_command_id=881,
+        awaiting_device_command_code=command.command_code,
         reconciliation_state=reconciliation_state,
     )
     from src.app.workline.models.safety import WorkLineRuntimeStatus

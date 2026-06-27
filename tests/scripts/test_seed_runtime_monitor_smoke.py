@@ -106,7 +106,7 @@ async def test_seed_runtime_monitor_smoke_clears_terminal_session_state(db_sessi
     session.status = SessionStatus.FAILED
     session.barcode = "OLD-BARCODE"
     session.ended_at = now
-    session.awaiting_command_id = 123
+    session.awaiting_device_command_code = "CMD-OLD"
     session.failure_domain = "DEVICE"
     session.failure_code = "OLD_FAILURE"
     session.failure_message = "old failure"
@@ -134,7 +134,7 @@ async def test_seed_runtime_monitor_smoke_clears_terminal_session_state(db_sessi
     assert session.status == SessionStatus.WAITING_EXTERNAL
     assert session.barcode is None
     assert session.ended_at is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert session.failure_domain is None
     assert session.failure_code is None
     assert session.failure_message is None

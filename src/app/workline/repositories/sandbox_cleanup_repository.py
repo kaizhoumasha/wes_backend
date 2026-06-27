@@ -184,7 +184,7 @@ class SandboxCleanupRepository:
                     session_columns.id.in_(session_ids),
                     session_columns.workline_id == workline_id,
                 )
-                .values(awaiting_command_id=None)
+                .values(awaiting_device_command_code=None)
             )
 
         await self._clear_deleted_command_device_refs(db, workline_id=workline_id, selection=selection)
@@ -314,12 +314,15 @@ class SandboxCleanupRepository:
 
     def _sandbox_command_ids_stmt(self, workline_id: int) -> Any:
         columns = cast("Any", DeviceCommand).__table__.c
-        session_ids = self._sandbox_session_ids_stmt(workline_id)
+        session_trace_ids = select(cast("Any", WorklineSession).__table__.c.trace_id).where(
+            cast("Any", WorklineSession).__table__.c.id.in_(self._sandbox_session_ids_stmt(workline_id)),
+            cast("Any", WorklineSession).__table__.c.trace_id.isnot(None),
+        )
         return (
             select(columns.id)
             .where(
                 columns.workline_id == workline_id,
-                columns.session_id_int.in_(session_ids),
+                columns.trace_id.in_(session_trace_ids),
             )
             .order_by(columns.id)
         )

@@ -201,14 +201,14 @@ async def _count_timed_out_sessions(db: AsyncSession) -> int:
     result = await db.execute(
         select(func.count())
         .select_from(WorklineSession)
-        .outerjoin(DeviceCommand, WorklineSession.awaiting_command_id == DeviceCommand.id)
+        .outerjoin(DeviceCommand, WorklineSession.awaiting_device_command_code == DeviceCommand.command_code)
         .where(  # type: ignore[arg-type]
             WorklineSession.deadline_at.isnot(None),
             WorklineSession.deadline_at < timezone.now_for_db(),
             or_(
                 and_(
                     WorklineSession.status == SessionStatus.WAITING_DEVICE_RESULT,
-                    WorklineSession.awaiting_command_id.isnot(None),
+                    WorklineSession.awaiting_device_command_code.isnot(None),
                     DeviceCommand.status == CommandStatus.ACK_RECEIVED,
                     DeviceCommand.ack_received_at.isnot(None),
                 ),
@@ -225,7 +225,7 @@ async def _count_ack_timed_out_commands(db: AsyncSession) -> int:
             DeviceCommand.status == CommandStatus.SENT,
             DeviceCommand.sent_at.is_not(None),
             DeviceCommand.ack_received_at.is_(None),
-            DeviceCommand.session_id_int.is_not(None),
+            DeviceCommand.correlation_id.is_not(None),
             DeviceCommand.workline_id.is_not(None),
         )
     )

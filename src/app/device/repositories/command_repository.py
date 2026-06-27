@@ -98,7 +98,6 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
                 columns.status == CommandStatus.SENT,
                 columns.sent_at.is_not(None),
                 columns.ack_received_at.is_(None),
-                columns.session_id_int.is_not(None),
                 columns.workline_id.is_not(None),
             )
             .order_by(columns.sent_at.asc(), columns.id.asc())

@@ -689,7 +689,7 @@ async def test_record_callback_resumes_session_only_when_operation_succeeded() -
         waiting_since=object(),
         deadline_at=object(),
         current_wait_timeout_seconds=300,
-        awaiting_command_id=9001,
+        awaiting_device_command_code=None,
         failure_domain=None,
         failure_code=None,
         failure_message=None,
@@ -760,7 +760,7 @@ async def test_record_callback_defers_arrived_operation_sync_until_resource_proj
         waiting_since=object(),
         deadline_at=object(),
         current_wait_timeout_seconds=300,
-        awaiting_command_id=9001,
+        awaiting_device_command_code=None,
         failure_domain=None,
         failure_code=None,
         failure_message=None,
@@ -828,7 +828,7 @@ async def test_record_callback_holds_session_when_operation_failed() -> None:
         waiting_since=object(),
         deadline_at=object(),
         current_wait_timeout_seconds=300,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         failure_domain=None,
         failure_code=None,
         failure_message=None,
@@ -861,7 +861,7 @@ async def test_record_callback_holds_session_when_operation_failed() -> None:
     assert session.waiting_since is None
     assert session.deadline_at is None
     assert session.current_wait_timeout_seconds is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert session.failure_domain == "EXTERNAL"
     assert session.failure_code == "RCS_RACK_OPERATION_FAILED"
     assert session.failure_message == "外部系统拒绝"
@@ -900,7 +900,7 @@ async def test_record_callback_preserves_failure_reason_when_later_sibling_succe
         waiting_since=object(),
         deadline_at=object(),
         current_wait_timeout_seconds=300,
-        awaiting_command_id=9001,
+        awaiting_device_command_code=9001,
         failure_domain="EXTERNAL",
         failure_code="RCS_RACK_OPERATION_FAILED",
         failure_message="外部系统拒绝",
@@ -933,7 +933,7 @@ async def test_record_callback_preserves_failure_reason_when_later_sibling_succe
     assert session.waiting_since is None
     assert session.deadline_at is None
     assert session.current_wait_timeout_seconds is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert session.failure_domain == "EXTERNAL"
     assert session.failure_code == "RCS_RACK_OPERATION_FAILED"
     assert session.failure_message == "外部系统拒绝"

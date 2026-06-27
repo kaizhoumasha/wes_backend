@@ -436,7 +436,7 @@ class DiagnosisVerdictBuilder:
             or coerce_optional_str(getattr(session, "current_wait_type", None))
             or getattr(session, "waiting_since", None)
             or getattr(session, "deadline_at", None)
-            or getattr(session, "awaiting_command_id", None)
+            or getattr(session, "awaiting_device_command_code", None)
         )
 
     @staticmethod

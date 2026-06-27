@@ -73,7 +73,7 @@ _INBOX_KIND_TO_PLUGIN_TYPE = {
 _MANUAL_OPERATION_KINDS = {"MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL"}
 _RESERVED_CONTEXT_KEYS = frozenset(
     {
-        "awaiting_command_id",
+        "awaiting_device_command_code",
         "current_device_id",
         "current_device_role",
         "current_wait_type",

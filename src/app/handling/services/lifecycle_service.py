@@ -576,7 +576,7 @@ def _apply_operation_status_to_session(
         session.waiting_since = None
         session.deadline_at = None
         session.current_wait_timeout_seconds = None
-        session.awaiting_command_id = None
+        session.awaiting_device_command_code = None
         session.failure_domain = None
         session.failure_code = None
         session.failure_message = None
@@ -594,7 +594,7 @@ def _apply_operation_status_to_session(
         session.waiting_since = None
         session.deadline_at = None
         session.current_wait_timeout_seconds = None
-        session.awaiting_command_id = None
+        session.awaiting_device_command_code = None
         session.failure_domain = "EXTERNAL"
         session.failure_code = error_code or f"HANDLING_OPERATION_{operation_status}"
         session.failure_message = error_message or f"Handling operation {operation_key} derived {operation_status}"

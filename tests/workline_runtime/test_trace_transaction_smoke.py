@@ -126,8 +126,10 @@ async def _seed_trace_graph(db_session: AsyncSession) -> SmokeFixture:
         session_code="SES-SMOKE-001",
         workline_id=workline_id,
         plugin_key="test_workline_plugin",
-        status=SessionStatus.RUNNING,
+        status=SessionStatus.WAITING_DEVICE_RESULT,
         trace_id="trace-smoke-001",
+        current_wait_type="COMMAND_RESULT",
+        awaiting_device_command_code="CMD-SMOKE-001",
         context_json={},
     )
     db_session.add(session)
@@ -143,8 +145,7 @@ async def _seed_trace_graph(db_session: AsyncSession) -> SmokeFixture:
         timeout_ms=30000,
         params={"task_type": "PICK_AND_PUT"},
         trace_id="trace-smoke-001",
-        session_id=session.session_code,
-        session_id_int=session_id,
+        correlation_id=session.session_code,
         workline_id=workline_id,
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,

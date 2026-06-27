@@ -161,7 +161,7 @@ class TraceSessionItem(BaseModel):
     current_wait_timeout_seconds: int | None = None
     waiting_since: datetime | None = None
     deadline_at: datetime | None = None
-    awaiting_command_id: int | None = None
+    awaiting_device_command_code: str | None = None
     reconciliation_state: str | None = None
     reconciliation_reason: str | None = None
     reconciliation_source_kind: str | None = None

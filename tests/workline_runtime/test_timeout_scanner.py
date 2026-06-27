@@ -27,7 +27,7 @@ class MockSession:
         workline_id: int = 1,
         trace_id: str | None = None,
         current_wait_type: str = "COMMAND_RESULT",
-        awaiting_command_id: int | None = 9,
+        awaiting_device_command_code: str | None = "CMD-001",
     ):
         self.id = session_id
         self.status = status
@@ -35,7 +35,7 @@ class MockSession:
         self.workline_id = workline_id
         self.trace_id = trace_id
         self.current_wait_type = current_wait_type
-        self.awaiting_command_id = awaiting_command_id
+        self.awaiting_device_command_code = awaiting_device_command_code
 
 
 class TestTimeoutScanner:
@@ -81,6 +81,21 @@ class TestTimeoutScanner:
         repo.get_by_id = AsyncMock(return_value=SimpleNamespace(id=7, device_code="ARM01"))
         return repo
 
+    @pytest.fixture
+    def mock_command_repo(self):
+        repo = MagicMock()
+        repo.get_by_command_code = AsyncMock(
+            return_value=SimpleNamespace(
+                id=9,
+                command_code="CMD-001",
+                device_id=7,
+                status="ACK_RECEIVED",
+                ack_received_at=datetime.now(UTC) - timedelta(minutes=4),
+            )
+        )
+        repo.get_ack_timed_out_commands = AsyncMock(return_value=[])
+        return repo
+
     @pytest.mark.asyncio
     async def test_scan_no_timed_out_sessions(self, mock_db, mock_session_repo):
         """测试无超时 Session 时正常退出"""
@@ -104,6 +119,7 @@ class TestTimeoutScanner:
         mock_session_repo,
         mock_inbox_service,
         mock_device_repo,
+        mock_command_repo,
     ):
         """测试单个超时 Session 处理"""
         from src.celery_app.tasks.workline import TimeoutScanner
@@ -132,6 +148,10 @@ class TestTimeoutScanner:
                 "src.app.device.repositories.device_repository.device_repository",
                 mock_device_repo,
             ),
+            patch(
+                "src.app.device.repositories.command_repository.DeviceCommandRepository",
+                return_value=mock_command_repo,
+            ),
         ):
             result = await TimeoutScanner._scan(mock_db)
 
@@ -141,7 +161,7 @@ class TestTimeoutScanner:
         mock_inbox_service.create_timeout_inbox.assert_called_once()
         call_kwargs = mock_inbox_service.create_timeout_inbox.call_args.kwargs
         assert call_kwargs["wait_token"] == "CMD-001"
-        assert call_kwargs["awaiting_command_id"] == 9
+        assert call_kwargs["awaiting_device_command_code"] == "CMD-001"
         assert call_kwargs["command_code"] == "CMD-001"
         assert call_kwargs["command_status"] == "ACK_RECEIVED"
         assert call_kwargs["ack_received_at"] is not None
@@ -224,7 +244,7 @@ class TestTimeoutScanner:
             workline_id=1,
             trace_id="trace-external",
             current_wait_type="EXTERNAL_HTTP",
-            awaiting_command_id=None,
+            awaiting_device_command_code=None,
         )
         mock_session_repo.get_timed_out_sessions.return_value = [session]
         mock_db.get = AsyncMock(return_value=None)
@@ -253,7 +273,7 @@ class TestTimeoutScanner:
         call_kwargs = mock_inbox_service.create_timeout_inbox.call_args.kwargs
         assert call_kwargs["wait_token"] is None
         assert call_kwargs["wait_type"] == "EXTERNAL_HTTP"
-        assert call_kwargs["awaiting_command_id"] is None
+        assert call_kwargs["awaiting_device_command_code"] is None
         assert call_kwargs["command_code"] is None
 
     @pytest.mark.asyncio
@@ -263,6 +283,7 @@ class TestTimeoutScanner:
         mock_session_repo,
         mock_inbox_service,
         mock_device_repo,
+        mock_command_repo,
     ):
         """测试批量扫描多个超时 Session"""
         from src.celery_app.tasks.workline import TimeoutScanner
@@ -292,6 +313,10 @@ class TestTimeoutScanner:
             patch(
                 "src.app.device.repositories.device_repository.device_repository",
                 mock_device_repo,
+            ),
+            patch(
+                "src.app.device.repositories.command_repository.DeviceCommandRepository",
+                return_value=mock_command_repo,
             ),
         ):
             result = await TimeoutScanner._scan(mock_db)

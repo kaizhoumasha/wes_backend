@@ -241,6 +241,47 @@ class DeviceRequirement(BaseModel):
     min_count: int = Field(description="最小数量限制")
     max_count: int | None = Field(default=None, description="最大数量限制")
     hardware_capabilities: list[str] = Field(default_factory=list, description="要求硬件能力声明")
+    required: bool = Field(
+        default=True,
+        description="required=true 设备不可用时 WorkLine 不允许启动；optional=true 可启动但 capability 从候选剔除",
+    )
+
+
+class SharedDevice(BaseModel):
+    """共享设备声明（CEO-012）。
+
+    主计划 §9.6 + §3.2：共享设备可被多条 WorkLine 或多个 capability 引用，
+    必须声明影响范围和 required/optional 角色，避免跨线抢占。
+    """
+
+    device_code: str = Field(description="共享设备编码")
+    role: str = Field(description="设备角色")
+    shared_by: list[str] = Field(
+        default_factory=list,
+        description="共享该设备的 WorkLine code 列表；空表示同 WorkLine 内多 capability 共享",
+    )
+    impact_scope: str = Field(
+        description="影响范围：WORKLINE / SESSION / WORK_ITEM；OFFLINE 时按 scope 决定 hold 范围",
+    )
+
+
+class SafetyZone(BaseModel):
+    """安全区域声明（CEO-012）。
+
+    主计划 §9.6 + §7.1：SafetyZone 标记物理安全边界，区域内设备
+    OFFLINE/MAINTENANCE/ESTOP 时 RuntimeHold 按区域隔离，不污染整线。
+    """
+
+    zone_code: str = Field(description="安全区域编码")
+    device_codes: list[str] = Field(
+        default_factory=list,
+        description="区域内设备编码列表；空表示按 role 匹配",
+    )
+    roles: list[str] = Field(default_factory=list, description="区域内设备角色列表")
+    isolation_policy: str = Field(
+        default="HOLD_ZONE",
+        description="隔离策略：HOLD_ZONE（仅 hold 区域内）/ HOLD_WORKLINE（hold 整线）",
+    )
 
 
 class RackPositionCarrierCapability(BaseModel):
@@ -391,6 +432,14 @@ class WorkLinePluginManifestSummary(BaseModel):
     events: list[EventBinding] = Field(default_factory=list, description="事件绑定")
     commands: list[CommandBinding] = Field(default_factory=list, description="命令绑定")
     resource_boundaries: list[ResourceBoundary] = Field(default_factory=list, description="资源边界")
+    safety_zones: list[SafetyZone] = Field(
+        default_factory=list,
+        description="安全区域声明；区域内设备异常时按 isolation_policy 隔离",
+    )
+    shared_devices: list[SharedDevice] = Field(
+        default_factory=list,
+        description="共享设备声明；跨线/跨 capability 共享设备的影响范围",
+    )
     session_subject: SessionSubject | None = Field(default=None, description="插件运行会话业务主体")
     state_machines: list[StateMachine] = Field(default_factory=list, description="业务状态机声明")
     pipeline_queues: list[PipelineQueue] = Field(default_factory=list, description="管线队列声明")

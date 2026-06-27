@@ -349,12 +349,11 @@ def _is_same_session_current_command(*, outbox: Any, command: Any | None, device
     command_id = resolve_entity_id(command)
     if command_id is None or device is None:
         return False
-    command_session_id = coerce_optional_int(getattr(command, "session_id_int", None))
     outbox_session_id = getattr(outbox, "session_id", None)
     return (
         getattr(device, "current_command_id", None) == command_id
         and outbox_session_id is not None
-        and command_session_id == outbox_session_id
+        and getattr(outbox, "dispatch_key", None) == f"device-command:{getattr(command, 'command_code', None)}"
     )
 
 
@@ -706,7 +705,7 @@ class DeviceCommandGateway:
                                 action="acked",
                                 workline_id=getattr(command, "workline_id", None),
                                 device_id=device_id,
-                                session_id=getattr(command, "session_id_int", None),
+                                session_id=getattr(outbox, "session_id", None),
                             )
                     else:
                         logger.warning(

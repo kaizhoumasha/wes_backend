@@ -3,7 +3,7 @@
 import importlib
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -281,6 +281,30 @@ class TestCallbackIngressRouteContracts:
 
 class TestCallbackEnqueueFallback:
     @pytest.mark.asyncio
+    async def test_load_command_session_does_not_fallback_to_trace_id(self) -> None:
+        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+        class RepoStub:
+            instances: ClassVar[list["RepoStub"]] = []
+
+            def __init__(self) -> None:
+                self.get_by_trace_id = AsyncMock(return_value=SimpleNamespace(id=99))
+                self.get_open_session_by_awaiting_device_command_code = AsyncMock(return_value=None)
+                self.__class__.instances.append(self)
+
+        service = CallbackOrchestrationService()
+        command = SimpleNamespace(command_code="CMD-404", trace_id="trace-same-but-wrong-session")
+        db = SimpleNamespace()
+
+        with patch("src.app.workline.repositories.session_repository.WorklineSessionRepository", RepoStub):
+            session = await service._load_command_session(db, command)  # type: ignore[arg-type]
+
+        assert session is None
+        repo = RepoStub.instances[0]
+        repo.get_open_session_by_awaiting_device_command_code.assert_awaited_once_with(db, "CMD-404")
+        repo.get_by_trace_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_commit_succeeds_when_enqueue_is_unavailable(self, db_session: AsyncSession) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
@@ -534,7 +558,6 @@ class TestCallbackResultAPI:
         handled_command.status.value = "SUCCESS"
         handled_command.get_duration_ms = MagicMock(return_value=100)
         handled_command.trace_id = "trace-001"
-        handled_command.session_id = None
 
         with (
             patch(
@@ -656,7 +679,6 @@ class TestCallbackResultAPI:
         handled_command.status.value = "SUCCESS"
         handled_command.get_duration_ms = MagicMock(return_value=100)
         handled_command.trace_id = "trace-vendor-001"
-        handled_command.session_id = None
 
         call_order: list[str] = []
 
@@ -2677,3 +2699,87 @@ class TestCallbackExternalAPI:
         assert log_kwargs["ingress_outcome"] == "DUPLICATE"
         mock_enqueue.assert_not_called()
         mock_audit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_callback_external_h4_accepts_wms_rack_operation_protocol_fields(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        """H4 边界: 接受 WMS 货架操作协议顶层业务字段。
+
+        真实 WMS mock 集成测试 (test_real_mock_driven_sandbox_e2e) 通过
+        _rack_operation_callback_payload 发送 rack_code/rack_kind/position_code/
+        operation_key/operation_type/bin_mounts/material/task_type 等顶层业务
+        字段; 这些是 WMS 协议的合法业务元数据, 不是 H4 关注的安全注入面。
+        H4 子层守卫 (_FORBIDDEN_PARAM_KEYS 递归扫描) 仍阻断 plc_address /
+        coordinate 等设备控制字段; 本测试只覆盖顶层白名单扩展的契约。
+
+        注: 同样适用于 WMS 失败 payload 顶层 error_code/error_message
+        (build_rack_operation_failure_payload 返回的诊断结构)。
+        """
+        rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
+        wms_rack_op_payload = create_wms_external_payload(
+            callback_type="WMS_RACK_ARRIVED",
+            dispatch_key="external:smt:release-001:RACK_OPERATION:1",
+            status="SUCCEEDED",
+            # WMS 协议顶层业务字段 (Phase 1 H4 边界白名单扩展):
+            rack_code="RACK-3C-001",
+            rack_kind="SINGLE_LAYER",
+            position_code="SINGLE_LAYER_A",
+            target_position_code="SINGLE_LAYER_A",
+            target_position_role="INPUT",
+            source_position_code="INPUT_STAGE_1",
+            operation_key="op-key-001",
+            operation_type="ALLOCATE_AND_MOVE_RACK",
+            task_type="ALLOCATE_AND_MOVE_RACK",
+            workline_code="LINE-SMT-01",
+            sequence_no=1,
+            actions=[{"step": "MOVE_RACK", "from": "INPUT", "target": "SINGLE_LAYER_A"}],
+            bin_mounts=[{"rack_code": "RACK-3C-001", "rack_slot_code": "A1", "bin_code": "BIN-001"}],
+            material={"material_code": "MAT-001", "quantity": 1.0},
+            source="INPUT_STAGE_1",
+            station="STATION-01",
+            target="SINGLE_LAYER_A",
+        )
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(return_value=SimpleNamespace(id=421, trace_id="trace-wms-rack-op")),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.mark_as_processed",
+                new=AsyncMock(),
+            ),
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
+                return_value=rack_task_service,
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ),
+            patch("src.app.callback.v1.callback._enqueue_workline_processing"),
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-rack-op-h4"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(body=wms_rack_op_payload, path="/api/v1/callback/external"),
+                db=db_session,
+            )
+
+        # H4 边界不拒绝 WMS 协议字段, response code 应为 1000 (submitted)
+        assert response["code"] == "1000", (
+            f"H4 边界应接受 WMS 协议字段, 实际 code={response.get('code')}: {response.get('message', '')}"
+        )
+        assert _response_data(response)["status"] == "submitted"
+        mock_create_inbox.assert_awaited_once()
+        # 验证 H4 失败原因码没出现在日志中 (即顶层字段未被拒绝)
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs.get("reason_code") != "CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED"
+        assert log_kwargs["ingress_outcome"] == "ACCEPTED"

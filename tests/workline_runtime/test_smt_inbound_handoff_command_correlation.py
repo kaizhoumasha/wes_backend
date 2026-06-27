@@ -41,7 +41,7 @@ def _session(**overrides: Any) -> SimpleNamespace:
         "waiting_since": None,
         "deadline_at": None,
         "current_wait_timeout_seconds": None,
-        "awaiting_command_id": None,
+        "awaiting_device_command_code": None,
         "ended_at": None,
         "failure_domain": None,
         "failure_code": None,
@@ -70,7 +70,7 @@ def _ctx(*, session: Any | None = None, db: Any | None = None) -> dict[str, Any]
         "trace": TraceContext.from_runtime(session=resolved_session, trace_id="trace-handoff-1"),
         "session_ctx": dict(getattr(resolved_session, "context_json", {}) or {}),
         "now": datetime(2026, 1, 1, 0, 2, 0),
-        "awaiting_command_id": None,
+        "awaiting_device_command_code": None,
         "awaiting_command_code": None,
         "next_timeline_seq_no": None,
     }

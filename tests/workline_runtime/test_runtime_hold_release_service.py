@@ -191,8 +191,7 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
         command_code="CMD-HOLD-CONTINUE-REPLAY",
         device_id=cast("int", device.id),
         workline_id=cast("int", workline.id),
-        session_id=session.session_code,
-        session_id_int=cast("int", session.id),
+        correlation_id=session.trace_id,
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
         task_type="PICK_AND_PUT",
@@ -230,7 +229,7 @@ async def test_continue_for_command_backed_hold_replays_command_result_instead_o
     assert isinstance(result["created_inbox_id"], int)
     assert session.status == SessionStatus.WAITING_DEVICE_RESULT
     assert session.ended_at is None
-    assert session.awaiting_command_id == command.id
+    assert session.awaiting_device_command_code == command.command_code
     assert session.current_wait_type == "COMMAND_RESULT"
     assert session.reconciliation_state == RuntimeReconciliationState.RESOLVED
     assert session.reconciliation_resolution == RuntimeReconciliationResolution.COMPLETED
@@ -289,8 +288,7 @@ async def test_continue_for_command_backed_hold_uses_command_params_when_result_
         command_code="CMD-HOLD-CONTINUE-PARAMS",
         device_id=cast("int", device.id),
         workline_id=cast("int", workline.id),
-        session_id=session.session_code,
-        session_id_int=cast("int", session.id),
+        correlation_id=session.session_code,
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
         task_type="MOVE_FORWARD",
@@ -375,8 +373,7 @@ async def test_continue_for_rough_sorter_pick_and_put_requires_valid_measurement
         command_code="CMD-HOLD-ROUGH-PICK-NO-MEASUREMENT",
         device_id=cast("int", device.id),
         workline_id=cast("int", workline.id),
-        session_id=session.session_code,
-        session_id_int=cast("int", session.id),
+        correlation_id=session.session_code,
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
         task_type="PICK_AND_PUT",
@@ -460,8 +457,7 @@ async def test_continue_for_command_hold_uses_late_callback_payload_when_result_
         command_code=command_code,
         device_id=cast("int", device.id),
         workline_id=cast("int", workline.id),
-        session_id=session.session_code,
-        session_id_int=cast("int", session.id),
+        correlation_id=session.session_code,
         plugin_key=workline.plugin_key,
         contract_version=workline.contract_version,
         task_type="PICK_AND_PUT",

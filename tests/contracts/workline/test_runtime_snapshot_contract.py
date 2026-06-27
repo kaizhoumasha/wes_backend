@@ -1,22 +1,87 @@
-"""BC-02 Runtime Snapshot 行为契约（strict xfail）。
+"""BC-02 Runtime Snapshot 行为契约。
 
 验收: active session 可查询 state、timeline、inbox、hold、pending intent、correlation。
-Phase 0 缺 Phase 1 ExecutionSession/RuntimeInbox/RuntimeIntentLog schema,
-用 strict xfail 标明解除条件。Phase 1 CEO-007 完成后解除。
 """
 
 from __future__ import annotations
 
-import pytest
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.runtime_hold import RuntimeHold
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
+from src.app.runtime.orchestration.services.runtime_snapshot_assembler import (
+    RuntimeSnapshotInput,
+    runtime_snapshot_assembler,
+)
 
 
-@pytest.mark.xfail(strict=True, reason="Phase 1 CEO-007 ExecutionSession/RuntimeInbox schema 未实现")
 def test_runtime_snapshot_exposes_state_timeline_inbox_hold_intent_correlation():
-    """目标态: snapshot 必须含 state/timeline/inbox/hold/pending intent/correlation。
+    """目标态: snapshot 必须含 state/timeline/inbox/hold/pending intent/correlation。"""
+    session = ExecutionSession(id=101, workline_id=7, manifest_version="manifest-v1", state="RUNNING")
+    correlation = ExecutionCorrelation(
+        id=201,
+        correlation_id="corr-001",
+        execution_session_id=101,
+        trace_id="trace-001",
+        source_event_id="evt-001",
+        business_owner_key="workline:7",
+    )
+    inbox = RuntimeInbox(
+        id=301,
+        execution_session_id=101,
+        correlation_id="corr-001",
+        provider_code="WMS",
+        event_type="BIN_ARRIVED",
+        source_event_id="evt-001",
+        status="RECEIVED",
+    )
+    hold = RuntimeHold(
+        id=401,
+        execution_session_id=101,
+        correlation_id="corr-001",
+        reason="等待扫码",
+        hold_type="RESOURCE_WAIT",
+        scope_type="WORK_ITEM",
+        scope_key="wi-001",
+    )
+    pending_intent = RuntimeIntentLog(
+        id=501,
+        execution_session_id=101,
+        correlation_id="corr-001",
+        provider_code="ECS",
+        target_domain="device",
+        target_action="dispatch_command",
+        idempotency_key="WES-DEVICE-001",
+        request_hash="sha256-001",
+        dispatch_status="PENDING",
+    )
+    timeline = RuntimeTimeline(
+        id=601,
+        execution_session_id=101,
+        trace_id="trace-001",
+        correlation_id="corr-001",
+        event_type="INBOX_RECEIVED",
+        occurred_at=1700000000000,
+    )
 
-    Phase 0 占位断言; Phase 1 接入真实 ExecutionSession 后补全字段断言。
-    """
-    # 占位: Phase 1 实现后替换为真实 snapshot assembler 断言
-    snapshot = {}  # type: ignore[var-annotated]
-    required_fields = {"state", "timeline", "inbox", "hold", "pending_intent", "correlation"}
-    assert required_fields.issubset(snapshot.keys())
+    snapshot = runtime_snapshot_assembler.assemble(
+        RuntimeSnapshotInput(
+            session=session,
+            correlation=correlation,
+            timeline=(timeline,),
+            inbox=(inbox,),
+            hold=(hold,),
+            pending_intent=(pending_intent,),
+        )
+    )
+
+    assert set(snapshot) == {"state", "timeline", "inbox", "hold", "pending_intent", "correlation"}
+    assert snapshot["state"]["state"] == "RUNNING"
+    assert snapshot["state"]["manifest_version"] == "manifest-v1"
+    assert snapshot["timeline"][0]["event_type"] == "INBOX_RECEIVED"
+    assert snapshot["inbox"][0]["status"] == "RECEIVED"
+    assert snapshot["hold"][0]["scope_key"] == "wi-001"
+    assert snapshot["pending_intent"][0]["dispatch_status"] == "PENDING"
+    assert snapshot["correlation"]["correlation_id"] == "corr-001"

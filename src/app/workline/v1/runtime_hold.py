@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, Query, status
 from fastapi.responses import JSONResponse
 
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
@@ -95,11 +95,11 @@ async def get_runtime_hold_ng_reasons(
 )
 async def list_runtime_holds(
     db: AsyncSessionDep,
-    workline_id: int | None = None,
-    session_id: int | None = None,
-    status: str | None = None,
-    active_only: bool = True,
-    limit: int = 100,
+    workline_id: Annotated[int | None, Query(ge=1, description="按工作线过滤")] = None,
+    session_id: Annotated[int | None, Query(ge=1, description="按 session 过滤")] = None,
+    status: Annotated[str | None, Query(description="按 hold 状态过滤 (OPEN/RESOLVED)")] = None,
+    active_only: Annotated[bool, Query(description="默认仅返回 active hold")] = True,
+    limit: Annotated[int, Query(ge=1, le=500, description="最多返回条数")] = 100,
 ) -> ResponseSchemaModel[list[RuntimeHoldSummary]]:
     items = await runtime_hold_query_service.list_holds(
         db,
@@ -144,9 +144,19 @@ async def resolve_runtime_hold(
     payload: ResolveRuntimeHoldRequest,
     db: AsyncSessionDep,
     current_user_id: Annotated[int, Depends(require_auth)],
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            description="客户端重试去重 key；用于 outbox 写入幂等保护",
+            max_length=160,
+        ),
+    ] = None,
 ) -> ResponseSchemaModel[ResolveRuntimeHoldResponse] | JSONResponse:
     try:
-        result = await runtime_hold_release_service.resolve_hold(db, hold_id, payload, current_user_id)
+        result = await runtime_hold_release_service.resolve_hold(
+            db, hold_id, payload, current_user_id, idempotency_key=idempotency_key
+        )
         async with WorklineUnitOfWork(db=db) as uow:
             await uow.commit()
         await publish_deferred_sse_events(db)
@@ -175,10 +185,10 @@ async def resolve_runtime_hold(
 )
 async def list_ng_return_items(
     db: AsyncSessionDep,
-    runtime_hold_id: int | None = None,
-    status: str | None = None,
-    material_identity_key: str | None = None,
-    limit: int = 100,
+    runtime_hold_id: Annotated[int | None, Query(ge=1, description="按 runtime hold 过滤")] = None,
+    status: Annotated[str | None, Query(description="按 NG 返回状态过滤")] = None,
+    material_identity_key: Annotated[str | None, Query(max_length=200, description="按物料幂等键过滤")] = None,
+    limit: Annotated[int, Query(ge=1, le=500, description="最多返回条数")] = 100,
 ) -> ResponseSchemaModel[list[NgReturnItemResponse]]:
     items = await runtime_hold_query_service.list_ng_return_items(
         db,

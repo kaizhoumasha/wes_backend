@@ -17,7 +17,7 @@ def _session(**overrides):
         "waiting_since": timezone.now_for_db(),
         "deadline_at": timezone.now_for_db(),
         "current_wait_timeout_seconds": 30,
-        "awaiting_command_id": 11,
+        "awaiting_device_command_code": "CMD-00011",
         "ended_at": None,
         "failure_domain": None,
         "failure_code": None,
@@ -40,7 +40,7 @@ def test_complete_clears_wait_fields_and_sets_end_time() -> None:
     assert session.waiting_since is None
     assert session.deadline_at is None
     assert session.current_wait_timeout_seconds is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
 
 
 def test_fail_records_failure_and_clears_wait_fields() -> None:
@@ -62,7 +62,7 @@ def test_fail_records_failure_and_clears_wait_fields() -> None:
     assert session.failure_code == "TIMEOUT"
     assert session.failure_message == "Callback timed out"
     assert session.current_wait_type is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
 
 
 def test_failed_resolution_preserves_existing_failure_fields() -> None:
@@ -80,7 +80,7 @@ def test_failed_resolution_preserves_existing_failure_fields() -> None:
     assert session.status == SessionStatus.FAILED
     assert session.ended_at == occurred_at
     assert session.current_wait_type is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert session.failure_domain == "BLOCK"
     assert session.failure_code == "SCAN_NG"
     assert session.failure_message == "原始阻塞原因"
@@ -95,7 +95,7 @@ def test_failed_resolution_is_idempotent_for_already_failed_session() -> None:
         failure_code="WORKLINE_ESTOPPED",
         failure_message="WorkLine 急停冻结",
         current_wait_type="MANUAL",
-        awaiting_command_id=123,
+        awaiting_device_command_code="CMD-00123",
     )
 
     service.resolve(session, resolution=SessionStatus.FAILED, occurred_at=occurred_at)
@@ -103,7 +103,7 @@ def test_failed_resolution_is_idempotent_for_already_failed_session() -> None:
     assert session.status == SessionStatus.FAILED
     assert session.ended_at == occurred_at
     assert session.current_wait_type is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert session.failure_domain == "SAFETY"
     assert session.failure_code == "WORKLINE_ESTOPPED"
     assert session.failure_message == "WorkLine 急停冻结"
@@ -112,20 +112,20 @@ def test_failed_resolution_is_idempotent_for_already_failed_session() -> None:
 def test_start_command_result_wait_keeps_deadline_empty_until_ack() -> None:
     service = WorklineSessionLifecycleService()
     occurred_at = timezone.now_for_db()
-    session = _session(status=SessionStatus.RUNNING, current_wait_type=None, awaiting_command_id=None)
+    session = _session(status=SessionStatus.RUNNING, current_wait_type=None, awaiting_device_command_code=None)
 
     service.start_wait(
         session,
         wait_type="COMMAND_RESULT",
         occurred_at=occurred_at,
-        awaiting_command_id=42,
+        awaiting_device_command_code="CMD-00042",
         deadline_seconds=60,
     )
 
     assert session.status == SessionStatus.WAITING_DEVICE_RESULT
     assert session.current_wait_type == "COMMAND_RESULT"
     assert session.waiting_since == occurred_at
-    assert session.awaiting_command_id == 42
+    assert session.awaiting_device_command_code == "CMD-00042"
     assert session.current_wait_timeout_seconds == 60
     assert session.deadline_at is None
     assert session.ended_at is None

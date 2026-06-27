@@ -23,7 +23,10 @@ from src.app.callback.models import (
 from src.app.callback.services.callback_log_service import callback_log_service
 from src.app.callback.services.callback_orchestration_service import callback_orchestration_service
 from src.app.device.models import parse_device_capabilities
-from src.app.device.models.command import CommandCallbackResult
+from src.app.device.models.command import (
+    _FORBIDDEN_PARAM_KEYS,
+    CommandCallbackResult,
+)
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
@@ -63,6 +66,92 @@ _EVENT_CALLBACK_TOP_LEVEL_FIELDS = (
 _RESULT_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
     {"command_code", "device_code", "result", "finish_time", "data", "error_detail"} | _TRACE_TOP_LEVEL_FIELDS
 )
+# 外部回调顶层白名单 (H4 边界一致): 不允许 provider_code/source_event_id
+# 等业务追溯字段直接放顶层, 必须放入 data 内。Phase 0 WMS 协议 source_event_id
+# 字段已被 wms_execution_callback_normalizer 内化到 callback_type 解析,
+# 不需要作为顶层持久化字段。
+_EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "callback_type",
+        "data",
+        "trace_id",
+        "event_id",
+        "causation_id",
+        # 兼容 WMS/RCS 协议 (WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS) 顶层元数据
+        "source_system",
+        "source_event_id",
+        "source_version",
+        "occurred_at",
+        "request_id",
+        "timestamp",
+        "signature",
+        # WMS/RCS 协议业务追溯与状态字段 (合法顶层, 不视为业务污染):
+        # - dispatch_key / status: WMS_RCS_RACK_STATUS_REQUIRED_CALLBACK_TYPES 协议要求
+        # - exchange_* / rack_release_id / wms_rcs_task_id:
+        #   WMS_RCS_FULL_BOX_EXCHANGE_REQUIRED_FIELDS 协议要求
+        # - active_bin_rack: WMS_RACK_ARRIVED 协议要求 (料架到位 payload)
+        "dispatch_key",
+        "status",
+        "exchange_request_code",
+        "rack_release_id",
+        "wms_rcs_task_id",
+        "exchange_status",
+        "active_bin_rack",
+        # AGV/外部执行协议 (AGV_TASK_RESULT) 顶层追溯字段:
+        # - command_code / result / finish_time / device_code:
+        #   与 _RESULT_CALLBACK_TOP_LEVEL_FIELDS 一致的执行回执结构
+        "command_code",
+        "result",
+        "finish_time",
+        "device_code",
+        # WMS/RCS 任务失败 payload (RCS_RACK_TASK_RESULT 等) 顶层字段:
+        # - task_status: WMS_RCS_EXECUTION_STATUS_ALIASES 协议别名
+        # - reason_code / reason_message: 任务失败结构化原因 (用于诊断与回放)
+        "task_status",
+        "reason_code",
+        "reason_message",
+        # WMS 货架操作协议 (rack_operation) 顶层业务字段, 由 wms_mock 真实
+        # 集成测试覆盖, Phase 1 H4 边界设计时未枚举全, 现补齐。这些字段是 WMS
+        # 协议的合法顶层业务元数据, 不是 H4 关注的安全注入面; H4 子层守卫
+        # (_FORBIDDEN_PARAM_KEYS 递归扫描 callback.data) 仍阻断 plc_address /
+        # coordinate 等设备控制字段, 顶层白名单扩展不削弱 H4 安全语义。
+        # - actions / sequence_no / source / station / target: 操作步骤与角色
+        # - bin_mounts / material: 料箱与物料的子结构 (顶层是 schema 入口)
+        # - operation_key / operation_type: WMS 操作标识 (派发幂等键的来源)
+        # - position_code / source_position_code / target_position_code /
+        #   target_position_role: 工位与角色
+        # - rack_code / rack_kind: 货架标识与类型
+        # - task_type: WMS 任务类型 (与 device_commands.task_type 区分)
+        # - workline_code: 工作线标识
+        "actions",
+        "bin_mounts",
+        "material",
+        "operation_key",
+        "operation_type",
+        "position_code",
+        "rack_code",
+        "rack_kind",
+        "sequence_no",
+        "source",
+        "source_position_code",
+        "station",
+        "target",
+        "target_position_code",
+        "target_position_role",
+        "task_type",
+        "workline_code",
+        # WMS 失败 payload 顶层错误字段 (与 reason_code/reason_message 配对):
+        # - error_code / error_message: build_rack_operation_failure_payload
+        #   返回的诊断结构, 真实 WMS mock 集成测试必需。
+        "error_code",
+        "error_message",
+    }
+)
+# H4 拒绝的机器可读原因码: client 可通过 reason_code 字段区分
+# 顶层字段违规 vs 其他 schema 校验失败 (用于埋点和告警)。
+_CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED_REASON_CODE = "CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED"
+# H4 子层守卫: callback.data 触发 _FORBIDDEN_PARAM_KEYS 时的原因码。
+_CALLBACK_DATA_FORBIDDEN_FIELD_REASON_CODE = "CALLBACK_DATA_FORBIDDEN_FIELD"
 
 _CALLBACK_AUDIT_TITLES = {
     "result": "设备回调结果",
@@ -151,6 +240,36 @@ def _validate_top_level_fields(payload: JsonDict, allowed_fields: frozenset[str]
             f"{callback_type} 顶层字段不符合协议: 不允许 {unexpected_text}; "
             f"允许字段: {allowed_text}; 业务字段必须放在 data 中"
         )
+
+
+def _collect_forbidden_param_keys(
+    data: Any,
+    *,
+    forbidden: frozenset[str] = frozenset(_FORBIDDEN_PARAM_KEYS),
+    path: str = "data",
+) -> list[tuple[str, str]]:
+    """递归扫描 ``data`` 字典, 收集所有触犯 ``_FORBIDDEN_PARAM_KEYS`` 的路径。
+
+    H4 子层守卫: 阻断 attacker 通过 callback.data 注入 plc_address / coordinate
+    等直连设备的控制字段, 与 CommandBase.params 入站校验保持一致。
+    返回 ``(dotted_path, key)`` 列表; 空列表表示通过。
+    """
+
+    hits: list[tuple[str, str]] = []
+    if isinstance(data, dict):
+        for raw_key, raw_value in data.items():
+            if not isinstance(raw_key, str):
+                hits.append((path, "<non-str-key>"))
+                continue
+            if raw_key.lower() in forbidden:
+                hits.append((f"{path}.{raw_key}", raw_key))
+            hits.extend(_collect_forbidden_param_keys(raw_value, forbidden=forbidden, path=f"{path}.{raw_key}"))
+        return hits
+    if isinstance(data, list):
+        for index, item in enumerate(data):
+            hits.extend(_collect_forbidden_param_keys(item, forbidden=forbidden, path=f"{path}[{index}]"))
+        return hits
+    return []
 
 
 def _response_time_ms(start_time: float) -> int:
@@ -282,13 +401,18 @@ def _validate_wms_rcs_execution_callback_payload(payload: JsonDict, callback_typ
     wms_execution_callback_normalizer.validate(payload, callback_type)
 
 
-def _build_contract_fail(message: str) -> CallbackRejectedIngressResponse:
+def _build_contract_fail(
+    message: str,
+    *,
+    reason_code: str | None = None,
+    diagnostic: JsonDict | None = None,
+) -> CallbackRejectedIngressResponse:
     return cast(
         "CallbackRejectedIngressResponse",
         response_builder.fail(
             code=ClientErrorCode.VALIDATION_ERROR,
             message=message,
-            data=build_callback_rejected_response(),
+            data=build_callback_rejected_response(reason_code=reason_code, diagnostic=diagnostic),
         ),
     )
 
@@ -474,6 +598,8 @@ async def _handle_validation_failure(
     trace_id: str | None = None,
     event_id: str | None = None,
     causation_id: str | None = None,
+    reason_code: str | None = None,
+    diagnostic: JsonDict | None = None,
 ) -> CallbackRejectedIngressResponse:
     await _log_callback_outcome(
         db,
@@ -494,7 +620,7 @@ async def _handle_validation_failure(
         ingress_outcome=_INGRESS_OUTCOME_REJECTED,
         failure_stage=failure_stage,
     )
-    return _build_contract_fail(message)
+    return _build_contract_fail(message, reason_code=reason_code, diagnostic=diagnostic)
 
 
 async def _handle_result_validation_failure(
@@ -509,6 +635,8 @@ async def _handle_result_validation_failure(
     trace_id: str | None = None,
     event_id: str | None = None,
     causation_id: str | None = None,
+    reason_code: str | None = None,
+    diagnostic: JsonDict | None = None,
 ) -> CallbackResultIngressResponse:
     return cast(
         "CallbackResultIngressResponse",
@@ -524,6 +652,8 @@ async def _handle_result_validation_failure(
             trace_id=trace_id,
             event_id=event_id,
             causation_id=causation_id,
+            reason_code=reason_code,
+            diagnostic=diagnostic,
         ),
     )
 
@@ -537,6 +667,8 @@ async def _handle_event_validation_failure(
     message: str,
     response_time_ms: int = 0,
     failure_stage: str,
+    reason_code: str | None = None,
+    diagnostic: JsonDict | None = None,
 ) -> CallbackEventIngressResponse:
     return cast(
         "CallbackEventIngressResponse",
@@ -549,6 +681,8 @@ async def _handle_event_validation_failure(
             message=message,
             response_time_ms=response_time_ms,
             failure_stage=failure_stage,
+            reason_code=reason_code,
+            diagnostic=diagnostic,
         ),
     )
 
@@ -670,6 +804,8 @@ async def _handle_external_validation_failure(
     message: str,
     response_time_ms: int = 0,
     failure_stage: str,
+    reason_code: str | None = None,
+    diagnostic: JsonDict | None = None,
 ) -> CallbackExternalIngressResponse:
     return cast(
         "CallbackExternalIngressResponse",
@@ -682,6 +818,8 @@ async def _handle_external_validation_failure(
             message=message,
             response_time_ms=response_time_ms,
             failure_stage=failure_stage,
+            reason_code=reason_code,
+            diagnostic=diagnostic,
         ),
     )
 
@@ -763,6 +901,12 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
         command_code = _require_first_str(callback_data, _COMMAND_CODE_ALIASES, "command_code")
     except ValueError as exc:
         logger.error(f"指令结果回调最小包络校验失败: {exc}")
+        # 区分 H4 顶层字段违规 (业务追溯字段混入顶层) 与其它 schema 校验失败,
+        # client 可通过 reason_code 做埋点和告警。
+        unexpected_top_level = sorted(
+            str(field_name) for field_name in callback_data if field_name not in _RESULT_CALLBACK_TOP_LEVEL_FIELDS
+        )
+        is_h4_top_level = bool(unexpected_top_level)
         await _record_callback_diagnostic(
             db,
             error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
@@ -780,6 +924,8 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             message=f"结果回调最小包络校验失败: {exc}",
             response_time_ms=_response_time_ms(start_time),
             failure_stage=_FAILURE_STAGE_ENVELOPE_VALIDATE,
+            reason_code=_CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED_REASON_CODE if is_h4_top_level else None,
+            diagnostic={"unexpected_fields": unexpected_top_level} if is_h4_top_level else None,
         )
 
     logger.info(f"收到指令结果回调: {command_code} (request_id={request_id})")
@@ -909,6 +1055,41 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
 
         # 直接用原始 payload 验证（Pydantic 自动处理别名）
         callback = CommandCallbackResult.model_validate(callback_data)
+        # H4 子层守卫: callback.data 禁止包含 plc_address / coordinate 等
+        # 直连设备控制字段, 与 CommandBase.params 入站校验保持一致。
+        forbidden_hits = _collect_forbidden_param_keys(callback.data)
+        if forbidden_hits:
+            forbidden_paths = [path for path, _ in forbidden_hits]
+            message = f"指令结果回调 data 包含禁止字段: {', '.join(forbidden_paths)}"
+            logger.error(f"{message} (command_code={callback.command_code})")
+            await _record_callback_diagnostic(
+                db,
+                error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
+                message=message,
+                request_id=request_id,
+                callback_type="result",
+                payload=callback_data,
+                device=device,
+                workline=workline,
+                command_code=callback.command_code,
+                trace_id=resolved_trace_id,
+                event_id=_resolve_callback_event_id(callback_data),
+                causation_id=_resolve_callback_causation_id(callback_data),
+            )
+            return await _handle_result_validation_failure(
+                db,
+                request,
+                request_id=request_id,
+                callback_data=callback_data,
+                message=message,
+                response_time_ms=_response_time_ms(start_time),
+                failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+                reason_code=_CALLBACK_DATA_FORBIDDEN_FIELD_REASON_CODE,
+                diagnostic={"forbidden_paths": forbidden_paths},
+                trace_id=resolved_trace_id,
+                event_id=_resolve_callback_event_id(callback_data),
+                causation_id=_resolve_callback_causation_id(callback_data),
+            )
         if not capabilities.allows_result_callback():
             message = f"设备 {device_code} 未声明支持结果回调"
             await _record_callback_diagnostic(
@@ -1093,6 +1274,12 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
         _validate_top_level_fields(event_data, _EVENT_CALLBACK_TOP_LEVEL_FIELDS, "event")
         normalized_event_request = CallbackEventRequest.model_validate(event_data)
     except (ValidationError, ValueError) as exc:
+        # 区分 H4 顶层字段违规 (业务追溯字段混入顶层) 与其它 schema 校验失败,
+        # client 可通过 reason_code 做埋点和告警。
+        unexpected_top_level = sorted(
+            str(field_name) for field_name in event_data if field_name not in _EVENT_CALLBACK_TOP_LEVEL_FIELDS
+        )
+        is_h4_top_level = bool(unexpected_top_level) and isinstance(exc, ValueError)
         detail = _summarize_validation_error(exc) if isinstance(exc, ValidationError) else str(exc)
         message = f"事件上报最小包络校验失败: {detail}"
         logger.error(message)
@@ -1113,10 +1300,40 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
                 message=message,
                 response_time_ms=_response_time_ms(start_time),
                 failure_stage=_FAILURE_STAGE_ENVELOPE_VALIDATE,
+                reason_code=_CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED_REASON_CODE if is_h4_top_level else None,
+                diagnostic={"unexpected_fields": unexpected_top_level} if is_h4_top_level else None,
             )
         )
 
     device_code = normalized_event_request.device_code
+    # H4 子层守卫: event.data 同样禁止 plc_address / coordinate 等
+    # 直连设备控制字段。
+    event_forbidden_hits = _collect_forbidden_param_keys(normalized_event_request.data)
+    if event_forbidden_hits:
+        forbidden_paths = [path for path, _ in event_forbidden_hits]
+        message = f"设备事件上报 data 包含禁止字段: {', '.join(forbidden_paths)}"
+        logger.error(f"{message} (device_code={device_code})")
+        await _record_callback_diagnostic(
+            db,
+            error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
+            message=message,
+            request_id=request_id,
+            callback_type="event",
+            payload=event_data,
+        )
+        return CallbackEventIngressDecision(
+            body=await _handle_event_validation_failure(
+                db,
+                request,
+                request_id=request_id,
+                event_data=event_data,
+                message=message,
+                response_time_ms=_response_time_ms(start_time),
+                failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+                reason_code=_CALLBACK_DATA_FORBIDDEN_FIELD_REASON_CODE,
+                diagnostic={"forbidden_paths": forbidden_paths},
+            )
+        )
     logger.info(f"收到设备事件上报: {device_code} (request_id={request_id})")
 
     # 设备/工作线上下文和能力校验属于“是否可路由入站”的入口职责。
@@ -1374,6 +1591,27 @@ async def handle_callback_external(
             failure_stage=_FAILURE_STAGE_REQUEST_PARSE,
         )
 
+    # H4 边界: 业务追溯字段 (provider_code/source_event_id 等) 必须放入 data,
+    # 防止外部系统通过顶层字段污染 RuntimeInbox 落库契约。
+    try:
+        _validate_top_level_fields(callback_data, _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS, "external")
+    except ValueError as exc:
+        unexpected_fields = sorted(
+            str(field_name) for field_name in callback_data if field_name not in _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS
+        )
+        logger.error(f"外部回调 H4 边界违规: {exc}")
+        return await _handle_external_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=str(exc),
+            response_time_ms=_response_time_ms(start_time),
+            failure_stage=_FAILURE_STAGE_ENVELOPE_VALIDATE,
+            reason_code=_CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED_REASON_CODE,
+            diagnostic={"unexpected_fields": unexpected_fields},
+        )
+
     try:
         normalized_payload = _normalize_external_callback_payload(callback_data)
         callback_type = cast("str", normalized_payload["callback_type"])
@@ -1388,6 +1626,25 @@ async def handle_callback_external(
             message=f"外部回调最小包络校验失败: {exc}",
             response_time_ms=_response_time_ms(start_time),
             failure_stage=_FAILURE_STAGE_ENVELOPE_VALIDATE,
+        )
+
+    # H4 子层守卫: 外部回调 data 同样禁止 plc_address / coordinate 等
+    # 直连设备控制字段, 防止外部系统间接控制设备。
+    external_forbidden_hits = _collect_forbidden_param_keys(callback_data.get("data"))
+    if external_forbidden_hits:
+        forbidden_paths = [path for path, _ in external_forbidden_hits]
+        message = f"外部回调 data 包含禁止字段: {', '.join(forbidden_paths)}"
+        logger.error(f"{message} (callback_type={callback_type})")
+        return await _handle_external_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=message,
+            response_time_ms=_response_time_ms(start_time),
+            failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+            reason_code=_CALLBACK_DATA_FORBIDDEN_FIELD_REASON_CODE,
+            diagnostic={"forbidden_paths": forbidden_paths},
         )
 
     logger.info(f"收到外部系统回调: {callback_type} (request_id={request_id})")

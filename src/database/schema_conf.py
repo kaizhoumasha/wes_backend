@@ -16,17 +16,21 @@ class SchemaType(str, Enum):
     # 业务相关
     BIZ = "wes_biz"  # 通用业务表
 
+    # 运行时编排相关
+    RUNTIME = "wes_runtime"  # Runtime/orchestration 会话、correlation、inbox、timeline 等
+
 
 # Schema 描述信息
 SCHEMA_DESCRIPTIONS = {
     SchemaType.SYS: "系统管理相关表 - 配置、权限、角色、菜单等",
     SchemaType.BIZ: "业务相关表 - 通用业务数据",
+    SchemaType.RUNTIME: "运行时编排相关表 - session、correlation、inbox、timeline 等",
 }
 
 
 # 所有 schema 的搜索路径（按优先级排序）
 # 注意：PostgreSQL 会按照列表顺序搜索 schema
-SCHEMA_SEARCH_PATH = [SchemaType.SYS.value, SchemaType.BIZ.value]
+SCHEMA_SEARCH_PATH = [SchemaType.SYS.value, SchemaType.BIZ.value, SchemaType.RUNTIME.value]
 
 
 def get_all_schemas() -> list[str]:

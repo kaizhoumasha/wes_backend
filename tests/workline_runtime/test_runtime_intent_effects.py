@@ -59,7 +59,7 @@ def _session(**overrides: Any) -> SimpleNamespace:
         "waiting_since": datetime(2026, 1, 1, 0, 0, 0),
         "deadline_at": datetime(2026, 1, 1, 0, 1, 0),
         "current_wait_timeout_seconds": 60,
-        "awaiting_command_id": 99,
+        "awaiting_device_command_code": "CMD-AWAITING-099",
         "ended_at": None,
         "failure_domain": None,
         "failure_code": None,
@@ -84,7 +84,7 @@ def _ctx(orch_result: OrchestratorResult, *, session: Any | None = None, db: Any
         "trace": TraceContext.from_runtime(session=resolved_session, trace_id="trace-runtime"),
         "session_ctx": dict(getattr(resolved_session, "context_json", {}) or {}),
         "now": datetime(2026, 1, 1, 0, 2, 0),
-        "awaiting_command_id": None,
+        "awaiting_device_command_code": None,
         "awaiting_command_code": None,
         "next_timeline_seq_no": None,
     }
@@ -301,7 +301,7 @@ async def test_empty_intents_complete_new_event_session_as_noop(monkeypatch: pyt
     session = _session(
         status="NEW",
         current_wait_type=None,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         waiting_since=None,
         deadline_at=None,
         current_wait_timeout_seconds=None,
@@ -324,7 +324,7 @@ async def test_empty_intents_complete_new_event_session_as_noop(monkeypatch: pyt
     assert session.status == "COMPLETED"
     assert session.ended_at == ctx["now"]
     assert session.current_wait_type is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert captured[0]["from_status"] == "NEW"
     assert captured[0]["to_status"] == "COMPLETED"
     assert captured[0]["payload"]["completion_reason"] == "NO_RUNTIME_INTENT"
@@ -1266,7 +1266,7 @@ async def test_update_context_and_complete(monkeypatch: pytest.MonkeyPatch) -> N
     assert session.context_json == {"pkg_id": "PKG-001", "scan_ok": True, "bin_code": "BIN-001"}
     assert session.status == "COMPLETED"
     assert session.current_wait_type is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert session.ended_at == ctx["now"]
     record_ng_flow.assert_awaited_once()
     emit_timeline.assert_awaited_once()
@@ -1574,7 +1574,7 @@ async def test_source_pick_resource_fact_records_handoff_success_with_command_ev
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = _session(
-        awaiting_command_id=88,
+        awaiting_device_command_code=88,
         context_json={
             "sorting": {
                 "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
@@ -1652,7 +1652,7 @@ async def test_source_pick_resource_fact_without_handoff_evidence_does_not_recor
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = _session(
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         context_json={
             "sorting": {
                 "context_schema_version": SORTING_CONTEXT_SCHEMA_VERSION,
@@ -2659,7 +2659,7 @@ async def test_resource_reservation_intent_is_applied_before_command(monkeypatch
     target = SimpleNamespace(id=2, device_code="OUT01", device_role="OUTPUT_ARM", upstream_device_id=1)
     created_payloads: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
     ctx["devices_by_role"] = {"CONVEYOR": [source], "OUTPUT_ARM": [target]}
@@ -2909,7 +2909,7 @@ async def test_block_intent_holds_session_without_command_creation(monkeypatch: 
 
     assert session.status == "MANUAL_HOLD"
     assert session.current_wait_type is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert session.failure_domain == "MATERIAL"
     assert session.failure_code == "MATERIAL_BLOCKED"
     assert db.add.call_count == 0
@@ -2933,7 +2933,7 @@ async def test_command_intent_creates_command_outbox_and_wait(monkeypatch: pytes
     created_payloads: list[dict[str, Any]] = []
     timelines: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
     ctx["devices_by_role"] = {"INPUT_ARM": [source], "CONVEYOR": [target]}
@@ -2975,14 +2975,57 @@ async def test_command_intent_creates_command_outbox_and_wait(monkeypatch: pytes
     assert created_payloads[0]["device_id"] == 2
     assert created_payloads[0]["command_code"] == "CMD-20260101-S123-MOVE_FORWARD-ABCDEF12"
     assert created_payloads[0]["task_type"] == "MOVE_FORWARD"
+    assert created_payloads[0]["correlation_id"] is None
     assert generated_command_codes == [("MOVE_FORWARD", 123)]
     assert session.status == "WAITING_DEVICE_RESULT"
-    assert session.awaiting_command_id == 88
+    assert session.awaiting_device_command_code == "CMD-TEST-001"
     db.execute.assert_awaited_once()
     assert db.add.call_count == 1
     assert [timeline["related_command_id"] for timeline in timelines] == [88, 88]
     assert timelines[0]["payload"]["task_type"] == "MOVE_FORWARD"
     assert "command_type" not in timelines[0]["payload"]
+
+
+@pytest.mark.asyncio
+async def test_command_intent_uses_explicit_execution_correlation_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = SimpleNamespace(id=1, device_code="ARM01", device_role="INPUT_ARM")
+    target = SimpleNamespace(id=2, device_code="CONV01", device_role="CONVEYOR", upstream_device_id=1)
+    created_payloads: list[dict[str, Any]] = []
+    db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
+    ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
+    ctx["correlation_id"] = "corr-runtime-001"
+    ctx["source_device"] = source
+    ctx["devices_by_role"] = {"INPUT_ARM": [source], "CONVEYOR": [target]}
+
+    async def fake_create(_repo, _db, payload):
+        created_payloads.append(payload)
+        return SimpleNamespace(
+            id=88,
+            command_code="CMD-TEST-001",
+            task_type="MOVE_FORWARD",
+            priority=5,
+            timeout_ms=30000,
+            params={},
+        )
+
+    monkeypatch.setattr(workline_effects, "_enforce_device_command_governance", lambda *_, **__: None)
+    monkeypatch.setattr("src.app.device.repositories.command_repository.DeviceCommandRepository.create", fake_create)
+    monkeypatch.setattr(workline_effects, "_emit_timeline", AsyncMock())
+
+    await RuntimeIntentEffectApplier().apply(
+        ctx,
+        [
+            RuntimeIntent.command(
+                action="MOVE_FORWARD",
+                payload={},
+                destination=Destination.role("CONVEYOR"),
+                timeout_seconds=300,
+            )
+        ],
+    )
+
+    assert created_payloads[0]["correlation_id"] == "corr-runtime-001"
 
 
 @pytest.mark.asyncio
@@ -2998,7 +3041,7 @@ async def test_command_intent_without_destination_uses_device_role_as_target(
     )
     created_payloads: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
     ctx["devices_by_role"] = {"ROUGH_SORTER_INPUT_ARM": [source], "ROUGH_SORTER_CONVEYOR": [target]}
@@ -3052,7 +3095,7 @@ async def test_command_intent_uses_payload_timeout_when_intent_timeout_is_missin
     session = _session(
         status="NEW",
         current_wait_type=None,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         waiting_since=None,
         deadline_at=None,
         current_wait_timeout_seconds=None,
@@ -3093,7 +3136,7 @@ async def test_command_intent_uses_payload_timeout_when_intent_timeout_is_missin
     assert created_payloads[0]["params"] == {"business_key": "PKG-001"}
     assert session.status == "WAITING_DEVICE_RESULT"
     assert session.current_wait_type == "COMMAND_RESULT"
-    assert session.awaiting_command_id == 88
+    assert session.awaiting_device_command_code == "CMD-NO-TIMEOUT"
     assert session.waiting_since == ctx["now"]
     assert session.current_wait_timeout_seconds == 180
     assert session.deadline_at is None
@@ -3109,7 +3152,7 @@ async def test_external_request_intent_creates_external_outbox_and_immediate_wai
 ) -> None:
     timelines: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
 
     async def capture_timeline(_ctx: dict[str, Any], **kwargs: Any) -> None:
@@ -3138,7 +3181,7 @@ async def test_external_request_intent_creates_external_outbox_and_immediate_wai
     assert outbox.payload_json == {"rack_release_id": "release-001"}
     assert session.status == "WAITING_EXTERNAL"
     assert session.current_wait_type == "EXTERNAL_HTTP"
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert session.current_wait_timeout_seconds == 1800
     assert session.deadline_at == ctx["now"] + timedelta(seconds=1800)
     assert [timeline["action_type"].value for timeline in timelines] == ["EXTERNAL_CALL_STARTED", "WAIT_STARTED"]
@@ -3152,7 +3195,7 @@ async def test_rack_operation_request_creates_operation_tasks_and_waits_by_opera
     timelines: list[dict[str, Any]] = []
     operation_calls: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["workline"].line_code = "WL-SMT-01"
 
@@ -3235,7 +3278,7 @@ async def test_rack_operation_request_creates_operation_tasks_and_waits_by_opera
     assert operation_calls[0]["trace_id"] == "trace-from-payload"
     assert session.status == "WAITING_EXTERNAL"
     assert session.current_wait_type == "RACK_OPERATION"
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert session.current_wait_timeout_seconds == 1800
     assert session.deadline_at == ctx["now"] + timedelta(seconds=1800)
     assert session.context_json["waiting_rack_operation_key"] == "rack-operation:trace-runtime"
@@ -3255,7 +3298,7 @@ async def test_single_layer_rack_operation_creates_waiting_external_outbox(
     operation_calls: list[dict[str, Any]] = []
     created_outboxes: list[SimpleNamespace] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["workline"].line_code = "WL-SMT-01"
 
@@ -3352,7 +3395,7 @@ async def test_single_layer_rack_operation_creates_waiting_external_outbox(
 async def test_rack_operation_station_lease_race_returns_resource_retry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None, context_json={})
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None, context_json={})
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["workline"].plugin_key = "rough_sorter"
@@ -3421,7 +3464,7 @@ async def test_rack_operation_request_stores_operation_wait_fields(
     session = _session(
         status="RUNNING",
         current_wait_type=None,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         context_json={"rack_operation": {"status": "OLD"}},
     )
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
@@ -3483,7 +3526,7 @@ async def test_rack_operation_request_carries_material_context_into_task_specs(
 ) -> None:
     operation_calls: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
 
     class RecordingRackOperationService:
@@ -3548,7 +3591,7 @@ async def test_rack_operation_request_persists_external_wait_fields(
     session = _session(
         status="WAITING_DEVICE_RESULT",
         current_wait_type="COMMAND_RESULT",
-        awaiting_command_id=88,
+        awaiting_device_command_code="CMD-TEST-001",
         context_json={},
     )
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
@@ -3613,7 +3656,7 @@ async def test_rack_operation_request_persists_external_wait_fields(
     )
     assert session.status == "WAITING_EXTERNAL"
     assert session.current_wait_type == "RACK_OPERATION"
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
 
 
 @pytest.mark.asyncio
@@ -3622,7 +3665,7 @@ async def test_rack_operation_request_preserves_operation_metadata_written_by_se
 ) -> None:
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
     operation_key = "rack-operation:trace-runtime"
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
 
     class RecordingRackOperationService:
@@ -3712,7 +3755,7 @@ async def test_bin_operation_request_calls_handling_service_and_waits(
 ) -> None:
     timelines: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     service = RecordingHandlingOperationService()
 
@@ -3757,7 +3800,7 @@ async def test_bin_operation_request_calls_handling_service_and_waits(
     assert service.calls[0]["trace_id"] == "trace-runtime"
     assert session.status == "WAITING_EXTERNAL"
     assert session.current_wait_type == "HANDLING_OPERATION"
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
     assert session.current_wait_timeout_seconds == 1800
     assert session.deadline_at == ctx["now"] + timedelta(seconds=1800)
     assert session.context_json["waiting_handling_operation_key"] == "bin-operation:trace-runtime"
@@ -3774,7 +3817,7 @@ async def test_rack_bin_exchange_request_uses_same_handling_wait_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     service = RecordingHandlingOperationService()
 
@@ -3820,7 +3863,7 @@ async def test_rack_bin_exchange_request_uses_same_handling_wait_path(
 
 
 def test_rack_operation_wait_released_rack_codes_include_only_move_out_tasks() -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
 
     RuntimeIntentEffectApplier()._mark_session_waiting_for_rack_operation(
@@ -3873,7 +3916,7 @@ def test_rack_operation_wait_released_rack_codes_include_only_move_out_tasks() -
 
 
 def test_rack_operation_wait_infers_target_position_from_returned_tasks() -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
 
     RuntimeIntentEffectApplier()._mark_session_waiting_for_rack_operation(
@@ -3925,7 +3968,7 @@ async def test_rack_operation_request_rejects_invalid_operation_contract(
     intent_kwargs: dict[str, Any],
     message: str,
 ) -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
 
     with pytest.raises(ValueError, match=message):
@@ -3948,7 +3991,7 @@ async def test_rack_operation_request_rejects_invalid_operation_contract(
 
 @pytest.mark.asyncio
 async def test_rack_operation_request_requires_trace_id() -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None, trace_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None, trace_id=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
     ctx["trace"] = SimpleNamespace(trace_id=None)
     ctx["trace_id"] = None
@@ -3984,7 +4027,7 @@ async def test_rack_operation_request_requires_trace_id() -> None:
 
 @pytest.mark.asyncio
 async def test_device_event_intent_creates_device_event_inbox_without_waiting_current_session() -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
 
     class RecordingInboxService:
@@ -4021,12 +4064,12 @@ async def test_device_event_intent_creates_device_event_inbox_without_waiting_cu
     assert recording_inbox_service.created["auto_commit"] is False
     assert session.status == "RUNNING"
     assert session.current_wait_type is None
-    assert session.awaiting_command_id is None
+    assert session.awaiting_device_command_code is None
 
 
 @pytest.mark.asyncio
 async def test_resource_fact_then_device_event_creates_storage_retry_inbox() -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
     resource_projection = RecordingResourceProjectionService()
 
@@ -4077,7 +4120,7 @@ async def test_resource_fact_then_device_event_creates_storage_retry_inbox() -> 
 
 @pytest.mark.asyncio
 async def test_resource_fact_duplicate_storage_retry_device_event_is_treated_as_idempotent() -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
     resource_projection = RecordingResourceProjectionService()
 
@@ -4205,7 +4248,7 @@ async def test_command_destination_current_targets_source_device(monkeypatch: py
     source = SimpleNamespace(id=1, device_code="ARM01", device_role="INPUT_ARM")
     created_payloads: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
     ctx["devices_by_role"] = {"INPUT_ARM": [source]}
@@ -4239,7 +4282,7 @@ async def test_command_destination_next_targets_topology_downstream(monkeypatch:
     target = SimpleNamespace(id=2, device_code="CONV01", device_role="CONVEYOR", upstream_device_id=1)
     created_payloads: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
     ctx["devices_by_role"] = {"INPUT_ARM": [source], "CONVEYOR": [target]}
@@ -4272,7 +4315,7 @@ async def test_command_destination_device_outside_topology_blocks(monkeypatch: p
     source = SimpleNamespace(id=1, device_code="ARM01", device_role="INPUT_ARM")
     timelines: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["source_device"] = source
     ctx["devices_by_role"] = {"INPUT_ARM": [source]}
@@ -4305,7 +4348,7 @@ async def test_command_destination_ng_route_uses_configured_route_role(monkeypat
     ng_target = SimpleNamespace(id=3, device_code="NG01", device_role="NG_BUFFER", upstream_device_id=1)
     created_payloads: list[dict[str, Any]] = []
     db = SimpleNamespace(add=MagicMock(), execute=AsyncMock())
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session, db=db)
     ctx["workline"].config = {"route_roles": {"NG_ROUTE": "NG_BUFFER"}}
     ctx["source_device"] = source
@@ -4340,7 +4383,7 @@ async def test_command_destination_ng_route_uses_configured_route_role(monkeypat
 
 @pytest.mark.asyncio
 async def test_invalid_combinations_are_rejected_before_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
     emit_timeline = AsyncMock()
 
@@ -4364,7 +4407,7 @@ async def test_invalid_combinations_are_rejected_before_side_effects(monkeypatch
 async def test_command_before_terminal_intent_is_rejected_before_side_effects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
     emit_timeline = AsyncMock()
     create_command = AsyncMock()
@@ -4395,7 +4438,7 @@ async def test_apply_resource_wait_sets_waiting_external_and_returns_resource_re
     session = _session(
         status="RUNNING",
         current_wait_type=None,
-        awaiting_command_id=None,
+        awaiting_device_command_code=None,
         context_json={},
     )
     db = SimpleNamespace(execute=AsyncMock())
@@ -4444,7 +4487,7 @@ async def test_apply_resource_wait_sets_waiting_external_and_returns_resource_re
 
 @pytest.mark.asyncio
 async def test_resource_wait_must_be_final_intent(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
     emit_timeline = AsyncMock()
     monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
@@ -4469,7 +4512,7 @@ async def test_resource_wait_must_be_final_intent(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.asyncio
 async def test_resource_wait_cannot_follow_command_producing_intent(monkeypatch: pytest.MonkeyPatch) -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
     emit_timeline = AsyncMock()
     create_command = AsyncMock()
@@ -4499,7 +4542,7 @@ async def test_resource_wait_cannot_follow_command_producing_intent(monkeypatch:
 async def test_external_request_before_terminal_intent_is_rejected_before_side_effects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     ctx = _ctx(OrchestratorResult(success=True, intents=[]), session=session)
     emit_timeline = AsyncMock()
 
@@ -4576,7 +4619,7 @@ async def test_apply_orchestrator_effects_dispatches_runtime_intents(monkeypatch
 
     monkeypatch.setattr("src.workline_runtime.runtime_intent_effects.RuntimeIntentEffectApplier", CapturingApplier)
 
-    session = _session(status="RUNNING", current_wait_type=None, awaiting_command_id=None)
+    session = _session(status="RUNNING", current_wait_type=None, awaiting_device_command_code=None)
     intents = [RuntimeIntent.update_context({"pkg_id": "PKG-001"})]
     from src.app.workline.services.write_back_service import orchestrator_write_back_service
 

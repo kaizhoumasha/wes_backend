@@ -63,6 +63,16 @@ class _SessionRepoStub:
     def __init__(self, session: object | None = None) -> None:
         self.session = session
         self.get_by_id = AsyncMock(return_value=session)
+        self.get_open_session_by_awaiting_device_command_code = AsyncMock(
+            side_effect=self._get_by_awaiting_command_code
+        )
+
+    async def _get_by_awaiting_command_code(self, _db: object, command_code: str) -> object | None:
+        if self.session is None:
+            return None
+        if getattr(self.session, "awaiting_device_command_code", None) == command_code:
+            return self.session
+        return None
 
 
 class _SingleItemRepoStub:
@@ -748,9 +758,8 @@ async def test_sandbox_ack_rejects_outbox_when_session_is_not_waiting_for_device
     command = SimpleNamespace(
         id=9,
         command_code="CMD-001",
-        session_id_int=530,
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.FAILED, awaiting_command_id=9)
+    session = SimpleNamespace(id=530, status=SessionStatus.FAILED, awaiting_device_command_code="CMD-001")
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     outbox_repo = _OutboxRepoStub(outbox)
     service = WorklineOperationService(
@@ -787,9 +796,10 @@ async def test_sandbox_ack_requires_current_awaiting_command() -> None:
     command = SimpleNamespace(
         id=9,
         command_code="CMD-001",
-        session_id_int=530,
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=10)
+    session = SimpleNamespace(
+        id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_device_command_code="CMD-OTHER"
+    )
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     outbox_repo = _OutboxRepoStub(outbox)
     service = WorklineOperationService(
@@ -799,7 +809,7 @@ async def test_sandbox_ack_requires_current_awaiting_command() -> None:
         workline_repo=cast("Any", _SingleItemRepoStub(workline)),
     )
 
-    with pytest.raises(ValueError, match="当前会话等待的 Command 不匹配"):
+    with pytest.raises(ValueError, match="未找到等待 Command 的会话"):
         await service.submit_sandbox_ack(
             object(),
             dispatch_key="device-command:CMD-001",
@@ -829,13 +839,14 @@ async def test_sandbox_ack_rejects_inactive_simulation_workline() -> None:
     command = SimpleNamespace(
         id=9,
         command_code="CMD-001",
-        session_id_int=530,
         sent_at=None,
         ack_received_at=None,
         ack_code=None,
         ack_message=None,
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    session = SimpleNamespace(
+        id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_device_command_code="CMD-001"
+    )
     service = WorklineOperationService(
         outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
         session_repo=cast("Any", _SessionRepoStub(session)),
@@ -878,13 +889,14 @@ async def test_sandbox_ack_marks_command_ack_and_keeps_outbox_sent() -> None:
     command = SimpleNamespace(
         id=9,
         command_code="CMD-001",
-        session_id_int=530,
         sent_at=None,
         ack_received_at=None,
         ack_code=None,
         ack_message=None,
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    session = SimpleNamespace(
+        id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_device_command_code="CMD-001"
+    )
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     outbox_repo = _OutboxRepoStub(outbox)
     service = WorklineOperationService(
@@ -937,13 +949,14 @@ async def test_sandbox_ack_accepts_new_outbox_and_marks_it_sent() -> None:
     command = SimpleNamespace(
         id=9,
         command_code="CMD-001",
-        session_id_int=530,
         sent_at=None,
         ack_received_at=None,
         ack_code=None,
         ack_message=None,
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    session = SimpleNamespace(
+        id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_device_command_code="CMD-001"
+    )
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     service = WorklineOperationService(
         outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
@@ -988,14 +1001,15 @@ async def test_sandbox_ack_rejects_duplicate_ack_without_resetting_deadline() ->
     command = SimpleNamespace(
         id=9,
         command_code="CMD-001",
-        session_id_int=530,
         status=CommandStatus.ACK_RECEIVED,
         sent_at=ack_received_at,
         ack_received_at=ack_received_at,
         ack_code=200,
         ack_message="SANDBOX_ACK",
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    session = SimpleNamespace(
+        id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_device_command_code="CMD-001"
+    )
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     service = WorklineOperationService(
         outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
@@ -1037,14 +1051,15 @@ async def test_sandbox_ack_rejects_terminal_command_without_regressing_status() 
     command = SimpleNamespace(
         id=9,
         command_code="CMD-001",
-        session_id_int=530,
         status=CommandStatus.COMPLETED,
         sent_at=datetime(2026, 5, 8, 9, 0, 0),
         ack_received_at=None,
         ack_code=None,
         ack_message=None,
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    session = SimpleNamespace(
+        id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_device_command_code="CMD-001"
+    )
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     service = WorklineOperationService(
         outbox_repo=cast("Any", _OutboxRepoStub(outbox)),
@@ -1177,9 +1192,9 @@ async def test_sandbox_pending_keeps_history_but_only_current_command_actionable
         last_error=None,
     )
     commands = {
-        "CMD-OLD-ACKED": SimpleNamespace(id=875, status=CommandStatus.ACK_RECEIVED),
-        "CMD-OLD-COMPLETED": SimpleNamespace(id=876, status=CommandStatus.COMPLETED),
-        "CMD-CURRENT": SimpleNamespace(id=879, status=CommandStatus.PENDING),
+        "CMD-OLD-ACKED": SimpleNamespace(id=875, command_code="CMD-OLD-ACKED", status=CommandStatus.ACK_RECEIVED),
+        "CMD-OLD-COMPLETED": SimpleNamespace(id=876, command_code="CMD-OLD-COMPLETED", status=CommandStatus.COMPLETED),
+        "CMD-CURRENT": SimpleNamespace(id=879, command_code="CMD-CURRENT", status=CommandStatus.PENDING),
     }
     command_repo = SimpleNamespace(
         get_by_command_code=AsyncMock(side_effect=lambda _db, command_code: commands[command_code])
@@ -1187,7 +1202,7 @@ async def test_sandbox_pending_keeps_history_but_only_current_command_actionable
     session = SimpleNamespace(
         id=550,
         status=SessionStatus.WAITING_DEVICE_RESULT,
-        awaiting_command_id=879,
+        awaiting_device_command_code="CMD-CURRENT",
     )
     outbox_repo = _OutboxRepoStub()
     outbox_repo.get_sandbox_pending_messages = AsyncMock(return_value=[old_acked, old_completed, current])
@@ -1426,11 +1441,12 @@ async def test_sandbox_result_inbox_contains_command_contract_fields_for_runtime
         params={"business_key": "PKG-001"},
         workline_id=45,
         session_id=530,
-        session_id_int=530,
         device_id=7,
         trace_id="trace-001",
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=9)
+    session = SimpleNamespace(
+        id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_device_command_code="CMD-001"
+    )
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     inbox_repo = _InboxRepoStub()
     outbox_repo = _OutboxRepoStub()
@@ -1490,11 +1506,12 @@ async def test_sandbox_result_rejects_command_when_session_is_waiting_for_anothe
         task_type="PICK_AND_PUT",
         workline_id=45,
         session_id=530,
-        session_id_int=530,
         device_id=7,
         trace_id="trace-001",
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_command_id=10)
+    session = SimpleNamespace(
+        id=530, status=SessionStatus.WAITING_DEVICE_RESULT, awaiting_device_command_code="CMD-OTHER"
+    )
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     inbox_repo = _InboxRepoStub()
     service = WorklineOperationService(
@@ -1505,7 +1522,7 @@ async def test_sandbox_result_rejects_command_when_session_is_waiting_for_anothe
         workline_repo=cast("Any", _SingleItemRepoStub(workline)),
     )
 
-    with pytest.raises(ValueError, match="当前会话等待的 Command 不匹配"):
+    with pytest.raises(ValueError, match="未找到等待 Command 的会话"):
         await service.submit_sandbox_result(
             object(),
             command_code="CMD-001",
@@ -1529,11 +1546,10 @@ async def test_sandbox_result_rejects_command_when_session_is_not_waiting_for_de
         task_type="PICK_AND_PUT",
         workline_id=45,
         session_id=530,
-        session_id_int=530,
         device_id=7,
         trace_id="trace-001",
     )
-    session = SimpleNamespace(id=530, status=SessionStatus.FAILED, awaiting_command_id=9)
+    session = SimpleNamespace(id=530, status=SessionStatus.FAILED, awaiting_device_command_code="CMD-001")
     workline = SimpleNamespace(id=45, run_mode=WorkLineRunMode.SIMULATION, is_active=True)
     inbox_repo = _InboxRepoStub()
     service = WorklineOperationService(

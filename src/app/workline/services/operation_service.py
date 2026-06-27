@@ -398,8 +398,9 @@ class WorklineOperationService(BaseService[Any, Any]):
         if session is None or enum_str(getattr(session, "status", None)) != SessionStatus.WAITING_DEVICE_RESULT.value:
             return True
 
-        awaiting_command_id = getattr(session, "awaiting_command_id", None)
-        return not isinstance(awaiting_command_id, int) or awaiting_command_id == command_id
+        awaiting_command_code = getattr(session, "awaiting_device_command_code", None)
+        command_code = getattr(command, "command_code", None)
+        return not isinstance(awaiting_command_code, str) or awaiting_command_code == command_code
 
     async def _is_current_sandbox_external_outbox(self, db: Any, outbox: Any) -> bool:
         """判断 EXTERNAL_HTTP outbox 是否仍是当前 session 等待的外部回调。"""
@@ -866,7 +867,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             action="acked",
             workline_id=getattr(command, "workline_id", None),
             device_id=getattr(command, "device_id", None),
-            session_id=getattr(command, "session_id_int", None),
+            session_id=getattr(outbox, "session_id", None),
         )
 
         if auto_commit:
@@ -1039,7 +1040,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             action="updated",
             workline_id=workline_id,
             device_id=device_id,
-            session_id=getattr(command, "session_id_int", None),
+            session_id=session.id,
         )
 
         if auto_commit:
@@ -1075,22 +1076,19 @@ class WorklineOperationService(BaseService[Any, Any]):
         *,
         action_label: str,
     ) -> Any:
-        session_id = command.session_id_int
-        if session_id is None:
-            raise ValueError(f"Command 未关联会话: {command_code}")
-
-        session = await self.session_repo.get_by_id(db, session_id)
+        session = await self.session_repo.get_open_session_by_awaiting_device_command_code(db, command.command_code)
         if session is None:
-            raise ValueError(f"会话不存在: {session_id}")
+            raise ValueError(f"未找到等待 Command 的会话: {command_code}")
+        session_id = session.id
 
         if session.status != _RESULT_WAIT_SESSION_STATUS:
             raise ValueError(
                 f"当前会话状态不允许{action_label}: session_id={session_id}, status={enum_str(session.status)}"
             )
-        if session.awaiting_command_id != command.id:
+        if session.awaiting_device_command_code != command.command_code:
             raise ValueError(
                 f"当前会话等待的 Command 不匹配: session_id={session_id}, "
-                f"awaiting_command_id={session.awaiting_command_id}, command_id={command.id}"
+                f"awaiting_device_command_code={session.awaiting_device_command_code}, command_code={command.command_code}"
             )
 
         return session

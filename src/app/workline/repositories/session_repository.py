@@ -284,7 +284,7 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         *,
         session_id: int,
         occurred_at: Any,
-        command_id: int | None,
+        command_code: str | None,
         timeout_seconds: int,
     ) -> None:
         """显式持久化命令 Result 等待态，避免异步懒加载丢失会话状态写回。"""
@@ -299,7 +299,7 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
                 waiting_since=occurred_at,
                 deadline_at=None,
                 current_wait_timeout_seconds=timeout_seconds,
-                awaiting_command_id=command_id,
+                awaiting_device_command_code=command_code,
                 ended_at=None,
                 failure_domain=None,
                 failure_code=None,
@@ -331,7 +331,7 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
                 waiting_since=occurred_at,
                 deadline_at=None if timeout_seconds is None else occurred_at + timedelta(seconds=timeout_seconds),
                 current_wait_timeout_seconds=timeout_seconds,
-                awaiting_command_id=None,
+                awaiting_device_command_code=None,
                 ended_at=None,
                 failure_domain=None,
                 failure_code=None,
@@ -361,7 +361,7 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
                 waiting_since=None,
                 deadline_at=None,
                 current_wait_timeout_seconds=None,
-                awaiting_command_id=None,
+                awaiting_device_command_code=None,
                 ended_at=occurred_at,
                 failure_domain=None,
                 failure_code=None,
@@ -393,7 +393,7 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
                 waiting_since=None,
                 deadline_at=None,
                 current_wait_timeout_seconds=None,
-                awaiting_command_id=None,
+                awaiting_device_command_code=None,
                 ended_at=None,
                 failure_domain=failure_domain,
                 failure_code=failure_code,
@@ -402,12 +402,12 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             .execution_options(synchronize_session=False)
         )
 
-    async def get_open_session_by_awaiting_command_id(
+    async def get_open_session_by_awaiting_device_command_code(
         self,
         db: AsyncSession,
-        command_id: int,
+        command_code: str,
     ) -> WorklineSession | None:
-        """根据 awaiting_command_id 查询未结束的会话。"""
+        """根据 awaiting_device_command_code 查询未结束的会话。"""
         columns = cast("Any", WorklineSession).__table__.c
         open_statuses = [
             "NEW",
@@ -418,7 +418,7 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         ]
         result = await db.execute(
             select(WorklineSession).where(
-                columns.awaiting_command_id == command_id,
+                columns.awaiting_device_command_code == command_code,
                 columns.status.in_(open_statuses),
             )
         )
@@ -506,14 +506,14 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         now = timezone.now_for_db()
         result = await db.execute(
             select(WorklineSession)
-            .outerjoin(DeviceCommand, columns.awaiting_command_id == command_columns.id)
+            .outerjoin(DeviceCommand, columns.awaiting_device_command_code == command_columns.command_code)
             .where(
                 columns.deadline_at.isnot(None),
                 columns.deadline_at < now,
                 or_(
                     and_(
                         columns.status == SessionStatus.WAITING_DEVICE_RESULT,
-                        columns.awaiting_command_id.isnot(None),
+                        columns.awaiting_device_command_code.isnot(None),
                         command_columns.status == CommandStatus.ACK_RECEIVED,
                         command_columns.ack_received_at.isnot(None),
                     ),

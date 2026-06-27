@@ -178,6 +178,7 @@ def _rough_scan_payload(*, pkg_id: str, sku: str = "CAP001", lot_no: str = "LOT-
 def _rough_result_inbox(
     command: DeviceCommand,
     *,
+    session_id: int,
     task_type: str,
     device_code: str,
     result: str = "SUCCESS",
@@ -198,11 +199,11 @@ def _rough_result_inbox(
         command_id=command.id,
         device_id=command.device_id,
         workline_id=command.workline_id,
-        session_id=command.session_id,
+        session_id=session_id,
         trace_id=command.trace_id,
         payload_json=payload_json,
         claim_bucket_key=build_claim_bucket_key(
-            session_id=command.session_id,
+            session_id=session_id,
             device_id=command.device_id,
             workline_id=command.workline_id,
             payload_json=payload_json,
@@ -327,10 +328,12 @@ async def _create_rough_scan_inbox(
 
 
 async def _latest_command(db: AsyncSession, *, session_id: int, task_type: str) -> DeviceCommand:
+    session = await db.get(WorklineSession, session_id)
+    assert session is not None and session.trace_id is not None
     statement = (
         select(DeviceCommand)
         .where(
-            DeviceCommand.session_id_int == session_id,  # type: ignore[arg-type]
+            DeviceCommand.trace_id == session.trace_id,  # type: ignore[arg-type]
             DeviceCommand.task_type == task_type,  # type: ignore[arg-type]
         )
         .order_by(DeviceCommand.id.desc())
@@ -358,7 +361,18 @@ async def _append_and_process_command_result(
     async with session_factory() as db:
         device = await db.get(Device, command.device_id)
         assert device is not None
-        db.add(_rough_result_inbox(command, task_type=task_type, device_code=device.device_code, data=data))
+        session = (
+            await db.execute(select(WorklineSession).where(WorklineSession.trace_id == command.trace_id))
+        ).scalar_one()
+        db.add(
+            _rough_result_inbox(
+                command,
+                session_id=session.id,
+                task_type=task_type,
+                device_code=device.device_code,
+                data=data,
+            )
+        )
         await db.commit()
     result = await _process_inboxes(session_factory, limit=10)
     assert result["success"] == 1

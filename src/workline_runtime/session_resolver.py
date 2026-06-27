@@ -5,7 +5,7 @@ Session 归属解析器
 
 规则（按 InboxKind）:
 - DEVICE_EVENT: 按 device_id + business_key 查找或创建
-- COMMAND_RESULT: 按 command_code -> awaiting_command_id / trace_id 恢复 Session
+- COMMAND_RESULT: 按 command_code -> awaiting_device_command_code 恢复 Session
 - EXTERNAL_HTTP: 优先按 dispatch_key -> rack task operation 恢复 Session，回退 outbox/trace_id
 - INTERNAL_EVENT: 按 session_id 恢复 Session
 - TIMER_TIMEOUT: 按 session_id 恢复 Session
@@ -451,16 +451,10 @@ class SessionResolver:
         if trace.trace_id:
             inbox.trace_id = trace.trace_id
 
-        session = await self.session_repo.get_open_session_by_awaiting_command_id(db, command.id)
+        session = await self.session_repo.get_open_session_by_awaiting_device_command_code(db, command.command_code)
         if session:
             inbox.session_id = session.id
             return session
-
-        if trace.trace_id:
-            session = await self.session_repo.get_by_trace_id(db, trace.trace_id)
-            if session:
-                inbox.session_id = session.id
-                return session
 
         raise ValueError(f"Session not found for command_code: {command_code}")
 

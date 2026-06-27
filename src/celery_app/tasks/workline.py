@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 from celery import Task
 
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
-from src.app.device.models.command import DeviceCommand
+from src.app.device.models.command import DeviceCommand as _DeviceCommand  # noqa: F401
 from src.celery_app.app import celery_app
 from src.celery_app.constants import (
     DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
@@ -280,9 +280,11 @@ class TimeoutScanner:
                 session_pk = resolve_entity_id(session)
                 if session_pk is None:
                     raise ValueError("Timed out session missing primary key")
-                awaiting_command_id = getattr(session, "awaiting_command_id", None)
+                awaiting_device_command_code = getattr(session, "awaiting_device_command_code", None)
                 command = (
-                    await db.get(DeviceCommand, awaiting_command_id) if isinstance(awaiting_command_id, int) else None
+                    await DeviceCommandRepository().get_by_command_code(db, awaiting_device_command_code)
+                    if isinstance(awaiting_device_command_code, str) and awaiting_device_command_code
+                    else None
                 )
                 if enum_value(getattr(session, "status", None)) == "WAITING_DEVICE_RESULT" and command is None:
                     raise ValueError(f"Timed out session awaiting command missing: session_id={session_pk}")
@@ -297,7 +299,7 @@ class TimeoutScanner:
                     trace_id=session.trace_id,
                     wait_token=getattr(command, "command_code", None),
                     wait_type=getattr(session, "current_wait_type", None),
-                    awaiting_command_id=awaiting_command_id,
+                    awaiting_device_command_code=awaiting_device_command_code,
                     command_code=getattr(command, "command_code", None),
                     device_id=command_device_id,
                     device_code=getattr(device, "device_code", None),

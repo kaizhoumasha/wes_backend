@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from sqlalchemy import JSON, Column, ForeignKey, Index, Text, text
+from sqlalchemy import JSON, Column, Index, String, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 
@@ -206,19 +206,13 @@ class WorklineSessionBase(BaseMixin):
         description="当前等待声明的业务完成窗口秒数；COMMAND_RESULT 等待在 ACK 后据此激活 deadline_at",
     )
 
-    awaiting_command_id: int | None = Field(
+    awaiting_device_command_code: str | None = Field(
         default=None,
-        index=True,
-        # 标记与 DeviceCommand.session_id_int 的已知外键环，
-        # 避免测试库 drop_all 清理排序 warning。
-        sa_column_args=(
-            ForeignKey(
-                "wes_biz.device_commands.id",
-                name="fk_workline_sessions_awaiting_command_id_device_commands",
-                use_alter=True,
-            ),
+        sa_column=Column(String(100), index=True),
+        description=(
+            "当前等待的设备指令 code (引用 DeviceCommand.command_code);"
+            " AP2 消解旧 awaiting_command_id → session FK 环后改为字符串 code 引用"
         ),
-        description="等待的设备指令 ID",
     )
 
     # 失败相关字段
@@ -357,7 +351,7 @@ class WorklineSession(
     - plugin_key: 执行的插件标识
     - status: 会话状态（由 Runtime 根据 RuntimeIntent 和外部事实推进）
     - context_json: Runtime 与插件共享的业务上下文快照
-    - awaiting_command_id: 当前等待的设备指令
+    - awaiting_device_command_code: 当前等待的设备指令编码
     - last_inbox_id: 追溯辅助字段
 
     Runtime lifecycle:

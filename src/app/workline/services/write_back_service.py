@@ -102,6 +102,14 @@ def _build_command_code(task_type: str, *, session_id: int | None = None) -> str
     return f"CMD-{date_str}-{session_segment}-{task_segment}-{uuid.uuid4().hex[:8].upper()}"
 
 
+def _resolve_command_correlation_id(ctx: "EffectApplyContext") -> str | None:
+    """解析 DeviceCommand 目标态 correlation key, 不用 trace/session alias 伪造。"""
+    raw_value = ctx.get("correlation_id")
+    if isinstance(raw_value, str) and raw_value:
+        return raw_value
+    return None
+
+
 _DEVICE_COMMAND_RESERVED_FIELDS = {
     "device_code",
     "command_code",
@@ -186,7 +194,7 @@ class EffectApplyContext(TypedDict):
     trace: TraceContext
     session_ctx: dict[str, Any]
     now: Any
-    awaiting_command_id: int | None
+    awaiting_device_command_pk: int | None
     awaiting_command_code: str | None
     next_timeline_seq_no: int | None
 
@@ -240,7 +248,7 @@ def _build_effect_apply_context(
         "trace": trace,
         "session_ctx": _session_context(session),
         "now": timezone.now_for_db(),
-        "awaiting_command_id": None,
+        "awaiting_device_command_pk": None,
         "awaiting_command_code": None,
         "next_timeline_seq_no": None,
     }
@@ -469,8 +477,7 @@ def _build_command_create_payload(
         "trace_id": ctx["trace"].trace_id or ctx["trace_id"],
         "event_id": ctx["trace"].event_id,
         "causation_id": ctx["trace"].causation_id,
-        "session_id": str(session.id),
-        "session_id_int": session.id,
+        "correlation_id": _resolve_command_correlation_id(ctx),
         "workline_id": session.workline_id,
         "plugin_key": getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
         "contract_version": getattr(session, "contract_version", None),
@@ -523,7 +530,7 @@ async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
         return False
     session = ctx["session"]
     should_cancel_pending_outboxes = bool(
-        getattr(session, "awaiting_command_id", None) is not None
+        getattr(session, "awaiting_device_command_code", None) is not None
         or getattr(session, "current_wait_type", None) == "COMMAND_RESULT"
     )
     workline_session_lifecycle_service.fail(
@@ -687,7 +694,7 @@ async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
         session,
         wait_type=wait.wait_type,
         occurred_at=ctx["now"],
-        awaiting_command_id=ctx["awaiting_command_id"],
+        awaiting_device_command_code=ctx["awaiting_command_code"],
         deadline_seconds=wait.deadline_seconds,
     )
     await _emit_timeline(
@@ -704,7 +711,7 @@ async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
         to_status=session.status,
         actor_type=TimelineActorType.ORCHESTRATOR,
         related_inbox_id=_timeline_inbox_id(ctx),
-        related_command_id=ctx["awaiting_command_id"],
+        related_command_id=ctx["awaiting_device_command_pk"],
         status=TimelineStatus.PENDING,
     )
     return True
@@ -722,7 +729,7 @@ def _ng_material_conflict_source_event_id(
         return source_event_id
     command_or_inbox_id = (
         evidence.get("new_source_command_id")
-        or getattr(session, "awaiting_command_id", None)
+        or getattr(session, "awaiting_device_command_code", None)
         or getattr(inbox, "id", None)
         or "unknown"
     )

@@ -362,7 +362,6 @@ def _effect_ctx(*, db: AsyncSession, workline: WorkLine, session: Any, inbox: Wo
         "trace": TraceContext.from_runtime(session=session, trace_id=trace_id),
         "session_ctx": dict(getattr(session, "context_json", None) or {}),
         "now": timezone.now_for_db(),
-        "awaiting_command_id": None,
         "awaiting_command_code": None,
         "next_timeline_seq_no": None,
     }
@@ -397,7 +396,6 @@ def _runtime_ctx(
         "trace": TraceContext.from_runtime(session=session, inbox=inbox, trace_id=trace_id),
         "session_ctx": dict(getattr(session, "context_json", None) or {}),
         "now": timezone.now_for_db(),
-        "awaiting_command_id": getattr(inbox, "command_id", None),
         "awaiting_command_code": None,
         "next_timeline_seq_no": None,
     }
@@ -635,7 +633,7 @@ async def _drive_source_item_to_sorted(
     target_command = (
         await db.execute(
             select(DeviceCommand)
-            .where(DeviceCommand.session_id_int == session.id)
+            .where(DeviceCommand.trace_id == trace_id)
             .where(DeviceCommand.task_type == COMMAND_TARGET_PLACE)
         )
     ).scalar_one()
@@ -754,7 +752,7 @@ async def _drive_source_item_to_skipped(
     ng_command = (
         await db.execute(
             select(DeviceCommand)
-            .where(DeviceCommand.session_id_int == session.id)
+            .where(DeviceCommand.trace_id == trace_id)
             .where(DeviceCommand.task_type == COMMAND_NG_PLACE)
         )
     ).scalar_one()

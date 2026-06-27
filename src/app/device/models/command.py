@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Any, ClassVar, cast
 
 from pydantic import field_validator
-from sqlalchemy import JSON, Column, ForeignKey
+from sqlalchemy import JSON, Column
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field, Relationship
 from sqlmodel._compat import SQLModelConfig
@@ -78,9 +78,55 @@ class CommandResult(str, Enum):
 
 # ==================== 基础字段 (用于 Schema 复用) ====================
 
+type DeviceCommandParamScalar = str | int | float | bool | None
+type DeviceCommandParamValue = (
+    DeviceCommandParamScalar | list[DeviceCommandParamValue] | dict[str, DeviceCommandParamValue]
+)
+type _NormalizedCommandParamValue = DeviceCommandParamValue
+
+_FORBIDDEN_PARAM_KEYS = {
+    "plc",
+    "plc_address",
+    "coordinate",
+    "coordinates",
+    "joint",
+    "joint_angle",
+    "axis",
+    "x_coord",
+    "y_coord",
+    "safety_loop",
+}
+
+
+def _normalize_command_param_value(value: Any, *, path: str) -> _NormalizedCommandParamValue:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, list):
+        return [_normalize_command_param_value(item, path=f"{path}[]") for item in value]
+    if isinstance(value, dict):
+        normalized: dict[str, _NormalizedCommandParamValue] = {}
+        for raw_key, raw_value in value.items():
+            if not isinstance(raw_key, str):
+                raise TypeError(f"{path} 参数 key 必须是字符串")
+            key = raw_key.strip()
+            if not key:
+                raise ValueError(f"{path} 参数 key 不能为空")
+            if key.lower() in _FORBIDDEN_PARAM_KEYS:
+                raise ValueError(f"params 禁止包含字段: {key}")
+            normalized[key] = _normalize_command_param_value(raw_value, path=f"{path}.{key}")
+        return normalized
+    raise ValueError(f"{path} 参数值必须是 JSON 标量、数组或对象")
+
 
 class CommandBase(BaseMixin):
-    """指令基础字段 - 用于 Schema 复用"""
+    """指令基础字段 - 用于 Schema 复用
+
+    H4: extra="forbid" 禁止未声明字段透传, 阻断 attacker 通过 params 注入
+    plc_address / coordinate 等禁止字段; 同 key 不同 hash 拒绝 (Phase 1 实现
+    RuntimeIntentLog outbound 最小版本, 完整 409 审计留 Phase 3 ENG-009)。
+    """
+
+    model_config = SQLModelConfig(from_attributes=True, extra="forbid")
 
     device_id: int = Field(
         index=True,
@@ -106,7 +152,7 @@ class CommandBase(BaseMixin):
         le=300000,
         description="超时时间（毫秒）",
     )
-    params: dict[str, Any] = Field(
+    params: dict[str, DeviceCommandParamValue] = Field(
         default_factory=dict,
         sa_column=Column(JSON),
         description="业务参数（JSON 格式）",
@@ -114,12 +160,12 @@ class CommandBase(BaseMixin):
 
     @field_validator("params", mode="before")
     @classmethod
-    def validate_params(cls, v: Any) -> dict[str, Any]:
-        """确保 params 是字典"""
+    def validate_params(cls, v: Any) -> dict[str, DeviceCommandParamValue]:
+        """确保 params 是 typed JSON 对象, 并阻断控制类字段透传。"""
         if v is None:
             return {}
         if isinstance(v, dict):
-            return cast("dict[str, Any]", v)
+            return cast("dict[str, DeviceCommandParamValue]", _normalize_command_param_value(v, path="params"))
         raise ValueError("params 必须是字典类型")
 
     @field_validator("task_type", mode="before")
@@ -259,27 +305,16 @@ class DeviceCommand(
         description="因果事件 ID",
     )
 
-    # 会话 ID（跟踪单个任务会话）
-    session_id: str | None = Field(
+    # 跨域 correlation key（无 session FK）
+    correlation_id: str | None = Field(
         default=None,
-        max_length=100,
+        max_length=120,
         index=True,
-        description="会话 ID（跟踪单个任务会话）",
+        description="跨域 correlation key（引用 ExecutionCorrelation.correlation_id, 无 session FK）",
     )
-    session_id_int: int | None = Field(
-        default=None,
-        index=True,
-        # 标记与 WorklineSession.awaiting_command_id 的已知外键环，
-        # 避免测试库 drop_all 清理排序 warning。
-        sa_column_args=(
-            ForeignKey(
-                "wes_biz.workline_sessions.id",
-                name="fk_device_commands_session_id_int_workline_sessions",
-                use_alter=True,
-            ),
-        ),
-        description="会话 ID 数值投影（兼容历史字符串 session_id）",
-    )
+    # Phase 1 AP2 消解: 旧 session_id/session_id_int 已删除。DeviceCommand
+    # 只持 correlation_id; session 等待关系通过 WorklineSession.awaiting_device_command_code
+    # 引用 command_code, 不再形成 device ↔ session FK 环。
 
     # 作业线 ID（关联到 WorkLine）
     workline_id: int | None = Field(
@@ -434,6 +469,7 @@ __all__ = [
     "CommandStatus",
     "DeviceCommand",
     "DeviceCommandCreate",
+    "DeviceCommandParamValue",
     "DeviceCommandUpdate",
     "TaskType",
 ]

@@ -1,7 +1,7 @@
 ---
 status: Draft v4 — 概要/详细设计（GB/T 8567 风格）
 created_at: 2026-06-23
-updated_at: 2026-06-24
+updated_at: 2026-06-26
 parent_goal: 对当前 WORKLINE + PLUGIN 体系进行全面重构/重做
 document_type: 概要设计说明书 + 详细设计（Outline Design + Detailed Design）
 audience: eng/arch lead, WES owner, WMS 集成 lead, code reviewer
@@ -25,7 +25,7 @@ review_summary: |
 # WORKLINE + PLUGIN 体系全面重构顶层设计
 
 > 概要设计说明书（GB/T 8567 风格）+ 详细设计
-> 版本：Draft v4（2026-06-24）
+> 版本：Draft v4（2026-06-26）
 > 父目标：对当前 WORKLINE + PLUGIN 体系进行全面重构/重做
 
 ---
@@ -60,12 +60,12 @@ review_summary: |
 
 **本文档不包含**（实施 SPEC 阶段展开）：
 
-- 各 port 详细字段定义（Phase 1 启动时写 `wms-integration-ports-spec.md`）
+- 各 port 详细字段定义（Phase 1 单 PR 的 Packet B / CEO-001 代码实现前写 `wms-integration-ports-spec.md`）
 - 11 态机完整转移表（Phase 3 启动时写 `fulfillment-state-machine-spec.md`）
 - HMAC canonical 字符串（Phase 3 启动时写 `external-callback-auth-spec.md`）
 - PlaneSceneView/PlaneSnapshot 完整 schema（Phase 3 启动时写 `plane-read-model-spec.md`）
 - ReconciliationManager 触发矩阵（Phase 3 启动时写 `reconciliation-manager-spec.md`）
-- Runtime IntentLog/Session 拆分（Phase 1 启动时写 `runtime-orchestration-spec.md`）
+- runtime/orchestration 7 core entities 最小骨架（Phase 1 单 PR 的 Packet C / AP3 前写 `runtime-orchestration-spec.md`）
 
 ### 1.3 术语与缩略语
 
@@ -1794,27 +1794,28 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 
 | Task | Effort | 关联文件 | 验证 |
 | --- | --- | --- | --- |
-| **CEO-001** 整理 `wms_integration/` 并补齐 WMS 能力面 ports | M | `src/app/wms_integration/` | 能力面 port 单元测试；覆盖 `wms_rcs_interface_requirements.md` P0 接口映射；内部域无 WMS DTO/client import |
+| **CEO-001** 整理 `wms_integration/` 并补齐 WMS 能力面 ports | M | `src/app/wms_integration/` | 能力面 port 单元测试；覆盖 `wms_rcs_interface_requirements.md` P0 接口映射；内部业务域无 WMS DTO/client import（callback ACL 域和 legacy 标注豁免） |
 | **CEO-002** 4 方案决策表归档 | S | 本文档 §3.8 | 已归档 |
-| **CEO-005** 查询响应 schema 增加 `scope/authority/source/evidence_at` 强制字段 | S | `src/app/*/schemas/` | schema 校验 + 测试 |
-| **CEO-006** Authority Matrix 文档发布 | S | `docs/architecture/authority-matrix.md` | 9 类事实类型 + 权威来源 |
-| **CEO-007** runtime/orchestration 最小骨架 | M | `src/app/runtime/orchestration/`, `docs/architecture/runtime-orchestration-spec.md` | ExecutionSession / ExecutionWorkItem / RuntimeInbox / RuntimeIntentLog / ExecutionCorrelation 类型分离；对象级 work item 不被 session 串行锁阻塞；最小 worker + 单元测试 |
+| **CEO-005** 查询响应 schema 增加 `scope/authority/source/evidence_at` 强制字段 | S | `src/app/*/schemas/` | schema 校验 + 测试；外部权威 QueryPort response 含 `source_version` |
+| **CEO-006** Authority Matrix 文档发布 | S | `docs/architecture/authority-matrix.md` | 11 类事实类型 + 权威来源（对齐 `target-state-contract.md` §4） |
+| **CEO-007** runtime/orchestration 最小骨架 | M | `src/app/runtime/orchestration/`, `docs/architecture/runtime-orchestration-spec.md` | ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog 7 个 runtime core 实体类型分离；对象级 work item 不被 session 串行锁阻塞；最小 worker + 单元测试 |
 | **CEO-008** `ConveyorQueueMembership` 目标模型 | M | `src/app/runtime/orchestration/`, `src/app/workline/` | manifest queue_code 校验 + active 唯一约束测试 |
 | **CEO-009** `RuntimeCapabilityContext` / `CapabilityPortRegistry` | M | `src/app/runtime/` | capability 只能拿到 query/effect port contract；静态检查拒绝 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort`、`RuntimeInbox` consumer |
-| **CEO-010** `DeviceCommand` ECS API contract + manifest concurrency limit | M | `src/app/device/`, `docs/architecture/device-command-contract.md` | command_code 幂等、dispatch 前 IDLE 校验、RUNNING 有界等待、ERROR/OFFLINE 短退避、Event_Push 只 ACK、缺 event_id 不推进、in-flight 限制测试 |
+| **CEO-010** `DeviceCommand` ECS API contract + manifest concurrency limit | M | `src/app/device/`, `docs/architecture/device-command-contract.md` | command_code 幂等、dispatch 前 IDLE 校验、RUNNING 有界等待、ERROR/OFFLINE 短退避、Event_Push 只 ACK、缺 event_id 不推进、in-flight 限制测试；DeviceRuntime 状态快照 TTL 与 DeviceDispatchPolicy 纳入 manifest/schema 设计并通过 validator 测试；`awaiting_command_id` 迁移为 `awaiting_device_command_code`（值为 `DeviceCommand.command_code`，无 device FK），移除 device ↔ session FK 环并验证 Alembic upgrade/downgrade |
 | **CEO-011** WorkLine manifest version pin | M | `src/app/workline/`, `src/app/runtime/orchestration/` | RUNNING session 固定 manifest_version；新 manifest 只影响新 session；activation-time validator 测试 |
 | **CEO-012** WorkLine SafetyZone / shared-device manifest schema | M | `src/app/workline/`, `src/app/device/` | shared device 影响范围、required/optional role、SafetyZone validator 测试 |
-| **CEO-013** ExternalContractProfile + provider simulator registry | M | `src/app/wms_integration/`, `src/app/device/`, `docs/contracts/external-contract-profile.md` | WMS/ECS provider profile、contract tests、fixture set 与 simulator registry 可运行；adapter/normalizer 不泄漏外部 DTO |
+| **CEO-013** ExternalContractProfile + provider simulator registry | M | `src/app/contracts/`, `src/app/wms_integration/`, `src/app/device/`, `docs/contracts/external-contract-profile.md` | ExternalContractProfile / RuntimeCapabilityProfile / InboundNormalizerProfile 生产路径位于 `src/app/contracts/` 共享层；WMS/ECS provider profile、contract tests、fixture set 与 simulator registry 可运行；adapter/normalizer 不泄漏外部 DTO |
 
 **Phase 1 完成门禁**：
 
 - [ ] `wms_integration` MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery 7 个目标 port 全部实现
 - [ ] `wms_rcs_interface_requirements.md` P0 基础数据、业务指令、回调事件均映射到目标 port
-- [ ] 内部域无代码直接 import WMS 类型
+- [ ] 内部业务域无代码直接 import WMS 类型；callback ACL 域和 legacy matrix 标注豁免项按 drop_phase 继续受 allowlist 管控
 - [ ] Runtime capability 注入仅暴露 query/effect port contract，不暴露 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort` 或 `RuntimeInbox` consumer；inbound normalizer 不进入业务 capability
 - [ ] Authority Matrix 文档发布
 - [ ] runtime/orchestration 最小骨架完成，RuntimeIntentLog 含 effect ledger 字段并支持崩溃重放
 - [ ] DeviceCommand 只面向 ECS API，不包含 PLC/坐标/关节/安全回路字段；dispatch 前必须校验 ECS 设备状态为 IDLE
+- [ ] `awaiting_command_id` 已迁移为 `awaiting_device_command_code`（值为 `DeviceCommand.command_code`，无 device FK），device ↔ session FK 环已消解且 Alembic upgrade/downgrade 通过
 - [ ] DeviceRuntime 状态快照 TTL 与 DeviceDispatchPolicy 已纳入 manifest/schema 设计
 - [ ] ExecutionSession 已 pin `manifest_version`
 - [ ] 动态队列 membership 模型替代旧 8 enum 方案
@@ -1994,7 +1995,7 @@ Phase 1 ────────────────────────
   ├── CEO-001 wms_integration 能力面 ports   │
   ├── CEO-005 scope/authority schema          │
   ├── CEO-006 Authority Matrix                │
-  ├── CEO-007 RuntimeIntentLog/Session 拆分   │
+  ├── CEO-007 runtime/orchestration 7 core entities │
   ├── CEO-008 动态队列 membership             │
   ├── CEO-010 DeviceCommand ECS contract      │
   ├── CEO-011 manifest version pin            │
@@ -2162,7 +2163,7 @@ Phase 5 ────────────────────────
 ### 12.4 3 个 cross-phase themes（autoplan 双 voice 独立命中）
 
 1. **外部 ACL 应补全并清理**（CEO F1 + Eng F14）→ Phase 1 CEO-001 + ADR 0001
-2. **RuntimeIntentLog / RuntimeSession 显式拆分**（CEO F7 + Eng F3/F4）→ Phase 1 CEO-007 + ADR 0007
+2. **RuntimeIntentLog / ExecutionSession / ExecutionCorrelation 显式拆分**（CEO F7 + Eng F3/F4）→ Phase 1 CEO-007 + ADR 0007
 3. **过早在命名/schema 画死**（CEO F4 + Eng F5/F12）→ 队列改为 manifest 动态配置 + typed envelope（Phase 3 ENG-010）
 
 ### 12.5 现状 → 目标态对比
@@ -2172,7 +2173,7 @@ Phase 5 ────────────────────────
 | 域结构 | workline 混合"配置 + 执行 + 插件"（32,979 LOC），runtime 在 `src/workline_runtime/`（10,241 LOC）独立，plugin 在 `src/workline_plugins/`（3,085 LOC）独立 | workline 仅配置；runtime/orchestration 独立域；plugin 能力在 runtime 域以 port/capability 形式重建 |
 | 域间引用 | 16+ 文件含 `session_id` / `execution_session_id` 跨域 FK | `ExecutionCorrelation.correlation_id` 作为跨域 correlation key |
 | WMS 集成 | 仅有旧 `WmsInventoryPort` 能力且 query/mutation 混杂 | WMS 能力面 ports 全部实现，库存拆为 Query / Transaction |
-| RuntimeIntentLog vs RuntimeSession | 同段自相矛盾 | 显式拆分 |
+| RuntimeIntentLog / ExecutionSession / ExecutionCorrelation | 同段自相矛盾 | 显式拆分 |
 | conveyor queue | `BinTransitMembership` + 8 个系统级 enum | `ConveyorQueueMembership` + manifest 动态队列 |
 | RECONCILING | 黑洞状态无恢复决议 | `ReconciliationManager` + owner-scoped resolution decision |
 | Plane 接口 | 全员可读全量运营数据 | 拆 scene + snapshot 独立接口 + RBAC + 行级 + 脱敏 + 审计 |
@@ -2190,7 +2191,8 @@ Phase 5 ────────────────────────
 实施细节（字段定义、状态机转移表、HMAC 合同、typed envelope schema、PlaneSceneView/Snapshot schema 等）**不在本文展开为独立 SPEC**。当对应 Phase 启动前或启动时，按需生成独立 SPEC：
 
 - **Phase 0 启动时** → 写 `external-contract-profile-spec.md`（provider_code、contract_version、runtime_capabilities、inbound_normalizers、field mapping、timeout/retry、fixture set、unsupported actions）、`integration-lab-and-simulator-spec.md`（WMS/ECS simulator、sandbox provider profile、scenario runner、contract fixture 与环境隔离）、`architecture-guardrails-spec.md`（§7.5 核心 5 条不变量 + I3 capability 注入/import 边界的脚本入口、测试目录、失败示例、CI/pre-commit 接入方式）
-- **Phase 1 启动时** → 写 `wms-integration-ports-spec.md`（MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery 各 port 详细字段，并引用 `docs/integration/wms_rcs_interface_requirements.md` 的 P0/P1 接口清单）、`runtime-orchestration-spec.md`（ExecutionSession / ExecutionWorkItem / RuntimeInbox / RuntimeIntentLog / ExecutionCorrelation 最小骨架；统一 §4.1 与 §9.2 的字段、索引、lease、deadline、idempotency 和对象级 work item 与 session 的并发边界）
+- **Phase 1 单 PR 的 Packet B / CEO-001 代码实现前** → 写 `wms-integration-ports-spec.md`（MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery 各 port 详细字段，并引用 `docs/integration/wms_rcs_interface_requirements.md` 的 P0/P1 接口清单）
+- **Phase 1 单 PR 的 Packet C / AP3 前** → 写 `runtime-orchestration-spec.md`（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog 7 个 runtime core 实体最小骨架；统一 §4.1 与 §9.2 的字段、索引、lease、deadline、idempotency 和对象级 work item 与 session 的并发边界）
 - **Phase 2 启动时** → 写 `legacy-runtime-migration-spec.md`（旧 WorkLine/plugin/runtime 执行能力迁移、删除和 WorkLine 清空顺序）
 - **Phase 3 启动时** → 写 `fulfillment-state-machine-spec.md`（11 态机完整转移图 + 4 timeout 时长表 + BLOCKED_BY_CB 出站阻塞 + CB 恢复期 late callback 入站 evidence 合同）、`reconciliation-manager-spec.md`（触发矩阵 + 隔离动作 + owner-scoped resolution decision + 5/30 分钟升级）、`plane-read-model-spec.md`（PlaneSceneView/Snapshot 字段 + 容量上限 + RBAC 矩阵）、`external-callback-auth-spec.md`（HMAC canonical + nonce TTL + allow-list）、`device-dispatch-policy-spec.md`（能力选择 + deadline + 状态快照 TTL）、`scenario-replay-spec.md`（录制、脱敏、deterministic replay、断言矩阵）、`observability-contract.md`（span/metric/log 命名与稳定 attributes）、`runtime-toggle-governance.md`（typed toggle 分类、owner/expiry/scope/default/rollback/test matrix）
 - **Phase 4 启动时** → 写 `material-location-query-spec.md`、`workline-active-objects-spec.md`、`sorter-inbound-capability-spec.md`（必须展开粗分机正常流、满箱交换前置分流、分拣机正常流、满箱交换区/分拣机 STATION 边界、`rack_code + rack_side` 批次分组、`CHANGE_RACK_FACE` 独立履约、已交换物料排除逐件分拣、`CellReservation`、授权料箱 resolve、扫码平台预取互锁及 manifest validator、物料 work item 与料箱 work item join 条件、本地物理事实先落与 WMS 同步/对账状态、CTU 父请求聚合子 work item 查询视图）、`smt-ng-wms-reconciliation-spec.md`；`fulfillment-provider-adapter-spec.md` 仅在 §10.5 RCS/AGV/CTU 直连触发条件满足时生成，生产前默认不写

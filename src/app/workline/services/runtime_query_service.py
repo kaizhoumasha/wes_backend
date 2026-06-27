@@ -343,7 +343,7 @@ def _device_session_clause(session_columns: Any, device_id: int) -> Any:
         exists(
             select(command_columns.id).where(
                 command_columns.device_id == device_id,
-                command_columns.session_id_int == session_columns.id,
+                command_columns.command_code == session_columns.awaiting_device_command_code,
             )
         ),
         exists(
@@ -1238,11 +1238,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
         now = timezone.now_for_db()
         session_ids = [item.id for item in sessions if item.id is not None]
         workline_map = await self._load_workline_map(db, [item.workline_id for item in sessions])
-        latest_command_by_session = await self._load_latest_command_by_session(db, session_ids)
-        awaiting_command_ids = [
-            session.awaiting_command_id for session in sessions if isinstance(session.awaiting_command_id, int)
+        latest_command_by_session = await self._load_latest_command_by_session(db, sessions)
+        awaiting_command_codes = [
+            session.awaiting_device_command_code
+            for session in sessions
+            if isinstance(session.awaiting_device_command_code, str) and session.awaiting_device_command_code
         ]
-        awaiting_command_by_id = await self._load_command_map_by_ids(db, awaiting_command_ids)
+        awaiting_command_by_code = await self._load_command_map_by_codes(db, awaiting_command_codes)
         latest_inbox_by_session = await self._load_latest_inbox_by_session(db, session_ids)
         latest_event_inbox_by_session = await self._load_latest_event_inbox_by_session(db, session_ids)
         latest_timeline_by_session = await self._load_latest_timeline_by_session(db, session_ids)
@@ -1251,7 +1253,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             item.device_id
             for item in [
                 *latest_command_by_session.values(),
-                *awaiting_command_by_id.values(),
+                *awaiting_command_by_code.values(),
                 *latest_inbox_by_session.values(),
             ]
             if item.device_id is not None
@@ -1262,9 +1264,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
             if session.id is None:
                 continue
             latest_command = latest_command_by_session.get(session.id)
-            awaiting_command_id = session.awaiting_command_id
+            awaiting_command_code = session.awaiting_device_command_code
             awaiting_command = (
-                awaiting_command_by_id.get(awaiting_command_id) if isinstance(awaiting_command_id, int) else None
+                awaiting_command_by_code.get(awaiting_command_code) if isinstance(awaiting_command_code, str) else None
             )
             command = awaiting_command or latest_command
             inbox = latest_inbox_by_session.get(session.id)
@@ -1296,23 +1298,40 @@ class RuntimeQueryService(BaseService[Any, Any]):
         result = await db.execute(select(DeviceCommand).where(columns.id.in_(command_ids)))
         return {item.id: item for item in result.scalars().all() if item.id is not None}
 
-    async def _load_latest_command_by_session(self, db: Any, session_ids: list[int]) -> dict[int, DeviceCommand]:
-        if not session_ids:
+    async def _load_command_map_by_codes(self, db: Any, command_codes: list[str]) -> dict[str, DeviceCommand]:
+        command_codes = [item for item in command_codes if isinstance(item, str) and item]
+        if not command_codes:
             return {}
+        columns = cast("Any", DeviceCommand).__table__.c
+        result = await db.execute(select(DeviceCommand).where(columns.command_code.in_(command_codes)))
+        return {item.command_code: item for item in result.scalars().all() if item.command_code}
+
+    async def _load_latest_command_by_session(
+        self, db: Any, sessions: list[WorklineSession]
+    ) -> dict[int, DeviceCommand]:
+        trace_session_pairs = [
+            (session.trace_id, session.id)
+            for session in sessions
+            if isinstance(session.trace_id, str) and session.trace_id and session.id is not None
+        ]
+        if not trace_session_pairs:
+            return {}
+        trace_ids = [trace_id for trace_id, _session_id in trace_session_pairs]
         columns = cast("Any", DeviceCommand).__table__.c
         latest_ids = _latest_rows_subquery(
             columns=columns,
-            partition_by=columns.session_id_int,
+            partition_by=columns.trace_id,
             order_by=(columns.created_at.desc(), columns.id.desc()),
-            filters=[columns.session_id_int.in_(session_ids)],
+            filters=[columns.trace_id.in_(trace_ids)],
         )
         result = await db.execute(
             select(DeviceCommand).join(latest_ids, columns.id == latest_ids.c.id).where(latest_ids.c.rn == 1)
         )
+        by_trace_id = {item.trace_id: item for item in result.scalars().all() if item.trace_id}
         mapping: dict[int, DeviceCommand] = {}
-        for item in result.scalars().all():
-            session_id = getattr(item, "session_id_int", None)
-            if isinstance(session_id, int) and session_id not in mapping:
+        for trace_id, session_id in trace_session_pairs:
+            item = by_trace_id.get(trace_id)
+            if item is not None and isinstance(session_id, int) and session_id not in mapping:
                 mapping[session_id] = item
         return mapping
 
@@ -2259,15 +2278,18 @@ class RuntimeQueryService(BaseService[Any, Any]):
         blocking_device_id: int | None = None
         blocking_reason: RuntimeBlockingReason | None = None
         if session and session.current_wait_type:
-            awaiting_cmd_id = session.awaiting_command_id
-            if awaiting_cmd_id:
-                cmd = next((c for c in result.commands if c.id == awaiting_cmd_id), None)
+            awaiting_cmd_code = session.awaiting_device_command_code
+            if awaiting_cmd_code:
+                cmd = next((c for c in result.commands if c.command_code == awaiting_cmd_code), None)
                 if cmd:
                     blocking_device_id = cmd.device_id
                     blocking_reason = RuntimeBlockingReason(
                         device_id=cmd.device_id,
                         reason=f"等待设备响应 {optional_enum_str(cmd.task_type) or cmd.command_code}",
-                        detail=f"command #{cmd.id} · {optional_enum_str(cmd.status)} · awaiting_command_id={session.awaiting_command_id}",
+                        detail=(
+                            f"command #{cmd.id} · {optional_enum_str(cmd.status)} · "
+                            f"awaiting_device_command_code={session.awaiting_device_command_code}"
+                        ),
                     )
             if blocking_device_id is None and session.failure_domain:
                 blocking_reason = RuntimeBlockingReason(

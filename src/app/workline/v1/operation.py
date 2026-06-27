@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
 from src.app.callback.models.ingress_response import (
     CallbackEventAcceptedResponse,
@@ -172,9 +172,9 @@ def _enqueue_workline_processing() -> None:
 )
 async def get_sandbox_pending(
     db: AsyncSessionDep,
-    limit: int = 50,
-    workline_id: int | None = None,
-    device_id: int | None = None,
+    limit: int = Query(default=50, ge=1, le=500, description="最多返回条数"),
+    workline_id: int | None = Query(default=None, ge=1, description="按工作线过滤"),
+    device_id: int | None = Query(default=None, ge=1, description="按设备过滤"),
 ) -> ResponseSchemaModel[list[dict[str, Any]]]:
     items = await workline_operation_service.get_sandbox_pending(
         db, limit=limit, workline_id=workline_id, device_id=device_id
@@ -193,9 +193,9 @@ async def get_sandbox_pending(
 )
 async def get_sandbox_completed(
     db: AsyncSessionDep,
-    limit: int = 50,
-    workline_id: int | None = None,
-    device_id: int | None = None,
+    limit: int = Query(default=50, ge=1, le=500, description="最多返回条数"),
+    workline_id: int | None = Query(default=None, ge=1, description="按工作线过滤"),
+    device_id: int | None = Query(default=None, ge=1, description="按设备过滤"),
 ) -> ResponseSchemaModel[list[dict[str, Any]]]:
     items = await workline_operation_service.get_sandbox_completed(
         db, limit=limit, workline_id=workline_id, device_id=device_id

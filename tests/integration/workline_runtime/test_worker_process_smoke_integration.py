@@ -143,12 +143,12 @@ async def test_scan_timeouts_batch_consumed_by_real_worker(
             ack_received_at=timezone.now_for_db() - timedelta(minutes=9),
             trace_id=trace_id,
             workline_id=line.id,
-            session_id_int=workline_session.id,
+            correlation_id=workline_session.session_code,
         )
         setup_db.add(command)
         await setup_db.flush()
 
-        workline_session.awaiting_command_id = command.id
+        workline_session.awaiting_device_command_code = command.command_code
         await setup_db.commit()
         session_id = workline_session.id
 

@@ -3,6 +3,7 @@ SessionResolver 单元测试
 
 测试 Session 归属解析器的各种场景：
 - DEVICE_EVENT: 按 device_id + business_key 查找或创建
+- COMMAND_RESULT: 按 command_code -> awaiting_device_command_code 恢复 Session
 - EXTERNAL_HTTP: 按 trace_id 恢复 Session
 - TIMER_TIMEOUT: 按 session_id 恢复 Session
 - MANUAL_*: 按 session_id 恢复 Session
@@ -220,11 +221,11 @@ class MockSessionRepository:
         self.created_sessions.append(session)
         return session
 
-    async def get_open_session_by_awaiting_command_id(self, db: object, command_id: int) -> object | None:
-        self.find_calls.append(("awaiting_command_id", command_id, None))
+    async def get_open_session_by_awaiting_device_command_code(self, db: object, command_code: str) -> object | None:
+        self.find_calls.append(("awaiting_device_command_code", command_code, None))
         for session in self.sessions.values():
             s = session if isinstance(session, dict) else session.__dict__
-            if s.get("awaiting_command_id") == command_id:
+            if s.get("awaiting_device_command_code") == command_code:
                 return session
         return None
 
@@ -1619,7 +1620,7 @@ class TestSessionResolver:
         assert ("business_key", 1, expected_hash) in mock_session_repo.find_calls
 
     @pytest.mark.asyncio
-    async def test_resolve_command_result_finds_session_by_awaiting_command_id(
+    async def test_resolve_command_result_finds_session_by_awaiting_device_command_code(
         self,
         mock_db,
         mock_session_repo,
@@ -1636,7 +1637,7 @@ class TestSessionResolver:
 
         existing_session = SimpleNamespace(
             id=401,
-            awaiting_command_id=301,
+            awaiting_device_command_code="CMD-001",
             trace_id="trace-301",
             status=SessionStatus.WAITING_DEVICE_RESULT,
         )
@@ -1660,6 +1661,49 @@ class TestSessionResolver:
         assert inbox.workline_id == 1
         assert inbox.session_id == 401
         assert inbox.trace_id == "trace-301"
+
+    @pytest.mark.asyncio
+    async def test_resolve_command_result_does_not_fallback_to_trace_id(
+        self,
+        mock_db,
+        mock_session_repo,
+        resolver,
+    ):
+        command = SimpleNamespace(
+            id=302,
+            command_code="CMD-NOT-AWAITED",
+            device_id=11,
+            workline_id=1,
+            trace_id="trace-shared-command",
+        )
+        resolver.command_repo.commands["CMD-NOT-AWAITED"] = command
+
+        trace_matched_session = SimpleNamespace(
+            id=402,
+            awaiting_device_command_code="CMD-OTHER",
+            trace_id="trace-shared-command",
+            status=SessionStatus.WAITING_DEVICE_RESULT,
+        )
+        mock_session_repo.sessions[402] = trace_matched_session
+
+        inbox = make_inbox(
+            kind=InboxKind.COMMAND_RESULT,
+            payload_json={"command_code": "CMD-NOT-AWAITED"},
+        )
+
+        with pytest.raises(ValueError, match="Session not found for command_code: CMD-NOT-AWAITED"):
+            await resolver.resolve_or_create(
+                db=mock_db,
+                inbox=inbox,
+                workline=make_workline(),
+                devices_by_role=make_devices_by_role(),
+            )
+
+        assert ("awaiting_device_command_code", "CMD-NOT-AWAITED", None) in mock_session_repo.find_calls
+        assert ("trace_id", 0, "trace-shared-command") not in mock_session_repo.find_calls
+        assert inbox.command_id == 302
+        assert inbox.trace_id == "trace-shared-command"
+        assert getattr(inbox, "session_id", None) is None
 
     @pytest.mark.asyncio
     async def test_device_event_creates_new_session_when_other_business_key_open(
