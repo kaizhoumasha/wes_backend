@@ -89,6 +89,7 @@ class IntegrationDebugService:
     def build_case(self, result: TraceQueryResult, *, include_raw: bool) -> IntegrationDebugCaseResponse:
         session = result.session
         trace = result.trace
+        # session 可能为 None (query miss), 走占位 session 状态。
         status = optional_enum_str(getattr(session, "status", None)) or "UNKNOWN"
         detected_wms_block = _wms_timeout_block(result)
         wms_block = detected_wms_block if status == "MANUAL_HOLD" else None

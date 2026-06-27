@@ -193,8 +193,14 @@ class RuntimeHoldReleaseService:
         operator_id: int,
         *,
         allow_safety_estop: bool = False,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        """解除 RuntimeHold，并在最后一个 active blocking hold 解除后恢复 WorkLine。"""
+        """解除 RuntimeHold，并在最后一个 active blocking hold 解除后恢复 WorkLine。
+
+        ``idempotency_key`` 由调用方 (API Idempotency-Key Header) 传入，用于
+        跨重试写入同一 outbox/inbox 行 (H5 幂等键命名: WES-RESOLVE_HOLD-{key})。
+        缺省时回退到 ``runtime-hold:resolve:{hold_id}`` 派生键, 满足单调用粒度。
+        """
 
         hold = await self.runtime_hold_repo.get_for_update(db, hold_id)
         if hold is None:
@@ -294,6 +300,7 @@ class RuntimeHoldReleaseService:
                     resolved_at=now,
                     session_id=cast("int", session.id),
                     session=session,
+                    idempotency_key=idempotency_key,
                 )
             else:
                 self._resolve_session(session, request=request, operator_id=operator_id, resolved_at=now)
@@ -773,6 +780,7 @@ class RuntimeHoldReleaseService:
         resolved_at: Any,
         session_id: int,
         session: Any | None,
+        idempotency_key: str | None = None,
     ) -> WorklineInbox:
         if command.id is None:
             raise ValueError(f"DeviceCommand 缺少主键: {command.command_code}")
@@ -792,11 +800,14 @@ class RuntimeHoldReleaseService:
             "runtime_hold_release": True,
             "data": result_payload,
         }
+        # 当调用方提供 Idempotency-Key 时, 用其派生 inbox 行 idempotency_key,
+        # 保证同一 client 重试不会重复落库 (H5 幂等: WES-RESOLVE_HOLD-{key})。
+        client_idem = f"WES-RESOLVE_HOLD-{idempotency_key}" if idempotency_key else f"runtime-hold:resolve:{hold.id}"
         inbox = await self.inbox_repo.create(
             db,
             {
                 "kind": InboxKind.COMMAND_RESULT,
-                "idempotency_key": f"runtime-hold:continue-result:{hold.id}:{command.id}",
+                "idempotency_key": client_idem,
                 "source_system": SourceSystem.MANUAL,
                 "source_message_id": f"runtime-hold:continue-result:{hold.id}",
                 "workline_id": command.workline_id,

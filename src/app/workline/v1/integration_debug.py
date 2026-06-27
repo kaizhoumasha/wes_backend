@@ -29,9 +29,9 @@ router = APIRouter(tags=["工作线集成调试"])
 async def get_latest_integration_debug_cases(
     db: AsyncSessionDep,
     limit: int = Query(default=10, ge=1, le=50),
-    workline_id: int | None = None,
-    device_id: int | None = None,
-    status: str | None = None,
+    workline_id: int | None = Query(default=None, ge=1, description="按工作线过滤"),
+    device_id: int | None = Query(default=None, ge=1, description="按设备过滤"),
+    status: str | None = Query(default=None, description="按 case 状态过滤"),
 ) -> ResponseSchemaModel[IntegrationDebugCaseListResponse]:
     result = await integration_debug_service.latest_cases(
         db,
