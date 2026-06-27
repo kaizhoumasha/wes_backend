@@ -247,6 +247,8 @@ def test_manifest_summary_exposes_devices_rack_positions_topology_events_command
         "events",
         "commands",
         "resource_boundaries",
+        "safety_zones",
+        "shared_devices",
         "session_subject",
         "state_machines",
         "pipeline_queues",
