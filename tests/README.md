@@ -52,10 +52,11 @@
 
 本轮测试套件治理后的当前基线：
 
-- `tests/` 下共有 `268` 个 `test_*.py` 文件。
+- `tests/` 下共有 `271` 个 `test_*.py` 文件。
 - `tests/` 根目录下没有 `test_*.py` 文件。
 - 默认快速回归 collect 为 `2669` 个测试。
-- 当前没有超过 `3000` 行的测试文件。
+- 原 `tests/api/test_callback_api.py` 已按 route contract、result、event、external 和共享支撑拆分。
+- 当前没有超过 `3000` 行的测试文件，最大测试文件为 `tests/rack/test_rack_operation_service.py`（`2898` 行）。
 
 后续新增或调整测试时遵循以下约束：
 
