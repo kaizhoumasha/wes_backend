@@ -23,6 +23,7 @@ from src.app.workline.models.inbox import InboxStatus
 from src.app.workline.models.session import SessionStatus
 from src.workline_runtime.atomic_writer import AtomicWriter, atomic_writer
 from src.workline_runtime.enums import TimelineStage
+from tests.workline_runtime.support.runtime_builders import make_mock_db
 
 
 class MockSession:
@@ -95,15 +96,9 @@ class TestAtomicWriterCommit:
     """AtomicWriter.commit 方法测试"""
 
     @pytest.fixture
-    def mock_db(self):
+    def workline_runtime_mock_db(self):
         """创建模拟数据库会话"""
-        db = AsyncMock(spec=AsyncSession)
-        db.add = MagicMock()
-        db.execute = AsyncMock()
-        db.commit = AsyncMock()
-        db.rollback = AsyncMock()
-        db.flush = AsyncMock()
-        return db
+        return make_mock_db(spec=AsyncSession)
 
     @pytest.fixture
     def writer(self):
@@ -111,7 +106,7 @@ class TestAtomicWriterCommit:
         return AtomicWriter()
 
     @pytest.mark.asyncio
-    async def test_commit_updates_session_status(self, mock_db, writer):
+    async def test_commit_updates_session_status(self, workline_runtime_mock_db, writer):
         """测试 commit 更新 Session 状态"""
         session = MockSession(status=SessionStatus.RUNNING)
         timelines = [MockTimeline()]
@@ -120,7 +115,7 @@ class TestAtomicWriterCommit:
         # Mock _get_next_seq_no
         with patch.object(writer, "_get_next_seq_no", return_value=1):
             await writer.commit(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 session=session,
                 timelines=timelines,
                 outboxes=None,
@@ -131,10 +126,10 @@ class TestAtomicWriterCommit:
         assert session.status == SessionStatus.RUNNING
 
         # 验证 db.add 被调用（用于添加 Timeline）
-        mock_db.add.assert_called()
+        workline_runtime_mock_db.add.assert_called()
 
     @pytest.mark.asyncio
-    async def test_commit_inserts_timelines(self, mock_db, writer):
+    async def test_commit_inserts_timelines(self, workline_runtime_mock_db, writer):
         """测试 commit 插入 Timeline 记录"""
         session = MockSession()
         timelines = [
@@ -152,7 +147,7 @@ class TestAtomicWriterCommit:
 
         with patch.object(writer, "_get_next_seq_no", side_effect=mock_get_seq_no):
             await writer.commit(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 session=session,
                 timelines=timelines,
                 outboxes=None,
@@ -160,10 +155,10 @@ class TestAtomicWriterCommit:
             )
 
         # 验证为每个 Timeline 调用 add
-        assert mock_db.add.call_count >= 2
+        assert workline_runtime_mock_db.add.call_count >= 2
 
     @pytest.mark.asyncio
-    async def test_commit_inserts_outboxes(self, mock_db, writer):
+    async def test_commit_inserts_outboxes(self, workline_runtime_mock_db, writer):
         """测试 commit 插入 Outbox 记录"""
         session = MockSession()
         timelines = [MockTimeline()]
@@ -175,7 +170,7 @@ class TestAtomicWriterCommit:
 
         with patch.object(writer, "_get_next_seq_no", return_value=1):
             await writer.commit(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 session=session,
                 timelines=timelines,
                 outboxes=outboxes,
@@ -183,10 +178,10 @@ class TestAtomicWriterCommit:
             )
 
         # 验证为每个 Outbox 调用 add
-        assert mock_db.add.call_count >= 3  # 1 timeline + 2 outboxes
+        assert workline_runtime_mock_db.add.call_count >= 3  # 1 timeline + 2 outboxes
 
     @pytest.mark.asyncio
-    async def test_commit_updates_inbox_status(self, mock_db, writer):
+    async def test_commit_updates_inbox_status(self, workline_runtime_mock_db, writer):
         """测试 commit 更新 Inbox 状态"""
         session = MockSession()
         timelines = [MockTimeline()]
@@ -194,7 +189,7 @@ class TestAtomicWriterCommit:
 
         with patch.object(writer, "_get_next_seq_no", return_value=1):
             await writer.commit(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 session=session,
                 timelines=timelines,
                 outboxes=None,
@@ -206,19 +201,19 @@ class TestAtomicWriterCommit:
         assert inbox.processed_at is not None
 
     @pytest.mark.asyncio
-    async def test_commit_is_atomic_rollback_on_error(self, mock_db, writer):
+    async def test_commit_is_atomic_rollback_on_error(self, workline_runtime_mock_db, writer):
         """测试 commit 在错误时回滚"""
         session = MockSession()
         timelines = [MockTimeline()]
         inbox = MockInbox()
 
         # 模拟数据库操作抛出异常
-        mock_db.add.side_effect = ValueError("Database error")
+        workline_runtime_mock_db.add.side_effect = ValueError("Database error")
 
         with patch.object(writer, "_get_next_seq_no", return_value=1):
             with pytest.raises(ValueError, match="Database error"):
                 await writer.commit(
-                    db=mock_db,
+                    db=workline_runtime_mock_db,
                     session=session,
                     timelines=timelines,
                     outboxes=None,
@@ -226,10 +221,10 @@ class TestAtomicWriterCommit:
                 )
 
         # 验证调用了 rollback
-        mock_db.rollback.assert_called_once()
+        workline_runtime_mock_db.rollback.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_commit_without_outboxes(self, mock_db, writer):
+    async def test_commit_without_outboxes(self, workline_runtime_mock_db, writer):
         """测试 commit 不传 outboxes 时正常工作"""
         session = MockSession()
         timelines = [MockTimeline()]
@@ -237,7 +232,7 @@ class TestAtomicWriterCommit:
 
         with patch.object(writer, "_get_next_seq_no", return_value=1):
             await writer.commit(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 session=session,
                 timelines=timelines,
                 outboxes=None,
@@ -260,19 +255,19 @@ class TestAtomicWriterGetNextSeqNo:
     async def test_get_next_seq_no_returns_incrementing_values(self, writer):
         """测试 _get_next_seq_no 返回递增值"""
         # 创建模拟数据库会话
-        mock_db = AsyncMock(spec=AsyncSession)
+        workline_runtime_mock_db = AsyncMock(spec=AsyncSession)
 
         # 模拟 execute 返回结果
         mock_result = MagicMock()
         mock_result.scalar = MagicMock(return_value=100)
-        mock_db.execute = AsyncMock(return_value=mock_result)
+        workline_runtime_mock_db.execute = AsyncMock(return_value=mock_result)
 
-        result = await writer._get_next_seq_no(mock_db)
+        result = await writer._get_next_seq_no(workline_runtime_mock_db)
 
         assert result == 100
 
         # 验证调用了正确的 SQL
-        call_args = mock_db.execute.call_args
+        call_args = workline_runtime_mock_db.execute.call_args
         assert call_args is not None
         # 检查第一个参数是否是 text 对象
         sql_text = call_args[0][0]
@@ -282,7 +277,7 @@ class TestAtomicWriterGetNextSeqNo:
     @pytest.mark.asyncio
     async def test_get_next_seq_no_multiple_calls(self, writer):
         """测试多次调用 _get_next_seq_no 返回不同值"""
-        mock_db = AsyncMock(spec=AsyncSession)
+        workline_runtime_mock_db = AsyncMock(spec=AsyncSession)
 
         # 模拟多次调用返回不同值
         call_count = 0
@@ -294,11 +289,11 @@ class TestAtomicWriterGetNextSeqNo:
             mock_result.scalar = MagicMock(return_value=100 + call_count)
             return mock_result
 
-        mock_db.execute = mock_execute
+        workline_runtime_mock_db.execute = mock_execute
 
         results = []
         for _ in range(3):
-            result = await writer._get_next_seq_no(mock_db)
+            result = await writer._get_next_seq_no(workline_runtime_mock_db)
             results.append(result)
 
         # 验证每次调用返回不同的值
@@ -327,15 +322,9 @@ class TestAtomicWriterEdgeCases:
     """AtomicWriter 边界情况测试"""
 
     @pytest.fixture
-    def mock_db(self):
+    def workline_runtime_mock_db(self):
         """创建模拟数据库会话"""
-        db = AsyncMock(spec=AsyncSession)
-        db.add = MagicMock()
-        db.execute = AsyncMock()
-        db.commit = AsyncMock()
-        db.rollback = AsyncMock()
-        db.flush = AsyncMock()
-        return db
+        return make_mock_db(spec=AsyncSession)
 
     @pytest.fixture
     def writer(self):
@@ -343,14 +332,14 @@ class TestAtomicWriterEdgeCases:
         return AtomicWriter()
 
     @pytest.mark.asyncio
-    async def test_commit_empty_timelines(self, mock_db, writer):
+    async def test_commit_empty_timelines(self, workline_runtime_mock_db, writer):
         """测试空 timelines 列表"""
         session = MockSession()
         timelines = []
         inbox = MockInbox()
 
         await writer.commit(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             session=session,
             timelines=timelines,
             outboxes=None,
@@ -361,7 +350,7 @@ class TestAtomicWriterEdgeCases:
         assert inbox.status == InboxStatus.PROCESSED
 
     @pytest.mark.asyncio
-    async def test_commit_empty_outboxes_list(self, mock_db, writer):
+    async def test_commit_empty_outboxes_list(self, workline_runtime_mock_db, writer):
         """测试空 outboxes 列表（非 None）"""
         session = MockSession()
         timelines = [MockTimeline()]
@@ -370,7 +359,7 @@ class TestAtomicWriterEdgeCases:
 
         with patch.object(writer, "_get_next_seq_no", return_value=1):
             await writer.commit(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 session=session,
                 timelines=timelines,
                 outboxes=outboxes,
@@ -381,7 +370,7 @@ class TestAtomicWriterEdgeCases:
         assert inbox.status == InboxStatus.PROCESSED
 
     @pytest.mark.asyncio
-    async def test_commit_session_context_update(self, mock_db, writer):
+    async def test_commit_session_context_update(self, workline_runtime_mock_db, writer):
         """测试 Session 上下文更新"""
         session = MockSession(context={"initial": "value"})
         timelines = [MockTimeline()]
@@ -392,7 +381,7 @@ class TestAtomicWriterEdgeCases:
 
         with patch.object(writer, "_get_next_seq_no", return_value=1):
             await writer.commit(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 session=session,
                 timelines=timelines,
                 outboxes=None,

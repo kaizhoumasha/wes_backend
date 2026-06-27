@@ -34,6 +34,7 @@ from src.workline_runtime.session_resolver import (
     SessionResolveError,
     _resolve_business_key,
 )
+from tests.workline_runtime.support.runtime_builders import make_devices_by_role, make_inbox, make_workline
 
 pytestmark = pytest.mark.usefixtures("registered_test_workline_plugin")
 
@@ -309,47 +310,6 @@ class RoughSorterRuntimePlugin:
         return _resolve_rough_sorter_business_key(payload_json)
 
 
-def make_inbox(
-    kind: InboxKind,
-    device_id: int | None = None,
-    command_id: int | None = None,
-    session_id: int | None = None,
-    trace_id: str | None = None,
-    source_message_id: str | None = None,
-    payload_json: dict | None = None,
-) -> MagicMock:
-    """创建模拟 Inbox"""
-    inbox = MagicMock()
-    inbox.kind = kind
-    inbox.device_id = device_id
-    inbox.command_id = command_id
-    inbox.session_id = session_id
-    inbox.trace_id = trace_id
-    inbox.source_message_id = source_message_id
-    inbox.payload_json = payload_json or {}
-    return inbox
-
-
-def make_workline(
-    workline_id: int = 1,
-    plugin_key: str | None = "test_plugin",
-) -> MagicMock:
-    """创建模拟 WorkLine"""
-    workline = MagicMock()
-    workline.id = workline_id
-    workline.plugin_key = plugin_key
-    workline.run_mode = "AUTO"
-    return workline
-
-
-def make_devices_by_role() -> dict[str, list]:
-    """创建模拟设备映射"""
-    return {
-        "SCANNER": [MagicMock(id=1, device_code="SCANNER_01")],
-        "CONVEYOR": [MagicMock(id=2, device_code="CONVEYOR_01")],
-    }
-
-
 def test_legacy_entry_blocker_symbols_removed() -> None:
     import importlib
 
@@ -391,11 +351,6 @@ class TestSessionResolver:
     """SessionResolver 测试套件"""
 
     @pytest.fixture
-    def mock_db(self):
-        """创建模拟数据库会话"""
-        return AsyncMock()
-
-    @pytest.fixture
     def mock_session_repo(self):
         """创建模拟 Session Repository"""
         return MockSessionRepository()
@@ -417,7 +372,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_creates_new_session(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -440,7 +395,7 @@ class TestSessionResolver:
             return_value="registry-legacy",
         ):
             session = await resolver.resolve_or_create(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 inbox=inbox,
                 workline=workline,
                 devices_by_role=devices_by_role,
@@ -465,11 +420,11 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_locks_business_key_before_lookup(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         resolver,
     ):
         """PostgreSQL 下同一 workline/business_key 必须先串行化再查建会话。"""
-        mock_db.get_bind = lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+        workline_runtime_mock_db.get_bind = lambda: SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
         inbox = make_inbox(
             kind=InboxKind.DEVICE_EVENT,
             device_id=1,
@@ -479,21 +434,21 @@ class TestSessionResolver:
         workline = make_workline(workline_id=7, plugin_key="test_workline_plugin")
 
         _ = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=workline,
             devices_by_role=make_devices_by_role(),
         )
 
-        mock_db.execute.assert_awaited()
-        lock_statement, lock_params = mock_db.execute.await_args_list[0].args
+        workline_runtime_mock_db.execute.assert_awaited()
+        lock_statement, lock_params = workline_runtime_mock_db.execute.await_args_list[0].args
         assert "pg_advisory_xact_lock(hashtext(:lock_key))" in str(lock_statement)
         assert lock_params == {"lock_key": "workline-session:7:ORDER_LOCK"}
-        assert len(mock_db.execute.await_args_list) == 1
+        assert len(workline_runtime_mock_db.execute.await_args_list) == 1
 
     @pytest.mark.asyncio
     async def test_resolve_device_event_falls_back_to_registry_contract_version_when_workline_missing(
-        self, mock_db, mock_session_repo, resolver
+        self, workline_runtime_mock_db, mock_session_repo, resolver
     ):
         """workline.contract_version 缺失时才回退 registry。"""
         inbox = make_inbox(
@@ -510,7 +465,7 @@ class TestSessionResolver:
             return_value="registry-2026.04",
         ):
             session = await resolver.resolve_or_create(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 inbox=inbox,
                 workline=workline,
                 devices_by_role=make_devices_by_role(),
@@ -522,7 +477,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_does_not_use_line_code_as_plugin_key_fallback(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -536,7 +491,7 @@ class TestSessionResolver:
         workline.line_code = "WL-001"
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=workline,
             devices_by_role=make_devices_by_role(),
@@ -549,7 +504,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_finds_existing_session(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -582,7 +537,7 @@ class TestSessionResolver:
 
         # Act
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=workline,
             devices_by_role=devices_by_role,
@@ -612,7 +567,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_reuses_terminal_session_for_same_business_key_without_time_window(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -640,7 +595,7 @@ class TestSessionResolver:
         )
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=make_workline(workline_id=1, plugin_key="test_workline_plugin"),
             devices_by_role=make_devices_by_role(),
@@ -654,7 +609,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_timer_timeout_finds_by_session_id(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -680,7 +635,7 @@ class TestSessionResolver:
 
         # Act
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=workline,
             devices_by_role=devices_by_role,
@@ -694,7 +649,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_external_http_by_trace_id(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -722,7 +677,7 @@ class TestSessionResolver:
 
         # Act
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=workline,
             devices_by_role=devices_by_role,
@@ -739,7 +694,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_external_http_prefers_dispatch_key_when_trace_has_multiple_sessions(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -783,7 +738,7 @@ class TestSessionResolver:
         )
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=None,
             devices_by_role=make_devices_by_role(),
@@ -797,7 +752,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_external_http_callback_resolves_session_by_rack_operation_key(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -840,7 +795,7 @@ class TestSessionResolver:
         )
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=None,
             devices_by_role=make_devices_by_role(),
@@ -855,7 +810,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_external_http_callback_does_not_resume_session_until_all_operation_tasks_succeeded(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -897,7 +852,7 @@ class TestSessionResolver:
         )
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=None,
             devices_by_role=make_devices_by_role(),
@@ -911,7 +866,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_external_http_callback_resolves_handling_operation_session(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -955,7 +910,7 @@ class TestSessionResolver:
         )
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=None,
             devices_by_role=make_devices_by_role(),
@@ -971,7 +926,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_manual_hold_by_session_id(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -998,7 +953,7 @@ class TestSessionResolver:
 
         # Act
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=workline,
             devices_by_role=devices_by_role,
@@ -1012,7 +967,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_timer_timeout_raises_when_session_not_found(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1027,7 +982,7 @@ class TestSessionResolver:
         # Act & Assert
         with pytest.raises(ValueError, match="Session not found: 999"):
             await resolver.resolve_or_create(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 inbox=inbox,
                 workline=workline,
                 devices_by_role=devices_by_role,
@@ -1036,7 +991,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_external_http_raises_when_trace_id_missing(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1051,7 +1006,7 @@ class TestSessionResolver:
         # Act & Assert
         with pytest.raises(ValueError, match="trace_id is required for EXTERNAL_HTTP"):
             await resolver.resolve_or_create(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 inbox=inbox,
                 workline=workline,
                 devices_by_role=devices_by_role,
@@ -1060,7 +1015,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_without_business_key_creates_session(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1075,7 +1030,7 @@ class TestSessionResolver:
 
         # Act
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=workline,
             devices_by_role=devices_by_role,
@@ -1198,7 +1153,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_raises_when_stable_business_key_missing(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1215,7 +1170,7 @@ class TestSessionResolver:
             match="Unable to resolve stable business_key from payload",
         ):
             await resolver.resolve_or_create(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 inbox=inbox,
                 workline=workline,
                 devices_by_role=make_devices_by_role(),
@@ -1226,7 +1181,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_rejects_estop_as_normal_session_event(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1247,7 +1202,7 @@ class TestSessionResolver:
             match="Unable to resolve stable business_key from payload",
         ):
             await resolver.resolve_or_create(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 inbox=inbox,
                 workline=workline,
                 devices_by_role=make_devices_by_role(),
@@ -1258,7 +1213,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_uses_event_scope_key_for_material_arrived(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1278,7 +1233,7 @@ class TestSessionResolver:
         workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=workline,
             devices_by_role=make_devices_by_role(),
@@ -1291,7 +1246,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_rejects_material_arrived_without_event_identity(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1314,7 +1269,7 @@ class TestSessionResolver:
             match="Unable to resolve stable business_key from payload",
         ):
             await resolver.resolve_or_create(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 inbox=inbox,
                 workline=workline,
                 devices_by_role=make_devices_by_role(),
@@ -1325,7 +1280,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_uses_test_plugin_item_fields_as_business_key(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1347,7 +1302,7 @@ class TestSessionResolver:
         workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=workline,
             devices_by_role=make_devices_by_role(),
@@ -1366,7 +1321,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_uses_rough_sorter_data_pkg_id_as_business_key(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1388,13 +1343,13 @@ class TestSessionResolver:
         workline = make_workline(workline_id=1, plugin_key="rough_sorter")
 
         first_session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=make_inbox(kind=InboxKind.DEVICE_EVENT, device_id=1, payload_json=payload),
             workline=workline,
             devices_by_role=make_devices_by_role(),
         )
         second_session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=make_inbox(kind=InboxKind.DEVICE_EVENT, device_id=1, payload_json=payload),
             workline=workline,
             devices_by_role=make_devices_by_role(),
@@ -1408,7 +1363,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_uses_incomplete_scan_key_when_test_item_id_missing(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1437,7 +1392,7 @@ class TestSessionResolver:
         workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=workline,
             devices_by_role=make_devices_by_role(),
@@ -1451,7 +1406,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_reuses_incomplete_scan_session_across_timestamps(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1478,13 +1433,13 @@ class TestSessionResolver:
 
         workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
         first_session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=make_inbox(kind=InboxKind.DEVICE_EVENT, device_id=1, payload_json=payload),
             workline=workline,
             devices_by_role=make_devices_by_role(),
         )
         second_session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=make_inbox(kind=InboxKind.DEVICE_EVENT, device_id=1, payload_json=later_payload),
             workline=workline,
             devices_by_role=make_devices_by_role(),
@@ -1497,7 +1452,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_rejects_test_plugin_item_without_plugin_key(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1507,7 +1462,7 @@ class TestSessionResolver:
 
         expected_hash = hashlib.sha256(json.dumps("ITEM-001", ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
         _ = await mock_session_repo.create(
-            mock_db,
+            workline_runtime_mock_db,
             {
                 "session_code": "SES_CANONICAL",
                 "workline_id": 1,
@@ -1545,7 +1500,7 @@ class TestSessionResolver:
             match="Unable to resolve stable business_key from payload",
         ):
             await resolver.resolve_or_create(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 inbox=inbox,
                 workline=workline,
                 devices_by_role=make_devices_by_role(),
@@ -1557,7 +1512,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_device_event_test_plugin_item_key_reuses_existing_session(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1567,7 +1522,7 @@ class TestSessionResolver:
 
         expected_hash = hashlib.sha256(json.dumps("ITEM-001", ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
         _ = await mock_session_repo.create(
-            mock_db,
+            workline_runtime_mock_db,
             {
                 "session_code": "SES_EXISTING",
                 "workline_id": 1,
@@ -1601,7 +1556,7 @@ class TestSessionResolver:
         workline = make_workline(workline_id=1, plugin_key="test_workline_plugin")
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=workline,
             devices_by_role=make_devices_by_role(),
@@ -1622,7 +1577,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_command_result_finds_session_by_awaiting_device_command_code(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1649,7 +1604,7 @@ class TestSessionResolver:
         )
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=make_workline(),
             devices_by_role=make_devices_by_role(),
@@ -1665,7 +1620,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_resolve_command_result_does_not_fallback_to_trace_id(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1693,7 +1648,7 @@ class TestSessionResolver:
 
         with pytest.raises(ValueError, match="Session not found for command_code: CMD-NOT-AWAITED"):
             await resolver.resolve_or_create(
-                db=mock_db,
+                db=workline_runtime_mock_db,
                 inbox=inbox,
                 workline=make_workline(),
                 devices_by_role=make_devices_by_role(),
@@ -1708,7 +1663,7 @@ class TestSessionResolver:
     @pytest.mark.asyncio
     async def test_device_event_creates_new_session_when_other_business_key_open(
         self,
-        mock_db,
+        workline_runtime_mock_db,
         mock_session_repo,
         resolver,
     ):
@@ -1736,7 +1691,7 @@ class TestSessionResolver:
         )
 
         session = await resolver.resolve_or_create(
-            db=mock_db,
+            db=workline_runtime_mock_db,
             inbox=inbox,
             workline=make_workline(workline_id=1, plugin_key="test_workline_plugin"),
             devices_by_role=make_devices_by_role(),
