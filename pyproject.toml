@@ -369,6 +369,7 @@ addopts = [
 [dependency-groups]
 dev = [
     "bandit>=1.9.3",
+    "import-linter>=2.0",
     "pytest-cov>=7.0.0",
     "pytest-html>=4.2.0",
     "basedpyright>=1.28.0",
