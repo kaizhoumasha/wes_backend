@@ -184,6 +184,32 @@ class InboundNormalizerProfile(BaseModel):
         description="source_event_id 解析 correlation 策略: manual / auto / hybrid",
     )
 
+    @model_validator(mode="after")
+    def _normalizer_injection_boundary(self) -> InboundNormalizerProfile:
+        """inbound normalizer 静态校验 (Phase 1 CEO-009 / Packet D)。
+
+        主计划 §3.5.1 + H2 黑名单: 拒绝不合规输入, 防止业务 capability 错误
+        注入 inbound normalizer (R-I3a/R-I3b/R-I3c)。
+        """
+        valid_prefixes = ("WMS_", "ECS_", "DEVICE_")
+        if not any(self.event_type.startswith(p) for p in valid_prefixes):
+            raise ValueError(f"event_type 必须以 {valid_prefixes} 之一开头, got: {self.event_type}")
+        provider_to_prefix = {"wms": "WMS_", "ecs": "ECS_", "device": "DEVICE_"}
+        expected_prefix = provider_to_prefix.get(self.source_provider.lower())
+        if expected_prefix is None:
+            raise ValueError(f"source_provider 必为 wms/ecs/device 之一, got: {self.source_provider}")
+        if not self.event_type.startswith(expected_prefix):
+            raise ValueError(
+                f"source_provider={self.source_provider} 与 event_type={self.event_type} 前缀不一致, "
+                f"应为 {expected_prefix}*"
+            )
+        valid_resolutions = ("manual", "auto", "hybrid")
+        if self.correlation_resolution not in valid_resolutions:
+            raise ValueError(
+                f"correlation_resolution 必为 {valid_resolutions} 之一, got: {self.correlation_resolution}"
+            )
+        return self
+
 
 class FixtureSet(BaseModel):
     """contract tests 与 simulator 使用的 fixture 集声明 (Phase 0 SPEC §P0-006)。
