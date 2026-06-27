@@ -16,6 +16,7 @@ from typing import Protocol, get_type_hints
 from pydantic import BaseModel
 
 from src.app.wms_integration.ports.document import WmsDocumentPort
+from src.app.wms_integration.ports.event import InboundEventPort, WmsEventPort
 from src.app.wms_integration.ports.fulfillment import WmsFulfillmentPort
 
 PORT_METHOD_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*Port\.[a-z_][A-Za-z0-9_]*$")
@@ -98,5 +99,57 @@ def test_wms_fulfillment_data_classes_are_pydantic():
     from src.app.wms_integration.ports.fulfillment import WmsFulfillmentResult, WmsPalletBindingResult
 
     for cls in [WmsFulfillmentResult, WmsPalletBindingResult]:
+        assert issubclass(cls, BaseModel), f"{cls.__name__} must be BaseModel"
+        assert cls.__doc__, f"{cls.__name__} needs docstring"
+
+
+def test_inbound_event_port_is_protocol():
+    assert issubclass(InboundEventPort, Protocol)
+
+
+def test_wms_event_port_is_protocol():
+    assert issubclass(WmsEventPort, Protocol)
+
+
+def test_wms_event_port_normalizer_signatures():
+    methods = [
+        "normalize_wms_grn_received",
+        "normalize_wms_pallet_arrived",
+        "normalize_wms_rack_arrived",
+        "normalize_wms_transport_completed",
+    ]
+    for name in methods:
+        assert hasattr(WmsEventPort, name), f"missing normalizer: {name}"
+
+
+def test_wms_event_port_have_docstrings():
+    assert WmsEventPort.__doc__, "WmsEventPort class needs docstring"
+    assert InboundEventPort.__doc__, "InboundEventPort class needs docstring"
+    for name in [
+        "normalize_wms_grn_received",
+        "normalize_wms_pallet_arrived",
+        "normalize_wms_rack_arrived",
+        "normalize_wms_transport_completed",
+    ]:
+        method = getattr(WmsEventPort, name)
+        assert method.__doc__, f"normalizer {name} needs docstring"
+
+
+def test_wms_event_data_classes_are_pydantic():
+    from src.app.wms_integration.ports.event import (
+        InboundEventEnvelope,
+        WmsGrnReceivedEvent,
+        WmsPalletArrivedEvent,
+        WmsRackArrivedEvent,
+        WmsTransportCompletedEvent,
+    )
+
+    for cls in [
+        InboundEventEnvelope,
+        WmsGrnReceivedEvent,
+        WmsPalletArrivedEvent,
+        WmsRackArrivedEvent,
+        WmsTransportCompletedEvent,
+    ]:
         assert issubclass(cls, BaseModel), f"{cls.__name__} must be BaseModel"
         assert cls.__doc__, f"{cls.__name__} needs docstring"
