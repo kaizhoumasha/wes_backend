@@ -15,12 +15,7 @@
 当前默认快速回归集的收集规则：
 
 - 收集范围：`tests/` 下符合 `test_*.py` 的测试文件
-- 默认包含：
-  - `tests/` 根目录中的单元/服务/仓储测试
-  - `tests/api/` 中的接口测试
-  - `tests/auth/` 中的鉴权测试
-  - `tests/workline_runtime/` 中的纯逻辑测试
-- 默认不包含：
+- 除以下重测试目录外，默认收集所有未被忽略的测试目录：
   - `tests/e2e/`
   - `tests/resilience/`
   - `tests/load/`
@@ -31,13 +26,28 @@
 - 日常回归价值高、执行快、依赖少的测试：放入默认快速回归集
 - 需要真实服务、多组件联调、降级/断连、压测或人工参与的测试：放到重测试目录
 
-### 运行所有测试
+### 目录归属矩阵
+
+新增测试优先按业务边界和执行成本归位，不要继续把领域测试放在 `tests/` 根目录。
+
+| 目录 | 放置内容 |
+| --- | --- |
+| `tests/api/` | FastAPI route、permission、response model、API facade 测试 |
+| `tests/workline_runtime/` | runtime service、orchestrator、intent、diagnostic、session resolver 纯逻辑测试 |
+| `tests/workline_plugins/` | plugin contract、plugin behavior、template asset 测试 |
+| `tests/contracts/` | 跨系统/跨模块契约测试 |
+| `tests/integration/` | 多组件但不依赖人工操作的集成测试 |
+| `tests/e2e/` | 显式运行的端到端测试，默认快速回归不收集 |
+| `tests/resilience/` | 降级、断连、恢复类测试，默认快速回归不收集 |
+| `tests/mock/` | mock server 和模拟器测试，默认快速回归不收集 |
+
+### 运行默认快速回归
 
 ```bash
 # 默认快速回归（不包含 e2e / resilience / mock / load）
 pytest
 
-# 生成 HTML 报告 + 覆盖率
+# 默认快速回归 + HTML 报告 + 覆盖率
 pytest --html=reports/report.html --self-contained-html --cov=src --cov-report=html:reports/coverage --cov-report=term-missing
 ```
 
