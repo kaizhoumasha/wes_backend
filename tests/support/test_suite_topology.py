@@ -47,9 +47,7 @@ ROOT_LEVEL_TEST_FILE_ALLOWLIST = {
 }
 
 # 第一阶段仅允许已确认超大文件继续存在；后续拆分任务会逐项移除。
-TEST_FILE_LINE_LIMIT_ALLOWLIST = {
-    "tests/workline_runtime/test_runtime_intent_effects.py",
-}
+TEST_FILE_LINE_LIMIT_ALLOWLIST = set[str]()
 
 
 def iter_test_files() -> list[Path]:
