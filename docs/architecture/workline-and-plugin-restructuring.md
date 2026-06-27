@@ -1,7 +1,7 @@
 ---
 status: Draft v4 — 概要/详细设计（GB/T 8567 风格）
 created_at: 2026-06-23
-updated_at: 2026-06-26
+updated_at: 2026-06-27
 parent_goal: 对当前 WORKLINE + PLUGIN 体系进行全面重构/重做
 document_type: 概要设计说明书 + 详细设计（Outline Design + Detailed Design）
 audience: eng/arch lead, WES owner, WMS 集成 lead, code reviewer
@@ -1762,7 +1762,28 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 
 Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行。实施默认允许破坏性清理，不设置旧 API / 旧表 / 旧插件兼容目标。
 
-### 10.1 Phase 0: 目标态锁定（7 项必做）
+### 10.0 实施进度快照（2026-06-27 同步）
+
+| Phase | 状态 | 已合并 PR | 关键交付 | 待办 |
+| --- | --- | --- | --- | --- |
+| Phase 0 目标态锁定（P0-001~P0-007） | ✅ **已完成** | [#63](https://github.com) `v0.9.0.0` (2026-06-25) | 7 项必做 + 行为契约 10 BC + 1686 行 legacy 矩阵 + C1~C5/R-I3 护栏脚本 | — |
+| Phase 1 Packet A Foundation（CEO-005/006/012 + AP5） | ✅ **已完成** | [#64](https://github.com) Packet A (2026-06-27) | `scope/authority/source/evidence_at` schema + Authority Matrix + SafetyZone + manifest version pin | — |
+| Phase 1 Packet B ACL & WMS Ports（CEO-001 起步 + CEO-013 + H4 + ADR-0009） | ✅ **已完成** | [#64](https://github.com) Packet B (2026-06-27) | `WmsMasterDataPort` / `WmsInventoryQueryPort` / `WmsInventoryTransactionPort` 3 ports 起步 + `ExternalContractProfile` / `RuntimeCapabilityProfile` / `InboundNormalizerProfile` + provider simulator registry + H4 反注入白/黑名单 + ADR-0009 shared contracts package | 剩余 4 port（Document / Fulfillment / Event / ReconciliationQuery）→ Packet D |
+| Phase 1 Packet C Runtime 骨架（CEO-007/008/010/011 + H5） | ✅ **已完成** | [#64](https://github.com) Packet C (2026-06-27) | 7 个 runtime core 实体（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog + IdempotencyKey） + `ConveyorQueueMembership` + DeviceCommand ECS contract + device FK ring dissolve + H5 IdempotencyGuard + callback / handling / rack 接入 runtime/orchestration | — |
+| Phase 1 Packet D Capability 边界 + 剩余 4 WMS port（CEO-009） | ⏳ **未启动** | — | — | CEO-009 capability 注入/import 边界静态检查 + 4 port 落地 + InboundNormalizer 静态校验 |
+| Phase 2 Runtime/Orchestration 迁移与 WorkLine 清空 | ⏳ **未启动** | — | — | 启动条件：Phase 0 + Phase 1 全完成 + 重新跑 autoplan；详见 §10.3.1 B 方案暂停/回退条件 |
+| Phase 3 执行安全与恢复能力补全 | ⏳ **未启动** | — | — | ENG-002~022 + DESIGN-001~005 |
+| Phase 4 后续子领域 | ⏳ **未启动** | — | — | MaterialLocationQuery / WorklineActiveObjects / 入库能力目标态重建 / SMT-NG-WMS 对账 |
+| Phase 5 Legacy 删除与收尾 | ⏳ **未启动** | — | — | 双 lane：技术残留清理（Phase 3 门禁后）+ 业务承载 legacy 清理（Phase 4 能力验收后） |
+
+**回归基线**（2026-06-27 在 develop @ `5b67797` 验证）：
+
+- `uv run pytest`：2668 passed, 33 skipped, 2 xfailed in 251.21s
+- `uv run ruff format --check .`：721 files already formatted
+- `uv run ruff check .`：All checks passed
+- Phase 0 / Phase 1 全部行为契约测试与架构护栏测试绿灯
+
+### 10.1 Phase 0: 目标态锁定（7 项必做） — ✅ 已完成（PR #63）
 
 **目标**：锁定 P0 系统目标和目标态边界，防止后续实现被旧 WorkLine/plugin 形态反向约束。
 
@@ -1776,63 +1797,89 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | 6 | **P0-006 IntegrationLab / 外部合同联调基线** | M | `docs/architecture/integration-lab-and-simulator.md`, `docs/contracts/external-contract-profile.md` | WMS/ECS simulator、sandbox provider profile、contract fixture、scenario runner 基线发布；只允许走正式 port contract |
 | 7 | **P0-007 Architecture guardrails 基线** | M | `docs/architecture/architecture-guardrails-spec.md`, `scripts/architecture-guardrails.sh`, `tests/architecture/` | §7.5 核心 5 条 + I3 capability 注入/import 边界扫描、跨域 FK 扫描、DeviceCommand 字段白名单、schema 字段校验、RuntimeInbox 状态机契约测试可运行 |
 
-**Phase 0 完成门禁**：
+**Phase 0 完成门禁**（2026-06-25 PR #63 全绿）：
 
-- [ ] `target-state-contract.md` 发布，不含旧 API/旧表兼容承诺
-- [ ] `legacy-cleanup-matrix.md` 发布，旧 WorkLine/plugin/runtime 每个入口都有处理策略
-- [ ] 行为契约测试可运行，保护业务语义而非旧代码形态
-- [ ] 粗分机正常入库、满箱交换前置分流、分拣机入库三场景基线被描述为目标态能力，不引用旧 plugin 接口、旧 context schema 或 fake allocator
-- [ ] `session-correlation-matrix.md` 发布
-- [ ] `device-command-contract.md` 发布，字段与白皮书 Command-Ack-Callback 一致
-- [ ] `external-contract-profile.md` 与 `integration-lab-and-simulator.md` 发布，明确 simulator/sandbox/replay/profile 不进入生产 fallback、不绕过正式 port contract
-- [ ] `architecture-guardrails-spec.md` 发布，逐条映射 §7.5 核心 5 条不变量 + I3 capability 注入/import 边界到脚本/测试/失败示例
-- [ ] `scripts/architecture-guardrails.sh` 可本地运行并纳入后续 Phase 门禁；核心 5 条不变量 + I3 capability 注入/import 边界有自动检查路径
+- [x] `target-state-contract.md` 发布，不含旧 API/旧表兼容承诺
+- [x] `legacy-cleanup-matrix.md` 发布，旧 WorkLine/plugin/runtime 每个入口都有处理策略
+- [x] 行为契约测试可运行，保护业务语义而非旧代码形态
+- [x] 粗分机正常入库、满箱交换前置分流、分拣机入库三场景基线被描述为目标态能力，不引用旧 plugin 接口、旧 context schema 或 fake allocator
+- [x] `session-correlation-matrix.md` 发布
+- [x] `device-command-contract.md` 发布，字段与白皮书 Command-Ack-Callback 一致
+- [x] `external-contract-profile.md` 与 `integration-lab-and-simulator.md` 发布，明确 simulator/sandbox/replay/profile 不进入生产 fallback、不绕过正式 port contract
+- [x] `architecture-guardrails-spec.md` 发布，逐条映射 §7.5 核心 5 条不变量 + I3 capability 注入/import 边界到脚本/测试/失败示例
+- [x] `scripts/architecture-guardrails.sh` 可本地运行并纳入后续 Phase 门禁；核心 5 条不变量 + I3 capability 注入/import 边界有自动检查路径
 
-### 10.2 Phase 1: 目标态骨架与 WMS ACL
+**Phase 0 实际落地证据**：
+
+- 文档：`docs/architecture/target-state-contract.md`、`legacy-cleanup-matrix.md`（1686 entries，0 pending-review）、`session-correlation-matrix.md`、`device-command-contract.md`、`integration-lab-and-simulator.md`、`architecture-guardrails-spec.md`
+- 行为契约：`ed6e7b5 test(workline): P0-003 行为契约测试基线 (10 BC, 28 pass + 3 strict xfail)`
+- 护栏脚本：`scripts/architecture-guardrails.sh` + `scripts/architecture-guardrails.allowlist`（phase-aware enforcement）
+- 护栏测试：`tests/architecture/test_c1..c5_*`、`test_ri3_capability_injection_guardrail.py`、`test_phase0_legacy_matrix_contract.py`
+
+### 10.2 Phase 1: 目标态骨架与 WMS ACL — 🟡 Packet A/B/C 已完成（PR #64），Packet D 未启动
 
 **目标**：先建立目标态骨架和 runtime/orchestration 最小运行骨架，不迁移旧执行入口。Phase 1 的完成标准是“runtime 能独立接收 inbox、记录 intent、关联 correlation”，不是 P0 最小可运行闭环，也不是旧 WorkLine/plugin/runtime 已经清空。
 
-| Task | Effort | 关联文件 | 验证 |
-| --- | --- | --- | --- |
-| **CEO-001** 整理 `wms_integration/` 并补齐 WMS 能力面 ports | M | `src/app/wms_integration/` | 能力面 port 单元测试；覆盖 `wms_rcs_interface_requirements.md` P0 接口映射；内部业务域无 WMS DTO/client import（callback ACL 域和 legacy 标注豁免） |
-| **CEO-002** 4 方案决策表归档 | S | 本文档 §3.8 | 已归档 |
-| **CEO-005** 查询响应 schema 增加 `scope/authority/source/evidence_at` 强制字段 | S | `src/app/*/schemas/` | schema 校验 + 测试；外部权威 QueryPort response 含 `source_version` |
-| **CEO-006** Authority Matrix 文档发布 | S | `docs/architecture/authority-matrix.md` | 11 类事实类型 + 权威来源（对齐 `target-state-contract.md` §4） |
-| **CEO-007** runtime/orchestration 最小骨架 | M | `src/app/runtime/orchestration/`, `docs/architecture/runtime-orchestration-spec.md` | ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog 7 个 runtime core 实体类型分离；对象级 work item 不被 session 串行锁阻塞；最小 worker + 单元测试 |
-| **CEO-008** `ConveyorQueueMembership` 目标模型 | M | `src/app/runtime/orchestration/`, `src/app/workline/` | manifest queue_code 校验 + active 唯一约束测试 |
-| **CEO-009** `RuntimeCapabilityContext` / `CapabilityPortRegistry` | M | `src/app/runtime/` | capability 只能拿到 query/effect port contract；静态检查拒绝 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort`、`RuntimeInbox` consumer |
-| **CEO-010** `DeviceCommand` ECS API contract + manifest concurrency limit | M | `src/app/device/`, `docs/architecture/device-command-contract.md` | command_code 幂等、dispatch 前 IDLE 校验、RUNNING 有界等待、ERROR/OFFLINE 短退避、Event_Push 只 ACK、缺 event_id 不推进、in-flight 限制测试；DeviceRuntime 状态快照 TTL 与 DeviceDispatchPolicy 纳入 manifest/schema 设计并通过 validator 测试；`awaiting_command_id` 迁移为 `awaiting_device_command_code`（值为 `DeviceCommand.command_code`，无 device FK），移除 device ↔ session FK 环并验证 Alembic upgrade/downgrade |
-| **CEO-011** WorkLine manifest version pin | M | `src/app/workline/`, `src/app/runtime/orchestration/` | RUNNING session 固定 manifest_version；新 manifest 只影响新 session；activation-time validator 测试 |
-| **CEO-012** WorkLine SafetyZone / shared-device manifest schema | M | `src/app/workline/`, `src/app/device/` | shared device 影响范围、required/optional role、SafetyZone validator 测试 |
-| **CEO-013** ExternalContractProfile + provider simulator registry | M | `src/app/contracts/`, `src/app/wms_integration/`, `src/app/device/`, `docs/contracts/external-contract-profile.md` | ExternalContractProfile / RuntimeCapabilityProfile / InboundNormalizerProfile 生产路径位于 `src/app/contracts/` 共享层；WMS/ECS provider profile、contract tests、fixture set 与 simulator registry 可运行；adapter/normalizer 不泄漏外部 DTO |
+| Task | Effort | 关联文件 | 验证 | 状态 |
+| --- | --- | --- | --- | --- |
+| **CEO-001** 整理 `wms_integration/` 并补齐 WMS 能力面 ports | M | `src/app/wms_integration/ports/` | 能力面 port 单元测试；覆盖 `wms_rcs_interface_requirements.md` P0 接口映射；内部业务域无 WMS DTO/client import（callback ACL 域和 legacy 标注豁免） | 🟡 3/7（MasterData/InventoryQuery/InventoryTransaction 已落，Document/Fulfillment/Event/ReconciliationQuery → Packet D） |
+| **CEO-002** 4 方案决策表归档 | S | 本文档 §3.8 | 已归档 | ✅ 已完成 |
+| **CEO-005** 查询响应 schema 增加 `scope/authority/source/evidence_at` 强制字段 | S | `src/app/*/schemas/` | schema 校验 + 测试；外部权威 QueryPort response 含 `source_version` | ✅ Packet A |
+| **CEO-006** Authority Matrix 文档发布 | S | `docs/architecture/authority-matrix.md` | 11 类事实类型 + 权威来源（对齐 `target-state-contract.md` §4） | ✅ Packet A |
+| **CEO-007** runtime/orchestration 最小骨架 | M | `src/app/runtime/orchestration/`, `docs/architecture/runtime-orchestration-spec.md` | ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog 7 个 runtime core 实体类型分离；对象级 work item 不被 session 串行锁阻塞；最小 worker + 单元测试 | ✅ Packet C |
+| **CEO-008** `ConveyorQueueMembership` 目标模型 | M | `src/app/runtime/orchestration/`, `src/app/workline/` | manifest queue_code 校验 + active 唯一约束测试 | ✅ Packet C |
+| **CEO-009** `RuntimeCapabilityContext` / `CapabilityPortRegistry` | M | `src/app/runtime/`, `src/app/contracts/external_contract_profile.py` | capability 只能拿到 query/effect port contract；静态检查拒绝 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort`、`RuntimeInbox` consumer | 🟡 类已实现（`src/app/runtime/capability_port_registry.py` + `src/app/contracts/external_contract_profile.py` 定义 `RuntimeCapabilityProfile` / `InboundNormalizerProfile`），Packet D 补全 4 remaining ports + 静态扫描 |
+| **CEO-010** `DeviceCommand` ECS API contract + manifest concurrency limit | M | `src/app/device/`, `docs/architecture/device-command-contract.md` | command_code 幂等、dispatch 前 IDLE 校验、RUNNING 有界等待、ERROR/OFFLINE 短退避、Event_Push 只 ACK、缺 event_id 不推进、in-flight 限制测试；DeviceRuntime 状态快照 TTL 与 DeviceDispatchPolicy 纳入 manifest/schema 设计并通过 validator 测试；`awaiting_command_id` 迁移为 `awaiting_device_command_code`（值为 `DeviceCommand.command_code`，无 device FK），移除 device ↔ session FK 环并验证 Alembic upgrade/downgrade | ✅ Packet C（`3a6a7e29 feat(device): Phase 1 DeviceCommand 接入 ExecutionCorrelation + H4 反注入` + `9b74b6e6 feat(migrations): Phase 1 AP2 device FK ring dissolve`） |
+| **CEO-011** WorkLine manifest version pin | M | `src/app/workline/`, `src/app/runtime/orchestration/` | RUNNING session 固定 manifest_version；新 manifest 只影响新 session；activation-time validator 测试 | ✅ Packet A |
+| **CEO-012** WorkLine SafetyZone / shared-device manifest schema | M | `src/app/workline/`, `src/app/device/` | shared device 影响范围、required/optional role、SafetyZone validator 测试 | ✅ Packet A |
+| **CEO-013** ExternalContractProfile + provider simulator registry | M | `src/app/contracts/`, `src/app/wms_integration/`, `src/app/device/`, `docs/contracts/external-contract-profile.md` | ExternalContractProfile / RuntimeCapabilityProfile / InboundNormalizerProfile 生产路径位于 `src/app/contracts/` 共享层；WMS/ECS provider profile、contract tests、fixture set 与 simulator registry 可运行；adapter/normalizer 不泄漏外部 DTO | ✅ Packet B（`src/app/contracts/external_contract_profile.py` + `src/app/wms_integration/provider_simulator_registry.py` + ADR-0009） |
 
-**Phase 1 完成门禁**：
+**Phase 1 完成门禁**（2026-06-27 PR #64 Packet A/B/C 落地）：
 
-- [ ] `wms_integration` MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery 7 个目标 port 全部实现
-- [ ] `wms_rcs_interface_requirements.md` P0 基础数据、业务指令、回调事件均映射到目标 port
-- [ ] 内部业务域无代码直接 import WMS 类型；callback ACL 域和 legacy matrix 标注豁免项按 drop_phase 继续受 allowlist 管控
-- [ ] Runtime capability 注入仅暴露 query/effect port contract，不暴露 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort` 或 `RuntimeInbox` consumer；inbound normalizer 不进入业务 capability
-- [ ] Authority Matrix 文档发布
-- [ ] runtime/orchestration 最小骨架完成，RuntimeIntentLog 含 effect ledger 字段并支持崩溃重放
-- [ ] DeviceCommand 只面向 ECS API，不包含 PLC/坐标/关节/安全回路字段；dispatch 前必须校验 ECS 设备状态为 IDLE
-- [ ] `awaiting_command_id` 已迁移为 `awaiting_device_command_code`（值为 `DeviceCommand.command_code`，无 device FK），device ↔ session FK 环已消解且 Alembic upgrade/downgrade 通过
-- [ ] DeviceRuntime 状态快照 TTL 与 DeviceDispatchPolicy 已纳入 manifest/schema 设计
-- [ ] ExecutionSession 已 pin `manifest_version`
-- [ ] 动态队列 membership 模型替代旧 8 enum 方案
-- [ ] WorkLine manifest 能表达 SafetyZone、共享设备和影响范围；WES 不包含 PLC 直连字段
-- [ ] ExternalContractProfile 覆盖 WMS/ECS 初始 provider，contract fixture 可被 simulator 与 adapter contract tests 复用
-- [ ] provider 未声明的 query/effect 能力无法进入 `RuntimeCapabilityContext`
-- [ ] provider 未声明的 callback/event/result normalizer 能力无法进入 callback API；`WmsEventPort` / `DeviceEventPort` / `RuntimeInbox` consumer 不会注入业务 capability
+- [ ] `wms_integration` MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery 7 个目标 port 全部实现 🟡 3/7
+- [ ] `wms_rcs_interface_requirements.md` P0 基础数据、业务指令、回调事件均映射到目标 port 🟡 已映射 MasterData / InventoryQuery / InventoryTransaction；其余 4 → Packet D
+- [x] 内部业务域无代码直接 import WMS 类型；callback ACL 域和 legacy matrix 标注豁免项按 drop_phase 继续受 allowlist 管控（C1 护栏测试通过）
+- [ ] Runtime capability 注入仅暴露 query/effect port contract，不暴露 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort` 或 `RuntimeInbox` consumer；inbound normalizer 不进入业务 capability 🟡 类已实现，静态扫描入 Packet D
+- [x] Authority Matrix 文档发布（Packet A）
+- [x] runtime/orchestration 最小骨架完成，RuntimeIntentLog 含 effect ledger 字段并支持崩溃重放（Packet C + H5 IdempotencyGuard）
+- [x] DeviceCommand 只面向 ECS API，不包含 PLC/坐标/关节/安全回路字段；dispatch 前必须校验 ECS 设备状态为 IDLE（C4 护栏测试通过）
+- [x] `awaiting_command_id` 已迁移为 `awaiting_device_command_code`（值为 `DeviceCommand.command_code`，无 device FK），device ↔ session FK 环已消解且 Alembic upgrade/downgrade 通过（`9b74b6e6` + `ede4a2ca`）
+- [x] DeviceRuntime 状态快照 TTL 与 DeviceDispatchPolicy 已纳入 manifest/schema 设计
+- [x] ExecutionSession 已 pin `manifest_version`（Packet A）
+- [x] 动态队列 membership 模型替代旧 8 enum 方案（Packet C `conveyor_queue_membership.py`）
+- [x] WorkLine manifest 能表达 SafetyZone、共享设备和影响范围；WES 不包含 PLC 直连字段（Packet A）
+- [x] ExternalContractProfile 覆盖 WMS/ECS 初始 provider，contract fixture 可被 simulator 与 adapter contract tests 复用（Packet B）
+- [ ] provider 未声明的 query/effect 能力无法进入 `RuntimeCapabilityContext` 🟡 Profile 类已定义，静态拒绝检查入 Packet D
+- [ ] provider 未声明的 callback/event/result normalizer 能力无法进入 callback API；`WmsEventPort` / `DeviceEventPort` / `RuntimeInbox` consumer 不会注入业务 capability 🟡 InboundNormalizerProfile 已定义，4 端口落地 + 静态拒绝检查入 Packet D
 
-### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空
+**Phase 1 Packet A/B/C 实际落地证据**（PR #64 提交列表）：
+
+- `aa6f6c99 feat(workline): Phase 1 Packet A Foundation (CEO-005/006/012 + AP5)`
+- `68805a7f` / `0043ed22 feat(workline): Phase 1 Packet B 部分交付 (AP1 + AP2 + H4 + ADR-0009)`
+- `f0724894 feat(workline): Phase 1 Packet B CEO-013 ExternalContractProfile + simulator registry`
+- `2e7d7cf0 feat(wms_integration): Phase 1 Packet B CEO-001 三大 port 起步 (WmsMasterData / WmsInventoryQuery / WmsInventoryTransaction)`
+- `5ccdefba feat(workline): Phase 1 Packet C 起步 (CEO-007 ExecutionSession + ExecutionCorrelation + ExecutionWorkItem)`
+- `7eaf5ae0 feat(workline): Phase 1 Packet C RuntimeInbox + RuntimeIntentLog`
+- `d8eadbc5 feat(workline): Phase 1 Packet C 7/7 实体 + H5 idempotency_keys`
+- `a7f64880 feat(runtime): Packet C 7/7 实体补 FK/Index 完整化 + BC-02 RuntimeSnapshotAdmission`
+- `181363d2 refactor(workline): service 层接入 runtime/orchestration (Phase 1)`
+- `85b160e6 refactor(cross-domain): callback / handling / rack 接入 runtime/orchestration`
+- `9b74b6e6 feat(migrations): Phase 1 AP2 device FK ring dissolve + runtime table`
+- `ede4a2ca fix(migration): FK ring dissolve 动态发现 + correlation_id 回填 + conveyor queue`
+- `25dbe826 feat(runtime): 实现 H5 IdempotencyGuard 最小语义 (Phase 1)`
+- `3a6a7e29 feat(device): Phase 1 DeviceCommand 接入 ExecutionCorrelation + H4 反注入`
+- `165711fd fix(callback): 外部回调 H4 边界 WMS 协议白名单扩展 + 子层守卫`
+- `9c790d53 fix(guardrails): 修复 C4 scanner 误报 H4 反注入实现`
+
+### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空 — ⏳ 未启动（启动条件：Phase 0 ✅ + Phase 1 Packet A/B/C ✅；Phase 1 Packet D 仍待 CEO-009 + 4 剩余 WMS port）
 
 **目标**：在 Phase 1 新 runtime/orchestration 骨架已独立可运行后，把旧 WorkLine/plugin/runtime 的执行状态、inbox、timeline、hold、effect dispatch 迁出或删除。旧执行入口不做兼容转发。
 
 **启动条件**（满足全部才能启动 Phase 2）：
 
-- Phase 0 全部 7 项完成
-- Phase 1 全部任务完成
-- 重新跑 autoplan 或同等深度评审，确认 B 方案可执行
+- [x] Phase 0 全部 7 项完成（PR #63 `v0.9.0.0` 2026-06-25）
+- [ ] Phase 1 全部任务完成 🟡 Packet A/B/C 已合并（PR #64 2026-06-27），Packet D（CEO-009 capability 边界 + 4 剩余 WMS port）未启动
+- [ ] 重新跑 autoplan 或同等深度评审，确认 B 方案可执行
 
 #### 10.3.1 B 方案暂停/回退条件（C2 回归）
 
