@@ -2,7 +2,7 @@
 
 > Legacy notes: 本文件索引存在历史条目，涉及旧插件 builder 的说明仅供定位旧文档；当前运行时以 `RuntimeIntent` 为准。
 
-**最后更新**: 2026年6月23日（v4.1 概要/详细设计：模块命名采用 `wms_integration`，不重命名为 `external/wms`）
+**最后更新**: 2026年6月27日（phase1-runtime-orchestration-spec：9 实体 + RuntimeSnapshot + H4/H5 + FK ring dissolve）
 **同步状态**: ⚠️ WORKLINE + PLUGIN 体系全面重构顶层设计采用 GB/T 8567 概要设计说明书 + 详细设计 13 章结构（`docs/architecture/workline-and-plugin-restructuring.md`），1,800+ 行；含数据模型、状态机图、模块 API、接口设计、Phase 实施 roadmap；不预先拆 SPEC；关键决策 8 个 ADR；autoplan 评审存档；其余内容请以实际仓库结构为准
 
 ---
@@ -12,6 +12,7 @@
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
 | 2026-06-23 | docs-workline-plugin-restructuring-v4 | WORKLINE + PLUGIN 重构顶层设计改用 GB/T 8567 概要/详细设计 13 章结构：1.引言 2.系统概述 3.体系结构 4.数据设计 5.接口设计 6.状态机 7.安全设计 8.非功能性 9.模块设计 10.实施计划 11.执行规范 12.风险 13.附录；1,800+ 行含数据模型 / 状态机 / 模块 API / Phase roadmap |
+| 2026-06-27 | phase1-runtime-orchestration-spec | Phase 1 SPEC（feature/workline-phase-1-spec）：补全 9 个 runtime/orchestration 实体（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog / IdempotencyKey / ConveyorQueueMembership）；新增 BC-02 RuntimeSnapshot 合同与 RuntimeSnapshotAssembler 服务；引入 H4 反注入边界（callback/event/result 三个入口顶层字段白名单）与 H5 幂等键命名规范 `WES-{OPERATION_KIND}-{HASH}`；FK ring dissolve（device ↔ workline_sessions 循环依赖解除）；架构守卫 C1–C5 与 R-I3a/b phase-aware 模式；API 强化：`/runtime-holds/{id}/resolve` 接受 `Idempotency-Key` Header，列表端点补 `Query()` 校验与 description；conveyor queue 增 `CheckConstraint`；Alembic 动态发现 pg_constraint 名称 |
 | 2026-06-23 | docs-workline-plugin-restructuring-v3 | WORKLINE + PLUGIN 重构顶层设计采用 4 章结构（总体设计目标 / 约束条件 / 执行规范 / 实施阶段），645 行自包含；不预先拆 SPEC，Phase 启动时按需展开；autoplan 28 decision 存档 reviews/ |
 | 2026-06-23 | docs-workline-plugin-restructuring | 新增 WORKLINE + PLUGIN 体系全面重构顶层设计（`docs/architecture/workline-and-plugin-restructuring.md`），父目标 + 6 个子目标 + 25 implementation task + capability freeze + authority matrix + 4 方案决策表 |
 | 2026-06-17 | docs-smt-handoff-manifest-flow | 补充 SMT 分拣入库 handoff/manifest 闭环、插件、Celery 兜底和测试索引入口 |
@@ -346,28 +347,65 @@
 | | `runtime.py` | 运行监控 / Trace 查询响应模型（overview / workline / device / trace） | 🔧 架构核心 |
 | | `workline.py` | WorkLine 模型（插件容器、运行时配置、诊断归属） | 🔧 架构核心 |
 | | `smt_inbound_handoff.py` | SMT 入库 handoff demand/source item 账本模型，记录 claim、source-pick、terminal ledger 和恢复证据 | 🔧 架构核心 |
+| | `runtime_hold.py` | RuntimeHold 模型（Manual / Safety E-Stop / Material Conflict 等 hold 状态机） | 🔧 架构核心 |
+| | `runtime_hold_api.py` | Runtime Hold API Schema（ResolveRuntimeHoldRequest / Response / Summary / Detail） | 🔧 架构核心 |
+| | `integration_debug.py` | 非生产集成调试案件 Schema（Case / StageCheck / NextAction / EvidenceLink） | 🔧 架构核心 |
+| | `operation.py` | Workline operation 沙箱 Schema（pending / completed 响应） | 🔧 架构核心 |
 | `repositories/` | `inbox_repository.py` | Inbox Repository（幂等键计算） | 🔧 架构核心 |
 | | `outbox_repository.py` | Outbox Repository（派发状态与重试管理） | 🔧 架构核心 |
 | | `session_repository.py` | Session Repository（按 business_key / trace_id / awaiting_command_id 查询） | 🔧 架构核心 |
 | | `workline_repository.py` | WorkLine Repository（按 line_code 查询） | 🔧 架构核心 |
 | | `smt_inbound_handoff_repository.py` | SMT 入库 handoff Repository：READY claim 候选、phase 2 re-lock、target WorkLine 串行查询和 post-claim recovery 查询 | 🔧 架构核心 |
+| | `runtime_hold_repository.py` | Runtime Hold Repository（按 hold_id / workline_id / session_id / material_identity_key 查询，含 NG Return Items） | 🔧 架构核心 |
 | | `__init__.py` | Repository 导出（workline / inbox / outbox / session） | 🔧 架构核心 |
 | `services/` | `inbox_service.py` | Inbox Service（创建 Inbox 消息） | 🔧 架构核心 |
 | | `trace_query_service.py` | TraceQueryService（只读 TRACE 聚合查询：callback / inbox / session / command / outbox / timeline） | 🔧 架构核心 |
 | | `runtime_query_service.py` | RuntimeQueryService（运行监控总览、工作线/设备运行态、Trace 列表聚合） | 🔧 架构核心 |
 | | `single_layer_rack_orchestration_service.py` | 单层货架 release fact 编排入口，接入 SMT handoff demand evaluate 与 demand-scoped claim | 🔧 架构核心 |
 | | `smt_inbound_handoff_service.py` | SMT 入库 handoff service：release/evaluate、两阶段 claim、source-pick/terminal ledger、demand 聚合和 READY recovery | 🔧 架构核心 |
+| | `runtime_hold_query_service.py` | Runtime Hold 查询 service：list_holds / get_detail / list_ng_reasons / list_ng_return_items | 🔧 架构核心 |
+| | `runtime_hold_creation_service.py` | Runtime Hold 创建 service：register / attach_to_session，封装 hold 状态机初始化 | 🔧 架构核心 |
+| | `runtime_hold_release_service.py` | Runtime Hold 解除 service：resolve_hold（接受 `idempotency_key`），写 outbox inbox `WES-RESOLVE_HOLD-{key}` 幂等键 | 🔧 架构核心 |
+| | `integration_debug_service.py` | 非生产集成调试案件定位 service：把 Trace 证据归纳成现场可读案件（latest / lookup），含 `build_case` / `_has_case_evidence` | 🔧 架构核心 |
+| | `ng_return_item_service.py` | NG Return Item service：material conflict 物料理赔单登记与查询 | 🔧 架构核心 |
+| | `operation_service.py` | Workline operation 沙箱 service：sandbox_pending / sandbox_completed 聚合 | 🔧 架构核心 |
 | | `__init__.py` | Service 导出（inbox_service / trace_query_service / runtime_query_service） | 🔧 架构核心 |
 | `v1/` | `workline.py` | WorkLine CRUD 路由 | 🔧 架构核心 |
 | | `trace.py` | Trace 详情与 Trace 列表查询路由 | 🔧 架构核心 |
 | | `runtime.py` | 运行监控 overview / workline / device 只读路由 | 🔧 架构核心 |
 | | `inbound_handoff.py` | SMT 入库 handoff 查询与处置路由，API 层只调用 service，不直接访问 Repository 或 DB | 🔧 架构核心 |
+| | `runtime_hold.py` | Runtime Hold 路由：列表 / 详情 / NG 原因 / resolve（接受 `Idempotency-Key` Header）；query 参数补 `Query()` 校验 | 🔧 架构核心 |
+| | `integration_debug.py` | 非生产集成调试案件定位路由（latest / lookup），返回现场可读案件结构 | 🔧 架构核心 |
+| | `operation.py` | Workline operation 沙箱路由：pending / completed 列表查询，`Query()` 校验与 description 完整 | 🔧 架构核心 |
 | | `__init__.py` | v1 路由聚合（workline / trace / runtime） | 🔧 架构核心 |
 
 **核心设计模式**：
 - **Inbox 模式**：统一编排入口（设备事件、指令结果、超时、人工操作）
-- **幂等性控制**：白皮书 6.3.1 节（厂商 ID 优先 + hash 备选）
+- **幂等性控制**：白皮书 6.3.1 节（厂商 ID 优先 + hash 备选），Phase 1 起统一为 `WES-{OPERATION_KIND}-{HASH}` 命名
 - **Outbox 模式**：统一调度出口（设备指令、外部回调、状态记录）
+
+#### 🔧 Runtime 编排层 (src/app/runtime/orchestration/) — Phase 1 新增
+
+> Runtime 编排层是 Phase 1 SPEC（`feature/workline-phase-1-spec`）落地的核心抽象：9 个 runtime/orchestration 实体 + BC-02 RuntimeSnapshot 合同 + H4 反注入边界 + H5 幂等键规范。设计原则：实体只承载状态，业务语义在 workline 层 Service 维护，跨域副作用通过 IdempotencyKey 串联。
+
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `execution_session.py` | ExecutionSession 实体（按 `trace_id`/`session_id`/`business_key` 唯一） | 🔧 架构核心 |
+| `execution_correlation.py` | ExecutionCorrelation 实体（一次性 correlation 跨实体锚点；含历史回填） | 🔧 架构核心 |
+| `execution_work_item.py` | ExecutionWorkItem 实体（work item 状态机） | 🔧 架构核心 |
+| `runtime_inbox.py` | RuntimeInbox 实体（持久化入口契约；H4 边界守门） | 🔧 架构核心 |
+| `runtime_timeline.py` | RuntimeTimeline 实体（事件溯源） | 🔧 架构核心 |
+| `runtime_hold.py` | RuntimeHold 实体（Manual / Safety E-Stop / Material Conflict 等 hold 状态） | 🔧 架构核心 |
+| `runtime_intent_log.py` | RuntimeIntentLog 实体（plugin 产出 RuntimeIntent 的 ledger） | 🔧 架构核心 |
+| `idempotency_key.py` | IdempotencyKey 实体（`WES-{OPERATION_KIND}-{HASH}` 唯一约束） | 🔧 架构核心 |
+| `conveyor_queue_membership.py` | ConveyorQueueMembership 实体（含 `CheckConstraint` 限定 `membership_status` 取值） | 🔧 架构核心 |
+| `services/runtime_snapshot_assembler.py` | RuntimeSnapshotAssembler：按 BC-02 合同把 session + timeline + inbox + hold + intent log 拼装成 RuntimeSnapshot 输出 | 🔧 架构核心 |
+| `services/__init__.py` | 服务层导出 | 🔧 架构核心 |
+| `__init__.py` | 模块导出 | 🔧 架构核心 |
+
+**关键约束**：
+- **H4 反注入边界**：callback / event / result 三个入口接受 payload 时，**仅允许**白名单顶层字段（`callback_type` / `data` / `trace_id` / `event_id` / `causation_id` / `source_system` / `source_version` / `occurred_at` / `request_id` / `timestamp` / `signature`）；业务追溯字段（如 `provider_code` / `source_event_id`）必须放入 `data` 内。外部回调 (`/callback/external`) 顶层白名单额外覆盖 WMS/RCS 协议业务元数据（`dispatch_key` / `status` / `exchange_*` / `rack_*` / `operation_key` / `operation_type` / `position_code` / `source_position_code` / `target_position_code` / `target_position_role` / `task_type` / `workline_code` / `bin_mounts` / `material` / `actions` / `sequence_no` / `source` / `station` / `target` / `active_bin_rack` / `error_code` / `error_message`）与 AGV 执行回执（`command_code` / `result` / `finish_time` / `device_code` / `task_status` / `reason_code` / `reason_message`）。H4 的真正安全屏障是子层 `_FORBIDDEN_PARAM_KEYS` 递归扫描（阻断 `plc_address` / `coordinate` 等设备控制字段），顶层白名单扩展不削弱 H4 安全语义。
+- **H5 幂等键命名**：`WES-{OPERATION_KIND}-{HASH}`，唯一约束落在 `idempotency_keys` 表。
 
 **相关文档**：
 - 运行时语义 SSOT：`docs/business/workline_business_data_event_flow_spec.md` v0.1
@@ -626,6 +664,13 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 |------|------|------|
 | `versions/20260527_0025_793f8773f841_add_wms_call_evidence.py` | 新增 WMS call evidence 表与索引 | 🔧 架构核心 |
 | `versions/20260527_0105_07be7a97f4a6_add_wms_circuit_breaker_state.py` | 新增 WMS circuit breaker state 表与索引 | 🔧 架构核心 |
+
+**Phase 1 SPEC 相关迁移**（`feature/workline-phase-1-spec`）：
+
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `versions/20260626_1200_0e9de1e6c7e3_phase1_device_fk_ring_dissolve.py` | Phase 0→1 FK ring dissolve：动态发现 pg_constraint 名称后 drop device ↔ workline_sessions 循环外键，保留字段用于业务追溯 | 🔧 架构核心 |
+| `versions/20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py` | 新增 9 个 runtime/orchestration 实体表（execution_sessions / execution_correlations / execution_work_items / runtime_inboxes / runtime_timelines / runtime_holds / runtime_intent_logs / idempotency_keys / conveyor_queue_memberships），含 `CheckConstraint` 限定 `membership_status` 取值；ExecutionCorrelation 历史回填默认列 | 🔧 架构核心 |
 
 ---
 
