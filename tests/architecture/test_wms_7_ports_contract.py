@@ -16,6 +16,7 @@ from typing import Protocol, get_type_hints
 from pydantic import BaseModel
 
 from src.app.wms_integration.ports.document import WmsDocumentPort
+from src.app.wms_integration.ports.fulfillment import WmsFulfillmentPort
 
 PORT_METHOD_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*Port\.[a-z_][A-Za-z0-9_]*$")
 
@@ -54,5 +55,48 @@ def test_wms_document_data_classes_are_pydantic():
     )
 
     for cls in [WmsGrnInfo, WmsGrnItem, WmsPickOrder, WmsOutboundOrder, WmsWave, WmsTaskSnapshot]:
+        assert issubclass(cls, BaseModel), f"{cls.__name__} must be BaseModel"
+        assert cls.__doc__, f"{cls.__name__} needs docstring"
+
+
+def test_wms_fulfillment_port_is_protocol():
+    assert issubclass(WmsFulfillmentPort, Protocol)
+
+
+def test_wms_fulfillment_port_method_signatures():
+    methods = [
+        "request_rack_supply",
+        "request_rack_transport",
+        "change_rack_face",
+        "full_box_exchange",
+        "move_bin_to_conveyor_entry",
+        "move_bin_to_conveyor_exit",
+        "notify_pkg_binding",
+    ]
+    for name in methods:
+        assert hasattr(WmsFulfillmentPort, name), f"missing method: {name}"
+        method = getattr(WmsFulfillmentPort, name)
+        assert callable(method)
+
+
+def test_wms_fulfillment_port_have_docstrings():
+    assert WmsFulfillmentPort.__doc__, "WmsFulfillmentPort class needs docstring"
+    for name in [
+        "request_rack_supply",
+        "request_rack_transport",
+        "change_rack_face",
+        "full_box_exchange",
+        "move_bin_to_conveyor_entry",
+        "move_bin_to_conveyor_exit",
+        "notify_pkg_binding",
+    ]:
+        method = getattr(WmsFulfillmentPort, name)
+        assert method.__doc__, f"method {name} needs docstring"
+
+
+def test_wms_fulfillment_data_classes_are_pydantic():
+    from src.app.wms_integration.ports.fulfillment import WmsFulfillmentResult, WmsPalletBindingResult
+
+    for cls in [WmsFulfillmentResult, WmsPalletBindingResult]:
         assert issubclass(cls, BaseModel), f"{cls.__name__} must be BaseModel"
         assert cls.__doc__, f"{cls.__name__} needs docstring"
