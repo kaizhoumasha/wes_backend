@@ -1770,7 +1770,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | Phase 1 Packet A Foundation（CEO-005/006/012 + AP5） | ✅ **已完成** | [#64](https://github.com) Packet A (2026-06-27) | `scope/authority/source/evidence_at` schema + Authority Matrix + SafetyZone + manifest version pin | — |
 | Phase 1 Packet B ACL & WMS Ports（CEO-001 起步 + CEO-013 + H4 + ADR-0009） | ✅ **已完成** | [#64](https://github.com) Packet B (2026-06-27) | `WmsMasterDataPort` / `WmsInventoryQueryPort` / `WmsInventoryTransactionPort` 3 ports 起步 + `ExternalContractProfile` / `RuntimeCapabilityProfile` / `InboundNormalizerProfile` + provider simulator registry + H4 反注入白/黑名单 + ADR-0009 shared contracts package | 剩余 4 port（Document / Fulfillment / Event / ReconciliationQuery）→ Packet D |
 | Phase 1 Packet C Runtime 骨架（CEO-007/008/010/011 + H5） | ✅ **已完成** | [#64](https://github.com) Packet C (2026-06-27) | 7 个 runtime core 实体（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog + IdempotencyKey） + `ConveyorQueueMembership` + DeviceCommand ECS contract + device FK ring dissolve + H5 IdempotencyGuard + callback / handling / rack 接入 runtime/orchestration | — |
-| Phase 1 Packet D Capability 边界 + 剩余 4 WMS port（CEO-009） | ⏳ **未启动** | — | — | CEO-009 capability 注入/import 边界静态检查 + 4 port 落地 + InboundNormalizer 静态校验 |
+| Phase 1 Packet D Capability 边界 + 剩余 4 WMS port（CEO-009） | ✅ **已完成 (PR Packet D)** | Packet D (2026-06-27) | 4 剩余 WMS port（WmsDocumentPort / WmsFulfillmentPort / WmsEventPort / WmsReconciliationQueryPort）全部 7/7 落地 + InboundNormalizerRegistry + `RuntimeCapabilityContext.get_inbound_normalizer()` + InboundNormalizerProfile 3 Pydantic validators + R-I3c 静态扫描 + import-linter capability-isolation contract | — |
 | Phase 2 Runtime/Orchestration 迁移与 WorkLine 清空 | ⏳ **未启动** | — | — | 启动条件：Phase 0 + Phase 1 全完成 + 重新跑 autoplan；详见 §10.3.1 B 方案暂停/回退条件 |
 | Phase 3 执行安全与恢复能力补全 | ⏳ **未启动** | — | — | ENG-002~022 + DESIGN-001~005 |
 | Phase 4 后续子领域 | ⏳ **未启动** | — | — | MaterialLocationQuery / WorklineActiveObjects / 入库能力目标态重建 / SMT-NG-WMS 对账 |
@@ -1816,7 +1816,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - 护栏脚本：`scripts/architecture-guardrails.sh` + `scripts/architecture-guardrails.allowlist`（phase-aware enforcement）
 - 护栏测试：`tests/architecture/test_c1..c5_*`、`test_ri3_capability_injection_guardrail.py`、`test_phase0_legacy_matrix_contract.py`
 
-### 10.2 Phase 1: 目标态骨架与 WMS ACL — 🟡 Packet A/B/C 已完成（PR #64），Packet D 未启动
+### 10.2 Phase 1: 目标态骨架与 WMS ACL — ✅ Packet A/B/C/D 全部完成（PR #64 + PR Packet D）
 
 **目标**：先建立目标态骨架和 runtime/orchestration 最小运行骨架，不迁移旧执行入口。Phase 1 的完成标准是“runtime 能独立接收 inbox、记录 intent、关联 correlation”，不是 P0 最小可运行闭环，也不是旧 WorkLine/plugin/runtime 已经清空。
 
@@ -1828,7 +1828,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | **CEO-006** Authority Matrix 文档发布 | S | `docs/architecture/authority-matrix.md` | 11 类事实类型 + 权威来源（对齐 `target-state-contract.md` §4） | ✅ Packet A |
 | **CEO-007** runtime/orchestration 最小骨架 | M | `src/app/runtime/orchestration/`, `docs/architecture/runtime-orchestration-spec.md` | ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog 7 个 runtime core 实体类型分离；对象级 work item 不被 session 串行锁阻塞；最小 worker + 单元测试 | ✅ Packet C |
 | **CEO-008** `ConveyorQueueMembership` 目标模型 | M | `src/app/runtime/orchestration/`, `src/app/workline/` | manifest queue_code 校验 + active 唯一约束测试 | ✅ Packet C |
-| **CEO-009** `RuntimeCapabilityContext` / `CapabilityPortRegistry` | M | `src/app/runtime/`, `src/app/contracts/external_contract_profile.py` | capability 只能拿到 query/effect port contract；静态检查拒绝 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort`、`RuntimeInbox` consumer | 🟡 类已实现（`src/app/runtime/capability_port_registry.py` + `src/app/contracts/external_contract_profile.py` 定义 `RuntimeCapabilityProfile` / `InboundNormalizerProfile`），Packet D 补全 4 remaining ports + 静态扫描 |
+| **CEO-009** `RuntimeCapabilityContext` / `CapabilityPortRegistry` | M | `src/app/runtime/`, `src/app/contracts/external_contract_profile.py` | capability 只能拿到 query/effect port contract；静态检查拒绝 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort`、`RuntimeInbox` consumer | ✅ Packet D（capability_port_registry + InboundNormalizerRegistry + R-I3c 静态扫描 + import-lister capability-isolation contract + 7/7 WMS ports 全部落地） |
 | **CEO-010** `DeviceCommand` ECS API contract + manifest concurrency limit | M | `src/app/device/`, `docs/architecture/device-command-contract.md` | command_code 幂等、dispatch 前 IDLE 校验、RUNNING 有界等待、ERROR/OFFLINE 短退避、Event_Push 只 ACK、缺 event_id 不推进、in-flight 限制测试；DeviceRuntime 状态快照 TTL 与 DeviceDispatchPolicy 纳入 manifest/schema 设计并通过 validator 测试；`awaiting_command_id` 迁移为 `awaiting_device_command_code`（值为 `DeviceCommand.command_code`，无 device FK），移除 device ↔ session FK 环并验证 Alembic upgrade/downgrade | ✅ Packet C（`3a6a7e29 feat(device): Phase 1 DeviceCommand 接入 ExecutionCorrelation + H4 反注入` + `9b74b6e6 feat(migrations): Phase 1 AP2 device FK ring dissolve`） |
 | **CEO-011** WorkLine manifest version pin | M | `src/app/workline/`, `src/app/runtime/orchestration/` | RUNNING session 固定 manifest_version；新 manifest 只影响新 session；activation-time validator 测试 | ✅ Packet A |
 | **CEO-012** WorkLine SafetyZone / shared-device manifest schema | M | `src/app/workline/`, `src/app/device/` | shared device 影响范围、required/optional role、SafetyZone validator 测试 | ✅ Packet A |
@@ -1851,6 +1851,32 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - [x] ExternalContractProfile 覆盖 WMS/ECS 初始 provider，contract fixture 可被 simulator 与 adapter contract tests 复用（Packet B）
 - [ ] provider 未声明的 query/effect 能力无法进入 `RuntimeCapabilityContext` 🟡 Profile 类已定义，静态拒绝检查入 Packet D
 - [ ] provider 未声明的 callback/event/result normalizer 能力无法进入 callback API；`WmsEventPort` / `DeviceEventPort` / `RuntimeInbox` consumer 不会注入业务 capability 🟡 InboundNormalizerProfile 已定义，4 端口落地 + 静态拒绝检查入 Packet D
+
+**Phase 1 Packet D 完成门禁**（PR Packet D 2026-06-27 落地）：
+
+- [x] `wms_integration` 7/7 目标 port 全部实现（MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery）
+- [x] `wms_rcs_interface_requirements.md` P0 基础数据、业务指令、回调事件全部映射到目标 port
+- [x] Runtime capability 注入仅暴露 query/effect port contract；inbound normalizer（WmsEventPort / DeviceEventPort / RuntimeInbox / RuntimeInboxConsumer）不进入业务 capability
+- [x] provider 未声明的 query/effect 能力无法进入 `RuntimeCapabilityContext`（R-I3b 静态扫描落地）
+- [x] provider 未声明的 callback/event/result normalizer 能力无法进入 callback API；`InboundNormalizerProfile` 3 Pydantic model_validator 拒绝裸字符串 event_type / source_provider 不一致 / 非枚举 correlation_resolution
+- [x] R-I3c 静态扫描器覆盖 `src/app/runtime` + `src/app/workline`，inbound normalizer 类型持有者 0 违规
+- [x] import-linter `capability-isolation` contract 启用，`capability_port_registry` 不得 import wms_integration/device/callback/orchestration 子模块
+
+**Phase 1 Packet D 实际落地证据**（PR Packet D 提交列表 9 atomic commit）：
+
+- `e42f551 chore(deps): add import-linter dependency for capability-isolation contract`
+- `c453e5f feat(wms-ports): add WmsDocumentPort protocol + 6 typed data classes`
+- `051f4aa feat(wms-ports): add WmsFulfillmentPort protocol + 2 typed data classes`
+- `8a6cc52 feat(wms-ports): add WmsEventPort protocol with 4 normalizers + InboundEventPort base`
+- `72e1f7f feat(wms-ports): add WmsReconciliationQueryPort protocol + 1 typed data class`
+- `8749ef3 feat(contracts): harden InboundNormalizerProfile with injection boundary validators`
+- `7682313 feat(runtime): add InboundNormalizerRegistry + RuntimeCapabilityContext.get_inbound_normalizer`
+- `f0be12e feat(architecture): enforce R-I3c inbound normalizer port guardrail + import-linter capability-isolation contract`
+- `81b6491 fix(architecture): extend rule_ri3c exclusion to cover full orchestration layer`
+- `tests/architecture/test_wms_7_ports_contract.py` — 7 ports 全部 contract 测试通过
+- `tests/architecture/test_inbound_normalizer_profile_validation.py` — 3 Pydantic validators 6 测试通过
+- `tests/architecture/test_runtime_capability_context_routing.py` — Registry + 3-step 错误优先级 7 测试通过
+- `tests/architecture/test_ri3c_inbound_normalizer_port_guardrail.py` — R-I3c 扫描器 + import-linter 7 测试通过
 
 **Phase 1 Packet A/B/C 实际落地证据**（PR #64 提交列表）：
 
@@ -1878,7 +1904,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 **启动条件**（满足全部才能启动 Phase 2）：
 
 - [x] Phase 0 全部 7 项完成（PR #63 `v0.9.0.0` 2026-06-25）
-- [ ] Phase 1 全部任务完成 🟡 Packet A/B/C 已合并（PR #64 2026-06-27），Packet D（CEO-009 capability 边界 + 4 剩余 WMS port）未启动
+- [ ] Phase 1 全部任务完成 ✅ Packet A/B/C（PR #64 2026-06-27）+ Packet D（PR Packet D 2026-06-27）已合并
 - [ ] 重新跑 autoplan 或同等深度评审，确认 B 方案可执行
 
 #### 10.3.1 B 方案暂停/回退条件（C2 回归）

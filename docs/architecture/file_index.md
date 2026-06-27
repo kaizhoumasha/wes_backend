@@ -403,6 +403,15 @@
 | `services/__init__.py` | 服务层导出 | 🔧 架构核心 |
 | `__init__.py` | 模块导出 | 🔧 架构核心 |
 
+#### 🔧 Runtime 能力面 (src/app/runtime/) — Phase 1 新增
+
+Runtime 顶层 capability / normalizer registry：业务能力注入（query/effect）与入站 normalizer（callback/event/result）的注册表 SSOT；与 `src/app/runtime/orchestration/` 实体层严格分层，由 import-linter `capability-isolation` contract 守护边界。
+
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `src/app/runtime/capability_port_registry.py` | CapabilityPortRegistry：runtime capability 注入只暴露 query/effect port contract，R-I3b 静态扫描拒绝 wms_integration / device service、HTTP client、DTO、provider exception、service locator、WmsEventPort、DeviceEventPort、RuntimeInbox consumer（Phase 1 Packet A + Packet D） | 🔧 架构核心 |
+| `src/app/runtime/inbound_normalizer_registry.py` | InboundNormalizerRegistry (Phase 1 Packet D)：与 CapabilityPortRegistry 严格分离的入站 normalizer 注册表；singleton per-port；非业务 capability 允许路径（仅 `src/app/runtime/orchestration/consumers` 通过 RuntimeCapabilityContext.get_inbound_normalizer 访问） | 🔧 架构核心 |
+
 **关键约束**：
 - **H4 反注入边界**：callback / event / result 三个入口接受 payload 时，**仅允许**白名单顶层字段（`callback_type` / `data` / `trace_id` / `event_id` / `causation_id` / `source_system` / `source_version` / `occurred_at` / `request_id` / `timestamp` / `signature`）；业务追溯字段（如 `provider_code` / `source_event_id`）必须放入 `data` 内。外部回调 (`/callback/external`) 顶层白名单额外覆盖 WMS/RCS 协议业务元数据（`dispatch_key` / `status` / `exchange_*` / `rack_*` / `operation_key` / `operation_type` / `position_code` / `source_position_code` / `target_position_code` / `target_position_role` / `task_type` / `workline_code` / `bin_mounts` / `material` / `actions` / `sequence_no` / `source` / `station` / `target` / `active_bin_rack` / `error_code` / `error_message`）与 AGV 执行回执（`command_code` / `result` / `finish_time` / `device_code` / `task_status` / `reason_code` / `reason_message`）。H4 的真正安全屏障是子层 `_FORBIDDEN_PARAM_KEYS` 递归扫描（阻断 `plc_address` / `coordinate` 等设备控制字段），顶层白名单扩展不削弱 H4 安全语义。
 - **H5 幂等键命名**：`WES-{OPERATION_KIND}-{HASH}`，唯一约束落在 `idempotency_keys` 表。
@@ -472,6 +481,25 @@
 | `repositories/` | `callback_log_repository.py` | 回调日志仓库 | 🔧 架构核心 |
 | `services/` | `callback_service.py` | 回调处理服务 | 🔧 架构核心 |
 | `v1/` | `callback.py` | 回调 API 路由（入口校验、early return logging、request_id 入口锚点） | 🔧 架构核心 |
+
+#### 🔌 WMS 能力面 ports (src/app/wms_integration/ports/) — Phase 1 新增
+
+7 个 WMS 目标 port Protocol + typed data classes（Phase 1 CEO-001 完成 7/7）：
+- 3 query port: MasterData / InventoryQuery / ReconciliationQuery
+- 1 effect port: InventoryTransaction
+- 1 effect port: Fulfillment
+- 1 event normalizer port: Event（含 InboundEventPort 基协议 + WmsEventPort 4 normalizer）
+- 1 document port: Document
+
+| 目录 | 文件 | 用途 | 分类 |
+|------|------|------|------|
+| `ports/` | `master_data.py` | WmsMasterDataPort Protocol + 6 typed data classes（Phase 1 Packet B） | 🔧 架构核心 |
+| | `inventory_query.py` | WmsInventoryQueryPort Protocol + 5 typed data classes（Phase 1 Packet B） | 🔧 架构核心 |
+| | `inventory_transaction.py` | WmsInventoryTransactionPort Protocol + 3 typed data classes（Phase 1 Packet B） | 🔧 架构核心 |
+| | `document.py` | WmsDocumentPort Protocol + 6 typed data classes（Phase 1 Packet D） | 🔧 架构核心 |
+| | `fulfillment.py` | WmsFulfillmentPort Protocol + 2 typed data classes（Phase 1 Packet D） | 🔧 架构核心 |
+| | `event.py` | InboundEventPort 基协议 + WmsEventPort Protocol + 5 typed data classes（Phase 1 Packet D） | 🔧 架构核心 |
+| | `reconciliation_query.py` | WmsReconciliationQueryPort Protocol + 1 typed data class（Phase 1 Packet D） | 🔧 架构核心 |
 
 #### 🔗 WMS 对接辅助域 (src/app/wms_integration/)
 
