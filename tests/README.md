@@ -41,6 +41,22 @@
 | `tests/resilience/` | 降级、断连、恢复类测试，默认快速回归不收集 |
 | `tests/mock/` | mock server 和模拟器测试，默认快速回归不收集 |
 
+### 当前治理约束
+
+本轮测试套件治理后的当前基线：
+
+- `tests/` 下共有 `268` 个 `test_*.py` 文件。
+- 默认快速回归 collect 为 `2707` 个测试。
+- 当前没有超过 `3000` 行的测试文件。
+
+后续新增或调整测试时遵循以下约束：
+
+- 新增领域测试默认不要放在 `tests/` 根目录，优先按上方目录归属矩阵归位。
+- 单个测试文件目标低于 `1000` 行；超过 `3000` 行会触发测试拓扑 guardrail。
+- API 测试文件只覆盖 route、permission、response contract 和 API facade 行为。
+- service、projection、builder、orchestrator、runtime intent 等测试放回对应领域目录。
+- 共享 fixture 和 mock builder 优先放到领域内 `conftest.py` 或 `support/`，避免跨文件复制同名 `mock_db`、`mock_session`、`mock_workline`。
+
 ### 运行默认快速回归
 
 ```bash
