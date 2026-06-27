@@ -12,12 +12,16 @@ SPEC §569 文件清单点名: `tests/unit/runtime/orchestration/test_runtime_in
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import select
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
+from src.app.runtime.orchestration.repositories.idempotency_key_repository import IdempotencyKeyRepository
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.idempotency_guard import (
     ClaimResult,
     IdempotencyConflict,
@@ -138,6 +142,128 @@ async def test_idempotency_guard_same_key_same_hash_returns_match(db_session):
         .all()
     )
     assert len(rows) == 1, "MATCH 路径必须复用既有行, 不能重复插入"
+
+
+@pytest.mark.asyncio
+async def test_idempotency_guard_atomic_insert_conflict_same_hash_returns_match(db_session):
+    """DB 唯一键冲突由 atomic insert 处理, 同 hash 必须按 MATCH 返回。"""
+    correlation = await _seed_correlation(db_session)
+    guard = IdempotencyGuard()
+    await db_session.execute(
+        IdempotencyKey.__table__.insert().values(
+            provider_code="WES",
+            operation_kind="FULFILLMENT",
+            idempotency_key="WES-FULFILLMENT-race",
+            execution_correlation_id=correlation.correlation_id,
+            request_hash="sha256-race",
+            created_at=NOW_MS,
+        )
+    )
+
+    result = await guard.claim_or_match(
+        db_session,
+        provider_code="WES",
+        operation_kind="FULFILLMENT",
+        idempotency_key="WES-FULFILLMENT-race",
+        request_hash="sha256-race",
+        execution_correlation_id=correlation.correlation_id,
+        now_ms=NOW_MS,
+    )
+
+    assert result is ClaimResult.MATCH
+    rows = (
+        (
+            await db_session.execute(
+                select(IdempotencyKey).where(
+                    IdempotencyKey.idempotency_key == "WES-FULFILLMENT-race",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].request_hash == "sha256-race"
+
+
+@pytest.mark.asyncio
+async def test_idempotency_guard_atomic_insert_conflict_different_hash_rejects(db_session):
+    """DB 唯一键冲突后若既有行 hash 不同, 仍必须中止 dispatch。"""
+    correlation = await _seed_correlation(db_session)
+    guard = IdempotencyGuard()
+    await db_session.execute(
+        IdempotencyKey.__table__.insert().values(
+            provider_code="WES",
+            operation_kind="FULFILLMENT",
+            idempotency_key="WES-FULFILLMENT-race-conflict",
+            execution_correlation_id=correlation.correlation_id,
+            request_hash="sha256-other-worker",
+            created_at=NOW_MS,
+        )
+    )
+
+    with pytest.raises(IdempotencyConflict) as exc_info:
+        await guard.claim_or_match(
+            db_session,
+            provider_code="WES",
+            operation_kind="FULFILLMENT",
+            idempotency_key="WES-FULFILLMENT-race-conflict",
+            request_hash="sha256-local",
+            execution_correlation_id=correlation.correlation_id,
+            now_ms=NOW_MS,
+        )
+
+    assert exc_info.value.provider_code == "WES"
+    assert exc_info.value.operation_kind == "FULFILLMENT"
+    assert exc_info.value.idempotency_key == "WES-FULFILLMENT-race-conflict"
+
+
+@pytest.mark.asyncio
+async def test_idempotency_guard_does_not_autoflush_unrelated_pending_rows(db_session):
+    """claim 自身不能提前 flush 调用方事务里的无关 pending ORM 对象。"""
+    correlation = await _seed_correlation(db_session)
+    pending_intent = RuntimeIntentLog(
+        execution_session_id=correlation.execution_session_id,
+        correlation_id=correlation.correlation_id,
+        provider_code="WES",
+        target_domain="device",
+        target_action="dispatch",
+        idempotency_key="WES-DEVICE_DISPATCH-pending",
+        request_hash="sha256-pending",
+    )
+    db_session.add(pending_intent)
+
+    result = await IdempotencyGuard().claim_or_match(
+        db_session,
+        provider_code="WES",
+        operation_kind="DEVICE_DISPATCH",
+        idempotency_key="WES-DEVICE_DISPATCH-no-autoflush",
+        request_hash="sha256-no-autoflush",
+        execution_correlation_id=correlation.correlation_id,
+        now_ms=NOW_MS,
+    )
+
+    assert result is ClaimResult.NEW
+    assert pending_intent.id is None
+
+
+@pytest.mark.asyncio
+async def test_idempotency_key_repository_rejects_unsupported_dialect(db_session, monkeypatch):
+    """atomic claim 只支持 PostgreSQL/SQLite, 其它 dialect 必须显式失败。"""
+    repository = IdempotencyKeyRepository()
+    monkeypatch.setattr(db_session, "get_bind", lambda: SimpleNamespace(dialect=SimpleNamespace(name="mysql")))
+
+    with pytest.raises(NotImplementedError, match="mysql"):
+        await repository.claim_if_absent(
+            db_session,
+            provider_code="WES",
+            operation_kind="DEVICE_DISPATCH",
+            idempotency_key="WES-DEVICE_DISPATCH-unsupported-dialect",
+            request_hash="sha256-dialect",
+            execution_correlation_id="corr-dialect",
+            now_ms=NOW_MS,
+            business_owner_key=None,
+        )
 
 
 @pytest.mark.asyncio

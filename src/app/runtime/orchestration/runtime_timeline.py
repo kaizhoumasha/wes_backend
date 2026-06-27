@@ -6,19 +6,22 @@ append-only 执行轨迹, 不作为 owner 状态源。
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from sqlalchemy import BigInteger
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
 from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
+from src.core.mixins.base import BaseMixin
 
 
-class RuntimeTimeline(SQLModel, table=True):
+class RuntimeTimeline(BaseMixin, table=True):
     """append-only 执行轨迹 (主计划 §9.2)。"""
 
     __tablename__ = "runtime_timelines"
     __schema__ = RUNTIME_SCHEMA
-    __table_args__ = {"schema": RUNTIME_SCHEMA}
+    __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
 
     id: int | None = Field(default=None, primary_key=True)
 

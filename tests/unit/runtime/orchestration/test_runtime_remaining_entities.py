@@ -6,6 +6,9 @@ RuntimeHold (运行时闸门) + IdempotencyKey (H5 幂等键表)。
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -109,6 +112,58 @@ def test_remaining_runtime_models_can_create_all_after_single_model_import():
     finally:
         SQLModel.metadata.drop_all(engine)
         engine.dispose()
+
+
+def test_runtime_models_keep_shared_metadata_when_imported_before_base_mixin():
+    """runtime 表即使先于 BaseMixin 导入, 也必须注册到项目共享 SQLModel.metadata。"""
+    script = """
+from sqlmodel import SQLModel
+
+from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
+from src.app.runtime.orchestration.runtime_hold import RuntimeHold
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
+from src.core.mixins.base import BaseMixin
+
+models = (
+    ExecutionSession,
+    ExecutionCorrelation,
+    ExecutionWorkItem,
+    RuntimeInbox,
+    RuntimeIntentLog,
+    RuntimeTimeline,
+    RuntimeHold,
+    ConveyorQueueMembership,
+    IdempotencyKey,
+)
+for model in models:
+    assert model.__table__.metadata is SQLModel.metadata, model.__name__
+assert BaseMixin.metadata is SQLModel.metadata
+expected_tables = {
+    "wes_runtime.execution_sessions",
+    "wes_runtime.execution_correlations",
+    "wes_runtime.execution_work_items",
+    "wes_runtime.runtime_inbox",
+    "wes_runtime.runtime_intent_logs",
+    "wes_runtime.runtime_timelines",
+    "wes_runtime.runtime_holds",
+    "wes_runtime.conveyor_queue_memberships",
+    "wes_runtime.idempotency_keys",
+}
+assert expected_tables <= set(SQLModel.metadata.tables)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_runtime_inbox_source_event_identity_is_unique_when_present():

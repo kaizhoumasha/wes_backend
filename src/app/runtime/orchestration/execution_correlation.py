@@ -19,17 +19,19 @@ idempotency_keys 是独立表 (主计划 §5.4), 复合主键
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003 - SQLModel table fields need the runtime class at import time.
+from typing import ClassVar
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field
 from sqlmodel._compat import SQLModelConfig
 
 from src.app.runtime.orchestration.execution_session import (
     RUNTIME_SCHEMA,
     ExecutionSession,
 )
+from src.core.mixins.base import BaseMixin
 
 
-class ExecutionCorrelation(SQLModel, table=True):
+class ExecutionCorrelation(BaseMixin, table=True):
     """跨域 correlation key (主计划 §9.2)。
 
     替代 Phase 0 旧 session FK 强引用, 跨域只持本表 correlation_id (无 session FK)。
@@ -39,7 +41,7 @@ class ExecutionCorrelation(SQLModel, table=True):
 
     __tablename__ = "execution_correlations"
     __schema__ = RUNTIME_SCHEMA  # runtime 域新 schema (区别 workline/wes_biz)
-    __table_args__ = {"schema": RUNTIME_SCHEMA}
+    __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
     model_config = SQLModelConfig(from_attributes=True, extra="forbid")
 
     id: int | None = Field(default=None, primary_key=True)

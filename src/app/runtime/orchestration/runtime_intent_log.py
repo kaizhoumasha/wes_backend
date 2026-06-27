@@ -16,13 +16,16 @@ H5 (Phase 1 最小版本): 同 key 不同 hash 拒绝 (outbound effect replay �
 
 from __future__ import annotations
 
-from sqlmodel import Field, SQLModel
+from typing import ClassVar
+
+from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
 from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
+from src.core.mixins.base import BaseMixin
 
 
-class RuntimeIntentLog(SQLModel, table=True):
+class RuntimeIntentLog(BaseMixin, table=True):
     """outbox/effect ledger (主计划 §9.2)。
 
     每条 effect 必带 correlation_id / provider_code / idempotency_key /
@@ -31,7 +34,7 @@ class RuntimeIntentLog(SQLModel, table=True):
 
     __tablename__ = "runtime_intent_logs"
     __schema__ = RUNTIME_SCHEMA
-    __table_args__ = {"schema": RUNTIME_SCHEMA}
+    __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
 
     id: int | None = Field(default=None, primary_key=True)
 

@@ -18,12 +18,15 @@ import re
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
-
-from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
+from src.app.runtime.orchestration.repositories.idempotency_key_repository import (
+    IdempotencyKeyRepository,
+    idempotency_key_repository,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
 
 # 主计划 §5.4 WES 内部 key 命名: `WES-{OPERATION_KIND}-{HASH}`
 _WES_KEY_PATTERN = re.compile(r"^WES-[A-Z0-9_]+-[A-Za-z0-9_.\-]+$")
@@ -64,8 +67,28 @@ def make_wes_internal_key(operation_kind: str, payload_hash: str) -> str:
     return f"WES-{op}-{payload_hash}"
 
 
+def _match_existing_or_raise(
+    row: IdempotencyKey,
+    *,
+    provider_code: str,
+    operation_kind: str,
+    idempotency_key: str,
+    request_hash: str,
+) -> ClaimResult:
+    if row.request_hash != request_hash:
+        raise IdempotencyConflict(
+            provider_code=provider_code,
+            operation_kind=operation_kind,
+            idempotency_key=idempotency_key,
+        )
+    return ClaimResult.MATCH
+
+
 class IdempotencyGuard:
     """outbound effect 幂等闸门 (主计划 §5.4 H5 最小实现)。"""
+
+    def __init__(self, repository: IdempotencyKeyRepository = idempotency_key_repository) -> None:
+        self.repository = repository
 
     async def claim_or_match(
         self,
@@ -82,37 +105,40 @@ class IdempotencyGuard:
         """声明幂等键 (NEW=首次插入, MATCH=同 hash 已存在)。
 
         同 key 不同 hash 抛 `IdempotencyConflict`, 调用方必须中止 dispatch。
+        使用 no_autoflush 避免 claim 提前 flush 调用方事务中的无关 pending ORM 对象;
+        execution_correlation_id 对应的 ExecutionCorrelation 必须已持久化。
         """
-        existing = await db.execute(
-            select(IdempotencyKey).where(
-                IdempotencyKey.provider_code == provider_code,
-                IdempotencyKey.operation_kind == operation_kind,
-                IdempotencyKey.idempotency_key == idempotency_key,
-            )
-        )
-        row = existing.scalar_one_or_none()
-        if row is not None:
-            if row.request_hash != request_hash:
-                raise IdempotencyConflict(
-                    provider_code=provider_code,
-                    operation_kind=operation_kind,
-                    idempotency_key=idempotency_key,
-                )
-            return ClaimResult.MATCH
-
-        db.add(
-            IdempotencyKey(
+        with db.no_autoflush:
+            inserted = await self.repository.claim_if_absent(
+                db,
                 provider_code=provider_code,
                 operation_kind=operation_kind,
                 idempotency_key=idempotency_key,
-                execution_correlation_id=execution_correlation_id,
                 request_hash=request_hash,
+                execution_correlation_id=execution_correlation_id,
+                now_ms=now_ms,
                 business_owner_key=business_owner_key,
-                created_at=now_ms,
             )
+            if inserted:
+                return ClaimResult.NEW
+
+            row = await self.repository.get_by_identity(
+                db,
+                provider_code=provider_code,
+                operation_kind=operation_kind,
+                idempotency_key=idempotency_key,
+            )
+        if row is None:
+            raise RuntimeError(
+                f"幂等 claim 冲突后无法读取既有 key: provider={provider_code} op={operation_kind} key={idempotency_key}"
+            )
+        return _match_existing_or_raise(
+            row,
+            provider_code=provider_code,
+            operation_kind=operation_kind,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
         )
-        await db.flush()
-        return ClaimResult.NEW
 
 
 idempotency_guard = IdempotencyGuard()

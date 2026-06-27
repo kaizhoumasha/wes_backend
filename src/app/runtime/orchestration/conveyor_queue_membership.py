@@ -9,13 +9,14 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import JSON, BigInteger, Column, Index, text
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
 from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
+from src.core.mixins.base import BaseMixin
 
 
-class ConveyorQueueMembership(SQLModel, table=True):
+class ConveyorQueueMembership(BaseMixin, table=True):
     """动态输送线队列 membership active/history 投影。"""
 
     __tablename__ = "conveyor_queue_memberships"

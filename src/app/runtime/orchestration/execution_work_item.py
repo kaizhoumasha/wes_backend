@@ -12,13 +12,14 @@
 from __future__ import annotations
 
 from sqlalchemy import UniqueConstraint
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
 from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
+from src.core.mixins.base import BaseMixin
 
 
-class ExecutionWorkItem(SQLModel, table=True):
+class ExecutionWorkItem(BaseMixin, table=True):
     """对象级执行令牌 (主计划 §9.2)。"""
 
     __tablename__ = "execution_work_items"

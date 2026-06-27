@@ -11,14 +11,17 @@ Session 只持:
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003 - SQLModel table fields need the runtime class at import time.
+from typing import ClassVar
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field
 from sqlmodel._compat import SQLModelConfig
+
+from src.core.mixins.base import BaseMixin
 
 RUNTIME_SCHEMA = "wes_runtime"
 
 
-class ExecutionSession(SQLModel, table=True):
+class ExecutionSession(BaseMixin, table=True):
     """Runtime/orchestration 域会话聚合根 (主计划 §9.2)。
 
     唯一 session PK 拥有者 (target-state-contract.md §3 域边界); 跨域只持
@@ -27,7 +30,7 @@ class ExecutionSession(SQLModel, table=True):
 
     __tablename__ = "execution_sessions"
     __schema__ = RUNTIME_SCHEMA  # runtime 域新 schema
-    __table_args__ = {"schema": RUNTIME_SCHEMA}
+    __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
     model_config = SQLModelConfig(from_attributes=True, extra="forbid")
 
     id: int | None = Field(default=None, primary_key=True)

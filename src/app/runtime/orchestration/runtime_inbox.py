@@ -20,13 +20,14 @@ RECEIVED -> PROCESSING -> PROCESSED 为唯一成功路径。
 from __future__ import annotations
 
 from sqlalchemy import Index, text
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
 from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
+from src.core.mixins.base import BaseMixin
 
 
-class RuntimeInbox(SQLModel, table=True):
+class RuntimeInbox(BaseMixin, table=True):
     """入站消息统一入口 (主计划 §9.2)。
 
     5 态状态机: RECEIVED / PROCESSING / PROCESSED / FAILED / DEAD_LETTER。

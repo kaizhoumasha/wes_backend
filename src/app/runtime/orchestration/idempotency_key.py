@@ -12,19 +12,22 @@ H5 (Phase 1 最小版本):
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from sqlalchemy import BigInteger
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
 from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
+from src.core.mixins.base import BaseMixin
 
 
-class IdempotencyKey(SQLModel, table=True):
+class IdempotencyKey(BaseMixin, table=True):
     """幂等键表 (主计划 §5.4)。"""
 
     __tablename__ = "idempotency_keys"
     __schema__ = RUNTIME_SCHEMA
-    __table_args__ = {"schema": RUNTIME_SCHEMA}
+    __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
 
     # 复合主键 (provider_code, operation_kind, idempotency_key)
     provider_code: str = Field(max_length=60, primary_key=True)

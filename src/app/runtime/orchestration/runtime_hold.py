@@ -11,19 +11,22 @@ RuntimeHold scope 契约 (主计划 §9.2):
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 from sqlalchemy import BigInteger
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
 from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
+from src.core.mixins.base import BaseMixin
 
 
-class RuntimeHold(SQLModel, table=True):
+class RuntimeHold(BaseMixin, table=True):
     """运行时闸门 (主计划 §9.2)。"""
 
     __tablename__ = "runtime_holds"
     __schema__ = RUNTIME_SCHEMA
-    __table_args__ = {"schema": RUNTIME_SCHEMA}
+    __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
 
     id: int | None = Field(default=None, primary_key=True)
 
