@@ -23,7 +23,9 @@ RI3C_EXCLUDED_PATHS = (
     "src/app/runtime/capability_port_registry.py",
     "src/app/runtime/inbound_normalizer_registry.py",
     "src/app/contracts/external_contract_profile.py",
-    "src/app/runtime/orchestration/*",
+    "src/app/runtime/orchestration/__init__.py",
+    "src/app/runtime/orchestration/runtime_inbox.py",
+    "src/app/runtime/orchestration/consumers/*",
 )
 
 
@@ -52,6 +54,7 @@ def test_ri3c_rule_excludes_legitimate_holders():
     m = re.search(r"rule_ri3c\(\)\s*\{(.*?)^\}", text, flags=re.DOTALL | re.MULTILINE)
     assert m
     body = m.group(1)
+    assert "src/app/runtime/orchestration/*" not in body, "R-I3c 禁止排除整个 orchestration 目录"
     for excluded in RI3C_EXCLUDED_PATHS:
         assert excluded in body, f"rule_ri3c 缺排除路径 {excluded}"
 
@@ -62,12 +65,10 @@ def test_ri3c_rule_pattern_covers_all_inbound_normalizer_types():
     m = re.search(r"rule_ri3c\(\)\s*\{(.*?)^\}", text, flags=re.DOTALL | re.MULTILINE)
     assert m
     body = m.group(1)
-    # 找第一个 local pattern='...' 赋值
-    pm = re.search(r"local\s+pattern='([^']+)'", body)
-    assert pm, "rule_ri3c 缺 local pattern"
-    pattern = pm.group(1)
     for name in RI3C_TYPE_NAMES:
-        assert name in pattern, f"rule_ri3c pattern 缺类型 {name}"
+        assert name in body, f"rule_ri3c pattern 缺类型 {name}"
+    assert "from .* import" in body
+    assert "^[[:space:]]*import" in body
 
 
 def test_ri3c_guardrail_runs_clean_in_phase1():
@@ -88,6 +89,90 @@ def test_ri3c_guardrail_runs_clean_in_phase1():
     )
 
 
+def test_ri3c_guardrail_rejects_non_consumer_orchestration_inbound_normalizer():
+    """非 consumers orchestration 文件持有 inbound normalizer 时 phase1 必须失败。"""
+    fixture = REPO_ROOT / "src/app/runtime/orchestration/services/_ri3c_violation_fixture.py"
+    fixture.write_text(
+        "from src.app.wms_integration.ports.event import WmsEventPort\n\n"
+        "leaked_normalizer: WmsEventPort | None = None\n",
+        encoding="utf-8",
+    )
+    try:
+        result = subprocess.run(
+            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        fixture.unlink(missing_ok=True)
+
+    assert result.returncode == 1, (
+        "R-I3c 应拒绝非 consumers orchestration 文件持有 inbound normalizer\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "R-I3c" in result.stderr
+    assert "src/app/runtime/orchestration/services/_ri3c_violation_fixture.py" in result.stderr
+
+
+def test_ri3c_guardrail_rejects_multiline_non_consumer_orchestration_import():
+    """多行 import 的 inbound normalizer 也不能绕过 R-I3c。"""
+    fixture = REPO_ROOT / "src/app/runtime/orchestration/services/_ri3c_multiline_violation_fixture.py"
+    fixture.write_text(
+        "from src.app.wms_integration.ports.event import (\n"
+        "    WmsEventPort,\n"
+        ")\n\n"
+        "leaked_normalizer: WmsEventPort | None = None\n",
+        encoding="utf-8",
+    )
+    try:
+        result = subprocess.run(
+            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        fixture.unlink(missing_ok=True)
+
+    assert result.returncode == 1, (
+        f"R-I3c 应拒绝多行 import 的 inbound normalizer\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "R-I3c" in result.stderr
+    assert "src/app/runtime/orchestration/services/_ri3c_multiline_violation_fixture.py" in result.stderr
+
+
+def test_ri3c_guardrail_rejects_alias_qualified_inbound_normalizer_type_hint():
+    """模块别名限定名和泛型 type hint 不能绕过 R-I3c。"""
+    fixture = REPO_ROOT / "src/app/runtime/orchestration/services/_ri3c_alias_violation_fixture.py"
+    fixture.write_text(
+        "import src.app.wms_integration.ports.event as wms_events\n\n"
+        "leaked_normalizers: list[wms_events.WmsEventPort] = []\n\n"
+        "def get_normalizer() -> wms_events.WmsEventPort | None:\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+    try:
+        result = subprocess.run(
+            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        fixture.unlink(missing_ok=True)
+
+    assert result.returncode == 1, (
+        "R-I3c 应拒绝 alias-qualified/generic inbound normalizer type hint\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "R-I3c" in result.stderr
+    assert "src/app/runtime/orchestration/services/_ri3c_alias_violation_fixture.py" in result.stderr
+
+
 def test_import_linter_config_exists():
     """.import-linter.ini 存在且包含 capability-isolation contract。"""
     ini = REPO_ROOT / ".import-linter.ini"
@@ -96,6 +181,8 @@ def test_import_linter_config_exists():
     assert "[importlinter:contract:capability-isolation]" in text
     assert "type = forbidden" in text
     assert "forbidden_modules" in text
+    assert "src.app.runtime.capability_port_registry" in text
+    assert "src.app.runtime.inbound_normalizer_registry" in text
 
 
 def test_import_linter_check_script_runs_clean():

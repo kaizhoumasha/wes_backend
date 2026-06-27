@@ -74,6 +74,12 @@ class CapabilityPortRegistry:
 _INBOUND_NORMALIZER_ALLOWED_CALLER_PREFIX = "src.app.runtime.orchestration.consumers"
 
 
+def _is_allowed_inbound_normalizer_caller(caller_module: str) -> bool:
+    return caller_module == _INBOUND_NORMALIZER_ALLOWED_CALLER_PREFIX or caller_module.startswith(
+        f"{_INBOUND_NORMALIZER_ALLOWED_CALLER_PREFIX}."
+    )
+
+
 class RuntimeCapabilityContext:
     """Runtime capability 注入上下文 (主计划 §3.5 + §9.2)。
 
@@ -127,7 +133,7 @@ class RuntimeCapabilityContext:
             raise RuntimeError(
                 "RuntimeCapabilityContext 未配置 InboundNormalizerRegistry; 构造时需传入 inbound_registry="
             )
-        if not caller_module.startswith(_INBOUND_NORMALIZER_ALLOWED_CALLER_PREFIX):
+        if not _is_allowed_inbound_normalizer_caller(caller_module):
             raise PermissionError(
                 f"inbound normalizer 不可注入业务 capability, caller={caller_module}; "
                 f"仅 {_INBOUND_NORMALIZER_ALLOWED_CALLER_PREFIX} 允许访问"

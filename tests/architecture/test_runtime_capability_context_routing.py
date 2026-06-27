@@ -82,6 +82,21 @@ def test_get_inbound_normalizer_from_allowed_caller():
     assert inst is not None
 
 
+def test_get_inbound_normalizer_from_allowed_package_root():
+    """caller_module 精确等于 consumers 包名时正常返回 normalizer instance。"""
+    cap_reg = CapabilityPortRegistry()
+    inbound_reg = InboundNormalizerRegistry()
+    WmsEventPort = type("WmsEventPort", (), {})
+    inbound_reg.register(WmsEventPort, _dummy_wms_event_port)
+
+    ctx = RuntimeCapabilityContext(cap_reg, inbound_registry=inbound_reg)
+    inst = ctx.get_inbound_normalizer(
+        WmsEventPort,
+        caller_module="src.app.runtime.orchestration.consumers",
+    )
+    assert inst is not None
+
+
 def test_get_inbound_normalizer_rejects_business_capability_caller():
     """业务 capability 调用抛 PermissionError。"""
     cap_reg = CapabilityPortRegistry()
@@ -94,6 +109,22 @@ def test_get_inbound_normalizer_rejects_business_capability_caller():
         ctx.get_inbound_normalizer(
             WmsEventPort,
             caller_module="src.app.workline.runtime.workline_capability",
+        )
+    assert "inbound normalizer 不可注入业务 capability" in str(exc_info.value)
+
+
+def test_get_inbound_normalizer_rejects_sibling_module_with_consumers_prefix():
+    """`consumers_fake` 这类 sibling module 不能绕过 allowlist 前缀检查。"""
+    cap_reg = CapabilityPortRegistry()
+    inbound_reg = InboundNormalizerRegistry()
+    WmsEventPort = type("WmsEventPort", (), {})
+    inbound_reg.register(WmsEventPort, _dummy_wms_event_port)
+
+    ctx = RuntimeCapabilityContext(cap_reg, inbound_registry=inbound_reg)
+    with pytest.raises(PermissionError) as exc_info:
+        ctx.get_inbound_normalizer(
+            WmsEventPort,
+            caller_module="src.app.runtime.orchestration.consumers_fake",
         )
     assert "inbound normalizer 不可注入业务 capability" in str(exc_info.value)
 

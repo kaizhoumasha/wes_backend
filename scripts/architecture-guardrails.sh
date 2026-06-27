@@ -224,7 +224,9 @@ rule_ri3b() {
 
 # --- R-I3c: capability 不得持有 inbound normalizer 类型 (主计划 §3.5.1 + H2) ---
 rule_ri3c() {
-    local pattern='WmsEventPort|DeviceEventPort|InboundEventPort|RuntimeInbox|RuntimeInboxConsumer'
+    local type_names='WmsEventPort|DeviceEventPort|InboundEventPort|RuntimeInbox|RuntimeInboxConsumer'
+    local qualified_type="([A-Za-z_][A-Za-z0-9_]*[.])?(${type_names})"
+    local pattern="^[[:space:]]*from .* import .*(${type_names})|^[[:space:]]*import .*(${type_names})|:[^#]*${qualified_type}|->[[:space:]]*[^#]*${qualified_type}"
     while IFS=: read -r file line _content; do
         [[ -z "$file" ]] && continue
         # 排除合法的 inbound normalizer 持有者 (定义/注册/允许路径)
@@ -233,8 +235,10 @@ rule_ri3c() {
             src/app/wms_integration/ports/__init__.py) continue ;;
             src/app/runtime/capability_port_registry.py) continue ;;
             src/app/runtime/inbound_normalizer_registry.py) continue ;;
+            src/app/runtime/orchestration/__init__.py) continue ;;
+            src/app/runtime/orchestration/runtime_inbox.py) continue ;;
+            src/app/runtime/orchestration/consumers/*) continue ;;
             src/app/contracts/external_contract_profile.py) continue ;;
-            src/app/runtime/orchestration/*) continue ;;
         esac
         emit_violation "R-I3c" "$file" "$line" \
             "业务 capability 持有 inbound normalizer 类型 (主计划 §3.5.1 + H2 黑名单)" \
