@@ -1,6 +1,6 @@
 from pathlib import Path
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_nginx_proxy_uses_runtime_docker_dns_resolution() -> None:

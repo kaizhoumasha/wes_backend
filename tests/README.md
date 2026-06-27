@@ -17,6 +17,7 @@
 - 收集范围：`tests/` 下符合 `test_*.py` 的测试文件
 - 除以下重测试目录外，默认收集所有未被忽略的测试目录：
   - `tests/e2e/`
+  - `tests/integration/`
   - `tests/resilience/`
   - `tests/load/`
   - `tests/mock/`
@@ -24,7 +25,7 @@
 放置新测试时建议遵循：
 
 - 日常回归价值高、执行快、依赖少的测试：放入默认快速回归集
-- 需要真实服务、多组件联调、降级/断连、压测或人工参与的测试：放到重测试目录
+- 需要真实服务、多组件联调、降级/断连、压测或人工参与的测试：放到重测试目录并显式运行
 
 ### 目录归属矩阵
 
@@ -36,7 +37,13 @@
 | `tests/workline_runtime/` | runtime service、orchestrator、intent、diagnostic、session resolver 纯逻辑测试 |
 | `tests/workline_plugins/` | plugin contract、plugin behavior、template asset 测试 |
 | `tests/contracts/` | 跨系统/跨模块契约测试 |
-| `tests/integration/` | 多组件但不依赖人工操作的集成测试 |
+| `tests/core/` | 核心框架、异常处理、RBAC、schema loader、BaseAPI/BaseService 测试 |
+| `tests/database/` | Repository、TreeRepository、Redis client、relation metadata 测试 |
+| `tests/sys/` | 系统域服务、审计日志、事件流、outbox 测试 |
+| `tests/api_auth/` | API application、开放接口授权与缓存测试 |
+| `tests/deployment/` | docker-compose、nginx、开发 worker/beat 配置测试 |
+| `tests/utils/` | 工具函数、时间、请求解析测试 |
+| `tests/integration/` | 多组件集成测试，默认快速回归不收集 |
 | `tests/e2e/` | 显式运行的端到端测试，默认快速回归不收集 |
 | `tests/resilience/` | 降级、断连、恢复类测试，默认快速回归不收集 |
 | `tests/mock/` | mock server 和模拟器测试，默认快速回归不收集 |
@@ -46,7 +53,8 @@
 本轮测试套件治理后的当前基线：
 
 - `tests/` 下共有 `268` 个 `test_*.py` 文件。
-- 默认快速回归 collect 为 `2707` 个测试。
+- `tests/` 根目录下没有 `test_*.py` 文件。
+- 默认快速回归 collect 为 `2669` 个测试。
 - 当前没有超过 `3000` 行的测试文件。
 
 后续新增或调整测试时遵循以下约束：
@@ -60,7 +68,7 @@
 ### 运行默认快速回归
 
 ```bash
-# 默认快速回归（不包含 e2e / resilience / mock / load）
+# 默认快速回归（不包含 e2e / integration / resilience / mock / load）
 pytest
 
 # 默认快速回归 + HTML 报告 + 覆盖率
@@ -76,7 +84,8 @@ pytest tests/e2e/
 # 韧性/降级测试（默认不会被 pytest 自动收集）
 pytest tests/resilience/
 
-# 指定运行负载测试或 mock 相关测试
+# 集成、负载或 mock 相关测试（默认不会被 pytest 自动收集）
+pytest tests/integration/
 pytest tests/load/
 pytest tests/mock/
 ```
@@ -93,6 +102,7 @@ pytest tests/api/
 pytest tests/admin/test_menu_service_tree.py
 
 # 3) 改动涉及系统稳定性或多服务联调：显式补跑重测试
+pytest tests/integration/
 pytest tests/resilience/
 pytest tests/e2e/
 ```
@@ -129,17 +139,18 @@ xdg-open reports/coverage/index.html
 
 ```bash
 # 只运行某个测试文件
-pytest tests/test_relation_metadata.py
+pytest tests/database/test_relation_metadata.py
 
-# 显式运行 E2E 或韧性测试目录
+# 显式运行集成、E2E 或韧性测试目录
+pytest tests/integration/
 pytest tests/e2e/test_conveyor_robot_arm.py
 pytest tests/resilience/test_redis_degradation.py
 
 # 只运行某个测试类
-pytest tests/test_relation_metadata.py::TestRelationMetadata
+pytest tests/database/test_relation_metadata.py::TestRelationMetadata
 
 # 只运行某个测试方法
-pytest tests/test_relation_metadata.py::TestRelationMetadata::test_get_relation_info_one_to_many
+pytest tests/database/test_relation_metadata.py::TestRelationMetadata::test_get_relation_info_one_to_many
 
 # 运行并显示详细输出
 pytest -v -s

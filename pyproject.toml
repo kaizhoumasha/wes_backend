@@ -339,6 +339,7 @@ python_functions = ["test_*"]
 pythonpath = ["."]
 norecursedirs = [
     "tests/e2e",
+    "tests/integration",
     "tests/resilience",
     "tests/load",
     "tests/mock",

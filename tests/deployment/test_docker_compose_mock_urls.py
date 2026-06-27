@@ -4,7 +4,7 @@ from pathlib import Path
 
 import yaml
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_docker_compose_uses_container_urls_for_mock_wms_flow() -> None:

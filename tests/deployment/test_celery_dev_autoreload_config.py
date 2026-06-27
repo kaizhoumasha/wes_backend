@@ -2,7 +2,7 @@ from pathlib import Path
 
 from src.celery_app.worker_healthcheck import has_celery_worker_process
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_docker_compose_dev_uses_beat_autoreload_script() -> None:
