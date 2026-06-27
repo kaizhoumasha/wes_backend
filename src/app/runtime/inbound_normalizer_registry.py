@@ -3,8 +3,7 @@
 入站事件 normalizer 注册表 (WmsEventPort / DeviceEventPort 等),
 与 CapabilityPortRegistry 严格分离: 注册的 normalizer 不可注入业务
 capability 上下文 (主计划 §3.5.1 + H2 黑名单); 只允许
-RuntimeInboxConsumer 通过 RuntimeCapabilityContext.get_inbound_normalizer()
-访问, 调用方模块路径必须命中 allowlist。
+RuntimeInboxConsumer 通过专用 InboundNormalizerContext 访问。
 
 设计:
 - factory pattern (与 CapabilityPortRegistry 对齐), 避免直接暴露 implementation type
@@ -25,7 +24,7 @@ class InboundNormalizerRegistry:
 
     与 CapabilityPortRegistry 严格分离: 注册的 normalizer 不可注入业务
     capability 上下文; 只允许 RuntimeInboxConsumer 通过
-    RuntimeCapabilityContext.get_inbound_normalizer() 获取。
+    InboundNormalizerContext 获取。
     """
 
     def __init__(self) -> None:

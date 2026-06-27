@@ -6,6 +6,9 @@ inbound normalizer (WmsEventPort / DeviceEventPort / RuntimeInbox consumer)
 
 factory pattern: register(port_protocol, factory) 按需构造, 不直接暴露
 implementation type。capability 不持有底层 session/db client。
+
+Inbound normalizer 使用独立 InboundNormalizerContext, 只在 RuntimeInboxConsumer
+wiring 路径创建, 不挂到通用 RuntimeCapabilityContext 上。
 """
 
 from __future__ import annotations
@@ -71,15 +74,6 @@ class CapabilityPortRegistry:
         return port_protocol.__name__ in self._factories
 
 
-_INBOUND_NORMALIZER_ALLOWED_CALLER_PREFIX = "src.app.runtime.orchestration.consumers"
-
-
-def _is_allowed_inbound_normalizer_caller(caller_module: str) -> bool:
-    return caller_module == _INBOUND_NORMALIZER_ALLOWED_CALLER_PREFIX or caller_module.startswith(
-        f"{_INBOUND_NORMALIZER_ALLOWED_CALLER_PREFIX}."
-    )
-
-
 class RuntimeCapabilityContext:
     """Runtime capability 注入上下文 (主计划 §3.5 + §9.2)。
 
@@ -90,18 +84,13 @@ class RuntimeCapabilityContext:
     capability 不能拿到:
     - inbound normalizer (WmsEventPort / DeviceEventPort / RuntimeInbox consumer)
     - HTTP client / service locator / DTO / provider exception
-
-    inbound normalizer 仅供 src.app.runtime.orchestration.consumers 通过
-    get_inbound_normalizer() 访问 (Phase 1 CEO-009 / Packet D + H2)。
     """
 
     def __init__(
         self,
         registry: CapabilityPortRegistry,
-        inbound_registry: InboundNormalizerRegistry | None = None,
     ) -> None:
         self._registry = registry
-        self._inbound_registry = inbound_registry
 
     def get_query_port(self, port_protocol: type[Any]) -> Any:
         """获取 query port (只读事实查询)。"""
@@ -111,31 +100,29 @@ class RuntimeCapabilityContext:
         """获取 effect port (出站副作用, 必须先写 RuntimeIntentLog)。"""
         return self._registry.get(port_protocol)
 
+
+class InboundNormalizerContext:
+    """RuntimeInboxConsumer 专用 inbound normalizer 上下文。
+
+    该 context 不暴露给业务 capability, 只能由 consumer wiring 通过
+    create_inbound_normalizer_context() 显式创建, 避免 caller_module 字符串伪造。
+    """
+
+    def __init__(self, inbound_registry: InboundNormalizerRegistry) -> None:
+        self._inbound_registry = inbound_registry
+
     def get_inbound_normalizer(
         self,
         port_protocol: type[Any],
-        *,
-        caller_module: str,
     ) -> Any:
-        """获取 inbound normalizer (主计划 §3.5.1 + H2)。
-
-        Args:
-            port_protocol: WmsEventPort 等 inbound normalizer Protocol
-            caller_module: 调用方模块路径, 仅允许
-                `src.app.runtime.orchestration.consumers` 路径
-
-        Raises:
-            RuntimeError: context 未配置 inbound_registry
-            PermissionError: caller_module 不在 allowlist
-            KeyError: inbound_registry 未注册该 port
-        """
-        if self._inbound_registry is None:
-            raise RuntimeError(
-                "RuntimeCapabilityContext 未配置 InboundNormalizerRegistry; 构造时需传入 inbound_registry="
-            )
-        if not _is_allowed_inbound_normalizer_caller(caller_module):
-            raise PermissionError(
-                f"inbound normalizer 不可注入业务 capability, caller={caller_module}; "
-                f"仅 {_INBOUND_NORMALIZER_ALLOWED_CALLER_PREFIX} 允许访问"
-            )
+        """获取 inbound normalizer (主计划 §3.5.1 + H2)。"""
         return self._inbound_registry.get(port_protocol)
+
+
+def create_inbound_normalizer_context(
+    inbound_registry: InboundNormalizerRegistry | None,
+) -> InboundNormalizerContext:
+    """创建 RuntimeInboxConsumer 专用 inbound context。"""
+    if inbound_registry is None:
+        raise RuntimeError("创建 InboundNormalizerContext 需显式传入 inbound_registry")
+    return InboundNormalizerContext(inbound_registry)
