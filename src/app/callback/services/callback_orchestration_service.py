@@ -336,11 +336,9 @@ class CallbackOrchestrationService:
         )
 
         if is_workline_callback:
-            from src.app.workline.services.runtime_reconciliation_service import (
-                workline_runtime_reconciliation_service,
-            )
+            from src.app.runtime.orchestration.services import runtime_reconciliation_facade
 
-            if await workline_runtime_reconciliation_service.record_late_callback_if_pending(
+            if await runtime_reconciliation_facade.record_late_callback_if_pending(
                 db,
                 command=cast("Any", existing_command),
                 callback_payload=callback.model_dump(mode="json"),
