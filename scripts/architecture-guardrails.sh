@@ -211,6 +211,29 @@ rule_ri3a() {
     done < <(grep -rnE "$pattern" src/app/runtime src/app/workline --include='*.py' 2>/dev/null || true)
 }
 
+# --- R-WLR: src.workline_runtime production import 严格型 (Phase 2 launch PR) ---
+# 唯一允许 import 入口:
+#   1. src/app/runtime/orchestration/consumers/  (单点入口)
+#   2. tests/                                    (测试)
+#   3. migrations/                               (Alembic 数据迁移)
+# 其余 src/ 任何 production code import src.workline_runtime 都违规。
+rule_wlr_import() {
+    local pattern='from src\.workline_runtime|import src\.workline_runtime'
+    while IFS=: read -r file line _content; do
+        [[ -z "$file" ]] && continue
+        # 排除 wlr 自身内部 import
+        [[ "$file" == src/workline_runtime/* ]] && continue
+        # 排除消费者单点入口 (严格型唯一允许)
+        [[ "$file" == src/app/runtime/orchestration/consumers/* ]] && continue
+        # 排除测试 + 迁移 (allowlist 前缀覆盖)
+        [[ "$file" == tests/* ]] && continue
+        [[ "$file" == migrations/* ]] && continue
+        emit_violation "R-WLR" "$file" "$line" \
+            "production code import src.workline_runtime (wlr allowlist 严格型违规)" \
+            "迁移至 runtime/orchestration 域; 仅 src/app/runtime/orchestration/consumers/ 允许直接 import"
+    done < <(grep -rnE "$pattern" src --include='*.py' 2>/dev/null || true)
+}
+
 # --- R-I3b: capability 不得 import wms_integration/device services/models ---
 rule_ri3b() {
     local pattern='from src\.app\.(wms_integration|device)\.(services|models)\..* import'
@@ -410,7 +433,9 @@ validate_allowlist() {
             fi
         fi
         # legacy_entry_id 必须能在 legacy-cleanup-matrix.csv 找到
-        if [[ -n "$legacy_entry_id" && -f docs/architecture/legacy-cleanup-matrix.csv ]]; then
+        # 例外: R-WLR 的 legacy_entry_id 是导入点自描述 (legacy:<path>:<file>#R-WLR),
+        #       指向"反向 import src.workline_runtime 的文件"本身,不属于迁移对象矩阵。
+        if [[ -n "$legacy_entry_id" && -f docs/architecture/legacy-cleanup-matrix.csv && "$rule_id" != "R-WLR" ]]; then
             matrix_drop_phase="$(matrix_drop_phase_for_entry "$legacy_entry_id" || true)"
             if [[ -z "$matrix_drop_phase" ]]; then
                 echo "[ALLOWLIST] 行 $lineno ($rule_id $path): legacy_entry_id 精确匹配失败 '$legacy_entry_id'" >&2
@@ -431,6 +456,7 @@ rule_c2
 rule_c3
 rule_c4
 rule_ri3a
+rule_wlr_import
 rule_ri3b
 rule_ri3c
 
