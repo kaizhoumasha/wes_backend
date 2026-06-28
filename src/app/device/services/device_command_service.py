@@ -179,9 +179,9 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         if not command or not command.id:
             raise NotFoundException(f"回调指令不存在: {callback.command_code}")
 
-        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+        from src.app.runtime.orchestration.services import runtime_reconciliation_facade
 
-        if await workline_runtime_reconciliation_service.record_late_callback_if_pending(
+        if await runtime_reconciliation_facade.record_late_callback_if_pending(
             db,
             command=command,
             callback_payload=callback.model_dump(mode="json"),
@@ -390,9 +390,9 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         updated_command_id = updated_command.id
         if ack_received_at is not None:
-            from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+            from src.app.runtime.orchestration.services import runtime_reconciliation_facade
 
-            _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
+            _ = await runtime_reconciliation_facade.activate_execution_deadline_after_ack(
                 db,
                 command_id=updated_command_id,
                 ack_received_at=ack_received_at,
