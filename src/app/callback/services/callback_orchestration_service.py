@@ -10,6 +10,8 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from src.app.callback.contracts import TraceContext, timeline_generator
+from src.app.callback.utils import JsonDict, ensure_dict
 from src.app.device.services.device_command_service import DeviceCallbackResultOutcome
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 from src.app.workline.models.inbox import SourceSystem
@@ -21,8 +23,6 @@ from src.app.workline.models.timeline import (
 )
 from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
-from src.workline_runtime.timeline_generator import timeline_generator
-from src.workline_runtime.trace_context import TraceContext
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -35,7 +35,6 @@ if TYPE_CHECKING:
     from src.app.workline.services import WorklineInboxService
 from src.core.logger import logger
 from src.utils.timezone import timezone
-from src.workline_runtime.utils import JsonDict, ensure_dict
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
 _RACK_TASK_LIFECYCLE_ONLY_CALLBACK_TYPES = frozenset(

@@ -9,6 +9,16 @@ from typing import Any, cast
 from fastapi import Request
 from pydantic import ValidationError
 
+from src.app.callback.contracts import (
+    ErrorCode,
+    TraceContext,
+    build_diagnostic_card,
+    build_diagnostic_context,
+    build_diagnostic_event,
+    canonicalize_event_type,
+    is_platform_control_event,
+    is_production_event,
+)
 from src.app.callback.models import (
     CallbackEventIngressResponse,
     CallbackEventRequest,
@@ -22,6 +32,7 @@ from src.app.callback.models import (
 )
 from src.app.callback.services.callback_log_service import callback_log_service
 from src.app.callback.services.callback_orchestration_service import callback_orchestration_service
+from src.app.callback.utils import JsonDict, resolve_first_str
 from src.app.device.models import parse_device_capabilities
 from src.app.device.models.command import (
     _FORBIDDEN_PARAM_KEYS,
@@ -42,16 +53,6 @@ from src.core.response import response_builder
 from src.core.response.response_code import ClientErrorCode, ResourceErrorCode, ResponseCode, ServerErrorCode
 from src.database.dependencies import AsyncSessionDep
 from src.utils.value_normalization import resolve_entity_id
-from src.workline_runtime.diagnostics import (
-    ErrorCode,
-    build_diagnostic_card,
-    build_diagnostic_context,
-    build_diagnostic_event,
-)
-from src.workline_runtime.plugin_sdk import canonicalize_event_type
-from src.workline_runtime.runtime_events import is_platform_control_event, is_production_event
-from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.utils import JsonDict, resolve_first_str
 
 # 字段别名常量
 _TRACE_ID_ALIASES = ("trace_id",)
