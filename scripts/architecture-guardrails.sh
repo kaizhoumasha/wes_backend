@@ -257,7 +257,13 @@ import ast
 import re
 from pathlib import Path
 
-SCAN_ROOTS = (Path("src/app/runtime"), Path("src/app/workline"))
+SCAN_ROOTS = (
+    Path("src/app/runtime"),
+    Path("src/app/workline"),
+    Path("src/app/callback"),
+    Path("src/app/wms_integration/services"),
+    Path("src/app/device"),
+)
 FORBIDDEN_NAMES = frozenset(
     {
         "WmsEventPort",
