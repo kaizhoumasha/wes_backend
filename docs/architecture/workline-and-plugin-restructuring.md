@@ -1897,15 +1897,15 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `165711fd fix(callback): 外部回调 H4 边界 WMS 协议白名单扩展 + 子层守卫`
 - `9c790d53 fix(guardrails): 修复 C4 scanner 误报 H4 反注入实现`
 
-### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空 — ⏳ 未启动（启动条件：Phase 0 ✅ + Phase 1 Packet A/B/C ✅；Phase 1 Packet D 仍待 CEO-009 + 4 剩余 WMS port）
+### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空 — ⏳ 未启动（启动条件：Phase 0 ✅ + Phase 1 Packet A/B/C/D ✅ + autoplan re-review CONDITIONAL-GO 2026-06-28）
 
 **目标**：在 Phase 1 新 runtime/orchestration 骨架已独立可运行后，把旧 WorkLine/plugin/runtime 的执行状态、inbox、timeline、hold、effect dispatch 迁出或删除。旧执行入口不做兼容转发。
 
 **启动条件**（满足全部才能启动 Phase 2）：
 
 - [x] Phase 0 全部 7 项完成（PR #63 `v0.9.0.0` 2026-06-25）
-- [ ] Phase 1 全部任务完成 ✅ Packet A/B/C（PR #64 2026-06-27）+ Packet D（PR Packet D 2026-06-27）已合并
-- [ ] 重新跑 autoplan 或同等深度评审，确认 B 方案可执行
+- [x] Phase 1 全部任务完成 ✅ Packet A/B/C（PR #64 2026-06-27）+ Packet D（PR #66 `223351c6` 2026-06-27）已合并
+- [x] 重新跑 autoplan 或同等深度评审，确认 B 方案可执行（CEO + Codex dual voice CONDITIONAL-GO 2026-06-28）
 
 #### 10.3.1 B 方案暂停/回退条件（C2 回归）
 
