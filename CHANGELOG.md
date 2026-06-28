@@ -10,6 +10,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.9.1.0] - 2026-06-28
+
+### Added
+
+- WorkLine Phase 1 Packet D 完成 capability 边界交付：业务 capability 只能取得 query/effect port contract，入站 normalizer 通过独立上下文与注册表管理，不再进入通用 `RuntimeCapabilityContext`。
+- WMS 能力面补齐剩余 4 个 port：`WmsDocumentPort`、`WmsFulfillmentPort`、`WmsEventPort` 和 `WmsReconciliationQueryPort`，Phase 1 目标态 WMS 7 ports 全部落地。
+- `InboundNormalizerProfile` 新增 provider/event/correlation 三层校验，阻止未声明或来源不一致的 WMS/ECS/device event profile 进入入站边界。
+- 新增 import-linter `capability-isolation` contract，并接入 `scripts/git-quality-gate.sh`，持续检查 runtime capability registry 不依赖 WMS/device/callback/orchestration 实现模块。
+- 新增 R-I3c 架构护栏和回归测试，覆盖非 consumer orchestration 文件、多行 import、alias-qualified type hint、普通表达式引用以及目录前缀 allowlist 绕过。
+
+### Changed
+
+- `docs/architecture/workline-and-plugin-restructuring.md` 与 `docs/architecture/file_index.md` 同步 Phase 1 Packet D 完成状态、文件索引和验证证据。
+
+### Fixed
+
+- 收紧 inbound normalizer 边界修复 code review 发现：R-I3c 不再 broad allowlist 整个 orchestration 目录，import-linter 同时检查 `inbound_normalizer_registry`，并移除可被字符串前缀伪造的 caller-module runtime guard。
+
 ## [0.9.0.0] - 2026-06-25
 
 ### Added

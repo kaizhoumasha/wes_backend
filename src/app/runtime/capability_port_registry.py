@@ -6,6 +6,9 @@ inbound normalizer (WmsEventPort / DeviceEventPort / RuntimeInbox consumer)
 
 factory pattern: register(port_protocol, factory) 按需构造, 不直接暴露
 implementation type。capability 不持有底层 session/db client。
+
+Inbound normalizer 使用独立 InboundNormalizerContext, 只在 RuntimeInboxConsumer
+wiring 路径创建, 不挂到通用 RuntimeCapabilityContext 上。
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from src.app.runtime.inbound_normalizer_registry import InboundNormalizerRegistry
 
 # H2: inbound normalizer 类型清单 — 注册表 type guard 拒绝这些类型
 _INBOUND_NORMALIZER_TYPE_NAMES: frozenset[str] = frozenset(
@@ -81,7 +86,10 @@ class RuntimeCapabilityContext:
     - HTTP client / service locator / DTO / provider exception
     """
 
-    def __init__(self, registry: CapabilityPortRegistry) -> None:
+    def __init__(
+        self,
+        registry: CapabilityPortRegistry,
+    ) -> None:
         self._registry = registry
 
     def get_query_port(self, port_protocol: type[Any]) -> Any:
@@ -91,3 +99,30 @@ class RuntimeCapabilityContext:
     def get_effect_port(self, port_protocol: type[Any]) -> Any:
         """获取 effect port (出站副作用, 必须先写 RuntimeIntentLog)。"""
         return self._registry.get(port_protocol)
+
+
+class InboundNormalizerContext:
+    """RuntimeInboxConsumer 专用 inbound normalizer 上下文。
+
+    该 context 不暴露给业务 capability, 只能由 consumer wiring 通过
+    create_inbound_normalizer_context() 显式创建, 避免 caller_module 字符串伪造。
+    """
+
+    def __init__(self, inbound_registry: InboundNormalizerRegistry) -> None:
+        self._inbound_registry = inbound_registry
+
+    def get_inbound_normalizer(
+        self,
+        port_protocol: type[Any],
+    ) -> Any:
+        """获取 inbound normalizer (主计划 §3.5.1 + H2)。"""
+        return self._inbound_registry.get(port_protocol)
+
+
+def create_inbound_normalizer_context(
+    inbound_registry: InboundNormalizerRegistry | None,
+) -> InboundNormalizerContext:
+    """创建 RuntimeInboxConsumer 专用 inbound context。"""
+    if inbound_registry is None:
+        raise RuntimeError("创建 InboundNormalizerContext 需显式传入 inbound_registry")
+    return InboundNormalizerContext(inbound_registry)

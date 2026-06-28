@@ -14,6 +14,7 @@
 #   C5   RuntimeInbox 状态机契约 (tests/architecture/ 覆盖)
 #   R-I3a capability 注入禁用关键词
 #   R-I3b capability 不得 import wms_integration/device services/models
+#   R-I3c capability 不得持有 inbound normalizer (WmsEventPort 等, 主计划 §3.5.1 + H2)
 set -euo pipefail
 
 PHASE=""
@@ -27,7 +28,7 @@ Usage: scripts/architecture-guardrails.sh --phase phase0|phase1|phase2 [--allowl
   --phase      phase0=warn-only, phase1=enforced, phase2=enforced+expired 清理
   --allowlist  allowlist 文件路径 (默认 scripts/architecture-guardrails.allowlist)
 
-规则: C1 C2 C3 C4 C5 R-I3a R-I3b (主计划 §7.5)
+规则: C1 C2 C3 C4 C5 R-I3a R-I3b R-I3c (主计划 §7.5)
 EOF
 }
 
@@ -71,8 +72,8 @@ is_allowlisted() {
     if printf '%s\n' "$ALLOWLIST_KEYS" | grep -qxF "$key"; then
         return 0
     fi
-    # R-I3b 只能逐文件枚举，不能靠目录前缀覆盖未来 capability import。
-    if [[ "$rule" == "R-I3b" ]]; then
+    # R-I3b/R-I3c 只能逐文件枚举，不能靠目录前缀覆盖未来 capability import。
+    if [[ "$rule" == "R-I3b" || "$rule" == "R-I3c" ]]; then
         return 1
     fi
     # 前缀匹配 (allowlist path 可为目录前缀)
@@ -221,6 +222,149 @@ rule_ri3b() {
     done < <(grep -rnE "$pattern" src/app/runtime src/app/workline --include='*.py' 2>/dev/null || true)
 }
 
+# --- R-I3c: capability 不得持有 inbound normalizer 类型 (主计划 §3.5.1 + H2) ---
+rule_ri3c() {
+    while IFS=$'\t' read -r file line reason; do
+        [[ -z "$file" ]] && continue
+        emit_violation "R-I3c" "$file" "$line" \
+            "$reason" \
+            "inbound normalizer 仅 RuntimeInboxConsumer 允许; capability 走 query/effect port contract"
+    done < <(run_python - <<'PY'
+import ast
+import re
+from pathlib import Path
+
+SCAN_ROOTS = (Path("src/app/runtime"), Path("src/app/workline"))
+FORBIDDEN_NAMES = frozenset(
+    {
+        "WmsEventPort",
+        "DeviceEventPort",
+        "InboundEventPort",
+        "RuntimeInbox",
+        "RuntimeInboxConsumer",
+        "InboundNormalizerContext",
+        "create_inbound_normalizer_context",
+    }
+)
+FORBIDDEN_IMPORT_MODULES = frozenset(
+    {
+        "src.app.wms_integration.ports.event",
+        "src.app.device.ports.event",
+        "src.app.runtime.inbound_normalizer_registry",
+        "src.app.runtime.orchestration.runtime_inbox",
+    }
+)
+FORBIDDEN_IMPORT_MEMBERS = {
+    "src.app.wms_integration.ports": frozenset(("event",)),
+    "src.app.device.ports": frozenset(("event",)),
+}
+EXCLUDED_FILES = frozenset(
+    {
+        "src/app/wms_integration/ports/event.py",
+        "src/app/wms_integration/ports/__init__.py",
+        "src/app/runtime/capability_port_registry.py",
+        "src/app/runtime/inbound_normalizer_registry.py",
+        "src/app/runtime/orchestration/__init__.py",
+        "src/app/runtime/orchestration/runtime_inbox.py",
+        "src/app/contracts/external_contract_profile.py",
+    }
+)
+EXCLUDED_PREFIXES = ("src/app/runtime/orchestration/consumers/",)
+
+NAME_PATTERN = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(sorted(FORBIDDEN_NAMES)) + r")(?![A-Za-z0-9_])")
+
+
+def is_excluded(path: Path) -> bool:
+    rel = path.as_posix()
+    return rel in EXCLUDED_FILES or any(rel.startswith(prefix) for prefix in EXCLUDED_PREFIXES)
+
+
+def module_is_forbidden(module: str) -> bool:
+    return module in FORBIDDEN_IMPORT_MODULES or any(
+        module.startswith(f"{forbidden}.") for forbidden in FORBIDDEN_IMPORT_MODULES
+    )
+
+
+def annotation_mentions_forbidden(annotation: ast.AST | None) -> bool:
+    if annotation is None:
+        return False
+    for node in ast.walk(annotation):
+        if isinstance(node, ast.Name) and node.id in FORBIDDEN_NAMES:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr in FORBIDDEN_NAMES:
+            return True
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and NAME_PATTERN.search(node.value):
+            return True
+    return False
+
+
+def value_root_name(node: ast.AST) -> str | None:
+    current = node
+    while isinstance(current, ast.Attribute):
+        current = current.value
+    if isinstance(current, ast.Name):
+        return current.id
+    return None
+
+
+def visit_file(path: Path) -> None:
+    rel = path.as_posix()
+    if is_excluded(path):
+        return
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+    except SyntaxError as exc:
+        line = exc.lineno or 1
+        print(f"{rel}\t{line}\tR-I3c 无法解析 Python AST, 静态边界无法确认")
+        return
+
+    forbidden_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            imported_names = {alias.name for alias in node.names}
+            forbidden_imported_names = imported_names.intersection(FORBIDDEN_NAMES)
+            if module_is_forbidden(module):
+                forbidden_aliases.update(alias.asname or alias.name for alias in node.names if alias.name not in {"*"})
+                print(f"{rel}\t{node.lineno}\t业务 capability import inbound normalizer 模块 (主计划 §3.5.1 + H2 黑名单)")
+            elif module in FORBIDDEN_IMPORT_MEMBERS and imported_names.intersection(FORBIDDEN_IMPORT_MEMBERS[module]):
+                forbidden_aliases.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name in FORBIDDEN_IMPORT_MEMBERS[module]
+                )
+                print(f"{rel}\t{node.lineno}\t业务 capability import inbound normalizer 模块 (主计划 §3.5.1 + H2 黑名单)")
+            elif forbidden_imported_names:
+                print(f"{rel}\t{node.lineno}\t业务 capability import inbound normalizer 类型或模块 (主计划 §3.5.1 + H2 黑名单)")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if module_is_forbidden(alias.name):
+                    forbidden_aliases.add(alias.asname or alias.name.split(".", maxsplit=1)[0])
+                    print(f"{rel}\t{node.lineno}\t业务 capability import inbound normalizer 模块 (主计划 §3.5.1 + H2 黑名单)")
+                    break
+        elif isinstance(node, ast.AnnAssign):
+            if annotation_mentions_forbidden(node.annotation):
+                print(f"{rel}\t{node.lineno}\t业务 capability 持有 inbound normalizer type hint (主计划 §3.5.1 + H2 黑名单)")
+        elif isinstance(node, ast.arg):
+            if annotation_mentions_forbidden(node.annotation):
+                print(f"{rel}\t{node.lineno}\t业务 capability 参数暴露 inbound normalizer type hint (主计划 §3.5.1 + H2 黑名单)")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if annotation_mentions_forbidden(node.returns):
+                print(f"{rel}\t{node.lineno}\t业务 capability 返回 inbound normalizer type hint (主计划 §3.5.1 + H2 黑名单)")
+        elif isinstance(node, ast.Attribute):
+            if value_root_name(node) in forbidden_aliases and node.attr in FORBIDDEN_NAMES:
+                print(f"{rel}\t{node.lineno}\t业务 capability 引用 inbound normalizer 类型 (主计划 §3.5.1 + H2 黑名单)")
+
+
+for root in SCAN_ROOTS:
+    if not root.exists():
+        continue
+    for path in root.rglob("*.py"):
+        visit_file(path)
+PY
+    )
+}
+
 # --- allowlist 校验 ---
 validate_allowlist() {
     if [[ ! -f "$ALLOWLIST" ]]; then
@@ -246,8 +390,8 @@ validate_allowlist() {
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 drop_phase" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
         fi
-        if [[ "$rule_id" == "R-I3b" && ( "$path" == */ || -d "$path" ) ]]; then
-            echo "[ALLOWLIST] 行 $lineno ($rule_id $path): R-I3b 必须逐文件枚举, 禁止目录前缀" >&2
+        if [[ ( "$rule_id" == "R-I3b" || "$rule_id" == "R-I3c" ) && ( "$path" == */ || -d "$path" ) ]]; then
+            echo "[ALLOWLIST] 行 $lineno ($rule_id $path): $rule_id 必须逐文件枚举, 禁止目录前缀" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
         fi
         if [[ -z "$expires_at" ]]; then
@@ -288,6 +432,7 @@ rule_c3
 rule_c4
 rule_ri3a
 rule_ri3b
+rule_ri3c
 
 if [[ "$PHASE" != "phase0" ]]; then
     validate_allowlist
