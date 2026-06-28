@@ -14,6 +14,7 @@
 | 2026-06-23 | docs-workline-plugin-restructuring-v4 | WORKLINE + PLUGIN 重构顶层设计改用 GB/T 8567 概要/详细设计 13 章结构：1.引言 2.系统概述 3.体系结构 4.数据设计 5.接口设计 6.状态机 7.安全设计 8.非功能性 9.模块设计 10.实施计划 11.执行规范 12.风险 13.附录；1,800+ 行含数据模型 / 状态机 / 模块 API / Phase roadmap |
 | 2026-06-27 | phase1-runtime-orchestration-spec | Phase 1 SPEC（feature/workline-phase-1-spec）：补全 9 个 runtime/orchestration 实体（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog / IdempotencyKey / ConveyorQueueMembership）；新增 BC-02 RuntimeSnapshot 合同与 RuntimeSnapshotAssembler 服务；引入 H4 反注入边界（callback/event/result 三个入口顶层字段白名单）与 H5 幂等键命名规范 `WES-{OPERATION_KIND}-{HASH}`；FK ring dissolve（device ↔ workline_sessions 循环依赖解除）；架构守卫 C1–C5 与 R-I3a/b phase-aware 模式；API 强化：`/runtime-holds/{id}/resolve` 接受 `Idempotency-Key` Header，列表端点补 `Query()` 校验与 description；conveyor queue 增 `CheckConstraint`；Alembic 动态发现 pg_constraint 名称 |
 | 2026-06-28 | phase2-launch-pr-docs | Phase 2 launch PR：新增 [`runtime-ownership-map.md`](./runtime-ownership-map.md) 与 [`adr/0001-phase2-runtime-ownership.md`](./adr/0001-phase2-runtime-ownership.md)；runtime/orchestration/ 索引补全（IdempotencyKey Repository + IdempotencyGuard + RuntimeSnapshotAssembler + 新增 RuntimeReconciliationFacade）；wlr allowlist 严格型与 R-I3c 5 域扩展均落地；wlr 索引保留至 Phase 2 T3 整目录删除 |
+| 2026-06-28 | phase2-launch-pr-spec | Phase 2 launch PR 同步：新增 [`legacy-runtime-migration-spec.md`](./legacy-runtime-migration-spec.md) burn-down 6 阶段执行契约 + 主计划 §10.3 启动条件勾选 + 完成门禁追踪；新增 [`tests/contracts/workline/`](../../tests/contracts/workline/) 8 个 Phase 2 behavior contract gap 索引（test_runtime_inbox_lifecycle / test_runtime_intent_log_dispatch / test_runtime_session_advance / test_runtime_timeline_query / test_runtime_hold / test_device_command_dispatch / test_wms_fulfillment_request / test_manual_replay_audit，共 +76 tests，107 passed, 2 xfailed） |
 | 2026-06-23 | docs-workline-plugin-restructuring-v3 | WORKLINE + PLUGIN 重构顶层设计采用 4 章结构（总体设计目标 / 约束条件 / 执行规范 / 实施阶段），645 行自包含；不预先拆 SPEC，Phase 启动时按需展开；autoplan 28 decision 存档 reviews/ |
 | 2026-06-23 | docs-workline-plugin-restructuring | 新增 WORKLINE + PLUGIN 体系全面重构顶层设计（`docs/architecture/workline-and-plugin-restructuring.md`），父目标 + 6 个子目标 + 25 implementation task + capability freeze + authority matrix + 4 方案决策表 |
 | 2026-06-17 | docs-smt-handoff-manifest-flow | 补充 SMT 分拣入库 handoff/manifest 闭环、插件、Celery 兜底和测试索引入口 |
@@ -88,6 +89,7 @@
 | `docs/architecture/adr/2026-05-26-wms-integration-domain.md` | WMS 对接辅助域 ADR：反腐层边界、证据留痕、熔断和调用方合同 | 📖 必读文档 |
 | `docs/architecture/adr/0001-phase2-runtime-ownership.md` | Phase 2 launch PR ADR:runtime 域所有权固化 + wlr 严格型 allowlist + R-I3c 5 域扩展 | 📖 必读文档 |
 | `docs/architecture/runtime-ownership-map.md` | Phase 2 launch PR Runtime 域 ownership map:entity/repository/service 三层归属,wlr allowlist 严格型入口 | 📖 必读文档 |
+| `docs/architecture/legacy-runtime-migration-spec.md` | Phase 2 launch PR 迁移规格:burn-down 6 阶段执行契约 + 9 处跨域 import 修复路径 + wlr allowlist 严格型 + 8 contract gap TDD 同步 + 主计划 §10.3 启动条件 + 完成门禁追踪 | 📖 必读文档 |
 | `docs/integration/wms_caller_checklist.md` | WMS 同步调用方接入 checklist：RuntimeHold/诊断、错误处理和证据传播要求 | 📖 必读文档 |
 | `docs/business/smt_sorter_inbound_workflow_guide.md` | SMT 分拣入库工作流指南，含 v0.7.0.0 后端 handoff/manifest P0 闭环状态 | 📖 必读文档 |
 | `docs/superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md` | SMT 分拣入库 handoff/manifest 后端闭环合同：两阶段 claim、ledger、READY recovery | 📖 必读文档 |
@@ -594,6 +596,19 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `workline_runtime/test_smt_inbound_handoff_recovery.py` | SMT handoff due scan、post-claim recovery、source-pick ledger 和 READY claim fallback 测试 | 🔧 架构核心 |
 | `workline_runtime/test_smt_inbound_handoff_celery.py` | SMT handoff Celery recovery task 注册、参数和 summary 合同测试 | 🔧 架构核心 |
 | `workline_runtime/test_runtime_intent_effects.py` | RuntimeIntent effects 回归测试，覆盖 SMT source-pick、target/ng terminal ledger 和 no-double-claim | 🔧 架构核心 |
+
+**Phase 2 behavior contract 测试文件**（`tests/contracts/workline/`,launch PR commit `8602c33b` 落地 8 个 TDD 同步 contract，burn-down 安全网）：
+
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `contracts/workline/test_runtime_inbox_lifecycle_contract.py` | BC-XX RuntimeInbox claim/process/retry/dead-letter 5 态状态机 + lease 过期回退 + 非法转移断言 | 🔧 架构核心 |
+| `contracts/workline/test_runtime_intent_log_dispatch_contract.py` | BC-XX IdempotencyGuard claim_or_match 三态 + WES-{OPERATION_KIND}-{HASH} 命名 + 归一化 + 边界校验 | 🔧 架构核心 |
+| `contracts/workline/test_runtime_session_advance_contract.py` | BC-XX ExecutionSession 不持 work item step_status + ExecutionWorkItem 状态机 + ExecutionCorrelation 桥接 1:N | 🔧 架构核心 |
+| `contracts/workline/test_runtime_timeline_query_contract.py` | BC-XX RuntimeTimeline 按 trace_id/correlation_id/event_type 过滤 + append-only 不持 owner 状态 | 🔧 架构核心 |
+| `contracts/workline/test_runtime_hold_contract.py` | BC-XX RuntimeHold NARROW_SCOPES (WORK_ITEM/OBJECT/DEVICE/RESOURCE/QUEUE) 默认 + WIDE_SCOPES 仅整线安全 | 🔧 架构核心 |
+| `contracts/workline/test_device_command_dispatch_contract.py` | BC-XX DeviceCommand 状态机 PENDING → SENT → ACK_RECEIVED → COMPLETED + H4 反注入 10 字段阻断 + correlation_id 跨域稳定 | 🔧 架构核心 |
+| `contracts/workline/test_wms_fulfillment_request_contract.py` | BC-XX WmsFulfillmentPort 7 effect 方法全实现 + accepted/reason 互斥语义 + pallet binding 全字段必填 | 🔧 架构核心 |
+| `contracts/workline/test_manual_replay_audit_contract.py` | BC-XX DEAD_LETTER 终态不可就地重置 + 重放新建 inbox + H5 审计 (actor + reason 必填) + causation_id 因果链 | 🔧 架构核心 |
 
 **WMS 对接辅助域测试文件**：
 
