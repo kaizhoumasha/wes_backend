@@ -7,8 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- `src/workline_runtime/` 整目录物理删除 (50 源文件: contracts/、diagnostics/、plugin_sdk/ 子包 + plugin_base 等 15 顶层模块) — Phase 2 burn-down 阶段 3 目标态锁定。
+- `tests/workline_runtime/` 117 文件 + `tests/integration/workline_runtime/` 6 文件 整目录删除;行为契约已由 `tests/contracts/workline/` 9 个下游 contract 持续覆盖 (107 passed, 2 xfailed)。
+
+### Changed
+- `src/app/runtime/orchestration/diagnostics/` 子目录建立 (5 子模块: builder / codes / failure_mapper / models / registry + 聚合层 `__init__.py`) — 完整迁移 wlr `diagnostics/` 子包,实现 diagnostics 公开 16 符号垂直内部化。原 `consumers/diagnostics_bridge.py` 改名为 `diagnostics.py` 并迁出 `consumers/` 子目录 (与 `events_bridge.py` 等 bridge 平级)。
+- `consumers/` 子包退出 R-WLR trust zone (`EXCLUDED_PREFIXES` 在阶段 2 已为终态空 tuple);`consumers/runtime_inbox_consumer.py` 持续作为 RuntimeInbox 单点入口,无 wlr 真引用。
+- `scripts/architecture-guardrails.sh` 中 `rule_wlr_import()` 函数永久保留;`tests/architecture/test_wlr_import_guardrail.py` 新增 `test_excluded_prefixes_does_not_contain_consumers` + `test_no_consumers_in_wlr_allowed_paths` + `test_consumers_directory_still_exists` 三个新增测试 + WLR_ALLOWED_PATHS 移除 `consumers/` 路径,作为永久安全网防止 wlr 残留回归。
+- 8 个 tests (`tests/contracts/workline/test_callback_runtime_contracts.py` + `tests/mock/{test_wms_mock_server, test_ecs_mock_server, ecs_mock_server}.py` + `tests/api/{test_callback_route_contracts, test_runtime_hold_api}.py` + `tests/workline_plugins/test_rough_sorter_plugin.py` + `tests/helpers/workline_test_plugin.py`) 与 2 个 scripts (`scripts/data/sync_test_workline_devices.py` + `scripts/data/repair_runtime_holds.py`) 的 wlr import 重定向到 mirror;`tests/architecture/test_workline_compat_mirror.py` + `tests/characterization/workline_legacy/test_business_semantics_characterization.py` 调整到 wlr 物理删除后的自包含校验;`tests/workline_plugins/test_plugin_template_assets.py` 保持原 reverse-validation 断言。
+- `src/app/workline/models/runtime_hold.py` 内联 `_LocalNgReasonSource` 本地副本 (PLUGIN / DEVICE_ERROR / RUNTIME / MANUAL 四值),避免引入 `src.app.workline.domain.ng_reason` 触发反向循环 (domain.services → resource.services → workline.repositories → models)。
+- 版本 `0.10.0.0 → 0.10.1.0` patch bump — 清理性变更,无功能新增/破坏性 API。
+
+## [0.10.0.0] - 2026-06-29
+
 ### Added
-- (Future changes will be listed here)
+
+- **RuntimeInbox 单点入口落地**。`src/app/runtime/orchestration/consumers/` 成为 RuntimeInbox 唯一允许访问 wlr 的 production 入口；`RuntimeInboxConsumer` 委托既有 workline inbox batch processor 实现，阶段 3 业务迁入前作占位 facade。所有 28 处外部生产路径对 wlr 的引用已收敛到这一处 trust zone。
+- **运行时工具与概念镜像**。`src/app/workline/utils.py` 与 `src/app/workline/trace_context.py` 完整镜像 wlr 顶层符号，`src/app/runtime/orchestration/diagnostics_bridge.py` 聚合 12 个 wlr diagnostics 公开符号；`src/app/runtime/orchestration/runtime_inbox.py` 等模块现在通过新镜像访问 capabilities，不再直接 import wlr。
+- **workline 域业务概念镜像**。`src/app/workline/domain/{ng_reason, material_identity, plugin_manifest, contracts}.py` 镜像 wlr 同名模块，使 ng 决策、material 标识、plugin manifest、SixInOne 契约等业务概念在 workline 域内自洽，不再跨域访问 wlr。
+- **workline plugins 子目录与镜像**。新建 `src/app/workline/plugins/`，提供 `plugin_base` / `plugin_context` / `session_resolver` / `null_plugin` / `plugin_next` 与完整 `plugin_sdk` 包（含 classifiers、contracts、normalizers 等子模块），workline 域插件机制具备独立命名空间。
+- **orchestration bridge 聚合**。`src/app/runtime/orchestration/{intent_bridge, orchestrator_bridge, topology_bridge, events_bridge, sandbox_catalog_bridge, resource_wait_evidence_bridge, lock_bridge, business_identity_bridge, enums}.py` 与 `src/app/workline/runtime_services.py` 统一聚合 wlr 编排型符号，外部服务可通过专属 bridge 访问 capabilities。
+
+### Changed
+
+- **R-WLR 护栏严格生效**。`scripts/architecture-guardrails.allowlist` 的 28 条 `R-WLR` 例外全部清空；任何 production 路径 import `src.workline_runtime` 都必须通过 `consumers/` trust zone 唯一出口，guardrail 在 pre-commit hook 与 CI 中常态运行。
+- **架构护栏测试套件扩展**。`tests/architecture/test_wlr_import_guardrail.py` 与新建的 `tests/architecture/test_workline_compat_mirror.py` / `test_plugin_mirrors_mirror.py` / `test_bridges_smoke.py` / `test_runtime_inbox_consumer.py` 持续验证镜像 AST 签名、consumer 仅在 trust zone、trust zone 文件无遗漏导入。
+
+### Fixed
+
+- `RuntimeInboxConsumer.consume_sync` 现在通过 `payload_dict.setdefault("consumer_id", ...)` 注入 `consumer_id`，同时保留 caller 明示值；`_consumed_ids` 改为 `deque(maxlen=10_000)` 环形缓冲并对 `source_event_id` 自动去重，防止长跑消费者内存泄漏与重复回放。
+- `tests/architecture/test_plugin_mirrors_mirror.PROJECT_ROOT` 由硬编码 worktree 路径改为 `Path(__file__).resolve().parents[3]`，解 worktree 切换与 CI 路径依赖。
 
 ## [0.9.1.0] - 2026-06-28
 

@@ -23,6 +23,7 @@ from src.app.resource.models import RackKind
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models.safety import WorkLineRuntimeStatus
+from src.app.workline.plugins.run_mode import SANDBOX_ALLOWED_ENVS
 from src.core.conf import settings
 from src.utils.device_cache import workline_device_cache
 from src.workline_plugins.rough_sorter.contract import (
@@ -50,7 +51,6 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
-from src.workline_runtime.run_mode import SANDBOX_ALLOWED_ENVS
 
 TEST_ROUGH_SORTER_LINE_CODE = "WL-ROUGH-SORTER-TEST"
 TEST_SMT_SORTING_INBOUND_LINE_CODE = "WL-SMT-SORTING-INBOUND-TEST"

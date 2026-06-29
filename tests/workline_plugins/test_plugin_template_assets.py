@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-from src.workline_runtime.plugin_manifest import FlowEdgeType, NodeRefKind, WorklinePluginManifest
+from src.app.workline.domain.plugin_manifest import FlowEdgeType, NodeRefKind, WorklinePluginManifest
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "docs" / "templates" / "workline_plugin"
 

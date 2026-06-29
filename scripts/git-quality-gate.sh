@@ -114,8 +114,9 @@ run_security_check() {
 
 run_architecture_check() {
     # Phase 0 默认 warn-only; Phase 1 起切 enforced。
-    # 通过 ARCHITECTURE_PHASE 环境变量覆盖 (默认 phase0)。
-    local phase="${ARCHITECTURE_PHASE:-phase0}"
+    # Phase 2 launch PR (PR #67+) 起默认 phase1,确保每次 commit 触发 R-I3a/b/c + C1/C2/C4 + wlr guardrail。
+    # 允许 ARCHITECTURE_PHASE 环境变量覆盖 (测试/回滚场景)。
+    local phase="${ARCHITECTURE_PHASE:-phase1}"
     log_step "architecture" "architecture-guardrails.sh --phase $phase"
     bash "$REPO_ROOT/scripts/architecture-guardrails.sh" --phase "$phase"
 }

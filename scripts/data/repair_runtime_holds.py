@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
 
+from src.app.workline.domain.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
 from src.app.workline.models.runtime_hold import RuntimeHoldStatus, RuntimeHoldType
 from src.app.workline.models.session import (
     RuntimeReconciliationReason,
@@ -21,7 +22,6 @@ from src.app.workline.models.session import (
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.database.db import close_db, get_db_context, init_db
 from src.workline_plugin_registry import get_workline_plugin_definition
-from src.workline_runtime.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession

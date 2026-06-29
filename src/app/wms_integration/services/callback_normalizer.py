@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.workline_runtime.utils import JsonDict, resolve_first_str
+from src.app.callback.utils import JsonDict, resolve_first_str
 
 WMS_RCS_EXECUTION_PREFIXES = ("WMS_", "RCS_")
 WMS_RCS_EXECUTION_STATUS_ALIASES = ("task_status", "status", "result", "external_status", "exchange_status")

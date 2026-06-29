@@ -8,6 +8,17 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from loguru import logger
 from sqlalchemy import text
 
+from src.app.runtime.orchestration.diagnostics import (
+    ErrorCode,
+    ErrorDomain,
+    ProblemClass,
+    map_failure_to_diagnostic,
+)
+from src.app.runtime.orchestration.effect_result import WriteBackDisposition
+from src.app.runtime.orchestration.events_bridge import RESERVED_RUNTIME_EVENTS
+from src.app.runtime.orchestration.lock_bridge import RedisDistributedLock
+from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult, OrchestratorService
+from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 from src.app.workline.constants import (
     EXTERNAL_HTTP_INBOX_KIND,
     INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -15,8 +26,12 @@ from src.app.workline.constants import (
     WORKLINE_RESOURCE_WAIT_RETRY_SECONDS,
 )
 from src.app.workline.diagnostic_support import _record_diagnostic
+from src.app.workline.domain.plugin_manifest import EventCategory
+from src.app.workline.plugins.session_resolver import SessionResolveError
 from src.app.workline.repositories.inbox_repository import WorklineInboxClaim
+from src.app.workline.runtime_services import WorklineRuntimeServices, build_workline_runtime_services
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+from src.app.workline.utils import payload_dict
 from src.core.task_queue_gateway import task_queue_gateway
 from src.database.redis_client import get_redis
 from src.utils.timezone import timezone
@@ -29,20 +44,22 @@ from src.utils.value_normalization import (
     string_value,
 )
 from src.workline_plugin_registry import get_workline_plugin_definition, parse_workline_six_in_one
-from src.workline_runtime.diagnostics import ErrorCode, ErrorDomain, ProblemClass
-from src.workline_runtime.diagnostics.failure_mapper import map_failure_to_diagnostic
-from src.workline_runtime.effect_result import WriteBackDisposition
-from src.workline_runtime.lock import RedisDistributedLock
-from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
-from src.workline_runtime.plugin_manifest import EventCategory
-from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS
-from src.workline_runtime.runtime_intent import RuntimeIntentKind
-from src.workline_runtime.services import WorklineRuntimeServices, build_workline_runtime_services
-from src.workline_runtime.session_resolver import SessionResolveError
-from src.workline_runtime.utils import payload_dict
 
 if TYPE_CHECKING:
-    from src.workline_runtime.utils import JsonDict
+    from src.app.workline.utils import JsonDict
+
+
+def process_inbox_payload(payload: dict) -> dict:
+    """RuntimeInboxConsumer 委托入口 (Phase 2 burn-down 阶段 2 C1)。
+
+    阶段 2 占位: 返回消费者结果 dict。
+    阶段 3 整体迁入 consumers/runtime_inbox_consumer.py。
+    """
+    return {
+        "status": "PROCESSED",
+        "consumer_id": payload.get("consumer_id", "unknown"),
+        "source_event_id": payload.get("source_event_id"),
+    }
 
 
 class ProcessResult(TypedDict):
@@ -667,11 +684,11 @@ async def _load_related_entities(
     """
     from src.app.device.repositories import DeviceRepository
     from src.app.device.repositories.command_repository import DeviceCommandRepository
+    from src.app.workline.plugins.session_resolver import session_resolver
     from src.app.workline.repositories import WorkLineRepository
     from src.app.workline.repositories.session_repository import (
         WorklineSessionRepository,
     )
-    from src.workline_runtime.session_resolver import session_resolver
 
     session_repo = WorklineSessionRepository()
     workline_repo = WorkLineRepository()
@@ -1087,7 +1104,7 @@ class InboxBatchProcessor:
                             raise RuntimeError(
                                 "Session state changed before WRITE apply; refusing stale orchestrator effects"
                             )
-                        from src.workline_runtime.session_resolver import reapply_pending_session_ingress_metadata
+                        from src.app.workline.plugins.session_resolver import reapply_pending_session_ingress_metadata
 
                         _ = reapply_pending_session_ingress_metadata(_session)
                         write_back_service = self.write_back_service

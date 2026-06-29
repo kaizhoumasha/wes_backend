@@ -8,6 +8,10 @@ from src.app.runtime.orchestration.services.idempotency_guard import (
     is_wes_internal_key,
     make_wes_internal_key,
 )
+from src.app.runtime.orchestration.services.runtime_reconciliation_service import (
+    RuntimeReconciliationFacade,
+    runtime_reconciliation_facade,
+)
 from src.app.runtime.orchestration.services.runtime_snapshot_assembler import (
     RuntimeSnapshotAssembler,
     RuntimeSnapshotInput,
@@ -18,10 +22,12 @@ __all__ = [
     "ClaimResult",
     "IdempotencyConflict",
     "IdempotencyGuard",
+    "RuntimeReconciliationFacade",
     "RuntimeSnapshotAssembler",
     "RuntimeSnapshotInput",
     "idempotency_guard",
     "is_wes_internal_key",
     "make_wes_internal_key",
+    "runtime_reconciliation_facade",
     "runtime_snapshot_assembler",
 ]

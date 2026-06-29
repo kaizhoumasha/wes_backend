@@ -1897,15 +1897,15 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `165711fd fix(callback): 外部回调 H4 边界 WMS 协议白名单扩展 + 子层守卫`
 - `9c790d53 fix(guardrails): 修复 C4 scanner 误报 H4 反注入实现`
 
-### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空 — ⏳ 未启动（启动条件：Phase 0 ✅ + Phase 1 Packet A/B/C/D ✅ + autoplan re-review CONDITIONAL-GO 2026-06-28）
+### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空 — ✅ launch PR 已合并 (develop HEAD 整合 feature/phase2-launch),burn-down 阶段 1/2/3 已完成 (阶段 3 v0.10.1.0);等待阶段 4 (service 迁移) + 阶段 5 (Runtime API facade) + 阶段 6 (WorkLine 配置化)
 
 **目标**：在 Phase 1 新 runtime/orchestration 骨架已独立可运行后，把旧 WorkLine/plugin/runtime 的执行状态、inbox、timeline、hold、effect dispatch 迁出或删除。旧执行入口不做兼容转发。
 
 **启动条件**（满足全部才能启动 Phase 2）：
 
 - [x] Phase 0 全部 7 项完成（PR #63 `v0.9.0.0` 2026-06-25）
-- [x] Phase 1 全部任务完成 ✅ Packet A/B/C（PR #64 2026-06-27）+ Packet D（PR #66 `223351c6` 2026-06-27）已合并
-- [x] 重新跑 autoplan 或同等深度评审，确认 B 方案可执行（CEO + Codex dual voice CONDITIONAL-GO 2026-06-28）
+- [x] Phase 1 全部任务完成 ✅ Packet A/B/C（PR #64 2026-06-27）+ Packet D（PR #66 `v0.9.1.0` 2026-06-27）已合并
+- [x] 重新跑 autoplan 或同等深度评审，确认 B 方案可执行（autoplan CONDITIONAL-GO 2026-06-28，见 `~/.gstack/projects/kaizhoumasha-wes_backend/develop-autoplan-restore-20260628-121500.md`）
 
 #### 10.3.1 B 方案暂停/回退条件（C2 回归）
 
@@ -1934,9 +1934,24 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 
 **Phase 2 完成门禁**：
 
-- [ ] `runtime/orchestration` 域独立落地
-- [ ] WorkLine 不再拥有运行状态
-- [ ] legacy 行为契约测试通过
+- [x] `runtime/orchestration` 域独立落地（launch PR commit `d5b88562` facade bridge + `8eab4042` 跨域 import 修复）
+- [ ] WorkLine 不再拥有运行状态（burn-down 阶段 6 完成）
+- [x] legacy 行为契约测试通过（launch PR commit `8602c33b`：`tests/contracts/workline/` 107 passed, 2 xfailed）
+
+**Launch PR 8 commit 落地清单（feature/phase2-launch, 8602c33b）**：
+
+| # | Commit | 内容 | 关联门禁 |
+|---|---|---|---|
+| 1 | `2e7715a2` | `chore(guardrails): pre-commit 默认 ARCHITECTURE_PHASE=phase1 + env 注入` | guardrail 默认 phase1 |
+| 2 | `26452fb9` | `fix(runtime): InboundNormalizerRegistry async/thread safety + 并发单测` | async safety |
+| 3 | `57de91ff` | `feat(guardrails): src.workline_runtime production import guardrail + allowlist (Phase 2 launch PR)` | wlr allowlist 严格型 |
+| 4 | `9bd29f03` | `feat(guardrails): R-I3c scope 扩展到 callback/wms_integration/services/device (Phase 2 launch PR)` | R-I3c 5 域 |
+| 5 | `ca1fe853` `aef4366c` `d5b88562` `8eab4042` | 跨域 import 修复 4 commit（callback/utils mirror → 4 callback services 切到 callback.contracts/utils → RuntimeReconciliationFacade bridge → device_command_service 跨域切到 facade） | 9 处跨域 import |
+| 6 | `123f57c9` | `docs(architecture): Runtime ownership map + ADR-0001` | ownership map + ADR |
+| 7 | `8602c33b` | `test(contracts): 8 个 Phase 2 behavior contract gaps (TDD 同步)` | 8 contract gap |
+| 8 | pending | `docs(architecture): legacy-runtime-migration-spec.md + Phase 2 §10.3 同步` | migration spec + §10.3 启动条件 |
+
+详见 [`./legacy-runtime-migration-spec.md`](./legacy-runtime-migration-spec.md) §2 / §3 / §5 / §6。
 
 ### 10.4 Phase 3: 执行安全与恢复能力补全
 

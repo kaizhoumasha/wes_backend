@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.app.workline.plugins.run_mode import normalize_run_mode
+from src.app.workline.trace_context import TraceContext
 from src.utils.value_normalization import enum_value
-from src.workline_runtime.run_mode import normalize_run_mode
-from src.workline_runtime.trace_context import TraceContext
 
 
 def _outbox_trace_extra(outbox: Any, trace: TraceContext | None = None) -> dict[str, Any]:

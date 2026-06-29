@@ -10,6 +10,11 @@ from typing import TYPE_CHECKING, Any, cast
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_service import DeviceService
 from src.app.rack.repositories import RackTaskRepository
+from src.app.runtime.orchestration.diagnostics import (
+    ErrorCode,
+    build_diagnostic_context,
+    build_diagnostic_event,
+)
 from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
@@ -54,7 +59,6 @@ from src.app.workline.services.timeline_sequence_service import add_timeline_wit
 from src.core.logger import logger
 from src.utils.timezone import timezone
 from src.utils.value_normalization import as_dict, enum_str
-from src.workline_runtime.diagnostics import ErrorCode, build_diagnostic_context, build_diagnostic_event
 
 if TYPE_CHECKING:
     from src.app.sys.models import SystemOutbox

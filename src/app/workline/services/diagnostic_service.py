@@ -4,13 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.app.workline.models.diagnostic import WorklineDiagnostic
-from src.app.workline.repositories.diagnostic_repository import (
-    WorklineDiagnosticRepository,
-    workline_diagnostic_repository,
-)
-from src.core.base_service import BaseService
-from src.workline_runtime.diagnostics import (
+from src.app.runtime.orchestration.diagnostics import (
     DiagnosticEvent,
     ErrorCode,
     build_diagnostic_card,
@@ -18,7 +12,13 @@ from src.workline_runtime.diagnostics import (
     build_diagnostic_event,
     get_diagnostic_code_definition,
 )
-from src.workline_runtime.resource_wait_evidence import ResourceWaitEvidence
+from src.app.runtime.orchestration.resource_wait_evidence_bridge import ResourceWaitEvidence
+from src.app.workline.models.diagnostic import WorklineDiagnostic
+from src.app.workline.repositories.diagnostic_repository import (
+    WorklineDiagnosticRepository,
+    workline_diagnostic_repository,
+)
+from src.core.base_service import BaseService
 
 _REDACT_KEYS = {
     "authorization",
@@ -46,6 +46,16 @@ def _redact(value: Any) -> Any:
     return value
 
 
+def _coerce_diagnostic_event(event: Any) -> DiagnosticEvent:
+    """将同形状的诊断镜像模型归一为 WLR DiagnosticEvent。"""
+
+    if isinstance(event, DiagnosticEvent):
+        return event
+    if hasattr(event, "model_dump"):
+        return DiagnosticEvent.model_validate(event.model_dump(mode="json"))
+    return DiagnosticEvent.model_validate(event)
+
+
 class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnosticRepository]):
     """集中生成和持久化工作线诊断。"""
 
@@ -66,15 +76,20 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
         self,
         db: Any,
         *,
-        event: DiagnosticEvent,
+        event: Any,
         evidence: dict[str, Any] | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
         diagnostic_key_override: str | None = None,
         auto_commit: bool = True,
     ) -> WorklineDiagnostic:
-        """按诊断事件创建或复用诊断记录。"""
+        """按诊断事件创建或复用诊断记录。
 
+        callback 域在 Phase 2 launch PR 中拥有本地诊断镜像模型;进入
+        workline 持久化边界时统一转换为 WLR 模型,避免 Pydantic 嵌套模型类型不匹配。
+        """
+
+        event = _coerce_diagnostic_event(event)
         diagnostic_key = diagnostic_key_override or self.build_diagnostic_key(event)
         existing = await self.repo.get_by_diagnostic_key(db, diagnostic_key)
         if existing is not None:

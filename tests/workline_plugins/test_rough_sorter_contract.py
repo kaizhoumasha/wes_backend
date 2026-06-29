@@ -2,6 +2,8 @@
 
 import pytest
 
+from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntentKind
+from src.app.workline.domain.contracts import SixInOne
 from src.workline_plugins.rough_sorter.context import RoughSorterContext
 from src.workline_plugins.rough_sorter.contract import (
     ACTION_MOVE_FORWARD,
@@ -28,8 +30,6 @@ from src.workline_plugins.rough_sorter.contract import (
     resolve_rough_sorter_business_key,
 )
 from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
-from src.workline_runtime.contracts import SixInOne
-from src.workline_runtime.runtime_intent import BlockScope, RuntimeIntentKind
 
 
 def _payload_data() -> dict[str, str]:

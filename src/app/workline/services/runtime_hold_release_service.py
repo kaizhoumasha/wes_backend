@@ -15,6 +15,8 @@ from src.app.device.models.device import Device
 from src.app.device.repositories import device_command_repository
 from src.app.device.services.device_service import DeviceService
 from src.app.sys.repositories import system_outbox_repository
+from src.app.workline.domain.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
+from src.app.workline.domain.ng_reason import NgReasonDefinition, build_ng_reason_catalog
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.models.inbox import InboxKind, SourceSystem
 from src.app.workline.models.runtime_hold import (
@@ -44,8 +46,6 @@ from src.workline_plugin_registry import (
     list_workline_ng_reasons,
     resolve_workline_material_identity,
 )
-from src.workline_runtime.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
-from src.workline_runtime.ng_reason import NgReasonDefinition, build_ng_reason_catalog
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession

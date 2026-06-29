@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from datetime import datetime  # noqa: TC003 - SQLModel table fields need runtime type
 from enum import Enum
-from pathlib import Path
 from typing import Any, ClassVar, Literal, cast
 
 from sqlalchemy import JSON, Column, Index, Text, UniqueConstraint, text
@@ -16,20 +13,17 @@ from sqlmodel import Field
 from src.core.mixins import DataTableMixin, EnterpriseMixin
 from src.database.schema_conf import SchemaType
 
-# NgReasonSource lives in src.workline_runtime.ng_reason, a leaf module with no
-# app-layer dependencies.  Importing it normally triggers workline_runtime/__init__
-# which cycles back through session_resolver → repositories → this module.
-# Load the leaf module directly by file path to break the cycle.
-_ng_reason_path = Path(__file__).resolve().parents[3] / "workline_runtime" / "ng_reason.py"
-_ng_reason_mod = "src.workline_runtime.ng_reason"
-if _ng_reason_mod not in sys.modules:
-    _spec = importlib.util.spec_from_file_location(_ng_reason_mod, _ng_reason_path)
-    if _spec is None or _spec.loader is None:  # pragma: no cover
-        raise ImportError(f"Unable to load {_ng_reason_path}")
-    _mod = importlib.util.module_from_spec(_spec)
-    sys.modules[_ng_reason_mod] = _mod
-    _spec.loader.exec_module(_mod)
-NgReasonSource = sys.modules[_ng_reason_mod].NgReasonSource
+
+class _LocalNgReasonSource(str, Enum):
+    """本地副本,避免引入 domain.ng_reason 触发反向循环。"""
+
+    PLUGIN = "PLUGIN"
+    DEVICE_ERROR = "DEVICE_ERROR"
+    RUNTIME = "RUNTIME"
+    MANUAL = "MANUAL"
+
+
+NgReasonSource = _LocalNgReasonSource
 
 
 class RuntimeHoldType(str, Enum):

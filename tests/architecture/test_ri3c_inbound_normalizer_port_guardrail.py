@@ -1,8 +1,15 @@
-"""R-I3c inbound normalizer port 静态扫描器测试 (Phase 1 CEO-009 / Packet D)。
+"""R-I3c inbound normalizer port 静态扫描器测试 (Phase 1 CEO-009 / Packet D / Phase 2 Step 4)。
 
-主计划 §3.5.1 + H2: 业务 capability (src/app/runtime + src/app/workline) 不得持有
-inbound normalizer Protocol (WmsEventPort / DeviceEventPort / InboundEventPort) 或
-RuntimeInbox / RuntimeInboxConsumer; 这些是 RuntimeInboxConsumer 专属依赖。
+主计划 §3.5.1 + H2: 业务 capability 不得持有 inbound normalizer Protocol
+(WmsEventPort / DeviceEventPort / InboundEventPort) 或 RuntimeInbox / RuntimeInboxConsumer;
+这些是 RuntimeInboxConsumer 专属依赖。
+
+Phase 2 Step 4 扩展 SCAN_ROOTS 至 5 个域:
+  - src/app/runtime
+  - src/app/workline
+  - src/app/callback
+  - src/app/wms_integration/services
+  - src/app/device
 """
 
 from __future__ import annotations
@@ -15,7 +22,13 @@ GUARDRAILS_SCRIPT = REPO_ROOT / "scripts" / "architecture-guardrails.sh"
 
 RI3C_TYPE_NAMES = ("WmsEventPort", "DeviceEventPort", "InboundEventPort", "RuntimeInbox", "RuntimeInboxConsumer")
 RI3C_CONTEXT_NAMES = ("InboundNormalizerContext", "create_inbound_normalizer_context")
-RI3C_SCAN_SCOPE = ("src/app/runtime", "src/app/workline")
+RI3C_SCAN_SCOPE = (
+    "src/app/runtime",
+    "src/app/workline",
+    "src/app/callback",
+    "src/app/wms_integration/services",
+    "src/app/device",
+)
 RI3C_EXCLUDED_PATHS = (
     "src/app/wms_integration/ports/event.py",
     "src/app/wms_integration/ports/__init__.py",
@@ -37,7 +50,7 @@ def test_ri3c_rule_registered_in_guardrails_script():
 
 
 def test_ri3c_rule_scans_correct_paths():
-    """rule_ri3c 必须扫描 src/app/runtime + src/app/workline (与 R-I3a/R-I3b 一致)。"""
+    """rule_ri3c 必须扫描 5 个域 (Phase 2 Step 4 扩展后)。"""
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
     for scope in RI3C_SCAN_SCOPE:
         assert scope in text, f"rule_ri3c 缺扫描路径 {scope}"
@@ -221,6 +234,84 @@ def test_ri3c_guardrail_rejects_qualified_runtime_reference():
     )
     assert "R-I3c" in result.stderr
     assert "src/app/runtime/orchestration/services/_ri3c_reference_violation_fixture.py" in result.stderr
+
+
+def test_ri3c_guardrail_scans_callback_domain():
+    """Phase 2 Step 4: R-I3c 必须扫描 src/app/callback 新域。"""
+    fixture = REPO_ROOT / "src/app/callback/_ri3c_callback_violation_fixture.py"
+    fixture.write_text(
+        "from src.app.wms_integration.ports.event import WmsEventPort\n\n"
+        "leaked_normalizer: WmsEventPort | None = None\n",
+        encoding="utf-8",
+    )
+    try:
+        result = subprocess.run(
+            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        fixture.unlink(missing_ok=True)
+
+    assert result.returncode == 1, (
+        f"R-I3c 应拒绝 src/app/callback 内持有 inbound normalizer\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "R-I3c" in result.stderr
+    assert "src/app/callback/_ri3c_callback_violation_fixture.py" in result.stderr
+
+
+def test_ri3c_guardrail_scans_wms_integration_services_domain():
+    """Phase 2 Step 4: R-I3c 必须扫描 src/app/wms_integration/services 新域。"""
+    fixture = REPO_ROOT / "src/app/wms_integration/services/_ri3c_wms_violation_fixture.py"
+    fixture.write_text(
+        "from src.app.wms_integration.ports.event import WmsEventPort\n\n"
+        "leaked_normalizer: WmsEventPort | None = None\n",
+        encoding="utf-8",
+    )
+    try:
+        result = subprocess.run(
+            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        fixture.unlink(missing_ok=True)
+
+    assert result.returncode == 1, (
+        "R-I3c 应拒绝 src/app/wms_integration/services 内持有 inbound normalizer\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "R-I3c" in result.stderr
+    assert "src/app/wms_integration/services/_ri3c_wms_violation_fixture.py" in result.stderr
+
+
+def test_ri3c_guardrail_scans_device_domain():
+    """Phase 2 Step 4: R-I3c 必须扫描 src/app/device 新域。"""
+    fixture = REPO_ROOT / "src/app/device/_ri3c_device_violation_fixture.py"
+    fixture.write_text(
+        "from src.app.device.ports.event import DeviceEventPort\n\nleaked_normalizer: DeviceEventPort | None = None\n",
+        encoding="utf-8",
+    )
+    try:
+        result = subprocess.run(
+            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        fixture.unlink(missing_ok=True)
+
+    assert result.returncode == 1, (
+        f"R-I3c 应拒绝 src/app/device 内持有 inbound normalizer\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "R-I3c" in result.stderr
+    assert "src/app/device/_ri3c_device_violation_fixture.py" in result.stderr
 
 
 def test_import_linter_config_exists():

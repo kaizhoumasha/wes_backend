@@ -41,6 +41,7 @@ from .transport_contract import (
     wms_transport_contract_service,
 )
 from .typed_ports import WmsSessionFactory, WmsTypedPortService
+from .wms_event_normalizer import WmsEventNormalizer, register_inbound_normalizers
 
 __all__ = [
     "DEFAULT_RACK_OPERATION_ENDPOINT",
@@ -53,6 +54,7 @@ __all__ = [
     "WmsCircuitBreakerService",
     "WmsCircuitOpenError",
     "WmsEndpointConfig",
+    "WmsEventNormalizer",
     "WmsEvidencePersistenceError",
     "WmsExecutionCallbackNormalizer",
     "WmsHttpClient",
@@ -71,6 +73,7 @@ __all__ = [
     "canonical_sha256",
     "clamp_query_cache_ttl_seconds",
     "redact_sensitive",
+    "register_inbound_normalizers",
     "wms_call_evidence_service",
     "wms_circuit_breaker_service",
     "wms_endpoint_config",

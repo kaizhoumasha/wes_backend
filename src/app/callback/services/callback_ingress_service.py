@@ -9,6 +9,16 @@ from typing import Any, cast
 from fastapi import Request
 from pydantic import ValidationError
 
+from src.app.callback.contracts import (
+    ErrorCode,
+    TraceContext,
+    build_diagnostic_card,
+    build_diagnostic_context,
+    build_diagnostic_event,
+    canonicalize_event_type,
+    is_platform_control_event,
+    is_production_event,
+)
 from src.app.callback.models import (
     CallbackEventIngressResponse,
     CallbackEventRequest,
@@ -22,6 +32,7 @@ from src.app.callback.models import (
 )
 from src.app.callback.services.callback_log_service import callback_log_service
 from src.app.callback.services.callback_orchestration_service import callback_orchestration_service
+from src.app.callback.utils import JsonDict, resolve_first_str
 from src.app.device.models import parse_device_capabilities
 from src.app.device.models.command import (
     _FORBIDDEN_PARAM_KEYS,
@@ -30,7 +41,7 @@ from src.app.device.models.command import (
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
-from src.app.wms_integration.services.callback_normalizer import wms_execution_callback_normalizer
+from src.app.wms_integration.services import callback_normalizer as _wms_callback_normalizer
 from src.app.workline.services import (
     inbox_service,
     workline_diagnostic_service,
@@ -42,16 +53,6 @@ from src.core.response import response_builder
 from src.core.response.response_code import ClientErrorCode, ResourceErrorCode, ResponseCode, ServerErrorCode
 from src.database.dependencies import AsyncSessionDep
 from src.utils.value_normalization import resolve_entity_id
-from src.workline_runtime.diagnostics import (
-    ErrorCode,
-    build_diagnostic_card,
-    build_diagnostic_context,
-    build_diagnostic_event,
-)
-from src.workline_runtime.plugin_sdk import canonicalize_event_type
-from src.workline_runtime.runtime_events import is_platform_control_event, is_production_event
-from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.utils import JsonDict, resolve_first_str
 
 # 字段别名常量
 _TRACE_ID_ALIASES = ("trace_id",)
@@ -392,13 +393,17 @@ async def _read_request_json(request: Request) -> JsonDict:
 
 
 def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
-    return wms_execution_callback_normalizer.normalize(payload)
+    # 延迟 import: 避免 callback_ingress_service 模块加载时反向 import
+    # `src.app.wms_integration.services.callback_normalizer`, 触发与 callback_normalizer.py 顶部
+    # `from src.app.callback.utils import ...` 的循环 import (Phase 2 launch PR 修复后暴露)
+    return _wms_callback_normalizer.wms_execution_callback_normalizer.normalize(payload)
 
 
 def _validate_wms_rcs_execution_callback_payload(payload: JsonDict, callback_type: str) -> None:
     """校验 WMS/RCS 运行时执行回调第零阶段最小包络。"""
 
-    wms_execution_callback_normalizer.validate(payload, callback_type)
+    # 延迟 import: 与 _normalize_external_callback_payload 同样的循环 import 规避
+    _wms_callback_normalizer.wms_execution_callback_normalizer.validate(payload, callback_type)
 
 
 def _build_contract_fail(

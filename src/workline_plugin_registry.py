@@ -7,9 +7,9 @@ from threading import Lock
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from src.workline_runtime.material_identity import MaterialIdentity, MaterialIdentityInput
-    from src.workline_runtime.ng_reason import NgReasonDefinition
-    from src.workline_runtime.plugin_manifest import WorklinePluginManifest
+    from src.app.workline.domain.material_identity import MaterialIdentity, MaterialIdentityInput
+    from src.app.workline.domain.ng_reason import NgReasonDefinition
+    from src.app.workline.domain.plugin_manifest import WorklinePluginManifest
 
 _WORKLINE_PLUGIN_MANIFEST_FIELDS = (
     "plugin_key",
@@ -152,7 +152,7 @@ def get_workline_context_model(plugin_key: str | None) -> type[Any] | None:
 
 
 def _missing_material_identity(input_value: "MaterialIdentityInput") -> "MaterialIdentity":
-    from src.workline_runtime.material_identity import (
+    from src.app.workline.domain.material_identity import (
         MaterialIdentity,
         MaterialIdentityResolutionStatus,
         material_identity_input_to_hash,
@@ -224,7 +224,7 @@ def validate_workline_plugin_assignment(
 
         raise BadRequestException(message=f"不支持的工作线插件: {plugin_key}")
 
-    from src.workline_runtime.topology import WorklineTopologyView, validate_topology_manifest
+    from src.app.runtime.orchestration.topology_bridge import WorklineTopologyView, validate_topology_manifest
 
     topology = WorklineTopologyView.from_devices(list(devices))
     try:

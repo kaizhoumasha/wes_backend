@@ -1,12 +1,14 @@
 from inspect import isawaitable
 from typing import Any, TypedDict
 
+from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.outbox_dispatch_support import (
     _outbox_trace_extra,
     _outbox_trace_log_suffix,
     _resolve_outbox_run_mode,
 )
+from src.app.workline.plugins.run_mode import is_simulation_run_mode
 from src.app.workline.services.device_command_gateway import (
     _build_device_command_log_envelope,
     _DeviceCommandGovernanceError,
@@ -14,6 +16,8 @@ from src.app.workline.services.device_command_gateway import (
     _mark_outbox_blocked_by_workline_state,
 )
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+from src.app.workline.trace_context import TraceContext
+from src.app.workline.utils import payload_dict
 from src.core.logger import logger
 from src.utils.value_normalization import (
     enum_value,
@@ -21,10 +25,6 @@ from src.utils.value_normalization import (
     resolve_required_pk,
     string_value,
 )
-from src.workline_runtime.diagnostics.codes import ErrorCode
-from src.workline_runtime.run_mode import is_simulation_run_mode
-from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.utils import payload_dict
 
 RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS = 2
 DEVICE_STATUS_PRECHECK_MAX_WAIT_SECONDS = 120
