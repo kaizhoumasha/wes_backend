@@ -41,7 +41,7 @@ from src.app.device.models.command import (
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
-from src.app.wms_integration.services.callback_normalizer import wms_execution_callback_normalizer
+from src.app.wms_integration.services import callback_normalizer as _wms_callback_normalizer
 from src.app.workline.services import (
     inbox_service,
     workline_diagnostic_service,
@@ -393,13 +393,17 @@ async def _read_request_json(request: Request) -> JsonDict:
 
 
 def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
-    return wms_execution_callback_normalizer.normalize(payload)
+    # 延迟 import: 避免 callback_ingress_service 模块加载时反向 import
+    # `src.app.wms_integration.services.callback_normalizer`, 触发与 callback_normalizer.py 顶部
+    # `from src.app.callback.utils import ...` 的循环 import (Phase 2 launch PR 修复后暴露)
+    return _wms_callback_normalizer.wms_execution_callback_normalizer.normalize(payload)
 
 
 def _validate_wms_rcs_execution_callback_payload(payload: JsonDict, callback_type: str) -> None:
     """校验 WMS/RCS 运行时执行回调第零阶段最小包络。"""
 
-    wms_execution_callback_normalizer.validate(payload, callback_type)
+    # 延迟 import: 与 _normalize_external_callback_payload 同样的循环 import 规避
+    _wms_callback_normalizer.wms_execution_callback_normalizer.validate(payload, callback_type)
 
 
 def _build_contract_fail(
