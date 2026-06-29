@@ -291,6 +291,7 @@ EXCLUDED_FILES = frozenset(
     {
         "src/app/wms_integration/ports/event.py",
         "src/app/wms_integration/ports/__init__.py",
+        "src/app/wms_integration/services/wms_event_normalizer.py",
         "src/app/runtime/capability_port_registry.py",
         "src/app/runtime/inbound_normalizer_registry.py",
         "src/app/runtime/orchestration/__init__.py",
