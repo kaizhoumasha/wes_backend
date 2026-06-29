@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.app.runtime.orchestration.consumers.diagnostics_bridge import (
+from src.app.runtime.orchestration.diagnostics import (
     DiagnosticEvent,
     ErrorCode,
     build_diagnostic_card,

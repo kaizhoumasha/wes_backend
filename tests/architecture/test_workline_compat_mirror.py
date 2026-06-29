@@ -1,9 +1,11 @@
 """Phase 2 burn-down 阶段 2 C2 — workline 域工具镜像与 wlr 原文件 AST 签名一致。
 
 不验证运行时行为, 只验证:
-- src/app/workline/utils.py top-level 函数名与 src/workline_runtime/utils.py 一致
-- src/app/workline/trace_context.py TraceContext 类存在 + dataclass 字段一致
-- src/app/runtime/orchestration/diagnostics_bridge.py 导出 diagnostics 包所有公开符号
+- src/app/workline/utils.py top-level 函数名自包含
+- src/app/workline/trace_context.py TraceContext 类存在
+- diagnostics 顶层门面导出 diagnostics 包所有公开符号
+
+阶段 3 删除 src/workline_runtime/ 后此测试改为自包含校验。
 """
 
 from __future__ import annotations
@@ -23,16 +25,13 @@ def _public_symbols_from_module(ast_module: ast.Module) -> set[str]:
     return symbols
 
 
-def test_workline_utils_mirror_matches_wlr_top_level() -> None:
-    """src/app/workline/utils.py 的 top-level 函数名与 wlr 原文件完全一致。"""
-    wlr_path = REPO_ROOT / "src/workline_runtime/utils.py"
+def test_workline_utils_mirror_is_self_consistent_after_wlr_removal() -> None:
+    """src/app/workline/utils.py 镜像在 wlr 物理删除后仍保持自包含 (阶段 3 终态)。"""
     mirror_path = REPO_ROOT / "src/app/workline/utils.py"
     assert mirror_path.exists(), f"镜像文件不存在: {mirror_path}"
-    wlr_ast = ast.parse(wlr_path.read_text(encoding="utf-8"))
     mirror_ast = ast.parse(mirror_path.read_text(encoding="utf-8"))
-    assert _public_symbols_from_module(wlr_ast) == _public_symbols_from_module(mirror_ast), (
-        "utils.py 镜像与 wlr 原文件 top-level 符号不一致"
-    )
+    public_symbols = _public_symbols_from_module(mirror_ast)
+    assert public_symbols, "utils.py 镜像缺少任何 top-level 公开符号"
 
 
 def test_workline_trace_context_mirror_exposes_tracecontext_class() -> None:
@@ -47,8 +46,8 @@ def test_workline_trace_context_mirror_exposes_tracecontext_class() -> None:
 
 
 def test_diagnostics_bridge_re_exports_all_diagnostics_public_symbols() -> None:
-    """diagnostics_bridge 导出 diagnostics 包全部 16 个公开符号 (包括子模块)。"""
-    from src.app.runtime.orchestration.consumers import diagnostics_bridge
+    """diagnostics 顶层门面导出 diagnostics 包全部 16 个公开符号 (包括子模块)。"""
+    from src.app.runtime.orchestration import diagnostics as diagnostics_bridge
 
     expected = {
         "DiagnosticCard",

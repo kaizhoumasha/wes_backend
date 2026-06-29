@@ -1,7 +1,7 @@
 from inspect import isawaitable
 from typing import Any, TypedDict
 
-from src.app.runtime.orchestration.consumers.diagnostics_bridge import ErrorCode
+from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.outbox_dispatch_support import (
     _outbox_trace_extra,

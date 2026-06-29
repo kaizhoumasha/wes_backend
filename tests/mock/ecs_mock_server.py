@@ -29,8 +29,8 @@ DOCKER_APP_ROOT = Path(__file__).resolve().parents[2]
 if str(DOCKER_APP_ROOT) not in sys.path:
     sys.path.insert(0, str(DOCKER_APP_ROOT))
 
-from src.workline_runtime.runtime_events import is_platform_control_event
-from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
+from src.app.callback.contracts.runtime_events import is_platform_control_event
+from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
 
 logger = logging.getLogger(__name__)
 

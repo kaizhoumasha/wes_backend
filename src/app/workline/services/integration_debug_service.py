@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from src.app.runtime.orchestration.consumers.diagnostics_bridge import ErrorCode, get_diagnostic_code_definition
+from src.app.runtime.orchestration.diagnostics import ErrorCode, get_diagnostic_code_definition
 from src.app.workline.models.integration_debug import (
     IntegrationDebugCaseListResponse,
     IntegrationDebugCaseResponse,

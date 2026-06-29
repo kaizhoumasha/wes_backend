@@ -211,26 +211,24 @@ rule_ri3a() {
     done < <(grep -rnE "$pattern" src/app/runtime src/app/workline --include='*.py' 2>/dev/null || true)
 }
 
-# --- R-WLR: src.workline_runtime production import 严格型 (Phase 2 launch PR) ---
-# 唯一允许 import 入口:
-#   1. src/app/runtime/orchestration/consumers/  (单点入口)
-#   2. tests/                                    (测试)
-#   3. migrations/                               (Alembic 数据迁移)
-# 其余 src/ 任何 production code import src.workline_runtime 都违规。
+# --- R-WLR: src.workline_runtime production import 严格型 (Phase 2 launch + Stage 3) ---
+# wlr 整目录已删 (阶段 3); 保留 rule 作为永久安全网防止回归:
+# 任何 src/ 下 production code import src.workline_runtime 视为违规 (wlr 已不存在)。
+# 仅以下前缀允许 (wlr 内部 import 自身 / 测试 / Alembic 迁移):
+#   1. tests/     (测试)
+#   2. migrations/  (Alembic 数据迁移)
 rule_wlr_import() {
     local pattern='from src\.workline_runtime|import src\.workline_runtime'
     while IFS=: read -r file line _content; do
         [[ -z "$file" ]] && continue
-        # 排除 wlr 自身内部 import
+        # 排除 wlr 自身内部 import (历史允许,阶段 3 后 wlr 目录已删,此分支防御性保留)
         [[ "$file" == src/workline_runtime/* ]] && continue
-        # 排除消费者单点入口 (严格型唯一允许)
-        [[ "$file" == src/app/runtime/orchestration/consumers/* ]] && continue
         # 排除测试 + 迁移 (allowlist 前缀覆盖)
         [[ "$file" == tests/* ]] && continue
         [[ "$file" == migrations/* ]] && continue
         emit_violation "R-WLR" "$file" "$line" \
             "production code import src.workline_runtime (wlr allowlist 严格型违规)" \
-            "迁移至 runtime/orchestration 域; 仅 src/app/runtime/orchestration/consumers/ 允许直接 import"
+            "src/workline_runtime/ 整目录已删 (阶段 3),不可直接 import; 改用 src.app.runtime.orchestration 或 src.app.workline 域内 mirror"
     done < <(grep -rnE "$pattern" src --include='*.py' 2>/dev/null || true)
 }
 

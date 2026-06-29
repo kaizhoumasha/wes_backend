@@ -13,8 +13,8 @@ from src.app.callback.models import (
     CallbackExternalIngressResponse,
     CallbackResultIngressResponse,
 )
+from src.app.workline.trace_context import TraceContext
 from src.core.conf import settings
-from src.workline_runtime.trace_context import TraceContext
 from tests.api import callback_test_support
 from tests.api.callback_test_support import (
     RequestFactory,

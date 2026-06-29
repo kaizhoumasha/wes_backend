@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.app.callback.contracts import runtime_events as wlr_runtime_events
 from src.app.callback.contracts.event_mapper import canonicalize_event_type
 from src.app.callback.contracts.runtime_events import (
     PLATFORM_CONTROL_EVENTS,
@@ -10,7 +11,6 @@ from src.app.callback.contracts.runtime_events import (
     is_platform_safety_event,
     is_production_event,
 )
-from src.workline_runtime import runtime_events as wlr_runtime_events
 
 
 def test_callback_event_mapper_uses_workline_runtime_config_mapping() -> None:

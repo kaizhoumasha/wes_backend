@@ -25,7 +25,7 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from src.app.runtime.orchestration.consumers.diagnostics_bridge import ErrorCode, error_domain_for
+from src.app.runtime.orchestration.diagnostics import ErrorCode, error_domain_for
 from src.app.runtime.orchestration.lock_bridge import LockAcquireError
 from src.app.workline.plugins.null_plugin import null_plugin
 from src.app.workline.plugins.plugin_context import PluginContext, PluginContextBuilder

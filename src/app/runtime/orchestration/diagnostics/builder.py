@@ -2,8 +2,8 @@
 
 from typing import Any
 
+from src.app.workline.trace_context import TraceContext
 from src.utils.value_normalization import optional_int_attr, optional_str, optional_str_attr
-from src.workline_runtime.trace_context import TraceContext
 
 from .codes import ErrorCode, ErrorDomain, ProblemClass, Recoverability, Severity, error_domain_for
 from .models import DiagnosticCard, DiagnosticContext, DiagnosticEvent

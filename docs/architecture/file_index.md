@@ -2,7 +2,7 @@
 
 > Legacy notes: 本文件索引存在历史条目，涉及旧插件 builder 的说明仅供定位旧文档；当前运行时以 `RuntimeIntent` 为准。
 
-**最后更新**: 2026年6月29日（phase2-stage2-burndown-docs: Phase 2 burn-down 阶段 2 — orchestration 7 bridge 镜像 + consumers/RuntimeInboxConsumer 单点入口 + workline utils/trace_context/domain/plugins 全量镜像 + 6 个 mirror 测试 + R-WLR allowlist 全清）
+**最后更新**: 2026年6月30日（phase2-stage3-burndown-docs: Phase 2 burn-down 阶段 3 — wlr 整目录物理删除 178 文件 + diagnostics 子目录内部化 + consumers/ 退出 R-WLR trust zone + 9 tests + 2 scripts wlr import 重定向 + 版本 0.10.0.0 → 0.10.1.0 patch）
 **同步状态**: ⚠️ WORKLINE + PLUGIN 体系全面重构顶层设计采用 GB/T 8567 概要设计说明书 + 详细设计 13 章结构（`docs/architecture/workline-and-plugin-restructuring.md`），1,800+ 行；含数据模型、状态机图、模块 API、接口设计、Phase 实施 roadmap；不预先拆 SPEC；关键决策 9 个 ADR（含 Phase 2 launch PR ADR-0001）；autoplan 评审存档；其余内容请以实际仓库结构为准
 
 ---
@@ -11,6 +11,7 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-06-30 | 0.10.1.0 / phase2-stage3-burndown-docs | Phase 2 burn-down 阶段 3：物理删除 `src/workline_runtime/` (50 文件) + `tests/workline_runtime/` (117 文件) + `tests/integration/workline_runtime/` (6 文件) 共 178 个 wlr 源文件；`diagnostics` 子目录从 `consumers/` 迁出至 `src/app/runtime/orchestration/diagnostics/` (5 子模块 + 聚合层)；`consumers/diagnostics_bridge.py` 改名为 `consumers/` 同级 `diagnostics.py` 并更新全部调用方 import；`consumers/` 退出 R-WLR trust zone (`EXCLUDED_PREFIXES = ()` 已为终态);9 tests + 2 scripts wlr import 重定向到 mirror;`tests/architecture/test_workline_compat_mirror.py` / `tests/characterization/workline_legacy/test_business_semantics_characterization.py` 中 wlr 目录引用更新为阶段 1 contract test 路径;`src/app/workline/models/runtime_hold.py` 内联 `_LocalNgReasonSource` 避免引入 domain 触发反向循环;版本 0.10.0.0 → 0.10.1.0 patch (清理性变更,无功能新增/破坏性 API) |
 | 2026-06-29 | 0.10.0.0 / phase2-stage2-burndown-docs | Phase 2 burn-down 阶段 2 (C1–C6) 文档同步：`src/app/runtime/orchestration/` 新增 6 个 wlr 平级镜像（`enums.py` / `device_ordering.py` / `effect_result.py` / `material_target_resolver.py` / `runtime_intent.py` / `runtime_intent_effects.py` / `timeline_generator.py`）+ 7 个 wlr bridge 门面（`business_identity_bridge.py` / `events_bridge.py` / `lock_bridge.py` / `orchestrator_bridge.py` / `resource_wait_evidence_bridge.py` / `sandbox_catalog_bridge.py` / `topology_bridge.py`）+ `consumers/` 子包（`__init__.py` / `runtime_inbox_consumer.py` / `diagnostics_bridge.py`）；`src/app/workline/` 新增 `utils.py` / `trace_context.py` / `diagnostic_support.py` / `outbox_dispatch_support.py` / `runtime_services.py` 镜像 + `domain/` 子包（`ng_reason` / `material_identity` / `plugin_manifest` / `contracts/` / `models/` / `services/`）+ `plugins/` 子包（`plugin_base` / `plugin_context` / `session_resolver` / `null_plugin` / `plugin_next` / `run_mode` + `plugin_sdk/`）；28 处 R-WLR production import 跨域重定向完成 + `scripts/architecture-guardrails.allowlist` R-WLR 条目全清（仅保留 R-I3a/b/C1/C2 等规则）；新增 6 个 mirror 一致性测试（`tests/architecture/test_{orchestration_bridges_mirror, plugin_mirrors_mirror, workline_compat_mirror, workline_domain_mirror, workline_plugins_mirror}.py`）+ `tests/runtime/orchestration/test_runtime_inbox_consumer.py` |
 | 2026-06-23 | docs-workline-plugin-restructuring-v4 | WORKLINE + PLUGIN 重构顶层设计改用 GB/T 8567 概要/详细设计 13 章结构：1.引言 2.系统概述 3.体系结构 4.数据设计 5.接口设计 6.状态机 7.安全设计 8.非功能性 9.模块设计 10.实施计划 11.执行规范 12.风险 13.附录；1,800+ 行含数据模型 / 状态机 / 模块 API / Phase roadmap |
 | 2026-06-27 | phase1-runtime-orchestration-spec | Phase 1 SPEC（feature/workline-phase-1-spec）：补全 9 个 runtime/orchestration 实体（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog / IdempotencyKey / ConveyorQueueMembership）；新增 BC-02 RuntimeSnapshot 合同与 RuntimeSnapshotAssembler 服务；引入 H4 反注入边界（callback/event/result 三个入口顶层字段白名单）与 H5 幂等键命名规范 `WES-{OPERATION_KIND}-{HASH}`；FK ring dissolve（device ↔ workline_sessions 循环依赖解除）；架构守卫 C1–C5 与 R-I3a/b phase-aware 模式；API 强化：`/runtime-holds/{id}/resolve` 接受 `Idempotency-Key` Header，列表端点补 `Query()` 校验与 description；conveyor queue 增 `CheckConstraint`；Alembic 动态发现 pg_constraint 名称 |
@@ -463,10 +464,11 @@
 | `resource_wait_evidence_bridge.py` | **Phase 2 burn-down 阶段 2 (C5a)** wlr `resource_wait_evidence` 桥接门面:RESOURCE_WAIT evidence helper | 🔧 架构核心 |
 | `sandbox_catalog_bridge.py` | **Phase 2 burn-down 阶段 2 (C5a)** wlr `sandbox_catalog` 桥接门面:SANDBOX / MOCK 确定性样例 catalog | 🔧 架构核心 |
 | `topology_bridge.py` | **Phase 2 burn-down 阶段 2 (C5a)** wlr `topology` 桥接门面:WORKLINE 运行时拓扑视图（自引用 wlr.device_ordering / wlr.plugin_manifest 已重定向到本目录 + domain 镜像） | 🔧 架构核心 |
-| `consumers/` | **Phase 2 burn-down 阶段 2 (C1/C2)** wlr 单点入口子包:wlr 唯一允许的非 wlr/non-migration production consumer 入口 | 🔧 架构核心 |
+| `consumers/` | **Phase 2 burn-down 阶段 3 (T3)** RuntimeInbox 入口子包:阶段 3 后无 wlr 真引用,阶段 2 trust zone (`EXCLUDED_PREFIXES`) 已退出,持续作为 RuntimeInbox 单点入口 | 🔧 架构核心 |
 | `consumers/__init__.py` | consumers 子包导出（`RuntimeInboxConsumer`） | 🔧 架构核心 |
-| `consumers/runtime_inbox_consumer.py` | **Phase 2 burn-down 阶段 2 (C1)** RuntimeInboxConsumer:RuntimeInbox 单点入口门面,委托 `src.app.workline.services.inbox_batch_processor` 实现（wlr 内部既有实现,lazy import 阶段 3 前的过渡）；不实现状态机 / idempotency / RuntimeHold 推进（阶段 3 业务迁移） | 🔧 架构核心 |
-| `consumers/diagnostics_bridge.py` | **Phase 2 burn-down 阶段 2 (C2)** wlr `diagnostics` 聚合 re-export:16 公开符号聚合暴露给 runtime/orchestration 域（只聚合 `__all__`,不重新 export 子模块路径） | 🔧 架构核心 |
+| `consumers/runtime_inbox_consumer.py` | **Phase 2 burn-down 阶段 2 (C1)** RuntimeInboxConsumer:RuntimeInbox 单点入口门面,委托 `src.app.workline.services.inbox_batch_processor` 实现；不实现状态机 / idempotency / RuntimeHold 推进（阶段 3 业务迁移） | 🔧 架构核心 |
+| `diagnostics/` | **Phase 2 burn-down 阶段 3 (T3)** wlr `diagnostics/` 子目录完整迁移:`builder` / `codes` / `failure_mapper` / `models` / `registry` 5 子模块 + 聚合层 `__init__.py`(原 `consumers/diagnostics_bridge.py` 已迁出) | 🔧 架构核心 |
+| `diagnostics.py` | **Phase 2 burn-down 阶段 3 (T3)** diagnostics 顶层门面（原 `consumers/diagnostics_bridge.py` 改名为 `diagnostics.py` 并迁出 `consumers/` 子目录） | 🔧 架构核心 |
 | `__init__.py` | 模块导出（9 entity） | 🔧 架构核心 |
 
 #### 🔧 Runtime 能力面 (src/app/runtime/) — Phase 1 新增
@@ -489,26 +491,6 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 - SMT handoff/manifest 闭环合同：`docs/superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md`
 - SMT handoff/manifest 实施记录：`docs/superpowers/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md`
 - 历史 SMT 粗分机资料：`docs/archive/legacy-smt-classifier/`
-
-#### 🔧 作业线运行时 (src/workline_runtime/) — Phase 2 launch PR 标记:wlr allowlist 严格型,Phase 2 T3 整目录删除
-
-> 插件化编排核心框架，提供装饰器驱动的声明式插件开发。**Phase 2 launch PR 后**:`src.workline_runtime` 在生产代码中仅允许以下入口直接 import — wlr 自身 + `src/app/runtime/orchestration/consumers/` + `tests/` + `migrations/`;其余 `src/` 任何 production code 都不允许 import wlr(由 `scripts/architecture-guardrails.sh` `R-WLR` 规则强制,28 处历史跨域 import 已纳入 `scripts/architecture-guardrails.allowlist` 严格型条目,legacy_entry_id 格式 `legacy:<path>:<file>#R-WLR`)。**Phase 2 T3** 整目录删除,届时本索引表同步移除。
-
-| 文件 | 用途 | 分类 |
-|------|------|------|
-| `plugin_base.py` | 插件基类 + 装饰器 + Builder（核心框架；含标准化命令结果公共 helper，如 envelope / failure 解析） | 🔧 架构核心 |
-| `payloads.py` | 共享 Payload 定义（Pydantic 模型；`SixInOne` 已迁至 `contracts/` 统一维护） | 🔄 常用功能 |
-| `contracts/` | 运行时统一合同模型（`SixInOne` SSOT、标准设备错误码） | 🔧 架构核心 |
-| `null_plugin.py` | 空实现插件（测试回退） | 🎯 示例代码 |
-| `trace_context.py` | 轻量 TRACE 传播上下文（request_id / trace_id / session / command / outbox 绑定） | 🔧 架构核心 |
-| `plugin_context.py` | 插件上下文（依赖注入、运行时快照、标准化输入、诊断上下文、TraceContext） | 🔧 架构核心 |
-| `types.py` | 插件运行时类型（CommandIntent, WaitIntent 等） | 🔧 架构核心 |
-| `device_target_resolver.py` | 基于 source device + topology + role 解析命令目标设备 | 🔧 架构核心 |
-| `orchestrator.py` | 编排器服务（READ 阶段编排、插件执行、错误标准化） | 🔧 架构核心 |
-| `enums.py` | 运行时枚举（FailureCode, DecisionType 等） | 🔄 常用功能 |
-| `plugin_sdk/` | 插件 SDK（标准化输入、运行时配置、分类器） | 🔧 架构核心 |
-| `diagnostics/` | 统一诊断模型、错误码、软件/硬件问题分类 | 🔧 架构核心 |
-| `runtime_intent_effects.py` | RuntimeIntent effect 落地器；SMT 分拣入库在 source-pick/terminal success 后通过 handoff service 写 ledger | 🔧 架构核心 |
 
 #### 🧩 作业线插件实现 (src/workline_plugins/)
 
@@ -638,24 +620,24 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `load/` | 负载测试（Locust） | 📚 参考资料 |
 | `resilience/` | 弹性测试（Redis 重连、降级） | 📚参考资料 |
 | `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
-| `workline_runtime/` | 作业线运行时测试（纯逻辑测试） | 🔧 架构核心 |
+| ~~`workline_runtime/`~~ | **Phase 2 burn-down 阶段 3 (T3) 已删除**：作业线运行时测试已被 `tests/contracts/workline/` 行为契约覆盖；wlr 整目录同步物理删除 | 🔧 架构核心 |
 | `wms_integration/` | WMS 对接辅助域测试（client、typed ports、evidence、breaker、cache、callback normalizer、caller contract） | 🔧 架构核心 |
-| `architecture/` | 架构守卫测试（import-linter 合同 + Phase 2 burn-down 阶段 2 mirror 测试） | 🔧 架构核心 |
+| `architecture/` | 架构守卫测试（import-linter 合同 + Phase 2 burn-down 阶段 2 mirror 测试；阶段 3 后 wlr 守卫继续作为永久安全网） | 🔧 架构核心 |
 | `runtime/orchestration/` | Runtime orchestration 测试（RuntimeInboxConsumer 单点入口测试） | 🔧 架构核心 |
 | `contracts/workline/` | Phase 2 launch PR behavior contract gap TDD 同步测试 | 🔧 架构核心 |
 | `workline_plugins/` | 作业线插件测试（rough_sorter / smt_sorting_inbound / barcode_decision 等） | 🔧 架构核心 |
-| `integration/workline_runtime/` | 作业线运行时 PostgreSQL 集成测试 | 🔧 架构核心 |
+| ~~`integration/workline_runtime/`~~ | **Phase 2 burn-down 阶段 3 (T3) 已删除**：作业线运行时 PostgreSQL 集成测试；wlr 整目录同步物理删除 | 🔧 架构核心 |
 
 **Phase 2 burn-down 阶段 2 mirror/guardrail 测试文件**（`tests/architecture/`）:
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
-| `architecture/test_wlr_import_guardrail.py` | R-WLR wlr production import 守卫:wlr 在 `src.workline_runtime.*` 生产代码中仅允许 wlr 自身 + `src/app/runtime/orchestration/consumers/` + `tests/` + `migrations/` 入口直接 import | 🔧 架构核心 |
-| `architecture/test_orchestration_bridges_mirror.py` | **Phase 2 burn-down 阶段 2 (C5a)** orchestration bridges 镜像一致性测试:runtime/orchestration 下的 7 个 bridge 文件（business_identity / events / lock / orchestrator / resource_wait_evidence / sandbox_catalog / topology）与 wlr 源文件签名一致 | 🔧 架构核心 |
-| `architecture/test_plugin_mirrors_mirror.py` | **Phase 2 burn-down 阶段 2 (C5b)** plugin mirrors 镜像一致性测试:plugin_base / plugin_context / null_plugin / plugin_next / plugin_sdk 等镜像与 wlr 源文件签名一致 | 🔧 架构核心 |
-| `architecture/test_workline_compat_mirror.py` | **Phase 2 burn-down 阶段 2 (C2)** workline compat 镜像一致性测试:`utils.py` / `trace_context.py` / `diagnostic_support.py` / `outbox_dispatch_support.py` / `runtime_services.py` 镜像与 wlr 源文件签名一致 | 🔧 架构核心 |
-| `architecture/test_workline_domain_mirror.py` | **Phase 2 burn-down 阶段 2 (C3)** workline domain 镜像一致性测试:`ng_reason` / `material_identity` / `plugin_manifest` / `domain/contracts/` / `domain/models/` / `domain/services/` 镜像与 wlr 源文件签名一致 | 🔧 架构核心 |
-| `architecture/test_workline_plugins_mirror.py` | **Phase 2 burn-down 阶段 2 (C5b)** workline plugins 镜像一致性测试:`plugins/` 子包（plugin_base / plugin_context / session_resolver / null_plugin / plugin_next / run_mode / plugin_sdk/）镜像与 wlr 源文件签名一致 | 🔧 架构核心 |
+| `architecture/test_wlr_import_guardrail.py` | **Phase 2 burn-down 阶段 3 (T3)** R-WLR wlr production import 守卫终态：wlr 整目录已物理删除，本测试持续 grep `from src.workline_runtime` 验证无残留真引用，并校验 `EXCLUDED_PREFIXES` 不含 consumers/ trust zone;作为永久安全网防止后续回归 | 🔧 架构核心 |
+| `architecture/test_orchestration_bridges_mirror.py` | **Phase 2 burn-down 阶段 3 (T3)** orchestration bridges 自包含校验：runtime/orchestration 下的 7 个 bridge 文件（business_identity / events / lock / orchestrator / resource_wait_evidence / sandbox_catalog / topology）镜像自包含校验（wlr 原文件已删除） | 🔧 架构核心 |
+| `architecture/test_plugin_mirrors_mirror.py` | **Phase 2 burn-down 阶段 3 (T3)** plugin mirrors 自包含校验：plugin_base / plugin_context / null_plugin / plugin_next / plugin_sdk 等镜像 wlr 源文件已删除后,此测试仍验证镜像模块结构完备 | 🔧 架构核心 |
+| `architecture/test_workline_compat_mirror.py` | **Phase 2 burn-down 阶段 3 (T3)** workline compat 自包含校验:`utils.py` / `trace_context.py` / `diagnostics` 顶层门面导出校验（wlr 原文件已删除） | 🔧 架构核心 |
+| `architecture/test_workline_domain_mirror.py` | **Phase 2 burn-down 阶段 3 (T3)** workline domain 自包含校验:`ng_reason` / `material_identity` / `plugin_manifest` / `domain/contracts/` / `domain/models/` / `domain/services/` 镜像自包含校验 | 🔧 架构核心 |
+| `architecture/test_workline_plugins_mirror.py` | **Phase 2 burn-down 阶段 3 (T3)** workline plugins 自包含校验:`plugins/` 子包镜像模块结构完备校验 | 🔧 架构核心 |
 
 **Runtime orchestration 测试文件**（`tests/runtime/orchestration/`）:
 

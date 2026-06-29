@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.workline_runtime.enums import FailureDomain
+from src.app.runtime.orchestration.enums import FailureDomain
 
 from .codes import ErrorCode, ErrorDomain, error_domain_for
 

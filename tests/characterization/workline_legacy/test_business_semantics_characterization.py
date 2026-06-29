@@ -56,10 +56,14 @@ def test_sorter_inbound_characterization_fixture_draft():
     Phase 0 可 pending, 但必须有 fixture draft。Phase 1 RuntimeIntentLog schema
     完成后升级为 contract test。
     """
-    # fixture draft 来源: src/workline_plugins/smt_sorting_inbound/ + 旧测试
+    # fixture draft 来源: src/workline_plugins/smt_sorting_inbound/ + 阶段 1 contract test。
+    # 原 tests/workline_runtime 已在阶段 3 删除 (wlr 整目录物理删除);行为契约由
+    # tests/contracts/workline/ 下游 contract 覆盖(尤其是 sorter in/runtime_intent_log)。
     draft_sources = [
         "src/workline_plugins/smt_sorting_inbound/plugin.py",
         "src/workline_plugins/smt_sorting_inbound/flow_service.py",
-        "tests/workline_runtime",  # 分拣机入库相关测试目录
+        "src/app/runtime/orchestration/runtime_intent_log.py",
+        "tests/contracts/workline/test_rough_sorter_inbound_contract.py",
+        "tests/contracts/workline/test_runtime_intent_log_dispatch_contract.py",
     ]
     _assert_characterization_sources_exist(draft_sources)

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from loguru import logger
 from sqlalchemy import text
 
-from src.app.runtime.orchestration.consumers.diagnostics_bridge import (
+from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     ErrorDomain,
     ProblemClass,

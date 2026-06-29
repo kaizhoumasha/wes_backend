@@ -7,8 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- (Future changes will be listed here)
+### Removed
+- `src/workline_runtime/` 整目录物理删除 (50 源文件: contracts/、diagnostics/、plugin_sdk/ 子包 + plugin_base 等 15 顶层模块) — Phase 2 burn-down 阶段 3 目标态锁定。
+- `tests/workline_runtime/` 117 文件 + `tests/integration/workline_runtime/` 6 文件 整目录删除;行为契约已由 `tests/contracts/workline/` 9 个下游 contract 持续覆盖 (107 passed, 2 xfailed)。
+
+### Changed
+- `src/app/runtime/orchestration/diagnostics/` 子目录建立 (5 子模块: builder / codes / failure_mapper / models / registry + 聚合层 `__init__.py`) — 完整迁移 wlr `diagnostics/` 子包,实现 diagnostics 公开 16 符号垂直内部化。原 `consumers/diagnostics_bridge.py` 改名为 `diagnostics.py` 并迁出 `consumers/` 子目录 (与 `events_bridge.py` 等 bridge 平级)。
+- `consumers/` 子包退出 R-WLR trust zone (`EXCLUDED_PREFIXES` 在阶段 2 已为终态空 tuple);`consumers/runtime_inbox_consumer.py` 持续作为 RuntimeInbox 单点入口,无 wlr 真引用。
+- `scripts/architecture-guardrails.sh` 中 `rule_wlr_import()` 函数永久保留;`tests/architecture/test_wlr_import_guardrail.py` 新增 `test_excluded_prefixes_does_not_contain_consumers` + `test_no_consumers_in_wlr_allowed_paths` + `test_consumers_directory_still_exists` 三个新增测试 + WLR_ALLOWED_PATHS 移除 `consumers/` 路径,作为永久安全网防止 wlr 残留回归。
+- 8 个 tests (`tests/contracts/workline/test_callback_runtime_contracts.py` + `tests/mock/{test_wms_mock_server, test_ecs_mock_server, ecs_mock_server}.py` + `tests/api/{test_callback_route_contracts, test_runtime_hold_api}.py` + `tests/workline_plugins/test_rough_sorter_plugin.py` + `tests/helpers/workline_test_plugin.py`) 与 2 个 scripts (`scripts/data/sync_test_workline_devices.py` + `scripts/data/repair_runtime_holds.py`) 的 wlr import 重定向到 mirror;`tests/architecture/test_workline_compat_mirror.py` + `tests/characterization/workline_legacy/test_business_semantics_characterization.py` 调整到 wlr 物理删除后的自包含校验;`tests/workline_plugins/test_plugin_template_assets.py` 保持原 reverse-validation 断言。
+- `src/app/workline/models/runtime_hold.py` 内联 `_LocalNgReasonSource` 本地副本 (PLUGIN / DEVICE_ERROR / RUNTIME / MANUAL 四值),避免引入 `src.app.workline.domain.ng_reason` 触发反向循环 (domain.services → resource.services → workline.repositories → models)。
+- 版本 `0.10.0.0 → 0.10.1.0` patch bump — 清理性变更,无功能新增/破坏性 API。
 
 ## [0.10.0.0] - 2026-06-29
 

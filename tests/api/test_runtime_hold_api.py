@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi.responses import JSONResponse
 
+from src.app.workline.domain.ng_reason import NgReasonDefinition
+from src.app.workline.domain.ng_reason import NgReasonSource as RuntimeNgReasonSource
 from src.app.workline.models import LineType, WorkLine
 from src.app.workline.models.runtime_hold import (
     MaterialDisposition,
@@ -21,8 +23,6 @@ from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.models.session import SessionStatus, WorklineSession
 from src.app.workline.services.runtime_hold_query_service import runtime_hold_query_service
 from src.app.workline.v1 import runtime_hold as runtime_hold_api
-from src.workline_runtime.ng_reason import NgReasonDefinition
-from src.workline_runtime.ng_reason import NgReasonSource as RuntimeNgReasonSource
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("registered_test_workline_plugin")]
 

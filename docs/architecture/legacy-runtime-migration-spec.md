@@ -116,7 +116,7 @@ launch PR 完成后,Phase 2 burn-down PR 必须按以下顺序执行,每个 PR �
 |---|---|---|---|
 | 1 | Inbound Normalizer 切到 5 域 registry | R-I3c 5 域扩展 | `ARCHITECTURE_PHASE=phase1 ./scripts/architecture-guardrails.sh --phase phase1` |
 | 2 | wlr 31 处 production import 全部迁移(按 capability 分批) | wlr allowlist 严格型 + RuntimeReconciliationFacade | 同上 + `tests/contracts/workline/` 全绿 |
-| 3 | `src/workline_runtime/` 整目录删除 | wlr allowlist 严格型 | 同上 + `tests/contracts/workline/` 全绿 |
+| 3 | `src/workline_runtime/` 整目录删除 | wlr allowlist 严格型 | 同上 + `tests/contracts/workline/` 全绿 | ✅ **2026-06-30 (PR 阶段 3)：物理删除 178 个 wlr 源文件** |
 | 4 | `src/app/workline/services/` 32 个 service 实际迁到 runtime/orchestration/services/ | ownership map service 层 + RuntimeReconciliationFacade 退役 | 阅读 ownership map |
 | 5 | Runtime API facade 替换 RuntimeReconciliationFacade | 同上 | 阅读 ownership map |
 | 6 | WorkLine 仅保留配置 CRUD + manifest + plane scene | ownership map + runtime/orchestration/ 全实体可用 | `tests/contracts/workline/` 全绿 |
@@ -145,7 +145,7 @@ ARCHITECTURE_PHASE=phase1 ./scripts/architecture-guardrails.sh --phase phase1
 下列工作显式不在 launch PR 内,留给 Phase 2 burn-down PR:
 
 - 814 rows cleanup matrix 实际迁移(Phase 2 burn-down 6 阶段)
-- `src/workline_runtime/` 整目录删除(Phase 2 T3)
+- ~~`src/workline_runtime/` 整目录删除(Phase 2 T3)~~ 已于 2026-06-30 阶段 3 PR 完成,本条不再适用
 - `src/app/workline/services/` 32 个 service 实际迁到 runtime(Phase 2 T2,仅修复跨域 import)
 - Runtime API facade 迁移(Phase 2 burn-down 阶段 5)
 - Phase 3 ENG-009 / ENG-011 / ENG-020(idempotency 完整 + inbox backpressure + scenario replay)

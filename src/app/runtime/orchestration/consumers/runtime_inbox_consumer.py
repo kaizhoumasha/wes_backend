@@ -6,8 +6,6 @@
   (wlr 内部既有实现, lazy import 阶段 3 前的过渡)
 - 不实现状态机 / idempotency / RuntimeHold 推进 (阶段 3 业务迁移)
 - list_consumed_ids 返回只读视图
-
-不在 consumers/ 之外的任何 production 路径 import src.workline_runtime。
 """
 
 from __future__ import annotations

@@ -1781,7 +1781,7 @@ class RuntimeIntentEffectApplier:
         plugin_key: str | None,
         contract_error: str,
     ) -> RuntimeIntentEffectResult:
-        from src.app.runtime.orchestration.consumers.diagnostics_bridge import (
+        from src.app.runtime.orchestration.diagnostics import (
             ErrorCode,
             build_diagnostic_context,
             build_diagnostic_event,
