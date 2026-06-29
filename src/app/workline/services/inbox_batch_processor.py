@@ -45,6 +45,19 @@ if TYPE_CHECKING:
     from src.workline_runtime.utils import JsonDict
 
 
+def process_inbox_payload(payload: dict) -> dict:
+    """RuntimeInboxConsumer 委托入口 (Phase 2 burn-down 阶段 2 C1)。
+
+    阶段 2 占位: 返回消费者结果 dict。
+    阶段 3 整体迁入 consumers/runtime_inbox_consumer.py。
+    """
+    return {
+        "status": "PROCESSED",
+        "consumer_id": payload.get("consumer_id", "unknown"),
+        "source_event_id": payload.get("source_event_id"),
+    }
+
+
 class ProcessResult(TypedDict):
     """处理结果"""
 

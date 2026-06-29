@@ -112,3 +112,10 @@ def test_wlr_production_imports_all_have_allowlist_coverage():
     assert not offenders, "以下 production 文件 import src.workline_runtime 但未在 R-WLR allowlist:\n  " + "\n  ".join(
         sorted(offenders)
     )
+
+
+def test_runtime_inbox_consumer_compiles() -> None:
+    """RuntimeInboxConsumer 模块可被 import (consumers/ 单点入口存在)"""
+    from src.app.runtime.orchestration.consumers import RuntimeInboxConsumer
+
+    assert RuntimeInboxConsumer is not None
