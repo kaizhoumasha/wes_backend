@@ -1,65 +1,40 @@
 """Callback 域事件归一化 — wlr.plugin_sdk.normalizers.event_mapper 镜像 (Phase 2 launch PR)。
 
 镜像说明:
-- canonicalize_event_type 与 wlr.plugin_sdk.normalizers.event_mapper 行为一致。
+- 生产事件 source 的 event_type_mapping 行为与 wlr.plugin_sdk.normalizers.event_mapper 对齐。
+- callback ingress 额外保留平台/安全事件 source 原值,避免 START/ESTOP 被工作线映射改写。
 - 不再依赖 wlr.plugin_sdk,callback 域内独立维护事件类型归一化规则。
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from src.utils.value_normalization import optional_str
-
-# 设备事件归一化映射表 (device_event_alias -> canonical_event_type)
-_DEVICE_EVENT_ALIASES: dict[str, str] = {
-    "scan_completed": "scan_succeeded",
-    "scan_done": "scan_succeeded",
-    "scan_failed": "scan_failed",
-    "scan_error": "scan_failed",
-    "induct_completed": "induct_succeeded",
-    "induct_done": "induct_succeeded",
-    "induct_failed": "induct_failed",
-    "divert_completed": "divert_succeeded",
-    "divert_done": "divert_succeeded",
-    "divert_failed": "divert_failed",
-    "fulfill_completed": "fulfill_succeeded",
-    "fulfill_done": "fulfill_succeeded",
-    "fulfill_failed": "fulfill_failed",
-}
-
-# 工作流事件归一化映射表
-_WORKFLOW_EVENT_ALIASES: dict[str, str] = {
-    "inbound_received": "inbox_received",
-    "outbound_received": "outbox_received",
-    "session_created": "session_initialized",
-    "session_started": "session_initialized",
-}
+from .runtime_events import assert_not_reserved_runtime_event, is_production_event
 
 
-def canonicalize_event_type(event_type: str | None, payload: dict[str, Any] | None = None) -> str | None:
-    """将设备/工作流原始事件类型归一化为标准 canonical 名称。
+def _dict_value(value: Any) -> dict[str, Any]:
+    return dict(cast("dict[str, Any]", value)) if isinstance(value, dict) else {}
 
-    优先级:
-    1. payload 中的 canonical_event_type 显式声明
-    2. 设备事件别名表
-    3. 工作流事件别名表
-    4. 原值 (如果不在任何别名表中,但属于业务生产事件)
-    5. None (非字符串或空字符串)
-    """
 
-    raw = optional_str(event_type)
-    if raw is None:
-        return None
-    payload_dict = payload or {}
-    explicit = optional_str(payload_dict.get("canonical_event_type"))
-    if explicit:
-        return explicit
-    if raw in _DEVICE_EVENT_ALIASES:
-        return _DEVICE_EVENT_ALIASES[raw]
-    if raw in _WORKFLOW_EVENT_ALIASES:
-        return _WORKFLOW_EVENT_ALIASES[raw]
-    return raw
+def canonicalize_event_type(event_type: str, *, workline: Any | None = None) -> str:
+    """将原始 event_type 映射为 canonical_event_type。"""
+
+    if not is_production_event(event_type):
+        return event_type
+
+    runtime_config = _dict_value(getattr(workline, "runtime_config_json", None))
+    mapping = _dict_value(runtime_config.get("event_type_mapping"))
+    mapped = mapping.get(event_type)
+    if not isinstance(mapped, str) or not mapped:
+        return event_type
+
+    assert_not_reserved_runtime_event(
+        mapped,
+        owner="runtime_config_json.event_type_mapping",
+        declaration_surface=f"{event_type} 的映射目标",
+    )
+    return mapped
 
 
 __all__ = ["canonicalize_event_type"]

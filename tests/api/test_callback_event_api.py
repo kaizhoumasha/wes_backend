@@ -431,9 +431,11 @@ class TestCallbackEventAPI:
         mock_log_callback.assert_awaited_once()
         mock_audit.assert_awaited_once()
 
+    @pytest.mark.parametrize("reserved_target", ["WORKLINE_START_REQUESTED", "ESTOP_PRESSED"])
     @pytest.mark.asyncio
-    async def test_callback_event_rejects_mapping_to_platform_start(
+    async def test_callback_event_rejects_mapping_to_reserved_target(
         self,
+        reserved_target: str,
         db_session: AsyncSession,
         build_request: RequestFactory,
     ) -> None:
@@ -450,7 +452,7 @@ class TestCallbackEventAPI:
                                 contract_version="1.0",
                                 is_active=True,
                                 runtime_status="STOPPED",
-                                runtime_config_json={"event_type_mapping": {"SCAN_FINISH": "WORKLINE_START_REQUESTED"}},
+                                runtime_config_json={"event_type_mapping": {"SCAN_FINISH": reserved_target}},
                             ),
                             plugin_key="test_workline_plugin",
                             contract_version="1.0",
@@ -478,7 +480,9 @@ class TestCallbackEventAPI:
                 new=AsyncMock(),
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
-            patch("src.app.callback.v1.callback.get_request_id", return_value="req-start-mapping-001"),
+            patch(
+                "src.app.callback.v1.callback.get_request_id", return_value=f"req-{reserved_target.lower()}-mapping-001"
+            ),
         ):
             from src.app.callback.v1.callback import callback_event
 
@@ -656,6 +660,7 @@ class TestCallbackEventAPI:
                                 contract_version="1.0",
                                 is_active=True,
                                 runtime_status="ESTOPPED",
+                                runtime_config_json={"event_type_mapping": {"ESTOP_PRESSED": "SCAN_COMPLETED"}},
                             ),
                             plugin_key="test_workline_plugin",
                             contract_version="1.0",
@@ -733,6 +738,9 @@ class TestCallbackEventAPI:
                                 contract_version="1.0",
                                 is_active=True,
                                 runtime_status="STOPPED",
+                                runtime_config_json={
+                                    "event_type_mapping": {"WORKLINE_START_REQUESTED": "SCAN_COMPLETED"}
+                                },
                             ),
                             plugin_key="test_workline_plugin",
                             contract_version="1.0",

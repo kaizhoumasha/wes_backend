@@ -9,37 +9,10 @@
 
 from __future__ import annotations
 
-PLATFORM_CONTROL_EVENTS: frozenset[str] = frozenset(
-    {
-        # 设备故障复位指令
-        "device_reset",
-        "device_recover",
-        # 工作线协调指令
-        "workline_pause",
-        "workline_resume",
-        "workline_isolate",
-        # 平台健康指令
-        "platform_heartbeat",
-        "platform_drain",
-    }
-)
+PLATFORM_CONTROL_EVENTS: frozenset[str] = frozenset({"WORKLINE_START_REQUESTED"})
 
 
-RESERVED_RUNTIME_EVENTS: frozenset[str] = frozenset(
-    {
-        # 工作线内部调度事件(由 runtime 自身产生,插件不可消费)
-        "runtime_session_advance",
-        "runtime_workitem_step",
-        "runtime_inbox_claim",
-        "runtime_inbox_process",
-        "runtime_inbox_retry",
-        "runtime_inbox_dead_letter",
-        "runtime_timeline_query",
-        "runtime_intent_log_dispatch",
-        "runtime_intent_log_replay",
-        "runtime_hold_evaluate",
-    }
-)
+RESERVED_RUNTIME_EVENTS: frozenset[str] = frozenset({"ESTOP_PRESSED"})
 
 
 def is_platform_control_event(event_type: str | None) -> bool:
@@ -59,26 +32,33 @@ def is_production_event(event_type: str | None) -> bool:
 
     if not isinstance(event_type, str):
         return False
+    return not is_platform_control_event(event_type) and not is_platform_safety_event(event_type)
+
+
+def assert_not_reserved_runtime_event(
+    event_type: str | None,
+    *,
+    owner: str,
+    declaration_surface: str | None = None,
+) -> None:
+    """禁止插件把平台保留事件声明为普通业务事件。"""
+
+    if not isinstance(event_type, str):
+        return
+
+    surface = f"（{declaration_surface}）" if declaration_surface else ""
     if event_type in PLATFORM_CONTROL_EVENTS:
-        return False
-    return event_type not in RESERVED_RUNTIME_EVENTS
+        raise ValueError(f"{event_type} 是平台保留控制事件，不能由 {owner}{surface} 声明或处理")
+    if event_type not in RESERVED_RUNTIME_EVENTS:
+        return
 
-
-def assert_not_reserved_runtime_event(event_type: str | None) -> None:
-    """断言给定 event_type 不在 runtime 保留集合中,否则抛 ValueError。"""
-
-    if is_reserved_runtime_event(event_type):
-        raise ValueError(f"event_type '{event_type}' 属于 runtime 保留事件,不允许插件或外部调用方消费")
+    raise ValueError(f"{event_type} 是平台保留安全事件，不能由 {owner}{surface} 声明或处理")
 
 
 def is_platform_safety_event(event_type: str | None) -> bool:
-    """是否为平台安全事件 (强制暂停、隔离、人为介入)。
+    """是否为平台安全事件。"""
 
-    平台安全事件是 PLATFORM_CONTROL_EVENTS 的子集,但要求操作员显式授权。
-    """
-
-    safety_subset = {"workline_pause", "workline_isolate", "platform_drain"}
-    return isinstance(event_type, str) and event_type in safety_subset
+    return isinstance(event_type, str) and event_type in RESERVED_RUNTIME_EVENTS
 
 
 __all__ = [
