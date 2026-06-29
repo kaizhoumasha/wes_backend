@@ -17,6 +17,7 @@ from src.app.runtime.orchestration.consumers.diagnostics_bridge import (
 from src.app.runtime.orchestration.effect_result import WriteBackDisposition
 from src.app.runtime.orchestration.events_bridge import RESERVED_RUNTIME_EVENTS
 from src.app.runtime.orchestration.lock_bridge import RedisDistributedLock
+from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult, OrchestratorService
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 from src.app.workline.constants import (
     EXTERNAL_HTTP_INBOX_KIND,
@@ -25,6 +26,8 @@ from src.app.workline.constants import (
     WORKLINE_RESOURCE_WAIT_RETRY_SECONDS,
 )
 from src.app.workline.diagnostic_support import _record_diagnostic
+from src.app.workline.domain.plugin_manifest import EventCategory
+from src.app.workline.plugins.session_resolver import SessionResolveError
 from src.app.workline.repositories.inbox_repository import WorklineInboxClaim
 from src.app.workline.runtime_services import WorklineRuntimeServices, build_workline_runtime_services
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
@@ -41,9 +44,6 @@ from src.utils.value_normalization import (
     string_value,
 )
 from src.workline_plugin_registry import get_workline_plugin_definition, parse_workline_six_in_one
-from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
-from src.workline_runtime.plugin_manifest import EventCategory
-from src.workline_runtime.session_resolver import SessionResolveError
 
 if TYPE_CHECKING:
     from src.app.workline.utils import JsonDict
@@ -684,11 +684,11 @@ async def _load_related_entities(
     """
     from src.app.device.repositories import DeviceRepository
     from src.app.device.repositories.command_repository import DeviceCommandRepository
+    from src.app.workline.plugins.session_resolver import session_resolver
     from src.app.workline.repositories import WorkLineRepository
     from src.app.workline.repositories.session_repository import (
         WorklineSessionRepository,
     )
-    from src.workline_runtime.session_resolver import session_resolver
 
     session_repo = WorklineSessionRepository()
     workline_repo = WorkLineRepository()
@@ -1104,7 +1104,7 @@ class InboxBatchProcessor:
                             raise RuntimeError(
                                 "Session state changed before WRITE apply; refusing stale orchestrator effects"
                             )
-                        from src.workline_runtime.session_resolver import reapply_pending_session_ingress_metadata
+                        from src.app.workline.plugins.session_resolver import reapply_pending_session_ingress_metadata
 
                         _ = reapply_pending_session_ingress_metadata(_session)
                         write_back_service = self.write_back_service

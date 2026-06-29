@@ -74,9 +74,3 @@ R-I3b|src/app/workline/services/trace_query_service.py|legacy capability import 
 # 唯一允许入口: src/app/runtime/orchestration/consumers/ (单点), tests/, migrations/
 # 当前 29 处 production import src.workline_runtime 全部为 workline domain / celery_app / workline_plugins 内部代理,
 # Phase 2 burn-down 阶段把它们的 wlr import 收敛到 runtime/orchestration/consumers/ 单点入口后消除。
-R-WLR|src/app/workline/services/inbox_batch_processor.py|legacy wlr import, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/inbox_batch_processor.py:<file>#R-WLR|phase2
-R-WLR|src/app/workline/services/write_back_service.py|legacy wlr import (orchestrator/timeline_generator), Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/services/write_back_service.py:<file>#R-WLR|phase2
-R-WLR|src/workline_plugin_registry.py|legacy wlr import, Phase 2 迁 runtime|2026-09-30|legacy:src/workline_plugin_registry.py:<file>#R-WLR|phase2
-R-WLR|src/workline_plugins/rough_sorter/plugin.py|legacy wlr import, Phase 2 迁 runtime|2026-09-30|legacy:src/workline_plugins/rough_sorter/plugin.py:<file>#R-WLR|phase2
-R-WLR|src/workline_plugins/smt_sorting_inbound/flow_service.py|legacy wlr import, Phase 2 迁 runtime|2026-09-30|legacy:src/workline_plugins/smt_sorting_inbound/flow_service.py:<file>#R-WLR|phase2
-R-WLR|src/workline_plugins/smt_sorting_inbound/plugin.py|legacy wlr import, Phase 2 迁 runtime|2026-09-30|legacy:src/workline_plugins/smt_sorting_inbound/plugin.py:<file>#R-WLR|phase2

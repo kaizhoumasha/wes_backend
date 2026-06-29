@@ -6,6 +6,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from src.app.workline.domain.material_identity import (
+    MaterialIdentity,
+    MaterialIdentityInput,
+    MaterialIdentityResolutionStatus,
+    material_identity_input_to_hash,
+)
+from src.app.workline.domain.ng_reason import NgReasonDefinition, NgReasonSource
+from src.app.workline.domain.plugin_manifest import WorklinePluginManifest
+from src.app.workline.plugins.plugin_base import WorklinePlugin, on_command, on_event
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
@@ -18,20 +27,11 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
 )
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext
 from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
-from src.workline_runtime.material_identity import (
-    MaterialIdentity,
-    MaterialIdentityInput,
-    MaterialIdentityResolutionStatus,
-    material_identity_input_to_hash,
-)
-from src.workline_runtime.ng_reason import NgReasonDefinition, NgReasonSource
-from src.workline_runtime.plugin_base import WorklinePlugin, on_command, on_event
-from src.workline_runtime.plugin_manifest import WorklinePluginManifest
 
 if TYPE_CHECKING:
+    from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
     from src.app.workline.models import WorklineInbox
-    from src.workline_runtime.plugin_context import PluginContext
-    from src.workline_runtime.runtime_intent import RuntimeIntent
+    from src.app.workline.plugins.plugin_context import PluginContext
 
 POSITION_SOURCE_STATION_A = "SOURCE_STATION_A"
 POSITION_SOURCE_STATION_B = "SOURCE_STATION_B"

@@ -4,6 +4,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
+from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.workline.constants import DEFAULT_COMMAND_PRIORITY, DEFAULT_COMMAND_TIMEOUT_MS, EXTERNAL_HTTP_DECISION_TYPE
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.services.device_command_gateway import (
@@ -15,7 +16,6 @@ from src.app.workline.utils import payload_dict
 from src.utils.timezone import timezone
 from src.utils.value_normalization import canonical_event_type, resolve_entity_id, string_value
 from src.workline_plugin_registry import get_plugin_contract_version
-from src.workline_runtime.orchestrator import OrchestratorResult
 
 if TYPE_CHECKING:
     from src.app.workline.utils import JsonDict
@@ -201,7 +201,7 @@ class EffectApplyContext(TypedDict):
 
 async def _emit_timeline(ctx: EffectApplyContext, **kwargs: Any) -> None:
     """统一 timeline 生成入口。"""
-    from src.workline_runtime.timeline_generator import timeline_generator
+    from src.app.runtime.orchestration.timeline_generator import timeline_generator
 
     timeline = timeline_generator.generate(
         session=ctx["session"],
