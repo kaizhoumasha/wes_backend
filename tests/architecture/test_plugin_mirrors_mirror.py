@@ -18,7 +18,8 @@ from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path("/Users/kaizhou/codeDev/wes_backend-worktrees/phase2-stage2")
+# 工作树根 (worktree 安全; CI 与本地均可解析)。tests/architecture/ → repo root = parents[3]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_plugin_base_mirror_exposes_public_api() -> None:

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -20,6 +21,9 @@ if TYPE_CHECKING:
     from src.app.runtime.inbound_normalizer_registry import InboundNormalizerRegistry
     from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
     from src.app.runtime.orchestration.runtime_inbox import RuntimeInboxRecord
+
+# 已消费 source_event_id 的环形缓冲上限,防止消费者长跑导致 list 无限增长。
+_MAX_TRACKED_IDS = 10_000
 
 
 class RuntimeInboxConsumer:
@@ -43,7 +47,7 @@ class RuntimeInboxConsumer:
         self._context = normalizer_context
         self._correlation = correlation
         self._consumer_id = consumer_id
-        self._consumed_ids: list[str] = []
+        self._consumed_ids: deque[str] = deque(maxlen=_MAX_TRACKED_IDS)
 
     async def consume(self, payload: Mapping[str, Any]) -> RuntimeInboxRecord:
         # 阶段 3 实现真正的异步状态机推进。
@@ -54,14 +58,17 @@ class RuntimeInboxConsumer:
         # Lazy import: 阶段 3 前的过渡, 避免循环依赖。
         from src.app.workline.services import inbox_batch_processor
 
-        record = inbox_batch_processor.process_inbox_payload(dict(payload))
+        # 注入 consumer_id 用于追溯; 若 payload 已带 consumer_id 则保留调用方值。
+        payload_dict = dict(payload)
+        payload_dict.setdefault("consumer_id", self._consumer_id)
+        record = inbox_batch_processor.process_inbox_payload(payload_dict)
         source_event_id = payload.get("source_event_id")
-        if isinstance(source_event_id, str):
+        if isinstance(source_event_id, str) and source_event_id not in self._consumed_ids:
             self._consumed_ids.append(source_event_id)
         return record
 
     def list_consumed_ids(self) -> tuple[str, ...]:
-        """返回已消费 source_event_id 的只读视图 (防外部 mutate)。"""
+        """返回已消费 source_event_id 的不可变快照 (防外部 mutate)。"""
         return tuple(self._consumed_ids)
 
 
