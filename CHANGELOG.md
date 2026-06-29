@@ -10,6 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - (Future changes will be listed here)
 
+## [0.10.0.0] - 2026-06-29
+
+### Added
+
+- **RuntimeInbox 单点入口落地**。`src/app/runtime/orchestration/consumers/` 成为 RuntimeInbox 唯一允许访问 wlr 的 production 入口；`RuntimeInboxConsumer` 委托既有 workline inbox batch processor 实现，阶段 3 业务迁入前作占位 facade。所有 28 处外部生产路径对 wlr 的引用已收敛到这一处 trust zone。
+- **运行时工具与概念镜像**。`src/app/workline/utils.py` 与 `src/app/workline/trace_context.py` 完整镜像 wlr 顶层符号，`src/app/runtime/orchestration/diagnostics_bridge.py` 聚合 12 个 wlr diagnostics 公开符号；`src/app/runtime/orchestration/runtime_inbox.py` 等模块现在通过新镜像访问 capabilities，不再直接 import wlr。
+- **workline 域业务概念镜像**。`src/app/workline/domain/{ng_reason, material_identity, plugin_manifest, contracts}.py` 镜像 wlr 同名模块，使 ng 决策、material 标识、plugin manifest、SixInOne 契约等业务概念在 workline 域内自洽，不再跨域访问 wlr。
+- **workline plugins 子目录与镜像**。新建 `src/app/workline/plugins/`，提供 `plugin_base` / `plugin_context` / `session_resolver` / `null_plugin` / `plugin_next` 与完整 `plugin_sdk` 包（含 classifiers、contracts、normalizers 等子模块），workline 域插件机制具备独立命名空间。
+- **orchestration bridge 聚合**。`src/app/runtime/orchestration/{intent_bridge, orchestrator_bridge, topology_bridge, events_bridge, sandbox_catalog_bridge, resource_wait_evidence_bridge, lock_bridge, business_identity_bridge, enums}.py` 与 `src/app/workline/runtime_services.py` 统一聚合 wlr 编排型符号，外部服务可通过专属 bridge 访问 capabilities。
+
+### Changed
+
+- **R-WLR 护栏严格生效**。`scripts/architecture-guardrails.allowlist` 的 28 条 `R-WLR` 例外全部清空；任何 production 路径 import `src.workline_runtime` 都必须通过 `consumers/` trust zone 唯一出口，guardrail 在 pre-commit hook 与 CI 中常态运行。
+- **架构护栏测试套件扩展**。`tests/architecture/test_wlr_import_guardrail.py` 与新建的 `tests/architecture/test_workline_compat_mirror.py` / `test_plugin_mirrors_mirror.py` / `test_bridges_smoke.py` / `test_runtime_inbox_consumer.py` 持续验证镜像 AST 签名、consumer 仅在 trust zone、trust zone 文件无遗漏导入。
+
+### Fixed
+
+- `RuntimeInboxConsumer.consume_sync` 现在通过 `payload_dict.setdefault("consumer_id", ...)` 注入 `consumer_id`，同时保留 caller 明示值；`_consumed_ids` 改为 `deque(maxlen=10_000)` 环形缓冲并对 `source_event_id` 自动去重，防止长跑消费者内存泄漏与重复回放。
+- `tests/architecture/test_plugin_mirrors_mirror.PROJECT_ROOT` 由硬编码 worktree 路径改为 `Path(__file__).resolve().parents[3]`，解 worktree 切换与 CI 路径依赖。
+
 ## [0.9.1.0] - 2026-06-28
 
 ### Added
