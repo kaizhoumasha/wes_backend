@@ -9,8 +9,8 @@ from src.app.workline.models.runtime import (
     DiagnosisEvidenceHealthResponse,
     DiagnosisVerdictResponse,
 )
+from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import coerce_optional_str, optional_enum_str
-from src.workline_runtime.utils import payload_dict
 
 _FAILED_TIMELINE_STATUSES = {"FAILED", "ERROR"}
 _FAILED_TIMELINE_ACTIONS = {"SESSION_FAILED", "COMMAND_FAILED", "EVENT_FAILED", "EXTERNAL_CALL_FAILED"}

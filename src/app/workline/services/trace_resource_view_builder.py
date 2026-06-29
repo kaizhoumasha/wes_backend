@@ -12,8 +12,8 @@ from src.app.workline.models.runtime import (
     RuntimeActiveBinRackView,
     RuntimeTraceResourceView,
 )
+from src.app.workline.utils import ensure_dict
 from src.utils.timezone import timezone
-from src.workline_runtime.utils import ensure_dict
 
 _RACK_FIELDS = ("rack_id", "rack_code", "rack_kind", "rack_type")
 _BIN_FIELDS = (

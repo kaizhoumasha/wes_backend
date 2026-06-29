@@ -20,6 +20,7 @@ from celery import Task
 
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
 from src.app.device.models.command import DeviceCommand as _DeviceCommand  # noqa: F401
+from src.app.runtime.orchestration.consumers.diagnostics_bridge import ErrorCode
 from src.celery_app.app import celery_app
 from src.celery_app.constants import (
     DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
@@ -30,7 +31,6 @@ from src.utils.value_normalization import (
     enum_value,
     resolve_entity_id,
 )
-from src.workline_runtime.diagnostics import ErrorCode
 
 
 # ============================================
