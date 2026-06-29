@@ -4,13 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.app.workline.models.diagnostic import WorklineDiagnostic
-from src.app.workline.repositories.diagnostic_repository import (
-    WorklineDiagnosticRepository,
-    workline_diagnostic_repository,
-)
-from src.core.base_service import BaseService
-from src.workline_runtime.diagnostics import (
+from src.app.runtime.orchestration.consumers.diagnostics_bridge import (
     DiagnosticEvent,
     ErrorCode,
     build_diagnostic_card,
@@ -18,7 +12,13 @@ from src.workline_runtime.diagnostics import (
     build_diagnostic_event,
     get_diagnostic_code_definition,
 )
-from src.workline_runtime.resource_wait_evidence import ResourceWaitEvidence
+from src.app.runtime.orchestration.resource_wait_evidence_bridge import ResourceWaitEvidence
+from src.app.workline.models.diagnostic import WorklineDiagnostic
+from src.app.workline.repositories.diagnostic_repository import (
+    WorklineDiagnosticRepository,
+    workline_diagnostic_repository,
+)
+from src.core.base_service import BaseService
 
 _REDACT_KEYS = {
     "authorization",

@@ -33,6 +33,19 @@ from src.app.resource.models import (
     RackBinMount,
     ResourceStateEvent,
 )
+from src.app.runtime.orchestration.consumers.diagnostics_bridge import (
+    DiagnosticCard,
+    DiagnosticContext,
+    ErrorCode,
+    ErrorDomain,
+    ProblemClass,
+    Recoverability,
+    Severity,
+    build_diagnostic_card,
+    build_diagnostic_context,
+    build_diagnostic_event,
+    get_diagnostic_code_definition,
+)
 from src.app.sys.models import SystemOutbox
 from src.app.workline.models.dispatch_attempt import WorklineDispatchAttempt
 from src.app.workline.models.inbox import WorklineInbox
@@ -50,22 +63,12 @@ from src.app.workline.repositories.session_repository import (
     workline_session_repository,
 )
 from src.app.workline.repositories.workline_repository import WorkLineRepository, workline_repository
-from src.core.base_service import BaseService
-from src.utils.value_normalization import coerce_optional_str, optional_enum_str
-from src.workline_runtime.diagnostics import (
-    DiagnosticContext,
-    ErrorCode,
-    build_diagnostic_card,
-    build_diagnostic_context,
-    build_diagnostic_event,
-    get_diagnostic_code_definition,
-)
-from src.workline_runtime.diagnostics.codes import ErrorDomain, ProblemClass, Recoverability, Severity
-from src.workline_runtime.diagnostics.models import DiagnosticCard
-from src.workline_runtime.trace_context import TraceContext
+from src.app.workline.trace_context import TraceContext
 
 # 导入公共工具函数
-from src.workline_runtime.utils import payload_dict
+from src.app.workline.utils import payload_dict
+from src.core.base_service import BaseService
+from src.utils.value_normalization import coerce_optional_str, optional_enum_str
 
 from .diagnosis_verdict_builder import DiagnosisVerdictBuilder, diagnosis_verdict_builder
 

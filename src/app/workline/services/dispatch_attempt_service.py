@@ -17,10 +17,10 @@ from src.app.workline.repositories.dispatch_attempt_repository import (
     WorklineDispatchAttemptRepository,
     workline_dispatch_attempt_repository,
 )
+from src.app.workline.trace_context import TraceContext
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 from src.utils.value_normalization import optional_enum_str
-from src.workline_runtime.trace_context import TraceContext
 
 
 async def _flush_if_supported(db: Any) -> None:

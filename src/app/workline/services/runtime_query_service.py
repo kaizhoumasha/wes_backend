@@ -15,6 +15,7 @@ from src.app.callback.repositories.callback_log_repository import callback_log_r
 from src.app.device.models import Device, DeviceCommand
 from src.app.device.repositories import device_repository
 from src.app.resource.services.active_rack_snapshot_service import smt_active_rack_snapshot_service
+from src.app.runtime.orchestration.business_identity_bridge import resolve_payload_display_identity
 from src.app.sys.models import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import (
     InboxKind,
@@ -72,12 +73,11 @@ from src.app.workline.services.trace_response_builder import (
     build_trace_session_item,
     build_trace_timeline_item,
 )
+from src.app.workline.utils import ensure_dict
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 from src.utils.value_normalization import optional_enum_str
 from src.workline_plugin_registry import get_workline_plugin_definition
-from src.workline_runtime.business_identity import resolve_payload_display_identity
-from src.workline_runtime.utils import ensure_dict
 
 T = TypeVar("T")
 

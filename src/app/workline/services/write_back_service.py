@@ -3,22 +3,22 @@ from enum import Enum
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
+from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.workline.constants import DEFAULT_COMMAND_PRIORITY, DEFAULT_COMMAND_TIMEOUT_MS, EXTERNAL_HTTP_DECISION_TYPE
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.services.device_command_gateway import (
     _DeviceCommandGovernanceError,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
     _enforce_device_command_governance,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
 )
+from src.app.workline.trace_context import TraceContext
+from src.app.workline.utils import payload_dict
 from src.utils.timezone import timezone
 from src.utils.value_normalization import canonical_event_type, resolve_entity_id, string_value
 from src.workline_plugin_registry import get_plugin_contract_version
-from src.workline_runtime.effect_result import RuntimeIntentEffectResult
 from src.workline_runtime.orchestrator import OrchestratorResult
-from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.utils import payload_dict
 
 if TYPE_CHECKING:
-    from src.workline_runtime.utils import JsonDict
+    from src.app.workline.utils import JsonDict
 
 
 def _session_context(session: Any) -> dict[str, Any]:
@@ -788,7 +788,7 @@ class OrchestratorWriteBackService:
             source_device=source_device,
             orch_result=orch_result,
         )
-        from src.workline_runtime.runtime_intent_effects import RuntimeIntentEffectApplier
+        from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
 
         return await RuntimeIntentEffectApplier().apply(ctx, orch_result.intents or [])
 

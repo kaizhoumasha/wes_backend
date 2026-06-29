@@ -8,6 +8,16 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from loguru import logger
 from sqlalchemy import text
 
+from src.app.runtime.orchestration.consumers.diagnostics_bridge import (
+    ErrorCode,
+    ErrorDomain,
+    ProblemClass,
+    map_failure_to_diagnostic,
+)
+from src.app.runtime.orchestration.effect_result import WriteBackDisposition
+from src.app.runtime.orchestration.events_bridge import RESERVED_RUNTIME_EVENTS
+from src.app.runtime.orchestration.lock_bridge import RedisDistributedLock
+from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 from src.app.workline.constants import (
     EXTERNAL_HTTP_INBOX_KIND,
     INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -16,7 +26,9 @@ from src.app.workline.constants import (
 )
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.repositories.inbox_repository import WorklineInboxClaim
+from src.app.workline.runtime_services import WorklineRuntimeServices, build_workline_runtime_services
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+from src.app.workline.utils import payload_dict
 from src.core.task_queue_gateway import task_queue_gateway
 from src.database.redis_client import get_redis
 from src.utils.timezone import timezone
@@ -29,20 +41,12 @@ from src.utils.value_normalization import (
     string_value,
 )
 from src.workline_plugin_registry import get_workline_plugin_definition, parse_workline_six_in_one
-from src.workline_runtime.diagnostics import ErrorCode, ErrorDomain, ProblemClass
-from src.workline_runtime.diagnostics.failure_mapper import map_failure_to_diagnostic
-from src.workline_runtime.effect_result import WriteBackDisposition
-from src.workline_runtime.lock import RedisDistributedLock
 from src.workline_runtime.orchestrator import OrchestratorResult, OrchestratorService
 from src.workline_runtime.plugin_manifest import EventCategory
-from src.workline_runtime.runtime_events import RESERVED_RUNTIME_EVENTS
-from src.workline_runtime.runtime_intent import RuntimeIntentKind
-from src.workline_runtime.services import WorklineRuntimeServices, build_workline_runtime_services
 from src.workline_runtime.session_resolver import SessionResolveError
-from src.workline_runtime.utils import payload_dict
 
 if TYPE_CHECKING:
-    from src.workline_runtime.utils import JsonDict
+    from src.app.workline.utils import JsonDict
 
 
 def process_inbox_payload(payload: dict) -> dict:

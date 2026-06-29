@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.core.logger import logger
-from src.utils.value_normalization import canonical_event_type
-from src.workline_runtime.diagnostics import (
+from src.app.runtime.orchestration.consumers.diagnostics_bridge import (
     ErrorCode,
     ErrorDomain,
     ProblemClass,
@@ -14,8 +12,10 @@ from src.workline_runtime.diagnostics import (
     build_diagnostic_context,
     build_diagnostic_event,
 )
-from src.workline_runtime.trace_context import TraceContext
-from src.workline_runtime.utils import payload_dict
+from src.app.workline.trace_context import TraceContext
+from src.app.workline.utils import payload_dict
+from src.core.logger import logger
+from src.utils.value_normalization import canonical_event_type
 
 
 def _log_diagnostic(
