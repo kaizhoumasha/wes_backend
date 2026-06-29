@@ -7,7 +7,10 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from src.workline_runtime.sandbox_catalog import mock_wms_inventory_seed, rough_sorter_scan_completed_payload
+from src.app.runtime.orchestration.sandbox_catalog_bridge import (
+    mock_wms_inventory_seed,
+    rough_sorter_scan_completed_payload,
+)
 from tests.mock import wms_mock_server
 
 

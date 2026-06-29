@@ -47,8 +47,8 @@ def test_workline_trace_context_mirror_exposes_tracecontext_class() -> None:
 
 
 def test_diagnostics_bridge_re_exports_all_diagnostics_public_symbols() -> None:
-    """diagnostics_bridge 导出 diagnostics 包全部 16 个公开符号 (包括子模块)。"""
-    from src.app.runtime.orchestration.consumers import diagnostics_bridge
+    """diagnostics 顶层门面导出 diagnostics 包全部 16 个公开符号 (包括子模块)。"""
+    from src.app.runtime.orchestration import diagnostics as diagnostics_bridge
 
     expected = {
         "DiagnosticCard",

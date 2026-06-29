@@ -5,7 +5,7 @@ from typing import ClassVar
 
 from fastapi.testclient import TestClient
 
-from src.workline_runtime.sandbox_catalog import rough_sorter_scan_completed_payload
+from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
 from tests.mock import ecs_mock_server
 
 
