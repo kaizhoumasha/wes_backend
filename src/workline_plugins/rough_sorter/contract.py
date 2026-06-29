@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from src.workline_runtime.contracts import SixInOne
+from src.app.workline.domain.contracts import SixInOne
 
 ROUGH_SORTER_PLUGIN_KEY = "rough_sorter"
 ROUGH_SORTER_CONTRACT_VERSION = "rough_sorter.v2"
