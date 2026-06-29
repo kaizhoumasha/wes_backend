@@ -1,13 +1,11 @@
-"""阶段 2 burn-down C2 — diagnostics_bridge 聚合 re-export。
+"""运行时诊断模块门面 — 聚合层 re-export。
 
-wlr diagnostics 包(6 子文件,16 公开符号)聚合暴露给 runtime/orchestration 域。
-wlr 目录在阶段 3 整体删除时,本 bridge 不变。
-
-不重新 export 实现细节(子模块路径:`builder`/`codes`/`failure_mapper`/`models`/`registry`),
-只聚合 wlr `__all__` 列表中的公开符号。
+阶段 3 burn-down C1 迁出 consumers/ trust zone;原 diagnostics_bridge.py 改名 + 改 import 路径。
+diagnostics 子包(6 子文件,16 公开符号)已在本地 `src/app/runtime/orchestration/diagnostics/`,
+聚合层仅 re-export `__all__` 列表中的公开符号。
 """
 
-from src.workline_runtime.diagnostics import (
+from src.app.runtime.orchestration.diagnostics import (
     DiagnosticCard,
     DiagnosticCodeDefinition,
     DiagnosticContext,

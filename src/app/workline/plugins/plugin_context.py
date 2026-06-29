@@ -18,7 +18,7 @@ from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.app.runtime.orchestration.consumers.diagnostics_bridge import DiagnosticContext, build_diagnostic_context
+from src.app.runtime.orchestration.diagnostics import DiagnosticContext, build_diagnostic_context
 from src.app.runtime.orchestration.topology_bridge import WorklineTopologyView
 from src.app.workline.plugins.plugin_next import PluginNext
 from src.app.workline.plugins.plugin_sdk import normalize_inbox_input, resolve_execution_context

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_service import DeviceService
 from src.app.rack.repositories import RackTaskRepository
-from src.app.runtime.orchestration.consumers.diagnostics_bridge import (
+from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     build_diagnostic_context,
     build_diagnostic_event,

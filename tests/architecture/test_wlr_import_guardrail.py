@@ -1,12 +1,19 @@
-"""R-WLR src.workline_runtime production import 严格型 guardrail 测试 (Phase 2 launch PR)。
+"""R-WLR src.workline_runtime production import 严格型 guardrail 测试 (Phase 2 launch + Stage 3)。
 
-主计划 §10.3 + Step 3: src.workline_runtime 在生产代码中仅允许以下入口直接 import:
+主计划 §10.3 + Step 3: src.workline_runtime 在生产代码中**严禁**直接 import (wlr allowlist 严格型)。
+阶段 3 burn-down 完成后,EXCLUDED_PREFIXES 收回至空集,consumers/ trust zone 退出。
+
+历史 (阶段 2 launch PR 末态):允许以下入口直接 import (作为单点过渡):
     1. src/app/runtime/orchestration/consumers/  (单点入口)
     2. tests/                                    (测试)
     3. migrations/                               (Alembic 数据迁移)
     4. src/workline_runtime/ 自身
 
-其余 src/ 任何 production code 都不允许 import src.workline_runtime (wlr allowlist 严格型)。
+阶段 3 后:
+    1. tests/    (测试,允许)
+    2. migrations/  (Alembic 数据迁移,允许)
+    3. src/workline_runtime/ 自身 (历史,阶段 3 后整目录已删)
+其余 src/ 任何 production code 都不允许 import src.workline_runtime。
 """
 
 from __future__ import annotations
@@ -20,9 +27,9 @@ GUARDRAILS_SCRIPT = REPO_ROOT / "scripts" / "architecture-guardrails.sh"
 ALLOWLIST = REPO_ROOT / "scripts" / "architecture-guardrails.allowlist"
 
 WLR_IMPORT_PATTERN = re.compile(r"from src\.workline_runtime|import src\.workline_runtime")
+# 阶段 3 终态:consumers/ 退出 trust zone
 WLR_ALLOWED_PATHS = (
     "src/workline_runtime/",
-    "src/app/runtime/orchestration/consumers/",
     "tests/",
     "migrations/",
 )
@@ -44,7 +51,7 @@ def test_wlr_rule_pattern_matches_workline_runtime_imports():
 
 
 def test_wlr_rule_excludes_legitimate_importers():
-    """rule_wlr_import 必须排除 wlr 自身 + consumers + tests + migrations。"""
+    """rule_wlr_import 必须排除 wlr 自身 + tests + migrations (阶段 3 终态)。"""
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
     body = text.split("# --- R-WLR:", maxsplit=1)[1].split("# --- R-I3b:", maxsplit=1)[0]
     for excluded in WLR_ALLOWED_PATHS:
@@ -89,7 +96,10 @@ def test_wlr_guardrail_runs_clean_in_phase1():
 
 
 def test_wlr_production_imports_all_have_allowlist_coverage():
-    """所有 production code 内的 src.workline_runtime import 都必须在 R-WLR allowlist 覆盖范围。"""
+    """所有 production code 内的 src.workline_runtime import 都必须在 R-WLR allowlist 覆盖范围。
+
+    阶段 3 终态:consumers/ 已退出 trust zone,本测试不应再有未覆盖违规。
+    """
     src_root = REPO_ROOT / "src"
     allowlisted_paths = set()
     if ALLOWLIST.exists():
@@ -104,8 +114,7 @@ def test_wlr_production_imports_all_have_allowlist_coverage():
         rel = py_file.relative_to(REPO_ROOT).as_posix()
         if rel.startswith("src/workline_runtime/"):
             continue
-        if rel.startswith("src/app/runtime/orchestration/consumers/"):
-            continue
+        # 阶段 3 终态:consumers/ 不再是 trust zone
         try:
             content = py_file.read_text(encoding="utf-8")
         except OSError as exc:
@@ -120,7 +129,39 @@ def test_wlr_production_imports_all_have_allowlist_coverage():
 
 
 def test_runtime_inbox_consumer_compiles() -> None:
-    """RuntimeInboxConsumer 模块可被 import (consumers/ 单点入口存在)"""
+    """RuntimeInboxConsumer 模块可被 import (consumers/ 入口仍存在)。"""
     from src.app.runtime.orchestration.consumers import RuntimeInboxConsumer
 
     assert RuntimeInboxConsumer is not None
+
+
+# --- 阶段 3 新增测试 ---
+
+
+def test_excluded_prefixes_does_not_contain_consumers():
+    """阶段 3 终态:EXCLUDED_PREFIXES 不再含 consumers/ (trust zone 退出)。
+
+    consumers/ 内 RuntimeInboxConsumer 已 wlr-free,无需 EXCLUDED_PREFIXES 保护。
+    """
+    text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
+    body = text.split("# --- R-WLR:", maxsplit=1)[1].split("# --- R-I3b:", maxsplit=1)[0]
+    assert "src/app/runtime/orchestration/consumers/" not in body, (
+        "阶段 3 终态:EXCLUDED_PREFIXES 不应再含 consumers/ trust zone"
+    )
+
+
+def test_no_consumers_in_wlr_allowed_paths():
+    """WLR_ALLOWED_PATHS 模块常量不再含 consumers/。"""
+    assert "src/app/runtime/orchestration/consumers/" not in WLR_ALLOWED_PATHS, (
+        "阶段 3 终态:WLR_ALLOWED_PATHS 不应再含 consumers/"
+    )
+
+
+def test_consumers_directory_still_exists():
+    """consumers/ 目录在阶段 3 后仍存在 (RuntimeInboxConsumer 单点入口保留)。"""
+    consumers_dir = REPO_ROOT / "src" / "app" / "runtime" / "orchestration" / "consumers"
+    assert consumers_dir.is_dir(), "consumers/ 目录应保留 (RuntimeInboxConsumer)"
+    init_file = consumers_dir / "__init__.py"
+    assert init_file.is_file(), "consumers/__init__.py 应保留"
+    consumer_module = consumers_dir / "runtime_inbox_consumer.py"
+    assert consumer_module.is_file(), "consumers/runtime_inbox_consumer.py 应保留"

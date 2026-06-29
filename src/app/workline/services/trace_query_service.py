@@ -33,7 +33,7 @@ from src.app.resource.models import (
     RackBinMount,
     ResourceStateEvent,
 )
-from src.app.runtime.orchestration.consumers.diagnostics_bridge import (
+from src.app.runtime.orchestration.diagnostics import (
     DiagnosticCard,
     DiagnosticContext,
     ErrorCode,
