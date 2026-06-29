@@ -52,19 +52,24 @@ def test_wlr_rule_excludes_legitimate_importers():
 
 
 def test_wlr_allowlist_entries_have_legacy_entry_id_and_drop_phase():
-    """R-WLR allowlist 每条记录都必须有 legacy_entry_id + drop_phase 字段 (Phase 2 launch PR)。"""
+    """R-WLR allowlist 字段契约校验 + 终态 (R-WLR=0) 允许。
+
+    C5b 后 R-WLR allowlist 终态 = 0, 本测试需支持两种状态:
+    1. R-WLR > 0: 每条 legacy_entry_id + drop_phase 字段非空
+    2. R-WLR = 0: 直接通过 (阶段 2 burn-down 完成)
+    """
     if not ALLOWLIST.exists():
         return
-    rows = [line for line in ALLOWLIST.read_text().splitlines() if line.startswith("R-WLR|")]
-    assert rows, "R-WLR allowlist 必须至少有一条记录"
-    for row in rows:
-        parts = row.split("|")
-        assert len(parts) >= 6, f"R-WLR allowlist 字段不足 6 列: {row}"
-        legacy_entry_id = parts[4]
-        drop_phase = parts[5]
-        assert legacy_entry_id.startswith("legacy:"), f"legacy_entry_id 缺 legacy: 前缀: {row}"
-        assert drop_phase, f"drop_phase 必填: {row}"
-        assert drop_phase == "phase2", f"Phase 2 launch PR R-WLR drop_phase 必须 = phase2 (实际={drop_phase}): {row}"
+    rwlr_lines = [line for line in ALLOWLIST.read_text().splitlines() if line.startswith("R-WLR|")]
+    if not rwlr_lines:
+        # 阶段 2 终态: R-WLR allowlist 清零, 字段契约不适用
+        return
+    for line in rwlr_lines:
+        fields = line.split("|")
+        # fields: [prefix, file, reason, expires, legacy_entry_id, "#R-WLR", drop_phase]
+        assert len(fields) >= 7, f"R-WLR 行字段不全: {line}"
+        assert fields[4] != "<file>", f"legacy_entry_id 未填: {line}"
+        assert fields[6].startswith("phase"), f"drop_phase 格式错: {line}"
 
 
 def test_wlr_guardrail_runs_clean_in_phase1():

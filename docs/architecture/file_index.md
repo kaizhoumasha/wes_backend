@@ -410,6 +410,7 @@
 | `services/runtime_snapshot_assembler.py` | RuntimeSnapshotAssembler：按 BC-02 合同把 session + timeline + inbox + hold + intent log 拼装成 RuntimeSnapshot 输出 | 🔧 架构核心 |
 | `services/runtime_reconciliation_service.py` | **Phase 2 launch PR 新增** RuntimeReconciliationFacade:device/callback 域对账能力唯一入口；当前委托 workline 单例（Phase 2 burn-down 阶段替换为本地实现） | 🔧 架构核心 |
 | `services/__init__.py` | 服务层导出（`RuntimeReconciliationFacade` / `IdempotencyGuard` / `RuntimeSnapshotAssembler`） | 🔧 架构核心 |
+| `exceptions.py` | Workline Runtime 桥接异常（`PluginNotFoundError` / `LockAcquireError`），C5b 从 `src.workline_runtime.exceptions` 镜像为桥接副本 | 🔧 架构核心 |
 | `__init__.py` | 模块导出（9 entity） | 🔧 架构核心 |
 
 #### 🔧 Runtime 能力面 (src/app/runtime/) — Phase 1 新增
