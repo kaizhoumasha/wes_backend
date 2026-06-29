@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.exc import IntegrityError
 
+from src.app.workline.domain.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
+from src.app.workline.domain.ng_reason import NgReasonDefinition, build_ng_reason_catalog
 from src.app.workline.models.runtime_hold import (
     MaterialDisposition,
     NgReturnItem,
@@ -18,8 +20,6 @@ from src.workline_plugin_registry import (
     list_workline_ng_reasons,
     resolve_workline_material_identity,
 )
-from src.workline_runtime.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
-from src.workline_runtime.ng_reason import NgReasonDefinition, build_ng_reason_catalog
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession

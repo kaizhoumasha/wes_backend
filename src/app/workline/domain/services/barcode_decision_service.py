@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, ClassVar
 from src.app.workline.domain.models import BarcodeDecision, BarcodeDecisionType
 
 if TYPE_CHECKING:
-    from src.workline_runtime.contracts import SixInOne
+    from src.app.workline.domain.contracts import SixInOne
 
 
 class BarcodeDecisionService:
