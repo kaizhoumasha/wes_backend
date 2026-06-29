@@ -89,6 +89,52 @@ async def test_diagnostic_service_upserts_card_with_registry_and_redacted_eviden
 
 
 @pytest.mark.asyncio
+async def test_diagnostic_service_accepts_callback_mirror_event() -> None:
+    from src.app.callback.contracts import (
+        ErrorCode as CallbackErrorCode,
+    )
+    from src.app.callback.contracts import (
+        build_diagnostic_context as build_callback_diagnostic_context,
+    )
+    from src.app.callback.contracts import (
+        build_diagnostic_event as build_callback_diagnostic_event,
+    )
+    from src.app.workline.services.diagnostic_service import WorklineDiagnosticService
+
+    repo = _DiagnosticRepoStub()
+    service = WorklineDiagnosticService(repository=cast("Any", repo))
+    event = build_callback_diagnostic_event(
+        error_code=CallbackErrorCode.CALLBACK_SCHEMA_INVALID,
+        context=build_callback_diagnostic_context(
+            request_id="req-callback-001",
+            trace_id="trace-callback-001",
+            command=SimpleNamespace(command_code="CMD-CALLBACK-001"),
+            extra={"callback_type": "event"},
+        ),
+        message="callback payload invalid",
+    )
+
+    diagnostic = await service.record_event(
+        object(),
+        event=event,
+        evidence={"payload": {"token": "secret", "event_type": "SCAN_COMPLETED"}},
+        auto_commit=False,
+    )
+
+    assert diagnostic.id == 41
+    assert repo.created is not None
+    assert repo.created["diagnostic_key"] == (
+        "CALLBACK_SCHEMA_INVALID:trace-callback-001:CMD-CALLBACK-001:req-callback-001"
+    )
+    assert repo.created["diagnostic_code"] == "CALLBACK_SCHEMA_INVALID"
+    evidence = cast("dict[str, Any]", repo.created["evidence_json"])
+    assert evidence == {"payload": {"token": "***", "event_type": "SCAN_COMPLETED"}}
+    card = cast("dict[str, Any]", repo.created["card_json"])
+    assert card["context"]["request_id"] == "req-callback-001"
+    assert card["context"]["extra"] == {"callback_type": "event"}
+
+
+@pytest.mark.asyncio
 async def test_diagnostic_service_returns_existing_record_for_duplicate_key() -> None:
     from src.app.workline.services.diagnostic_service import WorklineDiagnosticService
 
