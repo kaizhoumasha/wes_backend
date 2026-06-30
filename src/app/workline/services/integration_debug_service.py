@@ -5,6 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from src.app.runtime.orchestration.diagnostics import ErrorCode, get_diagnostic_code_definition
+from src.app.runtime.orchestration.services.trace.trace_query_service import (
+    TraceQueryResult,
+    trace_query_service,
+)
+from src.app.runtime.orchestration.services.trace.trace_response_builder import (
+    build_trace_response,
+)
 from src.app.workline.models.integration_debug import (
     IntegrationDebugCaseListResponse,
     IntegrationDebugCaseResponse,
@@ -14,8 +21,6 @@ from src.app.workline.models.integration_debug import (
 )
 from src.app.workline.models.runtime import TraceQueryRequest
 from src.app.workline.services.runtime_query_service import RuntimeQueryService, runtime_query_service
-from src.app.workline.services.trace_query_service import TraceQueryResult, trace_query_service
-from src.app.workline.services.trace_response_builder import build_trace_response
 from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import coerce_optional_str, optional_enum_str
 

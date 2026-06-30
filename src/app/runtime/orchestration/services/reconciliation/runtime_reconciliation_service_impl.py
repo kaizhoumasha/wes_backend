@@ -65,7 +65,7 @@ if TYPE_CHECKING:
     from src.app.workline.models.inbox import WorklineInbox
 
 
-from src.app.workline.services.runtime_hold_query_service import (
+from src.app.runtime.orchestration.services.hold.runtime_hold_query_service import (
     _CALLBACK_TIMEOUT_CHECKS,
     _DISPATCH_ACK_CHECKS,
 )
