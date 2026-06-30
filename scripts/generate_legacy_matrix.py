@@ -103,6 +103,42 @@ MIGRATED_SERVICE_IMPLS = {
 }
 MIGRATED_IMPL_TO_LEGACY = {impl: legacy for legacy, impl in MIGRATED_SERVICE_IMPLS.items()}
 
+# Phase 2 burn-down F-1/F-2:workline/repositories 运行态 repository 物理迁入
+# runtime/orchestration/repositories。R-I3b seed 仍按旧入口追踪,映射回 legacy 路径。
+MIGRATED_REPOSITORIES = {
+    "src/app/workline/repositories/bin_cell_reservation_repository.py": (
+        "src/app/runtime/orchestration/repositories/bin_cell_reservation_repository.py"
+    ),
+    "src/app/workline/repositories/diagnostic_repository.py": (
+        "src/app/runtime/orchestration/repositories/diagnostic_repository.py"
+    ),
+    "src/app/workline/repositories/dispatch_attempt_repository.py": (
+        "src/app/runtime/orchestration/repositories/dispatch_attempt_repository.py"
+    ),
+    "src/app/workline/repositories/inbox_repository.py": (
+        "src/app/runtime/orchestration/repositories/inbox_repository.py"
+    ),
+    "src/app/workline/repositories/material_unit_repository.py": (
+        "src/app/runtime/orchestration/repositories/material_unit_repository.py"
+    ),
+    "src/app/workline/repositories/object_transition_event_repository.py": (
+        "src/app/runtime/orchestration/repositories/object_transition_event_repository.py"
+    ),
+    "src/app/workline/repositories/rack_position_repository.py": (
+        "src/app/runtime/orchestration/repositories/rack_position_repository.py"
+    ),
+    "src/app/workline/repositories/runtime_hold_repository.py": (
+        "src/app/runtime/orchestration/repositories/runtime_hold_repository.py"
+    ),
+    "src/app/workline/repositories/session_repository.py": (
+        "src/app/runtime/orchestration/repositories/session_repository.py"
+    ),
+    "src/app/workline/repositories/smt_inbound_handoff_repository.py": (
+        "src/app/runtime/orchestration/repositories/smt_inbound_handoff_repository.py"
+    ),
+}
+MIGRATED_REPOSITORIES_TO_LEGACY = {impl: legacy for legacy, impl in MIGRATED_REPOSITORIES.items()}
+
 SHIM_INTERNAL_SYMBOLS = {
     ("src/app/workline/services/__init__.py", "__getattr__"),
     ("src/app/workline/services/inbox_batch_processor.py", "_load_target_module"),
@@ -386,13 +422,14 @@ def _append_ri3b_seed_paths(seed_paths: list[SeedPath]) -> None:
     scan_paths = [
         "src/app/workline/services",
         "src/app/workline/repositories",
+        "src/app/runtime/orchestration/repositories",
         *MIGRATED_SERVICE_IMPLS.values(),
     ]
     for line in git_grep(ri3b_pattern, scan_paths):
         m = re.match(r"([^:]+):(\d+):", line)
         if not m:
             continue
-        path = MIGRATED_IMPL_TO_LEGACY.get(m.group(1), m.group(1))
+        path = MIGRATED_IMPL_TO_LEGACY.get(m.group(1), MIGRATED_REPOSITORIES_TO_LEGACY.get(m.group(1), m.group(1)))
         etype = "repository" if "/repositories/" in path else "service"
         seed_paths.append(
             (

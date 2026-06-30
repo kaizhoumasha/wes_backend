@@ -64,15 +64,15 @@ from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline  # no
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 from src.app.wms_integration.models import WmsCallEvidence, WmsCircuitBreakerState  # noqa: F401
 
-# 导入所有 workline 模型
-from src.app.workline.models import (  # noqa: F401
-    WorkLine,
+# 导入所有 workline 配置域模型 + runtime/orchestration 运行态模型(阶段 6 物理迁移后)
+from src.app.runtime.orchestration.models import (  # noqa: F401
     WorklineBinCellReservation,
     WorklineInbox,
     WorklineRackPosition,
     WorklineSession,
     WorklineTimeline,
 )
+from src.app.workline.models import WorkLine  # noqa: F401
 
 # 导入项目配置
 from src.core.conf import settings

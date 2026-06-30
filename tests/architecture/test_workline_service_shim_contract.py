@@ -123,13 +123,10 @@ def test_workline_services_shrunk_to_config_crud_after_stage6():
 
 def test_workline_repositories_shrunk_to_workline_only_after_stage6():
     """阶段 6:workline/repositories/ 下运行态 repository 必须物理删除。"""
-    # ⚠️ plan 偏差:阶段 4 实际只完成 facade delegation,未完成内部 import 路径
-    # 迁移。runtime 域 7 处仍 `from src.app.workline.repositories.workline_repository
-    # import workline_repository` — workline_repository 必须保留作为跨域跨层
-    # 桥接,不能物理删除。本测试标记 xfail,后续 PR 完成"workline_repository
-    # 迁入 runtime/orchestration/repositories"与"workline 域 run-internal import
-    # 改写"后转为硬绿。
-    pytest.xfail(reason="plan deviation: stage 4 内部路径未完整迁移,workline_repository 仍被 runtime 域依赖")
+    for name in _STAGE6_REMOVED_REPOSITORIES:
+        assert not _file_exists(f"src/app/workline/repositories/{name}.py"), (
+            f"阶段 6:workline 运行态 repository 必须物理删除,遗留: {name}.py"
+        )
 
 
 def test_workline_kept_models_preserved_after_stage6():
@@ -147,13 +144,14 @@ def test_workline_kept_repositories_preserved_after_stage6():
 
 
 def test_workline_models_shrunk_to_workline_only_after_stage6():
-    """阶段 6:workline/models/ 下运行态 model 文件必须物理删除。"""
-    # ⚠️ plan 偏差:阶段 4 实际只完成 facade delegation,53+ 处仍
-    # `from src.app.workline.models.{inbox,session,timeline,...}` — 跨子包
-    # 物理删除会破坏 runtime 域 import。后续 PR 完成"workline 运行态 models 迁入
-    # runtime/orchestration/models/"与"workline 域 import 改写"后转为硬绿。
-    # safety.py 例外保留,见 `_STAGE6_KEPT_MODELS`。
-    pytest.xfail(reason="plan deviation: stage 4 内部路径未完整迁移,workline 运行态 models 仍被 runtime 域依赖")
+    """阶段 6:workline/models/ 下运行态 model 文件必须物理删除。
+
+    safety.py 例外保留,见 `_STAGE6_KEPT_MODELS`。
+    """
+    for name in _STAGE6_REMOVED_MODELS:
+        assert not _file_exists(f"src/app/workline/models/{name}.py"), (
+            f"阶段 6:workline 运行态 model 必须物理删除,遗留: {name}.py"
+        )
 
 
 def test_workline_v1_routers_shrunk_after_stage6():

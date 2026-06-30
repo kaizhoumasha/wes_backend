@@ -43,7 +43,7 @@ def test_full_box_exchange_characterization_inputs_extracted():
     """
     # 旧业务输入来源: 主计划 §2.2 full-box exchange + smt_inbound_handoff + rack_operation
     sources = [
-        "src/app/workline/models/smt_inbound_handoff.py",
+        "src/app/runtime/orchestration/models/smt_inbound_handoff.py",
         "src/app/workline/domain/services/smt_inbound_handoff_route_service.py",
         "docs/integration/wms_rcs_interface_requirements.md",
     ]

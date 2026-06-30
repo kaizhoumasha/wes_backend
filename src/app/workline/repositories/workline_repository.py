@@ -7,9 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.runtime.orchestration.models import InboxStatus, SessionStatus, WorklineInbox, WorklineSession
+from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.sys.models.outbox import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import WorkLine
-from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.database.base_repository import BaseRepository
 
 

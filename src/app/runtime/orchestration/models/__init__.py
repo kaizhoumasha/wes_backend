@@ -1,13 +1,10 @@
-"""Runtime/orchestration models re-export shim (C1 transitional).
+"""Runtime/orchestration 运行态 model 聚合导出。
 
-从 src.app.workline.models.{12 个 __init__ 管理的待迁文件} re-export 公开符号,
-对齐 workline/models/__init__.py 语义。operation.py + runtime_hold_api.py 不在此
-re-export (caller 用具名子模块 import,走对应 shim 文件)。
-
-C3 物理迁移后改为本地 import (from .xxx import ...)。
+承载从 workline 域物理迁入的 12 个 __init__ 管理的运行态 model 符号;
+operation.py + runtime_hold_api.py 由 caller 具名子模块直接 import。
 """
 
-from src.app.workline.models.bin_cell_reservation import (
+from .bin_cell_reservation import (
     BinCellReservationStatus,
     WorklineBinCellReservation,
     WorklineBinCellReservationBase,
@@ -15,19 +12,19 @@ from src.app.workline.models.bin_cell_reservation import (
     WorklineBinCellReservationResponse,
     WorklineBinCellReservationUpdate,
 )
-from src.app.workline.models.diagnostic import (
+from .diagnostic import (
     DiagnosticStatus,
     WorklineDiagnostic,
     WorklineDiagnosticBase,
     WorklineDiagnosticCreate,
 )
-from src.app.workline.models.dispatch_attempt import (
+from .dispatch_attempt import (
     DispatchAttemptStatus,
     WorklineDispatchAttempt,
     WorklineDispatchAttemptBase,
     WorklineDispatchAttemptCreate,
 )
-from src.app.workline.models.inbox import (
+from .inbox import (
     InboxKind,
     InboxStatus,
     SourceSystem,
@@ -35,19 +32,19 @@ from src.app.workline.models.inbox import (
     WorklineInboxBase,
     WorklineInboxCreate,
 )
-from src.app.workline.models.material_unit import (
+from .material_unit import (
     MaterialUnit,
     MaterialUnitBase,
     MaterialUnitStatus,
 )
-from src.app.workline.models.object_transition_event import (
+from .object_transition_event import (
     ObjectTransitionDomain,
     ObjectTransitionEvent,
     ObjectTransitionEventBase,
     ObjectTransitionEventCreate,
     ObjectTransitionEventResponse,
 )
-from src.app.workline.models.rack_position import (
+from .rack_position import (
     WorklineRackPosition,
     WorklineRackPositionBase,
     WorklineRackPositionCreate,
@@ -55,7 +52,7 @@ from src.app.workline.models.rack_position import (
     WorklineRackPositionRole,
     WorklineRackPositionUpdate,
 )
-from src.app.workline.models.runtime import (
+from .runtime import (
     DiagnosisEvidenceHealthItemResponse,
     DiagnosisEvidenceHealthResponse,
     DiagnosisVerdictResponse,
@@ -86,7 +83,7 @@ from src.app.workline.models.runtime import (
     TraceSessionItem,
     TraceTimelineItem,
 )
-from src.app.workline.models.runtime_hold import (
+from .runtime_hold import (
     MaterialDisposition,
     NgReasonSource,
     NgReturnItem,
@@ -95,7 +92,7 @@ from src.app.workline.models.runtime_hold import (
     RuntimeHoldStatus,
     RuntimeHoldType,
 )
-from src.app.workline.models.session import (
+from .session import (
     RunMode,
     RuntimeReconciliationReason,
     RuntimeReconciliationResolution,
@@ -107,7 +104,7 @@ from src.app.workline.models.session import (
     WorklineSessionCreate,
     WorklineSessionUpdate,
 )
-from src.app.workline.models.smt_inbound_handoff import (
+from .smt_inbound_handoff import (
     SmtInboundHandoffActionResponse,
     SmtInboundHandoffDemand,
     SmtInboundHandoffDemandBase,
@@ -124,7 +121,7 @@ from src.app.workline.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItemStatus,
     SmtInboundHandoffSourceItemUpdate,
 )
-from src.app.workline.models.timeline import (
+from .timeline import (
     TimelineActionType,
     TimelineActorType,
     TimelineStage,
