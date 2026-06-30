@@ -11,10 +11,19 @@ from typing import Any
 # services 与 runtime/capabilities/phase4/ 后已物理删除。
 #
 # 阶段 6 C5:__all__ / _LAZY_SHIM_MAP 收敛到当前 4 个真实 module export +
-# 3 个 live caller 死引用 tombstone(inbox_service / workline_bin_cell_reservation_service
-# / WorklineInboxService,源在 runtime_intent_effects.py:1545/1627 与
-# callback_orchestration_service.py:35 — 这些 caller 是死代码,未触发,
-# 保留作为 lazy shim 兜底的最后一道闸)。其他 dead entries 已物理删除。
+# 3 个未初始化 service 属性的 fallback tombstone(inbox_service /
+# workline_bin_cell_reservation_service / WorklineInboxService)。
+# 这 3 个符号历史上由 workline.services 域暴露,底层 module 已物理删除
+# (迁入 runtime/orchestration/services/ 与 repositories/)。3 处 caller 仍按
+# `from src.app.workline.services import ...` 旧路径访问:
+#   - runtime_intent_effects.py:1545/1627 — `self._inbox_service` /
+#     `self._bin_cell_reservation_service` 属性未注入时的 fallback import
+#     (属性注入后不触发,路径是活的防御性兜底,非死代码)
+#   - callback_orchestration_service.py:35 — TYPE_CHECKING 块内 type hint
+#     (运行时不触发,静态类型检查用)
+# PEP 562 __getattr__ 命中 _LAZY_SHIM_MAP 后 import 旧路径,因 module 已删除
+# 抛 ModuleNotFoundError,让调用方明确感知"属性不可用"。其他 dead entries
+# 已物理删除。
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
 from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service
 from .workline_service import WorkLineService, workline_service
@@ -36,10 +45,10 @@ __all__ = [
 ]
 
 
-# 阶段 6 C5:3 个 live caller 死引用 tombstone,attribute access 命中时通过
-# importlib.import_module 触发 ModuleNotFoundError — 与 Python 默认
-# attribute lookup 抛 AttributeError 不同但对调用方语义一致(都是不可用)。
-# 不在表中的属性按 PEP 562 默认行为抛 AttributeError。
+# 阶段 6 C5:3 个未初始化 service 属性的 fallback tombstone。caller 命中时
+# 通过 importlib.import_module 触发 ModuleNotFoundError(旧 module 已物理
+# 删除),与 Python 默认 attribute lookup 抛 AttributeError 不同但对调用方
+# 语义一致(都是不可用)。不在表中的属性按 PEP 562 默认行为抛 AttributeError。
 _LAZY_SHIM_MAP = {
     "inbox_service": "inbox_service",
     "workline_bin_cell_reservation_service": "bin_cell_reservation_service",
