@@ -1,0 +1,13 @@
+"""Query 子目录 — 运行监控中心只读聚合查询服务。
+
+Phase 2 burn-down 阶段 4 C4a (PR):从 workline/services/ 物理迁入。
+workline/services/runtime_query_service.py 改为 PEP 562 re-export shim,
+通过 src.app.workline.services._LAZY_SHIM_MAP + __getattr__ 推迟加载。
+"""
+
+from src.app.runtime.orchestration.services.query.runtime_query_service import (
+    RuntimeQueryService,
+    runtime_query_service,
+)
+
+__all__ = ["RuntimeQueryService", "runtime_query_service"]

@@ -8,5 +8,14 @@ from src.app.runtime.orchestration.services.intent.operation_service import (
     WorklineOperationService,
     workline_operation_service,
 )
+from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import (
+    SmtInboundHandoffService,
+    smt_inbound_handoff_service,
+)
 
-__all__ = ["WorklineOperationService", "workline_operation_service"]
+__all__ = [
+    "SmtInboundHandoffService",
+    "WorklineOperationService",
+    "smt_inbound_handoff_service",
+    "workline_operation_service",
+]

@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from src.app.rack.models import RackTaskType
 from src.app.resource.models import RackKind
+from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import smt_inbound_handoff_service
 from src.app.sys.models import (
     DispatchEnvelope,
     SystemOutbox,
@@ -24,7 +25,6 @@ from src.app.wms_integration.services.transport_contract import (
     wms_transport_contract_service,
 )
 from src.app.workline.models.safety import WorkLineRuntimeStatus
-from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
 from src.app.workline.services.station_lease_service import (
     StationLeaseReasonCode,
     StationLeaseService,
