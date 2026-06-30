@@ -215,3 +215,105 @@ def test_workline_service_config_only_after_stage6():
     assert hasattr(workline_service_singleton, "configuration_status"), (
         "阶段 6 C3:WorkLineService 必须保留 configuration_status 配置域方法"
     )
+
+
+# 阶段 6 C5:workline.services.__init__ 清理 — __all__ / _LAZY_SHIM_MAP 收敛到
+# 当前 4 个真实 module export + 6 个 live caller(shim 路径),其余 dead entries
+# 必须删除。`runtime_intent_effects.py:1545/1627` 与
+# `callback_orchestration_service.py:35` 3 处死引用保留(未触发,不爆),
+# 作为 lazy shim 兜底的最后一道闸,验证 `__all__` / `_LAZY_SHIM_MAP` 语义一致。
+#
+# 来源:audit_c5_shim_cleanup (2026-06-30)
+#   LIVE (3):WorkLineSafetyBlocked, workline_safety_service, workline_service
+#   DEAD 但 caller 仍存在 (3):WorklineInboxService, inbox_service,
+#                              workline_bin_cell_reservation_service
+#   实际 module export (9):WorklineDiagnosticService, workline_diagnostic_service,
+#                           WorkLineSafetyBlocked, WorkLineSafetyService,
+#                           workline_safety_service, WorkLineService,
+#                           workline_service, OrchestratorWriteBackService,
+#                           orchestrator_write_back_service
+#   shim 兜底死引用 (3):WorklineInboxService → inbox_service,
+#                        inbox_service → inbox_service,
+#                        workline_bin_cell_reservation_service
+#                        → bin_cell_reservation_service
+_C5_REAL_MODULE_EXPORTS = frozenset(
+    {
+        # diagnostic_service
+        "WorklineDiagnosticService",
+        "workline_diagnostic_service",
+        # safety_service
+        "WorkLineSafetyBlocked",
+        "WorkLineSafetyService",
+        "workline_safety_service",
+        # workline_service
+        "WorkLineService",
+        "workline_service",
+        # write_back_service
+        "OrchestratorWriteBackService",
+        "orchestrator_write_back_service",
+    }
+)
+
+_C5_SHIM_TOMBSTONES = frozenset(
+    {
+        # runtime_intent_effects.py:1545 死引用 — shim fake 触发 ModuleNotFoundError
+        "inbox_service",
+        # runtime_intent_effects.py:1627 死引用 — shim fake 触发 ModuleNotFoundError
+        "workline_bin_cell_reservation_service",
+        # callback_orchestration_service.py:35 死引用 (type hint,非 import 触发)
+        "WorklineInboxService",
+    }
+)
+
+
+def test_workline_services_init_all_exports_match_real_modules_and_live_callers():
+    """阶段 6 C5:`workline.services.__init__` 的 `__all__` 必须只包含实际 module export
+    + live caller,不允许残留 dead entries。"""
+    import importlib
+
+    workline_services = importlib.import_module("src.app.workline.services")
+
+    expected = _C5_REAL_MODULE_EXPORTS | _C5_SHIM_TOMBSTONES
+    assert set(workline_services.__all__) == expected, (
+        "阶段 6 C5:__all__ 残留 dead entries。\n"
+        f"  期望: {sorted(expected)}\n"
+        f"  实际: {sorted(workline_services.__all__)}"
+    )
+
+
+def test_workline_services_init_shim_map_contains_only_dead_caller_tombstones():
+    """阶段 6 C5:`_LAZY_SHIM_MAP` 必须只保留死引用 tombstones,其余 49 个 dead entries
+    物理删除,让未知属性按 PEP 562 默认抛 AttributeError。"""
+    import importlib
+
+    workline_services = importlib.import_module("src.app.workline.services")
+
+    shim_map = getattr(workline_services, "_LAZY_SHIM_MAP", None)
+    assert shim_map is not None, "阶段 6 C5:_LAZY_SHIM_MAP 必须保留(承载死引用 tombstones)"
+
+    assert set(shim_map.keys()) == _C5_SHIM_TOMBSTONES, (
+        "阶段 6 C5:_LAZY_SHIM_MAP 残留 dead entries。\n"
+        f"  期望 keys: {sorted(_C5_SHIM_TOMBSTONES)}\n"
+        f"  实际 keys: {sorted(shim_map.keys())}"
+    )
+
+
+def test_workline_services_init_getattr_returns_real_exports():
+    """阶段 6 C5:`__getattr__` 必须仍能解析真实 module export,且死引用触发
+    ModuleNotFoundError(与 Python 默认 attribute lookup 抛 AttributeError 不同但
+    语义一致 — 都是不可用)。"""
+    import importlib
+
+    workline_services = importlib.import_module("src.app.workline.services")
+
+    # Live export:__getattr__ 走 module re-export,正常工作
+    diagnostic_class = workline_services.WorklineDiagnosticService
+    assert diagnostic_class is not None
+
+    # 死引用:__getattr__ 触发 ModuleNotFoundError
+    with pytest.raises(ModuleNotFoundError):
+        workline_services.inbox_service  # noqa: B018
+
+    # 未知属性:按 PEP 562 默认行为抛 AttributeError
+    with pytest.raises(AttributeError):
+        workline_services.never_existed_attribute  # noqa: B018
