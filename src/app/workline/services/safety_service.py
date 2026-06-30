@@ -9,6 +9,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from src.app.device.repositories.command_repository import DeviceCommandRepository
 from src.app.device.services.device_service import DeviceService
+from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
+    runtime_hold_creation_service as default_runtime_hold_creation_service,
+)
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.models.runtime_hold import RuntimeHoldType
 from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
@@ -17,9 +20,6 @@ from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRep
 from src.app.workline.repositories.safety_incident_repository import WorklineSafetyIncidentRepository
 from src.app.workline.repositories.session_repository import WorklineSessionRepository
 from src.app.workline.repositories.workline_repository import WorkLineRepository
-from src.app.workline.services.runtime_hold_creation_service import (
-    runtime_hold_creation_service as default_runtime_hold_creation_service,
-)
 from src.core.logger import logger
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_str
@@ -141,7 +141,7 @@ class WorkLineSafetyService:
         self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
         self.runtime_hold_repository = runtime_hold_repository or RuntimeHoldRepository()
         if runtime_hold_release_service is None:
-            from src.app.workline.services.runtime_hold_release_service import (
+            from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
                 runtime_hold_release_service as default_release,
             )
 

@@ -58,8 +58,10 @@ async def test_device_status_changed_sse_uses_canonical_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_session_updated_sse_uses_canonical_envelope() -> None:
+    from src.app.runtime.orchestration.services.inbox.inbox_batch_processor import (
+        build_workline_runtime_session_updated_event_payload,
+    )
     from src.app.sys.services.event_stream_service import defer_sse_event
-    from src.app.workline.services.inbox_batch_processor import build_workline_runtime_session_updated_event_payload
 
     db = SimpleNamespace(info={})
     payload = build_workline_runtime_session_updated_event_payload(workline_id=45, session_id=99)
@@ -235,9 +237,9 @@ async def test_real_ecs_ack_path_defers_command_status_changed_event(monkeypatch
     import importlib
 
     from src.app.device.models.command import CommandStatus
-    from src.app.workline.services.device_command_gateway import DeviceCommandGateway
+    from src.app.runtime.orchestration.services.device_command_gateway import DeviceCommandGateway
 
-    gateway_module = importlib.import_module("src.app.workline.services.device_command_gateway")
+    gateway_module = importlib.import_module("src.app.runtime.orchestration.services.device_command_gateway")
     command_repository_module = importlib.import_module("src.app.device.repositories.command_repository")
 
     _AckCapturingAsyncClient.requests.clear()
@@ -272,7 +274,7 @@ async def test_real_ecs_ack_path_defers_command_status_changed_event(monkeypatch
     fake_device_service = SimpleNamespace(mark_command_dispatched=AsyncMock(return_value=None))
     monkeypatch.setattr("src.app.device.services.device_service", fake_device_service, raising=True)
     monkeypatch.setattr(
-        "src.app.workline.services.runtime_reconciliation_service.workline_runtime_reconciliation_service."
+        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_runtime_reconciliation_service."
         "activate_execution_deadline_after_ack",
         AsyncMock(return_value=None),
         raising=True,
@@ -352,10 +354,10 @@ async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
     """sandbox ACK 路径必须经由 helper defer command.status.changed。"""
 
     from src.app.device.models.command import CommandStatus
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
     from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
     from src.app.workline.models.session import SessionStatus
     from src.app.workline.models.workline import WorkLineRunMode
-    from src.app.workline.services.operation_service import WorklineOperationService
 
     outbox = SimpleNamespace(
         id=34,
@@ -398,7 +400,7 @@ async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
     helper_spy = MagicMock()
     with (
         patch(
-            "src.app.workline.services.runtime_reconciliation_service."
+            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl."
             "workline_runtime_reconciliation_service.activate_execution_deadline_after_ack",
             new=AsyncMock(return_value=session),
         ),
@@ -423,9 +425,9 @@ async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
 async def test_sandbox_result_path_defers_command_status_changed_event() -> None:
     """sandbox result 路径必须经由 helper defer command.status.changed。"""
 
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
     from src.app.workline.models.session import SessionStatus
     from src.app.workline.models.workline import WorkLineRunMode
-    from src.app.workline.services.operation_service import WorklineOperationService
 
     device = SimpleNamespace(id=7, device_code="ARM01")
     command = SimpleNamespace(
@@ -548,7 +550,9 @@ def _build_ack_exhausted_fixtures(
 
 
 def _build_reconciliation_service(*, session: Any, workline: Any) -> Any:
-    from src.app.workline.services.runtime_reconciliation_service import WorklineRuntimeReconciliationService
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        WorklineRuntimeReconciliationService,
+    )
 
     session_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=session))
     workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
@@ -582,11 +586,11 @@ async def test_ack_exhausted_pending_branch_defers_command_status_changed_event(
     helper_spy = MagicMock()
     with (
         patch(
-            "src.app.workline.services.runtime_reconciliation_service.add_timeline_with_sequence",
+            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
             new=AsyncMock(),
         ),
         patch(
-            "src.app.workline.services.runtime_reconciliation_service.workline_diagnostic_service.record_event",
+            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_diagnostic_service.record_event",
             new=AsyncMock(),
         ),
         patch(_HELPER_PATCH_TARGET, new=helper_spy),
@@ -625,11 +629,11 @@ async def test_ack_exhausted_main_branch_defers_command_status_changed_event() -
     helper_spy = MagicMock()
     with (
         patch(
-            "src.app.workline.services.runtime_reconciliation_service.add_timeline_with_sequence",
+            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
             new=AsyncMock(),
         ),
         patch(
-            "src.app.workline.services.runtime_reconciliation_service.workline_diagnostic_service.record_event",
+            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_diagnostic_service.record_event",
             new=AsyncMock(),
         ),
         patch(_HELPER_PATCH_TARGET, new=helper_spy),
@@ -659,9 +663,11 @@ async def test_dispatch_failed_path_delegates_and_defers_command_status_changed_
     handle_dispatch_ack_exhausted；端到端必须经由 helper defer。"""
 
     from src.app.device.models.command import CommandStatus
+    from src.app.runtime.orchestration.services.device_command_gateway import (
+        _mark_device_command_failed_if_dispatch_exhausted,
+    )
     from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
     from src.app.workline.models.session import SessionStatus
-    from src.app.workline.services.device_command_gateway import _mark_device_command_failed_if_dispatch_exhausted
 
     command, _, session, workline = _build_ack_exhausted_fixtures(
         session_status=SessionStatus.WAITING_DEVICE_RESULT,
@@ -708,15 +714,15 @@ async def test_dispatch_failed_path_delegates_and_defers_command_status_changed_
             _GatewayCommandRepo,
         ),
         patch(
-            "src.app.workline.services.runtime_reconciliation_service.workline_runtime_reconciliation_service",
+            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_runtime_reconciliation_service",
             reconciliation_service,
         ),
         patch(
-            "src.app.workline.services.runtime_reconciliation_service.add_timeline_with_sequence",
+            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
             new=AsyncMock(),
         ),
         patch(
-            "src.app.workline.services.runtime_reconciliation_service.workline_diagnostic_service.record_event",
+            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_diagnostic_service.record_event",
             new=AsyncMock(),
         ),
         patch(_HELPER_PATCH_TARGET, new=helper_spy),

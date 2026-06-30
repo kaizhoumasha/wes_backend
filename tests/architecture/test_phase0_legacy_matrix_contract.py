@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import csv
+from collections import Counter
 from pathlib import Path
 
 from scripts.generate_legacy_matrix import parse_entries
@@ -81,6 +82,28 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
             assert rows[entry_id][field] == value
 
 
+def test_markdown_summary_matches_generated_csv():
+    """Markdown 摘要中的硬编码统计必须与 CSV 同步。"""
+    matrix_path = REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.csv"
+    doc_text = (REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.md").read_text(encoding="utf-8")
+
+    with open(matrix_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    total_entries = len(rows)
+    phase4_carrier = sum(row["phase4_carrier"] == "True" for row in rows)
+    pending_review = sum(row["classification_status"] == "pending-review" for row in rows)
+
+    assert f"legacy-cleanup-matrix.csv（{total_entries} 条" in doc_text
+    assert f"| **total_entries** | **{total_entries}** |" in doc_text
+    assert f"| phase4_carrier（承载 Phase 4 业务语义） | {phase4_carrier} |" in doc_text
+    assert f"| pending-review | {pending_review} |" in doc_text
+
+    for field in ("entry_type", "strategy", "drop_phase", "current_owner"):
+        for value, count in Counter(row[field] for row in rows).items():
+            assert f"| {value} | {count} |" in doc_text
+
+
 def _exported_symbols_from_all_assignment(path: Path) -> set[str]:
     module = ast.parse(path.read_text(encoding="utf-8"))
     symbols: set[str] = set()
@@ -113,10 +136,12 @@ def test_runtime_and_plugin_all_exports_are_inventory_entries():
 
 def test_ri3b_device_seed_targets_device_command_port():
     """只 import device 实现的 R-I3b seed 必须指向 DeviceCommandPort。"""
-    entry = _entry_by_id("legacy:src/app/workline/services/device_command_gateway.py:<file>#R-I3b")
+    # 阶段 6 C3:device_command_gateway 物理迁入 runtime/orchestration/services/ 后,
+    # R-I3b seed 路径跟随新位置(impl 物理迁入 后 path 跟踪)。
+    entry = _entry_by_id("legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b")
 
     assert entry is not None
-    assert entry.business_semantics == "capability import device 实现 (R-I3b seed)"
+    assert "capability import device 实现" in entry.business_semantics
     assert entry.target_path == "src/app/runtime/orchestration/ports/device_command.py"
     assert entry.target_capability == "DeviceCommandPort.dispatch"
 

@@ -13,11 +13,11 @@ from src.app.handling.repositories.bin_transit_membership_repository import (
     BinTransitMembershipRepository,
     bin_transit_membership_repository,
 )
-from src.app.workline.models.object_transition_event import ObjectTransitionDomain
-from src.app.workline.services.object_transition_event_service import (
+from src.app.runtime.orchestration.services.inbox.object_transition_event_service import (
     ObjectTransitionEventService,
     object_transition_event_service,
 )
+from src.app.workline.models.object_transition_event import ObjectTransitionDomain
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 

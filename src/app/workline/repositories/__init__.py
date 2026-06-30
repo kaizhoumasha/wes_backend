@@ -17,11 +17,6 @@ from .object_transition_event_repository import (
 from .rack_position_repository import WorklineRackPositionRepository, workline_rack_position_repository
 from .runtime_hold_repository import RuntimeHoldRepository, runtime_hold_repository
 from .safety_incident_repository import WorklineSafetyIncidentRepository, workline_safety_incident_repository
-from .sandbox_cleanup_repository import (
-    SandboxCleanupRepository,
-    SandboxCleanupSelection,
-    sandbox_cleanup_repository,
-)
 from .session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
@@ -34,8 +29,6 @@ __all__ = [
     "ObjectTransitionEventRepository",
     "RackTaskRepository",
     "RuntimeHoldRepository",
-    "SandboxCleanupRepository",
-    "SandboxCleanupSelection",
     "SmtInboundHandoffRepository",
     "WorkLineRepository",
     "WorklineBinCellReservationRepository",
@@ -50,7 +43,6 @@ __all__ = [
     "object_transition_event_repository",
     "rack_task_repository",
     "runtime_hold_repository",
-    "sandbox_cleanup_repository",
     "smt_inbound_handoff_repository",
     "workline_bin_cell_reservation_repository",
     "workline_diagnostic_repository",

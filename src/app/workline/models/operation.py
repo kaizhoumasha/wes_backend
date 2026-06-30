@@ -27,44 +27,6 @@ class SandboxWorklineStartRequest(BaseModel):
     trace_id: str | None = Field(default=None, max_length=200, description="Trace ID（可选，自动生成）")
 
 
-class SandboxCleanupRequest(BaseModel):
-    """沙箱工作线清理请求。"""
-
-    dry_run: bool = Field(default=True, description="true 仅返回影响范围；false 执行清理")
-    confirmation: str | None = Field(default=None, max_length=200, description="执行清理时必须等于工作线编码")
-
-
-class SandboxCleanupResponse(BaseModel):
-    """沙箱工作线清理响应。"""
-
-    workline_id: int = Field(description="工作线 ID")
-    dry_run: bool = Field(description="是否仅预览影响范围")
-    deleted: bool = Field(description="是否已执行删除")
-    counts: dict[str, int] = Field(default_factory=dict, description="影响数据计数")
-    affected_session_ids: list[int] = Field(default_factory=list, description="受影响 Session ID")
-    message: str = Field(description="清理结果消息")
-
-
-class DebugDataCleanupRequest(BaseModel):
-    """非生产调试过程数据清理请求。"""
-
-    dry_run: bool = Field(default=True, description="true 仅返回影响范围；false 执行清理")
-    confirmation: str | None = Field(default=None, max_length=200, description="执行清理时的确认文本")
-
-
-class DebugDataCleanupResponse(BaseModel):
-    """非生产调试过程数据清理响应。"""
-
-    scope: str = Field(pattern="^(WORKLINE|ALL)$", description="清理范围")
-    workline_id: int | None = Field(default=None, description="按工作线清理时的工作线 ID")
-    dry_run: bool = Field(description="是否仅预览影响范围")
-    deleted: bool = Field(description="是否已执行删除")
-    counts: dict[str, int] = Field(default_factory=dict, description="影响数据计数")
-    affected_workline_ids: list[int] = Field(default_factory=list, description="受影响工作线 ID")
-    affected_session_ids: list[int] = Field(default_factory=list, description="受影响 Session ID")
-    message: str = Field(description="清理结果消息")
-
-
 class SandboxAckRequest(BaseModel):
     """沙箱 Command ACK 模拟请求。"""
 
@@ -152,14 +114,10 @@ class SandboxTemplatesResponse(BaseModel):
 
 
 __all__ = [
-    "DebugDataCleanupRequest",
-    "DebugDataCleanupResponse",
     "ManualOperationRequest",
     "ReplayInboxRequest",
     "ResolveRuntimeReconciliationRequest",
     "SandboxAckRequest",
-    "SandboxCleanupRequest",
-    "SandboxCleanupResponse",
     "SandboxEventRequest",
     "SandboxEventTemplate",
     "SandboxExternalCallbackRequest",

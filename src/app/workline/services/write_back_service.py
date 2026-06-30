@@ -5,12 +5,12 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
-from src.app.workline.constants import DEFAULT_COMMAND_PRIORITY, DEFAULT_COMMAND_TIMEOUT_MS, EXTERNAL_HTTP_DECISION_TYPE
-from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
-from src.app.workline.services.device_command_gateway import (
+from src.app.runtime.orchestration.services.device_command_gateway import (
     _DeviceCommandGovernanceError,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
     _enforce_device_command_governance,  # noqa: F401 - RuntimeIntentEffectApplier accesses via module alias
 )
+from src.app.workline.constants import DEFAULT_COMMAND_PRIORITY, DEFAULT_COMMAND_TIMEOUT_MS, EXTERNAL_HTTP_DECISION_TYPE
+from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import payload_dict
 from src.utils.timezone import timezone
@@ -174,7 +174,7 @@ def _build_outbox_payload(command: Any, *, device_code: str | None = None) -> di
 
 
 async def _add_timeline(db: Any, timeline: Any, *, seq_no: int | None = None) -> int:
-    from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
+    from src.app.runtime.orchestration.services.trace.timeline_sequence_service import add_timeline_with_sequence
 
     return await add_timeline_with_sequence(db, timeline, seq_no=seq_no)
 
@@ -599,11 +599,14 @@ async def _emit_completion_timeline(ctx: EffectApplyContext) -> None:
 
 
 async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
+    from src.app.runtime.capabilities.phase4.ng_return_item_service import (
+        NgMaterialConflictError,
+        ng_return_item_service,
+    )
+    from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import runtime_hold_creation_service
     from src.app.workline.models.session import SessionStatus
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
     from src.app.workline.repositories.session_repository import WorklineSessionRepository
-    from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, ng_return_item_service
-    from src.app.workline.services.runtime_hold_creation_service import runtime_hold_creation_service
     from src.utils.value_normalization import resolve_required_pk
 
     if not getattr(ctx["orch_result"], "complete", False):

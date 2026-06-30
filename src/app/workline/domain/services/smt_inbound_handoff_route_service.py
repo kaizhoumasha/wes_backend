@@ -190,7 +190,7 @@ class SmtInboundHandoffRouteService:
 
     def _station_lease_service(self) -> object:
         if self.station_lease_service is None:
-            from src.app.workline.services.station_lease_service import workline_station_lease_service
+            from src.app.runtime.capabilities.phase4.station_lease_service import workline_station_lease_service
 
             self.station_lease_service = workline_station_lease_service
         return self.station_lease_service
@@ -390,7 +390,7 @@ async def _real_ecs_status_probe(db: AsyncSession, *, workline: object, route: o
         return _ProbeResult(available=False, reason_code="WORKLINE_ID_MISSING")
 
     from src.app.device.repositories.device_repository import device_repository
-    from src.app.workline.services.device_command_gateway import _ensure_realtime_device_status_ready
+    from src.app.runtime.orchestration.services.device_command_gateway import _ensure_realtime_device_status_ready
 
     try:
         devices = await device_repository.get_by_work_line_id(db, workline_id)

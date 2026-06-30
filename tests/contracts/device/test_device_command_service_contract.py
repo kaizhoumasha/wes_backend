@@ -184,7 +184,9 @@ async def test_error_detail_dict_is_kept_as_json_object(monkeypatch: pytest.Monk
     service = DeviceCommandService()
     service.repo = repo  # type: ignore[assignment]
     service._invalidate_command_cache = AsyncMock()  # type: ignore[method-assign]
-    from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        workline_runtime_reconciliation_service,
+    )
 
     record_late_callback = AsyncMock(return_value=False)
     monkeypatch.setattr(
@@ -252,7 +254,9 @@ async def test_send_command_body_contains_top_level_device_code_and_uses_device_
         callback_path="/api/v1/device/command",
     )
     monkeypatch.setattr(device_repository_module.device_repository, "get_by_id", AsyncMock(return_value=device))
-    from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        workline_runtime_reconciliation_service,
+    )
 
     monkeypatch.setattr(
         workline_runtime_reconciliation_service,

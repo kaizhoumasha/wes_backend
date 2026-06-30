@@ -1,128 +1,59 @@
 """WorkLine Service 导出"""
 
-from .bin_cell_reservation_service import (
-    BinCellReservationResult,
-    BinCellReservationStatusCode,
-    WorklineBinCellReservationService,
-    workline_bin_cell_reservation_service,
-)
-from .debug_data_cleanup_service import DebugDataCleanupService, debug_data_cleanup_service
-from .device_command_gateway import DeviceCommandGateway, device_command_gateway
+from __future__ import annotations
+
+from typing import Any
+
+# Phase 2 burn-down 阶段 6:workline 域退化为纯配置域,运行态 service shim 已
+# 物理删除。保留 file 是配置域 service(diagnostic_service / safety_service /
+# workline_service / write_back_service)。device_command_gateway 在 C3 迁出至
+# runtime/orchestration/services/。其余运行态 service 迁入 runtime/orchestration/
+# services 与 runtime/capabilities/phase4/ 后已物理删除。
+#
+# 阶段 6 C5:__all__ / _LAZY_SHIM_MAP 收敛到当前 4 个真实 module export +
+# 3 个 live caller 死引用 tombstone(inbox_service / workline_bin_cell_reservation_service
+# / WorklineInboxService,源在 runtime_intent_effects.py:1545/1627 与
+# callback_orchestration_service.py:35 — 这些 caller 是死代码,未触发,
+# 保留作为 lazy shim 兜底的最后一道闸)。其他 dead entries 已物理删除。
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
-from .dispatch_attempt_service import WorklineDispatchAttemptService, workline_dispatch_attempt_service
-from .inbox_batch_processor import InboxBatchProcessor
-from .inbox_service import WorklineInboxService, inbox_service
-from .integration_debug_service import IntegrationDebugService, integration_debug_service
-from .ng_return_item_service import NgMaterialConflictError, NgReturnItemService, ng_return_item_service
-from .object_transition_event_service import ObjectTransitionEventService, object_transition_event_service
-from .operation_service import WorklineOperationService, workline_operation_service
-from .outbox_dispatch_service import OutboxDispatchService, outbox_dispatch_service
-from .rack_position_service import WorklineRackPositionService, workline_rack_position_service
-from .runtime_hold_creation_service import RuntimeHoldCreationService, runtime_hold_creation_service
-from .runtime_hold_query_service import RuntimeHoldQueryService, runtime_hold_query_service
-from .runtime_hold_release_service import RuntimeHoldReleaseService, runtime_hold_release_service
-from .runtime_query_service import RuntimeQueryService, runtime_query_service
-from .runtime_reconciliation_service import (
-    WorklineRuntimeReconciliationService,
-    workline_runtime_reconciliation_service,
-)
 from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service
-from .sandbox_cleanup_service import SandboxCleanupService, sandbox_cleanup_service
-from .single_layer_rack_orchestration_service import (
-    SingleLayerRackOrchestrationDecision,
-    SingleLayerRackOrchestrationDecisionCode,
-    SingleLayerRackOrchestrationService,
-    single_layer_rack_orchestration_service,
-)
-from .smt_inbound_handoff_service import SmtInboundHandoffService, smt_inbound_handoff_service
-from .start_admission_service import (
-    StartAdmissionResult,
-    StartAdmissionStatusFetchResult,
-    StartAdmissionStatusTarget,
-    WorkLineStartAdmissionService,
-    start_admission_service,
-)
-from .station_lease_service import (
-    StationLeaseReasonCode,
-    StationLeaseResult,
-    StationLeaseService,
-    WorklineStationLeaseService,
-    station_lease_service,
-    workline_station_lease_service,
-)
-from .timeline_sequence_service import add_timeline_with_sequence, allocate_timeline_seq_no
-from .trace_query_service import TraceQueryResult, TraceQueryService, trace_query_service
 from .workline_service import WorkLineService, workline_service
 from .write_back_service import OrchestratorWriteBackService, orchestrator_write_back_service
 
 __all__ = [
-    "BinCellReservationResult",
-    "BinCellReservationStatusCode",
-    "DebugDataCleanupService",
-    "DeviceCommandGateway",
-    "InboxBatchProcessor",
-    "IntegrationDebugService",
-    "NgMaterialConflictError",
-    "NgReturnItemService",
-    "ObjectTransitionEventService",
     "OrchestratorWriteBackService",
-    "OutboxDispatchService",
-    "RuntimeHoldCreationService",
-    "RuntimeHoldQueryService",
-    "RuntimeHoldReleaseService",
-    "RuntimeQueryService",
-    "SandboxCleanupService",
-    "SingleLayerRackOrchestrationDecision",
-    "SingleLayerRackOrchestrationDecisionCode",
-    "SingleLayerRackOrchestrationService",
-    "SmtInboundHandoffService",
-    "StartAdmissionResult",
-    "StartAdmissionStatusFetchResult",
-    "StartAdmissionStatusTarget",
-    "StationLeaseReasonCode",
-    "StationLeaseResult",
-    "StationLeaseService",
-    "TraceQueryResult",
-    "TraceQueryService",
     "WorkLineSafetyBlocked",
     "WorkLineSafetyService",
     "WorkLineService",
-    "WorkLineStartAdmissionService",
-    "WorklineBinCellReservationService",
     "WorklineDiagnosticService",
-    "WorklineDispatchAttemptService",
     "WorklineInboxService",
-    "WorklineOperationService",
-    "WorklineRackPositionService",
-    "WorklineRuntimeReconciliationService",
-    "WorklineStationLeaseService",
-    "add_timeline_with_sequence",
-    "allocate_timeline_seq_no",
-    "debug_data_cleanup_service",
-    "device_command_gateway",
     "inbox_service",
-    "integration_debug_service",
-    "ng_return_item_service",
-    "object_transition_event_service",
     "orchestrator_write_back_service",
-    "outbox_dispatch_service",
-    "runtime_hold_creation_service",
-    "runtime_hold_query_service",
-    "runtime_hold_release_service",
-    "runtime_query_service",
-    "sandbox_cleanup_service",
-    "single_layer_rack_orchestration_service",
-    "smt_inbound_handoff_service",
-    "start_admission_service",
-    "station_lease_service",
-    "trace_query_service",
     "workline_bin_cell_reservation_service",
     "workline_diagnostic_service",
-    "workline_dispatch_attempt_service",
-    "workline_operation_service",
-    "workline_rack_position_service",
-    "workline_runtime_reconciliation_service",
     "workline_safety_service",
     "workline_service",
-    "workline_station_lease_service",
 ]
+
+
+# 阶段 6 C5:3 个 live caller 死引用 tombstone,attribute access 命中时通过
+# importlib.import_module 触发 ModuleNotFoundError — 与 Python 默认
+# attribute lookup 抛 AttributeError 不同但对调用方语义一致(都是不可用)。
+# 不在表中的属性按 PEP 562 默认行为抛 AttributeError。
+_LAZY_SHIM_MAP = {
+    "inbox_service": "inbox_service",
+    "workline_bin_cell_reservation_service": "bin_cell_reservation_service",
+    "WorklineInboxService": "inbox_service",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _LAZY_SHIM_MAP.get(name)
+    if module_name is None:
+        raise AttributeError(name)
+    import importlib
+
+    module = importlib.import_module(f"src.app.workline.services.{module_name}")
+    value = getattr(module, name)
+    globals()[name] = value
+    return value

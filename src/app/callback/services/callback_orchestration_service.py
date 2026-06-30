@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 from src.app.callback.contracts import TraceContext, timeline_generator
 from src.app.callback.utils import JsonDict, ensure_dict
 from src.app.device.services.device_command_service import DeviceCallbackResultOutcome
+from src.app.runtime.orchestration.services.trace.timeline_sequence_service import add_timeline_with_sequence
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 from src.app.workline.models.inbox import SourceSystem
 from src.app.workline.models.timeline import (
@@ -21,7 +22,6 @@ from src.app.workline.models.timeline import (
     TimelineStage,
     TimelineStatus,
 )
-from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 
 if TYPE_CHECKING:
@@ -336,9 +336,13 @@ class CallbackOrchestrationService:
         )
 
         if is_workline_callback:
-            from src.app.runtime.orchestration.services import runtime_reconciliation_facade
+            # Phase 2 burn-down 阶段 5:RuntimeReconciliationFacade 物理删除。
+            # callback 域直接走 workline shim 路径(impl sys.modules alias,行为等价)。
+            from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+                workline_runtime_reconciliation_service,
+            )
 
-            if await runtime_reconciliation_facade.record_late_callback_if_pending(
+            if await workline_runtime_reconciliation_service.record_late_callback_if_pending(
                 db,
                 command=cast("Any", existing_command),
                 callback_payload=callback.model_dump(mode="json"),

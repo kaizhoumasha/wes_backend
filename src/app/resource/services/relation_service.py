@@ -28,7 +28,7 @@ from src.app.resource.repositories import (
     rack_placement_repository,
     resource_state_event_repository,
 )
-from src.app.workline.services.runtime_hold_creation_service import (
+from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
     runtime_hold_creation_service as default_runtime_hold_creation_service,
 )
 from src.utils.timezone import timezone

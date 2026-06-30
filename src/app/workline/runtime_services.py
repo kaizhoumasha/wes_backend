@@ -176,7 +176,7 @@ def build_workline_runtime_services(
     if db is not None and workline is not None:
         from src.app.rack.services import rack_operation_service
         from src.app.resource.services.active_rack_snapshot_service import smt_active_rack_snapshot_service
-        from src.app.workline.services.station_lease_service import station_lease_service
+        from src.app.runtime.capabilities.phase4.station_lease_service import station_lease_service
 
         active_rack_snapshot_provider = smt_active_rack_snapshot_service.bind(db=db, workline=workline)
         rack_operation_status_provider = BoundRackOperationStatusProvider(
