@@ -40,9 +40,20 @@ class ClaimResult(str, Enum):
 
 
 class IdempotencyConflict(Exception):
-    """同 key 不同 hash, 必须中止 dispatch (主计划 §5.4)。"""
+    """同 key 不同 hash, 必须中止 dispatch 并产生安全审计事件。"""
 
-    def __init__(self, *, provider_code: str, operation_kind: str, idempotency_key: str) -> None:
+    status_code = 409
+
+    def __init__(
+        self,
+        *,
+        provider_code: str,
+        operation_kind: str,
+        idempotency_key: str,
+        existing_request_hash: str | None = None,
+        incoming_request_hash: str | None = None,
+        correlation_id: str | None = None,
+    ) -> None:
         super().__init__(
             f"idempotency conflict: provider={provider_code} op={operation_kind} key={idempotency_key} "
             "(same key, different request_hash; 中止 dispatch 防止双发)"
@@ -50,6 +61,22 @@ class IdempotencyConflict(Exception):
         self.provider_code = provider_code
         self.operation_kind = operation_kind
         self.idempotency_key = idempotency_key
+        self.existing_request_hash = existing_request_hash
+        self.incoming_request_hash = incoming_request_hash
+        self.correlation_id = correlation_id
+
+    def to_audit_event(self) -> dict[str, str | None]:
+        """转换为稳定安全审计 payload。"""
+
+        return {
+            "event_type": "IDEMPOTENCY_CONFLICT",
+            "provider_code": self.provider_code,
+            "operation_kind": self.operation_kind,
+            "idempotency_key": self.idempotency_key,
+            "existing_request_hash": self.existing_request_hash,
+            "incoming_request_hash": self.incoming_request_hash,
+            "correlation_id": self.correlation_id,
+        }
 
 
 def is_wes_internal_key(idempotency_key: str) -> bool:
@@ -80,6 +107,9 @@ def _match_existing_or_raise(
             provider_code=provider_code,
             operation_kind=operation_kind,
             idempotency_key=idempotency_key,
+            existing_request_hash=row.request_hash,
+            incoming_request_hash=request_hash,
+            correlation_id=row.execution_correlation_id,
         )
     return ClaimResult.MATCH
 
