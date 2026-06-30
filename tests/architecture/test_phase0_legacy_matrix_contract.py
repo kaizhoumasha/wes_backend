@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import csv
+from collections import Counter
 from pathlib import Path
 
 from scripts.generate_legacy_matrix import parse_entries
@@ -79,6 +80,28 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
     for entry_id, fields in expected.items():
         for field, value in fields.items():
             assert rows[entry_id][field] == value
+
+
+def test_markdown_summary_matches_generated_csv():
+    """Markdown 摘要中的硬编码统计必须与 CSV 同步。"""
+    matrix_path = REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.csv"
+    doc_text = (REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.md").read_text(encoding="utf-8")
+
+    with open(matrix_path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+
+    total_entries = len(rows)
+    phase4_carrier = sum(row["phase4_carrier"] == "True" for row in rows)
+    pending_review = sum(row["classification_status"] == "pending-review" for row in rows)
+
+    assert f"legacy-cleanup-matrix.csv（{total_entries} 条" in doc_text
+    assert f"| **total_entries** | **{total_entries}** |" in doc_text
+    assert f"| phase4_carrier（承载 Phase 4 业务语义） | {phase4_carrier} |" in doc_text
+    assert f"| pending-review | {pending_review} |" in doc_text
+
+    for field in ("entry_type", "strategy", "drop_phase", "current_owner"):
+        for value, count in Counter(row[field] for row in rows).items():
+            assert f"| {value} | {count} |" in doc_text
 
 
 def _exported_symbols_from_all_assignment(path: Path) -> set[str]:

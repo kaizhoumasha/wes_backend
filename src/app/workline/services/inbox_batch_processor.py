@@ -15,10 +15,9 @@ import importlib.util
 from typing import Any
 
 _TARGET_FILE = "src/app/runtime/orchestration/services/inbox/inbox_batch_processor.py"
-_SYMBOL = "InboxBatchProcessor"
 
 
-def _load_target() -> Any:
+def _load_target_module() -> Any:
     spec = importlib.util.spec_from_file_location(
         "src.app.runtime.orchestration.services.inbox.inbox_batch_processor_shim",
         _TARGET_FILE,
@@ -27,10 +26,19 @@ def _load_target() -> Any:
         raise ImportError(f"cannot load spec for {_TARGET_FILE}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return getattr(module, _SYMBOL)
+    return module
 
 
-InboxBatchProcessor = _load_target()
+_target_module = _load_target_module()
 
+InboxBatchProcessor = _target_module.InboxBatchProcessor
+process_inbox_payload = _target_module.process_inbox_payload
+build_workline_runtime_session_updated_event_payload = (
+    _target_module.build_workline_runtime_session_updated_event_payload
+)
 
-__all__ = ["InboxBatchProcessor"]
+__all__ = [
+    "InboxBatchProcessor",
+    "build_workline_runtime_session_updated_event_payload",
+    "process_inbox_payload",
+]

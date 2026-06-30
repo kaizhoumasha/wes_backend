@@ -5,8 +5,9 @@ Phase 2 burn-down 阶段 4 (PR):workline/services/ 保留此 shim 供 v1 API 旧
 """
 
 from src.app.runtime.orchestration.services.inbox.inbox_service import (
+    DuplicateInboxError,
     WorklineInboxService,
     inbox_service,
 )
 
-__all__ = ["WorklineInboxService", "inbox_service"]
+__all__ = ["DuplicateInboxError", "WorklineInboxService", "inbox_service"]

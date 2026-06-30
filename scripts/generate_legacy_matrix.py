@@ -18,6 +18,10 @@ import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -29,6 +33,80 @@ SCAN_DIRS = {
     "tests/workline_runtime": "workline_runtime",
     "tests/workline_plugins": "workline_plugins",
     "docs/templates/workline_plugin": "workline_runtime",
+}
+
+# Phase 2 burn-down 会把 workline/services 的实现物理迁入 runtime/orchestration
+# 或 runtime/capabilities，但 legacy cleanup matrix 仍需按旧入口追踪清理策略。
+MIGRATED_SERVICE_IMPLS = {
+    "src/app/workline/services/bin_cell_reservation_service.py": (
+        "src/app/runtime/capabilities/phase4/bin_cell_reservation_service.py"
+    ),
+    "src/app/workline/services/dispatch_attempt_service.py": (
+        "src/app/runtime/orchestration/services/inbox/dispatch_attempt_service.py"
+    ),
+    "src/app/workline/services/inbox_batch_processor.py": (
+        "src/app/runtime/orchestration/services/inbox/inbox_batch_processor.py"
+    ),
+    "src/app/workline/services/inbox_service.py": "src/app/runtime/orchestration/services/inbox/inbox_service.py",
+    "src/app/workline/services/ng_return_item_service.py": (
+        "src/app/runtime/capabilities/phase4/ng_return_item_service.py"
+    ),
+    "src/app/workline/services/object_transition_event_service.py": (
+        "src/app/runtime/orchestration/services/inbox/object_transition_event_service.py"
+    ),
+    "src/app/workline/services/operation_service.py": "src/app/runtime/orchestration/services/intent/operation_service.py",
+    "src/app/workline/services/outbox_dispatch_service.py": (
+        "src/app/runtime/orchestration/services/inbox/outbox_dispatch_service.py"
+    ),
+    "src/app/workline/services/runtime_hold_creation_service.py": (
+        "src/app/runtime/orchestration/services/hold/runtime_hold_creation_service.py"
+    ),
+    "src/app/workline/services/runtime_hold_query_service.py": (
+        "src/app/runtime/orchestration/services/hold/runtime_hold_query_service.py"
+    ),
+    "src/app/workline/services/runtime_hold_release_service.py": (
+        "src/app/runtime/orchestration/services/hold/runtime_hold_release_service.py"
+    ),
+    "src/app/workline/services/runtime_query_service.py": (
+        "src/app/runtime/orchestration/services/query/runtime_query_service.py"
+    ),
+    "src/app/workline/services/runtime_reconciliation_service.py": (
+        "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py"
+    ),
+    "src/app/workline/services/single_layer_rack_orchestration_service.py": (
+        "src/app/runtime/capabilities/phase4/single_layer_rack_orchestration_service.py"
+    ),
+    "src/app/workline/services/smt_inbound_handoff_service.py": (
+        "src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py"
+    ),
+    "src/app/workline/services/start_admission_service.py": (
+        "src/app/runtime/capabilities/phase4/start_admission_service.py"
+    ),
+    "src/app/workline/services/station_lease_service.py": (
+        "src/app/runtime/capabilities/phase4/station_lease_service.py"
+    ),
+    "src/app/workline/services/timeline_sequence_service.py": (
+        "src/app/runtime/orchestration/services/trace/timeline_sequence_service.py"
+    ),
+    "src/app/workline/services/trace_query_service.py": (
+        "src/app/runtime/orchestration/services/trace/trace_query_service.py"
+    ),
+    "src/app/workline/services/trace_resource_view_builder.py": (
+        "src/app/runtime/orchestration/services/trace/trace_resource_view_builder.py"
+    ),
+    "src/app/workline/services/trace_response_builder.py": (
+        "src/app/runtime/orchestration/services/trace/trace_response_builder.py"
+    ),
+}
+MIGRATED_IMPL_TO_LEGACY = {impl: legacy for legacy, impl in MIGRATED_SERVICE_IMPLS.items()}
+
+SHIM_INTERNAL_SYMBOLS = {
+    ("src/app/workline/services/__init__.py", "__getattr__"),
+    ("src/app/workline/services/inbox_batch_processor.py", "_load_target_module"),
+}
+
+GUARDRAIL_SEED_SYMBOLS = {
+    "src/workline_runtime/services.py": "build_workline_runtime_services",
 }
 
 # 业务语义关键词 → business_semantics + phase4 标记
@@ -302,11 +380,16 @@ def _ri3b_business_semantics(line: str) -> str:
 
 def _append_ri3b_seed_paths(seed_paths: list[SeedPath]) -> None:
     ri3b_pattern = r"from src\.app\.(wms_integration|device)\.(services|models)\..* import"
-    for line in git_grep(ri3b_pattern, ["src/app/workline/services", "src/app/workline/repositories"]):
+    scan_paths = [
+        "src/app/workline/services",
+        "src/app/workline/repositories",
+        *MIGRATED_SERVICE_IMPLS.values(),
+    ]
+    for line in git_grep(ri3b_pattern, scan_paths):
         m = re.match(r"([^:]+):(\d+):", line)
         if not m:
             continue
-        path = m.group(1)
+        path = MIGRATED_IMPL_TO_LEGACY.get(m.group(1), m.group(1))
         etype = "repository" if "/repositories/" in path else "service"
         seed_paths.append(
             (
@@ -340,12 +423,28 @@ def _exported_symbols_from_all(path: Path) -> list[str]:
     return symbols
 
 
+def _defined_symbols_from_python(path: Path) -> list[str]:
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return []
+
+    return [
+        node.name for node in module.body if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+    ]
+
+
+def _add_migrated_service_entries(add: Callable[[str, str, str, str], None]) -> None:
+    for legacy_path, impl_path in MIGRATED_SERVICE_IMPLS.items():
+        for symbol in _defined_symbols_from_python(REPO_ROOT / impl_path):
+            add(legacy_path, symbol, "service", "workline")
+
+
 def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths: list[SeedPath]) -> None:
     for path, owner, etype, bs, phase, risk in seed_paths:
-        full = REPO_ROOT / path
-        if not full.exists():
-            continue
-        sym = "<file>#R-I3b" if "R-I3b seed" in bs else "<file>"
+        sym = GUARDRAIL_SEED_SYMBOLS.get(path)
+        if sym is None:
+            sym = "<file>#R-I3b" if "R-I3b seed" in bs else "<file>"
         eid = f"legacy:{path}:{sym}"
         if eid in seen:
             continue
@@ -381,7 +480,7 @@ def parse_entries() -> list[Entry]:
         rel = str(Path(path).relative_to(REPO_ROOT)) if Path(path).is_absolute() else path
         sym = symbol or "<file>"
         eid = f"legacy:{rel}:{sym}"
-        if eid in seen:
+        if eid in seen or (rel, sym) in SHIM_INTERNAL_SYMBOLS:
             return
         seen.add(eid)
         bs, p4 = classify_business_semantics(sym, rel)
@@ -426,6 +525,9 @@ def parse_entries() -> list[Entry]:
         m = re.match(r"([^:]+):(\d+):(?:class |def |async def )([A-Za-z_][A-Za-z0-9_]*)", line)
         if m:
             add(m.group(1), m.group(3), "service", "workline")
+
+    # 3b. 已迁入 runtime/capabilities 的 service 仍按旧 workline/services 入口记账。
+    _add_migrated_service_entries(add)
 
     # 4. Repositories
     for line in git_grep(r"^class [A-Za-z_]", ["src/app/workline/repositories"]):
@@ -502,6 +604,14 @@ def parse_entries() -> list[Entry]:
             "跨域 WMS import (C1 seed)",
             "phase2",
             "MEDIUM",
+        ),
+        (
+            "src/workline_runtime/services.py",
+            "workline_runtime",
+            "runtime_helper",
+            "跨域 WMS import (C1 seed)",
+            "phase5-tech",
+            "LOW",
         ),
         # C2: 跨域 session FK
         (
@@ -628,6 +738,14 @@ def parse_entries() -> list[Entry]:
             "MEDIUM",
         ),
         (
+            "src/app/runtime/orchestration/services/inbox/object_transition_event_service.py",
+            "runtime",
+            "service",
+            "跨域 session FK (C2 seed — impl 物理迁入 inbox/ 后 path 跟踪)",
+            "phase2",
+            "MEDIUM",
+        ),
+        (
             "src/app/workline/services/runtime_reconciliation_service.py",
             "workline",
             "service",
@@ -635,9 +753,61 @@ def parse_entries() -> list[Entry]:
             "phase2",
             "MEDIUM",
         ),
+        (
+            "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py",
+            "runtime",
+            "service",
+            "跨域 session FK (C2 seed — impl 物理迁入 reconciliation/ 后 path 跟踪)",
+            "phase2",
+            "MEDIUM",
+        ),
     ]
 
     _append_ri3b_seed_paths(seed_paths)
+    seed_paths.extend(
+        [
+            (
+                "src/app/runtime/orchestration/services/intent/operation_service.py",
+                "runtime",
+                "service",
+                "capability import device 实现 (R-I3b seed — impl 物理迁入 intent/ 后 path 跟踪)",
+                "phase2",
+                "MEDIUM",
+            ),
+            (
+                "src/app/runtime/orchestration/services/hold/runtime_hold_query_service.py",
+                "runtime",
+                "service",
+                "capability import device 实现 (R-I3b seed — impl 物理迁入 hold/ 后 path 跟踪)",
+                "phase2",
+                "MEDIUM",
+            ),
+            (
+                "src/app/runtime/orchestration/services/hold/runtime_hold_release_service.py",
+                "runtime",
+                "service",
+                "capability import device 实现 (R-I3b seed — impl 物理迁入 hold/ 后 path 跟踪)",
+                "phase2",
+                "MEDIUM",
+            ),
+            (
+                "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py",
+                "runtime",
+                "service",
+                "capability import device 实现 (R-I3b seed — impl 物理迁入 reconciliation/ 后 path 跟踪)",
+                "phase2",
+                "MEDIUM",
+            ),
+            (
+                "src/app/runtime/orchestration/services/trace/trace_query_service.py",
+                "runtime",
+                "service",
+                "capability import device 实现 (R-I3b seed — impl 物理迁入 trace/ 后 path 跟踪)",
+                "phase2",
+                "MEDIUM",
+            ),
+        ]
+    )
     _add_guardrail_seed_entries(entries, seen, seed_paths)
 
     return entries
