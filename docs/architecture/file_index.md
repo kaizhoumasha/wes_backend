@@ -359,7 +359,7 @@
 | | `diagnostic_service.py` | WorklineDiagnosticService（**阶段 6 keep-contract**:配置域 5 个 production critical path 之一） | 🔧 架构核心 |
 | | `safety_service.py` | WorkLineSafetyService（配置域 — 阶段 6 保留） | 🔧 架构核心 |
 | | `write_back_service.py` | OrchestratorWriteBackService（**阶段 6 保留**:orchestrator 写回机制 — 直连 `src.app.runtime.orchestration.*`） | 🔧 架构核心 |
-| | `diagnosis_verdict_builder.py` | **阶段 6 keep-contract**:诊断 verdict 构造器（保持 workline 域职责） | 🔧 架构核心 |
+| | `diagnosis_verdict_builder_service.py` | **阶段 6 keep-contract**:诊断 verdict 构造器(保持 workline 域职责;F-3 改名对齐 `_service` 命名约定,原 `diagnosis_verdict_builder.py`) | 🔧 架构核心 |
 | | `rack_position_service.py` | **阶段 6 保留**:rack 位置 service（仍 workline 域职责 — 已迁出运行态） | 🔧 架构核心 |
 | | `station_lease_service.py` | **阶段 6 保留**:station 租约 service（workline 域职责） | 🔧 架构核心 |
 | | `__init__.py` | Service 导出（workline / diagnostic / safety / write_back 等 + lazy `__getattr__` 兼容 shim 名 — `runtime_query_service` / `inbox_service` / `operation_service` 等已删的运行态名字仍可通过 `_LAZY_SHIM_MAP` 触发 `ModuleNotFoundError`,与原模块行为一致） | 🔧 架构核心 |

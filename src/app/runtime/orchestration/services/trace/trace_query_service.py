@@ -78,7 +78,7 @@ if TYPE_CHECKING:
     from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
     from src.app.runtime.orchestration.models.session import WorklineSession
     from src.app.runtime.orchestration.repositories.diagnostic_repository import WorklineDiagnosticRepository
-    from src.app.workline.services.diagnosis_verdict_builder import DiagnosisVerdictBuilder
+    from src.app.workline.services.diagnosis_verdict_builder_service import DiagnosisVerdictBuilder
 
 _SESSION_FAILURE_CODE_MAP: dict[str, ErrorCode] = {
     "DEVICE_TIMEOUT": ErrorCode.DEVICE_TIMEOUT,
@@ -184,7 +184,7 @@ class TraceQueryService(BaseService[Any, Any]):
         workline_repo: WorkLineRepository | None = None,
         verdict_builder: DiagnosisVerdictBuilder | None = None,
     ) -> None:
-        from src.app.workline.services.diagnosis_verdict_builder import diagnosis_verdict_builder
+        from src.app.workline.services.diagnosis_verdict_builder_service import diagnosis_verdict_builder
 
         super().__init__(inbox_repository, enable_cache=False)
         self.callback_log_repo = callback_log_repo or callback_log_repository

@@ -79,7 +79,7 @@ from src.app.runtime.orchestration.services.trace.trace_response_builder import 
 )
 from src.app.sys.models import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import WorkLine
-from src.app.workline.services.diagnosis_verdict_builder import diagnosis_verdict_builder
+from src.app.workline.services.diagnosis_verdict_builder_service import diagnosis_verdict_builder
 from src.app.workline.utils import ensure_dict
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone

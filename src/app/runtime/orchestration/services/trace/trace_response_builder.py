@@ -336,7 +336,7 @@ def _build_resource_evidence(result: Any) -> TraceResourceEvidenceResponse:
 
 
 def build_trace_response(result: Any) -> TraceDetailResponse:
-    from src.app.workline.services.diagnosis_verdict_builder import diagnosis_verdict_builder
+    from src.app.workline.services.diagnosis_verdict_builder_service import diagnosis_verdict_builder
 
     sessions = result.sessions
     dispatch_attempts = result.dispatch_attempts
