@@ -174,7 +174,7 @@ def _build_outbox_payload(command: Any, *, device_code: str | None = None) -> di
 
 
 async def _add_timeline(db: Any, timeline: Any, *, seq_no: int | None = None) -> int:
-    from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
+    from src.app.runtime.orchestration.services.trace.timeline_sequence_service import add_timeline_with_sequence
 
     return await add_timeline_with_sequence(db, timeline, seq_no=seq_no)
 
@@ -603,10 +603,10 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
         NgMaterialConflictError,
         ng_return_item_service,
     )
+    from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import runtime_hold_creation_service
     from src.app.workline.models.session import SessionStatus
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
     from src.app.workline.repositories.session_repository import WorklineSessionRepository
-    from src.app.workline.services.runtime_hold_creation_service import runtime_hold_creation_service
     from src.utils.value_normalization import resolve_required_pk
 
     if not getattr(ctx["orch_result"], "complete", False):

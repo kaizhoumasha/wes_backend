@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
+from src.app.runtime.orchestration.services.inbox.inbox_service import WorklineInboxService, inbox_service
 from src.app.workline.domain.services.smt_inbound_handoff_reason import (
     SMT_INBOUND_HANDOFF_REASON_CATALOG,
     SmtInboundHandoffReasonCatalog,
@@ -42,7 +43,6 @@ from src.app.workline.repositories.smt_inbound_handoff_repository import (
     SmtInboundHandoffRepository,
     smt_inbound_handoff_repository,
 )
-from src.app.workline.services.inbox_service import WorklineInboxService, inbox_service
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 from src.workline_plugins.smt_sorting_inbound.constants import (

@@ -1,47 +1,33 @@
 """WorkLine Service 导出"""
 
-# Phase 2 burn-down 阶段 4 C4a 循环导入防御:
-# runtime_reconciliation_service_impl 在模块顶层 import workline.services
-# .timeline_sequence_service(走 __getattr__ → 加载 trace.timeline_sequence_service),
-# 而 trace.timeline_sequence_service 又依赖 trace.__init__ 提前加载完 trace 子模块。
-# C4a 之前,workline.services 顶层 eager 加载 runtime_query_service.py,顺带把
-# trace 子模块加载完毕,从而打破循环。C4a 把 runtime_query_service 改为 lazy shim
-# 后,这个隐式 priming 失效,导致 runtime → trace → callback → workline.services
-# 链上出现部分模块循环。
-#
-# 防御策略:在 inbox_service / workline_diagnostic_service 等 callback_ingress_service
-# 反向依赖 eager 完成之后(否则 callback_ingress_service 反向 import 会得到
-# partial module),在 runtime_reconciliation_service 之前,通过
-# importlib.import_module 直接加载 query.runtime_query_service 模块,提前完成
-# trace 子模块初始化。注意不能直接
-# `from ... import runtime_query_service` — 那会再把它绑回 workline.services
-# globals,破坏 lazy shim 语义。
-import importlib as _importlib
+# Phase 2 burn-down 阶段 6:workline 域退化为纯配置域,运行态 service shim 已
+# 物理删除。保留 file 是配置域 service(device_command_gateway / diagnostic_service /
+# safety_service / workline_service / write_back_service)。其余 19 个 service
+# (dispatch_attempt / inbox / object_transition_event / operation /
+# outbox_dispatch / rack_position / runtime_reconciliation / runtime_hold_* /
+# runtime_query / smt_inbound_handoff / timeline_sequence / trace_* / phase4
+# capabilities)迁入 runtime/orchestration/services 与 runtime/capabilities/phase4/
+# 后已物理删除,__getattr__ 命中 `_LAZY_SHIM_MAP` 的 entry 会触发
+# ModuleNotFoundError,与原模块行为一致。
 
 from .device_command_gateway import DeviceCommandGateway, device_command_gateway
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
-from .dispatch_attempt_service import WorklineDispatchAttemptService, workline_dispatch_attempt_service
-from .inbox_batch_processor import InboxBatchProcessor
-from .inbox_service import WorklineInboxService, inbox_service
 
-# 见文件顶部 C4a 循环导入防御说明。在 inbox_service 等 callback_ingress_service
-# 反向依赖 eager 完成之后,提前 prime query.runtime_query_service 与
-# intent.smt_inbound_handoff_service,使 trace 子模块提前初始化完成,
-# 避免 runtime_reconciliation_service 触发部分模块循环。
-_importlib.import_module("src.app.runtime.orchestration.services.query.runtime_query_service")
-_importlib.import_module("src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service")
-
-from .object_transition_event_service import ObjectTransitionEventService, object_transition_event_service  # noqa: E402
-from .operation_service import WorklineOperationService, workline_operation_service  # noqa: E402
-from .outbox_dispatch_service import OutboxDispatchService, outbox_dispatch_service  # noqa: E402
-from .rack_position_service import WorklineRackPositionService, workline_rack_position_service  # noqa: E402
-from .runtime_reconciliation_service import (  # noqa: E402
-    WorklineRuntimeReconciliationService,
-    workline_runtime_reconciliation_service,
-)
-from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service  # noqa: E402
-from .workline_service import WorkLineService, workline_service  # noqa: E402
-from .write_back_service import OrchestratorWriteBackService, orchestrator_write_back_service  # noqa: E402
+# 阶段 6:运行态 service shim 已物理删除(`dispatch_attempt_service`、
+# `inbox_batch_processor`、`inbox_service`、`object_transition_event_service`、
+# `operation_service`、`outbox_dispatch_service`、`rack_position_service`、
+# `runtime_reconciliation_service`)。访问这些属性会通过 `_LAZY_SHIM_MAP`
+# 命中并由 __getattr__ 触发 ModuleNotFoundError — 与原模块行为一致。
+# C4a 循环导入防御:
+#   阶段 4 把 `runtime_query_service` / `smt_inbound_handoff_service` 等迁入
+#   runtime/orchestration/services/{query,intent}/,workline 顶层保留的 lazy
+#   shim 用 importlib.import_module 提前 prime trace 子模块,避免 runtime →
+#   trace → callback → workline.services 链上出现部分模块循环。
+#   阶段 6 把 workline 端 shim 物理删除后,该 prime 通道同步关闭 —
+#   runtime/orchestration 域已独立完成 prime,不再依赖 workline 顶层帮助。
+from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service
+from .workline_service import WorkLineService, workline_service
+from .write_back_service import OrchestratorWriteBackService, orchestrator_write_back_service
 
 __all__ = [
     "BinCellReservationResult",
@@ -110,22 +96,18 @@ __all__ = [
 ]
 
 
-# Phase 2 burn-down 阶段 4:hold/* 与 trace/* service 已迁入
-# runtime/orchestration/services/{hold,trace}/。这些 shim 的顶层 import
-# 会触发跨子包循环(workline.domain → resource.services →
-# workline.services → shim → 回到 hold/trace service)。改用 PEP 562
-# module __getattr__ 推迟到首次属性访问时再加载 shim,
-# 避免 __init__.py 加载阶段触发循环。
+# Phase 2 burn-down 阶段 6:workline 域退化为纯配置域。所有运行态 service 已
+# 迁出(`hold/*`、`trace/*`、`intent/smt_inbound_handoff`、`query/runtime_query`
+# 迁入 runtime/orchestration/services/{hold,trace,intent,query}/;5 phase4
+# capability 迁入 runtime/capabilities/phase4/),且 workline 顶层 shim 已
+# 物理删除。
 #
-# C4a 阶段:intent/smt_inbound_handoff_service 与 query/runtime_query_service
-# 也迁入 runtime/orchestration/services/{intent,query}/,继续使用同模式
-# 以保持一致并避免后续 capability 重建阶段对 shim import 顺序产生意外依赖。
-#
-# C4b 阶段:`bin_cell_reservation_service`、`ng_return_item_service`、
-# `single_layer_rack_orchestration_service`、`start_admission_service`、
-# `station_lease_service` 物理迁入 runtime/capabilities/phase4/。
-# 同样 lazy,避免反向回路触发 partial module 循环。
+# 本表只保留已删除模块的 lazy entries,attribute access 命中时通过
+# importlib.import_module 触发 ModuleNotFoundError — 与 Python 默认
+# attribute lookup 抛 AttributeError 不同但对调用方语义一致(都是不可用)。
+# 不在表中的属性仍按 PEP 562 默认行为抛 AttributeError。
 _LAZY_SHIM_MAP = {
+    # 阶段 4 迁出(C4a / C4b):
     "RuntimeHoldCreationService": "runtime_hold_creation_service",
     "runtime_hold_creation_service": "runtime_hold_creation_service",
     "RuntimeHoldQueryService": "runtime_hold_query_service",
@@ -141,7 +123,6 @@ _LAZY_SHIM_MAP = {
     "trace_query_service": "trace_query_service",
     "add_timeline_with_sequence": "timeline_sequence_service",
     "allocate_timeline_seq_no": "timeline_sequence_service",
-    # C4b phase4 capabilities 重建 5 service:
     "WorklineBinCellReservationService": "bin_cell_reservation_service",
     "workline_bin_cell_reservation_service": "bin_cell_reservation_service",
     "BinCellReservationResult": "bin_cell_reservation_service",
@@ -164,6 +145,22 @@ _LAZY_SHIM_MAP = {
     "workline_station_lease_service": "station_lease_service",
     "StationLeaseResult": "station_lease_service",
     "StationLeaseReasonCode": "station_lease_service",
+    # 阶段 6 物理删除(运行时态 service 文件已 git rm):
+    "WorklineDispatchAttemptService": "dispatch_attempt_service",
+    "workline_dispatch_attempt_service": "dispatch_attempt_service",
+    "InboxBatchProcessor": "inbox_batch_processor",
+    "WorklineInboxService": "inbox_service",
+    "inbox_service": "inbox_service",
+    "ObjectTransitionEventService": "object_transition_event_service",
+    "object_transition_event_service": "object_transition_event_service",
+    "WorklineOperationService": "operation_service",
+    "workline_operation_service": "operation_service",
+    "OutboxDispatchService": "outbox_dispatch_service",
+    "outbox_dispatch_service": "outbox_dispatch_service",
+    "WorklineRackPositionService": "rack_position_service",
+    "workline_rack_position_service": "rack_position_service",
+    "WorklineRuntimeReconciliationService": "runtime_reconciliation_service",
+    "workline_runtime_reconciliation_service": "runtime_reconciliation_service",
 }
 
 

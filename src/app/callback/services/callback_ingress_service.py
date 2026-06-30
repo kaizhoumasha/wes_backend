@@ -40,13 +40,11 @@ from src.app.device.models.command import (
 )
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.runtime.capabilities.phase4.start_admission_service import start_admission_service
+from src.app.runtime.orchestration.services.inbox import inbox_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
 from src.app.wms_integration.services import callback_normalizer as _wms_callback_normalizer
-from src.app.workline.services import (
-    inbox_service,
-    workline_diagnostic_service,
-)
+from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 from src.core.client_ip import resolve_client_ip
 from src.core.logger import logger
 from src.core.response import response_builder

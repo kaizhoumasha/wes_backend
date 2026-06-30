@@ -182,7 +182,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         # Phase 2 burn-down 阶段 5:RuntimeReconciliationFacade 物理删除,device 域直接走
         # workline shim 路径(impl 模块在 sys.modules 上替换此 shim,行为等价)。
         # 测试契约 `tests/contracts/device/test_device_command_service_contract.py` 已用同一路径。
-        from src.app.workline.services.runtime_reconciliation_service import (
+        from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
             workline_runtime_reconciliation_service,
         )
 
@@ -396,7 +396,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         updated_command_id = updated_command.id
         if ack_received_at is not None:
             # Phase 2 burn-down 阶段 5:facade 物理删除,见上方同段注释。
-            from src.app.workline.services.runtime_reconciliation_service import (
+            from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
                 workline_runtime_reconciliation_service,
             )
 

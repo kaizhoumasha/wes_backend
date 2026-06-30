@@ -255,11 +255,13 @@ class TimeoutScanner:
                 "errors": 错误数
             }
         """
+        from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
+        from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+            workline_runtime_reconciliation_service,
+        )
         from src.app.workline.repositories.session_repository import (
             WorklineSessionRepository,
         )
-        from src.app.workline.services.inbox_service import inbox_service
-        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
 
         result: ScanResult = {
             "scanned": 0,
@@ -420,7 +422,7 @@ def process_inbox_batch(self: WorklineTask, limit: int = 10) -> ProcessResult:
 
     async def _process() -> ProcessResult:
         async with self.db as db:
-            from src.app.workline.services.inbox_batch_processor import InboxBatchProcessor
+            from src.app.runtime.orchestration.services.inbox.inbox_batch_processor import InboxBatchProcessor
             from src.app.workline.services.write_back_service import orchestrator_write_back_service
 
             processor = InboxBatchProcessor(write_back_service=orchestrator_write_back_service)

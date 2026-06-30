@@ -511,7 +511,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         if original.session_id is not None:
             session = await self.session_repo.get_by_id(db, original.session_id)
             if session is not None:
-                from src.app.workline.services.runtime_reconciliation_service import (
+                from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
                     workline_runtime_reconciliation_service,
                 )
 
@@ -573,7 +573,9 @@ class WorklineOperationService(BaseService[Any, Any]):
             raise ValueError(f"会话不存在: {session_id}")
         if session.status not in _OPEN_SESSION_STATUSES:
             raise ValueError(f"当前会话状态不允许人工操作: session_id={session_id}")
-        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+        from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+            workline_runtime_reconciliation_service,
+        )
 
         workline_runtime_reconciliation_service.assert_not_pending_reconciliation(session)
         _ = await self._lock_active_workline_for_runtime_write(db, session.workline_id)
@@ -851,7 +853,9 @@ class WorklineOperationService(BaseService[Any, Any]):
         command.ack_code = 200
         command.ack_message = "SANDBOX_ACK"
 
-        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+        from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+            workline_runtime_reconciliation_service,
+        )
 
         _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
             db,
@@ -885,8 +889,10 @@ class WorklineOperationService(BaseService[Any, Any]):
     ) -> dict[str, Any]:
         """解除 runtime reconciliation 隔离并释放对应 parked outbox。"""
 
+        from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
+            runtime_hold_release_service,
+        )
         from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
-        from src.app.workline.services.runtime_hold_release_service import runtime_hold_release_service
 
         session = await self.session_repo.get_by_id(db, session_id)
         if session is None:

@@ -388,7 +388,7 @@ def _duplicate_entry_material_conflict(
 
 
 async def _add_timeline(db: Any, timeline: Any, *, seq_no: int | None = None) -> int:
-    from src.app.workline.services.timeline_sequence_service import add_timeline_with_sequence
+    from src.app.runtime.orchestration.services.trace.timeline_sequence_service import add_timeline_with_sequence
 
     return await add_timeline_with_sequence(db, timeline, seq_no=seq_no)
 
@@ -923,7 +923,7 @@ class InboxBatchProcessor:
 
                 inbox_kind = getattr(getattr(inbox, "kind", None), "value", getattr(inbox, "kind", None))
                 if inbox_kind == "TIMER_TIMEOUT":
-                    from src.app.workline.services.runtime_reconciliation_service import (
+                    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
                         workline_runtime_reconciliation_service,
                     )
 

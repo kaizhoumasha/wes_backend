@@ -1548,7 +1548,7 @@ class RuntimeIntentEffectApplier:
 
         ctx_map = cast("Mapping[str, Any]", ctx)
         payload = dict(intent.payload_json)
-        from src.app.workline.services.inbox_service import DuplicateInboxError
+        from src.app.runtime.orchestration.services.inbox.inbox_service import DuplicateInboxError
 
         try:
             _ = await service.create_device_event_inbox(

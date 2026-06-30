@@ -454,7 +454,9 @@ class OutboxDispatchService:
         result: DispatchResult,
     ) -> tuple[set[Any], set[str]]:
         """优先探测资源等待队首，ECS ready 后领取并复用设备 POST。"""
-        from src.app.workline.services.dispatch_attempt_service import workline_dispatch_attempt_service
+        from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import (
+            workline_dispatch_attempt_service,
+        )
         from src.app.workline.services.safety_service import workline_safety_service
 
         processed_device_ids: set[Any] = set()
@@ -636,8 +638,10 @@ class OutboxDispatchService:
         Returns:
             派发结果统计
         """
+        from src.app.runtime.orchestration.services.inbox.dispatch_attempt_service import (
+            workline_dispatch_attempt_service,
+        )
         from src.app.sys.repositories import SystemOutboxRepository
-        from src.app.workline.services.dispatch_attempt_service import workline_dispatch_attempt_service
         from src.app.workline.services.safety_service import WorkLineSafetyBlocked, workline_safety_service
 
         result: DispatchResult = {

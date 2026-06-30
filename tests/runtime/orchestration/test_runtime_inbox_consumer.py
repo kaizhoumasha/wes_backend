@@ -52,7 +52,7 @@ def test_consumer_consume_sync_delegates_to_workline_batch_processor(monkeypatch
             return {"status": "PROCESSED", "consumer_id": payload.get("consumer_id")}
 
     # 桩 wlr inbox_batch_processor 在 lazy import 解析
-    import src.app.workline.services.inbox_batch_processor as bp_module
+    import src.app.runtime.orchestration.services.inbox.inbox_batch_processor as bp_module
 
     monkeypatch.setattr(bp_module, "process_inbox_payload", _FakeBatchProcessor.process_payload, raising=False)
 
@@ -91,7 +91,7 @@ def test_consumer_preserves_caller_supplied_consumer_id(monkeypatch: pytest.Monk
             captured["payload"] = payload
             return {"status": "PROCESSED"}
 
-    import src.app.workline.services.inbox_batch_processor as bp_module
+    import src.app.runtime.orchestration.services.inbox.inbox_batch_processor as bp_module
 
     monkeypatch.setattr(bp_module, "process_inbox_payload", _FakeBatchProcessor.process_payload, raising=False)
 
@@ -118,7 +118,7 @@ def test_consumer_dedups_duplicate_source_event_id(monkeypatch: pytest.MonkeyPat
         def process_payload(payload: dict) -> dict:
             return {"status": "PROCESSED"}
 
-    import src.app.workline.services.inbox_batch_processor as bp_module
+    import src.app.runtime.orchestration.services.inbox.inbox_batch_processor as bp_module
 
     monkeypatch.setattr(bp_module, "process_inbox_payload", _FakeBatchProcessor.process_payload, raising=False)
 
@@ -163,7 +163,7 @@ def test_consumer_consumed_ids_bounded_by_ring_buffer(monkeypatch: pytest.Monkey
         def process_payload(payload: dict) -> dict:
             return {"status": "PROCESSED"}
 
-    import src.app.workline.services.inbox_batch_processor as bp_module
+    import src.app.runtime.orchestration.services.inbox.inbox_batch_processor as bp_module
 
     monkeypatch.setattr(bp_module, "process_inbox_payload", _FakeBatchProcessor.process_payload, raising=False)
 
@@ -194,7 +194,7 @@ def test_consumer_ignores_non_string_source_event_id(monkeypatch: pytest.MonkeyP
         def process_payload(payload: dict) -> dict:
             return {"status": "PROCESSED"}
 
-    import src.app.workline.services.inbox_batch_processor as bp_module
+    import src.app.runtime.orchestration.services.inbox.inbox_batch_processor as bp_module
 
     monkeypatch.setattr(bp_module, "process_inbox_payload", _FakeBatchProcessor.process_payload, raising=False)
 

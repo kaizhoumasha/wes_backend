@@ -24,6 +24,7 @@ from src.app.device.repositories import device_repository
 from src.app.resource.services.active_rack_snapshot_service import smt_active_rack_snapshot_service
 from src.app.runtime.capabilities.phase4.station_lease_service import station_lease_service
 from src.app.runtime.orchestration.business_identity_bridge import resolve_payload_display_identity
+from src.app.runtime.orchestration.services.trace.trace_resource_view_builder import build_trace_resource_view
 from src.app.runtime.orchestration.services.trace.trace_response_builder import (
     _blocked_wait_seconds,
     _resource_wait_detail_summary,
@@ -79,7 +80,6 @@ from src.app.workline.models.runtime import (
 )
 from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.workline.services.diagnosis_verdict_builder import diagnosis_verdict_builder
-from src.app.workline.services.trace_resource_view_builder import build_trace_resource_view
 from src.app.workline.utils import ensure_dict
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
@@ -2199,7 +2199,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     async def get_session_path(self, db: Any, session_id: int) -> RuntimeTracePathResponse | None:
         """聚合 Session 粒度的设备路径视图。"""
-        from src.app.workline.services.trace_query_service import trace_query_service
+        from src.app.runtime.orchestration.services.trace.trace_query_service import trace_query_service
 
         result = await trace_query_service.path_by_session_id(db, session_id)
         if result.session is None:
@@ -2209,7 +2209,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     async def get_trace_path(self, db: Any, trace_id: str) -> RuntimeTracePathResponse | None:
         """聚合 Trace ID 粒度的设备路径视图。"""
-        from src.app.workline.services.trace_query_service import trace_query_service
+        from src.app.runtime.orchestration.services.trace.trace_query_service import trace_query_service
 
         result = await trace_query_service.path_by_trace_id(db, trace_id)
         if result.session is None and not _trace_path_has_facts(result):

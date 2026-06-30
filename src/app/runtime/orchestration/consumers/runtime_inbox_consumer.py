@@ -53,8 +53,9 @@ class RuntimeInboxConsumer:
         return self.consume_sync(payload)  # type: ignore[return-value]
 
     def consume_sync(self, payload: Mapping[str, Any]) -> Any:
-        # Lazy import: 阶段 3 前的过渡, 避免循环依赖。
-        from src.app.workline.services import inbox_batch_processor
+        # Lazy import:避免循环依赖。阶段 6 workline 域退化为配置域,
+        # InboxBatchProcessor 已迁入 runtime/orchestration/services/inbox/。
+        from src.app.runtime.orchestration.services.inbox import inbox_batch_processor
 
         # 注入 consumer_id 用于追溯; 若 payload 已带 consumer_id 则保留调用方值。
         payload_dict = dict(payload)

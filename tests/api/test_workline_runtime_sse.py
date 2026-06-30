@@ -58,8 +58,10 @@ async def test_device_status_changed_sse_uses_canonical_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_session_updated_sse_uses_canonical_envelope() -> None:
+    from src.app.runtime.orchestration.services.inbox.inbox_batch_processor import (
+        build_workline_runtime_session_updated_event_payload,
+    )
     from src.app.sys.services.event_stream_service import defer_sse_event
-    from src.app.workline.services.inbox_batch_processor import build_workline_runtime_session_updated_event_payload
 
     db = SimpleNamespace(info={})
     payload = build_workline_runtime_session_updated_event_payload(workline_id=45, session_id=99)
@@ -352,10 +354,10 @@ async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
     """sandbox ACK 路径必须经由 helper defer command.status.changed。"""
 
     from src.app.device.models.command import CommandStatus
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
     from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
     from src.app.workline.models.session import SessionStatus
     from src.app.workline.models.workline import WorkLineRunMode
-    from src.app.workline.services.operation_service import WorklineOperationService
 
     outbox = SimpleNamespace(
         id=34,
@@ -423,9 +425,9 @@ async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
 async def test_sandbox_result_path_defers_command_status_changed_event() -> None:
     """sandbox result 路径必须经由 helper defer command.status.changed。"""
 
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
     from src.app.workline.models.session import SessionStatus
     from src.app.workline.models.workline import WorkLineRunMode
-    from src.app.workline.services.operation_service import WorklineOperationService
 
     device = SimpleNamespace(id=7, device_code="ARM01")
     command = SimpleNamespace(
@@ -548,7 +550,9 @@ def _build_ack_exhausted_fixtures(
 
 
 def _build_reconciliation_service(*, session: Any, workline: Any) -> Any:
-    from src.app.workline.services.runtime_reconciliation_service import WorklineRuntimeReconciliationService
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        WorklineRuntimeReconciliationService,
+    )
 
     session_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=session))
     workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=workline))
