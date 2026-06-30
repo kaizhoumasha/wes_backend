@@ -18,7 +18,6 @@
 # globals,破坏 lazy shim 语义。
 import importlib as _importlib
 
-from .debug_data_cleanup_service import DebugDataCleanupService, debug_data_cleanup_service
 from .device_command_gateway import DeviceCommandGateway, device_command_gateway
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
 from .dispatch_attempt_service import WorklineDispatchAttemptService, workline_dispatch_attempt_service
@@ -32,8 +31,6 @@ from .inbox_service import WorklineInboxService, inbox_service
 _importlib.import_module("src.app.runtime.orchestration.services.query.runtime_query_service")
 _importlib.import_module("src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service")
 
-# Phase 2 burn-down 阶段 4:`integration_debug_service` 反向依赖 trace.trace_query_service,
-# 顶层 eager import 会在 trace → callback → workline.services 链上构成循环。改为 PEP 562 lazy。
 from .object_transition_event_service import ObjectTransitionEventService, object_transition_event_service  # noqa: E402
 from .operation_service import WorklineOperationService, workline_operation_service  # noqa: E402
 from .outbox_dispatch_service import OutboxDispatchService, outbox_dispatch_service  # noqa: E402
@@ -43,17 +40,14 @@ from .runtime_reconciliation_service import (  # noqa: E402
     workline_runtime_reconciliation_service,
 )
 from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service  # noqa: E402
-from .sandbox_cleanup_service import SandboxCleanupService, sandbox_cleanup_service  # noqa: E402
 from .workline_service import WorkLineService, workline_service  # noqa: E402
 from .write_back_service import OrchestratorWriteBackService, orchestrator_write_back_service  # noqa: E402
 
 __all__ = [
     "BinCellReservationResult",
     "BinCellReservationStatusCode",
-    "DebugDataCleanupService",
     "DeviceCommandGateway",
     "InboxBatchProcessor",
-    "IntegrationDebugService",
     "NgMaterialConflictError",
     "NgReturnItemService",
     "ObjectTransitionEventService",
@@ -63,7 +57,6 @@ __all__ = [
     "RuntimeHoldQueryService",
     "RuntimeHoldReleaseService",
     "RuntimeQueryService",
-    "SandboxCleanupService",
     "SingleLayerRackOrchestrationDecision",
     "SingleLayerRackOrchestrationDecisionCode",
     "SingleLayerRackOrchestrationService",
@@ -90,10 +83,8 @@ __all__ = [
     "WorklineStationLeaseService",
     "add_timeline_with_sequence",
     "allocate_timeline_seq_no",
-    "debug_data_cleanup_service",
     "device_command_gateway",
     "inbox_service",
-    "integration_debug_service",
     "ng_return_item_service",
     "object_transition_event_service",
     "orchestrator_write_back_service",
@@ -102,7 +93,6 @@ __all__ = [
     "runtime_hold_query_service",
     "runtime_hold_release_service",
     "runtime_query_service",
-    "sandbox_cleanup_service",
     "single_layer_rack_orchestration_service",
     "smt_inbound_handoff_service",
     "start_admission_service",
@@ -136,8 +126,6 @@ __all__ = [
 # `station_lease_service` 物理迁入 runtime/capabilities/phase4/。
 # 同样 lazy,避免反向回路触发 partial module 循环。
 _LAZY_SHIM_MAP = {
-    "IntegrationDebugService": "integration_debug_service",
-    "integration_debug_service": "integration_debug_service",
     "RuntimeHoldCreationService": "runtime_hold_creation_service",
     "runtime_hold_creation_service": "runtime_hold_creation_service",
     "RuntimeHoldQueryService": "runtime_hold_query_service",

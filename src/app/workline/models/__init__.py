@@ -38,13 +38,6 @@ from .inbox import (
     WorklineInboxBase,
     WorklineInboxCreate,
 )
-from .integration_debug import (
-    IntegrationDebugCaseListResponse,
-    IntegrationDebugCaseResponse,
-    IntegrationDebugEvidenceLink,
-    IntegrationDebugNextAction,
-    IntegrationDebugStageCheck,
-)
 from .material_unit import (
     MaterialUnit,
     MaterialUnitBase,
@@ -175,11 +168,6 @@ __all__ = [
     "DispatchAttemptStatus",
     "InboxKind",
     "InboxStatus",
-    "IntegrationDebugCaseListResponse",
-    "IntegrationDebugCaseResponse",
-    "IntegrationDebugEvidenceLink",
-    "IntegrationDebugNextAction",
-    "IntegrationDebugStageCheck",
     "LineType",
     "MaterialDisposition",
     "MaterialUnit",

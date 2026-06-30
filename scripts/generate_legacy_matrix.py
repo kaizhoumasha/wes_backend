@@ -503,14 +503,6 @@ def parse_entries() -> list[Entry]:
             "phase2",
             "MEDIUM",
         ),
-        (
-            "src/app/workline/repositories/debug_data_cleanup_repository.py",
-            "workline",
-            "repository",
-            "跨域 WMS import (C1 seed)",
-            "phase5-tech",
-            "LOW",
-        ),
         # C2: 跨域 session FK
         (
             "src/app/handling/models/bin_transit_membership.py",
@@ -621,14 +613,6 @@ def parse_entries() -> list[Entry]:
         ),
         (
             "src/app/workline/repositories/object_transition_event_repository.py",
-            "workline",
-            "repository",
-            "跨域 session FK (C2 seed)",
-            "phase2",
-            "LOW",
-        ),
-        (
-            "src/app/workline/repositories/sandbox_cleanup_repository.py",
             "workline",
             "repository",
             "跨域 session FK (C2 seed)",
