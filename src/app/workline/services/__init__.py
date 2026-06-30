@@ -1,5 +1,9 @@
 """WorkLine Service 导出"""
 
+from __future__ import annotations
+
+from typing import Any
+
 # Phase 2 burn-down 阶段 6:workline 域退化为纯配置域,运行态 service shim 已
 # 物理删除。保留 file 是配置域 service(diagnostic_service / safety_service /
 # workline_service / write_back_service)。device_command_gateway 在 C3 迁出至
@@ -43,7 +47,7 @@ _LAZY_SHIM_MAP = {
 }
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     module_name = _LAZY_SHIM_MAP.get(name)
     if module_name is None:
         raise AttributeError(name)
