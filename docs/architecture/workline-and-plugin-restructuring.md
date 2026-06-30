@@ -1771,7 +1771,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | Phase 1 Packet B ACL & WMS Ports（CEO-001 起步 + CEO-013 + H4 + ADR-0009） | ✅ **已完成** | [#64](https://github.com) Packet B (2026-06-27) | `WmsMasterDataPort` / `WmsInventoryQueryPort` / `WmsInventoryTransactionPort` 3 ports 起步 + `ExternalContractProfile` / `RuntimeCapabilityProfile` / `InboundNormalizerProfile` + provider simulator registry + H4 反注入白/黑名单 + ADR-0009 shared contracts package | 剩余 4 port（Document / Fulfillment / Event / ReconciliationQuery）→ Packet D |
 | Phase 1 Packet C Runtime 骨架（CEO-007/008/010/011 + H5） | ✅ **已完成** | [#64](https://github.com) Packet C (2026-06-27) | 7 个 runtime core 实体（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog + IdempotencyKey） + `ConveyorQueueMembership` + DeviceCommand ECS contract + device FK ring dissolve + H5 IdempotencyGuard + callback / handling / rack 接入 runtime/orchestration | — |
 | Phase 1 Packet D Capability 边界 + 剩余 4 WMS port（CEO-009） | ✅ **已完成 (PR Packet D)** | Packet D (2026-06-27) | 4 剩余 WMS port（WmsDocumentPort / WmsFulfillmentPort / WmsEventPort / WmsReconciliationQueryPort）全部 7/7 落地 + InboundNormalizerRegistry + `RuntimeCapabilityContext.get_inbound_normalizer()` + InboundNormalizerProfile 3 Pydantic validators + R-I3c 静态扫描 + import-linter capability-isolation contract | — |
-| Phase 2 Runtime/Orchestration 迁移与 WorkLine 清空 | ⏳ **未启动** | — | — | 启动条件：Phase 0 + Phase 1 全完成 + 重新跑 autoplan；详见 §10.3.1 B 方案暂停/回退条件 |
+| Phase 2 Runtime/Orchestration 迁移与 WorkLine 清空 | ✅ **已完成** | launch PR `8602c33b` + 阶段 1-6 burn-down（PR #70 `v0.10.2.1`）+ F-1/F-2 收尾（PR #71 `v0.10.3.0`） | 阶段 1-6 + F-1/F-2 收尾全完成；`WorkLine 不再拥有运行状态` 门禁完全关闭（2 个 xfail 契约转硬绿） | 详见 §10.3 |
 | Phase 3 执行安全与恢复能力补全 | ⏳ **未启动** | — | — | ENG-002~022 + DESIGN-001~005 |
 | Phase 4 后续子领域 | ⏳ **未启动** | — | — | MaterialLocationQuery / WorklineActiveObjects / 入库能力目标态重建 / SMT-NG-WMS 对账 |
 | Phase 5 Legacy 删除与收尾 | ⏳ **未启动** | — | — | 双 lane：技术残留清理（Phase 3 门禁后）+ 业务承载 legacy 清理（Phase 4 能力验收后） |
@@ -1897,7 +1897,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `165711fd fix(callback): 外部回调 H4 边界 WMS 协议白名单扩展 + 子层守卫`
 - `9c790d53 fix(guardrails): 修复 C4 scanner 误报 H4 反注入实现`
 
-### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空 — ✅ launch PR 已合并 (develop HEAD 整合 feature/phase2-launch),burn-down 阶段 1/2/3 已完成 (阶段 3 v0.10.1.0);burn-down 阶段 4 (v0.10.2.0) + 阶段 5 (RuntimeReconciliationFacade 物理删除) + 阶段 6 (WorkLine 配置化 + 大规模瘦身,v0.10.3.0) 均已完成
+### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空 — ✅ launch PR 已合并 (develop HEAD 整合 feature/phase2-launch),burn-down 阶段 1/2/3 已完成 (阶段 3 v0.10.1.0);burn-down 阶段 4 (v0.10.2.0) + 阶段 5 (RuntimeReconciliationFacade 物理删除) + 阶段 6 (WorkLine 配置化 + 大规模瘦身,PR #70 `v0.10.2.1`) 均已完成;F-1/F-2 收尾 (14 model + 10 repository 物理迁入 `runtime/orchestration/{models,repositories}/`,PR #71 `v0.10.3.0`) 关闭唯一未完成子门禁 — Phase 2 全部完成
 
 **目标**：在 Phase 1 新 runtime/orchestration 骨架已独立可运行后，把旧 WorkLine/plugin/runtime 的执行状态、inbox、timeline、hold、effect dispatch 迁出或删除。旧执行入口不做兼容转发。
 
@@ -1935,7 +1935,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 **Phase 2 完成门禁**：
 
 - [x] `runtime/orchestration` 域独立落地（launch PR commit `d5b88562` facade bridge + `8eab4042` 跨域 import 修复）
-- [x] WorkLine 不再拥有运行状态（burn-down 阶段 6 完成 — `feature/phase2-burndown-stage5-6` PR,4 commit: 阶段 5 facade 物理删除 + 阶段 6 大规模 workline 域瘦身 + device_command_gateway 迁出 + 文档收尾,v0.10.3.0）
+- [x] WorkLine 不再拥有运行状态（阶段 6 PR #70 `feature/phase2-burndown-stage5-6` v0.10.2.1 部分关闭 — service/v1 router 域清空 + facade 物理删除 + device_command_gateway 迁出,但 model/repository 子门禁 2 个 xfail;F-1/F-2 收尾 PR #71 `feature/phase2-burndown-f1-f2` v0.10.3.0 完全关闭 — 14 model + 10 repository 物理迁入 `runtime/orchestration/{models,repositories}/` + 2 个 xfail 契约转硬绿 + F-3..F-7 评审 follow-up)
 - [x] legacy 行为契约测试通过（launch PR commit `8602c33b`：`tests/contracts/workline/` 107 passed, 2 xfailed）
 
 **Launch PR 8 commit 落地清单（feature/phase2-launch, 8602c33b）**：
@@ -1949,7 +1949,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | 5 | `ca1fe853` `aef4366c` `d5b88562` `8eab4042` | 跨域 import 修复 4 commit（callback/utils mirror → 4 callback services 切到 callback.contracts/utils → RuntimeReconciliationFacade bridge → device_command_service 跨域切到 facade） | 9 处跨域 import |
 | 6 | `123f57c9` | `docs(architecture): Runtime ownership map + ADR-0001` | ownership map + ADR |
 | 7 | `8602c33b` | `test(contracts): 8 个 Phase 2 behavior contract gaps (TDD 同步)` | 8 contract gap |
-| 8 | pending | `docs(architecture): legacy-runtime-migration-spec.md + Phase 2 §10.3 同步` | migration spec + §10.3 启动条件 |
+| 8 | ✅ 已落地 | `docs(architecture): legacy-runtime-migration-spec.md + Phase 2 §10.3 同步` | migration spec（`legacy-runtime-migration-spec.md` 已存在）+ §10.3 启动条件 |
 
 详见 [`./legacy-runtime-migration-spec.md`](./legacy-runtime-migration-spec.md) §2 / §3 / §5 / §6。
 
