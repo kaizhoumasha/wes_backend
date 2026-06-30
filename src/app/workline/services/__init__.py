@@ -1,16 +1,15 @@
 """WorkLine Service 导出"""
 
 # Phase 2 burn-down 阶段 6:workline 域退化为纯配置域,运行态 service shim 已
-# 物理删除。保留 file 是配置域 service(device_command_gateway / diagnostic_service /
-# safety_service / workline_service / write_back_service)。其余 19 个 service
-# (dispatch_attempt / inbox / object_transition_event / operation /
-# outbox_dispatch / rack_position / runtime_reconciliation / runtime_hold_* /
-# runtime_query / smt_inbound_handoff / timeline_sequence / trace_* / phase4
-# capabilities)迁入 runtime/orchestration/services 与 runtime/capabilities/phase4/
-# 后已物理删除,__getattr__ 命中 `_LAZY_SHIM_MAP` 的 entry 会触发
-# ModuleNotFoundError,与原模块行为一致。
+# 物理删除。保留 file 是配置域 service(diagnostic_service / safety_service /
+# workline_service / write_back_service)。device_command_gateway 在 C3 迁出至
+# runtime/orchestration/services/。其余 19 个 service (dispatch_attempt / inbox /
+# object_transition_event / operation / outbox_dispatch / rack_position /
+# runtime_reconciliation / runtime_hold_* / runtime_query / smt_inbound_handoff /
+# timeline_sequence / trace_* / phase4 capabilities)迁入 runtime/orchestration/
+# services 与 runtime/capabilities/phase4/ 后已物理删除,__getattr__ 命中
+# `_LAZY_SHIM_MAP` 的 entry 会触发 ModuleNotFoundError,与原模块行为一致。
 
-from .device_command_gateway import DeviceCommandGateway, device_command_gateway
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
 
 # 阶段 6:运行态 service shim 已物理删除(`dispatch_attempt_service`、
@@ -32,7 +31,6 @@ from .write_back_service import OrchestratorWriteBackService, orchestrator_write
 __all__ = [
     "BinCellReservationResult",
     "BinCellReservationStatusCode",
-    "DeviceCommandGateway",
     "InboxBatchProcessor",
     "NgMaterialConflictError",
     "NgReturnItemService",
@@ -69,7 +67,6 @@ __all__ = [
     "WorklineStationLeaseService",
     "add_timeline_with_sequence",
     "allocate_timeline_seq_no",
-    "device_command_gateway",
     "inbox_service",
     "ng_return_item_service",
     "object_transition_event_service",

@@ -1,3 +1,16 @@
+"""DeviceCommandGateway — 设备命令下发桥接 (Phase 2 burn-down 阶段 6 C3)。
+
+主计划 §3.6 + 阶段 6:DeviceCommandGateway 从 src.app.workline.services 迁入
+runtime/orchestration/services/,原位置成为跨域引用违例。
+
+- reserve_sandbox_command / dispatch 是 device 与 workline 域间设备命令流转的
+  唯一桥接
+- workline 域调用方改为 src.app.runtime.orchestration.services.device_command_gateway
+- 内部对 src.app.runtime.orchestration.services.reconciliation
+  .runtime_reconciliation_service_impl.workline_runtime_reconciliation_service
+  的引用已修正(原 workline shim 在 C2 已物理删除)
+"""
+
 from collections.abc import Mapping
 from typing import Any, NoReturn
 from urllib.parse import quote
@@ -7,9 +20,14 @@ from loguru import logger
 from src.app.device.models.capability import parse_device_capabilities
 from src.app.device.models.device import DeviceStatus
 from src.app.runtime.orchestration.enums import FailureDomain
-from src.app.workline.utils import payload_dict
 from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_int, coerce_string_value, enum_value, resolve_entity_id
+
+
+def _payload_dict(value: Any) -> dict[str, Any]:
+    """内联 payload_dict(原 src.app.workline.utils.payload_dict)。"""
+    return value if isinstance(value, dict) else {}
+
 
 _DEFAULT_DEVICE_COMMAND_CALLBACK_PATH = "/api/v1/device/command"
 _DEFAULT_DEVICE_STATUS_PATH = "/api/v1/device/status"
@@ -289,15 +307,17 @@ async def _mark_device_command_failed_if_dispatch_exhausted(
     """Outbox 已永久失败时，进入通信 ACK runtime reconciliation。"""
 
     from src.app.device.repositories.command_repository import DeviceCommandRepository
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        workline_runtime_reconciliation_service,
+    )
     from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
-    from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
 
     if getattr(failed_outbox, "status", None) != SystemOutboxStatus.FAILED:
         return
     if getattr(outbox, "dispatch_type", None) != SystemOutboxDispatchType.DEVICE_COMMAND:
         return
 
-    payload = payload_dict(getattr(outbox, "payload_json", None))
+    payload = _payload_dict(getattr(outbox, "payload_json", None))
     command_code = coerce_string_value(payload.get("command_code"))
     if not command_code:
         return
@@ -328,7 +348,9 @@ async def _mark_outbox_blocked_by_workline_state(
 
     reason = str(safety_error)
     if "WORKLINE_RECONCILING" in reason:
-        from src.app.workline.services.runtime_reconciliation_service import workline_runtime_reconciliation_service
+        from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+            workline_runtime_reconciliation_service,
+        )
 
         _ = await workline_runtime_reconciliation_service.park_outbox_for_reconciliation(
             db,
@@ -568,7 +590,7 @@ class DeviceCommandGateway:
             logger.error(f"沙箱设备不存在: {outbox.target_code}")
             return False
 
-        payload = payload_dict(getattr(outbox, "payload_json", None))
+        payload = _payload_dict(getattr(outbox, "payload_json", None))
         command_code = coerce_string_value(payload.get("command_code"))
         if not command_code:
             logger.error(f"沙箱设备指令缺少 command_code: outbox_id={getattr(outbox, 'id', None)}")
@@ -624,7 +646,7 @@ class DeviceCommandGateway:
                 logger.error(f"设备不存在或通信配置不完整: {outbox.target_code}")
                 return False
 
-            payload = payload_dict(getattr(outbox, "payload_json", None))
+            payload = _payload_dict(getattr(outbox, "payload_json", None))
             payload["device_code"] = coerce_string_value(getattr(device, "device_code", None), outbox.target_code)
             from src.app.device.models.command import CommandStatus
             from src.app.device.repositories.command_repository import DeviceCommandRepository
@@ -657,7 +679,7 @@ class DeviceCommandGateway:
                 response = await client.post(url, json=payload, timeout=ack_timeout)
                 if response.status_code == 200:
                     from src.app.device.services import device_service
-                    from src.app.workline.services.runtime_reconciliation_service import (
+                    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
                         workline_runtime_reconciliation_service,
                     )
 

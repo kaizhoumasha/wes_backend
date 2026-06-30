@@ -173,7 +173,7 @@ async def _dispatch_workline_domain(db: Any, limit: int) -> DispatchResult:
 
 
 async def _dispatch_device_command(db: Any, outbox: Any) -> bool:
-    from src.app.workline.services.device_command_gateway import device_command_gateway
+    from src.app.runtime.orchestration.services.device_command_gateway import device_command_gateway
 
     return await device_command_gateway.dispatch(db, outbox)
 

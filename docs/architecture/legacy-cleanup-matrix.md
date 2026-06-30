@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-  逐入口数据在 legacy-cleanup-matrix.csv（829 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（830 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -33,11 +33,11 @@ uv run python scripts/generate_legacy_matrix.py
 
 扫描覆盖：`src/app/workline/`、`src/workline_runtime/`、`src/workline_plugins/`、`tests/workline_runtime/`、`tests/workline_plugins/`、`docs/templates/workline_plugin/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；`src/workline_runtime/` 与 `src/workline_plugins/` 同时登记 `__all__` exported symbol。
 
-## 3. 汇总（截至 feature/phase2-burndown-stage4 @ 2026-06-30）
+## 3. 汇总（截至 feature/phase2-burndown-stage5-6 @ 2026-06-30）
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **829** |
+| **total_entries** | **830** |
 | phase4_carrier（承载 Phase 4 业务语义） | 241 |
 | pending-review | 0 |
 
@@ -45,7 +45,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | entry_type | count |
 | --- | ---: |
-| service | 324 |
+| service | 325 |
 | model | 192 |
 | plugin | 116 |
 | domain_object | 91 |
@@ -60,7 +60,7 @@ uv run python scripts/generate_legacy_matrix.py
 | strategy | count |
 | --- | ---: |
 | rebuild | 536 |
-| keep-contract | 195 |
+| keep-contract | 196 |
 | delete | 81 |
 | move | 17 |
 
@@ -69,7 +69,7 @@ uv run python scripts/generate_legacy_matrix.py
 | drop_phase | count |
 | --- | ---: |
 | phase2 | 302 |
-| phase5-tech | 277 |
+| phase5-tech | 278 |
 | phase4 | 241 |
 | phase1 | 9 |
 
@@ -80,7 +80,7 @@ uv run python scripts/generate_legacy_matrix.py
 | workline | 617 |
 | workline_plugins | 178 |
 | workline_runtime | 9 |
-| runtime | 7 |
+| runtime | 8 |
 | handling | 6 |
 | rack | 5 |
 | resource | 5 |

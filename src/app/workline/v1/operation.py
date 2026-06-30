@@ -12,6 +12,8 @@ from src.app.callback.models.ingress_response import (
     build_callback_event_accepted_response,
     build_callback_rejected_response,
 )
+from src.app.runtime.capabilities.phase4 import start_admission_service
+from src.app.runtime.orchestration.services.intent import operation_service
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 from src.app.workline.models.operation import (
     ManualOperationRequest,
@@ -28,12 +30,7 @@ from src.app.workline.models.safety import (  # noqa: TC001 - FastAPI needs runt
     ClearWorkLineEstopRequest,
     SimulateWorkLineEstopRequest,
 )
-from src.app.workline.services import (
-    WorkLineSafetyBlocked,
-    start_admission_service,
-    workline_operation_service,
-    workline_safety_service,
-)
+from src.app.workline.services import WorkLineSafetyBlocked, workline_safety_service
 from src.app.workline.unit_of_work import WorklineUnitOfWork
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
@@ -42,6 +39,8 @@ from src.core.security import require_auth
 from src.core.task_queue_gateway import task_queue_gateway
 from src.database.dependencies import AsyncSessionDep  # noqa: TC001
 from src.utils.value_normalization import enum_value
+
+workline_operation_service = operation_service.workline_operation_service
 
 router = APIRouter(tags=["工作线诊断操作"])
 

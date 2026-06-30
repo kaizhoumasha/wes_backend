@@ -2,6 +2,12 @@ from inspect import isawaitable
 from typing import Any, TypedDict
 
 from src.app.runtime.orchestration.diagnostics import ErrorCode
+from src.app.runtime.orchestration.services.device_command_gateway import (
+    _build_device_command_log_envelope,
+    _DeviceCommandGovernanceError,
+    _mark_device_command_failed_if_dispatch_exhausted,
+    _mark_outbox_blocked_by_workline_state,
+)
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.outbox_dispatch_support import (
     _outbox_trace_extra,
@@ -9,12 +15,6 @@ from src.app.workline.outbox_dispatch_support import (
     _resolve_outbox_run_mode,
 )
 from src.app.workline.plugins.run_mode import is_simulation_run_mode
-from src.app.workline.services.device_command_gateway import (
-    _build_device_command_log_envelope,
-    _DeviceCommandGovernanceError,
-    _mark_device_command_failed_if_dispatch_exhausted,
-    _mark_outbox_blocked_by_workline_state,
-)
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import payload_dict
@@ -407,7 +407,7 @@ class OutboxDispatchService:
         import httpx
 
         from src.app.device.repositories.device_repository import device_repository
-        from src.app.workline.services.device_command_gateway import (
+        from src.app.runtime.orchestration.services.device_command_gateway import (
             _ensure_realtime_device_status_ready,
             _get_device_for_command_dispatch,
         )
@@ -964,7 +964,7 @@ class OutboxDispatchService:
         if await self._should_dispatch_to_sandbox(db, outbox):
             return await self._dispatch_sandbox(db, outbox)
         if outbox.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND:
-            from src.app.workline.services.device_command_gateway import device_command_gateway
+            from src.app.runtime.orchestration.services.device_command_gateway import device_command_gateway
 
             return await device_command_gateway.dispatch(db, outbox)
         if outbox.dispatch_type == SystemOutboxDispatchType.EXTERNAL_HTTP:
@@ -994,7 +994,7 @@ class OutboxDispatchService:
         from src.app.sys.models import SystemOutboxDispatchType
 
         if outbox.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND:
-            from src.app.workline.services.device_command_gateway import device_command_gateway
+            from src.app.runtime.orchestration.services.device_command_gateway import device_command_gateway
 
             reserved = await device_command_gateway.reserve_sandbox_command(db, outbox)
             if not reserved:

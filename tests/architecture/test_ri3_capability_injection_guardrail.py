@@ -64,7 +64,7 @@ def test_ri3b_directory_prefix_allowlist_is_rejected(tmp_path):
     current_rows = _allowlist_rows_with_matrix_drop_phase()
     current_rows.append(
         "R-I3b|src/app/workline/services/|legacy directory prefix must fail|2026-09-30|"
-        "legacy:src/app/workline/services/device_command_gateway.py:<file>#R-I3b|phase2"
+        "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase2"
     )
 
     temp_allowlist = tmp_path / "architecture-guardrails.allowlist"
@@ -136,9 +136,9 @@ def test_guardrail_resolves_python_interpreter_for_csv_parser():
 def test_allowlist_rejects_short_legacy_entry_id(tmp_path):
     """legacy_entry_id 必须精确匹配 CSV 第一列，不能靠子串误绿。"""
     rows = _allowlist_rows_with_matrix_drop_phase()
-    bad_entry = "legacy:src/app/workline/services/device_command_gateway.py:<file>"
+    bad_entry = "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>"
     rows = [
-        row.replace("legacy:src/app/workline/services/device_command_gateway.py:<file>#R-I3b", bad_entry)
+        row.replace("legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b", bad_entry)
         for row in rows
     ]
 
@@ -153,8 +153,8 @@ def test_allowlist_rejects_drop_phase_mismatch(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     rows = [
         row.replace(
-            "legacy:src/app/workline/services/device_command_gateway.py:<file>#R-I3b|phase2",
-            "legacy:src/app/workline/services/device_command_gateway.py:<file>#R-I3b|phase4",
+            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase2",
+            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase4",
         )
         for row in rows
     ]
@@ -169,10 +169,10 @@ def test_allowlist_rejects_invalid_expires_at(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     rows = [
         row.replace(
-            "R-I3b|src/app/workline/services/device_command_gateway.py|"
-            "legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|",
-            "R-I3b|src/app/workline/services/device_command_gateway.py|"
-            "legacy capability import device 实现, Phase 2 迁 runtime|not-a-date|",
+            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "legacy capability import device 实现, Phase 2 阶段 6 C3 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
+            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "legacy capability import device 实现, Phase 2 阶段 6 C3 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|not-a-date|",
         )
         for row in rows
     ]
@@ -187,10 +187,10 @@ def test_allowlist_rejects_invalid_calendar_expires_at(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     rows = [
         row.replace(
-            "R-I3b|src/app/workline/services/device_command_gateway.py|"
-            "legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|",
-            "R-I3b|src/app/workline/services/device_command_gateway.py|"
-            "legacy capability import device 实现, Phase 2 迁 runtime|2026-02-31|",
+            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "legacy capability import device 实现, Phase 2 阶段 6 C3 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
+            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "legacy capability import device 实现, Phase 2 阶段 6 C3 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-02-31|",
         )
         for row in rows
     ]
@@ -205,10 +205,10 @@ def test_phase2_rejects_expired_allowlist_rows(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     rows = [
         row.replace(
-            "R-I3b|src/app/workline/services/device_command_gateway.py|"
-            "legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|",
-            "R-I3b|src/app/workline/services/device_command_gateway.py|"
-            "legacy capability import device 实现, Phase 2 迁 runtime|2000-01-01|",
+            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "legacy capability import device 实现, Phase 2 阶段 6 C3 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
+            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "legacy capability import device 实现, Phase 2 阶段 6 C3 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2000-01-01|",
         )
         for row in rows
     ]

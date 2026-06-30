@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.app.runtime.orchestration.services.device_command_gateway import _DeviceCommandGovernanceError
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus, SystemOutboxTargetType
 from src.app.sys.services import SystemOutboxEngine as SystemOutboxDispatcher
-from src.app.workline.services.device_command_gateway import _DeviceCommandGovernanceError
 
 
 class FakeSystemOutboxRepository:

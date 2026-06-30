@@ -169,3 +169,49 @@ def test_workline_runtime_reconciliation_shim_alias_removed_after_stage6():
     assert not _file_exists("src/app/workline/services/runtime_reconciliation_service.py"), (
         "阶段 6:workline runtime_reconciliation_service shim 必须物理删除"
     )
+
+
+def test_device_command_gateway_module_moved_to_runtime_after_stage6():
+    """阶段 6 C3:device_command_gateway 必须从 workline 域迁入 runtime/orchestration。"""
+    import importlib
+
+    runtime_module = importlib.import_module("src.app.runtime.orchestration.services.device_command_gateway")
+    assert hasattr(runtime_module, "DeviceCommandGateway"), (
+        "阶段 6 C3:runtime/orchestration/services/device_command_gateway 必须暴露 DeviceCommandGateway 类"
+    )
+    assert hasattr(runtime_module, "device_command_gateway"), (
+        "阶段 6 C3:runtime/orchestration/services/device_command_gateway 必须暴露单例符号"
+    )
+    assert not _file_exists("src/app/workline/services/device_command_gateway.py"), (
+        "阶段 6 C3:workline/services/device_command_gateway.py 必须物理删除"
+    )
+
+
+def test_workline_services_module_does_not_export_device_command_gateway_after_stage6():
+    """阶段 6 C3:workline.services 顶层不再导出 device_command_gateway 符号。"""
+    import importlib
+
+    workline_services = importlib.import_module("src.app.workline.services")
+    assert not hasattr(workline_services, "device_command_gateway"), (
+        "阶段 6 C3:workline.services 必须不再暴露 device_command_gateway 符号"
+    )
+    assert not hasattr(workline_services, "DeviceCommandGateway"), (
+        "阶段 6 C3:workline.services 必须不再暴露 DeviceCommandGateway 类"
+    )
+
+
+def test_workline_service_config_only_after_stage6():
+    """阶段 6 C3:workline_service 配置域保留(无运行态方法)。"""
+    import importlib
+
+    workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
+    # 配置域保留 — WorkLineService 公开方法不应依赖 runtime 域单例
+    workline_service_singleton = workline_service_module.workline_service
+    assert hasattr(workline_service_singleton, "create"), "阶段 6 C3:WorkLineService 必须保留 create 配置域方法"
+    assert hasattr(workline_service_singleton, "update"), "阶段 6 C3:WorkLineService 必须保留 update 配置域方法"
+    assert hasattr(workline_service_singleton, "delete"), "阶段 6 C3:WorkLineService 必须保留 delete 配置域方法"
+    assert hasattr(workline_service_singleton, "activate"), "阶段 6 C3:WorkLineService 必须保留 activate 配置域方法"
+    assert hasattr(workline_service_singleton, "deactivate"), "阶段 6 C3:WorkLineService 必须保留 deactivate 配置域方法"
+    assert hasattr(workline_service_singleton, "configuration_status"), (
+        "阶段 6 C3:WorkLineService 必须保留 configuration_status 配置域方法"
+    )

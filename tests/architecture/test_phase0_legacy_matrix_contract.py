@@ -136,10 +136,12 @@ def test_runtime_and_plugin_all_exports_are_inventory_entries():
 
 def test_ri3b_device_seed_targets_device_command_port():
     """只 import device 实现的 R-I3b seed 必须指向 DeviceCommandPort。"""
-    entry = _entry_by_id("legacy:src/app/workline/services/device_command_gateway.py:<file>#R-I3b")
+    # 阶段 6 C3:device_command_gateway 物理迁入 runtime/orchestration/services/ 后,
+    # R-I3b seed 路径跟随新位置(impl 物理迁入 后 path 跟踪)。
+    entry = _entry_by_id("legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b")
 
     assert entry is not None
-    assert entry.business_semantics == "capability import device 实现 (R-I3b seed)"
+    assert "capability import device 实现" in entry.business_semantics
     assert entry.target_path == "src/app/runtime/orchestration/ports/device_command.py"
     assert entry.target_capability == "DeviceCommandPort.dispatch"
 

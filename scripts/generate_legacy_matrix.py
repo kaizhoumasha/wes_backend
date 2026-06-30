@@ -44,6 +44,9 @@ MIGRATED_SERVICE_IMPLS = {
     "src/app/workline/services/dispatch_attempt_service.py": (
         "src/app/runtime/orchestration/services/inbox/dispatch_attempt_service.py"
     ),
+    "src/app/workline/services/device_command_gateway.py": (
+        "src/app/runtime/orchestration/services/device_command_gateway.py"
+    ),
     "src/app/workline/services/inbox_batch_processor.py": (
         "src/app/runtime/orchestration/services/inbox/inbox_batch_processor.py"
     ),
@@ -803,6 +806,14 @@ def parse_entries() -> list[Entry]:
                 "runtime",
                 "service",
                 "capability import device 实现 (R-I3b seed — impl 物理迁入 trace/ 后 path 跟踪)",
+                "phase2",
+                "MEDIUM",
+            ),
+            (
+                "src/app/runtime/orchestration/services/device_command_gateway.py",
+                "runtime",
+                "service",
+                "capability import device 实现 (R-I3b seed — impl 物理迁入 orchestration/ 后 path 跟踪)",
                 "phase2",
                 "MEDIUM",
             ),
