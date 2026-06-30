@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - `src/workline_runtime/` 整目录物理删除 (50 源文件: contracts/、diagnostics/、plugin_sdk/ 子包 + plugin_base 等 15 顶层模块) — Phase 2 burn-down 阶段 3 目标态锁定。
 - `tests/workline_runtime/` 117 文件 + `tests/integration/workline_runtime/` 6 文件 整目录删除;行为契约已由 `tests/contracts/workline/` 9 个下游 contract 持续覆盖 (107 passed, 2 xfailed)。
+- `src/app/runtime/orchestration/services/runtime_reconciliation_service.py` 整文件删除 (`RuntimeReconciliationFacade` + `runtime_reconciliation_facade` 公开 API 物理删除) — Phase 2 burn-down 阶段 5 完成。`src/app/runtime/orchestration/services/__init__.py` 同步移除 export。`workline_runtime_reconciliation_service` 单例保留为 `WorklineRuntimeReconciliationService` 公开 API,workline/services/runtime_reconciliation_service.py 20 行 shim 仍在,阶段 6 整 workline 域清空时一并删除。
+- **阶段 6 (T6) workline 运行态 service 物理删除**:workline/services/ 下 19 个 service 文件 + 顶层 helper 4 文件 (runtime_services / inbox_claim_bucket / outbox_dispatch_support / diagnostic_support) + 1 facade (RuntimeReconciliationFacade) + 4 v1 router 物理删除 (runtime / runtime_hold / trace / inbound_handoff);v1/__init__.py 改写仅导出 `workline` + `operation` router。
+- 5 个 dead test 物理删除 (`tests/api/test_runtime_hold_api.py` + `tests/api/test_smt_inbound_handoff_api.py` + `tests/api/test_workline_runtime_api.py` + `tests/resource/test_resource_projection_service.py` + `tests/workline/test_object_transition_event.py`) — C2 阶段未清空 dead test 一起清理。
 
 ### Changed
 - `src/app/runtime/orchestration/diagnostics/` 子目录建立 (5 子模块: builder / codes / failure_mapper / models / registry + 聚合层 `__init__.py`) — 完整迁移 wlr `diagnostics/` 子包,实现 diagnostics 公开 16 符号垂直内部化。原 `consumers/diagnostics_bridge.py` 改名为 `diagnostics.py` 并迁出 `consumers/` 子目录 (与 `events_bridge.py` 等 bridge 平级)。
@@ -17,38 +20,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/architecture-guardrails.sh` 中 `rule_wlr_import()` 函数永久保留;`tests/architecture/test_wlr_import_guardrail.py` 新增 `test_excluded_prefixes_does_not_contain_consumers` + `test_no_consumers_in_wlr_allowed_paths` + `test_consumers_directory_still_exists` 三个新增测试 + WLR_ALLOWED_PATHS 移除 `consumers/` 路径,作为永久安全网防止 wlr 残留回归。
 - 8 个 tests (`tests/contracts/workline/test_callback_runtime_contracts.py` + `tests/mock/{test_wms_mock_server, test_ecs_mock_server, ecs_mock_server}.py` + `tests/api/{test_callback_route_contracts, test_runtime_hold_api}.py` + `tests/workline_plugins/test_rough_sorter_plugin.py` + `tests/helpers/workline_test_plugin.py`) 与 2 个 scripts (`scripts/data/sync_test_workline_devices.py` + `scripts/data/repair_runtime_holds.py`) 的 wlr import 重定向到 mirror;`tests/architecture/test_workline_compat_mirror.py` + `tests/characterization/workline_legacy/test_business_semantics_characterization.py` 调整到 wlr 物理删除后的自包含校验;`tests/workline_plugins/test_plugin_template_assets.py` 保持原 reverse-validation 断言。
 - `src/app/workline/models/runtime_hold.py` 内联 `_LocalNgReasonSource` 本地副本 (PLUGIN / DEVICE_ERROR / RUNTIME / MANUAL 四值),避免引入 `src.app.workline.domain.ng_reason` 触发反向循环 (domain.services → resource.services → workline.repositories → models)。
-- 版本 `0.10.0.0 → 0.10.1.0` patch bump — 清理性变更,无功能新增/破坏性 API。
+- **阶段 6 (T6)** `device_command_gateway.py` 物理迁入 `src/app/runtime/orchestration/services/device_command_gateway.py`;workline 域对应位置删除。跨域调用方 (outbox_dispatch_service / outbox_engine / smt_inbound_handoff_route_service / write_back_service) import 路径跟随新位置。`scripts/architecture-guardrails.allowlist` R-I3b 行路径同步跟随;`scripts/generate_legacy_matrix.py` 新增 R-I3b 物理迁入后 path 跟踪 hardcoded seed,`docs/architecture/legacy-cleanup-matrix.{md,csv}` 同步 (830 条, runtime 7→8, service 324→325, keep-contract 195→196, phase5-tech 277→278)。
+- **阶段 6 (T6)** `workline_service.py` 拆分保留 WorkLine 配置 CRUD,删除运行态方法(已迁入 phase4 capability);`workline/v1/__init__.py` + `workline/v1/operation.py` 修 C2 incomplete cleanup,删除已删 router 的 import,改写为 `src.app.runtime.capabilities.phase4` + `src.app.runtime.orchestration.services.intent` 直连。
+- **阶段 6 (T6)** WorkLine 配置域收敛:workline 域 22 个 service shim 物理删除,保留配置 CRUD + manifest + plane scene + 4 个 domain service + plugin SDK + diagnostic_service (C4d keep-contract);`__all__` / `_LAZY_SHIM_MAP` 收敛到 9 个真实 module export + 3 个死引用 tombstone。
+- 8 个 workline API tests 与 17 个 R-I3 guardrail tests 的 import 路径改写 (workline.services.* → runtime.orchestration.services.* 与 workline.v1.* → workline.v1.{workline,operation})。
 
 ### Added
 - **阶段 4 (T4)** C1 + C2 + C3:13 service 物理迁入 `src/app/runtime/orchestration/services/{facade_impl,inbox,hold,intent,query,trace}` — facade 委托本地化 + 7 service 迁入 + 6 service 迁入 + 跨子包循环修复;workline 侧对应位置改写为 PEP 562 lazy shim (`_LAZY_SHIM_MAP` + `__getattr__`),保留全部 public API。
 - **阶段 4 (T4)** C4a:2 service phase2 rebuild — `smt_inbound_handoff_service` 与 `runtime_query_service` 物理迁入 `src/app/runtime/orchestration/services/{intent,query}/`;workline 侧 shim 文件缩至 ~15 行;`importlib.import_module` priming 防御 `runtime_reconciliation_service_impl → trace 子模块` 部分模块循环(防御点写于 `__init__.py` 顶部注释)。
 - **阶段 4 (T4)** C4b:5 service phase4 capabilities 重建 — `bin_cell_reservation` / `ng_return_item` / `single_layer_rack_orchestration` / `start_admission` / `station_lease` 物理迁入 `src/app/runtime/capabilities/phase4/`,同样 PEP 562 lazy shim 模式。
 - **阶段 4 (T4)** C4c:3 debug service 物理删除 — `integration_debug_service` / `debug_data_cleanup_service` / `sandbox_cleanup_service` 连同 2 个 repository / `models/integration_debug.py` / `v1/integration_debug.py` 物理删除,3 个 v1 endpoint (`cleanup_sandbox_workline` / `cleanup_debug_data_workline` / `cleanup_all_debug_data`) + `_is_debug_cleanup_enabled` + `debug_router` 整段子树拆解。`diagnostic_service` 因 5 个 production critical path 调用方(intent_effects / reconciliation_impl / inbox_batch_processor / callback_ingress / diagnostic_support) keep-contract 保留(归 C4d)。
+- `tests/runtime/orchestration/test_outbox_dispatch_async_guard.py` 新增 4 个 isawaitable 防御回归测试,锁住 sync/async repo 双路径行为。
 
 ### Fixed
 - **阶段 4 (T4)** 跨子包循环导入修复:`runtime_reconciliation_service_impl → trace 子模块 → workline.services` 部分模块循环通过 `importlib.import_module` priming 阻断;C4a 与 C4b 走同模式 PEP 562 lazy shim 推迟到首次属性访问再加载。
 - **阶段 4 (T4)** 跨层 guardrail `R-I3b` allowlist 同步:阶段 4 迁入路径下 service 跨层调用 entry path 跟随新位置,allowlist 验证路径精确匹配。
+- **阶段 6 (T6)** `outbox_dispatch_service._escalate_status_precheck_wait_if_needed` 与 `_dispatch_blocked_resource_heads` 之前直接 `await updater(...)` / `await getter(...)`,假定 repo 返回 awaitable。runtime fallback 路径(repo 走同步实现)下会抛 "object dict can't be used in 'await' expression"。加 `isawaitable` 防御,与同模块 `dispatch_attempt_service` / `timeline_sequence_service` / `outbox_engine` 已有的 isawaitable 模式一致。回归测试 `tests/runtime/orchestration/test_outbox_dispatch_async_guard.py` 锁住 sync/async 双路径。
 
 ### Migration notes
 - 公共 import 路径不变:workline 侧消费者仍可 `from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service` 走 lazy shim;新代码推荐直接 `from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import smt_inbound_handoff_service`。
 - 3 个 debug v1 endpoint (sandbox / debug_data cleanup) 已下线,调用方如有依赖需在阶段 5 / 主计划重新审视。
 
-### Removed
-- `src/app/runtime/orchestration/services/runtime_reconciliation_service.py` 整文件删除 (`RuntimeReconciliationFacade` + `runtime_reconciliation_facade` 公开 API 物理删除) — Phase 2 burn-down 阶段 5 完成。`src/app/runtime/orchestration/services/__init__.py` 同步移除 export。`workline_runtime_reconciliation_service` 单例保留为 `WorklineRuntimeReconciliationService` 公开 API,workline/services/runtime_reconciliation_service.py 20 行 shim 仍在,阶段 6 整 workline 域清空时一并删除。
-- **阶段 6 (T6) 大规模 workline 域物理瘦身**:workline/services/ 下 22 个 service shim 物理删除 (runtime_hold_creation / runtime_hold_query / runtime_hold_release / runtime_query / runtime_reconciliation / inbox_batch_processor / inbox_service / dispatch_attempt_service / object_transition_event_service / operation_service / outbox_dispatch_service / safety_service / smt_inbound_handoff_service / write_back_service / diagnosis_verdict_builder / rack_position_service / timeline_sequence_service / trace_query_service / trace_resource_view_builder / trace_response_builder / device_command_gateway) + 顶层 helper 4 文件 (runtime_services / inbox_claim_bucket / outbox_dispatch_support / diagnostic_support)。
-- workline/repositories/ 下 11 个 repository 物理删除 (inbox / dispatch_attempt / object_transition_event / runtime_hold / session / smt_inbound_handoff / bin_cell_reservation / material_unit / rack_position / diagnostic / safety_incident)。
-- workline/models/ 下 16 个运行态 model 物理删除 (runtime / runtime_hold / runtime_hold_api / inbox / dispatch_attempt / object_transition_event / operation / session / timeline / safety / rack_position / diagnostic / smt_inbound_handoff / bin_cell_reservation / material_unit / device_command_gateway)。
-- workline/v1/ 下 4 个运行态 router 物理删除 (runtime / runtime_hold / trace / inbound_handoff);v1/__init__.py 改写仅导出 `workline` + `operation` router。
-- 5 个 dead test 物理删除 (`tests/api/test_runtime_hold_api.py` + `tests/api/test_smt_inbound_handoff_api.py` + `tests/api/test_workline_runtime_api.py` + `tests/resource/test_resource_projection_service.py` + `tests/workline/test_object_transition_event.py`) — C2 阶段未清空 dead test 一起清理。
+### Plan deviation (阶段 6)
+本 PR 不完成 `WorkLine 不再拥有运行状态` 门禁,workline 域以下 2 个 follow-up 子门禁转入后续 PR(由 `tests/architecture/test_workline_service_shim_contract.py` 中 2 个 xfailed 锁定):
+- **F-1** workline/models/ 16 个运行态 model 与 workline/repositories/ 11 个 repository 物理删除(从 workline 域迁入 runtime/orchestration 域 models/repositories)。前置:53+ 处 `from src.app.workline.models.{inbox,session,timeline,...}` 跨子包 import 改写。`safety.py` 与 `safety_incident_repository.py` 例外保留(承载 `WorkLineRuntimeStatus` 跨域 enum 与配置域审计表)。
+- **F-2** 28 处 `from src.app.workline.X` runtime 域 import 改写(其中 7 处 `workline_repository` 跨域桥接,21 处 model / service / v1 router 引用),workline_repository 迁入 runtime/orchestration/repositories/。
 
-### Changed
-- **阶段 6 (T6)** `device_command_gateway.py` 物理迁入 `src/app/runtime/orchestration/services/device_command_gateway.py`;workline 域对应位置删除。跨域调用方 (outbox_dispatch_service / outbox_engine / smt_inbound_handoff_route_service / write_back_service) import 路径跟随新位置。`scripts/architecture-guardrails.allowlist` R-I3b 行路径同步跟随;`scripts/generate_legacy_matrix.py` 新增 R-I3b 物理迁入后 path 跟踪 hardcoded seed,`docs/architecture/legacy-cleanup-matrix.{md,csv}` 同步 (830 条, runtime 7→8, service 324→325, keep-contract 195→196, phase5-tech 277→278)。
-- **阶段 6 (T6)** `workline_service.py` 拆分保留 WorkLine 配置 CRUD,删除运行态方法(已迁入 phase4 capability);`workline/v1/__init__.py` + `workline/v1/operation.py` 修 C2 incomplete cleanup,删除已删 router 的 import,改写为 `src.app.runtime.capabilities.phase4` + `src.app.runtime.orchestration.services.intent` 直连。
-- **阶段 6 (T6)** WorkLine 配置域收敛:workline 域只保留配置 CRUD + manifest + plane scene + 4 个 domain service + plugin SDK + diagnostic_service (C4d keep-contract)。Phase 2 唯一未完成门禁 `WorkLine 不再拥有运行状态` 关闭。
-- 8 个 workline API tests 与 17 个 R-I3 guardrail tests 的 import 路径改写 (workline.services.* → runtime.orchestration.services.* 与 workline.v1.* → workline.v1.{workline,operation})。
+完成 F-1 + F-2 后 Phase 2 burn-down 阶段 6 门禁才真正关闭。
 
 ### 版本
-- 版本 `0.10.2.0 → 0.10.3.0` patch bump — 阶段 5/6 cleanup,无破坏性 API 变更;facade 物理删除 + workline 域大幅瘦身 + device_command_gateway 迁出。
+- 版本 `0.10.2.0 → 0.10.2.1` patch bump — 阶段 5/6 cleanup patch 增量(workline 域 service shim 大幅瘦身 + facade 物理删除 + device_command_gateway 迁出),阶段 6 门禁 follow-up 子项 F-1 + F-2 转入后续 PR。
 
 ## [0.10.0.0] - 2026-06-29
 
