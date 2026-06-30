@@ -199,20 +199,52 @@ def test_workline_services_module_does_not_export_device_command_gateway_after_s
 
 
 def test_workline_service_config_only_after_stage6():
-    """阶段 6 C3:workline_service 配置域保留(无运行态方法)。"""
+    """阶段 6 C3:workline_service 配置域保留(无运行态方法)。
+
+    F-4 行为验证:不再用 hasattr 存在性守卫,改为验证方法为 async callable
+    + 签名契约(db 入参 + 返回类型注解),确保配置域方法形态稳定。
+    """
+    import asyncio
     import importlib
+    import inspect
+    import typing
 
     workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
-    # 配置域保留 — WorkLineService 公开方法不应依赖 runtime 域单例
     workline_service_singleton = workline_service_module.workline_service
-    assert hasattr(workline_service_singleton, "create"), "阶段 6 C3:WorkLineService 必须保留 create 配置域方法"
-    assert hasattr(workline_service_singleton, "update"), "阶段 6 C3:WorkLineService 必须保留 update 配置域方法"
-    assert hasattr(workline_service_singleton, "delete"), "阶段 6 C3:WorkLineService 必须保留 delete 配置域方法"
-    assert hasattr(workline_service_singleton, "activate"), "阶段 6 C3:WorkLineService 必须保留 activate 配置域方法"
-    assert hasattr(workline_service_singleton, "deactivate"), "阶段 6 C3:WorkLineService 必须保留 deactivate 配置域方法"
-    assert hasattr(workline_service_singleton, "configuration_status"), (
-        "阶段 6 C3:WorkLineService 必须保留 configuration_status 配置域方法"
-    )
+
+    # 配置域方法形态契约:name → 期望返回类型(单类型)或 union 成员集合
+    from src.app.workline.models.workline import WorkLine, WorkLineConfigurationStatus
+
+    expected: dict[str, object] = {
+        "create": (WorkLine, type(None)),
+        "update": (WorkLine, type(None)),
+        "delete": (bool, type(None)),
+        "activate": (WorkLine, type(None)),
+        "deactivate": (WorkLine, type(None)),
+        "configuration_status": WorkLineConfigurationStatus,
+    }
+    for name, expected_return in expected.items():
+        method = getattr(workline_service_singleton, name, None)
+        assert method is not None, f"阶段 6 C3:WorkLineService 必须保留 {name} 配置域方法"
+        assert asyncio.iscoroutinefunction(method), (
+            f"阶段 6 C3:WorkLineService.{name} 必须是 async callable(配置域 CRUD 契约)"
+        )
+        sig = inspect.signature(method)
+        assert "db" in sig.parameters, f"阶段 6 C3:WorkLineService.{name} 签名必须保留 db: AsyncSession 入参"
+        return_annotation = sig.return_annotation
+        assert return_annotation is not inspect.Parameter.empty, (
+            f"阶段 6 C3:WorkLineService.{name} 必须声明返回类型注解"
+        )
+        if isinstance(expected_return, tuple):
+            union_args = set(typing.get_args(return_annotation))
+            assert set(expected_return).issubset(union_args), (
+                f"阶段 6 C3:WorkLineService.{name} 返回注解 {return_annotation} "
+                f"必须包含 {expected_return},实际 union args {union_args}"
+            )
+        else:
+            assert return_annotation is expected_return, (
+                f"阶段 6 C3:WorkLineService.{name} 返回注解必须为 {expected_return},实际 {return_annotation}"
+            )
 
 
 # 阶段 6 C5:workline.services.__init__ 清理 — __all__ / _LAZY_SHIM_MAP 收敛到
