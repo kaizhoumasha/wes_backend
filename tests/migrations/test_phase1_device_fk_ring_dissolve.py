@@ -132,7 +132,7 @@ def test_migration_downgrade_restores_int_type():
 
 def test_model_workline_session_has_awaiting_device_command_code():
     """模型 WorklineSession 含 awaiting_device_command_code 字段 (VARCHAR 100)。"""
-    from src.app.workline.models.session import WorklineSession
+    from src.app.runtime.orchestration.models.session import WorklineSession
 
     field = WorklineSession.model_fields.get("awaiting_device_command_code")
     assert field is not None, "WorklineSession 必须含 awaiting_device_command_code 字段"
@@ -141,7 +141,7 @@ def test_model_workline_session_has_awaiting_device_command_code():
 
 def test_model_workline_session_no_longer_has_awaiting_command_id():
     """模型 WorklineSession 不再暴露旧 awaiting_command_id 字段。"""
-    from src.app.workline.models.session import WorklineSession
+    from src.app.runtime.orchestration.models.session import WorklineSession
 
     assert "awaiting_command_id" not in WorklineSession.model_fields
 

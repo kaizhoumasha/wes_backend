@@ -39,10 +39,10 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from contextlib import AbstractAsyncContextManager
 
+    from src.app.runtime.orchestration.models.inbox import WorklineInbox
+    from src.app.runtime.orchestration.models.session import WorklineSession
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
     from src.app.workline.models import WorkLine
-    from src.app.workline.models.inbox import WorklineInbox
-    from src.app.workline.models.session import WorklineSession
     from src.app.workline.runtime_services import WorklineRuntimeServices
 
 

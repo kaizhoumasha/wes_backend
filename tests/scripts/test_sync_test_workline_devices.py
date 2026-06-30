@@ -12,8 +12,8 @@ from scripts.data.sync_test_workline_devices import (
 )
 from src.app.device.models import Device, DeviceProtocol, DeviceStatus
 from src.app.resource.models import RackKind
+from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
-from src.app.workline.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.services.workline_service import WorkLineService
 from src.workline_plugins.rough_sorter.contract import (

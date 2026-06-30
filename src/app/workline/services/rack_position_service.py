@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from src.app.workline.repositories.rack_position_repository import (
+from src.app.runtime.orchestration.repositories.rack_position_repository import (
     WorklineRackPositionRepository,
     workline_rack_position_repository,
 )
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.resource.models import RackKind
-    from src.app.workline.models.rack_position import WorklineRackPosition
+    from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
 
 
 class WorklineRackPositionService:

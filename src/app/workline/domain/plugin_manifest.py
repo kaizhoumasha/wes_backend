@@ -19,7 +19,7 @@ from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 
 from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
-from src.app.workline.models.material_unit import MaterialUnitStatus
+from src.app.runtime.orchestration.models.material_unit import MaterialUnitStatus
 
 logger = logging.getLogger(__name__)
 

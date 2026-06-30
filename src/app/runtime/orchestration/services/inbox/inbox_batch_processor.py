@@ -18,6 +18,7 @@ from src.app.runtime.orchestration.effect_result import WriteBackDisposition
 from src.app.runtime.orchestration.events_bridge import RESERVED_RUNTIME_EVENTS
 from src.app.runtime.orchestration.lock_bridge import RedisDistributedLock
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult, OrchestratorService
+from src.app.runtime.orchestration.repositories.inbox_repository import WorklineInboxClaim
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 from src.app.workline.constants import (
     EXTERNAL_HTTP_INBOX_KIND,
@@ -28,7 +29,6 @@ from src.app.workline.constants import (
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.domain.plugin_manifest import EventCategory
 from src.app.workline.plugins.session_resolver import SessionResolveError
-from src.app.workline.repositories.inbox_repository import WorklineInboxClaim
 from src.app.workline.runtime_services import WorklineRuntimeServices, build_workline_runtime_services
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.utils import payload_dict
@@ -403,7 +403,7 @@ async def _record_duplicate_entry_archive_timeline(
     reason: str,
 ) -> None:
     """为重复入口归档留一条显式 timeline 证据。"""
-    from src.app.workline.models.timeline import (
+    from src.app.runtime.orchestration.models.timeline import (
         TimelineActionType,
         TimelineActorType,
         TimelineStage,
@@ -453,7 +453,7 @@ async def _record_late_command_result_archive_timeline(
     reason: str,
 ) -> None:
     """为迟到/重复 COMMAND_RESULT 归档留一条显式 timeline 证据。"""
-    from src.app.workline.models.timeline import (
+    from src.app.runtime.orchestration.models.timeline import (
         TimelineActionType,
         TimelineActorType,
         TimelineStage,
@@ -684,11 +684,11 @@ async def _load_related_entities(
     """
     from src.app.device.repositories import DeviceRepository
     from src.app.device.repositories.command_repository import DeviceCommandRepository
-    from src.app.workline.plugins.session_resolver import session_resolver
-    from src.app.workline.repositories import WorkLineRepository
-    from src.app.workline.repositories.session_repository import (
+    from src.app.runtime.orchestration.repositories.session_repository import (
         WorklineSessionRepository,
     )
+    from src.app.workline.plugins.session_resolver import session_resolver
+    from src.app.workline.repositories import WorkLineRepository
 
     session_repo = WorklineSessionRepository()
     workline_repo = WorkLineRepository()

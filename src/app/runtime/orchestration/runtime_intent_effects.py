@@ -18,6 +18,7 @@ from sqlmodel import select
 
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.material_target_resolver import resolve_destination_device
+from src.app.runtime.orchestration.models.session import SessionStatus
 from src.app.runtime.orchestration.resource_wait_evidence_bridge import ResourceWaitEvidence
 from src.app.runtime.orchestration.runtime_intent import (
     BlockScope,
@@ -26,7 +27,6 @@ from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
 )
-from src.app.workline.models.session import SessionStatus
 from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
 from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_plugins.smt_sorting_inbound.constants import (
@@ -473,7 +473,7 @@ async def _reject_reuse_when_owned_by_active_session(
         return
     if not hasattr(db, "execute"):
         return
-    from src.app.workline.models.session import WorklineSession
+    from src.app.runtime.orchestration.models.session import WorklineSession
 
     result = await db.execute(select(WorklineSession.status).where(WorklineSession.id == owner_session_id).limit(1))
     scalars = getattr(result, "scalars", None)
@@ -862,7 +862,7 @@ class RuntimeIntentEffectApplier:
         return RuntimeIntentEffectResult.processed()
 
     async def _apply_create_material_unit(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
+        from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus
 
         session = ctx["session"]
         db = ctx["db"]
@@ -943,7 +943,7 @@ class RuntimeIntentEffectApplier:
         session.current_material_unit_id = resolve_required_pk(material_unit, "material_unit")
 
     async def _apply_update_material_unit_status(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
+        from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus
 
         material_unit_id = optional_int(intent.payload_json.get("material_unit_id"))
         if material_unit_id is None:
@@ -979,7 +979,7 @@ class RuntimeIntentEffectApplier:
         session.current_material_unit_id = material_unit_id
 
     async def _apply_current_material_unit_reconciliation_status(self, ctx: Any) -> None:
-        from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
+        from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus
 
         session = ctx["session"]
         material_unit_id = optional_int(getattr(session, "current_material_unit_id", None))
@@ -1000,8 +1000,8 @@ class RuntimeIntentEffectApplier:
         # material_unit 来自 db.get，已在 identity map 中，status 写入即脏标记，无需 add。
 
     async def _cleanup_completed_material_unit(self, ctx: Any) -> None:
-        from src.app.workline.models.material_unit import MaterialUnit, MaterialUnitStatus
-        from src.app.workline.models.session import SessionStatus
+        from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus
+        from src.app.runtime.orchestration.models.session import SessionStatus
 
         session = ctx["session"]
         if getattr(session, "status", None) != SessionStatus.COMPLETED.value:
@@ -1064,13 +1064,13 @@ class RuntimeIntentEffectApplier:
             )
 
     async def _apply_noop_completion(self, ctx: Any) -> None:
-        from src.app.workline.models.timeline import (
+        from src.app.runtime.orchestration.models.timeline import (
             TimelineActionType,
             TimelineActorType,
             TimelineStage,
             TimelineStatus,
         )
-        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
         from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
@@ -1105,7 +1105,7 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_mark_ng(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.workline.models.timeline import (
+        from src.app.runtime.orchestration.models.timeline import (
             TimelineActionType,
             TimelineActorType,
             TimelineStage,
@@ -1134,7 +1134,7 @@ class RuntimeIntentEffectApplier:
 
     async def _apply_command(self, ctx: Any, intent: RuntimeIntent) -> None:
         from src.app.device.repositories.command_repository import DeviceCommandRepository
-        from src.app.workline.models.timeline import (
+        from src.app.runtime.orchestration.models.timeline import (
             TimelineActionType,
             TimelineActorType,
             TimelineStage,
@@ -1212,7 +1212,7 @@ class RuntimeIntentEffectApplier:
         await self._apply_command_wait(ctx, intent)
 
     async def _apply_external_request(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.workline.models.timeline import (
+        from src.app.runtime.orchestration.models.timeline import (
             TimelineActionType,
             TimelineActorType,
             TimelineStage,
@@ -1274,7 +1274,7 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_rack_operation_request(self, ctx: Any, intent: RuntimeIntent) -> RuntimeIntentEffectResult | None:
-        from src.app.workline.models.timeline import (
+        from src.app.runtime.orchestration.models.timeline import (
             TimelineActionType,
             TimelineActorType,
             TimelineStage,
@@ -1418,7 +1418,7 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _persist_session_waiting_for_rack_operation(self, ctx: Any, *, timeout_seconds: int) -> None:
-        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 
         session = ctx["session"]
         await WorklineSessionRepository().persist_external_wait(
@@ -1431,7 +1431,7 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_handling_operation_request(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.workline.models.timeline import (
+        from src.app.runtime.orchestration.models.timeline import (
             TimelineActionType,
             TimelineActorType,
             TimelineStage,
@@ -1600,7 +1600,7 @@ class RuntimeIntentEffectApplier:
         _ = await service.sync_operation_status(ctx["db"], operation_key=operation_key)
 
     async def _apply_resource_reconciliation_hold(self, ctx: Any, result: Any) -> None:
-        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
         from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
@@ -1640,13 +1640,13 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_resource_wait(self, ctx: Any, intent: RuntimeIntent) -> RuntimeIntentEffectResult:
-        from src.app.workline.models.timeline import (
+        from src.app.runtime.orchestration.models.timeline import (
             TimelineActionType,
             TimelineActorType,
             TimelineStage,
             TimelineStatus,
         )
-        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
         from src.app.workline.services import write_back_service as workline_effects
         from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 
@@ -1848,13 +1848,13 @@ class RuntimeIntentEffectApplier:
         return RuntimeIntentEffectResult.processed()
 
     async def _apply_command_wait(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.workline.models.timeline import (
+        from src.app.runtime.orchestration.models.timeline import (
             TimelineActionType,
             TimelineActorType,
             TimelineStage,
             TimelineStatus,
         )
-        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
         from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]
@@ -1909,13 +1909,13 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_block(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.workline.models.timeline import (
+        from src.app.runtime.orchestration.models.timeline import (
             TimelineActionType,
             TimelineActorType,
             TimelineStage,
             TimelineStatus,
         )
-        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
         from src.app.workline.services import write_back_service as workline_effects
 
         session = ctx["session"]

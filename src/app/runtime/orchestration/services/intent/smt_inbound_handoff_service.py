@@ -20,6 +20,18 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
+from src.app.runtime.orchestration.models.material_unit import MaterialUnit
+from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
+from src.app.runtime.orchestration.models.smt_inbound_handoff import (
+    SmtInboundHandoffDemand,
+    SmtInboundHandoffDemandStatus,
+    SmtInboundHandoffSourceItem,
+    SmtInboundHandoffSourceItemStatus,
+)
+from src.app.runtime.orchestration.repositories.smt_inbound_handoff_repository import (
+    SmtInboundHandoffRepository,
+    smt_inbound_handoff_repository,
+)
 from src.app.runtime.orchestration.services.inbox.inbox_service import WorklineInboxService, inbox_service
 from src.app.workline.domain.services.smt_inbound_handoff_reason import (
     SMT_INBOUND_HANDOFF_REASON_CATALOG,
@@ -31,18 +43,6 @@ from src.app.workline.domain.services.smt_inbound_handoff_route_service import (
     smt_inbound_handoff_route_service,
 )
 from src.app.workline.domain.services.smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy
-from src.app.workline.models.material_unit import MaterialUnit
-from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
-from src.app.workline.models.smt_inbound_handoff import (
-    SmtInboundHandoffDemand,
-    SmtInboundHandoffDemandStatus,
-    SmtInboundHandoffSourceItem,
-    SmtInboundHandoffSourceItemStatus,
-)
-from src.app.workline.repositories.smt_inbound_handoff_repository import (
-    SmtInboundHandoffRepository,
-    smt_inbound_handoff_repository,
-)
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 from src.workline_plugins.smt_sorting_inbound.constants import (
@@ -1169,9 +1169,9 @@ class SmtInboundHandoffService:
             already_terminal=False,
         )
 
+        from src.app.runtime.orchestration.models.session import SessionStatus
+        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
         from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
-        from src.app.workline.models.session import SessionStatus
-        from src.app.workline.repositories.session_repository import WorklineSessionRepository
 
         now = timezone.now_for_db()
         if self._enum_text(getattr(session, "status", None)) != SessionStatus.COMPLETED.value:
@@ -1235,12 +1235,12 @@ class SmtInboundHandoffService:
             conflict=True,
         )
 
+        from src.app.runtime.orchestration.models.session import SessionStatus
+        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
         from src.app.workline.domain.services.session_lifecycle_service import (
             InvalidSessionTransition,
             workline_session_lifecycle_service,
         )
-        from src.app.workline.models.session import SessionStatus
-        from src.app.workline.repositories.session_repository import WorklineSessionRepository
 
         session_status = self._enum_text(getattr(session, "status", None))
         terminal_session_statuses = {
@@ -1418,7 +1418,7 @@ class SmtInboundHandoffService:
         now: Any,
     ) -> str | None:
         from src.app.device.models.command import CommandResult, CommandStatus, DeviceCommand
-        from src.app.workline.models.inbox import InboxStatus, WorklineInbox
+        from src.app.runtime.orchestration.models.inbox import InboxStatus, WorklineInbox
 
         demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
         if demand is None:

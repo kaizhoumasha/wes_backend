@@ -8,14 +8,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.exc import IntegrityError
 
-from src.app.workline.domain.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
-from src.app.workline.domain.ng_reason import NgReasonDefinition, build_ng_reason_catalog
-from src.app.workline.models.runtime_hold import (
+from src.app.runtime.orchestration.models.runtime_hold import (
     MaterialDisposition,
     NgReturnItem,
     NgReturnItemStatus,
 )
-from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.workline.domain.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
+from src.app.workline.domain.ng_reason import NgReasonDefinition, build_ng_reason_catalog
 from src.utils.value_normalization import as_dict
 from src.workline_plugin_registry import (
     list_workline_ng_reasons,
@@ -25,7 +25,7 @@ from src.workline_plugin_registry import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository
+    from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository
 
 
 def _as_non_empty_str(value: Any) -> str | None:

@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from sqlalchemy import func, select, text
 
-from src.app.workline.models.timeline import WorklineTimeline
+from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 
 
 def _dialect_name(db: Any) -> str | None:

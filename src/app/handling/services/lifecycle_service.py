@@ -18,8 +18,8 @@ from src.app.handling.services.bin_transit_membership_service import (
     BinTransitMembershipService,
     bin_transit_membership_service,
 )
-from src.app.workline.models.session import SessionStatus
-from src.app.workline.repositories.session_repository import (
+from src.app.runtime.orchestration.models.session import SessionStatus
+from src.app.runtime.orchestration.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
 )

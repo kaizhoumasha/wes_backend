@@ -11,15 +11,15 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
 
-from src.app.workline.domain.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
-from src.app.workline.models.runtime_hold import RuntimeHoldStatus, RuntimeHoldType
-from src.app.workline.models.session import (
+from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldStatus, RuntimeHoldType
+from src.app.runtime.orchestration.models.session import (
     RuntimeReconciliationReason,
     RuntimeReconciliationSourceKind,
     RuntimeReconciliationState,
     WorklineSession,
 )
-from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.workline.domain.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
 from src.database.db import close_db, get_db_context, init_db
 from src.workline_plugin_registry import get_workline_plugin_definition
 
@@ -145,7 +145,7 @@ async def _active_reconciliation_session_count(db: AsyncSession) -> int:
 
 
 async def _active_runtime_hold_count(db: AsyncSession) -> int:
-    from src.app.workline.models.runtime_hold import RuntimeHold
+    from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 
     columns = cast("Any", RuntimeHold).__table__.c
     result = await db.execute(

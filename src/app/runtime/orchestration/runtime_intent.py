@@ -521,7 +521,7 @@ class RuntimeIntent(BaseModel):
         raw = self.payload_json.get(field_name)
         if not raw:
             raise ValueError(f"{self.kind.value} intent requires {field_name}")
-        from src.app.workline.models.material_unit import MaterialUnitStatus
+        from src.app.runtime.orchestration.models.material_unit import MaterialUnitStatus
 
         try:
             MaterialUnitStatus(raw)

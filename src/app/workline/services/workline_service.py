@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.device.models import parse_device_capabilities
 from src.app.device.repositories import device_repository
 from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
+from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
+from src.app.runtime.orchestration.repositories.rack_position_repository import workline_rack_position_repository
 from src.app.runtime.orchestration.topology_bridge import WorklineTopologyView
 from src.app.workline.models import (
     WorkLine,
@@ -19,7 +21,6 @@ from src.app.workline.models import (
     WorkLinePluginOption,
     WorkLineRunMode,
 )
-from src.app.workline.models.rack_position import WorklineRackPosition
 from src.app.workline.models.workline import (
     CommandBinding,
     DeviceRequirement,
@@ -43,7 +44,6 @@ from src.app.workline.plugins.run_mode import (
     normalize_run_mode,
 )
 from src.app.workline.repositories import WorkLineRepository, workline_repository
-from src.app.workline.repositories.rack_position_repository import workline_rack_position_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.conf import settings

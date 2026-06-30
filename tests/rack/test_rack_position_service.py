@@ -7,8 +7,8 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from src.app.resource.models import RackKind
-from src.app.workline.models.rack_position import WorklineRackPosition
-from src.app.workline.repositories.rack_position_repository import WorklineRackPositionRepository
+from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
+from src.app.runtime.orchestration.repositories.rack_position_repository import WorklineRackPositionRepository
 from src.app.workline.services.rack_position_service import WorklineRackPositionService
 
 

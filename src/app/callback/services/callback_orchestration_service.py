@@ -13,15 +13,15 @@ from typing import TYPE_CHECKING, Any, cast
 from src.app.callback.contracts import TraceContext, timeline_generator
 from src.app.callback.utils import JsonDict, ensure_dict
 from src.app.device.services.device_command_service import DeviceCallbackResultOutcome
-from src.app.runtime.orchestration.services.trace.timeline_sequence_service import add_timeline_with_sequence
-from src.app.sys.services.event_stream_service import publish_deferred_sse_events
-from src.app.workline.models.inbox import SourceSystem
-from src.app.workline.models.timeline import (
+from src.app.runtime.orchestration.models.inbox import SourceSystem
+from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
     TimelineActorType,
     TimelineStage,
     TimelineStatus,
 )
+from src.app.runtime.orchestration.services.trace.timeline_sequence_service import add_timeline_with_sequence
+from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 
 if TYPE_CHECKING:
@@ -178,7 +178,7 @@ class CallbackOrchestrationService:
         return trace
 
     async def _load_command_session(self, db: AsyncSession, command: object) -> object | None:
-        from src.app.workline.repositories.session_repository import WorklineSessionRepository
+        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 
         command_code = getattr(command, "command_code", None)
         if not isinstance(command_code, str) or not command_code:

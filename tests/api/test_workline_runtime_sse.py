@@ -354,9 +354,9 @@ async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
     """sandbox ACK 路径必须经由 helper defer command.status.changed。"""
 
     from src.app.device.models.command import CommandStatus
+    from src.app.runtime.orchestration.models.session import SessionStatus
     from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
     from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
-    from src.app.workline.models.session import SessionStatus
     from src.app.workline.models.workline import WorkLineRunMode
 
     outbox = SimpleNamespace(
@@ -425,8 +425,8 @@ async def test_sandbox_ack_path_defers_command_status_changed_event() -> None:
 async def test_sandbox_result_path_defers_command_status_changed_event() -> None:
     """sandbox result 路径必须经由 helper defer command.status.changed。"""
 
+    from src.app.runtime.orchestration.models.session import SessionStatus
     from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
-    from src.app.workline.models.session import SessionStatus
     from src.app.workline.models.workline import WorkLineRunMode
 
     device = SimpleNamespace(id=7, device_code="ARM01")
@@ -573,7 +573,7 @@ async def test_ack_exhausted_pending_branch_defers_command_status_changed_event(
     """ACK exhausted - PENDING 重入分支必须 defer helper。"""
 
     from src.app.device.models.command import CommandStatus
-    from src.app.workline.models.session import RuntimeReconciliationState, SessionStatus
+    from src.app.runtime.orchestration.models.session import RuntimeReconciliationState, SessionStatus
 
     command, outbox, session, workline = _build_ack_exhausted_fixtures(
         session_status=SessionStatus.MANUAL_HOLD,
@@ -616,7 +616,7 @@ async def test_ack_exhausted_main_branch_defers_command_status_changed_event() -
     """ACK exhausted - 新建 reconciliation 主分支必须 defer helper。"""
 
     from src.app.device.models.command import CommandStatus
-    from src.app.workline.models.session import SessionStatus
+    from src.app.runtime.orchestration.models.session import SessionStatus
 
     command, outbox, session, workline = _build_ack_exhausted_fixtures(
         session_status=SessionStatus.WAITING_DEVICE_RESULT,
@@ -663,11 +663,11 @@ async def test_dispatch_failed_path_delegates_and_defers_command_status_changed_
     handle_dispatch_ack_exhausted；端到端必须经由 helper defer。"""
 
     from src.app.device.models.command import CommandStatus
+    from src.app.runtime.orchestration.models.session import SessionStatus
     from src.app.runtime.orchestration.services.device_command_gateway import (
         _mark_device_command_failed_if_dispatch_exhausted,
     )
     from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
-    from src.app.workline.models.session import SessionStatus
 
     command, _, session, workline = _build_ack_exhausted_fixtures(
         session_status=SessionStatus.WAITING_DEVICE_RESULT,

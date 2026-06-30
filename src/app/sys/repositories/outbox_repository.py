@@ -761,7 +761,7 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         device_id: int | None = None,
     ) -> list[SystemOutbox]:
         from src.app.device.models import Device
-        from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
+        from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 
         columns = cast("Any", SystemOutbox).__table__.c
         session_columns = cast("Any", WorklineSession).__table__.c
@@ -812,8 +812,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         """获取沙箱已完成 outbox，按 Session 分组。"""
 
         from src.app.device.models import Device
-        from src.app.workline.models.inbox import InboxKind, WorklineInbox
-        from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
+        from src.app.runtime.orchestration.models.inbox import InboxKind, WorklineInbox
+        from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 
         columns = cast("Any", SystemOutbox).__table__.c
         session_columns = cast("Any", WorklineSession).__table__.c

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from src.app.workline.models.timeline import (
+from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
     TimelineActorType,
     TimelineStage,

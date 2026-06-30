@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, select
 
-from src.app.workline.models import MaterialUnit, MaterialUnitStatus
-from src.app.workline.models.session import WorklineSession
+from src.app.runtime.orchestration.models import MaterialUnit, MaterialUnitStatus
+from src.app.runtime.orchestration.models.session import WorklineSession
 from src.database.sqlite_schema import configure_sqlite_schemas
 
 

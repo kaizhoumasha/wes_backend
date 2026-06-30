@@ -23,10 +23,10 @@ from scripts.data.sync_test_workline_devices import (
     TEST_SMT_SORTING_INBOUND_LINE_CODE,
     sync_test_workline_devices,
 )
+from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
+from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.models.safety import WorkLineRuntimeStatus
-from src.app.workline.models.session import RunMode, SessionStatus, WorklineSession
-from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 from src.core.conf import settings
 from src.utils.timezone import timezone
 

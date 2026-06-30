@@ -14,6 +14,7 @@ from src.app.rack.services import (
 )
 from src.app.rack.services.gateway import WmsRcsRackGateway
 from src.app.resource.models import RackKind
+from src.app.runtime.orchestration.models.session import SessionStatus
 from src.app.sys.models import (
     OperationCompletionPolicy,
     SystemOutbox,
@@ -21,7 +22,6 @@ from src.app.sys.models import (
     SystemOutboxStatus,
     SystemOutboxTargetType,
 )
-from src.app.workline.models.session import SessionStatus
 from src.celery_app.app import celery_app
 from src.utils.timezone import timezone
 

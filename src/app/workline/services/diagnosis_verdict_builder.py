@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.app.workline.models.runtime import (
+from src.app.runtime.orchestration.models.runtime import (
     DiagnosisEvidenceHealthItemResponse,
     DiagnosisEvidenceHealthResponse,
     DiagnosisVerdictResponse,
