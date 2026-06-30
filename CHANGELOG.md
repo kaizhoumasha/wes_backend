@@ -5,7 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.2.1] - 2026-06-30
+
+> **Note**:0.10.1.0(阶段 3)与 0.10.2.0(阶段 4)版本号 bump commit 已落地(`f0aab25a` / `f492f16a`),但阶段 3/4 改动描述未单独切分为独立 [0.10.1.0] / [0.10.2.0] 段,统一累积在 [Unreleased] 段中;659b9e78 阶段 6 重新校准后该累积段正式落盘为 [0.10.2.1]。如需补拆,可对照 `f0aab25a` / `f492f16a` / `8ff83d5c` / `6cd0aa23` / `628dbfdf` / `2905eb54` / `34c10eae` / `f7970a5d` / `4bb76b00` 9 个阶段 3+4 提交单独回填。
 
 ### Removed
 - `src/workline_runtime/` 整目录物理删除 (50 源文件: contracts/、diagnostics/、plugin_sdk/ 子包 + plugin_base 等 15 顶层模块) — Phase 2 burn-down 阶段 3 目标态锁定。
