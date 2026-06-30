@@ -179,9 +179,14 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         if not command or not command.id:
             raise NotFoundException(f"回调指令不存在: {callback.command_code}")
 
-        from src.app.runtime.orchestration.services import runtime_reconciliation_facade
+        # Phase 2 burn-down 阶段 5:RuntimeReconciliationFacade 物理删除,device 域直接走
+        # workline shim 路径(impl 模块在 sys.modules 上替换此 shim,行为等价)。
+        # 测试契约 `tests/contracts/device/test_device_command_service_contract.py` 已用同一路径。
+        from src.app.workline.services.runtime_reconciliation_service import (
+            workline_runtime_reconciliation_service,
+        )
 
-        if await runtime_reconciliation_facade.record_late_callback_if_pending(
+        if await workline_runtime_reconciliation_service.record_late_callback_if_pending(
             db,
             command=command,
             callback_payload=callback.model_dump(mode="json"),
@@ -390,9 +395,12 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         updated_command_id = updated_command.id
         if ack_received_at is not None:
-            from src.app.runtime.orchestration.services import runtime_reconciliation_facade
+            # Phase 2 burn-down 阶段 5:facade 物理删除,见上方同段注释。
+            from src.app.workline.services.runtime_reconciliation_service import (
+                workline_runtime_reconciliation_service,
+            )
 
-            _ = await runtime_reconciliation_facade.activate_execution_deadline_after_ack(
+            _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
                 db,
                 command_id=updated_command_id,
                 ack_received_at=ack_received_at,

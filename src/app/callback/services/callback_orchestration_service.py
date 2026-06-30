@@ -336,9 +336,13 @@ class CallbackOrchestrationService:
         )
 
         if is_workline_callback:
-            from src.app.runtime.orchestration.services import runtime_reconciliation_facade
+            # Phase 2 burn-down 阶段 5:RuntimeReconciliationFacade 物理删除。
+            # callback 域直接走 workline shim 路径(impl sys.modules alias,行为等价)。
+            from src.app.workline.services.runtime_reconciliation_service import (
+                workline_runtime_reconciliation_service,
+            )
 
-            if await runtime_reconciliation_facade.record_late_callback_if_pending(
+            if await workline_runtime_reconciliation_service.record_late_callback_if_pending(
                 db,
                 command=cast("Any", existing_command),
                 callback_payload=callback.model_dump(mode="json"),
