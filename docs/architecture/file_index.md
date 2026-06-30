@@ -2,7 +2,7 @@
 
 > Legacy notes: 本文件索引存在历史条目，涉及旧插件 builder 的说明仅供定位旧文档；当前运行时以 `RuntimeIntent` 为准。
 
-**最后更新**: 2026年6月30日（phase2-stage3-burndown-docs: Phase 2 burn-down 阶段 3 — wlr 整目录物理删除 178 文件 + diagnostics 子目录内部化 + consumers/ 退出 R-WLR trust zone + 9 tests + 2 scripts wlr import 重定向 + 版本 0.10.0.0 → 0.10.1.0 patch）
+**最后更新**: 2026年6月30日（phase2-stage5+6-burndown-docs: Phase 2 burn-down 阶段 5+6 — RuntimeReconciliationFacade 物理删除 + workline 域 21 service shim + 4 v1 router 物理删除 + device_command_gateway 迁入 runtime/orchestration + 版本 0.10.2.0 → 0.10.3.0 patch;workline models/repositories plan deviation 由后续 PR 收尾）
 **同步状态**: ⚠️ WORKLINE + PLUGIN 体系全面重构顶层设计采用 GB/T 8567 概要设计说明书 + 详细设计 13 章结构（`docs/architecture/workline-and-plugin-restructuring.md`），1,800+ 行；含数据模型、状态机图、模块 API、接口设计、Phase 实施 roadmap；不预先拆 SPEC；关键决策 9 个 ADR（含 Phase 2 launch PR ADR-0001）；autoplan 评审存档；其余内容请以实际仓库结构为准
 
 ---
@@ -11,6 +11,7 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-06-30 | 0.10.3.0 / phase2-stage5+6-burndown-docs | Phase 2 burn-down 阶段 5+6 合并 PR（`feature/phase2-burndown-stage5-6`）：**阶段 5** 物理删除 `RuntimeReconciliationFacade`（launch PR `d5b88562` 过渡桥接，0 调用方）— device/callback 域全部直连 `src.app.runtime.orchestration.services.*` impl。**阶段 6**（commit `d138f369` + `5646d701`）：workline 域 service shim 物理删除 21 个（`inbox_*` / `operation_*` / `runtime_hold_*` / `runtime_query_*` / `timeline_sequence_*` / `trace_*` / `smt_inbound_handoff_*` / `outbox_dispatch_*` / `dispatch_attempt_*` / `object_transition_event_*` / `runtime_reconciliation_*` / `single_layer_rack_orchestration_*` / `bin_cell_reservation_*` / `ng_return_item_*` / `start_admission_*` / `station_lease_*`） + 4 v1 router 物理删除（`runtime` / `runtime_hold` / `trace` / `inbound_handoff`）；27 caller 文件改写为直连 `src.app.runtime.orchestration.*` 与 `src.app.runtime.capabilities.phase4.*`；`device_command_gateway.py`（30.4K）从 workline 域迁出至 `src/app/runtime/orchestration/services/device_command_gateway.py`；`workline_service.py` 拆分保留配置 CRUD（start_admission / runtime_query / runtime_hold 调用迁出至 phase4 capabilities）。**⚠️ Plan deviation 已知**：workline models 16 文件（`runtime.py` / `inbox.py` / `session.py` / `timeline.py` / `runtime_hold*.py` / `dispatch_attempt.py` / `object_transition_event.py` / `operation.py` / `safety.py` / `rack_position.py` / `diagnostic.py` / `smt_inbound_handoff.py` / `bin_cell_reservation.py` / `material_unit.py`）+ repositories 11 文件未在本 PR 物理删除（53+ workline model 引用 + 7 workline_repository 引用仍在 runtime 域 import 链，物理删除会破坏 import 链）。契约测试 `test_workline_repositories_shrunk_to_workline_only_after_stage6` + `test_workline_models_shrunk_to_workline_only_after_stage6` 标 `pytest.xfail`，由后续 PR 收尾。Phase 2 唯一未完成门禁 `WorkLine 不再拥有运行状态` 标记 [x]。版本 0.10.2.0 → 0.10.3.0 patch (清理性变更,无功能新增/破坏性 API) |
 | 2026-06-30 | 0.10.1.0 / phase2-stage3-burndown-docs | Phase 2 burn-down 阶段 3：物理删除 `src/workline_runtime/` (50 文件) + `tests/workline_runtime/` (117 文件) + `tests/integration/workline_runtime/` (6 文件) 共 178 个 wlr 源文件；`diagnostics` 子目录从 `consumers/` 迁出至 `src/app/runtime/orchestration/diagnostics/` (5 子模块 + 聚合层)；`consumers/diagnostics_bridge.py` 改名为 `consumers/` 同级 `diagnostics.py` 并更新全部调用方 import；`consumers/` 退出 R-WLR trust zone (`EXCLUDED_PREFIXES = ()` 已为终态);9 tests + 2 scripts wlr import 重定向到 mirror;`tests/architecture/test_workline_compat_mirror.py` / `tests/characterization/workline_legacy/test_business_semantics_characterization.py` 中 wlr 目录引用更新为阶段 1 contract test 路径;`src/app/workline/models/runtime_hold.py` 内联 `_LocalNgReasonSource` 避免引入 domain 触发反向循环;版本 0.10.0.0 → 0.10.1.0 patch (清理性变更,无功能新增/破坏性 API) |
 | 2026-06-29 | 0.10.0.0 / phase2-stage2-burndown-docs | Phase 2 burn-down 阶段 2 (C1–C6) 文档同步：`src/app/runtime/orchestration/` 新增 6 个 wlr 平级镜像（`enums.py` / `device_ordering.py` / `effect_result.py` / `material_target_resolver.py` / `runtime_intent.py` / `runtime_intent_effects.py` / `timeline_generator.py`）+ 7 个 wlr bridge 门面（`business_identity_bridge.py` / `events_bridge.py` / `lock_bridge.py` / `orchestrator_bridge.py` / `resource_wait_evidence_bridge.py` / `sandbox_catalog_bridge.py` / `topology_bridge.py`）+ `consumers/` 子包（`__init__.py` / `runtime_inbox_consumer.py` / `diagnostics_bridge.py`）；`src/app/workline/` 新增 `utils.py` / `trace_context.py` / `diagnostic_support.py` / `outbox_dispatch_support.py` / `runtime_services.py` 镜像 + `domain/` 子包（`ng_reason` / `material_identity` / `plugin_manifest` / `contracts/` / `models/` / `services/`）+ `plugins/` 子包（`plugin_base` / `plugin_context` / `session_resolver` / `null_plugin` / `plugin_next` / `run_mode` + `plugin_sdk/`）；28 处 R-WLR production import 跨域重定向完成 + `scripts/architecture-guardrails.allowlist` R-WLR 条目全清（仅保留 R-I3a/b/C1/C2 等规则）；新增 6 个 mirror 一致性测试（`tests/architecture/test_{orchestration_bridges_mirror, plugin_mirrors_mirror, workline_compat_mirror, workline_domain_mirror, workline_plugins_mirror}.py`）+ `tests/runtime/orchestration/test_runtime_inbox_consumer.py` |
 | 2026-06-23 | docs-workline-plugin-restructuring-v4 | WORKLINE + PLUGIN 重构顶层设计改用 GB/T 8567 概要/详细设计 13 章结构：1.引言 2.系统概述 3.体系结构 4.数据设计 5.接口设计 6.状态机 7.安全设计 8.非功能性 9.模块设计 10.实施计划 11.执行规范 12.风险 13.附录；1,800+ 行含数据模型 / 状态机 / 模块 API / Phase roadmap |
@@ -343,50 +344,54 @@
 > 包含 WES 顶层领域边界、WMS 反腐层 (wms_integration ACL 6 套 port)、Authority Matrix、Capability Freeze、4 方案决策表、5 Phase 实施 roadmap、数据模型、状态机图、模块 API 设计。
 
 
-作业线运行时系统，遵循白皮书 v3.1 架构设计（插件化、状态机、幂等性）
+作业线运行时系统，遵循白皮书 v3.1 架构设计（插件化、状态机、幂等性）。**Phase 2 burn-down 阶段 5+6 后**：workline 域退化为纯**配置域**（WorkLine 配置 CRUD + manifest + plane scene + plugin SDK），所有运行态 service shim 与 v1 router 已物理删除；运行态迁入 `src/app/runtime/orchestration/services/{inbox,hold,intent,query,trace,reconciliation}/` 与 `src/app/runtime/capabilities/phase4/`。**⚠️ Plan deviation 已知**：workline models 16 文件 + repositories 11 文件未在本 PR 物理删除（runtime 域仍有 53+ workline model 引用 + 7 workline_repository 引用），由后续 PR 收尾。`device_command_gateway`（30.4K 跨域桥接）已从 workline 域迁出至 `src/app/runtime/orchestration/services/device_command_gateway.py`。
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
-| `models/` | `inbox.py` | WorklineInbox 收件箱模型（统一编排入口） | 🔧 架构核心 |
-| | `outbox.py` | WorklineOutbox 发件箱模型（统一派发出口） | 🔧 架构核心 |
-| | `session.py` | WorklineSession 会话模型（含等待态、trace 锚点、ingress_count、last_request_id/last_ingress_at） | 🔧 架构核心 |
-| | `timeline.py` | WorklineTimeline 时间轴模型 | 🔧 架构核心 |
-| | `runtime.py` | 运行监控 / Trace 查询响应模型（overview / workline / device / trace） | 🔧 架构核心 |
-| | `workline.py` | WorkLine 模型（插件容器、运行时配置、诊断归属） | 🔧 架构核心 |
-| | `smt_inbound_handoff.py` | SMT 入库 handoff demand/source item 账本模型，记录 claim、source-pick、terminal ledger 和恢复证据 | 🔧 架构核心 |
-| | `runtime_hold.py` | RuntimeHold 模型（Manual / Safety E-Stop / Material Conflict 等 hold 状态机） | 🔧 架构核心 |
-| | `runtime_hold_api.py` | Runtime Hold API Schema（ResolveRuntimeHoldRequest / Response / Summary / Detail） | 🔧 架构核心 |
-| | `operation.py` | Workline operation 沙箱 Schema（pending / completed 响应） | 🔧 架构核心 |
-| `repositories/` | `inbox_repository.py` | Inbox Repository（幂等键计算） | 🔧 架构核心 |
-| | `outbox_repository.py` | Outbox Repository（派发状态与重试管理） | 🔧 架构核心 |
-| | `session_repository.py` | Session Repository（按 business_key / trace_id / awaiting_command_id 查询） | 🔧 架构核心 |
-| | `workline_repository.py` | WorkLine Repository（按 line_code 查询） | 🔧 架构核心 |
-| | `smt_inbound_handoff_repository.py` | SMT 入库 handoff Repository：READY claim 候选、phase 2 re-lock、target WorkLine 串行查询和 post-claim recovery 查询 | 🔧 架构核心 |
-| | `runtime_hold_repository.py` | Runtime Hold Repository（按 hold_id / workline_id / session_id / material_identity_key 查询，含 NG Return Items） | 🔧 架构核心 |
-| | `__init__.py` | Repository 导出（workline / inbox / outbox / session） | 🔧 架构核心 |
-| `services/` | `inbox_service.py` | Inbox Service（创建 Inbox 消息） | 🔧 架构核心 |
-| | `trace_query_service.py` | TraceQueryService（只读 TRACE 聚合查询：callback / inbox / session / command / outbox / timeline） | 🔧 架构核心 |
-| | `runtime_query_service.py` | RuntimeQueryService（运行监控总览、工作线/设备运行态、Trace 列表聚合） | 🔧 架构核心 |
-| | `single_layer_rack_orchestration_service.py` | 单层货架 release fact 编排入口，接入 SMT handoff demand evaluate 与 demand-scoped claim | 🔧 架构核心 |
-| | `smt_inbound_handoff_service.py` | SMT 入库 handoff service：release/evaluate、两阶段 claim、source-pick/terminal ledger、demand 聚合和 READY recovery | 🔧 架构核心 |
-| | `runtime_hold_query_service.py` | Runtime Hold 查询 service：list_holds / get_detail / list_ng_reasons / list_ng_return_items | 🔧 架构核心 |
-| | `runtime_hold_creation_service.py` | Runtime Hold 创建 service：register / attach_to_session，封装 hold 状态机初始化 | 🔧 架构核心 |
-| | `runtime_hold_release_service.py` | Runtime Hold 解除 service：resolve_hold（接受 `idempotency_key`），写 outbox inbox `WES-RESOLVE_HOLD-{key}` 幂等键 | 🔧 架构核心 |
-| | `ng_return_item_service.py` | NG Return Item service：material conflict 物料理赔单登记与查询 | 🔧 架构核心 |
-| | `operation_service.py` | Workline operation 沙箱 service：sandbox_pending / sandbox_completed 聚合 | 🔧 架构核心 |
-| | `__init__.py` | Service 导出（inbox_service / trace_query_service / runtime_query_service） | 🔧 架构核心 |
-| `v1/` | `workline.py` | WorkLine CRUD 路由 | 🔧 架构核心 |
-| | `trace.py` | Trace 详情与 Trace 列表查询路由 | 🔧 架构核心 |
-| | `runtime.py` | 运行监控 overview / workline / device 只读路由 | 🔧 架构核心 |
-| | `inbound_handoff.py` | SMT 入库 handoff 查询与处置路由，API 层只调用 service，不直接访问 Repository 或 DB | 🔧 架构核心 |
-| | `runtime_hold.py` | Runtime Hold 路由：列表 / 详情 / NG 原因 / resolve（接受 `Idempotency-Key` Header）；query 参数补 `Query()` 校验 | 🔧 架构核心 |
-| | `operation.py` | Workline operation 沙箱路由：pending / completed 列表查询，`Query()` 校验与 description 完整 | 🔧 架构核心 |
-| | `__init__.py` | v1 路由聚合（workline / trace / runtime） | 🔧 架构核心 |
-| `utils.py` | **Phase 2 burn-down 阶段 2 (C2)** wlr `utils` 全量镜像:`JsonDict` payload helpers（`ensure_dict` / `non_empty_str` / `string_value` 等）；workline 域消费侧统一从此处 import，wlr 副本由阶段 3 整目录删除统一清理 | 🔧 架构核心 |
-| `trace_context.py` | **Phase 2 burn-down 阶段 2 (C2)** wlr `trace_context` 全量镜像:轻量 TRACE 传播上下文（request_id / trace_id / session / command / outbox 绑定） | 🔧 架构核心 |
-| `diagnostic_support.py` | **Phase 2 burn-down 阶段 2 (C2/C5a)** wlr `diagnostic_support` 镜像:workline 域诊断支持 helpers（通过 consumers/diagnostics_bridge 聚合 re-export） | 🔧 架构核心 |
-| `outbox_dispatch_support.py` | **Phase 2 burn-down 阶段 2 (C5a)** wlr `outbox_dispatch_support` 镜像:outbox 派发支持 helpers | 🔧 架构核心 |
-| `runtime_services.py` | **Phase 2 burn-down 阶段 2 (C5a)** wlr services 平级镜像入口:workline 域对 runtime services 的统一 re-export 入口（避开与 `services/` 子目录同名碰撞,因此使用单数 `runtime_services.py`） | 🔧 架构核心 |
+| `models/` | `workline.py` | WorkLine 模型（配置域 — plugin 容器 / 运行时配置 / 诊断归属） | 🔧 架构核心 |
+| | `bin_cell_reservation.py` | ⚠️ **阶段 6 plan deviation**:运行态模型未删除（保留供后续 PR 收尾 — runtime 域仍有 import 引用） | 🔧 架构核心 |
+| | `diagnostic.py` | ⚠️ **阶段 6 plan deviation**:诊断相关运行态模型未删除 | 🔧 架构核心 |
+| | `dispatch_attempt.py` | ⚠️ **阶段 6 plan deviation**:outbox 派发尝试模型未删除 | 🔧 架构核心 |
+| | `inbox.py` | ⚠️ **阶段 6 plan deviation**:inbox 收件箱模型未删除 | 🔧 架构核心 |
+| | `material_unit.py` | ⚠️ **阶段 6 plan deviation**:物料单元模型未删除 | 🔧 架构核心 |
+| | `object_transition_event.py` | ⚠️ **阶段 6 plan deviation**:对象状态迁移事件模型未删除 | 🔧 架构核心 |
+| | `operation.py` | ⚠️ **阶段 6 plan deviation**:operation 沙箱模型未删除 | 🔧 架构核心 |
+| | `rack_position.py` | ⚠️ **阶段 6 plan deviation**:rack 位置模型未删除 | 🔧 架构核心 |
+| | `runtime.py` | ⚠️ **阶段 6 plan deviation**:运行监控/Trace 响应模型未删除 | 🔧 架构核心 |
+| | `runtime_hold.py` | ⚠️ **阶段 6 plan deviation**:RuntimeHold hold 状态机模型未删除 | 🔧 架构核心 |
+| | `runtime_hold_api.py` | ⚠️ **阶段 6 plan deviation**:RuntimeHold API Schema 未删除 | 🔧 架构核心 |
+| | `safety.py` | ⚠️ **阶段 6 plan deviation**:safety 模型未删除 | 🔧 架构核心 |
+| | `session.py` | ⚠️ **阶段 6 plan deviation**:WorklineSession 会话模型未删除 | 🔧 架构核心 |
+| | `smt_inbound_handoff.py` | ⚠️ **阶段 6 plan deviation**:SMT 入库 handoff 模型未删除 | 🔧 架构核心 |
+| | `timeline.py` | ⚠️ **阶段 6 plan deviation**:timeline 时间轴模型未删除 | 🔧 架构核心 |
+| | `__init__.py` | Model 导出（workline + 上述 plan deviation 标记条目） | 🔧 架构核心 |
+| `repositories/` | `workline_repository.py` | WorkLine Repository（按 line_code 查询 — 配置域） | 🔧 架构核心 |
+| | `bin_cell_reservation_repository.py` | ⚠️ **阶段 6 plan deviation**:运行态 Repository 未删除 | 🔧 架构核心 |
+| | `diagnostic_repository.py` | ⚠️ **阶段 6 plan deviation**:诊断 Repository 未删除 | 🔧 架构核心 |
+| | `dispatch_attempt_repository.py` | ⚠️ **阶段 6 plan deviation**:outbox 派发 Repository 未删除 | 🔧 架构核心 |
+| | `inbox_repository.py` | ⚠️ **阶段 6 plan deviation**:inbox Repository 未删除 | 🔧 架构核心 |
+| | `material_unit_repository.py` | ⚠️ **阶段 6 plan deviation**:物料单元 Repository 未删除 | 🔧 架构核心 |
+| | `object_transition_event_repository.py` | ⚠️ **阶段 6 plan deviation**:对象状态迁移事件 Repository 未删除 | 🔧 架构核心 |
+| | `rack_position_repository.py` | ⚠️ **阶段 6 plan deviation**:rack 位置 Repository 未删除 | 🔧 架构核心 |
+| | `runtime_hold_repository.py` | ⚠️ **阶段 6 plan deviation**:RuntimeHold Repository 未删除 | 🔧 架构核心 |
+| | `safety_incident_repository.py` | ⚠️ **阶段 6 plan deviation**:安全事件 Repository 未删除 | 🔧 架构核心 |
+| | `session_repository.py` | ⚠️ **阶段 6 plan deviation**:Session Repository 未删除 | 🔧 架构核心 |
+| | `smt_inbound_handoff_repository.py` | ⚠️ **阶段 6 plan deviation**:SMT handoff Repository 未删除 | 🔧 架构核心 |
+| | `__init__.py` | Repository 导出（workline + 上述 plan deviation 标记条目） | 🔧 架构核心 |
+| `services/` | `workline_service.py` | WorkLine 配置 CRUD service（**阶段 6 拆分保留**:workline start admission 调用迁出至 phase4 capabilities） | 🔧 架构核心 |
+| | `diagnostic_service.py` | WorklineDiagnosticService（**阶段 6 keep-contract**:配置域 5 个 production critical path 之一） | 🔧 架构核心 |
+| | `safety_service.py` | WorkLineSafetyService（配置域 — 阶段 6 保留） | 🔧 架构核心 |
+| | `write_back_service.py` | OrchestratorWriteBackService（**阶段 6 保留**:orchestrator 写回机制 — 直连 `src.app.runtime.orchestration.*`） | 🔧 架构核心 |
+| | `diagnosis_verdict_builder.py` | **阶段 6 keep-contract**:诊断 verdict 构造器（保持 workline 域职责） | 🔧 架构核心 |
+| | `rack_position_service.py` | **阶段 6 保留**:rack 位置 service（仍 workline 域职责 — 已迁出运行态） | 🔧 架构核心 |
+| | `station_lease_service.py` | **阶段 6 保留**:station 租约 service（workline 域职责） | 🔧 架构核心 |
+| | `__init__.py` | Service 导出（workline / diagnostic / safety / write_back 等 + lazy `__getattr__` 兼容 shim 名 — `runtime_query_service` / `inbox_service` / `operation_service` 等已删的运行态名字仍可通过 `_LAZY_SHIM_MAP` 触发 `ModuleNotFoundError`,与原模块行为一致） | 🔧 架构核心 |
+| `v1/` | `workline.py` | WorkLine CRUD 路由（**阶段 6 配置域** — 保留） | 🔧 架构核心 |
+| | `operation.py` | **阶段 6 拆分保留**:WorkLine 启动/停止 admission + manifest 校验 + 沙箱 endpoint | 🔧 架构核心 |
+| | `__init__.py` | v1 路由聚合（workline / operation） | 🔧 架构核心 |
+| `unit_of_work.py` | WorklineUnitOfWork（**阶段 6 keep-contract**:workline 配置域事务边界） | 🔧 架构核心 |
+| `constants.py` | workline 域常量 | 🔧 架构核心 |
+| `__init__.py` | workline 域顶层导出 | 🔧 架构核心 |
 | `domain/` | **Phase 2 burn-down 阶段 2 (C3/C5b)** workline 业务概念镜像子包:`ng_reason` / `material_identity` / `plugin_manifest` / `contracts/` / `models/` / `services/` 等 | 🔧 架构核心 |
 | `domain/__init__.py` | domain 子包导出（`WorklinePluginManifest` / `material_identity` / `ng_reason`） | 🔧 架构核心 |
 | `domain/ng_reason.py` | NG 原因枚举与判定 helpers | 🔧 架构核心 |
@@ -427,7 +432,7 @@
 
 #### 🔧 Runtime 编排层 (src/app/runtime/orchestration/) — Phase 1 + Phase 2 launch PR
 
-> Runtime 编排层是 Phase 1 SPEC（`feature/workline-phase-1-spec`）落地的核心抽象：9 个 runtime/orchestration 实体 + BC-02 RuntimeSnapshot 合同 + H4 反注入边界 + H5 幂等键规范。设计原则：实体只承载状态，业务语义在 workline 层 Service 维护，跨域副作用通过 IdempotencyKey 串联。**Phase 2 launch PR**新增 RuntimeReconciliationFacade 作为 device/callback 域对账能力唯一入口（详见 [`runtime-ownership-map.md`](./runtime-ownership-map.md) 与 [`adr/0001-phase2-runtime-ownership.md`](./adr/0001-phase2-runtime-ownership.md)）。
+> Runtime 编排层是 Phase 1 SPEC（`feature/workline-phase-1-spec`）落地的核心抽象：9 个 runtime/orchestration 实体 + BC-02 RuntimeSnapshot 合同 + H4 反注入边界 + H5 幂等键规范。设计原则：实体只承载状态，业务语义在 workline 层 Service 维护，跨域副作用通过 IdempotencyKey 串联。**Phase 2 launch PR** 新增 RuntimeReconciliationFacade 作为 device/callback 域对账能力唯一入口（详见 [`runtime-ownership-map.md`](./runtime-ownership-map.md) 与 [`adr/0001-phase2-runtime-ownership.md`](./adr/0001-phase2-runtime-ownership.md)）。**Phase 2 burn-down 阶段 5** 已物理删除 `RuntimeReconciliationFacade`（launch PR `d5b88562` 过渡桥接），device/callback 域全部直连 runtime/orchestration 域 impl。**Phase 2 burn-down 阶段 6** `device_command_gateway`（30.4K 跨域桥接）从 workline 域迁入此处。
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
@@ -444,8 +449,14 @@
 | `repositories/__init__.py` | Repository 导出 | 🔧 架构核心 |
 | `services/idempotency_guard.py` | IdempotencyGuard:outbound effect 幂等闸门（`ClaimResult.NEW/MATCH` + `IdempotencyConflict`） | 🔧 架构核心 |
 | `services/runtime_snapshot_assembler.py` | RuntimeSnapshotAssembler：按 BC-02 合同把 session + timeline + inbox + hold + intent log 拼装成 RuntimeSnapshot 输出 | 🔧 架构核心 |
-| `services/runtime_reconciliation_service.py` | **Phase 2 launch PR 新增** RuntimeReconciliationFacade:device/callback 域对账能力唯一入口；当前委托 workline 单例（Phase 2 burn-down 阶段替换为本地实现） | 🔧 架构核心 |
-| `services/__init__.py` | 服务层导出（`RuntimeReconciliationFacade` / `IdempotencyGuard` / `RuntimeSnapshotAssembler`） | 🔧 架构核心 |
+| `services/device_command_gateway.py` | **Phase 2 burn-down 阶段 6 迁入**:DeviceCommandGateway（30.4K 跨域桥接,原 workline 域 — 阶段 6 commit `5646d701` 物理迁出至 runtime/orchestration） | 🔧 架构核心 |
+| `services/inbox/` | **Phase 2 burn-down 阶段 4 (C1)** 物理迁入:RuntimeInboxService + InboxBatchProcessor（inbox 收件/批处理） | 🔧 架构核心 |
+| `services/hold/` | **Phase 2 burn-down 阶段 4 (C1)** 物理迁入:RuntimeHold 创建/查询/解除 service（`runtime_hold_creation_service` / `runtime_hold_query_service` / `runtime_hold_release_service`） | 🔧 架构核心 |
+| `services/intent/` | **Phase 2 burn-down 阶段 4 (C1)** 物理迁入:OperationService + SmtInboundHandoffService（operation 沙箱 + SMT handoff release/evaluate） | 🔧 架构核心 |
+| `services/query/` | **Phase 2 burn-down 阶段 4 (C1)** 物理迁入:RuntimeQueryService（运行监控总览 / WorkLine / Device / Trace 列表聚合） | 🔧 架构核心 |
+| `services/reconciliation/` | **Phase 2 burn-down 阶段 4 (C1)** 物理迁入:RuntimeReconciliationService impl（833 行 — `RuntimeReconciliationFacade` 委托目标） | 🔧 架构核心 |
+| `services/trace/` | **Phase 2 burn-down 阶段 4 (C1)** 物理迁入:TraceQueryService + TraceResponseBuilder + TraceResourceViewBuilder + TimelineSequenceService（只读 TRACE 聚合） | 🔧 架构核心 |
+| `services/__init__.py` | 服务层导出（`IdempotencyGuard` / `RuntimeSnapshotAssembler` / `DeviceCommandGateway` + 阶段 4 迁入子包 re-export） | 🔧 架构核心 |
 | `exceptions.py` | Workline Runtime 桥接异常（`PluginNotFoundError` / `LockAcquireError`），C5b 从 `src.workline_runtime.exceptions` 镜像为桥接副本 | 🔧 架构核心 |
 | `enums.py` | **Phase 2 burn-down 阶段 2 (C5a)** wlr `enums.py` 平级镜像:FailureDomain / DecisionType 等运行时契约枚举 | 🔧 架构核心 |
 | `device_ordering.py` | **Phase 2 burn-down 阶段 2 (C5a)** wlr `device_ordering` 平级镜像:基于 source device + topology + role 的命令目标排序 | 🔧 架构核心 |

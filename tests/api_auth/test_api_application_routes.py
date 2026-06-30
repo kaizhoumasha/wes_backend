@@ -41,16 +41,6 @@ def test_generated_crud_routes_use_api_application_permission_resource() -> None
     assert _permission_names("/applications/{id}/permanent", "DELETE") == ["api-auth:api_application:permanent_delete"]
 
 
-def test_workline_inbound_handoff_routes_are_registered_under_workline_router() -> None:
-    from src.app.workline.v1 import router as workline_router
-
-    route_paths = {(route.path, tuple(sorted(route.methods))) for route in workline_router.routes}
-
-    assert ("/inbound-handoff/demands", ("GET",)) in route_paths
-    assert ("/inbound-handoff/demands/{demand_id}", ("GET",)) in route_paths
-    assert ("/inbound-handoff/source-items/{source_item_id}/actions/retry-source-pick", ("POST",)) in route_paths
-
-
 def test_application_response_exposes_assigned_permissions() -> None:
     assert "permissions" in APIApplicationResponse.model_fields
 

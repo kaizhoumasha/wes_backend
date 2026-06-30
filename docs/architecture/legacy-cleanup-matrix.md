@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-  逐入口数据在 legacy-cleanup-matrix.csv（830 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（831 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -37,7 +37,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **830** |
+| **total_entries** | **831** |
 | phase4_carrier（承载 Phase 4 业务语义） | 241 |
 | pending-review | 0 |
 
@@ -45,7 +45,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | entry_type | count |
 | --- | ---: |
-| service | 325 |
+| service | 326 |
 | model | 192 |
 | plugin | 116 |
 | domain_object | 91 |
@@ -59,7 +59,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | strategy | count |
 | --- | ---: |
-| rebuild | 536 |
+| rebuild | 537 |
 | keep-contract | 196 |
 | delete | 81 |
 | move | 17 |
@@ -68,7 +68,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | drop_phase | count |
 | --- | ---: |
-| phase2 | 302 |
+| phase2 | 303 |
 | phase5-tech | 278 |
 | phase4 | 241 |
 | phase1 | 9 |
@@ -77,7 +77,7 @@ uv run python scripts/generate_legacy_matrix.py
 
 | current_owner | count |
 | --- | ---: |
-| workline | 617 |
+| workline | 618 |
 | workline_plugins | 178 |
 | workline_runtime | 9 |
 | runtime | 8 |

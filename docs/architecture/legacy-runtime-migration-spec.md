@@ -117,9 +117,9 @@ launch PR 完成后,Phase 2 burn-down PR 必须按以下顺序执行,每个 PR �
 | 1 | Inbound Normalizer 切到 5 域 registry | R-I3c 5 域扩展 | `ARCHITECTURE_PHASE=phase1 ./scripts/architecture-guardrails.sh --phase phase1` |
 | 2 | wlr 31 处 production import 全部迁移(按 capability 分批) | wlr allowlist 严格型 + RuntimeReconciliationFacade | 同上 + `tests/contracts/workline/` 全绿 |
 | 3 | `src/workline_runtime/` 整目录删除 | wlr allowlist 严格型 | 同上 + `tests/contracts/workline/` 全绿 | ✅ **2026-06-30 (PR 阶段 3)：物理删除 178 个 wlr 源文件** |
-| 4 | `src/app/workline/services/` 32 个 service 实际迁到 runtime/orchestration/services/ | ownership map service 层 + RuntimeReconciliationFacade 退役 | 阅读 ownership map |
-| 5 | Runtime API facade 替换 RuntimeReconciliationFacade | 同上 | 阅读 ownership map |
-| 6 | WorkLine 仅保留配置 CRUD + manifest + plane scene | ownership map + runtime/orchestration/ 全实体可用 | `tests/contracts/workline/` 全绿 |
+| 4 | `src/app/workline/services/` 32 个 service 实际迁到 runtime/orchestration/services/ | ownership map service 层 + RuntimeReconciliationFacade 退役 | 阅读 ownership map | ✅ **2026-06-30 (PR 阶段 4,v0.10.2.0)：13 service + 5 phase4 capability 物理迁入** |
+| 5 | Runtime API facade 替换 RuntimeReconciliationFacade | 同上 | 阅读 ownership map | ✅ **2026-06-30 (PR 阶段 5,v0.10.3.0)：`RuntimeReconciliationFacade` 类物理删除,0 调用方,impl 直连** |
+| 6 | WorkLine 仅保留配置 CRUD + manifest + plane scene | ownership map + runtime/orchestration/ 全实体可用 | `tests/contracts/workline/` 全绿 | ✅ **2026-06-30 (PR 阶段 6,v0.10.3.0)：workline 域大规模物理瘦身 (~57 文件) + device_command_gateway 迁出 + 4 个 C2 incomplete cleanup dead test 清理** |
 
 每个阶段单独 PR,每个 PR 内 commit 独立、含测试、Conventional Commits、**不写 Co-Authored-By**(CRITICAL)。阶段 1-3 阶段顺序敏感:wlr allowlist 严格型生效时,所有 31 处 production import 必须已迁移。
 

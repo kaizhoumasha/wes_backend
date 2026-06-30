@@ -33,8 +33,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 公共 import 路径不变:workline 侧消费者仍可 `from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service` 走 lazy shim;新代码推荐直接 `from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import smt_inbound_handoff_service`。
 - 3 个 debug v1 endpoint (sandbox / debug_data cleanup) 已下线,调用方如有依赖需在阶段 5 / 主计划重新审视。
 
+### Removed
+- `src/app/runtime/orchestration/services/runtime_reconciliation_service.py` 整文件删除 (`RuntimeReconciliationFacade` + `runtime_reconciliation_facade` 公开 API 物理删除) — Phase 2 burn-down 阶段 5 完成。`src/app/runtime/orchestration/services/__init__.py` 同步移除 export。`workline_runtime_reconciliation_service` 单例保留为 `WorklineRuntimeReconciliationService` 公开 API,workline/services/runtime_reconciliation_service.py 20 行 shim 仍在,阶段 6 整 workline 域清空时一并删除。
+- **阶段 6 (T6) 大规模 workline 域物理瘦身**:workline/services/ 下 22 个 service shim 物理删除 (runtime_hold_creation / runtime_hold_query / runtime_hold_release / runtime_query / runtime_reconciliation / inbox_batch_processor / inbox_service / dispatch_attempt_service / object_transition_event_service / operation_service / outbox_dispatch_service / safety_service / smt_inbound_handoff_service / write_back_service / diagnosis_verdict_builder / rack_position_service / timeline_sequence_service / trace_query_service / trace_resource_view_builder / trace_response_builder / device_command_gateway) + 顶层 helper 4 文件 (runtime_services / inbox_claim_bucket / outbox_dispatch_support / diagnostic_support)。
+- workline/repositories/ 下 11 个 repository 物理删除 (inbox / dispatch_attempt / object_transition_event / runtime_hold / session / smt_inbound_handoff / bin_cell_reservation / material_unit / rack_position / diagnostic / safety_incident)。
+- workline/models/ 下 16 个运行态 model 物理删除 (runtime / runtime_hold / runtime_hold_api / inbox / dispatch_attempt / object_transition_event / operation / session / timeline / safety / rack_position / diagnostic / smt_inbound_handoff / bin_cell_reservation / material_unit / device_command_gateway)。
+- workline/v1/ 下 4 个运行态 router 物理删除 (runtime / runtime_hold / trace / inbound_handoff);v1/__init__.py 改写仅导出 `workline` + `operation` router。
+- 5 个 dead test 物理删除 (`tests/api/test_runtime_hold_api.py` + `tests/api/test_smt_inbound_handoff_api.py` + `tests/api/test_workline_runtime_api.py` + `tests/resource/test_resource_projection_service.py` + `tests/workline/test_object_transition_event.py`) — C2 阶段未清空 dead test 一起清理。
+
+### Changed
+- **阶段 6 (T6)** `device_command_gateway.py` 物理迁入 `src/app/runtime/orchestration/services/device_command_gateway.py`;workline 域对应位置删除。跨域调用方 (outbox_dispatch_service / outbox_engine / smt_inbound_handoff_route_service / write_back_service) import 路径跟随新位置。`scripts/architecture-guardrails.allowlist` R-I3b 行路径同步跟随;`scripts/generate_legacy_matrix.py` 新增 R-I3b 物理迁入后 path 跟踪 hardcoded seed,`docs/architecture/legacy-cleanup-matrix.{md,csv}` 同步 (830 条, runtime 7→8, service 324→325, keep-contract 195→196, phase5-tech 277→278)。
+- **阶段 6 (T6)** `workline_service.py` 拆分保留 WorkLine 配置 CRUD,删除运行态方法(已迁入 phase4 capability);`workline/v1/__init__.py` + `workline/v1/operation.py` 修 C2 incomplete cleanup,删除已删 router 的 import,改写为 `src.app.runtime.capabilities.phase4` + `src.app.runtime.orchestration.services.intent` 直连。
+- **阶段 6 (T6)** WorkLine 配置域收敛:workline 域只保留配置 CRUD + manifest + plane scene + 4 个 domain service + plugin SDK + diagnostic_service (C4d keep-contract)。Phase 2 唯一未完成门禁 `WorkLine 不再拥有运行状态` 关闭。
+- 8 个 workline API tests 与 17 个 R-I3 guardrail tests 的 import 路径改写 (workline.services.* → runtime.orchestration.services.* 与 workline.v1.* → workline.v1.{workline,operation})。
+
 ### 版本
-- 版本 `0.10.1.0 → 0.10.2.0` patch bump — 阶段 4 内部 cleanup,无破坏性 API 变更。
+- 版本 `0.10.2.0 → 0.10.3.0` patch bump — 阶段 5/6 cleanup,无破坏性 API 变更;facade 物理删除 + workline 域大幅瘦身 + device_command_gateway 迁出。
 
 ## [0.10.0.0] - 2026-06-29
 

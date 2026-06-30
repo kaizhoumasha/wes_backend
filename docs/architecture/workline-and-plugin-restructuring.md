@@ -1897,7 +1897,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `165711fd fix(callback): 外部回调 H4 边界 WMS 协议白名单扩展 + 子层守卫`
 - `9c790d53 fix(guardrails): 修复 C4 scanner 误报 H4 反注入实现`
 
-### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空 — ✅ launch PR 已合并 (develop HEAD 整合 feature/phase2-launch),burn-down 阶段 1/2/3 已完成 (阶段 3 v0.10.1.0);等待阶段 4 (service 迁移) + 阶段 5 (Runtime API facade) + 阶段 6 (WorkLine 配置化)
+### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空 — ✅ launch PR 已合并 (develop HEAD 整合 feature/phase2-launch),burn-down 阶段 1/2/3 已完成 (阶段 3 v0.10.1.0);burn-down 阶段 4 (v0.10.2.0) + 阶段 5 (RuntimeReconciliationFacade 物理删除) + 阶段 6 (WorkLine 配置化 + 大规模瘦身,v0.10.3.0) 均已完成
 
 **目标**：在 Phase 1 新 runtime/orchestration 骨架已独立可运行后，把旧 WorkLine/plugin/runtime 的执行状态、inbox、timeline、hold、effect dispatch 迁出或删除。旧执行入口不做兼容转发。
 
@@ -1935,7 +1935,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 **Phase 2 完成门禁**：
 
 - [x] `runtime/orchestration` 域独立落地（launch PR commit `d5b88562` facade bridge + `8eab4042` 跨域 import 修复）
-- [ ] WorkLine 不再拥有运行状态（burn-down 阶段 6 完成）
+- [x] WorkLine 不再拥有运行状态（burn-down 阶段 6 完成 — `feature/phase2-burndown-stage5-6` PR,4 commit: 阶段 5 facade 物理删除 + 阶段 6 大规模 workline 域瘦身 + device_command_gateway 迁出 + 文档收尾,v0.10.3.0）
 - [x] legacy 行为契约测试通过（launch PR commit `8602c33b`：`tests/contracts/workline/` 107 passed, 2 xfailed）
 
 **Launch PR 8 commit 落地清单（feature/phase2-launch, 8602c33b）**：
