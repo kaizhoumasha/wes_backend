@@ -6,6 +6,8 @@ from urllib.parse import unquote
 from fastapi import APIRouter, Body, Depends, Path, Query, status
 
 from src.app.workline.models import (
+    PlaneSceneView,
+    PlaneSnapshot,
     WorkLine,
     WorkLineConfigurationStatus,
     WorkLineCreate,
@@ -15,7 +17,7 @@ from src.app.workline.models import (
     WorkLineStateTransitionRequest,
     WorkLineUpdate,
 )
-from src.app.workline.services import workline_service
+from src.app.workline.services import workline_plane_service, workline_service
 from src.core.base_api import BaseAPI
 from src.core.rbac import RequirePermission
 from src.core.response import (
@@ -172,6 +174,48 @@ async def deactivate_workline(
         "ResponseSchemaModel[WorkLineResponse]",
         response_builder.success(data=workline_service.to_response(response_resource, WorkLineResponse)),
     )
+
+
+@router.get(
+    "/work_lines/{id}/plane/scene",
+    summary="[biz:workline:view-plane-scene] 获取作业线平面静态场景",
+    response_model=ResponseSchemaModel[PlaneSceneView],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:view-plane-scene"))],
+)
+async def get_workline_plane_scene(
+    db: AsyncSessionDep,
+    cache: CacheDep,
+    id: int = Path(...),
+) -> ResponseSchemaModel[PlaneSceneView]:
+    """读取 WorkLine 平面态势静态 scene。"""
+
+    try:
+        scene = await workline_plane_service.get_scene(db, cache, id)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[PlaneSceneView]", _workline_value_error_response(exc))
+    return cast("ResponseSchemaModel[PlaneSceneView]", response_builder.success(data=scene))
+
+
+@router.get(
+    "/work_lines/{id}/plane/snapshot",
+    summary="[biz:workline:view-plane-snapshot] 获取作业线平面动态快照",
+    response_model=ResponseSchemaModel[PlaneSnapshot],
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(RequirePermission("biz:workline:view-plane-snapshot"))],
+)
+async def get_workline_plane_snapshot(
+    db: AsyncSessionDep,
+    cache: CacheDep,
+    id: int = Path(...),
+) -> ResponseSchemaModel[PlaneSnapshot]:
+    """读取 WorkLine 平面态势动态 snapshot。"""
+
+    try:
+        snapshot = await workline_plane_service.get_snapshot(db, cache, id)
+    except ValueError as exc:
+        return cast("ResponseSchemaModel[PlaneSnapshot]", _workline_value_error_response(exc))
+    return cast("ResponseSchemaModel[PlaneSnapshot]", response_builder.success(data=snapshot))
 
 
 # 使用 BaseAPI 零代码生成 CRUD 路由

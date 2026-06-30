@@ -120,6 +120,28 @@ def test_plugin_manifest_route_requires_workline_list_permission() -> None:
     assert [getattr(dep.dependency, "permission_required", "") for dep in route.dependencies] == ["biz:workline:list"]
 
 
+def test_plane_routes_require_dedicated_permissions() -> None:
+    """plane scene/snapshot 使用独立权限, 不能复用普通 detail。"""
+
+    scene_route = next(
+        route
+        for route in workline_api.router.routes
+        if route.path == "/work_lines/{id}/plane/scene" and "GET" in route.methods
+    )
+    snapshot_route = next(
+        route
+        for route in workline_api.router.routes
+        if route.path == "/work_lines/{id}/plane/snapshot" and "GET" in route.methods
+    )
+
+    assert [getattr(dep.dependency, "permission_required", "") for dep in scene_route.dependencies] == [
+        "biz:workline:view-plane-scene"
+    ]
+    assert [getattr(dep.dependency, "permission_required", "") for dep in snapshot_route.dependencies] == [
+        "biz:workline:view-plane-snapshot"
+    ]
+
+
 def test_plugin_manifest_route_accepts_encoded_slash_plugin_keys() -> None:
     route = next(
         route

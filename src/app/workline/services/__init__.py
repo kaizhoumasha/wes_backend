@@ -25,12 +25,16 @@ from typing import Any
 # 抛 ModuleNotFoundError,让调用方明确感知"属性不可用"。其他 dead entries
 # 已物理删除。
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
+from .manifest_validator import WorkLineManifestActivationValidator, workline_manifest_activation_validator
+from .plane_service import WorkLinePlaneService, workline_plane_service
 from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service
 from .workline_service import WorkLineService, workline_service
 from .write_back_service import OrchestratorWriteBackService, orchestrator_write_back_service
 
 __all__ = [
     "OrchestratorWriteBackService",
+    "WorkLineManifestActivationValidator",
+    "WorkLinePlaneService",
     "WorkLineSafetyBlocked",
     "WorkLineSafetyService",
     "WorkLineService",
@@ -40,6 +44,8 @@ __all__ = [
     "orchestrator_write_back_service",
     "workline_bin_cell_reservation_service",
     "workline_diagnostic_service",
+    "workline_manifest_activation_validator",
+    "workline_plane_service",
     "workline_safety_service",
     "workline_service",
 ]
