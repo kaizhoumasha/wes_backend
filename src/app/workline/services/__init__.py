@@ -18,12 +18,6 @@
 # globals,破坏 lazy shim 语义。
 import importlib as _importlib
 
-from .bin_cell_reservation_service import (
-    BinCellReservationResult,
-    BinCellReservationStatusCode,
-    WorklineBinCellReservationService,
-    workline_bin_cell_reservation_service,
-)
 from .debug_data_cleanup_service import DebugDataCleanupService, debug_data_cleanup_service
 from .device_command_gateway import DeviceCommandGateway, device_command_gateway
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
@@ -40,7 +34,6 @@ _importlib.import_module("src.app.runtime.orchestration.services.intent.smt_inbo
 
 # Phase 2 burn-down 阶段 4:`integration_debug_service` 反向依赖 trace.trace_query_service,
 # 顶层 eager import 会在 trace → callback → workline.services 链上构成循环。改为 PEP 562 lazy。
-from .ng_return_item_service import NgMaterialConflictError, NgReturnItemService, ng_return_item_service  # noqa: E402
 from .object_transition_event_service import ObjectTransitionEventService, object_transition_event_service  # noqa: E402
 from .operation_service import WorklineOperationService, workline_operation_service  # noqa: E402
 from .outbox_dispatch_service import OutboxDispatchService, outbox_dispatch_service  # noqa: E402
@@ -51,27 +44,6 @@ from .runtime_reconciliation_service import (  # noqa: E402
 )
 from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service  # noqa: E402
 from .sandbox_cleanup_service import SandboxCleanupService, sandbox_cleanup_service  # noqa: E402
-from .single_layer_rack_orchestration_service import (  # noqa: E402
-    SingleLayerRackOrchestrationDecision,
-    SingleLayerRackOrchestrationDecisionCode,
-    SingleLayerRackOrchestrationService,
-    single_layer_rack_orchestration_service,
-)
-from .start_admission_service import (  # noqa: E402
-    StartAdmissionResult,
-    StartAdmissionStatusFetchResult,
-    StartAdmissionStatusTarget,
-    WorkLineStartAdmissionService,
-    start_admission_service,
-)
-from .station_lease_service import (  # noqa: E402
-    StationLeaseReasonCode,
-    StationLeaseResult,
-    StationLeaseService,
-    WorklineStationLeaseService,
-    station_lease_service,
-    workline_station_lease_service,
-)
 from .workline_service import WorkLineService, workline_service  # noqa: E402
 from .write_back_service import OrchestratorWriteBackService, orchestrator_write_back_service  # noqa: E402
 
@@ -158,6 +130,11 @@ __all__ = [
 # C4a 阶段:intent/smt_inbound_handoff_service 与 query/runtime_query_service
 # 也迁入 runtime/orchestration/services/{intent,query}/,继续使用同模式
 # 以保持一致并避免后续 capability 重建阶段对 shim import 顺序产生意外依赖。
+#
+# C4b 阶段:`bin_cell_reservation_service`、`ng_return_item_service`、
+# `single_layer_rack_orchestration_service`、`start_admission_service`、
+# `station_lease_service` 物理迁入 runtime/capabilities/phase4/。
+# 同样 lazy,避免反向回路触发 partial module 循环。
 _LAZY_SHIM_MAP = {
     "IntegrationDebugService": "integration_debug_service",
     "integration_debug_service": "integration_debug_service",
@@ -176,6 +153,29 @@ _LAZY_SHIM_MAP = {
     "trace_query_service": "trace_query_service",
     "add_timeline_with_sequence": "timeline_sequence_service",
     "allocate_timeline_seq_no": "timeline_sequence_service",
+    # C4b phase4 capabilities 重建 5 service:
+    "WorklineBinCellReservationService": "bin_cell_reservation_service",
+    "workline_bin_cell_reservation_service": "bin_cell_reservation_service",
+    "BinCellReservationResult": "bin_cell_reservation_service",
+    "BinCellReservationStatusCode": "bin_cell_reservation_service",
+    "NgReturnItemService": "ng_return_item_service",
+    "ng_return_item_service": "ng_return_item_service",
+    "NgMaterialConflictError": "ng_return_item_service",
+    "SingleLayerRackOrchestrationService": "single_layer_rack_orchestration_service",
+    "single_layer_rack_orchestration_service": "single_layer_rack_orchestration_service",
+    "SingleLayerRackOrchestrationDecision": "single_layer_rack_orchestration_service",
+    "SingleLayerRackOrchestrationDecisionCode": "single_layer_rack_orchestration_service",
+    "WorkLineStartAdmissionService": "start_admission_service",
+    "start_admission_service": "start_admission_service",
+    "StartAdmissionResult": "start_admission_service",
+    "StartAdmissionStatusFetchResult": "start_admission_service",
+    "StartAdmissionStatusTarget": "start_admission_service",
+    "StationLeaseService": "station_lease_service",
+    "station_lease_service": "station_lease_service",
+    "WorklineStationLeaseService": "station_lease_service",
+    "workline_station_lease_service": "station_lease_service",
+    "StationLeaseResult": "station_lease_service",
+    "StationLeaseReasonCode": "station_lease_service",
 }
 
 
