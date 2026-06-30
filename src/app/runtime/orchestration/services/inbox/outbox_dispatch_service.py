@@ -163,13 +163,16 @@ async def _escalate_status_precheck_wait_if_needed(
     updater = getattr(outbox_repo, "update_resource_wait_detail", None)
     if not callable(updater):
         return
-    updated = await updater(
+    updated_result = updater(
         db,
         outbox_id,
         expected_reason="DEVICE_STATUS_PRECHECK_WAIT",
         last_error=message,
         detail=detail,
     )
+    if not isawaitable(updated_result):
+        return
+    updated = await updated_result
     if updated is not None:
         blocked_outbox = updated
     await _record_diagnostic(
@@ -465,12 +468,15 @@ class OutboxDispatchService:
         if not callable(getter):
             return processed_device_ids, processed_target_codes
 
-        blocked_heads = await getter(
+        blocked_heads_result = getter(
             db,
             limit=limit,
             min_probe_interval_seconds=RESOURCE_WAIT_PROBE_MIN_INTERVAL_SECONDS,
             operation_domains=("WORKLINE", "RACK"),
         )
+        if not isawaitable(blocked_heads_result):
+            return processed_device_ids, processed_target_codes
+        blocked_heads = await blocked_heads_result
         for outbox in blocked_heads:
             if result["dispatched"] >= limit:
                 break
