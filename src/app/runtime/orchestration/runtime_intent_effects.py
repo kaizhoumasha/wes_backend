@@ -576,7 +576,7 @@ async def _record_source_pick_command_correlation(
     if correlation is None:
         return
 
-    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+    from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import smt_inbound_handoff_service
 
     _ = await smt_inbound_handoff_service.record_source_pick_command_correlation(
         ctx["db"],
@@ -604,7 +604,7 @@ async def _record_source_pick_success(ctx: Any, *, command_id: int | None = None
     if not _has_smt_handoff_source_pick_evidence(ctx, command_id=command_id):
         return
 
-    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+    from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import smt_inbound_handoff_service
 
     try:
         _ = await smt_inbound_handoff_service.record_source_pick_success(
@@ -694,7 +694,7 @@ async def _record_source_item_terminal_result(
     command_id: int | None,
     terminal_evidence: Mapping[str, Any] | None,
 ) -> Any:
-    from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+    from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import smt_inbound_handoff_service
 
     result = await smt_inbound_handoff_service.record_source_item_terminal_result(
         ctx["db"],

@@ -396,7 +396,9 @@ async def test_resolve_runtime_hold_already_resolved_returns_409(db_session) -> 
 
 
 async def test_get_runtime_hold_ng_reasons_uses_registry_helper_and_returns_fallback(db_session, monkeypatch) -> None:
-    hold_query_module = importlib.import_module("src.app.workline.services.runtime_hold_query_service")
+    hold_query_module = importlib.import_module(
+        "src.app.runtime.orchestration.services.hold.runtime_hold_query_service"
+    )
 
     calls: list[str | None] = []
 

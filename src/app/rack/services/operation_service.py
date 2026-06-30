@@ -35,6 +35,10 @@ from src.app.resource.repositories.resource_repository import (
     RackPlacementRepository,
     rack_placement_repository,
 )
+from src.app.runtime.capabilities.phase4.station_lease_service import (
+    StationLeaseService,
+    station_lease_service,
+)
 from src.app.sys.models.outbox import (
     DispatchEnvelope,
     OperationCompletionPolicy,
@@ -47,10 +51,6 @@ from src.app.sys.repositories.outbox_repository import SystemOutboxRepository, o
 from src.app.workline.services.rack_position_service import (
     WorklineRackPositionService,
     workline_rack_position_service,
-)
-from src.app.workline.services.station_lease_service import (
-    StationLeaseService,
-    station_lease_service,
 )
 from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_int, coerce_optional_str, enum_value

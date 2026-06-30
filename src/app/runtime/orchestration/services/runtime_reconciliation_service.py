@@ -30,9 +30,9 @@ class RuntimeReconciliationFacade:
         self._delegate: Any | None = None
 
     def _resolve_delegate(self) -> Any:
-        """惰性解析 workline 单例,避免模块加载时拉起 workline 全链路。"""
+        """惰性解析本地 runtime 单例,避免模块加载时拉起 workline 全链路。"""
         if self._delegate is None:
-            from src.app.workline.services.runtime_reconciliation_service import (
+            from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
                 workline_runtime_reconciliation_service,
             )
 

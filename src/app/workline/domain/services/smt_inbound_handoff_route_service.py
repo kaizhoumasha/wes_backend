@@ -190,7 +190,7 @@ class SmtInboundHandoffRouteService:
 
     def _station_lease_service(self) -> object:
         if self.station_lease_service is None:
-            from src.app.workline.services.station_lease_service import workline_station_lease_service
+            from src.app.runtime.capabilities.phase4.station_lease_service import workline_station_lease_service
 
             self.station_lease_service = workline_station_lease_service
         return self.station_lease_service

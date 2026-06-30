@@ -599,10 +599,13 @@ async def _emit_completion_timeline(ctx: EffectApplyContext) -> None:
 
 
 async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
+    from src.app.runtime.capabilities.phase4.ng_return_item_service import (
+        NgMaterialConflictError,
+        ng_return_item_service,
+    )
     from src.app.workline.models.session import SessionStatus
     from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
     from src.app.workline.repositories.session_repository import WorklineSessionRepository
-    from src.app.workline.services.ng_return_item_service import NgMaterialConflictError, ng_return_item_service
     from src.app.workline.services.runtime_hold_creation_service import runtime_hold_creation_service
     from src.utils.value_normalization import resolve_required_pk
 

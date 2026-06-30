@@ -19,6 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `src/app/workline/models/runtime_hold.py` 内联 `_LocalNgReasonSource` 本地副本 (PLUGIN / DEVICE_ERROR / RUNTIME / MANUAL 四值),避免引入 `src.app.workline.domain.ng_reason` 触发反向循环 (domain.services → resource.services → workline.repositories → models)。
 - 版本 `0.10.0.0 → 0.10.1.0` patch bump — 清理性变更,无功能新增/破坏性 API。
 
+### Added
+- **阶段 4 (T4)** C1 + C2 + C3:13 service 物理迁入 `src/app/runtime/orchestration/services/{facade_impl,inbox,hold,intent,query,trace}` — facade 委托本地化 + 7 service 迁入 + 6 service 迁入 + 跨子包循环修复;workline 侧对应位置改写为 PEP 562 lazy shim (`_LAZY_SHIM_MAP` + `__getattr__`),保留全部 public API。
+- **阶段 4 (T4)** C4a:2 service phase2 rebuild — `smt_inbound_handoff_service` 与 `runtime_query_service` 物理迁入 `src/app/runtime/orchestration/services/{intent,query}/`;workline 侧 shim 文件缩至 ~15 行;`importlib.import_module` priming 防御 `runtime_reconciliation_service_impl → trace 子模块` 部分模块循环(防御点写于 `__init__.py` 顶部注释)。
+- **阶段 4 (T4)** C4b:5 service phase4 capabilities 重建 — `bin_cell_reservation` / `ng_return_item` / `single_layer_rack_orchestration` / `start_admission` / `station_lease` 物理迁入 `src/app/runtime/capabilities/phase4/`,同样 PEP 562 lazy shim 模式。
+- **阶段 4 (T4)** C4c:3 debug service 物理删除 — `integration_debug_service` / `debug_data_cleanup_service` / `sandbox_cleanup_service` 连同 2 个 repository / `models/integration_debug.py` / `v1/integration_debug.py` 物理删除,3 个 v1 endpoint (`cleanup_sandbox_workline` / `cleanup_debug_data_workline` / `cleanup_all_debug_data`) + `_is_debug_cleanup_enabled` + `debug_router` 整段子树拆解。`diagnostic_service` 因 5 个 production critical path 调用方(intent_effects / reconciliation_impl / inbox_batch_processor / callback_ingress / diagnostic_support) keep-contract 保留(归 C4d)。
+
+### Fixed
+- **阶段 4 (T4)** 跨子包循环导入修复:`runtime_reconciliation_service_impl → trace 子模块 → workline.services` 部分模块循环通过 `importlib.import_module` priming 阻断;C4a 与 C4b 走同模式 PEP 562 lazy shim 推迟到首次属性访问再加载。
+- **阶段 4 (T4)** 跨层 guardrail `R-I3b` allowlist 同步:阶段 4 迁入路径下 service 跨层调用 entry path 跟随新位置,allowlist 验证路径精确匹配。
+
+### Migration notes
+- 公共 import 路径不变:workline 侧消费者仍可 `from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service` 走 lazy shim;新代码推荐直接 `from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import smt_inbound_handoff_service`。
+- 3 个 debug v1 endpoint (sandbox / debug_data cleanup) 已下线,调用方如有依赖需在阶段 5 / 主计划重新审视。
+
+### 版本
+- 版本 `0.10.1.0 → 0.10.2.0` patch bump — 阶段 4 内部 cleanup,无破坏性 API 变更。
+
 ## [0.10.0.0] - 2026-06-29
 
 ### Added

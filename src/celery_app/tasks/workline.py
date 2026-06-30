@@ -585,7 +585,9 @@ def scan_smt_inbound_handoff_demands_batch(
 
     async def _scan() -> SmtInboundHandoffRecoveryResult:
         async with self.db as db:
-            from src.app.workline.services.smt_inbound_handoff_service import smt_inbound_handoff_service
+            from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import (
+                smt_inbound_handoff_service,
+            )
 
             return cast(
                 "SmtInboundHandoffRecoveryResult",
