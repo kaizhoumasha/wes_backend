@@ -356,7 +356,6 @@
 | | `smt_inbound_handoff.py` | SMT 入库 handoff demand/source item 账本模型，记录 claim、source-pick、terminal ledger 和恢复证据 | 🔧 架构核心 |
 | | `runtime_hold.py` | RuntimeHold 模型（Manual / Safety E-Stop / Material Conflict 等 hold 状态机） | 🔧 架构核心 |
 | | `runtime_hold_api.py` | Runtime Hold API Schema（ResolveRuntimeHoldRequest / Response / Summary / Detail） | 🔧 架构核心 |
-| | `integration_debug.py` | 非生产集成调试案件 Schema（Case / StageCheck / NextAction / EvidenceLink） | 🔧 架构核心 |
 | | `operation.py` | Workline operation 沙箱 Schema（pending / completed 响应） | 🔧 架构核心 |
 | `repositories/` | `inbox_repository.py` | Inbox Repository（幂等键计算） | 🔧 架构核心 |
 | | `outbox_repository.py` | Outbox Repository（派发状态与重试管理） | 🔧 架构核心 |
@@ -373,7 +372,6 @@
 | | `runtime_hold_query_service.py` | Runtime Hold 查询 service：list_holds / get_detail / list_ng_reasons / list_ng_return_items | 🔧 架构核心 |
 | | `runtime_hold_creation_service.py` | Runtime Hold 创建 service：register / attach_to_session，封装 hold 状态机初始化 | 🔧 架构核心 |
 | | `runtime_hold_release_service.py` | Runtime Hold 解除 service：resolve_hold（接受 `idempotency_key`），写 outbox inbox `WES-RESOLVE_HOLD-{key}` 幂等键 | 🔧 架构核心 |
-| | `integration_debug_service.py` | 非生产集成调试案件定位 service：把 Trace 证据归纳成现场可读案件（latest / lookup），含 `build_case` / `_has_case_evidence` | 🔧 架构核心 |
 | | `ng_return_item_service.py` | NG Return Item service：material conflict 物料理赔单登记与查询 | 🔧 架构核心 |
 | | `operation_service.py` | Workline operation 沙箱 service：sandbox_pending / sandbox_completed 聚合 | 🔧 架构核心 |
 | | `__init__.py` | Service 导出（inbox_service / trace_query_service / runtime_query_service） | 🔧 架构核心 |
@@ -382,7 +380,6 @@
 | | `runtime.py` | 运行监控 overview / workline / device 只读路由 | 🔧 架构核心 |
 | | `inbound_handoff.py` | SMT 入库 handoff 查询与处置路由，API 层只调用 service，不直接访问 Repository 或 DB | 🔧 架构核心 |
 | | `runtime_hold.py` | Runtime Hold 路由：列表 / 详情 / NG 原因 / resolve（接受 `Idempotency-Key` Header）；query 参数补 `Query()` 校验 | 🔧 架构核心 |
-| | `integration_debug.py` | 非生产集成调试案件定位路由（latest / lookup），返回现场可读案件结构 | 🔧 架构核心 |
 | | `operation.py` | Workline operation 沙箱路由：pending / completed 列表查询，`Query()` 校验与 description 完整 | 🔧 架构核心 |
 | | `__init__.py` | v1 路由聚合（workline / trace / runtime） | 🔧 架构核心 |
 | `utils.py` | **Phase 2 burn-down 阶段 2 (C2)** wlr `utils` 全量镜像:`JsonDict` payload helpers（`ensure_dict` / `non_empty_str` / `string_value` 等）；workline 域消费侧统一从此处 import，wlr 副本由阶段 3 整目录删除统一清理 | 🔧 架构核心 |
