@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.3.0] - 2026-06-30
+
+> **Note**:Phase 2 burn-down F-1/F-2 收尾 PR(`feature/phase2-burndown-f1-f2`)。把 workline 域 14 个运行态 model + 10 个运行态 repository 物理迁入 `src/app/runtime/orchestration/{models,repositories}/`,同步重写 262 条跨域 import(81 文件),2 个 xfail 契约测试转硬绿。物理迁移是文件位置变更,`__tablename__` 不变,数据库 schema 不变,沿用 0.x patch 表达"安全清理"语义。
+
+### Removed
+- `src/app/workline/models/` 下 14 个运行态 model 物理删除(`bin_cell_reservation` / `diagnostic` / `dispatch_attempt` / `inbox` / `material_unit` / `object_transition_event` / `operation` / `rack_position` / `runtime` / `runtime_hold` / `runtime_hold_api` / `session` / `smt_inbound_handoff` / `timeline`)— 整体 `git mv` 到 `src/app/runtime/orchestration/models/`。`workline/models/` 收缩为 `workline.py` + `safety.py` + `__init__.py`。
+- `src/app/workline/repositories/` 下 10 个运行态 repository 物理删除(`bin_cell_reservation` / `diagnostic` / `dispatch_attempt` / `inbox` / `material_unit` / `object_transition_event` / `rack_position` / `runtime_hold` / `session` / `smt_inbound_handoff` 各 `_repository.py`)— 整体 `git mv` 到 `src/app/runtime/orchestration/repositories/`。`workline/repositories/` 收缩为 `workline_repository.py` + `safety_incident_repository.py` + `__init__.py`。
+
+### Changed
+- 81 文件 262 条跨域 import 批量改写:`from src.app.workline.{models,repositories}.<待迁>` → `from src.app.runtime.orchestration.{models,repositories}.<待迁>`,覆盖 runtime/handling/rack/resource/device/callback/sys/celery_app/workline 内部/workline_plugins/scripts/tests 全部 caller。保留文件(`workline.py` / `safety.py` / `workline_repository.py` / `safety_incident_repository.py`)的 import 路径不变。
+- `src/app/workline/models/__init__.py` 收缩为纯配置域聚合(WorkLine + safety 跨域 enum + rack.model 透传);`src/app/workline/repositories/__init__.py` 收缩为 workline_repository + safety_incident_repository + rack.repository 透传。
+- `src/app/workline/repositories/workline_repository.py` 跨域 bridge import 修正:`runtime_hold_repository` 改指 `src.app.runtime.orchestration.repositories.runtime_hold_repository` 新路径。
+- `migrations/env.py` mapper 注册链拆分:`WorklineBinCellReservation` / `WorklineInbox` / `WorklineRackPosition` / `WorklineSession` / `WorklineTimeline` 5 个已迁 symbol 改指 `src.app.runtime.orchestration.models`,`WorkLine` 保留 `src.app.workline.models`。
+- `scripts/architecture-guardrails.allowlist` 第 55-56 行 R-I3b path 字段同步到 `src/app/runtime/orchestration/repositories/{session,smt_inbound_handoff}_repository.py` 新路径;`legacy_entry_id` 保留旧版 `legacy:src/app/workline/repositories/...` 以稳定 audit trace 反向查找。
+- `scripts/generate_legacy_matrix.py` 扩展 `MIGRATED_REPOSITORIES` 映射(10 条 legacy → runtime 路径)+ `_append_ri3b_seed_paths` 的 `scan_paths` 增加 `src/app/runtime/orchestration/repositories`,并把扫描到的新路径通过 `MIGRATED_REPOSITORIES_TO_LEGACY` 映射回旧版路径,保证迁移后 R-I3b seed 条目仍以旧版路径记入 CSV(audit trace 稳定性)。
+- `docs/architecture/legacy-cleanup-matrix.csv` 重新生成:668 条(原 831 条减少 165 条已迁文件条目,新增 2 条 R-I3b seed)。
+- `docs/architecture/legacy-cleanup-matrix.md` 统计表同步:total 668 / model 39 / repository 7 / rebuild 412 / phase2 199 / workline 455。
+- `tests/characterization/workline_legacy/test_business_semantics_characterization.py` 硬编码路径修正:`smt_inbound_handoff.py` 改指 `src/app/runtime/orchestration/models/smt_inbound_handoff.py`。
+
+### Fixed
+- `tests/architecture/test_workline_service_shim_contract.py` 2 个 xfail 契约转硬断言:`test_workline_models_shrunk_to_workline_only_after_stage6` + `test_workline_repositories_shrunk_to_workline_only_after_stage6` 现以 `assert not _file_exists(...)` 强制验证 workline/models/ 与 workline/repositories/ 下运行态文件物理删除。
+
 ## [0.10.2.1] - 2026-06-30
 
 > **Note**:0.10.1.0(阶段 3)与 0.10.2.0(阶段 4)版本号 bump commit 已落地(`f0aab25a` / `f492f16a`),但阶段 3/4 改动描述未单独切分为独立 [0.10.1.0] / [0.10.2.0] 段,统一累积在 [Unreleased] 段中;659b9e78 阶段 6 重新校准后该累积段正式落盘为 [0.10.2.1]。如需补拆,可对照 `f0aab25a` / `f492f16a` / `8ff83d5c` / `6cd0aa23` / `628dbfdf` / `2905eb54` / `34c10eae` / `f7970a5d` / `4bb76b00` 9 个阶段 3+4 提交单独回填。

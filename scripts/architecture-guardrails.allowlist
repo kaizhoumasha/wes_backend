@@ -44,8 +44,8 @@ C2|src/app/resource/models/resource.py|legacy session FK, Phase 1 改 correlatio
 C2|src/app/wms_integration/services/transport_contract.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/wms_integration/services/transport_contract.py:<file>|phase1
 
 # C2: 跨域 session FK (workline runtime, drop_phase=phase2)
-C2|src/app/workline/models/object_transition_event.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/models/object_transition_event.py:<file>|phase2
-C2|src/app/workline/repositories/object_transition_event_repository.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/object_transition_event_repository.py:<file>|phase2
+C2|src/app/runtime/orchestration/models/object_transition_event.py|legacy session FK, Phase 2 迁 runtime (F-1 物理迁移自 src/app/workline/models/object_transition_event.py)|2026-09-30|legacy:src/app/workline/models/object_transition_event.py:<file>|phase2
+C2|src/app/runtime/orchestration/repositories/object_transition_event_repository.py|legacy session FK, Phase 2 迁 runtime (F-1 物理迁移自 src/app/workline/repositories/object_transition_event_repository.py)|2026-09-30|legacy:src/app/workline/repositories/object_transition_event_repository.py:<file>|phase2
 C2|src/app/runtime/orchestration/services/inbox/object_transition_event_service.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/inbox/object_transition_event_service.py:<file>|phase2
 C2|src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py|legacy session FK, Phase 2 迁 runtime (workline/services/runtime_reconciliation_service.py 已迁入 reconciliation/)|2026-09-30|legacy:src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py:<file>|phase2
 

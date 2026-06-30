@@ -2,7 +2,7 @@
 
 > Legacy notes: 本文件索引存在历史条目，涉及旧插件 builder 的说明仅供定位旧文档；当前运行时以 `RuntimeIntent` 为准。
 
-**最后更新**: 2026年6月30日（phase2-stage5+6-burndown-docs: Phase 2 burn-down 阶段 5+6 — RuntimeReconciliationFacade 物理删除 + workline 域 22 service shim + 4 v1 router 物理删除 + device_command_gateway 迁入 runtime/orchestration + 版本 0.10.2.0 → 0.10.2.1 patch (回退自 0.10.3.0,阶段 6 门禁 follow-up 子项 F-1+F-2 转入后续 PR);workline models/repositories plan deviation 由后续 PR 收尾)
+**最后更新**: 2026年6月30日（phase2-f1-f2-burndown-docs: Phase 2 burn-down F-1/F-2 收尾 — workline 域 14 个运行态 model + 10 个运行态 repository 物理迁入 `src/app/runtime/orchestration/{models,repositories}/` + 262 条跨域 import 改写(81 文件) + 2 个 xfail 契约转硬绿 + 版本 0.10.2.1 → 0.10.3.0 patch (清理性变更,无功能新增/破坏性 API);Phase 2 唯一未完成门禁 `WorkLine 不再拥有运行状态` 全部关闭)
 **同步状态**: ⚠️ WORKLINE + PLUGIN 体系全面重构顶层设计采用 GB/T 8567 概要设计说明书 + 详细设计 13 章结构（`docs/architecture/workline-and-plugin-restructuring.md`），1,800+ 行；含数据模型、状态机图、模块 API、接口设计、Phase 实施 roadmap；不预先拆 SPEC；关键决策 9 个 ADR（含 Phase 2 launch PR ADR-0001）；autoplan 评审存档；其余内容请以实际仓库结构为准
 
 ---
@@ -11,6 +11,7 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-06-30 | 0.10.3.0 / phase2-f1-f2-burndown-docs | Phase 2 burn-down F-1/F-2 收尾 PR（`feature/phase2-burndown-f1-f2`）：workline 域 14 个运行态 model（`bin_cell_reservation` / `diagnostic` / `dispatch_attempt` / `inbox` / `material_unit` / `object_transition_event` / `operation` / `rack_position` / `runtime` / `runtime_hold` / `runtime_hold_api` / `session` / `smt_inbound_handoff` / `timeline`）+ 10 个运行态 repository 物理迁入 `src/app/runtime/orchestration/{models,repositories}/`（`git mv` 整体迁移,`__tablename__` 不变,数据库 schema 不变）；81 文件 262 条跨域 import 批量改写 `from src.app.workline.{models,repositories}.<待迁>` → `from src.app.runtime.orchestration.{models,repositories}.<待迁>`；`workline/models/__init__.py` + `workline/repositories/__init__.py` 收缩为纯配置域聚合（workline + safety + rack 透传）；`migrations/env.py` mapper 注册链拆分（5 个已迁 symbol 改指 runtime.orchestration.models,WorkLine 保留 workline.models）；2 个 xfail 契约测试转硬断言（`test_workline_models_shrunk_to_workline_only_after_stage6` + `test_workline_repositories_shrunk_to_workline_only_after_stage6`）；`scripts/architecture-guardrails.allowlist` R-I3b path 字段同步 + `scripts/generate_legacy_matrix.py` 扩展 MIGRATED_REPOSITORIES 映射保持 audit trace 稳定；`docs/architecture/legacy-cleanup-matrix.{md,csv}` 重新生成（668 条）。**Phase 2 唯一未完成门禁 `WorkLine 不再拥有运行状态` 全部关闭**。版本 0.10.2.1 → 0.10.3.0 patch (清理性变更,无功能新增/破坏性 API) |
 | 2026-06-30 | 0.10.2.1 / phase2-stage5+6-burndown-docs | Phase 2 burn-down 阶段 5+6 合并 PR（`feature/phase2-burndown-stage5-6`）诚实披露版：版本经 rework 由 0.10.3.0 回退至 0.10.2.1 patch。**阶段 5** 物理删除 `RuntimeReconciliationFacade`（launch PR `d5b88562` 过渡桥接，0 调用方）— device/callback 域全部直连 `src.app.runtime.orchestration.services.*` impl。**阶段 6**（commit `d138f369` + `5646d701`）：workline 域 service shim 物理删除 22 个（`inbox_*` / `operation_*` / `runtime_hold_*` / `runtime_query_*` / `timeline_sequence_*` / `trace_*` / `smt_inbound_handoff_*` / `outbox_dispatch_*` / `dispatch_attempt_*` / `object_transition_event_*` / `runtime_reconciliation_*` / `single_layer_rack_orchestration_*` / `bin_cell_reservation_*` / `ng_return_item_*` / `start_admission_*` / `station_lease_*` / `workline_bin_cell_reservation_*` / `write_back_*` / `outbox_dispatch_support` / `inbox_claim_bucket` / `diagnostic_support` / `runtime_services`） + 4 v1 router 物理删除（`runtime` / `runtime_hold` / `trace` / `inbound_handoff`）+ 5 dead test 物理删除（test_runtime_hold_api / test_smt_inbound_handoff_api / test_workline_runtime_api / test_resource_projection_service / test_object_transition_event）；27 caller 文件改写为直连 `src.app.runtime.orchestration.*` 与 `src.app.runtime.capabilities.phase4.*`；`device_command_gateway.py`（30.4K）从 workline 域迁出至 `src/app/runtime/orchestration/services/device_command_gateway.py`；`workline_service.py` 拆分保留配置 CRUD（start_admission / runtime_query / runtime_hold 调用迁出至 phase4 capabilities）。`__all__` / `_LAZY_SHIM_MAP` 收敛到 9 个真实 module export + 3 个死引用 tombstone。**Plan deviation（阶段 6 未完成门禁）**：workline models 16 文件（`runtime.py` / `inbox.py` / `session.py` / `timeline.py` / `runtime_hold*.py` / `dispatch_attempt.py` / `object_transition_event.py` / `operation.py` / `safety.py` / `rack_position.py` / `diagnostic.py` / `smt_inbound_handoff.py` / `bin_cell_reservation.py` / `material_unit.py`）+ repositories 11 文件未在本 PR 物理删除（53+ workline model 引用 + 7 workline_repository 引用仍在 runtime 域 import 链，物理删除会破坏 import 链）。契约测试 `test_workline_repositories_shrunk_to_workline_only_after_stage6` + `test_workline_models_shrunk_to_workline_only_after_stage6` 标 `pytest.xfail`，由后续 PR 收尾。**isawaitable 防御**修复 `outbox_dispatch_service._escalate_status_precheck_wait_if_needed` + `_dispatch_blocked_resource_heads` 在 sync repo fallback 路径抛 TypeError 的 bug（回归测试 `test_outbox_dispatch_async_guard.py` 4 个全过）。**Phase 2 唯一未完成门禁 `WorkLine 不再拥有运行状态` 实际仅部分关闭**：service / v1 router 域整体清空完成，model / repository 子门禁 follow-up（FOLLOWS-UP F-1 + F-2）转交后续 PR。版本 0.10.2.0 → 0.10.2.1 patch (清理性变更,无功能新增/破坏性 API) |
 | 2026-06-30 | 0.10.1.0 / phase2-stage3-burndown-docs | Phase 2 burn-down 阶段 3：物理删除 `src/workline_runtime/` (50 文件) + `tests/workline_runtime/` (117 文件) + `tests/integration/workline_runtime/` (6 文件) 共 178 个 wlr 源文件；`diagnostics` 子目录从 `consumers/` 迁出至 `src/app/runtime/orchestration/diagnostics/` (5 子模块 + 聚合层)；`consumers/diagnostics_bridge.py` 改名为 `consumers/` 同级 `diagnostics.py` 并更新全部调用方 import；`consumers/` 退出 R-WLR trust zone (`EXCLUDED_PREFIXES = ()` 已为终态);9 tests + 2 scripts wlr import 重定向到 mirror;`tests/architecture/test_workline_compat_mirror.py` / `tests/characterization/workline_legacy/test_business_semantics_characterization.py` 中 wlr 目录引用更新为阶段 1 contract test 路径;`src/app/workline/models/runtime_hold.py` 内联 `_LocalNgReasonSource` 避免引入 domain 触发反向循环;版本 0.10.0.0 → 0.10.1.0 patch (清理性变更,无功能新增/破坏性 API) |
 | 2026-06-29 | 0.10.0.0 / phase2-stage2-burndown-docs | Phase 2 burn-down 阶段 2 (C1–C6) 文档同步：`src/app/runtime/orchestration/` 新增 6 个 wlr 平级镜像（`enums.py` / `device_ordering.py` / `effect_result.py` / `material_target_resolver.py` / `runtime_intent.py` / `runtime_intent_effects.py` / `timeline_generator.py`）+ 7 个 wlr bridge 门面（`business_identity_bridge.py` / `events_bridge.py` / `lock_bridge.py` / `orchestrator_bridge.py` / `resource_wait_evidence_bridge.py` / `sandbox_catalog_bridge.py` / `topology_bridge.py`）+ `consumers/` 子包（`__init__.py` / `runtime_inbox_consumer.py` / `diagnostics_bridge.py`）；`src/app/workline/` 新增 `utils.py` / `trace_context.py` / `diagnostic_support.py` / `outbox_dispatch_support.py` / `runtime_services.py` 镜像 + `domain/` 子包（`ng_reason` / `material_identity` / `plugin_manifest` / `contracts/` / `models/` / `services/`）+ `plugins/` 子包（`plugin_base` / `plugin_context` / `session_resolver` / `null_plugin` / `plugin_next` / `run_mode` + `plugin_sdk/`）；28 处 R-WLR production import 跨域重定向完成 + `scripts/architecture-guardrails.allowlist` R-WLR 条目全清（仅保留 R-I3a/b/C1/C2 等规则）；新增 6 个 mirror 一致性测试（`tests/architecture/test_{orchestration_bridges_mirror, plugin_mirrors_mirror, workline_compat_mirror, workline_domain_mirror, workline_plugins_mirror}.py`）+ `tests/runtime/orchestration/test_runtime_inbox_consumer.py` |
@@ -344,40 +345,16 @@
 > 包含 WES 顶层领域边界、WMS 反腐层 (wms_integration ACL 6 套 port)、Authority Matrix、Capability Freeze、4 方案决策表、5 Phase 实施 roadmap、数据模型、状态机图、模块 API 设计。
 
 
-作业线运行时系统，遵循白皮书 v3.1 架构设计（插件化、状态机、幂等性）。**Phase 2 burn-down 阶段 5+6 后**：workline 域退化为纯**配置域**（WorkLine 配置 CRUD + manifest + plane scene + plugin SDK），所有运行态 service shim 与 v1 router 已物理删除；运行态迁入 `src/app/runtime/orchestration/services/{inbox,hold,intent,query,trace,reconciliation}/` 与 `src/app/runtime/capabilities/phase4/`。**⚠️ Plan deviation 已知**：workline models 16 文件 + repositories 11 文件未在本 PR 物理删除（runtime 域仍有 53+ workline model 引用 + 7 workline_repository 引用），由后续 PR 收尾。`device_command_gateway`（30.4K 跨域桥接）已从 workline 域迁出至 `src/app/runtime/orchestration/services/device_command_gateway.py`。
+作业线运行时系统，遵循白皮书 v3.1 架构设计（插件化、状态机、幂等性）。**Phase 2 burn-down 阶段 5+6 + F-1/F-2 收尾后**：workline 域退化为纯**配置域**（WorkLine 配置 CRUD + manifest + plane scene + plugin SDK），所有运行态 service shim / v1 router / model / repository 已物理删除；运行态 model + repository 迁入 `src/app/runtime/orchestration/{models,repositories}/`,运行态 service 迁入 `src/app/runtime/orchestration/services/{inbox,hold,intent,query,trace,reconciliation}/` 与 `src/app/runtime/capabilities/phase4/`。`device_command_gateway`（30.4K 跨域桥接）已从 workline 域迁出至 `src/app/runtime/orchestration/services/device_command_gateway.py`。
 
 | 目录 | 文件 | 用途 | 分类 |
 |------|------|------|------|
 | `models/` | `workline.py` | WorkLine 模型（配置域 — plugin 容器 / 运行时配置 / 诊断归属） | 🔧 架构核心 |
-| | `bin_cell_reservation.py` | ⚠️ **阶段 6 plan deviation**:运行态模型未删除（保留供后续 PR 收尾 — runtime 域仍有 import 引用） | 🔧 架构核心 |
-| | `diagnostic.py` | ⚠️ **阶段 6 plan deviation**:诊断相关运行态模型未删除 | 🔧 架构核心 |
-| | `dispatch_attempt.py` | ⚠️ **阶段 6 plan deviation**:outbox 派发尝试模型未删除 | 🔧 架构核心 |
-| | `inbox.py` | ⚠️ **阶段 6 plan deviation**:inbox 收件箱模型未删除 | 🔧 架构核心 |
-| | `material_unit.py` | ⚠️ **阶段 6 plan deviation**:物料单元模型未删除 | 🔧 架构核心 |
-| | `object_transition_event.py` | ⚠️ **阶段 6 plan deviation**:对象状态迁移事件模型未删除 | 🔧 架构核心 |
-| | `operation.py` | ⚠️ **阶段 6 plan deviation**:operation 沙箱模型未删除 | 🔧 架构核心 |
-| | `rack_position.py` | ⚠️ **阶段 6 plan deviation**:rack 位置模型未删除 | 🔧 架构核心 |
-| | `runtime.py` | ⚠️ **阶段 6 plan deviation**:运行监控/Trace 响应模型未删除 | 🔧 架构核心 |
-| | `runtime_hold.py` | ⚠️ **阶段 6 plan deviation**:RuntimeHold hold 状态机模型未删除 | 🔧 架构核心 |
-| | `runtime_hold_api.py` | ⚠️ **阶段 6 plan deviation**:RuntimeHold API Schema 未删除 | 🔧 架构核心 |
-| | `safety.py` | ⚠️ **阶段 6 plan deviation**:safety 模型未删除 | 🔧 架构核心 |
-| | `session.py` | ⚠️ **阶段 6 plan deviation**:WorklineSession 会话模型未删除 | 🔧 架构核心 |
-| | `smt_inbound_handoff.py` | ⚠️ **阶段 6 plan deviation**:SMT 入库 handoff 模型未删除 | 🔧 架构核心 |
-| | `timeline.py` | ⚠️ **阶段 6 plan deviation**:timeline 时间轴模型未删除 | 🔧 架构核心 |
-| | `__init__.py` | Model 导出（workline + 上述 plan deviation 标记条目） | 🔧 架构核心 |
+| | `safety.py` | safety 跨域 enum + 配置域审计表（`WorkLineRuntimeStatus` / `WorklineSafetyIncident` / `WorklineSafetyIncidentStatus` / `ClearWorkLineEstopRequest` — **F-1/F-2 例外保留**:承载跨域 enum 与配置域审计,不迁 runtime） | 🔧 架构核心 |
+| | `__init__.py` | Model 导出（workline + safety + rack.model 透传 — 阶段 6 + F-1/F-2 后收缩为纯配置域聚合） | 🔧 架构核心 |
 | `repositories/` | `workline_repository.py` | WorkLine Repository（按 line_code 查询 — 配置域） | 🔧 架构核心 |
-| | `bin_cell_reservation_repository.py` | ⚠️ **阶段 6 plan deviation**:运行态 Repository 未删除 | 🔧 架构核心 |
-| | `diagnostic_repository.py` | ⚠️ **阶段 6 plan deviation**:诊断 Repository 未删除 | 🔧 架构核心 |
-| | `dispatch_attempt_repository.py` | ⚠️ **阶段 6 plan deviation**:outbox 派发 Repository 未删除 | 🔧 架构核心 |
-| | `inbox_repository.py` | ⚠️ **阶段 6 plan deviation**:inbox Repository 未删除 | 🔧 架构核心 |
-| | `material_unit_repository.py` | ⚠️ **阶段 6 plan deviation**:物料单元 Repository 未删除 | 🔧 架构核心 |
-| | `object_transition_event_repository.py` | ⚠️ **阶段 6 plan deviation**:对象状态迁移事件 Repository 未删除 | 🔧 架构核心 |
-| | `rack_position_repository.py` | ⚠️ **阶段 6 plan deviation**:rack 位置 Repository 未删除 | 🔧 架构核心 |
-| | `runtime_hold_repository.py` | ⚠️ **阶段 6 plan deviation**:RuntimeHold Repository 未删除 | 🔧 架构核心 |
-| | `safety_incident_repository.py` | ⚠️ **阶段 6 plan deviation**:安全事件 Repository 未删除 | 🔧 架构核心 |
-| | `session_repository.py` | ⚠️ **阶段 6 plan deviation**:Session Repository 未删除 | 🔧 架构核心 |
-| | `smt_inbound_handoff_repository.py` | ⚠️ **阶段 6 plan deviation**:SMT handoff Repository 未删除 | 🔧 架构核心 |
-| | `__init__.py` | Repository 导出（workline + 上述 plan deviation 标记条目） | 🔧 架构核心 |
+| | `safety_incident_repository.py` | WorklineSafetyIncidentRepository（**F-1/F-2 例外保留**:配置域审计表,不迁 runtime） | 🔧 架构核心 |
+| | `__init__.py` | Repository 导出（workline + safety_incident + rack.repository 透传 — 阶段 6 + F-1/F-2 后收缩为纯配置域聚合） | 🔧 架构核心 |
 | `services/` | `workline_service.py` | WorkLine 配置 CRUD service（**阶段 6 拆分保留**:workline start admission 调用迁出至 phase4 capabilities） | 🔧 架构核心 |
 | | `diagnostic_service.py` | WorklineDiagnosticService（**阶段 6 keep-contract**:配置域 5 个 production critical path 之一） | 🔧 架构核心 |
 | | `safety_service.py` | WorkLineSafetyService（配置域 — 阶段 6 保留） | 🔧 架构核心 |
@@ -445,8 +422,33 @@
 | `runtime_intent_log.py` | RuntimeIntentLog 实体（plugin 产出 RuntimeIntent 的 ledger） | 🔧 架构核心 |
 | `idempotency_key.py` | IdempotencyKey 实体（`WES-{OPERATION_KIND}-{HASH}` 唯一约束） | 🔧 架构核心 |
 | `conveyor_queue_membership.py` | ConveyorQueueMembership 实体（含 `CheckConstraint` 限定 `membership_status` 取值） | 🔧 架构核心 |
+| `models/__init__.py` | **Phase 2 burn-down F-1 迁入**:14 个 workline 域运行态 model 聚合导出（`bin_cell_reservation` / `diagnostic` / `dispatch_attempt` / `inbox` / `material_unit` / `object_transition_event` / `operation` / `rack_position` / `runtime` / `runtime_hold` / `runtime_hold_api` / `session` / `smt_inbound_handoff` / `timeline`） | 🔧 架构核心 |
+| `models/bin_cell_reservation.py` | **Phase 2 burn-down F-1 迁入**:BinCellReservation 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/diagnostic.py` | **Phase 2 burn-down F-1 迁入**:Diagnostic 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/dispatch_attempt.py` | **Phase 2 burn-down F-1 迁入**:DispatchAttempt 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/inbox.py` | **Phase 2 burn-down F-1 迁入**:WorklineInbox 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/material_unit.py` | **Phase 2 burn-down F-1 迁入**:MaterialUnit 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/object_transition_event.py` | **Phase 2 burn-down F-1 迁入**:ObjectTransitionEvent 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/operation.py` | **Phase 2 burn-down F-1 迁入**:Operation 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/rack_position.py` | **Phase 2 burn-down F-1 迁入**:RackPosition 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/runtime.py` | **Phase 2 burn-down F-1 迁入**:Runtime 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/runtime_hold.py` | **Phase 2 burn-down F-1 迁入**:RuntimeHold 运行态 model（与顶层 `runtime_hold.py` 同名但 `__tablename__` 不同,无 mapper 冲突;原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/runtime_hold_api.py` | **Phase 2 burn-down F-1 迁入**:RuntimeHoldApi 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/session.py` | **Phase 2 burn-down F-1 迁入**:WorklineSession 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/smt_inbound_handoff.py` | **Phase 2 burn-down F-1 迁入**:SmtInboundHandoff 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `models/timeline.py` | **Phase 2 burn-down F-1 迁入**:Timeline 运行态 model（原 `src/app/workline/models/`） | 🔧 架构核心 |
+| `repositories/__init__.py` | Repository 导出（idempotency_key + F-1 迁入 10 个 workline 域运行态 repository 聚合） | 🔧 架构核心 |
 | `repositories/idempotency_key_repository.py` | IdempotencyKey Repository:upsert 语义封装 (`claim_if_absent` + `get_by_identity`) | 🔧 架构核心 |
-| `repositories/__init__.py` | Repository 导出 | 🔧 架构核心 |
+| `repositories/bin_cell_reservation_repository.py` | **Phase 2 burn-down F-1 迁入**:BinCellReservation Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
+| `repositories/diagnostic_repository.py` | **Phase 2 burn-down F-1 迁入**:Diagnostic Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
+| `repositories/dispatch_attempt_repository.py` | **Phase 2 burn-down F-1 迁入**:DispatchAttempt Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
+| `repositories/inbox_repository.py` | **Phase 2 burn-down F-1 迁入**:WorklineInbox Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
+| `repositories/material_unit_repository.py` | **Phase 2 burn-down F-1 迁入**:MaterialUnit Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
+| `repositories/object_transition_event_repository.py` | **Phase 2 burn-down F-1 迁入**:ObjectTransitionEvent Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
+| `repositories/rack_position_repository.py` | **Phase 2 burn-down F-1 迁入**:RackPosition Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
+| `repositories/runtime_hold_repository.py` | **Phase 2 burn-down F-1 迁入**:RuntimeHold Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
+| `repositories/session_repository.py` | **Phase 2 burn-down F-1 迁入**:WorklineSession Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
+| `repositories/smt_inbound_handoff_repository.py` | **Phase 2 burn-down F-1 迁入**:SmtInboundHandoff Repository（原 `src/app/workline/repositories/`） | 🔧 架构核心 |
 | `services/idempotency_guard.py` | IdempotencyGuard:outbound effect 幂等闸门（`ClaimResult.NEW/MATCH` + `IdempotencyConflict`） | 🔧 架构核心 |
 | `services/runtime_snapshot_assembler.py` | RuntimeSnapshotAssembler：按 BC-02 合同把 session + timeline + inbox + hold + intent log 拼装成 RuntimeSnapshot 输出 | 🔧 架构核心 |
 | `services/device_command_gateway.py` | **Phase 2 burn-down 阶段 6 迁入**:DeviceCommandGateway（30.4K 跨域桥接,原 workline 域 — 阶段 6 commit `5646d701` 物理迁出至 runtime/orchestration） | 🔧 架构核心 |
