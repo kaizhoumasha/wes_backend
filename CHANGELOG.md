@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - `tests/architecture/test_workline_service_shim_contract.py` 2 个 xfail 契约转硬断言:`test_workline_models_shrunk_to_workline_only_after_stage6` + `test_workline_repositories_shrunk_to_workline_only_after_stage6` 现以 `assert not _file_exists(...)` 强制验证 workline/models/ 与 workline/repositories/ 下运行态文件物理删除。
 
+### Added (F-3..F-7 阶段 6 评审 follow-ups)
+- **F-5** `tests/architecture/test_cleanup_matrix_guardrail.py` 新增 5 个 audit trace 守护测试,补 `test_phase0_legacy_matrix_contract.py` 未覆盖的 8 个审计字段一致性(entry_type / relative_path / symbol_or_route / current_owner / business_semantics / phase4_carrier / classification_status / risk)+ entry_id 格式 `legacy:<path>:<symbol>` + entry_id 唯一性 + classification_status 枚举收敛到 `{final, pending-review}` + allowlist 第 5 列 legacy_entry_id 反向引用必须在 CSV 中存在。
+- **F-7** `tests/runtime/orchestration/test_device_command_gateway.py` 新增 7 个 runtime 行为锁定测试,锁定 `device_command_gateway` 迁入 `runtime/orchestration/services/` 后的 runtime 行为契约:模块路径与单例符号可导入 + reserve_sandbox_command 设备不存在返回 False / maintenance_mode 拒绝抛 `_DeviceCommandGovernanceError` + dispatch 设备/通信配置缺失返回 False / httpx ACK 超时转 `RuntimeError("OUTBOX_ACK_TIMEOUT")`。用 `SimpleNamespace` + `AsyncMock` + `patch` 隔离,不依赖真实 DB/httpx。
+
+### Changed (F-3..F-7 阶段 6 评审 follow-ups)
+- **F-3** `src/app/workline/services/diagnosis_verdict_builder.py` 改名为 `diagnosis_verdict_builder_service.py`,对齐目录内 `_service.py` 命名约定;`__init__.py` export 路径同步。
+- **F-4** `tests/architecture/test_workline_service_shim_contract.py::test_workline_service_config_only_after_stage6` 由 `hasattr` 存在性守卫改为行为验证:`asyncio.iscoroutinefunction` 校验 async callable + `inspect.signature` 校验 `db` 入参与返回类型注解,并用 `typing.get_args` 提取 union 成员验证返回类型契约,确保配置域 CRUD 方法形态稳定。
+- **F-6** `src/app/workline/services/__init__.py` `_LAZY_SHIM_MAP` docstring 改写:从"live caller 死引用/死代码,未触发"夸饰改为"未初始化 service 属性的 fallback"准确描述。3 处 caller 真实情况精确标注:`runtime_intent_effects.py:1545/1627` 是 `self._inbox_service`/`self._bin_cell_reservation_service` 属性未注入时的 fallback import(属性注入后不触发,路径是活的防御性兜底,非死代码);`callback_orchestration_service.py:35` 是 TYPE_CHECKING 块内 type hint(运行时不触发,静态类型检查用)。`_LAZY_SHIM_MAP` 内容不变。
+
 ## [0.10.2.1] - 2026-06-30
 
 > **Note**:0.10.1.0(阶段 3)与 0.10.2.0(阶段 4)版本号 bump commit 已落地(`f0aab25a` / `f492f16a`),但阶段 3/4 改动描述未单独切分为独立 [0.10.1.0] / [0.10.2.0] 段,统一累积在 [Unreleased] 段中;659b9e78 阶段 6 重新校准后该累积段正式落盘为 [0.10.2.1]。如需补拆,可对照 `f0aab25a` / `f492f16a` / `8ff83d5c` / `6cd0aa23` / `628dbfdf` / `2905eb54` / `34c10eae` / `f7970a5d` / `4bb76b00` 9 个阶段 3+4 提交单独回填。

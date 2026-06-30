@@ -157,6 +157,8 @@
 
 **Priority**: P3
 
+**Completed:** 2026-07-01 (v0.10.3.0 PR #71) — F-3..F-7 全部合入 `feature/phase2-burndown-f1-f2` 分支,5 个 commit:`961ff8b` (F-3) / `109c344` (F-4) / `720e553` (F-5) / `d3ed185` (F-6) / `069caaa` (F-7)。
+
 ---
 
 ## Completed
