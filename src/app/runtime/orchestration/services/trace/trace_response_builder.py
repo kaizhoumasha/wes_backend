@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
-from src.app.workline.models.runtime import (
+from src.app.runtime.orchestration.models.runtime import (
     TraceCallbackLogItem,
     TraceCommandItem,
     TraceContextResponse,
@@ -19,7 +19,7 @@ from src.app.workline.models.runtime import (
     TraceSessionItem,
     TraceTimelineItem,
 )
-from src.app.workline.models.runtime_hold_api import FailedCommandEvidence
+from src.app.runtime.orchestration.models.runtime_hold_api import FailedCommandEvidence
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value, optional_enum_str
 
@@ -336,7 +336,7 @@ def _build_resource_evidence(result: Any) -> TraceResourceEvidenceResponse:
 
 
 def build_trace_response(result: Any) -> TraceDetailResponse:
-    from src.app.workline.services.diagnosis_verdict_builder import diagnosis_verdict_builder
+    from src.app.workline.services.diagnosis_verdict_builder_service import diagnosis_verdict_builder
 
     sessions = result.sessions
     dispatch_attempts = result.dispatch_attempts

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
-from src.app.workline.models.material_unit import MaterialUnit
+from src.app.runtime.orchestration.models.material_unit import MaterialUnit
 from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:

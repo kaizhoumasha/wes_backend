@@ -15,29 +15,29 @@ from src.app.device.repositories import (
     device_command_repository,
     device_repository,
 )
-from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
-from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
-from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
-from src.app.workline.models.inbox import InboxKind, SourceSystem
-from src.app.workline.models.operation import (
+from src.app.runtime.orchestration.models.inbox import InboxKind, SourceSystem
+from src.app.runtime.orchestration.models.operation import (
     ResolveRuntimeReconciliationRequest,
     SandboxEventTemplate,
     SandboxResultTemplate,
     SandboxTemplatesResponse,
 )
-from src.app.workline.models.runtime_hold import RuntimeHoldType
-from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
-from src.app.workline.models.session import RuntimeReconciliationResolution, SessionStatus
-from src.app.workline.models.workline import WorkLineRunMode
-from src.app.workline.repositories import (
+from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldType
+from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
+from src.app.runtime.orchestration.models.session import RuntimeReconciliationResolution, SessionStatus
+from src.app.runtime.orchestration.repositories import (
     inbox_repository,
     runtime_hold_repository,
-    workline_repository,
     workline_session_repository,
 )
-from src.app.workline.repositories.inbox_repository import WorklineInboxRepository  # noqa: TC001
-from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository  # noqa: TC001
-from src.app.workline.repositories.session_repository import WorklineSessionRepository  # noqa: TC001
+from src.app.runtime.orchestration.repositories.inbox_repository import WorklineInboxRepository  # noqa: TC001
+from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository  # noqa: TC001
+from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository  # noqa: TC001
+from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
+from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
+from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
+from src.app.workline.models.workline import WorkLineRunMode
+from src.app.workline.repositories import workline_repository
 from src.app.workline.repositories.workline_repository import WorkLineRepository  # noqa: TC001
 from src.app.workline.trace_context import TraceContext
 from src.core.base_service import BaseService
@@ -889,10 +889,10 @@ class WorklineOperationService(BaseService[Any, Any]):
     ) -> dict[str, Any]:
         """解除 runtime reconciliation 隔离并释放对应 parked outbox。"""
 
+        from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
         from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
             runtime_hold_release_service,
         )
-        from src.app.workline.repositories.runtime_hold_repository import runtime_hold_repository
 
         session = await self.session_repo.get_by_id(db, session_id)
         if session is None:

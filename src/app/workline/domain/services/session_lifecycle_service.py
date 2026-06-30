@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
-from src.app.workline.models.session import SessionStatus
+from src.app.runtime.orchestration.models.session import SessionStatus
 
 
 class InvalidSessionTransition(ValueError):

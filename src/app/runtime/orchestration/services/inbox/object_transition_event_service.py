@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from src.app.workline.models.object_transition_event import ObjectTransitionDomain, ObjectTransitionEvent
-from src.app.workline.repositories.object_transition_event_repository import (
+from src.app.runtime.orchestration.models.object_transition_event import ObjectTransitionDomain, ObjectTransitionEvent
+from src.app.runtime.orchestration.repositories.object_transition_event_repository import (
     ObjectTransitionEventRepository,
     object_transition_event_repository,
 )

@@ -9,12 +9,12 @@ from sqlalchemy import and_, exists, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.workline.inbox_claim_bucket import build_claim_bucket_key, build_claim_bucket_key_for_update
-from src.app.workline.models.inbox import (
+from src.app.runtime.orchestration.models.inbox import (
     InboxKind,
     InboxStatus,
     WorklineInbox,
 )
+from src.app.workline.inbox_claim_bucket import build_claim_bucket_key, build_claim_bucket_key_for_update
 from src.database.base_repository import BaseRepository
 from src.utils.timezone import timezone
 

@@ -16,7 +16,7 @@ from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
 from src.app.workline.plugins.plugin_base import WorklinePlugin, on_command, on_event
 
 if TYPE_CHECKING:
-    from src.app.workline.models import WorklineInbox
+    from src.app.runtime.orchestration.models import WorklineInbox
     from src.app.workline.plugins.plugin_context import PluginContext
 
 

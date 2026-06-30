@@ -38,7 +38,7 @@ from src.app.workline.utils import ensure_dict, non_empty_str
 from src.core.logger import logger
 
 if TYPE_CHECKING:
-    from src.app.workline.models import WorklineInbox
+    from src.app.runtime.orchestration.models import WorklineInbox
     from src.app.workline.plugins.plugin_context import PluginContext
 
 

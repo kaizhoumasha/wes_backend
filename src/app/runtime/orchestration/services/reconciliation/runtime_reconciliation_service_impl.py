@@ -15,6 +15,30 @@ from src.app.runtime.orchestration.diagnostics import (
     build_diagnostic_context,
     build_diagnostic_event,
 )
+from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldType
+from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
+from src.app.runtime.orchestration.models.session import (
+    RuntimeReconciliationReason,
+    RuntimeReconciliationResolution,
+    RuntimeReconciliationSourceKind,
+    RuntimeReconciliationState,
+    SessionStatus,
+    WorklineSession,
+)
+from src.app.runtime.orchestration.models.timeline import (
+    TimelineActionType,
+    TimelineActorType,
+    TimelineStage,
+    TimelineStatus,
+    WorklineTimeline,
+)
+from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
+    RuntimeHoldRepository,
+)
+from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
+    runtime_hold_repository as default_runtime_hold_repository,
+)
+from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
     runtime_hold_creation_service as default_runtime_hold_creation_service,
 )
@@ -29,31 +53,7 @@ from src.app.runtime.orchestration.services.trace.timeline_sequence_service impo
 from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
-from src.app.workline.models.runtime_hold import RuntimeHoldType
-from src.app.workline.models.runtime_hold_api import ResolveRuntimeHoldRequest
 from src.app.workline.models.safety import WorkLineRuntimeStatus
-from src.app.workline.models.session import (
-    RuntimeReconciliationReason,
-    RuntimeReconciliationResolution,
-    RuntimeReconciliationSourceKind,
-    RuntimeReconciliationState,
-    SessionStatus,
-    WorklineSession,
-)
-from src.app.workline.models.timeline import (
-    TimelineActionType,
-    TimelineActorType,
-    TimelineStage,
-    TimelineStatus,
-    WorklineTimeline,
-)
-from src.app.workline.repositories.runtime_hold_repository import (
-    RuntimeHoldRepository,
-)
-from src.app.workline.repositories.runtime_hold_repository import (
-    runtime_hold_repository as default_runtime_hold_repository,
-)
-from src.app.workline.repositories.session_repository import WorklineSessionRepository
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 from src.core.logger import logger
@@ -61,8 +61,8 @@ from src.utils.timezone import timezone
 from src.utils.value_normalization import as_dict, enum_str
 
 if TYPE_CHECKING:
+    from src.app.runtime.orchestration.models.inbox import WorklineInbox
     from src.app.sys.models import SystemOutbox
-    from src.app.workline.models.inbox import WorklineInbox
 
 
 from src.app.runtime.orchestration.services.hold.runtime_hold_query_service import (

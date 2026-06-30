@@ -5,17 +5,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from src.app.device.models.command import DeviceCommand
-from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
-    RuntimeHoldReleaseService,
-    runtime_hold_release_service,
-)
-from src.app.workline.models.runtime_hold import (
+from src.app.runtime.orchestration.models.runtime_hold import (
     MaterialDisposition,
     NgReturnItem,
     RuntimeHold,
     RuntimeHoldType,
 )
-from src.app.workline.models.runtime_hold_api import (
+from src.app.runtime.orchestration.models.runtime_hold_api import (
     NgReasonOption,
     NgReturnItemResponse,
     RuntimeHoldBlocker,
@@ -24,8 +20,15 @@ from src.app.workline.models.runtime_hold_api import (
     RuntimeHoldSource,
     RuntimeHoldSummary,
 )
-from src.app.workline.models.session import WorklineSession
-from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository, runtime_hold_repository
+from src.app.runtime.orchestration.models.session import WorklineSession
+from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
+    RuntimeHoldRepository,
+    runtime_hold_repository,
+)
+from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
+    RuntimeHoldReleaseService,
+    runtime_hold_release_service,
+)
 from src.utils.value_normalization import as_dict, optional_enum_str
 from src.workline_plugin_registry import list_workline_ng_reasons
 

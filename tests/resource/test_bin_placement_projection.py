@@ -16,7 +16,7 @@ from src.app.resource.models import (
 )
 from src.app.resource.services import ResourceProjectionStatus
 from src.app.resource.services.projection_service import ResourceProjectionService
-from src.app.workline.models import ObjectTransitionDomain
+from src.app.runtime.orchestration.models import ObjectTransitionDomain
 
 
 class RecordingStateEventRepo:

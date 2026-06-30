@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
-from src.app.workline.models.rack_position import WorklineRackPosition
+from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
 from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:

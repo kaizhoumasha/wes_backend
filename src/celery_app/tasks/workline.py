@@ -255,12 +255,12 @@ class TimeoutScanner:
                 "errors": 错误数
             }
         """
+        from src.app.runtime.orchestration.repositories.session_repository import (
+            WorklineSessionRepository,
+        )
         from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
         from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
             workline_runtime_reconciliation_service,
-        )
-        from src.app.workline.repositories.session_repository import (
-            WorklineSessionRepository,
         )
 
         result: ScanResult = {

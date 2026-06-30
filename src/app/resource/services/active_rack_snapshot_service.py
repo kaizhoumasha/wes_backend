@@ -17,11 +17,11 @@ from src.app.resource.repositories import (
     rack_bin_mount_repository,
     rack_placement_repository,
 )
-from src.app.workline.repositories import (
+from src.app.runtime.orchestration.repositories import (
     WorklineBinCellReservationRepository,
     workline_bin_cell_reservation_repository,
 )
-from src.app.workline.repositories.session_repository import WorklineSessionRepository
+from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 
 DEFAULT_SMT_RACK_POSITION_CODE = "SINGLE_LAYER_A"
 DERIVED_CELL_OCCUPANCY_FIELDS = (

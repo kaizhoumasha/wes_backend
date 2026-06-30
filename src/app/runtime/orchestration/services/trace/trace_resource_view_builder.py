@@ -6,7 +6,7 @@ from collections import OrderedDict
 from datetime import datetime
 from typing import Any
 
-from src.app.workline.models.runtime import (
+from src.app.runtime.orchestration.models.runtime import (
     RuntimeActiveBinRackBinView,
     RuntimeActiveBinRackCellView,
     RuntimeActiveBinRackView,

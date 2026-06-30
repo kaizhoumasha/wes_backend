@@ -20,8 +20,8 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from src.app.device.models import Device, DeviceProtocol, DeviceStatus
 from src.app.resource.models import RackKind
+from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
-from src.app.workline.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.plugins.run_mode import SANDBOX_ALLOWED_ENVS
 from src.core.conf import settings

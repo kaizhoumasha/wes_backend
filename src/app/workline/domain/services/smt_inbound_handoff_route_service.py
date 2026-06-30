@@ -197,7 +197,7 @@ class SmtInboundHandoffRouteService:
 
     def _session_repository(self) -> object:
         if self.session_repository is None:
-            from src.app.workline.repositories.session_repository import workline_session_repository
+            from src.app.runtime.orchestration.repositories.session_repository import workline_session_repository
 
             self.session_repository = workline_session_repository
         return self.session_repository

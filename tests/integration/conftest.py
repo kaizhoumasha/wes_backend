@@ -19,11 +19,11 @@ from sqlalchemy.pool import NullPool
 # 预加载外键目标模型，避免 SQLModel 在 flush 时出现 NoReferencedTableError。
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
+from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
+from src.app.runtime.orchestration.models.inbox import InboxStatus, WorklineInbox
+from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
+from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.sys.models import SystemOutbox
-from src.app.workline.models.diagnostic import WorklineDiagnostic
-from src.app.workline.models.inbox import InboxStatus, WorklineInbox
-from src.app.workline.models.session import SessionStatus, WorklineSession
-from src.app.workline.models.timeline import WorklineTimeline
 from src.app.workline.models.workline import WorkLine
 from src.core.conf import settings
 from src.database.schema_conf import get_schema_search_path

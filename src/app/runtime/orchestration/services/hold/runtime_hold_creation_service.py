@@ -5,9 +5,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from src.app.workline.models.runtime_hold import RuntimeHold, RuntimeHoldType
+from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold, RuntimeHoldType
+from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
+    RuntimeHoldRepository,
+    runtime_hold_repository,
+)
 from src.app.workline.models.safety import WorkLineRuntimeStatus
-from src.app.workline.repositories.runtime_hold_repository import RuntimeHoldRepository, runtime_hold_repository
 from src.app.workline.repositories.workline_repository import workline_repository as default_workline_repository
 from src.utils.timezone import timezone
 from src.utils.value_normalization import dict_attr, enum_str, optional_int_attr, optional_str_attr, required_int_attr

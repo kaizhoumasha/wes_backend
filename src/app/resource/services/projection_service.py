@@ -39,6 +39,8 @@ from src.app.resource.repositories import (
 from src.app.resource.services.material_identity import material_identity_keys_match, material_identity_lookup_keys
 from src.app.resource.services.relation_service import ResourceProjectionResult, ResourceProjectionStatus
 from src.app.resource.services.snapshot_service import ResourceSnapshotService, resource_snapshot_service
+from src.app.runtime.orchestration.models.object_transition_event import ObjectTransitionDomain
+from src.app.runtime.orchestration.repositories import MaterialUnitRepository, material_unit_repository
 from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
     runtime_hold_creation_service as default_runtime_hold_creation_service,
 )
@@ -46,8 +48,6 @@ from src.app.runtime.orchestration.services.inbox.object_transition_event_servic
     ObjectTransitionEventService,
     object_transition_event_service,
 )
-from src.app.workline.models.object_transition_event import ObjectTransitionDomain
-from src.app.workline.repositories import MaterialUnitRepository, material_unit_repository
 from src.app.workline.services.rack_position_service import (
     WorklineRackPositionService,
     workline_rack_position_service,

@@ -283,7 +283,9 @@ def _is_dispatched_command(command: Any | None) -> bool:
 async def _repair_orphaned_device_busy_dispatches(db: Any, *, outbox_repo: Any, limit: int) -> int:
     """恢复 attempt 已结束但 outbox 仍卡在 DISPATCHING 的设备忙派发。"""
     from src.app.device.repositories.device_repository import device_repository
-    from src.app.workline.repositories.dispatch_attempt_repository import workline_dispatch_attempt_repository
+    from src.app.runtime.orchestration.repositories.dispatch_attempt_repository import (
+        workline_dispatch_attempt_repository,
+    )
 
     getter = getattr(outbox_repo, "get_dispatching_device_messages", None)
     if not callable(getter):

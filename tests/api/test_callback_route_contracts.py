@@ -111,7 +111,7 @@ class TestCallbackEnqueueFallback:
         command = SimpleNamespace(command_code="CMD-404", trace_id="trace-same-but-wrong-session")
         db = SimpleNamespace()
 
-        with patch("src.app.workline.repositories.session_repository.WorklineSessionRepository", RepoStub):
+        with patch("src.app.runtime.orchestration.repositories.session_repository.WorklineSessionRepository", RepoStub):
             session = await service._load_command_session(db, command)  # type: ignore[arg-type]
 
         assert session is None

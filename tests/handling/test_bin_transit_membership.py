@@ -29,7 +29,7 @@ from src.app.handling.models import (
 )
 from src.app.handling.repositories import BinTransitMembershipRepository
 from src.app.handling.services import BinTransitMembershipService, HandlingOperationLifecycleService
-from src.app.workline.models import ObjectTransitionDomain, ObjectTransitionEvent
+from src.app.runtime.orchestration.models import ObjectTransitionDomain, ObjectTransitionEvent
 from src.database.sqlite_schema import configure_sqlite_schemas
 
 

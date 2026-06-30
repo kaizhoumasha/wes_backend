@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Any, cast
 from src.app.resource.models import RackKind
 from src.app.resource.services.material_identity import material_identity_keys_match
 from src.app.resource.services.smt_bin_cell_allocation_policy import SmtBinCellAllocationPolicy
+from src.app.runtime.orchestration.models.material_unit import MaterialUnitStatus
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
-from src.app.workline.models.material_unit import MaterialUnitStatus
 from src.workline_plugins.smt_sorting_inbound.constants import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
@@ -29,7 +29,7 @@ from src.workline_plugins.smt_sorting_inbound.constants import (
 from src.workline_plugins.smt_sorting_inbound.context import SortingInboundContext, SortingInboundContextError
 
 if TYPE_CHECKING:
-    from src.app.workline.models import WorklineInbox
+    from src.app.runtime.orchestration.models import WorklineInbox
     from src.app.workline.plugins.plugin_context import PluginContext
 
 _SCAN_PLATFORM_EMPTY = "EMPTY"

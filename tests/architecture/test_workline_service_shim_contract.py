@@ -123,13 +123,10 @@ def test_workline_services_shrunk_to_config_crud_after_stage6():
 
 def test_workline_repositories_shrunk_to_workline_only_after_stage6():
     """阶段 6:workline/repositories/ 下运行态 repository 必须物理删除。"""
-    # ⚠️ plan 偏差:阶段 4 实际只完成 facade delegation,未完成内部 import 路径
-    # 迁移。runtime 域 7 处仍 `from src.app.workline.repositories.workline_repository
-    # import workline_repository` — workline_repository 必须保留作为跨域跨层
-    # 桥接,不能物理删除。本测试标记 xfail,后续 PR 完成"workline_repository
-    # 迁入 runtime/orchestration/repositories"与"workline 域 run-internal import
-    # 改写"后转为硬绿。
-    pytest.xfail(reason="plan deviation: stage 4 内部路径未完整迁移,workline_repository 仍被 runtime 域依赖")
+    for name in _STAGE6_REMOVED_REPOSITORIES:
+        assert not _file_exists(f"src/app/workline/repositories/{name}.py"), (
+            f"阶段 6:workline 运行态 repository 必须物理删除,遗留: {name}.py"
+        )
 
 
 def test_workline_kept_models_preserved_after_stage6():
@@ -147,13 +144,14 @@ def test_workline_kept_repositories_preserved_after_stage6():
 
 
 def test_workline_models_shrunk_to_workline_only_after_stage6():
-    """阶段 6:workline/models/ 下运行态 model 文件必须物理删除。"""
-    # ⚠️ plan 偏差:阶段 4 实际只完成 facade delegation,53+ 处仍
-    # `from src.app.workline.models.{inbox,session,timeline,...}` — 跨子包
-    # 物理删除会破坏 runtime 域 import。后续 PR 完成"workline 运行态 models 迁入
-    # runtime/orchestration/models/"与"workline 域 import 改写"后转为硬绿。
-    # safety.py 例外保留,见 `_STAGE6_KEPT_MODELS`。
-    pytest.xfail(reason="plan deviation: stage 4 内部路径未完整迁移,workline 运行态 models 仍被 runtime 域依赖")
+    """阶段 6:workline/models/ 下运行态 model 文件必须物理删除。
+
+    safety.py 例外保留,见 `_STAGE6_KEPT_MODELS`。
+    """
+    for name in _STAGE6_REMOVED_MODELS:
+        assert not _file_exists(f"src/app/workline/models/{name}.py"), (
+            f"阶段 6:workline 运行态 model 必须物理删除,遗留: {name}.py"
+        )
 
 
 def test_workline_v1_routers_shrunk_after_stage6():
@@ -201,20 +199,52 @@ def test_workline_services_module_does_not_export_device_command_gateway_after_s
 
 
 def test_workline_service_config_only_after_stage6():
-    """阶段 6 C3:workline_service 配置域保留(无运行态方法)。"""
+    """阶段 6 C3:workline_service 配置域保留(无运行态方法)。
+
+    F-4 行为验证:不再用 hasattr 存在性守卫,改为验证方法为 async callable
+    + 签名契约(db 入参 + 返回类型注解),确保配置域方法形态稳定。
+    """
+    import asyncio
     import importlib
+    import inspect
+    import typing
 
     workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
-    # 配置域保留 — WorkLineService 公开方法不应依赖 runtime 域单例
     workline_service_singleton = workline_service_module.workline_service
-    assert hasattr(workline_service_singleton, "create"), "阶段 6 C3:WorkLineService 必须保留 create 配置域方法"
-    assert hasattr(workline_service_singleton, "update"), "阶段 6 C3:WorkLineService 必须保留 update 配置域方法"
-    assert hasattr(workline_service_singleton, "delete"), "阶段 6 C3:WorkLineService 必须保留 delete 配置域方法"
-    assert hasattr(workline_service_singleton, "activate"), "阶段 6 C3:WorkLineService 必须保留 activate 配置域方法"
-    assert hasattr(workline_service_singleton, "deactivate"), "阶段 6 C3:WorkLineService 必须保留 deactivate 配置域方法"
-    assert hasattr(workline_service_singleton, "configuration_status"), (
-        "阶段 6 C3:WorkLineService 必须保留 configuration_status 配置域方法"
-    )
+
+    # 配置域方法形态契约:name → 期望返回类型(单类型)或 union 成员集合
+    from src.app.workline.models.workline import WorkLine, WorkLineConfigurationStatus
+
+    expected: dict[str, object] = {
+        "create": (WorkLine, type(None)),
+        "update": (WorkLine, type(None)),
+        "delete": (bool, type(None)),
+        "activate": (WorkLine, type(None)),
+        "deactivate": (WorkLine, type(None)),
+        "configuration_status": WorkLineConfigurationStatus,
+    }
+    for name, expected_return in expected.items():
+        method = getattr(workline_service_singleton, name, None)
+        assert method is not None, f"阶段 6 C3:WorkLineService 必须保留 {name} 配置域方法"
+        assert asyncio.iscoroutinefunction(method), (
+            f"阶段 6 C3:WorkLineService.{name} 必须是 async callable(配置域 CRUD 契约)"
+        )
+        sig = inspect.signature(method)
+        assert "db" in sig.parameters, f"阶段 6 C3:WorkLineService.{name} 签名必须保留 db: AsyncSession 入参"
+        return_annotation = sig.return_annotation
+        assert return_annotation is not inspect.Parameter.empty, (
+            f"阶段 6 C3:WorkLineService.{name} 必须声明返回类型注解"
+        )
+        if isinstance(expected_return, tuple):
+            union_args = set(typing.get_args(return_annotation))
+            assert set(expected_return).issubset(union_args), (
+                f"阶段 6 C3:WorkLineService.{name} 返回注解 {return_annotation} "
+                f"必须包含 {expected_return},实际 union args {union_args}"
+            )
+        else:
+            assert return_annotation is expected_return, (
+                f"阶段 6 C3:WorkLineService.{name} 返回注解必须为 {expected_return},实际 {return_annotation}"
+            )
 
 
 # 阶段 6 C5:workline.services.__init__ 清理 — __all__ / _LAZY_SHIM_MAP 收敛到

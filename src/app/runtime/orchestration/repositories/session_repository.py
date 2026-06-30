@@ -7,7 +7,7 @@ from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
-from src.app.workline.models.session import RuntimeReconciliationState, SessionStatus, WorklineSession
+from src.app.runtime.orchestration.models.session import RuntimeReconciliationState, SessionStatus, WorklineSession
 from src.database.base_repository import BaseRepository
 from src.utils.timezone import timezone
 

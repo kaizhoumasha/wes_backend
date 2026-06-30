@@ -50,7 +50,7 @@ async def _resolve_outbox_run_mode(db: Any, outbox: Any) -> str:
         return normalize_run_mode(run_mode)
     session_id = getattr(outbox, "session_id", None)
     if isinstance(session_id, int) and hasattr(db, "get"):
-        from src.app.workline.models.session import WorklineSession
+        from src.app.runtime.orchestration.models.session import WorklineSession
 
         loaded_session = await db.get(WorklineSession, session_id)
         return normalize_run_mode(getattr(loaded_session, "run_mode", None))

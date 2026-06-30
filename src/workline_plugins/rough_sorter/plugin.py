@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from src.app.runtime.orchestration.models.material_unit import MaterialUnitStatus
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
 from src.app.wms_integration.models import QueryInventoryRequest, QueryInventoryResponse, WmsInventoryItem
 from src.app.wms_integration.services.exceptions import WmsBusinessRejectedError, WmsIntegrationError
@@ -21,7 +22,6 @@ from src.app.workline.domain.models import BarcodeDecisionType
 from src.app.workline.domain.ng_reason import NgReasonDefinition, NgReasonSource
 from src.app.workline.domain.plugin_manifest import ResourceBoundary, WorklinePluginManifest
 from src.app.workline.domain.services.barcode_decision_service import barcode_decision_service
-from src.app.workline.models.material_unit import MaterialUnitStatus
 from src.app.workline.plugins.plugin_base import WorklinePlugin, on_command, on_event
 from src.workline_plugins.rough_sorter.context import RoughSorterContext
 from src.workline_plugins.rough_sorter.contract import (
@@ -55,7 +55,7 @@ from src.workline_plugins.rough_sorter.contract import (
 )
 
 if TYPE_CHECKING:
-    from src.app.workline.models import WorklineInbox
+    from src.app.runtime.orchestration.models import WorklineInbox
     from src.app.workline.plugins.plugin_context import PluginContext
 
 DEFAULT_NG_LOCATION = "NG-01"

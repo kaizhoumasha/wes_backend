@@ -5,7 +5,7 @@ from typing import Any, cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.workline.models.dispatch_attempt import WorklineDispatchAttempt
+from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
 from src.database.base_repository import BaseRepository
 
 

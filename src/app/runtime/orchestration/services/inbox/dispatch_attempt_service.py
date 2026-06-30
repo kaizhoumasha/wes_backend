@@ -9,11 +9,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.workline.models.dispatch_attempt import (
+from src.app.runtime.orchestration.models.dispatch_attempt import (
     DispatchAttemptStatus,
     WorklineDispatchAttempt,
 )
-from src.app.workline.repositories.dispatch_attempt_repository import (
+from src.app.runtime.orchestration.repositories.dispatch_attempt_repository import (
     WorklineDispatchAttemptRepository,
     workline_dispatch_attempt_repository,
 )

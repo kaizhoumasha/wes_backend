@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.app.runtime.orchestration.models.inbox import InboxKind, InboxStatus, SourceSystem, WorklineInbox
 from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
-from src.app.workline.models.inbox import InboxKind, InboxStatus, SourceSystem, WorklineInbox
 
 
 def build_workline_inbox(**overrides: Any) -> WorklineInbox:

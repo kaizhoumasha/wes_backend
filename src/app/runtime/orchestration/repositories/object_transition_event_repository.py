@@ -8,7 +8,7 @@ from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from src.app.workline.models.object_transition_event import ObjectTransitionDomain, ObjectTransitionEvent
+from src.app.runtime.orchestration.models.object_transition_event import ObjectTransitionDomain, ObjectTransitionEvent
 from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:

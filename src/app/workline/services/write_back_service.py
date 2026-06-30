@@ -372,7 +372,7 @@ def _failure_timeline_payload(ctx: EffectApplyContext, *, message: str) -> dict[
 
 async def _apply_transition_timeline(ctx: EffectApplyContext) -> None:
     """记录插件做出的 transition 决策。"""
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
+    from src.app.runtime.orchestration.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
 
     orch_result = ctx["orch_result"]
     if not getattr(orch_result, "transition", None):
@@ -390,7 +390,12 @@ async def _apply_transition_timeline(ctx: EffectApplyContext) -> None:
 
 async def _apply_business_decisions(ctx: EffectApplyContext) -> None:
     """记录插件业务判定，不改变失败归因。"""
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
+    from src.app.runtime.orchestration.models.timeline import (
+        TimelineActionType,
+        TimelineActorType,
+        TimelineStage,
+        TimelineStatus,
+    )
 
     for decision in getattr(ctx["orch_result"], "business_decisions", None) or []:
         await _emit_timeline(
@@ -408,7 +413,12 @@ async def _apply_business_decisions(ctx: EffectApplyContext) -> None:
 
 async def _apply_external_decisions(ctx: EffectApplyContext) -> None:
     """应用 EXTERNAL_HTTP decisions。"""
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
+    from src.app.runtime.orchestration.models.timeline import (
+        TimelineActionType,
+        TimelineActorType,
+        TimelineStage,
+        TimelineStatus,
+    )
 
     db = ctx["db"]
     for decision in getattr(ctx["orch_result"], "decisions", None) or []:
@@ -523,7 +533,12 @@ def _build_command_outbox_model(ctx: EffectApplyContext, *, command: Any, device
 
 
 async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
+    from src.app.runtime.orchestration.models.timeline import (
+        TimelineActionType,
+        TimelineActorType,
+        TimelineStage,
+        TimelineStatus,
+    )
 
     failure = getattr(ctx["orch_result"], "failure", None)
     if failure is None:
@@ -566,7 +581,7 @@ async def _apply_failure_transition(ctx: EffectApplyContext) -> bool:
 
 
 async def _apply_manual_cancel_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
+    from src.app.runtime.orchestration.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
 
     if ctx["orch_result"].transition != "manual_cancel":
         return False
@@ -585,7 +600,7 @@ async def _apply_manual_cancel_transition(ctx: EffectApplyContext) -> bool:
 
 
 async def _emit_completion_timeline(ctx: EffectApplyContext) -> None:
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
+    from src.app.runtime.orchestration.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
 
     await _emit_timeline(
         ctx,
@@ -603,10 +618,15 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
         NgMaterialConflictError,
         ng_return_item_service,
     )
+    from src.app.runtime.orchestration.models.session import SessionStatus
+    from src.app.runtime.orchestration.models.timeline import (
+        TimelineActionType,
+        TimelineActorType,
+        TimelineStage,
+        TimelineStatus,
+    )
+    from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
     from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import runtime_hold_creation_service
-    from src.app.workline.models.session import SessionStatus
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
-    from src.app.workline.repositories.session_repository import WorklineSessionRepository
     from src.utils.value_normalization import resolve_required_pk
 
     if not getattr(ctx["orch_result"], "complete", False):
@@ -684,7 +704,12 @@ async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
 
 
 async def _apply_wait_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.workline.models.timeline import TimelineActionType, TimelineActorType, TimelineStage, TimelineStatus
+    from src.app.runtime.orchestration.models.timeline import (
+        TimelineActionType,
+        TimelineActorType,
+        TimelineStage,
+        TimelineStatus,
+    )
 
     wait = getattr(ctx["orch_result"], "wait", None)
     if wait is None:

@@ -6,7 +6,12 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.workline.models.runtime_hold import NgReturnItem, NgReturnItemStatus, RuntimeHold, RuntimeHoldStatus
+from src.app.runtime.orchestration.models.runtime_hold import (
+    NgReturnItem,
+    NgReturnItemStatus,
+    RuntimeHold,
+    RuntimeHoldStatus,
+)
 from src.database.base_repository import BaseRepository
 
 _ACTIVE_BLOCKING_STATUSES = (

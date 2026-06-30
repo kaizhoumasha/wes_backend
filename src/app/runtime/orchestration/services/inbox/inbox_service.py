@@ -5,14 +5,14 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
-from src.app.workline.models.inbox import (
+from src.app.runtime.orchestration.models.inbox import (
     InboxKind,
     InboxStatus,
     SourceSystem,
     WorklineInbox,
 )
-from src.app.workline.repositories import inbox_repository
+from src.app.runtime.orchestration.repositories import inbox_repository
+from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
 from src.core.base_service import BaseService
 from src.core.exceptions import ConflictException
 from src.utils.timezone import timezone

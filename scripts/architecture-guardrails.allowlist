@@ -44,16 +44,16 @@ C2|src/app/resource/models/resource.py|legacy session FK, Phase 1 改 correlatio
 C2|src/app/wms_integration/services/transport_contract.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/wms_integration/services/transport_contract.py:<file>|phase1
 
 # C2: 跨域 session FK (workline runtime, drop_phase=phase2)
-C2|src/app/workline/models/object_transition_event.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/models/object_transition_event.py:<file>|phase2
-C2|src/app/workline/repositories/object_transition_event_repository.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/object_transition_event_repository.py:<file>|phase2
+C2|src/app/runtime/orchestration/models/object_transition_event.py|legacy session FK, Phase 2 迁 runtime (F-1 物理迁移自 src/app/workline/models/object_transition_event.py)|2026-09-30|legacy:src/app/workline/models/object_transition_event.py:<file>|phase2
+C2|src/app/runtime/orchestration/repositories/object_transition_event_repository.py|legacy session FK, Phase 2 迁 runtime (F-1 物理迁移自 src/app/workline/repositories/object_transition_event_repository.py)|2026-09-30|legacy:src/app/workline/repositories/object_transition_event_repository.py:<file>|phase2
 C2|src/app/runtime/orchestration/services/inbox/object_transition_event_service.py|legacy session FK, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/inbox/object_transition_event_service.py:<file>|phase2
 C2|src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py|legacy session FK, Phase 2 迁 runtime (workline/services/runtime_reconciliation_service.py 已迁入 reconciliation/)|2026-09-30|legacy:src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py:<file>|phase2
 
 # R-I3a/R-I3b: Phase 0 时 src/app/runtime/ 不存在, 预期 0 命中
 # workline 域 legacy capability import wms_integration/device services/models, Phase 2 迁 runtime 时消除。
 # 必须逐文件枚举，禁止目录前缀吞掉未来新增违规。
-R-I3b|src/app/workline/repositories/session_repository.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/session_repository.py:<file>#R-I3b|phase2
-R-I3b|src/app/workline/repositories/smt_inbound_handoff_repository.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/smt_inbound_handoff_repository.py:<file>#R-I3b|phase2
+R-I3b|src/app/runtime/orchestration/repositories/session_repository.py|legacy capability import device 实现, Phase 2 物理迁 runtime/orchestration/repositories 后保留|2026-09-30|legacy:src/app/workline/repositories/session_repository.py:<file>#R-I3b|phase2
+R-I3b|src/app/runtime/orchestration/repositories/smt_inbound_handoff_repository.py|legacy capability import device 实现, Phase 2 物理迁 runtime/orchestration/repositories 后保留|2026-09-30|legacy:src/app/workline/repositories/smt_inbound_handoff_repository.py:<file>#R-I3b|phase2
 R-I3b|src/app/workline/repositories/workline_repository.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/workline_repository.py:<file>#R-I3b|phase2
 R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|legacy capability import device 实现, Phase 2 阶段 6 C3 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase2
 R-I3b|src/app/runtime/orchestration/services/intent/operation_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/intent/operation_service.py:<file>#R-I3b|phase2

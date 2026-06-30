@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-  逐入口数据在 legacy-cleanup-matrix.csv（831 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（668 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -37,8 +37,8 @@ uv run python scripts/generate_legacy_matrix.py
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **831** |
-| phase4_carrier（承载 Phase 4 业务语义） | 241 |
+| **total_entries** | **668** |
+| phase4_carrier（承载 Phase 4 业务语义） | 213 |
 | pending-review | 0 |
 
 ### total_entries_by_type
@@ -46,12 +46,12 @@ uv run python scripts/generate_legacy_matrix.py
 | entry_type | count |
 | --- | ---: |
 | service | 326 |
-| model | 192 |
+| model | 39 |
 | plugin | 116 |
 | domain_object | 91 |
 | test | 62 |
 | api_route | 18 |
-| repository | 17 |
+| repository | 7 |
 | doc_template | 8 |
 | runtime_helper | 1 |
 
@@ -59,25 +59,25 @@ uv run python scripts/generate_legacy_matrix.py
 
 | strategy | count |
 | --- | ---: |
-| rebuild | 537 |
-| keep-contract | 196 |
-| delete | 81 |
-| move | 17 |
+| rebuild | 412 |
+| keep-contract | 178 |
+| delete | 68 |
+| move | 10 |
 
 ### total_entries_by_drop_phase
 
 | drop_phase | count |
 | --- | ---: |
-| phase2 | 303 |
-| phase5-tech | 278 |
-| phase4 | 241 |
+| phase5-tech | 247 |
+| phase4 | 213 |
+| phase2 | 199 |
 | phase1 | 9 |
 
 ### total_entries_by_owner
 
 | current_owner | count |
 | --- | ---: |
-| workline | 618 |
+| workline | 455 |
 | workline_plugins | 178 |
 | workline_runtime | 9 |
 | runtime | 8 |
@@ -203,8 +203,8 @@ CSV 列（对齐 SPEC P0-002 矩阵字段表）：
 
 ## 9. 验收（SPEC P0-002）
 
-1. ✅ 每个旧入口都有且只有一个主策略（CSV 852 条，strategy 字段非空）
-2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，241 条）
+1. ✅ 每个旧入口都有且只有一个主策略（CSV 668 条，strategy 字段非空）
+2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，213 条）
 3. ✅ 标记删除、迁移或重建前置条件（`blocking_tests` 字段非空）
 4. ✅ pending-review 归零（全部 final）
 5. ✅ `total_entries_by_type` 汇总存在，由脚本输出

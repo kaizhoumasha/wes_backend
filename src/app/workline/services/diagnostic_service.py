@@ -12,12 +12,12 @@ from src.app.runtime.orchestration.diagnostics import (
     build_diagnostic_event,
     get_diagnostic_code_definition,
 )
-from src.app.runtime.orchestration.resource_wait_evidence_bridge import ResourceWaitEvidence
-from src.app.workline.models.diagnostic import WorklineDiagnostic
-from src.app.workline.repositories.diagnostic_repository import (
+from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
+from src.app.runtime.orchestration.repositories.diagnostic_repository import (
     WorklineDiagnosticRepository,
     workline_diagnostic_repository,
 )
+from src.app.runtime.orchestration.resource_wait_evidence_bridge import ResourceWaitEvidence
 from src.core.base_service import BaseService
 
 _REDACT_KEYS = {

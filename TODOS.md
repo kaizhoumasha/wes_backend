@@ -50,6 +50,8 @@
 
 **Priority**: P1
 
+**Completed:** v0.10.3.0 (2026-06-30) — 14 model + 10 repository 物理迁入 `src/app/runtime/orchestration/{models,repositories}/`,2 个 xfail 契约转硬绿,随 `cbdfcfe8` 提交。
+
 ---
 
 ## P2 - 28 处 workline 域 import 跨域改写 (Phase 2 burn-down F-2)
@@ -69,6 +71,8 @@
 **Effort**: M
 
 **Priority**: P2
+
+**Completed:** v0.10.3.0 (2026-06-30) — 262 条跨域 import 批量改写(81 文件,`workline.{models,repositories}.<待迁>` → `runtime.orchestration.{models,repositories}.<待迁>`),随 `feature/phase2-burndown-f1-f2` PR 提交。注:TODOS 标题为 import 改写,What 段描述与标题不一致属既有数据漂移,本 Completed 以标题 scope 为准。
 
 ---
 
@@ -152,6 +156,8 @@
 **Effort**: S
 
 **Priority**: P3
+
+**Completed:** 2026-07-01 (v0.10.3.0 PR #71) — F-3..F-7 全部合入 `feature/phase2-burndown-f1-f2` 分支,5 个 commit:`961ff8b` (F-3) / `109c344` (F-4) / `720e553` (F-5) / `d3ed185` (F-6) / `069caaa` (F-7)。
 
 ---
 

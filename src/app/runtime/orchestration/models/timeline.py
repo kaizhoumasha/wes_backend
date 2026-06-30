@@ -21,7 +21,7 @@ from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
 
 if TYPE_CHECKING:
-    from src.app.workline.models.session import WorklineSession
+    from src.app.runtime.orchestration.models.session import WorklineSession
 
 
 # ==================== 枚举定义 ====================

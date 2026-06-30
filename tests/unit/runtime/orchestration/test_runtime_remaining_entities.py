@@ -166,6 +166,25 @@ assert expected_tables <= set(SQLModel.metadata.tables)
     assert result.returncode == 0, result.stderr
 
 
+def test_runtime_model_aggregate_registers_workline_for_mapper_configuration():
+    """新 runtime model 聚合入口必须可独立完成 WorklineSession mapper 配置。"""
+    script = """
+from sqlalchemy.orm import configure_mappers
+
+import src.app.runtime.orchestration.models as runtime_models
+
+assert runtime_models.WorklineSession.__name__ == "WorklineSession"
+configure_mappers()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_runtime_inbox_source_event_identity_is_unique_when_present():
     """provider_code + event_type + source_event_id 是入站事件幂等身份。"""
     index = next(

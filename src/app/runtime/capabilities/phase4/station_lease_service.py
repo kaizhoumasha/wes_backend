@@ -9,9 +9,12 @@ from typing import TYPE_CHECKING, Any
 
 from src.app.resource.models import RackKind
 from src.app.resource.repositories import RackPlacementRepository, rack_placement_repository
+from src.app.runtime.orchestration.repositories.session_repository import (
+    WorklineSessionRepository,
+    workline_session_repository,
+)
 from src.app.sys.models.outbox import DispatchEnvelope, SystemOutbox, SystemOutboxDispatchType
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository, system_outbox_repository
-from src.app.workline.repositories.session_repository import WorklineSessionRepository, workline_session_repository
 
 # rack_position_service 在 C4d 范围内保留原地(workline/services/rack_position_service.py)。
 # 这里继续走 workline.services 入口以便跨层兼容。
@@ -24,7 +27,7 @@ from src.utils.value_normalization import coerce_optional_str
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.app.workline.models.session import WorklineSession
+    from src.app.runtime.orchestration.models.session import WorklineSession
 
 _SMT_SORTING_TARGET_STATION_CODE = "TARGET_STATION"
 

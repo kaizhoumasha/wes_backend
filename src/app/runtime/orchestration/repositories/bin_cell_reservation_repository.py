@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
-from src.app.workline.models.bin_cell_reservation import BinCellReservationStatus, WorklineBinCellReservation
+from src.app.runtime.orchestration.models.bin_cell_reservation import (
+    BinCellReservationStatus,
+    WorklineBinCellReservation,
+)
 from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:

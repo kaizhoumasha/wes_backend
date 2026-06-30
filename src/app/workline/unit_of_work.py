@@ -8,15 +8,17 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.sys.repositories import SystemOutboxRepository
-from src.app.workline.repositories import (
+from src.app.runtime.orchestration.repositories import (
     RuntimeHoldRepository,
     WorklineDiagnosticRepository,
     WorklineDispatchAttemptRepository,
     WorklineInboxRepository,
+    WorklineSessionRepository,
+)
+from src.app.sys.repositories import SystemOutboxRepository
+from src.app.workline.repositories import (
     WorkLineRepository,
     WorklineSafetyIncidentRepository,
-    WorklineSessionRepository,
 )
 from src.database.db import get_db_context
 

@@ -29,8 +29,8 @@ from src.workline_plugins.smt_sorting_inbound.context import SortingInboundConte
 from src.workline_plugins.smt_sorting_inbound.flow_service import SmtSortingInboundFlowService
 
 if TYPE_CHECKING:
+    from src.app.runtime.orchestration.models import WorklineInbox
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
-    from src.app.workline.models import WorklineInbox
     from src.app.workline.plugins.plugin_context import PluginContext
 
 POSITION_SOURCE_STATION_A = "SOURCE_STATION_A"

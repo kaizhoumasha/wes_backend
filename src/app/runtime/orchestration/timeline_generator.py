@@ -13,7 +13,7 @@ seq_no 由 AtomicWriter 从数据库序列获取。
 
 from typing import Any, Protocol
 
-from src.app.workline.models.timeline import (
+from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
     TimelineActorType,
     TimelineStage,

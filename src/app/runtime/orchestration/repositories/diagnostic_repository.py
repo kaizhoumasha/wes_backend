@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.app.workline.models.diagnostic import DiagnosticStatus, WorklineDiagnostic
+from src.app.runtime.orchestration.models.diagnostic import DiagnosticStatus, WorklineDiagnostic
 from src.database.base_repository import BaseRepository
 from src.utils.timezone import timezone
 

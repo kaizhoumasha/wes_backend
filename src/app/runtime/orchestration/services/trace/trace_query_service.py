@@ -46,22 +46,22 @@ from src.app.runtime.orchestration.diagnostics import (
     build_diagnostic_event,
     get_diagnostic_code_definition,
 )
-from src.app.sys.models import SystemOutbox
-from src.app.workline.models.dispatch_attempt import WorklineDispatchAttempt
-from src.app.workline.models.inbox import WorklineInbox
-from src.app.workline.models.runtime import (
+from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
+from src.app.runtime.orchestration.models.inbox import WorklineInbox
+from src.app.runtime.orchestration.models.runtime import (
     DiagnosisVerdictResponse,
     DiagnosticCardResponse,
     TraceBlockingPointResponse,
 )
-from src.app.workline.models.runtime_hold import RuntimeHold
-from src.app.workline.models.timeline import WorklineTimeline
-from src.app.workline.repositories import inbox_repository
-from src.app.workline.repositories.diagnostic_repository import workline_diagnostic_repository
-from src.app.workline.repositories.session_repository import (
+from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
+from src.app.runtime.orchestration.models.timeline import WorklineTimeline
+from src.app.runtime.orchestration.repositories import inbox_repository
+from src.app.runtime.orchestration.repositories.diagnostic_repository import workline_diagnostic_repository
+from src.app.runtime.orchestration.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
 )
+from src.app.sys.models import SystemOutbox
 from src.app.workline.repositories.workline_repository import WorkLineRepository, workline_repository
 from src.app.workline.trace_context import TraceContext
 
@@ -75,10 +75,10 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.app.workline.models.diagnostic import WorklineDiagnostic
-    from src.app.workline.models.session import WorklineSession
-    from src.app.workline.repositories.diagnostic_repository import WorklineDiagnosticRepository
-    from src.app.workline.services.diagnosis_verdict_builder import DiagnosisVerdictBuilder
+    from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
+    from src.app.runtime.orchestration.models.session import WorklineSession
+    from src.app.runtime.orchestration.repositories.diagnostic_repository import WorklineDiagnosticRepository
+    from src.app.workline.services.diagnosis_verdict_builder_service import DiagnosisVerdictBuilder
 
 _SESSION_FAILURE_CODE_MAP: dict[str, ErrorCode] = {
     "DEVICE_TIMEOUT": ErrorCode.DEVICE_TIMEOUT,
@@ -184,7 +184,7 @@ class TraceQueryService(BaseService[Any, Any]):
         workline_repo: WorkLineRepository | None = None,
         verdict_builder: DiagnosisVerdictBuilder | None = None,
     ) -> None:
-        from src.app.workline.services.diagnosis_verdict_builder import diagnosis_verdict_builder
+        from src.app.workline.services.diagnosis_verdict_builder_service import diagnosis_verdict_builder
 
         super().__init__(inbox_repository, enable_cache=False)
         self.callback_log_repo = callback_log_repo or callback_log_repository
