@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import time
 from dataclasses import dataclass
 from ipaddress import ip_address
@@ -14,6 +16,8 @@ from src.database.dependencies import AsyncSessionDep, CacheDep  # 运行时需�
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from src.app.api_auth.models.api_application import APIApplication
 
 
@@ -23,6 +27,71 @@ class APIAppContext:
     app_name: str
     app_type: str
     permissions: set[str]
+
+
+def calculate_body_hmac_signature(
+    *,
+    app_secret: str,
+    method: str,
+    path: str,
+    timestamp: str,
+    nonce: str,
+    body_sha256: str,
+    app_id: str,
+) -> str:
+    """计算 Phase 3 external callback body HMAC 签名。"""
+
+    canonical = f"{method.upper()}\n{path}\n{timestamp}\n{nonce}\n{body_sha256}\n{app_id}"
+    return hmac.new(app_secret.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def is_body_hmac_required_path(path: str) -> bool:
+    """Phase 3 起 external callback 路径必须使用 body HMAC。"""
+
+    from src.core.conf import settings
+
+    api_path = settings.API_PATH.rstrip("/")
+    callback_prefix = f"{api_path}/v1/callback/" if api_path else "/v1/callback/"
+    return path.startswith(callback_prefix)
+
+
+def signature_clock_skew_seconds(path: str) -> tuple[int, int]:
+    """返回签名允许的过去/未来时间偏差秒数。"""
+
+    if is_body_hmac_required_path(path):
+        return (30, 30)
+    return (300, 60)
+
+
+def missing_body_hmac_headers(path: str, headers: Mapping[str, str]) -> list[str]:
+    """返回 callback body HMAC 缺失 header 列表。"""
+
+    if not is_body_hmac_required_path(path):
+        return []
+    lowered = {key.lower() for key in headers}
+    required = ["X-Nonce", "X-Body-SHA256"]
+    return [name for name in required if name.lower() not in lowered]
+
+
+class InMemoryNonceReplayGuard:
+    """进程内 nonce TTL 去重器，用于测试和无 Redis fallback 场景。"""
+
+    def __init__(self) -> None:
+        self._seen: dict[tuple[str, str], int] = {}
+
+    def consume(self, *, app_id: str, nonce: str, now: int, ttl_seconds: int) -> bool:
+        key = (app_id, nonce)
+        expires_at = self._seen.get(key)
+        if expires_at is not None and expires_at > now:
+            return False
+        self._seen[key] = now + ttl_seconds
+        self._prune(now)
+        return True
+
+    def _prune(self, now: int) -> None:
+        expired = [key for key, expires_at in self._seen.items() if expires_at <= now]
+        for key in expired:
+            self._seen.pop(key, None)
 
 
 def _is_ip_allowed(client_ip: str, ip_whitelist: list[str]) -> bool:
@@ -58,6 +127,7 @@ async def verify_api_auth(request: Request, db: AsyncSessionDep, cache: CacheDep
     app_id: str | None = request.headers.get("X-App-ID")
     timestamp: str | None = request.headers.get("X-Timestamp")
     signature: str | None = request.headers.get("X-Signature")
+    path = str(request.url.path)
 
     if not app_id or not timestamp or not signature:
         return None
@@ -65,9 +135,10 @@ async def verify_api_auth(request: Request, db: AsyncSessionDep, cache: CacheDep
     try:
         request_time = int(str(timestamp))
         current_time = int(time.time())
-        if current_time - request_time > 300:
+        past_skew_seconds, future_skew_seconds = signature_clock_skew_seconds(path)
+        if current_time - request_time > past_skew_seconds:
             raise AuthException(f"请求已过期 (时间差: {current_time - request_time}秒)")
-        if request_time > current_time + 60:  # 允许 1 分钟时钟偏差
+        if request_time > current_time + future_skew_seconds:
             raise AuthException("请求时间戳不能是未来时间")
     except ValueError as ve:
         raise AuthException("时间戳格式错误") from ve
@@ -84,16 +155,47 @@ async def verify_api_auth(request: Request, db: AsyncSessionDep, cache: CacheDep
 
     app_secret = encryption_service.decrypt(app.app_secret_encrypted)
 
-    expected_signature = SignatureService.calculate(
-        app_secret=app_secret,
-        app_id=app_id,
-        timestamp=str(timestamp),
-        method=request.method,
-        path=str(request.url.path),
-    )
+    body_hmac_required = is_body_hmac_required_path(path)
+    missing_hmac_headers = missing_body_hmac_headers(path, request.headers)
+    if missing_hmac_headers:
+        raise AuthException(f"缺少 body HMAC 请求头: {', '.join(missing_hmac_headers)}")
+
+    nonce = request.headers.get("X-Nonce")
+    body_sha256 = request.headers.get("X-Body-SHA256")
+    if body_hmac_required:
+        body = await request.body()
+        calculated_body_hash = hashlib.sha256(body).hexdigest()
+        if body_sha256 != calculated_body_hash:
+            raise AuthException("body hash 验证失败")
+
+        expected_signature = calculate_body_hmac_signature(
+            app_secret=app_secret,
+            method=request.method,
+            path=path,
+            timestamp=str(timestamp),
+            nonce=str(nonce),
+            body_sha256=body_sha256,
+            app_id=app_id,
+        )
+    else:
+        expected_signature = SignatureService.calculate(
+            app_secret=app_secret,
+            app_id=app_id,
+            timestamp=str(timestamp),
+            method=request.method,
+            path=path,
+        )
 
     if not SignatureService.verify(expected_signature, signature):
         raise AuthException("签名验证失败")
+
+    if body_hmac_required:
+        nonce_key = f"api_auth:nonce:{app_id}:{nonce}"
+        nonce_consumed = await cache.set_if_absent(nonce_key, "1", expire=300)
+        if nonce_consumed is False:
+            raise AuthException("nonce 已被使用")
+        if nonce_consumed is None:
+            raise AuthException("nonce 无法校验")
 
     if app.ip_whitelist:
         client_ip = resolve_client_ip(request)
@@ -216,6 +318,10 @@ def require_api_permission(permission_name: str):
 
 
 __all__ = [
+    "InMemoryNonceReplayGuard",
     "RequireAPIAuth",
     "RequireAPIPermission",
+    "calculate_body_hmac_signature",
+    "is_body_hmac_required_path",
+    "missing_body_hmac_headers",
 ]

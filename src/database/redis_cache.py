@@ -299,6 +299,39 @@ class RedisCache:
             self.circuit_breaker.record_failure()
             return False
 
+    async def set_if_absent(self, key: str, value: Any, expire: int) -> bool | None:
+        """
+        仅当 key 不存在时设置缓存，使用固定 TTL，不添加随机抖动。
+
+        该方法用于安全/幂等场景（如 nonce 消费），调用方需要区分：
+        True=本次成功写入，False=key 已存在，None=Redis 不可用或写入失败。
+
+        :param key: 缓存键
+        :param value: 缓存值
+        :param expire: 固定过期时间（秒）
+        :return: 是否成功写入；Redis 不可用或异常返回 None
+        """
+        if not await self.is_available():
+            logger.debug(f"Redis 不可用，跳过原子缓存设置: {key}")
+            return None
+
+        ttl_seconds = max(1, int(expire))
+        redis_key = self._make_key(key)
+        serialized_value = self.NULL_VALUE if value is None else json.dumps(value, ensure_ascii=False)
+
+        try:
+            result = await self.redis.set(redis_key, serialized_value, nx=True, ex=ttl_seconds)  # type: ignore[arg-type]
+            self.circuit_breaker.record_success()
+            if result:
+                logger.debug(f"原子缓存设置成功: {key}, expire: {ttl_seconds}s")
+                return True
+            logger.debug(f"原子缓存设置跳过，键已存在: {key}")
+            return False
+        except Exception as e:
+            logger.error(f"原子缓存设置失败: {key}, error: {e}")
+            self.circuit_breaker.record_failure()
+            return None
+
     async def delete(self, key: str) -> bool:
         """
         删除缓存（支持自动降级）

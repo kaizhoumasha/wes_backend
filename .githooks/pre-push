@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# gstack-redact pre-push (managed)
+set -euo pipefail
+
+if [ "${GSTACK_REDACT_PREPUSH:-}" = "skip" ]; then
+  exit 0
+fi
+
+_input="$(cat)"
+_local="$(git rev-parse --git-path hooks/pre-push.local)"
+if [ -x "$_local" ]; then
+  printf '%s' "$_input" | "$_local" "$@" || exit $?
+fi
+
+_repo_root="$(git rev-parse --show-toplevel)"
+_redact_bin=""
+for _candidate in \
+  "${GSTACK_BIN:-}/gstack-redact-prepush" \
+  "$_repo_root/.agents/skills/gstack/bin/gstack-redact-prepush" \
+  "$HOME/.codex/skills/gstack/bin/gstack-redact-prepush"; do
+  if [ -x "$_candidate" ]; then
+    _redact_bin="$_candidate"
+    break
+  fi
+done
+
+if [ -z "$_redact_bin" ] && command -v gstack-redact-prepush >/dev/null 2>&1; then
+  _redact_bin="$(command -v gstack-redact-prepush)"
+fi
+
+if [ -z "$_redact_bin" ]; then
+  echo "[pre-push] gstack-redact-prepush not found; skipping credential scan." >&2
+  echo "[pre-push] Install gstack or set GSTACK_BIN to enable this guard." >&2
+  exit 0
+fi
+
+printf '%s' "$_input" | "$_redact_bin" "$@"
