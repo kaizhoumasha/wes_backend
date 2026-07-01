@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 # 这些模型 import 用于注册隔离 SQLite create_all 所需的跨表 FK metadata。
 from src.app.device.models.command import DeviceCommand
@@ -24,6 +26,40 @@ class _AuditServiceStub:
     async def create_audit_log(self, _db: Any, **kwargs: Any) -> object:
         self.calls.append(kwargs)
         return SimpleNamespace(id=len(self.calls))
+
+
+class _RuntimeInboxUniqueRaceRepository:
+    """模拟查询后并发插入导致唯一索引冲突的 repository。"""
+
+    def __init__(self, existing: Any) -> None:
+        self.existing = existing
+        self.add_calls = 0
+
+    async def get_by_source_event_identity(self, *_args: Any, **_kwargs: Any) -> Any | None:
+        return self.existing if self.add_calls > 0 else None
+
+    async def add_received(self, *_args: Any, **_kwargs: Any) -> Any:
+        self.add_calls += 1
+        raise IntegrityError("INSERT INTO runtime_inbox", {}, Exception("unique source event"))
+
+
+class _RuntimeInboxStaleReadRepository:
+    """用真实 add_received 触发唯一索引冲突，同时模拟第一次读到旧快照。"""
+
+    def __init__(self) -> None:
+        from src.app.runtime.orchestration.consumers.runtime_inbox_repository import RuntimeInboxRepository
+
+        self.real_repository = RuntimeInboxRepository()
+        self.read_count = 0
+
+    async def get_by_source_event_identity(self, db: Any, **kwargs: Any) -> Any | None:
+        self.read_count += 1
+        if self.read_count == 1:
+            return None
+        return await self.real_repository.get_by_source_event_identity(db, **kwargs)
+
+    async def add_received(self, db: Any, data: dict[str, Any]) -> RuntimeInbox:
+        return await self.real_repository.add_received(db, data)
 
 
 @pytest.mark.asyncio
@@ -53,6 +89,78 @@ async def test_runtime_inbox_accept_returns_existing_ack_for_same_hash(db_sessio
     assert second.created is False
     assert second.record.id == first.record.id
     assert second.record.status == "RECEIVED"
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_accept_returns_existing_after_unique_conflict(db_session) -> None:
+    """并发插入撞唯一索引时，必须重新读取既有记录并返回幂等 ACK。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    existing = SimpleNamespace(id=7, payload_hash="hash-001", status="RECEIVED")
+    repository = _RuntimeInboxUniqueRaceRepository(existing)
+    service = RuntimeInboxService(repository=repository)
+
+    result = await service.accept_received(
+        db_session,
+        provider_code="WMS",
+        event_type="WMS_TASK_CHANGE",
+        source_event_id="evt-race-001",
+        payload_hash="hash-001",
+    )
+
+    assert result.created is False
+    assert result.record is existing
+    assert repository.add_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_accept_keeps_session_usable_after_real_unique_conflict(db_session) -> None:
+    """真实 flush 撞唯一索引后，savepoint rollback 必须允许重读和继续写入。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    existing = RuntimeInbox(
+        provider_code="WMS",
+        event_type="WMS_TASK_CHANGE",
+        source_event_id="evt-real-race-001",
+        payload_hash="hash-001",
+        status="RECEIVED",
+    )
+    db_session.add(existing)
+    await db_session.flush()
+    assert existing.id is not None
+
+    repository = _RuntimeInboxStaleReadRepository()
+    service = RuntimeInboxService(repository=repository)
+
+    result = await service.accept_received(
+        db_session,
+        provider_code="WMS",
+        event_type="WMS_TASK_CHANGE",
+        source_event_id="evt-real-race-001",
+        payload_hash="hash-001",
+    )
+
+    assert result.created is False
+    assert result.record.id == existing.id
+
+    probe = RuntimeInbox(
+        provider_code="WMS",
+        event_type="WMS_TASK_CHANGE",
+        source_event_id="evt-real-race-probe",
+        payload_hash="hash-probe",
+        status="RECEIVED",
+    )
+    db_session.add(probe)
+    await db_session.flush()
+
+    rows = (
+        await db_session.execute(
+            select(RuntimeInbox).where(RuntimeInbox.source_event_id.in_(["evt-real-race-001", "evt-real-race-probe"]))
+        )
+    ).scalars()
+    assert {record.source_event_id for record in rows} == {"evt-real-race-001", "evt-real-race-probe"}
 
 
 @pytest.mark.asyncio
@@ -87,6 +195,32 @@ async def test_runtime_inbox_accept_rejects_same_event_different_hash(db_session
     assert audit_event["event_type"] == "RUNTIME_INBOX_PAYLOAD_CONFLICT"
     assert audit_event["existing_payload_hash"] == "hash-original"
     assert audit_event["incoming_payload_hash"] == "hash-tampered"
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_accept_conflict_after_unique_conflict(db_session) -> None:
+    """并发插入后发现同 source event 不同 hash 时，仍必须返回 409 conflict。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+        RuntimeInboxConflict,
+        RuntimeInboxService,
+    )
+
+    existing = SimpleNamespace(id=8, payload_hash="hash-original", status="RECEIVED")
+    repository = _RuntimeInboxUniqueRaceRepository(existing)
+    service = RuntimeInboxService(repository=repository)
+
+    with pytest.raises(RuntimeInboxConflict) as exc_info:
+        await service.accept_received(
+            db_session,
+            provider_code="WMS",
+            event_type="WMS_TASK_CHANGE",
+            source_event_id="evt-race-002",
+            payload_hash="hash-tampered",
+        )
+
+    assert exc_info.value.existing_payload_hash == "hash-original"
+    assert exc_info.value.incoming_payload_hash == "hash-tampered"
 
 
 @pytest.mark.asyncio

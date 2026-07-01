@@ -88,3 +88,31 @@ def test_late_callback_during_blocked_by_cb_is_inboxed_not_marked_blocked() -> N
     assert result.state == FulfillmentState.RECONCILING
     assert result.runtime_inbox_required is True
     assert result.reason == "LATE_CALLBACK_WHILE_CB_BLOCKED"
+
+
+def test_terminal_fulfillment_state_cannot_be_overwritten_by_late_events() -> None:
+    """终态履约不能被 provider 重试或乱序 callback 覆盖。"""
+
+    from src.app.wms_integration.state_machine import (
+        FulfillmentEvent,
+        FulfillmentState,
+        WmsFulfillmentStateMachine,
+    )
+
+    machine = WmsFulfillmentStateMachine()
+    now = timezone.now_for_db()
+
+    scenarios = [
+        (FulfillmentState.SUCCEEDED, FulfillmentEvent.CALLBACK_FAILED, True),
+        (FulfillmentState.SUCCEEDED, FulfillmentEvent.PROVIDER_REJECTED, False),
+        (FulfillmentState.REJECTED, FulfillmentEvent.CALLBACK_SUCCEEDED, True),
+        (FulfillmentState.FAILED, FulfillmentEvent.PROVIDER_RUNNING, False),
+        (FulfillmentState.TIMEOUT, FulfillmentEvent.CALLBACK_SUCCEEDED, True),
+        (FulfillmentState.CANCELLED, FulfillmentEvent.DISPATCH_SENT, False),
+    ]
+    for current, event, expected_runtime_inbox_required in scenarios:
+        result = machine.transition(current=current, event=event, now=now)
+
+        assert result.state == current
+        assert result.reason == "TERMINAL_STATE_IGNORED"
+        assert result.runtime_inbox_required is expected_runtime_inbox_required

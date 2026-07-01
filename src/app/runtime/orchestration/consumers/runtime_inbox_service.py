@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
+from sqlalchemy.exc import IntegrityError
+
 from src.app.runtime.orchestration.consumers.runtime_inbox_repository import (
     RuntimeInboxRepository,
     runtime_inbox_repository,
@@ -116,6 +118,18 @@ class RuntimeInboxService:
         做幂等；同 hash 返回既有记录，不同 hash 409。
         """
 
+        record_data = {
+            "execution_session_id": execution_session_id,
+            "correlation_id": correlation_id,
+            "provider_code": provider_code,
+            "event_type": event_type,
+            "source_event_id": source_event_id,
+            "payload_hash": payload_hash,
+            "status": "RECEIVED",
+            "attempt_count": 0,
+            "max_retries": max_retries,
+        }
+
         if source_event_id:
             existing = await self.repository.get_by_source_event_identity(
                 db,
@@ -134,20 +148,29 @@ class RuntimeInboxService:
                     )
                 return RuntimeInboxAcceptResult(record=existing, created=False)
 
-        record = await self.repository.add_received(
-            db,
-            {
-                "execution_session_id": execution_session_id,
-                "correlation_id": correlation_id,
-                "provider_code": provider_code,
-                "event_type": event_type,
-                "source_event_id": source_event_id,
-                "payload_hash": payload_hash,
-                "status": "RECEIVED",
-                "attempt_count": 0,
-                "max_retries": max_retries,
-            },
-        )
+            try:
+                async with db.begin_nested():
+                    record = await self.repository.add_received(db, record_data)
+            except IntegrityError:
+                existing = await self.repository.get_by_source_event_identity(
+                    db,
+                    provider_code=provider_code,
+                    event_type=event_type,
+                    source_event_id=source_event_id,
+                )
+                if existing is None:
+                    raise
+                if existing.payload_hash != payload_hash:
+                    raise RuntimeInboxConflict(
+                        provider_code=provider_code,
+                        event_type=event_type,
+                        source_event_id=source_event_id,
+                        existing_payload_hash=existing.payload_hash,
+                        incoming_payload_hash=payload_hash,
+                    ) from None
+                return RuntimeInboxAcceptResult(record=existing, created=False)
+        else:
+            record = await self.repository.add_received(db, record_data)
         return RuntimeInboxAcceptResult(record=record, created=True)
 
     async def replay_from_dead_letter(

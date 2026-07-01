@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from typing import TYPE_CHECKING
+
+from src.core.conf import settings
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def test_body_hmac_canonical_signature_includes_nonce_body_hash_and_app_id() -> None:
@@ -54,6 +60,22 @@ def test_callback_path_requires_body_hmac_headers() -> None:
 
     assert missing_body_hmac_headers("/api/v1/callback/event", headers) == ["X-Nonce", "X-Body-SHA256"]
     assert missing_body_hmac_headers("/api/v1/api-auth/applications/try/invoke", headers) == []
+
+
+def test_callback_path_uses_configured_api_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """API_PATH 改变时，真实 callback 路径仍必须使用 body HMAC。"""
+
+    from src.core.api_security import missing_body_hmac_headers, signature_clock_skew_seconds
+
+    monkeypatch.setattr(settings, "API_PATH", "/gateway")
+    headers = {
+        "X-App-ID": "ecs-app",
+        "X-Timestamp": "1782843000",
+        "X-Signature": "sig",
+    }
+
+    assert missing_body_hmac_headers("/gateway/v1/callback/event", headers) == ["X-Nonce", "X-Body-SHA256"]
+    assert signature_clock_skew_seconds("/gateway/v1/callback/event") == (30, 30)
 
 
 def test_callback_path_uses_strict_timestamp_skew() -> None:

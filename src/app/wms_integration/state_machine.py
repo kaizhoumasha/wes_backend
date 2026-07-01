@@ -55,6 +55,21 @@ class FulfillmentTransitionResult:
 class WmsFulfillmentStateMachine:
     """WMS fulfillment 目标态最小状态机。"""
 
+    _TERMINAL_STATES: ClassVar[frozenset[FulfillmentState]] = frozenset(
+        {
+            FulfillmentState.SUCCEEDED,
+            FulfillmentState.REJECTED,
+            FulfillmentState.FAILED,
+            FulfillmentState.TIMEOUT,
+            FulfillmentState.CANCELLED,
+        }
+    )
+    _CALLBACK_EVENTS: ClassVar[frozenset[FulfillmentEvent]] = frozenset(
+        {
+            FulfillmentEvent.CALLBACK_SUCCEEDED,
+            FulfillmentEvent.CALLBACK_FAILED,
+        }
+    )
     _SIMPLE_TRANSITIONS: ClassVar[dict[FulfillmentEvent, tuple[FulfillmentState, str]]] = {
         FulfillmentEvent.PROVIDER_ACCEPTED: (FulfillmentState.ACCEPTED, "PROVIDER_ACCEPTED"),
         FulfillmentEvent.PROVIDER_REJECTED: (FulfillmentState.REJECTED, "PROVIDER_REJECTED"),
@@ -70,6 +85,14 @@ class WmsFulfillmentStateMachine:
         event: FulfillmentEvent,
         now: datetime,
     ) -> FulfillmentTransitionResult:
+        if current in self._TERMINAL_STATES:
+            return FulfillmentTransitionResult(
+                state=current,
+                occurred_at=now,
+                reason="TERMINAL_STATE_IGNORED",
+                runtime_inbox_required=event in self._CALLBACK_EVENTS,
+            )
+
         if event == FulfillmentEvent.CIRCUIT_BREAKER_OPEN:
             return FulfillmentTransitionResult(
                 state=FulfillmentState.BLOCKED_BY_CB,
