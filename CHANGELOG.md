@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.4.0] - 2026-07-01
+
+> **Note**: Phase 3 执行安全与恢复发布。本 patch 线新增 callback replay 防护、RuntimeInbox 幂等入口、Reconciliation 决策合同、WMS 履约状态保护，以及 WorkLine plane/manifest 读面；不包含数据库 schema 变更。
+
+### Added
+- Runtime callback 新增 body-bound HMAC 路径，签名覆盖 method、path、timestamp、nonce、body hash 与 app id，外部 callback 可使用更严格的签名合同，不再只依赖 legacy header-only 路径。
+- `RuntimeInboxService` 新增 provider callback 幂等 source-event 入口，记录 payload hash，支持 manual replay record，并向审计与恢复流程暴露 payload conflict 细节。
+- Active object ownership 与 Reconciliation 合同新增 owner-scoped decision、升级 severity、hold/freeze action 与 evidence reference。
+- Device command 恢复策略新增 inbox backpressure、dead-letter operator attention 与可过期 command lease。
+- WMS fulfillment 新增类型化状态转移、callback inbox handoff 语义、circuit breaker 阻断行为、类型化 evidence envelope 与 lifecycle helper。
+- WorkLine 配置面新增 plane scene/snapshot 读模型，并可在激活前校验 manifest queue code、device role 与 required capability 缺口。
+- Phase 3 运维合同新增 runtime observability signal 与 runtime toggle governance，明确禁止安全绕过开关。
+
+### Changed
+- WorkLine service export 纳入 Phase 3 manifest validator 与 plane service，并重新生成 legacy cleanup matrix，覆盖新增 plane、manifest 与 route 入口。
+- Callback path 检测改为跟随配置化 `API_PATH`，部署调整 API 前缀后 callback HMAC 请求仍会强制要求 nonce 与 body-hash header。
+
+### Fixed
+- Callback nonce replay 防护改用原子 Redis `SET NX EX` 固定 TTL；nonce 存储不可用时 fail closed。
+- 并发重复 RuntimeInbox callback 现在会重读既有 source event 并比较 payload hash，不再把唯一索引冲突泄漏成 `IntegrityError`。
+- WMS fulfillment 终态现在会忽略迟到或乱序 provider/callback event，防止 `SUCCEEDED`、`REJECTED`、`FAILED`、`TIMEOUT` 或 `CANCELLED` 被覆盖。
+- Release 验证补齐 generated legacy cleanup matrix 与 Stage 6 service-shim contract，使其与 Phase 3 WorkLine export 保持一致。
+
 ## [0.10.3.0] - 2026-06-30
 
 > **Note**:Phase 2 burn-down F-1/F-2 收尾 PR(`feature/phase2-burndown-f1-f2`)。把 workline 域 14 个运行态 model + 10 个运行态 repository 物理迁入 `src/app/runtime/orchestration/{models,repositories}/`,同步重写 262 条跨域 import(81 文件),2 个 xfail 契约测试转硬绿。物理迁移是文件位置变更,`__tablename__` 不变,数据库 schema 不变,沿用 0.x patch 表达"安全清理"语义。
