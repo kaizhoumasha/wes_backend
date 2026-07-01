@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-  逐入口数据在 legacy-cleanup-matrix.csv（668 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（679 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -33,11 +33,11 @@ uv run python scripts/generate_legacy_matrix.py
 
 扫描覆盖：`src/app/workline/`、`src/workline_runtime/`、`src/workline_plugins/`、`tests/workline_runtime/`、`tests/workline_plugins/`、`docs/templates/workline_plugin/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；`src/workline_runtime/` 与 `src/workline_plugins/` 同时登记 `__all__` exported symbol。
 
-## 3. 汇总（截至 feature/phase2-burndown-stage5-6 @ 2026-06-30）
+## 3. 汇总（截至 feature/phase3-execution-safety-recovery @ 2026-07-01）
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **668** |
+| **total_entries** | **679** |
 | phase4_carrier（承载 Phase 4 业务语义） | 213 |
 | pending-review | 0 |
 
@@ -45,14 +45,14 @@ uv run python scripts/generate_legacy_matrix.py
 
 | entry_type | count |
 | --- | ---: |
-| service | 326 |
-| model | 39 |
+| service | 329 |
 | plugin | 116 |
 | domain_object | 91 |
 | test | 62 |
-| api_route | 18 |
-| repository | 7 |
+| model | 45 |
+| api_route | 20 |
 | doc_template | 8 |
+| repository | 7 |
 | runtime_helper | 1 |
 
 ### total_entries_by_strategy
@@ -60,24 +60,24 @@ uv run python scripts/generate_legacy_matrix.py
 | strategy | count |
 | --- | ---: |
 | rebuild | 412 |
-| keep-contract | 178 |
+| keep-contract | 187 |
 | delete | 68 |
-| move | 10 |
+| move | 12 |
 
 ### total_entries_by_drop_phase
 
 | drop_phase | count |
 | --- | ---: |
-| phase5-tech | 247 |
+| phase5-tech | 256 |
 | phase4 | 213 |
-| phase2 | 199 |
+| phase2 | 201 |
 | phase1 | 9 |
 
 ### total_entries_by_owner
 
 | current_owner | count |
 | --- | ---: |
-| workline | 455 |
+| workline | 466 |
 | workline_plugins | 178 |
 | workline_runtime | 9 |
 | runtime | 8 |

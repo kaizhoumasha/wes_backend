@@ -248,20 +248,23 @@ def test_workline_service_config_only_after_stage6():
 
 
 # 阶段 6 C5:workline.services.__init__ 清理 — __all__ / _LAZY_SHIM_MAP 收敛到
-# 当前 9 个真实 module export + 3 个死引用 tombstone,其余 dead entries
+# 当前 13 个真实 module export + 3 个死引用 tombstone,其余 dead entries
 # 必须删除。`runtime_intent_effects.py:1545/1627` 与
 # `callback_orchestration_service.py:35` 3 处死引用保留(未触发,不爆),
 # 作为 lazy shim 兜底的最后一道闸,验证 `__all__` / `_LAZY_SHIM_MAP` 语义一致。
 #
-# 来源:audit_c5_shim_cleanup (2026-06-30)
+# 来源:audit_c5_shim_cleanup (2026-06-30),Phase 3 配置域 plane/manifest 导出同步
 #   LIVE (3):WorkLineSafetyBlocked, workline_safety_service, workline_service
 #   DEAD 但 caller 仍存在 (3):WorklineInboxService, inbox_service,
 #                              workline_bin_cell_reservation_service
-#   实际 module export (9):WorklineDiagnosticService, workline_diagnostic_service,
+#   实际 module export (13):WorklineDiagnosticService, workline_diagnostic_service,
 #                           WorkLineSafetyBlocked, WorkLineSafetyService,
 #                           workline_safety_service, WorkLineService,
 #                           workline_service, OrchestratorWriteBackService,
-#                           orchestrator_write_back_service
+#                           orchestrator_write_back_service,
+#                           WorkLineManifestActivationValidator,
+#                           workline_manifest_activation_validator,
+#                           WorkLinePlaneService, workline_plane_service
 #   shim 兜底死引用 (3):WorklineInboxService → inbox_service,
 #                        inbox_service → inbox_service,
 #                        workline_bin_cell_reservation_service
@@ -271,6 +274,12 @@ _C5_REAL_MODULE_EXPORTS = frozenset(
         # diagnostic_service
         "WorklineDiagnosticService",
         "workline_diagnostic_service",
+        # manifest_validator
+        "WorkLineManifestActivationValidator",
+        "workline_manifest_activation_validator",
+        # plane_service
+        "WorkLinePlaneService",
+        "workline_plane_service",
         # safety_service
         "WorkLineSafetyBlocked",
         "WorkLineSafetyService",
