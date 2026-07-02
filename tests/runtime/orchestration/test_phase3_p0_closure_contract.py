@@ -419,6 +419,57 @@ def test_phase3_benchmark_gate_rejects_production_artifact_without_scenario_prov
     )
 
 
+def test_phase3_benchmark_gate_rejects_production_artifact_without_workload_metadata() -> None:
+    import json
+    from pathlib import Path
+
+    from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
+
+    repo_root = Path(__file__).resolve().parents[3]
+    artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "phase3_benchmark_artifact.json").read_text())
+    artifact["profile"] = {
+        "kind": "production-scale",
+        "database_backend": "postgresql",
+        "dependency_profile": "postgresql-wms-ecs-http",
+        "concurrency_level": 64,
+        "duration_seconds": 300,
+    }
+    artifact["scenarios"]["runtime_inbox_claim"]["source"] = {
+        "kind": "postgresql",
+        "evidence": "reports/benchmarks/runtime-inbox-claim.json",
+    }
+    artifact["scenarios"]["conveyor_queue_writer"]["source"] = {
+        "kind": "postgresql",
+        "evidence": "reports/benchmarks/conveyor-queue-writer.json",
+    }
+    artifact["scenarios"]["ecs_status_command"]["source"] = {
+        "kind": "ecs-http",
+        "evidence": "reports/benchmarks/ecs-status-command.json",
+    }
+    artifact["scenarios"]["plane_snapshot"]["source"] = {
+        "kind": "api-http",
+        "evidence": "reports/benchmarks/plane-snapshot.json",
+    }
+
+    validation = RuntimeBenchmarkGate().validate_artifact(artifact)
+
+    assert validation.valid is False
+    assert validation.reason == "MISSING_WORKLOAD_METADATA"
+    assert validation.missing_workload_fields == (
+        "conveyor_queue_writer.workload.active_membership_count",
+        "conveyor_queue_writer.workload.concurrent_identity_collision",
+        "ecs_status_command.workload.command_post_count",
+        "ecs_status_command.workload.status_get_count",
+        "plane_snapshot.workload.active_object_count",
+        "plane_snapshot.workload.active_session_count",
+        "plane_snapshot.workload.device_count",
+        "plane_snapshot.workload.queue_count",
+        "plane_snapshot.workload.workline_count",
+        "runtime_inbox_claim.workload.pending_inbox_count",
+        "runtime_inbox_claim.workload.worker_concurrency",
+    )
+
+
 def test_phase3_benchmark_gate_accepts_production_artifact_with_scenario_provenance() -> None:
     import json
     from pathlib import Path
@@ -438,17 +489,36 @@ def test_phase3_benchmark_gate_accepts_production_artifact_with_scenario_provena
         "kind": "postgresql",
         "evidence": "reports/benchmarks/runtime-inbox-claim.json",
     }
+    artifact["scenarios"]["runtime_inbox_claim"]["workload"] = {
+        "pending_inbox_count": 1000,
+        "worker_concurrency": 4,
+    }
     artifact["scenarios"]["conveyor_queue_writer"]["source"] = {
         "kind": "postgresql",
         "evidence": "reports/benchmarks/conveyor-queue-writer.json",
+    }
+    artifact["scenarios"]["conveyor_queue_writer"]["workload"] = {
+        "active_membership_count": 200,
+        "concurrent_identity_collision": True,
     }
     artifact["scenarios"]["ecs_status_command"]["source"] = {
         "kind": "ecs-http",
         "evidence": "reports/benchmarks/ecs-status-command.json",
     }
+    artifact["scenarios"]["ecs_status_command"]["workload"] = {
+        "status_get_count": 400,
+        "command_post_count": 400,
+    }
     artifact["scenarios"]["plane_snapshot"]["source"] = {
         "kind": "api-http",
         "evidence": "reports/benchmarks/plane-snapshot.json",
+    }
+    artifact["scenarios"]["plane_snapshot"]["workload"] = {
+        "workline_count": 1,
+        "queue_count": 10,
+        "device_count": 50,
+        "active_session_count": 100,
+        "active_object_count": 200,
     }
 
     validation = RuntimeBenchmarkGate().validate_artifact(artifact)

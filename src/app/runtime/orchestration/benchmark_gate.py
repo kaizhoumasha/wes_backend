@@ -32,6 +32,8 @@ class RuntimeBenchmarkArtifactValidation:
     invalid_sample_counts: tuple[str, ...] = ()
     missing_provenance_fields: tuple[str, ...] = ()
     invalid_provenance_fields: tuple[str, ...] = ()
+    missing_workload_fields: tuple[str, ...] = ()
+    invalid_workload_fields: tuple[str, ...] = ()
 
 
 class RuntimeBenchmarkGate:
@@ -160,6 +162,8 @@ def _validate_scenario_results(
     invalid_sample_counts: list[str] = []
     missing_provenance_fields: list[str] = []
     invalid_provenance_fields: list[str] = []
+    missing_workload_fields: list[str] = []
+    invalid_workload_fields: list[str] = []
     for scenario in scenarios:
         raw_result = raw_scenarios.get(scenario.name)
         result = raw_result if isinstance(raw_result, Mapping) else {}
@@ -173,6 +177,12 @@ def _validate_scenario_results(
                 result,
                 missing_fields=missing_provenance_fields,
                 invalid_fields=invalid_provenance_fields,
+            )
+            _collect_scenario_workload_validation(
+                scenario.name,
+                result,
+                missing_fields=missing_workload_fields,
+                invalid_fields=invalid_workload_fields,
             )
 
         metrics = result.get("metrics")
@@ -192,43 +202,79 @@ def _validate_scenario_results(
             if _is_number(metric_value) and _is_number(threshold_value) and metric_value > threshold_value:
                 failed_thresholds.append(metric_key)
 
+    return _validation_from_collected_scenario_errors(
+        invalid_sample_counts=invalid_sample_counts,
+        missing_provenance_fields=missing_provenance_fields,
+        invalid_provenance_fields=invalid_provenance_fields,
+        missing_workload_fields=missing_workload_fields,
+        invalid_workload_fields=invalid_workload_fields,
+        missing_metrics=missing_metrics,
+        missing_thresholds=missing_thresholds,
+        failed_thresholds=failed_thresholds,
+    )
+
+
+def _validation_from_collected_scenario_errors(
+    *,
+    invalid_sample_counts: list[str],
+    missing_provenance_fields: list[str],
+    invalid_provenance_fields: list[str],
+    missing_workload_fields: list[str],
+    invalid_workload_fields: list[str],
+    missing_metrics: list[str],
+    missing_thresholds: list[str],
+    failed_thresholds: list[str],
+) -> RuntimeBenchmarkArtifactValidation | None:
+    validation: RuntimeBenchmarkArtifactValidation | None = None
     if invalid_sample_counts:
-        return RuntimeBenchmarkArtifactValidation(
+        validation = RuntimeBenchmarkArtifactValidation(
             valid=False,
             reason="INVALID_SAMPLE_COUNT",
             invalid_sample_counts=tuple(invalid_sample_counts),
         )
-    if missing_provenance_fields:
-        return RuntimeBenchmarkArtifactValidation(
+    elif missing_provenance_fields:
+        validation = RuntimeBenchmarkArtifactValidation(
             valid=False,
             reason="MISSING_SCENARIO_PROVENANCE",
             missing_provenance_fields=tuple(sorted(missing_provenance_fields)),
         )
-    if invalid_provenance_fields:
-        return RuntimeBenchmarkArtifactValidation(
+    elif invalid_provenance_fields:
+        validation = RuntimeBenchmarkArtifactValidation(
             valid=False,
             reason="INVALID_SCENARIO_PROVENANCE",
             invalid_provenance_fields=tuple(sorted(invalid_provenance_fields)),
         )
-    if missing_metrics:
-        return RuntimeBenchmarkArtifactValidation(
+    elif missing_workload_fields:
+        validation = RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="MISSING_WORKLOAD_METADATA",
+            missing_workload_fields=tuple(sorted(missing_workload_fields)),
+        )
+    elif invalid_workload_fields:
+        validation = RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="INVALID_WORKLOAD_METADATA",
+            invalid_workload_fields=tuple(sorted(invalid_workload_fields)),
+        )
+    elif missing_metrics:
+        validation = RuntimeBenchmarkArtifactValidation(
             valid=False,
             reason="MISSING_METRICS",
             missing_metrics=tuple(missing_metrics),
         )
-    if missing_thresholds:
-        return RuntimeBenchmarkArtifactValidation(
+    elif missing_thresholds:
+        validation = RuntimeBenchmarkArtifactValidation(
             valid=False,
             reason="MISSING_THRESHOLDS",
             missing_thresholds=tuple(missing_thresholds),
         )
-    if failed_thresholds:
-        return RuntimeBenchmarkArtifactValidation(
+    elif failed_thresholds:
+        validation = RuntimeBenchmarkArtifactValidation(
             valid=False,
             reason="THRESHOLD_EXCEEDED",
             failed_thresholds=tuple(failed_thresholds),
         )
-    return None
+    return validation
 
 
 def _collect_scenario_provenance_validation(
@@ -251,6 +297,50 @@ def _collect_scenario_provenance_validation(
 
     if not _non_empty_text(source.get("evidence")):
         missing_fields.append(f"{scenario.name}.source.evidence")
+
+
+_PRODUCTION_WORKLOAD_REQUIREMENTS: dict[str, dict[str, int | bool]] = {
+    "runtime_inbox_claim": {"pending_inbox_count": 1000, "worker_concurrency": 4},
+    "conveyor_queue_writer": {"active_membership_count": 200, "concurrent_identity_collision": True},
+    "ecs_status_command": {"status_get_count": 1, "command_post_count": 1},
+    "plane_snapshot": {
+        "workline_count": 1,
+        "queue_count": 10,
+        "device_count": 50,
+        "active_session_count": 100,
+        "active_object_count": 200,
+    },
+}
+
+
+def _collect_scenario_workload_validation(
+    scenario_name: str,
+    result: Mapping[object, object],
+    *,
+    missing_fields: list[str],
+    invalid_fields: list[str],
+) -> None:
+    requirements = _PRODUCTION_WORKLOAD_REQUIREMENTS.get(scenario_name, {})
+    if not requirements:
+        return
+
+    workload = result.get("workload")
+    if not isinstance(workload, Mapping):
+        missing_fields.extend(f"{scenario_name}.workload.{field_name}" for field_name in requirements)
+        return
+
+    for field_name, expected_value in requirements.items():
+        field_key = f"{scenario_name}.workload.{field_name}"
+        actual_value = workload.get(field_name)
+        if actual_value is None:
+            missing_fields.append(field_key)
+            continue
+        if isinstance(expected_value, bool):
+            if actual_value is not expected_value:
+                invalid_fields.append(field_key)
+            continue
+        if not _is_number(actual_value) or actual_value < expected_value:
+            invalid_fields.append(field_key)
 
 
 def default_phase3_benchmark_scenarios() -> list[RuntimeBenchmarkScenario]:
