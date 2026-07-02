@@ -26,6 +26,7 @@ Phase 1: runtime core 实体已落地, ConveyorQueueMembership 作为 CEO-008
 """
 
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
+from src.app.runtime.orchestration.device_runtime_projection import DeviceRuntimeProjection
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
@@ -37,6 +38,7 @@ from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
 
 __all__ = [
     "ConveyorQueueMembership",
+    "DeviceRuntimeProjection",
     "ExecutionCorrelation",
     "ExecutionSession",
     "ExecutionWorkItem",

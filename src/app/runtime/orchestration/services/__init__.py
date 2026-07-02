@@ -7,6 +7,10 @@ from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_ser
     ConveyorQueueWriteBlocked,
     conveyor_queue_membership_writer_service,
 )
+from src.app.runtime.orchestration.services.device_runtime_projection_writer_service import (
+    DeviceRuntimeProjectionWriterService,
+    device_runtime_projection_writer_service,
+)
 from src.app.runtime.orchestration.services.idempotency_guard import (
     ClaimResult,
     IdempotencyConflict,
@@ -31,11 +35,13 @@ __all__ = [
     "ConveyorQueueMembershipWriteResult",
     "ConveyorQueueMembershipWriterService",
     "ConveyorQueueWriteBlocked",
+    "DeviceRuntimeProjectionWriterService",
     "IdempotencyConflict",
     "IdempotencyGuard",
     "RuntimeSnapshotAssembler",
     "RuntimeSnapshotInput",
     "conveyor_queue_membership_writer_service",
+    "device_runtime_projection_writer_service",
     "idempotency_guard",
     "is_wes_internal_key",
     "make_wes_internal_key",
