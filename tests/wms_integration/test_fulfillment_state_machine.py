@@ -114,6 +114,35 @@ def test_four_timeout_paths_enter_timeout_with_distinct_reasons() -> None:
         assert result.reason == event.value
 
 
+def test_fulfillment_state_machine_observable_transition_matrix() -> None:
+    """可观察转移必须按 current state 限定, 不能只按 event 越级改状态。"""
+
+    from src.app.wms_integration.state_machine import (
+        FulfillmentEvent,
+        FulfillmentState,
+        WmsFulfillmentStateMachine,
+    )
+
+    machine = WmsFulfillmentStateMachine()
+    now = timezone.now_for_db()
+    scenarios = [
+        (FulfillmentState.REQUESTED, FulfillmentEvent.PROVIDER_ACCEPTED, FulfillmentState.RECONCILING, False),
+        (FulfillmentState.REQUESTED, FulfillmentEvent.CALLBACK_SUCCEEDED, FulfillmentState.RECONCILING, True),
+        (FulfillmentState.SENT, FulfillmentEvent.PROVIDER_ACCEPTED, FulfillmentState.ACCEPTED, False),
+        (FulfillmentState.SENT, FulfillmentEvent.PROVIDER_REJECTED, FulfillmentState.REJECTED, False),
+        (FulfillmentState.ACCEPTED, FulfillmentEvent.PROVIDER_RUNNING, FulfillmentState.RUNNING, False),
+        (FulfillmentState.ACCEPTED, FulfillmentEvent.CALLBACK_SUCCEEDED, FulfillmentState.SUCCEEDED, True),
+        (FulfillmentState.RUNNING, FulfillmentEvent.CALLBACK_FAILED, FulfillmentState.FAILED, True),
+        (FulfillmentState.RECONCILING, FulfillmentEvent.CALLBACK_SUCCEEDED, FulfillmentState.RECONCILING, True),
+    ]
+
+    for current, event, expected_state, expected_runtime_inbox_required in scenarios:
+        result = machine.transition(current=current, event=event, now=now)
+
+        assert result.state == expected_state
+        assert result.runtime_inbox_required is expected_runtime_inbox_required
+
+
 def test_late_callback_during_blocked_by_cb_is_inboxed_not_marked_blocked() -> None:
     """CB open/half-open 只阻断出站 effect, late callback 仍进入 RuntimeInbox。"""
 
