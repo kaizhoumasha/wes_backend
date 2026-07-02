@@ -10,3 +10,4 @@ def test_conveyor_queue_writer_benchmark() -> None:
 
     assert result.metrics["write_p95_ms"] < result.thresholds["write_p95_ms"]
     assert result.metrics["reconciling_count"] == 100
+    assert result.metrics["integrity_conflict_recheck_count"] == 100

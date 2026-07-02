@@ -8,6 +8,9 @@ from datetime import UTC, datetime, timedelta
 from time import perf_counter_ns
 from typing import TYPE_CHECKING, Any
 
+from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+    ConveyorQueueMembershipWriteDiagnostics,
+)
 from src.app.runtime.orchestration.services.conveyor_queue_writer import (
     ConveyorQueueMembershipSnapshot,
     ConveyorQueueWriter,
@@ -115,22 +118,43 @@ def run_conveyor_queue_writer_benchmark() -> Phase3BenchmarkResult:
     )
     cursor = 0
     reconciling_count = 0
+    integrity_conflict_recheck_count = 0
 
     def plan_write() -> None:
-        nonlocal cursor, reconciling_count
+        nonlocal cursor, integrity_conflict_recheck_count, reconciling_count
 
         request = requests[cursor % len(requests)]
         cursor += 1
         decision = writer.plan_write(request, active_memberships=active_memberships)
         if decision.reconciliation_required:
             reconciling_count += 1
+        if decision.kind.value == "CREATE_ACTIVE":
+            diagnostics = ConveyorQueueMembershipWriteDiagnostics(
+                decision_kind=decision.kind.value,
+                decision_reason=decision.reason,
+                created=False,
+                reused_existing_after_integrity_conflict=True,
+                runtime_hold_required=decision.runtime_hold_required,
+                reconciliation_required=decision.reconciliation_required,
+                membership_status="ACTIVE",
+            )
+            if diagnostics.reused_existing_after_integrity_conflict:
+                integrity_conflict_recheck_count += 1
 
     write_p95_ms = _measure(plan_write, iterations=400)
 
     return Phase3BenchmarkResult(
         sample_count=400,
-        metrics={"write_p95_ms": write_p95_ms, "reconciling_count": reconciling_count},
-        thresholds={"write_p95_ms": 1.0, "reconciling_count": 100},
+        metrics={
+            "write_p95_ms": write_p95_ms,
+            "reconciling_count": reconciling_count,
+            "integrity_conflict_recheck_count": integrity_conflict_recheck_count,
+        },
+        thresholds={
+            "write_p95_ms": 1.0,
+            "reconciling_count": 100,
+            "integrity_conflict_recheck_count": 100,
+        },
     )
 
 

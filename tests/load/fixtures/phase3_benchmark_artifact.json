@@ -17,11 +17,13 @@
       "sample_count": 1000,
       "metrics": {
         "write_p95_ms": 6.0,
-        "reconciling_count": 0
+        "reconciling_count": 0,
+        "integrity_conflict_recheck_count": 0
       },
       "thresholds": {
         "write_p95_ms": 30.0,
-        "reconciling_count": 0
+        "reconciling_count": 0,
+        "integrity_conflict_recheck_count": 100
       }
     },
     "ecs_status_command": {
