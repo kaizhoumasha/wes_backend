@@ -138,7 +138,7 @@ class WmsTypedPortService:
         )
         started_at = timezone.now_for_db()
 
-        decision = await self._before_call(endpoint)
+        decision = await self._before_call(endpoint, trace_id=request.trace_id)
         if not decision.allowed:
             evidence = await self._record_evidence(
                 endpoint=endpoint,
@@ -313,13 +313,14 @@ class WmsTypedPortService:
             ) from exc
         return response
 
-    async def _before_call(self, endpoint: WmsOperationEndpoint) -> WmsCircuitBreakerDecision:
+    async def _before_call(self, endpoint: WmsOperationEndpoint, *, trace_id: str | None) -> WmsCircuitBreakerDecision:
         async with self.session_factory() as db:
             try:
                 decision = await self.breaker_service.before_call(
                     db,
                     target_code=endpoint.target_code,
                     operation_name=endpoint.operation_name,
+                    trace_id=trace_id,
                 )
                 await db.commit()
                 return decision
@@ -359,6 +360,7 @@ class WmsTypedPortService:
                     operation_name=endpoint.operation_name,
                     evidence_key=evidence.evidence_key,
                     probe_generation=probe_generation,
+                    trace_id=request.trace_id,
                 )
                 await db.commit()
                 return evidence
@@ -400,6 +402,7 @@ class WmsTypedPortService:
                     operation_name=endpoint.operation_name,
                     evidence_key=evidence.evidence_key,
                     probe_generation=probe_generation,
+                    trace_id=request.trace_id,
                 )
                 await db.commit()
                 return evidence
@@ -441,6 +444,7 @@ class WmsTypedPortService:
                     operation_name=endpoint.operation_name,
                     evidence_key=evidence.evidence_key,
                     probe_generation=probe_generation,
+                    trace_id=request.trace_id,
                 )
                 await db.commit()
                 return evidence

@@ -16,6 +16,7 @@ def test_runtime_observability_registry_requires_stable_attributes() -> None:
             "trace_id": "trace-1",
             "correlation_id": "corr-1",
             "command_code": "CMD-1",
+            "provider_code": "ECS",
         },
     )
     invalid = registry.validate(
@@ -23,12 +24,35 @@ def test_runtime_observability_registry_requires_stable_attributes() -> None:
         {
             "trace_id": "trace-1",
             "provider_code": "WMS",
+            "breaker_state": "OPEN",
         },
     )
 
     assert valid.valid is True
     assert invalid.valid is False
     assert invalid.missing_attributes == ("operation_kind",)
+
+
+def test_runtime_observability_registry_emits_valid_events_to_observers() -> None:
+    from src.app.runtime.orchestration.observability import RuntimeObservabilityRegistry
+
+    emitted = []
+    registry = RuntimeObservabilityRegistry(observers=(emitted.append,))
+
+    event = registry.emit(
+        "wms_breaker.transition",
+        {
+            "trace_id": "trace-1",
+            "provider_code": "WMS",
+            "operation_kind": "query_inventory",
+            "breaker_state": "OPEN",
+        },
+    )
+
+    assert emitted == [event]
+    assert event.name == "wms_breaker.transition"
+    assert event.signal_type == "metric+log"
+    assert event.attributes["breaker_state"] == "OPEN"
 
 
 def test_runtime_toggle_registry_blocks_expired_and_security_bypass_toggles() -> None:

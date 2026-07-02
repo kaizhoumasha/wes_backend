@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+WmsBreakerObservabilityEmit = Callable[[str, dict[str, object]], object]
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
         half_open_success_threshold: int = 1,
         half_open_max_attempts: int | None = None,
         half_open_probe_timeout_seconds: int | None = None,
+        observability_emit: WmsBreakerObservabilityEmit | None = None,
     ) -> None:
         super().__init__(repository or wms_circuit_breaker_repository)
         if failure_threshold < 1:
@@ -69,6 +73,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
         self.half_open_success_threshold = half_open_success_threshold
         self.half_open_max_attempts = half_open_max_attempts or half_open_success_threshold
         self.half_open_probe_timeout_seconds = half_open_probe_timeout_seconds or retry_after_seconds
+        self._observability_emit = observability_emit
 
     async def before_call(
         self,
@@ -76,6 +81,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
         *,
         target_code: str,
         operation_name: str,
+        trace_id: str | None = None,
         now: datetime | None = None,
     ) -> WmsCircuitBreakerDecision:
         """调用 WMS 前判定是否允许放行。
@@ -85,6 +91,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
 
         current_time = now or timezone.now_for_db()
         state = await self.repo.get_or_create_for_update(db, target_code=target_code, operation_name=operation_name)
+        previous_state = state.state
 
         if state.state == WmsCircuitBreakerStatus.CLOSED:
             await db.flush()
@@ -101,6 +108,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
                 )
             self._move_to_half_open(state, current_time)
             self._start_half_open_probe(state, current_time)
+            self._emit_transition(previous_state, state, trace_id=trace_id)
             await db.flush()
             return self._decision(state, allowed=True, reason="OPEN_RETRY_AFTER_ELAPSED", include_probe=True)
 
@@ -124,6 +132,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
         operation_name: str,
         evidence_key: str | None = None,
         probe_generation: int | None = None,
+        trace_id: str | None = None,
         now: datetime | None = None,
     ) -> WmsCircuitBreakerState:
         """记录一次 WMS 调用成功，并按状态机推进。
@@ -133,6 +142,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
 
         current_time = now or timezone.now_for_db()
         state = await self.repo.get_or_create_for_update(db, target_code=target_code, operation_name=operation_name)
+        previous_state = state.state
 
         if state.state == WmsCircuitBreakerStatus.HALF_OPEN:
             if not self._matches_half_open_probe(state, probe_generation, current_time):
@@ -147,6 +157,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
         else:
             state.last_evidence_key = evidence_key
 
+        self._emit_transition(previous_state, state, trace_id=trace_id)
         await db.flush()
         return state
 
@@ -158,6 +169,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
         operation_name: str,
         evidence_key: str | None = None,
         probe_generation: int | None = None,
+        trace_id: str | None = None,
         now: datetime | None = None,
     ) -> WmsCircuitBreakerState:
         """记录一次 WMS 调用失败，并按状态机推进。
@@ -167,6 +179,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
 
         current_time = now or timezone.now_for_db()
         state = await self.repo.get_or_create_for_update(db, target_code=target_code, operation_name=operation_name)
+        previous_state = state.state
 
         if state.state == WmsCircuitBreakerStatus.HALF_OPEN:
             if not self._matches_half_open_probe(state, probe_generation, current_time):
@@ -185,6 +198,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
             if state.failure_count >= self.failure_threshold:
                 self._move_to_open(state, current_time)
 
+        self._emit_transition(previous_state, state, trace_id=trace_id)
         await db.flush()
         return state
 
@@ -261,11 +275,33 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
             and state.half_open_probe_expires_at > now
         )
 
+    def _emit_transition(
+        self,
+        previous_state: WmsCircuitBreakerStatus,
+        state: WmsCircuitBreakerState,
+        *,
+        trace_id: str | None,
+    ) -> None:
+        if self._observability_emit is None or trace_id is None or state.state == previous_state:
+            return
+        self._observability_emit(
+            "wms_breaker.transition",
+            {
+                "trace_id": trace_id,
+                "provider_code": state.target_code,
+                "operation_kind": state.operation_name,
+                "breaker_state": state.state.value
+                if isinstance(state.state, WmsCircuitBreakerStatus)
+                else str(state.state),
+            },
+        )
+
 
 wms_circuit_breaker_service = WmsCircuitBreakerService()
 
 
 __all__ = [
+    "WmsBreakerObservabilityEmit",
     "WmsCircuitBreakerDecision",
     "WmsCircuitBreakerService",
     "wms_circuit_breaker_service",

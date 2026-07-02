@@ -1792,7 +1792,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `DeviceDispatchPolicy`：补齐 fresh IDLE 放行、过期/未知状态短退避、RUNNING deadline 有界等待、session HOLD/RECONCILING/CLOSED 冻结或取消的纯策略合同，并已接入 `DeviceCommandGateway.dispatch` 热路径；fresh busy/hard-state 本地快照会短路，stale/unknown 本地快照继续走 ECS realtime status probe。
 - `ConveyorQueueWriter`：补齐同 queue 幂等重放、跨 queue 冲突进入 RECONCILING、placeholder resolve、未知 queue strict-mode 阻断的写入决策合同，并新增 `ConveyorQueueMembershipRepository` / `ConveyorQueueMembershipWriterService`，覆盖 ACTIVE 创建、幂等复用、placeholder 原地解析、RECONCILING 标记、strict-mode unknown queue 阻断和唯一冲突后的 existing 重读。
 - `ScenarioRecorder` / `ScenarioReplayRunner`：补齐脱敏录制、deterministic replay、timeline/outbox/projection hash/reconciliation reason 断言合同；本分支新增 `tests/resilience/fixtures/phase3_runtime_replay_fixture.json` 与显式 resilience replay 测试；生产数据源采集和 simulator fixture 仍待接入。
-- `RuntimeObservabilityRegistry`、`RuntimeToggleRegistry`、`RuntimeToggleReleaseGate`、`RuntimeBenchmarkGate`：补齐稳定 attributes 校验、toggle owner/expiry/security-bypass 拦截、release toggle default-off/test_matrix evidence 发布阻塞和 Phase 3 benchmark 场景清单合同；runtime toggle release gate 已接入 `scripts/git-quality-gate.sh --check runtime-toggle-release` 和 quality profile；本分支补齐 `tests/load/test_runtime_inbox_claim_benchmark.py`、`test_conveyor_queue_writer_benchmark.py`、`test_ecs_status_command_benchmark.py`、`test_plane_snapshot_benchmark.py` 四个轻量 benchmark 命令；运行时 instrumentation 与生产规模 benchmark artifact 仍待接入。
+- `RuntimeObservabilityRegistry`、`RuntimeToggleRegistry`、`RuntimeToggleReleaseGate`、`RuntimeBenchmarkGate`：补齐稳定 attributes 校验、observer 发射入口、WMS breaker transition instrumentation、toggle owner/expiry/security-bypass 拦截、release toggle default-off/test_matrix evidence 发布阻塞和 Phase 3 benchmark 场景清单合同；runtime toggle release gate 已接入 `scripts/git-quality-gate.sh --check runtime-toggle-release` 和 quality profile；本分支补齐 `tests/load/test_runtime_inbox_claim_benchmark.py`、`test_conveyor_queue_writer_benchmark.py`、`test_ecs_status_command_benchmark.py`、`test_plane_snapshot_benchmark.py` 四个轻量 benchmark 命令；全链路 OpenTelemetry exporter 与生产规模 benchmark artifact 仍待接入。
 - WMS fulfillment 状态机补齐 4 类 timeout 事件合同，并修正 circuit breaker open 只阻断出站请求、不覆盖已在途 fulfillment 状态。
 - `ExternalReferenceCatalog` 补齐 typed external reference 与 `source_version` drift 分类合同；GIN 索引和 WMS drift job 仍待接入。
 - full-box exchange 行为合同从 strict xfail 转为真实合同：验证 full-box 外部履约、typed evidence 与本地冲突进入 ReconciliationManager 的语义；RACK_BIN exchange 和生产 callback/projection 接入仍待补齐。
@@ -1811,7 +1811,8 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `uv run pytest tests/runtime/orchestration/test_device_command_gateway.py -q`：8 passed
 - `uv run pytest tests/runtime/orchestration/test_conveyor_queue_membership_writer_service.py -q`：6 passed
 - `uv run pytest tests/runtime/orchestration/test_phase3_recovery_policies.py tests/runtime/orchestration/test_phase3_p0_closure_contract.py tests/runtime/orchestration/test_phase3_operational_contracts.py -q`：15 passed
-- `uv run pytest tests/runtime/orchestration/test_phase3_operational_contracts.py tests/contracts/test_phase3_ops_contract_docs.py -q`：7 passed
+- `uv run pytest tests/runtime/orchestration/test_phase3_operational_contracts.py tests/contracts/test_phase3_ops_contract_docs.py -q`：8 passed
+- `uv run pytest tests/wms_integration/test_circuit_breaker.py tests/wms_integration/test_wms_client.py -q`：40 passed
 - `uv run pytest tests/architecture/test_git_quality_gate_architecture_profile.py -q`：2 passed
 - `uv run pytest tests/load/ -q`：4 passed
 - `uv run pytest tests/resilience/test_phase3_scenario_replay.py -q`：1 passed
@@ -2041,10 +2042,10 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | ENG-013 | ✅ 已完成 | RECONCILING 软件禁发、投影冻结和 owner-scoped 人工恢复审计合同 |
 | ENG-016 | 🟡 部分完成 | 本分支补齐 `ConveyorQueueWriter` 写入决策合同，并新增 runtime DB-backed `ConveyorQueueMembershipWriterService` / repository，覆盖幂等重放、placeholder resolve、跨队列 RECONCILING、strict-mode unknown queue 和 IntegrityError existing 重读；PostgreSQL 高并发基准与 `tests/load/` 性能数据仍待补齐 |
 | ENG-017 | 🟡 部分完成 | 本分支将 full-box exchange 合同从 strict xfail 转为真实合同，覆盖外部履约 evidence 与本地冲突进入 reconciliation；RACK_BIN exchange 与生产 callback/projection 接入仍待补齐 |
-| ENG-018 | 🟡 部分完成 | typed evidence envelope 与 observability contract 已落地；retention/archive、breaker OPEN/HALF_OPEN 指标和 evidence 写入失败指标仍待补齐 |
+| ENG-018 | 🟡 部分完成 | typed evidence envelope 与 observability contract 已落地；本分支补齐 WMS breaker OPEN/HALF_OPEN/CLOSED transition instrumentation 和 typed port `trace_id` 透传；retention/archive 与 evidence 写入失败指标仍待补齐 |
 | ENG-019 | 🟡 部分完成 | 本分支新增 `RuntimeBenchmarkGate` 必需场景清单合同，覆盖 RuntimeInbox claim、queue writer、ECS status command 和 plane snapshot；并补齐对应 `tests/load/` 轻量 benchmark 脚本，四个 gate 命令均可显式运行；生产规模性能数据、CI artifact 和真实外部依赖压测仍待补齐 |
 | ENG-020 | 🟡 部分完成 | 本分支新增 `ScenarioRecorder` / `ScenarioReplayRunner` 脱敏录制和 deterministic replay 合同，并补齐 `tests/resilience/fixtures/phase3_runtime_replay_fixture.json` + `tests/resilience/test_phase3_scenario_replay.py` 显式回放；生产录制源和 simulator fixture 仍待补齐 |
-| ENG-021 | 🟡 部分完成 | `docs/contracts/observability-contract.md` 与契约测试已落地；本分支新增 `RuntimeObservabilityRegistry` 稳定 attributes 校验；运行时 OpenTelemetry instrumentation 仍待补齐 |
+| ENG-021 | 🟡 部分完成 | `docs/contracts/observability-contract.md` 与契约测试已落地；本分支新增 `RuntimeObservabilityRegistry` 稳定 attributes 校验、observer 发射入口，并接入 WMS breaker transition 运行时 instrumentation；其余 runtime/callback/device span 与 OpenTelemetry exporter 仍待补齐 |
 | ENG-022 | ✅ 已完成 | `docs/contracts/runtime-toggle-governance.md` 与契约测试已落地；本分支新增 `RuntimeToggleRegistry` owner/expiry/security-bypass validator、`RuntimeToggleReleaseGate`、`RUNTIME_TOGGLES` typed catalog 和 `scripts/check_runtime_toggle_release_gate.py`；发布阻塞已接入 `scripts/git-quality-gate.sh --check runtime-toggle-release` 与 quality profile |
 | DESIGN-001..005 | ✅ 已完成 | plane scene/snapshot 独立读模型、schema version、label/code 分离和极态展示合同 |
 

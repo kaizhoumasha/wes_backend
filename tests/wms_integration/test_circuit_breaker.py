@@ -133,6 +133,42 @@ async def test_open_fast_fails_until_retry_after_elapsed(db_session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_breaker_transitions_emit_observability_events(db_session) -> None:
+    from src.app.runtime.orchestration.observability import RuntimeObservabilityRegistry
+
+    emitted = []
+    registry = RuntimeObservabilityRegistry(observers=(emitted.append,))
+    service = WmsCircuitBreakerService(
+        failure_threshold=1,
+        retry_after_seconds=10,
+        observability_emit=registry.emit,
+    )
+    now = timezone.now_for_db()
+
+    await service.record_failure(
+        db_session,
+        target_code="WMS_INVENTORY",
+        operation_name="query_inventory",
+        evidence_key="ev-breaker-open",
+        trace_id="trace-breaker-1",
+        now=now,
+    )
+    await service.before_call(
+        db_session,
+        target_code="WMS_INVENTORY",
+        operation_name="query_inventory",
+        trace_id="trace-breaker-1",
+        now=now + timedelta(seconds=11),
+    )
+
+    assert [event.name for event in emitted] == ["wms_breaker.transition", "wms_breaker.transition"]
+    assert [event.attributes["breaker_state"] for event in emitted] == ["OPEN", "HALF_OPEN"]
+    assert emitted[0].attributes["trace_id"] == "trace-breaker-1"
+    assert emitted[0].attributes["provider_code"] == "WMS_INVENTORY"
+    assert emitted[0].attributes["operation_kind"] == "query_inventory"
+
+
+@pytest.mark.asyncio
 async def test_half_open_success_threshold_closes_breaker(db_session) -> None:
     service = WmsCircuitBreakerService(
         failure_threshold=1,

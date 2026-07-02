@@ -438,6 +438,38 @@ async def test_wms_error_5xx_records_unavailable_and_breaker_failure(db_engine) 
 
 
 @pytest.mark.asyncio
+async def test_wms_5xx_breaker_transition_observability_uses_request_trace(db_engine) -> None:
+    from src.app.runtime.orchestration.observability import RuntimeObservabilityRegistry
+
+    emitted = []
+    registry = RuntimeObservabilityRegistry(observers=(emitted.append,))
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"reason_code": "WMS_DOWN", "message": "WMS unavailable"})
+
+    service = _service(
+        db_engine,
+        httpx.MockTransport(handler),
+        breaker_service=WmsCircuitBreakerService(
+            failure_threshold=1,
+            retry_after_seconds=60,
+            observability_emit=registry.emit,
+        ),
+    )
+
+    with pytest.raises(WmsUnavailableError):
+        await service.query_inventory(
+            QueryInventoryRequest(request_id="REQ-OBS", trace_id="trace-wms-obs", sku="SKU-1")
+        )
+
+    assert len(emitted) == 1
+    assert emitted[0].attributes["trace_id"] == "trace-wms-obs"
+    assert emitted[0].attributes["provider_code"] == "WMS_INVENTORY"
+    assert emitted[0].attributes["operation_kind"] == "query_inventory"
+    assert emitted[0].attributes["breaker_state"] == "OPEN"
+
+
+@pytest.mark.asyncio
 async def test_wms_error_circuit_open_fast_fails_without_http_call(db_engine) -> None:
     breaker_service = WmsCircuitBreakerService(failure_threshold=1, retry_after_seconds=60)
     session_factory = _session_factory(db_engine)
