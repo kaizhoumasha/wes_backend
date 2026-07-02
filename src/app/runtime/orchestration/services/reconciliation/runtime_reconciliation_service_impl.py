@@ -10,6 +10,10 @@ from typing import TYPE_CHECKING, Any, cast
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.services.device_service import DeviceService
 from src.app.rack.repositories import RackTaskRepository
+from src.app.reconciliation.manager import (
+    ReconciliationConflictInput,
+    ReconciliationManager,
+)
 from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     build_diagnostic_context,
@@ -132,6 +136,7 @@ class WorklineRuntimeReconciliationService:
         runtime_hold_repository: RuntimeHoldRepository | None = None,
         runtime_hold_release_service: RuntimeHoldReleaseService | None = None,
         rack_task_repository: RackTaskRepository | None = None,
+        reconciliation_manager: ReconciliationManager | None = None,
     ) -> None:
         self.session_repository = session_repository or WorklineSessionRepository()
         self.workline_repository = workline_repository or WorkLineRepository()
@@ -141,6 +146,7 @@ class WorklineRuntimeReconciliationService:
         self.runtime_hold_repository = runtime_hold_repository or default_runtime_hold_repository
         self.runtime_hold_release_service = runtime_hold_release_service or default_runtime_hold_release_service
         self.rack_task_repository = rack_task_repository or RackTaskRepository()
+        self.reconciliation_manager = reconciliation_manager or ReconciliationManager()
 
     async def activate_execution_deadline_after_ack(
         self,
@@ -221,6 +227,15 @@ class WorklineRuntimeReconciliationService:
         session.reconciliation_deadline_at = claim_deadline_at
         session.reconciliation_occurred_at = now
         session.reconciliation_late_evidence_received = False
+        reconciliation_registration = await self._register_runtime_reconciliation_idempotent(
+            db,
+            session=session,
+            conflict_kind=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
+            reason="callback deadline expired",
+            detected_at=now,
+            inbox=inbox,
+            command=command,
+        )
 
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
         if workline is not None:
@@ -267,6 +282,7 @@ class WorklineRuntimeReconciliationService:
                 "ack_received_at": _dt_key(session.reconciliation_ack_received_at),
                 "wait_token": session.reconciliation_wait_token,
                 "runtime_hold_id": runtime_hold_id,
+                "reconciliation_registration": reconciliation_registration,
             },
             inbox=inbox,
             command=command,
@@ -284,6 +300,7 @@ class WorklineRuntimeReconciliationService:
                 "ack_received_at": _dt_key(session.reconciliation_ack_received_at),
                 "wait_token": session.reconciliation_wait_token,
                 "runtime_hold_id": runtime_hold_id,
+                "reconciliation_registration": reconciliation_registration,
             },
         )
 
@@ -310,6 +327,15 @@ class WorklineRuntimeReconciliationService:
             return None
         now = timezone.now_for_db()
         hold_source_reason = self._dispatch_ack_hold_source_reason(error_message)
+        reconciliation_registration = await self._register_runtime_reconciliation_idempotent(
+            db,
+            session=session,
+            conflict_kind=hold_source_reason,
+            reason=error_message,
+            detected_at=now,
+            outbox=outbox,
+            command=command,
+        )
         outbox.status = SystemOutboxStatus.FAILED
         outbox.last_error = error_message
         outbox.next_retry_at = None
@@ -352,6 +378,7 @@ class WorklineRuntimeReconciliationService:
                 command=command,
                 source_reason=hold_source_reason,
             )
+            _ = reconciliation_registration
             await db.flush()
             return session
 
@@ -422,6 +449,7 @@ class WorklineRuntimeReconciliationService:
                 "error_message": error_message,
                 "outbox_id": _resolve_id(outbox),
                 "runtime_hold_id": runtime_hold_id,
+                "reconciliation_registration": reconciliation_registration,
             },
             outbox=outbox,
             command=command,
@@ -439,6 +467,7 @@ class WorklineRuntimeReconciliationService:
                 "command_id": _resolve_id(command),
                 "error_message": error_message,
                 "runtime_hold_id": runtime_hold_id,
+                "reconciliation_registration": reconciliation_registration,
             },
         )
 
@@ -743,6 +772,155 @@ class WorklineRuntimeReconciliationService:
             evidence=evidence or {},
             auto_commit=False,
         )
+
+    async def _register_runtime_reconciliation_idempotent(
+        self,
+        db: Any,
+        *,
+        session: WorklineSession,
+        conflict_kind: str,
+        reason: str,
+        detected_at: datetime,
+        inbox: WorklineInbox | None = None,
+        outbox: SystemOutbox | None = None,
+        command: DeviceCommand | None = None,
+    ) -> dict[str, Any] | None:
+        """runtime reconciliation 生产入口登记 owner-scoped decision 前的幂等 claim。"""
+
+        session_id = _resolve_id(session)
+        if session_id is None:
+            return None
+        correlation_id = self._runtime_reconciliation_correlation_id(inbox=inbox, outbox=outbox, command=command)
+        if correlation_id is None:
+            return None
+
+        owner_id = str(session_id)
+        evidence_refs = self._runtime_reconciliation_evidence_refs(inbox=inbox, outbox=outbox, command=command)
+        source_ref = self._runtime_reconciliation_source_ref(session_id=session_id, inbox=inbox, outbox=outbox)
+        idempotency_key = f"runtime-reconciliation:{conflict_kind}:{source_ref}"
+        business_owner_key = f"runtime:ExecutionSession:{owner_id}"
+        request_hash = _canonical_json_hash(
+            {
+                "owner_domain": "runtime",
+                "owner_kind": "ExecutionSession",
+                "owner_id": owner_id,
+                "conflict_kind": conflict_kind,
+                "source_ref": source_ref,
+                "evidence_refs": evidence_refs,
+                "correlation_id": correlation_id,
+            }
+        )
+        conflict = ReconciliationConflictInput(
+            owner_domain="runtime",
+            owner_kind="ExecutionSession",
+            owner_id=owner_id,
+            conflict_kind=conflict_kind,
+            reason=reason,
+            evidence_refs=evidence_refs,
+            detected_at=detected_at,
+            owner_snapshot={
+                "session_status": enum_str(getattr(session, "status", None)),
+                "reconciliation_state": enum_str(getattr(session, "reconciliation_state", None)),
+                "workline_id": getattr(session, "workline_id", None),
+                "trace_id": getattr(session, "trace_id", None),
+            },
+        )
+        result = await self.reconciliation_manager.register_conflict_idempotent(
+            db,
+            conflict,
+            provider_code="WES",
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+            execution_correlation_id=correlation_id,
+            now_ms=int(timezone.now_utc().timestamp() * 1000),
+            business_owner_key=business_owner_key,
+        )
+        audit_payload = {
+            "provider_code": "WES",
+            "operation_kind": "reconciliation",
+            "idempotency_key": idempotency_key,
+            "request_hash": request_hash,
+            "correlation_id": correlation_id,
+            "business_owner_key": business_owner_key,
+            "claim_result": enum_str(result.claim_result),
+            "decision": self._reconciliation_decision_payload(result.decision),
+        }
+        context = as_dict(getattr(session, "context_json", None))
+        context["runtime_reconciliation_registration"] = audit_payload
+        session.context_json = context
+        return audit_payload
+
+    def _runtime_reconciliation_correlation_id(
+        self,
+        *,
+        inbox: WorklineInbox | None = None,
+        outbox: SystemOutbox | None = None,
+        command: DeviceCommand | None = None,
+    ) -> str | None:
+        for source in (command, outbox, inbox):
+            value = _payload_str({"correlation_id": getattr(source, "correlation_id", None)}, "correlation_id")
+            if value is not None:
+                return value
+            payload = as_dict(getattr(source, "payload_json", None))
+            value = _payload_str(payload, "correlation_id") or _payload_str(payload, "execution_correlation_id")
+            if value is not None:
+                return value
+        return None
+
+    def _runtime_reconciliation_evidence_refs(
+        self,
+        *,
+        inbox: WorklineInbox | None = None,
+        outbox: SystemOutbox | None = None,
+        command: DeviceCommand | None = None,
+    ) -> list[str]:
+        refs: list[str] = []
+        inbox_id = _resolve_id(inbox)
+        if inbox_id is not None:
+            refs.append(f"inbox:{inbox_id}")
+        outbox_id = _resolve_id(outbox)
+        if outbox_id is not None:
+            refs.append(f"outbox:{outbox_id}")
+        command_id = _resolve_id(command)
+        if command_id is not None:
+            refs.append(f"command:{command_id}")
+        else:
+            command_code = getattr(command, "command_code", None)
+            if isinstance(command_code, str) and command_code:
+                refs.append(f"command:{command_code}")
+        return refs
+
+    def _runtime_reconciliation_source_ref(
+        self,
+        *,
+        session_id: int,
+        inbox: WorklineInbox | None = None,
+        outbox: SystemOutbox | None = None,
+    ) -> str:
+        inbox_id = _resolve_id(inbox)
+        if inbox_id is not None:
+            return f"inbox:{inbox_id}"
+        outbox_id = _resolve_id(outbox)
+        if outbox_id is not None:
+            return f"outbox:{outbox_id}"
+        return f"session:{session_id}"
+
+    def _reconciliation_decision_payload(self, decision: Any) -> dict[str, Any]:
+        return {
+            "owner_domain": decision.owner_domain,
+            "owner_kind": decision.owner_kind,
+            "owner_id": decision.owner_id,
+            "conflict_kind": decision.conflict_kind,
+            "reason": decision.reason,
+            "evidence_refs": list(decision.evidence_refs),
+            "detected_at": _dt_key(decision.detected_at),
+            "status": decision.status,
+            "severity": enum_str(decision.severity),
+            "action": enum_str(decision.action),
+            "runtime_hold_required": decision.runtime_hold_required,
+            "allowed_next_effect_scope": dict(decision.allowed_next_effect_scope),
+            "owner_snapshot": dict(decision.owner_snapshot) if decision.owner_snapshot is not None else None,
+        }
 
     def _timer_timeout_claim_matches(
         self,
