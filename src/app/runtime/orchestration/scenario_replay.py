@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any
@@ -51,6 +52,34 @@ class ScenarioRecorder:
             for event in sorted(events, key=lambda item: (item.occurred_at, item.event_id))
         )
         return ScenarioRecording(scenario_id=scenario_id, schema_version="scenario.v1", events=sanitized)
+
+    def record_simulator_events(
+        self,
+        *,
+        scenario_id: str,
+        simulator_events: list[Mapping[str, Any]],
+    ) -> ScenarioRecording:
+        """Build a replay recording from WMS/ECS simulator fixture events."""
+
+        events: list[ScenarioEvent] = []
+        for index, raw_event in enumerate(simulator_events, start=1):
+            payload = raw_event.get("payload")
+            event_payload = dict(payload) if isinstance(payload, Mapping) else {}
+            source_system = raw_event.get("source_system") or raw_event.get("source")
+            if source_system:
+                event_payload.setdefault("source_system", str(source_system))
+            occurred_at = raw_event.get("occurred_at")
+            if not isinstance(occurred_at, str) or not occurred_at.strip():
+                raise ValueError(f"simulator event missing occurred_at: index={index}")
+            events.append(
+                ScenarioEvent(
+                    event_id=str(raw_event.get("event_id") or f"simulator-{index:04d}"),
+                    kind=str(raw_event.get("kind") or "simulator_event"),
+                    occurred_at=occurred_at,
+                    payload=event_payload,
+                )
+            )
+        return self.record(scenario_id=scenario_id, events=events)
 
     def _sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         sanitized: dict[str, Any] = {}
