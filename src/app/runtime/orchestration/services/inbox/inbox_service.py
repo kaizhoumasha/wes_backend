@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from loguru import logger
+
 from src.app.runtime.orchestration.models.inbox import (
     InboxKind,
     InboxStatus,
@@ -16,6 +18,7 @@ from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
 from src.core.base_service import BaseService
 from src.core.exceptions import ConflictException
 from src.utils.timezone import timezone
+from src.utils.value_normalization import coerce_optional_str, enum_value
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,6 +58,68 @@ def _validate_internal_handoff_correlation(data: dict[str, Any]) -> None:
         value = data.get(field_name)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(f"internal event data requires positive integer {field_name}")
+
+
+def _claim_payload_text(payload: dict[str, Any], *field_names: str) -> str | None:
+    for field_name in field_names:
+        value = coerce_optional_str(payload.get(field_name))
+        if value:
+            return value
+
+    data = payload.get("data")
+    if isinstance(data, dict):
+        for field_name in field_names:
+            value = coerce_optional_str(data.get(field_name))
+            if value:
+                return value
+
+    return None
+
+
+def _runtime_inbox_claim_trace_id(claim: inbox_repository.WorklineInboxClaim) -> str:
+    payload = claim.payload_json
+    return (
+        coerce_optional_str(claim.trace_id) or _claim_payload_text(payload, "trace_id") or f"runtime-inbox:{claim.id}"
+    )
+
+
+def _runtime_inbox_claim_correlation_id(claim: inbox_repository.WorklineInboxClaim) -> str:
+    payload = claim.payload_json
+    correlation_id = _claim_payload_text(payload, "correlation_id", "execution_correlation_id")
+    if correlation_id:
+        return correlation_id
+    if claim.session_id is not None:
+        return f"session:{claim.session_id}"
+    if claim.workline_id is not None:
+        return f"workline:{claim.workline_id}"
+    if claim.device_id is not None:
+        return f"device:{claim.device_id}"
+    if claim.claim_bucket_key and claim.claim_bucket_key != "serial:unknown":
+        return claim.claim_bucket_key
+    return f"inbox:{claim.id}"
+
+
+def _runtime_inbox_claim_operation_kind(claim: inbox_repository.WorklineInboxClaim) -> str:
+    return coerce_optional_str(enum_value(claim.kind)) or "UNKNOWN"
+
+
+def _emit_runtime_inbox_claim_observability(claim: inbox_repository.WorklineInboxClaim) -> None:
+    """发出 RuntimeInbox claim 观测事件；观测失败不改变 claim 业务状态。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    try:
+        runtime_observability_registry.emit(
+            "runtime_inbox.claim",
+            {
+                "trace_id": _runtime_inbox_claim_trace_id(claim),
+                "correlation_id": _runtime_inbox_claim_correlation_id(claim),
+                "operation_kind": _runtime_inbox_claim_operation_kind(claim),
+                "inbox_id": claim.id,
+            },
+        )
+    except Exception as exc:  # pragma: no cover - 防止观测链路反向影响 inbox claim
+        logger.warning(f"RuntimeInbox claim 观测事件发射失败: inbox_id={claim.id}, error={exc}")
 
 
 class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
@@ -337,6 +402,8 @@ class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
             stale_after_seconds=stale_after_seconds,
         )
         await self._commit_inbox_mutation(db, auto_commit=auto_commit)
+        for claim in claims:
+            _emit_runtime_inbox_claim_observability(claim)
         return claims
 
     async def mark_as_processing(

@@ -26,6 +26,7 @@ def test_observability_contract_declares_stable_runtime_signals() -> None:
         "provider_code",
         "operation_kind",
         "command_code",
+        "inbox_id",
         "evidence_key",
         "reason_code",
     ):
