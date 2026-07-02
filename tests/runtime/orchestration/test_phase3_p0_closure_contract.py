@@ -154,3 +154,44 @@ def test_phase3_benchmark_gate_lists_all_required_runtime_scenarios() -> None:
         )
         == ()
     )
+
+
+def test_phase3_benchmark_gate_validates_structured_artifact() -> None:
+    import json
+    from pathlib import Path
+
+    from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
+
+    repo_root = Path(__file__).resolve().parents[3]
+    artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "phase3_benchmark_artifact.json").read_text())
+
+    validation = RuntimeBenchmarkGate().validate_artifact(artifact)
+
+    assert validation.valid is True
+    assert validation.reason == "OK"
+
+
+def test_phase3_benchmark_gate_rejects_incomplete_artifact() -> None:
+    from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
+
+    validation = RuntimeBenchmarkGate().validate_artifact(
+        {
+            "environment": "local-postgres-redis-ecs-simulator",
+            "generated_at": "2026-07-02T12:00:00Z",
+            "scenarios": {
+                "runtime_inbox_claim": {
+                    "sample_count": 1000,
+                    "metrics": {"claim_p95_ms": 4.0},
+                    "thresholds": {"claim_p95_ms": 30.0},
+                }
+            },
+        }
+    )
+
+    assert validation.valid is False
+    assert validation.reason == "MISSING_SCENARIOS"
+    assert validation.missing_scenarios == (
+        "conveyor_queue_writer",
+        "ecs_status_command",
+        "plane_snapshot",
+    )
