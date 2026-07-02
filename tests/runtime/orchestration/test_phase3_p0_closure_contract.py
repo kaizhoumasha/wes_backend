@@ -7,6 +7,173 @@ from datetime import timedelta
 from src.utils.timezone import timezone
 
 
+def _phase3_p0_production_e2e_artifact() -> dict:
+    """生产 P0 E2E 证据的最小有效 artifact。"""
+
+    return {
+        "profile": {
+            "kind": "production-e2e",
+            "environment": "field-dry-run",
+            "dependency_profile": "wms-ecs-http",
+        },
+        "source": {
+            "kind": "trace-query",
+            "evidence": "reports/phase3/p0-e2e/trace-prod-0001.json",
+        },
+        "latency": {"p95_seconds": 18.7},
+        "recording": {
+            "scenario_id": "phase3-p0-production-e2e",
+            "schema_version": "scenario.v1",
+            "events": [
+                {
+                    "event_id": "manifest-001",
+                    "kind": "workline_manifest",
+                    "occurred_at": "2026-07-03T10:00:00Z",
+                    "payload": {"object_key": "workline:WL-PROD", "state": "ACTIVE"},
+                },
+                {
+                    "event_id": "session-001",
+                    "kind": "execution_session",
+                    "occurred_at": "2026-07-03T10:00:01Z",
+                    "payload": {"object_key": "session:S-PROD", "state": "RUNNING"},
+                },
+                {
+                    "event_id": "inbox-001",
+                    "kind": "runtime_inbox",
+                    "occurred_at": "2026-07-03T10:00:02Z",
+                    "payload": {"source_event_id": "ecs-scan-prod-1", "object_key": "pkg:PKG-PROD-0001"},
+                },
+                {
+                    "event_id": "intent-001",
+                    "kind": "runtime_intent",
+                    "occurred_at": "2026-07-03T10:00:03Z",
+                    "payload": {"effect_key": "device-command:CMD-PROD-1", "object_key": "pkg:PKG-PROD-0001"},
+                },
+                {
+                    "event_id": "device-001",
+                    "kind": "device_command",
+                    "occurred_at": "2026-07-03T10:00:04Z",
+                    "payload": {"effect_key": "device-command:CMD-PROD-1", "state": "ACKED"},
+                },
+                {
+                    "event_id": "wms-001",
+                    "kind": "wms_fulfillment",
+                    "occurred_at": "2026-07-03T10:00:05Z",
+                    "payload": {"effect_key": "wms-fulfillment:FUL-PROD-1", "state": "SUCCEEDED"},
+                },
+                {
+                    "event_id": "plane-001",
+                    "kind": "plane_snapshot",
+                    "occurred_at": "2026-07-03T10:00:06Z",
+                    "payload": {"object_key": "pkg:PKG-PROD-0001", "state": "VISIBLE"},
+                },
+            ],
+        },
+        "exception_paths": {
+            "ecs_timeout": {"result": "RECONCILING", "evidence": "reports/phase3/p0-e2e/ecs-timeout.json"},
+            "wms_reject": {"result": "RECONCILING", "evidence": "reports/phase3/p0-e2e/wms-reject.json"},
+            "callback_out_of_order": {
+                "result": "RECONCILING",
+                "evidence": "reports/phase3/p0-e2e/callback-out-of-order.json",
+            },
+        },
+    }
+
+
+def test_phase3_p0_e2e_gate_accepts_production_trace_evidence() -> None:
+    from src.app.runtime.orchestration.p0_e2e_gate import RuntimeP0E2EGate
+
+    validation = RuntimeP0E2EGate().validate_artifact(_phase3_p0_production_e2e_artifact())
+
+    assert validation.valid is True
+    assert validation.reason == "OK"
+
+
+def test_phase3_p0_e2e_gate_rejects_fixture_or_partial_chain_as_production() -> None:
+    from src.app.runtime.orchestration.p0_e2e_gate import RuntimeP0E2EGate
+
+    artifact = _phase3_p0_production_e2e_artifact()
+    artifact["profile"]["environment"] = "sandbox"
+    artifact["source"]["kind"] = "fixture"
+    artifact["recording"]["events"] = artifact["recording"]["events"][:3]
+
+    validation = RuntimeP0E2EGate().validate_artifact(artifact)
+
+    assert validation.valid is False
+    assert validation.reason == "INVALID_PROFILE_METADATA"
+    assert validation.invalid_profile_fields == ("profile.environment",)
+
+
+def test_phase3_p0_e2e_gate_rejects_missing_effect_evidence() -> None:
+    from src.app.runtime.orchestration.p0_e2e_gate import RuntimeP0E2EGate
+
+    artifact = _phase3_p0_production_e2e_artifact()
+    for event in artifact["recording"]["events"]:
+        payload = event.get("payload")
+        if isinstance(payload, dict) and str(payload.get("effect_key", "")).startswith("device-command:"):
+            payload.pop("effect_key")
+
+    validation = RuntimeP0E2EGate().validate_artifact(artifact)
+
+    assert validation.valid is False
+    assert validation.reason == "MISSING_E2E_EFFECTS"
+    assert validation.missing_effects == ("device-command",)
+
+
+def test_phase3_p0_e2e_gate_rejects_non_reconciling_exception_path() -> None:
+    from src.app.runtime.orchestration.p0_e2e_gate import RuntimeP0E2EGate
+
+    artifact = _phase3_p0_production_e2e_artifact()
+    artifact["exception_paths"]["wms_reject"]["result"] = "SUCCEEDED"
+
+    validation = RuntimeP0E2EGate().validate_artifact(artifact)
+
+    assert validation.valid is False
+    assert validation.reason == "INVALID_EXCEPTION_PATHS"
+    assert validation.invalid_exception_paths == ("wms_reject.result",)
+
+
+def test_phase3_p0_e2e_gate_rejects_slow_production_trace() -> None:
+    from src.app.runtime.orchestration.p0_e2e_gate import RuntimeP0E2EGate
+
+    artifact = _phase3_p0_production_e2e_artifact()
+    artifact["latency"]["p95_seconds"] = 30.1
+
+    validation = RuntimeP0E2EGate().validate_artifact(artifact)
+
+    assert validation.valid is False
+    assert validation.reason == "E2E_LATENCY_EXCEEDED"
+    assert validation.failed_latency_fields == ("latency.p95_seconds",)
+
+
+def test_phase3_p0_e2e_gate_cli_accepts_production_artifact(tmp_path) -> None:
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    artifact_path = tmp_path / "phase3-p0-e2e.json"
+    artifact_path.write_text(
+        json.dumps(_phase3_p0_production_e2e_artifact(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    repo_root = Path(__file__).resolve().parents[3]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/check_phase3_p0_e2e_gate.py",
+            str(artifact_path),
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "Phase 3 P0 E2E artifact passed" in result.stdout
+
+
 def test_phase3_p0_minimal_chain_records_runtime_effects_and_reconciliation() -> None:
     """P0 闭环必须串起 manifest/session/inbox/intent/device/WMS/plane/reconciliation。"""
 
