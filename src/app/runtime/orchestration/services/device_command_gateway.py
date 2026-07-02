@@ -137,6 +137,54 @@ def _build_device_command_log_envelope(
     return envelope
 
 
+def _device_command_ack_age_ms(command: Any, *, ack_received_at: Any) -> int:
+    sent_at = getattr(command, "sent_at", None)
+    if sent_at is None:
+        return 0
+    return max(0, int((ack_received_at - sent_at).total_seconds() * 1000))
+
+
+def _device_command_provider_code(device: Any, payload: dict[str, Any]) -> str:
+    return (
+        coerce_string_value(getattr(device, "vendor_type", None))
+        or coerce_string_value(getattr(device, "provider_code", None))
+        or coerce_string_value(payload.get("provider_code"))
+        or "ECS"
+    )
+
+
+def _emit_device_command_ack_observability(
+    *,
+    command: Any,
+    device: Any,
+    outbox: Any,
+    payload: dict[str, Any],
+    ack_received_at: Any,
+) -> None:
+    """发出 DeviceCommand ACK age 观测事件；观测失败不改变 ACK 业务状态。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    command_code = coerce_string_value(getattr(command, "command_code", None)) or coerce_string_value(
+        payload.get("command_code")
+    )
+    try:
+        runtime_observability_registry.emit(
+            "device_command.ack",
+            {
+                "trace_id": coerce_string_value(getattr(command, "trace_id", None))
+                or coerce_string_value(getattr(outbox, "trace_id", None)),
+                "correlation_id": coerce_string_value(getattr(command, "correlation_id", None))
+                or coerce_string_value(getattr(outbox, "correlation_id", None)),
+                "command_code": command_code,
+                "provider_code": _device_command_provider_code(device, payload),
+                "ack_age_ms": _device_command_ack_age_ms(command, ack_received_at=ack_received_at),
+            },
+        )
+    except Exception as exc:  # pragma: no cover - 防止观测链路反向影响设备派发
+        logger.warning(f"设备指令 ACK 观测事件发射失败: command_code={command_code or 'UNKNOWN'}, error={exc}")
+
+
 def _resolve_command_type_for_governance(payload: dict[str, Any]) -> str | None:
     """为设备治理校验提取稳定 command_type。"""
 
@@ -878,6 +926,13 @@ class DeviceCommandGateway:
                             _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
                                 db,
                                 command_id=command_id,
+                                ack_received_at=ack_received_at,
+                            )
+                            _emit_device_command_ack_observability(
+                                command=command,
+                                device=device,
+                                outbox=outbox,
+                                payload=payload,
                                 ack_received_at=ack_received_at,
                             )
                             from src.app.sys.services.event_stream_service import (

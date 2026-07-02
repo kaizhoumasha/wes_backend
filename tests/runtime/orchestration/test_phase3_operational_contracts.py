@@ -17,6 +17,16 @@ def test_runtime_observability_registry_requires_stable_attributes() -> None:
             "correlation_id": "corr-1",
             "command_code": "CMD-1",
             "provider_code": "ECS",
+            "ack_age_ms": 123,
+        },
+    )
+    invalid_ack = registry.validate(
+        "device_command.ack",
+        {
+            "trace_id": "trace-1",
+            "correlation_id": "corr-1",
+            "command_code": "CMD-1",
+            "provider_code": "ECS",
         },
     )
     invalid = registry.validate(
@@ -29,6 +39,8 @@ def test_runtime_observability_registry_requires_stable_attributes() -> None:
     )
 
     assert valid.valid is True
+    assert invalid_ack.valid is False
+    assert invalid_ack.missing_attributes == ("ack_age_ms",)
     assert invalid.valid is False
     assert invalid.missing_attributes == ("operation_kind",)
 

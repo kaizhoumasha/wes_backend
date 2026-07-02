@@ -13,7 +13,7 @@ runtime/orchestration/services/。本文件锁定迁入后的 runtime 行为契�
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -217,3 +217,92 @@ async def test_dispatch_uses_policy_wait_for_running_device_before_http_post():
     assert error.detail["policy_decision"] == "WAIT_FOR_IDLE"
     assert error.detail["reason"] == "DEVICE_BUSY"
     async_client_mock.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_emits_device_command_ack_observability_event() -> None:
+    """设备命令 ACK 成功后必须发出稳定 ack age 观测事件。"""
+
+    sent_at = datetime(2026, 7, 2, 9, 0, 0)
+    ack_received_at = sent_at + timedelta(milliseconds=1234)
+    device = SimpleNamespace(
+        id=10,
+        device_code="DEV-ACK",
+        device_status="idle",
+        maintenance_mode=False,
+        current_command_id=None,
+        capabilities_json={
+            "supported_command_types": ["SCAN"],
+            "status_snapshot_ttl_ms": 1000,
+        },
+        vendor_type="ECS",
+        host="10.0.0.3",
+        port=8080,
+        updated_at=sent_at,
+    )
+    command = SimpleNamespace(
+        id=55,
+        command_code="CMD-ACK",
+        status="PENDING",
+        sent_at=sent_at,
+        ack_received_at=None,
+        ack_code=None,
+        ack_message=None,
+        trace_id="trace-ack",
+        correlation_id="corr-ack",
+        workline_id=7,
+    )
+    outbox = SimpleNamespace(
+        target_code="DEV-ACK",
+        payload_json={"command_code": "CMD-ACK", "task_type": "SCAN"},
+        session_id=77,
+        dispatch_key="device-command:CMD-ACK",
+    )
+    db = SimpleNamespace(refresh=AsyncMock())
+    async_client_mock = AsyncMock()
+    async_client_mock.post = AsyncMock(return_value=SimpleNamespace(status_code=200, text=""))
+    async_client_mock.__aenter__ = AsyncMock(return_value=async_client_mock)
+    async_client_mock.__aexit__ = AsyncMock(return_value=None)
+
+    from src.app.device import services as device_services
+
+    with (
+        _patched_get_device(device),
+        patch(
+            "src.app.device.repositories.command_repository.DeviceCommandRepository.get_by_command_code",
+            new=AsyncMock(return_value=command),
+        ),
+        patch(
+            "src.app.runtime.orchestration.services.device_command_gateway._ensure_realtime_device_status_ready",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("httpx.AsyncClient", return_value=async_client_mock),
+        patch(
+            "src.app.runtime.orchestration.services.device_command_gateway.timezone.now_for_db",
+            return_value=ack_received_at,
+        ),
+        patch.object(
+            device_services.device_service,
+            "mark_command_dispatched",
+            new=AsyncMock(return_value=SimpleNamespace()),
+        ),
+        patch(
+            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl."
+            "workline_runtime_reconciliation_service.activate_execution_deadline_after_ack",
+            new=AsyncMock(return_value=SimpleNamespace()),
+        ),
+        patch("src.app.sys.services.event_stream_service.defer_command_status_changed_event"),
+        patch("src.app.runtime.orchestration.observability.runtime_observability_registry.emit") as emit,
+    ):
+        result = await device_command_gateway.dispatch(db=db, outbox=outbox)
+
+    assert result is True
+    emit.assert_called_once()
+    assert emit.call_args.args[0] == "device_command.ack"
+    assert emit.call_args.args[1] == {
+        "trace_id": "trace-ack",
+        "correlation_id": "corr-ack",
+        "command_code": "CMD-ACK",
+        "provider_code": "ECS",
+        "ack_age_ms": 1234,
+    }

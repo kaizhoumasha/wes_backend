@@ -9,7 +9,7 @@
 | `callback.normalize` | span + metric + log event | `trace_id`, `correlation_id`, `provider_code`, `source_event_id` |
 | `runtime_inbox.claim` | span + metric | `trace_id`, `correlation_id`, `operation_kind`, `inbox_id` |
 | `runtime_intent.dispatch` | span + metric + log event | `trace_id`, `correlation_id`, `provider_code`, `operation_kind` |
-| `device_command.ack` | span + metric | `trace_id`, `correlation_id`, `command_code`, `provider_code` |
+| `device_command.ack` | span + metric | `trace_id`, `correlation_id`, `command_code`, `provider_code`, `ack_age_ms` |
 | `device_command.result` | span + metric | `trace_id`, `correlation_id`, `command_code`, `source_event_id` |
 | `wms_breaker.transition` | metric + log event | `trace_id`, `provider_code`, `operation_kind`, `breaker_state` |
 | `wms_evidence.persistence_failure` | metric + log event | `trace_id`, `provider_code`, `operation_kind`, `evidence_key`, `reason_code` |
@@ -21,6 +21,7 @@
 - `provider_code`：外部 provider 或内部 capability provider 的稳定编码。
 - `operation_kind`：幂等和观测统一操作类型，例如 `callback`, `fulfillment`, `device_command`, `reconciliation`。
 - `command_code`：DeviceCommand 的业务命令编码，不使用 device FK 作为观测主键。
+- `ack_age_ms`：DeviceCommand 从 `sent_at` 到 `ack_received_at` 的耗时毫秒数，用于 ACK age SLO 和现场设备链路诊断。
 - `source_event_id`：外部 callback / event 的原始事件标识。
 - `evidence_key`：WMS evidence 幂等键，用于定位失败留痕尝试。
 - `reason_code`：稳定失败原因码，例如 `WMS_EVIDENCE_PERSISTENCE_FAILED`。

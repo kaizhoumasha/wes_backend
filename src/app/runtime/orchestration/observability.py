@@ -151,7 +151,7 @@ def default_runtime_observability_signals() -> dict[str, RuntimeObservabilitySig
         "device_command.ack": RuntimeObservabilitySignal(
             "device_command.ack",
             "span+metric",
-            common | {"command_code", "provider_code"},
+            common | {"command_code", "provider_code", "ack_age_ms"},
         ),
         "device_command.result": RuntimeObservabilitySignal(
             "device_command.result",
