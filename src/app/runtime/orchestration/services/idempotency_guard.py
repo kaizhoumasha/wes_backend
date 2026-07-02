@@ -3,10 +3,10 @@
 WES outbound effect 幂等闸门: dispatch 前对 RuntimeIntentLog / DeviceCommand
 等出站操作做 claim, 防止崩溃重放或重试导致下游双发。
 
-最小语义 (Phase 3 ENG-009 才扩展 409 + 安全审计):
+核心语义:
 - NEW    首次 claim, 写入 IdempotencyKey, 调用方可继续 dispatch
 - MATCH  同 (provider, op_kind, key) 已存在且 request_hash 一致, 调用方安全跳过
-- 同 key 不同 hash → 抛 IdempotencyConflict, 调用方必须中止 dispatch
+- 同 key 不同 hash → 抛 IdempotencyConflict, 调用方必须中止 dispatch 并输出 Phase 3 审计矩阵 payload
 
 WES 内部 key 命名: `WES-{OPERATION_KIND}-{HASH}` (主计划 §5.4)。
 外部 provider 提供的 key (e.g. WMS 回调 source_event_id) 不强制此前缀。
@@ -15,6 +15,7 @@ WES 内部 key 命名: `WES-{OPERATION_KIND}-{HASH}` (主计划 §5.4)。
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -37,6 +38,57 @@ class ClaimResult(str, Enum):
 
     NEW = "NEW"
     MATCH = "MATCH"
+
+
+@dataclass(frozen=True, slots=True)
+class IdempotencyOperationSpec:
+    """Phase 3 ENG-009 跨域幂等审计矩阵条目。"""
+
+    operation_kind: str
+    domain: str
+
+
+_IDEMPOTENCY_OPERATION_MATRIX = {
+    "callback": IdempotencyOperationSpec(operation_kind="callback", domain="callback"),
+    "fulfillment": IdempotencyOperationSpec(operation_kind="fulfillment", domain="wms_integration"),
+    "device_command": IdempotencyOperationSpec(operation_kind="device_command", domain="device"),
+    "device_event": IdempotencyOperationSpec(operation_kind="device_event", domain="device"),
+    "reconciliation": IdempotencyOperationSpec(operation_kind="reconciliation", domain="reconciliation"),
+}
+
+_IDEMPOTENCY_OPERATION_ALIASES = {
+    "external_callback": "callback",
+    "wms_callback": "callback",
+    "rcs_callback": "callback",
+    "wms_fulfillment": "fulfillment",
+    "device_dispatch": "device_command",
+    "dispatch_command": "device_command",
+    "command_result": "device_event",
+    "event_push": "device_event",
+    "runtime_reconciliation": "reconciliation",
+    "resource_reconciliation": "reconciliation",
+}
+
+
+def _normalize_operation_kind(operation_kind: str) -> str:
+    return operation_kind.strip().lower().replace("-", "_")
+
+
+def default_idempotency_operation_matrix() -> dict[str, IdempotencyOperationSpec]:
+    """返回 Phase 3 要求覆盖的 canonical operation_kind 审计矩阵。"""
+
+    return dict(_IDEMPOTENCY_OPERATION_MATRIX)
+
+
+def get_idempotency_operation_spec(operation_kind: str) -> IdempotencyOperationSpec:
+    """按 canonical kind 或 legacy alias 获取幂等审计域。"""
+
+    normalized = _normalize_operation_kind(operation_kind)
+    canonical = _IDEMPOTENCY_OPERATION_ALIASES.get(normalized, normalized)
+    spec = _IDEMPOTENCY_OPERATION_MATRIX.get(canonical)
+    if spec is not None:
+        return spec
+    return IdempotencyOperationSpec(operation_kind=normalized or "unknown", domain="runtime")
 
 
 class IdempotencyConflict(Exception):
@@ -65,17 +117,22 @@ class IdempotencyConflict(Exception):
         self.incoming_request_hash = incoming_request_hash
         self.correlation_id = correlation_id
 
-    def to_audit_event(self) -> dict[str, str | None]:
+    def to_audit_event(self) -> dict[str, object]:
         """转换为稳定安全审计 payload。"""
 
+        spec = get_idempotency_operation_spec(self.operation_kind)
         return {
             "event_type": "IDEMPOTENCY_CONFLICT",
             "provider_code": self.provider_code,
             "operation_kind": self.operation_kind,
+            "normalized_operation_kind": spec.operation_kind,
+            "domain": spec.domain,
             "idempotency_key": self.idempotency_key,
             "existing_request_hash": self.existing_request_hash,
             "incoming_request_hash": self.incoming_request_hash,
             "correlation_id": self.correlation_id,
+            "status_code": self.status_code,
+            "security_control": "idempotency_key_request_hash",
         }
 
 
@@ -178,6 +235,9 @@ __all__ = [
     "ClaimResult",
     "IdempotencyConflict",
     "IdempotencyGuard",
+    "IdempotencyOperationSpec",
+    "default_idempotency_operation_matrix",
+    "get_idempotency_operation_spec",
     "idempotency_guard",
     "is_wes_internal_key",
     "make_wes_internal_key",

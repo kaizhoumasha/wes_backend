@@ -921,6 +921,18 @@ idempotency_keys:
 
 **operation_kind**：`"fulfillment" / "callback" / "device_command" / "device_event" / "reconciliation"`。
 
+**Phase 3 审计矩阵**：
+
+| canonical operation_kind | domain | aliases / legacy inputs |
+| --- | --- | --- |
+| `callback` | `callback` | `external_callback`, `wms_callback`, `rcs_callback` |
+| `fulfillment` | `wms_integration` | `FULFILLMENT`, `wms_fulfillment` |
+| `device_command` | `device` | `DISPATCH_COMMAND`, `DEVICE_DISPATCH`, `device_dispatch` |
+| `device_event` | `device` | `command_result`, `event_push` |
+| `reconciliation` | `reconciliation` | `runtime_reconciliation`, `resource_reconciliation` |
+
+审计 payload 必须保留原始 `operation_kind`，同时输出 `normalized_operation_kind`、`domain`、`status_code=409` 和 `security_control=idempotency_key_request_hash`，避免跨域调用点用临时日志字段代替安全审计。
+
 **idempotency_key**：调用方提供的业务键，跨域跨 provider 唯一。
 
 **WES 内部 key 命名空间（C3 回归）**：
@@ -2041,7 +2053,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | ENG-004 | ✅ 已完成 | 11 态状态机、终态保护、CB / late callback 合同已落地；本分支补齐 4 类 timeout 与 current-state-aware 可观察转移矩阵，并覆盖 CB open/half-open 只阻断出站 effect、不覆盖在途状态、OPEN fast-fail 与 HALF_OPEN trial-in-progress 二次 effect 不打 HTTP 的集成矩阵 |
 | ENG-006 | ✅ 已完成 | `ActiveObjectRegistry` 跨投影 active 归属仲裁读模型 |
 | ENG-008 | ✅ 已完成 | callback body HMAC、nonce 原子消费、body hash、`API_PATH` 前缀和 fail-closed 已落地；本分支补齐 WMS/RCS provider/source 矩阵（`WMS_*`→`WMS`, `RCS_*`→`RCS`），并在统一 external callback 入口补齐 WMS/RCS、ECS/device 与 AGV/CTU provider-specific callback_type allow-list/source mismatch 拒绝矩阵 |
-| ENG-009 | 🟡 部分完成 | RuntimeInbox source event 幂等、payload hash 冲突、唯一冲突重读和审计已覆盖；fulfillment / device event / reconciliation 全域统一矩阵仍待补齐 |
+| ENG-009 | 🟡 部分完成 | RuntimeInbox source event 幂等、payload hash 冲突、唯一冲突重读和审计已覆盖；本分支补齐 `IdempotencyOperationSpec` canonical/alias 审计矩阵与 `IdempotencyConflict` 409 payload；fulfillment / device event / reconciliation 生产调用点全量接入仍待补齐 |
 | ENG-010 | ✅ 已完成 | typed evidence envelope 已落地；本分支补齐 typed `ExternalReference` catalog、source-version drift 分类合同、`WmsCallEvidence` JSONB GIN 索引、只读 WMS drift job 和 `docs/contracts/evidence-catalog.md` |
 | ENG-011 | ✅ 已完成 | RuntimeInbox backpressure、死信/人工重放审计、DeviceCommand 可过期 lease 和 recovery 策略 |
 | ENG-012 | 🟡 部分完成 | 本分支补齐 `DeviceDispatchPolicy` 纯策略合同并接入 `DeviceCommandGateway.dispatch` 热路径：fresh busy/hard-state 本地快照短路，stale/UNKNOWN 保留 ECS status probe，deadline 到期暴露 `runtime_hold_required` decision detail；持久 DeviceRuntime 投影、生产 metrics 和全量集成矩阵仍待补齐 |
@@ -2063,7 +2075,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 - [x] 11 态机覆盖所有可观察转移。PR #73 已覆盖 11 态枚举、终态保护和核心 CB / late callback 语义；本分支补齐 4 类 timeout 与 current-state-aware 可观察转移矩阵。
 - [x] CB `open/half-open` 只阻断出站 effect；late callback 不得被标记为 `BLOCKED_BY_CB`，必须经 RuntimeInbox 幂等合并 evidence，冲突时进入 RECONCILING。PR #73 已覆盖 late callback 入 RuntimeInbox / evidence 合并合同；本分支补齐出站 effect open/half-open 集成矩阵。
 - [x] External callback 鉴权从"字段级"升级为"body 完整性级"，覆盖 WMS/RCS/ECS/device 的统一校验路径。
-- [ ] idempotency 跨域语义统一，覆盖 callback / fulfillment / device_command / device_event / reconciliation。🟡 PR #73 已覆盖 callback / RuntimeInbox source event 幂等与 payload hash conflict；全域 409 + 审计矩阵仍待补齐。
+- [ ] idempotency 跨域语义统一，覆盖 callback / fulfillment / device_command / device_event / reconciliation。🟡 PR #73 已覆盖 callback / RuntimeInbox source event 幂等与 payload hash conflict；本分支补齐 canonical/alias 审计矩阵与 409 audit payload；fulfillment / device_event / reconciliation 生产调用点仍待补齐。
 - [x] RECONCILING 具备软件禁发、投影冻结和人工恢复审计。
 - [x] DeviceCommand lease 与 RuntimeInbox backpressure 已覆盖。
 - [ ] DeviceDispatchPolicy 与 DeviceRuntime TTL 已覆盖。🟡 本分支补齐 DeviceDispatchPolicy 纯策略合同；DeviceRuntime TTL、ECS status probe 和 dispatch 热路径接入仍待补齐。
