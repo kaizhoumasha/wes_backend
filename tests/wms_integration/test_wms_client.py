@@ -510,6 +510,64 @@ async def test_wms_error_circuit_open_fast_fails_without_http_call(db_engine) ->
 
 
 @pytest.mark.asyncio
+async def test_wms_half_open_trial_in_progress_blocks_second_outbound_effect_without_http(db_engine) -> None:
+    breaker_service = WmsCircuitBreakerService(failure_threshold=1, retry_after_seconds=60)
+    session_factory = _session_factory(db_engine)
+    async with session_factory() as db:
+        opened = await breaker_service.record_failure(
+            db,
+            target_code="WMS_INVENTORY",
+            operation_name="release_reservation",
+            evidence_key="ev:seed-half-open-busy",
+        )
+        opened.opened_until = timezone.now_for_db() - timedelta(seconds=1)
+        await db.commit()
+
+    async with session_factory() as db:
+        first_trial = await breaker_service.before_call(
+            db,
+            target_code="WMS_INVENTORY",
+            operation_name="release_reservation",
+        )
+        await db.commit()
+
+    assert first_trial.allowed is True
+    assert first_trial.reason == "OPEN_RETRY_AFTER_ELAPSED"
+
+    http_called = False
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal http_called
+        http_called = True
+        return httpx.Response(200, json={"reservation_key": "RSV-HALF-OPEN-BUSY", "released": True})
+
+    service = _service(db_engine, httpx.MockTransport(handler), breaker_service=breaker_service)
+
+    with pytest.raises(WmsCircuitOpenError) as exc_info:
+        await service.release_reservation(
+            ReleaseReservationRequest(request_id="REQ-HALF-OPEN-BUSY", reservation_key="RSV-HALF-OPEN-BUSY")
+        )
+
+    error = exc_info.value
+    evidence = await _get_evidence(db_engine, "ev:release_reservation:REQ-HALF-OPEN-BUSY")
+    breaker_state = await _get_breaker_state(
+        db_engine,
+        target_code="WMS_INVENTORY",
+        operation_name="release_reservation",
+    )
+
+    assert http_called is False
+    assert error.evidence_key == "ev:release_reservation:REQ-HALF-OPEN-BUSY"
+    assert error.reason_code == "WMS_CIRCUIT_OPEN"
+    assert evidence is not None
+    assert evidence.status == "FAILED"
+    assert evidence.reason_code == "WMS_CIRCUIT_OPEN"
+    assert evidence.response_snapshot["reason"] == "HALF_OPEN_TRIAL_IN_PROGRESS"
+    assert breaker_state is not None
+    assert breaker_state.state == WmsCircuitBreakerStatus.HALF_OPEN
+
+
+@pytest.mark.asyncio
 async def test_wms_success_persistence_failure_raises_non_retryable_typed_error(
     db_engine,
 ) -> None:
