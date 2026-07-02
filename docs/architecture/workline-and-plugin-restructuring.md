@@ -245,7 +245,7 @@ P0 必须支撑以下能力（每条都是验收项）：
 
 后续实现阶段验收（不作为 P0 文档验收，但必须在对应 Phase 门禁中落地）：
 
-- [ ] plane 接口安全门禁：`biz:workline:view-plane-scene` / `biz:workline:view-plane-snapshot` + 行级过滤 + 脱敏 + 审计。🟡 PR #73 已落地 `PlaneSceneView` / `PlaneSnapshot` 读模型和 route，安全门禁仍待补齐。
+- [ ] plane 接口安全门禁：`biz:workline:view-plane-scene` / `biz:workline:view-plane-snapshot` + 行级过滤 + 脱敏 + 审计。🟡 PR #73 已落地 `PlaneSceneView` / `PlaneSnapshot` 读模型和 route；本分支补齐 `PlaneReadSecurityPolicy`，集中声明专用权限、`WORKLINE_LOCAL` scope、脱敏字段 deny-list 与审计 action，并将 route 权限依赖改为引用该 policy；真实行级过滤执行与审计落库仍待补齐。
 - [ ] External callback HMAC body 签名 + idempotency 复合主键 + typed `ExternalReference` 全部就绪。🟡 PR #73 已落地 body HMAC、nonce、payload hash、`API_PATH` 感知校验和 typed evidence envelope；本分支补齐 `ExternalReferenceCatalog`、source-version drift 分类合同、WMS evidence JSONB GIN 索引、只读 drift job 与 `docs/contracts/evidence-catalog.md`；跨域 idempotency 复合矩阵仍待补齐。
 - [x] RuntimeInbox 支持 ACK-before-processing 后的重试、死信、人工重放和幂等审计。
 - [ ] DeviceCommand 调度策略支持设备能力选择、优先级、deadline、串行/限流、取消和状态快照 TTL。🟡 PR #73 已落地可过期 command lease；本分支补齐 `DeviceDispatchPolicy` 策略合同与 fresh IDLE、stale/UNKNOWN、RUNNING deadline、HOLD/RECONCILING 冻结测试；`DeviceRuntime` TTL、ECS status probe 和 DeviceCommandGateway 热路径接入仍待补齐。
@@ -1803,6 +1803,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 
 - `DeviceDispatchPolicy`：补齐 fresh IDLE 放行、过期/未知状态短退避、RUNNING deadline 有界等待、session HOLD/RECONCILING/CLOSED 冻结或取消的纯策略合同，并已接入 `DeviceCommandGateway.dispatch` 热路径；fresh busy/hard-state 本地快照会短路，stale/unknown 本地快照继续走 ECS realtime status probe。
 - `ConveyorQueueWriter`：补齐同 queue 幂等重放、跨 queue 冲突进入 RECONCILING、placeholder resolve、未知 queue strict-mode 阻断的写入决策合同，并新增 `ConveyorQueueMembershipRepository` / `ConveyorQueueMembershipWriterService`，覆盖 ACTIVE 创建、幂等复用、placeholder 原地解析、RECONCILING 标记、strict-mode unknown queue 阻断、唯一冲突后的 existing 重读和写入结果诊断。
+- `PlaneReadSecurityPolicy`：补齐 plane scene/snapshot 专用权限、`WORKLINE_LOCAL` scope、WorkLine 配置字段脱敏 deny-list 与审计 action 的集中安全合同；route 权限依赖从硬编码字符串收敛为引用 policy。
 - `ScenarioRecorder` / `ScenarioReplayRunner`：补齐脱敏录制、deterministic replay、timeline/outbox/projection hash/reconciliation reason 断言合同；本分支新增 `tests/resilience/fixtures/phase3_runtime_replay_fixture.json`、`phase3_simulator_replay_fixture.json`、TraceQueryResult 生产录制源适配与显式 resilience replay 测试；IntegrationLab 完整链路仍待接入。
 - `RuntimeObservabilityRegistry`、`RuntimeOpenTelemetryBridge`、`RuntimeToggleRegistry`、`RuntimeToggleReleaseGate`、`RuntimeBenchmarkGate`：补齐稳定 attributes 校验、observer 发射入口、OpenTelemetry-style exporter fan-out、WMS breaker transition instrumentation、WMS evidence persistence failure instrumentation、toggle owner/expiry/security-bypass 拦截、release toggle default-off/test_matrix evidence 发布阻塞和 Phase 3 benchmark 场景清单合同；runtime toggle release gate 已接入 `scripts/git-quality-gate.sh --check runtime-toggle-release` 和 quality profile；本分支补齐 `tests/load/test_runtime_inbox_claim_benchmark.py`、`test_conveyor_queue_writer_benchmark.py`、`test_ecs_status_command_benchmark.py`、`test_plane_snapshot_benchmark.py` 四个轻量 benchmark 命令，并新增 `tests/load/fixtures/phase3_benchmark_artifact.json`、`tests/load/phase3_benchmark_scenarios.py`、`scripts/run_phase3_runtime_benchmarks.py` 与 `Jenkinsfile.backend-ci` artifact 归档；queue writer benchmark artifact 已纳入 `integrity_conflict_recheck_count` 诊断指标；生产 OpenTelemetry backend 接线和真实外部依赖压测仍待接入。
 - WMS fulfillment 状态机补齐 4 类 timeout 事件合同与 current-state-aware 可观察转移矩阵，避免 provider/callback 事件越级改状态；并修正 circuit breaker open/half-open 只阻断出站请求、不覆盖已在途 fulfillment 状态；typed port 集成矩阵覆盖 OPEN fast-fail 与 HALF_OPEN trial-in-progress 二次 effect 不打 HTTP。
@@ -1824,6 +1825,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `uv run pytest tests/ -q`：1544 passed, 5 skipped, 1 xfailed, 3 warnings
 - `uv run pytest tests/runtime/orchestration/test_device_command_gateway.py -q`：8 passed
 - `uv run pytest tests/runtime/orchestration/test_conveyor_queue_membership_writer_service.py -q`：7 passed
+- `uv run pytest tests/api/test_workline_routes.py tests/workline/test_plane_read_model_phase3.py -q`：18 passed
 - `uv run pytest tests/runtime/orchestration/test_phase3_recovery_policies.py tests/runtime/orchestration/test_phase3_p0_closure_contract.py tests/runtime/orchestration/test_phase3_operational_contracts.py -q`：15 passed
 - `uv run pytest tests/runtime/orchestration/test_phase3_operational_contracts.py tests/contracts/test_phase3_ops_contract_docs.py -q`：8 passed
 - `uv run pytest tests/wms_integration/test_circuit_breaker.py tests/wms_integration/test_wms_client.py tests/wms_integration/test_fulfillment_state_machine.py -q`：49 passed

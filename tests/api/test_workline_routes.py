@@ -123,6 +123,8 @@ def test_plugin_manifest_route_requires_workline_list_permission() -> None:
 def test_plane_routes_require_dedicated_permissions() -> None:
     """plane scene/snapshot 使用独立权限, 不能复用普通 detail。"""
 
+    from src.app.workline.services import plane_read_security_policy
+
     scene_route = next(
         route
         for route in workline_api.router.routes
@@ -135,10 +137,10 @@ def test_plane_routes_require_dedicated_permissions() -> None:
     )
 
     assert [getattr(dep.dependency, "permission_required", "") for dep in scene_route.dependencies] == [
-        "biz:workline:view-plane-scene"
+        plane_read_security_policy.scene_permission
     ]
     assert [getattr(dep.dependency, "permission_required", "") for dep in snapshot_route.dependencies] == [
-        "biz:workline:view-plane-snapshot"
+        plane_read_security_policy.snapshot_permission
     ]
 
 

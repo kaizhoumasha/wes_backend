@@ -17,7 +17,7 @@ from src.app.workline.models import (
     WorkLineStateTransitionRequest,
     WorkLineUpdate,
 )
-from src.app.workline.services import workline_plane_service, workline_service
+from src.app.workline.services import plane_read_security_policy, workline_plane_service, workline_service
 from src.core.base_api import BaseAPI
 from src.core.rbac import RequirePermission
 from src.core.response import (
@@ -181,7 +181,7 @@ async def deactivate_workline(
     summary="[biz:workline:view-plane-scene] 获取作业线平面静态场景",
     response_model=ResponseSchemaModel[PlaneSceneView],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:view-plane-scene"))],
+    dependencies=[Depends(RequirePermission(plane_read_security_policy.scene_permission))],
 )
 async def get_workline_plane_scene(
     db: AsyncSessionDep,
@@ -202,7 +202,7 @@ async def get_workline_plane_scene(
     summary="[biz:workline:view-plane-snapshot] 获取作业线平面动态快照",
     response_model=ResponseSchemaModel[PlaneSnapshot],
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(RequirePermission("biz:workline:view-plane-snapshot"))],
+    dependencies=[Depends(RequirePermission(plane_read_security_policy.snapshot_permission))],
 )
 async def get_workline_plane_snapshot(
     db: AsyncSessionDep,

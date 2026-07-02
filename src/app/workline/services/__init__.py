@@ -26,13 +26,19 @@ from typing import Any
 # 已物理删除。
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
 from .manifest_validator import WorkLineManifestActivationValidator, workline_manifest_activation_validator
-from .plane_service import WorkLinePlaneService, workline_plane_service
+from .plane_service import (
+    PlaneReadSecurityPolicy,
+    WorkLinePlaneService,
+    plane_read_security_policy,
+    workline_plane_service,
+)
 from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service
 from .workline_service import WorkLineService, workline_service
 from .write_back_service import OrchestratorWriteBackService, orchestrator_write_back_service
 
 __all__ = [
     "OrchestratorWriteBackService",
+    "PlaneReadSecurityPolicy",
     "WorkLineManifestActivationValidator",
     "WorkLinePlaneService",
     "WorkLineSafetyBlocked",
@@ -42,6 +48,7 @@ __all__ = [
     "WorklineInboxService",
     "inbox_service",
     "orchestrator_write_back_service",
+    "plane_read_security_policy",
     "workline_bin_cell_reservation_service",
     "workline_diagnostic_service",
     "workline_manifest_activation_validator",

@@ -42,3 +42,26 @@ def test_plane_read_model_rejects_label_without_code() -> None:
             nodes=[{"label": "扫码位 1", "kind": "station"}],
             edges=[],
         )
+
+
+def test_plane_read_security_policy_declares_scope_redaction_and_audit_actions() -> None:
+    """plane read 安全门禁必须集中声明权限、scope、脱敏与审计口径。"""
+
+    from src.app.workline.services import plane_read_security_policy
+
+    assert plane_read_security_policy.scope == "WORKLINE_LOCAL"
+    assert plane_read_security_policy.scene_permission == "biz:workline:view-plane-scene"
+    assert plane_read_security_policy.snapshot_permission == "biz:workline:view-plane-snapshot"
+    assert {"config", "runtime_config_json", "diagnostic_profile"}.issubset(
+        plane_read_security_policy.redacted_workline_fields
+    )
+    assert plane_read_security_policy.audit_event("scene", workline_id=7, workline_code="WL-7") == {
+        "action": "WORKLINE_PLANE_SCENE_READ",
+        "permission": "biz:workline:view-plane-scene",
+        "scope": "WORKLINE_LOCAL",
+        "workline_id": "7",
+        "workline_code": "WL-7",
+    }
+    assert plane_read_security_policy.audit_event("snapshot", workline_id=7, workline_code="WL-7")["action"] == (
+        "WORKLINE_PLANE_SNAPSHOT_READ"
+    )

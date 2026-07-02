@@ -2,13 +2,54 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
 
 from src.app.workline.models import PlaneNode, PlaneSceneView, PlaneSnapshot, WorkLine
 from src.app.workline.services.workline_service import workline_service
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+@dataclass(frozen=True, slots=True)
+class PlaneReadSecurityPolicy:
+    """WorkLine plane read 安全合同。"""
+
+    scene_permission: str = "biz:workline:view-plane-scene"
+    snapshot_permission: str = "biz:workline:view-plane-snapshot"
+    scope: str = "WORKLINE_LOCAL"
+    scene_audit_action: str = "WORKLINE_PLANE_SCENE_READ"
+    snapshot_audit_action: str = "WORKLINE_PLANE_SNAPSHOT_READ"
+    redacted_workline_fields: frozenset[str] = frozenset(
+        {
+            "config",
+            "runtime_config_json",
+            "diagnostic_profile",
+            "description",
+        }
+    )
+
+    def permission_for(self, view: Literal["scene", "snapshot"]) -> str:
+        if view == "scene":
+            return self.scene_permission
+        return self.snapshot_permission
+
+    def audit_event(
+        self,
+        view: Literal["scene", "snapshot"],
+        *,
+        workline_id: int,
+        workline_code: str,
+    ) -> dict[str, str]:
+        action = self.scene_audit_action if view == "scene" else self.snapshot_audit_action
+        return {
+            "action": action,
+            "permission": self.permission_for(view),
+            "scope": self.scope,
+            "workline_id": str(workline_id),
+            "workline_code": workline_code,
+        }
 
 
 class WorkLinePlaneService:
@@ -90,7 +131,13 @@ class WorkLinePlaneService:
         return nodes
 
 
+plane_read_security_policy = PlaneReadSecurityPolicy()
 workline_plane_service = WorkLinePlaneService()
 
 
-__all__ = ["WorkLinePlaneService", "workline_plane_service"]
+__all__ = [
+    "PlaneReadSecurityPolicy",
+    "WorkLinePlaneService",
+    "plane_read_security_policy",
+    "workline_plane_service",
+]
