@@ -9,9 +9,18 @@ from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services.audit_service import audit_log_service
 from src.app.workline.models import PlaneNode, PlaneSceneView, PlaneSnapshot, WorkLine
 from src.app.workline.services.workline_service import workline_service
+from src.core.exceptions import PermissionException
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+@dataclass(frozen=True, slots=True)
+class PlaneReadPrincipal:
+    """WorkLine plane read 当前读者上下文。"""
+
+    user_id: int
+    is_superuser: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +45,23 @@ class PlaneReadSecurityPolicy:
         if view == "scene":
             return self.scene_permission
         return self.snapshot_permission
+
+    def can_read_workline(self, workline: Any, principal: PlaneReadPrincipal) -> bool:
+        if principal.is_superuser:
+            return True
+        return getattr(workline, "created_by", None) == principal.user_id
+
+    def ensure_can_read_workline(self, workline: Any, principal: PlaneReadPrincipal) -> None:
+        if self.can_read_workline(workline, principal):
+            return
+        raise PermissionException(
+            "无权读取该 WorkLine plane 视图",
+            detail={
+                "scope": self.scope,
+                "workline_id": str(getattr(workline, "id", "")),
+                "viewer_user_id": str(principal.user_id),
+            },
+        )
 
     def audit_event(
         self,
@@ -69,16 +95,32 @@ class WorkLinePlaneService:
         self.audit_service = audit_service
         self.security_policy = security_policy
 
-    async def get_scene(self, db: AsyncSession, cache: Any, workline_id: int) -> PlaneSceneView:
+    async def get_scene(
+        self,
+        db: AsyncSession,
+        cache: Any,
+        workline_id: int,
+        *,
+        principal: PlaneReadPrincipal,
+    ) -> PlaneSceneView:
         """读取 WorkLine 静态平面 scene。"""
 
         workline = await self._load_workline(db, cache, workline_id)
+        self.security_policy.ensure_can_read_workline(workline, principal)
         return self.build_scene(workline)
 
-    async def get_snapshot(self, db: AsyncSession, cache: Any, workline_id: int) -> PlaneSnapshot:
+    async def get_snapshot(
+        self,
+        db: AsyncSession,
+        cache: Any,
+        workline_id: int,
+        *,
+        principal: PlaneReadPrincipal,
+    ) -> PlaneSnapshot:
         """读取 WorkLine 动态平面 snapshot。"""
 
         workline = await self._load_workline(db, cache, workline_id)
+        self.security_policy.ensure_can_read_workline(workline, principal)
         return self.build_snapshot(workline)
 
     async def record_read_audit(
@@ -176,6 +218,7 @@ workline_plane_service = WorkLinePlaneService()
 
 
 __all__ = [
+    "PlaneReadPrincipal",
     "PlaneReadSecurityPolicy",
     "WorkLinePlaneService",
     "plane_read_security_policy",

@@ -27,6 +27,7 @@ from typing import Any
 from .diagnostic_service import WorklineDiagnosticService, workline_diagnostic_service
 from .manifest_validator import WorkLineManifestActivationValidator, workline_manifest_activation_validator
 from .plane_service import (
+    PlaneReadPrincipal,
     PlaneReadSecurityPolicy,
     WorkLinePlaneService,
     plane_read_security_policy,
@@ -38,6 +39,7 @@ from .write_back_service import OrchestratorWriteBackService, orchestrator_write
 
 __all__ = [
     "OrchestratorWriteBackService",
+    "PlaneReadPrincipal",
     "PlaneReadSecurityPolicy",
     "WorkLineManifestActivationValidator",
     "WorkLinePlaneService",

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 from pydantic import ValidationError
 
@@ -74,6 +77,53 @@ def test_plane_read_security_policy_declares_scope_redaction_and_audit_actions()
     assert plane_read_security_policy.audit_event("snapshot", workline_id=7, workline_code="WL-7")["action"] == (
         "WORKLINE_PLANE_SNAPSHOT_READ"
     )
+
+
+def test_plane_read_security_policy_enforces_workline_local_owner_scope() -> None:
+    """plane read 行级过滤必须约束到当前用户可见的 WorkLine。"""
+
+    from src.app.workline.services import PlaneReadPrincipal, plane_read_security_policy
+    from src.core.exceptions import PermissionException
+
+    workline = SimpleNamespace(id=7, line_code="WL-7", created_by=42)
+
+    plane_read_security_policy.ensure_can_read_workline(
+        workline,
+        PlaneReadPrincipal(user_id=42, is_superuser=False),
+    )
+    plane_read_security_policy.ensure_can_read_workline(
+        workline,
+        PlaneReadPrincipal(user_id=99, is_superuser=True),
+    )
+
+    with pytest.raises(PermissionException, match="无权读取该 WorkLine plane 视图"):
+        plane_read_security_policy.ensure_can_read_workline(
+            workline,
+            PlaneReadPrincipal(user_id=99, is_superuser=False),
+        )
+
+
+@pytest.mark.asyncio
+async def test_plane_service_rejects_non_owner_plane_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """service 读取 scene/snapshot 前必须执行行级过滤。"""
+
+    from src.app.workline.services import PlaneReadPrincipal, WorkLinePlaneService
+    from src.core.exceptions import PermissionException
+
+    service = WorkLinePlaneService(audit_service=_AuditServiceStub())
+    monkeypatch.setattr(
+        service,
+        "_load_workline",
+        AsyncMock(return_value=SimpleNamespace(id=7, line_code="WL-7", line_name="Line 7", config={}, created_by=42)),
+    )
+
+    with pytest.raises(PermissionException, match="无权读取该 WorkLine plane 视图"):
+        await service.get_scene(
+            object(),
+            object(),
+            7,
+            principal=PlaneReadPrincipal(user_id=99, is_superuser=False),
+        )
 
 
 @pytest.mark.asyncio

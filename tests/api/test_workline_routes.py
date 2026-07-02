@@ -149,6 +149,7 @@ async def test_plane_scene_route_records_read_audit(monkeypatch: pytest.MonkeyPa
     """plane scene route 返回成功时必须记录读取审计。"""
 
     from src.app.workline.models import PlaneSceneView
+    from src.app.workline.services import PlaneReadPrincipal
 
     service = SimpleNamespace(
         get_scene=AsyncMock(
@@ -164,9 +165,11 @@ async def test_plane_scene_route_records_read_audit(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(workline_api, "workline_plane_service", service)
     db = SimpleNamespace()
     cache = SimpleNamespace()
+    principal = PlaneReadPrincipal(user_id=42, is_superuser=False)
 
-    await workline_api.get_workline_plane_scene(db=db, cache=cache, id=7)
+    await workline_api.get_workline_plane_scene(db=db, cache=cache, id=7, principal=principal)
 
+    service.get_scene.assert_awaited_once_with(db, cache, 7, principal=principal)
     service.record_read_audit.assert_awaited_once_with(db, view="scene", workline_id=7, workline_code="WL-7")
 
 
@@ -175,6 +178,7 @@ async def test_plane_snapshot_route_records_read_audit(monkeypatch: pytest.Monke
     """plane snapshot route 返回成功时必须记录读取审计。"""
 
     from src.app.workline.models import PlaneSnapshot
+    from src.app.workline.services import PlaneReadPrincipal
 
     service = SimpleNamespace(
         get_snapshot=AsyncMock(
@@ -191,9 +195,11 @@ async def test_plane_snapshot_route_records_read_audit(monkeypatch: pytest.Monke
     monkeypatch.setattr(workline_api, "workline_plane_service", service)
     db = SimpleNamespace()
     cache = SimpleNamespace()
+    principal = PlaneReadPrincipal(user_id=42, is_superuser=False)
 
-    await workline_api.get_workline_plane_snapshot(db=db, cache=cache, id=7)
+    await workline_api.get_workline_plane_snapshot(db=db, cache=cache, id=7, principal=principal)
 
+    service.get_snapshot.assert_awaited_once_with(db, cache, 7, principal=principal)
     service.record_read_audit.assert_awaited_once_with(db, view="snapshot", workline_id=7, workline_code="WL-7")
 
 

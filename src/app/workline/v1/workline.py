@@ -1,9 +1,9 @@
 """WorkLine API 路由"""
 
-from typing import cast
+from typing import Annotated, cast
 from urllib.parse import unquote
 
-from fastapi import APIRouter, Body, Depends, Path, Query, status
+from fastapi import APIRouter, Body, Depends, Path, Query, Request, status
 
 from src.app.workline.models import (
     PlaneSceneView,
@@ -17,7 +17,12 @@ from src.app.workline.models import (
     WorkLineStateTransitionRequest,
     WorkLineUpdate,
 )
-from src.app.workline.services import plane_read_security_policy, workline_plane_service, workline_service
+from src.app.workline.services import (
+    PlaneReadPrincipal,
+    plane_read_security_policy,
+    workline_plane_service,
+    workline_service,
+)
 from src.core.base_api import BaseAPI
 from src.core.rbac import RequirePermission
 from src.core.response import (
@@ -27,6 +32,7 @@ from src.core.response import (
     ResponseSchemaModel,
     response_builder,
 )
+from src.core.security import require_auth
 from src.database.dependencies import AsyncSessionDep, CacheDep
 
 router = APIRouter(tags=["作业线管理"])
@@ -37,6 +43,16 @@ def _workline_value_error_response(exc: ValueError) -> dict[str, object]:
     if "不存在" in message:
         return response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=message)
     return response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=message)
+
+
+def _plane_read_principal(
+    request: Request,
+    user_id: Annotated[int, Depends(require_auth)],
+) -> PlaneReadPrincipal:
+    return PlaneReadPrincipal(
+        user_id=user_id,
+        is_superuser=bool(getattr(request.state, "is_superuser", False)),
+    )
 
 
 @router.get(
@@ -186,12 +202,13 @@ async def deactivate_workline(
 async def get_workline_plane_scene(
     db: AsyncSessionDep,
     cache: CacheDep,
+    principal: Annotated[PlaneReadPrincipal, Depends(_plane_read_principal)],
     id: int = Path(...),
 ) -> ResponseSchemaModel[PlaneSceneView]:
     """读取 WorkLine 平面态势静态 scene。"""
 
     try:
-        scene = await workline_plane_service.get_scene(db, cache, id)
+        scene = await workline_plane_service.get_scene(db, cache, id, principal=principal)
     except ValueError as exc:
         return cast("ResponseSchemaModel[PlaneSceneView]", _workline_value_error_response(exc))
     await workline_plane_service.record_read_audit(db, view="scene", workline_id=id, workline_code=scene.workline_code)
@@ -208,12 +225,13 @@ async def get_workline_plane_scene(
 async def get_workline_plane_snapshot(
     db: AsyncSessionDep,
     cache: CacheDep,
+    principal: Annotated[PlaneReadPrincipal, Depends(_plane_read_principal)],
     id: int = Path(...),
 ) -> ResponseSchemaModel[PlaneSnapshot]:
     """读取 WorkLine 平面态势动态 snapshot。"""
 
     try:
-        snapshot = await workline_plane_service.get_snapshot(db, cache, id)
+        snapshot = await workline_plane_service.get_snapshot(db, cache, id, principal=principal)
     except ValueError as exc:
         return cast("ResponseSchemaModel[PlaneSnapshot]", _workline_value_error_response(exc))
     await workline_plane_service.record_read_audit(
