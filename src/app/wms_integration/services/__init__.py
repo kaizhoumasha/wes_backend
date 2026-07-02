@@ -41,6 +41,7 @@ from .exceptions import (
 from .fulfillment_lifecycle import (
     WmsFulfillmentLifecycleRecord,
     WmsFulfillmentLifecycleService,
+    WmsFulfillmentOpenResult,
     wms_fulfillment_lifecycle_service,
 )
 from .http_client import WmsHttpClient, WmsHttpResult, wms_http_client
@@ -73,6 +74,7 @@ __all__ = [
     "WmsExternalReferenceDriftReport",
     "WmsFulfillmentLifecycleRecord",
     "WmsFulfillmentLifecycleService",
+    "WmsFulfillmentOpenResult",
     "WmsHttpClient",
     "WmsHttpMethod",
     "WmsHttpResult",
