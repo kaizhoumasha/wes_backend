@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
@@ -26,6 +27,24 @@ class _ConveyorQueueUniqueRaceRepository(ConveyorQueueMembershipRepository):
 async def _membership_count(db_session) -> int:
     result = await db_session.execute(select(func.count()).select_from(ConveyorQueueMembership))
     return int(result.scalar_one())
+
+
+def test_conveyor_queue_membership_repository_builds_postgres_for_update_statement() -> None:
+    """Writer 写入前读取 ACTIVE 候选时必须具备 PostgreSQL 行级锁语义。"""
+
+    repository = ConveyorQueueMembershipRepository()
+
+    statement = repository.build_active_identity_select(
+        workline_id=1,
+        bin_code="BIN-001",
+        placeholder_key="scan:001",
+        for_update=True,
+    )
+    compiled = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "FOR UPDATE" in compiled
+    assert "conveyor_queue_memberships" in compiled
+    assert "membership_status" in compiled
 
 
 @pytest.mark.asyncio

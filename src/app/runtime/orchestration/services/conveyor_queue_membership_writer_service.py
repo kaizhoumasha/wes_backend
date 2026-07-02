@@ -112,6 +112,7 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
             workline_id=normalized.workline_id,
             bin_code=normalized.bin_code,
             placeholder_key=normalized.placeholder_key,
+            for_update=True,
         )
         active_memberships = _sort_active_memberships_for_request(
             active_memberships,

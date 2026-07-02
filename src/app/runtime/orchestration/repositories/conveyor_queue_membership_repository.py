@@ -11,6 +11,7 @@ from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.sql import Select
 
 
 class ConveyorQueueMembershipRepository(BaseRepository[ConveyorQueueMembership]):
@@ -77,8 +78,31 @@ class ConveyorQueueMembershipRepository(BaseRepository[ConveyorQueueMembership])
         workline_id: int,
         bin_code: str | None = None,
         placeholder_key: str | None = None,
+        for_update: bool = False,
     ) -> list[ConveyorQueueMembership]:
         """按写入身份读取候选 ACTIVE memberships。"""
+
+        statement = self.build_active_identity_select(
+            workline_id=workline_id,
+            bin_code=bin_code,
+            placeholder_key=placeholder_key,
+            for_update=for_update,
+        )
+        if statement is None:
+            return []
+
+        result = await db.execute(statement)
+        return list(result.scalars().all())
+
+    def build_active_identity_select(
+        self,
+        *,
+        workline_id: int,
+        bin_code: str | None = None,
+        placeholder_key: str | None = None,
+        for_update: bool = False,
+    ) -> Select[tuple[ConveyorQueueMembership]] | None:
+        """构造 ACTIVE identity 查询；PostgreSQL 写路径可启用行级锁。"""
 
         identity_clauses = []
         columns = cast("Any", ConveyorQueueMembership).__table__.c
@@ -87,9 +111,9 @@ class ConveyorQueueMembershipRepository(BaseRepository[ConveyorQueueMembership])
         if placeholder_key is not None:
             identity_clauses.append(columns.placeholder_key == placeholder_key)
         if not identity_clauses:
-            return []
+            return None
 
-        result = await db.execute(
+        statement = (
             select(ConveyorQueueMembership)
             .where(
                 columns.workline_id == workline_id,
@@ -98,7 +122,9 @@ class ConveyorQueueMembershipRepository(BaseRepository[ConveyorQueueMembership])
             )
             .order_by(columns.id.asc())
         )
-        return list(result.scalars().all())
+        if for_update:
+            return statement.with_for_update()
+        return statement
 
 
 conveyor_queue_membership_repository = ConveyorQueueMembershipRepository()
