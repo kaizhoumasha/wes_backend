@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from pydantic import ValidationError
+
+from src.app.wms_integration.evidence import (
+    ExternalReference,
+    ExternalReferenceCatalog,
+    ExternalReferenceDriftKind,
+)
 from src.app.wms_integration.models import WmsCallEvidence, WmsEvidenceStatus
 from src.app.wms_integration.repositories import WmsCallEvidenceRepository, wms_call_evidence_repository
 from src.app.wms_integration.services.redaction import bounded_redacted_snapshot, canonical_sha256
@@ -18,6 +26,31 @@ if TYPE_CHECKING:
 ASYNC_SUMMARY_METADATA_KEYS = ("status", "error_code", "reason_code", "result_code")
 MAX_ASYNC_METADATA_LENGTH = 240
 MAX_ASYNC_PAYLOAD_KEYS = 120
+
+
+@dataclass(frozen=True, slots=True)
+class WmsExternalReferenceDriftItem:
+    """单条 WMS evidence 外部引用漂移。"""
+
+    evidence_key: str
+    operation_name: str
+    snapshot_field: str
+    kind: ExternalReferenceDriftKind
+    reference: ExternalReference
+    expected_source_version: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class WmsExternalReferenceDriftReport:
+    """WMS evidence drift job 只读扫描结果。"""
+
+    scanned_evidence_count: int
+    scanned_reference_count: int
+    drift_items: list[WmsExternalReferenceDriftItem]
+
+    @property
+    def drift_count(self) -> int:
+        return len(self.drift_items)
 
 
 class WmsCallEvidenceService(BaseService[WmsCallEvidence, WmsCallEvidenceRepository]):
@@ -131,6 +164,44 @@ class WmsCallEvidenceService(BaseService[WmsCallEvidence, WmsCallEvidenceReposit
             raise RuntimeError("创建 WMS evidence 失败")
         return created
 
+    async def run_external_reference_drift_job(
+        self,
+        db: AsyncSession,
+        *,
+        catalog: ExternalReferenceCatalog,
+        limit: int = 500,
+        operation_name: str | None = None,
+    ) -> WmsExternalReferenceDriftReport:
+        """扫描 evidence envelope 中的 ExternalReference，并按 catalog 分类漂移。"""
+
+        evidence_rows = await self.repo.list_recent_for_drift_scan(db, limit=limit, operation_name=operation_name)
+        scanned_reference_count = 0
+        drift_items: list[WmsExternalReferenceDriftItem] = []
+
+        for evidence in evidence_rows:
+            for snapshot_field, snapshot in _iter_evidence_snapshots(evidence):
+                for reference in _extract_external_references(snapshot):
+                    scanned_reference_count += 1
+                    drift = catalog.classify(reference)
+                    if drift.kind is ExternalReferenceDriftKind.NONE:
+                        continue
+                    drift_items.append(
+                        WmsExternalReferenceDriftItem(
+                            evidence_key=evidence.evidence_key,
+                            operation_name=evidence.operation_name,
+                            snapshot_field=snapshot_field,
+                            kind=drift.kind,
+                            reference=reference,
+                            expected_source_version=drift.expected_source_version,
+                        )
+                    )
+
+        return WmsExternalReferenceDriftReport(
+            scanned_evidence_count=len(evidence_rows),
+            scanned_reference_count=scanned_reference_count,
+            drift_items=drift_items,
+        )
+
 
 def _build_async_evidence_summary(summary: dict[str, Any]) -> dict[str, Any]:
     """把异步事实源 payload 收敛为可留痕摘要，避免复制完整 payload。"""
@@ -164,10 +235,42 @@ def _truncate_metadata_value(value: Any) -> Any:
     return value
 
 
+def _iter_evidence_snapshots(evidence: WmsCallEvidence) -> tuple[tuple[str, dict[str, Any]], ...]:
+    snapshots: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(evidence.request_snapshot, dict):
+        snapshots.append(("request_snapshot", evidence.request_snapshot))
+    if isinstance(evidence.response_snapshot, dict):
+        snapshots.append(("response_snapshot", evidence.response_snapshot))
+    return tuple(snapshots)
+
+
+def _extract_external_references(snapshot: dict[str, Any]) -> list[ExternalReference]:
+    raw_refs = snapshot.get("external_refs")
+    if not isinstance(raw_refs, list):
+        return []
+
+    references: list[ExternalReference] = []
+    for raw_ref in raw_refs:
+        if isinstance(raw_ref, ExternalReference):
+            references.append(raw_ref)
+            continue
+        if not isinstance(raw_ref, dict):
+            continue
+        try:
+            reference = ExternalReference.model_validate(raw_ref)
+        except ValidationError:
+            reference = None
+        if reference is not None:
+            references.append(reference)
+    return references
+
+
 wms_call_evidence_service = WmsCallEvidenceService()
 
 
 __all__ = [
     "WmsCallEvidenceService",
+    "WmsExternalReferenceDriftItem",
+    "WmsExternalReferenceDriftReport",
     "wms_call_evidence_service",
 ]

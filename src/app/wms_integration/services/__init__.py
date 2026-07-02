@@ -23,7 +23,12 @@ from .endpoint_config import (
     WmsOperationEndpoint,
     wms_endpoint_config,
 )
-from .evidence_service import WmsCallEvidenceService, wms_call_evidence_service
+from .evidence_service import (
+    WmsCallEvidenceService,
+    WmsExternalReferenceDriftItem,
+    WmsExternalReferenceDriftReport,
+    wms_call_evidence_service,
+)
 from .exceptions import (
     WmsBusinessRejectedError,
     WmsCircuitOpenError,
@@ -62,6 +67,8 @@ __all__ = [
     "WmsEventNormalizer",
     "WmsEvidencePersistenceError",
     "WmsExecutionCallbackNormalizer",
+    "WmsExternalReferenceDriftItem",
+    "WmsExternalReferenceDriftReport",
     "WmsFulfillmentLifecycleRecord",
     "WmsFulfillmentLifecycleService",
     "WmsHttpClient",

@@ -1,6 +1,7 @@
 import json
 
 import pytest
+from sqlalchemy.dialects.postgresql import JSONB
 
 from src.app.wms_integration.models import WmsCallEvidence, WmsEvidenceStatus
 from src.app.wms_integration.services import (
@@ -214,6 +215,8 @@ def test_evidence_model_declares_required_indexes() -> None:
         "ix_wms_call_evidence_trace_request_dispatch",
         "ix_wms_call_evidence_operation_started",
         "ix_wms_call_evidence_status_started",
+        "ix_wms_call_evidence_request_snapshot_gin",
+        "ix_wms_call_evidence_response_snapshot_gin",
     }
     assert indexes["ux_wms_call_evidence_key"] == ("evidence_key",)
     assert indexes["ix_wms_call_evidence_trace_request_dispatch"] == (
@@ -223,3 +226,93 @@ def test_evidence_model_declares_required_indexes() -> None:
     )
     assert indexes["ix_wms_call_evidence_operation_started"] == ("operation_name", "started_at")
     assert indexes["ix_wms_call_evidence_status_started"] == ("status", "started_at")
+    assert indexes["ix_wms_call_evidence_request_snapshot_gin"] == ("request_snapshot",)
+    assert indexes["ix_wms_call_evidence_response_snapshot_gin"] == ("response_snapshot",)
+
+    assert isinstance(table.c.request_snapshot.type, JSONB)
+    assert isinstance(table.c.response_snapshot.type, JSONB)
+
+    gin_indexes = {
+        index.name: index.dialect_options["postgresql"].get("using")
+        for index in table.indexes
+        if index.name in {"ix_wms_call_evidence_request_snapshot_gin", "ix_wms_call_evidence_response_snapshot_gin"}
+    }
+    assert gin_indexes == {
+        "ix_wms_call_evidence_request_snapshot_gin": "gin",
+        "ix_wms_call_evidence_response_snapshot_gin": "gin",
+    }
+
+
+@pytest.mark.asyncio
+async def test_wms_external_reference_drift_job_classifies_evidence_envelopes(db_session) -> None:
+    from src.app.wms_integration.evidence import (
+        EvidenceEnvelope,
+        ExternalReference,
+        ExternalReferenceCatalog,
+        ExternalReferenceCatalogEntry,
+        ExternalReferenceDriftKind,
+    )
+
+    envelope = EvidenceEnvelope(
+        schema_version="evidence.v1",
+        source_system="WMS",
+        source_event_id="EVT-DRIFT-001",
+        source_version="wms-42",
+        evidence_type="PKG_BOUND",
+        occurred_at="2026-07-01T02:00:00Z",
+        external_refs=[
+            ExternalReference(
+                system="WMS",
+                object_type="PKG",
+                code="PKG-OK",
+                schema_version="wms.pkg.v1",
+                validated_at="2026-07-01T02:00:00Z",
+                source_version="wms-42",
+            ),
+            ExternalReference(
+                system="WMS",
+                object_type="PKG",
+                code="PKG-DRIFT",
+                schema_version="wms.pkg.v1",
+                validated_at="2026-07-01T02:00:00Z",
+                source_version="wms-41",
+            ),
+        ],
+        request_hash="b" * 64,
+        payload_hash="a" * 64,
+        payload={"pkg_code": "PKG-DRIFT"},
+    )
+    await wms_call_evidence_service.record_sync_call(
+        db_session,
+        evidence_key="sync:pkg-bound:REQ-DRIFT-001",
+        operation_name="pkg_bound",
+        target_code="WMS",
+        status=WmsEvidenceStatus.SUCCEEDED,
+        request_snapshot=envelope.model_dump(),
+        response_snapshot={},
+        request_id="REQ-DRIFT-001",
+        trace_id="TRACE-DRIFT-001",
+        http_status=200,
+    )
+
+    report = await wms_call_evidence_service.run_external_reference_drift_job(
+        db_session,
+        catalog=ExternalReferenceCatalog(
+            [
+                ExternalReferenceCatalogEntry(
+                    system="WMS",
+                    object_type="PKG",
+                    schema_version="wms.pkg.v1",
+                    source_version="wms-42",
+                )
+            ]
+        ),
+    )
+
+    assert report.scanned_evidence_count == 1
+    assert report.drift_count == 1
+    assert report.drift_items[0].evidence_key == "sync:pkg-bound:REQ-DRIFT-001"
+    assert report.drift_items[0].snapshot_field == "request_snapshot"
+    assert report.drift_items[0].kind == ExternalReferenceDriftKind.SOURCE_VERSION_MISMATCH
+    assert report.drift_items[0].reference.code == "PKG-DRIFT"
+    assert report.drift_items[0].expected_source_version == "wms-42"

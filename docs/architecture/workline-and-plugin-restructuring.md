@@ -246,7 +246,7 @@ P0 必须支撑以下能力（每条都是验收项）：
 后续实现阶段验收（不作为 P0 文档验收，但必须在对应 Phase 门禁中落地）：
 
 - [ ] plane 接口安全门禁：`biz:workline:view-plane-scene` / `biz:workline:view-plane-snapshot` + 行级过滤 + 脱敏 + 审计。🟡 PR #73 已落地 `PlaneSceneView` / `PlaneSnapshot` 读模型和 route，安全门禁仍待补齐。
-- [ ] External callback HMAC body 签名 + idempotency 复合主键 + typed `ExternalReference` 全部就绪。🟡 PR #73 已落地 body HMAC、nonce、payload hash、`API_PATH` 感知校验和 typed evidence envelope；本分支补齐 `ExternalReferenceCatalog` 与 source-version drift 分类合同；GIN 索引和 WMS drift job 仍待补齐。
+- [ ] External callback HMAC body 签名 + idempotency 复合主键 + typed `ExternalReference` 全部就绪。🟡 PR #73 已落地 body HMAC、nonce、payload hash、`API_PATH` 感知校验和 typed evidence envelope；本分支补齐 `ExternalReferenceCatalog`、source-version drift 分类合同、WMS evidence JSONB GIN 索引、只读 drift job 与 `docs/contracts/evidence-catalog.md`；跨域 idempotency 复合矩阵仍待补齐。
 - [x] RuntimeInbox 支持 ACK-before-processing 后的重试、死信、人工重放和幂等审计。
 - [ ] DeviceCommand 调度策略支持设备能力选择、优先级、deadline、串行/限流、取消和状态快照 TTL。🟡 PR #73 已落地可过期 command lease；本分支补齐 `DeviceDispatchPolicy` 策略合同与 fresh IDLE、stale/UNKNOWN、RUNNING deadline、HOLD/RECONCILING 冻结测试；`DeviceRuntime` TTL、ECS status probe 和 DeviceCommandGateway 热路径接入仍待补齐。
 
@@ -1795,7 +1795,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `RuntimeObservabilityRegistry`、`RuntimeToggleRegistry`、`RuntimeToggleReleaseGate`、`RuntimeBenchmarkGate`：补齐稳定 attributes 校验、observer 发射入口、WMS breaker transition instrumentation、WMS evidence persistence failure instrumentation、toggle owner/expiry/security-bypass 拦截、release toggle default-off/test_matrix evidence 发布阻塞和 Phase 3 benchmark 场景清单合同；runtime toggle release gate 已接入 `scripts/git-quality-gate.sh --check runtime-toggle-release` 和 quality profile；本分支补齐 `tests/load/test_runtime_inbox_claim_benchmark.py`、`test_conveyor_queue_writer_benchmark.py`、`test_ecs_status_command_benchmark.py`、`test_plane_snapshot_benchmark.py` 四个轻量 benchmark 命令；全链路 OpenTelemetry exporter 与生产规模 benchmark artifact 仍待接入。
 - WMS fulfillment 状态机补齐 4 类 timeout 事件合同与 current-state-aware 可观察转移矩阵，避免 provider/callback 事件越级改状态；并修正 circuit breaker open/half-open 只阻断出站请求、不覆盖已在途 fulfillment 状态；typed port 集成矩阵覆盖 OPEN fast-fail 与 HALF_OPEN trial-in-progress 二次 effect 不打 HTTP。
 - External callback allow-list 补齐 Phase 3 矩阵：WMS/RCS normalizer enforce `WMS_*`→`WMS`、`RCS_*`→`RCS`；统一 external callback 入口拒绝未登记 `callback_type`，并校验 ECS/device 与 provider-specific source mismatch，避免跨 provider callback_type/source 混用。
-- `ExternalReferenceCatalog` 补齐 typed external reference 与 `source_version` drift 分类合同；GIN 索引和 WMS drift job 仍待接入。
+- `ExternalReferenceCatalog` 补齐 typed external reference 与 `source_version` drift 分类合同；`WmsCallEvidence` request/response snapshot 升级为 JSONB 并声明 GIN 索引；`WmsCallEvidenceService.run_external_reference_drift_job()` 只读扫描 evidence envelope 并输出 drift report；`docs/contracts/evidence-catalog.md` 固化 schema、索引和 drift 分类口径。
 - full-box exchange 行为合同从 strict xfail 转为真实合同：验证 full-box 外部履约、typed evidence 与本地冲突进入 ReconciliationManager 的语义；RACK_BIN exchange 和生产 callback/projection 接入仍待补齐。
 
 **Phase 3 PR #73 回归证据**：
@@ -1815,6 +1815,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `uv run pytest tests/runtime/orchestration/test_phase3_operational_contracts.py tests/contracts/test_phase3_ops_contract_docs.py -q`：8 passed
 - `uv run pytest tests/wms_integration/test_circuit_breaker.py tests/wms_integration/test_wms_client.py tests/wms_integration/test_fulfillment_state_machine.py -q`：49 passed
 - `uv run pytest tests/wms_integration/test_fulfillment_state_machine.py tests/wms_integration/test_fulfillment_lifecycle_service.py tests/runtime/orchestration/test_phase3_p0_closure_contract.py -q`：14 passed
+- `uv run pytest tests/wms_integration/test_evidence.py tests/wms_integration/test_typed_evidence_envelope.py -q`：12 passed
 - `uv run pytest tests/wms_integration/test_callback_normalizer.py -q`：33 passed
 - `uv run pytest tests/api/test_callback_external_api.py -q`：34 passed
 - `uv run pytest tests/architecture/test_git_quality_gate_architecture_profile.py -q`：2 passed
@@ -2040,7 +2041,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | ENG-006 | ✅ 已完成 | `ActiveObjectRegistry` 跨投影 active 归属仲裁读模型 |
 | ENG-008 | ✅ 已完成 | callback body HMAC、nonce 原子消费、body hash、`API_PATH` 前缀和 fail-closed 已落地；本分支补齐 WMS/RCS provider/source 矩阵（`WMS_*`→`WMS`, `RCS_*`→`RCS`），并在统一 external callback 入口补齐 WMS/RCS、ECS/device 与 AGV/CTU provider-specific callback_type allow-list/source mismatch 拒绝矩阵 |
 | ENG-009 | 🟡 部分完成 | RuntimeInbox source event 幂等、payload hash 冲突、唯一冲突重读和审计已覆盖；fulfillment / device event / reconciliation 全域统一矩阵仍待补齐 |
-| ENG-010 | 🟡 部分完成 | typed evidence envelope 已落地；本分支补齐 typed `ExternalReference` catalog 与 source-version drift 分类合同；GIN 索引和 WMS drift job 仍待补齐 |
+| ENG-010 | ✅ 已完成 | typed evidence envelope 已落地；本分支补齐 typed `ExternalReference` catalog、source-version drift 分类合同、`WmsCallEvidence` JSONB GIN 索引、只读 WMS drift job 和 `docs/contracts/evidence-catalog.md` |
 | ENG-011 | ✅ 已完成 | RuntimeInbox backpressure、死信/人工重放审计、DeviceCommand 可过期 lease 和 recovery 策略 |
 | ENG-012 | 🟡 部分完成 | 本分支补齐 `DeviceDispatchPolicy` 纯策略合同并接入 `DeviceCommandGateway.dispatch` 热路径：fresh busy/hard-state 本地快照短路，stale/UNKNOWN 保留 ECS status probe，deadline 到期暴露 `runtime_hold_required` decision detail；持久 DeviceRuntime 投影、生产 metrics 和全量集成矩阵仍待补齐 |
 | ENG-013 | ✅ 已完成 | RECONCILING 软件禁发、投影冻结和 owner-scoped 人工恢复审计合同 |

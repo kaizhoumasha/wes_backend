@@ -10,8 +10,9 @@ from datetime import datetime  # noqa: TC003
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
-from sqlalchemy import JSON, Column, Index
+from sqlalchemy import Column, Index
 from sqlalchemy import Enum as SQLAEnum
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
 from src.core.mixins import DataTableMixin
@@ -41,6 +42,8 @@ class WmsCallEvidence(DataTableMixin, table=True):
         Index("ix_wms_call_evidence_trace_request_dispatch", "trace_id", "request_id", "dispatch_key"),
         Index("ix_wms_call_evidence_operation_started", "operation_name", "started_at"),
         Index("ix_wms_call_evidence_status_started", "status", "started_at"),
+        Index("ix_wms_call_evidence_request_snapshot_gin", "request_snapshot", postgresql_using="gin"),
+        Index("ix_wms_call_evidence_response_snapshot_gin", "response_snapshot", postgresql_using="gin"),
         {"schema": SchemaType.BIZ.value},
     )
 
@@ -64,12 +67,12 @@ class WmsCallEvidence(DataTableMixin, table=True):
 
     request_snapshot: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON, nullable=False, comment="脱敏请求或异步摘要"),
+        sa_column=Column(JSONB, nullable=False, comment="脱敏请求或异步摘要"),
         description="脱敏请求或异步摘要",
     )
     response_snapshot: dict[str, Any] = Field(
         default_factory=dict,
-        sa_column=Column(JSON, nullable=False, comment="脱敏响应摘要"),
+        sa_column=Column(JSONB, nullable=False, comment="脱敏响应摘要"),
         description="脱敏响应摘要",
     )
     request_hash: str = Field(min_length=64, max_length=64, description="canonical request sha256")
