@@ -31,13 +31,14 @@
 
 - `RuntimeObservabilityRegistry.emit()` 是当前 Python 运行时的稳定事件发射入口；所有 adapter 必须先通过 required attributes 校验，再转成实际 metric/log/span。
 - `RuntimeOpenTelemetryBridge` 是 registry observer 到 OpenTelemetry-style exporter 的无依赖桥接层；按 `signal_type` 将同一已验证事件 fan-out 为 span、metric 和 log event，不允许 exporter 绕过 registry 直接消费临时字段。
+- `RuntimeOpenTelemetryHttpExporter` 是生产 backend adapter 接线；FastAPI lifespan 通过 `configure_runtime_open_telemetry_backend()` 按 `WES_RUNTIME_OTEL_ENABLED=true` + `WES_RUNTIME_OTEL_ENDPOINT` 注册命名 observer，重复初始化必须幂等，默认关闭。
 - Callback ingress 在 external normalize allow-list 校验、device result 命令锚点解析、device event 入库 trace 解析完成后发出 `callback.normalize`；观测发射失败不得影响 callback ACK、落库或业务编排。
 - WorklineInbox worker 在 `claim_pending_messages()` 成功提交释放行锁后发出 `runtime_inbox.claim`；观测发射失败不得回滚或阻塞 claim。
 - Workline `OutboxDispatchService._dispatch_single()` 进入设备、HTTP 或内部信号派发出口时发出 `runtime_intent.dispatch`；观测发射失败不得阻塞 outbox 派发或改变终态更新。
 - `DeviceCommandService.handle_callback_result()` 在设备结果被接受并更新命令终态后发出 `device_command.result`；观测发射失败不得回滚或阻塞 callback result 处理。
 - WMS breaker OPEN/HALF_OPEN/CLOSED 状态变化使用 `wms_breaker.transition`；typed port 必须从请求 `trace_id` 透传，不能在缺失 trace 时伪造追踪标识。
 - WMS 成功响应后的本地 evidence/breaker 留痕失败使用 `wms_evidence.persistence_failure`；该事件必须保留原始 `trace_id` 和 `evidence_key`，供系统诊断而非业务 HOLD。
-- 具体 exporter/backend（Jaeger / Tempo / SkyWalking 等）不属于本合同；生产接入时只能挂载在 `RuntimeOpenTelemetryBridge` 后，不能新增临时字段替代稳定 attributes。
+- 具体 backend（Jaeger / Tempo / SkyWalking 等）必须通过 `RuntimeOpenTelemetryBridge` 后方的 HTTP adapter / collector endpoint 挂载，不能新增临时字段替代稳定 attributes。
 
 ## Prohibitions
 
