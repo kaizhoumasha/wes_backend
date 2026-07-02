@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.app.handling.services.completion_policy import is_full_box_exchange_operation_type
+from src.app.handling.services.completion_policy import is_reconciled_exchange_operation_type
 from src.app.wms_integration.services.transport_contract import (
     WmsTransportContractService,
     wms_transport_contract_service,
@@ -22,7 +22,7 @@ class WmsRcsHandlingGateway:
             operation=operation,
             move=move,
             sequence_no=sequence_no,
-            is_full_box_exchange=is_full_box_exchange_operation_type(
+            is_full_box_exchange=is_reconciled_exchange_operation_type(
                 str(getattr(operation, "operation_type", "") or "")
             ),
         )
