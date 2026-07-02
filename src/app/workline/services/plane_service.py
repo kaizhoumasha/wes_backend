@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from src.app.sys.models.audit_log import OperaStatus
+from src.app.sys.services.audit_service import audit_log_service
 from src.app.workline.models import PlaneNode, PlaneSceneView, PlaneSnapshot, WorkLine
 from src.app.workline.services.workline_service import workline_service
 
@@ -52,8 +54,20 @@ class PlaneReadSecurityPolicy:
         }
 
 
+plane_read_security_policy = PlaneReadSecurityPolicy()
+
+
 class WorkLinePlaneService:
     """WorkLine 平面态势读模型服务。"""
+
+    def __init__(
+        self,
+        *,
+        audit_service: Any = audit_log_service,
+        security_policy: PlaneReadSecurityPolicy = plane_read_security_policy,
+    ) -> None:
+        self.audit_service = audit_service
+        self.security_policy = security_policy
 
     async def get_scene(self, db: AsyncSession, cache: Any, workline_id: int) -> PlaneSceneView:
         """读取 WorkLine 静态平面 scene。"""
@@ -66,6 +80,33 @@ class WorkLinePlaneService:
 
         workline = await self._load_workline(db, cache, workline_id)
         return self.build_snapshot(workline)
+
+    async def record_read_audit(
+        self,
+        db: AsyncSession,
+        *,
+        view: Literal["scene", "snapshot"],
+        workline_id: int,
+        workline_code: str,
+    ) -> None:
+        """记录 WorkLine plane read 审计。"""
+
+        args = {
+            **self.security_policy.audit_event(view, workline_id=workline_id, workline_code=workline_code),
+            "object_type": "WorkLine",
+            "object_id": str(workline_id),
+            "change_summary": f"read plane {view}",
+        }
+        await self.audit_service.create_audit_log(
+            db,
+            method="GET",
+            title=f"WorkLine Plane {view.title()} Read",
+            path=f"/work_lines/{workline_id}/plane/{view}",
+            args=args,
+            status=OperaStatus.SUCCESS,
+            code="200",
+            msg="OK",
+        )
 
     async def _load_workline(self, db: AsyncSession, cache: Any, workline_id: int) -> WorkLine:
         workline = await workline_service.get_by_id(db, cache, workline_id, max_depth=0)
@@ -131,7 +172,6 @@ class WorkLinePlaneService:
         return nodes
 
 
-plane_read_security_policy = PlaneReadSecurityPolicy()
 workline_plane_service = WorkLinePlaneService()
 
 

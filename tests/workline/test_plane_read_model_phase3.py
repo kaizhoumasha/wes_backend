@@ -6,6 +6,15 @@ import pytest
 from pydantic import ValidationError
 
 
+class _AuditServiceStub:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def create_audit_log(self, _db: object, **kwargs: object) -> object:
+        self.calls.append(kwargs)
+        return object()
+
+
 def test_plane_scene_and_snapshot_have_independent_schema_versions() -> None:
     """scene 与 snapshot 必须独立 version, 前端不能混用。"""
 
@@ -65,3 +74,38 @@ def test_plane_read_security_policy_declares_scope_redaction_and_audit_actions()
     assert plane_read_security_policy.audit_event("snapshot", workline_id=7, workline_code="WL-7")["action"] == (
         "WORKLINE_PLANE_SNAPSHOT_READ"
     )
+
+
+@pytest.mark.asyncio
+async def test_plane_service_records_read_audit_with_security_policy_args() -> None:
+    """plane read audit 必须使用安全 policy 生成可查询维度。"""
+
+    from src.app.sys.models.audit_log import OperaStatus
+    from src.app.workline.services import WorkLinePlaneService
+
+    audit_service = _AuditServiceStub()
+    service = WorkLinePlaneService(audit_service=audit_service)
+    db = object()
+
+    await service.record_read_audit(db, view="scene", workline_id=7, workline_code="WL-7")
+
+    assert audit_service.calls == [
+        {
+            "method": "GET",
+            "title": "WorkLine Plane Scene Read",
+            "path": "/work_lines/7/plane/scene",
+            "args": {
+                "action": "WORKLINE_PLANE_SCENE_READ",
+                "permission": "biz:workline:view-plane-scene",
+                "scope": "WORKLINE_LOCAL",
+                "workline_id": "7",
+                "workline_code": "WL-7",
+                "object_type": "WorkLine",
+                "object_id": "7",
+                "change_summary": "read plane scene",
+            },
+            "status": OperaStatus.SUCCESS,
+            "code": "200",
+            "msg": "OK",
+        }
+    ]

@@ -194,6 +194,7 @@ async def get_workline_plane_scene(
         scene = await workline_plane_service.get_scene(db, cache, id)
     except ValueError as exc:
         return cast("ResponseSchemaModel[PlaneSceneView]", _workline_value_error_response(exc))
+    await workline_plane_service.record_read_audit(db, view="scene", workline_id=id, workline_code=scene.workline_code)
     return cast("ResponseSchemaModel[PlaneSceneView]", response_builder.success(data=scene))
 
 
@@ -215,6 +216,12 @@ async def get_workline_plane_snapshot(
         snapshot = await workline_plane_service.get_snapshot(db, cache, id)
     except ValueError as exc:
         return cast("ResponseSchemaModel[PlaneSnapshot]", _workline_value_error_response(exc))
+    await workline_plane_service.record_read_audit(
+        db,
+        view="snapshot",
+        workline_id=id,
+        workline_code=snapshot.workline_code,
+    )
     return cast("ResponseSchemaModel[PlaneSnapshot]", response_builder.success(data=snapshot))
 
 
