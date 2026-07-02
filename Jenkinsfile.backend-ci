@@ -221,6 +221,28 @@ pipeline {
                         '''
                     }
                 }
+
+                stage('Phase 3 Benchmark Artifact') {
+                    steps {
+                        sh '''
+                            set -e
+                            mkdir -p reports/benchmarks
+                            docker run --rm \
+                                -v "$WORKSPACE/reports:/artifacts/reports" \
+                                "${CI_IMAGE}" \
+                                sh -c '
+                                    python scripts/run_phase3_runtime_benchmarks.py \
+                                        --output /artifacts/reports/benchmarks/phase3-runtime-benchmark.json \
+                                        --environment ci-lightweight
+                                '
+                        '''
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: 'reports/benchmarks/phase3-runtime-benchmark.json', allowEmptyArchive: true
+                        }
+                    }
+                }
             }
         }
 
