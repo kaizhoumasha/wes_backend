@@ -665,7 +665,7 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `reconciliation/` | Reconciliation owner-scoped 决议合同测试 | 🔧 架构核心 |
 | `benchmark/` | 性能基准测试 | 📚 参考资料 |
 | `load/` | 显式运行的负载/基准测试（Locust + Phase 3 runtime benchmark gate 四场景） | 📚 参考资料 |
-| `resilience/` | 弹性测试（Redis 重连、降级） | 📚参考资料 |
+| `resilience/` | 显式运行的弹性/恢复测试（Redis 重连、降级、Phase 3 scenario replay fixture） | 📚参考资料 |
 | `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
 | ~~`workline_runtime/`~~ | **Phase 2 burn-down 阶段 3 (T3) 已删除**：作业线运行时测试已被 `tests/contracts/workline/` 行为契约覆盖；wlr 整目录同步物理删除 | 🔧 架构核心 |
 | `wms_integration/` | WMS 对接辅助域测试（client、typed ports、evidence、breaker、cache、callback normalizer、caller contract） | 🔧 架构核心 |
