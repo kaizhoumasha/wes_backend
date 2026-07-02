@@ -236,6 +236,126 @@ async def test_dispatch_uses_policy_wait_for_running_device_before_http_post():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_converts_running_deadline_expired_to_runtime_hold_decision():
+    """RUNNING 设备超过 dispatch deadline 时必须暴露 runtime hold 决策细节。"""
+
+    now = timezone.now_for_db()
+    device = SimpleNamespace(
+        device_code="DEV-BUSY-DEADLINE",
+        device_status="running",
+        maintenance_mode=False,
+        current_command_id=777,
+        capabilities_json={
+            "supported_command_types": ["SCAN"],
+            "status_snapshot_ttl_ms": 1000,
+        },
+        host="10.0.0.22",
+        port=8080,
+        updated_at=now,
+    )
+    outbox = SimpleNamespace(
+        target_code="DEV-BUSY-DEADLINE",
+        payload_json={
+            "command_code": "CMD-BUSY-DEADLINE",
+            "task_type": "SCAN",
+            "dispatch_deadline_at": (now - timedelta(milliseconds=1)).isoformat(),
+        },
+        session_id=1,
+        dispatch_key="device-command:CMD-BUSY-DEADLINE",
+        trace_id="trace-policy-deadline",
+        correlation_id="corr-policy-deadline",
+    )
+
+    async_client_mock = AsyncMock()
+    async_client_mock.get = AsyncMock(side_effect=AssertionError("deadline hold should happen before ECS status probe"))
+    async_client_mock.post = AsyncMock(return_value=SimpleNamespace(status_code=200, text=""))
+    async_client_mock.__aenter__ = AsyncMock(return_value=async_client_mock)
+    async_client_mock.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        _patched_get_device(device),
+        patch(
+            "src.app.device.repositories.command_repository.DeviceCommandRepository.get_by_command_code",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("httpx.AsyncClient", return_value=async_client_mock),
+        patch("src.app.runtime.orchestration.observability.runtime_observability_registry.emit") as emit,
+    ):
+        with pytest.raises(_DeviceCommandGovernanceError) as exc_info:
+            await device_command_gateway.dispatch(db=object(), outbox=outbox)
+
+    error = exc_info.value
+    assert error.code == "DEVICE_STATUS_PRECHECK_WAIT"
+    assert error.detail["policy_decision"] == "CREATE_RUNTIME_HOLD"
+    assert error.detail["reason"] == "DISPATCH_DEADLINE_EXPIRED"
+    assert error.detail["runtime_hold_required"] is True
+    emit.assert_called_once()
+    assert emit.call_args.args[1]["policy_decision"] == "CREATE_RUNTIME_HOLD"
+    assert emit.call_args.args[1]["runtime_hold_required"] is True
+    async_client_mock.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_freezes_reconciling_session_before_status_probe():
+    """RECONCILING session 的未下发命令必须 freeze/cancel，不进入 ECS status probe。"""
+
+    now = timezone.now_for_db()
+    device = SimpleNamespace(
+        device_code="DEV-RECONCILING",
+        device_status="idle",
+        maintenance_mode=False,
+        current_command_id=None,
+        capabilities_json={
+            "supported_command_types": ["SCAN"],
+            "status_snapshot_ttl_ms": 1000,
+        },
+        host="10.0.0.23",
+        port=8080,
+        updated_at=now,
+    )
+    outbox = SimpleNamespace(
+        target_code="DEV-RECONCILING",
+        payload_json={
+            "command_code": "CMD-RECONCILING",
+            "task_type": "SCAN",
+            "session_state": "RECONCILING",
+        },
+        session_id=1,
+        dispatch_key="device-command:CMD-RECONCILING",
+        trace_id="trace-policy-reconciling",
+        correlation_id="corr-policy-reconciling",
+    )
+
+    async_client_mock = AsyncMock()
+    async_client_mock.get = AsyncMock(side_effect=AssertionError("RECONCILING freeze should happen before probe"))
+    async_client_mock.post = AsyncMock(return_value=SimpleNamespace(status_code=200, text=""))
+    async_client_mock.__aenter__ = AsyncMock(return_value=async_client_mock)
+    async_client_mock.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        _patched_get_device(device),
+        patch(
+            "src.app.device.repositories.command_repository.DeviceCommandRepository.get_by_command_code",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("httpx.AsyncClient", return_value=async_client_mock),
+        patch("src.app.runtime.orchestration.observability.runtime_observability_registry.emit") as emit,
+    ):
+        with pytest.raises(_DeviceCommandGovernanceError) as exc_info:
+            await device_command_gateway.dispatch(db=object(), outbox=outbox)
+
+    error = exc_info.value
+    assert error.detail["policy_decision"] == "FREEZE_OR_CANCEL"
+    assert error.detail["reason"] == "SESSION_RECONCILING"
+    assert error.detail["runtime_hold_required"] is True
+    assert error.detail["cancel_unsubmitted"] is True
+    assert error.detail["freeze_submitted"] is True
+    emit.assert_called_once()
+    assert emit.call_args.args[1]["policy_decision"] == "FREEZE_OR_CANCEL"
+    async_client_mock.post.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_dispatch_revalidates_stale_idle_snapshot_with_ecs_status_before_http_post():
     """过期 IDLE 快照不能直接派发，必须先重查 ECS 实时状态。"""
 
@@ -258,6 +378,64 @@ async def test_dispatch_revalidates_stale_idle_snapshot_with_ecs_status_before_h
         payload_json={"command_code": "CMD-STALE", "task_type": "SCAN"},
         session_id=1,
         dispatch_key="device-command:CMD-STALE",
+    )
+    events: list[str] = []
+
+    async def status_probe(*_args, **_kwargs):
+        events.append("status")
+        return SimpleNamespace(
+            status_code=200,
+            text="",
+            json=lambda: {"mode": "AUTO", "status": "IDLE", "current_command_id": None},
+        )
+
+    async def command_post(*_args, **_kwargs):
+        events.append("post")
+        return SimpleNamespace(status_code=200, text="")
+
+    async_client_mock = AsyncMock()
+    async_client_mock.get = AsyncMock(side_effect=status_probe)
+    async_client_mock.post = AsyncMock(side_effect=command_post)
+    async_client_mock.__aenter__ = AsyncMock(return_value=async_client_mock)
+    async_client_mock.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        _patched_get_device(device),
+        patch(
+            "src.app.device.repositories.command_repository.DeviceCommandRepository.get_by_command_code",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("httpx.AsyncClient", return_value=async_client_mock),
+    ):
+        result = await device_command_gateway.dispatch(db=object(), outbox=outbox)
+
+    assert result is True
+    assert events == ["status", "post"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_revalidates_unknown_snapshot_with_ecs_status_before_http_post():
+    """UNKNOWN 本地快照不能直接派发，必须先重查 ECS 实时状态。"""
+
+    now = timezone.now_for_db()
+    device = SimpleNamespace(
+        device_code="DEV-UNKNOWN",
+        device_status="unknown",
+        maintenance_mode=False,
+        current_command_id=None,
+        capabilities_json={
+            "supported_command_types": ["SCAN"],
+            "status_snapshot_ttl_ms": 1000,
+        },
+        host="10.0.0.24",
+        port=8080,
+        updated_at=now,
+    )
+    outbox = SimpleNamespace(
+        target_code="DEV-UNKNOWN",
+        payload_json={"command_code": "CMD-UNKNOWN", "task_type": "SCAN"},
+        session_id=1,
+        dispatch_key="device-command:CMD-UNKNOWN",
     )
     events: list[str] = []
 
