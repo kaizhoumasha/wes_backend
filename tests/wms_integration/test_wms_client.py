@@ -59,6 +59,7 @@ def _service(
     *,
     breaker_service: WmsCircuitBreakerService | None = None,
     evidence_service: Any | None = None,
+    observability_emit: Any | None = None,
     use_default_evidence_key: bool = False,
 ) -> WmsTypedPortService:
     kwargs: dict[str, Any] = {
@@ -69,6 +70,8 @@ def _service(
     }
     if evidence_service is not None:
         kwargs["evidence_service"] = evidence_service
+    if observability_emit is not None:
+        kwargs["observability_emit"] = observability_emit
     if not use_default_evidence_key:
         kwargs["evidence_key_factory"] = _evidence_key
     return WmsTypedPortService(**kwargs)
@@ -510,11 +513,16 @@ async def test_wms_error_circuit_open_fast_fails_without_http_call(db_engine) ->
 async def test_wms_success_persistence_failure_raises_non_retryable_typed_error(
     db_engine,
 ) -> None:
+    from src.app.runtime.orchestration.observability import RuntimeObservabilityRegistry
+
     class FailingSuccessEvidenceService:
         async def record_sync_call(self, _db: AsyncSession, **kwargs):
             if kwargs["status"] == "SUCCEEDED":
                 raise RuntimeError("database unavailable")
             raise AssertionError("本测试不应记录失败 evidence")
+
+    emitted = []
+    registry = RuntimeObservabilityRegistry(observers=(emitted.append,))
 
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -530,12 +538,14 @@ async def test_wms_success_persistence_failure_raises_non_retryable_typed_error(
         db_engine,
         httpx.MockTransport(handler),
         evidence_service=FailingSuccessEvidenceService(),
+        observability_emit=registry.emit,
     )
 
     with pytest.raises(WmsEvidencePersistenceError) as exc_info:
         await service.reserve_inventory(
             ReserveInventoryRequest(
                 request_id="REQ-PERSIST",
+                trace_id="trace-persist-failure",
                 reservation_key="RSV-PERSIST",
                 sku="SKU-1",
                 qty="1",
@@ -549,6 +559,12 @@ async def test_wms_success_persistence_failure_raises_non_retryable_typed_error(
     assert error.reason_code == "WMS_EVIDENCE_PERSISTENCE_FAILED"
     assert error.target_code == "WMS_INVENTORY"
     assert error.retryable is False
+    assert len(emitted) == 1
+    assert emitted[0].name == "wms_evidence.persistence_failure"
+    assert emitted[0].attributes["trace_id"] == "trace-persist-failure"
+    assert emitted[0].attributes["provider_code"] == "WMS_INVENTORY"
+    assert emitted[0].attributes["operation_kind"] == "reserve_inventory"
+    assert emitted[0].attributes["evidence_key"] == "ev:reserve_inventory:REQ-PERSIST"
 
 
 @pytest.mark.asyncio

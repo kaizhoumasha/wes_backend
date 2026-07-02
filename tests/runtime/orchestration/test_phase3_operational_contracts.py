@@ -54,6 +54,19 @@ def test_runtime_observability_registry_emits_valid_events_to_observers() -> Non
     assert event.signal_type == "metric+log"
     assert event.attributes["breaker_state"] == "OPEN"
 
+    evidence_failure = registry.validate(
+        "wms_evidence.persistence_failure",
+        {
+            "trace_id": "trace-1",
+            "provider_code": "WMS",
+            "operation_kind": "reserve_inventory",
+            "evidence_key": "ev:reserve_inventory:REQ-1",
+            "reason_code": "WMS_EVIDENCE_PERSISTENCE_FAILED",
+        },
+    )
+
+    assert evidence_failure.valid is True
+
 
 def test_runtime_toggle_registry_blocks_expired_and_security_bypass_toggles() -> None:
     from src.core.runtime_toggles import RuntimeToggleDefinition, RuntimeToggleKind, RuntimeToggleRegistry

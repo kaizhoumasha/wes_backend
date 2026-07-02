@@ -64,6 +64,7 @@ if TYPE_CHECKING:
 
 ResponseT = TypeVar("ResponseT", bound=BaseModel)
 EvidenceKeyFactory = Callable[[WmsOperationName, str], str]
+WmsTypedPortObservabilityEmit = Callable[[str, dict[str, object]], object]
 
 
 class WmsSessionFactory(Protocol):
@@ -90,6 +91,7 @@ class WmsTypedPortService:
         evidence_service: WmsCallEvidenceService | None = None,
         breaker_service: WmsCircuitBreakerService | None = None,
         evidence_key_factory: EvidenceKeyFactory | None = None,
+        observability_emit: WmsTypedPortObservabilityEmit | None = None,
         cache: Any | None = None,
         query_cache_ttl_seconds: int = WMS_QUERY_CACHE_TTL_SECONDS,
     ) -> None:
@@ -99,6 +101,7 @@ class WmsTypedPortService:
         self.evidence_service = evidence_service or wms_call_evidence_service
         self.breaker_service = breaker_service or wms_circuit_breaker_service
         self.evidence_key_factory = evidence_key_factory or _default_evidence_key
+        self._observability_emit = observability_emit
         self.query_cache = WmsQueryCacheService(cache, ttl_seconds=query_cache_ttl_seconds)
 
     async def query_inventory(self, request: QueryInventoryRequest) -> QueryInventoryResponse:
@@ -302,6 +305,12 @@ class WmsTypedPortService:
                 started_at=started_at,
             )
         except Exception as exc:
+            self._emit_evidence_persistence_failure(
+                endpoint=endpoint,
+                request=request,
+                evidence_key=evidence_key,
+                http_status=http_result.status_code,
+            )
             raise WmsEvidencePersistenceError(
                 "WMS 已返回成功，但本地 evidence/breaker 成功留痕失败",
                 operation_name=endpoint.operation_name,
@@ -517,6 +526,29 @@ class WmsTypedPortService:
             retryable=retryable,
             started_at=started_at,
             finished_at=timezone.now_for_db(),
+        )
+
+    def _emit_evidence_persistence_failure(
+        self,
+        *,
+        endpoint: WmsOperationEndpoint,
+        request: WmsPortRequest,
+        evidence_key: str,
+        http_status: int,
+    ) -> None:
+        if self._observability_emit is None or request.trace_id is None:
+            return
+        self._observability_emit(
+            "wms_evidence.persistence_failure",
+            {
+                "trace_id": request.trace_id,
+                "provider_code": endpoint.target_code,
+                "operation_kind": endpoint.operation_name,
+                "evidence_key": evidence_key,
+                "request_id": request.request_id,
+                "http_status": http_status,
+                "reason_code": "WMS_EVIDENCE_PERSISTENCE_FAILED",
+            },
         )
 
 

@@ -126,6 +126,11 @@ def default_runtime_observability_signals() -> dict[str, RuntimeObservabilitySig
             "metric+log",
             frozenset({"trace_id", "provider_code", "operation_kind", "breaker_state"}),
         ),
+        "wms_evidence.persistence_failure": RuntimeObservabilitySignal(
+            "wms_evidence.persistence_failure",
+            "metric+log",
+            frozenset({"trace_id", "provider_code", "operation_kind", "evidence_key", "reason_code"}),
+        ),
         "scenario_replay.run": RuntimeObservabilitySignal(
             "scenario_replay.run",
             "span+metric",

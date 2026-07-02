@@ -17,9 +17,18 @@ def test_observability_contract_declares_stable_runtime_signals() -> None:
         "runtime_intent.dispatch",
         "device_command.ack",
         "wms_breaker.transition",
+        "wms_evidence.persistence_failure",
     ):
         assert signal in text
-    for attribute in ("trace_id", "correlation_id", "provider_code", "operation_kind", "command_code"):
+    for attribute in (
+        "trace_id",
+        "correlation_id",
+        "provider_code",
+        "operation_kind",
+        "command_code",
+        "evidence_key",
+        "reason_code",
+    ):
         assert attribute in text
 
 
