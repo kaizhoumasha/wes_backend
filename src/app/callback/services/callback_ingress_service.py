@@ -464,6 +464,64 @@ def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
     return normalized_payload
 
 
+def _callback_normalize_provider_code(callback_type: str, payload: JsonDict) -> str:
+    return resolve_first_str(payload, ("source_system",)) or callback_type.split("_", 1)[0] or "UNKNOWN"
+
+
+def _callback_normalize_correlation_id(callback_type: str, payload: JsonDict, request_id: str | None) -> str:
+    return (
+        resolve_first_str(payload, ("dispatch_key", "command_code", "exchange_request_code", "request_id"))
+        or request_id
+        or f"callback:{callback_type}"
+    )
+
+
+def _callback_normalize_source_event_id(callback_type: str, payload: JsonDict, request_id: str | None) -> str:
+    source_event_id = resolve_first_str(payload, ("source_event_id", "event_id", "request_id")) or request_id
+    if source_event_id:
+        return source_event_id
+    return f"callback:{callback_type}:{_callback_normalize_correlation_id(callback_type, payload, request_id)}"
+
+
+def _callback_normalize_trace_id(
+    callback_type: str,
+    payload: JsonDict,
+    normalized_payload: JsonDict,
+    request_id: str | None,
+) -> str:
+    return (
+        resolve_first_str(normalized_payload, ("trace_id",))
+        or _resolve_callback_trace_id(payload)
+        or request_id
+        or _callback_normalize_source_event_id(callback_type, payload, request_id)
+    )
+
+
+def _emit_callback_normalize_observability(
+    payload: JsonDict,
+    normalized_payload: JsonDict,
+    *,
+    request_id: str | None,
+) -> None:
+    """发出 external callback normalize 观测事件；观测失败不改变 callback ACK。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    callback_type = cast("str", normalized_payload["callback_type"])
+    try:
+        runtime_observability_registry.emit(
+            "callback.normalize",
+            {
+                "trace_id": _callback_normalize_trace_id(callback_type, payload, normalized_payload, request_id),
+                "correlation_id": _callback_normalize_correlation_id(callback_type, payload, request_id),
+                "provider_code": _callback_normalize_provider_code(callback_type, payload),
+                "source_event_id": _callback_normalize_source_event_id(callback_type, payload, request_id),
+            },
+        )
+    except Exception as exc:  # pragma: no cover - 防止观测链路反向影响 callback ACK
+        logger.warning(f"Callback normalize 观测事件发射失败: callback_type={callback_type}, error={exc}")
+
+
 def _validate_external_callback_allow_list(payload: JsonDict, callback_type: str) -> None:
     """校验 Phase 3 external callback callback_type 与 source_system 矩阵。"""
 
@@ -1701,6 +1759,7 @@ async def handle_callback_external(
         normalized_payload = _normalize_external_callback_payload(callback_data)
         callback_type = cast("str", normalized_payload["callback_type"])
         external_trace_id = cast("str | None", normalized_payload["trace_id"])
+        _emit_callback_normalize_observability(callback_data, normalized_payload, request_id=request_id)
     except ValueError as exc:
         logger.error(f"外部回调最小包络校验失败: {exc}")
         return await _handle_external_validation_failure(

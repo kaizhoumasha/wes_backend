@@ -69,6 +69,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.v1.callback.get_request_id",
                 return_value="req-ext-001",
             ),
+            patch("src.app.runtime.orchestration.observability.runtime_observability_registry.emit") as emit,
         ):
             from src.app.callback.v1.callback import callback_external
 
@@ -87,6 +88,15 @@ class TestCallbackExternalAPI:
         assert log_kwargs["trace_id"] == "trace-agv-001"
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         assert log_kwargs["failure_stage"] is None
+        emit.assert_called_once_with(
+            "callback.normalize",
+            {
+                "trace_id": "trace-agv-001",
+                "correlation_id": "AGV-REQ-001",
+                "provider_code": "AGV",
+                "source_event_id": "req-ext-001",
+            },
+        )
         mock_enqueue.assert_called_once()
         db_session.commit.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
