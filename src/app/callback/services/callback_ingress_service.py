@@ -465,10 +465,17 @@ def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
 
 
 def _callback_normalize_provider_code(callback_type: str, payload: JsonDict) -> str:
+    if callback_type in {"result", "event"}:
+        return "ECS"
     return resolve_first_str(payload, ("source_system",)) or callback_type.split("_", 1)[0] or "UNKNOWN"
 
 
 def _callback_normalize_correlation_id(callback_type: str, payload: JsonDict, request_id: str | None) -> str:
+    if callback_type == "event":
+        device_code = resolve_first_str(payload, ("device_code",))
+        event_type = resolve_first_str(payload, ("event_type",))
+        if device_code and event_type:
+            return f"event:{device_code}:{event_type}"
     return (
         resolve_first_str(payload, ("dispatch_key", "command_code", "exchange_request_code", "request_id"))
         or request_id
@@ -503,7 +510,7 @@ def _emit_callback_normalize_observability(
     *,
     request_id: str | None,
 ) -> None:
-    """发出 external callback normalize 观测事件；观测失败不改变 callback ACK。"""
+    """发出 callback normalize 观测事件；观测失败不改变 callback ACK。"""
 
     from src.app.runtime.orchestration.observability import runtime_observability_registry
 
@@ -1099,6 +1106,11 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
 
     command_trace_id = getattr(existing_command, "trace_id", None)
     resolved_trace_id = _resolve_callback_trace_id(callback_data) or command_trace_id
+    _emit_callback_normalize_observability(
+        callback_data,
+        {"callback_type": "result", "trace_id": resolved_trace_id},
+        request_id=request_id,
+    )
 
     # 使用 DeviceContextService 验证设备和工作线上下文
     ctx_result, ctx_error = await device_context_service.resolve(db, device_code)
@@ -1649,6 +1661,11 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             enqueue_processing=enqueue_processing,
         )
         is_duplicate = outcome.is_duplicate
+        _emit_callback_normalize_observability(
+            event_data,
+            {"callback_type": "event", "trace_id": outcome.trace_id},
+            request_id=request_id,
+        )
 
         response_time_ms = _response_time_ms(start_time)
         await _log_callback_outcome(

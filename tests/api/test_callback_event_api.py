@@ -82,6 +82,7 @@ class TestCallbackEventAPI:
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-003"),
+            patch("src.app.runtime.orchestration.observability.runtime_observability_registry.emit") as emit,
         ):
             from src.app.callback.v1.callback import callback_event
 
@@ -110,6 +111,15 @@ class TestCallbackEventAPI:
         assert log_kwargs["trace_id"] == event_trace_id
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         assert log_kwargs["failure_stage"] is None
+        emit.assert_called_once_with(
+            "callback.normalize",
+            {
+                "trace_id": event_trace_id,
+                "correlation_id": "event:ARM_01:SCAN_COMPLETED",
+                "provider_code": "ECS",
+                "source_event_id": "req-003",
+            },
+        )
         mock_enqueue.assert_called_once()
         db_session.commit.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
