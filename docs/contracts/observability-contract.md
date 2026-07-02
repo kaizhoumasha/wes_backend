@@ -28,9 +28,10 @@
 ## Instrumentation Binding
 
 - `RuntimeObservabilityRegistry.emit()` 是当前 Python 运行时的稳定事件发射入口；所有 adapter 必须先通过 required attributes 校验，再转成实际 metric/log/span。
+- `RuntimeOpenTelemetryBridge` 是 registry observer 到 OpenTelemetry-style exporter 的无依赖桥接层；按 `signal_type` 将同一已验证事件 fan-out 为 span、metric 和 log event，不允许 exporter 绕过 registry 直接消费临时字段。
 - WMS breaker OPEN/HALF_OPEN/CLOSED 状态变化使用 `wms_breaker.transition`；typed port 必须从请求 `trace_id` 透传，不能在缺失 trace 时伪造追踪标识。
 - WMS 成功响应后的本地 evidence/breaker 留痕失败使用 `wms_evidence.persistence_failure`；该事件必须保留原始 `trace_id` 和 `evidence_key`，供系统诊断而非业务 HOLD。
-- exporter/backend（Jaeger / Tempo / SkyWalking 等）不属于本合同；接入时只能消费已验证事件，不能新增临时字段替代稳定 attributes。
+- 具体 exporter/backend（Jaeger / Tempo / SkyWalking 等）不属于本合同；生产接入时只能挂载在 `RuntimeOpenTelemetryBridge` 后，不能新增临时字段替代稳定 attributes。
 
 ## Prohibitions
 

@@ -30,6 +30,7 @@ def test_observability_contract_declares_stable_runtime_signals() -> None:
         "reason_code",
     ):
         assert attribute in text
+    assert "RuntimeOpenTelemetryBridge" in text
 
 
 def test_runtime_toggle_governance_blocks_security_bypass() -> None:

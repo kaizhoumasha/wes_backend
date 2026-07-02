@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Protocol
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,42 @@ class RuntimeObservabilityEmissionError(ValueError):
 
 
 RuntimeObservabilityObserver = Callable[[RuntimeObservabilityEvent], None]
+
+
+class RuntimeOpenTelemetryExporter(Protocol):
+    """Exporter port consumed by the runtime OpenTelemetry bridge."""
+
+    def emit_span(self, name: str, attributes: Mapping[str, object]) -> None:
+        """Export a validated span."""
+
+    def emit_metric(self, name: str, attributes: Mapping[str, object]) -> None:
+        """Export a validated metric."""
+
+    def emit_log_event(self, name: str, attributes: Mapping[str, object]) -> None:
+        """Export a validated log event."""
+
+
+class RuntimeOpenTelemetryBridge:
+    """Observer that fans validated runtime events out to OpenTelemetry-style exporters."""
+
+    def __init__(self, exporter: RuntimeOpenTelemetryExporter) -> None:
+        self._exporter = exporter
+
+    def __call__(self, event: RuntimeObservabilityEvent) -> None:
+        self.export(event)
+
+    def export(self, event: RuntimeObservabilityEvent) -> None:
+        """Export each signal kind declared by the stable contract."""
+
+        for signal_kind in event.signal_type.split("+"):
+            if signal_kind == "span":
+                self._exporter.emit_span(event.name, event.attributes)
+            elif signal_kind == "metric":
+                self._exporter.emit_metric(event.name, event.attributes)
+            elif signal_kind == "log":
+                self._exporter.emit_log_event(event.name, event.attributes)
+            else:
+                raise ValueError(f"unsupported runtime observability signal kind: {signal_kind}")
 
 
 class RuntimeObservabilityRegistry:
@@ -149,6 +186,8 @@ __all__ = [
     "RuntimeObservabilityRegistry",
     "RuntimeObservabilitySignal",
     "RuntimeObservabilityValidation",
+    "RuntimeOpenTelemetryBridge",
+    "RuntimeOpenTelemetryExporter",
     "default_runtime_observability_signals",
     "runtime_observability_registry",
 ]

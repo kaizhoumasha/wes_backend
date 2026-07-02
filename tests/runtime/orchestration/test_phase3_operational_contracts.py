@@ -68,6 +68,44 @@ def test_runtime_observability_registry_emits_valid_events_to_observers() -> Non
     assert evidence_failure.valid is True
 
 
+def test_runtime_observability_open_telemetry_bridge_exports_signal_kinds() -> None:
+    from src.app.runtime.orchestration.observability import (
+        RuntimeObservabilityRegistry,
+        RuntimeOpenTelemetryBridge,
+    )
+
+    class RecordingExporter:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def emit_span(self, name, attributes) -> None:
+            self.calls.append(("span", name, dict(attributes)))
+
+        def emit_metric(self, name, attributes) -> None:
+            self.calls.append(("metric", name, dict(attributes)))
+
+        def emit_log_event(self, name, attributes) -> None:
+            self.calls.append(("log", name, dict(attributes)))
+
+    exporter = RecordingExporter()
+    bridge = RuntimeOpenTelemetryBridge(exporter)
+    registry = RuntimeObservabilityRegistry(observers=(bridge,))
+
+    registry.emit(
+        "callback.normalize",
+        {
+            "trace_id": "trace-1",
+            "correlation_id": "corr-1",
+            "provider_code": "WMS",
+            "source_event_id": "evt-1",
+        },
+    )
+
+    assert [call[0] for call in exporter.calls] == ["span", "metric", "log"]
+    assert {call[1] for call in exporter.calls} == {"callback.normalize"}
+    assert all(call[2]["trace_id"] == "trace-1" for call in exporter.calls)
+
+
 def test_runtime_toggle_registry_blocks_expired_and_security_bypass_toggles() -> None:
     from src.core.runtime_toggles import RuntimeToggleDefinition, RuntimeToggleKind, RuntimeToggleRegistry
 
