@@ -13,6 +13,7 @@ class RuntimeBenchmarkScenario:
     name: str
     command: str
     required_metrics: frozenset[str]
+    production_source_kinds: frozenset[str] = frozenset()
     blocks_phase_gate: bool = True
 
 
@@ -29,6 +30,8 @@ class RuntimeBenchmarkArtifactValidation:
     missing_thresholds: tuple[str, ...] = ()
     failed_thresholds: tuple[str, ...] = ()
     invalid_sample_counts: tuple[str, ...] = ()
+    missing_provenance_fields: tuple[str, ...] = ()
+    invalid_provenance_fields: tuple[str, ...] = ()
 
 
 class RuntimeBenchmarkGate:
@@ -62,11 +65,16 @@ class RuntimeBenchmarkGate:
                 missing_scenarios=missing_scenarios,
             )
 
-        profile_validation = _validate_profile_metadata(artifact.get("profile"))
+        profile = artifact.get("profile")
+        profile_validation = _validate_profile_metadata(profile)
         if profile_validation is not None:
             return profile_validation
 
-        scenario_result_validation = _validate_scenario_results(self.scenarios, raw_scenarios)
+        scenario_result_validation = _validate_scenario_results(
+            self.scenarios,
+            raw_scenarios,
+            require_production_provenance=_is_production_scale_profile(profile),
+        )
         if scenario_result_validation is not None:
             return scenario_result_validation
         return RuntimeBenchmarkArtifactValidation(valid=True)
@@ -136,19 +144,36 @@ def _validate_profile_metadata(profile: object) -> RuntimeBenchmarkArtifactValid
     return None
 
 
+def _is_production_scale_profile(profile: object) -> bool:
+    return isinstance(profile, Mapping) and profile.get("kind") == "production-scale"
+
+
 def _validate_scenario_results(
-    scenarios: list[RuntimeBenchmarkScenario], raw_scenarios: Mapping[object, object]
+    scenarios: list[RuntimeBenchmarkScenario],
+    raw_scenarios: Mapping[object, object],
+    *,
+    require_production_provenance: bool = False,
 ) -> RuntimeBenchmarkArtifactValidation | None:
     missing_metrics: list[str] = []
     missing_thresholds: list[str] = []
     failed_thresholds: list[str] = []
     invalid_sample_counts: list[str] = []
+    missing_provenance_fields: list[str] = []
+    invalid_provenance_fields: list[str] = []
     for scenario in scenarios:
         raw_result = raw_scenarios.get(scenario.name)
         result = raw_result if isinstance(raw_result, Mapping) else {}
         sample_count = result.get("sample_count")
         if not isinstance(sample_count, int) or sample_count <= 0:
             invalid_sample_counts.append(scenario.name)
+
+        if require_production_provenance:
+            _collect_scenario_provenance_validation(
+                scenario,
+                result,
+                missing_fields=missing_provenance_fields,
+                invalid_fields=invalid_provenance_fields,
+            )
 
         metrics = result.get("metrics")
         thresholds = result.get("thresholds")
@@ -173,6 +198,18 @@ def _validate_scenario_results(
             reason="INVALID_SAMPLE_COUNT",
             invalid_sample_counts=tuple(invalid_sample_counts),
         )
+    if missing_provenance_fields:
+        return RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="MISSING_SCENARIO_PROVENANCE",
+            missing_provenance_fields=tuple(sorted(missing_provenance_fields)),
+        )
+    if invalid_provenance_fields:
+        return RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="INVALID_SCENARIO_PROVENANCE",
+            invalid_provenance_fields=tuple(sorted(invalid_provenance_fields)),
+        )
     if missing_metrics:
         return RuntimeBenchmarkArtifactValidation(
             valid=False,
@@ -194,27 +231,53 @@ def _validate_scenario_results(
     return None
 
 
+def _collect_scenario_provenance_validation(
+    scenario: RuntimeBenchmarkScenario,
+    result: Mapping[object, object],
+    *,
+    missing_fields: list[str],
+    invalid_fields: list[str],
+) -> None:
+    source = result.get("source")
+    if not isinstance(source, Mapping):
+        missing_fields.append(f"{scenario.name}.source")
+        return
+
+    source_kind = source.get("kind")
+    if not _non_empty_text(source_kind):
+        missing_fields.append(f"{scenario.name}.source.kind")
+    elif scenario.production_source_kinds and source_kind not in scenario.production_source_kinds:
+        invalid_fields.append(f"{scenario.name}.source.kind")
+
+    if not _non_empty_text(source.get("evidence")):
+        missing_fields.append(f"{scenario.name}.source.evidence")
+
+
 def default_phase3_benchmark_scenarios() -> list[RuntimeBenchmarkScenario]:
     return [
         RuntimeBenchmarkScenario(
             name="runtime_inbox_claim",
             command="uv run pytest tests/load/test_runtime_inbox_claim_benchmark.py -q",
             required_metrics=frozenset({"claim_p95_ms", "duplicate_claim_count"}),
+            production_source_kinds=frozenset({"postgresql"}),
         ),
         RuntimeBenchmarkScenario(
             name="conveyor_queue_writer",
             command="uv run pytest tests/load/test_conveyor_queue_writer_benchmark.py -q",
             required_metrics=frozenset({"write_p95_ms", "reconciling_count", "integrity_conflict_recheck_count"}),
+            production_source_kinds=frozenset({"postgresql"}),
         ),
         RuntimeBenchmarkScenario(
             name="ecs_status_command",
             command="uv run pytest tests/load/test_ecs_status_command_benchmark.py -q",
             required_metrics=frozenset({"status_get_p95_ms", "command_post_p95_ms"}),
+            production_source_kinds=frozenset({"ecs-http"}),
         ),
         RuntimeBenchmarkScenario(
             name="plane_snapshot",
             command="uv run pytest tests/load/test_plane_snapshot_benchmark.py -q",
             required_metrics=frozenset({"snapshot_p95_ms", "snapshot_10x_p95_ms"}),
+            production_source_kinds=frozenset({"api-http"}),
         ),
     ]
 

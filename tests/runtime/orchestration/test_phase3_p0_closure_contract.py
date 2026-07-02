@@ -224,6 +224,71 @@ def test_phase3_benchmark_gate_rejects_production_profile_without_postgres_and_c
     )
 
 
+def test_phase3_benchmark_gate_rejects_production_artifact_without_scenario_provenance() -> None:
+    import json
+    from pathlib import Path
+
+    from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
+
+    repo_root = Path(__file__).resolve().parents[3]
+    artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "phase3_benchmark_artifact.json").read_text())
+    artifact["profile"] = {
+        "kind": "production-scale",
+        "database_backend": "postgresql",
+        "dependency_profile": "wms-ecs-simulator",
+        "concurrency_level": 64,
+        "duration_seconds": 300,
+    }
+
+    validation = RuntimeBenchmarkGate().validate_artifact(artifact)
+
+    assert validation.valid is False
+    assert validation.reason == "MISSING_SCENARIO_PROVENANCE"
+    assert validation.missing_provenance_fields == (
+        "conveyor_queue_writer.source",
+        "ecs_status_command.source",
+        "plane_snapshot.source",
+        "runtime_inbox_claim.source",
+    )
+
+
+def test_phase3_benchmark_gate_accepts_production_artifact_with_scenario_provenance() -> None:
+    import json
+    from pathlib import Path
+
+    from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
+
+    repo_root = Path(__file__).resolve().parents[3]
+    artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "phase3_benchmark_artifact.json").read_text())
+    artifact["profile"] = {
+        "kind": "production-scale",
+        "database_backend": "postgresql",
+        "dependency_profile": "wms-ecs-simulator",
+        "concurrency_level": 64,
+        "duration_seconds": 300,
+    }
+    artifact["scenarios"]["runtime_inbox_claim"]["source"] = {
+        "kind": "postgresql",
+        "evidence": "reports/benchmarks/runtime-inbox-claim.json",
+    }
+    artifact["scenarios"]["conveyor_queue_writer"]["source"] = {
+        "kind": "postgresql",
+        "evidence": "reports/benchmarks/conveyor-queue-writer.json",
+    }
+    artifact["scenarios"]["ecs_status_command"]["source"] = {
+        "kind": "ecs-http",
+        "evidence": "reports/benchmarks/ecs-status-command.json",
+    }
+    artifact["scenarios"]["plane_snapshot"]["source"] = {
+        "kind": "api-http",
+        "evidence": "reports/benchmarks/plane-snapshot.json",
+    }
+
+    validation = RuntimeBenchmarkGate().validate_artifact(artifact)
+
+    assert validation.valid is True
+
+
 def test_phase3_benchmark_gate_rejects_unknown_profile_kind() -> None:
     import json
     from pathlib import Path
