@@ -146,6 +146,55 @@ _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
         "error_message",
     }
 )
+_EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_SUFFIXES = (
+    "GRN_RECEIVED",
+    "PALLET_ARRIVED",
+    "RACK_ARRIVED",
+    "TRANSPORT_COMPLETED",
+    "EXCHANGE_COMPLETED",
+    "INVENTORY_UPDATED",
+    "TASK_CHANGE",
+    "REJECTED",
+    "FAILED",
+)
+_EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_TYPES = frozenset(
+    f"{provider}_{suffix}" for provider in ("WMS", "RCS") for suffix in _EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_SUFFIXES
+)
+_EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES = frozenset(
+    {
+        "DEVICE_RESULT",
+        "DEVICE_EVENT",
+        "DEVICE_STATUS_CHANGED",
+        "MATERIAL_ARRIVED",
+        "SCAN_COMPLETED",
+        "ESTOP_PRESSED",
+        "DEVICE_ERROR",
+        "DEVICE_ONLINE",
+        "DEVICE_OFFLINE",
+    }
+)
+_EXTERNAL_CALLBACK_PROVIDER_SPECIFIC_ALLOWED_TYPES = frozenset(
+    {
+        "AGV_TASK_RESULT",
+        "CTU_BIN_MOVE_PROGRESS",
+        "CTU_BIN_MOVE_COMPLETED",
+        "CTU_BIN_MOVE_FAILED",
+    }
+)
+_EXTERNAL_CALLBACK_ALLOWED_TYPES = (
+    _EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_TYPES
+    | _wms_callback_normalizer.WMS_RCS_RACK_CALLBACK_TYPES
+    | _wms_callback_normalizer.WMS_RCS_FULL_BOX_EXCHANGE_CALLBACK_TYPES
+    | _EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES
+    | _EXTERNAL_CALLBACK_PROVIDER_SPECIFIC_ALLOWED_TYPES
+)
+_EXTERNAL_CALLBACK_SOURCE_SYSTEMS_BY_CALLBACK_TYPE = {
+    **{callback_type: frozenset({"ECS", "DEVICE"}) for callback_type in _EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES},
+    "AGV_TASK_RESULT": frozenset({"AGV"}),
+    "CTU_BIN_MOVE_PROGRESS": frozenset({"CTU"}),
+    "CTU_BIN_MOVE_COMPLETED": frozenset({"CTU"}),
+    "CTU_BIN_MOVE_FAILED": frozenset({"CTU"}),
+}
 # H4 拒绝的机器可读原因码: client 可通过 reason_code 字段区分
 # 顶层字段违规 vs 其他 schema 校验失败 (用于埋点和告警)。
 _CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED_REASON_CODE = "CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED"
@@ -394,7 +443,25 @@ def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
     # 延迟 import: 避免 callback_ingress_service 模块加载时反向 import
     # `src.app.wms_integration.services.callback_normalizer`, 触发与 callback_normalizer.py 顶部
     # `from src.app.callback.utils import ...` 的循环 import (Phase 2 launch PR 修复后暴露)
-    return _wms_callback_normalizer.wms_execution_callback_normalizer.normalize(payload)
+    normalized_payload = _wms_callback_normalizer.wms_execution_callback_normalizer.normalize(payload)
+    callback_type = cast("str", normalized_payload["callback_type"])
+    _validate_external_callback_allow_list(payload, callback_type)
+    return normalized_payload
+
+
+def _validate_external_callback_allow_list(payload: JsonDict, callback_type: str) -> None:
+    """校验 Phase 3 external callback callback_type 与 source_system 矩阵。"""
+
+    if callback_type not in _EXTERNAL_CALLBACK_ALLOWED_TYPES:
+        raise ValueError(f"callback_type is not allow-listed: {callback_type}")
+
+    source_system = resolve_first_str(payload, ("source_system",))
+    if not source_system:
+        return
+
+    allowed_sources = _EXTERNAL_CALLBACK_SOURCE_SYSTEMS_BY_CALLBACK_TYPE.get(callback_type)
+    if allowed_sources is not None and source_system not in allowed_sources:
+        raise ValueError("source_system must match callback_type provider")
 
 
 def _validate_wms_rcs_execution_callback_payload(payload: JsonDict, callback_type: str) -> None:
