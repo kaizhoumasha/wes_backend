@@ -1,0 +1,20 @@
+{
+  "case_id": "duplicate",
+  "provider_code": "ECS",
+  "contract_version": "2026-07-03",
+  "expected_port": "DeviceEventPort.normalize_event",
+  "direction": "event",
+  "raw_callback": {
+    "event_type": "ECS_COMMAND_RESULT",
+    "data": {
+      "event_id": "evt-ecs-duplicate-001",
+      "command_code": "CMD-ECS-SUCCESS-001",
+      "duplicate": true
+    }
+  },
+  "expected_typed": {
+    "source_event_id": "evt-ecs-duplicate-001",
+    "command_code": "CMD-ECS-SUCCESS-001",
+    "dedupe_action": "ACK_ONLY"
+  }
+}

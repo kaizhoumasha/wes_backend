@@ -79,11 +79,14 @@ note: |
 | 超时 | query/effect 超时（验证 timeout_retry 退避） |
 | 重复事件 | 同 `source_event_id + payload_hash` 重复 callback（验证幂等合并） |
 | 缺 `event_id` | ECS event 缺 `event_id`（验证 ACK 但不推进归属，BC-08） |
+| 乱序事件 | 迟到 callback 必须进入 RECONCILING，不覆盖已推进状态 |
+| 断网 | ECS/WMS 链路不可用必须进入 RECONCILING，不静默成功 |
 
 **scenario runner 约束**：
 - scenario 必须基于 fixture，不依赖生产数据
 - scenario replay 必须验证 active projection diff、RuntimeTimeline 顺序、outbox/effect 幂等和 ReconciliationRecord 结果（主计划 §3.5.1 联调不变量）
 - 场景回放必须 deterministic（同输入同输出）
+- Phase 3 runner 使用 `IntegrationLabScenarioRunner`：先通过 `ExternalContractProfile` / `ProviderSimulatorRegistry` 校验 WMS/ECS sandbox profile 与 fixture case，再交给 `ScenarioRecorder` / `ScenarioReplayRunner` 断言完整链路 replay。
 
 ## 7. ScenarioRecorder / ScenarioReplayRunner（来源主计划 §3.5.1）
 
@@ -115,10 +118,11 @@ note: |
 1. ✅ simulator 和 sandbox 只能走正式 port contract（§3/§4/§5）
 2. ✅ 不允许业务代码直接依赖 simulator 实现（simulator 只通过 port contract 注册）
 3. ✅ fixture 可被 adapter contract tests 复用（§6 scenario + `tests/fixtures/external_contracts/wms/default`）
+4. ✅ Phase 3 `IntegrationLabScenarioRunner` 可跑通 WMS/ECS fixture-level 完整链路，覆盖正常、乱序、重复、超时、拒绝、断网场景，并断言 active projection diff、timeline、outbox/effect 幂等和 reconciliation 结果。
 
 ## 11. 后续 Phase
 
 | Phase | 任务 | 本基线锁定项 |
 | --- | --- | --- |
 | Phase 1 CEO-013 | ExternalContractProfile + provider simulator registry | WMS/ECS simulator、sandbox profile、contract fixture、scenario runner 可运行 |
-| Phase 3 | `scenario-replay-spec.md` | ScenarioRecorder / ScenarioReplayRunner 录制、脱敏、deterministic replay、断言矩阵 |
+| Phase 3 | `scenario-replay-spec.md` | ScenarioRecorder / ScenarioReplayRunner / IntegrationLabScenarioRunner 录制、脱敏、deterministic replay、断言矩阵 |

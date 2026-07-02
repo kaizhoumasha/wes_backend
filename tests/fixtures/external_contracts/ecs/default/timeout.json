@@ -1,0 +1,24 @@
+{
+  "case_id": "timeout",
+  "provider_code": "ECS",
+  "contract_version": "2026-07-03",
+  "expected_port": "DeviceCommandPort.receive_command",
+  "direction": "effect",
+  "raw_request": {
+    "command_code": "CMD-ECS-TIMEOUT-001",
+    "device_code": "ECS-SCANNER-01",
+    "capability_code": "SCAN"
+  },
+  "raw_response": {
+    "timeout": true,
+    "elapsed_seconds": 10
+  },
+  "expected_typed": {
+    "accepted": false,
+    "status": "TIMEOUT"
+  },
+  "expected_error": {
+    "code": "ECS_TIMEOUT",
+    "retryable": true
+  }
+}

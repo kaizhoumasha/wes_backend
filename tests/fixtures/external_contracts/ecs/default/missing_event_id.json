@@ -1,0 +1,21 @@
+{
+  "case_id": "missing_event_id",
+  "provider_code": "ECS",
+  "contract_version": "2026-07-03",
+  "expected_port": "DeviceEventPort.normalize_event",
+  "direction": "event",
+  "raw_callback": {
+    "event_type": "ECS_COMMAND_RESULT",
+    "data": {
+      "command_code": "CMD-ECS-MISSING-EVENT-ID-001"
+    }
+  },
+  "expected_typed": {
+    "advance_correlation": false,
+    "ack": true
+  },
+  "expected_error": {
+    "code": "MISSING_EVENT_ID",
+    "retryable": false
+  }
+}
