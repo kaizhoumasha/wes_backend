@@ -1794,6 +1794,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `ScenarioRecorder` / `ScenarioReplayRunner`：补齐脱敏录制、deterministic replay、timeline/outbox/projection hash/reconciliation reason 断言合同；本分支新增 `tests/resilience/fixtures/phase3_runtime_replay_fixture.json` 与显式 resilience replay 测试；生产数据源采集和 simulator fixture 仍待接入。
 - `RuntimeObservabilityRegistry`、`RuntimeToggleRegistry`、`RuntimeToggleReleaseGate`、`RuntimeBenchmarkGate`：补齐稳定 attributes 校验、observer 发射入口、WMS breaker transition instrumentation、WMS evidence persistence failure instrumentation、toggle owner/expiry/security-bypass 拦截、release toggle default-off/test_matrix evidence 发布阻塞和 Phase 3 benchmark 场景清单合同；runtime toggle release gate 已接入 `scripts/git-quality-gate.sh --check runtime-toggle-release` 和 quality profile；本分支补齐 `tests/load/test_runtime_inbox_claim_benchmark.py`、`test_conveyor_queue_writer_benchmark.py`、`test_ecs_status_command_benchmark.py`、`test_plane_snapshot_benchmark.py` 四个轻量 benchmark 命令；全链路 OpenTelemetry exporter 与生产规模 benchmark artifact 仍待接入。
 - WMS fulfillment 状态机补齐 4 类 timeout 事件合同，并修正 circuit breaker open 只阻断出站请求、不覆盖已在途 fulfillment 状态。
+- WMS/RCS external callback normalizer 补齐 provider/source 矩阵：`WMS_*` 只接受 `source_system=WMS`，`RCS_*` 只接受 `source_system=RCS`，避免跨 provider callback_type/source 混用。
 - `ExternalReferenceCatalog` 补齐 typed external reference 与 `source_version` drift 分类合同；GIN 索引和 WMS drift job 仍待接入。
 - full-box exchange 行为合同从 strict xfail 转为真实合同：验证 full-box 外部履约、typed evidence 与本地冲突进入 ReconciliationManager 的语义；RACK_BIN exchange 和生产 callback/projection 接入仍待补齐。
 
@@ -1813,6 +1814,8 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `uv run pytest tests/runtime/orchestration/test_phase3_recovery_policies.py tests/runtime/orchestration/test_phase3_p0_closure_contract.py tests/runtime/orchestration/test_phase3_operational_contracts.py -q`：15 passed
 - `uv run pytest tests/runtime/orchestration/test_phase3_operational_contracts.py tests/contracts/test_phase3_ops_contract_docs.py -q`：8 passed
 - `uv run pytest tests/wms_integration/test_circuit_breaker.py tests/wms_integration/test_wms_client.py -q`：40 passed
+- `uv run pytest tests/wms_integration/test_callback_normalizer.py -q`：33 passed
+- `uv run pytest tests/api/test_callback_external_api.py -q`：31 passed
 - `uv run pytest tests/architecture/test_git_quality_gate_architecture_profile.py -q`：2 passed
 - `uv run pytest tests/load/ -q`：4 passed
 - `uv run pytest tests/resilience/test_phase3_scenario_replay.py -q`：1 passed
@@ -2034,7 +2037,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | ENG-003 | ✅ 已完成 | WorkLine manifest activation validator，防止已知 queue_code typo 污染 active projection |
 | ENG-004 | 🟡 部分完成 | 11 态状态机、终态保护、CB / late callback 合同已落地；本分支补齐 4 类 timeout 状态机转移和 CB open 不覆盖在途状态合同；出站 effect open/half-open 集成矩阵仍待补齐 |
 | ENG-006 | ✅ 已完成 | `ActiveObjectRegistry` 跨投影 active 归属仲裁读模型 |
-| ENG-008 | 🟡 部分完成 | callback body HMAC、nonce 原子消费、body hash、`API_PATH` 前缀和 fail-closed 已落地；provider/source allow-list 全量矩阵仍待补齐 |
+| ENG-008 | 🟡 部分完成 | callback body HMAC、nonce 原子消费、body hash、`API_PATH` 前缀和 fail-closed 已落地；本分支补齐 WMS/RCS provider/source 矩阵（`WMS_*`→`WMS`, `RCS_*`→`RCS`）；ECS/device 等全量 callback_type allow-list 矩阵仍待补齐 |
 | ENG-009 | 🟡 部分完成 | RuntimeInbox source event 幂等、payload hash 冲突、唯一冲突重读和审计已覆盖；fulfillment / device event / reconciliation 全域统一矩阵仍待补齐 |
 | ENG-010 | 🟡 部分完成 | typed evidence envelope 已落地；本分支补齐 typed `ExternalReference` catalog 与 source-version drift 分类合同；GIN 索引和 WMS drift job 仍待补齐 |
 | ENG-011 | ✅ 已完成 | RuntimeInbox backpressure、死信/人工重放审计、DeviceCommand 可过期 lease 和 recovery 策略 |

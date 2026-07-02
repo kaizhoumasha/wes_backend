@@ -70,6 +70,45 @@ def test_callback_normalizer_rejects_invalid_wms_rcs_source_system() -> None:
         WmsExecutionCallbackNormalizer().normalize(payload)
 
 
+@pytest.mark.parametrize(
+    ("callback_type", "source_system"),
+    [
+        ("WMS_RACK_TASK_RESULT", "WMS"),
+        ("RCS_RACK_TASK_RESULT", "RCS"),
+        ("WMS_FULL_BOX_EXCHANGE_RESULT", "WMS"),
+        ("RCS_FULL_BOX_EXCHANGE_RESULT", "RCS"),
+    ],
+)
+def test_callback_normalizer_accepts_provider_source_matrix(callback_type: str, source_system: str) -> None:
+    if "FULL_BOX" in callback_type:
+        payload = _full_box_payload(callback_type=callback_type, source_system=source_system)
+    else:
+        payload = _rack_payload(callback_type=callback_type, status="SUCCEEDED", source_system=source_system)
+
+    normalized = WmsExecutionCallbackNormalizer().normalize(payload)
+
+    assert normalized["callback_type"] == callback_type
+
+
+@pytest.mark.parametrize(
+    ("callback_type", "source_system"),
+    [
+        ("WMS_RACK_TASK_RESULT", "RCS"),
+        ("RCS_RACK_TASK_RESULT", "WMS"),
+        ("WMS_FULL_BOX_EXCHANGE_RESULT", "RCS"),
+        ("RCS_FULL_BOX_EXCHANGE_RESULT", "WMS"),
+    ],
+)
+def test_callback_normalizer_rejects_provider_source_mismatch(callback_type: str, source_system: str) -> None:
+    if "FULL_BOX" in callback_type:
+        payload = _full_box_payload(callback_type=callback_type, source_system=source_system)
+    else:
+        payload = _rack_payload(callback_type=callback_type, status="SUCCEEDED", source_system=source_system)
+
+    with pytest.raises(ValueError, match="source_system must match callback_type provider"):
+        WmsExecutionCallbackNormalizer().normalize(payload)
+
+
 def _rack_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "callback_type": "WMS_RACK_ARRIVED",

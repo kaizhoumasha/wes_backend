@@ -516,6 +516,7 @@ class TestCallbackExternalAPI:
                     body=create_wms_external_payload(
                         callback_type="RCS_RACK_TASK_RESULT",
                         dispatch_key="external:smt:release-001:RACK_OPERATION:2",
+                        source_system="RCS",
                         task_status="FAILED",
                         status=None,
                         reason_code="RCS_RACK_OPERATION_FAILED",
