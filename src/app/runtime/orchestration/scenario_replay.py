@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
 
@@ -81,6 +82,89 @@ class ScenarioRecorder:
             )
         return self.record(scenario_id=scenario_id, events=events)
 
+    def record_trace_query_result(self, *, scenario_id: str, trace_result: Any) -> ScenarioRecording:
+        """Build a replay recording from the production trace aggregation view."""
+
+        trace = getattr(trace_result, "trace", None)
+        trace_id = _text(getattr(trace, "trace_id", None))
+        request_id = _text(getattr(trace, "request_id", None))
+        events: list[ScenarioEvent] = []
+
+        for inbox in getattr(trace_result, "inboxes", ()) or ():
+            source_event_id = (
+                _text(getattr(inbox, "source_event_id", None)) or f"inbox-{getattr(inbox, 'id', 'unknown')}"
+            )
+            payload = _payload_from(inbox)
+            payload.setdefault("source_event_id", source_event_id)
+            payload.setdefault("state", _text(getattr(inbox, "status", None)) or "RECEIVED")
+            _add_trace_payload(payload, trace_id=trace_id, request_id=request_id)
+            events.append(
+                ScenarioEvent(
+                    event_id=source_event_id,
+                    kind="runtime_inbox",
+                    occurred_at=_occurred_at(inbox),
+                    payload=payload,
+                )
+            )
+
+        for command in getattr(trace_result, "commands", ()) or ():
+            command_code = (
+                _text(getattr(command, "command_code", None)) or f"command-{getattr(command, 'id', 'unknown')}"
+            )
+            payload = _payload_from(command)
+            payload.setdefault("command_code", command_code)
+            payload.setdefault("effect_key", f"device-command:{command_code}")
+            payload.setdefault("state", _text(getattr(command, "status", None)) or "UNKNOWN")
+            provider_code = _text(getattr(command, "provider_code", None))
+            if provider_code:
+                payload.setdefault("provider_code", provider_code)
+            _add_trace_payload(payload, trace_id=trace_id, request_id=request_id)
+            events.append(
+                ScenarioEvent(
+                    event_id=command_code,
+                    kind="device_command",
+                    occurred_at=_occurred_at(command),
+                    payload=payload,
+                )
+            )
+
+        for outbox in getattr(trace_result, "outboxes", ()) or ():
+            dispatch_key = _text(getattr(outbox, "dispatch_key", None)) or f"outbox-{getattr(outbox, 'id', 'unknown')}"
+            payload = _payload_from(outbox)
+            payload.setdefault("effect_key", dispatch_key)
+            payload.setdefault("state", _text(getattr(outbox, "status", None)) or "UNKNOWN")
+            dispatch_type = _text(getattr(outbox, "dispatch_type", None))
+            if dispatch_type:
+                payload.setdefault("dispatch_type", dispatch_type)
+            _add_trace_payload(payload, trace_id=trace_id, request_id=request_id)
+            events.append(
+                ScenarioEvent(
+                    event_id=dispatch_key,
+                    kind="runtime_outbox",
+                    occurred_at=_occurred_at(outbox),
+                    payload=payload,
+                )
+            )
+
+        for timeline in getattr(trace_result, "timelines", ()) or ():
+            timeline_id = _text(getattr(timeline, "event_id", None)) or f"timeline-{getattr(timeline, 'id', 'unknown')}"
+            payload = _payload_from(timeline)
+            action_type = _text(getattr(timeline, "action_type", None)) or _text(payload.get("canonical_event_type"))
+            payload.setdefault(
+                "state", _text(getattr(timeline, "to_status", None)) or _text(getattr(timeline, "status", None))
+            )
+            _add_trace_payload(payload, trace_id=trace_id, request_id=request_id)
+            events.append(
+                ScenarioEvent(
+                    event_id=timeline_id,
+                    kind=action_type or "runtime_timeline",
+                    occurred_at=_occurred_at(timeline),
+                    payload=payload,
+                )
+            )
+
+        return self.record(scenario_id=scenario_id, events=events)
+
     def _sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         sanitized: dict[str, Any] = {}
         for key, value in payload.items():
@@ -91,6 +175,42 @@ class ScenarioRecorder:
             else:
                 sanitized[key] = value
         return sanitized
+
+
+def _payload_from(record: Any) -> dict[str, Any]:
+    for attr in ("payload_json", "payload", "trace_json"):
+        payload = getattr(record, attr, None)
+        if isinstance(payload, Mapping):
+            return dict(payload)
+    return {}
+
+
+def _add_trace_payload(payload: dict[str, Any], *, trace_id: str | None, request_id: str | None) -> None:
+    if trace_id:
+        payload.setdefault("trace_id", trace_id)
+    if request_id:
+        payload.setdefault("request_id", request_id)
+
+
+def _text(value: object) -> str | None:
+    if value is None:
+        return None
+    raw = getattr(value, "value", value)
+    text = str(raw).strip()
+    return text or None
+
+
+def _occurred_at(record: Any) -> str:
+    for attr in ("occurred_at", "received_at", "created_at", "updated_at", "finished_at"):
+        value = getattr(record, attr, None)
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=UTC)
+            return value.isoformat().replace("+00:00", "Z")
+        text = _text(value)
+        if text:
+            return text
+    return "1970-01-01T00:00:00Z"
 
 
 class ScenarioReplayRunner:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from src.app.runtime.orchestration.scenario_replay import (
     ScenarioEvent,
@@ -62,3 +63,69 @@ def test_phase3_simulator_fixture_records_and_replays_deterministically() -> Non
         "wms_reject:sim-wms-001",
     )
     assert result.reconciliation_reasons == ("late_device_result", "wms_business_reject")
+
+
+def test_phase3_trace_query_result_records_production_replay_source() -> None:
+    from src.app.runtime.orchestration.services.trace.trace_query_service import TraceQueryResult
+    from src.app.workline.trace_context import TraceContext
+
+    trace_result = TraceQueryResult(
+        trace=TraceContext.from_request(request_id="REQ-PROD-1", trace_id="trace-prod-1"),
+        inboxes=[
+            SimpleNamespace(
+                id=11,
+                source_event_id="evt-prod-1",
+                status="RECEIVED",
+                received_at="2026-07-02T10:00:01Z",
+                payload_json={
+                    "object_key": "pkg:PKG-PROD-0001",
+                    "state": "RECEIVED",
+                    "pkg_code": "PKG-PROD-0001",
+                    "bin_code": "BIN-PROD-01",
+                },
+            )
+        ],
+        commands=[
+            SimpleNamespace(
+                command_code="CMD-PROD-1",
+                status="ACKED",
+                provider_code="ECS",
+                created_at="2026-07-02T10:00:02Z",
+            )
+        ],
+        outboxes=[
+            SimpleNamespace(
+                dispatch_key="device-command:CMD-PROD-1",
+                dispatch_type="DEVICE_COMMAND",
+                status="SENT",
+                created_at="2026-07-02T10:00:03Z",
+                payload_json={"object_key": "pkg:PKG-PROD-0001", "state": "IN_FLIGHT"},
+            )
+        ],
+        timelines=[
+            SimpleNamespace(
+                id=31,
+                action_type="callback_out_of_order",
+                to_status="RECONCILING",
+                created_at="2026-07-02T10:00:04Z",
+                payload_json={"object_key": "pkg:PKG-PROD-0001", "reason": "late_device_result"},
+            )
+        ],
+    )
+
+    recording = ScenarioRecorder().record_trace_query_result(
+        scenario_id="phase3-production-trace",
+        trace_result=trace_result,
+    )
+    result = ScenarioReplayRunner().replay(recording)
+
+    assert recording.events[0].payload["pkg_code"] == "***0001"
+    assert recording.events[0].payload["bin_code"] == "BIN***"
+    assert result.timeline == (
+        "runtime_inbox:evt-prod-1",
+        "device_command:CMD-PROD-1",
+        "runtime_outbox:device-command:CMD-PROD-1",
+        "callback_out_of_order:timeline-31",
+    )
+    assert result.outbox_effect_keys == ("device-command:CMD-PROD-1",)
+    assert result.reconciliation_reasons == ("late_device_result",)
