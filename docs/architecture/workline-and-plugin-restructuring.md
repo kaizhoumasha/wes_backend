@@ -246,9 +246,9 @@ P0 必须支撑以下能力（每条都是验收项）：
 后续实现阶段验收（不作为 P0 文档验收，但必须在对应 Phase 门禁中落地）：
 
 - [ ] plane 接口安全门禁：`biz:workline:view-plane-scene` / `biz:workline:view-plane-snapshot` + 行级过滤 + 脱敏 + 审计。🟡 PR #73 已落地 `PlaneSceneView` / `PlaneSnapshot` 读模型和 route，安全门禁仍待补齐。
-- [ ] External callback HMAC body 签名 + idempotency 复合主键 + typed `ExternalReference` 全部就绪。🟡 PR #73 已落地 body HMAC、nonce、payload hash、`API_PATH` 感知校验和 typed evidence envelope；typed `ExternalReference` catalog / drift 仍待补齐。
+- [ ] External callback HMAC body 签名 + idempotency 复合主键 + typed `ExternalReference` 全部就绪。🟡 PR #73 已落地 body HMAC、nonce、payload hash、`API_PATH` 感知校验和 typed evidence envelope；本分支补齐 `ExternalReferenceCatalog` 与 source-version drift 分类合同；GIN 索引和 WMS drift job 仍待补齐。
 - [x] RuntimeInbox 支持 ACK-before-processing 后的重试、死信、人工重放和幂等审计。
-- [ ] DeviceCommand 调度策略支持设备能力选择、优先级、deadline、串行/限流、取消和状态快照 TTL。🟡 PR #73 已落地可过期 command lease；`DeviceDispatchPolicy` / `DeviceRuntime` TTL 全量调度门禁仍待补齐。
+- [ ] DeviceCommand 调度策略支持设备能力选择、优先级、deadline、串行/限流、取消和状态快照 TTL。🟡 PR #73 已落地可过期 command lease；本分支补齐 `DeviceDispatchPolicy` 策略合同与 fresh IDLE、stale/UNKNOWN、RUNNING deadline、HOLD/RECONCILING 冻结测试；`DeviceRuntime` TTL、ECS status probe 和 DeviceCommandGateway 热路径接入仍待补齐。
 
 ---
 
@@ -1772,7 +1772,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | Phase 1 Packet C Runtime 骨架（CEO-007/008/010/011 + H5） | ✅ **已完成** | [#64](https://github.com) Packet C (2026-06-27) | 7 个 runtime core 实体（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog + IdempotencyKey） + `ConveyorQueueMembership` + DeviceCommand ECS contract + device FK ring dissolve + H5 IdempotencyGuard + callback / handling / rack 接入 runtime/orchestration | — |
 | Phase 1 Packet D Capability 边界 + 剩余 4 WMS port（CEO-009） | ✅ **已完成 (PR Packet D)** | Packet D (2026-06-27) | 4 剩余 WMS port（WmsDocumentPort / WmsFulfillmentPort / WmsEventPort / WmsReconciliationQueryPort）全部 7/7 落地 + InboundNormalizerRegistry + `RuntimeCapabilityContext.get_inbound_normalizer()` + InboundNormalizerProfile 3 Pydantic validators + R-I3c 静态扫描 + import-linter capability-isolation contract | — |
 | Phase 2 Runtime/Orchestration 迁移与 WorkLine 清空 | ✅ **已完成** | launch PR `8602c33b` + 阶段 1-6 burn-down（PR #70 `v0.10.2.1`）+ F-1/F-2 收尾（PR #71 `v0.10.3.0`） | 阶段 1-6 + F-1/F-2 收尾全完成；`WorkLine 不再拥有运行状态` 门禁完全关闭（2 个 xfail 契约转硬绿） | 详见 §10.3 |
-| Phase 3 执行安全与恢复能力补全 | 🟡 **部分完成** | [#73](https://github.com/kaizhoumasha/wes_backend/pull/73) `v0.10.4.0` (2026-07-02) | callback body HMAC/nonce、RuntimeInbox 幂等/重放/backpressure、ReconciliationManager owner-scoped 决议、ActiveObjectRegistry、DeviceCommand lease、WMS fulfillment 状态机/typed evidence、WorkLine plane/manifest、ops contracts | P0 E2E 闭环、DeviceDispatchPolicy/DeviceRuntime TTL、Conveyor queue writer、FULL_BOX/RACK exchange、WMS breaker retention/metrics、benchmark、ScenarioReplayRunner、runtime instrumentation/toggle enforcement |
+| Phase 3 执行安全与恢复能力补全 | 🟡 **部分完成（本分支补齐关键合同与两条热路径）** | [#73](https://github.com/kaizhoumasha/wes_backend/pull/73) `v0.10.4.0` (2026-07-02) + 本分支 Phase 3 closure slice | callback body HMAC/nonce、RuntimeInbox 幂等/重放/backpressure、ReconciliationManager owner-scoped 决议、ActiveObjectRegistry、DeviceCommand lease、WMS fulfillment 状态机/typed evidence、WorkLine plane/manifest、ops contracts；本分支新增并接入 DeviceDispatchPolicy 到 DeviceCommandGateway 预检、落地 DB-backed ConveyorQueueMembership writer service，并补齐 ScenarioRecorder/ReplayRunner、RuntimeObservabilityRegistry、RuntimeToggleRegistry、RuntimeBenchmarkGate、ExternalReferenceCatalog、timeout 转移和 full-box 合同 | 生产 P0 E2E、持久 DeviceRuntime 投影/metrics、RACK exchange、WMS breaker retention/metrics、tests/load benchmark、IntegrationLab simulator、OpenTelemetry instrumentation、toggle 发布门禁 |
 | Phase 4 后续子领域 | ⏳ **未启动** | — | — | MaterialLocationQuery / WorklineActiveObjects / 入库能力目标态重建 / SMT-NG-WMS 对账 |
 | Phase 5 Legacy 删除与收尾 | ⏳ **未启动** | — | — | 双 lane：技术残留清理（Phase 3 门禁后）+ 业务承载 legacy 清理（Phase 4 能力验收后） |
 
@@ -1787,6 +1787,16 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - WorkLine plane 落地 `PlaneSceneView` / `PlaneSnapshot` 读模型、scene/snapshot 分离 route 和 manifest activation validator。
 - 运维合同新增 `docs/contracts/observability-contract.md` 与 `docs/contracts/runtime-toggle-governance.md`，明确 runtime observability signal、toggle owner/expiry/scope/default/rollback/test matrix 和安全绕过禁令。
 
+**Phase 3 本分支新增合同与热路径实现（2026-07-02 同步）**：
+
+- `DeviceDispatchPolicy`：补齐 fresh IDLE 放行、过期/未知状态短退避、RUNNING deadline 有界等待、session HOLD/RECONCILING/CLOSED 冻结或取消的纯策略合同，并已接入 `DeviceCommandGateway.dispatch` 热路径；fresh busy/hard-state 本地快照会短路，stale/unknown 本地快照继续走 ECS realtime status probe。
+- `ConveyorQueueWriter`：补齐同 queue 幂等重放、跨 queue 冲突进入 RECONCILING、placeholder resolve、未知 queue strict-mode 阻断的写入决策合同，并新增 `ConveyorQueueMembershipRepository` / `ConveyorQueueMembershipWriterService`，覆盖 ACTIVE 创建、幂等复用、placeholder 原地解析、RECONCILING 标记、strict-mode unknown queue 阻断和唯一冲突后的 existing 重读。
+- `ScenarioRecorder` / `ScenarioReplayRunner`：补齐脱敏录制、deterministic replay、timeline/outbox/projection hash/reconciliation reason 断言合同；生产数据源采集和 resilience fixture 仍待接入。
+- `RuntimeObservabilityRegistry`、`RuntimeToggleRegistry`、`RuntimeBenchmarkGate`：补齐稳定 attributes 校验、toggle owner/expiry/security-bypass 拦截和 Phase 3 benchmark 场景清单合同；运行时 instrumentation、发布阻塞和 `tests/load/` 基准脚本仍待接入。
+- WMS fulfillment 状态机补齐 4 类 timeout 事件合同，并修正 circuit breaker open 只阻断出站请求、不覆盖已在途 fulfillment 状态。
+- `ExternalReferenceCatalog` 补齐 typed external reference 与 `source_version` drift 分类合同；GIN 索引和 WMS drift job 仍待接入。
+- full-box exchange 行为合同从 strict xfail 转为真实合同：验证 full-box 外部履约、typed evidence 与本地冲突进入 ReconciliationManager 的语义；RACK_BIN exchange 和生产 callback/projection 接入仍待补齐。
+
 **Phase 3 PR #73 回归证据**：
 
 - `uv run pytest tests/ -q`：2929 passed, 35 skipped, 4 xfailed
@@ -1794,6 +1804,19 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `uv run ruff check .`：All checks passed
 - `uv run bandit -r src/ -q`：安全扫描通过
 - `./scripts/git-quality-gate.sh --profile quality`：通过
+
+**Phase 3 本分支验证证据（2026-07-02）**：
+
+- `uv run pytest tests/ -q`：1544 passed, 5 skipped, 1 xfailed, 3 warnings
+- `uv run pytest tests/runtime/orchestration/test_device_command_gateway.py -q`：8 passed
+- `uv run pytest tests/runtime/orchestration/test_conveyor_queue_membership_writer_service.py -q`：6 passed
+- `uv run pytest tests/runtime/orchestration/test_phase3_recovery_policies.py tests/runtime/orchestration/test_phase3_p0_closure_contract.py tests/runtime/orchestration/test_phase3_operational_contracts.py -q`：14 passed
+- `uv run ruff check .`：All checks passed
+- `uv run ruff format --check .`：690 files already formatted
+- `./scripts/architecture-guardrails.sh --phase phase1`：violations 0, warnings 0
+- `./scripts/import-linter-check.sh`：Contracts: 1 kept, 0 broken
+- `./scripts/git-quality-gate.sh --profile quality`：通过
+- `npx gitnexus detect-changes --scope all`：tracked changes risk low，affected processes 0
 
 **回归基线**（2026-06-27 在 develop @ `5b67797` 验证）：
 
@@ -1997,43 +2020,48 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | **ENG-022** Typed ops/release toggle governance | S | `src/core/`, `docs/contracts/runtime-toggle-governance.md` | toggle owner/expiry/scope/default/rollback/test matrix 校验；过期 toggle 阻塞发布；禁止绕过安全/幂等/evidence |
 | **DESIGN-001..005** 5 项 design 修复（schema_version、scene/snapshot 独立、目标态枚举、label/code 分离、极态清单） | 4×S + 1×M | `src/app/workline/v1/plane.py`, `src/app/workline/schemas/` | 单元测试 |
 
-**Phase 3 PR #73 任务状态同步（2026-07-02）**：
+**Phase 3 任务状态同步（2026-07-02）**：
 
-| 任务 | 状态 | PR #73 已完成范围 |
+| 任务 | 状态 | PR #73 / 本分支完成范围 |
 | --- | --- | --- |
 | ENG-002 | ✅ 已完成 | `ReconciliationManager` owner-scoped 决议、hold/freeze action、人工恢复审计最小合同 |
 | ENG-003 | ✅ 已完成 | WorkLine manifest activation validator，防止已知 queue_code typo 污染 active projection |
-| ENG-004 | 🟡 部分完成 | 11 态状态机、终态保护、CB / late callback 合同已落地；4 类 timeout 与出站阻塞全量集成矩阵仍待补齐 |
+| ENG-004 | 🟡 部分完成 | 11 态状态机、终态保护、CB / late callback 合同已落地；本分支补齐 4 类 timeout 状态机转移和 CB open 不覆盖在途状态合同；出站 effect open/half-open 集成矩阵仍待补齐 |
 | ENG-006 | ✅ 已完成 | `ActiveObjectRegistry` 跨投影 active 归属仲裁读模型 |
 | ENG-008 | 🟡 部分完成 | callback body HMAC、nonce 原子消费、body hash、`API_PATH` 前缀和 fail-closed 已落地；provider/source allow-list 全量矩阵仍待补齐 |
 | ENG-009 | 🟡 部分完成 | RuntimeInbox source event 幂等、payload hash 冲突、唯一冲突重读和审计已覆盖；fulfillment / device event / reconciliation 全域统一矩阵仍待补齐 |
-| ENG-010 | 🟡 部分完成 | typed evidence envelope 已落地；typed `ExternalReference` catalog、GIN 索引和 WMS drift job 仍待补齐 |
+| ENG-010 | 🟡 部分完成 | typed evidence envelope 已落地；本分支补齐 typed `ExternalReference` catalog 与 source-version drift 分类合同；GIN 索引和 WMS drift job 仍待补齐 |
 | ENG-011 | ✅ 已完成 | RuntimeInbox backpressure、死信/人工重放审计、DeviceCommand 可过期 lease 和 recovery 策略 |
+| ENG-012 | 🟡 部分完成 | 本分支补齐 `DeviceDispatchPolicy` 纯策略合同并接入 `DeviceCommandGateway.dispatch` 热路径：fresh busy/hard-state 本地快照短路，stale/UNKNOWN 保留 ECS status probe，deadline 到期暴露 `runtime_hold_required` decision detail；持久 DeviceRuntime 投影、生产 metrics 和全量集成矩阵仍待补齐 |
 | ENG-013 | ✅ 已完成 | RECONCILING 软件禁发、投影冻结和 owner-scoped 人工恢复审计合同 |
+| ENG-016 | 🟡 部分完成 | 本分支补齐 `ConveyorQueueWriter` 写入决策合同，并新增 runtime DB-backed `ConveyorQueueMembershipWriterService` / repository，覆盖幂等重放、placeholder resolve、跨队列 RECONCILING、strict-mode unknown queue 和 IntegrityError existing 重读；PostgreSQL 高并发基准与 `tests/load/` 性能数据仍待补齐 |
+| ENG-017 | 🟡 部分完成 | 本分支将 full-box exchange 合同从 strict xfail 转为真实合同，覆盖外部履约 evidence 与本地冲突进入 reconciliation；RACK_BIN exchange 与生产 callback/projection 接入仍待补齐 |
 | ENG-018 | 🟡 部分完成 | typed evidence envelope 与 observability contract 已落地；retention/archive、breaker OPEN/HALF_OPEN 指标和 evidence 写入失败指标仍待补齐 |
-| ENG-021 | 🟡 部分完成 | `docs/contracts/observability-contract.md` 与契约测试已落地；运行时 OpenTelemetry instrumentation 仍待补齐 |
-| ENG-022 | 🟡 部分完成 | `docs/contracts/runtime-toggle-governance.md` 与契约测试已落地；owner/expiry runtime validator、发布阻塞和安全门禁强制执行仍待补齐 |
+| ENG-019 | 🟡 部分完成 | 本分支新增 `RuntimeBenchmarkGate` 必需场景清单合同，覆盖 RuntimeInbox claim、queue writer、ECS status command 和 plane snapshot；`tests/load/` 基准脚本与性能数据仍待补齐 |
+| ENG-020 | 🟡 部分完成 | 本分支新增 `ScenarioRecorder` / `ScenarioReplayRunner` 脱敏录制和 deterministic replay 合同；生产录制源、simulator fixture 和 resilience 目录回放仍待补齐 |
+| ENG-021 | 🟡 部分完成 | `docs/contracts/observability-contract.md` 与契约测试已落地；本分支新增 `RuntimeObservabilityRegistry` 稳定 attributes 校验；运行时 OpenTelemetry instrumentation 仍待补齐 |
+| ENG-022 | 🟡 部分完成 | `docs/contracts/runtime-toggle-governance.md` 与契约测试已落地；本分支新增 `RuntimeToggleRegistry` owner/expiry/security-bypass validator；发布阻塞和安全门禁强制执行仍待补齐 |
 | DESIGN-001..005 | ✅ 已完成 | plane scene/snapshot 独立读模型、schema version、label/code 分离和极态展示合同 |
 
 **Phase 3 完成门禁**：
 
-- [ ] P0 最小可运行闭环：以「分拣机入料 1 个料箱 → ECS 扫码 → WES 决策投箱 → 通知 WMS PKG 绑定 → PlaneSnapshot 可观察」为验证锚点，跑通 WorkLine manifest -> ExecutionSession -> RuntimeInbox -> RuntimeIntentLog -> DeviceCommand / WMS fulfillment -> PlaneSnapshot -> RECONCILING 链路；端到端 P95 < 30s；任一异常路径（ECS 超时、WMS 拒绝、callback 乱序）必须落入 RECONCILING 而非静默失败。🟡 PR #73 已完成关键基础合同，端到端闭环仍待补齐。
+- [ ] P0 最小可运行闭环：以「分拣机入料 1 个料箱 → ECS 扫码 → WES 决策投箱 → 通知 WMS PKG 绑定 → PlaneSnapshot 可观察」为验证锚点，跑通 WorkLine manifest -> ExecutionSession -> RuntimeInbox -> RuntimeIntentLog -> DeviceCommand / WMS fulfillment -> PlaneSnapshot -> RECONCILING 链路；端到端 P95 < 30s；任一异常路径（ECS 超时、WMS 拒绝、callback 乱序）必须落入 RECONCILING 而非静默失败。🟡 PR #73 已完成关键基础合同；本分支新增 deterministic P0 closure 合同测试和 ECS timeout / WMS reject 进入 reconciliation 的合同；生产热路径端到端仍待补齐。
 - [x] RECONCILING 不再是黑洞状态；owner-scoped resolution decision 有测试覆盖，且 ReconciliationManager 不直接写 owner 状态。
 - [x] WorkLine 启动时已知 queue_code typo 不会污染 active projection。
-- [ ] 11 态机覆盖所有可观察转移。🟡 PR #73 已覆盖 11 态枚举、终态保护和核心 CB / late callback 语义；4 类 timeout 与全量可观察转移矩阵仍待补齐。
+- [ ] 11 态机覆盖所有可观察转移。🟡 PR #73 已覆盖 11 态枚举、终态保护和核心 CB / late callback 语义；本分支补齐 4 类 timeout 状态机合同；全量出站/入站可观察转移矩阵仍待补齐。
 - [ ] CB `open/half-open` 只阻断出站 effect；late callback 不得被标记为 `BLOCKED_BY_CB`，必须经 RuntimeInbox 幂等合并 evidence，冲突时进入 RECONCILING。🟡 PR #73 已覆盖 late callback 入 RuntimeInbox / evidence 合并合同；出站 effect open/half-open 集成矩阵仍待补齐。
 - [x] External callback 鉴权从"字段级"升级为"body 完整性级"，覆盖 WMS/RCS/ECS/device 的统一校验路径。
 - [ ] idempotency 跨域语义统一，覆盖 callback / fulfillment / device_command / device_event / reconciliation。🟡 PR #73 已覆盖 callback / RuntimeInbox source event 幂等与 payload hash conflict；全域 409 + 审计矩阵仍待补齐。
 - [x] RECONCILING 具备软件禁发、投影冻结和人工恢复审计。
 - [x] DeviceCommand lease 与 RuntimeInbox backpressure 已覆盖。
-- [ ] DeviceDispatchPolicy 与 DeviceRuntime TTL 已覆盖
-- [ ] Conveyor queue writer 并发、幂等、诊断和严格模式已覆盖 PostgreSQL 语义
-- [ ] 满箱/换箱/换架不再按普通 trusted callback 完成处理
+- [ ] DeviceDispatchPolicy 与 DeviceRuntime TTL 已覆盖。🟡 本分支补齐 DeviceDispatchPolicy 纯策略合同；DeviceRuntime TTL、ECS status probe 和 dispatch 热路径接入仍待补齐。
+- [ ] Conveyor queue writer 并发、幂等、诊断和严格模式已覆盖 PostgreSQL 语义。🟡 本分支补齐 writer 决策合同；PostgreSQL 行级锁/upsert 与 IntegrityError 重读仍待补齐。
+- [ ] 满箱/换箱/换架不再按普通 trusted callback 完成处理。🟡 本分支将 full-box exchange 合同转为真实合同；RACK_BIN exchange 与生产 callback/projection 接入仍待补齐。
 - [ ] WMS breaker/evidence、DeviceCommand ACK age、RuntimeInbox/Outbox 等关键指标已纳入观测口径。🟡 PR #73 已落地 typed evidence envelope 与 observability contract；运行时指标与 retention/archive 仍待补齐。
 - [ ] IntegrationLab 能跑通 WMS/ECS simulator 的完整链路和乱序、重复、超时、拒绝、断网 fixture
-- [ ] ScenarioReplayRunner 能 deterministic 复现关键异常并断言 active projection diff、timeline、outbox/effect 幂等和 reconciliation 结果
+- [ ] ScenarioReplayRunner 能 deterministic 复现关键异常并断言 active projection diff、timeline、outbox/effect 幂等和 reconciliation 结果。🟡 本分支补齐纯 replay 合同；生产录制源、simulator fixture 和 resilience 回放仍待补齐。
 - [x] Observability contract 覆盖 WMS/ECS HTTP、callback normalize、RuntimeInbox claim、RuntimeIntentLog dispatch、DeviceCommand ACK/RESULT 和 replay runner。
-- [ ] Typed toggle 清单无过期项；任何 toggle 都不能绕过 IDLE 准入、HMAC、idempotency、evidence 和 RuntimeHold。🟡 PR #73 已落地治理合同；runtime validator、过期阻塞和发布门禁强制执行仍待补齐。
+- [ ] Typed toggle 清单无过期项；任何 toggle 都不能绕过 IDLE 准入、HMAC、idempotency、evidence 和 RuntimeHold。🟡 PR #73 已落地治理合同；本分支补齐 runtime validator 合同；发布阻塞和安全门禁强制执行仍待补齐。
 
 ### 10.5 Phase 4: 后续子领域
 

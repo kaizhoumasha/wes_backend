@@ -13,6 +13,7 @@ runtime/orchestration/services/。本文件锁定迁入后的 runtime 行为契�
 
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -25,6 +26,7 @@ from src.app.runtime.orchestration.services.device_command_gateway import (
     _DeviceCommandGovernanceError,
     device_command_gateway,
 )
+from src.utils.timezone import timezone
 
 
 def test_module_relocated_to_runtime_orchestration():
@@ -162,3 +164,56 @@ async def test_dispatch_raises_runtime_error_on_ack_timeout():
     ):
         with pytest.raises(RuntimeError, match="OUTBOX_ACK_TIMEOUT"):
             await device_command_gateway.dispatch(db=object(), outbox=outbox)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_uses_policy_wait_for_running_device_before_http_post():
+    """RUNNING 设备未到 deadline 时必须走 DeviceDispatchPolicy 的有界等待决策。"""
+
+    now = timezone.now_for_db()
+    device = SimpleNamespace(
+        device_code="DEV-BUSY",
+        device_status="running",
+        maintenance_mode=False,
+        current_command_id=777,
+        capabilities_json={
+            "supported_command_types": ["SCAN"],
+            "status_snapshot_ttl_ms": 1000,
+        },
+        host="10.0.0.2",
+        port=8080,
+        updated_at=now,
+    )
+    outbox = SimpleNamespace(
+        target_code="DEV-BUSY",
+        payload_json={
+            "command_code": "CMD-BUSY",
+            "task_type": "SCAN",
+            "dispatch_deadline_at": (now + timedelta(seconds=10)).isoformat(),
+        },
+        session_id=1,
+        dispatch_key="device-command:CMD-BUSY",
+    )
+
+    async_client_mock = AsyncMock()
+    async_client_mock.get = AsyncMock(side_effect=AssertionError("policy wait should happen before ECS status probe"))
+    async_client_mock.post = AsyncMock(return_value=SimpleNamespace(status_code=200, text=""))
+    async_client_mock.__aenter__ = AsyncMock(return_value=async_client_mock)
+    async_client_mock.__aexit__ = AsyncMock(return_value=None)
+
+    with (
+        _patched_get_device(device),
+        patch(
+            "src.app.device.repositories.command_repository.DeviceCommandRepository.get_by_command_code",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("httpx.AsyncClient", return_value=async_client_mock),
+    ):
+        with pytest.raises(_DeviceCommandGovernanceError) as exc_info:
+            await device_command_gateway.dispatch(db=object(), outbox=outbox)
+
+    error = exc_info.value
+    assert error.code == "DEVICE_STATUS_PRECHECK_WAIT"
+    assert error.detail["policy_decision"] == "WAIT_FOR_IDLE"
+    assert error.detail["reason"] == "DEVICE_BUSY"
+    async_client_mock.post.assert_not_called()

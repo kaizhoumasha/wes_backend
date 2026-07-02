@@ -1,5 +1,11 @@
 """Runtime/orchestration service helpers."""
 
+from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+    ConveyorQueueMembershipWriteResult,
+    ConveyorQueueMembershipWriterService,
+    ConveyorQueueWriteBlocked,
+    conveyor_queue_membership_writer_service,
+)
 from src.app.runtime.orchestration.services.idempotency_guard import (
     ClaimResult,
     IdempotencyConflict,
@@ -20,10 +26,14 @@ from src.app.runtime.orchestration.services.runtime_snapshot_assembler import (
 
 __all__ = [
     "ClaimResult",
+    "ConveyorQueueMembershipWriteResult",
+    "ConveyorQueueMembershipWriterService",
+    "ConveyorQueueWriteBlocked",
     "IdempotencyConflict",
     "IdempotencyGuard",
     "RuntimeSnapshotAssembler",
     "RuntimeSnapshotInput",
+    "conveyor_queue_membership_writer_service",
     "idempotency_guard",
     "is_wes_internal_key",
     "make_wes_internal_key",

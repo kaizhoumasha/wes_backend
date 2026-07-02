@@ -68,6 +68,52 @@ def test_open_circuit_breaker_blocks_outbound_request_without_consuming_sent_quo
     assert result.should_dispatch_effect is False
 
 
+def test_circuit_breaker_open_does_not_overwrite_in_flight_fulfillment() -> None:
+    """CB open 只阻断新出站 effect, 不覆盖已经 SENT/RUNNING 的履约。"""
+
+    from src.app.wms_integration.state_machine import (
+        FulfillmentEvent,
+        FulfillmentState,
+        WmsFulfillmentStateMachine,
+    )
+
+    machine = WmsFulfillmentStateMachine()
+
+    for current in (FulfillmentState.SENT, FulfillmentState.RUNNING):
+        result = machine.transition(
+            current=current,
+            event=FulfillmentEvent.CIRCUIT_BREAKER_OPEN,
+            now=timezone.now_for_db(),
+        )
+
+        assert result.state == current
+        assert result.reason == "CIRCUIT_BREAKER_OPEN_OUTBOUND_ONLY"
+
+
+def test_four_timeout_paths_enter_timeout_with_distinct_reasons() -> None:
+    """Phase 3 四类 timeout 必须可观测, 不能混成同一个黑盒超时。"""
+
+    from src.app.wms_integration.state_machine import (
+        FulfillmentEvent,
+        FulfillmentState,
+        WmsFulfillmentStateMachine,
+    )
+
+    machine = WmsFulfillmentStateMachine()
+    scenarios = [
+        (FulfillmentState.REQUESTED, FulfillmentEvent.REQUEST_DISPATCH_TIMEOUT),
+        (FulfillmentState.SENT, FulfillmentEvent.SENT_ACK_TIMEOUT),
+        (FulfillmentState.ACCEPTED, FulfillmentEvent.ACCEPTED_RUNNING_TIMEOUT),
+        (FulfillmentState.RUNNING, FulfillmentEvent.RUNNING_RESULT_TIMEOUT),
+    ]
+
+    for current, event in scenarios:
+        result = machine.transition(current=current, event=event, now=timezone.now_for_db())
+
+        assert result.state == FulfillmentState.TIMEOUT
+        assert result.reason == event.value
+
+
 def test_late_callback_during_blocked_by_cb_is_inboxed_not_marked_blocked() -> None:
     """CB open/half-open 只阻断出站 effect, late callback 仍进入 RuntimeInbox。"""
 

@@ -51,3 +51,48 @@ def test_evidence_envelope_rejects_raw_unversioned_external_reference() -> None:
             payload_hash="a" * 64,
             payload={},
         )
+
+
+def test_external_reference_catalog_classifies_source_drift() -> None:
+    from src.app.wms_integration.evidence import (
+        ExternalReference,
+        ExternalReferenceCatalog,
+        ExternalReferenceCatalogEntry,
+        ExternalReferenceDriftKind,
+    )
+
+    catalog = ExternalReferenceCatalog(
+        [
+            ExternalReferenceCatalogEntry(
+                system="WMS",
+                object_type="PKG",
+                schema_version="wms.pkg.v1",
+                source_version="wms-42",
+            )
+        ]
+    )
+
+    ok = catalog.classify(
+        ExternalReference(
+            system="WMS",
+            object_type="PKG",
+            code="PKG-001",
+            schema_version="wms.pkg.v1",
+            validated_at="2026-07-01T02:00:00Z",
+            source_version="wms-42",
+        )
+    )
+    drift = catalog.classify(
+        ExternalReference(
+            system="WMS",
+            object_type="PKG",
+            code="PKG-002",
+            schema_version="wms.pkg.v1",
+            validated_at="2026-07-01T02:00:00Z",
+            source_version="wms-41",
+        )
+    )
+
+    assert ok.kind == ExternalReferenceDriftKind.NONE
+    assert drift.kind == ExternalReferenceDriftKind.SOURCE_VERSION_MISMATCH
+    assert drift.expected_source_version == "wms-42"

@@ -1,0 +1,257 @@
+"""ConveyorQueueMembership DB-backed writer service tests."""
+
+from __future__ import annotations
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+
+from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
+from src.app.runtime.orchestration.repositories.conveyor_queue_membership_repository import (
+    ConveyorQueueMembershipRepository,
+)
+from src.app.runtime.orchestration.services.conveyor_queue_writer import ConveyorQueueWriteDecisionKind
+
+
+class _ConveyorQueueUniqueRaceRepository(ConveyorQueueMembershipRepository):
+    """模拟查询后并发插入导致唯一索引冲突的 repository。"""
+
+    async def list_active_by_identity(self, *_args, **_kwargs) -> list[ConveyorQueueMembership]:
+        return []
+
+    async def create_without_session_rollback(self, *_args, **_kwargs) -> ConveyorQueueMembership:
+        raise IntegrityError("INSERT INTO conveyor_queue_memberships", {}, Exception("unique active bin"))
+
+
+async def _membership_count(db_session) -> int:
+    result = await db_session.execute(select(func.count()).select_from(ConveyorQueueMembership))
+    return int(result.scalar_one())
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_creates_active_membership(db_session) -> None:
+    """Writer service 必须真实写入 runtime ConveyorQueueMembership active 投影。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    service = ConveyorQueueMembershipWriterService()
+
+    result = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-001",
+        declared_queue_codes={"Q-IN"},
+        correlation_id="corr-queue-001",
+        evidence_json={"source_event_id": "evt-create"},
+        auto_commit=False,
+    )
+
+    assert result.created is True
+    assert result.decision.kind == ConveyorQueueWriteDecisionKind.CREATE_ACTIVE
+    assert result.membership.id is not None
+    assert result.membership.membership_status == "ACTIVE"
+    assert result.membership.bin_code == "BIN-001"
+    assert result.membership.queue_code == "Q-IN"
+    assert result.membership.correlation_id == "corr-queue-001"
+    assert result.membership.evidence_json["source_event_id"] == "evt-create"
+    assert await _membership_count(db_session) == 1
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_reuses_same_active_membership(db_session) -> None:
+    """同 workline、同 bin、同 queue 重放必须复用 active membership。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    service = ConveyorQueueMembershipWriterService()
+    first = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-001",
+        declared_queue_codes={"Q-IN"},
+        evidence_json={"source_event_id": "evt-first"},
+        auto_commit=False,
+    )
+
+    replay = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-001",
+        declared_queue_codes={"Q-IN"},
+        evidence_json={"source_event_id": "evt-replay"},
+        auto_commit=False,
+    )
+
+    assert replay.created is False
+    assert replay.decision.kind == ConveyorQueueWriteDecisionKind.IDEMPOTENT_REPLAY
+    assert replay.membership.id == first.membership.id
+    assert await _membership_count(db_session) == 1
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_rereads_existing_after_unique_conflict(db_session) -> None:
+    """并发插入撞 ACTIVE 唯一约束时，必须重读 existing 并返回非 created。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    existing = ConveyorQueueMembership(
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-001",
+        membership_status="ACTIVE",
+        entered_at=1700000000000,
+    )
+    db_session.add(existing)
+    await db_session.flush()
+    assert existing.id is not None
+
+    service = ConveyorQueueMembershipWriterService(repository=_ConveyorQueueUniqueRaceRepository())
+
+    result = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-001",
+        declared_queue_codes={"Q-IN"},
+        evidence_json={"source_event_id": "evt-race"},
+        auto_commit=False,
+    )
+
+    assert result.created is False
+    assert result.membership.id == existing.id
+    assert await _membership_count(db_session) == 1
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_resolves_placeholder_in_place(db_session) -> None:
+    """placeholder resolve 必须原地绑定真实 bin，不额外创建第二条 active。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    service = ConveyorQueueMembershipWriterService()
+    placeholder = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        placeholder_key="scan:001",
+        declared_queue_codes={"Q-IN"},
+        evidence_json={"source_event_id": "evt-placeholder"},
+        auto_commit=False,
+    )
+
+    resolved = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-001",
+        placeholder_key="scan:001",
+        declared_queue_codes={"Q-IN"},
+        evidence_json={"source_event_id": "evt-resolve"},
+        auto_commit=False,
+    )
+
+    assert resolved.created is False
+    assert resolved.decision.kind == ConveyorQueueWriteDecisionKind.RESOLVE_PLACEHOLDER
+    assert resolved.membership.id == placeholder.membership.id
+    assert resolved.membership.bin_code == "BIN-001"
+    assert resolved.membership.placeholder_key is None
+    assert resolved.membership.evidence_json["resolved_from_placeholder_key"] == "scan:001"
+    assert resolved.membership.evidence_json["source_event_id"] == "evt-resolve"
+    assert await _membership_count(db_session) == 1
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_marks_conflict_reconciling(db_session) -> None:
+    """同 bin 跨 queue 冲突必须标记 RECONCILING，不能静默切换 active 队列。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    service = ConveyorQueueMembershipWriterService()
+    active = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-002",
+        declared_queue_codes={"Q-IN", "Q-OUT"},
+        evidence_json={"source_event_id": "evt-active"},
+        auto_commit=False,
+    )
+
+    conflict = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-OUT",
+        queue_role="EXIT_SCAN",
+        bin_code="BIN-002",
+        declared_queue_codes={"Q-IN", "Q-OUT"},
+        evidence_json={"source_event_id": "evt-conflict"},
+        auto_commit=False,
+    )
+
+    assert conflict.created is False
+    assert conflict.decision.kind == ConveyorQueueWriteDecisionKind.RECONCILING
+    assert conflict.membership.id == active.membership.id
+    assert conflict.membership.membership_status == "RECONCILING"
+    assert conflict.membership.queue_code == "Q-IN"
+    assert conflict.membership.evidence_json["existing_queue_code"] == "Q-IN"
+    assert conflict.membership.evidence_json["conflicting_queue_code"] == "Q-OUT"
+    assert await _membership_count(db_session) == 1
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_blocks_unknown_queue_without_write(db_session) -> None:
+    """strict mode 下未知 manifest queue 必须阻断写入并暴露 policy decision。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+        ConveyorQueueWriteBlocked,
+    )
+
+    service = ConveyorQueueMembershipWriterService()
+
+    with pytest.raises(ConveyorQueueWriteBlocked) as exc_info:
+        await service.write_active(
+            db_session,
+            workline_id=1,
+            conveyor_code="CV-01",
+            queue_code="Q-UNKNOWN",
+            queue_role="ENTRY_SCAN",
+            bin_code="BIN-003",
+            declared_queue_codes={"Q-IN"},
+            evidence_json={"source_event_id": "evt-blocked"},
+            auto_commit=False,
+        )
+
+    assert exc_info.value.decision.kind == ConveyorQueueWriteDecisionKind.BLOCKED
+    assert exc_info.value.decision.reason == "UNKNOWN_QUEUE_CODE"
+    assert await _membership_count(db_session) == 0

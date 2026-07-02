@@ -37,6 +37,10 @@ class FulfillmentEvent(str, Enum):
     CALLBACK_FAILED = "CALLBACK_FAILED"
     CANCEL = "CANCEL"
     TIMEOUT = "TIMEOUT"
+    REQUEST_DISPATCH_TIMEOUT = "REQUEST_DISPATCH_TIMEOUT"
+    SENT_ACK_TIMEOUT = "SENT_ACK_TIMEOUT"
+    ACCEPTED_RUNNING_TIMEOUT = "ACCEPTED_RUNNING_TIMEOUT"
+    RUNNING_RESULT_TIMEOUT = "RUNNING_RESULT_TIMEOUT"
     CIRCUIT_BREAKER_OPEN = "CIRCUIT_BREAKER_OPEN"
 
 
@@ -78,7 +82,7 @@ class WmsFulfillmentStateMachine:
         FulfillmentEvent.TIMEOUT: (FulfillmentState.TIMEOUT, "TIMEOUT"),
     }
 
-    def transition(
+    def transition(  # noqa: PLR0911 - explicit transition exits keep state-table semantics readable.
         self,
         *,
         current: FulfillmentState,
@@ -93,11 +97,17 @@ class WmsFulfillmentStateMachine:
                 runtime_inbox_required=event in self._CALLBACK_EVENTS,
             )
 
-        if event == FulfillmentEvent.CIRCUIT_BREAKER_OPEN:
+        if event == FulfillmentEvent.CIRCUIT_BREAKER_OPEN and current == FulfillmentState.REQUESTED:
             return FulfillmentTransitionResult(
                 state=FulfillmentState.BLOCKED_BY_CB,
                 occurred_at=now,
                 reason="CIRCUIT_BREAKER_OPEN",
+            )
+        if event == FulfillmentEvent.CIRCUIT_BREAKER_OPEN:
+            return FulfillmentTransitionResult(
+                state=current,
+                occurred_at=now,
+                reason="CIRCUIT_BREAKER_OPEN_OUTBOUND_ONLY",
             )
 
         if current == FulfillmentState.BLOCKED_BY_CB and event in {
@@ -124,6 +134,18 @@ class WmsFulfillmentStateMachine:
         if simple_transition is not None:
             state, reason = simple_transition
             return FulfillmentTransitionResult(state, now, reason)
+
+        if event in {
+            FulfillmentEvent.REQUEST_DISPATCH_TIMEOUT,
+            FulfillmentEvent.SENT_ACK_TIMEOUT,
+            FulfillmentEvent.ACCEPTED_RUNNING_TIMEOUT,
+            FulfillmentEvent.RUNNING_RESULT_TIMEOUT,
+        }:
+            return FulfillmentTransitionResult(
+                FulfillmentState.TIMEOUT,
+                now,
+                event.value,
+            )
 
         if event == FulfillmentEvent.CALLBACK_SUCCEEDED:
             return FulfillmentTransitionResult(
