@@ -16,6 +16,8 @@ def test_observability_contract_declares_stable_runtime_signals() -> None:
         "runtime_inbox.claim",
         "runtime_intent.dispatch",
         "device_command.ack",
+        "device_command.dispatch_policy",
+        "device_command.result",
         "wms_breaker.transition",
         "wms_evidence.persistence_failure",
     ):
@@ -26,8 +28,12 @@ def test_observability_contract_declares_stable_runtime_signals() -> None:
         "provider_code",
         "operation_kind",
         "command_code",
+        "device_code",
         "inbox_id",
         "evidence_key",
+        "policy_decision",
+        "dispatch_allowed",
+        "runtime_hold_required",
         "reason_code",
     ):
         assert attribute in text

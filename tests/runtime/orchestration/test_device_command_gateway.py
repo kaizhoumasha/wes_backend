@@ -193,6 +193,8 @@ async def test_dispatch_uses_policy_wait_for_running_device_before_http_post():
         },
         session_id=1,
         dispatch_key="device-command:CMD-BUSY",
+        trace_id="trace-policy",
+        correlation_id="corr-policy",
     )
 
     async_client_mock = AsyncMock()
@@ -208,6 +210,7 @@ async def test_dispatch_uses_policy_wait_for_running_device_before_http_post():
             new=AsyncMock(return_value=None),
         ),
         patch("httpx.AsyncClient", return_value=async_client_mock),
+        patch("src.app.runtime.orchestration.observability.runtime_observability_registry.emit") as emit,
     ):
         with pytest.raises(_DeviceCommandGovernanceError) as exc_info:
             await device_command_gateway.dispatch(db=object(), outbox=outbox)
@@ -216,6 +219,19 @@ async def test_dispatch_uses_policy_wait_for_running_device_before_http_post():
     assert error.code == "DEVICE_STATUS_PRECHECK_WAIT"
     assert error.detail["policy_decision"] == "WAIT_FOR_IDLE"
     assert error.detail["reason"] == "DEVICE_BUSY"
+    emit.assert_called_once()
+    assert emit.call_args.args[0] == "device_command.dispatch_policy"
+    assert emit.call_args.args[1] == {
+        "trace_id": "trace-policy",
+        "correlation_id": "corr-policy",
+        "command_code": "CMD-BUSY",
+        "device_code": "DEV-BUSY",
+        "provider_code": "ECS",
+        "policy_decision": "WAIT_FOR_IDLE",
+        "reason": "DEVICE_BUSY",
+        "dispatch_allowed": False,
+        "runtime_hold_required": False,
+    }
     async_client_mock.post.assert_not_called()
 
 
@@ -296,7 +312,7 @@ async def test_dispatch_emits_device_command_ack_observability_event() -> None:
         vendor_type="ECS",
         host="10.0.0.3",
         port=8080,
-        updated_at=sent_at,
+        updated_at=ack_received_at,
     )
     command = SimpleNamespace(
         id=55,
@@ -355,9 +371,22 @@ async def test_dispatch_emits_device_command_ack_observability_event() -> None:
         result = await device_command_gateway.dispatch(db=db, outbox=outbox)
 
     assert result is True
-    emit.assert_called_once()
-    assert emit.call_args.args[0] == "device_command.ack"
-    assert emit.call_args.args[1] == {
+    assert [call.args[0] for call in emit.call_args_list] == [
+        "device_command.dispatch_policy",
+        "device_command.ack",
+    ]
+    assert emit.call_args_list[0].args[1] == {
+        "trace_id": "trace-ack",
+        "correlation_id": "corr-ack",
+        "command_code": "CMD-ACK",
+        "device_code": "DEV-ACK",
+        "provider_code": "ECS",
+        "policy_decision": "ALLOW_DISPATCH",
+        "reason": "DEVICE_IDLE",
+        "dispatch_allowed": True,
+        "runtime_hold_required": False,
+    }
+    assert emit.call_args_list[1].args[1] == {
         "trace_id": "trace-ack",
         "correlation_id": "corr-ack",
         "command_code": "CMD-ACK",

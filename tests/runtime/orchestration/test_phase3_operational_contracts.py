@@ -37,8 +37,23 @@ def test_runtime_observability_registry_requires_stable_attributes() -> None:
             "breaker_state": "OPEN",
         },
     )
+    dispatch_policy = registry.validate(
+        "device_command.dispatch_policy",
+        {
+            "trace_id": "trace-1",
+            "correlation_id": "corr-1",
+            "command_code": "CMD-1",
+            "device_code": "DEV-1",
+            "provider_code": "ECS",
+            "policy_decision": "WAIT_FOR_IDLE",
+            "reason": "DEVICE_BUSY",
+            "dispatch_allowed": False,
+            "runtime_hold_required": False,
+        },
+    )
 
     assert valid.valid is True
+    assert dispatch_policy.valid is True
     assert invalid_ack.valid is False
     assert invalid_ack.missing_attributes == ("ack_age_ms",)
     assert invalid.valid is False

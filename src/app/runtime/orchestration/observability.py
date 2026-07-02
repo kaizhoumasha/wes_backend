@@ -291,6 +291,20 @@ def default_runtime_observability_signals() -> dict[str, RuntimeObservabilitySig
             "span+metric",
             common | {"command_code", "provider_code", "ack_age_ms"},
         ),
+        "device_command.dispatch_policy": RuntimeObservabilitySignal(
+            "device_command.dispatch_policy",
+            "span+metric",
+            common
+            | {
+                "command_code",
+                "device_code",
+                "provider_code",
+                "policy_decision",
+                "reason",
+                "dispatch_allowed",
+                "runtime_hold_required",
+            },
+        ),
         "device_command.result": RuntimeObservabilitySignal(
             "device_command.result",
             "span+metric",

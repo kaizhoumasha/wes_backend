@@ -628,6 +628,58 @@ def _build_dispatch_policy_detail(decision: DeviceDispatchDecision) -> dict[str,
     }
 
 
+def _emit_device_dispatch_policy_observability(
+    *,
+    command: Any | None,
+    device: Any,
+    outbox: Any,
+    payload: dict[str, Any],
+    decision: DeviceDispatchDecision,
+) -> None:
+    """发出 DeviceDispatchPolicy 决策观测事件；观测失败不改变派发决策。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    command_code = (
+        coerce_string_value(getattr(command, "command_code", None))
+        or coerce_string_value(payload.get("command_code"))
+        or coerce_string_value(getattr(outbox, "dispatch_key", None))
+        or "UNKNOWN_COMMAND"
+    )
+    dispatch_key = coerce_string_value(getattr(outbox, "dispatch_key", None))
+    device_code = (
+        decision.device_code
+        or coerce_string_value(getattr(device, "device_code", None))
+        or coerce_string_value(getattr(outbox, "target_code", None))
+        or "UNKNOWN_DEVICE"
+    )
+    try:
+        runtime_observability_registry.emit(
+            "device_command.dispatch_policy",
+            {
+                "trace_id": coerce_string_value(getattr(command, "trace_id", None))
+                or coerce_string_value(getattr(outbox, "trace_id", None))
+                or dispatch_key
+                or command_code,
+                "correlation_id": coerce_string_value(getattr(command, "correlation_id", None))
+                or coerce_string_value(getattr(outbox, "correlation_id", None))
+                or dispatch_key
+                or command_code,
+                "command_code": command_code,
+                "device_code": device_code,
+                "provider_code": _device_command_provider_code(device, payload),
+                "policy_decision": decision.kind.value,
+                "reason": decision.reason,
+                "dispatch_allowed": decision.dispatch_allowed,
+                "runtime_hold_required": decision.runtime_hold_required,
+            },
+        )
+    except Exception as exc:  # pragma: no cover - 防止观测链路反向影响派发策略
+        logger.warning(
+            f"设备派发策略观测事件发射失败: command_code={command_code}, device_code={device_code}, error={exc}"
+        )
+
+
 def _ensure_dispatch_policy_allows_realtime_probe_or_dispatch(
     *,
     device: Any,
@@ -644,6 +696,13 @@ def _ensure_dispatch_policy_allows_realtime_probe_or_dispatch(
     snapshot = _build_device_runtime_snapshot(device, now=now, policy=policy)
     request = _build_device_dispatch_request(outbox, payload, device, command, command_code=command_code, now=now)
     decision = policy.evaluate(request, snapshot=snapshot, now=now)
+    _emit_device_dispatch_policy_observability(
+        command=command,
+        device=device,
+        outbox=outbox,
+        payload=payload,
+        decision=decision,
+    )
     if decision.kind in {
         DeviceDispatchDecisionKind.ALLOW_DISPATCH,
         DeviceDispatchDecisionKind.RETRY_STATUS_PROBE,
