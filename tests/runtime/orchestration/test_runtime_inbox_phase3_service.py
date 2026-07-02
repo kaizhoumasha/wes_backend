@@ -11,10 +11,30 @@ from sqlalchemy.exc import IntegrityError
 
 # 这些模型 import 用于注册隔离 SQLite create_all 所需的跨表 FK metadata。
 from src.app.device.models.command import DeviceCommand
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.workline.models import WorkLine
+
+NOW_MS = 1_700_000_000_000
+
+
+async def _seed_execution_correlation(db_session, *, correlation_id: str = "corr-device-event-001"):
+    """建立 ExecutionSession + ExecutionCorrelation，满足 IdempotencyKey FK 前置。"""
+
+    session = ExecutionSession(workline_id=1, manifest_version="v1", state="RUNNING")
+    db_session.add(session)
+    await db_session.flush()
+    correlation = ExecutionCorrelation(
+        correlation_id=correlation_id,
+        execution_session_id=session.id,
+        trace_id=f"trace-{correlation_id}",
+    )
+    db_session.add(correlation)
+    await db_session.flush()
+    return correlation
 
 
 class _AuditServiceStub:
@@ -221,6 +241,87 @@ async def test_runtime_inbox_accept_conflict_after_unique_conflict(db_session) -
 
     assert exc_info.value.existing_payload_hash == "hash-original"
     assert exc_info.value.incoming_payload_hash == "hash-tampered"
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_device_event_accept_claims_idempotency_key(db_session) -> None:
+    """device_event 入站生产入口必须同步 claim IdempotencyKey。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    correlation = await _seed_execution_correlation(db_session)
+    service = RuntimeInboxService()
+
+    first = await service.accept_received(
+        db_session,
+        provider_code="ECS",
+        event_type="COMMAND_RESULT",
+        source_event_id="evt-device-001",
+        payload_hash="hash-device-001",
+        correlation_id=correlation.correlation_id,
+        now_ms=NOW_MS,
+    )
+    second = await service.accept_received(
+        db_session,
+        provider_code="ECS",
+        event_type="COMMAND_RESULT",
+        source_event_id="evt-device-001",
+        payload_hash="hash-device-001",
+        correlation_id=correlation.correlation_id,
+        now_ms=NOW_MS,
+    )
+
+    assert first.created is True
+    assert second.created is False
+    stored = (
+        await db_session.execute(
+            select(IdempotencyKey).where(
+                IdempotencyKey.provider_code == "ECS",
+                IdempotencyKey.operation_kind == "device_event",
+                IdempotencyKey.idempotency_key == "evt-device-001",
+            )
+        )
+    ).scalar_one()
+    assert stored.request_hash == "hash-device-001"
+    assert stored.execution_correlation_id == correlation.correlation_id
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_device_event_accept_rejects_existing_idempotency_hash_conflict(db_session) -> None:
+    """device_event 已有 IdempotencyKey 不同 hash 时必须 409 并暴露 device 审计域。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
+
+    correlation = await _seed_execution_correlation(db_session, correlation_id="corr-device-event-conflict")
+    db_session.add(
+        IdempotencyKey(
+            provider_code="ECS",
+            operation_kind="device_event",
+            idempotency_key="evt-device-conflict",
+            execution_correlation_id=correlation.correlation_id,
+            request_hash="hash-original",
+            business_owner_key="device_event:evt-device-conflict",
+            created_at=NOW_MS,
+        )
+    )
+    await db_session.flush()
+
+    with pytest.raises(IdempotencyConflict) as exc_info:
+        await RuntimeInboxService().accept_received(
+            db_session,
+            provider_code="ECS",
+            event_type="EVENT_PUSH",
+            source_event_id="evt-device-conflict",
+            payload_hash="hash-tampered",
+            correlation_id=correlation.correlation_id,
+            now_ms=NOW_MS,
+        )
+
+    audit_event = exc_info.value.to_audit_event()
+    assert audit_event["normalized_operation_kind"] == "device_event"
+    assert audit_event["domain"] == "device"
+    assert audit_event["incoming_request_hash"] == "hash-tampered"
 
 
 @pytest.mark.asyncio
