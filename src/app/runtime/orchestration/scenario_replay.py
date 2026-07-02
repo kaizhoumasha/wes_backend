@@ -29,6 +29,15 @@ class ScenarioRecording:
 
 
 @dataclass(frozen=True, slots=True)
+class ScenarioProjectionDiff:
+    """One active projection state change observed during replay."""
+
+    object_key: str
+    from_state: str | None
+    to_state: str
+
+
+@dataclass(frozen=True, slots=True)
 class ScenarioReplayResult:
     """Replay result used by Phase 3 gates."""
 
@@ -37,6 +46,7 @@ class ScenarioReplayResult:
     projection_hash: str
     outbox_effect_keys: tuple[str, ...]
     reconciliation_reasons: tuple[str, ...]
+    projection_diff: tuple[ScenarioProjectionDiff, ...] = ()
 
 
 class ScenarioRecorder:
@@ -222,7 +232,8 @@ class ScenarioReplayRunner:
         timeline: list[str] = []
         outbox_effect_keys: list[str] = []
         reconciliation_reasons: list[str] = []
-        projection_state: dict[str, Any] = {}
+        projection_state: dict[str, str] = {}
+        projection_diff: list[ScenarioProjectionDiff] = []
 
         for event in recording.events:
             timeline.append(f"{event.kind}:{event.event_id}")
@@ -231,7 +242,17 @@ class ScenarioReplayRunner:
                 outbox_effect_keys.append(effect_key)
             object_key = event.payload.get("object_key")
             if isinstance(object_key, str):
-                projection_state[object_key] = event.payload.get("state", event.kind)
+                next_state = str(event.payload.get("state", event.kind))
+                previous_state = projection_state.get(object_key)
+                if previous_state != next_state:
+                    projection_diff.append(
+                        ScenarioProjectionDiff(
+                            object_key=object_key,
+                            from_state=previous_state,
+                            to_state=next_state,
+                        )
+                    )
+                projection_state[object_key] = next_state
             if event.kind in self._RECONCILING_KINDS:
                 reason = event.payload.get("reason")
                 reconciliation_reasons.append(str(reason or event.kind))
@@ -244,6 +265,7 @@ class ScenarioReplayRunner:
             projection_hash=projection_hash,
             outbox_effect_keys=tuple(outbox_effect_keys),
             reconciliation_reasons=tuple(reconciliation_reasons),
+            projection_diff=tuple(projection_diff),
         )
 
 
@@ -253,6 +275,7 @@ scenario_replay_runner = ScenarioReplayRunner()
 
 __all__ = [
     "ScenarioEvent",
+    "ScenarioProjectionDiff",
     "ScenarioRecorder",
     "ScenarioRecording",
     "ScenarioReplayResult",

@@ -173,6 +173,74 @@ def test_phase3_benchmark_gate_validates_structured_artifact() -> None:
     assert validation.reason == "OK"
 
 
+def test_phase3_benchmark_gate_rejects_complete_artifact_without_profile_metadata() -> None:
+    import json
+    from pathlib import Path
+
+    from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
+
+    repo_root = Path(__file__).resolve().parents[3]
+    artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "phase3_benchmark_artifact.json").read_text())
+    artifact.pop("profile", None)
+
+    validation = RuntimeBenchmarkGate().validate_artifact(artifact)
+
+    assert validation.valid is False
+    assert validation.reason == "MISSING_PROFILE_METADATA"
+    assert validation.missing_profile_fields == (
+        "profile.concurrency_level",
+        "profile.database_backend",
+        "profile.dependency_profile",
+        "profile.duration_seconds",
+        "profile.kind",
+    )
+
+
+def test_phase3_benchmark_gate_rejects_production_profile_without_postgres_and_concurrency() -> None:
+    import json
+    from pathlib import Path
+
+    from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
+
+    repo_root = Path(__file__).resolve().parents[3]
+    artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "phase3_benchmark_artifact.json").read_text())
+    artifact["profile"] = {
+        "kind": "production-scale",
+        "database_backend": "sqlite",
+        "dependency_profile": "",
+        "concurrency_level": 1,
+        "duration_seconds": 0,
+    }
+
+    validation = RuntimeBenchmarkGate().validate_artifact(artifact)
+
+    assert validation.valid is False
+    assert validation.reason == "INVALID_PROFILE_METADATA"
+    assert validation.invalid_profile_fields == (
+        "profile.concurrency_level",
+        "profile.database_backend",
+        "profile.dependency_profile",
+        "profile.duration_seconds",
+    )
+
+
+def test_phase3_benchmark_gate_rejects_unknown_profile_kind() -> None:
+    import json
+    from pathlib import Path
+
+    from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
+
+    repo_root = Path(__file__).resolve().parents[3]
+    artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "phase3_benchmark_artifact.json").read_text())
+    artifact["profile"]["kind"] = "sandbox"
+
+    validation = RuntimeBenchmarkGate().validate_artifact(artifact)
+
+    assert validation.valid is False
+    assert validation.reason == "INVALID_PROFILE_METADATA"
+    assert validation.invalid_profile_fields == ("profile.kind",)
+
+
 def test_phase3_benchmark_runner_generates_gate_valid_artifact() -> None:
     from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
     from tests.load.phase3_benchmark_scenarios import build_phase3_benchmark_artifact

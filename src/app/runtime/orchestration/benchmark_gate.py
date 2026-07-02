@@ -22,6 +22,8 @@ class RuntimeBenchmarkArtifactValidation:
 
     valid: bool
     reason: str = "OK"
+    missing_profile_fields: tuple[str, ...] = ()
+    invalid_profile_fields: tuple[str, ...] = ()
     missing_scenarios: tuple[str, ...] = ()
     missing_metrics: tuple[str, ...] = ()
     missing_thresholds: tuple[str, ...] = ()
@@ -60,58 +62,13 @@ class RuntimeBenchmarkGate:
                 missing_scenarios=missing_scenarios,
             )
 
-        missing_metrics: list[str] = []
-        missing_thresholds: list[str] = []
-        failed_thresholds: list[str] = []
-        invalid_sample_counts: list[str] = []
-        for scenario in self.scenarios:
-            raw_result = raw_scenarios.get(scenario.name)
-            result = raw_result if isinstance(raw_result, Mapping) else {}
-            sample_count = result.get("sample_count")
-            if not isinstance(sample_count, int) or sample_count <= 0:
-                invalid_sample_counts.append(scenario.name)
+        profile_validation = _validate_profile_metadata(artifact.get("profile"))
+        if profile_validation is not None:
+            return profile_validation
 
-            metrics = result.get("metrics")
-            thresholds = result.get("thresholds")
-            metrics_map = metrics if isinstance(metrics, Mapping) else {}
-            thresholds_map = thresholds if isinstance(thresholds, Mapping) else {}
-            for metric_name in sorted(scenario.required_metrics):
-                metric_key = f"{scenario.name}.{metric_name}"
-                if metric_name not in metrics_map:
-                    missing_metrics.append(metric_key)
-                    continue
-                if metric_name not in thresholds_map:
-                    missing_thresholds.append(metric_key)
-                    continue
-                metric_value = metrics_map[metric_name]
-                threshold_value = thresholds_map[metric_name]
-                if _is_number(metric_value) and _is_number(threshold_value) and metric_value > threshold_value:
-                    failed_thresholds.append(metric_key)
-
-        if invalid_sample_counts:
-            return RuntimeBenchmarkArtifactValidation(
-                valid=False,
-                reason="INVALID_SAMPLE_COUNT",
-                invalid_sample_counts=tuple(invalid_sample_counts),
-            )
-        if missing_metrics:
-            return RuntimeBenchmarkArtifactValidation(
-                valid=False,
-                reason="MISSING_METRICS",
-                missing_metrics=tuple(missing_metrics),
-            )
-        if missing_thresholds:
-            return RuntimeBenchmarkArtifactValidation(
-                valid=False,
-                reason="MISSING_THRESHOLDS",
-                missing_thresholds=tuple(missing_thresholds),
-            )
-        if failed_thresholds:
-            return RuntimeBenchmarkArtifactValidation(
-                valid=False,
-                reason="THRESHOLD_EXCEEDED",
-                failed_thresholds=tuple(failed_thresholds),
-            )
+        scenario_result_validation = _validate_scenario_results(self.scenarios, raw_scenarios)
+        if scenario_result_validation is not None:
+            return scenario_result_validation
         return RuntimeBenchmarkArtifactValidation(valid=True)
 
 
@@ -121,6 +78,120 @@ def _non_empty_text(value: object) -> bool:
 
 def _is_number(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
+
+
+_REQUIRED_PROFILE_FIELDS = (
+    "kind",
+    "database_backend",
+    "dependency_profile",
+    "concurrency_level",
+    "duration_seconds",
+)
+_ALLOWED_PROFILE_KINDS = frozenset({"lightweight", "production-scale"})
+
+
+def _validate_profile_metadata(profile: object) -> RuntimeBenchmarkArtifactValidation | None:
+    if not isinstance(profile, Mapping):
+        return RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="MISSING_PROFILE_METADATA",
+            missing_profile_fields=tuple(sorted(f"profile.{field}" for field in _REQUIRED_PROFILE_FIELDS)),
+        )
+
+    missing_fields = [
+        f"profile.{field}" for field in _REQUIRED_PROFILE_FIELDS if field not in profile or profile[field] is None
+    ]
+    if missing_fields:
+        return RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="MISSING_PROFILE_METADATA",
+            missing_profile_fields=tuple(sorted(missing_fields)),
+        )
+
+    if profile["kind"] not in _ALLOWED_PROFILE_KINDS:
+        return RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="INVALID_PROFILE_METADATA",
+            invalid_profile_fields=("profile.kind",),
+        )
+
+    if profile["kind"] != "production-scale":
+        return None
+
+    invalid_fields: list[str] = []
+    if profile["database_backend"] != "postgresql":
+        invalid_fields.append("profile.database_backend")
+    if not _non_empty_text(profile["dependency_profile"]):
+        invalid_fields.append("profile.dependency_profile")
+    if not _is_number(profile["concurrency_level"]) or profile["concurrency_level"] < 2:
+        invalid_fields.append("profile.concurrency_level")
+    if not _is_number(profile["duration_seconds"]) or profile["duration_seconds"] <= 0:
+        invalid_fields.append("profile.duration_seconds")
+    if invalid_fields:
+        return RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="INVALID_PROFILE_METADATA",
+            invalid_profile_fields=tuple(sorted(invalid_fields)),
+        )
+    return None
+
+
+def _validate_scenario_results(
+    scenarios: list[RuntimeBenchmarkScenario], raw_scenarios: Mapping[object, object]
+) -> RuntimeBenchmarkArtifactValidation | None:
+    missing_metrics: list[str] = []
+    missing_thresholds: list[str] = []
+    failed_thresholds: list[str] = []
+    invalid_sample_counts: list[str] = []
+    for scenario in scenarios:
+        raw_result = raw_scenarios.get(scenario.name)
+        result = raw_result if isinstance(raw_result, Mapping) else {}
+        sample_count = result.get("sample_count")
+        if not isinstance(sample_count, int) or sample_count <= 0:
+            invalid_sample_counts.append(scenario.name)
+
+        metrics = result.get("metrics")
+        thresholds = result.get("thresholds")
+        metrics_map = metrics if isinstance(metrics, Mapping) else {}
+        thresholds_map = thresholds if isinstance(thresholds, Mapping) else {}
+        for metric_name in sorted(scenario.required_metrics):
+            metric_key = f"{scenario.name}.{metric_name}"
+            if metric_name not in metrics_map:
+                missing_metrics.append(metric_key)
+                continue
+            if metric_name not in thresholds_map:
+                missing_thresholds.append(metric_key)
+                continue
+            metric_value = metrics_map[metric_name]
+            threshold_value = thresholds_map[metric_name]
+            if _is_number(metric_value) and _is_number(threshold_value) and metric_value > threshold_value:
+                failed_thresholds.append(metric_key)
+
+    if invalid_sample_counts:
+        return RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="INVALID_SAMPLE_COUNT",
+            invalid_sample_counts=tuple(invalid_sample_counts),
+        )
+    if missing_metrics:
+        return RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="MISSING_METRICS",
+            missing_metrics=tuple(missing_metrics),
+        )
+    if missing_thresholds:
+        return RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="MISSING_THRESHOLDS",
+            missing_thresholds=tuple(missing_thresholds),
+        )
+    if failed_thresholds:
+        return RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="THRESHOLD_EXCEEDED",
+            failed_thresholds=tuple(failed_thresholds),
+        )
+    return None
 
 
 def default_phase3_benchmark_scenarios() -> list[RuntimeBenchmarkScenario]:

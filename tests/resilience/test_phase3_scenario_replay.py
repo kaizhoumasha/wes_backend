@@ -62,6 +62,13 @@ def test_phase3_simulator_fixture_records_and_replays_deterministically() -> Non
         "callback_out_of_order:sim-ecs-002",
         "wms_reject:sim-wms-001",
     )
+    assert tuple(
+        (diff.object_key, diff.from_state, diff.to_state) for diff in getattr(result, "projection_diff", ())
+    ) == (
+        ("pkg:PKG-SIM-0001", None, "IN_FLIGHT"),
+        ("pkg:PKG-SIM-0001", "IN_FLIGHT", "RECONCILING"),
+        ("fulfillment:FUL-SIM-001", None, "RECONCILING"),
+    )
     assert result.reconciliation_reasons == ("late_device_result", "wms_business_reject")
 
 

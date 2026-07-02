@@ -252,5 +252,12 @@ def build_phase3_benchmark_artifact(*, environment: str, generated_at: str) -> d
     return {
         "environment": environment,
         "generated_at": generated_at,
+        "profile": {
+            "kind": "lightweight",
+            "database_backend": "in-memory",
+            "dependency_profile": "in-process-contract",
+            "concurrency_level": 1,
+            "duration_seconds": 0,
+        },
         "scenarios": {name: result.to_artifact() for name, result in results.items()},
     }
