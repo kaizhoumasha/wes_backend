@@ -4,7 +4,31 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+from sqlalchemy import select
+
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
 from src.utils.timezone import timezone
+
+NOW_MS = 1_700_000_000_000
+
+
+async def _seed_execution_correlation(db_session, *, correlation_id: str = "corr-reconciliation-001"):
+    """建立 ExecutionSession + ExecutionCorrelation，满足 IdempotencyKey FK 前置。"""
+
+    session = ExecutionSession(workline_id=1, manifest_version="v1", state="RUNNING")
+    db_session.add(session)
+    await db_session.flush()
+    correlation = ExecutionCorrelation(
+        correlation_id=correlation_id,
+        execution_session_id=session.id,
+        trace_id=f"trace-{correlation_id}",
+    )
+    db_session.add(correlation)
+    await db_session.flush()
+    return correlation
 
 
 def test_reconciliation_manager_registers_owner_scoped_decision_without_owner_mutation() -> None:
@@ -105,3 +129,114 @@ def test_reconciliation_manager_marks_projection_conflict_as_freeze_and_hold() -
     assert decision.action == ResolutionAction.FREEZE_PROJECTION
     assert decision.runtime_hold_required is True
     assert decision.allowed_next_effect_scope["owner_id"] == "bin:BIN-001"
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_manager_idempotent_register_claims_key_and_replays_same_hash(db_session) -> None:
+    """reconciliation 生产入口必须先 claim 幂等键，同 hash 重放返回 MATCH。"""
+
+    from src.app.reconciliation.manager import (
+        ReconciliationConflictInput,
+        ReconciliationManager,
+    )
+    from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult
+
+    correlation = await _seed_execution_correlation(db_session)
+    conflict = ReconciliationConflictInput(
+        owner_domain="runtime",
+        owner_kind="ExecutionSession",
+        owner_id="session-1001",
+        conflict_kind="DISPATCH_ACK_EXHAUSTED",
+        reason="device command ACK exhausted",
+        evidence_refs=["outbox:7001", "command:CMD-7001"],
+        detected_at=timezone.now_for_db(),
+    )
+    manager = ReconciliationManager()
+
+    first = await manager.register_conflict_idempotent(
+        db_session,
+        conflict,
+        provider_code="WES",
+        idempotency_key="WES-RECONCILIATION-hash001",
+        request_hash="sha256-reconciliation-001",
+        execution_correlation_id=correlation.correlation_id,
+        now_ms=NOW_MS,
+        business_owner_key="runtime:ExecutionSession:session-1001",
+    )
+    second = await manager.register_conflict_idempotent(
+        db_session,
+        conflict,
+        provider_code="WES",
+        idempotency_key="WES-RECONCILIATION-hash001",
+        request_hash="sha256-reconciliation-001",
+        execution_correlation_id=correlation.correlation_id,
+        now_ms=NOW_MS,
+        business_owner_key="runtime:ExecutionSession:session-1001",
+    )
+
+    assert first.claim_result is ClaimResult.NEW
+    assert second.claim_result is ClaimResult.MATCH
+    assert second.decision.allowed_next_effect_scope == first.decision.allowed_next_effect_scope
+    stored = (
+        await db_session.execute(
+            select(IdempotencyKey).where(
+                IdempotencyKey.provider_code == "WES",
+                IdempotencyKey.operation_kind == "reconciliation",
+                IdempotencyKey.idempotency_key == "WES-RECONCILIATION-hash001",
+            )
+        )
+    ).scalar_one()
+    assert stored.request_hash == "sha256-reconciliation-001"
+    assert stored.business_owner_key == "runtime:ExecutionSession:session-1001"
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_manager_idempotent_register_rejects_same_key_different_hash(db_session) -> None:
+    """reconciliation 同 key 不同 hash 必须 409 并暴露审计 payload。"""
+
+    from src.app.reconciliation.manager import (
+        ReconciliationConflictInput,
+        ReconciliationManager,
+    )
+    from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
+
+    correlation = await _seed_execution_correlation(db_session, correlation_id="corr-reconciliation-conflict")
+    conflict = ReconciliationConflictInput(
+        owner_domain="runtime",
+        owner_kind="ExecutionSession",
+        owner_id="session-1002",
+        conflict_kind="CALLBACK_DEADLINE_EXPIRED",
+        reason="callback deadline expired",
+        evidence_refs=["inbox:8001"],
+        detected_at=timezone.now_for_db(),
+    )
+    manager = ReconciliationManager()
+
+    await manager.register_conflict_idempotent(
+        db_session,
+        conflict,
+        provider_code="WES",
+        idempotency_key="WES-RECONCILIATION-conflict",
+        request_hash="sha256-original",
+        execution_correlation_id=correlation.correlation_id,
+        now_ms=NOW_MS,
+        business_owner_key="runtime:ExecutionSession:session-1002",
+    )
+
+    with pytest.raises(IdempotencyConflict) as exc_info:
+        await manager.register_conflict_idempotent(
+            db_session,
+            conflict,
+            provider_code="WES",
+            idempotency_key="WES-RECONCILIATION-conflict",
+            request_hash="sha256-tampered",
+            execution_correlation_id=correlation.correlation_id,
+            now_ms=NOW_MS,
+            business_owner_key="runtime:ExecutionSession:session-1002",
+        )
+
+    assert exc_info.value.status_code == 409
+    audit_event = exc_info.value.to_audit_event()
+    assert audit_event["normalized_operation_kind"] == "reconciliation"
+    assert audit_event["domain"] == "reconciliation"
+    assert audit_event["incoming_request_hash"] == "sha256-tampered"
