@@ -20,6 +20,8 @@ Checks:
   format    Run only Ruff format check.
   lint      Run only Ruff lint.
   security  Run only Bandit security scan.
+  runtime-toggle-release
+            Run only Phase 3 runtime toggle release gate.
   architecture  Run only architecture guardrails.
   import-linter  Run only import-linter capability-isolation contract check.
 
@@ -112,6 +114,11 @@ run_security_check() {
     run_tool bandit -r src/ -f screen
 }
 
+run_runtime_toggle_release_gate() {
+    log_step "runtime-toggle" "check_runtime_toggle_release_gate.py"
+    run_tool python scripts/check_runtime_toggle_release_gate.py
+}
+
 run_architecture_check() {
     # Phase 0 默认 warn-only; Phase 1 起切 enforced。
     # Phase 2 launch PR (PR #67+) 起默认 phase1,确保每次 commit 触发 R-I3a/b/c + C1/C2/C4 + wlr guardrail。
@@ -135,6 +142,7 @@ run_quality_profile() {
     run_format_check
     run_lint_check
     run_security_check
+    run_runtime_toggle_release_gate
     run_import_linter_check
     run_architecture_check
     run_test_topology_check
@@ -162,6 +170,9 @@ if [[ -n "$CHECK" ]]; then
             ;;
         security)
             run_security_check
+            ;;
+        runtime-toggle-release)
+            run_runtime_toggle_release_gate
             ;;
         architecture)
             run_architecture_check

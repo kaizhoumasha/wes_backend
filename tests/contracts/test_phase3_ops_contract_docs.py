@@ -31,3 +31,16 @@ def test_runtime_toggle_governance_blocks_security_bypass() -> None:
         assert field in text
     for forbidden in ("HMAC", "nonce", "idempotency", "RuntimeHold", "evidence"):
         assert forbidden in text
+
+
+def test_runtime_toggle_governance_declares_release_gate_entrypoint() -> None:
+    path = REPO_ROOT / "docs" / "contracts" / "runtime-toggle-governance.md"
+    text = path.read_text(encoding="utf-8")
+
+    for token in (
+        "RuntimeToggleReleaseGate",
+        "runtime-toggle-release",
+        "WES_RUNTIME_TOGGLE_PASSED_CHECKS",
+        "--passed-check",
+    ):
+        assert token in text

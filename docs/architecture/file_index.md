@@ -143,6 +143,9 @@
 | `rbac.py` | RBAC 权限验证、超级用户检查 | 🔧 架构核心 |
 | `security.py` | JWT 认证、密码哈希、Token 管理 | 🔧 架构核心 |
 | `api_security.py` | 外部 API 签名认证逻辑；Phase 3 callback body HMAC、nonce replay guard 和短时间窗校验入口 | 🔄 常用功能 |
+| `runtime_toggles.py` | Phase 3 typed runtime toggle 定义与 owner/expiry/security-bypass validator | 🔧 架构核心 |
+| `runtime_toggle_release_gate.py` | Phase 3 release toggle 发布阻塞决策：default-off 与 test_matrix evidence 校验 | 🔧 架构核心 |
+| `runtime_toggle_catalog.py` | Phase 3 runtime toggle typed catalog；quality gate 的唯一检查清单 | 🔧 架构核心 |
 | `conf.py` | Pydantic Settings 配置管理 | 🔧 架构核心 |
 | `logger.py` | 统一日志记录器 | 📚 参考资料 |
 | `context.py` | 请求上下文管理 | 📚 参考资料 |
@@ -824,6 +827,7 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `start_e2e_env.sh` | E2E 测试环境管理（启动/停止/日志） | 🔄 常用功能 |
 | `run_performance_test.sh` | 运行 Locust/AB 性能测试 | 📚 参考资料 |
 | `test_api_signature.sh` | API 签名验证测试 | 📚 参考资料 |
+| `check_runtime_toggle_release_gate.py` | Phase 3 runtime toggle 发布门禁入口，供 `git-quality-gate.sh --check runtime-toggle-release` 调用 | 🔧 架构核心 |
 | `docker-deploy-simple.sh` | 简化 Docker 部署 | 📚 参考资料 |
 | `init-deploy-servers.sh` | 部署服务器初始化 | 📚 参考资料 |
 

@@ -35,6 +35,8 @@ Phase 3 只允许 typed runtime toggle。toggle 用于 release / ops 调试、pr
 - release toggle 必须默认关闭；`default=true` 返回 `RELEASE_TOGGLE_DEFAULT_ON`。
 - release toggle 的 `test_matrix` 必须全部出现在已通过检查集合中；缺失项返回 `TOGGLE_TEST_MATRIX_NOT_VERIFIED`。
 - 阻塞发布时抛出 `RuntimeToggleReleaseBlocked`，用于 CI/PR gate 或发布脚本 fail-closed。
+- 本地与 CI 统一入口为 `./scripts/git-quality-gate.sh --check runtime-toggle-release`；默认 `quality` profile 会自动执行该门禁。
+- 已通过的 test matrix check 通过 `WES_RUNTIME_TOGGLE_PASSED_CHECKS` 或脚本参数 `--passed-check` 传入。
 
 ## Lifecycle
 
