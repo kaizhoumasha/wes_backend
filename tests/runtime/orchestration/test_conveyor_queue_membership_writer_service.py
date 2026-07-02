@@ -142,6 +142,51 @@ async def test_conveyor_queue_membership_writer_rereads_existing_after_unique_co
 
 
 @pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_reports_integrity_conflict_diagnostics(db_session) -> None:
+    """唯一约束冲突重读必须在结果中暴露可观测诊断。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    existing = ConveyorQueueMembership(
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-001",
+        membership_status="ACTIVE",
+        entered_at=1700000000000,
+    )
+    db_session.add(existing)
+    await db_session.flush()
+
+    service = ConveyorQueueMembershipWriterService(repository=_ConveyorQueueUniqueRaceRepository())
+
+    result = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-001",
+        declared_queue_codes={"Q-IN"},
+        evidence_json={"source_event_id": "evt-race-diagnostics"},
+        auto_commit=False,
+    )
+
+    assert result.diagnostics.decision_kind == "CREATE_ACTIVE"
+    assert result.diagnostics.decision_reason == "CREATE_NEW_ACTIVE_MEMBERSHIP"
+    assert result.diagnostics.created is False
+    assert result.diagnostics.reused_existing_after_integrity_conflict is True
+    assert result.diagnostics.runtime_hold_required is False
+    assert result.diagnostics.reconciliation_required is False
+    assert result.diagnostics.membership_status == "ACTIVE"
+    assert result.membership.id == existing.id
+    assert await _membership_count(db_session) == 1
+
+
+@pytest.mark.asyncio
 async def test_conveyor_queue_membership_writer_resolves_placeholder_in_place(db_session) -> None:
     """placeholder resolve 必须原地绑定真实 bin，不额外创建第二条 active。"""
 

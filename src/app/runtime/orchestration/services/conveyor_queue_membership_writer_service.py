@@ -36,6 +36,20 @@ class ConveyorQueueMembershipWriteResult:
     membership: ConveyorQueueMembership
     decision: ConveyorQueueWriteDecision
     created: bool
+    diagnostics: ConveyorQueueMembershipWriteDiagnostics
+
+
+@dataclass(frozen=True, slots=True)
+class ConveyorQueueMembershipWriteDiagnostics:
+    """Conveyor queue membership 写入诊断。"""
+
+    decision_kind: str
+    decision_reason: str
+    created: bool
+    reused_existing_after_integrity_conflict: bool
+    runtime_hold_required: bool
+    reconciliation_required: bool
+    membership_status: str | None
 
 
 class ConveyorQueueWriteBlocked(Exception):
@@ -126,7 +140,7 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
             )
             if membership is None:
                 raise RuntimeError("ConveyorQueueWriter 返回幂等复用，但未找到 ACTIVE membership")
-            return ConveyorQueueMembershipWriteResult(membership=membership, decision=decision, created=False)
+            return _write_result(membership, decision, created=False)
         if decision.kind == ConveyorQueueWriteDecisionKind.RESOLVE_PLACEHOLDER:
             membership = await self._resolve_placeholder(
                 db,
@@ -135,7 +149,7 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
                 decision=decision,
             )
             await self._finish(db, membership, auto_commit=auto_commit)
-            return ConveyorQueueMembershipWriteResult(membership=membership, decision=decision, created=False)
+            return _write_result(membership, decision, created=False)
         if decision.kind == ConveyorQueueWriteDecisionKind.RECONCILING:
             membership = await self._mark_reconciling(
                 db,
@@ -144,15 +158,20 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
                 decision=decision,
             )
             await self._finish(db, membership, auto_commit=auto_commit)
-            return ConveyorQueueMembershipWriteResult(membership=membership, decision=decision, created=False)
+            return _write_result(membership, decision, created=False)
 
-        membership, created = await self._create_active_with_conflict_recheck(
+        membership, created, reused_existing_after_integrity_conflict = await self._create_active_with_conflict_recheck(
             db,
             normalized=normalized,
             decision=decision,
         )
         await self._finish(db, membership, auto_commit=auto_commit)
-        return ConveyorQueueMembershipWriteResult(membership=membership, decision=decision, created=created)
+        return _write_result(
+            membership,
+            decision,
+            created=created,
+            reused_existing_after_integrity_conflict=reused_existing_after_integrity_conflict,
+        )
 
     async def _create_active_with_conflict_recheck(
         self,
@@ -160,7 +179,7 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
         *,
         normalized: _NormalizedWriteInput,
         decision: ConveyorQueueWriteDecision,
-    ) -> tuple[ConveyorQueueMembership, bool]:
+    ) -> tuple[ConveyorQueueMembership, bool, bool]:
         try:
             async with db.begin_nested():
                 membership = await self.repo.create_without_session_rollback(
@@ -181,12 +200,12 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
                         },
                     },
                 )
-                return membership, True
+                return membership, True, False
         except IntegrityError:
             existing = await self._read_existing_after_integrity_conflict(db, normalized=normalized)
             if existing is None:
                 raise
-            return existing, False
+            return existing, False, True
 
     async def _resolve_placeholder(
         self,
@@ -355,6 +374,29 @@ def _decision_evidence(decision: ConveyorQueueWriteDecision) -> dict[str, Any]:
     }
 
 
+def _write_result(
+    membership: ConveyorQueueMembership,
+    decision: ConveyorQueueWriteDecision,
+    *,
+    created: bool,
+    reused_existing_after_integrity_conflict: bool = False,
+) -> ConveyorQueueMembershipWriteResult:
+    return ConveyorQueueMembershipWriteResult(
+        membership=membership,
+        decision=decision,
+        created=created,
+        diagnostics=ConveyorQueueMembershipWriteDiagnostics(
+            decision_kind=decision.kind.value,
+            decision_reason=decision.reason,
+            created=created,
+            reused_existing_after_integrity_conflict=reused_existing_after_integrity_conflict,
+            runtime_hold_required=decision.runtime_hold_required,
+            reconciliation_required=decision.reconciliation_required,
+            membership_status=membership.membership_status,
+        ),
+    )
+
+
 def _merge_evidence(
     membership: ConveyorQueueMembership,
     evidence_json: dict[str, Any] | None,
@@ -391,6 +433,7 @@ conveyor_queue_membership_writer_service = ConveyorQueueMembershipWriterService(
 
 
 __all__ = [
+    "ConveyorQueueMembershipWriteDiagnostics",
     "ConveyorQueueMembershipWriteResult",
     "ConveyorQueueMembershipWriterService",
     "ConveyorQueueWriteBlocked",

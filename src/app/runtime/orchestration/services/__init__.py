@@ -1,6 +1,7 @@
 """Runtime/orchestration service helpers."""
 
 from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+    ConveyorQueueMembershipWriteDiagnostics,
     ConveyorQueueMembershipWriteResult,
     ConveyorQueueMembershipWriterService,
     ConveyorQueueWriteBlocked,
@@ -26,6 +27,7 @@ from src.app.runtime.orchestration.services.runtime_snapshot_assembler import (
 
 __all__ = [
     "ClaimResult",
+    "ConveyorQueueMembershipWriteDiagnostics",
     "ConveyorQueueMembershipWriteResult",
     "ConveyorQueueMembershipWriterService",
     "ConveyorQueueWriteBlocked",
