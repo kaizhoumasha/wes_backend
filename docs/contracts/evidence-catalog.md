@@ -18,6 +18,19 @@
 | `ix_wms_call_evidence_request_snapshot_gin` | `request_snapshot` | 查询出站 request envelope 内的 `external_refs`、`source_event_id`、`payload_hash` |
 | `ix_wms_call_evidence_response_snapshot_gin` | `response_snapshot` | 查询入站/响应 envelope 内的 `external_refs`、`source_event_id`、`payload_hash` |
 
+## Retention And Archive
+
+`WMS_CALL_EVIDENCE_RETENTION_DAYS` 默认 180 天。`WmsCallEvidenceService.archive_expired_evidence()` 只迁移超过保留期且非 `STARTED` 的 evidence：
+
+| Table | Purpose | Notes |
+| --- | --- | --- |
+| `wms_call_evidence` | 热 evidence 表 | 供 trace、callback、breaker、drift job 和现场诊断查询 |
+| `wms_call_evidence_archive` | 归档 evidence 表 | 保留原 `evidence_key`、hash、snapshot、状态、时间和 `original_evidence_id` |
+
+- `STARTED` 表示仍可能在途，不能被 retention job 归档或删除。
+- archive 写入成功后才允许删除热表记录。
+- archive 表只保存脱敏快照，不恢复或复制原始 provider payload。
+
 ## Drift Classification
 
 `ExternalReferenceCatalog` 按 `(system, object_type, schema_version)` 查找当前 provider catalog。`WmsCallEvidenceService.run_external_reference_drift_job()` 只读扫描 evidence envelope，不写 WMS、不修改本地投影。

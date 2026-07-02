@@ -87,8 +87,64 @@ class WmsCallEvidence(DataTableMixin, table=True):
     finished_at: datetime | None = Field(default=None, description="调用结束时间")
 
 
+class WmsCallEvidenceArchive(DataTableMixin, table=True):
+    """WMS 调用证据归档表。"""
+
+    __tablename__: ClassVar[Literal["wms_call_evidence_archive"]] = "wms_call_evidence_archive"
+    __schema__ = SchemaType.BIZ.value
+    __table_args__ = (
+        Index("ux_wms_call_evidence_archive_original_id", "original_evidence_id", unique=True),
+        Index("ux_wms_call_evidence_archive_key", "evidence_key", unique=True),
+        Index("ix_wms_call_evidence_archive_operation_started", "operation_name", "started_at"),
+        Index("ix_wms_call_evidence_archive_archived", "archived_at"),
+        {"schema": SchemaType.BIZ.value},
+    )
+
+    original_evidence_id: int = Field(description="原 wms_call_evidence.id")
+    evidence_key: str = Field(min_length=1, max_length=240, description="证据幂等键")
+    operation_name: str = Field(min_length=1, max_length=120, description="WMS 操作名")
+    target_code: str | None = Field(default=None, max_length=240, description="WMS/RCS 目标编码")
+    status: WmsEvidenceStatus = Field(
+        sa_type=cast(
+            "Any",
+            SQLAEnum(WmsEvidenceStatus, native_enum=False, create_constraint=True, length=50),
+        ),
+        description="证据状态",
+    )
+
+    request_id: str | None = Field(default=None, max_length=120, description="请求 ID")
+    trace_id: str | None = Field(default=None, max_length=120, description="Trace ID")
+    dispatch_key: str | None = Field(default=None, max_length=240, description="Outbox 派发键")
+    source_ref_type: str | None = Field(default=None, max_length=50, description="异步事实源类型")
+    source_ref_id: str | None = Field(default=None, max_length=120, description="异步事实源 ID")
+
+    request_snapshot: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, comment="脱敏请求或异步摘要"),
+        description="脱敏请求或异步摘要",
+    )
+    response_snapshot: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSONB, nullable=False, comment="脱敏响应摘要"),
+        description="脱敏响应摘要",
+    )
+    request_hash: str = Field(min_length=64, max_length=64, description="canonical request sha256")
+    response_hash: str | None = Field(
+        default=None, min_length=64, max_length=64, description="canonical response sha256"
+    )
+
+    http_status: int | None = Field(default=None, description="HTTP 状态码")
+    reason_code: str | None = Field(default=None, max_length=120, description="WMS 原因码")
+    retryable: bool | None = Field(default=None, description="调用方是否可重试")
+    started_at: datetime = Field(description="调用开始时间")
+    finished_at: datetime | None = Field(default=None, description="调用结束时间")
+    archived_at: datetime = Field(default_factory=timezone.now_for_db, description="归档时间")
+    retention_cutoff_at: datetime = Field(description="本次归档 cutoff 时间")
+
+
 __all__ = [
     "WMS_CALL_EVIDENCE_RETENTION_DAYS",
     "WmsCallEvidence",
+    "WmsCallEvidenceArchive",
     "WmsEvidenceStatus",
 ]

@@ -25,6 +25,7 @@ from .endpoint_config import (
 )
 from .evidence_service import (
     WmsCallEvidenceService,
+    WmsEvidenceArchiveReport,
     WmsExternalReferenceDriftItem,
     WmsExternalReferenceDriftReport,
     wms_call_evidence_service,
@@ -65,6 +66,7 @@ __all__ = [
     "WmsCircuitOpenError",
     "WmsEndpointConfig",
     "WmsEventNormalizer",
+    "WmsEvidenceArchiveReport",
     "WmsEvidencePersistenceError",
     "WmsExecutionCallbackNormalizer",
     "WmsExternalReferenceDriftItem",

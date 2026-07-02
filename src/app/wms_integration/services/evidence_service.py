@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -12,8 +13,13 @@ from src.app.wms_integration.evidence import (
     ExternalReferenceCatalog,
     ExternalReferenceDriftKind,
 )
-from src.app.wms_integration.models import WmsCallEvidence, WmsEvidenceStatus
-from src.app.wms_integration.repositories import WmsCallEvidenceRepository, wms_call_evidence_repository
+from src.app.wms_integration.models import WMS_CALL_EVIDENCE_RETENTION_DAYS, WmsCallEvidence, WmsEvidenceStatus
+from src.app.wms_integration.repositories import (
+    WmsCallEvidenceArchiveRepository,
+    WmsCallEvidenceRepository,
+    wms_call_evidence_archive_repository,
+    wms_call_evidence_repository,
+)
 from src.app.wms_integration.services.redaction import bounded_redacted_snapshot, canonical_sha256
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
@@ -53,11 +59,26 @@ class WmsExternalReferenceDriftReport:
         return len(self.drift_items)
 
 
+@dataclass(frozen=True, slots=True)
+class WmsEvidenceArchiveReport:
+    """WMS evidence retention/archive 扫描结果。"""
+
+    cutoff_at: datetime
+    scanned_count: int
+    archived_count: int
+    deleted_count: int
+
+
 class WmsCallEvidenceService(BaseService[WmsCallEvidence, WmsCallEvidenceRepository]):
     """WMS 调用证据服务。"""
 
-    def __init__(self, repository: WmsCallEvidenceRepository | None = None) -> None:
+    def __init__(
+        self,
+        repository: WmsCallEvidenceRepository | None = None,
+        archive_repository: WmsCallEvidenceArchiveRepository | None = None,
+    ) -> None:
         super().__init__(repository or wms_call_evidence_repository)
+        self.archive_repo = archive_repository or wms_call_evidence_archive_repository
 
     async def record_sync_call(
         self,
@@ -202,6 +223,45 @@ class WmsCallEvidenceService(BaseService[WmsCallEvidence, WmsCallEvidenceReposit
             drift_items=drift_items,
         )
 
+    async def archive_expired_evidence(
+        self,
+        db: AsyncSession,
+        *,
+        now: datetime | None = None,
+        retention_days: int = WMS_CALL_EVIDENCE_RETENTION_DAYS,
+        limit: int = 500,
+    ) -> WmsEvidenceArchiveReport:
+        """把超过保留期且非 in-flight 的 WMS evidence 移入 archive 表。"""
+
+        effective_now = now or timezone.now_for_db()
+        cutoff_at = effective_now - timedelta(days=retention_days)
+        expired_rows = await self.repo.list_expired_for_archive(db, cutoff_at=cutoff_at, limit=limit)
+
+        archived_ids: list[int] = []
+        for evidence in expired_rows:
+            original_id = int(evidence.id)
+            existing_archive = await self.archive_repo.get_by_original_evidence_id(db, original_id)
+            if existing_archive is None:
+                created = await self.archive_repo.create(
+                    db,
+                    _archive_evidence_data(
+                        evidence,
+                        archived_at=effective_now,
+                        retention_cutoff_at=cutoff_at,
+                    ),
+                )
+                if created is None:
+                    raise RuntimeError("创建 WMS evidence archive 失败")
+            archived_ids.append(original_id)
+
+        deleted_count = await self.repo.delete_by_ids(db, archived_ids)
+        return WmsEvidenceArchiveReport(
+            cutoff_at=cutoff_at,
+            scanned_count=len(expired_rows),
+            archived_count=len(archived_ids),
+            deleted_count=deleted_count,
+        )
+
 
 def _build_async_evidence_summary(summary: dict[str, Any]) -> dict[str, Any]:
     """把异步事实源 payload 收敛为可留痕摘要，避免复制完整 payload。"""
@@ -265,11 +325,43 @@ def _extract_external_references(snapshot: dict[str, Any]) -> list[ExternalRefer
     return references
 
 
+def _archive_evidence_data(
+    evidence: WmsCallEvidence,
+    *,
+    archived_at: datetime,
+    retention_cutoff_at: datetime,
+) -> dict[str, Any]:
+    return {
+        "original_evidence_id": int(evidence.id),
+        "evidence_key": evidence.evidence_key,
+        "operation_name": evidence.operation_name,
+        "target_code": evidence.target_code,
+        "status": evidence.status,
+        "request_id": evidence.request_id,
+        "trace_id": evidence.trace_id,
+        "dispatch_key": evidence.dispatch_key,
+        "source_ref_type": evidence.source_ref_type,
+        "source_ref_id": evidence.source_ref_id,
+        "request_snapshot": dict(evidence.request_snapshot),
+        "response_snapshot": dict(evidence.response_snapshot),
+        "request_hash": evidence.request_hash,
+        "response_hash": evidence.response_hash,
+        "http_status": evidence.http_status,
+        "reason_code": evidence.reason_code,
+        "retryable": evidence.retryable,
+        "started_at": evidence.started_at,
+        "finished_at": evidence.finished_at,
+        "archived_at": archived_at,
+        "retention_cutoff_at": retention_cutoff_at,
+    }
+
+
 wms_call_evidence_service = WmsCallEvidenceService()
 
 
 __all__ = [
     "WmsCallEvidenceService",
+    "WmsEvidenceArchiveReport",
     "WmsExternalReferenceDriftItem",
     "WmsExternalReferenceDriftReport",
     "wms_call_evidence_service",

@@ -1794,6 +1794,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `ScenarioRecorder` / `ScenarioReplayRunner`：补齐脱敏录制、deterministic replay、timeline/outbox/projection hash/reconciliation reason 断言合同；本分支新增 `tests/resilience/fixtures/phase3_runtime_replay_fixture.json` 与显式 resilience replay 测试；生产数据源采集和 simulator fixture 仍待接入。
 - `RuntimeObservabilityRegistry`、`RuntimeToggleRegistry`、`RuntimeToggleReleaseGate`、`RuntimeBenchmarkGate`：补齐稳定 attributes 校验、observer 发射入口、WMS breaker transition instrumentation、WMS evidence persistence failure instrumentation、toggle owner/expiry/security-bypass 拦截、release toggle default-off/test_matrix evidence 发布阻塞和 Phase 3 benchmark 场景清单合同；runtime toggle release gate 已接入 `scripts/git-quality-gate.sh --check runtime-toggle-release` 和 quality profile；本分支补齐 `tests/load/test_runtime_inbox_claim_benchmark.py`、`test_conveyor_queue_writer_benchmark.py`、`test_ecs_status_command_benchmark.py`、`test_plane_snapshot_benchmark.py` 四个轻量 benchmark 命令；全链路 OpenTelemetry exporter 与生产规模 benchmark artifact 仍待接入。
 - WMS fulfillment 状态机补齐 4 类 timeout 事件合同与 current-state-aware 可观察转移矩阵，避免 provider/callback 事件越级改状态；并修正 circuit breaker open/half-open 只阻断出站请求、不覆盖已在途 fulfillment 状态；typed port 集成矩阵覆盖 OPEN fast-fail 与 HALF_OPEN trial-in-progress 二次 effect 不打 HTTP。
+- WMS evidence retention/archive 补齐 `wms_call_evidence_archive` 归档表、过期 finished evidence 迁移服务和保留期合同；in-flight `STARTED` evidence 不归档，避免清理仍在途调用诊断。
 - External callback allow-list 补齐 Phase 3 矩阵：WMS/RCS normalizer enforce `WMS_*`→`WMS`、`RCS_*`→`RCS`；统一 external callback 入口拒绝未登记 `callback_type`，并校验 ECS/device 与 provider-specific source mismatch，避免跨 provider callback_type/source 混用。
 - `ExternalReferenceCatalog` 补齐 typed external reference 与 `source_version` drift 分类合同；`WmsCallEvidence` request/response snapshot 升级为 JSONB 并声明 GIN 索引；`WmsCallEvidenceService.run_external_reference_drift_job()` 只读扫描 evidence envelope 并输出 drift report；`docs/contracts/evidence-catalog.md` 固化 schema、索引和 drift 分类口径。
 - full-box exchange 行为合同从 strict xfail 转为真实合同：验证 full-box 外部履约、typed evidence 与本地冲突进入 ReconciliationManager 的语义；RACK_BIN exchange 和生产 callback/projection 接入仍待补齐。
@@ -1815,7 +1816,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `uv run pytest tests/runtime/orchestration/test_phase3_operational_contracts.py tests/contracts/test_phase3_ops_contract_docs.py -q`：8 passed
 - `uv run pytest tests/wms_integration/test_circuit_breaker.py tests/wms_integration/test_wms_client.py tests/wms_integration/test_fulfillment_state_machine.py -q`：49 passed
 - `uv run pytest tests/wms_integration/test_fulfillment_state_machine.py tests/wms_integration/test_fulfillment_lifecycle_service.py tests/runtime/orchestration/test_phase3_p0_closure_contract.py -q`：14 passed
-- `uv run pytest tests/wms_integration/test_evidence.py tests/wms_integration/test_typed_evidence_envelope.py -q`：12 passed
+- `uv run pytest tests/wms_integration/test_evidence.py tests/wms_integration/test_typed_evidence_envelope.py -q`：13 passed
 - `uv run pytest tests/wms_integration/test_callback_normalizer.py -q`：33 passed
 - `uv run pytest tests/api/test_callback_external_api.py -q`：34 passed
 - `uv run pytest tests/architecture/test_git_quality_gate_architecture_profile.py -q`：2 passed
@@ -2047,7 +2048,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | ENG-013 | ✅ 已完成 | RECONCILING 软件禁发、投影冻结和 owner-scoped 人工恢复审计合同 |
 | ENG-016 | 🟡 部分完成 | 本分支补齐 `ConveyorQueueWriter` 写入决策合同，并新增 runtime DB-backed `ConveyorQueueMembershipWriterService` / repository，覆盖幂等重放、placeholder resolve、跨队列 RECONCILING、strict-mode unknown queue 和 IntegrityError existing 重读；PostgreSQL 高并发基准与 `tests/load/` 性能数据仍待补齐 |
 | ENG-017 | 🟡 部分完成 | 本分支将 full-box exchange 合同从 strict xfail 转为真实合同，覆盖外部履约 evidence 与本地冲突进入 reconciliation；RACK_BIN exchange 与生产 callback/projection 接入仍待补齐 |
-| ENG-018 | 🟡 部分完成 | typed evidence envelope 与 observability contract 已落地；本分支补齐 WMS breaker OPEN/HALF_OPEN/CLOSED transition instrumentation、typed port `trace_id` 透传和 `wms_evidence.persistence_failure` 指标事件；retention/archive 仍待补齐 |
+| ENG-018 | ✅ 已完成 | typed evidence envelope 与 observability contract 已落地；本分支补齐 WMS breaker OPEN/HALF_OPEN/CLOSED transition instrumentation、typed port `trace_id` 透传、`wms_evidence.persistence_failure` 指标事件，以及 `wms_call_evidence_archive` retention/archive 服务与迁移 |
 | ENG-019 | 🟡 部分完成 | 本分支新增 `RuntimeBenchmarkGate` 必需场景清单合同，覆盖 RuntimeInbox claim、queue writer、ECS status command 和 plane snapshot；并补齐对应 `tests/load/` 轻量 benchmark 脚本，四个 gate 命令均可显式运行；生产规模性能数据、CI artifact 和真实外部依赖压测仍待补齐 |
 | ENG-020 | 🟡 部分完成 | 本分支新增 `ScenarioRecorder` / `ScenarioReplayRunner` 脱敏录制和 deterministic replay 合同，并补齐 `tests/resilience/fixtures/phase3_runtime_replay_fixture.json` + `tests/resilience/test_phase3_scenario_replay.py` 显式回放；生产录制源和 simulator fixture 仍待补齐 |
 | ENG-021 | 🟡 部分完成 | `docs/contracts/observability-contract.md` 与契约测试已落地；本分支新增 `RuntimeObservabilityRegistry` 稳定 attributes 校验、observer 发射入口，并接入 WMS breaker transition 与 evidence persistence failure 运行时 instrumentation；其余 runtime/callback/device span 与 OpenTelemetry exporter 仍待补齐 |
