@@ -46,6 +46,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"missing_artifacts={','.join(validation.missing_artifacts)}")
         if validation.invalid_artifacts:
             print(f"invalid_artifacts={','.join(validation.invalid_artifacts)}")
+        if validation.missing_evidence_files:
+            print(f"missing_evidence_files={','.join(validation.missing_evidence_files)}")
         return 1
 
     print("Phase 3 closure evidence passed")

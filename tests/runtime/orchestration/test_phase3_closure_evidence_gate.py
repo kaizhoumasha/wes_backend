@@ -101,9 +101,40 @@ def _write_json(path: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
+def _write_evidence_file(base_dir: Path, relative_path: str) -> str:
+    evidence_path = base_dir / relative_path
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_text(json.dumps({"evidence": relative_path}, sort_keys=True), encoding="utf-8")
+    return relative_path
+
+
 def _write_closure_artifacts(tmp_path: Path) -> tuple[Path, Path]:
     p0_e2e_path = _write_json(tmp_path / "phase3-p0-e2e.json", _p0_e2e_artifact())
     benchmark_path = _write_json(tmp_path / "phase3-production-benchmark.json", _benchmark_artifact())
+    return p0_e2e_path, benchmark_path
+
+
+def _write_closure_artifacts_with_evidence(tmp_path: Path) -> tuple[Path, Path]:
+    p0_e2e_artifact = _p0_e2e_artifact()
+    p0_e2e_artifact["source"]["evidence"] = _write_evidence_file(tmp_path, "evidence/p0-e2e/source.json")
+    p0_e2e_artifact["exception_paths"]["callback_out_of_order"]["evidence"] = _write_evidence_file(
+        tmp_path, "evidence/p0-e2e/callback-out-of-order.json"
+    )
+    p0_e2e_artifact["exception_paths"]["ecs_timeout"]["evidence"] = _write_evidence_file(
+        tmp_path, "evidence/p0-e2e/ecs-timeout.json"
+    )
+    p0_e2e_artifact["exception_paths"]["wms_reject"]["evidence"] = _write_evidence_file(
+        tmp_path, "evidence/p0-e2e/wms-reject.json"
+    )
+
+    benchmark_artifact = _benchmark_artifact()
+    for scenario_name in benchmark_artifact["scenarios"]:
+        benchmark_artifact["scenarios"][scenario_name]["source"]["evidence"] = _write_evidence_file(
+            tmp_path, f"evidence/benchmark/{scenario_name}.json"
+        )
+
+    p0_e2e_path = _write_json(tmp_path / "phase3-p0-e2e.json", p0_e2e_artifact)
+    benchmark_path = _write_json(tmp_path / "phase3-production-benchmark.json", benchmark_artifact)
     return p0_e2e_path, benchmark_path
 
 
@@ -122,7 +153,7 @@ def test_phase3_closure_gate_requires_both_production_artifacts(tmp_path) -> Non
 def test_phase3_closure_gate_accepts_valid_p0_and_benchmark_artifacts(tmp_path) -> None:
     from src.app.runtime.orchestration.phase3_closure_gate import RuntimePhase3ClosureGate
 
-    p0_e2e_path, benchmark_path = _write_closure_artifacts(tmp_path)
+    p0_e2e_path, benchmark_path = _write_closure_artifacts_with_evidence(tmp_path)
 
     validation = RuntimePhase3ClosureGate().validate_artifact_files(
         {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path}
@@ -130,6 +161,29 @@ def test_phase3_closure_gate_accepts_valid_p0_and_benchmark_artifacts(tmp_path) 
 
     assert validation.valid is True
     assert validation.reason == "OK"
+
+
+def test_phase3_closure_gate_rejects_missing_referenced_evidence_files(tmp_path) -> None:
+    from src.app.runtime.orchestration.phase3_closure_gate import RuntimePhase3ClosureGate
+
+    p0_e2e_path, benchmark_path = _write_closure_artifacts(tmp_path)
+
+    validation = RuntimePhase3ClosureGate().validate_artifact_files(
+        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path}
+    )
+
+    assert validation.valid is False
+    assert validation.reason == "MISSING_PHASE3_CLOSURE_EVIDENCE_FILES"
+    assert validation.missing_evidence_files == (
+        "benchmark:scenarios.conveyor_queue_writer.source.evidence",
+        "benchmark:scenarios.ecs_status_command.source.evidence",
+        "benchmark:scenarios.plane_snapshot.source.evidence",
+        "benchmark:scenarios.runtime_inbox_claim.source.evidence",
+        "p0_e2e:exception_paths.callback_out_of_order.evidence",
+        "p0_e2e:exception_paths.ecs_timeout.evidence",
+        "p0_e2e:exception_paths.wms_reject.evidence",
+        "p0_e2e:source.evidence",
+    )
 
 
 def test_phase3_closure_gate_rejects_lightweight_benchmark_artifact(tmp_path) -> None:
@@ -174,7 +228,7 @@ def test_phase3_closure_gate_rejects_non_production_benchmark_environment(tmp_pa
 
 
 def test_phase3_closure_gate_cli_validates_artifact_set(tmp_path) -> None:
-    p0_e2e_path, benchmark_path = _write_closure_artifacts(tmp_path)
+    p0_e2e_path, benchmark_path = _write_closure_artifacts_with_evidence(tmp_path)
     repo_root = Path(__file__).resolve().parents[3]
 
     result = subprocess.run(

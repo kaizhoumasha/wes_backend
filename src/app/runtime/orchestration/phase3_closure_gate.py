@@ -20,6 +20,7 @@ class RuntimePhase3ClosureValidation:
     reason: str = "OK"
     missing_artifacts: tuple[str, ...] = ()
     invalid_artifacts: tuple[str, ...] = ()
+    missing_evidence_files: tuple[str, ...] = ()
 
 
 class RuntimePhase3ClosureGate:
@@ -66,8 +67,10 @@ class RuntimePhase3ClosureGate:
             )
 
         invalid_artifacts: list[str] = []
+        loaded_artifacts: dict[str, tuple[Path, dict[str, Any]]] = {}
         for artifact_name in self._REQUIRED_ARTIFACTS:
-            artifact = self._load_artifact(Path(artifact_paths[artifact_name]))
+            artifact_path = Path(artifact_paths[artifact_name])
+            artifact = self._load_artifact(artifact_path)
             if artifact is None:
                 invalid_artifacts.append(f"{artifact_name}:INVALID_JSON")
                 continue
@@ -75,12 +78,32 @@ class RuntimePhase3ClosureGate:
             validation_reason = self._validate_named_artifact(artifact_name, artifact)
             if validation_reason is not None:
                 invalid_artifacts.append(f"{artifact_name}:{validation_reason}")
+                continue
+            loaded_artifacts[artifact_name] = (artifact_path, artifact)
 
         if invalid_artifacts:
             return RuntimePhase3ClosureValidation(
                 valid=False,
                 reason="INVALID_PHASE3_CLOSURE_ARTIFACTS",
                 invalid_artifacts=tuple(invalid_artifacts),
+            )
+
+        missing_evidence_files = tuple(
+            sorted(
+                missing_file
+                for artifact_name, (artifact_path, artifact) in loaded_artifacts.items()
+                for missing_file in _missing_referenced_evidence_files(
+                    artifact_name=artifact_name,
+                    artifact_path=artifact_path,
+                    artifact=artifact,
+                )
+            )
+        )
+        if missing_evidence_files:
+            return RuntimePhase3ClosureValidation(
+                valid=False,
+                reason="MISSING_PHASE3_CLOSURE_EVIDENCE_FILES",
+                missing_evidence_files=missing_evidence_files,
             )
 
         return RuntimePhase3ClosureValidation(valid=True)
@@ -106,6 +129,66 @@ class RuntimePhase3ClosureGate:
             validation = self._benchmark_gate.validate_artifact(artifact)
             return None if validation.valid else validation.reason
         return "UNKNOWN"
+
+
+def _missing_referenced_evidence_files(
+    *,
+    artifact_name: str,
+    artifact_path: Path,
+    artifact: Mapping[str, object],
+) -> tuple[str, ...]:
+    evidence_fields = _referenced_evidence_fields(artifact_name, artifact)
+    return tuple(
+        f"{artifact_name}:{field_name}"
+        for field_name, raw_path in evidence_fields.items()
+        if not _evidence_file_exists(base_dir=artifact_path.parent, raw_path=raw_path)
+    )
+
+
+def _referenced_evidence_fields(artifact_name: str, artifact: Mapping[str, object]) -> dict[str, object]:
+    if artifact_name == "p0_e2e":
+        return _p0_e2e_evidence_fields(artifact)
+    if artifact_name == "benchmark":
+        return _benchmark_evidence_fields(artifact)
+    return {}
+
+
+def _p0_e2e_evidence_fields(artifact: Mapping[str, object]) -> dict[str, object]:
+    evidence_fields: dict[str, object] = {}
+    source = artifact.get("source")
+    if isinstance(source, Mapping):
+        evidence_fields["source.evidence"] = source.get("evidence")
+
+    exception_paths = artifact.get("exception_paths")
+    if isinstance(exception_paths, Mapping):
+        for path_name, raw_exception_path in exception_paths.items():
+            if isinstance(path_name, str) and isinstance(raw_exception_path, Mapping):
+                evidence_fields[f"exception_paths.{path_name}.evidence"] = raw_exception_path.get("evidence")
+    return evidence_fields
+
+
+def _benchmark_evidence_fields(artifact: Mapping[str, object]) -> dict[str, object]:
+    scenarios = artifact.get("scenarios")
+    if not isinstance(scenarios, Mapping):
+        return {}
+
+    evidence_fields: dict[str, object] = {}
+    for scenario_name, raw_scenario in scenarios.items():
+        if not isinstance(scenario_name, str) or not isinstance(raw_scenario, Mapping):
+            continue
+        source = raw_scenario.get("source")
+        if isinstance(source, Mapping):
+            evidence_fields[f"scenarios.{scenario_name}.source.evidence"] = source.get("evidence")
+    return evidence_fields
+
+
+def _evidence_file_exists(*, base_dir: Path, raw_path: object) -> bool:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return False
+    evidence_path = Path(raw_path)
+    if not evidence_path.is_absolute():
+        evidence_path = base_dir / evidence_path
+    return evidence_path.is_file()
 
 
 runtime_phase3_closure_gate = RuntimePhase3ClosureGate()
