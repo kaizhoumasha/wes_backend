@@ -122,6 +122,47 @@ def test_phase3_closure_gate_accepts_valid_p0_and_benchmark_artifacts(tmp_path) 
     assert validation.reason == "OK"
 
 
+def test_phase3_closure_gate_rejects_lightweight_benchmark_artifact(tmp_path) -> None:
+    from src.app.runtime.orchestration.phase3_closure_gate import RuntimePhase3ClosureGate
+
+    p0_e2e_path = _write_json(tmp_path / "phase3-p0-e2e.json", _p0_e2e_artifact())
+    benchmark_artifact = _benchmark_artifact()
+    benchmark_artifact["environment"] = "local-lightweight"
+    benchmark_artifact["profile"] = {
+        "kind": "lightweight",
+        "database_backend": "in-memory",
+        "dependency_profile": "in-process-contract",
+        "concurrency_level": 1,
+        "duration_seconds": 0,
+    }
+    benchmark_path = _write_json(tmp_path / "phase3-lightweight-benchmark.json", benchmark_artifact)
+
+    validation = RuntimePhase3ClosureGate().validate_artifact_files(
+        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path}
+    )
+
+    assert validation.valid is False
+    assert validation.reason == "INVALID_PHASE3_CLOSURE_ARTIFACTS"
+    assert validation.invalid_artifacts == ("benchmark:LIGHTWEIGHT_BENCHMARK_NOT_ALLOWED",)
+
+
+def test_phase3_closure_gate_rejects_non_production_benchmark_environment(tmp_path) -> None:
+    from src.app.runtime.orchestration.phase3_closure_gate import RuntimePhase3ClosureGate
+
+    p0_e2e_path = _write_json(tmp_path / "phase3-p0-e2e.json", _p0_e2e_artifact())
+    benchmark_artifact = _benchmark_artifact()
+    benchmark_artifact["environment"] = "local-lightweight"
+    benchmark_path = _write_json(tmp_path / "phase3-local-benchmark.json", benchmark_artifact)
+
+    validation = RuntimePhase3ClosureGate().validate_artifact_files(
+        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path}
+    )
+
+    assert validation.valid is False
+    assert validation.reason == "INVALID_PHASE3_CLOSURE_ARTIFACTS"
+    assert validation.invalid_artifacts == ("benchmark:NON_PRODUCTION_BENCHMARK_ENVIRONMENT",)
+
+
 def test_phase3_closure_gate_cli_validates_artifact_set(tmp_path) -> None:
     p0_e2e_path, benchmark_path = _write_closure_artifacts(tmp_path)
     repo_root = Path(__file__).resolve().parents[3]

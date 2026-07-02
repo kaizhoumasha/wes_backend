@@ -26,6 +26,9 @@ class RuntimePhase3ClosureGate:
     """Require the production P0 E2E and production benchmark artifacts before Phase 3 closure."""
 
     _REQUIRED_ARTIFACTS: ClassVar[tuple[str, ...]] = ("p0_e2e", "benchmark")
+    _FORBIDDEN_BENCHMARK_ENVIRONMENTS: ClassVar[frozenset[str]] = frozenset(
+        {"sandbox", "local-lightweight", "ci-lightweight", "lightweight"}
+    )
 
     def __init__(
         self,
@@ -94,6 +97,12 @@ class RuntimePhase3ClosureGate:
             validation = self._p0_e2e_gate.validate_artifact(artifact)
             return None if validation.valid else validation.reason
         if artifact_name == "benchmark":
+            profile = artifact.get("profile")
+            if not isinstance(profile, Mapping) or profile.get("kind") != "production-scale":
+                return "LIGHTWEIGHT_BENCHMARK_NOT_ALLOWED"
+            environment = artifact.get("environment")
+            if isinstance(environment, str) and environment.strip().lower() in self._FORBIDDEN_BENCHMARK_ENVIRONMENTS:
+                return "NON_PRODUCTION_BENCHMARK_ENVIRONMENT"
             validation = self._benchmark_gate.validate_artifact(artifact)
             return None if validation.valid else validation.reason
         return "UNKNOWN"
