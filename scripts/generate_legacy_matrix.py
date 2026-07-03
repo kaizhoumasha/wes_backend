@@ -232,6 +232,27 @@ class Entry:
 
 def git_grep(pattern: str, paths: list[str]) -> list[str]:
     """运行 git grep，返回匹配行列表。"""
+    compiled = re.compile(pattern)
+
+    def python_grep() -> list[str]:
+        matches: list[str] = []
+        for raw_path in paths:
+            root = REPO_ROOT / raw_path
+            candidates = [root] if root.is_file() else root.rglob("*")
+            for candidate in candidates:
+                if not candidate.is_file():
+                    continue
+                try:
+                    lines = candidate.read_text(encoding="utf-8").splitlines()
+                except UnicodeDecodeError:  # noqa: S112
+                    # git grep 默认跳过二进制内容；Python fallback 保持同样语义。
+                    continue
+                rel = candidate.relative_to(REPO_ROOT).as_posix()
+                for lineno, line in enumerate(lines, start=1):
+                    if compiled.search(line):
+                        matches.append(f"{rel}:{lineno}:{line}")
+        return matches
+
     try:
         result = subprocess.run(  # noqa: S603
             ["git", "grep", "-n", "-E", pattern, "--", *paths],  # noqa: S607
@@ -240,9 +261,11 @@ def git_grep(pattern: str, paths: list[str]) -> list[str]:
             text=True,
             check=False,
         )
-        return [ln for ln in result.stdout.splitlines() if ln.strip()]
+        if result.returncode == 0:
+            return [ln for ln in result.stdout.splitlines() if ln.strip()]
     except Exception:
-        return []
+        pass
+    return python_grep()
 
 
 def classify_business_semantics(symbol: str, path: str) -> tuple[str, bool]:

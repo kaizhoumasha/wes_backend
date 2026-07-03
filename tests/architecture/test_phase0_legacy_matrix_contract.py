@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import ast
 import csv
+import subprocess
 from collections import Counter
 from pathlib import Path
 
+from scripts import generate_legacy_matrix
 from scripts.generate_legacy_matrix import parse_entries
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -57,6 +59,19 @@ def test_generated_csv_uses_lf_line_endings():
     matrix_path = REPO_ROOT / "docs" / "architecture" / "legacy-cleanup-matrix.csv"
 
     assert b"\r\n" not in matrix_path.read_bytes()
+
+
+def test_git_grep_falls_back_when_git_metadata_is_unavailable(monkeypatch):
+    """CI 镜像无 .git 时，矩阵生成仍必须能扫描源码。"""
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args=args, returncode=128, stdout="", stderr="fatal: not a git repository")
+
+    monkeypatch.setattr(generate_legacy_matrix.subprocess, "run", fake_run)
+
+    lines = generate_legacy_matrix.git_grep(r"^class WorkLine", ["src/app/workline/models"])
+
+    assert any(line.startswith("src/app/workline/models/workline.py:") for line in lines)
 
 
 def test_generated_csv_matches_parse_entries_for_required_fields():

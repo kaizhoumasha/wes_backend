@@ -75,6 +75,14 @@ if [[ -z "$REPO_ROOT" && "$CI_MODE" == "true" ]]; then
 fi
 
 if [[ -z "$REPO_ROOT" ]]; then
+    # CI 镜像和源码包场景可能没有 .git 元数据；脚本仍应能从自身位置定位仓库。
+    script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    if [[ -f "$script_root/pyproject.toml" ]]; then
+        REPO_ROOT="$script_root"
+    fi
+fi
+
+if [[ -z "$REPO_ROOT" ]]; then
     echo "Unable to determine repository root. Run inside a git checkout or pass --ci in containerized CI." >&2
     exit 2
 fi

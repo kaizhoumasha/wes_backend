@@ -70,3 +70,43 @@ exit 0
     assert result.returncode == 23
     assert "[runtime-toggle] check_runtime_toggle_release_gate.py" in result.stdout
     assert "runtime toggle release gate reached" in result.stderr
+
+
+def test_quality_gate_falls_back_to_script_root_without_git_metadata(tmp_path):
+    """CI 镜像无 .git 元数据时，quality gate 仍应从脚本位置定位仓库。"""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(parents=True, exist_ok=True)
+
+    fake_git = fake_bin / "git"
+    fake_git.write_text("#!/usr/bin/env bash\nexit 1\n", encoding="utf-8")
+    fake_git.chmod(0o755)
+
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text(
+        """#!/usr/bin/env bash
+if [[ "$*" == *"scripts/check_runtime_toggle_release_gate.py"* ]]; then
+  echo "runtime toggle release gate reached" >&2
+  exit 23
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+    }
+    result = subprocess.run(
+        ["/bin/bash", str(QUALITY_GATE), "--check", "runtime-toggle-release"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 23
+    assert "[runtime-toggle] check_runtime_toggle_release_gate.py" in result.stdout
+    assert "runtime toggle release gate reached" in result.stderr
