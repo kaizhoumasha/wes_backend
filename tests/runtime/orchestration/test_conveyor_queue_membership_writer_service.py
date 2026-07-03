@@ -250,6 +250,48 @@ async def test_conveyor_queue_membership_writer_resolves_placeholder_in_place(db
 
 
 @pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_replays_placeholder_without_bin_idempotently(db_session) -> None:
+    """真实 bin 到来前的 placeholder 重放必须复用 active 身份。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    service = ConveyorQueueMembershipWriterService()
+    first = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        placeholder_key="scan:001",
+        declared_queue_codes={"Q-IN"},
+        evidence_json={"source_event_id": "evt-placeholder"},
+        auto_commit=False,
+    )
+
+    replay = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        placeholder_key="scan:001",
+        declared_queue_codes={"Q-IN"},
+        evidence_json={"source_event_id": "evt-placeholder-replay"},
+        auto_commit=False,
+    )
+
+    assert replay.created is False
+    assert replay.decision.kind == ConveyorQueueWriteDecisionKind.IDEMPOTENT_REPLAY
+    assert replay.membership.id == first.membership.id
+    assert replay.membership.bin_code is None
+    assert replay.membership.placeholder_key == "scan:001"
+    assert replay.membership.queue_code == "Q-IN"
+    assert await _membership_count(db_session) == 1
+
+
+@pytest.mark.asyncio
 async def test_conveyor_queue_membership_writer_marks_conflict_reconciling(db_session) -> None:
     """同 bin 跨 queue 冲突必须标记 RECONCILING，不能静默切换 active 队列。"""
 

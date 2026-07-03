@@ -254,6 +254,15 @@ def test_conveyor_queue_writer_resolves_placeholder_and_escalates_conflict() -> 
         ),
         active_memberships=[placeholder],
     )
+    placeholder_replay = writer.plan_write(
+        ConveyorQueueWriteRequest(
+            workline_id=1,
+            queue_code="Q-IN",
+            placeholder_key="scan:001",
+            declared_queue_codes=frozenset({"Q-IN", "Q-OUT"}),
+        ),
+        active_memberships=[placeholder],
+    )
     conflict = writer.plan_write(
         ConveyorQueueWriteRequest(
             workline_id=1,
@@ -274,6 +283,8 @@ def test_conveyor_queue_writer_resolves_placeholder_and_escalates_conflict() -> 
     )
 
     assert resolve.kind == ConveyorQueueWriteDecisionKind.RESOLVE_PLACEHOLDER
+    assert placeholder_replay.kind == ConveyorQueueWriteDecisionKind.IDEMPOTENT_REPLAY
+    assert placeholder_replay.reuse_existing is True
     assert conflict.kind == ConveyorQueueWriteDecisionKind.RECONCILING
     assert conflict.runtime_hold_required is True
     assert blocked.kind == ConveyorQueueWriteDecisionKind.BLOCKED

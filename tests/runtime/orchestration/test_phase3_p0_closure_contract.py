@@ -391,6 +391,40 @@ def test_phase3_benchmark_gate_rejects_production_profile_without_postgres_and_c
     )
 
 
+def test_phase3_benchmark_gate_rejects_non_numeric_required_metric() -> None:
+    import json
+    from pathlib import Path
+
+    from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
+
+    repo_root = Path(__file__).resolve().parents[3]
+    artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "phase3_benchmark_artifact.json").read_text())
+    artifact["scenarios"]["runtime_inbox_claim"]["metrics"]["claim_p95_ms"] = "4.0"
+
+    validation = RuntimeBenchmarkGate().validate_artifact(artifact)
+
+    assert validation.valid is False
+    assert validation.reason == "INVALID_METRICS"
+    assert validation.invalid_metrics == ("runtime_inbox_claim.claim_p95_ms",)
+
+
+def test_phase3_benchmark_gate_rejects_non_numeric_required_threshold() -> None:
+    import json
+    from pathlib import Path
+
+    from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate
+
+    repo_root = Path(__file__).resolve().parents[3]
+    artifact = json.loads((repo_root / "tests" / "load" / "fixtures" / "phase3_benchmark_artifact.json").read_text())
+    artifact["scenarios"]["runtime_inbox_claim"]["thresholds"]["claim_p95_ms"] = None
+
+    validation = RuntimeBenchmarkGate().validate_artifact(artifact)
+
+    assert validation.valid is False
+    assert validation.reason == "INVALID_THRESHOLDS"
+    assert validation.invalid_thresholds == ("runtime_inbox_claim.claim_p95_ms",)
+
+
 def test_phase3_benchmark_gate_rejects_production_artifact_without_scenario_provenance() -> None:
     import json
     from pathlib import Path

@@ -149,6 +149,7 @@ class WorkLinePlaneService:
             code="200",
             msg="OK",
         )
+        await db.commit()
 
     async def _load_workline(self, db: AsyncSession, cache: Any, workline_id: int) -> WorkLine:
         workline = await workline_service.get_by_id(db, cache, workline_id, max_depth=0)

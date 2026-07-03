@@ -102,6 +102,24 @@ class ConveyorQueueWriter:
                 and membership.placeholder_key == request.placeholder_key
                 and membership.bin_code is None
             ):
+                if request.bin_code is None:
+                    if membership.queue_code == request.queue_code:
+                        return ConveyorQueueWriteDecision(
+                            kind=ConveyorQueueWriteDecisionKind.IDEMPOTENT_REPLAY,
+                            reason="ACTIVE_PLACEHOLDER_ALREADY_IN_QUEUE",
+                            queue_code=request.queue_code,
+                            bin_code=request.bin_code,
+                            reuse_existing=True,
+                        )
+                    return ConveyorQueueWriteDecision(
+                        kind=ConveyorQueueWriteDecisionKind.RECONCILING,
+                        reason="ACTIVE_PLACEHOLDER_QUEUE_CONFLICT",
+                        queue_code=request.queue_code,
+                        bin_code=request.bin_code,
+                        runtime_hold_required=True,
+                        reconciliation_required=True,
+                        reuse_existing=True,
+                    )
                 return ConveyorQueueWriteDecision(
                     kind=ConveyorQueueWriteDecisionKind.RESOLVE_PLACEHOLDER,
                     reason="PLACEHOLDER_RESOLVE",

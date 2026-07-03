@@ -18,6 +18,14 @@ class _AuditServiceStub:
         return object()
 
 
+class _AuditSessionStub:
+    def __init__(self) -> None:
+        self.commit_count = 0
+
+    async def commit(self) -> None:
+        self.commit_count += 1
+
+
 def test_plane_scene_and_snapshot_have_independent_schema_versions() -> None:
     """scene 与 snapshot 必须独立 version, 前端不能混用。"""
 
@@ -135,7 +143,7 @@ async def test_plane_service_records_read_audit_with_security_policy_args() -> N
 
     audit_service = _AuditServiceStub()
     service = WorkLinePlaneService(audit_service=audit_service)
-    db = object()
+    db = _AuditSessionStub()
 
     await service.record_read_audit(db, view="scene", workline_id=7, workline_code="WL-7")
 
@@ -159,3 +167,4 @@ async def test_plane_service_records_read_audit_with_security_policy_args() -> N
             "msg": "OK",
         }
     ]
+    assert db.commit_count == 1

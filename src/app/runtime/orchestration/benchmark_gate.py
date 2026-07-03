@@ -27,7 +27,9 @@ class RuntimeBenchmarkArtifactValidation:
     invalid_profile_fields: tuple[str, ...] = ()
     missing_scenarios: tuple[str, ...] = ()
     missing_metrics: tuple[str, ...] = ()
+    invalid_metrics: tuple[str, ...] = ()
     missing_thresholds: tuple[str, ...] = ()
+    invalid_thresholds: tuple[str, ...] = ()
     failed_thresholds: tuple[str, ...] = ()
     invalid_sample_counts: tuple[str, ...] = ()
     missing_provenance_fields: tuple[str, ...] = ()
@@ -157,7 +159,9 @@ def _validate_scenario_results(
     require_production_provenance: bool = False,
 ) -> RuntimeBenchmarkArtifactValidation | None:
     missing_metrics: list[str] = []
+    invalid_metrics: list[str] = []
     missing_thresholds: list[str] = []
+    invalid_thresholds: list[str] = []
     failed_thresholds: list[str] = []
     invalid_sample_counts: list[str] = []
     missing_provenance_fields: list[str] = []
@@ -199,7 +203,13 @@ def _validate_scenario_results(
                 continue
             metric_value = metrics_map[metric_name]
             threshold_value = thresholds_map[metric_name]
-            if _is_number(metric_value) and _is_number(threshold_value) and metric_value > threshold_value:
+            if not _is_number(metric_value):
+                invalid_metrics.append(metric_key)
+                continue
+            if not _is_number(threshold_value):
+                invalid_thresholds.append(metric_key)
+                continue
+            if metric_value > threshold_value:
                 failed_thresholds.append(metric_key)
 
     return _validation_from_collected_scenario_errors(
@@ -209,7 +219,9 @@ def _validate_scenario_results(
         missing_workload_fields=missing_workload_fields,
         invalid_workload_fields=invalid_workload_fields,
         missing_metrics=missing_metrics,
+        invalid_metrics=invalid_metrics,
         missing_thresholds=missing_thresholds,
+        invalid_thresholds=invalid_thresholds,
         failed_thresholds=failed_thresholds,
     )
 
@@ -222,7 +234,9 @@ def _validation_from_collected_scenario_errors(
     missing_workload_fields: list[str],
     invalid_workload_fields: list[str],
     missing_metrics: list[str],
+    invalid_metrics: list[str],
     missing_thresholds: list[str],
+    invalid_thresholds: list[str],
     failed_thresholds: list[str],
 ) -> RuntimeBenchmarkArtifactValidation | None:
     validation: RuntimeBenchmarkArtifactValidation | None = None
@@ -262,11 +276,23 @@ def _validation_from_collected_scenario_errors(
             reason="MISSING_METRICS",
             missing_metrics=tuple(missing_metrics),
         )
+    elif invalid_metrics:
+        validation = RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="INVALID_METRICS",
+            invalid_metrics=tuple(invalid_metrics),
+        )
     elif missing_thresholds:
         validation = RuntimeBenchmarkArtifactValidation(
             valid=False,
             reason="MISSING_THRESHOLDS",
             missing_thresholds=tuple(missing_thresholds),
+        )
+    elif invalid_thresholds:
+        validation = RuntimeBenchmarkArtifactValidation(
+            valid=False,
+            reason="INVALID_THRESHOLDS",
+            invalid_thresholds=tuple(invalid_thresholds),
         )
     elif failed_thresholds:
         validation = RuntimeBenchmarkArtifactValidation(
