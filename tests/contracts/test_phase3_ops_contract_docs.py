@@ -16,11 +16,31 @@ def test_observability_contract_declares_stable_runtime_signals() -> None:
         "runtime_inbox.claim",
         "runtime_intent.dispatch",
         "device_command.ack",
+        "device_command.dispatch_policy",
+        "device_command.result",
         "wms_breaker.transition",
+        "wms_evidence.persistence_failure",
     ):
         assert signal in text
-    for attribute in ("trace_id", "correlation_id", "provider_code", "operation_kind", "command_code"):
+    for attribute in (
+        "trace_id",
+        "correlation_id",
+        "provider_code",
+        "operation_kind",
+        "command_code",
+        "device_code",
+        "inbox_id",
+        "evidence_key",
+        "policy_decision",
+        "dispatch_allowed",
+        "runtime_hold_required",
+        "reason_code",
+    ):
         assert attribute in text
+    assert "RuntimeOpenTelemetryBridge" in text
+    assert "RuntimeOpenTelemetryHttpExporter" in text
+    assert "WES_RUNTIME_OTEL_ENABLED" in text
+    assert "WES_RUNTIME_OTEL_ENDPOINT" in text
 
 
 def test_runtime_toggle_governance_blocks_security_bypass() -> None:
@@ -31,3 +51,16 @@ def test_runtime_toggle_governance_blocks_security_bypass() -> None:
         assert field in text
     for forbidden in ("HMAC", "nonce", "idempotency", "RuntimeHold", "evidence"):
         assert forbidden in text
+
+
+def test_runtime_toggle_governance_declares_release_gate_entrypoint() -> None:
+    path = REPO_ROOT / "docs" / "contracts" / "runtime-toggle-governance.md"
+    text = path.read_text(encoding="utf-8")
+
+    for token in (
+        "RuntimeToggleReleaseGate",
+        "runtime-toggle-release",
+        "WES_RUNTIME_TOGGLE_PASSED_CHECKS",
+        "--passed-check",
+    ):
+        assert token in text

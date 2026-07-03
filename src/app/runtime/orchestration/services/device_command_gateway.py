@@ -12,6 +12,7 @@ runtime/orchestration/services/,原位置成为跨域引用违例。
 """
 
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any, NoReturn
 from urllib.parse import quote
 
@@ -20,6 +21,15 @@ from loguru import logger
 from src.app.device.models.capability import parse_device_capabilities
 from src.app.device.models.device import DeviceStatus
 from src.app.runtime.orchestration.enums import FailureDomain
+from src.app.runtime.orchestration.services.device_dispatch_policy import (
+    DeviceDispatchDecision,
+    DeviceDispatchDecisionKind,
+    DeviceDispatchPolicy,
+    DeviceDispatchRequest,
+    DeviceRuntimeSnapshot,
+    DeviceRuntimeStatus,
+    device_dispatch_policy,
+)
 from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_int, coerce_string_value, enum_value, resolve_entity_id
 
@@ -127,6 +137,54 @@ def _build_device_command_log_envelope(
     return envelope
 
 
+def _device_command_ack_age_ms(command: Any, *, ack_received_at: Any) -> int:
+    sent_at = getattr(command, "sent_at", None)
+    if sent_at is None:
+        return 0
+    return max(0, int((ack_received_at - sent_at).total_seconds() * 1000))
+
+
+def _device_command_provider_code(device: Any, payload: dict[str, Any]) -> str:
+    return (
+        coerce_string_value(getattr(device, "vendor_type", None))
+        or coerce_string_value(getattr(device, "provider_code", None))
+        or coerce_string_value(payload.get("provider_code"))
+        or "ECS"
+    )
+
+
+def _emit_device_command_ack_observability(
+    *,
+    command: Any,
+    device: Any,
+    outbox: Any,
+    payload: dict[str, Any],
+    ack_received_at: Any,
+) -> None:
+    """发出 DeviceCommand ACK age 观测事件；观测失败不改变 ACK 业务状态。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    command_code = coerce_string_value(getattr(command, "command_code", None)) or coerce_string_value(
+        payload.get("command_code")
+    )
+    try:
+        runtime_observability_registry.emit(
+            "device_command.ack",
+            {
+                "trace_id": coerce_string_value(getattr(command, "trace_id", None))
+                or coerce_string_value(getattr(outbox, "trace_id", None)),
+                "correlation_id": coerce_string_value(getattr(command, "correlation_id", None))
+                or coerce_string_value(getattr(outbox, "correlation_id", None)),
+                "command_code": command_code,
+                "provider_code": _device_command_provider_code(device, payload),
+                "ack_age_ms": _device_command_ack_age_ms(command, ack_received_at=ack_received_at),
+            },
+        )
+    except Exception as exc:  # pragma: no cover - 防止观测链路反向影响设备派发
+        logger.warning(f"设备指令 ACK 观测事件发射失败: command_code={command_code or 'UNKNOWN'}, error={exc}")
+
+
 def _resolve_command_type_for_governance(payload: dict[str, Any]) -> str | None:
     """为设备治理校验提取稳定 command_type。"""
 
@@ -170,6 +228,98 @@ def _resolve_device_status_timeout_seconds(device: Any) -> float:
     if not isinstance(value, int | float):
         value = _DEFAULT_DEVICE_STATUS_TIMEOUT_SECONDS
     return float(min(max(value, 1.0), 5.0))
+
+
+def _resolve_device_status_snapshot_ttl_ms(device: Any, policy: DeviceDispatchPolicy) -> int:
+    capabilities = getattr(device, "capabilities_json", None)
+    raw = capabilities if isinstance(capabilities, dict) else {}
+    value = raw.get("status_snapshot_ttl_ms", policy.status_snapshot_ttl_ms)
+    if not isinstance(value, int | float):
+        value = policy.status_snapshot_ttl_ms
+    return int(min(max(value, 1), 60_000))
+
+
+def _normalize_device_runtime_status(value: Any) -> DeviceRuntimeStatus:
+    status = str(enum_value(value) or "").upper()
+    if status in DeviceRuntimeStatus.__members__:
+        return DeviceRuntimeStatus[status]
+    return DeviceRuntimeStatus.UNKNOWN
+
+
+def _resolve_device_snapshot_observed_at(device: Any, *, now: Any) -> Any:
+    return (
+        timezone.to_db_datetime(getattr(device, "last_heartbeat_at", None))
+        or timezone.to_db_datetime(getattr(device, "updated_at", None))
+        or now
+    )
+
+
+def _build_device_runtime_snapshot(
+    device: Any,
+    *,
+    now: Any,
+    policy: DeviceDispatchPolicy,
+) -> DeviceRuntimeSnapshot:
+    status = _normalize_device_runtime_status(getattr(device, "device_status", None))
+    observed_at = _resolve_device_snapshot_observed_at(device, now=now)
+    status_valid_until = observed_at + timedelta(milliseconds=_resolve_device_status_snapshot_ttl_ms(device, policy))
+    current_command_id = getattr(device, "current_command_id", None)
+    in_flight_count = 1 if current_command_id is not None or status == DeviceRuntimeStatus.RUNNING else 0
+    concurrency_limit = coerce_optional_int(getattr(device, "max_concurrent_tasks", None)) or 1
+    return DeviceRuntimeSnapshot(
+        device_code=coerce_string_value(getattr(device, "device_code", None), "UNKNOWN_DEVICE"),
+        status=status,
+        observed_at=observed_at,
+        status_valid_until=status_valid_until,
+        in_flight_count=in_flight_count,
+        concurrency_limit=concurrency_limit,
+    )
+
+
+def _resolve_dispatch_deadline_at(outbox: Any, payload: dict[str, Any], command: Any | None, *, now: Any) -> Any:
+    for value in (
+        payload.get("dispatch_deadline_at"),
+        payload.get("deadline_at"),
+        getattr(outbox, "dispatch_deadline_at", None),
+        getattr(outbox, "deadline_at", None),
+        getattr(command, "dispatch_deadline_at", None),
+        getattr(command, "deadline_at", None),
+    ):
+        parsed = timezone.to_db_datetime(value)
+        if parsed is not None:
+            return parsed
+    return now + timedelta(seconds=_DEFAULT_DEVICE_COMMAND_ACK_TIMEOUT_SECONDS)
+
+
+def _resolve_dispatch_retry_attempt(outbox: Any, payload: dict[str, Any]) -> int:
+    return (
+        coerce_optional_int(payload.get("dispatch_retry_attempt"))
+        or coerce_optional_int(getattr(outbox, "blocked_check_count", None))
+        or 0
+    )
+
+
+def _build_device_dispatch_request(
+    outbox: Any,
+    payload: dict[str, Any],
+    device: Any,
+    command: Any | None,
+    *,
+    command_code: str | None,
+    now: Any,
+) -> DeviceDispatchRequest:
+    command_type = _resolve_command_type_for_governance(payload)
+    return DeviceDispatchRequest(
+        command_code=command_code or "UNKNOWN_COMMAND",
+        device_role=coerce_string_value(getattr(device, "device_role", None), "UNKNOWN_ROLE"),
+        capability_code=coerce_string_value(payload.get("capability_code") or command_type, "UNKNOWN_CAPABILITY"),
+        dispatch_deadline_at=_resolve_dispatch_deadline_at(outbox, payload, command, now=now),
+        session_state=coerce_string_value(
+            payload.get("session_state") or getattr(outbox, "session_state", None), "RUNNING"
+        ).upper(),
+        priority=coerce_optional_int(payload.get("priority")) or 5,
+        retry_attempt=_resolve_dispatch_retry_attempt(outbox, payload),
+    )
 
 
 def _enforce_device_command_governance(
@@ -409,6 +559,7 @@ def _build_device_status_precheck_detail(
     http_status: int | None = None,
     error_kind: str | None = None,
     error_message: str | None = None,
+    extra_detail: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构造 ECS status precheck 的最小诊断摘要，供 dispatcher 写入资源等待详情。"""
 
@@ -425,6 +576,8 @@ def _build_device_status_precheck_detail(
         "error_message": error_message,
     }
     detail.update({key: value for key, value in optional_values.items() if value is not None})
+    if extra_detail:
+        detail.update(extra_detail)
     return detail
 
 
@@ -440,6 +593,7 @@ def _raise_device_status_precheck_wait(
     http_status: int | None = None,
     error_kind: str,
     error_message: str | None = None,
+    extra_detail: dict[str, Any] | None = None,
     cause: Exception | None = None,
 ) -> NoReturn:
     _raise_device_command_governance_error(
@@ -457,8 +611,125 @@ def _raise_device_status_precheck_wait(
             http_status=http_status,
             error_kind=error_kind,
             error_message=error_message,
+            extra_detail=extra_detail,
         ),
         cause=cause,
+    )
+
+
+def _build_dispatch_policy_detail(decision: DeviceDispatchDecision) -> dict[str, Any]:
+    return {
+        "policy_decision": decision.kind.value,
+        "reason": decision.reason,
+        "retry_after_seconds": decision.retry_after_seconds,
+        "runtime_hold_required": decision.runtime_hold_required,
+        "cancel_unsubmitted": decision.cancel_unsubmitted,
+        "freeze_submitted": decision.freeze_submitted,
+    }
+
+
+def _emit_device_dispatch_policy_observability(
+    *,
+    command: Any | None,
+    device: Any,
+    outbox: Any,
+    payload: dict[str, Any],
+    decision: DeviceDispatchDecision,
+) -> None:
+    """发出 DeviceDispatchPolicy 决策观测事件；观测失败不改变派发决策。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    command_code = (
+        coerce_string_value(getattr(command, "command_code", None))
+        or coerce_string_value(payload.get("command_code"))
+        or coerce_string_value(getattr(outbox, "dispatch_key", None))
+        or "UNKNOWN_COMMAND"
+    )
+    dispatch_key = coerce_string_value(getattr(outbox, "dispatch_key", None))
+    device_code = (
+        decision.device_code
+        or coerce_string_value(getattr(device, "device_code", None))
+        or coerce_string_value(getattr(outbox, "target_code", None))
+        or "UNKNOWN_DEVICE"
+    )
+    try:
+        runtime_observability_registry.emit(
+            "device_command.dispatch_policy",
+            {
+                "trace_id": coerce_string_value(getattr(command, "trace_id", None))
+                or coerce_string_value(getattr(outbox, "trace_id", None))
+                or dispatch_key
+                or command_code,
+                "correlation_id": coerce_string_value(getattr(command, "correlation_id", None))
+                or coerce_string_value(getattr(outbox, "correlation_id", None))
+                or dispatch_key
+                or command_code,
+                "command_code": command_code,
+                "device_code": device_code,
+                "provider_code": _device_command_provider_code(device, payload),
+                "policy_decision": decision.kind.value,
+                "reason": decision.reason,
+                "dispatch_allowed": decision.dispatch_allowed,
+                "runtime_hold_required": decision.runtime_hold_required,
+            },
+        )
+    except Exception as exc:  # pragma: no cover - 防止观测链路反向影响派发策略
+        logger.warning(
+            f"设备派发策略观测事件发射失败: command_code={command_code}, device_code={device_code}, error={exc}"
+        )
+
+
+def _ensure_dispatch_policy_allows_realtime_probe_or_dispatch(
+    *,
+    device: Any,
+    outbox: Any,
+    payload: dict[str, Any],
+    command: Any | None,
+    command_code: str | None,
+    status_url: str,
+    allow_same_reserved_command: bool = False,
+    policy: DeviceDispatchPolicy = device_dispatch_policy,
+) -> None:
+    """在真实 ECS status probe 前应用 DeviceDispatchPolicy 的本地快照门禁。"""
+
+    now = timezone.now_for_db()
+    snapshot = _build_device_runtime_snapshot(device, now=now, policy=policy)
+    request = _build_device_dispatch_request(outbox, payload, device, command, command_code=command_code, now=now)
+    if allow_same_reserved_command:
+        decision = DeviceDispatchDecision(
+            kind=DeviceDispatchDecisionKind.ALLOW_DISPATCH,
+            reason="SAME_RESERVED_COMMAND",
+            device_code=snapshot.device_code,
+            dispatch_allowed=True,
+            runtime_hold_required=False,
+        )
+    else:
+        decision = policy.evaluate(request, snapshot=snapshot, now=now)
+    _emit_device_dispatch_policy_observability(
+        command=command,
+        device=device,
+        outbox=outbox,
+        payload=payload,
+        decision=decision,
+    )
+    if decision.kind in {
+        DeviceDispatchDecisionKind.ALLOW_DISPATCH,
+        DeviceDispatchDecisionKind.RETRY_STATUS_PROBE,
+    }:
+        return
+
+    _raise_device_status_precheck_wait(
+        device=device,
+        device_code=snapshot.device_code,
+        status_url=status_url,
+        message=f"设备 {snapshot.device_code} 未通过派发策略门禁，等待下次预检: {decision.reason}",
+        observed_mode="LOCAL_RUNTIME",
+        observed_status=snapshot.status.value,
+        observed_current_command_id=getattr(device, "current_command_id", None),
+        error_kind="dispatch_policy",
+        error_message=decision.reason,
+        extra_detail=_build_dispatch_policy_detail(decision),
     )
 
 
@@ -669,6 +940,16 @@ class DeviceCommandGateway:
             scheme = _resolve_device_protocol_scheme(device)
             callback_path = _resolve_device_command_path(device)
             url = f"{scheme}://{device.host}:{device.port}{callback_path}"
+            status_url = _build_device_status_url(device, device_code=payload["device_code"])
+            _ensure_dispatch_policy_allows_realtime_probe_or_dispatch(
+                device=device,
+                outbox=outbox,
+                payload=payload,
+                command=command,
+                command_code=command_code,
+                status_url=status_url,
+                allow_same_reserved_command=is_same_reserved_command,
+            )
             ack_timeout = _DEFAULT_DEVICE_COMMAND_ACK_TIMEOUT_SECONDS
             async with httpx.AsyncClient() as client:
                 _ = await _ensure_realtime_device_status_ready(
@@ -715,6 +996,13 @@ class DeviceCommandGateway:
                             _ = await workline_runtime_reconciliation_service.activate_execution_deadline_after_ack(
                                 db,
                                 command_id=command_id,
+                                ack_received_at=ack_received_at,
+                            )
+                            _emit_device_command_ack_observability(
+                                command=command,
+                                device=device,
+                                outbox=outbox,
+                                payload=payload,
                                 ack_received_at=ack_received_at,
                             )
                             from src.app.sys.services.event_stream_service import (

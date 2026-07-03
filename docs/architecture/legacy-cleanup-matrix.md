@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-  逐入口数据在 legacy-cleanup-matrix.csv（679 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（707 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -33,11 +33,11 @@ uv run python scripts/generate_legacy_matrix.py
 
 扫描覆盖：`src/app/workline/`、`src/workline_runtime/`、`src/workline_plugins/`、`tests/workline_runtime/`、`tests/workline_plugins/`、`docs/templates/workline_plugin/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；`src/workline_runtime/` 与 `src/workline_plugins/` 同时登记 `__all__` exported symbol。
 
-## 3. 汇总（截至 feature/phase3-execution-safety-recovery @ 2026-07-01）
+## 3. 汇总（截至 feature/workline-phase3-closure @ 2026-07-03）
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **679** |
+| **total_entries** | **707** |
 | phase4_carrier（承载 Phase 4 业务语义） | 213 |
 | pending-review | 0 |
 
@@ -45,10 +45,10 @@ uv run python scripts/generate_legacy_matrix.py
 
 | entry_type | count |
 | --- | ---: |
-| service | 329 |
+| service | 355 |
 | plugin | 116 |
 | domain_object | 91 |
-| test | 62 |
+| test | 64 |
 | model | 45 |
 | api_route | 20 |
 | doc_template | 8 |
@@ -59,8 +59,8 @@ uv run python scripts/generate_legacy_matrix.py
 
 | strategy | count |
 | --- | ---: |
-| rebuild | 412 |
-| keep-contract | 187 |
+| rebuild | 430 |
+| keep-contract | 197 |
 | delete | 68 |
 | move | 12 |
 
@@ -68,18 +68,18 @@ uv run python scripts/generate_legacy_matrix.py
 
 | drop_phase | count |
 | --- | ---: |
-| phase5-tech | 256 |
+| phase5-tech | 266 |
 | phase4 | 213 |
-| phase2 | 201 |
+| phase2 | 219 |
 | phase1 | 9 |
 
 ### total_entries_by_owner
 
 | current_owner | count |
 | --- | ---: |
-| workline | 466 |
+| workline | 492 |
 | workline_plugins | 178 |
-| workline_runtime | 9 |
+| workline_runtime | 11 |
 | runtime | 8 |
 | handling | 6 |
 | rack | 5 |
@@ -145,18 +145,18 @@ CSV 列（对齐 SPEC P0-002 矩阵字段表）：
 
 ## 7. 按域说明
 
-### 7.1 workline（640 entries）
+### 7.1 workline（492 entries）
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
 | WorkLine 配置类（`models/workline.py:WorkLine/WorkLineBase`、manifest/topology/safety/rack_position） | move | 保留为配置域目标，Phase 2 调整 schema 对齐目标态 WorkLine manifest |
 | 执行状态模型（`models/session.py`、`inbox.py`、`timeline.py`、`runtime_hold*.py`、`runtime.py`） | rebuild | 整体 move 到 `src/app/runtime/orchestration/models/`，内部 session_id 保留为 execution_session_id（见 P0-004 §4.6） |
 | 业务流程模型（`smt_inbound_handoff.py`、`object_transition_event.py`） | rebuild | Phase 4 按目标态 capability 重建 |
-| API routes（41 个，`v1/`） | rebuild | runtime 监控/handoff/trace/hold 路由迁 runtime 域；workline 配置 CRUD 路由保留 |
+| API routes（20 个，`v1/`） | rebuild | runtime 监控/handoff/trace/hold 路由迁 runtime 域；workline 配置 CRUD 路由保留 |
 | Services（inbox_batch_processor/outbox_dispatch/device_command_gateway 等） | rebuild | `class` / `def` / `async def` 全量登记；执行状态服务迁 runtime 域，按 EffectPort/RuntimeInbox 重建 |
 | `single_layer_rack_orchestration_service` | rebuild | [phase4] 单层机架编排，Phase 4 重建（C1 seed 关联） |
 
-### 7.2 workline_runtime（9 entries）
+### 7.2 workline_runtime（11 entries）
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |

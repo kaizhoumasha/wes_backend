@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Mapping
 from types import SimpleNamespace
@@ -56,6 +58,14 @@ _SUPPORTED_INTENT_KINDS = {
 }
 _TERMINAL_INTENT_KINDS = {RuntimeIntentKind.COMPLETE, RuntimeIntentKind.BLOCK, RuntimeIntentKind.RESOURCE_WAIT}
 _DEFAULT_RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
+_FULFILLMENT_EXTERNAL_TARGET_CODES = frozenset(
+    {
+        "WMS_FULFILLMENT",
+        "WMS_RCS_BIN_OPERATION",
+        "WMS_RCS_FULL_BOX_EXCHANGE",
+        "WMS_RCS_RACK_OPERATION",
+    }
+)
 _DEFAULT_COMMAND_RESULT_TIMEOUT_SECONDS = 300
 _STATION_DISPATCH_LEASE_UNAVAILABLE = "station dispatch lease is not available"
 _SMT_SOURCE_PICK_COMMAND = "SORTING_SOURCE_PICK"
@@ -208,6 +218,70 @@ def _non_empty_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _mapping_text(value: Mapping[str, Any], *field_names: str) -> str | None:
+    for field_name in field_names:
+        if (text := _non_empty_text(value.get(field_name))) is not None:
+            return text
+    return None
+
+
+def _is_fulfillment_external_request(*, target_code: str, payload_json: Mapping[str, Any]) -> bool:
+    operation_kind = _mapping_text(payload_json, "operation_kind")
+    if operation_kind is not None:
+        from src.app.runtime.orchestration.services.idempotency_guard import get_idempotency_operation_spec
+
+        return get_idempotency_operation_spec(operation_kind).operation_kind == "fulfillment"
+    return target_code in _FULFILLMENT_EXTERNAL_TARGET_CODES
+
+
+def _fulfillment_provider_code(intent: RuntimeIntent, *, target_code: str, payload_json: Mapping[str, Any]) -> str:
+    return (
+        _mapping_text(payload_json, "provider_code", "source_system", "provider")
+        or _non_empty_text(intent.source_system)
+        or ("WMS" if target_code.startswith("WMS") else target_code)
+    )
+
+
+def _canonical_payload_hash(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(dict(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+async def _claim_external_fulfillment_idempotency_if_needed(
+    ctx: Mapping[str, Any],
+    intent: RuntimeIntent,
+    *,
+    dispatch_key: str,
+    target_code: str,
+    payload_json: Mapping[str, Any],
+) -> Any | None:
+    """在实际创建 fulfillment outbox 前 claim 幂等键；缺少 correlation 的 legacy 请求保持旧行为。"""
+
+    if not _is_fulfillment_external_request(target_code=target_code, payload_json=payload_json):
+        return None
+    correlation_id = _mapping_text(payload_json, "correlation_id", "execution_correlation_id")
+    if correlation_id is None:
+        return None
+
+    from src.app.runtime.orchestration.services.idempotency_guard import idempotency_guard
+    from src.utils.timezone import timezone as timezone_utils
+
+    idempotency_key = (
+        _mapping_text(payload_json, "idempotency_key", "request_id", "dispatch_key", "exchange_request_code")
+        or dispatch_key
+    )
+    return await idempotency_guard.claim_or_match(
+        ctx["db"],
+        provider_code=_fulfillment_provider_code(intent, target_code=target_code, payload_json=payload_json),
+        operation_kind="fulfillment",
+        idempotency_key=idempotency_key,
+        request_hash=_canonical_payload_hash(payload_json),
+        execution_correlation_id=correlation_id,
+        now_ms=int(timezone_utils.now_utc().timestamp() * 1000),
+        business_owner_key=f"fulfillment:{dispatch_key}",
+    )
 
 
 def _int_value(value: Any) -> int | None:
@@ -1226,6 +1300,15 @@ class RuntimeIntentEffectApplier:
         timeout_seconds = int(intent.timeout_seconds or 0)
         session = ctx["session"]
 
+        claim_result = await _claim_external_fulfillment_idempotency_if_needed(
+            ctx,
+            intent,
+            dispatch_key=dispatch_key,
+            target_code=target_code,
+            payload_json=payload_json,
+        )
+        if claim_result == "MATCH":
+            return
         outbox = workline_effects._build_external_http_outbox_model(
             ctx,
             dispatch_key=dispatch_key,

@@ -45,7 +45,7 @@ class DeviceService(BaseService[Device, DeviceRepository]):
         }
     )
 
-    def __init__(self) -> None:
+    def __init__(self, runtime_projection_writer: Any | None = None) -> None:
         super().__init__(
             device_repository,
             enable_cache=True,
@@ -56,6 +56,13 @@ class DeviceService(BaseService[Device, DeviceRepository]):
         )
         self.command_repo = DeviceCommandRepository()
         self.workline_repo: WorkLineRepository = workline_repository
+        if runtime_projection_writer is None:
+            from src.app.runtime.orchestration.services.device_runtime_projection_writer_service import (
+                device_runtime_projection_writer_service,
+            )
+
+            runtime_projection_writer = device_runtime_projection_writer_service
+        self.runtime_projection_writer = runtime_projection_writer
 
     @staticmethod
     def _resolve_work_line_id(device: Device | None) -> int | None:
@@ -163,6 +170,15 @@ class DeviceService(BaseService[Device, DeviceRepository]):
 
         updated = await self.repo.update(db, device_id, update_data)
         if updated is not None:
+            await self.runtime_projection_writer.upsert_from_device(
+                db,
+                device=updated,
+                evidence_json={
+                    "source": "device_service_runtime_update",
+                    "changed_fields": changed_fields,
+                },
+                auto_commit=False,
+            )
             self._defer_device_status_event(db, device=updated, old_state=old_state, changed_fields=changed_fields)
         await self._commit_if_requested(db, auto_commit=auto_commit)
         return updated

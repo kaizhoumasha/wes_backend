@@ -5,6 +5,10 @@ from __future__ import annotations
 from src.app.callback.utils import JsonDict, resolve_first_str
 
 WMS_RCS_EXECUTION_PREFIXES = ("WMS_", "RCS_")
+WMS_RCS_SOURCE_SYSTEM_BY_PREFIX = {
+    "WMS_": "WMS",
+    "RCS_": "RCS",
+}
 WMS_RCS_EXECUTION_STATUS_ALIASES = ("task_status", "status", "result", "external_status", "exchange_status")
 WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS = (
     "source_system",
@@ -80,13 +84,13 @@ class WmsExecutionCallbackNormalizer:
         _ = _require_payload_value(payload, "dispatch_key")
         if callback_type in WMS_RCS_FULL_BOX_EXCHANGE_CALLBACK_TYPES:
             _require_payload_fields(payload, WMS_RCS_FULL_BOX_EXCHANGE_REQUIRED_FIELDS)
-            _validate_wms_rcs_source_system(payload)
+            _validate_wms_rcs_source_system(payload, callback_type)
             return
 
         if callback_type in WMS_RCS_RACK_CALLBACK_TYPES:
             _require_payload_fields(payload, WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS)
 
-            _validate_wms_rcs_source_system(payload)
+            _validate_wms_rcs_source_system(payload, callback_type)
 
             if callback_type in WMS_RCS_RACK_STATUS_REQUIRED_CALLBACK_TYPES and not resolve_first_str(
                 payload, WMS_RCS_EXECUTION_STATUS_ALIASES
@@ -99,6 +103,8 @@ class WmsExecutionCallbackNormalizer:
         source_system = resolve_first_str(payload, ("source_system",))
         if source_system is not None and source_system not in {"WMS", "RCS"}:
             raise ValueError("source_system must be WMS or RCS")
+        if source_system is not None:
+            _validate_callback_source_match(callback_type, source_system)
 
 
 def _resolve_optional_str(payload: JsonDict, aliases: tuple[str, ...]) -> str | None:
@@ -127,10 +133,24 @@ def _require_payload_fields(payload: JsonDict, field_names: tuple[str, ...]) -> 
         _ = _require_payload_value(payload, field_name)
 
 
-def _validate_wms_rcs_source_system(payload: JsonDict) -> None:
+def _validate_wms_rcs_source_system(payload: JsonDict, callback_type: str) -> None:
     source_system = resolve_first_str(payload, ("source_system",))
     if source_system not in {"WMS", "RCS"}:
         raise ValueError("source_system must be WMS or RCS")
+    _validate_callback_source_match(callback_type, source_system)
+
+
+def _validate_callback_source_match(callback_type: str, source_system: str) -> None:
+    expected_source = next(
+        (
+            expected_source
+            for prefix, expected_source in WMS_RCS_SOURCE_SYSTEM_BY_PREFIX.items()
+            if callback_type.startswith(prefix)
+        ),
+        None,
+    )
+    if expected_source is not None and source_system != expected_source:
+        raise ValueError("source_system must match callback_type provider")
 
 
 wms_execution_callback_normalizer = WmsExecutionCallbackNormalizer()

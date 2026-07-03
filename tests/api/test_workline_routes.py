@@ -123,6 +123,8 @@ def test_plugin_manifest_route_requires_workline_list_permission() -> None:
 def test_plane_routes_require_dedicated_permissions() -> None:
     """plane scene/snapshot 使用独立权限, 不能复用普通 detail。"""
 
+    from src.app.workline.services.plane_service import plane_read_security_policy
+
     scene_route = next(
         route
         for route in workline_api.router.routes
@@ -135,11 +137,70 @@ def test_plane_routes_require_dedicated_permissions() -> None:
     )
 
     assert [getattr(dep.dependency, "permission_required", "") for dep in scene_route.dependencies] == [
-        "biz:workline:view-plane-scene"
+        plane_read_security_policy.scene_permission
     ]
     assert [getattr(dep.dependency, "permission_required", "") for dep in snapshot_route.dependencies] == [
-        "biz:workline:view-plane-snapshot"
+        plane_read_security_policy.snapshot_permission
     ]
+
+
+@pytest.mark.asyncio
+async def test_plane_scene_route_records_read_audit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """plane scene route 返回成功时必须记录读取审计。"""
+
+    from src.app.workline.models import PlaneSceneView
+    from src.app.workline.services.plane_service import PlaneReadPrincipal
+
+    service = SimpleNamespace(
+        get_scene=AsyncMock(
+            return_value=PlaneSceneView(
+                schema_version="plane.scene.v1",
+                workline_code="WL-7",
+                nodes=[],
+                edges=[],
+            )
+        ),
+        record_read_audit=AsyncMock(),
+    )
+    monkeypatch.setattr(workline_api, "workline_plane_service", service)
+    db = SimpleNamespace()
+    cache = SimpleNamespace()
+    principal = PlaneReadPrincipal(user_id=42, is_superuser=False)
+
+    await workline_api.get_workline_plane_scene(db=db, cache=cache, id=7, principal=principal)
+
+    service.get_scene.assert_awaited_once_with(db, cache, 7, principal=principal)
+    service.record_read_audit.assert_awaited_once_with(db, view="scene", workline_id=7, workline_code="WL-7")
+
+
+@pytest.mark.asyncio
+async def test_plane_snapshot_route_records_read_audit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """plane snapshot route 返回成功时必须记录读取审计。"""
+
+    from src.app.workline.models import PlaneSnapshot
+    from src.app.workline.services.plane_service import PlaneReadPrincipal
+
+    service = SimpleNamespace(
+        get_snapshot=AsyncMock(
+            return_value=PlaneSnapshot(
+                schema_version="plane.snapshot.v1",
+                workline_code="WL-7",
+                scene_schema_version="plane.scene.v1",
+                objects=[],
+                extremes=[],
+            )
+        ),
+        record_read_audit=AsyncMock(),
+    )
+    monkeypatch.setattr(workline_api, "workline_plane_service", service)
+    db = SimpleNamespace()
+    cache = SimpleNamespace()
+    principal = PlaneReadPrincipal(user_id=42, is_superuser=False)
+
+    await workline_api.get_workline_plane_snapshot(db=db, cache=cache, id=7, principal=principal)
+
+    service.get_snapshot.assert_awaited_once_with(db, cache, 7, principal=principal)
+    service.record_read_audit.assert_awaited_once_with(db, view="snapshot", workline_id=7, workline_code="WL-7")
 
 
 def test_plugin_manifest_route_accepts_encoded_slash_plugin_keys() -> None:

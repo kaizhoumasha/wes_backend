@@ -59,6 +59,7 @@ def _service(
     *,
     breaker_service: WmsCircuitBreakerService | None = None,
     evidence_service: Any | None = None,
+    observability_emit: Any | None = None,
     use_default_evidence_key: bool = False,
 ) -> WmsTypedPortService:
     kwargs: dict[str, Any] = {
@@ -69,6 +70,8 @@ def _service(
     }
     if evidence_service is not None:
         kwargs["evidence_service"] = evidence_service
+    if observability_emit is not None:
+        kwargs["observability_emit"] = observability_emit
     if not use_default_evidence_key:
         kwargs["evidence_key_factory"] = _evidence_key
     return WmsTypedPortService(**kwargs)
@@ -438,6 +441,38 @@ async def test_wms_error_5xx_records_unavailable_and_breaker_failure(db_engine) 
 
 
 @pytest.mark.asyncio
+async def test_wms_5xx_breaker_transition_observability_uses_request_trace(db_engine) -> None:
+    from src.app.runtime.orchestration.observability import RuntimeObservabilityRegistry
+
+    emitted = []
+    registry = RuntimeObservabilityRegistry(observers=(emitted.append,))
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"reason_code": "WMS_DOWN", "message": "WMS unavailable"})
+
+    service = _service(
+        db_engine,
+        httpx.MockTransport(handler),
+        breaker_service=WmsCircuitBreakerService(
+            failure_threshold=1,
+            retry_after_seconds=60,
+            observability_emit=registry.emit,
+        ),
+    )
+
+    with pytest.raises(WmsUnavailableError):
+        await service.query_inventory(
+            QueryInventoryRequest(request_id="REQ-OBS", trace_id="trace-wms-obs", sku="SKU-1")
+        )
+
+    assert len(emitted) == 1
+    assert emitted[0].attributes["trace_id"] == "trace-wms-obs"
+    assert emitted[0].attributes["provider_code"] == "WMS_INVENTORY"
+    assert emitted[0].attributes["operation_kind"] == "query_inventory"
+    assert emitted[0].attributes["breaker_state"] == "OPEN"
+
+
+@pytest.mark.asyncio
 async def test_wms_error_circuit_open_fast_fails_without_http_call(db_engine) -> None:
     breaker_service = WmsCircuitBreakerService(failure_threshold=1, retry_after_seconds=60)
     session_factory = _session_factory(db_engine)
@@ -475,14 +510,77 @@ async def test_wms_error_circuit_open_fast_fails_without_http_call(db_engine) ->
 
 
 @pytest.mark.asyncio
+async def test_wms_half_open_trial_in_progress_blocks_second_outbound_effect_without_http(db_engine) -> None:
+    breaker_service = WmsCircuitBreakerService(failure_threshold=1, retry_after_seconds=60)
+    session_factory = _session_factory(db_engine)
+    async with session_factory() as db:
+        opened = await breaker_service.record_failure(
+            db,
+            target_code="WMS_INVENTORY",
+            operation_name="release_reservation",
+            evidence_key="ev:seed-half-open-busy",
+        )
+        opened.opened_until = timezone.now_for_db() - timedelta(seconds=1)
+        await db.commit()
+
+    async with session_factory() as db:
+        first_trial = await breaker_service.before_call(
+            db,
+            target_code="WMS_INVENTORY",
+            operation_name="release_reservation",
+        )
+        await db.commit()
+
+    assert first_trial.allowed is True
+    assert first_trial.reason == "OPEN_RETRY_AFTER_ELAPSED"
+
+    http_called = False
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal http_called
+        http_called = True
+        return httpx.Response(200, json={"reservation_key": "RSV-HALF-OPEN-BUSY", "released": True})
+
+    service = _service(db_engine, httpx.MockTransport(handler), breaker_service=breaker_service)
+
+    with pytest.raises(WmsCircuitOpenError) as exc_info:
+        await service.release_reservation(
+            ReleaseReservationRequest(request_id="REQ-HALF-OPEN-BUSY", reservation_key="RSV-HALF-OPEN-BUSY")
+        )
+
+    error = exc_info.value
+    evidence = await _get_evidence(db_engine, "ev:release_reservation:REQ-HALF-OPEN-BUSY")
+    breaker_state = await _get_breaker_state(
+        db_engine,
+        target_code="WMS_INVENTORY",
+        operation_name="release_reservation",
+    )
+
+    assert http_called is False
+    assert error.evidence_key == "ev:release_reservation:REQ-HALF-OPEN-BUSY"
+    assert error.reason_code == "WMS_CIRCUIT_OPEN"
+    assert evidence is not None
+    assert evidence.status == "FAILED"
+    assert evidence.reason_code == "WMS_CIRCUIT_OPEN"
+    assert evidence.response_snapshot["reason"] == "HALF_OPEN_TRIAL_IN_PROGRESS"
+    assert breaker_state is not None
+    assert breaker_state.state == WmsCircuitBreakerStatus.HALF_OPEN
+
+
+@pytest.mark.asyncio
 async def test_wms_success_persistence_failure_raises_non_retryable_typed_error(
     db_engine,
 ) -> None:
+    from src.app.runtime.orchestration.observability import RuntimeObservabilityRegistry
+
     class FailingSuccessEvidenceService:
         async def record_sync_call(self, _db: AsyncSession, **kwargs):
             if kwargs["status"] == "SUCCEEDED":
                 raise RuntimeError("database unavailable")
             raise AssertionError("本测试不应记录失败 evidence")
+
+    emitted = []
+    registry = RuntimeObservabilityRegistry(observers=(emitted.append,))
 
     async def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -498,12 +596,14 @@ async def test_wms_success_persistence_failure_raises_non_retryable_typed_error(
         db_engine,
         httpx.MockTransport(handler),
         evidence_service=FailingSuccessEvidenceService(),
+        observability_emit=registry.emit,
     )
 
     with pytest.raises(WmsEvidencePersistenceError) as exc_info:
         await service.reserve_inventory(
             ReserveInventoryRequest(
                 request_id="REQ-PERSIST",
+                trace_id="trace-persist-failure",
                 reservation_key="RSV-PERSIST",
                 sku="SKU-1",
                 qty="1",
@@ -517,6 +617,12 @@ async def test_wms_success_persistence_failure_raises_non_retryable_typed_error(
     assert error.reason_code == "WMS_EVIDENCE_PERSISTENCE_FAILED"
     assert error.target_code == "WMS_INVENTORY"
     assert error.retryable is False
+    assert len(emitted) == 1
+    assert emitted[0].name == "wms_evidence.persistence_failure"
+    assert emitted[0].attributes["trace_id"] == "trace-persist-failure"
+    assert emitted[0].attributes["provider_code"] == "WMS_INVENTORY"
+    assert emitted[0].attributes["operation_kind"] == "reserve_inventory"
+    assert emitted[0].attributes["evidence_key"] == "ev:reserve_inventory:REQ-PERSIST"
 
 
 @pytest.mark.asyncio

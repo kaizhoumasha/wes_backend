@@ -18,6 +18,7 @@ from src.app.handling.services.bin_transit_membership_service import (
     BinTransitMembershipService,
     bin_transit_membership_service,
 )
+from src.app.handling.services.completion_policy import is_reconciled_exchange_operation_type
 from src.app.runtime.orchestration.models.session import SessionStatus
 from src.app.runtime.orchestration.repositories.session_repository import (
     WorklineSessionRepository,
@@ -106,6 +107,12 @@ class HandlingOperationLifecycleService:
             return None
 
         status, error_code, error_message = _callback_step_status(payload_json)
+        operation_key = coerce_optional_str(getattr(step, "operation_key", None))
+        operation = await self.operation_repository.get_by_operation_key(db, operation_key) if operation_key else None
+        post_exchange_relations_error = _post_exchange_relations_error(operation, payload_json)
+        if status != HandlingStepStatus.RECONCILING and post_exchange_relations_error is not None:
+            status = HandlingStepStatus.RECONCILING
+            error_code, error_message = post_exchange_relations_error
         if _source_version_is_stale(getattr(step, "callback_json", None), payload_json):
             logger.warning(
                 "Ignoring stale handling step callback: "
@@ -471,6 +478,28 @@ def _business_context_error(session: Any | None, payload_json: Mapping[str, Any]
             f"满箱交换回调 rack_release_id={incoming_rack_release_id} 与等待上下文 {expected_rack_release_id} 不一致",
         )
     return None
+
+
+def _post_exchange_relations_error(operation: Any | None, payload_json: Mapping[str, Any]) -> tuple[str, str] | None:
+    if operation is None:
+        return None
+    raw_status = coerce_optional_str(
+        payload_json.get("exchange_status")
+        or payload_json.get("task_status")
+        or payload_json.get("status")
+        or payload_json.get("result")
+        or payload_json.get("external_status")
+    )
+    status = raw_status.upper() if raw_status is not None else None
+    if status not in _POST_EXCHANGE_RELATIONS_REQUIRED_STATUSES or _has_post_exchange_relations(payload_json):
+        return None
+    operation_type = coerce_optional_str(getattr(operation, "operation_type", None))
+    if operation_type is None or not is_reconciled_exchange_operation_type(operation_type):
+        return None
+    return (
+        "POST_EXCHANGE_RELATIONS_MISSING",
+        "交换物理完成回调缺少 post_exchange_relations，已进入资源对账",
+    )
 
 
 def _callback_step_status(payload_json: Mapping[str, Any]) -> tuple[HandlingStepStatus, str | None, str | None]:

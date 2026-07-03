@@ -146,6 +146,70 @@ _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
         "error_message",
     }
 )
+_EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_SUFFIXES = (
+    "GRN_RECEIVED",
+    "PALLET_ARRIVED",
+    "RACK_ARRIVED",
+    "TRANSPORT_COMPLETED",
+    "EXCHANGE_COMPLETED",
+    "INVENTORY_UPDATED",
+    "TASK_CHANGE",
+    "REJECTED",
+    "FAILED",
+)
+_EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_TYPES = frozenset(
+    f"{provider}_{suffix}" for provider in ("WMS", "RCS") for suffix in _EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_SUFFIXES
+)
+_EXTERNAL_CALLBACK_WMS_RCS_RUNTIME_TYPES = frozenset(
+    {
+        "WMS_RACK_TASK_RESULT",
+        "RCS_RACK_TASK_RESULT",
+        "WMS_RACK_TASK_PROGRESS",
+        "RCS_RACK_TASK_PROGRESS",
+        "WMS_RACK_ARRIVED",
+        "RCS_RACK_ARRIVED",
+        "WMS_RACK_EXCHANGE_PROGRESS",
+        "RCS_RACK_EXCHANGE_PROGRESS",
+        "WMS_RACK_EXCHANGE_FAILED",
+        "RCS_RACK_EXCHANGE_FAILED",
+        "WMS_FULL_BOX_EXCHANGE_RESULT",
+        "RCS_FULL_BOX_EXCHANGE_RESULT",
+    }
+)
+_EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES = frozenset(
+    {
+        "DEVICE_RESULT",
+        "DEVICE_EVENT",
+        "DEVICE_STATUS_CHANGED",
+        "MATERIAL_ARRIVED",
+        "SCAN_COMPLETED",
+        "ESTOP_PRESSED",
+        "DEVICE_ERROR",
+        "DEVICE_ONLINE",
+        "DEVICE_OFFLINE",
+    }
+)
+_EXTERNAL_CALLBACK_PROVIDER_SPECIFIC_ALLOWED_TYPES = frozenset(
+    {
+        "AGV_TASK_RESULT",
+        "CTU_BIN_MOVE_PROGRESS",
+        "CTU_BIN_MOVE_COMPLETED",
+        "CTU_BIN_MOVE_FAILED",
+    }
+)
+_EXTERNAL_CALLBACK_ALLOWED_TYPES = (
+    _EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_TYPES
+    | _EXTERNAL_CALLBACK_WMS_RCS_RUNTIME_TYPES
+    | _EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES
+    | _EXTERNAL_CALLBACK_PROVIDER_SPECIFIC_ALLOWED_TYPES
+)
+_EXTERNAL_CALLBACK_SOURCE_SYSTEMS_BY_CALLBACK_TYPE = {
+    **{callback_type: frozenset({"ECS", "DEVICE"}) for callback_type in _EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES},
+    "AGV_TASK_RESULT": frozenset({"AGV"}),
+    "CTU_BIN_MOVE_PROGRESS": frozenset({"CTU"}),
+    "CTU_BIN_MOVE_COMPLETED": frozenset({"CTU"}),
+    "CTU_BIN_MOVE_FAILED": frozenset({"CTU"}),
+}
 # H4 拒绝的机器可读原因码: client 可通过 reason_code 字段区分
 # 顶层字段违规 vs 其他 schema 校验失败 (用于埋点和告警)。
 _CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED_REASON_CODE = "CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED"
@@ -394,7 +458,90 @@ def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
     # 延迟 import: 避免 callback_ingress_service 模块加载时反向 import
     # `src.app.wms_integration.services.callback_normalizer`, 触发与 callback_normalizer.py 顶部
     # `from src.app.callback.utils import ...` 的循环 import (Phase 2 launch PR 修复后暴露)
-    return _wms_callback_normalizer.wms_execution_callback_normalizer.normalize(payload)
+    normalized_payload = _wms_callback_normalizer.wms_execution_callback_normalizer.normalize(payload)
+    callback_type = cast("str", normalized_payload["callback_type"])
+    _validate_external_callback_allow_list(payload, callback_type)
+    return normalized_payload
+
+
+def _callback_normalize_provider_code(callback_type: str, payload: JsonDict) -> str:
+    if callback_type in {"result", "event"}:
+        return "ECS"
+    return resolve_first_str(payload, ("source_system",)) or callback_type.split("_", 1)[0] or "UNKNOWN"
+
+
+def _callback_normalize_correlation_id(callback_type: str, payload: JsonDict, request_id: str | None) -> str:
+    if callback_type == "event":
+        device_code = resolve_first_str(payload, ("device_code",))
+        event_type = resolve_first_str(payload, ("event_type",))
+        if device_code and event_type:
+            return f"event:{device_code}:{event_type}"
+    return (
+        resolve_first_str(payload, ("dispatch_key", "command_code", "exchange_request_code", "request_id"))
+        or request_id
+        or f"callback:{callback_type}"
+    )
+
+
+def _callback_normalize_source_event_id(callback_type: str, payload: JsonDict, request_id: str | None) -> str:
+    source_event_id = resolve_first_str(payload, ("source_event_id", "event_id", "request_id")) or request_id
+    if source_event_id:
+        return source_event_id
+    return f"callback:{callback_type}:{_callback_normalize_correlation_id(callback_type, payload, request_id)}"
+
+
+def _callback_normalize_trace_id(
+    callback_type: str,
+    payload: JsonDict,
+    normalized_payload: JsonDict,
+    request_id: str | None,
+) -> str:
+    return (
+        resolve_first_str(normalized_payload, ("trace_id",))
+        or _resolve_callback_trace_id(payload)
+        or request_id
+        or _callback_normalize_source_event_id(callback_type, payload, request_id)
+    )
+
+
+def _emit_callback_normalize_observability(
+    payload: JsonDict,
+    normalized_payload: JsonDict,
+    *,
+    request_id: str | None,
+) -> None:
+    """发出 callback normalize 观测事件；观测失败不改变 callback ACK。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    callback_type = cast("str", normalized_payload["callback_type"])
+    try:
+        runtime_observability_registry.emit(
+            "callback.normalize",
+            {
+                "trace_id": _callback_normalize_trace_id(callback_type, payload, normalized_payload, request_id),
+                "correlation_id": _callback_normalize_correlation_id(callback_type, payload, request_id),
+                "provider_code": _callback_normalize_provider_code(callback_type, payload),
+                "source_event_id": _callback_normalize_source_event_id(callback_type, payload, request_id),
+            },
+        )
+    except Exception as exc:  # pragma: no cover - 防止观测链路反向影响 callback ACK
+        logger.warning(f"Callback normalize 观测事件发射失败: callback_type={callback_type}, error={exc}")
+
+
+def _validate_external_callback_allow_list(payload: JsonDict, callback_type: str) -> None:
+    """校验 Phase 3 external callback callback_type 与 source_system 矩阵。"""
+
+    if callback_type not in _EXTERNAL_CALLBACK_ALLOWED_TYPES:
+        raise ValueError(f"callback_type is not allow-listed: {callback_type}")
+
+    source_system = resolve_first_str(payload, ("source_system",))
+    if not source_system:
+        return
+
+    allowed_sources = _EXTERNAL_CALLBACK_SOURCE_SYSTEMS_BY_CALLBACK_TYPE.get(callback_type)
+    if allowed_sources is not None and source_system not in allowed_sources:
+        raise ValueError("source_system must match callback_type provider")
 
 
 def _validate_wms_rcs_execution_callback_payload(payload: JsonDict, callback_type: str) -> None:
@@ -959,6 +1106,11 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
 
     command_trace_id = getattr(existing_command, "trace_id", None)
     resolved_trace_id = _resolve_callback_trace_id(callback_data) or command_trace_id
+    _emit_callback_normalize_observability(
+        callback_data,
+        {"callback_type": "result", "trace_id": resolved_trace_id},
+        request_id=request_id,
+    )
 
     # 使用 DeviceContextService 验证设备和工作线上下文
     ctx_result, ctx_error = await device_context_service.resolve(db, device_code)
@@ -1509,6 +1661,11 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             enqueue_processing=enqueue_processing,
         )
         is_duplicate = outcome.is_duplicate
+        _emit_callback_normalize_observability(
+            event_data,
+            {"callback_type": "event", "trace_id": outcome.trace_id},
+            request_id=request_id,
+        )
 
         response_time_ms = _response_time_ms(start_time)
         await _log_callback_outcome(
@@ -1619,6 +1776,7 @@ async def handle_callback_external(
         normalized_payload = _normalize_external_callback_payload(callback_data)
         callback_type = cast("str", normalized_payload["callback_type"])
         external_trace_id = cast("str | None", normalized_payload["trace_id"])
+        _emit_callback_normalize_observability(callback_data, normalized_payload, request_id=request_id)
     except ValueError as exc:
         logger.error(f"外部回调最小包络校验失败: {exc}")
         return await _handle_external_validation_failure(

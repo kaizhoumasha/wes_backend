@@ -4,6 +4,7 @@ from src.app.reconciliation.manager import (
     ReconciliationConflictInput,
     ReconciliationDecision,
     ReconciliationManager,
+    ReconciliationRegistrationResult,
     ReconciliationSeverity,
     ResolutionAction,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "ReconciliationConflictInput",
     "ReconciliationDecision",
     "ReconciliationManager",
+    "ReconciliationRegistrationResult",
     "ReconciliationSeverity",
     "ResolutionAction",
 ]

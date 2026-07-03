@@ -37,6 +37,10 @@ class FulfillmentEvent(str, Enum):
     CALLBACK_FAILED = "CALLBACK_FAILED"
     CANCEL = "CANCEL"
     TIMEOUT = "TIMEOUT"
+    REQUEST_DISPATCH_TIMEOUT = "REQUEST_DISPATCH_TIMEOUT"
+    SENT_ACK_TIMEOUT = "SENT_ACK_TIMEOUT"
+    ACCEPTED_RUNNING_TIMEOUT = "ACCEPTED_RUNNING_TIMEOUT"
+    RUNNING_RESULT_TIMEOUT = "RUNNING_RESULT_TIMEOUT"
     CIRCUIT_BREAKER_OPEN = "CIRCUIT_BREAKER_OPEN"
 
 
@@ -70,15 +74,28 @@ class WmsFulfillmentStateMachine:
             FulfillmentEvent.CALLBACK_FAILED,
         }
     )
-    _SIMPLE_TRANSITIONS: ClassVar[dict[FulfillmentEvent, tuple[FulfillmentState, str]]] = {
-        FulfillmentEvent.PROVIDER_ACCEPTED: (FulfillmentState.ACCEPTED, "PROVIDER_ACCEPTED"),
-        FulfillmentEvent.PROVIDER_REJECTED: (FulfillmentState.REJECTED, "PROVIDER_REJECTED"),
-        FulfillmentEvent.PROVIDER_RUNNING: (FulfillmentState.RUNNING, "PROVIDER_RUNNING"),
-        FulfillmentEvent.CANCEL: (FulfillmentState.CANCELLED, "CANCEL"),
-        FulfillmentEvent.TIMEOUT: (FulfillmentState.TIMEOUT, "TIMEOUT"),
+    _PROVIDER_TRANSITIONS: ClassVar[dict[tuple[FulfillmentState, FulfillmentEvent], tuple[FulfillmentState, str]]] = {
+        (FulfillmentState.SENT, FulfillmentEvent.PROVIDER_ACCEPTED): (
+            FulfillmentState.ACCEPTED,
+            "PROVIDER_ACCEPTED",
+        ),
+        (FulfillmentState.SENT, FulfillmentEvent.PROVIDER_REJECTED): (
+            FulfillmentState.REJECTED,
+            "PROVIDER_REJECTED",
+        ),
+        (FulfillmentState.ACCEPTED, FulfillmentEvent.PROVIDER_RUNNING): (
+            FulfillmentState.RUNNING,
+            "PROVIDER_RUNNING",
+        ),
+    }
+    _TIMEOUT_TRANSITIONS: ClassVar[dict[tuple[FulfillmentState, FulfillmentEvent], str]] = {
+        (FulfillmentState.REQUESTED, FulfillmentEvent.REQUEST_DISPATCH_TIMEOUT): "REQUEST_DISPATCH_TIMEOUT",
+        (FulfillmentState.SENT, FulfillmentEvent.SENT_ACK_TIMEOUT): "SENT_ACK_TIMEOUT",
+        (FulfillmentState.ACCEPTED, FulfillmentEvent.ACCEPTED_RUNNING_TIMEOUT): "ACCEPTED_RUNNING_TIMEOUT",
+        (FulfillmentState.RUNNING, FulfillmentEvent.RUNNING_RESULT_TIMEOUT): "RUNNING_RESULT_TIMEOUT",
     }
 
-    def transition(
+    def transition(  # noqa: PLR0911 - explicit transition exits keep state-table semantics readable.
         self,
         *,
         current: FulfillmentState,
@@ -93,11 +110,25 @@ class WmsFulfillmentStateMachine:
                 runtime_inbox_required=event in self._CALLBACK_EVENTS,
             )
 
-        if event == FulfillmentEvent.CIRCUIT_BREAKER_OPEN:
+        if current == FulfillmentState.RECONCILING:
+            return FulfillmentTransitionResult(
+                state=FulfillmentState.RECONCILING,
+                occurred_at=now,
+                reason="RECONCILING_STATE_IGNORED",
+                runtime_inbox_required=event in self._CALLBACK_EVENTS,
+            )
+
+        if event == FulfillmentEvent.CIRCUIT_BREAKER_OPEN and current == FulfillmentState.REQUESTED:
             return FulfillmentTransitionResult(
                 state=FulfillmentState.BLOCKED_BY_CB,
                 occurred_at=now,
                 reason="CIRCUIT_BREAKER_OPEN",
+            )
+        if event == FulfillmentEvent.CIRCUIT_BREAKER_OPEN:
+            return FulfillmentTransitionResult(
+                state=current,
+                occurred_at=now,
+                reason="CIRCUIT_BREAKER_OPEN_OUTBOUND_ONLY",
             )
 
         if current == FulfillmentState.BLOCKED_BY_CB and event in {
@@ -112,6 +143,8 @@ class WmsFulfillmentStateMachine:
             )
 
         if event == FulfillmentEvent.DISPATCH_SENT:
+            if current != FulfillmentState.REQUESTED:
+                return self._unsupported(now, runtime_inbox_required=False)
             return FulfillmentTransitionResult(
                 state=FulfillmentState.SENT,
                 occurred_at=now,
@@ -120,26 +153,57 @@ class WmsFulfillmentStateMachine:
                 should_dispatch_effect=True,
             )
 
-        simple_transition = self._SIMPLE_TRANSITIONS.get(event)
-        if simple_transition is not None:
-            state, reason = simple_transition
+        if event == FulfillmentEvent.CANCEL:
+            return FulfillmentTransitionResult(FulfillmentState.CANCELLED, now, "CANCEL")
+
+        if event == FulfillmentEvent.TIMEOUT:
+            return FulfillmentTransitionResult(FulfillmentState.TIMEOUT, now, "TIMEOUT")
+
+        provider_transition = self._PROVIDER_TRANSITIONS.get((current, event))
+        if provider_transition is not None:
+            state, reason = provider_transition
             return FulfillmentTransitionResult(state, now, reason)
 
-        if event == FulfillmentEvent.CALLBACK_SUCCEEDED:
+        timeout_reason = self._TIMEOUT_TRANSITIONS.get((current, event))
+        if timeout_reason is not None:
+            return FulfillmentTransitionResult(
+                FulfillmentState.TIMEOUT,
+                now,
+                timeout_reason,
+            )
+
+        if event == FulfillmentEvent.CALLBACK_SUCCEEDED and current in {
+            FulfillmentState.SENT,
+            FulfillmentState.ACCEPTED,
+            FulfillmentState.RUNNING,
+        }:
             return FulfillmentTransitionResult(
                 FulfillmentState.SUCCEEDED,
                 now,
                 "CALLBACK_SUCCEEDED",
                 runtime_inbox_required=True,
             )
-        if event == FulfillmentEvent.CALLBACK_FAILED:
+        if event == FulfillmentEvent.CALLBACK_FAILED and current in {
+            FulfillmentState.SENT,
+            FulfillmentState.ACCEPTED,
+            FulfillmentState.RUNNING,
+        }:
             return FulfillmentTransitionResult(
                 FulfillmentState.FAILED,
                 now,
                 "CALLBACK_FAILED",
                 runtime_inbox_required=True,
             )
-        return FulfillmentTransitionResult(FulfillmentState.RECONCILING, now, "UNSUPPORTED_TRANSITION")
+        return self._unsupported(now, runtime_inbox_required=event in self._CALLBACK_EVENTS)
+
+    @staticmethod
+    def _unsupported(now: datetime, *, runtime_inbox_required: bool) -> FulfillmentTransitionResult:
+        return FulfillmentTransitionResult(
+            FulfillmentState.RECONCILING,
+            now,
+            "UNSUPPORTED_TRANSITION",
+            runtime_inbox_required=runtime_inbox_required,
+        )
 
 
 __all__ = [

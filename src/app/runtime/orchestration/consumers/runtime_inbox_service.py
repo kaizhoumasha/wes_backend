@@ -11,7 +11,15 @@ from src.app.runtime.orchestration.consumers.runtime_inbox_repository import (
     RuntimeInboxRepository,
     runtime_inbox_repository,
 )
+from src.app.runtime.orchestration.services.idempotency_guard import (
+    IdempotencyGuard,
+    get_idempotency_operation_spec,
+)
+from src.app.runtime.orchestration.services.idempotency_guard import (
+    idempotency_guard as default_idempotency_guard,
+)
 from src.app.sys.models.audit_log import OperaStatus
+from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -96,9 +104,11 @@ class RuntimeInboxService:
         self,
         repository: RuntimeInboxRepository = runtime_inbox_repository,
         audit_service: _AuditService | None = None,
+        idempotency_guard: IdempotencyGuard = default_idempotency_guard,
     ) -> None:
         self.repository = repository
         self.audit_service = audit_service
+        self.idempotency_guard = idempotency_guard
 
     async def accept_received(
         self,
@@ -111,6 +121,7 @@ class RuntimeInboxService:
         execution_session_id: int | None = None,
         correlation_id: str | None = None,
         max_retries: int = 5,
+        now_ms: int | None = None,
     ) -> RuntimeInboxAcceptResult:
         """持久化入站消息并返回 ACK 语义结果。
 
@@ -146,10 +157,28 @@ class RuntimeInboxService:
                         existing_payload_hash=existing.payload_hash,
                         incoming_payload_hash=payload_hash,
                     )
+                await self._claim_device_event_idempotency_if_needed(
+                    db,
+                    provider_code=provider_code,
+                    event_type=event_type,
+                    source_event_id=source_event_id,
+                    payload_hash=payload_hash,
+                    correlation_id=correlation_id,
+                    now_ms=now_ms,
+                )
                 return RuntimeInboxAcceptResult(record=existing, created=False)
 
             try:
                 async with db.begin_nested():
+                    await self._claim_device_event_idempotency_if_needed(
+                        db,
+                        provider_code=provider_code,
+                        event_type=event_type,
+                        source_event_id=source_event_id,
+                        payload_hash=payload_hash,
+                        correlation_id=correlation_id,
+                        now_ms=now_ms,
+                    )
                     record = await self.repository.add_received(db, record_data)
             except IntegrityError:
                 existing = await self.repository.get_by_source_event_identity(
@@ -168,6 +197,15 @@ class RuntimeInboxService:
                         existing_payload_hash=existing.payload_hash,
                         incoming_payload_hash=payload_hash,
                     ) from None
+                await self._claim_device_event_idempotency_if_needed(
+                    db,
+                    provider_code=provider_code,
+                    event_type=event_type,
+                    source_event_id=source_event_id,
+                    payload_hash=payload_hash,
+                    correlation_id=correlation_id,
+                    now_ms=now_ms,
+                )
                 return RuntimeInboxAcceptResult(record=existing, created=False)
         else:
             record = await self.repository.add_received(db, record_data)
@@ -221,6 +259,36 @@ class RuntimeInboxService:
         }
         await self._write_replay_audit(db, audit_event)
         return RuntimeInboxReplayResult(source_record=source, replay_record=replay.record, audit_event=audit_event)
+
+    async def _claim_device_event_idempotency_if_needed(
+        self,
+        db: AsyncSession,
+        *,
+        provider_code: str,
+        event_type: str,
+        source_event_id: str | None,
+        payload_hash: str | None,
+        correlation_id: str | None,
+        now_ms: int | None,
+    ) -> None:
+        """device_event 入站消息写入 RuntimeInbox 时，同步 claim 跨域 IdempotencyKey。"""
+
+        if not source_event_id or not payload_hash or not correlation_id:
+            return
+        spec = get_idempotency_operation_spec(event_type)
+        if spec.operation_kind != "device_event":
+            return
+
+        await self.idempotency_guard.claim_or_match(
+            db,
+            provider_code=provider_code,
+            operation_kind=spec.operation_kind,
+            idempotency_key=source_event_id,
+            request_hash=payload_hash,
+            execution_correlation_id=correlation_id,
+            now_ms=now_ms if now_ms is not None else int(timezone.now_utc().timestamp() * 1000),
+            business_owner_key=f"device_event:{source_event_id}",
+        )
 
     async def _write_replay_audit(self, db: AsyncSession, audit_event: dict[str, str | None]) -> None:
         """写入人工重放审计；未注入审计服务时只返回 audit_event。"""

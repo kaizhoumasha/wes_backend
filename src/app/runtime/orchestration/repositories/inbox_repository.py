@@ -32,6 +32,7 @@ class WorklineInboxClaim:
     kind: InboxKind | str
     payload_json: dict[str, Any]
     claim_bucket_key: str = "serial:unknown"
+    trace_id: str | None = None
 
 
 class WorklineInboxRepository(BaseRepository[WorklineInbox]):
@@ -224,6 +225,7 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
                 columns.kind,
                 columns.payload_json,
                 columns.claim_bucket_key,
+                columns.trace_id,
             )
         )
         result = await db.execute(statement)
@@ -238,6 +240,7 @@ class WorklineInboxRepository(BaseRepository[WorklineInbox]):
                 kind=cast("InboxKind | str", row["kind"]),
                 payload_json=dict(cast("dict[str, Any] | None", row["payload_json"]) or {}),
                 claim_bucket_key=str(row.get("claim_bucket_key") or "serial:unknown"),
+                trace_id=cast("str | None", row["trace_id"]),
             )
             for row in result.mappings().all()
         ]

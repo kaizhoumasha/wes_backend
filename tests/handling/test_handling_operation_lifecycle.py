@@ -778,6 +778,97 @@ async def test_full_box_exchange_physical_completed_without_relations_enters_rec
 
 
 @pytest.mark.asyncio
+async def test_rack_bin_exchange_callback_conflict_enters_reconciling_projection() -> None:
+    operation = SimpleNamespace(
+        id=700,
+        operation_key="rack-bin:exchange-001",
+        operation_type="RACK_BIN_EXCHANGE",
+        operation_status=HandlingOperationStatus.REQUESTED,
+        workline_id=45,
+        workline_code="SMT_SORTER_01",
+        material_session_id=301,
+        error_code=None,
+        error_message=None,
+        completed_at=None,
+    )
+    step = SimpleNamespace(
+        id=701,
+        operation_id=700,
+        operation_key="rack-bin:exchange-001",
+        move_id=801,
+        dispatch_key="handling:rack-bin:exchange-001:move:1",
+        step_status=HandlingStepStatus.REQUESTED,
+        callback_json={},
+        result_json={},
+        error_code=None,
+        error_message=None,
+        started_at=None,
+        completed_at=None,
+    )
+    move = SimpleNamespace(
+        id=801,
+        move_status=HandlingMoveStatus.REQUESTED,
+        bin_code="BIN-001",
+        placeholder_key=None,
+        target_code="SMT_FULL_BOX_EXCHANGE",
+        metadata_json={},
+    )
+    session = SimpleNamespace(
+        id=301,
+        workline_id=45,
+        status="WAITING_EXTERNAL",
+        current_wait_type="HANDLING_OPERATION",
+        waiting_since=object(),
+        deadline_at=object(),
+        current_wait_timeout_seconds=1800,
+        awaiting_device_command_code=None,
+        failure_domain=None,
+        failure_code=None,
+        failure_message=None,
+        ended_at=None,
+        context_json={
+            "waiting_handling_operation_key": "rack-bin:exchange-001",
+            "handling_operation": {
+                "operation_key": "rack-bin:exchange-001",
+                "operation_type": "RACK_BIN_EXCHANGE",
+                "status": "IN_PROGRESS",
+            },
+        },
+    )
+    membership_service = FakeMembershipService()
+    service = HandlingOperationLifecycleService(
+        operation_repository=FakeOperationRepository(operation),
+        move_repository=FakeMoveRepository([move]),
+        step_repository=FakeStepRepository([step]),
+        session_repository=FakeSessionRepository(session),
+        membership_service=membership_service,
+    )
+
+    result = await service.record_callback_from_external_http(
+        SimpleNamespace(add=lambda _obj: None),
+        payload_json={
+            "callback_type": "WMS_TRANSPORT_COMPLETED",
+            "dispatch_key": "handling:rack-bin:exchange-001:move:1",
+            "exchange_request_code": "handling:rack-bin:exchange-001:move:1",
+            "exchange_status": "PHYSICAL_COMPLETED",
+            "wms_rcs_task_id": "RCS-TASK-RACK-BIN-001",
+        },
+        trace_id="trace-rack-bin-exchange-001",
+    )
+
+    assert result is step
+    assert step.step_status == HandlingStepStatus.RECONCILING
+    assert move.move_status == HandlingMoveStatus.RECONCILING
+    assert operation.operation_status == HandlingOperationStatus.RECONCILING
+    assert session.status == "MANUAL_HOLD"
+    assert session.failure_code == "POST_EXCHANGE_RELATIONS_MISSING"
+    assert membership_service.reconciling_calls[0]["reason_code"] == "POST_EXCHANGE_RELATIONS_MISSING"
+    assert membership_service.reconciling_calls[0]["evidence_json"]["exchange_request_code"] == (
+        "handling:rack-bin:exchange-001:move:1"
+    )
+
+
+@pytest.mark.asyncio
 async def test_reconciling_full_box_exchange_can_later_complete_business() -> None:
     operation = SimpleNamespace(
         id=700,

@@ -5,14 +5,17 @@ from __future__ import annotations
 from typing import Any
 
 # Phase 2 burn-down 阶段 6:workline 域退化为纯配置域,运行态 service shim 已
-# 物理删除。保留 file 是配置域 service(diagnostic_service / safety_service /
-# workline_service / write_back_service)。device_command_gateway 在 C3 迁出至
+# 物理删除。保留 file 是配置域 service(diagnostic_service /
+# manifest_validator / plane_service / safety_service / workline_service /
+# write_back_service)。device_command_gateway 在 C3 迁出至
 # runtime/orchestration/services/。其余运行态 service 迁入 runtime/orchestration/
 # services 与 runtime/capabilities/phase4/ 后已物理删除。
 #
-# 阶段 6 C5:__all__ / _LAZY_SHIM_MAP 收敛到当前 6 个真实 module export +
+# 阶段 6 C5:__all__ / _LAZY_SHIM_MAP 收敛到当前真实 service export +
 # 3 个未初始化 service 属性的 fallback tombstone(inbox_service /
 # workline_bin_cell_reservation_service / WorklineInboxService)。
+# PlaneReadPrincipal / PlaneReadSecurityPolicy / plane_read_security_policy
+# 是 plane_service 的安全 helper,由具体模块直接导入,不放在 package facade。
 # 这 3 个符号历史上由 workline.services 域暴露,底层 module 已物理删除
 # (迁入 runtime/orchestration/services/ 与 repositories/)。3 处 caller 仍按
 # `from src.app.workline.services import ...` 旧路径访问:

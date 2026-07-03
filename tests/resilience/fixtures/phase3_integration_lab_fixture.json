@@ -1,0 +1,276 @@
+{
+  "scenario_id": "phase3-integration-lab-wms-ecs-full-chain",
+  "environment": "sandbox",
+  "required_cases": [
+    "happy_path",
+    "out_of_order",
+    "duplicate",
+    "timeout",
+    "reject",
+    "network_partition"
+  ],
+  "required_event_kinds": [
+    "workline_manifest",
+    "execution_session",
+    "runtime_inbox",
+    "runtime_intent",
+    "device_command",
+    "wms_fulfillment",
+    "plane_snapshot",
+    "runtime_conflict"
+  ],
+  "provider_profiles": [
+    {
+      "provider_code": "WMS",
+      "contract_version": "2026-06-25",
+      "environment": "sandbox",
+      "runtime_capabilities_query": [
+        "WmsMasterDataPort.get_material"
+      ],
+      "runtime_capabilities_effect": [
+        "WmsFulfillmentPort.request_transport"
+      ],
+      "inbound_normalizers_event": [
+        "WMS_TRANSPORT_COMPLETED"
+      ],
+      "inbound_normalizers_result": [
+        "WMS_TRANSPORT_RESULT"
+      ],
+      "timeout_retry_query_timeout_seconds": 10,
+      "timeout_retry_effect_timeout_seconds": 30,
+      "timeout_retry_retry_backoff_seconds": [
+        1,
+        2,
+        4
+      ],
+      "cache_ttl_seconds": 30,
+      "fixture_set_path": "tests/fixtures/external_contracts/wms/default",
+      "fixture_set_required_cases": [
+        "success",
+        "reject",
+        "timeout",
+        "duplicate",
+        "missing_event_id"
+      ],
+      "unsupported_actions": [
+        "direct_rcs_dispatch"
+      ]
+    },
+    {
+      "provider_code": "ECS",
+      "contract_version": "2026-07-03",
+      "environment": "sandbox",
+      "runtime_capabilities_query": [
+        "DeviceStatusPort.get_status"
+      ],
+      "runtime_capabilities_effect": [
+        "DeviceCommandPort.receive_command"
+      ],
+      "inbound_normalizers_event": [
+        "ECS_SCAN_COMPLETED",
+        "ECS_DEVICE_OFFLINE"
+      ],
+      "inbound_normalizers_result": [
+        "ECS_COMMAND_RESULT"
+      ],
+      "timeout_retry_query_timeout_seconds": 5,
+      "timeout_retry_effect_timeout_seconds": 10,
+      "timeout_retry_retry_backoff_seconds": [
+        1,
+        2
+      ],
+      "cache_ttl_seconds": 1,
+      "fixture_set_path": "tests/fixtures/external_contracts/ecs/default",
+      "fixture_set_required_cases": [
+        "success",
+        "timeout",
+        "duplicate",
+        "missing_event_id",
+        "offline"
+      ],
+      "unsupported_actions": [
+        "direct_plc_control"
+      ]
+    }
+  ],
+  "scenario_cases": [
+    {
+      "case_id": "happy_path",
+      "provider_cases": {
+        "ECS": "success",
+        "WMS": "success"
+      }
+    },
+    {
+      "case_id": "out_of_order",
+      "provider_cases": {
+        "ECS": "success"
+      }
+    },
+    {
+      "case_id": "duplicate",
+      "provider_cases": {
+        "ECS": "duplicate",
+        "WMS": "duplicate"
+      }
+    },
+    {
+      "case_id": "timeout",
+      "provider_cases": {
+        "ECS": "timeout",
+        "WMS": "timeout"
+      }
+    },
+    {
+      "case_id": "reject",
+      "provider_cases": {
+        "WMS": "reject"
+      }
+    },
+    {
+      "case_id": "network_partition",
+      "provider_cases": {
+        "ECS": "offline"
+      }
+    }
+  ],
+  "simulator_events": [
+    {
+      "source_system": "WES",
+      "event_id": "il-manifest-001",
+      "kind": "workline_manifest",
+      "occurred_at": "2026-07-03T10:00:00Z",
+      "payload": {
+        "object_key": "workline:WL-IL",
+        "state": "ACTIVE"
+      }
+    },
+    {
+      "source_system": "WES",
+      "event_id": "il-session-001",
+      "kind": "execution_session",
+      "occurred_at": "2026-07-03T10:00:01Z",
+      "payload": {
+        "object_key": "session:S-IL",
+        "state": "RUNNING"
+      }
+    },
+    {
+      "source_system": "ECS",
+      "event_id": "il-inbox-001",
+      "kind": "runtime_inbox",
+      "occurred_at": "2026-07-03T10:00:02Z",
+      "payload": {
+        "source_event_id": "ecs-scan-il-001",
+        "object_key": "pkg:PKG-IL-0001",
+        "state": "RECEIVED",
+        "pkg_code": "PKG-IL-0001",
+        "bin_code": "BIN-IL-01"
+      }
+    },
+    {
+      "source_system": "WES",
+      "event_id": "il-intent-001",
+      "kind": "runtime_intent",
+      "occurred_at": "2026-07-03T10:00:03Z",
+      "payload": {
+        "effect_key": "device-command:CMD-IL-001",
+        "object_key": "pkg:PKG-IL-0001",
+        "state": "DISPATCHING"
+      }
+    },
+    {
+      "source_system": "ECS",
+      "event_id": "il-device-001",
+      "kind": "device_command",
+      "occurred_at": "2026-07-03T10:00:04Z",
+      "payload": {
+        "effect_key": "device-command:CMD-IL-001",
+        "object_key": "pkg:PKG-IL-0001",
+        "state": "ACKED",
+        "command_code": "CMD-IL-001"
+      }
+    },
+    {
+      "source_system": "WMS",
+      "event_id": "il-wms-001",
+      "kind": "wms_fulfillment",
+      "occurred_at": "2026-07-03T10:00:05Z",
+      "payload": {
+        "effect_key": "wms-fulfillment:FUL-IL-001",
+        "object_key": "fulfillment:FUL-IL-001",
+        "state": "SENT",
+        "request_id": "FUL-IL-001"
+      }
+    },
+    {
+      "source_system": "WES",
+      "event_id": "il-plane-001",
+      "kind": "plane_snapshot",
+      "occurred_at": "2026-07-03T10:00:06Z",
+      "payload": {
+        "object_key": "pkg:PKG-IL-0001",
+        "state": "VISIBLE"
+      }
+    },
+    {
+      "source_system": "ECS",
+      "event_id": "il-out-of-order-001",
+      "kind": "callback_out_of_order",
+      "occurred_at": "2026-07-03T10:00:07Z",
+      "payload": {
+        "object_key": "pkg:PKG-IL-0001",
+        "state": "RECONCILING",
+        "reason": "late_device_result",
+        "command_code": "CMD-IL-001"
+      }
+    },
+    {
+      "source_system": "WES",
+      "event_id": "il-duplicate-001",
+      "kind": "runtime_conflict",
+      "occurred_at": "2026-07-03T10:00:08Z",
+      "payload": {
+        "object_key": "pkg:PKG-IL-0001",
+        "state": "RECONCILING",
+        "reason": "duplicate_callback"
+      }
+    },
+    {
+      "source_system": "ECS",
+      "event_id": "il-timeout-001",
+      "kind": "device_timeout",
+      "occurred_at": "2026-07-03T10:00:09Z",
+      "payload": {
+        "object_key": "pkg:PKG-IL-0001",
+        "state": "RECONCILING",
+        "reason": "ecs_timeout",
+        "command_code": "CMD-IL-001"
+      }
+    },
+    {
+      "source_system": "WMS",
+      "event_id": "il-reject-001",
+      "kind": "wms_reject",
+      "occurred_at": "2026-07-03T10:00:10Z",
+      "payload": {
+        "effect_key": "wms-fulfillment:FUL-IL-001",
+        "object_key": "fulfillment:FUL-IL-001",
+        "state": "RECONCILING",
+        "reason": "wms_business_reject",
+        "request_id": "FUL-IL-001"
+      }
+    },
+    {
+      "source_system": "ECS",
+      "event_id": "il-network-001",
+      "kind": "runtime_conflict",
+      "occurred_at": "2026-07-03T10:00:11Z",
+      "payload": {
+        "object_key": "link:WMS-ECS",
+        "state": "RECONCILING",
+        "reason": "network_partition"
+      }
+    }
+  ]
+}

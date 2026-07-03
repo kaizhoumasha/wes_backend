@@ -20,6 +20,7 @@ from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import payload_dict
 from src.core.logger import logger
 from src.utils.value_normalization import (
+    coerce_optional_str,
     enum_value,
     resolve_entity_id,
     resolve_required_pk,
@@ -51,6 +52,77 @@ def _dispatch_failure_diagnostic_code(failed_outbox: Any) -> ErrorCode:
     if enum_value(getattr(failed_outbox, "status", None)) == "FAILED":
         return ErrorCode.OUTBOX_DISPATCH_FAILED
     return ErrorCode.OUTBOX_ACK_TIMEOUT
+
+
+def _outbox_payload_text(payload: dict[str, Any], *field_names: str) -> str | None:
+    for field_name in field_names:
+        value = coerce_optional_str(payload.get(field_name))
+        if value:
+            return value
+    return None
+
+
+def _runtime_intent_dispatch_trace_id(outbox: Any, payload: dict[str, Any]) -> str:
+    outbox_id = resolve_entity_id(outbox)
+    return (
+        coerce_optional_str(getattr(outbox, "trace_id", None))
+        or _outbox_payload_text(payload, "trace_id")
+        or coerce_optional_str(getattr(outbox, "dispatch_key", None))
+        or f"outbox:{outbox_id or 'unknown'}"
+    )
+
+
+def _runtime_intent_dispatch_correlation_id(outbox: Any, payload: dict[str, Any]) -> str:
+    return (
+        _outbox_payload_text(payload, "correlation_id", "execution_correlation_id")
+        or coerce_optional_str(getattr(outbox, "operation_key", None))
+        or coerce_optional_str(getattr(outbox, "dispatch_key", None))
+        or coerce_optional_str(getattr(outbox, "session_id", None))
+        or coerce_optional_str(getattr(outbox, "workline_id", None))
+        or coerce_optional_str(getattr(outbox, "device_id", None))
+        or f"outbox:{resolve_entity_id(outbox) or 'unknown'}"
+    )
+
+
+def _runtime_intent_dispatch_provider_code(outbox: Any, payload: dict[str, Any]) -> str:
+    dispatch_type = enum_value(getattr(outbox, "dispatch_type", None))
+    if dispatch_type == "DEVICE_COMMAND":
+        return _outbox_payload_text(payload, "provider_code", "source_system", "provider") or "ECS"
+    return (
+        _outbox_payload_text(payload, "provider_code", "source_system", "provider")
+        or coerce_optional_str(getattr(outbox, "target_code", None))
+        or coerce_optional_str(getattr(outbox, "operation_domain", None))
+        or "SYSTEM"
+    )
+
+
+def _runtime_intent_dispatch_operation_kind(outbox: Any, payload: dict[str, Any]) -> str:
+    return (
+        _outbox_payload_text(payload, "operation_kind", "operation_type", "action")
+        or coerce_optional_str(enum_value(getattr(outbox, "dispatch_type", None)))
+        or "UNKNOWN"
+    )
+
+
+def _emit_runtime_intent_dispatch_observability(outbox: Any) -> None:
+    """发出 RuntimeIntent/Outbox 派发观测事件；观测失败不改变派发业务状态。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    payload = payload_dict(getattr(outbox, "payload_json", None))
+    try:
+        runtime_observability_registry.emit(
+            "runtime_intent.dispatch",
+            {
+                "trace_id": _runtime_intent_dispatch_trace_id(outbox, payload),
+                "correlation_id": _runtime_intent_dispatch_correlation_id(outbox, payload),
+                "provider_code": _runtime_intent_dispatch_provider_code(outbox, payload),
+                "operation_kind": _runtime_intent_dispatch_operation_kind(outbox, payload),
+            },
+        )
+    except Exception as exc:  # pragma: no cover - 防止观测链路反向影响 outbox 派发
+        outbox_id = resolve_entity_id(outbox)
+        logger.warning(f"RuntimeIntent dispatch 观测事件发射失败: outbox_id={outbox_id or 'UNKNOWN'}, error={exc}")
 
 
 async def _block_outbox_for_workline_safety(
@@ -969,6 +1041,7 @@ class OutboxDispatchService:
         """
         from src.app.sys.models import SystemOutboxDispatchType
 
+        _emit_runtime_intent_dispatch_observability(outbox)
         if await self._should_dispatch_to_sandbox(db, outbox):
             return await self._dispatch_sandbox(db, outbox)
         if outbox.dispatch_type == SystemOutboxDispatchType.DEVICE_COMMAND:

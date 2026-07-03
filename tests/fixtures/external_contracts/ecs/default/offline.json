@@ -1,0 +1,23 @@
+{
+  "case_id": "offline",
+  "provider_code": "ECS",
+  "contract_version": "2026-07-03",
+  "expected_port": "DeviceStatusPort.get_status",
+  "direction": "query",
+  "raw_request": {
+    "device_code": "ECS-SCANNER-01"
+  },
+  "raw_response": {
+    "device_code": "ECS-SCANNER-01",
+    "status": "OFFLINE"
+  },
+  "expected_typed": {
+    "device_code": "ECS-SCANNER-01",
+    "status": "OFFLINE",
+    "network_partition": true
+  },
+  "expected_error": {
+    "code": "ECS_OFFLINE",
+    "retryable": true
+  }
+}

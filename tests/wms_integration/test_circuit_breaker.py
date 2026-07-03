@@ -133,6 +133,144 @@ async def test_open_fast_fails_until_retry_after_elapsed(db_session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_breaker_transitions_emit_observability_events(db_session) -> None:
+    from src.app.runtime.orchestration.observability import RuntimeObservabilityRegistry
+
+    emitted = []
+    registry = RuntimeObservabilityRegistry(observers=(emitted.append,))
+    service = WmsCircuitBreakerService(
+        failure_threshold=1,
+        retry_after_seconds=10,
+        observability_emit=registry.emit,
+    )
+    now = timezone.now_for_db()
+
+    await service.record_failure(
+        db_session,
+        target_code="WMS_INVENTORY",
+        operation_name="query_inventory",
+        evidence_key="ev-breaker-open",
+        trace_id="trace-breaker-1",
+        now=now,
+    )
+    await service.before_call(
+        db_session,
+        target_code="WMS_INVENTORY",
+        operation_name="query_inventory",
+        trace_id="trace-breaker-1",
+        now=now + timedelta(seconds=11),
+    )
+
+    assert [event.name for event in emitted] == ["wms_breaker.transition", "wms_breaker.transition"]
+    assert [event.attributes["breaker_state"] for event in emitted] == ["OPEN", "HALF_OPEN"]
+    assert emitted[0].attributes["trace_id"] == "trace-breaker-1"
+    assert emitted[0].attributes["provider_code"] == "WMS_INVENTORY"
+    assert emitted[0].attributes["operation_kind"] == "query_inventory"
+
+
+@pytest.mark.asyncio
+async def test_breaker_transition_observability_failure_does_not_abort_state_change(db_session) -> None:
+    """observability emit 是 best-effort，失败不能反向中断 breaker 状态机。"""
+
+    def broken_emit(_name: str, _attributes: dict[str, object]) -> None:
+        raise RuntimeError("observer unavailable")
+
+    service = WmsCircuitBreakerService(
+        failure_threshold=1,
+        retry_after_seconds=10,
+        observability_emit=broken_emit,
+    )
+    now = timezone.now_for_db()
+
+    opened = await service.record_failure(
+        db_session,
+        target_code="WMS_INVENTORY",
+        operation_name="query_inventory",
+        evidence_key="ev-breaker-observer-fails",
+        trace_id="trace-breaker-observer-fails",
+        now=now,
+    )
+
+    assert opened.state == WmsCircuitBreakerStatus.OPEN
+    assert opened.last_evidence_key == "ev-breaker-observer-fails"
+
+
+@pytest.mark.asyncio
+async def test_breaker_before_call_observability_failure_does_not_abort_half_open(db_session) -> None:
+    """OPEN -> HALF_OPEN 的观测失败不能中断 before_call 放行。"""
+
+    def broken_emit(_name: str, _attributes: dict[str, object]) -> None:
+        raise RuntimeError("observer unavailable")
+
+    service = WmsCircuitBreakerService(
+        failure_threshold=1,
+        retry_after_seconds=10,
+        observability_emit=broken_emit,
+    )
+    now = timezone.now_for_db()
+    await service.record_failure(
+        db_session,
+        target_code="WMS_INVENTORY",
+        operation_name="query_inventory",
+        evidence_key="ev-breaker-open",
+        now=now,
+    )
+
+    decision = await service.before_call(
+        db_session,
+        target_code="WMS_INVENTORY",
+        operation_name="query_inventory",
+        trace_id="trace-breaker-half-open-observer-fails",
+        now=now + timedelta(seconds=11),
+    )
+
+    assert decision.allowed is True
+    assert decision.state == WmsCircuitBreakerStatus.HALF_OPEN
+    assert decision.reason == "OPEN_RETRY_AFTER_ELAPSED"
+
+
+@pytest.mark.asyncio
+async def test_breaker_record_success_observability_failure_does_not_abort_close(db_session) -> None:
+    """HALF_OPEN -> CLOSED 的观测失败不能中断 record_success 状态推进。"""
+
+    def broken_emit(_name: str, _attributes: dict[str, object]) -> None:
+        raise RuntimeError("observer unavailable")
+
+    service = WmsCircuitBreakerService(
+        failure_threshold=1,
+        retry_after_seconds=10,
+        observability_emit=broken_emit,
+    )
+    now = timezone.now_for_db()
+    await service.record_failure(
+        db_session,
+        target_code="WMS_INVENTORY",
+        operation_name="query_inventory",
+        evidence_key="ev-breaker-open",
+        now=now,
+    )
+    decision = await service.before_call(
+        db_session,
+        target_code="WMS_INVENTORY",
+        operation_name="query_inventory",
+        now=now + timedelta(seconds=11),
+    )
+
+    closed = await service.record_success(
+        db_session,
+        target_code="WMS_INVENTORY",
+        operation_name="query_inventory",
+        evidence_key="ev-breaker-close",
+        probe_generation=decision.probe_generation,
+        trace_id="trace-breaker-close-observer-fails",
+        now=now + timedelta(seconds=12),
+    )
+
+    assert closed.state == WmsCircuitBreakerStatus.CLOSED
+    assert closed.last_evidence_key == "ev-breaker-close"
+
+
+@pytest.mark.asyncio
 async def test_half_open_success_threshold_closes_breaker(db_session) -> None:
     service = WmsCircuitBreakerService(
         failure_threshold=1,

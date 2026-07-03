@@ -13,6 +13,14 @@ from .bin_cell_reservation_repository import (
     WorklineBinCellReservationRepository,
     workline_bin_cell_reservation_repository,
 )
+from .conveyor_queue_membership_repository import (
+    ConveyorQueueMembershipRepository,
+    conveyor_queue_membership_repository,
+)
+from .device_runtime_projection_repository import (
+    DeviceRuntimeProjectionRepository,
+    device_runtime_projection_repository,
+)
 from .diagnostic_repository import (
     WorklineDiagnosticRepository,
     workline_diagnostic_repository,
@@ -51,6 +59,8 @@ from .smt_inbound_handoff_repository import (
 )
 
 __all__ = [
+    "ConveyorQueueMembershipRepository",
+    "DeviceRuntimeProjectionRepository",
     "IdempotencyKeyRepository",
     "MaterialUnitRepository",
     "ObjectTransitionEventRepository",
@@ -62,6 +72,8 @@ __all__ = [
     "WorklineInboxRepository",
     "WorklineRackPositionRepository",
     "WorklineSessionRepository",
+    "conveyor_queue_membership_repository",
+    "device_runtime_projection_repository",
     "idempotency_key_repository",
     "inbox_repository",
     "material_unit_repository",

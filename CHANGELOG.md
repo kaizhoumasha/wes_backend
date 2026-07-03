@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.5.0] - 2026-07-03
+
+> **Note**: Phase 3 closure 本地合同与门禁补齐发布。本 patch 完成运行态安全/恢复热路径、production evidence composer 与总门禁、benchmark provenance/workload 校验、观测与 toggle 发布门禁；Phase 3 生产/预生产 P0 E2E artifact 与 production-scale benchmark artifact 仍作为外部 evidence 后续补齐，不在本版本伪完成。
+
+### Added
+- Runtime/Orchestration 新增 Phase 3 closure gate、P0 E2E artifact gate/composer、benchmark artifact composer/gate 与生产 evidence 一致性校验，要求 trace、异常路径和 benchmark scenario evidence 文件存在且内容一致。
+- 新增 DB-backed conveyor queue membership writer、DeviceRuntimeProjection 持久投影与 DeviceDispatchPolicy dispatch 预检，覆盖 placeholder resolve、跨队列 RECONCILING、唯一冲突重读和设备状态 TTL/实时 probe 策略。
+- 新增 RuntimeObservabilityRegistry、OpenTelemetry bridge/backend adapter、runtime toggle release gate、外部 evidence catalog、WMS evidence archive/GIN index 和多类 Phase 3 resilience/load/contract fixture。
+- WorkLine plane read 补齐 owner/superuser 行级过滤、独立权限和读取审计；full-box / RACK_BIN exchange 合同转为真实 callback + reconciliation 完成语义。
+
+### Changed
+- 收紧 RuntimeBenchmarkGate 的 production-scale provenance/workload metadata：禁止 lightweight/sandbox artifact 冒充生产基线，并要求 PostgreSQL、ECS HTTP、API HTTP 来源证据。
+- `src/app/workline/services` package facade 只导出真实 service 与保留 tombstone；PlaneRead 安全 helper 改由 `plane_service.py` 具体模块直接导入。
+- Docker compose 默认将 API、Nginx、Postgres、Redis、Flower、Locust、mock ECS/WMS 和前端开发服务端口绑定到 `127.0.0.1`，可通过 `DOCKER_HOST_BIND_IP` 覆盖。
+- Legacy cleanup matrix 重新生成并同步摘要，当前 707 条 legacy entry、0 pending-review。
+
+### Fixed
+- 修复评审发现的 fulfillment 幂等 MATCH 重复派发、设备预占命令本地 busy 阻断、DeviceRuntimeProjection 并发 upsert、placeholder resolve 唯一冲突、RACK_BIN exchange 协议误判和 breaker 观测失败反向影响主流程等 Phase 3 热路径问题。
+- 修复 plane read 安全 helper 包入口误导出导致 Stage 6 service-shim guardrail 失败的问题，并同步更新相关 API/模型测试导入路径。
+
 ## [0.10.4.0] - 2026-07-01
 
 > **Note**: Phase 3 执行安全与恢复发布。本 patch 线新增 callback replay 防护、RuntimeInbox 幂等入口、Reconciliation 决策合同、WMS 履约状态保护，以及 WorkLine plane/manifest 读面；不包含数据库 schema 变更。

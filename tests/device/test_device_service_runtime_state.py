@@ -101,8 +101,13 @@ class FakeCommandRepo:
         return active_commands[:limit]
 
 
+class NoopRuntimeProjectionWriter:
+    async def upsert_from_device(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
 def _service(device_repo: FakeDeviceRepo, command_repo: FakeCommandRepo | None = None) -> DeviceService:
-    service = DeviceService()
+    service = DeviceService(runtime_projection_writer=NoopRuntimeProjectionWriter())
     service.repo = device_repo  # type: ignore[assignment]
     service.command_repo = command_repo or FakeCommandRepo()  # type: ignore[attr-defined]
     return service

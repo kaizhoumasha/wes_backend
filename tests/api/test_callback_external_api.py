@@ -34,6 +34,21 @@ def build_request() -> RequestFactory:
 
 
 class TestCallbackExternalAPI:
+    def test_external_callback_allow_list_includes_phase3_ecs_device_matrix(self) -> None:
+        expected_types = {
+            "DEVICE_RESULT",
+            "DEVICE_EVENT",
+            "DEVICE_STATUS_CHANGED",
+            "MATERIAL_ARRIVED",
+            "SCAN_COMPLETED",
+            "ESTOP_PRESSED",
+            "DEVICE_ERROR",
+            "DEVICE_ONLINE",
+            "DEVICE_OFFLINE",
+        }
+
+        assert expected_types <= callback_test_support.callback_ingress_module._EXTERNAL_CALLBACK_ALLOWED_TYPES
+
     @pytest.mark.asyncio
     async def test_callback_external_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
         with (
@@ -54,6 +69,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.v1.callback.get_request_id",
                 return_value="req-ext-001",
             ),
+            patch("src.app.runtime.orchestration.observability.runtime_observability_registry.emit") as emit,
         ):
             from src.app.callback.v1.callback import callback_external
 
@@ -72,6 +88,15 @@ class TestCallbackExternalAPI:
         assert log_kwargs["trace_id"] == "trace-agv-001"
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         assert log_kwargs["failure_stage"] is None
+        emit.assert_called_once_with(
+            "callback.normalize",
+            {
+                "trace_id": "trace-agv-001",
+                "correlation_id": "AGV-REQ-001",
+                "provider_code": "AGV",
+                "source_event_id": "req-ext-001",
+            },
+        )
         mock_enqueue.assert_called_once()
         db_session.commit.assert_awaited_once()
         mock_log_callback.assert_awaited_once()
@@ -113,6 +138,87 @@ class TestCallbackExternalAPI:
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
         assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_external_rejects_callback_type_outside_allow_list(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-ext-unsupported-type"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(
+                    body=create_external_payload(callback_type="ERP_STOCK_SYNCED"),
+                    path="/api/v1/callback/external",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        mock_create_inbox.assert_not_awaited()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        assert "callback_type is not allow-listed" in str(log_kwargs["error_message"])
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_external_rejects_ecs_device_source_mismatch(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-ext-source-mismatch"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(
+                    body=create_external_payload(
+                        callback_type="DEVICE_EVENT",
+                        source_system="WMS",
+                    ),
+                    path="/api/v1/callback/external",
+                ),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        mock_create_inbox.assert_not_awaited()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
+        assert "source_system must match callback_type provider" in str(log_kwargs["error_message"])
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -516,6 +622,7 @@ class TestCallbackExternalAPI:
                     body=create_wms_external_payload(
                         callback_type="RCS_RACK_TASK_RESULT",
                         dispatch_key="external:smt:release-001:RACK_OPERATION:2",
+                        source_system="RCS",
                         task_status="FAILED",
                         status=None,
                         reason_code="RCS_RACK_OPERATION_FAILED",

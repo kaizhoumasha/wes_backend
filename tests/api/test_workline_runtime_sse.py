@@ -498,6 +498,17 @@ class _ReconciliationDb:
         return self.command
 
 
+class _SseReconciliationManager:
+    async def register_conflict_idempotent(self, _db: Any, conflict: Any, **_kwargs: Any) -> Any:
+        from src.app.reconciliation.manager import ReconciliationManager, ReconciliationRegistrationResult
+        from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult
+
+        return ReconciliationRegistrationResult(
+            decision=ReconciliationManager().register_conflict(conflict),
+            claim_result=ClaimResult.NEW,
+        )
+
+
 def _build_ack_exhausted_fixtures(
     *,
     session_status: Any,
@@ -565,6 +576,7 @@ def _build_reconciliation_service(*, session: Any, workline: Any) -> Any:
         workline_repository=workline_repo,
         device_service=device_service,
         runtime_hold_creation_service=runtime_hold_creation_service,
+        reconciliation_manager=_SseReconciliationManager(),
     )
 
 

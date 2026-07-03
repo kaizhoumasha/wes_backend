@@ -108,6 +108,7 @@ class TestCallbackResultAPI:
             ) as mock_audit,
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-001"),
+            patch("src.app.runtime.orchestration.observability.runtime_observability_registry.emit") as emit,
             patch(
                 "src.app.callback.services.callback_ingress_service.device_service.mark_command_finished",
                 new=AsyncMock(),
@@ -141,6 +142,15 @@ class TestCallbackResultAPI:
         assert log_kwargs["trace_id"] == "trace-001"
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         assert log_kwargs["failure_stage"] is None
+        emit.assert_called_once_with(
+            "callback.normalize",
+            {
+                "trace_id": "trace-001",
+                "correlation_id": "CMD-20250317-001",
+                "provider_code": "ECS",
+                "source_event_id": "req-001",
+            },
+        )
         mock_handle.assert_awaited_once()
         mock_enqueue.assert_called_once()
         db_session.commit.assert_awaited_once()

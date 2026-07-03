@@ -41,6 +41,68 @@ class DeviceCallbackResultOutcome:
     late_callback_recorded: bool = False
 
 
+def _non_empty_text(value: object) -> str | None:
+    candidate = getattr(value, "value", value)
+    if candidate is None:
+        return None
+    text = str(candidate).strip()
+    return text or None
+
+
+def _device_command_result_trace_id(command: object, callback: CommandCallbackResult) -> str | None:
+    return (
+        _non_empty_text(getattr(callback, "trace_id", None))
+        or _non_empty_text(getattr(command, "trace_id", None))
+        or _device_command_result_source_event_id(command, callback)
+    )
+
+
+def _device_command_result_correlation_id(command: object, callback: CommandCallbackResult) -> str | None:
+    command_code = _non_empty_text(getattr(command, "command_code", None)) or _non_empty_text(
+        getattr(callback, "command_code", None)
+    )
+    return (
+        _non_empty_text(getattr(command, "correlation_id", None))
+        or _non_empty_text(getattr(callback, "causation_id", None))
+        or (f"command:{command_code}" if command_code else None)
+    )
+
+
+def _device_command_result_source_event_id(command: object, callback: CommandCallbackResult) -> str | None:
+    command_code = _non_empty_text(getattr(command, "command_code", None)) or _non_empty_text(
+        getattr(callback, "command_code", None)
+    )
+    finish_time = _non_empty_text(getattr(callback, "finish_time", None))
+    return (
+        _non_empty_text(getattr(callback, "event_id", None))
+        or _non_empty_text(getattr(command, "event_id", None))
+        or _non_empty_text(getattr(callback, "causation_id", None))
+        or (f"command_result:{command_code}:{finish_time}" if command_code and finish_time else None)
+    )
+
+
+def _emit_device_command_result_observability(command: object, callback: CommandCallbackResult) -> None:
+    """发出 DeviceCommand RESULT 观测事件；观测失败不改变结果处理状态。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    command_code = _non_empty_text(getattr(command, "command_code", None)) or _non_empty_text(
+        getattr(callback, "command_code", None)
+    )
+    try:
+        runtime_observability_registry.emit(
+            "device_command.result",
+            {
+                "trace_id": _device_command_result_trace_id(command, callback),
+                "correlation_id": _device_command_result_correlation_id(command, callback),
+                "command_code": command_code,
+                "source_event_id": _device_command_result_source_event_id(command, callback),
+            },
+        )
+    except Exception as exc:  # pragma: no cover - 防止观测链路反向影响设备结果处理
+        logger.warning(f"设备指令 RESULT 观测事件发射失败: command_code={command_code or 'UNKNOWN'}, error={exc}")
+
+
 class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
     """设备指令服务（纯 CRUD 层）
 
@@ -219,6 +281,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             logger.info(
                 f"处理回调结果: {callback.command_code} -> {callback.result} (耗时: {updated_command.get_duration_ms()}ms)"
             )
+            _emit_device_command_result_observability(updated_command, callback)
 
         if updated_command is None:
             raise RuntimeError(f"更新回调指令状态失败: {callback.command_code}")

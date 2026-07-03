@@ -143,6 +143,9 @@
 | `rbac.py` | RBAC 权限验证、超级用户检查 | 🔧 架构核心 |
 | `security.py` | JWT 认证、密码哈希、Token 管理 | 🔧 架构核心 |
 | `api_security.py` | 外部 API 签名认证逻辑；Phase 3 callback body HMAC、nonce replay guard 和短时间窗校验入口 | 🔄 常用功能 |
+| `runtime_toggles.py` | Phase 3 typed runtime toggle 定义与 owner/expiry/security-bypass validator | 🔧 架构核心 |
+| `runtime_toggle_release_gate.py` | Phase 3 release toggle 发布阻塞决策：default-off 与 test_matrix evidence 校验 | 🔧 架构核心 |
+| `runtime_toggle_catalog.py` | Phase 3 runtime toggle typed catalog；quality gate 的唯一检查清单 | 🔧 架构核心 |
 | `conf.py` | Pydantic Settings 配置管理 | 🔧 架构核心 |
 | `logger.py` | 统一日志记录器 | 📚 参考资料 |
 | `context.py` | 请求上下文管理 | 📚 参考资料 |
@@ -661,8 +664,8 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `active_objects/` | ActiveObject 归属投影和冲突仲裁测试 | 🔧 架构核心 |
 | `reconciliation/` | Reconciliation owner-scoped 决议合同测试 | 🔧 架构核心 |
 | `benchmark/` | 性能基准测试 | 📚 参考资料 |
-| `load/` | 负载测试（Locust） | 📚 参考资料 |
-| `resilience/` | 弹性测试（Redis 重连、降级） | 📚参考资料 |
+| `load/` | 显式运行的负载/基准测试（Locust + Phase 3 runtime benchmark gate 四场景） | 📚 参考资料 |
+| `resilience/` | 显式运行的弹性/恢复测试（Redis 重连、降级、Phase 3 scenario replay fixture） | 📚参考资料 |
 | `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
 | ~~`workline_runtime/`~~ | **Phase 2 burn-down 阶段 3 (T3) 已删除**：作业线运行时测试已被 `tests/contracts/workline/` 行为契约覆盖；wlr 整目录同步物理删除 | 🔧 架构核心 |
 | `wms_integration/` | WMS 对接辅助域测试（client、typed ports、evidence、breaker、cache、callback normalizer、caller contract） | 🔧 架构核心 |
@@ -691,8 +694,10 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 |------|------|------|
 | `runtime/orchestration/test_runtime_inbox_consumer.py` | **Phase 2 burn-down 阶段 2 (C1)** RuntimeInboxConsumer 单点入口测试:wlr 唯一允许的非 wlr/non-migration production consumer 入口（consume / consume_sync / list_consumed_ids / inbound normalizer routing） | 🔧 架构核心 |
 | `runtime/orchestration/test_runtime_inbox_phase3_service.py` | Phase 3 RuntimeInboxService 幂等接收、唯一冲突重读、payload conflict 409 和人工重放审计测试 | 🔧 架构核心 |
+| `runtime/orchestration/test_conveyor_queue_membership_writer_service.py` | Phase 3 ConveyorQueueMembershipWriter DB-backed 写入、幂等、placeholder resolve、RECONCILING、诊断和 PostgreSQL `FOR UPDATE` 合同测试 | 🔧 架构核心 |
 | `runtime/orchestration/test_idempotency_phase3_audit.py` | Phase 3 IdempotencyGuard conflict audit payload 测试 | 🔧 架构核心 |
 | `runtime/orchestration/test_phase3_recovery_policies.py` | Phase 3 RuntimeInbox backpressure 与 DeviceCommand lease 恢复策略测试 | 🔧 架构核心 |
+| `integration/test_phase3_conveyor_queue_membership_concurrency.py` | Phase 3 ConveyorQueueMembershipWriter opt-in PostgreSQL partial unique index 并发冲突与 existing 重读测试 | 🔧 架构核心 |
 
 **Phase 3 执行安全与恢复测试文件**：
 
@@ -824,6 +829,7 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `start_e2e_env.sh` | E2E 测试环境管理（启动/停止/日志） | 🔄 常用功能 |
 | `run_performance_test.sh` | 运行 Locust/AB 性能测试 | 📚 参考资料 |
 | `test_api_signature.sh` | API 签名验证测试 | 📚 参考资料 |
+| `check_runtime_toggle_release_gate.py` | Phase 3 runtime toggle 发布门禁入口，供 `git-quality-gate.sh --check runtime-toggle-release` 调用 | 🔧 架构核心 |
 | `docker-deploy-simple.sh` | 简化 Docker 部署 | 📚 参考资料 |
 | `init-deploy-servers.sh` | 部署服务器初始化 | 📚 参考资料 |
 
