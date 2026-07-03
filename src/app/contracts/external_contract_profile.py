@@ -13,12 +13,14 @@
 
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Environment = Literal["sandbox", "staging", "production"]
 Direction = Literal["query", "effect", "event", "result"]
+PORT_METHOD_RE = re.compile(r"^[A-Z][A-Za-z0-9_]*Port\.[a-z_][A-Za-z0-9_]*$")
 
 
 class SecurityProfile(BaseModel):
@@ -133,13 +135,35 @@ class ExternalContractProfile(BaseModel):
 
         字符类含下划线, 支持 snake_case 方法名 (如 WmsFulfillmentPort.request_transport)。
         """
-        import re
+        return _validate_port_method_entries(v, direction="query")
 
-        pat = re.compile(r"^[A-Z][A-Za-z0-9_]*Port\.[a-z_][A-Za-z0-9_]*$")
-        for entry in v:
-            if not pat.match(entry):
-                raise ValueError(f"query 元素必须为 'ClassName.method' 格式 (Port.method 合同), got: {entry}")
-        return v
+    @field_validator("runtime_capabilities_effect")
+    @classmethod
+    def _effect_method_format(cls, v: list[str]) -> list[str]:
+        """effect 元素必须匹配 'ClassName.method' 格式 (Port.method 合同)。"""
+
+        return _validate_port_method_entries(v, direction="effect")
+
+    def ensure_runtime_capability_declared(self, capability: str, *, direction: Literal["query", "effect"]) -> None:
+        """校验 provider profile 已声明指定 query/effect capability。"""
+
+        declared = self.runtime_capabilities_query if direction == "query" else self.runtime_capabilities_effect
+        if capability in declared:
+            return
+        raise PermissionError(f"provider={self.provider_code} 未声明 {direction} capability: {capability}")
+
+    def ensure_inbound_normalizer_declared(
+        self,
+        callback_type: str,
+        *,
+        direction: Literal["event", "result"],
+    ) -> None:
+        """校验 provider profile 已声明指定 callback/event/result normalizer。"""
+
+        declared = self.inbound_normalizers_event if direction == "event" else self.inbound_normalizers_result
+        if callback_type in declared:
+            return
+        raise PermissionError(f"provider={self.provider_code} 未声明 {direction} normalizer: {callback_type}")
 
 
 class RuntimeCapabilityProfile(BaseModel):
@@ -165,6 +189,13 @@ class RuntimeCapabilityProfile(BaseModel):
         default_factory=list,
         description="显式禁止注入的 inbound normalizer 类型, e.g. WmsEventPort",
     )
+
+
+def _validate_port_method_entries(entries: list[str], *, direction: Literal["query", "effect"]) -> list[str]:
+    for entry in entries:
+        if not PORT_METHOD_RE.match(entry):
+            raise ValueError(f"{direction} 元素必须为 'ClassName.method' 格式 (Port.method 合同), got: {entry}")
+    return entries
 
 
 class InboundNormalizerProfile(BaseModel):

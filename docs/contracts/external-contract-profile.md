@@ -84,7 +84,7 @@ security_profile:
 | --- | --- |
 | 格式 | YAML 或 JSON 均可，但必须由 Pydantic model 校验 |
 | Phase 0 测试 model 路径 | `tests/support/external_contract_profile.py`（仅供 fixture 校验与 contract tests import；**禁止** `src/app/` 下任何模块 import） |
-| Phase 1 生产 model 路径 | `src/app/wms_integration/models/external_contract_profile.py`（Phase 1 CEO-013 实施，从 `tests/support/` 升级；Phase 0 不创建此文件） |
+| Phase 1 生产 model 路径 | `src/app/contracts/external_contract_profile.py`（Phase 1 CEO-013 实施，从 `tests/support/` 升级；Phase 0 不创建此文件） |
 | fixture 校验 | 每个 fixture 必须声明 `provider_code`、`contract_version`、`case_id`、`expected_port` |
 | unsupported action | provider 未声明能力时，runtime capability 和 callback API 必须拒绝 |
 

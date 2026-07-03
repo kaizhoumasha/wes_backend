@@ -203,7 +203,7 @@ CSV 列（对齐 SPEC P0-002 矩阵字段表）：
 
 ## 9. 验收（SPEC P0-002）
 
-1. ✅ 每个旧入口都有且只有一个主策略（CSV 668 条，strategy 字段非空）
+1. ✅ 每个旧入口都有且只有一个主策略（CSV 707 条，strategy 字段非空）
 2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，213 条）
 3. ✅ 标记删除、迁移或重建前置条件（`blocking_tests` 字段非空）
 4. ✅ pending-review 归零（全部 final）
