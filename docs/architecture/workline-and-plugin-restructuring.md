@@ -8,6 +8,7 @@ audience: eng/arch lead, WES owner, WMS 集成 lead, code reviewer
 related_specs:
   - docs/superpowers/specs/2026-06-19-workline-multi-object-state-machine-design.md  (子设计)
   - docs/superpowers/specs/2026-06-23-workline-c0-resource-projection-foundation.md  (C0 子基础)
+  - docs/architecture/runtime-orchestration-spec.md  (Runtime/Orchestration 域最小骨架 SPEC)
 detail_docs:
   - 关键决策（ADR）：docs/architecture/adr/workline-restructuring/
   - 评审存档：docs/architecture/reviews/
@@ -65,7 +66,6 @@ review_summary: |
 - HMAC canonical 字符串（Phase 3 启动时写 `external-callback-auth-spec.md`）
 - PlaneSceneView/PlaneSnapshot 完整 schema（Phase 3 启动时写 `plane-read-model-spec.md`）
 - ReconciliationManager 触发矩阵（Phase 3 启动时写 `reconciliation-manager-spec.md`）
-- runtime/orchestration 7 core entities 最小骨架（Phase 1 单 PR 的 Packet C / AP3 前写 `runtime-orchestration-spec.md`）
 
 ### 1.3 术语与缩略语
 
@@ -123,6 +123,7 @@ review_summary: |
 | 10 | `docs/architecture/reviews/autoplan-workline-restructuring-2026-06-23.md` | autoplan CEO/Design/Eng 评审全文 |
 | 11 | `docs/architecture/reviews/decision-audit-trail.md` | 28 auto-decision 审计 |
 | 12 | `docs/architecture/adr/workline-restructuring/0001-0008` | 8 个关键决策 ADR |
+| 13 | `docs/architecture/runtime-orchestration-spec.md` | Runtime/Orchestration 域最小骨架 SPEC（7 核心实体 + 支撑实体 + 设计决策） |
 
 ### 1.5 缩略语
 
@@ -2417,7 +2418,7 @@ Phase 5 ────────────────────────
 
 - **Phase 0 启动时** → 写 `external-contract-profile-spec.md`（provider_code、contract_version、runtime_capabilities、inbound_normalizers、field mapping、timeout/retry、fixture set、unsupported actions）、`integration-lab-and-simulator-spec.md`（WMS/ECS simulator、sandbox provider profile、scenario runner、contract fixture 与环境隔离）、`architecture-guardrails-spec.md`（§7.5 核心 5 条不变量 + I3 capability 注入/import 边界的脚本入口、测试目录、失败示例、CI/pre-commit 接入方式）
 - **Phase 1 单 PR 的 Packet B / CEO-001 代码实现前** → 写 `wms-integration-ports-spec.md`（MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery 各 port 详细字段，并引用 `docs/integration/wms_rcs_interface_requirements.md` 的 P0/P1 接口清单）
-- **Phase 1 单 PR 的 Packet C / AP3 前** → 写 `runtime-orchestration-spec.md`（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog 7 个 runtime core 实体最小骨架；统一 §4.1 与 §9.2 的字段、索引、lease、deadline、idempotency 和对象级 work item 与 session 的并发边界）
+- **Phase 1 单 PR 的 Packet C / AP3 前** → ✅ 已写 `runtime-orchestration-spec.md`（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog 7 个 runtime core 实体最小骨架；统一 §4.1 与 §9.2 的字段、索引、lease、deadline、idempotency 和对象级 work item 与 session 的并发边界）
 - **Phase 2 启动时** → 写 `legacy-runtime-migration-spec.md`（旧 WorkLine/plugin/runtime 执行能力迁移、删除和 WorkLine 清空顺序）
 - **Phase 3 启动时** → 写 `fulfillment-state-machine-spec.md`（11 态机完整转移图 + 4 timeout 时长表 + BLOCKED_BY_CB 出站阻塞 + CB 恢复期 late callback 入站 evidence 合同）、`reconciliation-manager-spec.md`（触发矩阵 + 隔离动作 + owner-scoped resolution decision + 5/30 分钟升级）、`plane-read-model-spec.md`（PlaneSceneView/Snapshot 字段 + 容量上限 + RBAC 矩阵）、`external-callback-auth-spec.md`（HMAC canonical + nonce TTL + allow-list）、`device-dispatch-policy-spec.md`（能力选择 + deadline + 状态快照 TTL）、`scenario-replay-spec.md`（录制、脱敏、deterministic replay、断言矩阵）、`observability-contract.md`（span/metric/log 命名与稳定 attributes）、`runtime-toggle-governance.md`（typed toggle 分类、owner/expiry/scope/default/rollback/test matrix）
 - **Phase 4 启动时** → 写 `material-location-query-spec.md`、`workline-active-objects-spec.md`、`sorter-inbound-capability-spec.md`（必须展开粗分机正常流、满箱交换前置分流、分拣机正常流、满箱交换区/分拣机 STATION 边界、`rack_code + rack_side` 批次分组、`CHANGE_RACK_FACE` 独立履约、已交换物料排除逐件分拣、`CellReservation`、授权料箱 resolve、扫码平台预取互锁及 manifest validator、物料 work item 与料箱 work item join 条件、本地物理事实先落与 WMS 同步/对账状态、CTU 父请求聚合子 work item 查询视图）、`smt-ng-wms-reconciliation-spec.md`；`fulfillment-provider-adapter-spec.md` 仅在 §10.5 RCS/AGV/CTU 直连触发条件满足时生成，生产前默认不写
