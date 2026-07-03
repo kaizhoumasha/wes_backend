@@ -123,7 +123,7 @@ def test_plugin_manifest_route_requires_workline_list_permission() -> None:
 def test_plane_routes_require_dedicated_permissions() -> None:
     """plane scene/snapshot 使用独立权限, 不能复用普通 detail。"""
 
-    from src.app.workline.services import plane_read_security_policy
+    from src.app.workline.services.plane_service import plane_read_security_policy
 
     scene_route = next(
         route
@@ -149,7 +149,7 @@ async def test_plane_scene_route_records_read_audit(monkeypatch: pytest.MonkeyPa
     """plane scene route 返回成功时必须记录读取审计。"""
 
     from src.app.workline.models import PlaneSceneView
-    from src.app.workline.services import PlaneReadPrincipal
+    from src.app.workline.services.plane_service import PlaneReadPrincipal
 
     service = SimpleNamespace(
         get_scene=AsyncMock(
@@ -178,7 +178,7 @@ async def test_plane_snapshot_route_records_read_audit(monkeypatch: pytest.Monke
     """plane snapshot route 返回成功时必须记录读取审计。"""
 
     from src.app.workline.models import PlaneSnapshot
-    from src.app.workline.services import PlaneReadPrincipal
+    from src.app.workline.services.plane_service import PlaneReadPrincipal
 
     service = SimpleNamespace(
         get_snapshot=AsyncMock(

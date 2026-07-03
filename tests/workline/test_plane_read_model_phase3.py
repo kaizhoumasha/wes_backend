@@ -67,7 +67,7 @@ def test_plane_read_model_rejects_label_without_code() -> None:
 def test_plane_read_security_policy_declares_scope_redaction_and_audit_actions() -> None:
     """plane read 安全门禁必须集中声明权限、scope、脱敏与审计口径。"""
 
-    from src.app.workline.services import plane_read_security_policy
+    from src.app.workline.services.plane_service import plane_read_security_policy
 
     assert plane_read_security_policy.scope == "WORKLINE_LOCAL"
     assert plane_read_security_policy.scene_permission == "biz:workline:view-plane-scene"
@@ -90,7 +90,7 @@ def test_plane_read_security_policy_declares_scope_redaction_and_audit_actions()
 def test_plane_read_security_policy_enforces_workline_local_owner_scope() -> None:
     """plane read 行级过滤必须约束到当前用户可见的 WorkLine。"""
 
-    from src.app.workline.services import PlaneReadPrincipal, plane_read_security_policy
+    from src.app.workline.services.plane_service import PlaneReadPrincipal, plane_read_security_policy
     from src.core.exceptions import PermissionException
 
     workline = SimpleNamespace(id=7, line_code="WL-7", created_by=42)
@@ -115,7 +115,7 @@ def test_plane_read_security_policy_enforces_workline_local_owner_scope() -> Non
 async def test_plane_service_rejects_non_owner_plane_read(monkeypatch: pytest.MonkeyPatch) -> None:
     """service 读取 scene/snapshot 前必须执行行级过滤。"""
 
-    from src.app.workline.services import PlaneReadPrincipal, WorkLinePlaneService
+    from src.app.workline.services.plane_service import PlaneReadPrincipal, WorkLinePlaneService
     from src.core.exceptions import PermissionException
 
     service = WorkLinePlaneService(audit_service=_AuditServiceStub())
