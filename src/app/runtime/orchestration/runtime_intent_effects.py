@@ -256,14 +256,14 @@ async def _claim_external_fulfillment_idempotency_if_needed(
     dispatch_key: str,
     target_code: str,
     payload_json: Mapping[str, Any],
-) -> None:
+) -> Any | None:
     """在实际创建 fulfillment outbox 前 claim 幂等键；缺少 correlation 的 legacy 请求保持旧行为。"""
 
     if not _is_fulfillment_external_request(target_code=target_code, payload_json=payload_json):
-        return
+        return None
     correlation_id = _mapping_text(payload_json, "correlation_id", "execution_correlation_id")
     if correlation_id is None:
-        return
+        return None
 
     from src.app.runtime.orchestration.services.idempotency_guard import idempotency_guard
     from src.utils.timezone import timezone as timezone_utils
@@ -272,7 +272,7 @@ async def _claim_external_fulfillment_idempotency_if_needed(
         _mapping_text(payload_json, "idempotency_key", "request_id", "dispatch_key", "exchange_request_code")
         or dispatch_key
     )
-    await idempotency_guard.claim_or_match(
+    return await idempotency_guard.claim_or_match(
         ctx["db"],
         provider_code=_fulfillment_provider_code(intent, target_code=target_code, payload_json=payload_json),
         operation_kind="fulfillment",
@@ -1300,13 +1300,15 @@ class RuntimeIntentEffectApplier:
         timeout_seconds = int(intent.timeout_seconds or 0)
         session = ctx["session"]
 
-        await _claim_external_fulfillment_idempotency_if_needed(
+        claim_result = await _claim_external_fulfillment_idempotency_if_needed(
             ctx,
             intent,
             dispatch_key=dispatch_key,
             target_code=target_code,
             payload_json=payload_json,
         )
+        if claim_result == "MATCH":
+            return
         outbox = workline_effects._build_external_http_outbox_model(
             ctx,
             dispatch_key=dispatch_key,

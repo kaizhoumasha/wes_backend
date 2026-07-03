@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy.exc import IntegrityError
+
 from src.app.runtime.orchestration.device_runtime_projection import DeviceRuntimeProjection
 from src.app.runtime.orchestration.repositories.device_runtime_projection_repository import (
     DeviceRuntimeProjectionRepository,
@@ -122,23 +124,46 @@ class DeviceRuntimeProjectionWriterService(BaseService[DeviceRuntimeProjection, 
 
         projection = await self.repo.get_by_device_code(db, device_code)
         if projection is None:
-            created = await self.repo.create(db, data)
-            if created is None:  # pragma: no cover - BaseRepository create either returns or raises
-                raise RuntimeError(f"DeviceRuntimeProjection 创建失败: device_code={device_code}")
-            projection = created
+            projection = await self._create_with_conflict_recheck(db, device_code=device_code, data=data)
         else:
-            projection_id = getattr(projection, "id", None)
-            if not isinstance(projection_id, int):
-                raise RuntimeError(f"DeviceRuntimeProjection 缺少 id: device_code={device_code}")
-            updated = await self.repo.update(db, projection_id, data)
-            if updated is None:  # pragma: no cover - BaseRepository update either returns or raises
-                raise RuntimeError(f"DeviceRuntimeProjection 更新失败: device_code={device_code}")
-            projection = updated
+            projection = await self._update_existing(db, projection=projection, device_code=device_code, data=data)
 
         if auto_commit:
             await db.commit()
             await db.refresh(projection)
         return projection
+
+    async def _create_with_conflict_recheck(
+        self,
+        db: AsyncSession,
+        *,
+        device_code: str,
+        data: dict[str, Any],
+    ) -> DeviceRuntimeProjection:
+        try:
+            async with db.begin_nested():
+                return await self.repo.create_without_session_rollback(db, data)
+        except IntegrityError:
+            existing = await self.repo.get_by_device_code(db, device_code)
+            if existing is None:
+                raise
+            return await self._update_existing(db, projection=existing, device_code=device_code, data=data)
+
+    async def _update_existing(
+        self,
+        db: AsyncSession,
+        *,
+        projection: DeviceRuntimeProjection,
+        device_code: str,
+        data: dict[str, Any],
+    ) -> DeviceRuntimeProjection:
+        projection_id = getattr(projection, "id", None)
+        if not isinstance(projection_id, int):
+            raise TypeError(f"DeviceRuntimeProjection 缺少 id: device_code={device_code}")
+        updated = await self.repo.update(db, projection_id, data)
+        if updated is None:  # pragma: no cover - BaseRepository update either returns or raises
+            raise RuntimeError(f"DeviceRuntimeProjection 更新失败: device_code={device_code}")
+        return updated
 
 
 device_runtime_projection_writer_service = DeviceRuntimeProjectionWriterService()

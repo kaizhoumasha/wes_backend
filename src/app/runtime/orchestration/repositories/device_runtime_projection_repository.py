@@ -19,6 +19,19 @@ class DeviceRuntimeProjectionRepository(BaseRepository[DeviceRuntimeProjection])
     def __init__(self) -> None:
         super().__init__(DeviceRuntimeProjection)
 
+    async def create_without_session_rollback(
+        self,
+        db: AsyncSession,
+        data: dict[str, Any],
+    ) -> DeviceRuntimeProjection:
+        """创建投影；约束冲突交给调用方的 savepoint 隔离。"""
+
+        projection = DeviceRuntimeProjection(**data)
+        db.add(projection)
+        await db.flush()
+        await db.refresh(projection)
+        return projection
+
     async def get_by_device_code(
         self,
         db: AsyncSession,

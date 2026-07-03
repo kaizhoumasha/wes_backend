@@ -236,6 +236,90 @@ async def test_dispatch_uses_policy_wait_for_running_device_before_http_post():
 
 
 @pytest.mark.asyncio
+async def test_dispatch_allows_same_reserved_running_command_to_http_post():
+    """RUNNING 设备已预占同一 command 时，本地 dispatch policy 不能阻断 POST。"""
+
+    now = timezone.now_for_db()
+    device = SimpleNamespace(
+        id=9,
+        device_code="DEV-RESERVED",
+        device_status="running",
+        maintenance_mode=False,
+        current_command_id=777,
+        capabilities_json={
+            "supported_command_types": ["SCAN"],
+            "status_snapshot_ttl_ms": 1000,
+        },
+        vendor_type="ECS",
+        host="10.0.0.2",
+        port=8080,
+        updated_at=now,
+    )
+    command = SimpleNamespace(
+        id=777,
+        command_code="CMD-RESERVED",
+        status="PENDING",
+        sent_at=None,
+        ack_received_at=None,
+        ack_code=None,
+        ack_message=None,
+        trace_id="trace-reserved",
+        correlation_id="corr-reserved",
+        workline_id=7,
+    )
+    outbox = SimpleNamespace(
+        target_code="DEV-RESERVED",
+        payload_json={
+            "command_code": "CMD-RESERVED",
+            "task_type": "SCAN",
+            "dispatch_deadline_at": (now + timedelta(seconds=10)).isoformat(),
+        },
+        session_id=1,
+        dispatch_key="device-command:CMD-RESERVED",
+        trace_id="trace-reserved",
+        correlation_id="corr-reserved",
+    )
+    db = SimpleNamespace(refresh=AsyncMock())
+    async_client_mock = AsyncMock()
+    async_client_mock.post = AsyncMock(return_value=SimpleNamespace(status_code=200, text=""))
+    async_client_mock.__aenter__ = AsyncMock(return_value=async_client_mock)
+    async_client_mock.__aexit__ = AsyncMock(return_value=None)
+
+    from src.app.device import services as device_services
+
+    with (
+        _patched_get_device(device),
+        patch(
+            "src.app.device.repositories.command_repository.DeviceCommandRepository.get_by_command_code",
+            new=AsyncMock(return_value=command),
+        ),
+        patch(
+            "src.app.runtime.orchestration.services.device_command_gateway._ensure_realtime_device_status_ready",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("httpx.AsyncClient", return_value=async_client_mock),
+        patch.object(
+            device_services.device_service,
+            "mark_command_dispatched",
+            new=AsyncMock(return_value=SimpleNamespace()),
+        ),
+        patch(
+            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl."
+            "workline_runtime_reconciliation_service.activate_execution_deadline_after_ack",
+            new=AsyncMock(return_value=SimpleNamespace()),
+        ),
+        patch("src.app.sys.services.event_stream_service.defer_command_status_changed_event"),
+        patch("src.app.runtime.orchestration.observability.runtime_observability_registry.emit") as emit,
+    ):
+        result = await device_command_gateway.dispatch(db=db, outbox=outbox)
+
+    assert result is True
+    async_client_mock.post.assert_awaited_once()
+    assert emit.call_args_list[0].args[1]["policy_decision"] == "ALLOW_DISPATCH"
+    assert emit.call_args_list[0].args[1]["reason"] == "SAME_RESERVED_COMMAND"
+
+
+@pytest.mark.asyncio
 async def test_dispatch_converts_running_deadline_expired_to_runtime_hold_decision():
     """RUNNING 设备超过 dispatch deadline 时必须暴露 runtime hold 决策细节。"""
 

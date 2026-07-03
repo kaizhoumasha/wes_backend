@@ -142,6 +142,32 @@ async def test_external_wms_fulfillment_request_claims_idempotency_before_outbox
 
 
 @pytest.mark.asyncio
+async def test_external_wms_fulfillment_request_match_skips_outbox(db_session) -> None:
+    """同 fulfillment 幂等键同 payload 重放必须跳过 outbox 创建。"""
+
+    correlation = await _seed_execution_correlation(db_session, correlation_id="corr-external-fulfillment-replay")
+    payload = {
+        "correlation_id": correlation.correlation_id,
+        "request_id": "wms-fulfillment:REQ-501",
+        "provider_code": "WMS",
+        "operation_kind": "fulfillment",
+        "fulfillment_kind": "FULL_BOX_EXCHANGE",
+        "box_code": "BOX-501",
+    }
+    first_db = _CollectingDb(db_session)
+    await RuntimeIntentEffectApplier().apply(_ctx(first_db, correlation), [_fulfillment_intent(payload=payload)])
+
+    replay_db = _CollectingDb(db_session)
+    result = await RuntimeIntentEffectApplier().apply(
+        _ctx(replay_db, correlation),
+        [_fulfillment_intent(payload=payload)],
+    )
+
+    assert result.disposition is WriteBackDisposition.PROCESSED
+    assert [item for item in replay_db.added if isinstance(item, SystemOutbox)] == []
+
+
+@pytest.mark.asyncio
 async def test_external_wms_fulfillment_request_rejects_same_key_different_payload_before_outbox(
     db_session,
 ) -> None:

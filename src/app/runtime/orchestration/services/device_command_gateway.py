@@ -688,6 +688,7 @@ def _ensure_dispatch_policy_allows_realtime_probe_or_dispatch(
     command: Any | None,
     command_code: str | None,
     status_url: str,
+    allow_same_reserved_command: bool = False,
     policy: DeviceDispatchPolicy = device_dispatch_policy,
 ) -> None:
     """在真实 ECS status probe 前应用 DeviceDispatchPolicy 的本地快照门禁。"""
@@ -695,7 +696,16 @@ def _ensure_dispatch_policy_allows_realtime_probe_or_dispatch(
     now = timezone.now_for_db()
     snapshot = _build_device_runtime_snapshot(device, now=now, policy=policy)
     request = _build_device_dispatch_request(outbox, payload, device, command, command_code=command_code, now=now)
-    decision = policy.evaluate(request, snapshot=snapshot, now=now)
+    if allow_same_reserved_command:
+        decision = DeviceDispatchDecision(
+            kind=DeviceDispatchDecisionKind.ALLOW_DISPATCH,
+            reason="SAME_RESERVED_COMMAND",
+            device_code=snapshot.device_code,
+            dispatch_allowed=True,
+            runtime_hold_required=False,
+        )
+    else:
+        decision = policy.evaluate(request, snapshot=snapshot, now=now)
     _emit_device_dispatch_policy_observability(
         command=command,
         device=device,
@@ -938,6 +948,7 @@ class DeviceCommandGateway:
                 command=command,
                 command_code=command_code,
                 status_url=status_url,
+                allow_same_reserved_command=is_same_reserved_command,
             )
             ack_timeout = _DEFAULT_DEVICE_COMMAND_ACK_TIMEOUT_SECONDS
             async with httpx.AsyncClient() as client:

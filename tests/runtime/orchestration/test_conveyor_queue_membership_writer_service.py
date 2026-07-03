@@ -24,6 +24,32 @@ class _ConveyorQueueUniqueRaceRepository(ConveyorQueueMembershipRepository):
         raise IntegrityError("INSERT INTO conveyor_queue_memberships", {}, Exception("unique active bin"))
 
 
+class _ConveyorQueueResolveUniqueRaceRepository(ConveyorQueueMembershipRepository):
+    """模拟 placeholder resolve 前读不到并发写入的 ACTIVE bin。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.bin_lookup_count = 0
+
+    async def list_active_by_identity(self, db, *, workline_id, bin_code=None, placeholder_key=None, for_update=False):
+        active = await self.get_active_by_placeholder_key(
+            db,
+            workline_id=workline_id,
+            placeholder_key=placeholder_key,
+        )
+        return [active] if active is not None else []
+
+    async def get_active_by_bin_code(self, db, *, workline_id: int, bin_code: str, for_update: bool = False):
+        self.bin_lookup_count += 1
+        if self.bin_lookup_count == 1:
+            return None
+        return await super().get_active_by_bin_code(
+            db,
+            workline_id=workline_id,
+            bin_code=bin_code,
+        )
+
+
 async def _membership_count(db_session) -> int:
     result = await db_session.execute(select(func.count()).select_from(ConveyorQueueMembership))
     return int(result.scalar_one())
@@ -247,6 +273,62 @@ async def test_conveyor_queue_membership_writer_resolves_placeholder_in_place(db
     assert resolved.membership.evidence_json["resolved_from_placeholder_key"] == "scan:001"
     assert resolved.membership.evidence_json["source_event_id"] == "evt-resolve"
     assert await _membership_count(db_session) == 1
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_marks_placeholder_reconciling_after_resolve_unique_conflict(
+    db_session,
+) -> None:
+    """placeholder resolve 撞 ACTIVE bin 唯一约束时必须隔离冲突并转 RECONCILING。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    existing_bin = ConveyorQueueMembership(
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-001",
+        membership_status="ACTIVE",
+        entered_at=1700000000000,
+        evidence_json={"resolved_from_placeholder_key": "scan:other"},
+    )
+    placeholder = ConveyorQueueMembership(
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        placeholder_key="scan:001",
+        membership_status="ACTIVE",
+        entered_at=1700000000001,
+    )
+    db_session.add_all([existing_bin, placeholder])
+    await db_session.flush()
+
+    service = ConveyorQueueMembershipWriterService(repository=_ConveyorQueueResolveUniqueRaceRepository())
+    result = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-001",
+        placeholder_key="scan:001",
+        declared_queue_codes={"Q-IN"},
+        evidence_json={"source_event_id": "evt-resolve-race"},
+        auto_commit=False,
+    )
+
+    assert result.created is False
+    assert result.membership.id == placeholder.id
+    assert result.membership.membership_status == "RECONCILING"
+    assert result.membership.bin_code is None
+    assert result.membership.placeholder_key == "scan:001"
+    assert result.membership.evidence_json["conflicting_bin_code"] == "BIN-001"
+    assert result.membership.evidence_json["conflicting_membership_id"] == existing_bin.id
+    assert await _membership_count(db_session) == 2
 
 
 @pytest.mark.asyncio

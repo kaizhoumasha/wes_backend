@@ -219,9 +219,74 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
         placeholder = _find_placeholder_membership(active_memberships, placeholder_key=normalized.placeholder_key)
         if placeholder is None:
             raise RuntimeError("ConveyorQueueWriter 返回 placeholder resolve，但未找到 ACTIVE placeholder")
+        placeholder_id = getattr(placeholder, "id", None)
 
-        placeholder.bin_code = normalized.bin_code
-        placeholder.placeholder_key = None
+        existing_bin = None
+        if normalized.bin_code is not None:
+            existing_bin = await self.repo.get_active_by_bin_code(
+                db,
+                workline_id=normalized.workline_id,
+                bin_code=normalized.bin_code,
+            )
+        if existing_bin is not None and getattr(existing_bin, "id", None) != placeholder_id:
+            return await self._mark_placeholder_resolve_conflict(
+                db,
+                placeholder=placeholder,
+                existing_bin=existing_bin,
+                normalized=normalized,
+                decision=decision,
+            )
+
+        try:
+            async with db.begin_nested():
+                placeholder.bin_code = normalized.bin_code
+                placeholder.placeholder_key = None
+                placeholder.queue_code = normalized.queue_code
+                placeholder.queue_role = normalized.queue_role
+                placeholder.conveyor_code = normalized.conveyor_code
+                placeholder.correlation_id = normalized.correlation_id or placeholder.correlation_id
+                placeholder.evidence_json = _merge_evidence(
+                    placeholder,
+                    {
+                        **normalized.evidence_json,
+                        **_decision_evidence(decision),
+                        "resolved_from_placeholder_key": normalized.placeholder_key,
+                    },
+                )
+                db.add(placeholder)
+                await db.flush()
+        except IntegrityError:
+            if normalized.bin_code is None:
+                raise
+            existing_bin = await self.repo.get_active_by_bin_code(
+                db,
+                workline_id=normalized.workline_id,
+                bin_code=normalized.bin_code,
+            )
+            if existing_bin is None or getattr(existing_bin, "id", None) == placeholder_id:
+                raise
+            return await self._mark_placeholder_resolve_conflict(
+                db,
+                placeholder=placeholder,
+                existing_bin=existing_bin,
+                normalized=normalized,
+                decision=decision,
+            )
+        return placeholder
+
+    async def _mark_placeholder_resolve_conflict(
+        self,
+        db: AsyncSession,
+        *,
+        placeholder: ConveyorQueueMembership,
+        existing_bin: ConveyorQueueMembership,
+        normalized: _NormalizedWriteInput,
+        decision: ConveyorQueueWriteDecision,
+    ) -> ConveyorQueueMembership:
+        await db.refresh(placeholder)
+        placeholder.membership_status = "RECONCILING"
+        placeholder.bin_code = None
+        placeholder.placeholder_key = normalized.placeholder_key
         placeholder.queue_code = normalized.queue_code
         placeholder.queue_role = normalized.queue_role
         placeholder.conveyor_code = normalized.conveyor_code
@@ -232,6 +297,8 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
                 **normalized.evidence_json,
                 **_decision_evidence(decision),
                 "resolved_from_placeholder_key": normalized.placeholder_key,
+                "conflicting_bin_code": normalized.bin_code,
+                "conflicting_membership_id": getattr(existing_bin, "id", None),
             },
         )
         db.add(placeholder)
