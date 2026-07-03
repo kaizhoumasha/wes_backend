@@ -228,6 +228,7 @@ pipeline {
                             set -e
                             mkdir -p reports/benchmarks
                             docker run --rm \
+                                --env-file "$WORKSPACE/.env.test" \
                                 -v "$WORKSPACE/reports:/artifacts/reports" \
                                 "${CI_IMAGE}" \
                                 sh -c '
