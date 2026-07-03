@@ -14,7 +14,9 @@ Phase 2 Step 4 扩展 SCAN_ROOTS 至 5 个域:
 
 from __future__ import annotations
 
+import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -334,6 +336,41 @@ def test_import_linter_check_script_disables_persistent_cache():
     script = REPO_ROOT / "scripts" / "import-linter-check.sh"
     text = script.read_text(encoding="utf-8")
     assert "--no-cache" in text
+
+
+def test_import_linter_check_script_uses_lint_imports_when_uv_is_unavailable(tmp_path):
+    """CI testing 镜像只提供 venv CLI 时, 脚本仍应直接运行 lint-imports。"""
+    script = REPO_ROOT / "scripts" / "import-linter-check.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    args_file = tmp_path / "lint-imports.args"
+    lint_imports = fake_bin / "lint-imports"
+    lint_imports.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > {args_file}\nexit 0\n",
+        encoding="utf-8",
+    )
+    lint_imports.chmod(0o755)
+
+    env = {**os.environ, "PATH": f"{fake_bin}:/bin:/usr/bin"}
+    result = subprocess.run(
+        ["/bin/bash", str(script)],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    args = args_file.read_text(encoding="utf-8").splitlines()
+    assert args == ["--config", ".import-linter.ini", "--no-cache"]
+
+
+def test_import_linter_is_installed_in_ci_dependency_group():
+    """Jenkins testing 镜像使用 ci group, 必须安装 lint-imports CLI。"""
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    ci_dependencies = pyproject["dependency-groups"]["ci"]
+    assert any(dependency.startswith("import-linter") for dependency in ci_dependencies)
 
 
 def test_import_linter_check_script_runs_clean():

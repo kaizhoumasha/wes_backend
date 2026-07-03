@@ -13,10 +13,12 @@ if [[ ! -f .import-linter.ini ]]; then
     exit 0
 fi
 
-if command -v uv >/dev/null 2>&1; then
-    # Jenkins 复用 workspace 时旧 graph cache 可能污染 contract 结果；架构门禁必须每次基于当前源码重算。
+# Jenkins 复用 workspace 时旧 graph cache 可能污染 contract 结果；架构门禁必须每次基于当前源码重算。
+if command -v lint-imports >/dev/null 2>&1; then
+    lint-imports --config .import-linter.ini --no-cache
+elif command -v uv >/dev/null 2>&1; then
     uv run lint-imports --config .import-linter.ini --no-cache
 else
-    echo "[import-linter] 未找到 uv, 请安装 uv (https://docs.astral.sh/uv/)" >&2
+    echo "[import-linter] 未找到 lint-imports 或 uv, 请先安装项目依赖" >&2
     exit 127
 fi
