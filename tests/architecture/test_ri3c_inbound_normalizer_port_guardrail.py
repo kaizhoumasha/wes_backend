@@ -329,6 +329,13 @@ def test_import_linter_config_exists():
     assert "src.app.callback.v1" in text
 
 
+def test_import_linter_check_script_disables_persistent_cache():
+    """CI workspace 复用时 import-linter 必须避免读取旧 graph cache。"""
+    script = REPO_ROOT / "scripts" / "import-linter-check.sh"
+    text = script.read_text(encoding="utf-8")
+    assert "--no-cache" in text
+
+
 def test_import_linter_check_script_runs_clean():
     """scripts/import-linter-check.sh 当前 capability-isolation contract 0 违规。"""
     script = REPO_ROOT / "scripts" / "import-linter-check.sh"
