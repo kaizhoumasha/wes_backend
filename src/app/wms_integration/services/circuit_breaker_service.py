@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
 from src.app.wms_integration.models import WmsCircuitBreakerState, WmsCircuitBreakerStatus
 from src.app.wms_integration.repositories import WmsCircuitBreakerRepository, wms_circuit_breaker_repository
 from src.core.base_service import BaseService
@@ -284,17 +286,23 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
     ) -> None:
         if self._observability_emit is None or trace_id is None or state.state == previous_state:
             return
-        self._observability_emit(
-            "wms_breaker.transition",
-            {
-                "trace_id": trace_id,
-                "provider_code": state.target_code,
-                "operation_kind": state.operation_name,
-                "breaker_state": state.state.value
-                if isinstance(state.state, WmsCircuitBreakerStatus)
-                else str(state.state),
-            },
-        )
+        try:
+            self._observability_emit(
+                "wms_breaker.transition",
+                {
+                    "trace_id": trace_id,
+                    "provider_code": state.target_code,
+                    "operation_kind": state.operation_name,
+                    "breaker_state": state.state.value
+                    if isinstance(state.state, WmsCircuitBreakerStatus)
+                    else str(state.state),
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "WMS breaker transition 观测事件发射失败: "
+                f"target_code={state.target_code}, operation_name={state.operation_name}, error={exc}"
+            )
 
 
 wms_circuit_breaker_service = WmsCircuitBreakerService()

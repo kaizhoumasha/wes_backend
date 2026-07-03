@@ -272,6 +272,19 @@ def test_conveyor_queue_writer_resolves_placeholder_and_escalates_conflict() -> 
         ),
         active_memberships=[ConveyorQueueMembershipSnapshot(workline_id=1, queue_code="Q-IN", bin_code="BIN-002")],
     )
+    resolve_with_existing_bin = writer.plan_write(
+        ConveyorQueueWriteRequest(
+            workline_id=1,
+            queue_code="Q-IN",
+            bin_code="BIN-001",
+            placeholder_key="scan:001",
+            declared_queue_codes=frozenset({"Q-IN", "Q-OUT"}),
+        ),
+        active_memberships=[
+            ConveyorQueueMembershipSnapshot(workline_id=1, queue_code="Q-IN", bin_code="BIN-001"),
+            placeholder,
+        ],
+    )
     blocked = writer.plan_write(
         ConveyorQueueWriteRequest(
             workline_id=1,
@@ -287,5 +300,6 @@ def test_conveyor_queue_writer_resolves_placeholder_and_escalates_conflict() -> 
     assert placeholder_replay.reuse_existing is True
     assert conflict.kind == ConveyorQueueWriteDecisionKind.RECONCILING
     assert conflict.runtime_hold_required is True
+    assert resolve_with_existing_bin.kind == ConveyorQueueWriteDecisionKind.RESOLVE_PLACEHOLDER
     assert blocked.kind == ConveyorQueueWriteDecisionKind.BLOCKED
     assert blocked.reason == "UNKNOWN_QUEUE_CODE"

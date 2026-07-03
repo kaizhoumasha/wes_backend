@@ -76,6 +76,10 @@ class ConveyorQueueWriter:
                 reconciliation_required=True,
             )
 
+        placeholder_resolve = self._plan_placeholder_resolve(request, active_memberships=active_memberships)
+        if placeholder_resolve is not None:
+            return placeholder_resolve
+
         for membership in active_memberships:
             if membership.workline_id != request.workline_id or membership.membership_status != "ACTIVE":
                 continue
@@ -134,6 +138,38 @@ class ConveyorQueueWriter:
             queue_code=request.queue_code,
             bin_code=request.bin_code,
         )
+
+    @staticmethod
+    def _plan_placeholder_resolve(
+        request: ConveyorQueueWriteRequest,
+        *,
+        active_memberships: list[ConveyorQueueMembershipSnapshot],
+    ) -> ConveyorQueueWriteDecision | None:
+        if not request.bin_code or not request.placeholder_key:
+            return None
+        for membership in active_memberships:
+            if membership.workline_id != request.workline_id or membership.membership_status != "ACTIVE":
+                continue
+            if membership.placeholder_key != request.placeholder_key or membership.bin_code is not None:
+                continue
+            if membership.queue_code == request.queue_code:
+                return ConveyorQueueWriteDecision(
+                    kind=ConveyorQueueWriteDecisionKind.RESOLVE_PLACEHOLDER,
+                    reason="PLACEHOLDER_RESOLVE",
+                    queue_code=request.queue_code,
+                    bin_code=request.bin_code,
+                    reuse_existing=True,
+                )
+            return ConveyorQueueWriteDecision(
+                kind=ConveyorQueueWriteDecisionKind.RECONCILING,
+                reason="ACTIVE_PLACEHOLDER_QUEUE_CONFLICT",
+                queue_code=request.queue_code,
+                bin_code=request.bin_code,
+                runtime_hold_required=True,
+                reconciliation_required=True,
+                reuse_existing=True,
+            )
+        return None
 
 
 conveyor_queue_writer = ConveyorQueueWriter()

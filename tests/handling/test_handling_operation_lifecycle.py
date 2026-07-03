@@ -782,6 +782,7 @@ async def test_rack_bin_exchange_callback_conflict_enters_reconciling_projection
     operation = SimpleNamespace(
         id=700,
         operation_key="rack-bin:exchange-001",
+        operation_type="RACK_BIN_EXCHANGE",
         operation_status=HandlingOperationStatus.REQUESTED,
         workline_id=45,
         workline_code="SMT_SORTER_01",
@@ -846,7 +847,7 @@ async def test_rack_bin_exchange_callback_conflict_enters_reconciling_projection
     result = await service.record_callback_from_external_http(
         SimpleNamespace(add=lambda _obj: None),
         payload_json={
-            "callback_type": "WMS_FULL_BOX_EXCHANGE_RESULT",
+            "callback_type": "WMS_TRANSPORT_COMPLETED",
             "dispatch_key": "handling:rack-bin:exchange-001:move:1",
             "exchange_request_code": "handling:rack-bin:exchange-001:move:1",
             "exchange_status": "PHYSICAL_COMPLETED",

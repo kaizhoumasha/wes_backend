@@ -103,7 +103,6 @@ def test_handling_models_are_system_level_contracts() -> None:
     [
         "FULL_BOX_EXCHANGE_BIN_MOVE",
         "SINGLE_LAYER_FULL_BOX_EXCHANGE",
-        "RACK_BIN_EXCHANGE",
     ],
 )
 def test_wms_rcs_gateway_builds_documented_ctu_request_envelope(
@@ -149,6 +148,51 @@ def test_wms_rcs_gateway_builds_documented_ctu_request_envelope(
     assert payload["from_location"] == "RACK-001:A"
     assert payload["to_location"] == "SMT_BUFFER"
     assert payload["priority"] == 8
+
+
+@pytest.mark.parametrize(
+    "operation_type",
+    [
+        "RACK_BIN_EXCHANGE",
+        "SINGLE_LAYER_RACK_BIN_EXCHANGE",
+    ],
+)
+def test_wms_rcs_gateway_keeps_rack_bin_exchange_on_bin_move_protocol(
+    monkeypatch: pytest.MonkeyPatch,
+    operation_type: str,
+) -> None:
+    """RACK_BIN_EXCHANGE 需要 reconciliation，但外部协议形态不是 full-box。"""
+
+    monkeypatch.setenv("WMS_RCS_BIN_OPERATION_URL", "http://wms-rcs/api/wes/transport-request")
+    operation = SimpleNamespace(
+        operation_key="rack-bin:release-001",
+        operation_type=operation_type,
+        trace_id="trace-rack-bin-001",
+        workline_code="SMT_SORTER_01",
+        material_session_id=81,
+    )
+    move = SimpleNamespace(
+        object_type=HandlingObjectType.BIN.value,
+        bin_code="BIN-001",
+        placeholder_key=None,
+        candidate_authorized_bin_ids=["BIN-001", "BIN-002"],
+        source_type="RACK_SLOT",
+        source_code="RACK-001:A",
+        target_type="BUFFER",
+        target_code="SMT_BUFFER",
+        carrier_type="CTU",
+        carrier_code=None,
+        rack_code="RACK-001",
+        rack_slot_code="A",
+        metadata_json={"rack_type": "SINGLE_LAYER", "priority": 8},
+    )
+
+    envelope = WmsRcsHandlingGateway().build_ctu_move_envelope(operation=operation, move=move, sequence_no=1)
+    payload = envelope["payload_json"]
+
+    assert envelope["target_code"] == "WMS_RCS_BIN_OPERATION"
+    assert payload["callback_type"] == "WMS_TRANSPORT_COMPLETED"
+    assert payload["request_type"] == "BIN_MOVE"
 
 
 @pytest.mark.asyncio
