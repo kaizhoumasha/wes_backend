@@ -1,0 +1,185 @@
+"""Phase 4 design documentation contracts."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+PHASE4_SPEC_FILES = (
+    "cell-reservation-spec.md",
+    "material-location-query-spec.md",
+    "workline-active-objects-spec.md",
+    "sorter-inbound-capability-spec.md",
+    "smt-ng-wms-reconciliation-spec.md",
+)
+DEFERRED_SPEC_REFERENCES = {"fulfillment-provider-adapter-spec.md"}
+SPEC_REFERENCE_PATTERN = re.compile(r"`(?:docs/architecture/)?([^`/]+-spec\.md)`")
+
+
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def _phase4_main_plan_text(main_plan: str) -> str:
+    start = main_plan.index("### 10.5 Phase 4")
+    next_section = main_plan.find("### 10.6", start)
+    phase4_section = main_plan[start:] if next_section == -1 else main_plan[start:next_section]
+    phase4_startup_lines = "\n".join(line for line in main_plan.splitlines() if "Phase 4 启动时" in line)
+    return f"{phase4_section}\n{phase4_startup_lines}"
+
+
+def _extract_spec_references(*texts: str) -> set[str]:
+    return {match.group(1) for text in texts for match in SPEC_REFERENCE_PATTERN.finditer(text)}
+
+
+def _section_between(text: str, start_heading: str, end_heading: str) -> str:
+    start = text.index(start_heading)
+    end = text.index(end_heading, start)
+    return text[start:end]
+
+
+def _src_defines_symbol(symbol: str) -> bool:
+    return any(
+        f"class {symbol}" in path.read_text(encoding="utf-8") for path in (REPO_ROOT / "src" / "app").rglob("*.py")
+    )
+
+
+def test_phase4_design_package_exists_and_is_linked_from_main_plan() -> None:
+    main_plan = _read(REPO_ROOT / "docs" / "architecture" / "workline-and-plugin-restructuring.md")
+    phase4_main_plan = _phase4_main_plan_text(main_plan)
+    umbrella = REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-07-03-phase4-design-with-residuals.md"
+
+    assert umbrella.exists()
+    umbrella_text = _read(umbrella)
+    assert "Residual Readiness Register" in umbrella_text
+    assert "scripts/check_phase3_closure_gate.py" in umbrella_text
+
+    for filename in PHASE4_SPEC_FILES:
+        assert filename in umbrella_text
+        assert filename in phase4_main_plan
+        assert (REPO_ROOT / "docs" / "architecture" / filename).exists()
+
+
+def test_phase4_spec_references_are_not_dangling() -> None:
+    main_plan = _read(REPO_ROOT / "docs" / "architecture" / "workline-and-plugin-restructuring.md")
+    phase4_main_plan = _phase4_main_plan_text(main_plan)
+    umbrella_text = _read(REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-07-03-phase4-design-with-residuals.md")
+    spec_texts = [_read(REPO_ROOT / "docs" / "architecture" / filename) for filename in PHASE4_SPEC_FILES]
+
+    referenced_specs = _extract_spec_references(phase4_main_plan, umbrella_text, *spec_texts)
+    required_specs = set(PHASE4_SPEC_FILES)
+
+    for filename in referenced_specs:
+        if filename in DEFERRED_SPEC_REFERENCES:
+            continue
+        assert filename in required_specs, f"{filename} is referenced by Phase 4 docs but not in registry"
+        assert (REPO_ROOT / "docs" / "architecture" / filename).exists(), f"{filename} is referenced but missing"
+
+
+def test_phase4_specs_keep_residual_gates_explicit() -> None:
+    required_tokens = (
+        "边界声明",
+        "Residual Readiness",
+        "行为契约测试",
+        "实施前置条件",
+        "Phase 5 legacy",
+    )
+
+    for filename in PHASE4_SPEC_FILES:
+        text = _read(REPO_ROOT / "docs" / "architecture" / filename)
+        for token in required_tokens:
+            assert token in text, f"{filename} missing {token}"
+        for residual in ("Phase 1", "Phase 2", "Phase 3"):
+            assert residual in text, f"{filename} missing {residual} residual gate"
+        assert "不复用旧 plugin" in text
+
+
+def test_cell_reservation_spec_reuses_existing_model_and_maps_target_states() -> None:
+    text = _read(REPO_ROOT / "docs" / "architecture" / "cell-reservation-spec.md")
+
+    for token in (
+        "WorklineBinCellReservation",
+        "WorklineBinCellReservationService",
+        "`RESERVED`",
+        "`OCCUPIED`",
+        "`RELEASED`",
+        "`RECONCILING`",
+        "BinCellReservationStatus.PLANNED",
+        "BinCellReservationStatus.CONSUMED",
+        "BinCellReservationStatus.RELEASED",
+        "持久状态缺口",
+        "禁止新建第二套 reservation model",
+    ):
+        assert token in text
+
+
+def test_phase4_design_does_not_prematurely_close_implementation_or_legacy_drop() -> None:
+    docs = [
+        _read(REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-07-03-phase4-design-with-residuals.md"),
+        _read(REPO_ROOT / "docs" / "architecture" / "workline-and-plugin-restructuring.md"),
+        *[_read(REPO_ROOT / "docs" / "architecture" / filename) for filename in PHASE4_SPEC_FILES],
+    ]
+    combined = "\n".join(docs)
+
+    for forbidden in (
+        "Phase 4 已完成",
+        "Phase4 已完成",
+        "Phase 4 实现完成",
+        "Phase4 实现完成",
+        "Phase 5 可以提前删除",
+        "绕过 Phase 3 closure",
+    ):
+        assert forbidden not in combined
+
+    assert "Phase 4 设计可以先行" in combined
+    assert "Phase 5 才能删除" in combined or "Phase 5 才能删除这些 legacy" in combined
+
+
+def test_sorter_runtime_mapping_does_not_mark_target_location_event_as_existing() -> None:
+    text = _read(REPO_ROOT / "docs" / "architecture" / "sorter-inbound-capability-spec.md")
+    runtime_mapping = _section_between(text, "## 10. Runtime 集成映射", "## 11. 实时决策延迟预算")
+
+    if _src_defines_symbol("RuntimeLocationEvent"):
+        return
+
+    runtime_location_rows = [
+        line for line in runtime_mapping.splitlines() if line.startswith("|") and "`RuntimeLocationEvent`" in line
+    ]
+    assert runtime_location_rows
+    for line in runtime_location_rows:
+        assert "✅" not in line
+        assert "🆕" in line
+        assert "需新增" in line or "ObjectTransitionEvent" in line
+
+
+def test_sorter_cell_reservation_rows_reuse_existing_model() -> None:
+    text = _read(REPO_ROOT / "docs" / "architecture" / "sorter-inbound-capability-spec.md")
+    runtime_mapping = _section_between(text, "## 10. Runtime 集成映射", "## 11. 实时决策延迟预算")
+
+    assert "`CellReservation` (🆕)" not in runtime_mapping
+    cell_reservation_rows = [
+        line
+        for line in runtime_mapping.splitlines()
+        if line.startswith("|") and "格位分配" in line and "CellReservation" in line
+    ]
+    assert cell_reservation_rows
+    assert all("WorklineBinCellReservation" in line for line in cell_reservation_rows)
+    assert all("♻️" in line for line in cell_reservation_rows)
+
+
+def test_sorter_wms_pkg_binding_uses_fulfillment_port() -> None:
+    text = _read(REPO_ROOT / "docs" / "architecture" / "sorter-inbound-capability-spec.md")
+    runtime_mapping = _section_between(text, "## 10. Runtime 集成映射", "## 11. 实时决策延迟预算")
+
+    pkg_binding_rows = [line for line in runtime_mapping.splitlines() if line.startswith("|") and "PKG 绑定" in line]
+    inventory_transaction_rows = [
+        line for line in runtime_mapping.splitlines() if line.startswith("|") and "库存事务" in line
+    ]
+
+    assert pkg_binding_rows
+    assert inventory_transaction_rows
+    assert all("WmsFulfillmentPort.notify_pkg_binding" in line for line in pkg_binding_rows)
+    assert all("WmsInventoryTransactionPort" not in line for line in pkg_binding_rows)
+    assert all("WmsInventoryTransactionPort" in line for line in inventory_transaction_rows)
