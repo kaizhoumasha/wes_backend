@@ -21,6 +21,8 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 
 2026-07-04 追加进展 5：新增 `scripts/check_phase4_runtime_readiness_gate.py`，把 Phase4 开发/测试 readiness 固化为可执行门禁：默认 `development-mock` profile 验证 SPEC 状态、Wave2/Wave3 本机 MOCK 合同、生产热路径未开启；`production` profile 在未显式生产接入前返回 `PHASE4_PRODUCTION_HOT_PATH_NOT_ENABLED`。该 gate 已接入 `./scripts/git-quality-gate.sh --profile quality`。
 
+2026-07-04 追加进展 6：新增 `Phase4SorterInboundPreviewService`，把粗分机正常流、分拣机 join gate、满箱交换前置分流、`CHANGE_RACK_FACE` 独立履约与 CTU 父子批次查询视图从 mock endpoint 语义沉淀为 runtime capability 级纯 preview service；该 service 不访问 DB、不发 WMS/ECS effect、不复用旧 plugin 入口，只用于开发/测试 MOCK 验收，并已纳入 Phase4 runtime readiness gate。
+
 ## 范围边界
 
 - 允许实施 P0 与 Wave1 的 runtime/read-model 能力。
@@ -47,6 +49,7 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 - [x] Wave2 本机开发环境 MOCK 验收：用 WMS/ECS mock 验证 PKG binding、库存事务、ECS callback、粗分机正常流 preview、分拣机入库 join gate、扫码平台预取 validator、CTU 父子视图、满箱交换前置分流、换面独立履约和逐件候选排除口径，不做生产接入。
 - [x] Wave3 本机开发环境 MOCK 验收：用 WMS reconciliation mock 验证冲突/乱序/版本漂移和 RuntimeHold scope-only release 场景，不做生产接入。
 - [x] Phase4 runtime readiness gate：`scripts/check_phase4_runtime_readiness_gate.py` 默认开发/测试 MOCK profile 通过，production profile 明确阻塞，并接入 quality profile。
+- [x] Wave2 sorter inbound preview capability：`Phase4SorterInboundPreviewService` 覆盖本机 preview 级粗分机/分拣机/满箱交换/CTU 父子视图语义，并由 readiness gate 检查存在与非生产边界。
 - [x] Phase2 兼容投影第一步：引入 `WorkLineRuntimeStatusProjectionService`，迁移 LOW 风险写入点。
 - [x] Phase2 兼容投影收尾：单独处理 HIGH 风险 safety estop / dispatch ACK exhausted 写入点。
 - [ ] Wave2 生产热路径：production closure profile 与上线确认未通过，未实施。
@@ -54,7 +57,7 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 
 ## 验收命令
 
-- `uv run pytest tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py tests/workline_runtime/test_runtime_location_event_service.py tests/workline_runtime/test_material_location_query_service.py tests/workline_runtime/test_workline_active_objects_service.py tests/api/test_phase4_read_model_routes.py tests/contracts/test_phase4_design_docs.py tests/contracts/test_phase3_ops_contract_docs.py -q`
+- `uv run pytest tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py tests/workline_runtime/test_runtime_location_event_service.py tests/workline_runtime/test_material_location_query_service.py tests/workline_runtime/test_workline_active_objects_service.py tests/workline_runtime/test_sorter_inbound_preview_service.py tests/api/test_phase4_read_model_routes.py tests/contracts/test_phase4_design_docs.py tests/contracts/test_phase3_ops_contract_docs.py -q`
 - `uv run pytest tests/api/ -q`
 - `uv run pytest tests/mock/phase4 -q`
 - `uv run python scripts/check_phase4_runtime_readiness_gate.py`
@@ -65,4 +68,4 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 
 ## 当前门禁结论
 
-P0/Wave1 已可本地验证，且 MaterialLocationQuery API 第 6 入口、CellReservation TTL、reservation evidence/idempotency 口径已补齐。Wave2/Wave3 已降级为本机开发环境 MOCK 验收；Phase1 callback admission 已在 callback API 热路径关闭。Phase3 closure 在当前开发/测试范围默认走 MOCK closure，真实 artifact 不再作为当前推进阻塞项。Phase2 `runtime_status` 兼容投影收尾已完成，开发/测试范围的 Phase4 runtime readiness gate 已关闭；生产热路径仍不得自动接入，发布前必须显式通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`，并重新确认 Wave2 稳定性与上线门禁。
+P0/Wave1 已可本地验证，且 MaterialLocationQuery API 第 6 入口、CellReservation TTL、reservation evidence/idempotency 口径已补齐。Wave2/Wave3 已降级为本机开发环境 MOCK 验收；Wave2 sorter inbound 语义已沉淀为 runtime capability 级纯 preview service，但不接生产写路径。Phase1 callback admission 已在 callback API 热路径关闭。Phase3 closure 在当前开发/测试范围默认走 MOCK closure，真实 artifact 不再作为当前推进阻塞项。Phase2 `runtime_status` 兼容投影收尾已完成，开发/测试范围的 Phase4 runtime readiness gate 已关闭；生产热路径仍不得自动接入，发布前必须显式通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`，并重新确认 Wave2 稳定性与上线门禁。

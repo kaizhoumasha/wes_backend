@@ -15,6 +15,8 @@ def _write_minimal_phase4_docs(repo_root: Path, *, stale_status: bool = False) -
     docs_architecture.mkdir(parents=True, exist_ok=True)
     (repo_root / "docs" / "superpowers" / "plans").mkdir(parents=True, exist_ok=True)
     (repo_root / "tests" / "mock" / "phase4").mkdir(parents=True, exist_ok=True)
+    (repo_root / "tests" / "workline_runtime").mkdir(parents=True, exist_ok=True)
+    (repo_root / "src" / "app" / "runtime" / "capabilities" / "phase4").mkdir(parents=True, exist_ok=True)
 
     status_by_file = {
         "cell-reservation-spec.md": "Phase 4 P0 开发/测试已落地；生产投放热路径未接入",
@@ -51,11 +53,25 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。
         encoding="utf-8",
     )
     (repo_root / "tests" / "mock" / "phase4" / "test_wave2_wave3_mock_acceptance.py").write_text(
-        '"""本机 MOCK 验收。"""\n',
+        '"""本机 MOCK 验收，不代表生产热路径接入。"""\n',
         encoding="utf-8",
     )
     (repo_root / "tests" / "mock" / "phase4" / "test_sorter_inbound_mock_contracts.py").write_text(
-        '"""sorter inbound 本机 MOCK 合同。"""\n',
+        '"""sorter inbound 本机 MOCK 合同，不代表生产热路径接入。"""\n',
+        encoding="utf-8",
+    )
+    (
+        repo_root / "src" / "app" / "runtime" / "capabilities" / "phase4" / "sorter_inbound_preview_service.py"
+    ).write_text(
+        '"""Phase4 sorter inbound preview capability; LOCAL_MOCK_ONLY; production_write_path; legacy_plugin_entry_used."""\n',
+        encoding="utf-8",
+    )
+    (repo_root / "tests" / "workline_runtime" / "test_sorter_inbound_preview_service.py").write_text(
+        (
+            '"""Phase4 sorter inbound preview capability 合同。"""\n'
+            '"production_write_path legacy_plugin_entry_used WmsFulfillmentPort.notify_pkg_binding '
+            'WmsInventoryTransactionPort.confirm_inbound"\n'
+        ),
         encoding="utf-8",
     )
 
@@ -100,3 +116,20 @@ def test_phase4_runtime_readiness_gate_rejects_stale_spec_status(tmp_path) -> No
     assert result.returncode == 1
     assert "STALE_PHASE4_SPEC_STATUS" in result.stdout
     assert "cell-reservation-spec.md" in result.stdout
+
+
+def test_phase4_runtime_readiness_gate_requires_sorter_preview_capability(tmp_path) -> None:
+    _write_minimal_phase4_docs(tmp_path)
+    (tmp_path / "src" / "app" / "runtime" / "capabilities" / "phase4" / "sorter_inbound_preview_service.py").unlink()
+
+    result = subprocess.run(
+        [sys.executable, str(GATE_SCRIPT), "--repo-root", str(tmp_path)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "MISSING_PHASE4_READINESS_FILES" in result.stdout
+    assert "sorter_inbound_preview_service.py" in result.stdout

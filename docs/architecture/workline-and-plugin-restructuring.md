@@ -2168,9 +2168,9 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | `cell-reservation-spec.md` | ✅ P0 开发/测试闭合 | 复用 `WorklineBinCellReservation`，保留 `PLANNED/CONSUMED/RELEASED/CANCELLED` 内部命名，新增 `RECONCILING`，覆盖 active/frozen 唯一约束、claim/consume/release、TTL 只释放 `PLANNED`、reservation_key/evidence 包含 `correlation_id`、`source_event_id`、provider/source_version | 生产投放热路径接入仍随 sorter inbound gate 验收 |
 | `material-location-query-spec.md` | ✅ Wave1 开发/测试闭合 | service 层与 API facade 覆盖 material identity、package/bin、rack/side、workline active object、ExternalReference、correlation_id 6 类入口，并按本地事实、ActiveObjectRegistry、CellReservation、WMS snapshot、legacy evidence 聚合 | 生产 WMS snapshot 证据仍按 gated profile 接入 |
 | `workline-active-objects-spec.md` | ✅ Wave1 本机合同验证已通过 | 聚合 ActiveObjectRegistry、ExecutionWorkItem、ConveyorQueueMembership、RuntimeHold/ReconciliationRecord、MaterialLocationQuery；覆盖 `OK/TRANSIENT/RECONCILING`、hold scope、limit/truncated | 生产读模型 SLA 与大规模 benchmark 仍随 production closure profile 验收 |
-| `sorter-inbound-capability-spec.md` | 🟡 本机 MOCK 验收 | `tests/mock/phase4` 可表达 sorter inbound 的本机 WMS/ECS mock 合同；PKG binding 与库存事务 port 归属已通过文档合同测试约束 | 粗分机、满箱交换、分拣机入库生产热路径未接入；不得复用旧 plugin 入口，发布前必须补生产合同与真实 effect dispatch 证据 |
+| `sorter-inbound-capability-spec.md` | 🟡 本机 MOCK + runtime preview 验收 | `tests/mock/phase4` 可表达 sorter inbound 的本机 WMS/ECS mock 合同；`Phase4SorterInboundPreviewService` 已把粗分机正常流、分拣机 join gate、满箱交换前置分流、`CHANGE_RACK_FACE` 独立履约与 CTU 父子批次视图沉淀为 runtime capability 级纯 preview；PKG binding 与库存事务 port 归属已通过文档/运行时合同测试约束 | 粗分机、满箱交换、分拣机入库生产热路径未接入；不得复用旧 plugin 入口，发布前必须补生产合同与真实 effect dispatch 证据 |
 | `smt-ng-wms-reconciliation-spec.md` | 🟡 本机 MOCK 验收 | `tests/mock/phase4` 可表达 SMT/NG/WMS 对账冲突、拒绝、重复/乱序、版本漂移等本机 mock 场景 | WMS reconciliation 生产热路径未接入；RuntimeHold scope-only release 与真实 WMS callback cutover 仍受 production closure profile 约束 |
-| Phase4 runtime readiness gate | ✅ 开发/测试 MOCK 门禁已接入 | `scripts/check_phase4_runtime_readiness_gate.py` 验证 SPEC 状态、Wave2/Wave3 本机 MOCK 合同和生产热路径未开启；已接入 `./scripts/git-quality-gate.sh --profile quality` | `--readiness-profile production` 当前返回 `PHASE4_PRODUCTION_HOT_PATH_NOT_ENABLED`，生产接入前不得改绿 |
+| Phase4 runtime readiness gate | ✅ 开发/测试 MOCK 门禁已接入 | `scripts/check_phase4_runtime_readiness_gate.py` 验证 SPEC 状态、Wave2/Wave3 本机 MOCK 合同、`Phase4SorterInboundPreviewService` 非生产边界和生产热路径未开启；已接入 `./scripts/git-quality-gate.sh --profile quality` | `--readiness-profile production` 当前返回 `PHASE4_PRODUCTION_HOT_PATH_NOT_ENABLED`，生产接入前不得改绿 |
 | RCS/AGV/CTU direct provider adapter | ✅ YAGNI 保持未触发 | 当前仍由 WMS 中转统一履约；未写 `fulfillment-provider-adapter-spec.md`，未预留代码骨架 | 仅当客户明确要求绕过 WMS，或 WMS 实测无法满足实时性需求时再启动独立 SPEC |
 
 **按需触发任务**（YAGNI 隔离，不在 Phase 4 时间表内强制执行）：
@@ -2196,7 +2196,8 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 - [x] `source_arm_prefetch_capacity` 进入 WorkLine manifest schema 与 validator；未声明时默认 0，声明大于 0 时必须校验 ECS 能力、缓存容量和超时策略（本机 MOCK 已覆盖 capability/buffer/timeout 三项校验）
 - [x] 本地物理完成与 WMS 同步状态显式拆分：`LOCAL_PHYSICAL_COMPLETED` 不等于业务完全完成；WMS 通知或库存事务失败时进入 `WMS_SYNC_PENDING` 或 `RECONCILING`（本机 MOCK 已覆盖）
 - [x] `RuntimeHold` 具备 object/device/resource/queue scope；单对象异常不得默认停整条 WorkLine，人工解除只释放声明的 `allowed_next_effect_scope`（本机 MOCK 已补 `runtime-hold-release-preview` scope-only release 合同）
-- [ ] 分拣机/粗分机入库能力按目标态 capability / port 重建，不保留旧插件兼容入口（本机 MOCK 合同已声明 `legacy_plugin_entry_used=false`；生产 runtime 接线未做，保持未勾选）
+- [x] 分拣机/粗分机入库能力开发/测试 preview 按目标态 capability 边界沉淀：`Phase4SorterInboundPreviewService` 不访问 DB、不发 WMS/ECS effect、不复用旧 plugin 入口，覆盖粗分机、分拣机 join gate、满箱交换、换面和 CTU 父子视图合同
+- [ ] 分拣机/粗分机入库能力生产 runtime 接线：真实 WMS/ECS effect dispatch、RuntimeIntent/DeviceCommand/WMS fulfillment 写路径和 production closure profile 未完成，保持未勾选
 - [x] SMT/NG/WMS 对账闭环不复制 WMS/NG/PDA 主数据，只保留 evidence、ExternalReference 和 RuntimeHold 解除条件（本机 MOCK 已覆盖冲突矩阵与 scope-only release；生产 callback cutover 不做接入）
 - [x] 按需触发任务未达到触发条件时保持不实施，不写预先 SPEC、不预留代码骨架
 
