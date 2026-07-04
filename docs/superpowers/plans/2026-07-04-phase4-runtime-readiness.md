@@ -17,6 +17,8 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 
 2026-07-04 追加进展 3：深化 Wave2/Wave3 本机 MOCK 验收，不接生产热路径：WMS mock 增加 `full_box_exchange`、`change_rack_face` 与 `runtime-hold-release-preview` 合同；`tests/mock/phase4` 覆盖满箱交换有/无需求分流、`CHANGE_RACK_FACE` 独立履约、已满箱对象排除逐件候选，以及 RuntimeHold 只释放声明 scope。
 
+2026-07-04 追加进展 4：补齐 sorter inbound preview 级本机 MOCK 合同：粗分机正常流拆分本地物理事实与 WMS 同步状态；分拣机入库覆盖 SCAN1/2/3、join gate、NG/RuntimeHold 路由、扫码平台预取默认 0 与显式开启 validator；CTU 父子批次视图覆盖父成功但子项缺失、重复 sequence、未 resolve placeholder 和部分失败进入 `RECONCILING`。
+
 ## 范围边界
 
 - 允许实施 P0 与 Wave1 的 runtime/read-model 能力。
@@ -40,7 +42,7 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 - [x] CellReservation evidence/idempotency 收敛：reservation_key 覆盖 object/correlation/target cell/source_event，evidence 保留 trace/correlation/source_event/provider/source_version，并进入 MaterialLocationQuery evidence。
 - [x] Wave2 预备合同：sorter characterization-to-target mapping 明确 PKG binding 与库存事务 port 归属。
 - [x] Wave3 预备合同：SMT/NG/WMS 对账覆盖 NG evidence、本地事实缺失、WMS 拒绝、目标箱回写失败、重复/乱序 callback、source_version drift、RuntimeHold scope-only release。
-- [x] Wave2 本机开发环境 MOCK 验收：用 WMS/ECS mock 验证 PKG binding、库存事务、ECS callback、满箱交换前置分流、换面独立履约和逐件候选排除口径，不做生产接入。
+- [x] Wave2 本机开发环境 MOCK 验收：用 WMS/ECS mock 验证 PKG binding、库存事务、ECS callback、粗分机正常流 preview、分拣机入库 join gate、扫码平台预取 validator、CTU 父子视图、满箱交换前置分流、换面独立履约和逐件候选排除口径，不做生产接入。
 - [x] Wave3 本机开发环境 MOCK 验收：用 WMS reconciliation mock 验证冲突/乱序/版本漂移和 RuntimeHold scope-only release 场景，不做生产接入。
 - [x] Phase2 兼容投影第一步：引入 `WorkLineRuntimeStatusProjectionService`，迁移 LOW 风险写入点。
 - [x] Phase2 兼容投影收尾：单独处理 HIGH 风险 safety estop / dispatch ACK exhausted 写入点。

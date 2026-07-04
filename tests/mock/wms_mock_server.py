@@ -1004,6 +1004,200 @@ async def change_rack_face(payload: dict[str, Any]):
     }
 
 
+@app.post("/api/wms/fulfillment/rough-sorter-inbound-preview", summary="本机 Mock: 粗分机入库预览")
+async def rough_sorter_inbound_preview(payload: dict[str, Any]):
+    """表达粗分机正常流合同，拆分本地物理事实与 WMS 同步状态。"""
+
+    local_physical_completed = bool(payload.get("local_physical_completed"))
+    wms_pkg_binding_result = str(payload.get("wms_pkg_binding_result") or "ACCEPTED").upper()
+    wms_sync_state = "READY_TO_SYNC"
+    business_completion_state = "LOCAL_PHYSICAL_COMPLETED"
+    if local_physical_completed and wms_pkg_binding_result not in {"ACCEPTED", "CONFIRMED"}:
+        wms_sync_state = "WMS_SYNC_PENDING"
+        business_completion_state = "RECONCILING"
+    return {
+        "code": 200,
+        "data": {
+            "environment": "LOCAL_MOCK_ONLY",
+            "production_write_path": False,
+            "request_id": payload.get("request_id", ""),
+            "object_key": payload.get("object_key", ""),
+            "target_cell_code": payload.get("target_cell_code", ""),
+            "ordered_steps": [
+                "SCAN_AND_MEASURE",
+                "WMS_GRN_BINDING_CHECK",
+                "SOURCE_ARM_TO_CONVEYOR",
+                "ROUGH_SORTER_TO_OUTBOUND",
+                "CELL_RESERVATION",
+                "OUTBOUND_ARM_TO_CELL",
+                "LOCAL_PHYSICAL_FACT",
+                "WMS_SYNC",
+            ],
+            "local_position_state": "LOCAL_PHYSICAL_COMPLETED" if local_physical_completed else "PENDING",
+            "wms_sync_state": wms_sync_state,
+            "business_completion_state": business_completion_state,
+            "preserve_local_physical_fact": local_physical_completed,
+            "next_object_admission_allowed": True,
+            "legacy_plugin_entry_used": False,
+            "effect_ports": {
+                "pkg_binding": "WmsFulfillmentPort.notify_pkg_binding",
+                "inventory_transaction": "WmsInventoryTransactionPort.confirm_inbound",
+            },
+        },
+    }
+
+
+def _source_arm_prefetch_capacity(payload: dict[str, Any]) -> int:
+    manifest = payload.get("manifest")
+    if not isinstance(manifest, dict):
+        return 0
+    raw_capacity = manifest.get("source_arm_prefetch_capacity", 0)
+    try:
+        capacity = int(raw_capacity)
+    except (TypeError, ValueError):
+        return 0
+    return max(capacity, 0)
+
+
+def _source_arm_prefetch_manifest_validation(payload: dict[str, Any], capacity: int) -> dict[str, Any]:
+    if capacity <= 0:
+        return {"allowed": True, "errors": []}
+    manifest = payload.get("manifest")
+    manifest = manifest if isinstance(manifest, dict) else {}
+    errors: list[str] = []
+    ecs_capabilities = manifest.get("ecs_capabilities")
+    if not isinstance(ecs_capabilities, list) or "SOURCE_ARM_PREFETCH" not in ecs_capabilities:
+        errors.append("ECS_SOURCE_ARM_PREFETCH_CAPABILITY_REQUIRED")
+    try:
+        prefetch_buffer_capacity = int(manifest.get("prefetch_buffer_capacity", 0))
+    except (TypeError, ValueError):
+        prefetch_buffer_capacity = 0
+    if prefetch_buffer_capacity < capacity:
+        errors.append("PREFETCH_BUFFER_CAPACITY_TOO_SMALL")
+    try:
+        prefetch_timeout_ms = int(manifest.get("prefetch_timeout_ms", 0))
+    except (TypeError, ValueError):
+        prefetch_timeout_ms = 0
+    if prefetch_timeout_ms <= 0:
+        errors.append("PREFETCH_TIMEOUT_REQUIRED")
+    return {"allowed": not errors, "errors": errors}
+
+
+@app.post("/api/wms/fulfillment/sorter-inbound-preview", summary="本机 Mock: 分拣机入库预览")
+async def sorter_inbound_preview(payload: dict[str, Any]):
+    """表达分拣机入库 join gate 与扫码平台预取互锁合同。"""
+
+    expected_authorized_bin_ids = set(_string_list(payload, "expected_authorized_bin_ids"))
+    actual_scanned_bin_id = str(payload.get("actual_scanned_bin_id") or "")
+    target_bin_ready = payload.get("target_bin_position_state") == "AT_WORK_POSITION"
+    target_cell_reservable = bool(payload.get("target_cell_reservable"))
+    reservation_ready = payload.get("cell_reservation_state") == "RESERVED"
+    waiting_deadline_declared = bool(payload.get("waiting_deadline_declared"))
+    condition_results = {
+        "AUTHORIZED_BIN_RESOLVED": actual_scanned_bin_id in expected_authorized_bin_ids,
+        "TARGET_BIN_AT_WORK_POSITION": target_bin_ready,
+        "TARGET_CELL_RESERVABLE": target_cell_reservable,
+        "CELL_RESERVATION_RESERVED": reservation_ready,
+        "WAITING_DEADLINE_DECLARED": waiting_deadline_declared,
+    }
+    missing_conditions = [name for name, passed in condition_results.items() if not passed]
+    capacity = _source_arm_prefetch_capacity(payload)
+    manifest_validation = _source_arm_prefetch_manifest_validation(payload, capacity)
+    scanner_platform_free = payload.get("scanner_platform_state") == "FREE"
+    can_pick_next_material = (capacity > 0 and manifest_validation["allowed"]) or scanner_platform_free
+    allowed = not missing_conditions
+    return {
+        "code": 200,
+        "data": {
+            "environment": "LOCAL_MOCK_ONLY",
+            "production_write_path": False,
+            "request_id": payload.get("request_id", ""),
+            "legacy_plugin_entry_used": False,
+            "prefetch_policy": {
+                "source_arm_prefetch_capacity": capacity,
+                "can_pick_next_material": can_pick_next_material,
+                "requires_scanner_platform_free": capacity == 0,
+            },
+            "manifest_validation": manifest_validation,
+            "ordered_steps": [
+                "STATION_ADMISSION",
+                "WMS_CTU_BIN_INFEED",
+                "SCAN1_AUTHORIZED_RESOLVE",
+                "SCAN2_ROUTE_DECISION",
+                "SCAN3_RETURN_OR_NG_ROUTE",
+                "SOURCE_ARM_TO_SCANNER_PLATFORM",
+                "CELL_RESERVATION",
+                "SOUTH_ARM_DROP",
+                "LOCAL_PHYSICAL_FACT",
+                "WMS_SYNC",
+            ],
+            "join_gate": {
+                "allowed": allowed,
+                "condition_results": condition_results,
+                "missing_conditions": missing_conditions,
+            },
+            "local_position_state": "LOCAL_PHYSICAL_COMPLETED" if allowed else "PENDING",
+            "wms_sync_state": "READY_TO_SYNC" if allowed else "BLOCKED",
+            "business_completion_state": "READY_TO_DROP" if allowed else "RECONCILING",
+            "ng_route_state": "CLEAR" if allowed else "NG_OR_RUNTIME_HOLD",
+            "runtime_hold_required": not allowed,
+        },
+    }
+
+
+def _duplicate_int_values(values: list[int]) -> list[int]:
+    seen: set[int] = set()
+    duplicates: set[int] = set()
+    for value in values:
+        if value in seen:
+            duplicates.add(value)
+        seen.add(value)
+    return sorted(duplicates)
+
+
+@app.post("/api/wms/fulfillment/ctu-batch-preview", summary="本机 Mock: CTU 父子批次预览")
+async def ctu_batch_preview(payload: dict[str, Any]):
+    """表达 CTU 父请求查询视图，父成功不能掩盖子项未收敛。"""
+
+    raw_child_items = payload.get("child_items")
+    child_items = raw_child_items if isinstance(raw_child_items, list) else []
+    sequence_nos = [int(item.get("sequence_no", 0)) for item in child_items if isinstance(item, dict)]
+    missing_resolved_placeholders = [
+        str(item.get("placeholder_key") or "")
+        for item in child_items
+        if isinstance(item, dict) and not item.get("resolved_bin_id")
+    ]
+    failed_child_placeholders = [
+        str(item.get("placeholder_key") or "")
+        for item in child_items
+        if isinstance(item, dict) and item.get("stage_status") != "COMPLETED"
+    ]
+    duplicate_sequence_nos = _duplicate_int_values(sequence_nos)
+    has_child_issues = bool(missing_resolved_placeholders or failed_child_placeholders or duplicate_sequence_nos)
+    parent_callback_state = str(payload.get("parent_callback_state") or "PENDING").upper()
+    parent_business_completed = parent_callback_state == "SUCCESS" and not has_child_issues
+    operator_summary_state = "COMPLETED" if parent_business_completed else "RECONCILING"
+    return {
+        "code": 200,
+        "data": {
+            "environment": "LOCAL_MOCK_ONLY",
+            "production_write_path": False,
+            "parent_request_id": payload.get("parent_request_id", ""),
+            "parent_callback_state": parent_callback_state,
+            "parent_business_completed": parent_business_completed,
+            "parent_projection_state": operator_summary_state,
+            "legacy_plugin_entry_used": False,
+            "query_view": {
+                "child_count": len(child_items),
+                "missing_resolved_placeholders": missing_resolved_placeholders,
+                "duplicate_sequence_nos": duplicate_sequence_nos,
+                "failed_child_placeholders": failed_child_placeholders,
+                "operator_summary_state": operator_summary_state,
+            },
+        },
+    }
+
+
 @app.post("/api/wms/reconciliation/snapshot", summary="本机 Mock: WMS 对账快照")
 async def reconciliation_snapshot(payload: dict[str, Any]):
     """模拟 WmsReconciliationQueryPort 快照, 不产生生产写入副作用。"""
