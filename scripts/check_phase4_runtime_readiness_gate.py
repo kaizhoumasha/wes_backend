@@ -25,6 +25,8 @@ PHASE4_MOCK_TEST_FILES = (
 PHASE4_RUNTIME_CAPABILITY_FILES = (
     "src/app/runtime/capabilities/phase4/sorter_inbound_preview_service.py",
     "tests/workline_runtime/test_sorter_inbound_preview_service.py",
+    "src/app/runtime/capabilities/phase4/smt_ng_wms_reconciliation_preview_service.py",
+    "tests/workline_runtime/test_smt_ng_wms_reconciliation_preview_service.py",
 )
 RUNTIME_READINESS_PLAN = "docs/superpowers/plans/2026-07-04-phase4-runtime-readiness.md"
 MAIN_PLAN = "docs/architecture/workline-and-plugin-restructuring.md"
@@ -108,6 +110,8 @@ def validate_mock_readiness(repo_root: Path) -> Phase4ReadinessValidation:
         mock_test_text = "\n".join(_read(repo_root, relative_path) for relative_path in PHASE4_MOCK_TEST_FILES)
         sorter_preview_service = _read(repo_root, PHASE4_RUNTIME_CAPABILITY_FILES[0])
         sorter_preview_test = _read(repo_root, PHASE4_RUNTIME_CAPABILITY_FILES[1])
+        reconciliation_preview_service = _read(repo_root, PHASE4_RUNTIME_CAPABILITY_FILES[2])
+        reconciliation_preview_test = _read(repo_root, PHASE4_RUNTIME_CAPABILITY_FILES[3])
         required_tokens_by_source = {
             RUNTIME_READINESS_PLAN: (
                 "Wave2/Wave3 降级为本机开发环境 MOCK 验收",
@@ -136,6 +140,18 @@ def validate_mock_readiness(repo_root: Path) -> Phase4ReadinessValidation:
                 "WmsFulfillmentPort.notify_pkg_binding",
                 "WmsInventoryTransactionPort.confirm_inbound",
             ),
+            PHASE4_RUNTIME_CAPABILITY_FILES[2]: (
+                "LOCAL_MOCK_ONLY",
+                "production_write_path",
+                "legacy_plugin_entry_used",
+                "RuntimeHold",
+            ),
+            PHASE4_RUNTIME_CAPABILITY_FILES[3]: (
+                "production_write_path",
+                "legacy_plugin_entry_used",
+                "IDEMPOTENT_DUPLICATE",
+                "RuntimeHold",
+            ),
         }
         source_texts = {
             RUNTIME_READINESS_PLAN: runtime_plan,
@@ -143,6 +159,8 @@ def validate_mock_readiness(repo_root: Path) -> Phase4ReadinessValidation:
             "tests/mock/phase4": mock_test_text,
             PHASE4_RUNTIME_CAPABILITY_FILES[0]: sorter_preview_service,
             PHASE4_RUNTIME_CAPABILITY_FILES[1]: sorter_preview_test,
+            PHASE4_RUNTIME_CAPABILITY_FILES[2]: reconciliation_preview_service,
+            PHASE4_RUNTIME_CAPABILITY_FILES[3]: reconciliation_preview_test,
         }
         for source, required_tokens in required_tokens_by_source.items():
             source_text = source_texts[source]

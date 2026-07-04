@@ -74,6 +74,25 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。
         ),
         encoding="utf-8",
     )
+    (
+        repo_root
+        / "src"
+        / "app"
+        / "runtime"
+        / "capabilities"
+        / "phase4"
+        / "smt_ng_wms_reconciliation_preview_service.py"
+    ).write_text(
+        '"""Phase4 SMT/NG/WMS preview; LOCAL_MOCK_ONLY; production_write_path; legacy_plugin_entry_used."""\n',
+        encoding="utf-8",
+    )
+    (repo_root / "tests" / "workline_runtime" / "test_smt_ng_wms_reconciliation_preview_service.py").write_text(
+        (
+            '"""Phase4 SMT/NG/WMS preview capability 合同。"""\n'
+            '"production_write_path legacy_plugin_entry_used IDEMPOTENT_DUPLICATE RuntimeHold scope-only"\n'
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_phase4_runtime_readiness_gate_dev_mock_passes() -> None:
@@ -133,3 +152,28 @@ def test_phase4_runtime_readiness_gate_requires_sorter_preview_capability(tmp_pa
     assert result.returncode == 1
     assert "MISSING_PHASE4_READINESS_FILES" in result.stdout
     assert "sorter_inbound_preview_service.py" in result.stdout
+
+
+def test_phase4_runtime_readiness_gate_requires_reconciliation_preview_capability(tmp_path) -> None:
+    _write_minimal_phase4_docs(tmp_path)
+    (
+        tmp_path
+        / "src"
+        / "app"
+        / "runtime"
+        / "capabilities"
+        / "phase4"
+        / "smt_ng_wms_reconciliation_preview_service.py"
+    ).unlink()
+
+    result = subprocess.run(
+        [sys.executable, str(GATE_SCRIPT), "--repo-root", str(tmp_path)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "MISSING_PHASE4_READINESS_FILES" in result.stdout
+    assert "smt_ng_wms_reconciliation_preview_service.py" in result.stdout
