@@ -137,6 +137,22 @@ def test_phase4_design_does_not_prematurely_close_implementation_or_legacy_drop(
     assert "Phase 5 才能删除" in combined or "Phase 5 才能删除这些 legacy" in combined
 
 
+def test_phase4_spec_status_headers_match_development_scope() -> None:
+    expected_status_tokens = {
+        "cell-reservation-spec.md": ("P0", "开发/测试"),
+        "material-location-query-spec.md": ("Wave1", "开发/测试"),
+        "workline-active-objects-spec.md": ("Wave1", "开发/测试"),
+        "sorter-inbound-capability-spec.md": ("本机 MOCK", "生产热路径未接入"),
+        "smt-ng-wms-reconciliation-spec.md": ("本机 MOCK", "生产热路径未接入"),
+    }
+
+    for filename, required_tokens in expected_status_tokens.items():
+        header = "\n".join(_read(REPO_ROOT / "docs" / "architecture" / filename).splitlines()[:4])
+        assert "未实现" not in header, f"{filename} status header is stale"
+        for token in required_tokens:
+            assert token in header, f"{filename} status header missing {token}"
+
+
 def test_sorter_runtime_mapping_does_not_mark_target_location_event_as_existing() -> None:
     text = _read(REPO_ROOT / "docs" / "architecture" / "sorter-inbound-capability-spec.md")
     runtime_mapping = _section_between(text, "## 10. Runtime 集成映射", "## 11. 实时决策延迟预算")

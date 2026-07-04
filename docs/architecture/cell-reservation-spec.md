@@ -1,6 +1,6 @@
 # CellReservation SPEC
 
-> 状态：Phase 4 P0 前置设计 SPEC，未实现
+> 状态：Phase 4 P0 开发/测试已落地；生产投放热路径未接入
 > 父计划：`workline-and-plugin-restructuring.md` §10.5
 
 ---

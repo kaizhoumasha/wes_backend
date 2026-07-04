@@ -1,6 +1,6 @@
 # WorklineActiveObjects / WorklineCurrentWorkView SPEC
 
-> 状态：Phase 4 设计 SPEC，未实现
+> 状态：Phase 4 Wave1 开发/测试已落地；生产 SLA/benchmark 随 production closure profile 验收
 > 父计划：`workline-and-plugin-restructuring.md` §10.5
 
 ---
