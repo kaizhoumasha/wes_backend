@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -177,6 +177,53 @@ class TestCallbackExternalAPI:
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
         assert "callback_type is not allow-listed" in str(log_kwargs["error_message"])
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_external_rejects_undeclared_provider_profile_normalizer(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        admission = MagicMock(side_effect=PermissionError("provider=AGV 未声明 result normalizer: AGV_TASK_RESULT"))
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_provider_profile_admission_service",
+                new=SimpleNamespace(admit=admission),
+                create=True,
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-ext-profile-admission"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(body=create_external_payload(), path="/api/v1/callback/external"),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        admission.assert_called_once_with(
+            provider_code="AGV",
+            callback_type="AGV_TASK_RESULT",
+            direction="result",
+        )
+        mock_create_inbox.assert_not_awaited()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["failure_stage"] == "CONTRACT_VALIDATE"
+        assert "未声明 result normalizer" in str(log_kwargs["error_message"])
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio

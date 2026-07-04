@@ -1,4 +1,4 @@
-"""Phase 3 closure evidence gate."""
+"""Phase 3 closure profile gate."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from src.app.runtime.orchestration.p0_e2e_gate import RuntimeP0E2EGate
 
 @dataclass(frozen=True, slots=True)
 class RuntimePhase3ClosureValidation:
-    """Validation result for Phase 3 closure evidence artifacts."""
+    """Validation result for a Phase 3 closure profile."""
 
     valid: bool
     reason: str = "OK"
@@ -25,9 +25,10 @@ class RuntimePhase3ClosureValidation:
 
 
 class RuntimePhase3ClosureGate:
-    """Require the production P0 E2E and production benchmark artifacts before Phase 3 closure."""
+    """Validate Phase 3 closure evidence for current deployment profile."""
 
     _REQUIRED_ARTIFACTS: ClassVar[tuple[str, ...]] = ("p0_e2e", "benchmark")
+    _MOCK_CLOSURE_PROFILES: ClassVar[frozenset[str]] = frozenset({"mock", "development-mock", "test-mock"})
     _FORBIDDEN_BENCHMARK_ENVIRONMENTS: ClassVar[frozenset[str]] = frozenset(
         {"sandbox", "local-lightweight", "ci-lightweight", "lightweight"}
     )
@@ -44,8 +45,19 @@ class RuntimePhase3ClosureGate:
     def validate_artifact_files(
         self,
         artifact_paths: Mapping[str, str | Path],
+        *,
+        closure_profile: str = "mock",
     ) -> RuntimePhase3ClosureValidation:
-        """Validate the complete Phase 3 closure evidence set from artifact JSON files."""
+        """Validate mock closure or the complete production evidence set."""
+
+        if self._is_mock_closure_profile(closure_profile):
+            return RuntimePhase3ClosureValidation(valid=True, reason="MOCK_PHASE3_CLOSURE")
+        if closure_profile != "production":
+            return RuntimePhase3ClosureValidation(
+                valid=False,
+                reason="UNKNOWN_PHASE3_CLOSURE_PROFILE",
+                invalid_artifacts=(closure_profile,),
+            )
 
         missing_artifacts = tuple(
             artifact_name
@@ -126,6 +138,9 @@ class RuntimePhase3ClosureGate:
             )
 
         return RuntimePhase3ClosureValidation(valid=True)
+
+    def _is_mock_closure_profile(self, closure_profile: str) -> bool:
+        return closure_profile.strip().lower() in self._MOCK_CLOSURE_PROFILES
 
     def _load_artifact(self, artifact_path: Path) -> dict[str, Any] | None:
         try:

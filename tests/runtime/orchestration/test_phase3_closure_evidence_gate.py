@@ -155,11 +155,23 @@ def test_phase3_closure_gate_requires_both_production_artifacts(tmp_path) -> Non
 
     p0_e2e_path = _write_json(tmp_path / "phase3-p0-e2e.json", _p0_e2e_artifact())
 
-    validation = RuntimePhase3ClosureGate().validate_artifact_files({"p0_e2e": p0_e2e_path})
+    validation = RuntimePhase3ClosureGate().validate_artifact_files(
+        {"p0_e2e": p0_e2e_path},
+        closure_profile="production",
+    )
 
     assert validation.valid is False
     assert validation.reason == "MISSING_PHASE3_CLOSURE_ARTIFACTS"
     assert validation.missing_artifacts == ("benchmark",)
+
+
+def test_phase3_closure_gate_defaults_to_mock_without_real_artifacts() -> None:
+    from src.app.runtime.orchestration.phase3_closure_gate import RuntimePhase3ClosureGate
+
+    validation = RuntimePhase3ClosureGate().validate_artifact_files({})
+
+    assert validation.valid is True
+    assert validation.reason == "MOCK_PHASE3_CLOSURE"
 
 
 def test_phase3_closure_gate_accepts_valid_p0_and_benchmark_artifacts(tmp_path) -> None:
@@ -168,7 +180,8 @@ def test_phase3_closure_gate_accepts_valid_p0_and_benchmark_artifacts(tmp_path) 
     p0_e2e_path, benchmark_path = _write_closure_artifacts_with_evidence(tmp_path)
 
     validation = RuntimePhase3ClosureGate().validate_artifact_files(
-        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path}
+        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path},
+        closure_profile="production",
     )
 
     assert validation.valid is True
@@ -181,7 +194,8 @@ def test_phase3_closure_gate_rejects_missing_referenced_evidence_files(tmp_path)
     p0_e2e_path, benchmark_path = _write_closure_artifacts(tmp_path)
 
     validation = RuntimePhase3ClosureGate().validate_artifact_files(
-        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path}
+        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path},
+        closure_profile="production",
     )
 
     assert validation.valid is False
@@ -208,7 +222,8 @@ def test_phase3_closure_gate_rejects_mismatched_referenced_evidence_files(tmp_pa
     )
 
     validation = RuntimePhase3ClosureGate().validate_artifact_files(
-        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path}
+        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path},
+        closure_profile="production",
     )
 
     assert validation.valid is False
@@ -232,12 +247,37 @@ def test_phase3_closure_gate_rejects_lightweight_benchmark_artifact(tmp_path) ->
     benchmark_path = _write_json(tmp_path / "phase3-lightweight-benchmark.json", benchmark_artifact)
 
     validation = RuntimePhase3ClosureGate().validate_artifact_files(
-        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path}
+        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path},
+        closure_profile="production",
     )
 
     assert validation.valid is False
     assert validation.reason == "INVALID_PHASE3_CLOSURE_ARTIFACTS"
     assert validation.invalid_artifacts == ("benchmark:LIGHTWEIGHT_BENCHMARK_NOT_ALLOWED",)
+
+
+def test_phase3_closure_gate_accepts_lightweight_benchmark_in_mock_profile(tmp_path) -> None:
+    from src.app.runtime.orchestration.phase3_closure_gate import RuntimePhase3ClosureGate
+
+    p0_e2e_path = _write_json(tmp_path / "phase3-p0-e2e.json", _p0_e2e_artifact())
+    benchmark_artifact = _benchmark_artifact()
+    benchmark_artifact["environment"] = "local-lightweight"
+    benchmark_artifact["profile"] = {
+        "kind": "lightweight",
+        "database_backend": "in-memory",
+        "dependency_profile": "in-process-contract",
+        "concurrency_level": 1,
+        "duration_seconds": 0,
+    }
+    benchmark_path = _write_json(tmp_path / "phase3-lightweight-benchmark.json", benchmark_artifact)
+
+    validation = RuntimePhase3ClosureGate().validate_artifact_files(
+        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path},
+        closure_profile="mock",
+    )
+
+    assert validation.valid is True
+    assert validation.reason == "MOCK_PHASE3_CLOSURE"
 
 
 def test_phase3_closure_gate_rejects_non_production_benchmark_environment(tmp_path) -> None:
@@ -249,7 +289,8 @@ def test_phase3_closure_gate_rejects_non_production_benchmark_environment(tmp_pa
     benchmark_path = _write_json(tmp_path / "phase3-local-benchmark.json", benchmark_artifact)
 
     validation = RuntimePhase3ClosureGate().validate_artifact_files(
-        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path}
+        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path},
+        closure_profile="production",
     )
 
     assert validation.valid is False
@@ -277,3 +318,20 @@ def test_phase3_closure_gate_cli_validates_artifact_set(tmp_path) -> None:
     )
 
     assert "Phase 3 closure evidence passed" in result.stdout
+
+
+def test_phase3_closure_gate_cli_defaults_to_mock_without_artifacts() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/check_phase3_closure_gate.py",
+        ],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "Phase 3 closure mock evidence passed" in result.stdout

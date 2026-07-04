@@ -34,8 +34,10 @@ from src.app.runtime.orchestration.repositories import (
     workline_session_repository,
 )
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    workline_runtime_status_projection_service,
+)
 from src.app.sys.repositories import system_outbox_repository
-from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.repositories import workline_repository
 from src.utils.timezone import timezone
 from src.utils.value_normalization import as_dict, enum_str
@@ -317,9 +319,7 @@ class RuntimeHoldReleaseService:
                 workline_id=hold.workline_id,
             )
             released_outbox_count = 0
-            workline.runtime_status = WorkLineRuntimeStatus.STOPPED
-            workline.resumed_at = None
-            workline.stopped_reason = "RECOVERY_CLEARED_WAITING_START"
+            workline_runtime_status_projection_service.project_stopped_waiting_start(workline)
         else:
             released_outbox_count = await self.outbox_repo.release_blocked_by_runtime_hold_or_workline(
                 db,
@@ -860,10 +860,15 @@ class RuntimeHoldReleaseService:
     def _project_remaining_hold_status(self, workline: Any, remaining_holds: list[RuntimeHold]) -> None:
         first_hold = remaining_holds[0]
         if any(item.hold_type == RuntimeHoldType.SAFETY_ESTOP for item in remaining_holds):
-            workline.runtime_status = WorkLineRuntimeStatus.ESTOPPED
+            workline_runtime_status_projection_service.project_estopped_active_hold(
+                workline,
+                reason=first_hold.source_reason,
+            )
         else:
-            workline.runtime_status = WorkLineRuntimeStatus.RECONCILING
-        workline.stopped_reason = first_hold.source_reason
+            workline_runtime_status_projection_service.project_reconciling(
+                workline,
+                reason=first_hold.source_reason,
+            )
 
     def _material_source_payload(self, hold: RuntimeHold) -> dict[str, Any]:
         evidence = as_dict(hold.evidence_snapshot_json)

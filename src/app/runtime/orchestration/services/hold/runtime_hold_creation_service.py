@@ -10,10 +10,12 @@ from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
     RuntimeHoldRepository,
     runtime_hold_repository,
 )
-from src.app.workline.models.safety import WorkLineRuntimeStatus
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    WorkLineRuntimeStatusProjectionService,
+    workline_runtime_status_projection_service,
+)
 from src.app.workline.repositories.workline_repository import workline_repository as default_workline_repository
-from src.utils.timezone import timezone
-from src.utils.value_normalization import dict_attr, enum_str, optional_int_attr, optional_str_attr, required_int_attr
+from src.utils.value_normalization import dict_attr, optional_int_attr, optional_str_attr, required_int_attr
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -27,10 +29,17 @@ class RuntimeHoldCreationService:
     """创建/复用 RuntimeHold，不负责 release。"""
 
     def __init__(
-        self, *, repository: RuntimeHoldRepository | None = None, workline_repository: Any | None = None
+        self,
+        *,
+        repository: RuntimeHoldRepository | None = None,
+        workline_repository: Any | None = None,
+        workline_status_projection_service: WorkLineRuntimeStatusProjectionService | None = None,
     ) -> None:
         self.repository = repository or runtime_hold_repository
         self.workline_repository = workline_repository or default_workline_repository
+        self.workline_status_projection_service = (
+            workline_status_projection_service or workline_runtime_status_projection_service
+        )
 
     async def create_for_callback_deadline_expired(
         self,
@@ -186,14 +195,13 @@ class RuntimeHoldCreationService:
         """资源冲突 hold 生效时，同步冻结 WorkLine 安全状态投影。"""
 
         workline = await self.workline_repository.get_for_update(db, workline_id)
-        if (
-            workline is None
-            or enum_str(getattr(workline, "runtime_status", None)) == WorkLineRuntimeStatus.ESTOPPED.value
-        ):
+        if workline is None:
             return
-        workline.runtime_status = WorkLineRuntimeStatus.RECONCILING
-        workline.stopped_at = getattr(workline, "stopped_at", None) or timezone.now_for_db()
-        workline.stopped_reason = source_reason
+        self.workline_status_projection_service.project_reconciling(
+            workline,
+            occurred_at=None,
+            reason=source_reason,
+        )
 
 
 runtime_hold_creation_service = RuntimeHoldCreationService()

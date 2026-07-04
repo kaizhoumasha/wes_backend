@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -89,6 +90,11 @@ class WorklineBinCellReservationService:
         source_event_id: str | None,
         reserved_at: datetime,
         material_identity_key: str | None = None,
+        correlation_id: str | None = None,
+        provider_code: str | None = None,
+        source_version: str | None = None,
+        evidence_json: dict[str, Any] | None = None,
+        expires_at: datetime | None = None,
     ) -> BinCellReservationResult:
         """为 OUTPUT_ARM 物理动作创建 session 级料格预占。"""
 
@@ -167,41 +173,64 @@ class WorklineBinCellReservationService:
                     message="料箱格位已满，不能创建计划预占",
                 )
 
-        active_reservation = await self.reservation_repository.get_active_by_bin_cell(
+        active_reservation = await self.reservation_repository.get_active_or_frozen_by_bin_cell(
             db,
             bin_code=bin_code,
             bin_cell_index=bin_cell_index,
         )
         if active_reservation is not None:
             if active_reservation.session_id == session_id and active_reservation.pkg_code == pkg_code:
+                if active_reservation.reservation_status == BinCellReservationStatus.RECONCILING:
+                    return BinCellReservationResult(
+                        status=BinCellReservationStatusCode.RECONCILING,
+                        reservation=active_reservation,
+                        reason_code="BIN_CELL_RESERVATION_FROZEN",
+                        message="料箱格位预占正在对账，不能复用为普通预占",
+                    )
                 return BinCellReservationResult(
                     status=BinCellReservationStatusCode.DUPLICATE,
                     reservation=active_reservation,
                 )
+            reason_code = "BIN_CELL_RESERVATION_CONFLICT"
+            evidence = {
+                "bin_code": bin_code,
+                "bin_cell_index": bin_cell_index,
+                "active_session_id": active_reservation.session_id,
+                "active_pkg_code": active_reservation.pkg_code,
+                "incoming_session_id": session_id,
+                "incoming_pkg_code": pkg_code,
+            }
             runtime_hold = await self._create_conflict_hold(
                 db,
                 workline_id=workline_id,
                 session_id=session_id,
                 trace_id=trace_id,
-                reason_code="BIN_CELL_RESERVATION_CONFLICT",
-                evidence={
-                    "bin_code": bin_code,
-                    "bin_cell_index": bin_cell_index,
-                    "active_session_id": active_reservation.session_id,
-                    "active_pkg_code": active_reservation.pkg_code,
-                    "incoming_session_id": session_id,
-                    "incoming_pkg_code": pkg_code,
-                },
+                reason_code=reason_code,
+                evidence=evidence,
+            )
+            reservation = await self.reservation_repository.mark_reconciling(
+                db,
+                active_reservation,
+                reason_code=reason_code,
+                evidence=evidence,
             )
             return BinCellReservationResult(
                 status=BinCellReservationStatusCode.RECONCILING,
-                reservation=active_reservation,
+                reservation=reservation,
                 runtime_hold=runtime_hold,
-                reason_code="BIN_CELL_RESERVATION_CONFLICT",
+                reason_code=reason_code,
                 message="料箱格位已有其他 active 预占",
             )
 
-        reservation_key = f"{workline_code}:{session_id}:{bin_code}:{bin_cell_index}:{pkg_code}"
+        reservation_key = _build_reservation_key(
+            workline_code=workline_code,
+            session_id=session_id,
+            bin_code=bin_code,
+            bin_cell_index=bin_cell_index,
+            pkg_code=pkg_code,
+            correlation_id=correlation_id,
+            source_event_id=source_event_id,
+        )
         reservation = await self.reservation_repository.create(
             db,
             {
@@ -209,6 +238,7 @@ class WorklineBinCellReservationService:
                 "workline_id": workline_id,
                 "workline_code": workline_code,
                 "session_id": session_id,
+                "correlation_id": correlation_id,
                 "trace_id": trace_id,
                 "pkg_code": pkg_code,
                 "bin_code": bin_code,
@@ -217,6 +247,15 @@ class WorklineBinCellReservationService:
                 "reservation_status": BinCellReservationStatus.PLANNED.value,
                 "source_event_id": source_event_id,
                 "reserved_at": reserved_at,
+                "expires_at": expires_at,
+                "evidence_json": _reservation_evidence(
+                    trace_id=trace_id,
+                    correlation_id=correlation_id,
+                    source_event_id=source_event_id,
+                    provider_code=provider_code,
+                    source_version=source_version,
+                    evidence_json=evidence_json,
+                ),
                 "metadata_json": {"material_identity_key": material_identity_key} if material_identity_key else {},
             },
         )
@@ -236,33 +275,47 @@ class WorklineBinCellReservationService:
     ) -> BinCellReservationResult:
         """物理占用成功后消耗当前 session 的预占。"""
 
-        active_reservation = await self.reservation_repository.get_active_by_bin_cell(
+        active_reservation = await self.reservation_repository.get_active_or_frozen_by_bin_cell(
             db,
             bin_code=bin_code,
             bin_cell_index=bin_cell_index,
         )
         if active_reservation is None:
             return BinCellReservationResult(status=BinCellReservationStatusCode.DUPLICATE)
+        if active_reservation.reservation_status == BinCellReservationStatus.RECONCILING:
+            return BinCellReservationResult(
+                status=BinCellReservationStatusCode.RECONCILING,
+                reservation=active_reservation,
+                reason_code="BIN_CELL_RESERVATION_FROZEN",
+                message="料箱格位预占正在对账，不能通过普通物理成功路径消耗",
+            )
         if active_reservation.session_id != session_id:
             reason_code = "BIN_CELL_RESERVATION_OWNER_MISMATCH"
+            evidence = {
+                "source_event_id": source_event_id or f"CONSUME_BIN_CELL:{session_id}:{bin_code}:{bin_cell_index}",
+                "bin_code": bin_code,
+                "bin_cell_index": bin_cell_index,
+                "active_session_id": active_reservation.session_id,
+                "active_pkg_code": active_reservation.pkg_code,
+                "incoming_session_id": session_id,
+            }
             runtime_hold = await self._create_conflict_hold(
                 db,
                 workline_id=workline_id or int(active_reservation.workline_id),
                 session_id=session_id,
                 trace_id=trace_id,
                 reason_code=reason_code,
-                evidence={
-                    "source_event_id": source_event_id or f"CONSUME_BIN_CELL:{session_id}:{bin_code}:{bin_cell_index}",
-                    "bin_code": bin_code,
-                    "bin_cell_index": bin_cell_index,
-                    "active_session_id": active_reservation.session_id,
-                    "active_pkg_code": active_reservation.pkg_code,
-                    "incoming_session_id": session_id,
-                },
+                evidence=evidence,
+            )
+            reservation = await self.reservation_repository.mark_reconciling(
+                db,
+                active_reservation,
+                reason_code=reason_code,
+                evidence=evidence,
             )
             return BinCellReservationResult(
                 status=BinCellReservationStatusCode.RECONCILING,
-                reservation=active_reservation,
+                reservation=reservation,
                 runtime_hold=runtime_hold,
                 reason_code=reason_code,
                 message="物理占用成功时 active 预占属于其他 session",
@@ -288,33 +341,47 @@ class WorklineBinCellReservationService:
     ) -> BinCellReservationResult:
         """物理动作失败后释放当前 session 的计划预占。"""
 
-        active_reservation = await self.reservation_repository.get_active_by_bin_cell(
+        active_reservation = await self.reservation_repository.get_active_or_frozen_by_bin_cell(
             db,
             bin_code=bin_code,
             bin_cell_index=bin_cell_index,
         )
         if active_reservation is None:
             return BinCellReservationResult(status=BinCellReservationStatusCode.DUPLICATE)
+        if active_reservation.reservation_status == BinCellReservationStatus.RECONCILING:
+            return BinCellReservationResult(
+                status=BinCellReservationStatusCode.RECONCILING,
+                reservation=active_reservation,
+                reason_code="BIN_CELL_RESERVATION_FROZEN",
+                message="料箱格位预占正在对账，不能通过普通失败路径释放",
+            )
         if active_reservation.session_id != session_id:
             reason_code = "BIN_CELL_RESERVATION_OWNER_MISMATCH"
+            evidence = {
+                "source_event_id": source_event_id or f"RELEASE_BIN_CELL:{session_id}:{bin_code}:{bin_cell_index}",
+                "bin_code": bin_code,
+                "bin_cell_index": bin_cell_index,
+                "active_session_id": active_reservation.session_id,
+                "active_pkg_code": active_reservation.pkg_code,
+                "incoming_session_id": session_id,
+            }
             runtime_hold = await self._create_conflict_hold(
                 db,
                 workline_id=workline_id or int(active_reservation.workline_id),
                 session_id=session_id,
                 trace_id=trace_id,
                 reason_code=reason_code,
-                evidence={
-                    "source_event_id": source_event_id or f"RELEASE_BIN_CELL:{session_id}:{bin_code}:{bin_cell_index}",
-                    "bin_code": bin_code,
-                    "bin_cell_index": bin_cell_index,
-                    "active_session_id": active_reservation.session_id,
-                    "active_pkg_code": active_reservation.pkg_code,
-                    "incoming_session_id": session_id,
-                },
+                evidence=evidence,
+            )
+            reservation = await self.reservation_repository.mark_reconciling(
+                db,
+                active_reservation,
+                reason_code=reason_code,
+                evidence=evidence,
             )
             return BinCellReservationResult(
                 status=BinCellReservationStatusCode.RECONCILING,
-                reservation=active_reservation,
+                reservation=reservation,
                 runtime_hold=runtime_hold,
                 reason_code=reason_code,
                 message="释放预占时 active 预占属于其他 session",
@@ -326,6 +393,32 @@ class WorklineBinCellReservationService:
             released_at=released_at,
         )
         return BinCellReservationResult(status=BinCellReservationStatusCode.RELEASED, reservation=reservation)
+
+    async def release_expired_planned_reservations(
+        self,
+        db: AsyncSession,
+        *,
+        expired_at: datetime,
+        limit: int = 100,
+    ) -> list[WorklineBinCellReservation]:
+        """TTL 释放未发生物理投放的 PLANNED 预占。"""
+
+        reservations = await self.reservation_repository.list_expired_planned(
+            db,
+            expired_at=expired_at,
+            limit=limit,
+        )
+        released: list[WorklineBinCellReservation] = []
+        for reservation in reservations:
+            self._move_reservation_key_to_released_namespace(reservation, released_at=expired_at)
+            released.append(
+                await self.reservation_repository.mark_released(
+                    db,
+                    reservation,
+                    released_at=expired_at,
+                )
+            )
+        return released
 
     def _move_reservation_key_to_released_namespace(
         self,
@@ -358,6 +451,19 @@ class WorklineBinCellReservationService:
         except (TypeError, ValueError):
             return False
 
+    @staticmethod
+    def target_semantic_status(reservation: WorklineBinCellReservation) -> str:
+        """将当前持久状态映射为 Phase4 CellReservation 目标语义。"""
+
+        status = reservation.reservation_status
+        if status == BinCellReservationStatus.PLANNED:
+            return "RESERVED"
+        if status == BinCellReservationStatus.CONSUMED:
+            return "OCCUPIED"
+        if status == BinCellReservationStatus.RECONCILING:
+            return "RECONCILING"
+        return "RELEASED"
+
     async def apply_runtime_reservation(
         self,
         *,
@@ -372,6 +478,7 @@ class WorklineBinCellReservationService:
         """RuntimeIntent 入口：执行预占 claim/consume/release。"""
 
         if operation == "CLAIM_BIN_CELL":
+            raw_source_event_id = payload_json.get("source_event_id") or idempotency_key
             return await self.claim_bin_cell(
                 db,
                 workline_id=int(workline.id),
@@ -383,8 +490,13 @@ class WorklineBinCellReservationService:
                 bin_cell_code=payload_json.get("bin_cell_code"),
                 bin_cell_index=str(payload_json["bin_cell_index"]),
                 material_identity_key=payload_json.get("material_identity_key"),
-                source_event_id=payload_json.get("source_event_id"),
+                source_event_id=str(raw_source_event_id) if raw_source_event_id else None,
                 reserved_at=payload_json.get("reserved_at") or timezone.now_for_db(),
+                expires_at=payload_json.get("expires_at"),
+                correlation_id=payload_json.get("correlation_id"),
+                provider_code=payload_json.get("provider_code"),
+                source_version=payload_json.get("source_version"),
+                evidence_json=payload_json.get("evidence_json"),
             )
         if operation == "CONSUME_BIN_CELL":
             raw_source_event_id = payload_json.get("source_event_id") or idempotency_key
@@ -434,6 +546,61 @@ class WorklineBinCellReservationService:
 
 
 workline_bin_cell_reservation_service = WorklineBinCellReservationService()
+
+
+def _build_reservation_key(
+    *,
+    workline_code: str,
+    session_id: int,
+    bin_code: str,
+    bin_cell_index: str,
+    pkg_code: str,
+    correlation_id: str | None,
+    source_event_id: str | None,
+) -> str:
+    raw_key = ":".join(
+        (
+            workline_code,
+            str(session_id),
+            bin_code,
+            bin_cell_index,
+            pkg_code,
+            correlation_id or "-",
+            source_event_id or "-",
+        )
+    )
+    if len(raw_key) <= RESERVATION_KEY_MAX_LENGTH:
+        return raw_key
+
+    digest = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16]
+    suffix = f":{digest}"
+    return f"{raw_key[: RESERVATION_KEY_MAX_LENGTH - len(suffix)]}{suffix}"
+
+
+def _reservation_evidence(
+    *,
+    trace_id: str | None,
+    correlation_id: str | None,
+    source_event_id: str | None,
+    provider_code: str | None,
+    source_version: str | None,
+    evidence_json: dict[str, Any] | None,
+) -> dict[str, Any]:
+    evidence = dict(evidence_json or {})
+    evidence.update(
+        {
+            key: value
+            for key, value in {
+                "trace_id": trace_id,
+                "correlation_id": correlation_id,
+                "source_event_id": source_event_id,
+                "provider_code": provider_code,
+                "source_version": source_version,
+            }.items()
+            if value is not None
+        }
+    )
+    return evidence
 
 
 __all__ = [

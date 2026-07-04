@@ -16,6 +16,9 @@ from src.app.runtime.orchestration.repositories.session_repository import Workli
 from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
     runtime_hold_creation_service as default_runtime_hold_creation_service,
 )
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    workline_runtime_status_projection_service,
+)
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.models.safety import WorkLineRuntimeStatus, WorklineSafetyIncident, WorklineSafetyIncidentStatus
 from src.app.workline.repositories.safety_incident_repository import WorklineSafetyIncidentRepository
@@ -129,6 +132,7 @@ class WorkLineSafetyService:
         runtime_hold_creation_service: Any | None = None,
         runtime_hold_repository: RuntimeHoldRepository | None = None,
         runtime_hold_release_service: Any | None = None,
+        workline_status_projection_service: Any | None = None,
     ) -> None:
         """初始化安全服务依赖。"""
 
@@ -140,6 +144,9 @@ class WorkLineSafetyService:
         self.device_service = device_service or DeviceService()
         self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
         self.runtime_hold_repository = runtime_hold_repository or RuntimeHoldRepository()
+        self.workline_status_projection_service = (
+            workline_status_projection_service or workline_runtime_status_projection_service
+        )
         if runtime_hold_release_service is None:
             from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
                 runtime_hold_release_service as default_release,
@@ -192,10 +199,12 @@ class WorkLineSafetyService:
         _ = await self.runtime_hold_creation_service.create_for_safety_estop(db, incident=incident)
 
         now = timezone.now_for_db()
-        workline.runtime_status = WorkLineRuntimeStatus.ESTOPPED
+        self.workline_status_projection_service.project_estopped_active_hold(
+            workline,
+            reason="ESTOP_PRESSED",
+        )
         workline.active_safety_incident_id = incident.id
         workline.stopped_at = workline.stopped_at or now
-        workline.stopped_reason = "ESTOP_PRESSED"
         await db.flush()
         await db.commit()
 

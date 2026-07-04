@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.6.0] - 2026-07-05
+
+> **Note**: Phase 4 runtime readiness 开发/测试范围发布。本 patch 完成 Phase4 SPEC 同步、CellReservation 目标生命周期、RuntimeLocationEvent 位置事实、MaterialLocationQuery 与 WorklineActiveObjects 只读能力，并把 Wave2/Wave3 降级为本机 MOCK 验收；生产热路径仍保持关闭，发布前需显式通过 production closure profile 与上线门禁。
+
+### Added
+- 新增 Phase4 设计包与运行时实施计划，覆盖 CellReservation、MaterialLocationQuery、WorklineActiveObjects、sorter inbound capability、SMT/NG/WMS reconciliation，并在主规划中同步开发/测试 MOCK 与生产 gate 状态。
+- Runtime/Orchestration 新增 `RuntimeLocationEvent` append-only 位置事实表、幂等写入 repository/service、查询索引和 Alembic 迁移。
+- CellReservation 复用 `WorklineBinCellReservation`，新增 `RECONCILING` 持久状态、correlation/evidence 字段、active/frozen 唯一约束和目标语义 mapper。
+- 新增 MaterialLocationQuery 与 WorklineActiveObjects 查询服务及只读 API facade，支持物料身份、package/bin、rack/side、workline active object、ExternalReference、correlation_id 查询入口。
+- 新增 Phase4 sorter inbound 与 SMT/NG/WMS reconciliation preview service，将 Wave2/Wave3 验收沉淀为 runtime capability 级本机 MOCK 能力，不访问 DB、不发 WMS/ECS/NG/PDA effect。
+- 新增 `scripts/check_phase4_runtime_readiness_gate.py` 并接入 quality profile，默认 development/test mock profile 通过，production profile 明确阻断生产热路径。
+
+### Changed
+- Callback 热路径接入 provider profile admission，未声明 callback/event/result normalizer 的 provider 在入口阶段被拒绝。
+- Phase3 closure gate 在当前未发布项目的开发/测试范围改为 MOCK closure，真实 production artifact 不再阻塞本地推进；production profile 仍保留显式门禁。
+- WorkLine `runtime_status` 写入收敛到 `WorkLineRuntimeStatusProjectionService` 兼容投影，减少 Phase4 新业务对 legacy 字段的直接依赖。
+- Workline restructuring 主计划同步 Phase4 SPEC 与 runtime readiness 状态，明确 Wave2/Wave3 生产热路径未实施、Phase5 legacy drop 不可提前。
+
+### Fixed
+- 修复 Phase4 SPEC 中 sorter runtime mapping 对 `RuntimeLocationEvent`、CellReservation 复用口径和 WMS PKG binding port 归属的误标，并补合同测试防回归。
+- 修复 MaterialLocationQuery 对 frozen/reconciling CellReservation evidence 的冲突展示口径，确保冲突返回 `RECONCILING` 而不是静默选边。
+- 补齐 CellReservation TTL、reservation key、provider/source_version/correlation evidence 与 owner mismatch/WMS reject/source_version drift 的对账路径覆盖。
+
 ## [0.10.5.0] - 2026-07-03
 
 > **Note**: Phase 3 closure 本地合同与门禁补齐发布。本 patch 完成运行态安全/恢复热路径、production evidence composer 与总门禁、benchmark provenance/workload 校验、观测与 toggle 发布门禁；Phase 3 生产/预生产 P0 E2E artifact 与 production-scale benchmark artifact 仍作为外部 evidence 后续补齐，不在本版本伪完成。

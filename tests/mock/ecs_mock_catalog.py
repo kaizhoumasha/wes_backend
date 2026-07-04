@@ -12,7 +12,9 @@ from typing import Any
 def _load_sandbox_catalog() -> Any:
     """按文件加载共享 catalog，避免 Docker 直接导入时依赖 src 包路径。"""
 
-    catalog_path = Path(__file__).resolve().parents[2] / "src" / "workline_runtime" / "sandbox_catalog.py"
+    catalog_path = (
+        Path(__file__).resolve().parents[2] / "src" / "app" / "runtime" / "orchestration" / "sandbox_catalog_bridge.py"
+    )
     spec = importlib.util.spec_from_file_location("wes_mock_sandbox_catalog_for_ecs", catalog_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"无法加载 ECS mock catalog: {catalog_path}")

@@ -308,7 +308,7 @@ class TestCallbackEventAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_event_rejects_invalid_plugin_event(
+    async def test_callback_event_rejects_undeclared_provider_profile_normalizer(
         self, db_session: AsyncSession, build_request: RequestFactory
     ) -> None:
         with (
@@ -368,10 +368,12 @@ class TestCallbackEventAPI:
                 response=Response(),
             )
 
-        # 简化架构：接受所有事件类型，返回成功
-        assert response["code"] == "1000"
-        assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_awaited_once()
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        assert "未声明 event normalizer" in response["message"]
+        mock_create_inbox.assert_not_awaited()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["failure_stage"] == "CONTRACT_VALIDATE"
         mock_log_callback.assert_awaited_once()
         mock_audit.assert_awaited_once()
 
@@ -439,6 +441,69 @@ class TestCallbackEventAPI:
         assert inbox_kwargs["canonical_event_type"] == "SCAN_COMPLETED"
         mock_enqueue.assert_called_once()
         mock_log_callback.assert_awaited_once()
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_event_rejects_undeclared_raw_event_alias_before_inbox(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=SimpleNamespace(capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]}),
+                            workline=SimpleNamespace(
+                                plugin_key="test_workline_plugin",
+                                contract_version="1.0",
+                                is_active=True,
+                                runtime_config_json={"event_type_mapping": {"UNDECLARED_SCAN_ALIAS": "SCAN_COMPLETED"}},
+                            ),
+                            plugin_key="test_workline_plugin",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-raw-alias-admission"),
+        ):
+            from src.app.callback.v1.callback import callback_event
+
+            response = await callback_event(
+                request=build_request(
+                    body=create_event_payload(event_type="UNDECLARED_SCAN_ALIAS"),
+                    path="/api/v1/callback/event",
+                ),
+                db=db_session,
+                response=Response(),
+            )
+
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        assert "UNDECLARED_SCAN_ALIAS" in response["message"]
+        mock_create_inbox.assert_not_awaited()
+        mock_enqueue.assert_not_called()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["failure_stage"] == "CONTRACT_VALIDATE"
         mock_audit.assert_awaited_once()
 
     @pytest.mark.parametrize("reserved_target", ["WORKLINE_START_REQUESTED", "ESTOP_PRESSED"])

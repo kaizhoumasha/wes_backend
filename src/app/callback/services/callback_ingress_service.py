@@ -4,7 +4,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import Request
 from pydantic import ValidationError
@@ -33,6 +33,7 @@ from src.app.callback.models import (
 from src.app.callback.services.callback_log_service import callback_log_service
 from src.app.callback.services.callback_orchestration_service import callback_orchestration_service
 from src.app.callback.utils import JsonDict, resolve_first_str
+from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.device.models import parse_device_capabilities
 from src.app.device.models.command import (
     _FORBIDDEN_PARAM_KEYS,
@@ -210,6 +211,16 @@ _EXTERNAL_CALLBACK_SOURCE_SYSTEMS_BY_CALLBACK_TYPE = {
     "CTU_BIN_MOVE_COMPLETED": frozenset({"CTU"}),
     "CTU_BIN_MOVE_FAILED": frozenset({"CTU"}),
 }
+_EXTERNAL_CALLBACK_RESULT_TYPES = frozenset(
+    {
+        "AGV_TASK_RESULT",
+        "DEVICE_RESULT",
+        "WMS_RACK_TASK_RESULT",
+        "RCS_RACK_TASK_RESULT",
+        "WMS_FULL_BOX_EXCHANGE_RESULT",
+        "RCS_FULL_BOX_EXCHANGE_RESULT",
+    }
+)
 # H4 拒绝的机器可读原因码: client 可通过 reason_code 字段区分
 # 顶层字段违规 vs 其他 schema 校验失败 (用于埋点和告警)。
 _CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED_REASON_CODE = "CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED"
@@ -227,6 +238,119 @@ _CALLBACK_SUBJECT_ALIASES = {
     "event": _DEVICE_CODE_ALIASES,
     "external": ("callback_type", "source_system"),
 }
+
+
+class CallbackProviderProfileAdmissionService:
+    """Callback 入站 provider profile admission。
+
+    Phase 1 residual gate: callback API 热路径必须拒绝 provider profile 未声明的
+    event/result normalizer，不能只依赖 callback_type allow-list。
+    """
+
+    def __init__(self, profiles_by_provider: dict[str, ExternalContractProfile] | None = None) -> None:
+        self._profiles_by_provider = profiles_by_provider or _build_default_callback_provider_profiles()
+
+    def admit(
+        self,
+        *,
+        provider_code: str,
+        callback_type: str,
+        direction: Literal["event", "result"],
+    ) -> None:
+        normalized_provider = provider_code.strip().upper()
+        profile = self._profiles_by_provider.get(normalized_provider)
+        if profile is None:
+            raise PermissionError(f"provider={normalized_provider or 'UNKNOWN'} 未注册 callback profile")
+        profile.ensure_inbound_normalizer_declared(callback_type, direction=direction)
+
+
+def _build_default_callback_provider_profiles() -> dict[str, ExternalContractProfile]:
+    wms_result_types = {
+        callback_type for callback_type in _EXTERNAL_CALLBACK_RESULT_TYPES if callback_type.startswith("WMS_")
+    }
+    rcs_result_types = {
+        callback_type for callback_type in _EXTERNAL_CALLBACK_RESULT_TYPES if callback_type.startswith("RCS_")
+    }
+    return {
+        "ECS": _build_callback_provider_profile(
+            "ECS",
+            event_types=(_EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES - {"DEVICE_RESULT"})
+            | {"SCAN_FINISH", "WORKLINE_START_REQUESTED"},
+            result_types={"DEVICE_RESULT"},
+        ),
+        "DEVICE": _build_callback_provider_profile(
+            "DEVICE",
+            event_types=(_EXTERNAL_CALLBACK_ECS_DEVICE_ALLOWED_TYPES - {"DEVICE_RESULT"})
+            | {"SCAN_FINISH", "WORKLINE_START_REQUESTED"},
+            result_types={"DEVICE_RESULT"},
+        ),
+        "WMS": _build_callback_provider_profile(
+            "WMS",
+            event_types=(
+                {
+                    callback_type
+                    for callback_type in _EXTERNAL_CALLBACK_ALLOWED_TYPES
+                    if callback_type.startswith("WMS_")
+                }
+                - wms_result_types
+            ),
+            result_types=wms_result_types,
+        ),
+        "RCS": _build_callback_provider_profile(
+            "RCS",
+            event_types=(
+                {
+                    callback_type
+                    for callback_type in _EXTERNAL_CALLBACK_ALLOWED_TYPES
+                    if callback_type.startswith("RCS_")
+                }
+                - rcs_result_types
+            ),
+            result_types=rcs_result_types,
+        ),
+        "AGV": _build_callback_provider_profile(
+            "AGV",
+            event_types=set(),
+            result_types={"AGV_TASK_RESULT"},
+        ),
+        "CTU": _build_callback_provider_profile(
+            "CTU",
+            event_types={
+                callback_type for callback_type in _EXTERNAL_CALLBACK_ALLOWED_TYPES if callback_type.startswith("CTU_")
+            },
+            result_types=set(),
+        ),
+    }
+
+
+def _build_callback_provider_profile(
+    provider_code: str,
+    *,
+    event_types: set[str] | frozenset[str],
+    result_types: set[str] | frozenset[str],
+) -> ExternalContractProfile:
+    fixture_provider = provider_code.lower() if provider_code in {"ECS", "WMS"} else "wms"
+    return ExternalContractProfile(
+        provider_code=provider_code,
+        contract_version="default",
+        environment="sandbox",
+        runtime_capabilities_query=["WmsMasterDataPort.get_material"],
+        inbound_normalizers_event=sorted(event_types),
+        inbound_normalizers_result=sorted(result_types),
+        timeout_retry_query_timeout_seconds=5,
+        timeout_retry_retry_backoff_seconds=[1],
+        fixture_set_path=f"tests/fixtures/external_contracts/{fixture_provider}/default",
+        fixture_set_required_cases=["success", "timeout", "duplicate", "missing_event_id"],
+    )
+
+
+def _external_callback_normalizer_direction(callback_type: str) -> Literal["event", "result"]:
+    if callback_type in _EXTERNAL_CALLBACK_RESULT_TYPES or callback_type.endswith("_TASK_RESULT"):
+        return "result"
+    return "event"
+
+
+callback_provider_profile_admission_service = CallbackProviderProfileAdmissionService()
 
 # callback 入口结果常量
 _INGRESS_OUTCOME_ACCEPTED = "ACCEPTED"
@@ -1078,6 +1202,24 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             diagnostic={"unexpected_fields": unexpected_top_level} if is_h4_top_level else None,
         )
 
+    try:
+        callback_provider_profile_admission_service.admit(
+            provider_code="ECS",
+            callback_type="DEVICE_RESULT",
+            direction="result",
+        )
+    except PermissionError as exc:
+        logger.error(f"指令结果回调 provider profile admission 失败: {exc}")
+        return await _handle_result_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=f"结果回调契约校验失败: {exc}",
+            response_time_ms=_response_time_ms(start_time),
+            failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+        )
+
     logger.info(f"收到指令结果回调: {command_code} (request_id={request_id})")
 
     existing_command = await device_command_service.get_command_by_code(db, command_code)
@@ -1541,6 +1683,26 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
         )
 
     try:
+        try:
+            callback_provider_profile_admission_service.admit(
+                provider_code="ECS",
+                callback_type=normalized_event_request.event_type,
+                direction="event",
+            )
+        except PermissionError as exc:
+            logger.error(f"设备事件上报 provider profile admission 失败: {exc}")
+            return CallbackEventIngressDecision(
+                body=await _handle_event_validation_failure(
+                    db,
+                    request,
+                    request_id=request_id,
+                    event_data=event_data,
+                    message=f"事件上报契约校验失败: {exc}",
+                    response_time_ms=_response_time_ms(start_time),
+                    failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+                )
+            )
+
         if normalized_event_request.event_type == "WORKLINE_START_REQUESTED":
             return await _handle_event_start_admission(
                 db,
@@ -1776,7 +1938,6 @@ async def handle_callback_external(
         normalized_payload = _normalize_external_callback_payload(callback_data)
         callback_type = cast("str", normalized_payload["callback_type"])
         external_trace_id = cast("str | None", normalized_payload["trace_id"])
-        _emit_callback_normalize_observability(callback_data, normalized_payload, request_id=request_id)
     except ValueError as exc:
         logger.error(f"外部回调最小包络校验失败: {exc}")
         return await _handle_external_validation_failure(
@@ -1787,6 +1948,25 @@ async def handle_callback_external(
             message=f"外部回调最小包络校验失败: {exc}",
             response_time_ms=_response_time_ms(start_time),
             failure_stage=_FAILURE_STAGE_ENVELOPE_VALIDATE,
+        )
+
+    try:
+        callback_provider_profile_admission_service.admit(
+            provider_code=_callback_normalize_provider_code(callback_type, callback_data),
+            callback_type=callback_type,
+            direction=_external_callback_normalizer_direction(callback_type),
+        )
+        _emit_callback_normalize_observability(callback_data, normalized_payload, request_id=request_id)
+    except PermissionError as exc:
+        logger.error(f"外部回调 provider profile admission 失败: {exc}")
+        return await _handle_external_validation_failure(
+            db,
+            request,
+            request_id=request_id,
+            callback_data=callback_data,
+            message=f"外部回调契约校验失败: {exc}",
+            response_time_ms=_response_time_ms(start_time),
+            failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
         )
 
     # H4 子层守卫: 外部回调 data 同样禁止 plc_address / coordinate 等

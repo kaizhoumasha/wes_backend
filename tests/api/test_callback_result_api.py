@@ -268,6 +268,58 @@ class TestCallbackResultAPI:
         assert log_kwargs["trace_id"] == "trace-vendor-001"
 
     @pytest.mark.asyncio
+    async def test_callback_result_rejects_undeclared_provider_profile_normalizer(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        admission = MagicMock(side_effect=PermissionError("provider=ECS 未声明 result normalizer: DEVICE_RESULT"))
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_provider_profile_admission_service",
+                new=SimpleNamespace(admit=admission),
+                create=True,
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
+                new=AsyncMock(),
+            ) as mock_get_command,
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_command_result_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-result-profile-admission"),
+        ):
+            from src.app.callback.v1.callback import callback_result
+
+            response = await callback_result(
+                request=build_request(body=create_result_payload(), path="/api/v1/callback/result"),
+                db=db_session,
+            )
+
+        assert response["code"] == "2004"
+        assert _response_data(response)["ack"] is False
+        admission.assert_called_once_with(
+            provider_code="ECS",
+            callback_type="DEVICE_RESULT",
+            direction="result",
+        )
+        mock_get_command.assert_not_awaited()
+        mock_create_inbox.assert_not_awaited()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["failure_stage"] == "CONTRACT_VALIDATE"
+        assert "未声明 result normalizer" in str(log_kwargs["error_message"])
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_callback_result_rejects_command_device_mismatch(
         self,
         db_session: AsyncSession,

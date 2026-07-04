@@ -2,7 +2,9 @@
 
 from src.app.callback.services.callback_ingress_service import (
     CallbackIngressService,
+    CallbackProviderProfileAdmissionService,
     callback_ingress_service,
+    callback_provider_profile_admission_service,
 )
 from src.app.callback.services.callback_log_service import (
     CallbackLogService,
@@ -17,7 +19,9 @@ __all__ = [
     "CallbackIngressService",
     "CallbackLogService",
     "CallbackOrchestrationService",
+    "CallbackProviderProfileAdmissionService",
     "callback_ingress_service",
     "callback_log_service",
     "callback_orchestration_service",
+    "callback_provider_profile_admission_service",
 ]
