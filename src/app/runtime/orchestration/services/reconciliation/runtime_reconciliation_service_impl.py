@@ -54,6 +54,9 @@ from src.app.runtime.orchestration.services.hold.runtime_hold_release_service im
 )
 from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
 from src.app.runtime.orchestration.services.trace.timeline_sequence_service import add_timeline_with_sequence
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    workline_runtime_status_projection_service,
+)
 from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
@@ -239,9 +242,11 @@ class WorklineRuntimeReconciliationService:
 
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
         if workline is not None:
-            workline.runtime_status = WorkLineRuntimeStatus.RECONCILING
-            workline.stopped_at = workline.stopped_at or now
-            workline.stopped_reason = RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value
+            workline_runtime_status_projection_service.project_reconciling(
+                workline,
+                occurred_at=now,
+                reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
+            )
 
         device_id = getattr(command, "device_id", None)
         if isinstance(device_id, int):

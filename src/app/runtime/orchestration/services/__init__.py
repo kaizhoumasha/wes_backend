@@ -24,6 +24,10 @@ from src.app.runtime.orchestration.services.runtime_snapshot_assembler import (
     RuntimeSnapshotInput,
     runtime_snapshot_assembler,
 )
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    WorkLineRuntimeStatusProjectionService,
+    workline_runtime_status_projection_service,
+)
 
 # Phase 2 burn-down 阶段 5:`RuntimeReconciliationFacade` 物理删除。原 facade
 # 仅委托 workline_runtime_reconciliation_service 两个方法,device/callback
@@ -40,10 +44,12 @@ __all__ = [
     "IdempotencyGuard",
     "RuntimeSnapshotAssembler",
     "RuntimeSnapshotInput",
+    "WorkLineRuntimeStatusProjectionService",
     "conveyor_queue_membership_writer_service",
     "device_runtime_projection_writer_service",
     "idempotency_guard",
     "is_wes_internal_key",
     "make_wes_internal_key",
     "runtime_snapshot_assembler",
+    "workline_runtime_status_projection_service",
 ]

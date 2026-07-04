@@ -14,6 +14,9 @@ from src.app.device.repositories import device_repository
 from src.app.device.services.device_context_service import device_context_service
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.runtime.orchestration.repositories.session_repository import workline_session_repository
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    workline_runtime_status_projection_service,
+)
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
@@ -531,9 +534,7 @@ class WorkLineStartAdmissionService:
         trace_id: str | None,
     ) -> None:
         now = timezone.now_for_db()
-        workline.runtime_status = _READY
-        workline.stopped_reason = None
-        workline.resumed_at = now
+        workline_runtime_status_projection_service.project_ready_after_start(workline, occurred_at=now)
         workline.start_admission_status = _SUCCESS
         workline.start_admission_message = "START 准入通过"
         workline.start_admission_failed_device_code = None
