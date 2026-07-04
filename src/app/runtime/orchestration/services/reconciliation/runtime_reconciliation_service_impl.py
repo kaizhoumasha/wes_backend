@@ -60,7 +60,6 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
 from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
-from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 from src.core.logger import logger
@@ -140,6 +139,7 @@ class WorklineRuntimeReconciliationService:
         runtime_hold_release_service: RuntimeHoldReleaseService | None = None,
         rack_task_repository: RackTaskRepository | None = None,
         reconciliation_manager: ReconciliationManager | None = None,
+        workline_status_projection_service: Any | None = None,
     ) -> None:
         self.session_repository = session_repository or WorklineSessionRepository()
         self.workline_repository = workline_repository or WorkLineRepository()
@@ -150,6 +150,9 @@ class WorklineRuntimeReconciliationService:
         self.runtime_hold_release_service = runtime_hold_release_service or default_runtime_hold_release_service
         self.rack_task_repository = rack_task_repository or RackTaskRepository()
         self.reconciliation_manager = reconciliation_manager or ReconciliationManager()
+        self.workline_status_projection_service = (
+            workline_status_projection_service or workline_runtime_status_projection_service
+        )
 
     async def activate_execution_deadline_after_ack(
         self,
@@ -423,9 +426,11 @@ class WorklineRuntimeReconciliationService:
 
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
         if workline is not None:
-            workline.runtime_status = WorkLineRuntimeStatus.RECONCILING
-            workline.stopped_at = workline.stopped_at or now
-            workline.stopped_reason = RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value
+            self.workline_status_projection_service.project_reconciling(
+                workline,
+                occurred_at=now,
+                reason=RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value,
+            )
 
         device_id = getattr(command, "device_id", None)
         if isinstance(device_id, int):
