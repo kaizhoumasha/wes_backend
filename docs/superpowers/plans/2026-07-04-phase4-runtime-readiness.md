@@ -19,6 +19,8 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 
 2026-07-04 追加进展 4：补齐 sorter inbound preview 级本机 MOCK 合同：粗分机正常流拆分本地物理事实与 WMS 同步状态；分拣机入库覆盖 SCAN1/2/3、join gate、NG/RuntimeHold 路由、扫码平台预取默认 0 与显式开启 validator；CTU 父子批次视图覆盖父成功但子项缺失、重复 sequence、未 resolve placeholder 和部分失败进入 `RECONCILING`。
 
+2026-07-04 追加进展 5：新增 `scripts/check_phase4_runtime_readiness_gate.py`，把 Phase4 开发/测试 readiness 固化为可执行门禁：默认 `development-mock` profile 验证 SPEC 状态、Wave2/Wave3 本机 MOCK 合同、生产热路径未开启；`production` profile 在未显式生产接入前返回 `PHASE4_PRODUCTION_HOT_PATH_NOT_ENABLED`。该 gate 已接入 `./scripts/git-quality-gate.sh --profile quality`。
+
 ## 范围边界
 
 - 允许实施 P0 与 Wave1 的 runtime/read-model 能力。
@@ -44,6 +46,7 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 - [x] Wave3 预备合同：SMT/NG/WMS 对账覆盖 NG evidence、本地事实缺失、WMS 拒绝、目标箱回写失败、重复/乱序 callback、source_version drift、RuntimeHold scope-only release。
 - [x] Wave2 本机开发环境 MOCK 验收：用 WMS/ECS mock 验证 PKG binding、库存事务、ECS callback、粗分机正常流 preview、分拣机入库 join gate、扫码平台预取 validator、CTU 父子视图、满箱交换前置分流、换面独立履约和逐件候选排除口径，不做生产接入。
 - [x] Wave3 本机开发环境 MOCK 验收：用 WMS reconciliation mock 验证冲突/乱序/版本漂移和 RuntimeHold scope-only release 场景，不做生产接入。
+- [x] Phase4 runtime readiness gate：`scripts/check_phase4_runtime_readiness_gate.py` 默认开发/测试 MOCK profile 通过，production profile 明确阻塞，并接入 quality profile。
 - [x] Phase2 兼容投影第一步：引入 `WorkLineRuntimeStatusProjectionService`，迁移 LOW 风险写入点。
 - [x] Phase2 兼容投影收尾：单独处理 HIGH 风险 safety estop / dispatch ACK exhausted 写入点。
 - [ ] Wave2 生产热路径：production closure profile 与上线确认未通过，未实施。
@@ -54,6 +57,7 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 - `uv run pytest tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py tests/workline_runtime/test_runtime_location_event_service.py tests/workline_runtime/test_material_location_query_service.py tests/workline_runtime/test_workline_active_objects_service.py tests/api/test_phase4_read_model_routes.py tests/contracts/test_phase4_design_docs.py tests/contracts/test_phase3_ops_contract_docs.py -q`
 - `uv run pytest tests/api/ -q`
 - `uv run pytest tests/mock/phase4 -q`
+- `uv run python scripts/check_phase4_runtime_readiness_gate.py`
 - `uv run pytest --collect-only -q -o addopts='' | tail -5`
 - `git diff --check`
 - `./scripts/git-quality-gate.sh --profile quality`

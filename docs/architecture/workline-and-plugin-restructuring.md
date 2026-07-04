@@ -2170,6 +2170,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | `workline-active-objects-spec.md` | ✅ Wave1 本机合同验证已通过 | 聚合 ActiveObjectRegistry、ExecutionWorkItem、ConveyorQueueMembership、RuntimeHold/ReconciliationRecord、MaterialLocationQuery；覆盖 `OK/TRANSIENT/RECONCILING`、hold scope、limit/truncated | 生产读模型 SLA 与大规模 benchmark 仍随 production closure profile 验收 |
 | `sorter-inbound-capability-spec.md` | 🟡 本机 MOCK 验收 | `tests/mock/phase4` 可表达 sorter inbound 的本机 WMS/ECS mock 合同；PKG binding 与库存事务 port 归属已通过文档合同测试约束 | 粗分机、满箱交换、分拣机入库生产热路径未接入；不得复用旧 plugin 入口，发布前必须补生产合同与真实 effect dispatch 证据 |
 | `smt-ng-wms-reconciliation-spec.md` | 🟡 本机 MOCK 验收 | `tests/mock/phase4` 可表达 SMT/NG/WMS 对账冲突、拒绝、重复/乱序、版本漂移等本机 mock 场景 | WMS reconciliation 生产热路径未接入；RuntimeHold scope-only release 与真实 WMS callback cutover 仍受 production closure profile 约束 |
+| Phase4 runtime readiness gate | ✅ 开发/测试 MOCK 门禁已接入 | `scripts/check_phase4_runtime_readiness_gate.py` 验证 SPEC 状态、Wave2/Wave3 本机 MOCK 合同和生产热路径未开启；已接入 `./scripts/git-quality-gate.sh --profile quality` | `--readiness-profile production` 当前返回 `PHASE4_PRODUCTION_HOT_PATH_NOT_ENABLED`，生产接入前不得改绿 |
 | RCS/AGV/CTU direct provider adapter | ✅ YAGNI 保持未触发 | 当前仍由 WMS 中转统一履约；未写 `fulfillment-provider-adapter-spec.md`，未预留代码骨架 | 仅当客户明确要求绕过 WMS，或 WMS 实测无法满足实时性需求时再启动独立 SPEC |
 
 **按需触发任务**（YAGNI 隔离，不在 Phase 4 时间表内强制执行）：
