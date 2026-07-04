@@ -132,6 +132,31 @@ class WorklineBinCellReservationRepository(BaseRepository[WorklineBinCellReserva
         )
         return list(result.scalars().all())
 
+    async def list_expired_planned(
+        self,
+        db: AsyncSession,
+        *,
+        expired_at: datetime,
+        limit: int,
+    ) -> list[WorklineBinCellReservation]:
+        """查询已过期且尚未发生物理投放的计划预占。"""
+
+        if limit <= 0:
+            return []
+
+        columns = cast("Any", WorklineBinCellReservation).__table__.c
+        result = await db.execute(
+            select(WorklineBinCellReservation)
+            .where(
+                columns.reservation_status == BinCellReservationStatus.PLANNED.value,
+                columns.expires_at.is_not(None),
+                columns.expires_at <= expired_at,
+            )
+            .order_by(columns.expires_at.asc(), columns.id.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     async def mark_consumed(
         self,
         db: AsyncSession,
@@ -176,6 +201,11 @@ class WorklineBinCellReservationRepository(BaseRepository[WorklineBinCellReserva
         if evidence is not None:
             metadata["reconciling_evidence"] = evidence
         reservation.metadata_json = metadata
+        evidence_json = dict(reservation.evidence_json or {})
+        evidence_json["reconciling_reason_code"] = reason_code
+        if evidence is not None:
+            evidence_json["reconciling_evidence"] = evidence
+        reservation.evidence_json = evidence_json
         db.add(reservation)
         return reservation
 

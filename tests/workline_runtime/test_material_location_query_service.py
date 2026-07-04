@@ -8,11 +8,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 from src.app.runtime.orchestration.models.bin_cell_reservation import BinCellReservationStatus
 from src.app.runtime.orchestration.services.query.material_location_query_service import (
     MaterialLocationConflictState,
+    MaterialLocationEvidence,
     MaterialLocationQueryService,
 )
 from src.utils.timezone import timezone
@@ -20,9 +22,64 @@ from src.utils.timezone import timezone
 
 class _LocationEvents:
     async def list_by_object(self, _db: Any, *, object_type: str, object_key: str) -> list[Any]:
+        if object_type == "BIN" and object_key == "BIN-ACTIVE-CONFLICT":
+            return [
+                SimpleNamespace(
+                    id=9001,
+                    object_type="BIN",
+                    object_key="BIN-ACTIVE-CONFLICT",
+                    location_scope="WORK_POSITION",
+                    location_code="WP-BIN",
+                    source="ECS",
+                    evidence_json={"source_event_id": "evt-bin-physical"},
+                    correlation_id="corr-bin-conflict",
+                    source_event_id="evt-bin-physical",
+                    source_version="1",
+                    external_reference_type=None,
+                    external_reference_value=None,
+                    provider_code="ECS",
+                    occurred_at=timezone.now_for_db(),
+                )
+            ]
+        if object_type == "PKG" and object_key == "PKG-MOVED":
+            return [
+                SimpleNamespace(
+                    id=1001,
+                    object_type="PKG",
+                    object_key="PKG-MOVED",
+                    location_scope="BIN_CELL",
+                    location_code="BIN-OLD:C01",
+                    source="ECS",
+                    evidence_json={"source_event_id": "evt-old"},
+                    correlation_id="corr-moved",
+                    source_event_id="evt-old",
+                    source_version="1",
+                    external_reference_type=None,
+                    external_reference_value=None,
+                    provider_code="ECS",
+                    occurred_at=timezone.to_db_datetime("2026-07-04T01:00:00Z"),
+                ),
+                SimpleNamespace(
+                    id=1002,
+                    object_type="PKG",
+                    object_key="PKG-MOVED",
+                    location_scope="WORK_POSITION",
+                    location_code="WP-NEW",
+                    source="ECS",
+                    evidence_json={"source_event_id": "evt-new"},
+                    correlation_id="corr-moved",
+                    source_event_id="evt-new",
+                    source_version="2",
+                    external_reference_type=None,
+                    external_reference_value=None,
+                    provider_code="ECS",
+                    occurred_at=timezone.to_db_datetime("2026-07-04T01:05:00Z"),
+                ),
+            ]
         if object_type == "PKG" and object_key == "PKG-CONFLICT":
             return [
                 SimpleNamespace(
+                    id=2001,
                     object_type="PKG",
                     object_key="PKG-CONFLICT",
                     location_scope="BIN_CELL",
@@ -37,6 +94,42 @@ class _LocationEvents:
                     provider_code="ECS",
                     occurred_at=timezone.now_for_db(),
                 )
+            ]
+        if object_type == "PKG" and object_key == "PKG-SAME-TIME":
+            occurred_at = timezone.to_db_datetime("2026-07-04T01:20:00Z")
+            return [
+                SimpleNamespace(
+                    id=3001,
+                    object_type="PKG",
+                    object_key="PKG-SAME-TIME",
+                    location_scope="BIN_CELL",
+                    location_code="BIN-SAME-OLD:C01",
+                    source="ECS",
+                    evidence_json={"source_event_id": "evt-same-old"},
+                    correlation_id="corr-same-time",
+                    source_event_id="evt-same-old",
+                    source_version="1",
+                    external_reference_type=None,
+                    external_reference_value=None,
+                    provider_code="ECS",
+                    occurred_at=occurred_at,
+                ),
+                SimpleNamespace(
+                    id=3002,
+                    object_type="PKG",
+                    object_key="PKG-SAME-TIME",
+                    location_scope="WORK_POSITION",
+                    location_code="WP-SAME-NEW",
+                    source="ECS",
+                    evidence_json={"source_event_id": "evt-same-new"},
+                    correlation_id="corr-same-time",
+                    source_event_id="evt-same-new",
+                    source_version="2",
+                    external_reference_type=None,
+                    external_reference_value=None,
+                    provider_code="ECS",
+                    occurred_at=occurred_at,
+                ),
             ]
         return []
 
@@ -73,6 +166,19 @@ class _ActiveFacts:
     async def list_material_location_facts(
         self, _db: Any, *, object_type: Any = None, object_key: Any = None, workline_id: Any = None
     ) -> list[Any]:
+        if object_key == "BIN-ACTIVE-CONFLICT":
+            return [
+                SimpleNamespace(
+                    object_type="BIN",
+                    object_key="BIN-ACTIVE-CONFLICT",
+                    location_scope="CONVEYOR_QUEUE",
+                    location_code="Q-BIN",
+                    source="ActiveObjectRegistry",
+                    evidence_ref="queue:bin-conflict",
+                    evidence_json={"owner_kind": "ON_CONVEYOR"},
+                    observed_at=timezone.now_for_db(),
+                )
+            ]
         if object_key == "PKG-CONFLICT":
             return [
                 SimpleNamespace(
@@ -114,12 +220,29 @@ class _Reservations:
                 bin_cell_code="C02",
                 reservation_status=BinCellReservationStatus.PLANNED,
                 source_event_id="evt-rsv",
+                correlation_id="corr-rsv",
+                evidence_json={"provider_code": "WMS", "source_version": "wms-rsv-v1"},
                 metadata_json={"material_identity_key": "MAT-RSV"},
                 reserved_at=timezone.now_for_db(),
             )
         ]
 
     async def list_active_or_frozen_by_bin_codes(self, _db: Any, bin_codes: Any) -> list[Any]:
+        if "BIN-RESERVED-ONLY" in bin_codes:
+            return [
+                SimpleNamespace(
+                    pkg_code="PKG-BIN-RESERVED",
+                    bin_code="BIN-RESERVED-ONLY",
+                    bin_cell_index="5",
+                    bin_cell_code="C05",
+                    reservation_status=BinCellReservationStatus.PLANNED,
+                    source_event_id="evt-bin-rsv",
+                    correlation_id="corr-bin-rsv",
+                    evidence_json={"provider_code": "WMS", "source_version": "wms-bin-rsv-v1"},
+                    metadata_json={"material_identity_key": "MAT-BIN-RSV"},
+                    reserved_at=timezone.now_for_db(),
+                )
+            ]
         if "BIN-RSV" not in bin_codes:
             return []
         return [
@@ -130,6 +253,8 @@ class _Reservations:
                 bin_cell_code="C02",
                 reservation_status=BinCellReservationStatus.PLANNED,
                 source_event_id="evt-rsv",
+                correlation_id="corr-rsv",
+                evidence_json={"provider_code": "WMS", "source_version": "wms-rsv-v1"},
                 metadata_json={"material_identity_key": "MAT-RSV"},
                 reserved_at=timezone.now_for_db(),
             )
@@ -170,6 +295,77 @@ class _Occupancy:
         return []
 
 
+class _WmsSnapshots:
+    async def list_evidence(self, _db: Any, *, query_entry: str, **criteria: Any) -> list[Any]:
+        if criteria.get("package_id") == "PKG-WMS":
+            return [
+                {
+                    "source": "WMS_RECONCILIATION_SNAPSHOT",
+                    "priority": 1,
+                    "object_type": "PKG",
+                    "object_key": "PKG-WMS",
+                    "location_scope": "WMS_BIN",
+                    "location_code": "WMS-BIN-01",
+                    "source_version": "wms.v1",
+                    "evidence_json": {"query_entry": query_entry},
+                    "observed_at": timezone.to_db_datetime("2026-07-04T01:10:00Z"),
+                }
+            ]
+        if criteria.get("package_id") == "PKG-WMS-TIMEOUT":
+            raise TimeoutError("wms snapshot timeout")
+        if criteria.get("package_id") == "PKG-WMS-HTTPX-TIMEOUT":
+            request = httpx.Request("GET", "http://wms.example/snapshot")
+            raise httpx.ReadTimeout("read timeout", request=request)
+        if criteria.get("package_id") == "PKG-WMS-DOMAIN-TIMEOUT":
+            raise _WmsStyleTimeout("wms timeout")
+        if criteria.get("package_id") == "PKG-WMS-MODEL":
+            return [
+                MaterialLocationEvidence(
+                    source="WMS_RECONCILIATION_SNAPSHOT",
+                    priority=1,
+                    object_type="PKG",
+                    object_key="PKG-WMS-MODEL",
+                    location_scope="WMS_BIN",
+                    location_code="WMS-BIN-MODEL",
+                )
+            ]
+        return []
+
+
+class _LegacyEvidence:
+    async def list_evidence(self, _db: Any, *, query_entry: str, **criteria: Any) -> list[Any]:
+        if criteria.get("package_id") != "PKG-LEGACY":
+            if criteria.get("package_id") == "PKG-LEGACY-MODEL":
+                return [
+                    MaterialLocationEvidence(
+                        source="LEGACY_CHARACTERIZATION",
+                        priority=1,
+                        object_type="PKG",
+                        object_key="PKG-LEGACY-MODEL",
+                        location_scope="LEGACY_CONTEXT",
+                        location_code="legacy-model-context",
+                    )
+                ]
+            return []
+        return [
+            SimpleNamespace(
+                source="LEGACY_CHARACTERIZATION",
+                priority=1,
+                object_type="PKG",
+                object_key="PKG-LEGACY",
+                location_scope="LEGACY_CONTEXT",
+                location_code="legacy-plugin-context",
+                semantic_status="CHARACTERIZED",
+                evidence_json={"query_entry": query_entry},
+                observed_at=timezone.to_db_datetime("2026-07-04T01:15:00Z"),
+            )
+        ]
+
+
+class _WmsStyleTimeout(Exception):
+    reason_code = "WMS_TIMEOUT"
+
+
 @pytest.mark.asyncio
 async def test_material_location_query_marks_priority_conflict_reconciling() -> None:
     """本地物理事实与 active projection 冲突时不得静默选任一位置。"""
@@ -186,6 +382,43 @@ async def test_material_location_query_marks_priority_conflict_reconciling() -> 
     assert result.conflict_state == MaterialLocationConflictState.RECONCILING
     assert result.location_code is None
     assert [evidence.source for evidence in result.evidence] == ["LOCAL_PHYSICAL_FACT", "ACTIVE_OBJECT"]
+
+
+@pytest.mark.asyncio
+async def test_material_location_query_uses_latest_location_event_as_current_fact() -> None:
+    """RuntimeLocationEvent 是 append-only 历史；当前位置只取最新事实参与冲突判断。"""
+
+    service = MaterialLocationQueryService(
+        location_event_service=_LocationEvents(),
+        active_fact_provider=_ActiveFacts(),
+        reservation_repository=_Reservations(),
+        occupancy_repository=_Occupancy(),
+    )
+
+    result = await service.query_by_package_or_bin(None, package_id="PKG-MOVED")
+
+    assert result.conflict_state == MaterialLocationConflictState.OK
+    assert result.location_scope == "WORK_POSITION"
+    assert result.location_code == "WP-NEW"
+    assert [evidence.location_code for evidence in result.evidence] == ["WP-NEW", "BIN-OLD:C01"]
+
+
+@pytest.mark.asyncio
+async def test_material_location_query_uses_latest_event_id_when_location_event_time_ties() -> None:
+    """同一 occurred_at 下，后写 RuntimeLocationEvent 必须覆盖旧位置事实。"""
+
+    service = MaterialLocationQueryService(
+        location_event_service=_LocationEvents(),
+        active_fact_provider=_ActiveFacts(),
+        reservation_repository=_Reservations(),
+        occupancy_repository=_Occupancy(),
+    )
+
+    result = await service.query_by_package_or_bin(None, package_id="PKG-SAME-TIME")
+
+    assert result.conflict_state == MaterialLocationConflictState.OK
+    assert result.location_code == "WP-SAME-NEW"
+    assert [evidence.location_code for evidence in result.evidence] == ["WP-SAME-NEW", "BIN-SAME-OLD:C01"]
 
 
 @pytest.mark.asyncio
@@ -206,6 +439,10 @@ async def test_material_location_query_returns_reservation_target_semantics() ->
     assert result.location_code == "BIN-RSV:C02"
     assert result.evidence[0].source == "CELL_RESERVATION"
     assert result.evidence[0].semantic_status == "RESERVED"
+    assert result.evidence[0].correlation_id == "corr-rsv"
+    assert result.evidence[0].provider_code == "WMS"
+    assert result.evidence[0].source_version == "wms-rsv-v1"
+    assert result.evidence[0].evidence_json["material_identity_key"] == "MAT-RSV"
 
 
 @pytest.mark.asyncio
@@ -242,6 +479,98 @@ async def test_material_location_query_finds_cell_reservation_by_package_id() ->
 
     assert result.conflict_state == MaterialLocationConflictState.OK
     assert result.location_code == "BIN-RSV:C02"
+    assert result.evidence[0].source == "CELL_RESERVATION"
+
+
+@pytest.mark.asyncio
+async def test_material_location_query_workline_active_object_aggregates_local_fact_conflicts() -> None:
+    """第 6 入口也必须聚合本地事实与 active projection，并暴露冲突。"""
+
+    service = MaterialLocationQueryService(
+        location_event_service=_LocationEvents(),
+        active_fact_provider=_ActiveFacts(),
+        reservation_repository=_Reservations(),
+        occupancy_repository=_Occupancy(),
+    )
+
+    result = await service.query_by_workline_active_object(
+        None,
+        workline_id=100,
+        object_type="PKG",
+        object_key="PKG-CONFLICT",
+    )
+
+    assert result.conflict_state == MaterialLocationConflictState.RECONCILING
+    assert result.location_code is None
+    assert [evidence.source for evidence in result.evidence] == ["LOCAL_PHYSICAL_FACT", "ACTIVE_OBJECT"]
+
+
+@pytest.mark.asyncio
+async def test_material_location_query_workline_active_object_reads_cell_reservation() -> None:
+    """第 6 入口按 PKG 查询时不能漏掉 CellReservation 目标位置。"""
+
+    service = MaterialLocationQueryService(
+        location_event_service=_LocationEvents(),
+        active_fact_provider=_ActiveFacts(),
+        reservation_repository=_Reservations(),
+        occupancy_repository=_Occupancy(),
+    )
+
+    result = await service.query_by_workline_active_object(
+        None,
+        workline_id=100,
+        object_type="PKG",
+        object_key="PKG-RSV",
+    )
+
+    assert result.conflict_state == MaterialLocationConflictState.OK
+    assert result.location_code == "BIN-RSV:C02"
+    assert result.evidence[0].source == "CELL_RESERVATION"
+
+
+@pytest.mark.asyncio
+async def test_material_location_query_workline_active_object_bin_conflict_reconciling() -> None:
+    """第 6 入口按 BIN 查询时也必须聚合本地事实和 active projection 冲突。"""
+
+    service = MaterialLocationQueryService(
+        location_event_service=_LocationEvents(),
+        active_fact_provider=_ActiveFacts(),
+        reservation_repository=_Reservations(),
+        occupancy_repository=_Occupancy(),
+    )
+
+    result = await service.query_by_workline_active_object(
+        None,
+        workline_id=100,
+        object_type="BIN",
+        object_key="BIN-ACTIVE-CONFLICT",
+    )
+
+    assert result.conflict_state == MaterialLocationConflictState.RECONCILING
+    assert result.location_code is None
+    assert [evidence.source for evidence in result.evidence] == ["LOCAL_PHYSICAL_FACT", "ACTIVE_OBJECT"]
+
+
+@pytest.mark.asyncio
+async def test_material_location_query_workline_active_object_bin_reads_cell_reservation() -> None:
+    """第 6 入口按 BIN 查询时必须能读取 CellReservation 目标格位。"""
+
+    service = MaterialLocationQueryService(
+        location_event_service=_LocationEvents(),
+        active_fact_provider=_ActiveFacts(),
+        reservation_repository=_Reservations(),
+        occupancy_repository=_Occupancy(),
+    )
+
+    result = await service.query_by_workline_active_object(
+        None,
+        workline_id=100,
+        object_type="BIN",
+        object_key="BIN-RESERVED-ONLY",
+    )
+
+    assert result.conflict_state == MaterialLocationConflictState.OK
+    assert result.location_code == "BIN-RESERVED-ONLY:C05"
     assert result.evidence[0].source == "CELL_RESERVATION"
 
 
@@ -290,3 +619,73 @@ async def test_material_location_query_resolves_external_reference_to_evidence()
     assert result.correlation_id == "corr-ext"
     assert result.location_code == "WP-01"
     assert result.evidence[0].external_reference == "WMS_DOCUMENT:doc-001"
+
+
+@pytest.mark.asyncio
+async def test_material_location_query_reads_wms_and_legacy_evidence_providers() -> None:
+    """WMS snapshot 与 legacy characterization provider 必须能进入 5 来源优先级。"""
+
+    service = MaterialLocationQueryService(
+        location_event_service=_LocationEvents(),
+        active_fact_provider=_ActiveFacts(),
+        reservation_repository=_Reservations(),
+        occupancy_repository=_Occupancy(),
+        wms_snapshot_provider=_WmsSnapshots(),
+        legacy_evidence_provider=_LegacyEvidence(),
+    )
+
+    wms_result = await service.query_by_package_or_bin(None, package_id="PKG-WMS")
+    legacy_result = await service.query_by_package_or_bin(None, package_id="PKG-LEGACY")
+    timeout_result = await service.query_by_package_or_bin(None, package_id="PKG-WMS-TIMEOUT")
+
+    assert wms_result.conflict_state == MaterialLocationConflictState.OK
+    assert wms_result.location_code == "WMS-BIN-01"
+    assert wms_result.evidence[0].source == "WMS_RECONCILIATION_SNAPSHOT"
+    assert wms_result.evidence[0].priority == 4
+    assert legacy_result.conflict_state == MaterialLocationConflictState.OK
+    assert legacy_result.location_code == "legacy-plugin-context"
+    assert legacy_result.evidence[0].source == "LEGACY_CHARACTERIZATION"
+    assert legacy_result.evidence[0].priority == 5
+    assert timeout_result.conflict_state == MaterialLocationConflictState.WMS_UNAVAILABLE
+    assert timeout_result.evidence[0].source == "WMS_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_material_location_query_normalizes_wms_timeout_exceptions() -> None:
+    """WMS provider timeout 不能冒泡到 API 查询层，统一返回 WMS_UNAVAILABLE evidence。"""
+
+    service = MaterialLocationQueryService(
+        location_event_service=_LocationEvents(),
+        active_fact_provider=_ActiveFacts(),
+        reservation_repository=_Reservations(),
+        occupancy_repository=_Occupancy(),
+        wms_snapshot_provider=_WmsSnapshots(),
+    )
+
+    httpx_timeout = await service.query_by_package_or_bin(None, package_id="PKG-WMS-HTTPX-TIMEOUT")
+    domain_timeout = await service.query_by_package_or_bin(None, package_id="PKG-WMS-DOMAIN-TIMEOUT")
+
+    assert httpx_timeout.conflict_state == MaterialLocationConflictState.WMS_UNAVAILABLE
+    assert httpx_timeout.evidence[0].source == "WMS_UNAVAILABLE"
+    assert domain_timeout.conflict_state == MaterialLocationConflictState.WMS_UNAVAILABLE
+    assert domain_timeout.evidence[0].source == "WMS_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_material_location_query_clamps_model_provider_evidence_priority() -> None:
+    """provider 直接返回 MaterialLocationEvidence 时也不能覆盖固定来源优先级。"""
+
+    service = MaterialLocationQueryService(
+        location_event_service=_LocationEvents(),
+        active_fact_provider=_ActiveFacts(),
+        reservation_repository=_Reservations(),
+        occupancy_repository=_Occupancy(),
+        wms_snapshot_provider=_WmsSnapshots(),
+        legacy_evidence_provider=_LegacyEvidence(),
+    )
+
+    wms_result = await service.query_by_package_or_bin(None, package_id="PKG-WMS-MODEL")
+    legacy_result = await service.query_by_package_or_bin(None, package_id="PKG-LEGACY-MODEL")
+
+    assert wms_result.evidence[0].priority == 4
+    assert legacy_result.evidence[0].priority == 5

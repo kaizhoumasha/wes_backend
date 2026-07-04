@@ -13,6 +13,8 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 
 2026-07-04 追加进展：Phase2 `runtime_status` 已引入 `WorkLineRuntimeStatusProjectionService` 作为 runtime/orchestration 兼容投影服务，并完成 LOW 风险写入点、HIGH 风险 safety estop 与 CRITICAL 风险 dispatch ACK exhausted 写入点收敛。`src/app` 中对 `WorkLine.runtime_status` 的真实写入已集中到兼容投影服务；其它命中仅为读取、局部变量或 device runtime projection。
 
+2026-07-04 追加进展 2：补齐 Phase4 P0/Wave1 开发/测试缺口：MaterialLocationQuery API facade 增加 workline active object 第 6 入口；CellReservation 增加 `correlation_id`、`evidence_json`、reservation_key correlation/source_event 覆盖、TTL 只释放过期 `PLANNED` 的 service/repository 路径；MaterialLocationQuery 的 CellReservation evidence 映射同步带出 correlation/provider/source_version。
+
 ## 范围边界
 
 - 允许实施 P0 与 Wave1 的 runtime/read-model 能力。
@@ -28,11 +30,12 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 - [x] Phase3 closure gate 记录：当前开发/测试默认使用 MOCK closure；`uv run python scripts/check_phase3_closure_gate.py` 无 artifact 可通过，生产发布前再显式运行 `--closure-profile production`。
 - [x] Reservation TDD：覆盖 RECONCILING 冻结、owner mismatch、普通失败释放不越过冻结态。
 - [x] RuntimeLocationEvent TDD：覆盖 append-only、幂等、按 object/correlation/external reference 查询。
-- [x] P0 迁移：新增 RuntimeLocationEvent 表，扩展 reservation enum/index。
-- [x] P0 service：扩展 reservation repository/service 与 RuntimeLocationEvent model/repository/service。
-- [x] MaterialLocationQuery TDD：覆盖来源优先级、冲突 RECONCILING、package/bin、external reference。
+- [x] P0 迁移：新增 RuntimeLocationEvent 表，扩展 reservation enum/index/correlation/evidence 字段。
+- [x] P0 service：扩展 reservation repository/service 与 RuntimeLocationEvent model/repository/service；覆盖 TTL 只释放过期 `PLANNED`，不释放 `RECONCILING`。
+- [x] MaterialLocationQuery TDD：覆盖来源优先级、冲突 RECONCILING、package/bin、external reference、workline active object API facade 第 6 入口。
 - [x] WorklineActiveObjects TDD：覆盖 OK、冲突、transient window、RuntimeHold freeze scope。
 - [x] API TDD：覆盖 material location query 与 workline active objects facade。
+- [x] CellReservation evidence/idempotency 收敛：reservation_key 覆盖 object/correlation/target cell/source_event，evidence 保留 trace/correlation/source_event/provider/source_version，并进入 MaterialLocationQuery evidence。
 - [x] Wave2 预备合同：sorter characterization-to-target mapping 明确 PKG binding 与库存事务 port 归属。
 - [x] Wave3 预备合同：SMT/NG/WMS 对账覆盖 NG evidence、本地事实缺失、WMS 拒绝、目标箱回写失败、重复/乱序 callback、source_version drift、RuntimeHold scope-only release。
 - [x] Wave2 本机开发环境 MOCK 验收：用 WMS/ECS mock 验证 PKG binding、库存事务和 ECS callback 口径，不做生产接入。
@@ -54,4 +57,4 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 
 ## 当前门禁结论
 
-P0/Wave1 已可本地验证。Wave2/Wave3 已降级为本机开发环境 MOCK 验收；Phase1 callback admission 已在 callback API 热路径关闭。Phase3 closure 在当前开发/测试范围默认走 MOCK closure，真实 artifact 不再作为当前推进阻塞项。Phase2 `runtime_status` 兼容投影收尾已完成，开发/测试范围的 Phase4 runtime readiness gate 已关闭；生产热路径仍不得自动接入，发布前必须显式通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`，并重新确认 Wave2 稳定性与上线门禁。
+P0/Wave1 已可本地验证，且 MaterialLocationQuery API 第 6 入口、CellReservation TTL、reservation evidence/idempotency 口径已补齐。Wave2/Wave3 已降级为本机开发环境 MOCK 验收；Phase1 callback admission 已在 callback API 热路径关闭。Phase3 closure 在当前开发/测试范围默认走 MOCK closure，真实 artifact 不再作为当前推进阻塞项。Phase2 `runtime_status` 兼容投影收尾已完成，开发/测试范围的 Phase4 runtime readiness gate 已关闭；生产热路径仍不得自动接入，发布前必须显式通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`，并重新确认 Wave2 稳定性与上线门禁。

@@ -67,6 +67,9 @@ class RuntimeActiveObjectFactProvider:
 
         if workline_id is None:
             return []
+        normalized_object_type = object_type.strip().upper() if object_type else "BIN"
+        if normalized_object_type != "BIN":
+            return []
         memberships = await self.membership_repository.list_active_by_workline(
             db,
             workline_id=workline_id,
@@ -81,7 +84,7 @@ class RuntimeActiveObjectFactProvider:
                 continue
             facts.append(
                 {
-                    "object_type": object_type or "BIN",
+                    "object_type": "BIN",
                     "object_key": candidate_key,
                     "location_scope": "CONVEYOR_QUEUE",
                     "location_code": membership.queue_code,

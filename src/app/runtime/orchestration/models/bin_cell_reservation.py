@@ -32,6 +32,7 @@ class WorklineBinCellReservationBase(BaseMixin):
     workline_id: int = Field(index=True, foreign_key="wes_biz.work_lines.id", description="关联 WorkLine.id")
     workline_code: str = Field(min_length=1, max_length=50, index=True, description="工作线编码")
     session_id: int = Field(index=True, foreign_key="wes_biz.workline_sessions.id", description="关联 Session.id")
+    correlation_id: str | None = Field(default=None, max_length=120, index=True, description="跨域 correlation ID")
     trace_id: str | None = Field(default=None, max_length=100, index=True, description="trace ID")
     pkg_code: str = Field(min_length=1, max_length=200, index=True, description="PKG 编码")
     bin_code: str = Field(min_length=1, max_length=80, index=True, description="料箱编码")
@@ -47,6 +48,7 @@ class WorklineBinCellReservationBase(BaseMixin):
     consumed_at: datetime | None = Field(default=None, index=True, description="消耗时间")
     released_at: datetime | None = Field(default=None, index=True, description="释放时间")
     expires_at: datetime | None = Field(default=None, index=True, description="预占过期时间")
+    evidence_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="预占证据")
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON), description="扩展属性")
 
 

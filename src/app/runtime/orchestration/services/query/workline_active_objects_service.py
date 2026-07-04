@@ -17,6 +17,7 @@ from src.app.runtime.orchestration.services.query.active_object_fact_provider im
     runtime_active_object_fact_provider,
 )
 from src.app.runtime.orchestration.services.query.material_location_query_service import (
+    MaterialLocationConflictState,
     MaterialLocationQueryService,
     MaterialLocationResult,
     material_location_query_service,
@@ -118,6 +119,7 @@ class WorklineActiveObjectsService:
                 object_type=object_type,
                 object_key=object_key,
             )
+            conflict_state = _merge_location_conflict_state(conflict_state, location_summary)
             views.append(
                 WorklineActiveObjectView(
                     object_type=object_type,
@@ -148,6 +150,16 @@ def _map_conflict_state(status: str) -> WorklineActiveObjectConflictState:
     if status == "RECONCILING":
         return WorklineActiveObjectConflictState.RECONCILING
     return WorklineActiveObjectConflictState.OK
+
+
+def _merge_location_conflict_state(
+    conflict_state: WorklineActiveObjectConflictState,
+    location_summary: MaterialLocationResult,
+) -> WorklineActiveObjectConflictState:
+    location_state = getattr(location_summary.conflict_state, "value", location_summary.conflict_state)
+    if location_state == MaterialLocationConflictState.RECONCILING.value:
+        return WorklineActiveObjectConflictState.RECONCILING
+    return conflict_state
 
 
 def _primary_source(owner_kind: str | None, owner_code: str | None) -> str | None:

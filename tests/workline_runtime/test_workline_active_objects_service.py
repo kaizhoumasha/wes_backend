@@ -39,6 +39,17 @@ class _LocationQuery:
         )
 
 
+class _ReconcilingLocationQuery:
+    async def query_by_workline_active_object(self, _db, *, workline_id: int, object_type: str, object_key: str):
+        return MaterialLocationResult(
+            query_entry="by workline active object",
+            conflict_state=MaterialLocationConflictState.RECONCILING,
+            object_type=object_type,
+            object_key=object_key,
+            evidence=[],
+        )
+
+
 class _RuntimeHolds:
     def __init__(self, holds=None) -> None:
         self.holds = holds or []
@@ -109,6 +120,34 @@ async def test_workline_active_objects_marks_multi_owner_reconciling() -> None:
     assert response.objects[0].conflict_state == WorklineActiveObjectConflictState.RECONCILING
     assert response.objects[0].operator_hint == "RECONCILIATION_REQUIRED"
     assert response.objects[0].all_sources == ["ON_CONVEYOR:Q-IN", "AT_WORK_POSITION:WP-01"]
+
+
+@pytest.mark.asyncio
+async def test_workline_active_objects_promotes_location_reconciling_to_object_state() -> None:
+    """单 owner 本身 OK 时，位置查询 RECONCILING 也必须展示在对象顶层。"""
+
+    service = WorklineActiveObjectsService(
+        active_fact_provider=_Facts(
+            [
+                ActiveObjectFact(
+                    object_code="BIN-LOCATION-CONFLICT",
+                    object_type="BIN",
+                    owner_kind="ON_CONVEYOR",
+                    owner_code="Q-IN",
+                    evidence_ref="queue:BIN-LOCATION-CONFLICT",
+                )
+            ]
+        ),
+        material_location_query_service=_ReconcilingLocationQuery(),
+        runtime_hold_repository=_RuntimeHolds(),
+    )
+
+    response = await service.get_active_objects(None, workline_id=1)
+
+    assert response.objects[0].conflict_state == WorklineActiveObjectConflictState.RECONCILING
+    assert response.objects[0].operator_hint == "RECONCILIATION_REQUIRED"
+    assert response.objects[0].location_summary is not None
+    assert response.objects[0].location_summary.conflict_state == MaterialLocationConflictState.RECONCILING
 
 
 @pytest.mark.asyncio
@@ -212,3 +251,40 @@ async def test_active_object_fact_provider_uses_membership_entered_at_for_transi
 
     assert len(facts) == 1
     assert facts[0].transient_until == timezone.to_utc(entered_at_ms / 1000) + timedelta(seconds=30)
+
+
+@pytest.mark.asyncio
+async def test_active_object_fact_provider_material_location_facts_are_bin_only() -> None:
+    """当前 ConveyorQueueMembership 来源只能产出 BIN active projection，不能按调用方伪装成 PKG。"""
+
+    provider = RuntimeActiveObjectFactProvider(
+        membership_repository=_Memberships(
+            [
+                SimpleNamespace(
+                    id=100,
+                    bin_code="BIN-ACTIVE",
+                    placeholder_key=None,
+                    queue_code="Q-IN",
+                    entered_at=None,
+                    evidence_json={"source": "queue"},
+                )
+            ]
+        )
+    )
+
+    pkg_facts = await provider.list_material_location_facts(
+        None,
+        workline_id=1,
+        object_type="PKG",
+        object_key="BIN-ACTIVE",
+    )
+    bin_facts = await provider.list_material_location_facts(
+        None,
+        workline_id=1,
+        object_type="BIN",
+        object_key="BIN-ACTIVE",
+    )
+
+    assert pkg_facts == []
+    assert bin_facts[0]["object_type"] == "BIN"
+    assert bin_facts[0]["object_key"] == "BIN-ACTIVE"

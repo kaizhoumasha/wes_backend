@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -25,7 +26,15 @@ class _RuntimeHoldRecorder:
         return {"runtime_hold": kwargs}
 
 
-async def _claim(service: WorklineBinCellReservationService, db_session, *, session_id: int, pkg_code: str):
+async def _claim(
+    service: WorklineBinCellReservationService,
+    db_session,
+    *,
+    session_id: int,
+    pkg_code: str,
+    bin_code: str = "BIN-P4-001",
+    bin_cell_index: str = "1",
+):
     return await service.claim_bin_cell(
         db_session,
         workline_id=1,
@@ -33,9 +42,9 @@ async def _claim(service: WorklineBinCellReservationService, db_session, *, sess
         session_id=session_id,
         trace_id=f"trace-{session_id}",
         pkg_code=pkg_code,
-        bin_code="BIN-P4-001",
+        bin_code=bin_code,
         bin_cell_code="C01",
-        bin_cell_index="1",
+        bin_cell_index=bin_cell_index,
         source_event_id=f"evt-claim-{session_id}",
         reserved_at=timezone.now_for_db(),
         material_identity_key=f"mat-{pkg_code}",
@@ -151,3 +160,107 @@ async def test_reconciling_reservation_cannot_be_released_by_normal_failure_path
     assert release.reservation is not None
     assert release.reservation.reservation_status == BinCellReservationStatus.RECONCILING
     assert release.reservation.released_at is None
+
+
+@pytest.mark.asyncio
+async def test_ttl_release_only_expires_planned_reservations(db_session) -> None:
+    """TTL 只释放未发生物理投放的 PLANNED，不能释放 RECONCILING。"""
+
+    hold_recorder = _RuntimeHoldRecorder()
+    service = WorklineBinCellReservationService(runtime_hold_creator=hold_recorder)
+    now = timezone.now_for_db()
+
+    expired = await _claim(
+        service,
+        db_session,
+        session_id=301,
+        pkg_code="PKG-EXPIRED",
+        bin_code="BIN-P4-TTL",
+        bin_cell_index="1",
+    )
+    assert expired.reservation is not None
+    expired.reservation.expires_at = now
+
+    frozen = await _claim(
+        service,
+        db_session,
+        session_id=302,
+        pkg_code="PKG-FROZEN-TTL",
+        bin_code="BIN-P4-TTL",
+        bin_cell_index="2",
+    )
+    assert frozen.reservation is not None
+    frozen.reservation.expires_at = now
+    await service.reservation_repository.mark_reconciling(
+        db_session,
+        frozen.reservation,
+        reason_code="WMS_REJECT",
+        evidence={"source_event_id": "evt-wms-reject"},
+    )
+
+    future = await _claim(
+        service,
+        db_session,
+        session_id=303,
+        pkg_code="PKG-FUTURE",
+        bin_code="BIN-P4-TTL",
+        bin_cell_index="3",
+    )
+    assert future.reservation is not None
+    future.reservation.expires_at = now + timedelta(days=1)
+    db_session.add_all([expired.reservation, frozen.reservation, future.reservation])
+    await db_session.flush()
+
+    released = await service.release_expired_planned_reservations(
+        db_session,
+        expired_at=now,
+        limit=50,
+    )
+    await db_session.flush()
+
+    assert [reservation.id for reservation in released] == [expired.reservation.id]
+    assert expired.reservation.reservation_status == BinCellReservationStatus.RELEASED
+    assert expired.reservation.released_at == now
+    assert frozen.reservation.reservation_status == BinCellReservationStatus.RECONCILING
+    assert frozen.reservation.released_at is None
+    assert future.reservation.reservation_status == BinCellReservationStatus.PLANNED
+
+
+@pytest.mark.asyncio
+async def test_claim_preserves_correlation_and_provider_evidence_in_idempotency_scope(db_session) -> None:
+    """预约幂等键和 evidence 必须覆盖 correlation/source/provider 口径。"""
+
+    service = WorklineBinCellReservationService(runtime_hold_creator=_RuntimeHoldRecorder())
+
+    claimed = await service.claim_bin_cell(
+        db_session,
+        workline_id=1,
+        workline_code="WL-P4",
+        session_id=401,
+        trace_id="trace-evidence",
+        pkg_code="PKG-EVIDENCE",
+        bin_code="BIN-P4-EVIDENCE",
+        bin_cell_code="C02",
+        bin_cell_index="2",
+        source_event_id="evt-claim-evidence",
+        reserved_at=timezone.now_for_db(),
+        material_identity_key="mat-evidence",
+        correlation_id="corr-evidence",
+        provider_code="WMS",
+        source_version="wms-v3",
+        evidence_json={"fixture_set": "phase4-local"},
+    )
+
+    assert claimed.status == BinCellReservationStatusCode.CLAIMED
+    assert claimed.reservation is not None
+    assert claimed.reservation.correlation_id == "corr-evidence"
+    assert "corr-evidence" in claimed.reservation.reservation_key
+    assert "evt-claim-evidence" in claimed.reservation.reservation_key
+    assert claimed.reservation.evidence_json == {
+        "trace_id": "trace-evidence",
+        "correlation_id": "corr-evidence",
+        "source_event_id": "evt-claim-evidence",
+        "provider_code": "WMS",
+        "source_version": "wms-v3",
+        "fixture_set": "phase4-local",
+    }

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003
 from enum import Enum
+from inspect import isawaitable
 from typing import TYPE_CHECKING, Any
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.app.resource.repositories import (
@@ -114,6 +116,13 @@ class MaterialLocationQueryService:
         evidence: list[MaterialLocationEvidence] = []
         occupancies = await self.occupancy_repository.list_active_by_material_identity(db, material_identity_key)
         evidence.extend(_evidence_from_occupancy(occupancy) for occupancy in occupancies)
+        evidence.extend(
+            await self._list_provider_evidence(
+                db,
+                query_entry="by material identity",
+                material_identity_key=material_identity_key,
+            )
+        )
         return self._resolve("by material identity", evidence)
 
     async def query_by_package_or_bin(
@@ -145,6 +154,14 @@ class MaterialLocationQueryService:
             reservations = await self.reservation_repository.list_active_or_frozen_by_bin_codes(db, [bin_code])
             evidence.extend(_evidence_from_occupancy(occupancy) for occupancy in occupancies)
             evidence.extend(_evidence_from_reservation(reservation) for reservation in reservations)
+        evidence.extend(
+            await self._list_provider_evidence(
+                db,
+                query_entry="by package or bin",
+                package_id=package_id,
+                bin_code=bin_code,
+            )
+        )
         return self._resolve("by package or bin", evidence)
 
     async def query_by_rack_and_side(
@@ -163,6 +180,14 @@ class MaterialLocationQueryService:
             for mount in mounts
             if _rack_slot_side(getattr(mount, "rack_slot_code", None)) == normalized_side
         ]
+        evidence.extend(
+            await self._list_provider_evidence(
+                db,
+                query_entry=f"by rack and side:{rack_code}:{normalized_side}",
+                rack_code=rack_code,
+                rack_side=normalized_side,
+            )
+        )
         return self._resolve(f"by rack and side:{rack_code}:{normalized_side}", evidence)
 
     async def query_by_workline_active_object(
@@ -175,15 +200,62 @@ class MaterialLocationQueryService:
     ) -> MaterialLocationResult:
         """按 WorkLine active object 查询位置。"""
 
+        normalized_object_type = object_type.strip().upper()
+        normalized_object_key = object_key.strip()
+        evidence: list[MaterialLocationEvidence] = []
+        if normalized_object_type == "PKG":
+            events = await self.location_event_service.list_by_object(
+                db,
+                object_type=normalized_object_type,
+                object_key=normalized_object_key,
+            )
+            reservations = await self.reservation_repository.list_active_or_frozen_by_pkg_codes(
+                db,
+                [normalized_object_key],
+            )
+            evidence.extend(_evidence_from_location_event(event) for event in events)
+            evidence.extend(_evidence_from_reservation(reservation) for reservation in reservations)
+        elif normalized_object_type == "BIN":
+            events = await self.location_event_service.list_by_object(
+                db,
+                object_type=normalized_object_type,
+                object_key=normalized_object_key,
+            )
+            occupancies = await self.occupancy_repository.list_active_by_bin_codes(db, [normalized_object_key])
+            reservations = await self.reservation_repository.list_active_or_frozen_by_bin_codes(
+                db,
+                [normalized_object_key],
+            )
+            evidence.extend(_evidence_from_location_event(event) for event in events)
+            evidence.extend(_evidence_from_occupancy(occupancy) for occupancy in occupancies)
+            evidence.extend(_evidence_from_reservation(reservation) for reservation in reservations)
+
         active_facts = await self.active_fact_provider.list_material_location_facts(
             db,
-            object_type=object_type,
-            object_key=object_key,
+            object_type=normalized_object_type,
+            object_key=normalized_object_key,
             workline_id=workline_id,
         )
-        evidence = [
-            _evidence_from_active_fact(fact, object_type=object_type, object_key=object_key) for fact in active_facts
-        ]
+        evidence.extend(
+            _evidence_from_active_fact(fact, object_type=normalized_object_type, object_key=normalized_object_key)
+            for fact in active_facts
+        )
+        provider_criteria: dict[str, Any] = {
+            "workline_id": workline_id,
+            "object_type": normalized_object_type,
+            "object_key": normalized_object_key,
+        }
+        if normalized_object_type == "PKG":
+            provider_criteria["package_id"] = normalized_object_key
+        elif normalized_object_type == "BIN":
+            provider_criteria["bin_code"] = normalized_object_key
+        evidence.extend(
+            await self._list_provider_evidence(
+                db,
+                query_entry="by workline active object",
+                **provider_criteria,
+            )
+        )
         return self._resolve("by workline active object", evidence)
 
     async def query_by_external_reference(
@@ -202,7 +274,17 @@ class MaterialLocationQueryService:
             external_reference_value=external_reference_value,
             provider_code=provider_code,
         )
-        return self._resolve("by ExternalReference", [_evidence_from_location_event(event) for event in events])
+        evidence = [_evidence_from_location_event(event) for event in events]
+        evidence.extend(
+            await self._list_provider_evidence(
+                db,
+                query_entry="by ExternalReference",
+                external_reference_type=external_reference_type,
+                external_reference_value=external_reference_value,
+                provider_code=provider_code,
+            )
+        )
+        return self._resolve("by ExternalReference", evidence)
 
     async def query_by_correlation_id(
         self,
@@ -213,10 +295,52 @@ class MaterialLocationQueryService:
         """按 correlation_id 查询位置。"""
 
         events = await self.location_event_service.list_by_correlation_id(db, correlation_id=correlation_id)
-        return self._resolve("by correlation_id", [_evidence_from_location_event(event) for event in events])
+        evidence = [_evidence_from_location_event(event) for event in events]
+        evidence.extend(
+            await self._list_provider_evidence(
+                db,
+                query_entry="by correlation_id",
+                correlation_id=correlation_id,
+            )
+        )
+        return self._resolve("by correlation_id", evidence)
+
+    async def _list_provider_evidence(
+        self,
+        db: AsyncSession,
+        *,
+        query_entry: str,
+        **criteria: Any,
+    ) -> list[MaterialLocationEvidence]:
+        """读取 Phase4 #4/#5 外部只读 evidence；provider 缺省时保持本地查询纯只读。"""
+
+        evidence: list[MaterialLocationEvidence] = []
+        evidence.extend(
+            await _list_optional_provider_evidence(
+                self.wms_snapshot_provider,
+                db,
+                query_entry=query_entry,
+                default_source="WMS_RECONCILIATION_SNAPSHOT",
+                default_priority=4,
+                timeout_source="WMS_UNAVAILABLE",
+                **criteria,
+            )
+        )
+        evidence.extend(
+            await _list_optional_provider_evidence(
+                self.legacy_evidence_provider,
+                db,
+                query_entry=query_entry,
+                default_source="LEGACY_CHARACTERIZATION",
+                default_priority=5,
+                timeout_source=None,
+                **criteria,
+            )
+        )
+        return evidence
 
     def _resolve(self, query_entry: str, evidence: list[MaterialLocationEvidence]) -> MaterialLocationResult:
-        sorted_evidence = sorted(evidence, key=lambda item: (item.priority, item.observed_at is None, item.observed_at))
+        sorted_evidence = _sort_evidence(evidence)
         if not sorted_evidence:
             return MaterialLocationResult(
                 query_entry=query_entry,
@@ -224,7 +348,19 @@ class MaterialLocationQueryService:
                 evidence=[],
             )
 
-        authoritative = [item for item in sorted_evidence if item.priority <= 3 and item.location_code]
+        location_evidence = [item for item in sorted_evidence if item.location_code]
+        if not location_evidence and any(item.source == "WMS_UNAVAILABLE" for item in sorted_evidence):
+            first = sorted_evidence[0]
+            return MaterialLocationResult(
+                query_entry=query_entry,
+                conflict_state=MaterialLocationConflictState.WMS_UNAVAILABLE,
+                object_type=first.object_type,
+                object_key=first.object_key,
+                evidence=sorted_evidence,
+            )
+
+        current_evidence = _current_authoritative_evidence(sorted_evidence)
+        authoritative = [item for item in current_evidence if item.priority <= 3 and item.location_code]
         reconciling = [item for item in authoritative if item.semantic_status == "RECONCILING"]
         if reconciling:
             first = reconciling[0]
@@ -248,7 +384,7 @@ class MaterialLocationQueryService:
                 evidence=sorted_evidence,
             )
 
-        primary = sorted_evidence[0]
+        primary = location_evidence[0] if location_evidence else sorted_evidence[0]
         return MaterialLocationResult(
             query_entry=query_entry,
             conflict_state=MaterialLocationConflictState.OK,
@@ -263,6 +399,7 @@ class MaterialLocationQueryService:
 
 
 def _evidence_from_location_event(event: Any) -> MaterialLocationEvidence:
+    event_ref = _runtime_location_event_ref(event)
     return MaterialLocationEvidence(
         source="LOCAL_PHYSICAL_FACT",
         priority=1,
@@ -271,6 +408,7 @@ def _evidence_from_location_event(event: Any) -> MaterialLocationEvidence:
         location_scope=event.location_scope,
         location_code=event.location_code,
         evidence_json=dict(event.evidence_json or {}),
+        evidence_ref=event_ref,
         correlation_id=event.correlation_id,
         provider_code=event.provider_code,
         source_event_id=event.source_event_id,
@@ -296,6 +434,8 @@ def _evidence_from_active_fact(fact: Any, *, object_type: str, object_key: str) 
 
 def _evidence_from_reservation(reservation: WorklineBinCellReservation | Any) -> MaterialLocationEvidence:
     bin_cell_code = getattr(reservation, "bin_cell_code", None) or reservation.bin_cell_index
+    evidence_json = dict(getattr(reservation, "metadata_json", None) or {})
+    evidence_json.update(dict(getattr(reservation, "evidence_json", None) or {}))
     return MaterialLocationEvidence(
         source="CELL_RESERVATION",
         priority=3,
@@ -305,8 +445,11 @@ def _evidence_from_reservation(reservation: WorklineBinCellReservation | Any) ->
         location_code=f"{reservation.bin_code}:{bin_cell_code}",
         semantic_status=_reservation_semantic_status(reservation),
         evidence_ref=f"cell_reservation:{getattr(reservation, 'id', None)}",
-        evidence_json=dict(getattr(reservation, "metadata_json", None) or {}),
+        evidence_json=evidence_json,
+        correlation_id=getattr(reservation, "correlation_id", None),
+        provider_code=evidence_json.get("provider_code"),
         source_event_id=getattr(reservation, "source_event_id", None),
+        source_version=evidence_json.get("source_version"),
         observed_at=getattr(reservation, "reserved_at", None),
     )
 
@@ -412,6 +555,161 @@ def _enum_value(value: Any) -> str | None:
     if value is None:
         return None
     return str(getattr(value, "value", value))
+
+
+def _runtime_location_event_ref(event: Any) -> str | None:
+    event_id = getattr(event, "id", None)
+    if event_id is not None:
+        return f"runtime_location_event:{event_id}"
+    source_event_id = getattr(event, "source_event_id", None)
+    if source_event_id:
+        return f"runtime_location_event:{source_event_id}"
+    return None
+
+
+def _sort_evidence(evidence: list[MaterialLocationEvidence]) -> list[MaterialLocationEvidence]:
+    latest_first = sorted(evidence, key=_evidence_recency_sort_key, reverse=True)
+    return sorted(latest_first, key=lambda item: item.priority)
+
+
+def _evidence_recency_sort_key(item: MaterialLocationEvidence) -> tuple[str, int]:
+    return (_observed_at_sort_value(item.observed_at), _runtime_location_event_sort_sequence(item))
+
+
+def _observed_at_sort_value(value: datetime | None) -> str:
+    if value is None:
+        return ""
+    return value.isoformat()
+
+
+def _runtime_location_event_sort_sequence(item: MaterialLocationEvidence) -> int:
+    if not item.evidence_ref or not item.evidence_ref.startswith("runtime_location_event:"):
+        return 0
+    raw_sequence = item.evidence_ref.removeprefix("runtime_location_event:")
+    try:
+        return int(raw_sequence)
+    except ValueError:
+        return 0
+
+
+def _current_authoritative_evidence(
+    evidence: list[MaterialLocationEvidence],
+) -> list[MaterialLocationEvidence]:
+    current: list[MaterialLocationEvidence] = []
+    seen_runtime_location_objects: set[tuple[int, str, str, str]] = set()
+    for item in evidence:
+        if _is_runtime_location_event_evidence(item):
+            key = (item.priority, item.source, item.object_type, item.object_key)
+            if key in seen_runtime_location_objects:
+                continue
+            seen_runtime_location_objects.add(key)
+        current.append(item)
+    return current
+
+
+def _is_runtime_location_event_evidence(item: MaterialLocationEvidence) -> bool:
+    return bool(item.evidence_ref and item.evidence_ref.startswith("runtime_location_event:"))
+
+
+async def _list_optional_provider_evidence(
+    provider: Any | None,
+    db: Any,
+    *,
+    query_entry: str,
+    default_source: str,
+    default_priority: int,
+    timeout_source: str | None,
+    **criteria: Any,
+) -> list[MaterialLocationEvidence]:
+    if provider is None:
+        return []
+    list_evidence = getattr(provider, "list_evidence", None)
+    if list_evidence is None:
+        return []
+    try:
+        raw_items = list_evidence(db, query_entry=query_entry, **criteria)
+        if isawaitable(raw_items):
+            raw_items = await raw_items
+    except Exception as exc:
+        if not _is_timeout_exception(exc):
+            raise
+        if timeout_source is None:
+            raise
+        object_type, object_key = _object_identity_from_criteria(criteria)
+        return [
+            MaterialLocationEvidence(
+                source=timeout_source,
+                priority=default_priority,
+                object_type=object_type,
+                object_key=object_key,
+                semantic_status="UNAVAILABLE",
+                evidence_json={"reason_code": timeout_source, "query_entry": query_entry},
+            )
+        ]
+    return [
+        _coerce_provider_evidence(
+            item,
+            default_source=default_source,
+            default_priority=default_priority,
+            criteria=criteria,
+        )
+        for item in list(raw_items or [])
+        if item is not None
+    ]
+
+
+def _coerce_provider_evidence(
+    item: Any,
+    *,
+    default_source: str,
+    default_priority: int,
+    criteria: dict[str, Any],
+) -> MaterialLocationEvidence:
+    if isinstance(item, MaterialLocationEvidence):
+        return item.model_copy(update={"priority": default_priority})
+    object_type, object_key = _object_identity_from_criteria(criteria)
+    return MaterialLocationEvidence(
+        source=str(_read_attr(item, "source", default_source)),
+        priority=default_priority,
+        object_type=str(_read_attr(item, "object_type", object_type)),
+        object_key=str(_read_attr(item, "object_key", object_key)),
+        location_scope=_read_attr(item, "location_scope", None),
+        location_code=_read_attr(item, "location_code", None),
+        semantic_status=_read_attr(item, "semantic_status", None),
+        evidence_ref=_read_attr(item, "evidence_ref", None),
+        evidence_json=dict(_read_attr(item, "evidence_json", {}) or {}),
+        correlation_id=_read_attr(item, "correlation_id", None),
+        provider_code=_read_attr(item, "provider_code", None),
+        source_event_id=_read_attr(item, "source_event_id", None),
+        source_version=_read_attr(item, "source_version", None),
+        external_reference=_read_attr(item, "external_reference", None),
+        observed_at=_read_attr(item, "observed_at", None),
+    )
+
+
+def _is_timeout_exception(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError | httpx.TimeoutException):
+        return True
+    reason_code = str(getattr(exc, "reason_code", "") or "").upper()
+    if reason_code in {"WMS_TIMEOUT", "WMS_UNAVAILABLE"}:
+        return True
+    return exc.__class__.__name__.lower().endswith("timeouterror")
+
+
+def _object_identity_from_criteria(criteria: dict[str, Any]) -> tuple[str, str]:
+    for key, object_type in (
+        ("package_id", "PKG"),
+        ("bin_code", "BIN"),
+        ("material_identity_key", "MATERIAL"),
+        ("object_key", str(criteria.get("object_type") or "OBJECT")),
+        ("rack_code", "RACK"),
+        ("correlation_id", "CORRELATION"),
+        ("external_reference_value", "EXTERNAL_REFERENCE"),
+    ):
+        value = criteria.get(key)
+        if value:
+            return object_type, str(value)
+    return "UNKNOWN", "UNKNOWN"
 
 
 material_location_query_service = MaterialLocationQueryService()

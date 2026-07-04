@@ -65,6 +65,53 @@ async def test_material_location_query_route_delegates_to_service(monkeypatch: p
     assert response["data"].location_code == "BIN-API:C01"
 
 
+@pytest.mark.asyncio
+async def test_material_location_query_route_delegates_workline_active_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.material.v1 import material_unit as material_unit_api
+
+    service = SimpleNamespace(
+        query_by_workline_active_object=AsyncMock(
+            return_value=MaterialLocationResult(
+                query_entry="by workline active object",
+                conflict_state=MaterialLocationConflictState.OK,
+                object_type="PKG",
+                object_key="PKG-WL",
+                location_scope="WORK_POSITION",
+                location_code="WL-7:POS-1",
+                evidence=[],
+            )
+        )
+    )
+    monkeypatch.setattr(material_unit_api, "material_location_query_service", service)
+    db = SimpleNamespace()
+
+    response = await material_unit_api.query_material_unit_location(
+        db=db,
+        package_id=None,
+        bin_code=None,
+        material_identity_key=None,
+        rack_code=None,
+        rack_side=None,
+        workline_id=7,
+        object_type="PKG",
+        object_key="PKG-WL",
+        external_reference_type=None,
+        external_reference_value=None,
+        provider_code=None,
+        correlation_id=None,
+    )
+
+    service.query_by_workline_active_object.assert_awaited_once_with(
+        db,
+        workline_id=7,
+        object_type="PKG",
+        object_key="PKG-WL",
+    )
+    assert response["data"].location_code == "WL-7:POS-1"
+
+
 def test_workline_active_objects_route_requires_detail_permission() -> None:
     from src.app.workline.v1 import active_objects as active_objects_api
 

@@ -1775,7 +1775,7 @@ Handling 只表达 WES 业务搬运意图和本地完成语义；外部履约 11
 
 Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行。实施默认允许破坏性清理，不设置旧 API / 旧表 / 旧插件兼容目标。
 
-### 10.0 实施进度快照（2026-07-03 同步）
+### 10.0 实施进度快照（2026-07-04 同步）
 
 | Phase | 状态 | 已合并 PR | 关键交付 | 待办 |
 | --- | --- | --- | --- | --- |
@@ -1786,7 +1786,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | Phase 1 Packet D Capability 边界 + 剩余 4 WMS port（CEO-009） | ✅ **已完成** | Packet D (2026-06-27) + 本分支 callback admission 收敛 | 4 剩余 WMS port（WmsDocumentPort / WmsFulfillmentPort / WmsEventPort / WmsReconciliationQueryPort）全部 7/7 落地 + InboundNormalizerRegistry + consumer-only `InboundNormalizerContext.get_inbound_normalizer()` + InboundNormalizerProfile 3 Pydantic validators + R-I3c 静态扫描 + import-linter capability-isolation contract + callback API provider profile admission 热路径接入 | — |
 | Phase 2 Runtime/Orchestration 迁移与 WorkLine 清空 | 🟡 **主迁移完成，运行状态投影收敛中** | launch PR `8602c33b` + 阶段 1-6 burn-down（PR #70 `v0.10.2.1`）+ F-1/F-2 收尾（PR #71 `v0.10.3.0`） | 阶段 1-6 + F-1/F-2 收尾已完成 service/v1 router 域清空、facade 物理删除、device_command_gateway 迁出和 model/repository 迁入；`WorkLine.runtime_status` 已引入 runtime/orchestration 兼容投影服务，LOW 风险写入点已迁入，HIGH 风险 safety / dispatch-ack 写入点仍保留 | 继续迁出或完成兼容投影收敛，详见 §10.3 |
 | Phase 3 执行安全与恢复能力补全 | 🟡 **本地合同/门禁已补齐，开发/测试 MOCK closure 可通过** | [#73](https://github.com/kaizhoumasha/wes_backend/pull/73) `v0.10.4.0` (2026-07-02) + 本分支 Phase 3 closure slice | callback body HMAC/nonce、RuntimeInbox 幂等/重放/backpressure、ReconciliationManager owner-scoped 决议、ActiveObjectRegistry、DeviceCommand lease、WMS fulfillment 状态机/typed evidence、WorkLine plane/manifest、ops contracts；本分支新增并接入 DeviceDispatchPolicy 到 DeviceCommandGateway 预检与 dispatch policy metrics、落地 DB-backed ConveyorQueueMembership writer service 与写入诊断结果、PostgreSQL `FOR UPDATE` active identity 锁语义和 opt-in unique race 合同、`wes_runtime.device_runtime_projections` 持久 DeviceRuntime 投影与 DeviceService 运行态同步，并补齐 ReconciliationManager 幂等登记入口、runtime reconciliation `TIMER_TIMEOUT` / dispatch ACK exhausted 热路径 claim、WMS fulfillment 幂等 opening 入口、RuntimeIntent `EXTERNAL_REQUEST` fulfillment 实际发起热路径 claim、RuntimeInbox device_event 幂等 claim、plane owner/superuser 行级过滤与 audit log、ScenarioRecorder/ReplayRunner active projection diff、IntegrationLab fixture runner、TraceQueryResult 生产录制源适配、RuntimeP0E2EGate 与 RuntimeP0E2EArtifactComposer 生产 E2E 证据门禁、RuntimeBenchmarkArtifactComposer 生产 benchmark evidence 组装门禁、RuntimePhase3ClosureGate 总门禁、RuntimeObservabilityRegistry、RuntimeOpenTelemetryBridge、RuntimeToggleRegistry、RuntimeToggleReleaseGate、RuntimeBenchmarkGate profile/provenance/workload metadata gate、ExternalReferenceCatalog、timeout 转移、full-box / RACK_BIN exchange 合同、runtime toggle quality gate、external callback allow-list 矩阵、`tests/load` 轻量 benchmark 命令、benchmark artifact 合同、CI lightweight artifact 归档、resilience replay fixture 和 simulator replay fixture、OpenTelemetry backend 接线 | 本项目未发布，当前开发/测试默认使用 MOCK closure；生产发布前再显式运行 `--closure-profile production` 并提供真实 P0 E2E 与 production-scale benchmark artifact |
-| Phase 4 后续子领域 | 📝 **设计 SPEC 已写，未实施** | 本分支 Phase 4 设计包 | `phase4-design-with-residuals.md` + 5 份 Phase 4 SPEC，纳入 Phase 1/2/3 residual gates | Phase 1 callback admission 已关闭；当前开发/测试默认使用 MOCK closure；后续生产热路径仍需满足 Phase 2 runtime_status 兼容投影决策与 production closure profile；不代表 Phase 4 能力完成 |
+| Phase 4 后续子领域 | 🟡 **SPEC 已写，P0/Wave1 开发/测试已闭合，生产门禁未关闭** | 本分支 Phase 4 设计包 + Phase 4 runtime readiness 分支 | `phase4-design-with-residuals.md` + 5 份 Phase 4 SPEC；CellReservation / RuntimeLocationEvent / MaterialLocationQuery / WorklineActiveObjects P0-Wave1 已进入本机合同验证；Wave2/Wave3 仅做本机 MOCK 验收，不做生产接入 | Phase 1 callback admission 已关闭；当前开发/测试默认使用 MOCK closure；后续生产热路径仍需满足 Phase 2 runtime_status 兼容投影决策与 production closure profile；不代表 sorter inbound 或 SMT/NG/WMS 生产热路径完成 |
 | Phase 5 Legacy 删除与收尾 | ⏳ **未启动** | — | — | 双 lane：技术残留清理（Phase 3 门禁后）+ 业务承载 legacy 清理（Phase 4 能力验收后） |
 
 **Phase 3 closure 状态校验（2026-07-04）**：
@@ -2160,6 +2160,18 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | 粗分机/满箱交换/分拣机入库能力目标态重建 | L | `sorter-inbound-capability-spec.md` | 按行为契约重建粗分机正常入库、满箱交换前置分流、分拣机入库、对象级流水并发、WMS 校验、箱格分配/预约、滚筒线路由、NG、投箱、本地物理事实先落与 WMS 同步对账；不复用旧 plugin 入口 |
 | SMT/NG/WMS 对账闭环 | L | `smt-ng-wms-reconciliation-spec.md` | NG evidence、WMS 确认/拒绝、目标箱回写失败、版本冲突恢复测试 |
 
+**SPEC 进度同步（2026-07-04 验收）**：
+
+| SPEC / 能力 | 当前状态 | 已验证范围 | 未闭合项 / 生产门禁 |
+| --- | --- | --- | --- |
+| Umbrella design | ✅ 设计包已完成 | `phase4-design-with-residuals.md` 已纳入 Phase 1/2/3 residual gates，并声明 Phase 4 设计可以先行 | 不代表 Phase 4 业务能力完成；生产热路径仍受 Phase 2 runtime_status 兼容投影决策与 production closure profile 约束 |
+| `cell-reservation-spec.md` | ✅ P0 开发/测试闭合 | 复用 `WorklineBinCellReservation`，保留 `PLANNED/CONSUMED/RELEASED/CANCELLED` 内部命名，新增 `RECONCILING`，覆盖 active/frozen 唯一约束、claim/consume/release、TTL 只释放 `PLANNED`、reservation_key/evidence 包含 `correlation_id`、`source_event_id`、provider/source_version | 生产投放热路径接入仍随 sorter inbound gate 验收 |
+| `material-location-query-spec.md` | ✅ Wave1 开发/测试闭合 | service 层与 API facade 覆盖 material identity、package/bin、rack/side、workline active object、ExternalReference、correlation_id 6 类入口，并按本地事实、ActiveObjectRegistry、CellReservation、WMS snapshot、legacy evidence 聚合 | 生产 WMS snapshot 证据仍按 gated profile 接入 |
+| `workline-active-objects-spec.md` | ✅ Wave1 本机合同验证已通过 | 聚合 ActiveObjectRegistry、ExecutionWorkItem、ConveyorQueueMembership、RuntimeHold/ReconciliationRecord、MaterialLocationQuery；覆盖 `OK/TRANSIENT/RECONCILING`、hold scope、limit/truncated | 生产读模型 SLA 与大规模 benchmark 仍随 production closure profile 验收 |
+| `sorter-inbound-capability-spec.md` | 🟡 本机 MOCK 验收 | `tests/mock/phase4` 可表达 sorter inbound 的本机 WMS/ECS mock 合同；PKG binding 与库存事务 port 归属已通过文档合同测试约束 | 粗分机、满箱交换、分拣机入库生产热路径未接入；不得复用旧 plugin 入口，发布前必须补生产合同与真实 effect dispatch 证据 |
+| `smt-ng-wms-reconciliation-spec.md` | 🟡 本机 MOCK 验收 | `tests/mock/phase4` 可表达 SMT/NG/WMS 对账冲突、拒绝、重复/乱序、版本漂移等本机 mock 场景 | WMS reconciliation 生产热路径未接入；RuntimeHold scope-only release 与真实 WMS callback cutover 仍受 production closure profile 约束 |
+| RCS/AGV/CTU direct provider adapter | ✅ YAGNI 保持未触发 | 当前仍由 WMS 中转统一履约；未写 `fulfillment-provider-adapter-spec.md`，未预留代码骨架 | 仅当客户明确要求绕过 WMS，或 WMS 实测无法满足实时性需求时再启动独立 SPEC |
+
 **按需触发任务**（YAGNI 隔离，不在 Phase 4 时间表内强制执行）：
 
 | Task | 触发条件 | 关联文件 | 备注 |
@@ -2168,10 +2180,10 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 
 **Phase 4 完成门禁**：
 
-- [ ] `MaterialLocationQuery` 6 入口全部支持
-- [ ] `WorklineActiveObjects` 与 `ActiveObjectRegistry` 协同
-- [ ] `CellReservation` 目标模型、唯一约束、TTL 释放、投放成功转占用和失败释放/RECONCILING 测试全部通过
-- [ ] 粗分机正常流通过行为契约测试：入料机械臂扫码/测量 -> WMS GRN 绑定与测量校验 -> 入料机械臂投流水线 -> 粗分机流水线到出料口 -> 出料格位分配/预约 -> 必要时 WMS 补空箱货架 -> 出料机械臂投格 -> 本地位置事实与格位占用落库 -> WMS PKG 绑定/库存事务通知；WMS 失败进入同步 hold/reconciliation，不抹掉本地物理事实；入料机械臂在当前对象进入流水线后即可处理下一个对象
+- [x] `MaterialLocationQuery` 6 入口全部支持（service 层与 API facade 均已覆盖）
+- [x] `WorklineActiveObjects` 与 `ActiveObjectRegistry` 协同（已通过本机合同测试；生产 SLA/benchmark 随 production closure profile 验收）
+- [x] `CellReservation` 目标模型、唯一约束、TTL 释放、投放成功转占用和失败释放/RECONCILING 测试全部通过（开发/测试范围已覆盖；生产投放热路径随 sorter inbound gate 验收）
+- [ ] 粗分机正常流通过行为契约测试：入料机械臂扫码/测量 -> WMS GRN 绑定与测量校验 -> 入料机械臂投流水线 -> 粗分机流水线到出料口 -> 出料格位分配/预约 -> 必要时 WMS 补空箱货架 -> 出料机械臂投格 -> 本地位置事实与格位占用落库 -> WMS PKG 绑定/库存事务通知；WMS 失败进入同步 hold/reconciliation，不抹掉本地物理事实；入料机械臂在当前对象进入流水线后即可处理下一个对象（当前仅本机 MOCK 验收，不做生产接入）
 - [ ] 满箱交换前置分流通过行为契约测试：粗分机移出单层货架 -> 满箱交换区或交换决策点 -> 无满箱需求进入分拣机 STATION/排队区；有满箱需求创建 `FULL_BOX_EXCHANGE` -> 按 `rack_code + rack_side` 分批 -> 必要时 `CHANGE_RACK_FACE` 独立履约 -> 满箱物料箱级入库完成/同步，剩余未满箱物料才进入分拣机逐件流程
 - [ ] 满箱交换区与分拣机 `STATION A/B` 不得混用；满箱交换完成前，分拣机北向机械臂不得对该单层货架取料
 - [ ] 分拣机入库正常流通过行为契约测试：STATION A/B 与 FIVE STATION admission -> WMS/CTU 批量投箱入线与逐箱 callback -> SCAN1 授权料箱 resolve / 未授权 NG -> SCAN2/SCAN3 路由与退料线 -> 北向机械臂取料到扫码平台 -> 扫码后格位分配/预约 -> 必要时换箱/等待 -> 南向机械臂投料 -> 本地位置事实与格位占用落库 -> WMS PKG 绑定/库存事务通知；WMS 失败进入同步 hold/reconciliation，不抹掉本地物理事实
@@ -2181,11 +2193,11 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 - [ ] CTU 父请求查询视图必须聚合子 `ExecutionWorkItem` 状态，展示子项缺失、乱序、未 resolve placeholder、部分失败和批次收敛结果；禁止运维界面只显示父批次成功
 - [ ] 扫码平台默认 `source_arm_prefetch_capacity=0`；未显式声明预取能力时，北向机械臂必须等待扫码平台 FREE 后才能取下一件
 - [ ] `source_arm_prefetch_capacity` 进入 WorkLine manifest schema 与 validator；未声明时默认 0，声明大于 0 时必须校验 ECS 能力、缓存容量和超时策略
-- [ ] 本地物理完成与 WMS 同步状态显式拆分：`LOCAL_PHYSICAL_COMPLETED` 不等于业务完全完成；WMS 通知或库存事务失败时进入 `WMS_SYNC_PENDING` 或 `RECONCILING`
-- [ ] `RuntimeHold` 具备 object/device/resource/queue scope；单对象异常不得默认停整条 WorkLine，人工解除只释放声明的 `allowed_next_effect_scope`
+- [ ] 本地物理完成与 WMS 同步状态显式拆分：`LOCAL_PHYSICAL_COMPLETED` 不等于业务完全完成；WMS 通知或库存事务失败时进入 `WMS_SYNC_PENDING` 或 `RECONCILING`（当前仅本机 MOCK 验收）
+- [x] `RuntimeHold` 具备 object/device/resource/queue scope；单对象异常不得默认停整条 WorkLine，人工解除只释放声明的 `allowed_next_effect_scope`
 - [ ] 分拣机/粗分机入库能力按目标态 capability / port 重建，不保留旧插件兼容入口
-- [ ] SMT/NG/WMS 对账闭环不复制 WMS/NG/PDA 主数据，只保留 evidence、ExternalReference 和 RuntimeHold 解除条件
-- [ ] 按需触发任务未达到触发条件时保持不实施，不写预先 SPEC、不预留代码骨架
+- [ ] SMT/NG/WMS 对账闭环不复制 WMS/NG/PDA 主数据，只保留 evidence、ExternalReference 和 RuntimeHold 解除条件（当前仅本机 MOCK 验收，不做生产接入）
+- [x] 按需触发任务未达到触发条件时保持不实施，不写预先 SPEC、不预留代码骨架
 
 ### 10.6 Phase 5: Legacy 删除与收尾
 
@@ -2434,7 +2446,7 @@ Phase 5 ────────────────────────
 - **Phase 1 单 PR 的 Packet C / AP3 前** → ✅ 已写 `runtime-orchestration-spec.md`（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog 7 个 runtime core 实体最小骨架；统一 §4.1 与 §9.2 的字段、索引、lease、deadline、idempotency 和对象级 work item 与 session 的并发边界）
 - **Phase 2 启动时** → 写 `legacy-runtime-migration-spec.md`（旧 WorkLine/plugin/runtime 执行能力迁移、删除和 WorkLine 清空顺序）
 - **Phase 3 启动时** → 写 `fulfillment-state-machine-spec.md`（11 态机完整转移图 + 4 timeout 时长表 + BLOCKED_BY_CB 出站阻塞 + CB 恢复期 late callback 入站 evidence 合同）、`reconciliation-manager-spec.md`（触发矩阵 + 隔离动作 + owner-scoped resolution decision + 5/30 分钟升级）、`plane-read-model-spec.md`（PlaneSceneView/Snapshot 字段 + 容量上限 + RBAC 矩阵）、`external-callback-auth-spec.md`（HMAC canonical + nonce TTL + allow-list）、`device-dispatch-policy-spec.md`（能力选择 + deadline + 状态快照 TTL）、`scenario-replay-spec.md`（录制、脱敏、deterministic replay、断言矩阵）、`observability-contract.md`（span/metric/log 命名与稳定 attributes）、`runtime-toggle-governance.md`（typed toggle 分类、owner/expiry/scope/default/rollback/test matrix）
-- **Phase 4 启动时** → ✅ 已写 `cell-reservation-spec.md`、`material-location-query-spec.md`、`workline-active-objects-spec.md`、`sorter-inbound-capability-spec.md`（展开粗分机正常流、满箱交换前置分流、分拣机正常流、满箱交换区/分拣机 STATION 边界、`rack_code + rack_side` 批次分组、`CHANGE_RACK_FACE` 独立履约、已交换物料排除逐件分拣、`CellReservation`、授权料箱 resolve、扫码平台预取互锁及 manifest validator、物料 work item 与料箱 work item join 条件、本地物理事实先落与 WMS 同步/对账状态、CTU 父请求聚合子 work item 查询视图）、`smt-ng-wms-reconciliation-spec.md`；同时写入 `docs/superpowers/specs/2026-07-03-phase4-design-with-residuals.md` 记录 Phase 1/2/3 residual gates。`fulfillment-provider-adapter-spec.md` 仅在 §10.5 RCS/AGV/CTU 直连触发条件满足时生成，生产前默认不写
+- **Phase 4 启动时** → ✅ 已写 `cell-reservation-spec.md`、`material-location-query-spec.md`、`workline-active-objects-spec.md`、`sorter-inbound-capability-spec.md`（展开粗分机正常流、满箱交换前置分流、分拣机正常流、满箱交换区/分拣机 STATION 边界、`rack_code + rack_side` 批次分组、`CHANGE_RACK_FACE` 独立履约、已交换物料排除逐件分拣、`CellReservation`、授权料箱 resolve、扫码平台预取互锁及 manifest validator、物料 work item 与料箱 work item join 条件、本地物理事实先落与 WMS 同步/对账状态、CTU 父请求聚合子 work item 查询视图）、`smt-ng-wms-reconciliation-spec.md`；同时写入 `docs/superpowers/specs/2026-07-03-phase4-design-with-residuals.md` 记录 Phase 1/2/3 residual gates。各 SPEC 当前实施、MOCK 验收与生产门禁状态以 §10.5 的 SPEC 进度同步表为准。`fulfillment-provider-adapter-spec.md` 仅在 §10.5 RCS/AGV/CTU 直连触发条件满足时生成，生产前默认不写
 - **Phase 5 启动时** → 写 `legacy-cleanup-execution-plan.md`，逐文件列出 delete / rebuild / move / keep-contract、是否承载 Phase 4 业务语义、对应 capability/port/contract tests、允许 drop 的前置条件和数据库 drop 顺序
 
 **为何不在本文展开**：

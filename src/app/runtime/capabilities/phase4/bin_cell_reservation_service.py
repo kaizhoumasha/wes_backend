@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -89,6 +90,11 @@ class WorklineBinCellReservationService:
         source_event_id: str | None,
         reserved_at: datetime,
         material_identity_key: str | None = None,
+        correlation_id: str | None = None,
+        provider_code: str | None = None,
+        source_version: str | None = None,
+        evidence_json: dict[str, Any] | None = None,
+        expires_at: datetime | None = None,
     ) -> BinCellReservationResult:
         """为 OUTPUT_ARM 物理动作创建 session 级料格预占。"""
 
@@ -216,7 +222,15 @@ class WorklineBinCellReservationService:
                 message="料箱格位已有其他 active 预占",
             )
 
-        reservation_key = f"{workline_code}:{session_id}:{bin_code}:{bin_cell_index}:{pkg_code}"
+        reservation_key = _build_reservation_key(
+            workline_code=workline_code,
+            session_id=session_id,
+            bin_code=bin_code,
+            bin_cell_index=bin_cell_index,
+            pkg_code=pkg_code,
+            correlation_id=correlation_id,
+            source_event_id=source_event_id,
+        )
         reservation = await self.reservation_repository.create(
             db,
             {
@@ -224,6 +238,7 @@ class WorklineBinCellReservationService:
                 "workline_id": workline_id,
                 "workline_code": workline_code,
                 "session_id": session_id,
+                "correlation_id": correlation_id,
                 "trace_id": trace_id,
                 "pkg_code": pkg_code,
                 "bin_code": bin_code,
@@ -232,6 +247,15 @@ class WorklineBinCellReservationService:
                 "reservation_status": BinCellReservationStatus.PLANNED.value,
                 "source_event_id": source_event_id,
                 "reserved_at": reserved_at,
+                "expires_at": expires_at,
+                "evidence_json": _reservation_evidence(
+                    trace_id=trace_id,
+                    correlation_id=correlation_id,
+                    source_event_id=source_event_id,
+                    provider_code=provider_code,
+                    source_version=source_version,
+                    evidence_json=evidence_json,
+                ),
                 "metadata_json": {"material_identity_key": material_identity_key} if material_identity_key else {},
             },
         )
@@ -370,6 +394,32 @@ class WorklineBinCellReservationService:
         )
         return BinCellReservationResult(status=BinCellReservationStatusCode.RELEASED, reservation=reservation)
 
+    async def release_expired_planned_reservations(
+        self,
+        db: AsyncSession,
+        *,
+        expired_at: datetime,
+        limit: int = 100,
+    ) -> list[WorklineBinCellReservation]:
+        """TTL 释放未发生物理投放的 PLANNED 预占。"""
+
+        reservations = await self.reservation_repository.list_expired_planned(
+            db,
+            expired_at=expired_at,
+            limit=limit,
+        )
+        released: list[WorklineBinCellReservation] = []
+        for reservation in reservations:
+            self._move_reservation_key_to_released_namespace(reservation, released_at=expired_at)
+            released.append(
+                await self.reservation_repository.mark_released(
+                    db,
+                    reservation,
+                    released_at=expired_at,
+                )
+            )
+        return released
+
     def _move_reservation_key_to_released_namespace(
         self,
         reservation: WorklineBinCellReservation,
@@ -428,6 +478,7 @@ class WorklineBinCellReservationService:
         """RuntimeIntent 入口：执行预占 claim/consume/release。"""
 
         if operation == "CLAIM_BIN_CELL":
+            raw_source_event_id = payload_json.get("source_event_id") or idempotency_key
             return await self.claim_bin_cell(
                 db,
                 workline_id=int(workline.id),
@@ -439,8 +490,13 @@ class WorklineBinCellReservationService:
                 bin_cell_code=payload_json.get("bin_cell_code"),
                 bin_cell_index=str(payload_json["bin_cell_index"]),
                 material_identity_key=payload_json.get("material_identity_key"),
-                source_event_id=payload_json.get("source_event_id"),
+                source_event_id=str(raw_source_event_id) if raw_source_event_id else None,
                 reserved_at=payload_json.get("reserved_at") or timezone.now_for_db(),
+                expires_at=payload_json.get("expires_at"),
+                correlation_id=payload_json.get("correlation_id"),
+                provider_code=payload_json.get("provider_code"),
+                source_version=payload_json.get("source_version"),
+                evidence_json=payload_json.get("evidence_json"),
             )
         if operation == "CONSUME_BIN_CELL":
             raw_source_event_id = payload_json.get("source_event_id") or idempotency_key
@@ -490,6 +546,61 @@ class WorklineBinCellReservationService:
 
 
 workline_bin_cell_reservation_service = WorklineBinCellReservationService()
+
+
+def _build_reservation_key(
+    *,
+    workline_code: str,
+    session_id: int,
+    bin_code: str,
+    bin_cell_index: str,
+    pkg_code: str,
+    correlation_id: str | None,
+    source_event_id: str | None,
+) -> str:
+    raw_key = ":".join(
+        (
+            workline_code,
+            str(session_id),
+            bin_code,
+            bin_cell_index,
+            pkg_code,
+            correlation_id or "-",
+            source_event_id or "-",
+        )
+    )
+    if len(raw_key) <= RESERVATION_KEY_MAX_LENGTH:
+        return raw_key
+
+    digest = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()[:16]
+    suffix = f":{digest}"
+    return f"{raw_key[: RESERVATION_KEY_MAX_LENGTH - len(suffix)]}{suffix}"
+
+
+def _reservation_evidence(
+    *,
+    trace_id: str | None,
+    correlation_id: str | None,
+    source_event_id: str | None,
+    provider_code: str | None,
+    source_version: str | None,
+    evidence_json: dict[str, Any] | None,
+) -> dict[str, Any]:
+    evidence = dict(evidence_json or {})
+    evidence.update(
+        {
+            key: value
+            for key, value in {
+                "trace_id": trace_id,
+                "correlation_id": correlation_id,
+                "source_event_id": source_event_id,
+                "provider_code": provider_code,
+                "source_version": source_version,
+            }.items()
+            if value is not None
+        }
+    )
+    return evidence
 
 
 __all__ = [

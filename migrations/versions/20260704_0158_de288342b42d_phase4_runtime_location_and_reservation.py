@@ -51,8 +51,45 @@ def _drop_reservation_status_constraint_if_exists() -> None:
     )
 
 
+def _block_reconciling_reservations_before_downgrade() -> None:
+    op.execute(
+        sa.text(
+            f"""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1
+                    FROM "{SCHEMA}"."{RESERVATION_TABLE}"
+                    WHERE reservation_status = 'RECONCILING'
+                ) THEN
+                    RAISE EXCEPTION
+                        'Cannot downgrade workline_bin_cell_reservations with RECONCILING reservations';
+                END IF;
+            END $$;
+            """
+        )
+    )
+
+
 def upgrade() -> None:
     """Upgrade schema."""
+
+    op.add_column(
+        RESERVATION_TABLE,
+        sa.Column("correlation_id", sa.String(length=120), nullable=True, comment="跨域 correlation ID"),
+        schema=SCHEMA,
+    )
+    op.add_column(
+        RESERVATION_TABLE,
+        _json_object_column("evidence_json", comment="预占证据"),
+        schema=SCHEMA,
+    )
+    op.create_index(
+        "ix_wes_biz_workline_bin_cell_reservations_correlation_id",
+        RESERVATION_TABLE,
+        ["correlation_id"],
+        schema=SCHEMA,
+    )
 
     op.drop_index(
         "ux_workline_bin_cell_reservations_active_cell",
@@ -156,6 +193,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     """Downgrade schema."""
 
+    _block_reconciling_reservations_before_downgrade()
+
     op.drop_index("ix_runtime_location_events_source_event", table_name=LOCATION_TABLE, schema=SCHEMA)
     op.drop_index("ix_runtime_location_events_external_ref", table_name=LOCATION_TABLE, schema=SCHEMA)
     op.drop_index("ix_runtime_location_events_correlation_occurred", table_name=LOCATION_TABLE, schema=SCHEMA)
@@ -199,3 +238,10 @@ def downgrade() -> None:
         schema=SCHEMA,
         postgresql_where=sa.text("reservation_status = 'PLANNED'"),
     )
+    op.drop_index(
+        "ix_wes_biz_workline_bin_cell_reservations_correlation_id",
+        table_name=RESERVATION_TABLE,
+        schema=SCHEMA,
+    )
+    op.drop_column(RESERVATION_TABLE, "evidence_json", schema=SCHEMA)
+    op.drop_column(RESERVATION_TABLE, "correlation_id", schema=SCHEMA)

@@ -31,6 +31,9 @@ async def query_material_unit_location(
     material_identity_key: str | None = Query(default=None, description="物料身份键"),
     rack_code: str | None = Query(default=None, description="货架编码"),
     rack_side: str | None = Query(default=None, description="货架面"),
+    workline_id: int | None = Query(default=None, description="WorkLine.id"),
+    object_type: str | None = Query(default=None, description="运行对象类型"),
+    object_key: str | None = Query(default=None, description="运行对象键"),
     external_reference_type: str | None = Query(default=None, description="外部引用类型"),
     external_reference_value: str | None = Query(default=None, description="外部引用值"),
     provider_code: str | None = Query(default=None, description="provider code"),
@@ -55,6 +58,13 @@ async def query_material_unit_location(
             rack_code=rack_code,
             rack_side=rack_side,
         )
+    elif workline_id is not None and object_type and object_key:
+        result = await material_location_query_service.query_by_workline_active_object(
+            db,
+            workline_id=workline_id,
+            object_type=object_type,
+            object_key=object_key,
+        )
     elif external_reference_type and external_reference_value:
         result = await material_location_query_service.query_by_external_reference(
             db,
@@ -69,7 +79,10 @@ async def query_material_unit_location(
             "ResponseSchemaModel[MaterialLocationResult]",
             response_builder.fail(
                 code=ClientErrorCode.VALIDATION_ERROR,
-                message="至少提供 package_id、bin_code、material_identity_key、rack_code+rack_side、ExternalReference 或 correlation_id",
+                message=(
+                    "至少提供 package_id、bin_code、material_identity_key、rack_code+rack_side、"
+                    "workline_id+object_type+object_key、ExternalReference 或 correlation_id"
+                ),
             ),
         )
 
