@@ -225,6 +225,17 @@ class MaterialLocationQueryService:
             )
 
         authoritative = [item for item in sorted_evidence if item.priority <= 3 and item.location_code]
+        reconciling = [item for item in authoritative if item.semantic_status == "RECONCILING"]
+        if reconciling:
+            first = reconciling[0]
+            return MaterialLocationResult(
+                query_entry=query_entry,
+                conflict_state=MaterialLocationConflictState.RECONCILING,
+                object_type=first.object_type,
+                object_key=first.object_key,
+                correlation_id=first.correlation_id,
+                evidence=sorted_evidence,
+            )
         authoritative_locations = {(item.location_scope, item.location_code) for item in authoritative}
         if len(authoritative_locations) > 1:
             first = sorted_evidence[0]
