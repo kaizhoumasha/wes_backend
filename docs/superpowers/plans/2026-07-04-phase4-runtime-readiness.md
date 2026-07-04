@@ -9,7 +9,7 @@
 - MaterialLocationQuery 运行时查询服务。
 - WorklineActiveObjects 作业线当前对象视图。
 
-Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。入库热路径与 SMT/NG/WMS 闭环的生产热路径继续保持 gated：只有 Phase1 callback admission、Phase2 `runtime_status` 兼容投影、Phase3 closure gate 全部通过后，才允许接入线上写路径。
+Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase1 callback admission 已关闭；入库热路径与 SMT/NG/WMS 闭环的生产热路径继续保持 gated：只有 Phase2 `runtime_status` 兼容投影、Phase3 closure gate 全部通过后，才允许接入线上写路径。
 
 ## 范围边界
 
@@ -18,7 +18,7 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。入�
 - 不新增 RCS/AGV/CTU direct provider adapter。
 - 不迁移 `MaterialUnit` 表归属；本轮只新增 material API facade 与查询 service。
 - API 层只调用 service，不直接访问 repository 或 database。
-- Wave2/Wave3 只允许通过 `tests/mock/phase4` 和本机 WMS/ECS mock 做合同验收；mock 验收不得绕过 Phase 1/2/3 residual gates 进入生产热路径。
+- Wave2/Wave3 只允许通过 `tests/mock/phase4` 和本机 WMS/ECS mock 做合同验收；mock 验收不得绕过 Phase 2/3 residual gates 进入生产热路径，Phase1 callback admission 证据需保持绿灯。
 
 ## 任务状态
 
@@ -35,7 +35,7 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。入�
 - [x] Wave3 预备合同：SMT/NG/WMS 对账覆盖 NG evidence、本地事实缺失、WMS 拒绝、目标箱回写失败、重复/乱序 callback、source_version drift、RuntimeHold scope-only release。
 - [x] Wave2 本机开发环境 MOCK 验收：用 WMS/ECS mock 验证 PKG binding、库存事务和 ECS callback 口径，不做生产接入。
 - [x] Wave3 本机开发环境 MOCK 验收：用 WMS reconciliation mock 验证冲突/乱序/版本漂移场景，不做生产接入。
-- [ ] Wave2 生产热路径：Phase 1/2/3 residual gates 未全部通过，未实施。
+- [ ] Wave2 生产热路径：Phase 2/3 residual gates 未全部通过，未实施。
 - [ ] Wave3 生产热路径：Phase 3 closure artifacts 未完整，未实施。
 
 ## 验收命令
@@ -50,4 +50,4 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。入�
 
 ## 当前门禁结论
 
-P0/Wave1 已可本地验证。Wave2/Wave3 已降级为本机开发环境 MOCK 验收；生产热路径继续被 Phase 1/2/3 residual gates 与 Phase3 closure gate 阻塞，不能接入 sorter inbound 或 SMT/NG/WMS 生产路径。
+P0/Wave1 已可本地验证。Wave2/Wave3 已降级为本机开发环境 MOCK 验收；Phase1 callback admission 已在 callback API 热路径关闭，生产热路径继续被 Phase2 `runtime_status` 兼容投影决策与 Phase3 closure gate 阻塞，不能接入 sorter inbound 或 SMT/NG/WMS 生产路径。

@@ -1783,10 +1783,10 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | Phase 1 Packet A Foundation（CEO-005/006/012 + AP5） | ✅ **已完成** | [#64](https://github.com) Packet A (2026-06-27) | `scope/authority/source/evidence_at` schema + Authority Matrix + SafetyZone + manifest version pin | — |
 | Phase 1 Packet B ACL & WMS Ports（CEO-001 起步 + CEO-013 + H4 + ADR-0009） | ✅ **已完成** | [#64](https://github.com) Packet B (2026-06-27) | `WmsMasterDataPort` / `WmsInventoryQueryPort` / `WmsInventoryTransactionPort` 3 ports 起步 + `ExternalContractProfile` / `RuntimeCapabilityProfile` / `InboundNormalizerProfile` + provider simulator registry + H4 反注入白/黑名单 + ADR-0009 shared contracts package | 剩余 4 port（Document / Fulfillment / Event / ReconciliationQuery）→ Packet D |
 | Phase 1 Packet C Runtime 骨架（CEO-007/008/010/011 + H5） | ✅ **已完成** | [#64](https://github.com) Packet C (2026-06-27) | 7 个 runtime core 实体（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog + IdempotencyKey） + `ConveyorQueueMembership` + DeviceCommand ECS contract + device FK ring dissolve + H5 IdempotencyGuard + callback / handling / rack 接入 runtime/orchestration | — |
-| Phase 1 Packet D Capability 边界 + 剩余 4 WMS port（CEO-009） | 🟡 **主体完成，callback admission 未关闭** | Packet D (2026-06-27) | 4 剩余 WMS port（WmsDocumentPort / WmsFulfillmentPort / WmsEventPort / WmsReconciliationQueryPort）全部 7/7 落地 + InboundNormalizerRegistry + consumer-only `InboundNormalizerContext.get_inbound_normalizer()` + InboundNormalizerProfile 3 Pydantic validators + R-I3c 静态扫描 + import-linter capability-isolation contract | callback API 热路径接入 provider profile admission，详见 §10.2 |
+| Phase 1 Packet D Capability 边界 + 剩余 4 WMS port（CEO-009） | ✅ **已完成** | Packet D (2026-06-27) + 本分支 callback admission 收敛 | 4 剩余 WMS port（WmsDocumentPort / WmsFulfillmentPort / WmsEventPort / WmsReconciliationQueryPort）全部 7/7 落地 + InboundNormalizerRegistry + consumer-only `InboundNormalizerContext.get_inbound_normalizer()` + InboundNormalizerProfile 3 Pydantic validators + R-I3c 静态扫描 + import-linter capability-isolation contract + callback API provider profile admission 热路径接入 | — |
 | Phase 2 Runtime/Orchestration 迁移与 WorkLine 清空 | 🟡 **主迁移完成，运行状态投影未清空** | launch PR `8602c33b` + 阶段 1-6 burn-down（PR #70 `v0.10.2.1`）+ F-1/F-2 收尾（PR #71 `v0.10.3.0`） | 阶段 1-6 + F-1/F-2 收尾已完成 service/v1 router 域清空、facade 物理删除、device_command_gateway 迁出和 model/repository 迁入；`WorkLine.runtime_status` 仍作为兼容投影被读写 | 迁出或明确改名兼容投影，详见 §10.3 |
 | Phase 3 执行安全与恢复能力补全 | 🟡 **本地合同/门禁已补齐，closure 未完成** | [#73](https://github.com/kaizhoumasha/wes_backend/pull/73) `v0.10.4.0` (2026-07-02) + 本分支 Phase 3 closure slice | callback body HMAC/nonce、RuntimeInbox 幂等/重放/backpressure、ReconciliationManager owner-scoped 决议、ActiveObjectRegistry、DeviceCommand lease、WMS fulfillment 状态机/typed evidence、WorkLine plane/manifest、ops contracts；本分支新增并接入 DeviceDispatchPolicy 到 DeviceCommandGateway 预检与 dispatch policy metrics、落地 DB-backed ConveyorQueueMembership writer service 与写入诊断结果、PostgreSQL `FOR UPDATE` active identity 锁语义和 opt-in unique race 合同、`wes_runtime.device_runtime_projections` 持久 DeviceRuntime 投影与 DeviceService 运行态同步，并补齐 ReconciliationManager 幂等登记入口、runtime reconciliation `TIMER_TIMEOUT` / dispatch ACK exhausted 热路径 claim、WMS fulfillment 幂等 opening 入口、RuntimeIntent `EXTERNAL_REQUEST` fulfillment 实际发起热路径 claim、RuntimeInbox device_event 幂等 claim、plane owner/superuser 行级过滤与 audit log、ScenarioRecorder/ReplayRunner active projection diff、IntegrationLab fixture runner、TraceQueryResult 生产录制源适配、RuntimeP0E2EGate 与 RuntimeP0E2EArtifactComposer 生产 E2E 证据门禁、RuntimeBenchmarkArtifactComposer 生产 benchmark evidence 组装门禁、RuntimePhase3ClosureGate 总门禁、RuntimeObservabilityRegistry、RuntimeOpenTelemetryBridge、RuntimeToggleRegistry、RuntimeToggleReleaseGate、RuntimeBenchmarkGate profile/provenance/workload metadata gate、ExternalReferenceCatalog、timeout 转移、full-box / RACK_BIN exchange 合同、runtime toggle quality gate、external callback allow-list 矩阵、`tests/load` 轻量 benchmark 命令、benchmark artifact 合同、CI lightweight artifact 归档、resilience replay fixture 和 simulator replay fixture、OpenTelemetry backend 接线 | 生产 P0 E2E 实跑 artifact、生产规模真实依赖 benchmark 数据；总门禁尚未通过 |
-| Phase 4 后续子领域 | 📝 **设计 SPEC 已写，未实施** | 本分支 Phase 4 设计包 | `phase4-design-with-residuals.md` + 5 份 Phase 4 SPEC，纳入 Phase 1/2/3 residual gates | 后续实现仍需满足 Phase 1 callback admission、Phase 2 runtime_status 兼容投影决策、Phase 3 closure gate；不代表 Phase 4 能力完成 |
+| Phase 4 后续子领域 | 📝 **设计 SPEC 已写，未实施** | 本分支 Phase 4 设计包 | `phase4-design-with-residuals.md` + 5 份 Phase 4 SPEC，纳入 Phase 1/2/3 residual gates | Phase 1 callback admission 已关闭；后续生产热路径仍需满足 Phase 2 runtime_status 兼容投影决策与 Phase 3 closure gate；不代表 Phase 4 能力完成 |
 | Phase 5 Legacy 删除与收尾 | ⏳ **未启动** | — | — | 双 lane：技术残留清理（Phase 3 门禁后）+ 业务承载 legacy 清理（Phase 4 能力验收后） |
 
 **Phase 3 closure 状态校验（2026-07-03）**：
@@ -1931,7 +1931,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - 护栏脚本：`scripts/architecture-guardrails.sh` + `scripts/architecture-guardrails.allowlist`（phase-aware enforcement）
 - 护栏测试：`tests/architecture/test_c1..c5_*`、`test_ri3_capability_injection_guardrail.py`、`test_phase0_legacy_matrix_contract.py`
 
-### 10.2 Phase 1: 目标态骨架与 WMS ACL — 🟡 Packet A/B/C + Packet D 主体完成，callback admission 未关闭（PR #64 + PR Packet D）
+### 10.2 Phase 1: 目标态骨架与 WMS ACL — ✅ Packet A/B/C + Packet D 完成（PR #64 + PR Packet D + 本分支 callback admission 收敛）
 
 **目标**：先建立目标态骨架和 runtime/orchestration 最小运行骨架，不迁移旧执行入口。Phase 1 的完成标准是“runtime 能独立接收 inbox、记录 intent、关联 correlation”，不是 P0 最小可运行闭环，也不是旧 WorkLine/plugin/runtime 已经清空。
 
@@ -1943,7 +1943,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | **CEO-006** Authority Matrix 文档发布 | S | `docs/architecture/authority-matrix.md` | 11 类事实类型 + 权威来源（对齐 `target-state-contract.md` §4） | ✅ Packet A |
 | **CEO-007** runtime/orchestration 最小骨架 | M | `src/app/runtime/orchestration/`, `docs/architecture/runtime-orchestration-spec.md` | ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog 7 个 runtime core 实体类型分离；对象级 work item 不被 session 串行锁阻塞；最小 worker + 单元测试 | ✅ Packet C |
 | **CEO-008** `ConveyorQueueMembership` 目标模型 | M | `src/app/runtime/orchestration/`, `src/app/workline/` | manifest queue_code 校验 + active 唯一约束测试 | ✅ Packet C |
-| **CEO-009** `RuntimeCapabilityContext` / `CapabilityPortRegistry` | M | `src/app/runtime/`, `src/app/contracts/external_contract_profile.py` | capability 只能拿到 query/effect port contract；静态检查拒绝 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort`、`RuntimeInbox` consumer | 🟡 Packet D 主体（capability_port_registry + InboundNormalizerRegistry + R-I3c 静态扫描 + import-lister capability-isolation contract + 7/7 WMS ports 全部落地；callback API normalizer admission 未关闭） |
+| **CEO-009** `RuntimeCapabilityContext` / `CapabilityPortRegistry` | M | `src/app/runtime/`, `src/app/contracts/external_contract_profile.py` | capability 只能拿到 query/effect port contract；静态检查拒绝 `wms_integration` / `device` service、HTTP client、DTO、provider exception、service locator、`WmsEventPort`、`DeviceEventPort`、`RuntimeInbox` consumer | ✅ Packet D + callback admission 收敛（capability_port_registry + InboundNormalizerRegistry + R-I3c 静态扫描 + import-linter capability-isolation contract + 7/7 WMS ports 全部落地；callback API normalizer admission 已接入热路径） |
 | **CEO-010** `DeviceCommand` ECS API contract + manifest concurrency limit | M | `src/app/device/`, `docs/architecture/device-command-contract.md` | command_code 幂等、dispatch 前 IDLE 校验、RUNNING 有界等待、ERROR/OFFLINE 短退避、Event_Push 只 ACK、缺 event_id 不推进、in-flight 限制测试；DeviceRuntime 状态快照 TTL 与 DeviceDispatchPolicy 纳入 manifest/schema 设计并通过 validator 测试；`awaiting_command_id` 迁移为 `awaiting_device_command_code`（值为 `DeviceCommand.command_code`，无 device FK），移除 device ↔ session FK 环并验证 Alembic upgrade/downgrade | ✅ Packet C（`3a6a7e29 feat(device): Phase 1 DeviceCommand 接入 ExecutionCorrelation + H4 反注入` + `9b74b6e6 feat(migrations): Phase 1 AP2 device FK ring dissolve`） |
 | **CEO-011** WorkLine manifest version pin | M | `src/app/workline/`, `src/app/runtime/orchestration/` | RUNNING session 固定 manifest_version；新 manifest 只影响新 session；activation-time validator 测试 | ✅ Packet A |
 | **CEO-012** WorkLine SafetyZone / shared-device manifest schema | M | `src/app/workline/`, `src/app/device/` | shared device 影响范围、required/optional role、SafetyZone validator 测试 | ✅ Packet A |
@@ -1965,7 +1965,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - [x] WorkLine manifest 能表达 SafetyZone、共享设备和影响范围；WES 不包含 PLC 直连字段（Packet A）
 - [x] ExternalContractProfile 覆盖 WMS/ECS 初始 provider，contract fixture 可被 simulator 与 adapter contract tests 复用（Packet B）
 - [ ] provider 未声明的 query/effect 能力无法进入 `RuntimeCapabilityContext` 🟡 Profile 类已定义，静态拒绝检查入 Packet D
-- [ ] provider 未声明的 callback/event/result normalizer 能力无法进入 callback API；`WmsEventPort` / `DeviceEventPort` / `RuntimeInbox` consumer 不会注入业务 capability 🟡 InboundNormalizerProfile 已定义，4 端口落地 + 静态拒绝检查入 Packet D
+- [x] provider 未声明的 callback/event/result normalizer 能力无法进入 callback API；`WmsEventPort` / `DeviceEventPort` / `RuntimeInbox` consumer 不会注入业务 capability（callback API result/event/external 热路径接入 provider profile admission）
 
 **Phase 1 Packet D 完成门禁**（PR Packet D 2026-06-27 落地）：
 
@@ -1973,7 +1973,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - [x] `wms_rcs_interface_requirements.md` P0 基础数据、业务指令、回调事件全部映射到目标 port
 - [x] Runtime capability 注入仅暴露 query/effect port contract；inbound normalizer（WmsEventPort / DeviceEventPort / RuntimeInbox / RuntimeInboxConsumer）不进入业务 capability
 - [x] provider 未声明的 query/effect 能力无法进入 `RuntimeCapabilityContext`（R-I3b 静态扫描 + `RuntimeCapabilityContext` provider profile admission 落地）
-- [ ] provider 未声明的 callback/event/result normalizer 能力无法进入 callback API；`InboundNormalizerProfile` 3 Pydantic model_validator 拒绝裸字符串 event_type / source_provider 不一致 / 非枚举 correlation_resolution，`ExternalContractProfile.ensure_inbound_normalizer_declared()` 已提供合同级拒绝入口；剩余工作是将 provider profile admission 接入 callback API 热路径。
+- [x] provider 未声明的 callback/event/result normalizer 能力无法进入 callback API；`InboundNormalizerProfile` 3 Pydantic model_validator 拒绝裸字符串 event_type / source_provider 不一致 / 非枚举 correlation_resolution，callback API result/event/external 热路径调用 `ExternalContractProfile.ensure_inbound_normalizer_declared()` 并在未声明时拒绝写入 inbox。
 - [x] R-I3c 静态扫描器覆盖 `src/app/runtime` + `src/app/workline`，inbound normalizer 类型持有者 0 违规
 - [x] import-linter `capability-isolation` contract 启用，`capability_port_registry` 不得 import wms_integration/device/callback/orchestration 子模块
 
@@ -2019,7 +2019,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 **启动条件**（满足全部才能启动 Phase 2）：
 
 - [x] Phase 0 全部 7 项完成（PR #63 `v0.9.0.0` 2026-06-25）
-- [ ] Phase 1 全部任务完成。Packet A/B/C（PR #64 2026-06-27）+ Packet D（PR #66 `v0.9.1.0` 2026-06-27）主体已合并；callback API 热路径 provider profile admission 仍未关闭，详见 §10.2 Packet D 完成门禁。
+- [x] Phase 1 全部任务完成。Packet A/B/C（PR #64 2026-06-27）+ Packet D（PR #66 `v0.9.1.0` 2026-06-27）主体已合并；callback API 热路径 provider profile admission 已在 §10.2 Packet D 完成门禁关闭。
 - [x] 重新跑 autoplan 或同等深度评审，确认 B 方案可执行（autoplan CONDITIONAL-GO 2026-06-28，见 `~/.gstack/projects/kaizhoumasha-wes_backend/develop-autoplan-restore-20260628-121500.md`）
 
 #### 10.3.1 B 方案暂停/回退条件（C2 回归）
@@ -2140,7 +2140,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 
 **目标**：补全 WES 作业期完整业务语义。Phase 4 不阻塞 Phase 3 的 P0 技术闭环上线验证，但阻塞完整业务能力上线；任何仍承载未重建业务语义的 legacy 不能在对应 Phase 4 能力验收前删除。
 
-**范围调整（2026-07-04）**：Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。`tests/mock/phase4` 只验收本机 WMS/ECS mock 能表达 sorter inbound 与 SMT/NG/WMS 对账合同；生产热路径、线上 callback cutover、真实 WMS/ECS effect dispatch 仍受 Phase 1/2/3 residual gates 与 Phase 3 closure gate 约束。
+**范围调整（2026-07-04）**：Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。`tests/mock/phase4` 只验收本机 WMS/ECS mock 能表达 sorter inbound 与 SMT/NG/WMS 对账合同；Phase1 callback admission 已关闭，生产热路径、线上 callback cutover、真实 WMS/ECS effect dispatch 仍受 Phase 2 runtime_status 兼容投影决策与 Phase 3 closure gate 约束。
 
 **设计包（2026-07-03）**：
 

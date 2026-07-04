@@ -15,7 +15,7 @@ WorklineActiveObjects 是 WorkLine 当前作业对象的只读聚合视图。它
 
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
-| Phase 1 callback admission 未关闭 | 所有入站来源必须保留 source/provider/evidence，视图不接受无 profile 的来源 |
+| Phase 1 callback admission 已关闭 | 所有入站来源必须保留 source/provider/evidence，视图不接受无 profile 的来源 |
 | Phase 2 运行状态投影未清空 | 视图只读 runtime/orchestration、active projection 和 evidence，不读 WorkLine 运行状态作为 owner |
 | Phase 3 closure 未关闭 | 允许定义视图合同；正式上线前必须有 production P0 E2E artifact 和 benchmark artifact |
 

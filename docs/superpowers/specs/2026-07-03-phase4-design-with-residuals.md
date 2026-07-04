@@ -10,7 +10,7 @@
 
 本 SPEC 只推进 Phase 4 设计，不实现业务能力、不删除 legacy、不改变运行时热路径。Phase 4 设计可以先行，但实现、上线和 Phase 5 删除必须受 Phase 1/2/3 residual gates 约束。
 
-2026-07-04 范围调整：Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。`tests/mock/phase4` 只证明 sorter inbound 与 SMT/NG/WMS 对账合同可由本机 WMS/ECS mock 表达；生产热路径仍必须等待 Phase 1/2/3 residual gates 与 Phase 3 closure gate。
+2026-07-04 范围调整：Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。`tests/mock/phase4` 只证明 sorter inbound 与 SMT/NG/WMS 对账合同可由本机 WMS/ECS mock 表达；生产热路径仍记录在 Phase 1/2/3 residual gates 中，但当前实际阻塞项为 Phase 2 runtime_status 兼容投影决策与 Phase 3 closure gate，Phase 1 callback admission 已关闭。
 
 Phase 4 目标是补全 WES 作业期完整业务语义：
 
@@ -32,7 +32,7 @@ Phase 4 目标是补全 WES 作业期完整业务语义：
 
 | Phase | 遗留门禁 | Phase 4 设计默认处理 | 实现前必须满足 |
 | --- | --- | --- | --- |
-| Phase 1 | callback API 热路径接入 provider profile admission，拒绝未声明 callback/event/result normalizer | 所有入站事件设计只引用 `ExternalContractProfile.ensure_inbound_normalizer_declared()` 作为合同，不假设生产热路径已接入 | callback API 对未声明 normalizer 的拒绝路径有合同测试和热路径测试 |
+| Phase 1 | callback API 热路径接入 provider profile admission，拒绝未声明 callback/event/result normalizer | 已在 callback API result/event/external 热路径调用 `ExternalContractProfile.ensure_inbound_normalizer_declared()`，未声明 normalizer 拒绝进入 inbox | callback API 对未声明 normalizer 的拒绝路径有合同测试和热路径测试 |
 | Phase 2 | `WorkLine.runtime_status` 迁出或正式改名为兼容投影 | Phase 4 不新增对 `WorkLine.runtime_status` 的业务依赖；需要运行态时读取 runtime/orchestration 或 active projection | 兼容投影命名/迁出决策完成，文档和查询接口不再把它描述为状态 owner |
 | Phase 3 | external callback 热路径切到 `RuntimeInbox` 状态机与 worker | Phase 4 只设计 RuntimeInbox 目标路径，不把旧 `WorklineInboxService` 当成可扩展依赖 | external callback 生产热路径完成 RuntimeInbox cutover |
 | Phase 3 | 生产/预生产 P0 E2E artifact | Phase 4 设计可以继续，但实现计划不得进入上线验收 | artifact 通过 `scripts/check_phase3_p0_e2e_gate.py` |

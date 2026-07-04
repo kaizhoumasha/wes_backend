@@ -15,7 +15,7 @@ CellReservation 是作业期格位预约能力，用于防止粗分机、分拣�
 
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
-| Phase 1 callback admission 未关闭 | 预约创建、投放成功、WMS reject 和 source_version drift 只接受带 provider profile / normalizer evidence 的输入 |
+| Phase 1 callback admission 已关闭 | 预约创建、投放成功、WMS reject 和 source_version drift 只接受带 provider profile / normalizer evidence 的输入 |
 | Phase 2 `WorkLine.runtime_status` 未清空 | 预约状态归 `WorklineBinCellReservation`、`BinCellOccupancy`、`RuntimeHold` 和 `ReconciliationRecord`，不写 WorkLine 运行状态 |
 | Phase 3 RuntimeInbox / closure artifact 未关闭 | 设计可完成；生产热路径实现前必须通过 RuntimeInbox cutover、P0 E2E artifact 和 production benchmark closure gate |
 
@@ -73,7 +73,7 @@ RESERVED ──投放成功 evidence──> OCCUPIED
 - 明确 `RECONCILING` 是否成为 `BinCellReservationStatus` 持久 enum；若不新增 enum，必须用 RuntimeHold/ReconciliationRecord 冻结格位并补合同测试。
 - 明确 `PLANNED`/`CONSUMED` 是否保留为数据库内部命名，或通过迁移改名为 `RESERVED`/`OCCUPIED`。
 - 确认现有 `WorklineBinCellReservationService.claim_bin_cell()`、`consume_bin_cell()`、`release_bin_cell()` 与目标生命周期映射一致。
-- Phase 1/2/3 residual gates 未关闭时，只允许设计和 characterization mapping，不允许生产热路径上线。
+- Phase 2/3 residual gates 未关闭时，只允许设计和 characterization mapping，不允许生产热路径上线；Phase1 callback admission 证据需保持绿灯。
 
 ## 8. Phase 5 legacy 判定
 
