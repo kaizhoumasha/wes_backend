@@ -183,3 +183,55 @@ def test_sorter_wms_pkg_binding_uses_fulfillment_port() -> None:
     assert all("WmsFulfillmentPort.notify_pkg_binding" in line for line in pkg_binding_rows)
     assert all("WmsInventoryTransactionPort" not in line for line in pkg_binding_rows)
     assert all("WmsInventoryTransactionPort" in line for line in inventory_transaction_rows)
+
+
+def test_sorter_characterization_to_target_mapping_is_explicit() -> None:
+    text = _read(REPO_ROOT / "docs" / "architecture" / "sorter-inbound-capability-spec.md")
+
+    for token in (
+        "characterization-to-target",
+        "BC-05",
+        "BC-06",
+        "BC-07",
+        "WmsFulfillmentPort.notify_pkg_binding",
+        "WmsInventoryTransactionPort",
+        "RuntimeLocationEvent",
+        "WorklineBinCellReservation",
+    ):
+        assert token in text
+
+
+def test_smt_ng_wms_reconciliation_contract_covers_conflict_scenarios() -> None:
+    text = _read(REPO_ROOT / "docs" / "architecture" / "smt-ng-wms-reconciliation-spec.md")
+
+    for token in (
+        "NG evidence",
+        "本地物理事实缺失",
+        "WMS 拒绝",
+        "目标箱回写失败",
+        "重复 callback",
+        "乱序 callback",
+        "source_version drift",
+        "RuntimeHold 解除只释放声明 scope",
+    ):
+        assert token in text
+
+
+def test_phase4_wave2_wave3_mock_acceptance_is_non_production_scope() -> None:
+    docs = [
+        _read(REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-04-phase4-runtime-readiness.md"),
+        _read(REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-07-03-phase4-design-with-residuals.md"),
+        _phase4_main_plan_text(_read(REPO_ROOT / "docs" / "architecture" / "workline-and-plugin-restructuring.md")),
+        _read(REPO_ROOT / "docs" / "architecture" / "sorter-inbound-capability-spec.md"),
+        _read(REPO_ROOT / "docs" / "architecture" / "smt-ng-wms-reconciliation-spec.md"),
+    ]
+    combined = "\n".join(docs)
+
+    for token in (
+        "本机开发环境 MOCK 验收",
+        "不做生产接入",
+        "tests/mock/phase4",
+        "生产热路径",
+        "Phase 1/2/3 residual gates",
+    ):
+        assert token in combined

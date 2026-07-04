@@ -6,7 +6,7 @@ from datetime import datetime  # noqa: TC003
 from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
-from sqlalchemy import JSON, Column, Index
+from sqlalchemy import JSON, Column, Index, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -22,6 +22,7 @@ class BinCellReservationStatus(str, Enum):
     CONSUMED = "CONSUMED"
     RELEASED = "RELEASED"
     CANCELLED = "CANCELLED"
+    RECONCILING = "RECONCILING"
 
 
 class WorklineBinCellReservationBase(BaseMixin):
@@ -61,7 +62,8 @@ class WorklineBinCellReservation(WorklineBinCellReservationBase, DataTableMixin,
             "bin_code",
             "bin_cell_index",
             unique=True,
-            postgresql_where="reservation_status = 'PLANNED'",
+            postgresql_where=text("reservation_status IN ('PLANNED', 'RECONCILING')"),
+            sqlite_where=text("reservation_status IN ('PLANNED', 'RECONCILING')"),
         ),
         Index("ix_workline_bin_cell_reservations_session", "session_id", "reservation_status"),
     )

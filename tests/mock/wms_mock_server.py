@@ -38,7 +38,7 @@ if str(project_root) not in sys.path:
 def _load_sandbox_catalog() -> Any:
     """按文件加载共享 catalog，避免导入完整后端运行时包。"""
 
-    catalog_path = project_root / "src" / "workline_runtime" / "sandbox_catalog.py"
+    catalog_path = project_root / "src" / "app" / "runtime" / "orchestration" / "sandbox_catalog_bridge.py"
     spec = importlib.util.spec_from_file_location("wes_mock_sandbox_catalog", catalog_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"无法加载 WMS mock catalog: {catalog_path}")
@@ -915,6 +915,53 @@ async def rack_operation(payload: dict[str, Any], background_tasks: BackgroundTa
             "accepted": True,
             "dispatch_key": payload.get("dispatch_key"),
             "operation_key": payload.get("operation_key"),
+        },
+    }
+
+
+@app.post("/api/wms/fulfillment/pkg-binding", summary="本机 Mock: PKG 绑定通知")
+async def notify_pkg_binding(payload: dict[str, Any]):
+    """模拟 WmsFulfillmentPort.notify_pkg_binding, 仅供本机开发验收。"""
+
+    package_id = str(payload.get("package_id") or "")
+    pallet_id = str(payload.get("pallet_id") or "")
+    station_code = str(payload.get("station_code") or "")
+    return {
+        "code": 200,
+        "data": {
+            "request_id": payload.get("request_id", ""),
+            "binding_key": f"{package_id}:{pallet_id}:{station_code}",
+            "package_id": package_id,
+            "pallet_id": pallet_id,
+            "station_code": station_code,
+            "accepted": True,
+        },
+    }
+
+
+@app.post("/api/wms/reconciliation/snapshot", summary="本机 Mock: WMS 对账快照")
+async def reconciliation_snapshot(payload: dict[str, Any]):
+    """模拟 WmsReconciliationQueryPort 快照, 不产生生产写入副作用。"""
+
+    scenario = str(payload.get("scenario") or "OK").upper()
+    conflict_state = "OK"
+    if scenario == "DUPLICATE_CALLBACK":
+        conflict_state = "IDEMPOTENT_DUPLICATE"
+    elif scenario != "OK":
+        conflict_state = "RECONCILING"
+    return {
+        "code": 200,
+        "data": {
+            "environment": "LOCAL_MOCK_ONLY",
+            "production_write_path": False,
+            "scenario": scenario,
+            "object_type": payload.get("object_type", ""),
+            "object_key": payload.get("object_key", ""),
+            "source_event_id": payload.get("source_event_id", ""),
+            "source_version": payload.get("source_version", "mock-wms.v1"),
+            "conflict_state": conflict_state,
+            "requires_runtime_hold": conflict_state == "RECONCILING",
+            "allowed_next_effect_scope": "OBJECT_ONLY",
         },
     }
 

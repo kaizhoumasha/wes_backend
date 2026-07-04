@@ -10,6 +10,8 @@
 
 本 SPEC 只推进 Phase 4 设计，不实现业务能力、不删除 legacy、不改变运行时热路径。Phase 4 设计可以先行，但实现、上线和 Phase 5 删除必须受 Phase 1/2/3 residual gates 约束。
 
+2026-07-04 范围调整：Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。`tests/mock/phase4` 只证明 sorter inbound 与 SMT/NG/WMS 对账合同可由本机 WMS/ECS mock 表达；生产热路径仍必须等待 Phase 1/2/3 residual gates 与 Phase 3 closure gate。
+
 Phase 4 目标是补全 WES 作业期完整业务语义：
 
 - MaterialLocationQuery：统一查询作业对象当前位置、来源和 evidence。

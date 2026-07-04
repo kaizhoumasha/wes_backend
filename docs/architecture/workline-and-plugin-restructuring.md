@@ -2140,6 +2140,8 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 
 **目标**：补全 WES 作业期完整业务语义。Phase 4 不阻塞 Phase 3 的 P0 技术闭环上线验证，但阻塞完整业务能力上线；任何仍承载未重建业务语义的 legacy 不能在对应 Phase 4 能力验收前删除。
 
+**范围调整（2026-07-04）**：Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。`tests/mock/phase4` 只验收本机 WMS/ECS mock 能表达 sorter inbound 与 SMT/NG/WMS 对账合同；生产热路径、线上 callback cutover、真实 WMS/ECS effect dispatch 仍受 Phase 1/2/3 residual gates 与 Phase 3 closure gate 约束。
+
 **设计包（2026-07-03）**：
 
 - `docs/superpowers/specs/2026-07-03-phase4-design-with-residuals.md`：Phase 4 umbrella design + Phase 1/2/3 Residual Readiness Register。

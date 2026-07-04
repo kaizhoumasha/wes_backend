@@ -94,6 +94,27 @@ class ConveyorQueueMembershipRepository(BaseRepository[ConveyorQueueMembership])
         result = await db.execute(statement)
         return list(result.scalars().all())
 
+    async def list_active_by_workline(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        limit: int = 200,
+    ) -> list[ConveyorQueueMembership]:
+        """按 WorkLine 读取当前 ACTIVE memberships。"""
+
+        columns = cast("Any", ConveyorQueueMembership).__table__.c
+        result = await db.execute(
+            select(ConveyorQueueMembership)
+            .where(
+                columns.workline_id == workline_id,
+                columns.membership_status == "ACTIVE",
+            )
+            .order_by(columns.entered_at.asc(), columns.id.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
     def build_active_identity_select(
         self,
         *,

@@ -18,6 +18,12 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
+ACTIVE_OR_FROZEN_RESERVATION_STATUSES = (
+    BinCellReservationStatus.PLANNED.value,
+    BinCellReservationStatus.RECONCILING.value,
+)
+
+
 class WorklineBinCellReservationRepository(BaseRepository[WorklineBinCellReservation]):
     """工作线料箱格位预占 Repository。"""
 
@@ -43,6 +49,25 @@ class WorklineBinCellReservationRepository(BaseRepository[WorklineBinCellReserva
         )
         return result.scalar_one_or_none()
 
+    async def get_active_or_frozen_by_bin_cell(
+        self,
+        db: AsyncSession,
+        *,
+        bin_code: str,
+        bin_cell_index: str,
+    ) -> WorklineBinCellReservation | None:
+        """查询料箱格位当前 active/frozen 预占。"""
+
+        columns = cast("Any", WorklineBinCellReservation).__table__.c
+        result = await db.execute(
+            select(WorklineBinCellReservation).where(
+                columns.bin_code == bin_code,
+                columns.bin_cell_index == bin_cell_index,
+                columns.reservation_status.in_(ACTIVE_OR_FROZEN_RESERVATION_STATUSES),
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def list_active_by_bin_codes(
         self,
         db: AsyncSession,
@@ -61,6 +86,49 @@ class WorklineBinCellReservationRepository(BaseRepository[WorklineBinCellReserva
                 columns.reservation_status == BinCellReservationStatus.PLANNED.value,
             )
             .order_by(columns.bin_code.asc(), columns.bin_cell_index.asc(), columns.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def list_active_or_frozen_by_bin_codes(
+        self,
+        db: AsyncSession,
+        bin_codes: list[str],
+    ) -> list[WorklineBinCellReservation]:
+        """批量查询料箱当前 active/frozen 预占。"""
+
+        if not bin_codes:
+            return []
+
+        columns = cast("Any", WorklineBinCellReservation).__table__.c
+        result = await db.execute(
+            select(WorklineBinCellReservation)
+            .where(
+                columns.bin_code.in_(bin_codes),
+                columns.reservation_status.in_(ACTIVE_OR_FROZEN_RESERVATION_STATUSES),
+            )
+            .order_by(columns.bin_code.asc(), columns.bin_cell_index.asc(), columns.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def list_active_or_frozen_by_pkg_codes(
+        self,
+        db: AsyncSession,
+        pkg_codes: list[str],
+    ) -> list[WorklineBinCellReservation]:
+        """批量查询 PKG 当前 active/frozen 预占。"""
+
+        unique_pkg_codes = list(dict.fromkeys(pkg_codes))
+        if not unique_pkg_codes:
+            return []
+
+        columns = cast("Any", WorklineBinCellReservation).__table__.c
+        result = await db.execute(
+            select(WorklineBinCellReservation)
+            .where(
+                columns.pkg_code.in_(unique_pkg_codes),
+                columns.reservation_status.in_(ACTIVE_OR_FROZEN_RESERVATION_STATUSES),
+            )
+            .order_by(columns.pkg_code.asc(), columns.bin_code.asc(), columns.bin_cell_index.asc(), columns.id.asc())
         )
         return list(result.scalars().all())
 
@@ -89,6 +157,25 @@ class WorklineBinCellReservationRepository(BaseRepository[WorklineBinCellReserva
 
         reservation.reservation_status = BinCellReservationStatus.RELEASED
         reservation.released_at = released_at
+        db.add(reservation)
+        return reservation
+
+    async def mark_reconciling(
+        self,
+        db: AsyncSession,
+        reservation: WorklineBinCellReservation,
+        *,
+        reason_code: str,
+        evidence: dict[str, Any] | None = None,
+    ) -> WorklineBinCellReservation:
+        """将预占标记为需对账，保持 active/frozen 唯一占位。"""
+
+        reservation.reservation_status = BinCellReservationStatus.RECONCILING
+        metadata = dict(reservation.metadata_json or {})
+        metadata["reconciling_reason_code"] = reason_code
+        if evidence is not None:
+            metadata["reconciling_evidence"] = evidence
+        reservation.metadata_json = metadata
         db.add(reservation)
         return reservation
 

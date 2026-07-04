@@ -122,9 +122,28 @@ CTU 批量履约必须保留父请求和逐对象子 work item。查询视图展
 - source arm prefetch 未声明时容量为 0。
 - CTU 父请求不能掩盖子项缺失或部分失败。
 
+### 8.1 characterization-to-target contract mapping
+
+Phase 4 实现前，旧业务 characterization 只能作为输入语义，不得继续复用旧 plugin 入口。目标合同必须把旧流程映射到 runtime/orchestration、WMS port 和本地事实模型：
+
+| characterization | 旧能力语义 | 目标合同 |
+| --- | --- | --- |
+| BC-05 | 粗分机正常入库 | 本地投格先写 `RuntimeLocationEvent`，格位预约复用 `WorklineBinCellReservation`；PKG 绑定只走 `WmsFulfillmentPort.notify_pkg_binding`，库存事务只走 `WmsInventoryTransactionPort` |
+| BC-06 | 满箱交换前置分流 | `FULL_BOX_EXCHANGE` 与 `CHANGE_RACK_FACE` 分别进入 `WmsFulfillmentPort`，父子 `ExecutionWorkItem` 保留批次和逐对象收敛状态 |
+| BC-07 | 分拣机入库 | SCAN 授权、NG/RuntimeHold、CellReservation、`RuntimeLocationEvent` 和 WMS 同步按对象级合同串联；未覆盖语义保留 characterization tests，不进入 Phase 5 drop |
+
 ## 9. 实施前置条件
 
 实现前必须关闭 Phase 1 callback admission、明确 Phase 2 runtime status 兼容投影口径，并通过 Phase 3 closure gate。否则只能保留为设计和 characterization mapping。
+
+### 9.1 本机开发环境 MOCK 验收
+
+Wave2 入库能力本轮降级为本机开发环境 MOCK 验收，不做生产接入。验收入口固定为 `tests/mock/phase4` 与本机 WMS/ECS mock：
+
+- WMS mock 可以表达 `WmsFulfillmentPort.notify_pkg_binding()` 与 `WmsInventoryTransactionPort` 的职责拆分。
+- ECS mock 可以表达 ACK/RESULT callback 和设备失败/超时场景，但 callback 只能指向 localhost 本机 WES。
+- mock 验收不得注册生产 router、Celery worker、真实 WMS/ECS client 或任何 sorter inbound 生产热路径。
+- 生产热路径仍必须等待 Phase 1/2/3 residual gates 通过；mock 通过不等于 Phase 4 业务上线完成。
 
 ## 10. Runtime 集成映射
 

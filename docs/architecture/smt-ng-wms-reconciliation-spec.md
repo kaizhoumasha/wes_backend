@@ -37,6 +37,7 @@
 - 目标箱回写失败：保留本地事实，创建 RuntimeHold，允许重试 WMS effect。
 - source_version 漂移：保留旧 evidence，等待 WMS drift query 决议；涉及格位预约时按 `cell-reservation-spec.md` 冻结 active/frozen 语义。
 - 重复 callback 同 hash：幂等合并；不同 hash：409 audit + RECONCILING。
+- 乱序 callback：按 occurred_at、source_version 和 source_event_id 建立因果边界；迟到旧版本只能登记 evidence，不能回滚本地物理事实或释放 RuntimeHold。
 
 ## 5. RuntimeHold 解除条件
 
@@ -58,10 +59,20 @@ RuntimeHold 解除必须声明：
 - source_version drift 能触发 WMS reconciliation query。
 - RuntimeHold 解除只释放声明 scope。
 - 重复 callback 同 hash 幂等，不同 hash 进入冲突审计。
+- 乱序 callback 不覆盖更新版本状态，不触发未授权 effect 重放。
 
 ## 7. 实施前置条件
 
 实现前必须确认 NG/WMS callback 已经过 provider profile admission，RuntimeInbox production hot path 已可重试/死信/人工重放，CellReservation RECONCILING 持久化或冻结口径已按 `cell-reservation-spec.md` 锁定，Phase 3 closure gate 已通过。
+
+### 7.1 本机开发环境 MOCK 验收
+
+Wave3 SMT/NG/WMS 对账本轮降级为本机开发环境 MOCK 验收，不做生产接入。验收入口固定为 `tests/mock/phase4` 与本机 WMS reconciliation mock：
+
+- mock 必须能表达 NG evidence、本地物理事实缺失、WMS 拒绝、目标箱回写失败、重复 callback、乱序 callback 与 source_version drift。
+- mock 返回的对账快照必须标记 `LOCAL_MOCK_ONLY`，且 `production_write_path=false`。
+- mock 验收不得注册生产 callback cutover、真实 WMS reconciliation query client、RuntimeInbox worker 或 SMT/NG/WMS 生产热路径。
+- 生产热路径仍必须等待 Phase 1/2/3 residual gates 通过；mock 通过只说明本机合同可验收。
 
 ## 8. Phase 5 legacy 判定
 

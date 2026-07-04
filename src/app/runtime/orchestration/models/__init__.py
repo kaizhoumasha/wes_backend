@@ -92,6 +92,12 @@ from .runtime_hold import (
     RuntimeHoldStatus,
     RuntimeHoldType,
 )
+from .runtime_location_event import (
+    RuntimeLocationEvent,
+    RuntimeLocationEventBase,
+    RuntimeLocationEventCreate,
+    RuntimeLocationEventResponse,
+)
 from .session import (
     RunMode,
     RuntimeReconciliationReason,
@@ -159,6 +165,10 @@ __all__ = [
     "RuntimeHold",
     "RuntimeHoldStatus",
     "RuntimeHoldType",
+    "RuntimeLocationEvent",
+    "RuntimeLocationEventBase",
+    "RuntimeLocationEventCreate",
+    "RuntimeLocationEventResponse",
     "RuntimeOverviewResponse",
     "RuntimeReconciliationReason",
     "RuntimeReconciliationResolution",
