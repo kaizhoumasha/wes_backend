@@ -80,6 +80,75 @@ def test_wave2_mock_acceptance_separates_pkg_binding_from_inventory_transaction(
     assert inventory_response.json()["data"]["confirmed"] is True
 
 
+def test_wave2_mock_acceptance_models_full_box_pre_diversion_contract() -> None:
+    """满箱交换必须在分拣机逐件流程前分流，且已满箱物料不得进入逐件候选集。"""
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post(
+            "/api/wms/fulfillment/full-box-exchange",
+            json={
+                "request_id": "mock-wave2-full-box-001",
+                "rack_code": "RACK-6CELL-001",
+                "rack_side": "A",
+                "exchange_zone": "FULL_BOX_EXCHANGE_ZONE_A",
+                "full_box_object_keys": ["PKG-FULL-001", "PKG-FULL-002"],
+                "remaining_object_keys": ["PKG-PIECE-001"],
+            },
+        )
+        no_exchange_response = client.post(
+            "/api/wms/fulfillment/full-box-exchange",
+            json={
+                "request_id": "mock-wave2-no-full-box-001",
+                "rack_code": "RACK-6CELL-002",
+                "rack_side": "B",
+                "exchange_zone": "FULL_BOX_EXCHANGE_ZONE_A",
+                "full_box_object_keys": [],
+                "remaining_object_keys": ["PKG-PIECE-002"],
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["environment"] == "LOCAL_MOCK_ONLY"
+    assert data["production_write_path"] is False
+    assert data["fulfillment_action"] == "FULL_BOX_EXCHANGE"
+    assert data["batch_key"] == "RACK-6CELL-001:A"
+    assert data["station_admission_blocked_until_exchange_completed"] is True
+    assert data["box_level_inventory_transaction_required"] is True
+    assert data["sorting_candidate_object_keys"] == ["PKG-PIECE-001"]
+    assert not set(data["full_box_object_keys"]) & set(data["sorting_candidate_object_keys"])
+    assert no_exchange_response.status_code == 200
+    no_exchange_data = no_exchange_response.json()["data"]
+    assert no_exchange_data["fulfillment_action"] == "SORTER_STATION_ADMISSION"
+    assert no_exchange_data["station_admission_blocked_until_exchange_completed"] is False
+    assert no_exchange_data["sorting_candidate_object_keys"] == ["PKG-PIECE-002"]
+
+
+def test_wave2_mock_acceptance_keeps_change_rack_face_as_independent_fulfillment() -> None:
+    """CHANGE_RACK_FACE 是独立履约，不能被 full-box exchange 成功吞并。"""
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post(
+            "/api/wms/fulfillment/change-rack-face",
+            json={
+                "request_id": "mock-wave2-change-face-001",
+                "parent_request_id": "mock-wave2-full-box-001",
+                "rack_code": "RACK-6CELL-001",
+                "from_rack_side": "A",
+                "to_rack_side": "B",
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["environment"] == "LOCAL_MOCK_ONLY"
+    assert data["production_write_path"] is False
+    assert data["fulfillment_action"] == "CHANGE_RACK_FACE"
+    assert data["parent_request_id"] == "mock-wave2-full-box-001"
+    assert data["independent_fulfillment"] is True
+    assert data["does_not_mark_full_box_exchange_completed"] is True
+
+
 def test_wave2_mock_acceptance_uses_ecs_mock_without_production_callback(monkeypatch) -> None:
     """ECS mock 可以本机闭环 ACK/RESULT callback，但只打 localhost WES callback。"""
 
@@ -134,3 +203,27 @@ def test_wave3_mock_acceptance_models_reconciliation_conflicts_locally() -> None
             assert data["conflict_state"] == expected_state
             assert data["environment"] == "LOCAL_MOCK_ONLY"
             assert data["production_write_path"] is False
+
+
+def test_wave3_mock_acceptance_runtime_hold_release_is_scope_only() -> None:
+    """RuntimeHold 人工解除只能释放声明 scope，不得顺手放行整线 effect。"""
+
+    with TestClient(wms_mock_server.app) as client:
+        response = client.post(
+            "/api/wms/reconciliation/runtime-hold-release-preview",
+            json={
+                "hold_id": "HOLD-MOCK-001",
+                "scope_type": "OBJECT",
+                "scope_key": "PKG-CAP001-LOT-A-001",
+                "allowed_next_effect_scope": "OBJECT_ONLY",
+                "requested_release_scope": "WORKLINE",
+            },
+        )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["environment"] == "LOCAL_MOCK_ONLY"
+    assert data["production_write_path"] is False
+    assert data["released_effect_scopes"] == ["OBJECT"]
+    assert data["blocked_effect_scopes"] == ["WORKLINE", "QUEUE", "DEVICE", "RESOURCE"]
+    assert data["requires_manual_review"] is True

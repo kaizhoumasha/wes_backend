@@ -939,6 +939,71 @@ async def notify_pkg_binding(payload: dict[str, Any]):
     }
 
 
+def _string_list(payload: dict[str, Any], field_name: str) -> list[str]:
+    raw_value = payload.get(field_name)
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, str):
+        return [raw_value]
+    if not isinstance(raw_value, list):
+        return []
+    return [str(item) for item in raw_value if str(item)]
+
+
+@app.post("/api/wms/fulfillment/full-box-exchange", summary="本机 Mock: 满箱交换履约")
+async def full_box_exchange(payload: dict[str, Any]):
+    """模拟 WmsFulfillmentPort.full_box_exchange, 不触发生产写路径。"""
+
+    rack_code = str(payload.get("rack_code") or "")
+    rack_side = str(payload.get("rack_side") or "")
+    full_box_object_keys = _string_list(payload, "full_box_object_keys")
+    full_box_set = set(full_box_object_keys)
+    sorting_candidate_object_keys = [
+        object_key for object_key in _string_list(payload, "remaining_object_keys") if object_key not in full_box_set
+    ]
+    exchange_required = bool(full_box_object_keys)
+    return {
+        "code": 200,
+        "data": {
+            "environment": "LOCAL_MOCK_ONLY",
+            "production_write_path": False,
+            "request_id": payload.get("request_id", ""),
+            "fulfillment_action": "FULL_BOX_EXCHANGE" if exchange_required else "SORTER_STATION_ADMISSION",
+            "batch_key": f"{rack_code}:{rack_side}",
+            "rack_code": rack_code,
+            "rack_side": rack_side,
+            "exchange_zone": payload.get("exchange_zone", ""),
+            "full_box_object_keys": full_box_object_keys,
+            "sorting_candidate_object_keys": sorting_candidate_object_keys,
+            "station_admission_blocked_until_exchange_completed": exchange_required,
+            "box_level_inventory_transaction_required": exchange_required,
+            "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
+        },
+    }
+
+
+@app.post("/api/wms/fulfillment/change-rack-face", summary="本机 Mock: 货架换面履约")
+async def change_rack_face(payload: dict[str, Any]):
+    """模拟 WmsFulfillmentPort.change_rack_face, 与满箱交换完成语义解耦。"""
+
+    return {
+        "code": 200,
+        "data": {
+            "environment": "LOCAL_MOCK_ONLY",
+            "production_write_path": False,
+            "request_id": payload.get("request_id", ""),
+            "parent_request_id": payload.get("parent_request_id", ""),
+            "fulfillment_action": "CHANGE_RACK_FACE",
+            "rack_code": str(payload.get("rack_code") or ""),
+            "from_rack_side": str(payload.get("from_rack_side") or ""),
+            "to_rack_side": str(payload.get("to_rack_side") or ""),
+            "independent_fulfillment": True,
+            "does_not_mark_full_box_exchange_completed": True,
+            "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
+        },
+    }
+
+
 @app.post("/api/wms/reconciliation/snapshot", summary="本机 Mock: WMS 对账快照")
 async def reconciliation_snapshot(payload: dict[str, Any]):
     """模拟 WmsReconciliationQueryPort 快照, 不产生生产写入副作用。"""
@@ -962,6 +1027,39 @@ async def reconciliation_snapshot(payload: dict[str, Any]):
             "conflict_state": conflict_state,
             "requires_runtime_hold": conflict_state == "RECONCILING",
             "allowed_next_effect_scope": "OBJECT_ONLY",
+        },
+    }
+
+
+@app.post("/api/wms/reconciliation/runtime-hold-release-preview", summary="本机 Mock: RuntimeHold 解除预览")
+async def runtime_hold_release_preview(payload: dict[str, Any]):
+    """表达 RuntimeHold scope-only release 合同，不实际解除任何生产 hold。"""
+
+    allowed_scope = str(payload.get("allowed_next_effect_scope") or "OBJECT_ONLY").upper()
+    requested_scope = str(payload.get("requested_release_scope") or allowed_scope).upper()
+    released_effect_scopes_by_allowed_scope = {
+        "OBJECT_ONLY": ["OBJECT"],
+        "QUEUE_ONLY": ["QUEUE"],
+        "DEVICE_ONLY": ["DEVICE"],
+        "RESOURCE_ONLY": ["RESOURCE"],
+        "WORKLINE": ["WORKLINE"],
+    }
+    released_effect_scopes = released_effect_scopes_by_allowed_scope.get(allowed_scope, ["OBJECT"])
+    all_effect_scopes = ["OBJECT", "WORKLINE", "QUEUE", "DEVICE", "RESOURCE"]
+    blocked_effect_scopes = [scope for scope in all_effect_scopes if scope not in released_effect_scopes]
+    return {
+        "code": 200,
+        "data": {
+            "environment": "LOCAL_MOCK_ONLY",
+            "production_write_path": False,
+            "hold_id": payload.get("hold_id", ""),
+            "scope_type": payload.get("scope_type", ""),
+            "scope_key": payload.get("scope_key", ""),
+            "allowed_next_effect_scope": allowed_scope,
+            "requested_release_scope": requested_scope,
+            "released_effect_scopes": released_effect_scopes,
+            "blocked_effect_scopes": blocked_effect_scopes,
+            "requires_manual_review": requested_scope != allowed_scope,
         },
     }
 
