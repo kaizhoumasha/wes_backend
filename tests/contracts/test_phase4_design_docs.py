@@ -235,3 +235,31 @@ def test_phase4_wave2_wave3_mock_acceptance_is_non_production_scope() -> None:
         "Phase 1/2/3 residual gates",
     ):
         assert token in combined
+
+
+def test_phase3_closure_gate_is_mock_for_current_dev_test_scope() -> None:
+    docs = [
+        _read(REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-04-phase4-runtime-readiness.md"),
+        _read(REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-07-03-phase4-design-with-residuals.md"),
+        _phase4_main_plan_text(_read(REPO_ROOT / "docs" / "architecture" / "workline-and-plugin-restructuring.md")),
+        *[_read(REPO_ROOT / "docs" / "architecture" / filename) for filename in PHASE4_SPEC_FILES],
+    ]
+    combined = "\n".join(docs)
+
+    for token in (
+        "当前开发/测试默认使用 MOCK closure",
+        "真实 artifact 不再作为当前开发/测试推进阻塞项",
+        "`--closure-profile production`",
+    ):
+        assert token in combined
+
+    for forbidden in (
+        "Wave2/Wave3 阻塞",
+        "等待真实环境 evidence",
+        "Phase 3 closure artifacts 未完整",
+        "正式上线前必须有 production P0 E2E artifact",
+        "必须先补齐 Phase 3 closure artifact 和 benchmark evidence",
+        "生产闭环实现必须等待 RuntimeInbox cutover、P0 E2E artifact 和 production benchmark artifact",
+        "实现前必须通过 Phase 3 closure gate，尤其是 RuntimeInbox cutover 与 queue writer PostgreSQL evidence",
+    ):
+        assert forbidden not in combined

@@ -17,7 +17,7 @@ MaterialLocationQuery 是作业期位置查询能力，不是状态 owner。它�
 | --- | --- |
 | Phase 1 callback normalizer admission 已关闭 | 查询响应仍必须保留 `provider_code` / `source_event_id` / `ExternalReference`，不信任裸 callback payload |
 | Phase 2 `WorkLine.runtime_status` 兼容投影未清空 | 查询接口不输出或推导 WorkLine 运行状态，只输出对象位置和 evidence |
-| Phase 3 RuntimeInbox / closure artifact 未关闭 | 查询设计可落地为只读合同；生产上线前必须确认 RuntimeInbox cutover 和 Phase 3 closure gate |
+| Phase 3 RuntimeInbox / closure profile | 查询设计可落地为只读合同；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产上线前必须确认 RuntimeInbox cutover 和 `--closure-profile production` |
 
 ## 3. 查询入口
 
@@ -65,7 +65,7 @@ MaterialLocationQuery 是作业期位置查询能力，不是状态 owner。它�
 
 ## 7. 实施前置条件
 
-实现前必须确认 Phase 1 callback normalizer admission 不改变 ExternalReference 字段口径；`CellReservation` 的 RESERVED/OCCUPIED/RECONCILING 与现有 `WorklineBinCellReservation` 映射已按 `cell-reservation-spec.md` 锁定；生产上线前必须通过 Phase 3 closure gate。
+实现前必须确认 Phase 1 callback normalizer admission 不改变 ExternalReference 字段口径；`CellReservation` 的 RESERVED/OCCUPIED/RECONCILING 与现有 `WorklineBinCellReservation` 映射已按 `cell-reservation-spec.md` 锁定；当前开发/测试默认使用 MOCK closure，生产上线前必须显式通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`。
 
 ## 8. 性能预算
 

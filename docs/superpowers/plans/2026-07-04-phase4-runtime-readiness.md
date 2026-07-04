@@ -9,7 +9,7 @@
 - MaterialLocationQuery 运行时查询服务。
 - WorklineActiveObjects 作业线当前对象视图。
 
-Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase1 callback admission 已关闭；入库热路径与 SMT/NG/WMS 闭环的生产热路径继续保持 gated：只有 Phase2 `runtime_status` 兼容投影、Phase3 closure gate 全部通过后，才允许接入线上写路径。
+Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase1 callback admission 已关闭；本项目未发布，当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项。入库热路径与 SMT/NG/WMS 闭环的生产热路径继续保持 gated：只有 Phase2 `runtime_status` 兼容投影收尾完成，且发布前显式通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...` 后，才允许接入线上写路径。
 
 2026-07-04 追加进展：Phase2 `runtime_status` 已引入 `WorkLineRuntimeStatusProjectionService` 作为 runtime/orchestration 兼容投影服务，并迁移 LOW 风险写入点；HIGH 风险 safety estop 与 dispatch ACK exhausted 写入点仍保留，Phase2 gate 未完全关闭。
 
@@ -20,12 +20,12 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 - 不新增 RCS/AGV/CTU direct provider adapter。
 - 不迁移 `MaterialUnit` 表归属；本轮只新增 material API facade 与查询 service。
 - API 层只调用 service，不直接访问 repository 或 database。
-- Wave2/Wave3 只允许通过 `tests/mock/phase4` 和本机 WMS/ECS mock 做合同验收；mock 验收不得绕过 Phase 2/3 residual gates 进入生产热路径，Phase1 callback admission 证据需保持绿灯。
+- Wave2/Wave3 只允许通过 `tests/mock/phase4` 和本机 WMS/ECS mock 做合同验收；mock 验收不得绕过 Phase 2 residual gate 或 production closure profile 进入生产热路径，Phase1 callback admission 证据需保持绿灯。
 
 ## 任务状态
 
 - [x] Baseline：`tests/contracts/test_phase4_design_docs.py` 通过。
-- [x] Phase3 closure gate 记录：当前缺少 `--p0-e2e-artifact` 与 `--benchmark-artifact`，Wave2/Wave3 阻塞。
+- [x] Phase3 closure gate 记录：当前开发/测试默认使用 MOCK closure；`uv run python scripts/check_phase3_closure_gate.py` 无 artifact 可通过，生产发布前再显式运行 `--closure-profile production`。
 - [x] Reservation TDD：覆盖 RECONCILING 冻结、owner mismatch、普通失败释放不越过冻结态。
 - [x] RuntimeLocationEvent TDD：覆盖 append-only、幂等、按 object/correlation/external reference 查询。
 - [x] P0 迁移：新增 RuntimeLocationEvent 表，扩展 reservation enum/index。
@@ -39,8 +39,8 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 - [x] Wave3 本机开发环境 MOCK 验收：用 WMS reconciliation mock 验证冲突/乱序/版本漂移场景，不做生产接入。
 - [x] Phase2 兼容投影第一步：引入 `WorkLineRuntimeStatusProjectionService`，迁移 LOW 风险写入点。
 - [ ] Phase2 兼容投影收尾：单独处理 HIGH 风险 safety estop / dispatch ACK exhausted 写入点。
-- [ ] Wave2 生产热路径：Phase 2/3 residual gates 未全部通过，未实施。
-- [ ] Wave3 生产热路径：Phase 3 closure artifacts 未完整，未实施。
+- [ ] Wave2 生产热路径：Phase 2 runtime_status 兼容投影收尾与 production closure profile 未全部通过，未实施。
+- [ ] Wave3 生产热路径：Phase 2 runtime_status 兼容投影收尾、Wave2 稳定性与 production closure profile 未全部通过，未实施。
 
 ## 验收命令
 
@@ -54,4 +54,4 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。Phase
 
 ## 当前门禁结论
 
-P0/Wave1 已可本地验证。Wave2/Wave3 已降级为本机开发环境 MOCK 验收；Phase1 callback admission 已在 callback API 热路径关闭。Phase2 `runtime_status` 已进入兼容投影服务收敛，但 HIGH 风险 safety / dispatch-ack 写入点未完成；生产热路径继续被 Phase2 收尾与 Phase3 closure gate 阻塞，不能接入 sorter inbound 或 SMT/NG/WMS 生产路径。
+P0/Wave1 已可本地验证。Wave2/Wave3 已降级为本机开发环境 MOCK 验收；Phase1 callback admission 已在 callback API 热路径关闭。Phase3 closure 在当前开发/测试范围默认走 MOCK closure，真实 artifact 不再作为当前推进阻塞项；生产发布前仍必须用 `--closure-profile production` 跑严格 artifact gate。Phase2 `runtime_status` 已进入兼容投影服务收敛，但 HIGH 风险 safety / dispatch-ack 写入点未完成；生产热路径继续被 Phase2 收尾与 production closure profile 阻塞，不能接入 sorter inbound 或 SMT/NG/WMS 生产路径。

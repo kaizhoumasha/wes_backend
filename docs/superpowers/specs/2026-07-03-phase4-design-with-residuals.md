@@ -8,9 +8,9 @@
 
 ## 1. 目标与边界
 
-本 SPEC 只推进 Phase 4 设计，不实现业务能力、不删除 legacy、不改变运行时热路径。Phase 4 设计可以先行，但实现、上线和 Phase 5 删除必须受 Phase 1/2/3 residual gates 约束。
+本 SPEC 只推进 Phase 4 设计，不实现业务能力、不删除 legacy、不改变运行时热路径。Phase 4 设计可以先行，但生产热路径、上线和 Phase 5 删除必须受 Phase 1/2/3 residual gates 约束。
 
-2026-07-04 范围调整：Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。`tests/mock/phase4` 只证明 sorter inbound 与 SMT/NG/WMS 对账合同可由本机 WMS/ECS mock 表达；生产热路径仍记录在 Phase 1/2/3 residual gates 中，但当前实际阻塞项为 Phase 2 runtime_status 兼容投影决策与 Phase 3 closure gate，Phase 1 callback admission 已关闭。
+2026-07-04 范围调整：本项目未发布，当前开发/测试默认使用 MOCK closure。Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。`tests/mock/phase4` 只证明 sorter inbound 与 SMT/NG/WMS 对账合同可由本机 WMS/ECS mock 表达；真实 artifact 不再作为当前开发/测试推进阻塞项。`scripts/check_phase3_closure_gate.py` 无 artifact 时自动选择 mock profile；`--closure-profile production` 保留生产发布前的严格 artifact 校验。生产热路径仍记录在 Phase 1/2/3 residual gates 中，但当前实际阻塞项为 Phase 2 runtime_status 兼容投影收尾，Phase 1 callback admission 已关闭。
 
 Phase 4 目标是补全 WES 作业期完整业务语义：
 
@@ -35,8 +35,8 @@ Phase 4 目标是补全 WES 作业期完整业务语义：
 | Phase 1 | callback API 热路径接入 provider profile admission，拒绝未声明 callback/event/result normalizer | 已在 callback API result/event/external 热路径调用 `ExternalContractProfile.ensure_inbound_normalizer_declared()`，未声明 normalizer 拒绝进入 inbox | callback API 对未声明 normalizer 的拒绝路径有合同测试和热路径测试 |
 | Phase 2 | `WorkLine.runtime_status` 迁出或正式改名为兼容投影 | Phase 4 不新增对 `WorkLine.runtime_status` 的业务依赖；需要运行态时读取 runtime/orchestration 或 active projection | 兼容投影命名/迁出决策完成，文档和查询接口不再把它描述为状态 owner |
 | Phase 3 | external callback 热路径切到 `RuntimeInbox` 状态机与 worker | Phase 4 只设计 RuntimeInbox 目标路径，不把旧 `WorklineInboxService` 当成可扩展依赖 | external callback 生产热路径完成 RuntimeInbox cutover |
-| Phase 3 | 生产/预生产 P0 E2E artifact | Phase 4 设计可以继续，但实现计划不得进入上线验收 | artifact 通过 `scripts/check_phase3_p0_e2e_gate.py` |
-| Phase 3 | production-scale benchmark artifact 与 queue writer PostgreSQL 生产规模证据 | Phase 4 设计中的并发、预约和查询性能只写验收口径，不声明生产能力已满足 | artifact 通过 `scripts/check_phase3_closure_gate.py`，且 benchmark 不是 lightweight / sandbox |
+| Phase 3 | P0 E2E closure profile | 当前开发/测试默认使用 MOCK closure；Phase 4 设计、P0/Wave1 与 Wave2/Wave3 本机 MOCK 验收可以继续 | 生产发布前显式运行 `scripts/check_phase3_closure_gate.py --closure-profile production ...`，并提供真实 P0 E2E artifact |
+| Phase 3 | benchmark / queue writer PostgreSQL 证据 profile | 真实 artifact 不再作为当前开发/测试推进阻塞项；性能只声明预算和合同，不声明生产能力已满足 | 生产发布 profile 必须提供 production-scale benchmark，且 benchmark 不是 lightweight / sandbox |
 
 ### 2.1 per-SPEC 就绪条件
 
@@ -44,8 +44,8 @@ Phase 4 目标是补全 WES 作业期完整业务语义：
 | --- | --- | --- | --- |
 | `material-location-query-spec.md` | ✅ 是（只读查询，不依赖 Phase 3 closure） | — | 需要 `ExternalReferenceCatalog` 稳定（Phase 3 已落地） |
 | `workline-active-objects-spec.md` | ✅ 是（只读聚合视图，不依赖 Phase 3 closure） | — | 依赖 `ActiveObjectRegistry`（Phase 3 已落地）和 `MaterialLocationQuery`（本 Phase 先实施） |
-| `sorter-inbound-capability-spec.md` | ⚠️ 部分（设计可完成，热路径实现需等待） | Phase 3 P0 E2E closure + RuntimeInbox cutover | 查询/只读部分可先行；DeviceCommand 下发、WMS fulfillment 热路径必须等待 Phase 3 closure |
-| `smt-ng-wms-reconciliation-spec.md` | ⚠️ 部分（设计可完成，生产闭环需等待） | Phase 3 P0 E2E closure + RuntimeInbox cutover + 入库能力 SPEC 稳定 | evidence/ExternalReference 部分可先行；对账闭环热路径必须等待 |
+| `sorter-inbound-capability-spec.md` | ⚠️ 部分（设计 + 本机 MOCK 可完成，生产热路径需等待） | Phase 2 runtime_status 兼容投影收尾 + RuntimeInbox cutover；生产发布前再切 `--closure-profile production` | 查询/只读部分和本机 mock 可先行；DeviceCommand 下发、WMS fulfillment 生产热路径不得接入 |
+| `smt-ng-wms-reconciliation-spec.md` | ⚠️ 部分（设计 + 本机 MOCK 可完成，生产闭环需等待） | Phase 2 runtime_status 兼容投影收尾 + RuntimeInbox cutover + 入库能力 SPEC 稳定；生产发布前再切 `--closure-profile production` | evidence/ExternalReference 和本机 mock 可先行；对账闭环生产热路径不得接入 |
 | `docs/architecture/cell-reservation-spec.md` | ✅ 是（独立状态机设计） | — | Phase 4 P0 前置项：3 个 SPEC 依赖 CellReservation，必须先锁定其生命周期 |
 
 ## 3. Phase 4 设计包
@@ -105,9 +105,9 @@ Phase 4 目标是补全 WES 作业期完整业务语义：
 ### 4.2 推荐实现顺序
 
 1. **P0 前置**: `cell-reservation-spec.md` — 定义 CellReservation 完整生命周期（创建/确认占用/释放/TTL/WMS reject/source_version drift），作为 3 个 SPEC 的共同依赖
-2. **Wave 1（查询读模型）**: `MaterialLocationQuery` + `WorklineActiveObjects` — 只读，不依赖 Phase 3 closure，可立即实施
-3. **Wave 2（入库能力）**: `SorterInbound` — 设计可完成，热路径实现等待 Phase 3 closure
-4. **Wave 3（对账闭环）**: `SMT/NG/WMS Reconciliation` — 等待入库能力 SPEC 稳定 + Phase 3 closure
+2. **Wave 1（查询读模型）**: `MaterialLocationQuery` + `WorklineActiveObjects` — 只读，不依赖 production closure，可立即实施
+3. **Wave 2（入库能力）**: `SorterInbound` — 设计与本机 MOCK 验收可完成，生产热路径等待 Phase 2 收尾与 production closure profile
+4. **Wave 3（对账闭环）**: `SMT/NG/WMS Reconciliation` — 本机 MOCK 验收可完成；生产闭环等待入库能力稳定、Phase 2 收尾与 production closure profile
 
 ## 5. 验收方式
 
@@ -116,7 +116,7 @@ Phase 4 目标是补全 WES 作业期完整业务语义：
 - 文档合同测试确认 Phase 4 SPEC registry 中的五份 SPEC 存在并被主计划引用。
 - 文档合同测试确认每份 SPEC 都包含边界声明、Residual Readiness（引用共享 Register + 特有门禁）、行为契约测试、实施前置条件和 Phase 5 legacy 判定。
 - 主计划不得把 Phase 4 设计状态描述为已交付运行时能力，也不得允许 Phase 5 legacy 提前删除。
-- Phase 3 closure 仍以 `scripts/check_phase3_closure_gate.py` 为 Phase 4 实现前置 gate。
+- Phase 3 closure 仍以 `scripts/check_phase3_closure_gate.py` 为 gate；当前开发/测试默认使用 MOCK closure，生产发布前必须显式切换 `--closure-profile production` 并提供真实 artifact。
 
 ### 5.2 跨 SPEC 集成测试矩阵
 

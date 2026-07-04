@@ -17,7 +17,7 @@
 | --- | --- |
 | Phase 1 callback admission 已关闭 | 所有 WMS/ECS callback 只描述目标态 normalizer admission，不假设旧 callback 可扩展 |
 | Phase 2 `WorkLine.runtime_status` 未清空 | 入库流程状态归 ExecutionWorkItem、WmsFulfillmentRequest、MaterialUnit、CellReservation 等 owner，不写 WorkLine 运行状态 |
-| Phase 3 RuntimeInbox / P0 E2E / benchmark 未关闭 | 设计可完成；实现前必须通过 Phase 3 closure gate，尤其是 RuntimeInbox cutover 与 queue writer PostgreSQL evidence |
+| Phase 3 RuntimeInbox / closure profile | 设计与本机 MOCK 验收可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产热路径接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
 
 ## 3. 粗分机正常流
 
@@ -134,7 +134,7 @@ Phase 4 实现前，旧业务 characterization 只能作为输入语义，不得
 
 ## 9. 实施前置条件
 
-生产热路径实现前必须明确 Phase 2 runtime status 兼容投影口径，并通过 Phase 3 closure gate。否则只能保留为设计、characterization mapping 和本机 MOCK 验收。
+生产热路径实现前必须明确 Phase 2 runtime status 兼容投影口径，并通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`。否则只能保留为设计、characterization mapping 和本机 MOCK 验收。
 
 ### 9.1 本机开发环境 MOCK 验收
 
@@ -143,7 +143,7 @@ Wave2 入库能力本轮降级为本机开发环境 MOCK 验收，不做生产�
 - WMS mock 可以表达 `WmsFulfillmentPort.notify_pkg_binding()` 与 `WmsInventoryTransactionPort` 的职责拆分。
 - ECS mock 可以表达 ACK/RESULT callback 和设备失败/超时场景，但 callback 只能指向 localhost 本机 WES。
 - mock 验收不得注册生产 router、Celery worker、真实 WMS/ECS client 或任何 sorter inbound 生产热路径。
-- 生产热路径仍必须等待 Phase 2/3 residual gates 通过，并保持 Phase1 callback admission 证据绿灯；mock 通过不等于 Phase 4 业务上线完成。
+- 生产热路径仍必须等待 Phase 2 residual gate 与 production closure profile 通过，并保持 Phase1 callback admission 证据绿灯；mock 通过不等于 Phase 4 业务上线完成。
 
 ## 10. Runtime 集成映射
 

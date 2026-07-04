@@ -17,7 +17,7 @@ WorklineActiveObjects 是 WorkLine 当前作业对象的只读聚合视图。它
 | --- | --- |
 | Phase 1 callback admission 已关闭 | 所有入站来源必须保留 source/provider/evidence，视图不接受无 profile 的来源 |
 | Phase 2 运行状态投影未清空 | 视图只读 runtime/orchestration、active projection 和 evidence，不读 WorkLine 运行状态作为 owner |
-| Phase 3 closure 未关闭 | 允许定义视图合同；正式上线前必须有 production P0 E2E artifact 和 benchmark artifact |
+| Phase 3 closure profile | 允许定义视图合同；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；正式上线前必须显式通过 `--closure-profile production` |
 
 ## 3. 视图职责
 
@@ -62,7 +62,7 @@ WorklineActiveObjects 是 WorkLine 当前作业对象的只读聚合视图。它
 
 ## 7. 实施前置条件
 
-实现可以作为只读查询薄片先行；若要展示 reservation deadline、冻结格位或 RECONCILING 来源，必须先引用 `cell-reservation-spec.md` 中的状态映射；若要接入生产运维界面，必须先补齐 Phase 3 closure artifact 和 benchmark evidence。
+实现可以作为只读查询薄片先行；若要展示 reservation deadline、冻结格位或 RECONCILING 来源，必须先引用 `cell-reservation-spec.md` 中的状态映射；若要接入生产运维界面，必须先通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`。
 
 ## 8. 性能预算
 
