@@ -22,8 +22,8 @@ def _write_minimal_phase4_docs(repo_root: Path, *, stale_status: bool = False) -
         "cell-reservation-spec.md": "Phase 4 P0 开发/测试已落地；生产投放热路径未接入",
         "material-location-query-spec.md": "Phase 4 Wave1 开发/测试已落地",
         "workline-active-objects-spec.md": "Phase 4 Wave1 开发/测试已落地",
-        "sorter-inbound-capability-spec.md": "Phase 4 本机 MOCK 已验收；生产热路径未接入",
-        "smt-ng-wms-reconciliation-spec.md": "Phase 4 本机 MOCK 已验收；生产热路径未接入",
+        "sorter-inbound-capability-spec.md": "Phase 4 runtime capability 已落地；evidence profile 未闭合",
+        "smt-ng-wms-reconciliation-spec.md": "Phase 4 runtime capability 已落地；evidence profile 未闭合",
     }
     if stale_status:
         status_by_file["cell-reservation-spec.md"] = "Phase 4 P0 前置设计 SPEC，未实现"
@@ -36,28 +36,30 @@ def _write_minimal_phase4_docs(repo_root: Path, *, stale_status: bool = False) -
 
     (repo_root / "docs" / "superpowers" / "plans" / "2026-07-04-phase4-runtime-readiness.md").write_text(
         """# Phase4 Runtime Readiness 实施计划
-Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。
+Wave2/Wave3 后续目标是 production-capable runtime path，外部 provider 可替换。
 开发/测试范围的 Phase4 runtime readiness gate 已关闭。
-- [ ] Wave2 生产热路径：production closure profile 与上线确认未通过，未实施。
-- [ ] Wave3 生产热路径：Wave2 生产稳定性、production closure profile 与上线确认未通过，未实施。
+- [x] Wave2 runtime capability builder：已输出 RuntimeIntent/effect contract/evidence。
+- [x] Wave3 runtime capability builder：已输出 RuntimeIntent/RuntimeInbox evidence/RuntimeHold plan。
+- [ ] Wave2 evidence profile：provider contract 证据未提供。
+- [ ] Wave3 evidence profile：provider contract 证据未提供。
 """,
         encoding="utf-8",
     )
     (repo_root / "docs" / "architecture" / "workline-and-plugin-restructuring.md").write_text(
         """### 10.5 Phase 4: 后续子领域
-Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。
-生产热路径、线上 callback cutover、真实 WMS/ECS effect dispatch 仍受 production closure profile 约束。
-- [ ] 分拣机/粗分机入库能力按目标态 capability / port 重建，不保留旧插件兼容入口（生产 runtime 接线未做，保持未勾选）
+Wave2/Wave3 后续目标是 production-capable runtime path，外部 provider 可替换。
+evidence profile 只改变验收证据要求，不改变 service 行为。
+- [x] 分拣机/粗分机入库能力 runtime capability builder 已按目标态 capability / port 重建，不保留旧插件兼容入口
 ### 10.6 Phase 5
 """,
         encoding="utf-8",
     )
     (repo_root / "tests" / "mock" / "phase4" / "test_wave2_wave3_mock_acceptance.py").write_text(
-        '"""本机 MOCK 验收，不代表生产热路径接入。"""\n',
+        '"""本机 MOCK 验收，不代表 evidence profile 闭合。"""\n',
         encoding="utf-8",
     )
     (repo_root / "tests" / "mock" / "phase4" / "test_sorter_inbound_mock_contracts.py").write_text(
-        '"""sorter inbound 本机 MOCK 合同，不代表生产热路径接入。"""\n',
+        '"""sorter inbound 本机 MOCK 合同，不代表 evidence profile 闭合。"""\n',
         encoding="utf-8",
     )
     (
@@ -83,7 +85,7 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。
         / "phase4"
         / "smt_ng_wms_reconciliation_preview_service.py"
     ).write_text(
-        '"""Phase4 SMT/NG/WMS preview; LOCAL_MOCK_ONLY; production_write_path; legacy_plugin_entry_used."""\n',
+        '"""Phase4 SMT/NG/WMS preview; LOCAL_MOCK_ONLY; production_write_path; legacy_plugin_entry_used; RuntimeHold."""\n',
         encoding="utf-8",
     )
     (repo_root / "tests" / "workline_runtime" / "test_smt_ng_wms_reconciliation_preview_service.py").write_text(
@@ -91,6 +93,40 @@ Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。
             '"""Phase4 SMT/NG/WMS preview capability 合同。"""\n'
             '"production_write_path legacy_plugin_entry_used IDEMPOTENT_DUPLICATE RuntimeHold scope-only"\n'
         ),
+        encoding="utf-8",
+    )
+    (
+        repo_root / "src" / "app" / "runtime" / "capabilities" / "phase4" / "sorter_inbound_runtime_service.py"
+    ).write_text(
+        (
+            '"""Phase4 sorter inbound runtime capability."""\n'
+            '"RuntimeIntent WmsFulfillmentPort.notify_pkg_binding '
+            'WmsInventoryTransactionPort.confirm_inbound provider-contract"\n'
+        ),
+        encoding="utf-8",
+    )
+    (repo_root / "tests" / "workline_runtime" / "test_sorter_inbound_runtime_service.py").write_text(
+        (
+            '"""Phase4 sorter inbound runtime capability 合同。"""\n'
+            '"RuntimeIntent WmsFulfillmentPort.notify_pkg_binding '
+            'WmsInventoryTransactionPort.confirm_inbound provider-contract"\n'
+        ),
+        encoding="utf-8",
+    )
+    (
+        repo_root
+        / "src"
+        / "app"
+        / "runtime"
+        / "capabilities"
+        / "phase4"
+        / "smt_ng_wms_reconciliation_runtime_service.py"
+    ).write_text(
+        '"""Phase4 SMT/NG/WMS reconciliation runtime capability; RuntimeIntent RuntimeInbox provider-contract."""\n',
+        encoding="utf-8",
+    )
+    (repo_root / "tests" / "workline_runtime" / "test_smt_ng_wms_reconciliation_runtime_service.py").write_text(
+        '"""Phase4 SMT/NG/WMS reconciliation runtime capability 合同。 RuntimeIntent RuntimeInbox provider-contract."""\n',
         encoding="utf-8",
     )
 
@@ -118,7 +154,60 @@ def test_phase4_runtime_readiness_gate_production_profile_is_blocked() -> None:
     )
 
     assert result.returncode == 2
-    assert "PHASE4_PRODUCTION_HOT_PATH_NOT_ENABLED" in result.stdout
+    assert "MISSING_PHASE4_RUNTIME_EVIDENCE_ARTIFACT" in result.stdout
+    assert "evidence_profile=production" in result.stdout
+
+
+def test_phase4_runtime_readiness_gate_simulator_profile_requires_evidence_not_code_branch() -> None:
+    result = subprocess.run(
+        [sys.executable, str(GATE_SCRIPT), "--readiness-profile", "simulator"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "MISSING_PHASE4_RUNTIME_EVIDENCE_ARTIFACT" in result.stdout
+    assert "evidence_profile=simulator" in result.stdout
+
+
+def test_phase4_runtime_readiness_gate_simulator_profile_accepts_provider_contract_evidence(tmp_path) -> None:
+    evidence_artifact = tmp_path / "phase4-runtime-evidence.json"
+    evidence_artifact.write_text(
+        """{
+  "profile": {"name": "simulator"},
+  "capabilities": ["sorter_inbound", "smt_ng_wms_reconciliation"],
+  "effect_path": [
+    "RuntimeIntentLog",
+    "WmsFulfillmentPort.notify_pkg_binding",
+    "WmsInventoryTransactionPort.confirm_inbound"
+  ],
+  "callback_path": ["RuntimeInbox"],
+  "service_behavior_invariant": ["provider-contract"]
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(GATE_SCRIPT),
+            "--readiness-profile",
+            "simulator",
+            "--phase4-runtime-evidence-artifact",
+            str(evidence_artifact),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "PHASE4_RUNTIME_EVIDENCE_READY" in result.stdout
+    assert "evidence_profile=simulator" in result.stdout
 
 
 def test_phase4_runtime_readiness_gate_rejects_stale_spec_status(tmp_path) -> None:
@@ -177,3 +266,20 @@ def test_phase4_runtime_readiness_gate_requires_reconciliation_preview_capabilit
     assert result.returncode == 1
     assert "MISSING_PHASE4_READINESS_FILES" in result.stdout
     assert "smt_ng_wms_reconciliation_preview_service.py" in result.stdout
+
+
+def test_phase4_runtime_readiness_gate_requires_runtime_capability_files(tmp_path) -> None:
+    _write_minimal_phase4_docs(tmp_path)
+    (tmp_path / "src" / "app" / "runtime" / "capabilities" / "phase4" / "sorter_inbound_runtime_service.py").unlink()
+
+    result = subprocess.run(
+        [sys.executable, str(GATE_SCRIPT), "--repo-root", str(tmp_path)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "MISSING_PHASE4_READINESS_FILES" in result.stdout
+    assert "sorter_inbound_runtime_service.py" in result.stdout

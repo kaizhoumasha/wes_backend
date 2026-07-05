@@ -1,6 +1,6 @@
 """Phase 4 Wave2/Wave3 本机 MOCK 验收。
 
-这些测试只验证本机 mock 能表达目标合同，不代表生产热路径接入。
+这些测试只验证本机 mock 能表达目标合同，不代表 evidence profile 闭合。
 """
 
 from __future__ import annotations

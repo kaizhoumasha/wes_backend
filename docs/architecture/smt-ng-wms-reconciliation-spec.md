@@ -1,6 +1,6 @@
 # SMT / NG / WMS Reconciliation SPEC
 
-> 状态：Phase 4 本机 MOCK 已验收；生产热路径未接入
+> 状态：Phase 4 runtime capability 已落地；evidence profile 未闭合
 > 父计划：`workline-and-plugin-restructuring.md` §10.5
 
 ---

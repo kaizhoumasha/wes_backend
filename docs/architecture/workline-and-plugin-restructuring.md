@@ -1786,14 +1786,14 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | Phase 1 Packet D Capability 边界 + 剩余 4 WMS port（CEO-009） | ✅ **已完成** | Packet D (2026-06-27) + 本分支 callback admission 收敛 | 4 剩余 WMS port（WmsDocumentPort / WmsFulfillmentPort / WmsEventPort / WmsReconciliationQueryPort）全部 7/7 落地 + InboundNormalizerRegistry + consumer-only `InboundNormalizerContext.get_inbound_normalizer()` + InboundNormalizerProfile 3 Pydantic validators + R-I3c 静态扫描 + import-linter capability-isolation contract + callback API provider profile admission 热路径接入 | — |
 | Phase 2 Runtime/Orchestration 迁移与 WorkLine 清空 | 🟡 **主迁移完成，运行状态投影收敛中** | launch PR `8602c33b` + 阶段 1-6 burn-down（PR #70 `v0.10.2.1`）+ F-1/F-2 收尾（PR #71 `v0.10.3.0`） | 阶段 1-6 + F-1/F-2 收尾已完成 service/v1 router 域清空、facade 物理删除、device_command_gateway 迁出和 model/repository 迁入；`WorkLine.runtime_status` 已引入 runtime/orchestration 兼容投影服务，LOW 风险写入点已迁入，HIGH 风险 safety / dispatch-ack 写入点仍保留 | 继续迁出或完成兼容投影收敛，详见 §10.3 |
 | Phase 3 执行安全与恢复能力补全 | 🟡 **本地合同/门禁已补齐，开发/测试 MOCK closure 可通过** | [#73](https://github.com/kaizhoumasha/wes_backend/pull/73) `v0.10.4.0` (2026-07-02) + 本分支 Phase 3 closure slice | callback body HMAC/nonce、RuntimeInbox 幂等/重放/backpressure、ReconciliationManager owner-scoped 决议、ActiveObjectRegistry、DeviceCommand lease、WMS fulfillment 状态机/typed evidence、WorkLine plane/manifest、ops contracts；本分支新增并接入 DeviceDispatchPolicy 到 DeviceCommandGateway 预检与 dispatch policy metrics、落地 DB-backed ConveyorQueueMembership writer service 与写入诊断结果、PostgreSQL `FOR UPDATE` active identity 锁语义和 opt-in unique race 合同、`wes_runtime.device_runtime_projections` 持久 DeviceRuntime 投影与 DeviceService 运行态同步，并补齐 ReconciliationManager 幂等登记入口、runtime reconciliation `TIMER_TIMEOUT` / dispatch ACK exhausted 热路径 claim、WMS fulfillment 幂等 opening 入口、RuntimeIntent `EXTERNAL_REQUEST` fulfillment 实际发起热路径 claim、RuntimeInbox device_event 幂等 claim、plane owner/superuser 行级过滤与 audit log、ScenarioRecorder/ReplayRunner active projection diff、IntegrationLab fixture runner、TraceQueryResult 生产录制源适配、RuntimeP0E2EGate 与 RuntimeP0E2EArtifactComposer 生产 E2E 证据门禁、RuntimeBenchmarkArtifactComposer 生产 benchmark evidence 组装门禁、RuntimePhase3ClosureGate 总门禁、RuntimeObservabilityRegistry、RuntimeOpenTelemetryBridge、RuntimeToggleRegistry、RuntimeToggleReleaseGate、RuntimeBenchmarkGate profile/provenance/workload metadata gate、ExternalReferenceCatalog、timeout 转移、full-box / RACK_BIN exchange 合同、runtime toggle quality gate、external callback allow-list 矩阵、`tests/load` 轻量 benchmark 命令、benchmark artifact 合同、CI lightweight artifact 归档、resilience replay fixture 和 simulator replay fixture、OpenTelemetry backend 接线 | 本项目未发布，当前开发/测试默认使用 MOCK closure；生产发布前再显式运行 `--closure-profile production` 并提供真实 P0 E2E 与 production-scale benchmark artifact |
-| Phase 4 后续子领域 | 🟡 **SPEC 已写，P0/Wave1 开发/测试已闭合，生产门禁未关闭** | 本分支 Phase 4 设计包 + Phase 4 runtime readiness 分支 | `phase4-design-with-residuals.md` + 5 份 Phase 4 SPEC；CellReservation / RuntimeLocationEvent / MaterialLocationQuery / WorklineActiveObjects P0-Wave1 已进入本机合同验证；Wave2/Wave3 仅做本机 MOCK 验收，不做生产接入 | Phase 1 callback admission 已关闭；当前开发/测试默认使用 MOCK closure；后续生产热路径仍需满足 Phase 2 runtime_status 兼容投影决策与 production closure profile；不代表 sorter inbound 或 SMT/NG/WMS 生产热路径完成 |
+| Phase 4 后续子领域 | 🟡 **SPEC 已写，P0/Wave1 已闭合，Wave2/Wave3 runtime capability 已落地，evidence profile 未闭合** | 本分支 Phase 4 设计包 + Phase 4 runtime readiness 分支 | `phase4-design-with-residuals.md` + 5 份 Phase 4 SPEC；CellReservation / RuntimeLocationEvent / MaterialLocationQuery / WorklineActiveObjects P0-Wave1 已进入本机合同验证；Wave2/Wave3 已从 preview 语义推进到 production-capable runtime path builder | Phase 1 callback admission 已关闭；当前开发/测试默认使用 MOCK closure；后续发布前仍需满足 Phase 3 production closure 与 Phase 4 evidence profile；不代表 sorter inbound 或 SMT/NG/WMS evidence profile 已闭合 |
 | Phase 5 Legacy 删除与收尾 | ⏳ **未启动** | — | — | 双 lane：技术残留清理（Phase 3 门禁后）+ 业务承载 legacy 清理（Phase 4 能力验收后） |
 
 **Phase 3 closure 状态校验（2026-07-04）**：
 
 - 结论：本项目未发布，当前开发/测试默认使用 MOCK closure；`uv run python scripts/check_phase3_closure_gate.py` 无 artifact 即按 mock profile 通过。真实 artifact 不再作为当前开发/测试推进阻塞项。
 - 生产发布 profile：`--closure-profile production` 仍要求真实 P0 E2E artifact、production-scale benchmark artifact，以及两类 artifact 引用 evidence 文件存在且内容一致。
-- 下一阶段边界：Phase 4 可作为后续业务语义建设启动；Phase 5 技术残留清理 lane 可依据开发/测试 MOCK closure 与行为契约推进，但任何生产热路径接入、上线发布或生产残留删除仍必须显式通过 production closure profile。
+- 下一阶段边界：Phase 4 可作为后续业务语义建设启动；Phase 5 技术残留清理 lane 可依据开发/测试 MOCK closure 与行为契约推进，但任何上线发布或业务承载 legacy 删除仍必须显式通过 production closure profile 与 Phase 4 evidence profile。
 - 轻量 benchmark 口径：`reports/benchmarks/phase3-runtime-benchmark.json` 的 `local-lightweight` / `lightweight` 结果可用于当前开发/测试 mock 验收；不得冒充 `--closure-profile production` 证据。
 
 **Phase 3 PR #73 已完成项（`v0.10.4.0`，2026-07-02 同步）**：
@@ -2141,7 +2141,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 
 **目标**：补全 WES 作业期完整业务语义。Phase 4 不阻塞 Phase 3 的 P0 技术闭环上线验证，但阻塞完整业务能力上线；任何仍承载未重建业务语义的 legacy 不能在对应 Phase 4 能力验收前删除。
 
-**范围调整（2026-07-04）**：本项目未发布，当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项。Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。`tests/mock/phase4` 只验收本机 WMS/ECS mock 能表达 sorter inbound 与 SMT/NG/WMS 对账合同；Phase1 callback admission 已关闭，生产热路径、线上 callback cutover、真实 WMS/ECS effect dispatch 仍受 Phase 2 runtime_status 兼容投影决策与 production closure profile 约束，发布前必须显式运行 `--closure-profile production`。
+**范围调整（2026-07-05）**：本项目未发布，当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项。Wave2/Wave3 后续目标是 **production-capable runtime path**，而不是把业务代码绑定到某个真实外设。WES 只面向 provider contract、RuntimeIntent、RuntimeInbox、idempotency、timeout/retry、evidence 与 RuntimeHold/Reconciliation；外部是真设备、sandbox、MOCK 还是 simulator，由部署 wiring 与 evidence profile 区分，不进入业务代码分支。Phase1 callback admission 已关闭；发布前必须显式运行 `--closure-profile production`，并通过 Phase4 evidence profile gate。
 
 **设计包（2026-07-03）**：
 
@@ -2162,15 +2162,15 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 
 **SPEC 进度同步（2026-07-04 验收）**：
 
-| SPEC / 能力 | 当前状态 | 已验证范围 | 未闭合项 / 生产门禁 |
+| SPEC / 能力 | 当前状态 | 已验证范围 | 未闭合项 / evidence profile |
 | --- | --- | --- | --- |
-| Umbrella design | ✅ 设计包已完成 | `phase4-design-with-residuals.md` 已纳入 Phase 1/2/3 residual gates，并声明 Phase 4 设计可以先行 | 不代表 Phase 4 业务能力完成；生产热路径仍受 Phase 2 runtime_status 兼容投影决策与 production closure profile 约束 |
-| `cell-reservation-spec.md` | ✅ P0 开发/测试闭合 | 复用 `WorklineBinCellReservation`，保留 `PLANNED/CONSUMED/RELEASED/CANCELLED` 内部命名，新增 `RECONCILING`，覆盖 active/frozen 唯一约束、claim/consume/release、TTL 只释放 `PLANNED`、reservation_key/evidence 包含 `correlation_id`、`source_event_id`、provider/source_version | 生产投放热路径接入仍随 sorter inbound gate 验收 |
+| Umbrella design | ✅ 设计包已完成 | `phase4-design-with-residuals.md` 已纳入 Phase 1/2/3 residual gates，并声明 Phase 4 设计可以先行 | 不代表 Phase 4 业务能力完成；后续按 production-capable runtime path 与 evidence profile gate 验收 |
+| `cell-reservation-spec.md` | ✅ P0 开发/测试闭合 | 复用 `WorklineBinCellReservation`，保留 `PLANNED/CONSUMED/RELEASED/CANCELLED` 内部命名，新增 `RECONCILING`，覆盖 active/frozen 唯一约束、claim/consume/release、TTL 只释放 `PLANNED`、reservation_key/evidence 包含 `correlation_id`、`source_event_id`、provider/source_version | 投放运行路径证据随 sorter inbound evidence profile 验收 |
 | `material-location-query-spec.md` | ✅ Wave1 开发/测试闭合 | service 层与 API facade 覆盖 material identity、package/bin、rack/side、workline active object、ExternalReference、correlation_id 6 类入口，并按本地事实、ActiveObjectRegistry、CellReservation、WMS snapshot、legacy evidence 聚合 | 生产 WMS snapshot 证据仍按 gated profile 接入 |
-| `workline-active-objects-spec.md` | ✅ Wave1 本机合同验证已通过 | 聚合 ActiveObjectRegistry、ExecutionWorkItem、ConveyorQueueMembership、RuntimeHold/ReconciliationRecord、MaterialLocationQuery；覆盖 `OK/TRANSIENT/RECONCILING`、hold scope、limit/truncated | 生产读模型 SLA 与大规模 benchmark 仍随 production closure profile 验收 |
-| `sorter-inbound-capability-spec.md` | 🟡 本机 MOCK + runtime preview 验收 | `tests/mock/phase4` 可表达 sorter inbound 的本机 WMS/ECS mock 合同；`Phase4SorterInboundPreviewService` 已把粗分机正常流、分拣机 join gate、满箱交换前置分流、`CHANGE_RACK_FACE` 独立履约与 CTU 父子批次视图沉淀为 runtime capability 级纯 preview；PKG binding 与库存事务 port 归属已通过文档/运行时合同测试约束 | 粗分机、满箱交换、分拣机入库生产热路径未接入；不得复用旧 plugin 入口，发布前必须补生产合同与真实 effect dispatch 证据 |
-| `smt-ng-wms-reconciliation-spec.md` | 🟡 本机 MOCK + runtime preview 验收 | `tests/mock/phase4` 可表达 SMT/NG/WMS 对账冲突、拒绝、重复/乱序、版本漂移等本机 mock 场景；`SmtNgWmsReconciliationPreviewService` 已把冲突矩阵、重复 callback 幂等合并与 RuntimeHold scope-only release 沉淀为 runtime capability 级纯 preview | WMS reconciliation 生产热路径未接入；RuntimeHold scope-only release 与真实 WMS callback cutover 仍受 production closure profile 约束 |
-| Phase4 runtime readiness gate | ✅ 开发/测试 MOCK 门禁已接入 | `scripts/check_phase4_runtime_readiness_gate.py` 验证 SPEC 状态、Wave2/Wave3 本机 MOCK 合同、`Phase4SorterInboundPreviewService` / `SmtNgWmsReconciliationPreviewService` 非生产边界和生产热路径未开启；已接入 `./scripts/git-quality-gate.sh --profile quality` | `--readiness-profile production` 当前返回 `PHASE4_PRODUCTION_HOT_PATH_NOT_ENABLED`，生产接入前不得改绿 |
+| `workline-active-objects-spec.md` | ✅ Wave1 本机合同验证已通过 | 聚合 ActiveObjectRegistry、ExecutionWorkItem、ConveyorQueueMembership、RuntimeHold/ReconciliationRecord、MaterialLocationQuery；覆盖 `OK/TRANSIENT/RECONCILING`、hold scope、limit/truncated | 读模型 SLA 与大规模 benchmark 随 evidence profile 验收 |
+| `sorter-inbound-capability-spec.md` | 🟡 runtime capability 已落地，evidence profile 未闭合 | `tests/mock/phase4` 可表达 sorter inbound provider contract 语义基线；`Phase4SorterInboundPreviewService` 保留纯 preview 边界；`Phase4SorterInboundRuntimeService` 已输出 `RuntimeIntent`、`WmsFulfillmentPort.notify_pkg_binding`、`WmsInventoryTransactionPort.confirm_inbound`、CellReservation/RuntimeLocationEvent evidence 与 join gate object-scope reconciliation plan | provider contract evidence、effect dispatch trace、RuntimeIntentLog/DeviceCommand/WMS fulfillment 证据未提供；不得复用旧 plugin 入口 |
+| `smt-ng-wms-reconciliation-spec.md` | 🟡 runtime capability 已落地，evidence profile 未闭合 | `tests/mock/phase4` 可表达 SMT/NG/WMS 对账 provider contract 语义基线；`SmtNgWmsReconciliationPreviewService` 保留纯 preview 边界；`SmtNgWmsReconciliationRuntimeService` 已输出 RuntimeInbox 上游 callback evidence、重复 callback 幂等合并、WMS reject/source_version drift 等 RuntimeHold plan 与 scope-only release plan | provider contract evidence、RuntimeInbox worker trace、RuntimeHold/ReconciliationRecord 证据未提供 |
+| Phase4 runtime readiness gate | ✅ 开发/测试门禁已接入 | `scripts/check_phase4_runtime_readiness_gate.py` 验证 SPEC 状态、Wave2/Wave3 mock 语义基线、preview 边界和 runtime capability 文件；已接入 `./scripts/git-quality-gate.sh --profile quality` | `development/simulator/site/production` profile 只改变 evidence 要求，不改变 service 行为；缺 evidence artifact 时对应 profile 保持红灯 |
 | RCS/AGV/CTU direct provider adapter | ✅ YAGNI 保持未触发 | 当前仍由 WMS 中转统一履约；未写 `fulfillment-provider-adapter-spec.md`，未预留代码骨架 | 仅当客户明确要求绕过 WMS，或 WMS 实测无法满足实时性需求时再启动独立 SPEC |
 
 **按需触发任务**（YAGNI 隔离，不在 Phase 4 时间表内强制执行）：
@@ -2182,10 +2182,10 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 **Phase 4 完成门禁**：
 
 - [x] `MaterialLocationQuery` 6 入口全部支持（service 层与 API facade 均已覆盖）
-- [x] `WorklineActiveObjects` 与 `ActiveObjectRegistry` 协同（已通过本机合同测试；生产 SLA/benchmark 随 production closure profile 验收）
-- [x] `CellReservation` 目标模型、唯一约束、TTL 释放、投放成功转占用和失败释放/RECONCILING 测试全部通过（开发/测试范围已覆盖；生产投放热路径随 sorter inbound gate 验收）
-- [x] 粗分机正常流通过本机 MOCK 行为契约测试：入料机械臂扫码/测量 -> WMS GRN 绑定与测量校验 -> 入料机械臂投流水线 -> 粗分机流水线到出料口 -> 出料格位分配/预约 -> 必要时 WMS 补空箱货架 -> 出料机械臂投格 -> 本地位置事实与格位占用落库 -> WMS PKG 绑定/库存事务通知；WMS 失败进入同步 hold/reconciliation，不抹掉本地物理事实；入料机械臂在当前对象进入流水线后即可处理下一个对象（不做生产接入）
-- [x] 满箱交换前置分流通过本机 MOCK 行为契约测试：粗分机移出单层货架 -> 满箱交换区或交换决策点 -> 无满箱需求进入分拣机 STATION/排队区；有满箱需求创建 `FULL_BOX_EXCHANGE` -> 按 `rack_code + rack_side` 分批 -> 必要时 `CHANGE_RACK_FACE` 独立履约 -> 满箱物料箱级入库完成/同步，剩余未满箱物料才进入分拣机逐件流程；生产热路径接入仍受 production closure profile 约束
+- [x] `WorklineActiveObjects` 与 `ActiveObjectRegistry` 协同（已通过本机合同测试；SLA/benchmark 随 evidence profile 验收）
+- [x] `CellReservation` 目标模型、唯一约束、TTL 释放、投放成功转占用和失败释放/RECONCILING 测试全部通过（开发/测试范围已覆盖；投放运行路径证据随 sorter inbound gate 验收）
+- [x] 粗分机正常流通过本机 MOCK 行为契约测试：入料机械臂扫码/测量 -> WMS GRN 绑定与测量校验 -> 入料机械臂投流水线 -> 粗分机流水线到出料口 -> 出料格位分配/预约 -> 必要时 WMS 补空箱货架 -> 出料机械臂投格 -> 本地位置事实与格位占用落库 -> WMS PKG 绑定/库存事务通知；WMS 失败进入同步 hold/reconciliation，不抹掉本地物理事实；入料机械臂在当前对象进入流水线后即可处理下一个对象
+- [x] 满箱交换前置分流通过本机 MOCK 行为契约测试：粗分机移出单层货架 -> 满箱交换区或交换决策点 -> 无满箱需求进入分拣机 STATION/排队区；有满箱需求创建 `FULL_BOX_EXCHANGE` -> 按 `rack_code + rack_side` 分批 -> 必要时 `CHANGE_RACK_FACE` 独立履约 -> 满箱物料箱级入库完成/同步，剩余未满箱物料才进入分拣机逐件流程
 - [x] 满箱交换区与分拣机 `STATION A/B` 不得混用；满箱交换完成前，分拣机北向机械臂不得对该单层货架取料（本机 MOCK 通过 `station_admission_blocked_until_exchange_completed` 合同表达）
 - [x] 分拣机入库正常流通过本机 MOCK 行为契约测试：STATION A/B 与 FIVE STATION admission -> WMS/CTU 批量投箱入线与逐箱 callback -> SCAN1 授权料箱 resolve / 未授权 NG -> SCAN2/SCAN3 路由与退料线 -> 北向机械臂取料到扫码平台 -> 扫码后格位分配/预约 -> 必要时换箱/等待 -> 南向机械臂投料 -> 本地位置事实与格位占用落库 -> WMS PKG 绑定/库存事务通知；WMS 失败进入同步 hold/reconciliation，不抹掉本地物理事实
 - [x] 已满箱交换入库的物料不得再次进入分拣机逐件分拣候选集；剩余未满箱料箱的物料可继续进入 `STATION A/B` 或排队区（本机 MOCK 已覆盖 full-box object 与 sorting candidate 集合互斥）
@@ -2197,9 +2197,12 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 - [x] 本地物理完成与 WMS 同步状态显式拆分：`LOCAL_PHYSICAL_COMPLETED` 不等于业务完全完成；WMS 通知或库存事务失败时进入 `WMS_SYNC_PENDING` 或 `RECONCILING`（本机 MOCK 已覆盖）
 - [x] `RuntimeHold` 具备 object/device/resource/queue scope；单对象异常不得默认停整条 WorkLine，人工解除只释放声明的 `allowed_next_effect_scope`（本机 MOCK 已补 `runtime-hold-release-preview` scope-only release 合同）
 - [x] 分拣机/粗分机入库能力开发/测试 preview 按目标态 capability 边界沉淀：`Phase4SorterInboundPreviewService` 不访问 DB、不发 WMS/ECS effect、不复用旧 plugin 入口，覆盖粗分机、分拣机 join gate、满箱交换、换面和 CTU 父子视图合同
-- [ ] 分拣机/粗分机入库能力生产 runtime 接线：真实 WMS/ECS effect dispatch、RuntimeIntent/DeviceCommand/WMS fulfillment 写路径和 production closure profile 未完成，保持未勾选
-- [x] SMT/NG/WMS 对账闭环不复制 WMS/NG/PDA 主数据，只保留 evidence、ExternalReference 和 RuntimeHold 解除条件（本机 MOCK 已覆盖冲突矩阵与 scope-only release；生产 callback cutover 不做接入）
+- [x] 分拣机/粗分机入库能力 production-capable runtime path builder：`Phase4SorterInboundRuntimeService` 输出 `RuntimeIntent`、effect contract、CellReservation/RuntimeLocationEvent evidence 与 object-scope reconciliation plan，不根据外部 provider 类型分支
+- [ ] 分拣机/粗分机入库能力 evidence profile：provider contract 证据、effect dispatch trace、RuntimeIntentLog/DeviceCommand/WMS fulfillment 证据未提供，保持未勾选
+- [x] SMT/NG/WMS 对账闭环不复制 WMS/NG/PDA 主数据，只保留 evidence、ExternalReference 和 RuntimeHold 解除条件（本机 MOCK 已覆盖冲突矩阵与 scope-only release）
 - [x] SMT/NG/WMS 对账开发/测试 preview 按目标态 capability 边界沉淀：`SmtNgWmsReconciliationPreviewService` 不访问 DB、不发 WMS/NG/PDA effect、不复用旧 plugin 入口，覆盖 NG evidence、本地事实缺失、WMS reject、目标箱回写失败、重复/乱序 callback、source_version drift 与 RuntimeHold scope-only release
+- [x] SMT/NG/WMS 对账 production-capable runtime path builder：`SmtNgWmsReconciliationRuntimeService` 输出 RuntimeInbox 上游 callback evidence、重复 callback 幂等合并、WMS reject/source_version drift 等 RuntimeHold plan 与 scope-only release plan，不根据外部 provider 类型分支
+- [ ] SMT/NG/WMS 对账 evidence profile：provider contract 证据、RuntimeInbox worker trace、RuntimeHold/ReconciliationRecord 证据未提供，保持未勾选
 - [x] 按需触发任务未达到触发条件时保持不实施，不写预先 SPEC、不预留代码骨架
 
 ### 10.6 Phase 5: Legacy 删除与收尾
