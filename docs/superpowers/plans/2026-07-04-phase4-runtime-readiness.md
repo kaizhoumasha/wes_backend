@@ -27,6 +27,8 @@ Wave2/Wave3 后续目标是 production-capable runtime path，外部 provider �
 
 2026-07-05 追加进展：新增 `Phase4SorterInboundRuntimeService` 与 `SmtNgWmsReconciliationRuntimeService`，把 Wave2/Wave3 从 preview 语义推进到 production-capable runtime path 的 plan builder：输出 `RuntimeIntent`、effect port contract、provider-contract evidence、RuntimeInbox evidence 与 RuntimeHold scope-only plan，不判断外部 provider 是真设备、sandbox、MOCK 还是 simulator。`scripts/check_phase4_runtime_readiness_gate.py` 新增 `development/simulator/site/production` evidence profile；profile 只改变证据要求，不改变 service 行为。新增 `scripts/compose_phase4_runtime_evidence_artifact.py`，用于生成可被 gate 验收的 Phase4 runtime evidence artifact，避免手写证据口径漂移。
 
+2026-07-05 追加进展 2：Phase4 runtime evidence profile gate 已细分 `simulator/site/production` 证据要求。`simulator` 允许最小 provider-contract artifact；`site/production` 必须提供 `evidence_manifest`，引用 Wave2/Wave3 provider contract、effect dispatch trace、RuntimeInbox worker trace、RuntimeHold/ReconciliationRecord trace 与 Phase4 runtime benchmark evidence 文件。`production` profile 继续叠加 Phase3 production closure artifact 校验。composer 支持 `--evidence-dir` 组装 site/production artifact；证据文件本身属于 `reports/` 或 CI/deploy artifact，不提交到 git。
+
 ## 范围边界
 
 - 允许实施 P0 与 Wave1 的 runtime/read-model 能力。
@@ -35,7 +37,7 @@ Wave2/Wave3 后续目标是 production-capable runtime path，外部 provider �
 - 不迁移 `MaterialUnit` 表归属；本轮只新增 material API facade 与查询 service。
 - API 层只调用 service，不直接访问 repository 或 database。
 - Wave2/Wave3 的 preview 与 mock 合同只作为语义基线；runtime capability builder 必须只面向 provider contract，不根据外部 provider 是否 MOCK / simulator / 真设备选择业务分支。
-- evidence profile 只改变验收证据要求；缺 provider contract evidence、Phase3 production closure artifact 或 benchmark artifact 时，发布前 gate 保持红灯。
+- evidence profile 只改变验收证据要求；`site/production` 缺 Phase4 evidence manifest、引用 evidence 文件、Phase3 production closure artifact 或 benchmark artifact 时，发布前 gate 保持红灯。
 
 ## 任务状态
 
@@ -60,8 +62,8 @@ Wave2/Wave3 后续目标是 production-capable runtime path，外部 provider �
 - [x] Phase2 兼容投影收尾：单独处理 HIGH 风险 safety estop / dispatch ACK exhausted 写入点。
 - [x] Wave2 runtime capability builder：`Phase4SorterInboundRuntimeService` 输出 `RuntimeIntent`、`WmsFulfillmentPort.notify_pkg_binding`、`WmsInventoryTransactionPort.confirm_inbound`、CellReservation/RuntimeLocationEvent evidence 与 join gate object-scope reconciliation plan。
 - [x] Wave3 runtime capability builder：`SmtNgWmsReconciliationRuntimeService` 输出 RuntimeInbox 上游 callback evidence、重复 callback 幂等合并、WMS reject/source_version drift 等 RuntimeHold plan 与 scope-only release plan。
-- [ ] Wave2 evidence profile：provider contract 证据、effect dispatch trace、RuntimeIntentLog/DeviceCommand/WMS fulfillment 证据未提供。
-- [ ] Wave3 evidence profile：provider contract 证据、RuntimeInbox worker trace、RuntimeHold/ReconciliationRecord 证据未提供。
+- [x] Wave2 evidence profile gate：site/production manifest 已要求 provider contract、effect dispatch trace、RuntimeIntentLog/DeviceCommand/WMS fulfillment 证据；实际 evidence 文件由 `reports/`、CI 或部署验收产物提供，不进入 git。
+- [x] Wave3 evidence profile gate：site/production manifest 已要求 provider contract、RuntimeInbox worker trace、RuntimeHold/ReconciliationRecord 证据；实际 evidence 文件由 `reports/`、CI 或部署验收产物提供，不进入 git。
 
 ## 验收命令
 
@@ -69,8 +71,11 @@ Wave2/Wave3 后续目标是 production-capable runtime path，外部 provider �
 - `uv run pytest tests/api/ -q`
 - `uv run pytest tests/mock/phase4 -q`
 - `uv run python scripts/compose_phase4_runtime_evidence_artifact.py --output reports/phase4/runtime-evidence-simulator.json --profile simulator --environment local-wms-ecs-simulator --generated-at 2026-07-05T00:00:00Z`
+- `uv run python scripts/compose_phase4_runtime_evidence_artifact.py --output reports/phase4/runtime-evidence-site.json --profile site --environment field-dry-run --generated-at 2026-07-05T00:00:00Z --evidence-dir evidence/phase4-runtime`
 - `uv run python scripts/check_phase4_runtime_readiness_gate.py`
 - `uv run python scripts/check_phase4_runtime_readiness_gate.py --readiness-profile simulator --phase4-runtime-evidence-artifact reports/phase4/runtime-evidence-simulator.json`
+- `uv run python scripts/check_phase4_runtime_readiness_gate.py --readiness-profile site --phase4-runtime-evidence-artifact reports/phase4/runtime-evidence-site.json`
+- `uv run python scripts/check_phase4_runtime_readiness_gate.py --readiness-profile production --phase4-runtime-evidence-artifact reports/phase4/runtime-evidence-production.json --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
 - `uv run pytest --collect-only -q -o addopts='' | tail -5`
 - `git diff --check`
 - `./scripts/git-quality-gate.sh --profile quality`
@@ -78,4 +83,4 @@ Wave2/Wave3 后续目标是 production-capable runtime path，外部 provider �
 
 ## 当前门禁结论
 
-P0/Wave1 已可本地验证，且 MaterialLocationQuery API 第 6 入口、CellReservation TTL、reservation evidence/idempotency 口径已补齐。Wave2/Wave3 已具备 preview 语义基线与 production-capable runtime path 的 plan builder；代码只输出 `RuntimeIntent`、effect contract、RuntimeInbox evidence 与 RuntimeHold/Reconciliation plan，不关心外部 provider 是 MOCK、simulator 还是真设备。Phase1 callback admission 已在 callback API 热路径关闭。Phase3 closure 在当前开发/测试范围默认走 MOCK closure，真实 artifact 不再作为当前推进阻塞项。Phase2 `runtime_status` 兼容投影收尾已完成，开发/测试范围的 Phase4 runtime readiness gate 已关闭；发布前仍必须显式通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...` 与 Phase4 evidence profile gate。
+P0/Wave1 已可本地验证，且 MaterialLocationQuery API 第 6 入口、CellReservation TTL、reservation evidence/idempotency 口径已补齐。Wave2/Wave3 已具备 preview 语义基线与 production-capable runtime path 的 plan builder；代码只输出 `RuntimeIntent`、effect contract、RuntimeInbox evidence 与 RuntimeHold/Reconciliation plan，不关心外部 provider 是 MOCK、simulator 还是真设备。Phase1 callback admission 已在 callback API 热路径关闭。Phase3 closure 在当前开发/测试范围默认走 MOCK closure，真实 artifact 不再作为当前推进阻塞项。Phase2 `runtime_status` 兼容投影收尾已完成，开发/测试范围的 Phase4 runtime readiness gate 已关闭；Phase4 `site/production` evidence profile gate 与 artifact composer 已闭合。发布前仍必须显式提供 Phase4 evidence manifest 引用文件，并通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...` 与 Phase4 production profile gate。

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +39,14 @@ RUNTIME_READINESS_PLAN = "docs/superpowers/plans/2026-07-04-phase4-runtime-readi
 MAIN_PLAN = "docs/architecture/workline-and-plugin-restructuring.md"
 DEVELOPMENT_READINESS_PROFILES = frozenset({"development", "development-mock", "test-mock"})
 EVIDENCE_READINESS_PROFILES = frozenset({"simulator", "site", "production"})
+SITE_PRODUCTION_EVIDENCE_KEYS = (
+    "provider_contracts.sorter_inbound",
+    "provider_contracts.smt_ng_wms_reconciliation",
+    "effect_dispatch_trace",
+    "callback_worker_trace",
+    "runtime_hold_reconciliation_trace",
+    "benchmark",
+)
 
 
 @dataclass(frozen=True)
@@ -126,13 +136,14 @@ def validate_mock_readiness(repo_root: Path) -> Phase4ReadinessValidation:
                 "开发/测试范围的 Phase4 runtime readiness gate 已关闭",
                 "- [x] Wave2 runtime capability builder",
                 "- [x] Wave3 runtime capability builder",
-                "- [ ] Wave2 evidence profile",
-                "- [ ] Wave3 evidence profile",
+                "- [x] Wave2 evidence profile gate",
+                "- [x] Wave3 evidence profile gate",
+                "证据文件本身属于",
             ),
             MAIN_PLAN: (
                 "### 10.5 Phase 4",
                 "production-capable runtime path",
-                "evidence profile",
+                "evidence manifest gate",
             ),
             "tests/mock/phase4": (
                 "MOCK",
@@ -202,31 +213,45 @@ def validate_mock_readiness(repo_root: Path) -> Phase4ReadinessValidation:
             accumulator.missing_tokens.extend(
                 f"{source}:{token}" for token in required_tokens if token not in source_text
             )
-        if "- [x] Wave2 evidence profile" in runtime_plan or "- [x] Wave3 evidence profile" in runtime_plan:
-            accumulator.production_hot_path_enabled = True
-
     return accumulator.as_result()
 
 
 def validate_runtime_evidence_artifact(artifact_path: Path, *, evidence_profile: str) -> tuple[bool, str]:
     """Validate Phase4 runtime evidence without changing runtime behavior."""
 
+    artifact = _load_runtime_evidence_artifact(artifact_path)
+    if artifact is None:
+        return False, "INVALID_PHASE4_RUNTIME_EVIDENCE_ARTIFACT"
+
+    failure_reason = _basic_runtime_evidence_failure(artifact, evidence_profile=evidence_profile)
+    if failure_reason is None and evidence_profile in {"site", "production"}:
+        failure_reason = _site_production_evidence_failure(artifact_path=artifact_path, artifact=artifact)
+    if failure_reason is not None:
+        return False, failure_reason
+
+    return True, "PHASE4_RUNTIME_EVIDENCE_READY"
+
+
+def _load_runtime_evidence_artifact(artifact_path: Path) -> dict[str, object] | None:
     try:
         artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return False, "INVALID_PHASE4_RUNTIME_EVIDENCE_ARTIFACT"
+        return None
     if not isinstance(artifact, dict):
-        return False, "INVALID_PHASE4_RUNTIME_EVIDENCE_ARTIFACT"
+        return None
+    return artifact
 
+
+def _basic_runtime_evidence_failure(artifact: Mapping[str, object], *, evidence_profile: str) -> str | None:
     profile = artifact.get("profile")
     if not isinstance(profile, dict) or profile.get("name") != evidence_profile:
-        return False, "MISMATCHED_PHASE4_RUNTIME_EVIDENCE_PROFILE"
+        return "MISMATCHED_PHASE4_RUNTIME_EVIDENCE_PROFILE"
 
     capabilities = artifact.get("capabilities")
     if not isinstance(capabilities, list) or not {"sorter_inbound", "smt_ng_wms_reconciliation"}.issubset(
         {str(item) for item in capabilities}
     ):
-        return False, "MISSING_PHASE4_RUNTIME_CAPABILITIES"
+        return "MISSING_PHASE4_RUNTIME_CAPABILITIES"
 
     effect_path = _string_set(artifact.get("effect_path"))
     if not {
@@ -234,17 +259,30 @@ def validate_runtime_evidence_artifact(artifact_path: Path, *, evidence_profile:
         "WmsFulfillmentPort.notify_pkg_binding",
         "WmsInventoryTransactionPort.confirm_inbound",
     }.issubset(effect_path):
-        return False, "MISSING_PHASE4_RUNTIME_EFFECT_PATH"
+        return "MISSING_PHASE4_RUNTIME_EFFECT_PATH"
 
     callback_path = _string_set(artifact.get("callback_path"))
     if "RuntimeInbox" not in callback_path:
-        return False, "MISSING_PHASE4_RUNTIME_CALLBACK_PATH"
+        return "MISSING_PHASE4_RUNTIME_CALLBACK_PATH"
 
     invariants = _string_set(artifact.get("service_behavior_invariant"))
     if "provider-contract" not in invariants:
-        return False, "MISSING_PHASE4_RUNTIME_PROVIDER_CONTRACT_INVARIANT"
+        return "MISSING_PHASE4_RUNTIME_PROVIDER_CONTRACT_INVARIANT"
 
-    return True, "PHASE4_RUNTIME_EVIDENCE_READY"
+    return None
+
+
+def _site_production_evidence_failure(*, artifact_path: Path, artifact: Mapping[str, object]) -> str | None:
+    manifest = artifact.get("evidence_manifest")
+    if not isinstance(manifest, Mapping):
+        return "MISSING_PHASE4_RUNTIME_EVIDENCE_MANIFEST"
+    missing_manifest_keys = _missing_manifest_keys(manifest)
+    if missing_manifest_keys:
+        return "MISSING_PHASE4_RUNTIME_EVIDENCE_MANIFEST"
+    missing_evidence_files = _missing_manifest_evidence_files(base_dir=artifact_path.parent, manifest=manifest)
+    if missing_evidence_files:
+        return "MISSING_PHASE4_RUNTIME_EVIDENCE_FILES"
+    return None
 
 
 def _string_set(value: object) -> set[str]:
@@ -253,6 +291,56 @@ def _string_set(value: object) -> set[str]:
     if not isinstance(value, list):
         return set()
     return {str(item) for item in value if str(item)}
+
+
+def _missing_manifest_keys(manifest: Mapping[str, object]) -> tuple[str, ...]:
+    missing_keys: list[str] = []
+    for manifest_key in SITE_PRODUCTION_EVIDENCE_KEYS:
+        entry = _manifest_entry(manifest, manifest_key)
+        if not isinstance(entry, Mapping) or not _has_evidence_path(entry):
+            missing_keys.append(manifest_key)
+    return tuple(missing_keys)
+
+
+def _missing_manifest_evidence_files(*, base_dir: Path, manifest: Mapping[str, object]) -> tuple[str, ...]:
+    missing_files: list[str] = []
+    for manifest_key in SITE_PRODUCTION_EVIDENCE_KEYS:
+        entry = _manifest_entry(manifest, manifest_key)
+        if not isinstance(entry, Mapping):
+            continue
+        raw_path = entry.get("evidence")
+        if not _evidence_file_exists(base_dir=base_dir, raw_path=raw_path):
+            missing_files.append(manifest_key)
+    return tuple(missing_files)
+
+
+def _manifest_entry(manifest: Mapping[str, object], dotted_key: str) -> object:
+    current: object = manifest
+    for key_part in dotted_key.split("."):
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key_part)
+    return current
+
+
+def _has_evidence_path(entry: Mapping[str, object]) -> bool:
+    raw_path = entry.get("evidence")
+    return isinstance(raw_path, str) and bool(raw_path.strip())
+
+
+def _evidence_file_exists(*, base_dir: Path, raw_path: object) -> bool:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return False
+    evidence_path = Path(raw_path)
+    if not evidence_path.is_absolute():
+        evidence_path = base_dir / evidence_path
+    return evidence_path.is_file()
+
+
+def _ensure_repo_root_on_path(repo_root: Path) -> None:
+    repo_root_text = str(repo_root)
+    if repo_root_text not in sys.path:
+        sys.path.insert(0, repo_root_text)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -289,7 +377,8 @@ def _print_failure(validation: Phase4ReadinessValidation) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
 
-    validation = validate_mock_readiness(Path(args.repo_root))
+    repo_root = Path(args.repo_root)
+    validation = validate_mock_readiness(repo_root)
     if not validation.valid:
         _print_failure(validation)
         return 1
@@ -319,6 +408,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 1
         if args.readiness_profile == "production":
+            _ensure_repo_root_on_path(repo_root)
             from src.app.runtime.orchestration.phase3_closure_gate import RuntimePhase3ClosureGate
 
             artifact_paths = {}
