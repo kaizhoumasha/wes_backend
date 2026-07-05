@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -77,6 +79,28 @@ def test_reconciliation_runtime_merges_duplicate_callback_without_hold() -> None
     assert plan.intents[0].kind == RuntimeIntentKind.RESOURCE_FACT
     assert plan.intents[0].payload_json["dedupe_result"] == "IDEMPOTENT_DUPLICATE"
     assert plan.effect_contracts == {}
+
+
+def test_reconciliation_runtime_rejects_callback_without_source_event_id() -> None:
+    """RuntimeInbox callback evidence 缺 source_event_id 时不能生成对账事实。"""
+
+    from src.app.runtime.capabilities.phase4.smt_ng_wms_reconciliation_runtime_service import (
+        SmtNgWmsReconciliationRuntimeService,
+    )
+
+    service = SmtNgWmsReconciliationRuntimeService()
+
+    with pytest.raises(ValueError, match="source_event_id is required"):
+        service.build_reconciliation_plan(
+            {
+                "scenario": "WMS_REJECT",
+                "provider_code": "WMS-A",
+                "correlation_id": "corr-reject-missing-source-event-001",
+                "object_type": "PACKAGE",
+                "object_key": "PKG-MISSING-SOURCE-EVENT-001",
+                "source_version": "wms.v2",
+            }
+        )
 
 
 def test_runtime_hold_release_plan_is_scope_only() -> None:

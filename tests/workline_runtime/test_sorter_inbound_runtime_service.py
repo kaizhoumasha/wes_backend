@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -98,6 +100,67 @@ def test_sorter_runtime_blocks_join_gate_failure_as_object_scope_reconciliation(
         "CELL_RESERVATION_RESERVED",
         "WAITING_DEADLINE_DECLARED",
     }
+
+
+def test_sorter_runtime_success_records_ready_to_drop_location_fact() -> None:
+    """分拣机 join gate 全满足时只记录 ready-to-drop 本地事实，不创建 hold。"""
+
+    from src.app.runtime.capabilities.phase4.sorter_inbound_runtime_service import (
+        Phase4SorterInboundRuntimeService,
+    )
+
+    service = Phase4SorterInboundRuntimeService()
+
+    plan = service.build_sorter_inbound_plan(
+        {
+            "request_id": "sorter-runtime-ready-001",
+            "correlation_id": "corr-sorter-ready-001",
+            "provider_code": "WMS-A",
+            "expected_authorized_bin_ids": ["BIN-A-001"],
+            "actual_scanned_bin_id": "BIN-A-001",
+            "target_bin_position_state": "AT_WORK_POSITION",
+            "target_cell_reservable": True,
+            "cell_reservation_state": "RESERVED",
+            "waiting_deadline_declared": True,
+            "target_work_position_code": "SORTER-WP-01",
+            "object_key": "PKG-SORTER-READY-001",
+        }
+    )
+
+    assert plan.reconciliation_required is False
+    assert plan.effect_contracts == {}
+    assert len(plan.intents) == 1
+    assert plan.intents[0].kind == RuntimeIntentKind.RESOURCE_FACT
+    assert plan.intents[0].action == "RUNTIME_LOCATION_EVENT"
+    assert plan.intents[0].payload_json["business_step"] == "SORTER_READY_TO_DROP"
+    assert plan.intents[0].payload_json["location_code"] == "SORTER-WP-01"
+
+
+def test_rough_sorter_runtime_rejects_non_positive_quantity() -> None:
+    """粗分机库存确认 payload 必须拒绝非正数数量。"""
+
+    from src.app.runtime.capabilities.phase4.sorter_inbound_runtime_service import (
+        Phase4SorterInboundRuntimeService,
+    )
+
+    service = Phase4SorterInboundRuntimeService()
+
+    with pytest.raises(ValueError, match="quantity must be positive"):
+        service.build_rough_sorter_inbound_plan(
+            {
+                "request_id": "rough-runtime-bad-quantity-001",
+                "correlation_id": "corr-rough-bad-quantity-001",
+                "provider_code": "WMS-A",
+                "object_key": "PKG-ROUGH-BAD-QTY-001",
+                "target_cell_code": "CELL-A-01",
+                "pkg_code": "PKG-ROUGH-BAD-QTY-001",
+                "pallet_id": "PALLET-A-01",
+                "station_code": "ROUGH-OUT-01",
+                "material_code": "MAT-A",
+                "quantity": 0,
+                "warehouse_code": "WH-A",
+            }
+        )
 
 
 def test_full_box_exchange_runtime_uses_fulfillment_intent_and_filters_sorting_candidates() -> None:
