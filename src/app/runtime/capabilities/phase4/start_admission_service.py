@@ -654,7 +654,8 @@ class WorkLineStartAdmissionService:
         return diagnostic
 
     def _runtime_status(self, workline: Any) -> str | None:
-        return self.workline_status_projection_service.runtime_status_snapshot(workline).runtime_status
+        runtime_snapshot = self.workline_status_projection_service.runtime_status_snapshot(workline)
+        return runtime_snapshot.runtime_status
 
     @staticmethod
     def _rejected(

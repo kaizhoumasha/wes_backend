@@ -1689,7 +1689,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     @staticmethod
     def _runtime_workline_readiness(workline: WorkLine) -> RuntimeWorklineReadiness:
-        runtime_status = workline_runtime_status_projection_service.runtime_status_snapshot(workline).runtime_status
+        runtime_snapshot = workline_runtime_status_projection_service.runtime_status_snapshot(workline)
+        runtime_status = runtime_snapshot.runtime_status
         if runtime_status == "READY":
             return RuntimeWorklineReadiness.READY
         if runtime_status in {"STOPPED", "STARTING", "ESTOPPED", "RECONCILING"}:

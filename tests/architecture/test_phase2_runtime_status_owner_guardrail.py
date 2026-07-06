@@ -31,18 +31,38 @@ def _source(path: Path) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
+def _parse_source(source: str) -> ast.Module:
+    return ast.parse(source)
+
+
 def _is_runtime_status_attr(node: ast.AST) -> bool:
     return isinstance(node, ast.Attribute) and node.attr == "runtime_status"
 
 
-def _is_projection_snapshot_attr(node: ast.Attribute) -> bool:
-    if isinstance(node.value, ast.Name) and node.value.id.endswith("snapshot"):
-        return True
-    return (
-        isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Attribute)
-        and node.value.func.attr == "runtime_status_snapshot"
+def _is_runtime_status_snapshot_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and (
+        (isinstance(node.func, ast.Attribute) and node.func.attr == "runtime_status_snapshot")
+        or (isinstance(node.func, ast.Name) and node.func.id == "runtime_status_snapshot")
     )
+
+
+def _runtime_status_snapshot_vars(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and _is_runtime_status_snapshot_call(node.value):
+            names.update(target.id for target in node.targets if isinstance(target, ast.Name))
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and node.value is not None
+            and _is_runtime_status_snapshot_call(node.value)
+            and isinstance(node.target, ast.Name)
+        ):
+            names.add(node.target.id)
+    return names
+
+
+def _is_projection_snapshot_attr(node: ast.Attribute, snapshot_vars: set[str]) -> bool:
+    return isinstance(node.value, ast.Name) and node.value.id in snapshot_vars
 
 
 def _is_runtime_status_getattr(node: ast.AST) -> bool:
@@ -57,15 +77,48 @@ def _is_runtime_status_getattr(node: ast.AST) -> bool:
 
 
 def _direct_runtime_status_reads(tree: ast.AST) -> list[int]:
+    snapshot_vars = _runtime_status_snapshot_vars(tree)
     lines: list[int] = []
     for node in ast.walk(tree):
         if _is_runtime_status_getattr(node) or (
             _is_runtime_status_attr(node)
             and not isinstance(node.ctx, ast.Store)
-            and not _is_projection_snapshot_attr(node)
+            and not _is_projection_snapshot_attr(node, snapshot_vars)
         ):
             lines.append(node.lineno)
     return sorted(set(lines))
+
+
+def _target_contains_runtime_status_attr(target: ast.AST) -> bool:
+    return any(_is_runtime_status_attr(node) for node in ast.walk(target))
+
+
+def _is_runtime_status_setattr(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "setattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == "runtime_status"
+    )
+
+
+def _is_values_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "values"
+
+
+def _dict_has_runtime_status_key(node: ast.AST) -> bool:
+    return isinstance(node, ast.Dict) and any(
+        isinstance(key, ast.Constant) and key.value == "runtime_status" for key in node.keys
+    )
+
+
+def _values_call_writes_runtime_status(node: ast.AST) -> bool:
+    return _is_values_call(node) and (
+        any(keyword.arg == "runtime_status" for keyword in node.keywords)
+        or any(_dict_has_runtime_status_key(arg) for arg in node.args)
+    )
 
 
 def _direct_runtime_status_writes(tree: ast.AST) -> list[int]:
@@ -73,8 +126,10 @@ def _direct_runtime_status_writes(tree: ast.AST) -> list[int]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
             targets = [node.target] if isinstance(node, ast.AnnAssign | ast.AugAssign) else list(node.targets)
-            if any(_is_runtime_status_attr(target) for target in targets):
+            if any(_target_contains_runtime_status_attr(target) for target in targets):
                 lines.append(node.lineno)
+        elif _is_runtime_status_setattr(node) or _values_call_writes_runtime_status(node):
+            lines.append(node.lineno)
     return sorted(set(lines))
 
 
@@ -92,6 +147,55 @@ def test_runtime_status_writes_are_centralized_in_projection_service() -> None:
     assert not violations, "WorkLine.runtime_status 直接写入必须集中到 projection service:\n  " + "\n  ".join(
         violations
     )
+
+
+def test_runtime_status_write_detector_catches_nested_assignment_and_setattr() -> None:
+    """写入扫描器必须覆盖非顶层 target 与 setattr 写入。"""
+    tree = _parse_source(
+        """
+(workline.runtime_status, ignored) = ("READY", 1)
+setattr(workline, "runtime_status", "READY")
+"""
+    )
+
+    assert _direct_runtime_status_writes(tree) == [2, 3]
+
+
+def test_runtime_status_write_detector_catches_values_updates_but_not_plain_payload() -> None:
+    """仅在明显写入口上下文拦截 dict key，避免误伤普通 payload/read-model fixture。"""
+    write_tree = _parse_source(
+        """
+update_stmt.values(runtime_status="READY")
+update_stmt.values({"runtime_status": "READY"})
+"""
+    )
+    payload_tree = _parse_source(
+        """
+payload = {"runtime_status": "READY"}
+"""
+    )
+
+    assert _direct_runtime_status_writes(write_tree) == [2, 3]
+    assert _direct_runtime_status_writes(payload_tree) == []
+
+
+def test_runtime_status_read_detector_only_allows_projection_snapshot_variables() -> None:
+    """只有来自 runtime_status_snapshot(...) 调用的数据流变量可以读 .runtime_status。"""
+    allowed_tree = _parse_source(
+        """
+runtime_snapshot = projection.runtime_status_snapshot(workline)
+status = runtime_snapshot.runtime_status
+"""
+    )
+    violation_tree = _parse_source(
+        """
+workline_snapshot = object()
+status = workline_snapshot.runtime_status
+"""
+    )
+
+    assert _direct_runtime_status_reads(allowed_tree) == []
+    assert _direct_runtime_status_reads(violation_tree) == [3]
 
 
 def test_workline_and_phase4_owner_sensitive_paths_use_projection_snapshot_for_runtime_status() -> None:

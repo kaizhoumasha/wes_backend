@@ -11,7 +11,7 @@ from typing import Any
 
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.utils.timezone import timezone
-from src.utils.value_normalization import enum_str
+from src.utils.value_normalization import optional_enum_str, optional_int
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,19 +30,19 @@ class WorkLineRuntimeStatusProjectionService:
     """集中维护 WorkLine.runtime_status 兼容投影。"""
 
     def status_value(self, workline: Any) -> str | None:
-        return enum_str(getattr(workline, "runtime_status", None))
+        return optional_enum_str(getattr(workline, "runtime_status", None))
 
     def runtime_status_snapshot(self, workline: Any) -> WorkLineRuntimeStatusSnapshot:
         """读取 runtime/orchestration 拥有的兼容投影快照。"""
 
-        active_safety_incident_id = getattr(workline, "active_safety_incident_id", None)
+        active_safety_incident_id = optional_int(getattr(workline, "active_safety_incident_id", None))
         return WorkLineRuntimeStatusSnapshot(
             runtime_status=self.status_value(workline),
             source="runtime/orchestration",
             stopped_at=getattr(workline, "stopped_at", None),
             stopped_reason=getattr(workline, "stopped_reason", None),
             resumed_at=getattr(workline, "resumed_at", None),
-            active_safety_incident_id=active_safety_incident_id if isinstance(active_safety_incident_id, int) else None,
+            active_safety_incident_id=active_safety_incident_id,
         )
 
     def is_ready(self, workline: Any) -> bool:

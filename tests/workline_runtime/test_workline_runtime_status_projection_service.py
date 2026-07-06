@@ -79,6 +79,21 @@ def test_projection_ready_after_start_sets_ready_snapshot_and_resume_time():
     assert projection.is_ready(workline) is True
 
 
+def test_projection_snapshot_treats_null_or_missing_runtime_status_as_absent():
+    projection = WorkLineRuntimeStatusProjectionService()
+
+    for workline in (
+        SimpleNamespace(id=45, runtime_status=None, active_safety_incident_id=True),
+        SimpleNamespace(id=46),
+    ):
+        snapshot = projection.runtime_status_snapshot(workline)
+
+        assert snapshot.runtime_status is None
+        assert snapshot.active_safety_incident_id is None
+        with pytest.raises(RuntimeError, match="WORKLINE_UNKNOWN"):
+            projection.assert_accepting_runtime_work(workline, workline_id=workline.id)
+
+
 def test_projection_reconciling_preserves_estopped_projection():
     projection = WorkLineRuntimeStatusProjectionService()
     workline = SimpleNamespace(
