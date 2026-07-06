@@ -165,6 +165,29 @@ def test_late_callback_during_blocked_by_cb_is_inboxed_not_marked_blocked() -> N
     assert result.reason == "LATE_CALLBACK_WHILE_CB_BLOCKED"
 
 
+def test_second_outbound_effect_while_cb_blocked_stays_blocked_without_dispatch() -> None:
+    """CB open/half-open trial 期间第二个出站 effect 继续 BLOCKED_BY_CB, 不能误进 RECONCILING。"""
+
+    from src.app.wms_integration.state_machine import (
+        FulfillmentEvent,
+        FulfillmentState,
+        WmsFulfillmentStateMachine,
+    )
+
+    machine = WmsFulfillmentStateMachine()
+
+    result = machine.transition(
+        current=FulfillmentState.BLOCKED_BY_CB,
+        event=FulfillmentEvent.DISPATCH_SENT,
+        now=timezone.now_for_db(),
+    )
+
+    assert result.state == FulfillmentState.BLOCKED_BY_CB
+    assert result.reason == "DISPATCH_BLOCKED_BY_CB"
+    assert result.should_dispatch_effect is False
+    assert result.counts_as_sent is False
+
+
 def test_terminal_fulfillment_state_cannot_be_overwritten_by_late_events() -> None:
     """终态履约不能被 provider 重试或乱序 callback 覆盖。"""
 

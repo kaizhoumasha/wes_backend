@@ -569,6 +569,24 @@ class WorklineRuntimeReconciliationService:
         context["runtime_reconciliation_late_callback_evidence"] = evidence_items
         session.context_json = context
         session.reconciliation_late_evidence_received = True
+        now = timezone.now_for_db()
+        _ = await self._register_runtime_reconciliation_idempotent(
+            db,
+            session=session,
+            conflict_kind=enum_str(session.reconciliation_reason) or "LATE_CALLBACK_EVIDENCE",
+            reason="late callback recorded while runtime reconciliation is pending",
+            detected_at=now,
+            command=command,
+            extra_evidence_refs=[f"late_callback:{evidence_key}"],
+            source_ref_override=f"late_callback:{evidence_key}",
+        )
+        workline = await self.workline_repository.get_for_update(db, session.workline_id)
+        if workline is not None:
+            self.workline_status_projection_service.project_reconciling(
+                workline,
+                occurred_at=now,
+                reason=enum_str(session.reconciliation_reason) or "LATE_CALLBACK_EVIDENCE",
+            )
         await self._append_reconciliation_timeline(
             db,
             session=session,
@@ -580,6 +598,7 @@ class WorklineRuntimeReconciliationService:
             message="Late callback recorded as runtime reconciliation evidence.",
             payload=evidence_item,
             command=command,
+            occurred_at=now,
         )
         await db.flush()
         return True
@@ -794,6 +813,8 @@ class WorklineRuntimeReconciliationService:
         inbox: WorklineInbox | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
+        extra_evidence_refs: list[str] | None = None,
+        source_ref_override: str | None = None,
     ) -> dict[str, Any] | None:
         """runtime reconciliation 生产入口登记 owner-scoped decision 前的幂等 claim。"""
 
@@ -805,8 +826,18 @@ class WorklineRuntimeReconciliationService:
             return None
 
         owner_id = str(session_id)
-        evidence_refs = self._runtime_reconciliation_evidence_refs(inbox=inbox, outbox=outbox, command=command)
-        source_ref = self._runtime_reconciliation_source_ref(session_id=session_id, inbox=inbox, outbox=outbox)
+        evidence_refs = self._runtime_reconciliation_evidence_refs(
+            inbox=inbox,
+            outbox=outbox,
+            command=command,
+            extra_refs=extra_evidence_refs,
+        )
+        source_ref = self._runtime_reconciliation_source_ref(
+            session_id=session_id,
+            inbox=inbox,
+            outbox=outbox,
+            source_ref_override=source_ref_override,
+        )
         idempotency_key = f"runtime-reconciliation:{conflict_kind}:{source_ref}"
         business_owner_key = f"runtime:ExecutionSession:{owner_id}"
         request_hash = _canonical_json_hash(
@@ -883,6 +914,7 @@ class WorklineRuntimeReconciliationService:
         inbox: WorklineInbox | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
+        extra_refs: list[str] | None = None,
     ) -> list[str]:
         refs: list[str] = []
         inbox_id = _resolve_id(inbox)
@@ -898,6 +930,8 @@ class WorklineRuntimeReconciliationService:
             command_code = getattr(command, "command_code", None)
             if isinstance(command_code, str) and command_code:
                 refs.append(f"command:{command_code}")
+        if extra_refs:
+            refs.extend(extra_ref for extra_ref in extra_refs if isinstance(extra_ref, str) and extra_ref)
         return refs
 
     def _runtime_reconciliation_source_ref(
@@ -906,7 +940,10 @@ class WorklineRuntimeReconciliationService:
         session_id: int,
         inbox: WorklineInbox | None = None,
         outbox: SystemOutbox | None = None,
+        source_ref_override: str | None = None,
     ) -> str:
+        if source_ref_override is not None:
+            return source_ref_override
         inbox_id = _resolve_id(inbox)
         if inbox_id is not None:
             return f"inbox:{inbox_id}"

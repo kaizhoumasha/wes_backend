@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from src.utils.timezone import timezone
 
@@ -303,3 +307,90 @@ def test_conveyor_queue_writer_resolves_placeholder_and_escalates_conflict() -> 
     assert resolve_with_existing_bin.kind == ConveyorQueueWriteDecisionKind.RESOLVE_PLACEHOLDER
     assert blocked.kind == ConveyorQueueWriteDecisionKind.BLOCKED
     assert blocked.reason == "UNKNOWN_QUEUE_CODE"
+
+
+class _RecordingReconciliationManager:
+    def __init__(self) -> None:
+        from src.app.reconciliation.manager import ReconciliationManager, ReconciliationRegistrationResult
+        from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult
+
+        self.calls: list[dict[str, Any]] = []
+        self._result_cls = ReconciliationRegistrationResult
+        self._claim_result = ClaimResult.NEW
+        self._manager = ReconciliationManager()
+
+    async def register_conflict_idempotent(self, db: Any, conflict: Any, **kwargs: Any) -> Any:
+        self.calls.append({"db": db, "conflict": conflict, **kwargs})
+        return self._result_cls(
+            decision=self._manager.register_conflict(conflict),
+            claim_result=self._claim_result,
+        )
+
+
+@pytest.mark.asyncio
+async def test_late_callback_pending_reconciliation_registers_owner_scoped_evidence_without_terminal_mutation() -> None:
+    """late callback 冲突必须补登记 owner-scoped reconciliation, 只保留证据并维持 RECONCILING。"""
+
+    from src.app.runtime.orchestration.models.session import (
+        RuntimeReconciliationReason,
+        RuntimeReconciliationState,
+        SessionStatus,
+    )
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        WorklineRuntimeReconciliationService,
+    )
+
+    command = SimpleNamespace(
+        id=991,
+        command_code="CMD-LATE-001",
+        device_id=7,
+        correlation_id="corr-late-callback",
+        status="ACK_RECEIVED",
+    )
+    session = SimpleNamespace(
+        id=553,
+        workline_id=45,
+        trace_id="trace-late-callback",
+        status=SessionStatus.MANUAL_HOLD,
+        reconciliation_state=RuntimeReconciliationState.PENDING,
+        reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        context_json={},
+        reconciliation_late_evidence_received=False,
+    )
+    manager = _RecordingReconciliationManager()
+    service = WorklineRuntimeReconciliationService(
+        session_repository=SimpleNamespace(
+            get_pending_reconciliation_by_command_id=AsyncMock(return_value=session),
+        ),
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace())),
+        reconciliation_manager=manager,
+    )
+    db = SimpleNamespace(flush=AsyncMock())
+    callback_payload = {
+        "event_id": "evt-late-001",
+        "command_code": "CMD-LATE-001",
+        "result": "SUCCESS",
+        "finish_time": 1_760_000_000_123,
+    }
+
+    with patch(
+        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
+        new=AsyncMock(),
+    ):
+        recorded = await service.record_late_callback_if_pending(
+            db,
+            command=command,
+            callback_payload=callback_payload,
+        )
+
+    assert recorded is True
+    assert session.status == SessionStatus.MANUAL_HOLD
+    assert session.reconciliation_state == RuntimeReconciliationState.PENDING
+    assert session.reconciliation_late_evidence_received is True
+    evidence = session.context_json["runtime_reconciliation_late_callback_evidence"]
+    assert evidence[0]["evidence_key"] == "event_id:evt-late-001"
+    assert len(manager.calls) == 1
+    call = manager.calls[0]
+    assert call["business_owner_key"] == "runtime:ExecutionSession:553"
+    assert call["conflict"].owner_id == "553"
+    assert "late_callback:event_id:evt-late-001" in call["conflict"].evidence_refs
