@@ -31,6 +31,30 @@ def _write_phase4_evidence_files(base_dir: Path) -> None:
         _write_json(base_dir / relative_path, {"evidence": relative_path, "result": "PASS"})
 
 
+def _phase4_manifest_entry(artifact: dict[str, Any], dotted_key: str) -> dict[str, Any]:
+    current: Any = artifact["evidence_manifest"]
+    for key_part in dotted_key.split("."):
+        current = current[key_part]
+    return current
+
+
+def _add_phase4_manifest_hashes(artifact: dict[str, Any], artifact_dir: Path) -> dict[str, Any]:
+    for manifest_key in (
+        "provider_contracts.sorter_inbound",
+        "provider_contracts.smt_ng_wms_reconciliation",
+        "effect_dispatch_trace",
+        "callback_worker_trace",
+        "runtime_hold_reconciliation_trace",
+        "benchmark",
+    ):
+        entry = _phase4_manifest_entry(artifact, manifest_key)
+        evidence_path = Path(entry["evidence"])
+        if not evidence_path.is_absolute():
+            evidence_path = artifact_dir / evidence_path
+        entry["evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    return artifact
+
+
 def _phase4_runtime_evidence_artifact(*, profile: str, evidence_dir: str | None = None) -> dict[str, Any]:
     artifact: dict[str, Any] = {
         "profile": {"name": profile},
@@ -422,7 +446,10 @@ def test_phase4_runtime_readiness_gate_site_profile_accepts_evidence_manifest_fi
     _write_phase4_evidence_files(evidence_dir)
     evidence_artifact = _write_json(
         tmp_path / "phase4-runtime-evidence-site.json",
-        _phase4_runtime_evidence_artifact(profile="site", evidence_dir="evidence/phase4-runtime"),
+        _add_phase4_manifest_hashes(
+            _phase4_runtime_evidence_artifact(profile="site", evidence_dir="evidence/phase4-runtime"),
+            tmp_path,
+        ),
     )
 
     result = subprocess.run(
@@ -445,6 +472,62 @@ def test_phase4_runtime_readiness_gate_site_profile_accepts_evidence_manifest_fi
     assert "evidence_profile=site" in result.stdout
 
 
+def test_phase4_runtime_readiness_gate_site_profile_rejects_manifest_without_evidence_hash(tmp_path) -> None:
+    evidence_dir = tmp_path / "evidence" / "phase4-runtime"
+    _write_phase4_evidence_files(evidence_dir)
+    evidence_artifact = _write_json(
+        tmp_path / "phase4-runtime-evidence-site.json",
+        _phase4_runtime_evidence_artifact(profile="site", evidence_dir="evidence/phase4-runtime"),
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(GATE_SCRIPT),
+            "--readiness-profile",
+            "site",
+            "--phase4-runtime-evidence-artifact",
+            str(evidence_artifact),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "MISSING_PHASE4_RUNTIME_EVIDENCE_HASHES" in result.stdout
+
+
+def test_phase4_runtime_readiness_gate_site_profile_rejects_mismatched_evidence_hash(tmp_path) -> None:
+    evidence_dir = tmp_path / "evidence" / "phase4-runtime"
+    _write_phase4_evidence_files(evidence_dir)
+    artifact = _add_phase4_manifest_hashes(
+        _phase4_runtime_evidence_artifact(profile="site", evidence_dir="evidence/phase4-runtime"),
+        tmp_path,
+    )
+    _phase4_manifest_entry(artifact, "callback_worker_trace")["evidence_sha256"] = "0" * 64
+    evidence_artifact = _write_json(tmp_path / "phase4-runtime-evidence-site.json", artifact)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(GATE_SCRIPT),
+            "--readiness-profile",
+            "site",
+            "--phase4-runtime-evidence-artifact",
+            str(evidence_artifact),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "MISMATCHED_PHASE4_RUNTIME_EVIDENCE_HASHES" in result.stdout
+
+
 def test_phase4_runtime_readiness_gate_production_profile_requires_phase3_artifacts_after_phase4_evidence(
     tmp_path,
 ) -> None:
@@ -452,7 +535,10 @@ def test_phase4_runtime_readiness_gate_production_profile_requires_phase3_artifa
     _write_phase4_evidence_files(evidence_dir)
     evidence_artifact = _write_json(
         tmp_path / "phase4-runtime-evidence-production.json",
-        _phase4_runtime_evidence_artifact(profile="production", evidence_dir="evidence/phase4-runtime"),
+        _add_phase4_manifest_hashes(
+            _phase4_runtime_evidence_artifact(profile="production", evidence_dir="evidence/phase4-runtime"),
+            tmp_path,
+        ),
     )
 
     result = subprocess.run(
@@ -479,7 +565,10 @@ def test_phase4_runtime_readiness_gate_production_profile_accepts_phase4_and_pha
     _write_phase4_evidence_files(evidence_dir)
     phase4_artifact = _write_json(
         tmp_path / "phase4-runtime-evidence-production.json",
-        _phase4_runtime_evidence_artifact(profile="production", evidence_dir="evidence/phase4-runtime"),
+        _add_phase4_manifest_hashes(
+            _phase4_runtime_evidence_artifact(profile="production", evidence_dir="evidence/phase4-runtime"),
+            tmp_path,
+        ),
     )
     p0_artifact, benchmark_artifact = _write_phase3_closure_artifacts(tmp_path)
 
