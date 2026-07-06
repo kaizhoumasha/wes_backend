@@ -82,7 +82,11 @@ def _p0_e2e_artifact() -> dict[str, Any]:
             "environment": "field-dry-run",
             "dependency_profile": "wms-ecs-http",
         },
-        "source": {"kind": "trace-query", "evidence": "evidence/p0-e2e/source.json"},
+        "source": {
+            "kind": "trace-query",
+            "environment": "field-dry-run",
+            "evidence": "evidence/p0-e2e/source.json",
+        },
         "latency": {"p95_seconds": 18.7},
         "recording": {
             "events": [
@@ -155,10 +159,26 @@ def _benchmark_artifact() -> dict[str, Any]:
 
 def _write_phase3_closure_artifacts(tmp_path: Path) -> tuple[Path, Path]:
     p0_artifact = _p0_e2e_artifact()
-    _write_json(tmp_path / "evidence/p0-e2e/source.json", p0_artifact["recording"])
-    _write_json(tmp_path / "evidence/p0-e2e/callback.json", {"case": "callback_out_of_order", "result": "RECONCILING"})
-    _write_json(tmp_path / "evidence/p0-e2e/ecs-timeout.json", {"case": "ecs_timeout", "result": "RECONCILING"})
-    _write_json(tmp_path / "evidence/p0-e2e/wms-reject.json", {"case": "wms_reject", "result": "RECONCILING"})
+    source_path = _write_json(tmp_path / "evidence/p0-e2e/source.json", p0_artifact["recording"])
+    p0_artifact["source"]["evidence_sha256"] = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    callback_path = _write_json(
+        tmp_path / "evidence/p0-e2e/callback.json", {"case": "callback_out_of_order", "result": "RECONCILING"}
+    )
+    p0_artifact["exception_paths"]["callback_out_of_order"]["evidence_sha256"] = hashlib.sha256(
+        callback_path.read_bytes()
+    ).hexdigest()
+    ecs_timeout_path = _write_json(
+        tmp_path / "evidence/p0-e2e/ecs-timeout.json", {"case": "ecs_timeout", "result": "RECONCILING"}
+    )
+    p0_artifact["exception_paths"]["ecs_timeout"]["evidence_sha256"] = hashlib.sha256(
+        ecs_timeout_path.read_bytes()
+    ).hexdigest()
+    wms_reject_path = _write_json(
+        tmp_path / "evidence/p0-e2e/wms-reject.json", {"case": "wms_reject", "result": "RECONCILING"}
+    )
+    p0_artifact["exception_paths"]["wms_reject"]["evidence_sha256"] = hashlib.sha256(
+        wms_reject_path.read_bytes()
+    ).hexdigest()
 
     benchmark_artifact = _benchmark_artifact()
     for scenario_name, scenario in benchmark_artifact["scenarios"].items():

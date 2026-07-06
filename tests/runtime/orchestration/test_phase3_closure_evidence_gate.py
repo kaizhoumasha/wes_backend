@@ -19,7 +19,12 @@ def _p0_e2e_artifact() -> dict[str, Any]:
             "environment": "field-dry-run",
             "dependency_profile": "wms-ecs-http",
         },
-        "source": {"kind": "trace-query", "evidence": "trace-query://phase3/p0-e2e"},
+        "source": {
+            "kind": "trace-query",
+            "environment": "field-dry-run",
+            "evidence": "trace-query://phase3/p0-e2e",
+            "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
+        },
         "latency": {"p95_seconds": 18.7},
         "recording": {
             "events": [
@@ -42,9 +47,21 @@ def _p0_e2e_artifact() -> dict[str, Any]:
             ],
         },
         "exception_paths": {
-            "callback_out_of_order": {"result": "RECONCILING", "evidence": "trace-query://phase3/callback"},
-            "ecs_timeout": {"result": "RECONCILING", "evidence": "trace-query://phase3/ecs-timeout"},
-            "wms_reject": {"result": "RECONCILING", "evidence": "trace-query://phase3/wms-reject"},
+            "callback_out_of_order": {
+                "result": "RECONCILING",
+                "evidence": "trace-query://phase3/callback",
+                "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
+            },
+            "ecs_timeout": {
+                "result": "RECONCILING",
+                "evidence": "trace-query://phase3/ecs-timeout",
+                "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
+            },
+            "wms_reject": {
+                "result": "RECONCILING",
+                "evidence": "trace-query://phase3/wms-reject",
+                "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
+            },
         },
     }
 
@@ -135,26 +152,42 @@ def _write_closure_artifacts(tmp_path: Path) -> tuple[Path, Path]:
 
 def _write_closure_artifacts_with_evidence(tmp_path: Path) -> tuple[Path, Path]:
     p0_e2e_artifact = _p0_e2e_artifact()
-    p0_e2e_artifact["source"]["evidence"] = _write_evidence_file(
+    source_evidence_path = _write_evidence_file(
         tmp_path,
         "evidence/p0-e2e/source.json",
         p0_e2e_artifact["recording"],
     )
-    p0_e2e_artifact["exception_paths"]["callback_out_of_order"]["evidence"] = _write_evidence_file(
+    p0_e2e_artifact["source"]["evidence"] = source_evidence_path
+    p0_e2e_artifact["source"]["evidence_sha256"] = hashlib.sha256(
+        (tmp_path / source_evidence_path).read_bytes()
+    ).hexdigest()
+    callback_evidence_path = _write_evidence_file(
         tmp_path,
         "evidence/p0-e2e/callback-out-of-order.json",
         {"case": "callback_out_of_order", "result": "RECONCILING"},
     )
-    p0_e2e_artifact["exception_paths"]["ecs_timeout"]["evidence"] = _write_evidence_file(
+    p0_e2e_artifact["exception_paths"]["callback_out_of_order"]["evidence"] = callback_evidence_path
+    p0_e2e_artifact["exception_paths"]["callback_out_of_order"]["evidence_sha256"] = hashlib.sha256(
+        (tmp_path / callback_evidence_path).read_bytes()
+    ).hexdigest()
+    ecs_timeout_evidence_path = _write_evidence_file(
         tmp_path,
         "evidence/p0-e2e/ecs-timeout.json",
         {"case": "ecs_timeout", "result": "RECONCILING"},
     )
-    p0_e2e_artifact["exception_paths"]["wms_reject"]["evidence"] = _write_evidence_file(
+    p0_e2e_artifact["exception_paths"]["ecs_timeout"]["evidence"] = ecs_timeout_evidence_path
+    p0_e2e_artifact["exception_paths"]["ecs_timeout"]["evidence_sha256"] = hashlib.sha256(
+        (tmp_path / ecs_timeout_evidence_path).read_bytes()
+    ).hexdigest()
+    wms_reject_evidence_path = _write_evidence_file(
         tmp_path,
         "evidence/p0-e2e/wms-reject.json",
         {"case": "wms_reject", "result": "RECONCILING"},
     )
+    p0_e2e_artifact["exception_paths"]["wms_reject"]["evidence"] = wms_reject_evidence_path
+    p0_e2e_artifact["exception_paths"]["wms_reject"]["evidence_sha256"] = hashlib.sha256(
+        (tmp_path / wms_reject_evidence_path).read_bytes()
+    ).hexdigest()
 
     benchmark_artifact = _benchmark_artifact()
     for scenario_name in benchmark_artifact["scenarios"]:
@@ -251,7 +284,57 @@ def test_phase3_closure_gate_rejects_mismatched_referenced_evidence_files(tmp_pa
 
     assert validation.valid is False
     assert validation.reason == "MISMATCHED_PHASE3_CLOSURE_EVIDENCE_FILES"
-    assert validation.mismatched_evidence_files == ("p0_e2e:source.evidence",)
+    assert validation.mismatched_evidence_files == (
+        "p0_e2e:source.evidence",
+        "p0_e2e:source.evidence_sha256",
+    )
+
+
+def test_phase3_closure_gate_rejects_mismatched_exception_evidence_case(tmp_path) -> None:
+    from src.app.runtime.orchestration.phase3_closure_gate import RuntimePhase3ClosureGate
+
+    p0_e2e_path, benchmark_path = _write_closure_artifacts_with_evidence(tmp_path)
+    wrong_case_path = tmp_path / "evidence/p0-e2e/ecs-timeout.json"
+    wrong_case_path.write_text(
+        json.dumps({"case": "wms_reject", "result": "RECONCILING"}, sort_keys=True),
+        encoding="utf-8",
+    )
+    p0_artifact = json.loads(p0_e2e_path.read_text(encoding="utf-8"))
+    p0_artifact["exception_paths"]["ecs_timeout"]["evidence_sha256"] = hashlib.sha256(
+        wrong_case_path.read_bytes()
+    ).hexdigest()
+    _write_json(p0_e2e_path, p0_artifact)
+
+    validation = RuntimePhase3ClosureGate().validate_artifact_files(
+        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path},
+        closure_profile="production",
+    )
+
+    assert validation.valid is False
+    assert validation.reason == "MISMATCHED_PHASE3_CLOSURE_EVIDENCE_FILES"
+    assert validation.mismatched_evidence_files == ("p0_e2e:exception_paths.ecs_timeout.evidence",)
+
+
+def test_phase3_closure_gate_rejects_reused_exception_evidence_file(tmp_path) -> None:
+    from src.app.runtime.orchestration.phase3_closure_gate import RuntimePhase3ClosureGate
+
+    p0_e2e_path, benchmark_path = _write_closure_artifacts_with_evidence(tmp_path)
+    p0_artifact = json.loads(p0_e2e_path.read_text(encoding="utf-8"))
+    reused = p0_artifact["exception_paths"]["ecs_timeout"]
+    p0_artifact["exception_paths"]["wms_reject"] = dict(reused)
+    _write_json(p0_e2e_path, p0_artifact)
+
+    validation = RuntimePhase3ClosureGate().validate_artifact_files(
+        {"p0_e2e": p0_e2e_path, "benchmark": benchmark_path},
+        closure_profile="production",
+    )
+
+    assert validation.valid is False
+    assert validation.reason == "MISMATCHED_PHASE3_CLOSURE_EVIDENCE_FILES"
+    assert validation.mismatched_evidence_files == (
+        "p0_e2e:exception_paths.wms_reject.evidence",
+        "p0_e2e:exception_paths.wms_reject.evidence_duplicate",
+    )
 
 
 def test_phase3_closure_gate_rejects_lightweight_benchmark_artifact(tmp_path) -> None:

@@ -208,19 +208,31 @@ def _mismatched_p0_e2e_evidence_files(
     mismatched_fields: list[str] = []
     source = artifact.get("source")
     if isinstance(source, Mapping):
-        source_evidence = _load_evidence_mapping(base_dir=artifact_path.parent, raw_path=source.get("evidence"))
+        source_evidence_path = source.get("evidence")
+        source_evidence_hash = _hash_evidence_file(base_dir=artifact_path.parent, raw_path=source_evidence_path)
+        if source_evidence_hash != source.get("evidence_sha256"):
+            mismatched_fields.append(f"{artifact_name}:source.evidence_sha256")
+        source_evidence = _load_evidence_mapping(base_dir=artifact_path.parent, raw_path=source_evidence_path)
         if source_evidence != artifact.get("recording"):
             mismatched_fields.append(f"{artifact_name}:source.evidence")
 
     exception_paths = artifact.get("exception_paths")
+    seen_exception_evidence_paths: set[Path] = set()
     if isinstance(exception_paths, Mapping):
         for path_name, raw_exception_path in exception_paths.items():
             if not isinstance(path_name, str) or not isinstance(raw_exception_path, Mapping):
                 continue
-            evidence = _load_evidence_mapping(
-                base_dir=artifact_path.parent, raw_path=raw_exception_path.get("evidence")
-            )
-            if evidence.get("result") != raw_exception_path.get("result"):
+            raw_evidence_path = raw_exception_path.get("evidence")
+            evidence_path = _resolve_evidence_path(base_dir=artifact_path.parent, raw_path=raw_evidence_path)
+            if evidence_path in seen_exception_evidence_paths:
+                mismatched_fields.append(f"{artifact_name}:exception_paths.{path_name}.evidence_duplicate")
+            elif evidence_path is not None:
+                seen_exception_evidence_paths.add(evidence_path)
+            evidence = _load_evidence_mapping(base_dir=artifact_path.parent, raw_path=raw_evidence_path)
+            evidence_hash = _hash_evidence_file(base_dir=artifact_path.parent, raw_path=raw_evidence_path)
+            if evidence_hash != raw_exception_path.get("evidence_sha256"):
+                mismatched_fields.append(f"{artifact_name}:exception_paths.{path_name}.evidence_sha256")
+            if evidence.get("result") != raw_exception_path.get("result") or evidence.get("case") != path_name:
                 mismatched_fields.append(f"{artifact_name}:exception_paths.{path_name}.evidence")
     return tuple(mismatched_fields)
 
@@ -289,12 +301,17 @@ def _benchmark_evidence_fields(artifact: Mapping[str, object]) -> dict[str, obje
 
 
 def _evidence_file_exists(*, base_dir: Path, raw_path: object) -> bool:
+    evidence_path = _resolve_evidence_path(base_dir=base_dir, raw_path=raw_path)
+    return evidence_path is not None and evidence_path.is_file()
+
+
+def _resolve_evidence_path(*, base_dir: Path, raw_path: object) -> Path | None:
     if not isinstance(raw_path, str) or not raw_path.strip():
-        return False
+        return None
     evidence_path = Path(raw_path)
     if not evidence_path.is_absolute():
         evidence_path = base_dir / evidence_path
-    return evidence_path.is_file()
+    return evidence_path.resolve()
 
 
 def _load_evidence_mapping(*, base_dir: Path, raw_path: object) -> dict[str, Any]:
