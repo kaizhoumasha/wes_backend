@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在进入 Phase5 删除旧体系前，关闭 Phase1~Phase4 中会影响删除安全、生产切换和上线验收的遗留项。
+**Goal:** 在进入 Phase5 删除旧体系前，关闭 Phase1~Phase4 中会影响删除安全、生产切换和上线验收的代码/门禁遗留项；真实 production evidence 产物作为发布/现场输入，不在本计划中伪造。
 
 **Architecture:** 以 runtime/orchestration 作为运行状态、入站消息、恢复与对账 owner；WorkLine 只保留配置职责，`WorkLine.runtime_status` 只能作为短生命周期兼容投影或被明确迁出。External callback 统一先进入 `RuntimeInbox`，旧 Workline inbox/processor 只能作为过渡消费实现，不再作为入站权威。
 
@@ -34,14 +34,21 @@ Prior learning applied:
 本计划关闭三类遗留项：
 
 1. **删除安全遗留项**：Phase2 `WorkLine.runtime_status` owner 未闭合；callback 热路径旧 inbox 依赖；CB late callback 仍与 RuntimeInbox cutover 绑定。
-2. **生产验收遗留项**：Phase3 production closure artifact、PostgreSQL queue writer benchmark、真实 P0 E2E / benchmark evidence。
-3. **Phase4 业务 evidence 遗留项**：sorter inbound 与 SMT/NG/WMS 对账的 production evidence profile 文件与 gate。
+2. **生产验收门禁遗留项**：Phase3 production closure artifact schema/composer、PostgreSQL queue writer benchmark provenance、真实 P0 E2E / benchmark evidence 的校验 gate。
+3. **Phase4 业务 evidence 门禁遗留项**：sorter inbound 与 SMT/NG/WMS 对账的 production evidence profile schema/composer 与 gate。
 
 不在本计划内：
 
 - Phase5 实际删除旧 `src/workline_runtime` / `src/workline_plugins` 全量代码。
+- 生成或伪造真实现场 Phase3 production artifact、Phase4 production evidence 文件。
 - RCS/AGV/CTU 直连 provider adapter。触发条件仍按主设计文档 §10.5 执行。
 - 为旧 API、旧表名、旧插件框架新增兼容层。
+
+执行状态（2026-07-06 验收修正）：
+
+- 本计划的开发/测试闭环与 Phase5 technical lane 前置已完成；对应 checkbox 反映执行状态。
+- Phase5 business lane 不是本计划内的“已完成”交付物；它必须等待真实 Phase3 production artifact、Phase4 production evidence artifact、Phase4 contract tests 和 legacy matrix 业务项逐项关闭。
+- 可选 PostgreSQL 并发验证未作为本地开发阻塞；production closure 前必须提供同等生产规模 evidence。
 
 ## 文件结构与职责
 
@@ -136,7 +143,7 @@ Prior learning applied:
 - Create: `scripts/check_phase5_readiness_gate.py`
   - 检查技术残留 lane 与业务承载 lane 的启动条件。
   - 技术残留 lane：要求 Phase2 runtime owner 收敛、RuntimeInbox cutover、Phase3 mock closure 与行为合同全绿。
-  - 业务承载 lane：要求 Phase3 production closure 与 Phase4 production evidence profile 全绿。
+  - 业务承载 lane：要求 Phase3 production closure、Phase4 production evidence profile、Phase4 capability / port / contract tests 全绿，以及 legacy matrix 业务项关闭。
 - Create: `tests/contracts/test_phase5_readiness_gate.py`
   - 覆盖技术 lane 可启动、业务 lane 被 production evidence 阻塞、旧 WorkLine runtime owner 未闭合时失败。
 - Modify: `docs/architecture/workline-and-plugin-restructuring.md`
@@ -156,7 +163,7 @@ Prior learning applied:
 - Modify: `docs/architecture/workline-and-plugin-restructuring.md`
 - Modify: `docs/architecture/legacy-cleanup-matrix.md`
 
-- [ ] **Step 1: GitNexus 影响分析**
+- [x] **Step 1: GitNexus 影响分析**
 
 Run:
 
@@ -170,7 +177,7 @@ Expected:
 - 记录 direct callers、affected processes、risk level。
 - 若任一结果为 HIGH / CRITICAL，先向用户汇报再继续执行代码修改。
 
-- [ ] **Step 2: 写失败的 owner guardrail 测试**
+- [x] **Step 2: 写失败的 owner guardrail 测试**
 
 在 `tests/architecture/test_phase2_runtime_status_owner_guardrail.py` 中定义静态扫描合同：
 
@@ -189,7 +196,7 @@ Expected:
 
 - 当前代码应失败，指出至少 `src/app/workline/services/safety_service.py` 或 Phase4 capability 中仍有直接运行态依赖。
 
-- [ ] **Step 3: 更新 residual ledger 文档**
+- [x] **Step 3: 更新 residual ledger 文档**
 
 在主设计文档新增或刷新 `Phase1~4 residual ledger` 小节，列出：
 
@@ -208,7 +215,7 @@ Expected:
 
 - 能定位到 residual ledger。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 Run:
 
@@ -233,7 +240,7 @@ Expected:
 - Modify: `tests/workline_runtime/test_workline_runtime_status_projection_service.py`
 - Modify: `tests/architecture/test_phase2_runtime_status_owner_guardrail.py`
 
-- [ ] **Step 1: GitNexus 影响分析**
+- [x] **Step 1: GitNexus 影响分析**
 
 Run:
 
@@ -248,7 +255,7 @@ Expected:
 - 明确 `handle_estop`、START admission、hold release、runtime query/trace 的 blast radius。
 - HIGH / CRITICAL 时先汇报。
 
-- [ ] **Step 2: 扩展失败测试**
+- [x] **Step 2: 扩展失败测试**
 
 在 `tests/workline_runtime/test_workline_runtime_status_projection_service.py` 增加合同场景：
 
@@ -266,7 +273,7 @@ Expected:
 
 - 新测试先失败，失败点指向直接读写或缺少 owner 方法。
 
-- [ ] **Step 3: 修改 runtime projection service**
+- [x] **Step 3: 修改 runtime projection service**
 
 调整 `WorkLineRuntimeStatusProjectionService` 的公共方法命名与职责：
 
@@ -283,7 +290,7 @@ Expected:
 - 读取方法返回带 `source="runtime/orchestration"` 的快照对象或 mapping。
 - 不引入新的 WorkLine 状态 owner。
 
-- [ ] **Step 4: 修改 WorkLine safety 与 START admission**
+- [x] **Step 4: 修改 WorkLine safety 与 START admission**
 
 调整：
 
@@ -301,7 +308,7 @@ Expected:
 
 - 相关测试通过。
 
-- [ ] **Step 5: 运行架构护栏**
+- [x] **Step 5: 运行架构护栏**
 
 Run:
 
@@ -315,7 +322,7 @@ Expected:
 - violations 0 / warnings 0。
 - owner guardrail 通过。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 Run:
 
@@ -343,7 +350,7 @@ Expected:
 - Modify: `tests/api/test_callback_event_api.py`
 - Modify: `tests/api/test_callback_result_api.py`
 
-- [ ] **Step 1: GitNexus 影响分析**
+- [x] **Step 1: GitNexus 影响分析**
 
 Run:
 
@@ -358,7 +365,7 @@ Expected:
 - 明确 callback API、tests、worker 的 blast radius。
 - HIGH / CRITICAL 时先汇报。
 
-- [ ] **Step 2: 写 cutover 失败测试**
+- [x] **Step 2: 写 cutover 失败测试**
 
 新增 `tests/callback/test_callback_runtime_inbox_cutover.py`，覆盖：
 
@@ -377,7 +384,7 @@ Expected:
 
 - 当前实现失败，原因是 callback orchestration 仍直接依赖 `WorklineInboxService`。
 
-- [ ] **Step 3: 实现 callback runtime inbox writer**
+- [x] **Step 3: 实现 callback runtime inbox writer**
 
 创建 `callback_runtime_inbox_writer.py`，职责固定为：
 
@@ -395,7 +402,7 @@ Expected:
 - 创建 WMS fulfillment。
 - 调用旧 Workline inbox processor。
 
-- [ ] **Step 4: 修正 RuntimeInboxService 细节**
+- [x] **Step 4: 修正 RuntimeInboxService 细节**
 
 在 `RuntimeInboxService.accept_received()` 中修正重复 `now_ms` 传参，并确保：
 
@@ -413,7 +420,7 @@ Expected:
 
 - RuntimeInbox 服务测试通过。
 
-- [ ] **Step 5: 改 callback orchestration 热路径**
+- [x] **Step 5: 改 callback orchestration 热路径**
 
 调整 `CallbackOrchestrationService.process_result/process_event/process_external`：
 
@@ -432,7 +439,7 @@ Expected:
 
 - callback API 与 cutover 合同通过。
 
-- [ ] **Step 6: 更新观测合同**
+- [x] **Step 6: 更新观测合同**
 
 若 callback 入站 metric/span 名称变化，同步：
 
@@ -450,7 +457,7 @@ Expected:
 
 - observability 合同通过。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 Run:
 
@@ -473,7 +480,7 @@ Expected:
 - Modify: `tests/wms_integration/test_fulfillment_state_machine.py`
 - Modify: `tests/runtime/orchestration/test_phase3_recovery_policies.py`
 
-- [ ] **Step 1: GitNexus 影响分析**
+- [x] **Step 1: GitNexus 影响分析**
 
 Run:
 
@@ -488,7 +495,7 @@ Expected:
 - 明确 fulfillment lifecycle、callback normalizer、runtime reconciliation 的影响。
 - HIGH / CRITICAL 时先汇报。
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
 扩展测试场景：
 
@@ -507,7 +514,7 @@ Expected:
 
 - 新 late callback RuntimeInbox 断言先失败。
 
-- [ ] **Step 3: 修改 fulfillment lifecycle**
+- [x] **Step 3: 修改 fulfillment lifecycle**
 
 实现约定：
 
@@ -516,7 +523,7 @@ Expected:
 - 恢复重试前必须查询 RuntimeInbox/evidence，避免重复发起已完成物理事实。
 - 状态 owner 只根据 evidence 转移，不由 ReconciliationManager 直接写终态。
 
-- [ ] **Step 4: 验证**
+- [x] **Step 4: 验证**
 
 Run:
 
@@ -528,7 +535,7 @@ Expected:
 
 - 全部通过。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 Run:
 
@@ -555,7 +562,7 @@ Expected:
 - Modify: `tests/runtime/orchestration/test_phase3_benchmark_artifact_composer.py`
 - Modify: `tests/integration/test_phase3_conveyor_queue_membership_concurrency.py`
 
-- [ ] **Step 1: 写 benchmark artifact 失败测试**
+- [x] **Step 1: 写 benchmark artifact 失败测试**
 
 在 `tests/runtime/orchestration/test_phase3_benchmark_artifact_composer.py` 增加断言：
 
@@ -574,7 +581,7 @@ Expected:
 
 - 当前 lightweight fixture 冒充 production 时失败。
 
-- [ ] **Step 2: 固化四类 production scenario metadata**
+- [x] **Step 2: 固化四类 production scenario metadata**
 
 更新 `tests/load/phase3_benchmark_scenarios.py`：
 
@@ -583,7 +590,7 @@ Expected:
 - ECS status command: source=`ecs-http`, includes status GET + command POST
 - PlaneSnapshot: source=`api-http`, includes 1 WorkLine / 10 queue / 50 device / 100 session / 200 object
 
-- [ ] **Step 3: 更新 composer 与 CLI**
+- [x] **Step 3: 更新 composer 与 CLI**
 
 更新 `scripts/compose_phase3_runtime_benchmark_artifact.py`：
 
@@ -602,7 +609,7 @@ Expected:
 - load 轻量测试仍可通过。
 - production artifact 规则测试通过。
 
-- [ ] **Step 4: 运行可选 PostgreSQL 并发验证**
+- [x] **Step 4: 记录可选 PostgreSQL 并发验证状态**
 
 仅在本地 PostgreSQL/Redis 准备好时运行：
 
@@ -615,7 +622,7 @@ Expected:
 - 1 passed。
 - 若环境不可用，不把该命令作为开发/测试阻塞；production closure 前必须提供同等 evidence。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 Run:
 
@@ -640,7 +647,7 @@ Expected:
 - Modify: `tests/resilience/test_phase3_integration_lab.py`
 - Modify: `tests/resilience/fixtures/phase3_integration_lab_fixture.json`
 
-- [ ] **Step 1: 写 production closure 失败测试**
+- [x] **Step 1: 写 production closure 失败测试**
 
 扩展测试：
 
@@ -659,7 +666,7 @@ Expected:
 
 - 新 production-only 断言先失败。
 
-- [ ] **Step 2: 更新 P0 E2E artifact composer**
+- [x] **Step 2: 更新 P0 E2E artifact composer**
 
 实现约定：
 
@@ -668,7 +675,7 @@ Expected:
 - exception paths 必须覆盖 ECS timeout、WMS reject、callback out-of-order。
 - evidence 文件必须存在并与 artifact 内嵌摘要一致。
 
-- [ ] **Step 3: 验证 mock 与 production gate 区分**
+- [x] **Step 3: 验证 mock 与 production gate 区分**
 
 Run:
 
@@ -682,7 +689,7 @@ Expected:
 - 无 artifact 时 mock closure 通过。
 - production profile 测试只接受真实 artifact fixture。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 Run:
 
@@ -707,7 +714,7 @@ Expected:
 - Modify: `tests/workline_runtime/test_smt_ng_wms_reconciliation_runtime_service.py`
 - Modify: `docs/superpowers/specs/2026-07-03-phase4-design-with-residuals.md`
 
-- [ ] **Step 1: 写 production evidence 失败测试**
+- [x] **Step 1: 写 production evidence 失败测试**
 
 扩展测试：
 
@@ -727,7 +734,7 @@ Expected:
 
 - 新 production-only 断言先失败。
 
-- [ ] **Step 2: 更新 evidence composer**
+- [x] **Step 2: 更新 evidence composer**
 
 `compose_phase4_runtime_evidence_artifact.py` 必须输出：
 
@@ -744,7 +751,7 @@ Expected:
 - 不把 evidence 文件提交到 git。
 - composer 只校验引用、hash 和 profile，不伪造现场结果。
 
-- [ ] **Step 3: 验证 runtime capability 仍不分支 provider**
+- [x] **Step 3: 验证 runtime capability 仍不分支 provider**
 
 Run:
 
@@ -756,7 +763,7 @@ Expected:
 
 - runtime path builder 只输出 provider contract / RuntimeIntent / RuntimeInbox evidence plan，不根据 MOCK/sandbox/site 写业务分支。
 
-- [ ] **Step 4: 更新 Phase4 residual 文档**
+- [x] **Step 4: 更新 Phase4 residual 文档**
 
 更新 `docs/superpowers/specs/2026-07-03-phase4-design-with-residuals.md`：
 
@@ -774,7 +781,7 @@ Expected:
 
 - 文档能查到上述口径。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 Run:
 
@@ -797,7 +804,7 @@ Expected:
 - Modify: `docs/architecture/workline-and-plugin-restructuring.md`
 - Modify: `docs/architecture/legacy-cleanup-matrix.md`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 新增 `tests/contracts/test_phase5_readiness_gate.py`：
 
@@ -816,7 +823,7 @@ Expected:
 
 - 当前无脚本时失败。
 
-- [ ] **Step 2: 实现 readiness gate**
+- [x] **Step 2: 实现 readiness gate**
 
 `scripts/check_phase5_readiness_gate.py` 支持：
 
@@ -837,9 +844,10 @@ Expected:
 - `RUNTIME_INBOX_CUTOVER_OPEN`
 - `MISSING_PHASE3_PRODUCTION_CLOSURE`
 - `MISSING_PHASE4_PRODUCTION_EVIDENCE`
+- `PHASE5_BUSINESS_CONTRACTS_OPEN`
 - `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`
 
-- [ ] **Step 3: 接入 quality profile**
+- [x] **Step 3: 接入 quality profile**
 
 更新 `scripts/git-quality-gate.sh`：
 
@@ -856,8 +864,9 @@ rtk uv run pytest tests/contracts/test_phase5_readiness_gate.py -q
 Expected:
 
 - technical lane 在前序任务完成后通过。
+- business lane 不默认执行；显式运行时必须在 Phase3/Phase4 production evidence 之后继续验证 Phase4 capability / port / contract tests。
 
-- [ ] **Step 4: 更新主设计文档**
+- [x] **Step 4: 更新主设计文档**
 
 更新 `docs/architecture/workline-and-plugin-restructuring.md`：
 
@@ -866,7 +875,7 @@ Expected:
 - Phase4 production evidence gate 状态。
 - Phase5 启动条件改为引用 readiness gate。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 Run:
 
@@ -886,7 +895,7 @@ Expected:
 - Modify: `docs/architecture/workline-and-plugin-restructuring.md`
 - Modify: `docs/architecture/legacy-cleanup-matrix.md`
 
-- [ ] **Step 1: 运行 Phase1/2 定向验收**
+- [x] **Step 1: 运行 Phase1/2 定向验收**
 
 Run:
 
@@ -898,7 +907,7 @@ Expected:
 
 - 全部通过；允许既有 strict xfail 继续存在，但不能新增未解释 xfail。
 
-- [ ] **Step 2: 运行 Phase3 定向验收**
+- [x] **Step 2: 运行 Phase3 定向验收**
 
 Run:
 
@@ -911,19 +920,19 @@ Expected:
 - 全部通过。
 - `scripts/check_phase3_closure_gate.py` 无 artifact 时仍显示 mock closure passed。
 
-- [ ] **Step 3: 运行 Phase4 定向验收**
+- [x] **Step 3: 运行 Phase4 定向验收**
 
 Run:
 
 ```bash
-rtk uv run pytest tests/contracts/test_phase4_design_docs.py tests/contracts/test_phase4_runtime_readiness_gate.py tests/contracts/test_phase4_runtime_evidence_artifact_composer.py tests/mock/phase4/test_sorter_inbound_mock_contracts.py tests/mock/phase4/test_wave2_wave3_mock_acceptance.py tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py tests/workline_runtime/test_material_location_query_service.py tests/workline_runtime/test_workline_active_objects_service.py tests/workline_runtime/test_sorter_inbound_preview_service.py tests/workline_runtime/test_sorter_inbound_runtime_service.py tests/workline_runtime/test_smt_ng_wms_reconciliation_preview_service.py tests/workline_runtime/test_smt_ng_wms_reconciliation_runtime_service.py tests/api/test_phase4_read_model_routes.py tests/migrations/test_phase4_runtime_location_reservation_migration.py -q
+rtk uv run pytest tests/contracts/test_phase4_design_docs.py tests/contracts/test_phase4_runtime_readiness_gate.py tests/contracts/test_phase4_runtime_evidence_artifact_composer.py tests/mock/phase4/test_sorter_inbound_mock_contracts.py tests/mock/phase4/test_wave2_wave3_mock_acceptance.py tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py tests/workline_runtime/test_runtime_location_event_service.py tests/workline_runtime/test_material_location_query_service.py tests/workline_runtime/test_workline_active_objects_service.py tests/workline_runtime/test_sorter_inbound_preview_service.py tests/workline_runtime/test_sorter_inbound_runtime_service.py tests/workline_runtime/test_smt_ng_wms_reconciliation_preview_service.py tests/workline_runtime/test_smt_ng_wms_reconciliation_runtime_service.py tests/api/test_phase4_read_model_routes.py tests/migrations/test_phase4_runtime_location_reservation_migration.py -q
 ```
 
 Expected:
 
 - 全部通过。
 
-- [ ] **Step 4: 运行 quality profile**
+- [x] **Step 4: 运行 quality profile**
 
 Run:
 
@@ -942,7 +951,7 @@ Expected:
 - test suite topology 通过。
 - Phase5 technical readiness 通过。
 
-- [ ] **Step 5: GitNexus detect changes**
+- [x] **Step 5: GitNexus detect changes**
 
 Run:
 
@@ -956,7 +965,7 @@ Expected:
 - affected processes 与 runtime/callback/wms/phase gate 范围一致。
 - 如果 HIGH / CRITICAL，补充风险说明并暂停提交或发布。
 
-- [ ] **Step 6: 更新验收报告**
+- [x] **Step 6: 更新验收报告**
 
 在主设计文档中记录：
 
@@ -965,7 +974,7 @@ Expected:
 - Phase4: development/mock readiness 通过；production evidence profile 仍需真实 artifact，或若已提供则标记通过。
 - Phase5: technical lane 是否可启动；business lane 是否仍被 production evidence 阻塞。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 Run:
 
@@ -1003,6 +1012,8 @@ Expected:
 - Phase4 production evidence profile 通过。
 - 对应 Phase4 capability / port / contract tests 全绿。
 - legacy cleanup matrix 中业务承载项逐项有 evidence 和删除前置条件。
+
+当前状态：business lane 仍为 `blocked-until-production-evidence`，不得仅凭 mock closure、lightweight benchmark 或本地 contract tests 删除业务承载 legacy。
 
 ## 风险与应对
 

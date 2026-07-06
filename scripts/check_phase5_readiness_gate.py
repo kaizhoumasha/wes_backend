@@ -18,6 +18,7 @@ PHASE2_RUNTIME_STATUS_OWNER_OPEN = "PHASE2_RUNTIME_STATUS_OWNER_OPEN"
 RUNTIME_INBOX_CUTOVER_OPEN = "RUNTIME_INBOX_CUTOVER_OPEN"
 PHASE3_MOCK_CLOSURE_OPEN = "PHASE3_MOCK_CLOSURE_OPEN"
 PHASE5_TECHNICAL_CONTRACTS_OPEN = "PHASE5_TECHNICAL_CONTRACTS_OPEN"
+PHASE5_BUSINESS_CONTRACTS_OPEN = "PHASE5_BUSINESS_CONTRACTS_OPEN"
 PHASE5_READINESS_DOCUMENTS_OPEN = "PHASE5_READINESS_DOCUMENTS_OPEN"
 MISSING_PHASE3_PRODUCTION_CLOSURE = "MISSING_PHASE3_PRODUCTION_CLOSURE"
 MISSING_PHASE4_PRODUCTION_EVIDENCE = "MISSING_PHASE4_PRODUCTION_EVIDENCE"
@@ -47,6 +48,23 @@ TECHNICAL_LANE_CONTRACT_TESTS = (
     Path("tests/contracts/test_phase3_ops_contract_docs.py"),
     Path("tests/contracts/workline"),
     Path("tests/characterization/workline_legacy"),
+)
+BUSINESS_LANE_CONTRACT_TESTS = (
+    Path("tests/contracts/test_phase4_design_docs.py"),
+    Path("tests/contracts/test_phase4_runtime_readiness_gate.py"),
+    Path("tests/contracts/test_phase4_runtime_evidence_artifact_composer.py"),
+    Path("tests/mock/phase4/test_sorter_inbound_mock_contracts.py"),
+    Path("tests/mock/phase4/test_wave2_wave3_mock_acceptance.py"),
+    Path("tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py"),
+    Path("tests/workline_runtime/test_runtime_location_event_service.py"),
+    Path("tests/workline_runtime/test_material_location_query_service.py"),
+    Path("tests/workline_runtime/test_workline_active_objects_service.py"),
+    Path("tests/workline_runtime/test_sorter_inbound_preview_service.py"),
+    Path("tests/workline_runtime/test_sorter_inbound_runtime_service.py"),
+    Path("tests/workline_runtime/test_smt_ng_wms_reconciliation_preview_service.py"),
+    Path("tests/workline_runtime/test_smt_ng_wms_reconciliation_runtime_service.py"),
+    Path("tests/api/test_phase4_read_model_routes.py"),
+    Path("tests/migrations/test_phase4_runtime_location_reservation_migration.py"),
 )
 
 
@@ -338,13 +356,13 @@ def _phase3_mock_closure_result(repo_root: Path) -> GateResult:
     return GateResult(True, "PHASE3_MOCK_CLOSURE_CLOSED")
 
 
-def _technical_contracts_result(repo_root: Path) -> GateResult:
-    missing = _missing_files(repo_root, TECHNICAL_LANE_CONTRACT_TESTS)
+def _pytest_contracts_result(repo_root: Path, contract_tests: Sequence[Path], *, failure_reason: str) -> GateResult:
+    missing = _missing_files(repo_root, contract_tests)
     if missing:
-        return GateResult(False, PHASE5_TECHNICAL_CONTRACTS_OPEN, missing)
+        return GateResult(False, failure_reason, missing)
 
     result = subprocess.run(  # noqa: S603 - fixed pytest module plus repository-owned test paths.
-        [sys.executable, "-m", "pytest", *(str(path) for path in TECHNICAL_LANE_CONTRACT_TESTS), "-q"],
+        [sys.executable, "-m", "pytest", *(str(path) for path in contract_tests), "-q"],
         cwd=repo_root,
         capture_output=True,
         text=True,
@@ -360,8 +378,24 @@ def _technical_contracts_result(repo_root: Path) -> GateResult:
             )
             if detail
         )
-        return GateResult(False, PHASE5_TECHNICAL_CONTRACTS_OPEN, details)
-    return GateResult(True, "PHASE5_TECHNICAL_CONTRACTS_CLOSED")
+        return GateResult(False, failure_reason, details)
+    return GateResult(True, f"{failure_reason.removesuffix('_OPEN')}_CLOSED")
+
+
+def _technical_contracts_result(repo_root: Path) -> GateResult:
+    return _pytest_contracts_result(
+        repo_root,
+        TECHNICAL_LANE_CONTRACT_TESTS,
+        failure_reason=PHASE5_TECHNICAL_CONTRACTS_OPEN,
+    )
+
+
+def _business_contracts_result(repo_root: Path) -> GateResult:
+    return _pytest_contracts_result(
+        repo_root,
+        BUSINESS_LANE_CONTRACT_TESTS,
+        failure_reason=PHASE5_BUSINESS_CONTRACTS_OPEN,
+    )
 
 
 def _tail(text: str, *, max_lines: int = 12) -> str:
@@ -509,6 +543,9 @@ def validate_readiness(args: argparse.Namespace) -> GateResult:
     )
     if not phase4_result.valid:
         return phase4_result
+    business_contracts_result = _business_contracts_result(repo_root)
+    if not business_contracts_result.valid:
+        return business_contracts_result
     matrix_result = _document_readiness_result(repo_root, lane="business")
     if not matrix_result.valid:
         return matrix_result

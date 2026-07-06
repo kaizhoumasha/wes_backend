@@ -1810,8 +1810,8 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - Phase2：`WorkLine.runtime_status` 已收敛为 runtime/orchestration compatibility projection；`WorkLineRuntimeStatusProjectionService` 是唯一写入口，safety / START admission / query / trace 通过 snapshot/readiness 使用兼容字段。
 - Phase3：development/mock closure 与行为合同已通过；production closure gate 已具备真实 P0 E2E artifact、production-scale benchmark artifact 与 evidence hash 校验，但当前未提供现场 production artifact，仍属于 business lane 前置。
 - Phase4：development-mock readiness 与 runtime capability / evidence profile gate 已通过；`site/production` profile 已要求 evidence manifest、文件存在与 hash 一致，并叠加 Phase3 production closure，真实 production evidence 仍待发布/现场验收产物提供。
-- Phase5：technical lane 已通过 `scripts/check_phase5_readiness_gate.py --lane technical` 并接入 `./scripts/git-quality-gate.sh --profile quality`；business lane 仍被 Phase3 production closure、Phase4 production evidence profile 和 legacy matrix 逐项关闭状态阻塞。
-- 本轮验证：Phase1/2 定向验收 `211 passed, 1 xfailed`；Phase3 定向验收 `240 passed`；Phase4 定向验收 `94 passed`；quality profile 通过（ruff format/check、bandit、runtime toggle、Phase4 readiness、Phase5 readiness、import-linter、architecture guardrails、test topology）。
+- Phase5：technical lane 已通过 `scripts/check_phase5_readiness_gate.py --lane technical` 并接入 `./scripts/git-quality-gate.sh --profile quality`；business lane 仍被 Phase3 production closure、Phase4 production evidence profile、Phase4 capability / port / contract tests 和 legacy matrix 逐项关闭状态阻塞。
+- 本轮验证：Phase1/2 定向验收 `211 passed, 1 xfailed`；Phase3 定向验收 `240 passed`；Phase4 定向验收 `95 passed`；quality profile 通过（ruff format/check、bandit、runtime toggle、Phase4 readiness、Phase5 readiness、import-linter、architecture guardrails、test topology）。
 
 **Task 1+2 收敛结论**：Phase2 的运行态字段遗留不再阻塞 Phase2 gate；它在 Phase5 前作为 compatibility projection 保留。callback / WMS / benchmark / evidence / Phase5 gate 的生产证据项属于后续业务 lane，不在本切片中扩大。
 
@@ -2231,7 +2231,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 **启动条件（双 lane）**：
 
 - **技术残留清理 lane**：必须先通过 `uv run python scripts/check_phase5_readiness_gate.py --lane technical`。该 gate 统一检查 Phase2 runtime owner guardrail、RuntimeInbox callback cutover、Phase3 mock closure，以及技术 lane 行为契约测试集；通过后只允许删除无业务语义的旧 plugin 框架、旧队列 enum、旧 API 兼容转发和 dead code。
-- **业务承载 legacy lane**：必须先通过 `uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`。该 gate 统一检查 Phase3 production closure、Phase4 production evidence profile 和 `legacy-cleanup-matrix.md` 中业务承载项关闭状态；未通过前只能冻结入口并保留 characterization tests，不得提前 drop 承载业务语义的数据或代码。
+- **业务承载 legacy lane**：必须先通过 `uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`。该 gate 统一检查 Phase3 production closure、Phase4 production evidence profile、Phase4 capability / port / contract tests 和 `legacy-cleanup-matrix.md` 中业务承载项关闭状态；未通过前只能冻结入口并保留 characterization tests，不得提前 drop 承载业务语义的数据或代码。
 
 | Task | Effort | 关联文件 | 验证 |
 | --- | --- | --- | --- |

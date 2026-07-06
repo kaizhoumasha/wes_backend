@@ -8,6 +8,23 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATE_SCRIPT = REPO_ROOT / "scripts" / "check_phase5_readiness_gate.py"
+BUSINESS_LANE_CONTRACT_TESTS = (
+    "tests/contracts/test_phase4_design_docs.py",
+    "tests/contracts/test_phase4_runtime_readiness_gate.py",
+    "tests/contracts/test_phase4_runtime_evidence_artifact_composer.py",
+    "tests/mock/phase4/test_sorter_inbound_mock_contracts.py",
+    "tests/mock/phase4/test_wave2_wave3_mock_acceptance.py",
+    "tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py",
+    "tests/workline_runtime/test_runtime_location_event_service.py",
+    "tests/workline_runtime/test_material_location_query_service.py",
+    "tests/workline_runtime/test_workline_active_objects_service.py",
+    "tests/workline_runtime/test_sorter_inbound_preview_service.py",
+    "tests/workline_runtime/test_sorter_inbound_runtime_service.py",
+    "tests/workline_runtime/test_smt_ng_wms_reconciliation_preview_service.py",
+    "tests/workline_runtime/test_smt_ng_wms_reconciliation_runtime_service.py",
+    "tests/api/test_phase4_read_model_routes.py",
+    "tests/migrations/test_phase4_runtime_location_reservation_migration.py",
+)
 
 
 def _write(path: Path, text: str) -> Path:
@@ -32,6 +49,11 @@ if __name__ == "__main__":
     raise SystemExit(0)
 """,
     )
+
+
+def _write_business_lane_contract_tests(repo_root: Path) -> None:
+    for relative_path in BUSINESS_LANE_CONTRACT_TESTS:
+        _write(repo_root / relative_path, "def test_phase4_business_contract_marker():\n    assert True\n")
 
 
 def _write_minimal_phase5_repo(repo_root: Path, *, business_ready: bool = False) -> None:
@@ -132,8 +154,9 @@ Phase5 technical lane 允许清理纯技术残留。
 Phase5 business lane 必须等待 Phase3 production closure 与 Phase4 production evidence profile。
 WorkLine.runtime_status 是 runtime/orchestration compatibility projection。
 RuntimeInbox callback cutover 已作为删除前共同前置。
-""",
+        """,
     )
+    _write_business_lane_contract_tests(repo_root)
 
 
 def test_phase5_readiness_gate_technical_lane_passes() -> None:
@@ -318,6 +341,75 @@ def test_phase5_readiness_gate_business_lane_rejects_open_legacy_matrix_items(tm
 
     assert result.returncode == 1
     assert "Phase 5 readiness failed: LEGACY_MATRIX_BUSINESS_ITEMS_OPEN" in result.stdout
+
+
+def test_phase5_readiness_gate_business_lane_requires_phase4_contract_tests(tmp_path: Path) -> None:
+    _write_minimal_phase5_repo(tmp_path, business_ready=True)
+    (tmp_path / "tests" / "workline_runtime" / "test_runtime_location_event_service.py").unlink()
+    p0_artifact = _write_json(tmp_path / "phase3-p0-e2e.json")
+    benchmark_artifact = _write_json(tmp_path / "phase3-production-benchmark.json")
+    phase4_artifact = _write_json(tmp_path / "phase4-runtime-evidence.json")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(GATE_SCRIPT),
+            "--lane",
+            "business",
+            "--repo-root",
+            str(tmp_path),
+            "--phase3-p0-e2e-artifact",
+            str(p0_artifact),
+            "--phase3-benchmark-artifact",
+            str(benchmark_artifact),
+            "--phase4-evidence-artifact",
+            str(phase4_artifact),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Phase 5 readiness failed: PHASE5_BUSINESS_CONTRACTS_OPEN" in result.stdout
+    assert "test_runtime_location_event_service.py" in result.stdout
+
+
+def test_phase5_readiness_gate_business_lane_rejects_failing_phase4_contract_tests(tmp_path: Path) -> None:
+    _write_minimal_phase5_repo(tmp_path, business_ready=True)
+    _write(
+        tmp_path / "tests" / "workline_runtime" / "test_runtime_location_event_service.py",
+        "def test_phase4_business_contract_marker():\n    assert False\n",
+    )
+    p0_artifact = _write_json(tmp_path / "phase3-p0-e2e.json")
+    benchmark_artifact = _write_json(tmp_path / "phase3-production-benchmark.json")
+    phase4_artifact = _write_json(tmp_path / "phase4-runtime-evidence.json")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(GATE_SCRIPT),
+            "--lane",
+            "business",
+            "--repo-root",
+            str(tmp_path),
+            "--phase3-p0-e2e-artifact",
+            str(p0_artifact),
+            "--phase3-benchmark-artifact",
+            str(benchmark_artifact),
+            "--phase4-evidence-artifact",
+            str(phase4_artifact),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "Phase 5 readiness failed: PHASE5_BUSINESS_CONTRACTS_OPEN" in result.stdout
+    assert "pytest_exit=1" in result.stdout
 
 
 def test_phase5_readiness_gate_business_lane_can_pass_when_matrix_is_closed(tmp_path: Path) -> None:
