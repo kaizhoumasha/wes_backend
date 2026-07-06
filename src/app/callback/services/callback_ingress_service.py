@@ -41,6 +41,8 @@ from src.app.device.models.command import (
 )
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.runtime.capabilities.phase4.start_admission_service import start_admission_service
+from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxConflict
+from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
 from src.app.runtime.orchestration.services.inbox import inbox_service
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
@@ -719,6 +721,41 @@ def _build_not_found_fail(message: str) -> CallbackRejectedIngressResponse:
             data=build_callback_rejected_response(),
         ),
     )
+
+
+async def _handle_runtime_inbox_conflict(
+    db: AsyncSessionDep,
+    request: Request,
+    *,
+    callback_type: str,
+    request_id: str | None,
+    request_body: JsonDict,
+    message: str,
+    response_time_ms: int,
+    trace_id: str | None = None,
+    event_id: str | None = None,
+    causation_id: str | None = None,
+) -> CallbackRejectedIngressResponse:
+    await _log_callback_outcome(
+        db,
+        request,
+        callback_type=callback_type,
+        subject_code=_resolve_callback_subject(callback_type, request_body),
+        request_body=request_body,
+        request_id=request_id,
+        trace_id=trace_id or _resolve_callback_trace_id(request_body),
+        event_id=event_id or _resolve_callback_event_id(request_body),
+        causation_id=causation_id or _resolve_callback_causation_id(request_body),
+        response_status=409,
+        response_time_ms=response_time_ms,
+        success=False,
+        record_audit=True,
+        audit_title=_resolve_callback_audit_title(callback_type),
+        error_message=message,
+        ingress_outcome=_INGRESS_OUTCOME_REJECTED,
+        failure_stage=_FAILURE_STAGE_ORCHESTRATION,
+    )
+    return _build_conflict_fail(message, reason_code="RUNTIME_INBOX_CONFLICT")
 
 
 def _resolve_callback_audit_title(callback_type: str) -> str:
@@ -1514,6 +1551,23 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             event_id=_resolve_callback_event_id(callback_data),
             causation_id=_resolve_callback_causation_id(callback_data),
         )
+    except (RuntimeInboxConflict, IdempotencyConflict) as exc:
+        logger.error(f"指令结果回调 RuntimeInbox 冲突: {exc}")
+        return cast(
+            "CallbackResultIngressResponse",
+            await _handle_runtime_inbox_conflict(
+                db,
+                request,
+                callback_type="result",
+                request_id=request_id,
+                request_body=callback_data,
+                message=str(exc),
+                response_time_ms=_response_time_ms(start_time),
+                trace_id=resolved_trace_id,
+                event_id=_resolve_callback_event_id(callback_data),
+                causation_id=_resolve_callback_causation_id(callback_data),
+            ),
+        )
     except Exception as exc:
         response_time_ms = _response_time_ms(start_time)
         logger.error(f"指令结果回调处理失败: {exc}")
@@ -1867,6 +1921,26 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
         )
 
     except Exception as exc:
+        if isinstance(exc, (RuntimeInboxConflict, IdempotencyConflict)):
+            logger.error(f"设备事件上报 RuntimeInbox 冲突: {exc}")
+            return CallbackEventIngressDecision(
+                body=cast(
+                    "CallbackEventIngressResponse",
+                    await _handle_runtime_inbox_conflict(
+                        db,
+                        request,
+                        callback_type="event",
+                        request_id=request_id,
+                        request_body=event_data,
+                        message=str(exc),
+                        response_time_ms=_response_time_ms(start_time),
+                        trace_id=_resolve_callback_trace_id(event_data),
+                        event_id=_resolve_callback_event_id(event_data),
+                        causation_id=_resolve_callback_causation_id(event_data),
+                    ),
+                ),
+                http_status=409,
+            )
         response_time_ms = _response_time_ms(start_time)
         logger.error(f"设备事件上报处理失败: {exc}")
         await _log_callback_outcome(
@@ -2048,6 +2122,23 @@ async def handle_callback_external(
             message=f"外部回调契约校验失败: {exc}",
             response_time_ms=_response_time_ms(start_time),
             failure_stage=_FAILURE_STAGE_CONTRACT_VALIDATE,
+        )
+    except (RuntimeInboxConflict, IdempotencyConflict) as exc:
+        logger.error(f"外部回调 RuntimeInbox 冲突: {exc}")
+        return cast(
+            "CallbackExternalIngressResponse",
+            await _handle_runtime_inbox_conflict(
+                db,
+                request,
+                callback_type="external",
+                request_id=request_id,
+                request_body=callback_data,
+                message=str(exc),
+                response_time_ms=_response_time_ms(start_time),
+                trace_id=external_trace_id,
+                event_id=_resolve_callback_event_id(callback_data),
+                causation_id=_resolve_callback_causation_id(callback_data),
+            ),
         )
     except Exception as exc:
         response_time_ms = _response_time_ms(start_time)

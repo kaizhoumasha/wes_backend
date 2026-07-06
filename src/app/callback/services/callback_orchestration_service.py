@@ -13,6 +13,9 @@ from typing import TYPE_CHECKING, Any, cast
 from src.app.callback.contracts import TraceContext, timeline_generator
 from src.app.callback.utils import JsonDict, ensure_dict
 from src.app.device.services.device_command_service import DeviceCallbackResultOutcome
+from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import (
+    callback_runtime_inbox_writer,
+)
 from src.app.runtime.orchestration.models.inbox import SourceSystem
 from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
@@ -104,10 +107,12 @@ class CallbackOrchestrationService:
         *,
         rack_task_service: Any | None = None,
         handling_operation_service: Any | None = None,
+        runtime_inbox_writer: Any = callback_runtime_inbox_writer,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
         self._rack_task_service = rack_task_service
         self._handling_operation_service = handling_operation_service
+        self._runtime_inbox_writer = runtime_inbox_writer
         self._queue_gateway = queue_gateway
 
     def _is_duplicate_inbox_error(self, error: ValueError) -> bool:
@@ -328,6 +333,15 @@ class CallbackOrchestrationService:
         inherited_trace_id = trace.trace_id or getattr(existing_command, "trace_id", None)
 
         is_duplicate = False
+        runtime_inbox_result = await self._runtime_inbox_writer.write_result_callback(
+            db,
+            payload=callback.model_dump(mode="json"),
+            request_id=request_id,
+            correlation_id=getattr(existing_command, "correlation_id", None),
+        )
+        if not runtime_inbox_result.created:
+            return ResultCallbackOutcome(trace_id=inherited_trace_id, is_duplicate=True)
+
         is_workline_callback = await self._is_workline_command_callback(
             db,
             existing_command=existing_command,
@@ -381,7 +395,8 @@ class CallbackOrchestrationService:
                     inherited_trace_id = trace.trace_id or inherited_trace_id
 
             if is_duplicate:
-                await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
+                await db.commit()
+                await publish_deferred_sse_events(db)
             else:
                 handled = await command_service.handle_callback_result(db, callback)
                 command, late_callback_recorded = self._unpack_command_callback_result(handled)
@@ -489,6 +504,15 @@ class CallbackOrchestrationService:
             trace = trace.with_trace_id(event_trace_id)
 
         is_duplicate = False
+        runtime_inbox_result = await self._runtime_inbox_writer.write_event_callback(
+            db,
+            payload=event_request.model_dump(mode="json"),
+            request_id=request_id,
+            canonical_event_type=canonical_event_type,
+        )
+        if not runtime_inbox_result.created:
+            return EventCallbackOutcome(trace_id=event_trace_id, is_duplicate=True)
+
         if is_workline_event:
             try:
                 _ = await inbox_service.create_device_event_inbox(
@@ -517,7 +541,14 @@ class CallbackOrchestrationService:
                     trace = trace.with_inbox(duplicate_inbox)
                     event_trace_id = trace.trace_id or event_trace_id
 
-            await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
+            if is_duplicate:
+                await db.commit()
+                await publish_deferred_sse_events(db)
+            else:
+                await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
+        else:
+            await db.commit()
+            await publish_deferred_sse_events(db)
 
         return EventCallbackOutcome(
             trace_id=event_trace_id,
@@ -554,6 +585,14 @@ class CallbackOrchestrationService:
             or callback_type in _HANDLING_LIFECYCLE_ONLY_CALLBACK_TYPES
         )
         created_inbox: object | None = None
+        runtime_inbox_result = await self._runtime_inbox_writer.write_external_callback(
+            db,
+            payload=payload,
+            request_id=request_id,
+        )
+        if not runtime_inbox_result.created:
+            return ExternalCallbackOutcome(trace_id=trace.trace_id or "", is_duplicate=True)
+
         try:
             created_inbox = await inbox_service.create_external_http_inbox(
                 db=db,
@@ -594,10 +633,14 @@ class CallbackOrchestrationService:
                     raise RuntimeError("生命周期回调 Inbox 缺少 ID，无法标记已处理")
                 _ = await inbox_service.mark_as_processed(db, inbox_id, auto_commit=False)
 
-        await self._commit_and_enqueue_workline_processing(
-            db,
-            enqueue_processing=_skip_workline_processing_enqueue if lifecycle_only else enqueue_processing,
-        )
+        if is_duplicate:
+            await db.commit()
+            await publish_deferred_sse_events(db)
+        else:
+            await self._commit_and_enqueue_workline_processing(
+                db,
+                enqueue_processing=_skip_workline_processing_enqueue if lifecycle_only else enqueue_processing,
+            )
 
         return ExternalCallbackOutcome(
             trace_id=trace.trace_id or "",

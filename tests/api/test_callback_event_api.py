@@ -69,6 +69,14 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
+                new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=811))),
+            ),
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
+                new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=814))),
+            ),
+            patch(
                 "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
@@ -343,6 +351,10 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
+                new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=812))),
+            ),
+            patch(
                 "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
                 new=AsyncMock(),
             ) as mock_create_inbox,
@@ -404,6 +416,10 @@ class TestCallbackEventAPI:
                         None,
                     )
                 ),
+            ),
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
+                new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=813))),
             ),
             patch(
                 "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
@@ -470,6 +486,10 @@ class TestCallbackEventAPI:
                         None,
                     )
                 ),
+            ),
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
+                new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=814))),
             ),
             patch(
                 "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
@@ -605,6 +625,10 @@ class TestCallbackEventAPI:
                         None,
                     )
                 ),
+            ),
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
+                new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=814))),
             ),
             patch(
                 "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
@@ -758,6 +782,10 @@ class TestCallbackEventAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
+                new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=814))),
+            ),
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-estop-001"),
         ):
@@ -1037,4 +1065,143 @@ class TestCallbackEventAPI:
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["response_status"] == 409
         assert log_kwargs["failure_stage"] == "WORKLINE_GUARD"
+        mock_audit.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_callback_event_duplicate_ack_comes_from_runtime_inbox(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=SimpleNamespace(
+                                capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
+                            ),
+                            workline=SimpleNamespace(
+                                plugin_key="test_workline_plugin",
+                                contract_version="1.0",
+                                is_active=True,
+                            ),
+                            plugin_key="test_workline_plugin",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
+            ),
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
+                new=AsyncMock(return_value=SimpleNamespace(created=False, record=SimpleNamespace(id=902))),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-runtime-dup-event"),
+        ):
+            from src.app.callback.v1.callback import callback_event
+
+            response = await callback_event(
+                request=build_request(body=create_event_payload(), path="/api/v1/callback/event"),
+                db=db_session,
+                response=Response(),
+            )
+
+        assert response["code"] == "1000"
+        assert _response_data(response)["status"] == "duplicate"
+        mock_create_inbox.assert_not_awaited()
+        mock_enqueue.assert_not_called()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "DUPLICATE"
+        mock_audit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_callback_event_conflict_maps_runtime_inbox_conflict(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxConflict
+
+        http_response = Response()
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
+                new=AsyncMock(
+                    return_value=(
+                        SimpleNamespace(
+                            device=SimpleNamespace(
+                                capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
+                            ),
+                            workline=SimpleNamespace(
+                                plugin_key="test_workline_plugin",
+                                contract_version="1.0",
+                                is_active=True,
+                            ),
+                            plugin_key="test_workline_plugin",
+                            contract_version="1.0",
+                            work_line_id=1,
+                            is_workline_bound=True,
+                        ),
+                        None,
+                    )
+                ),
+            ),
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
+                new=AsyncMock(
+                    side_effect=RuntimeInboxConflict(
+                        provider_code="ECS",
+                        event_type="event",
+                        source_event_id="evt-event-conflict",
+                        existing_payload_hash="hash-old",
+                        incoming_payload_hash="hash-new",
+                    )
+                ),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-runtime-conflict-event"),
+        ):
+            from src.app.callback.v1.callback import callback_event
+
+            response = await callback_event(
+                request=build_request(body=create_event_payload(), path="/api/v1/callback/event"),
+                db=db_session,
+                response=http_response,
+            )
+
+        assert http_response.status_code == 409
+        assert response["code"] == ResourceErrorCode.CONFLICT.code
+        assert _response_data(response)["ack"] is False
+        mock_create_inbox.assert_not_awaited()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["response_status"] == 409
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
         mock_audit.assert_awaited_once()
