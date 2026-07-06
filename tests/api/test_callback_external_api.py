@@ -736,13 +736,13 @@ class TestCallbackExternalAPI:
             )
 
         assert response["code"] == "1000"
-        assert _response_data(response)["status"] == "duplicate"
+        assert _response_data(response)["status"] == "submitted"
         mock_create_inbox.assert_awaited_once()
         rack_task_service.record_callback_from_external_http.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
-        assert log_kwargs["ingress_outcome"] == "DUPLICATE"
+        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         mock_enqueue.assert_not_called()
-        mock_audit.assert_not_awaited()
+        mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_callback_external_h4_accepts_wms_rack_operation_protocol_fields(

@@ -45,12 +45,13 @@ class CallbackRuntimeInboxWriter:
         *,
         payload: dict[str, Any],
         request_id: str | None,
+        canonical_result_type: str,
         correlation_id: str | None = None,
     ) -> RuntimeInboxAcceptResult:
         return await self._service.accept_received(
             db,
             provider_code="ECS",
-            event_type="result",
+            event_type=canonical_result_type,
             source_event_id=_resolve_source_event_id(payload, request_id),
             payload_hash=_canonical_payload_hash(payload),
             correlation_id=correlation_id or _resolve_first_str(payload, ("command_code", "request_id")),
@@ -71,7 +72,7 @@ class CallbackRuntimeInboxWriter:
         return await self._service.accept_received(
             db,
             provider_code="ECS",
-            event_type="event",
+            event_type=canonical_event_type,
             source_event_id=_resolve_source_event_id(payload, request_id),
             payload_hash=_canonical_payload_hash(payload),
             correlation_id=correlation_id,
@@ -94,7 +95,7 @@ class CallbackRuntimeInboxWriter:
         return await self._service.accept_received(
             db,
             provider_code=normalized_provider,
-            event_type="external",
+            event_type=callback_type,
             source_event_id=_resolve_source_event_id(payload, request_id),
             payload_hash=_canonical_payload_hash(payload),
             correlation_id=correlation_id,

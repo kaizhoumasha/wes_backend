@@ -218,6 +218,34 @@ async def test_runtime_inbox_accept_rejects_same_event_different_hash(db_session
 
 
 @pytest.mark.asyncio
+async def test_runtime_inbox_accept_keeps_distinct_canonical_event_types_separate(db_session) -> None:
+    """同 source_event_id 但不同 canonical callback/event type 不得落入同一幂等空间。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    service = RuntimeInboxService()
+
+    result_record = await service.accept_received(
+        db_session,
+        provider_code="ECS",
+        event_type="DEVICE_RESULT",
+        source_event_id="evt-shared-001",
+        payload_hash="hash-result-001",
+    )
+    event_record = await service.accept_received(
+        db_session,
+        provider_code="ECS",
+        event_type="SCAN_COMPLETED",
+        source_event_id="evt-shared-001",
+        payload_hash="hash-event-001",
+    )
+
+    assert result_record.created is True
+    assert event_record.created is True
+    assert result_record.record.id != event_record.record.id
+
+
+@pytest.mark.asyncio
 async def test_runtime_inbox_accept_conflict_after_unique_conflict(db_session) -> None:
     """并发插入后发现同 source event 不同 hash 时，仍必须返回 409 conflict。"""
 
