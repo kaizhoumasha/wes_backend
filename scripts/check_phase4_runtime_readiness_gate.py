@@ -1,8 +1,11 @@
-"""Validate Phase 4 runtime readiness for the current development/test profile."""
+"""Validate Phase 4 runtime readiness for the requested evidence profile."""
 
 from __future__ import annotations
 
 import argparse
+import json
+import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,8 +18,8 @@ PHASE4_SPEC_STATUS_TOKENS: dict[str, tuple[str, ...]] = {
     "cell-reservation-spec.md": ("P0", "开发/测试"),
     "material-location-query-spec.md": ("Wave1", "开发/测试"),
     "workline-active-objects-spec.md": ("Wave1", "开发/测试"),
-    "sorter-inbound-capability-spec.md": ("本机 MOCK", "生产热路径未接入"),
-    "smt-ng-wms-reconciliation-spec.md": ("本机 MOCK", "生产热路径未接入"),
+    "sorter-inbound-capability-spec.md": ("runtime capability", "evidence profile"),
+    "smt-ng-wms-reconciliation-spec.md": ("runtime capability", "evidence profile"),
 }
 PHASE4_MOCK_TEST_FILES = (
     "tests/mock/phase4/test_wave2_wave3_mock_acceptance.py",
@@ -27,9 +30,23 @@ PHASE4_RUNTIME_CAPABILITY_FILES = (
     "tests/workline_runtime/test_sorter_inbound_preview_service.py",
     "src/app/runtime/capabilities/phase4/smt_ng_wms_reconciliation_preview_service.py",
     "tests/workline_runtime/test_smt_ng_wms_reconciliation_preview_service.py",
+    "src/app/runtime/capabilities/phase4/sorter_inbound_runtime_service.py",
+    "tests/workline_runtime/test_sorter_inbound_runtime_service.py",
+    "src/app/runtime/capabilities/phase4/smt_ng_wms_reconciliation_runtime_service.py",
+    "tests/workline_runtime/test_smt_ng_wms_reconciliation_runtime_service.py",
 )
 RUNTIME_READINESS_PLAN = "docs/superpowers/plans/2026-07-04-phase4-runtime-readiness.md"
 MAIN_PLAN = "docs/architecture/workline-and-plugin-restructuring.md"
+DEVELOPMENT_READINESS_PROFILES = frozenset({"development", "development-mock", "test-mock"})
+EVIDENCE_READINESS_PROFILES = frozenset({"simulator", "site", "production"})
+SITE_PRODUCTION_EVIDENCE_KEYS = (
+    "provider_contracts.sorter_inbound",
+    "provider_contracts.smt_ng_wms_reconciliation",
+    "effect_dispatch_trace",
+    "callback_worker_trace",
+    "runtime_hold_reconciliation_trace",
+    "benchmark",
+)
 
 
 @dataclass(frozen=True)
@@ -61,7 +78,7 @@ class _ValidationAccumulator:
         elif self.missing_tokens:
             reason = "MISSING_PHASE4_READINESS_TOKENS"
         elif self.production_hot_path_enabled:
-            reason = "PHASE4_PRODUCTION_HOT_PATH_ENABLED"
+            reason = "PHASE4_EVIDENCE_PROFILE_MARKED_COMPLETE"
         else:
             reason = "MOCK_PHASE4_RUNTIME_READINESS"
         return Phase4ReadinessValidation(
@@ -114,20 +131,23 @@ def validate_mock_readiness(repo_root: Path) -> Phase4ReadinessValidation:
         reconciliation_preview_test = _read(repo_root, PHASE4_RUNTIME_CAPABILITY_FILES[3])
         required_tokens_by_source = {
             RUNTIME_READINESS_PLAN: (
-                "Wave2/Wave3 降级为本机开发环境 MOCK 验收",
-                "不做生产接入",
+                "Wave2/Wave3 后续目标是 production-capable runtime path",
+                "外部 provider 可替换",
                 "开发/测试范围的 Phase4 runtime readiness gate 已关闭",
-                "- [ ] Wave2 生产热路径",
-                "- [ ] Wave3 生产热路径",
+                "- [x] Wave2 runtime capability builder",
+                "- [x] Wave3 runtime capability builder",
+                "- [x] Wave2 evidence profile gate",
+                "- [x] Wave3 evidence profile gate",
+                "证据文件本身属于",
             ),
             MAIN_PLAN: (
                 "### 10.5 Phase 4",
-                "生产热路径",
-                "production closure profile",
+                "production-capable runtime path",
+                "evidence manifest gate",
             ),
             "tests/mock/phase4": (
                 "MOCK",
-                "不代表生产热路径接入",
+                "不代表 evidence profile 闭合",
             ),
             PHASE4_RUNTIME_CAPABILITY_FILES[0]: (
                 "LOCAL_MOCK_ONLY",
@@ -152,6 +172,28 @@ def validate_mock_readiness(repo_root: Path) -> Phase4ReadinessValidation:
                 "IDEMPOTENT_DUPLICATE",
                 "RuntimeHold",
             ),
+            PHASE4_RUNTIME_CAPABILITY_FILES[4]: (
+                "RuntimeIntent",
+                "WmsFulfillmentPort.notify_pkg_binding",
+                "WmsInventoryTransactionPort.confirm_inbound",
+                "provider-contract",
+            ),
+            PHASE4_RUNTIME_CAPABILITY_FILES[5]: (
+                "RuntimeIntent",
+                "WmsFulfillmentPort.notify_pkg_binding",
+                "WmsInventoryTransactionPort.confirm_inbound",
+                "provider-contract",
+            ),
+            PHASE4_RUNTIME_CAPABILITY_FILES[6]: (
+                "RuntimeIntent",
+                "RuntimeInbox",
+                "provider-contract",
+            ),
+            PHASE4_RUNTIME_CAPABILITY_FILES[7]: (
+                "RuntimeIntent",
+                "RuntimeInbox",
+                "provider-contract",
+            ),
         }
         source_texts = {
             RUNTIME_READINESS_PLAN: runtime_plan,
@@ -161,26 +203,157 @@ def validate_mock_readiness(repo_root: Path) -> Phase4ReadinessValidation:
             PHASE4_RUNTIME_CAPABILITY_FILES[1]: sorter_preview_test,
             PHASE4_RUNTIME_CAPABILITY_FILES[2]: reconciliation_preview_service,
             PHASE4_RUNTIME_CAPABILITY_FILES[3]: reconciliation_preview_test,
+            PHASE4_RUNTIME_CAPABILITY_FILES[4]: _read(repo_root, PHASE4_RUNTIME_CAPABILITY_FILES[4]),
+            PHASE4_RUNTIME_CAPABILITY_FILES[5]: _read(repo_root, PHASE4_RUNTIME_CAPABILITY_FILES[5]),
+            PHASE4_RUNTIME_CAPABILITY_FILES[6]: _read(repo_root, PHASE4_RUNTIME_CAPABILITY_FILES[6]),
+            PHASE4_RUNTIME_CAPABILITY_FILES[7]: _read(repo_root, PHASE4_RUNTIME_CAPABILITY_FILES[7]),
         }
         for source, required_tokens in required_tokens_by_source.items():
             source_text = source_texts[source]
             accumulator.missing_tokens.extend(
                 f"{source}:{token}" for token in required_tokens if token not in source_text
             )
-        if "- [x] Wave2 生产热路径" in runtime_plan or "- [x] Wave3 生产热路径" in runtime_plan:
-            accumulator.production_hot_path_enabled = True
-
     return accumulator.as_result()
+
+
+def validate_runtime_evidence_artifact(artifact_path: Path, *, evidence_profile: str) -> tuple[bool, str]:
+    """Validate Phase4 runtime evidence without changing runtime behavior."""
+
+    artifact = _load_runtime_evidence_artifact(artifact_path)
+    if artifact is None:
+        return False, "INVALID_PHASE4_RUNTIME_EVIDENCE_ARTIFACT"
+
+    failure_reason = _basic_runtime_evidence_failure(artifact, evidence_profile=evidence_profile)
+    if failure_reason is None and evidence_profile in {"site", "production"}:
+        failure_reason = _site_production_evidence_failure(artifact_path=artifact_path, artifact=artifact)
+    if failure_reason is not None:
+        return False, failure_reason
+
+    return True, "PHASE4_RUNTIME_EVIDENCE_READY"
+
+
+def _load_runtime_evidence_artifact(artifact_path: Path) -> dict[str, object] | None:
+    try:
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(artifact, dict):
+        return None
+    return artifact
+
+
+def _basic_runtime_evidence_failure(artifact: Mapping[str, object], *, evidence_profile: str) -> str | None:
+    profile = artifact.get("profile")
+    if not isinstance(profile, dict) or profile.get("name") != evidence_profile:
+        return "MISMATCHED_PHASE4_RUNTIME_EVIDENCE_PROFILE"
+
+    capabilities = artifact.get("capabilities")
+    if not isinstance(capabilities, list) or not {"sorter_inbound", "smt_ng_wms_reconciliation"}.issubset(
+        {str(item) for item in capabilities}
+    ):
+        return "MISSING_PHASE4_RUNTIME_CAPABILITIES"
+
+    effect_path = _string_set(artifact.get("effect_path"))
+    if not {
+        "RuntimeIntentLog",
+        "WmsFulfillmentPort.notify_pkg_binding",
+        "WmsInventoryTransactionPort.confirm_inbound",
+    }.issubset(effect_path):
+        return "MISSING_PHASE4_RUNTIME_EFFECT_PATH"
+
+    callback_path = _string_set(artifact.get("callback_path"))
+    if "RuntimeInbox" not in callback_path:
+        return "MISSING_PHASE4_RUNTIME_CALLBACK_PATH"
+
+    invariants = _string_set(artifact.get("service_behavior_invariant"))
+    if "provider-contract" not in invariants:
+        return "MISSING_PHASE4_RUNTIME_PROVIDER_CONTRACT_INVARIANT"
+
+    return None
+
+
+def _site_production_evidence_failure(*, artifact_path: Path, artifact: Mapping[str, object]) -> str | None:
+    manifest = artifact.get("evidence_manifest")
+    if not isinstance(manifest, Mapping):
+        return "MISSING_PHASE4_RUNTIME_EVIDENCE_MANIFEST"
+    missing_manifest_keys = _missing_manifest_keys(manifest)
+    if missing_manifest_keys:
+        return "MISSING_PHASE4_RUNTIME_EVIDENCE_MANIFEST"
+    missing_evidence_files = _missing_manifest_evidence_files(base_dir=artifact_path.parent, manifest=manifest)
+    if missing_evidence_files:
+        return "MISSING_PHASE4_RUNTIME_EVIDENCE_FILES"
+    return None
+
+
+def _string_set(value: object) -> set[str]:
+    if isinstance(value, str):
+        return {value}
+    if not isinstance(value, list):
+        return set()
+    return {str(item) for item in value if str(item)}
+
+
+def _missing_manifest_keys(manifest: Mapping[str, object]) -> tuple[str, ...]:
+    missing_keys: list[str] = []
+    for manifest_key in SITE_PRODUCTION_EVIDENCE_KEYS:
+        entry = _manifest_entry(manifest, manifest_key)
+        if not isinstance(entry, Mapping) or not _has_evidence_path(entry):
+            missing_keys.append(manifest_key)
+    return tuple(missing_keys)
+
+
+def _missing_manifest_evidence_files(*, base_dir: Path, manifest: Mapping[str, object]) -> tuple[str, ...]:
+    missing_files: list[str] = []
+    for manifest_key in SITE_PRODUCTION_EVIDENCE_KEYS:
+        entry = _manifest_entry(manifest, manifest_key)
+        if not isinstance(entry, Mapping):
+            continue
+        raw_path = entry.get("evidence")
+        if not _evidence_file_exists(base_dir=base_dir, raw_path=raw_path):
+            missing_files.append(manifest_key)
+    return tuple(missing_files)
+
+
+def _manifest_entry(manifest: Mapping[str, object], dotted_key: str) -> object:
+    current: object = manifest
+    for key_part in dotted_key.split("."):
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key_part)
+    return current
+
+
+def _has_evidence_path(entry: Mapping[str, object]) -> bool:
+    raw_path = entry.get("evidence")
+    return isinstance(raw_path, str) and bool(raw_path.strip())
+
+
+def _evidence_file_exists(*, base_dir: Path, raw_path: object) -> bool:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return False
+    evidence_path = Path(raw_path)
+    if not evidence_path.is_absolute():
+        evidence_path = base_dir / evidence_path
+    return evidence_path.is_file()
+
+
+def _ensure_repo_root_on_path(repo_root: Path) -> None:
+    repo_root_text = str(repo_root)
+    if repo_root_text not in sys.path:
+        sys.path.insert(0, repo_root_text)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--readiness-profile",
-        choices=("development-mock", "test-mock", "production"),
+        choices=("development", "development-mock", "test-mock", "simulator", "site", "production"),
         default="development-mock",
-        help="Readiness profile. Production is intentionally blocked until production hot path gates are explicit.",
+        help="Readiness profile. Profiles change evidence requirements only, not runtime service behavior.",
     )
+    parser.add_argument("--phase4-runtime-evidence-artifact", help="Path to the Phase4 runtime evidence artifact JSON.")
+    parser.add_argument("--p0-e2e-artifact", help="Path to the Phase3 production P0 E2E artifact JSON.")
+    parser.add_argument("--benchmark-artifact", help="Path to the Phase3 production-scale benchmark artifact JSON.")
     parser.add_argument(
         "--repo-root",
         default=str(Path(__file__).resolve().parents[1]),
@@ -203,14 +376,61 @@ def _print_failure(validation: Phase4ReadinessValidation) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.readiness_profile == "production":
-        print("Phase 4 runtime readiness production gate failed: PHASE4_PRODUCTION_HOT_PATH_NOT_ENABLED")
-        return 2
 
-    validation = validate_mock_readiness(Path(args.repo_root))
+    repo_root = Path(args.repo_root)
+    validation = validate_mock_readiness(repo_root)
     if not validation.valid:
         _print_failure(validation)
         return 1
+
+    if args.readiness_profile in DEVELOPMENT_READINESS_PROFILES:
+        print(
+            "Phase 4 runtime readiness mock gate passed: "
+            f"reason={validation.reason} readiness_profile={args.readiness_profile}"
+        )
+        return 0
+
+    if args.readiness_profile in EVIDENCE_READINESS_PROFILES:
+        if not args.phase4_runtime_evidence_artifact:
+            print(
+                "Phase 4 runtime readiness evidence gate failed: "
+                f"MISSING_PHASE4_RUNTIME_EVIDENCE_ARTIFACT evidence_profile={args.readiness_profile}"
+            )
+            return 2
+        evidence_valid, evidence_reason = validate_runtime_evidence_artifact(
+            Path(args.phase4_runtime_evidence_artifact),
+            evidence_profile=args.readiness_profile,
+        )
+        if not evidence_valid:
+            print(
+                "Phase 4 runtime readiness evidence gate failed: "
+                f"{evidence_reason} evidence_profile={args.readiness_profile}"
+            )
+            return 1
+        if args.readiness_profile == "production":
+            _ensure_repo_root_on_path(repo_root)
+            from src.app.runtime.orchestration.phase3_closure_gate import RuntimePhase3ClosureGate
+
+            artifact_paths = {}
+            if args.p0_e2e_artifact:
+                artifact_paths["p0_e2e"] = Path(args.p0_e2e_artifact)
+            if args.benchmark_artifact:
+                artifact_paths["benchmark"] = Path(args.benchmark_artifact)
+            closure_validation = RuntimePhase3ClosureGate().validate_artifact_files(
+                artifact_paths,
+                closure_profile="production",
+            )
+            if not closure_validation.valid:
+                print(
+                    "Phase 4 runtime readiness evidence gate failed: "
+                    f"{closure_validation.reason} evidence_profile=production"
+                )
+                return 2
+        print(
+            "Phase 4 runtime readiness evidence gate passed: "
+            f"reason={evidence_reason} evidence_profile={args.readiness_profile}"
+        )
+        return 0
 
     print(
         "Phase 4 runtime readiness mock gate passed: "

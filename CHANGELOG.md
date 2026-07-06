@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0.0] - 2026-07-05
+
+> **Note**: Phase 4 production-capable runtime path 发布。本 minor 完成 Wave2/Wave3 runtime capability builder、evidence profile gate 和 evidence artifact composer；业务代码只面向 provider contract，不根据外部设备是真实、sandbox、MOCK 或 simulator 分支。
+
+### Added
+- 新增 Phase4 sorter inbound runtime capability builder，可生成 `RuntimeIntent`、CellReservation/RuntimeLocationEvent evidence、PKG binding fulfillment effect、库存事务 effect，以及 join gate object-scope reconciliation plan。
+- 新增 Phase4 SMT/NG/WMS reconciliation runtime capability builder，可生成 RuntimeInbox 上游 callback evidence、重复 callback 幂等合并、WMS reject/source_version drift RuntimeHold plan 与 scope-only release plan。
+- 新增 Phase4 runtime evidence artifact composer，支持 simulator/site/production profile 生成统一 evidence manifest。
+- 新增 site/production evidence profile gate，校验 provider contract、effect dispatch trace、RuntimeInbox worker trace、RuntimeHold/Reconciliation trace、benchmark 和 Phase3 production closure artifact。
+
+### Changed
+- Phase4 主计划和 sorter/SMT specs 从“生产接入”口径调整为 “production-capable runtime path”，明确外部 provider 可替换，真实设备、sandbox、MOCK 或 simulator 只由部署 wiring 与 evidence 区分。
+- Phase4 readiness gate 从开发/测试 MOCK gate 扩展为 profile-aware gate：development/test profile 继续用于本机推进，simulator/site/production profile 只提高 evidence 要求，不改变 service 行为。
+- Legacy cleanup matrix 重新生成并同步摘要，覆盖新增 Phase4 runtime capability 与合同测试入口。
+
+### Fixed
+- 补齐 sorter runtime 成功 join gate、本地位置事实、非正库存数量拒绝、SMT/NG/WMS callback 缺 source event 拒绝等合同测试，防止 runtime builder 生成不完整 evidence。
+
 ## [0.10.6.0] - 2026-07-05
 
 > **Note**: Phase 4 runtime readiness 开发/测试范围发布。本 patch 完成 Phase4 SPEC 同步、CellReservation 目标生命周期、RuntimeLocationEvent 位置事实、MaterialLocationQuery 与 WorklineActiveObjects 只读能力，并把 Wave2/Wave3 降级为本机 MOCK 验收；生产热路径仍保持关闭，发布前需显式通过 production closure profile 与上线门禁。

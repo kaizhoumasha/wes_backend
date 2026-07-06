@@ -4,7 +4,7 @@
 - 不访问 DB / repository。
 - 不发 WMS/ECS effect。
 - 不复用旧 plugin 入口。
-- 不代表生产热路径接入。
+- 不代表 evidence profile 闭合。
 """
 
 from __future__ import annotations

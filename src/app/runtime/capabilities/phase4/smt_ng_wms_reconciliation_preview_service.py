@@ -4,7 +4,7 @@
 - 不访问 DB / repository。
 - 不发 WMS/NG/PDA effect。
 - 不复用旧 plugin 入口。
-- 不代表生产 callback cutover 或生产热路径接入。
+- 不代表 callback worker evidence 或 evidence profile 闭合。
 """
 
 from __future__ import annotations

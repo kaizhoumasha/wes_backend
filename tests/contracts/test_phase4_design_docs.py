@@ -142,8 +142,8 @@ def test_phase4_spec_status_headers_match_development_scope() -> None:
         "cell-reservation-spec.md": ("P0", "开发/测试"),
         "material-location-query-spec.md": ("Wave1", "开发/测试"),
         "workline-active-objects-spec.md": ("Wave1", "开发/测试"),
-        "sorter-inbound-capability-spec.md": ("本机 MOCK", "生产热路径未接入"),
-        "smt-ng-wms-reconciliation-spec.md": ("本机 MOCK", "生产热路径未接入"),
+        "sorter-inbound-capability-spec.md": ("runtime capability", "evidence profile"),
+        "smt-ng-wms-reconciliation-spec.md": ("runtime capability", "evidence profile"),
     }
 
     for filename, required_tokens in expected_status_tokens.items():
