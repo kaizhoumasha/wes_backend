@@ -430,6 +430,7 @@ async def test_runtime_inbox_accept_allows_missing_source_event_id_without_dedup
     ("event_type", "expected_operation_kind", "expected_domain"),
     [
         ("result", "device_event", "device"),
+        ("DEVICE_RESULT", "device_event", "device"),
         ("event", "device_event", "device"),
         ("external", "callback", "callback"),
         ("fulfillment", "fulfillment", "wms_integration"),
@@ -459,7 +460,10 @@ def test_runtime_inbox_conflict_audit_maps_operation_kind(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("event_type", ["result", "event", "command_result", "event_push", "device_event"])
+@pytest.mark.parametrize(
+    "event_type",
+    ["result", "event", "command_result", "event_push", "device_event", "DEVICE_RESULT", "device_result"],
+)
 async def test_runtime_inbox_accept_device_event_aliases_claim_idempotency_key(db_session, event_type: str) -> None:
     """result/event canonical 与 legacy alias 都必须归一到 device_event 并 claim IdempotencyKey。"""
 

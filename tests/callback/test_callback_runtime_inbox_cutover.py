@@ -70,6 +70,87 @@ async def test_callback_runtime_inbox_writer_uses_canonical_types_without_channe
 
 
 @pytest.mark.asyncio
+async def test_callback_runtime_inbox_writer_does_not_synthesize_unverified_correlation_ids() -> None:
+    """writer 不能为 event/external 合成未持久化的 correlation_id。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    accepted_calls: list[dict[str, object]] = []
+
+    class RuntimeInboxServiceStub:
+        async def accept_received(self, _db, **kwargs):
+            accepted_calls.append(kwargs)
+            return _runtime_accept_result(created=True, record_id=len(accepted_calls))
+
+    writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
+
+    _ = await writer.write_result_callback(
+        SimpleNamespace(),
+        payload={"event_id": "evt-result-001", "command_code": "CMD-001", "result": "SUCCESS"},
+        request_id="req-result-001",
+        canonical_result_type="DEVICE_RESULT",
+        correlation_id=None,
+    )
+    _ = await writer.write_event_callback(
+        SimpleNamespace(),
+        payload={"event_id": "evt-event-001", "device_code": "ARM_01", "event_type": "SCAN_COMPLETED"},
+        request_id="req-event-001",
+        canonical_event_type="SCAN_COMPLETED",
+    )
+    _ = await writer.write_external_callback(
+        SimpleNamespace(),
+        payload={
+            "callback_type": "AGV_TASK_RESULT",
+            "source_system": "AGV",
+            "request_id": "REQ-EXT-001",
+            "dispatch_key": "external:agv:001",
+            "trace_id": "trace-ext-001",
+        },
+        request_id="req-external-001",
+    )
+
+    assert [call["correlation_id"] for call in accepted_calls] == [None, None, None]
+
+
+@pytest.mark.asyncio
+async def test_callback_runtime_inbox_writer_external_uses_data_source_event_id_before_request_id() -> None:
+    """external writer 必须优先使用 payload.data.source_event_id，避免 request_id 塌缩幂等键。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    accepted_calls: list[dict[str, object]] = []
+
+    class RuntimeInboxServiceStub:
+        async def accept_received(self, _db, **kwargs):
+            accepted_calls.append(kwargs)
+            return _runtime_accept_result(created=True, record_id=len(accepted_calls))
+
+    writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
+
+    payload = {
+        "callback_type": "WMS_RACK_TASK_RESULT",
+        "source_system": "WMS",
+        "request_id": "REQ-EXT-001",
+        "data": {"source_event_id": "biz-source-evt-001"},
+    }
+    _ = await writer.write_external_callback(
+        SimpleNamespace(),
+        payload=payload,
+        request_id="req-external-001",
+    )
+    _ = await writer.write_external_callback(
+        SimpleNamespace(),
+        payload={**payload, "request_id": "REQ-EXT-002"},
+        request_id="req-external-002",
+    )
+
+    assert [call["source_event_id"] for call in accepted_calls] == [
+        "biz-source-evt-001",
+        "biz-source-evt-001",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_process_result_writes_runtime_inbox_before_legacy_workline_inbox() -> None:
     """结果回调必须先写 RuntimeInbox，再委托旧 Workline inbox 过渡消费。"""
 

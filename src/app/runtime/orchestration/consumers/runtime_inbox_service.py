@@ -106,6 +106,7 @@ def _runtime_inbox_operation_spec(event_type: str) -> IdempotencyOperationSpec:
     normalized = event_type.strip().lower().replace("-", "_")
     aliases = {
         "result": "command_result",
+        "device_result": "command_result",
         "event": "event_push",
         "external": "external_callback",
     }

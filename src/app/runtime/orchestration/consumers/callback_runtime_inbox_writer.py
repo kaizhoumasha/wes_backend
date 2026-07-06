@@ -24,6 +24,17 @@ def _resolve_first_str(payload: dict[str, Any], aliases: tuple[str, ...]) -> str
     return None
 
 
+def _resolve_nested_str(payload: dict[str, Any], path: tuple[str, ...]) -> str | None:
+    value: Any = payload
+    for segment in path:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(segment)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def _canonical_payload_hash(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return sha256(encoded.encode("utf-8")).hexdigest()
@@ -31,6 +42,15 @@ def _canonical_payload_hash(payload: dict[str, Any]) -> str:
 
 def _resolve_source_event_id(payload: dict[str, Any], request_id: str | None) -> str | None:
     return _resolve_first_str(payload, ("event_id", "source_event_id", "request_id")) or request_id
+
+
+def _resolve_external_source_event_id(payload: dict[str, Any], request_id: str | None) -> str | None:
+    return (
+        _resolve_first_str(payload, ("event_id", "source_event_id"))
+        or _resolve_nested_str(payload, ("data", "source_event_id"))
+        or _resolve_first_str(payload, ("request_id",))
+        or request_id
+    )
 
 
 class CallbackRuntimeInboxWriter:
@@ -54,7 +74,7 @@ class CallbackRuntimeInboxWriter:
             event_type=canonical_result_type,
             source_event_id=_resolve_source_event_id(payload, request_id),
             payload_hash=_canonical_payload_hash(payload),
-            correlation_id=correlation_id or _resolve_first_str(payload, ("command_code", "request_id")),
+            correlation_id=correlation_id,
         )
 
     async def write_event_callback(
@@ -65,17 +85,13 @@ class CallbackRuntimeInboxWriter:
         request_id: str | None,
         canonical_event_type: str,
     ) -> RuntimeInboxAcceptResult:
-        device_code = _resolve_first_str(payload, ("device_code",))
-        correlation_id = None
-        if device_code and canonical_event_type:
-            correlation_id = f"event:{device_code}:{canonical_event_type}"
         return await self._service.accept_received(
             db,
             provider_code="ECS",
             event_type=canonical_event_type,
             source_event_id=_resolve_source_event_id(payload, request_id),
             payload_hash=_canonical_payload_hash(payload),
-            correlation_id=correlation_id,
+            correlation_id=None,
         )
 
     async def write_external_callback(
@@ -88,17 +104,13 @@ class CallbackRuntimeInboxWriter:
         provider_code = _resolve_first_str(payload, ("source_system",))
         callback_type = _resolve_first_str(payload, ("callback_type",)) or "UNKNOWN"
         normalized_provider = provider_code or callback_type.split("_", 1)[0] or "UNKNOWN"
-        correlation_id = _resolve_first_str(
-            payload,
-            ("dispatch_key", "command_code", "exchange_request_code", "request_id", "trace_id"),
-        )
         return await self._service.accept_received(
             db,
             provider_code=normalized_provider,
             event_type=callback_type,
-            source_event_id=_resolve_source_event_id(payload, request_id),
+            source_event_id=_resolve_external_source_event_id(payload, request_id),
             payload_hash=_canonical_payload_hash(payload),
-            correlation_id=correlation_id,
+            correlation_id=None,
         )
 
 
