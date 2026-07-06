@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -19,8 +20,10 @@ from src.app.runtime.capability_dispatcher import (
 )
 from src.app.runtime.inbound_normalizer_registry import InboundNormalizerRegistry
 from src.app.runtime.normalization.normalizers import normalize_inbox_input
+from src.app.runtime.orchestration.effect_result import WriteBackDisposition
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorService
-from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
+from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent, RuntimeIntentKind
+from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
 
 
 @asynccontextmanager
@@ -249,6 +252,476 @@ async def test_orchestrator_does_not_trust_raw_external_runtime_intents_without_
 
     assert result.success is False
     assert "provider profile required" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_routes_command_result_outside_runtime_capability_dispatcher() -> None:
+    """常规 COMMAND_RESULT 不应被误送入 runtime capability dispatcher。"""
+
+    def fail_if_profile_resolved(_normalized_input: object) -> object:
+        raise AssertionError("COMMAND_RESULT must not resolve a runtime capability provider profile")
+
+    orchestrator = OrchestratorService(
+        lock_provider=lambda _lock_key: _noop_lock(),
+        runtime_profile_resolver=fail_if_profile_resolved,
+    )
+
+    result = await orchestrator.process_inbox(
+        session=SimpleNamespace(id=201, contract_version="rough_sorter.v1"),
+        workline=SimpleNamespace(contract_version="rough_sorter.v1", plugin_key="rough_sorter"),
+        inbox=SimpleNamespace(
+            kind="COMMAND_RESULT",
+            payload_json={
+                "command_code": "CMD-201",
+                "command_type": "PICK_AND_PUT",
+                "result": "SUCCESS",
+                "device_code": "ARM-01",
+            },
+            trace_id="trace-command-result",
+        ),
+        devices_by_role={},
+        services=SimpleNamespace(),
+        trace_id="trace-command-result",
+    )
+
+    assert result.success is True
+    assert [intent.kind for intent in result.intents or []] == [RuntimeIntentKind.CONTINUE_NEXT]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_blocks_failed_command_result_without_runtime_capability_profile() -> None:
+    """常规 COMMAND_RESULT 失败回调应进入 block，而不是 provider profile 错误。"""
+
+    orchestrator = OrchestratorService(lock_provider=lambda _lock_key: _noop_lock())
+
+    result = await orchestrator.process_inbox(
+        session=SimpleNamespace(id=202, contract_version="rough_sorter.v1"),
+        workline=SimpleNamespace(contract_version="rough_sorter.v1", plugin_key="rough_sorter"),
+        inbox=SimpleNamespace(
+            kind="COMMAND_RESULT",
+            payload_json={
+                "command_code": "CMD-202",
+                "command_type": "PICK_AND_PUT",
+                "result": "FAILED",
+                "device_code": "ARM-01",
+                "error_detail": {"error_code": "DEVICE_BUSY", "error_message": "设备忙"},
+            },
+            trace_id="trace-command-failed",
+        ),
+        devices_by_role={},
+        services=SimpleNamespace(),
+        trace_id="trace-command-failed",
+    )
+
+    assert result.success is True
+    [intent] = result.intents or []
+    assert intent.kind == RuntimeIntentKind.BLOCK
+    assert intent.block_scope == BlockScope.COMMAND
+    assert intent.reason_code == "DEVICE_BUSY"
+    assert intent.message == "设备忙"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_blocks_unknown_command_result_with_stable_reason_code() -> None:
+    """未知命令结果不能静默推进，fallback reason code 必须稳定。"""
+
+    orchestrator = OrchestratorService(lock_provider=lambda _lock_key: _noop_lock())
+
+    result = await orchestrator.process_inbox(
+        session=SimpleNamespace(id=203, contract_version="rough_sorter.v1"),
+        workline=SimpleNamespace(contract_version="rough_sorter.v1", plugin_key="rough_sorter"),
+        inbox=SimpleNamespace(
+            kind="COMMAND_RESULT",
+            payload_json={
+                "command_code": "CMD-203",
+                "command_type": "PICK_AND_PUT",
+                "result": "UNKNOWN_VENDOR_RESULT",
+                "device_code": "ARM-01",
+            },
+            trace_id="trace-command-unknown",
+        ),
+        devices_by_role={},
+        services=SimpleNamespace(),
+        trace_id="trace-command-unknown",
+    )
+
+    assert result.success is True
+    [intent] = result.intents or []
+    assert intent.kind == RuntimeIntentKind.BLOCK
+    assert intent.block_scope == BlockScope.COMMAND
+    assert intent.reason_code == "SYSTEM_FAILURE"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_routes_rough_sorter_scan_completed_device_event_to_target_state_intents() -> None:
+    """普通 DEVICE_EVENT 入口事件应有目标态 intent handler，不应进入 provider profile。"""
+
+    def fail_if_profile_resolved(_normalized_input: object) -> object:
+        raise AssertionError("DEVICE_EVENT must not resolve a runtime capability provider profile")
+
+    orchestrator = OrchestratorService(
+        lock_provider=lambda _lock_key: _noop_lock(),
+        runtime_profile_resolver=fail_if_profile_resolved,
+    )
+
+    result = await orchestrator.process_inbox(
+        session=SimpleNamespace(id=301, contract_version="rough_sorter.v2"),
+        workline=SimpleNamespace(
+            contract_version="rough_sorter.v2",
+            plugin_key="rough_sorter",
+            config={"pipeline_input_location": "PIPELINE-IN-T"},
+            runtime_config_json={},
+        ),
+        inbox=SimpleNamespace(
+            kind="DEVICE_EVENT",
+            payload_json={
+                "event_type": "SCAN_COMPLETED",
+                "canonical_event_type": "SCAN_COMPLETED",
+                "device_code": "SCAN-01",
+                "data": {
+                    "HHPN": "MAT-A",
+                    "MfrPN": "VENDOR-A",
+                    "Qty": "10",
+                    "DateCode": "20260707",
+                    "LotCode": "LOT-A",
+                    "PkgID": "PKG-SCAN-001",
+                },
+            },
+            trace_id="trace-scan",
+        ),
+        devices_by_role={},
+        services=SimpleNamespace(),
+        trace_id="trace-scan",
+    )
+
+    assert result.success is True
+    assert [intent.kind for intent in result.intents or []] == [
+        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
+        RuntimeIntentKind.UPDATE_CONTEXT,
+        RuntimeIntentKind.COMMAND,
+    ]
+    command_intent = (result.intents or [])[-1]
+    assert command_intent.action == "PICK_AND_PUT"
+    assert command_intent.device_role == "ROUGH_SORTER_INPUT_ARM"
+    assert command_intent.payload_json["params"]["target_location"] == "PIPELINE-IN-T"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_routes_internal_source_pick_requested_to_target_state_command() -> None:
+    """普通 INTERNAL_EVENT 也应走目标态事件 handler，而不是 provider profile。"""
+
+    orchestrator = OrchestratorService(lock_provider=lambda _lock_key: _noop_lock())
+
+    result = await orchestrator.process_inbox(
+        session=SimpleNamespace(id=302, contract_version="2026-06-21.p1"),
+        workline=SimpleNamespace(contract_version="2026-06-21.p1", plugin_key="SMT_SORTING_INBOUND"),
+        inbox=SimpleNamespace(
+            id=901,
+            kind="INTERNAL_EVENT",
+            payload_json={
+                "event_type": "SORTING_SOURCE_PICK_REQUESTED",
+                "canonical_event_type": "SORTING_SOURCE_PICK_REQUESTED",
+                "event_id": "evt-source-pick-001",
+                "causation_id": "handoff-source-item:11",
+                "trace_id": "trace-source-pick",
+                "data": {
+                    "handoff_demand_id": 7,
+                    "handoff_source_item_id": 11,
+                    "claim_attempt_no": 2,
+                    "rack_release_id": "REL-1",
+                    "single_layer_rack_code": "RACK-A",
+                    "bin_code": "BIN-A",
+                    "bin_cell_index": 3,
+                    "bin_cell_code": "CELL-A-03",
+                    "material_identity_key": "MAT:A:V:20260707:LOT-A",
+                    "pkg_code": "PKG-SMT-001",
+                    "reel_thickness_mm": "15.5",
+                    "route_evidence": {"route": "handoff"},
+                },
+            },
+            trace_id="trace-source-pick",
+        ),
+        devices_by_role={},
+        services=SimpleNamespace(),
+        trace_id="trace-source-pick",
+    )
+
+    assert result.success is True
+    [intent] = result.intents or []
+    assert intent.kind == RuntimeIntentKind.COMMAND
+    assert intent.action == "SORTING_SOURCE_PICK"
+    assert intent.device_role == "SORTING_SOURCE_ARM"
+    assert intent.payload_json["handoff_demand_id"] == 7
+    assert intent.payload_json["source_pick_inbox_id"] == 901
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_routes_manual_resume_without_runtime_capability_profile() -> None:
+    """人工恢复 inbox 应走目标态 manual handler，并真实清理 MANUAL_HOLD 状态。"""
+
+    def fail_if_profile_resolved(_normalized_input: object) -> object:
+        raise AssertionError("MANUAL_RESUME must not resolve a runtime capability provider profile")
+
+    session = SimpleNamespace(
+        id=303,
+        status="MANUAL_HOLD",
+        current_wait_type="COMMAND_RESULT",
+        waiting_since=object(),
+        deadline_at=None,
+        current_wait_timeout_seconds=300,
+        awaiting_device_command_code="CMD-303",
+        failure_domain="WORKLINE",
+        failure_code="MANUAL_HOLD_REQUESTED",
+        failure_message="人工暂停",
+        ended_at=None,
+        trace_id=None,
+    )
+    inbox = SimpleNamespace(
+        id=902,
+        kind="MANUAL_RESUME",
+        payload_json={
+            "message_type": "MANUAL_OPERATION",
+            "operation": "RESUME",
+            "operator_id": "operator-a",
+            "reason": "现场确认恢复",
+            "session_id": 303,
+        },
+        trace_id="trace-manual-resume",
+    )
+    orchestrator = OrchestratorService(
+        lock_provider=lambda _lock_key: _noop_lock(),
+        runtime_profile_resolver=fail_if_profile_resolved,
+    )
+
+    result = await orchestrator.process_inbox(
+        session=session,
+        workline=SimpleNamespace(contract_version="rough_sorter.v2", plugin_key="rough_sorter"),
+        inbox=inbox,
+        devices_by_role={},
+        services=SimpleNamespace(),
+        trace_id="trace-manual-resume",
+    )
+
+    assert result.success is True
+    [intent] = result.intents or []
+    assert intent.kind == RuntimeIntentKind.CONTINUE_NEXT
+    assert intent.payload_json["operation"] == "RESUME"
+
+    effect_result = await RuntimeIntentEffectApplier().apply(
+        {
+            "session": session,
+            "trace_id": "trace-manual-resume",
+            "inbox": inbox,
+        },
+        [intent],
+    )
+
+    assert effect_result.disposition == WriteBackDisposition.PROCESSED
+    assert session.status.value == "RUNNING"
+    assert session.current_wait_type is None
+    assert session.awaiting_device_command_code is None
+    assert session.failure_code is None
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_routes_manual_cancel_to_cancel_intent() -> None:
+    """人工取消 inbox 不能被错误表达成 COMPLETE 或 MANUAL_HOLD。"""
+
+    orchestrator = OrchestratorService(lock_provider=lambda _lock_key: _noop_lock())
+
+    result = await orchestrator.process_inbox(
+        session=SimpleNamespace(id=304, status="MANUAL_HOLD", contract_version="rough_sorter.v2"),
+        workline=SimpleNamespace(contract_version="rough_sorter.v2", plugin_key="rough_sorter"),
+        inbox=SimpleNamespace(
+            id=903,
+            kind="MANUAL_CANCEL",
+            payload_json={
+                "message_type": "MANUAL_OPERATION",
+                "operation": "CANCEL",
+                "operator_id": "operator-a",
+                "reason": "现场确认取消",
+                "session_id": 304,
+            },
+            trace_id="trace-manual-cancel",
+        ),
+        devices_by_role={},
+        services=SimpleNamespace(),
+        trace_id="trace-manual-cancel",
+    )
+
+    assert result.success is True
+    [intent] = result.intents or []
+    assert intent.kind == RuntimeIntentKind.CANCEL
+    assert intent.reason_code == "MANUAL_CANCEL_REQUESTED"
+    assert intent.payload_json["operation"] == "CANCEL"
+
+
+@pytest.mark.asyncio
+async def test_cancel_effect_marks_session_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CANCEL intent 应真实进入 CANCELLED，而不是完成或挂起。"""
+
+    from src.app.runtime.orchestration.repositories import session_repository as session_repository_module
+    from src.app.sys import repositories as sys_repositories
+    from src.app.workline.services import write_back_service as workline_effects
+
+    persist_cancelled = AsyncMock()
+    monkeypatch.setattr(
+        session_repository_module,
+        "WorklineSessionRepository",
+        lambda: SimpleNamespace(persist_cancelled=persist_cancelled),
+    )
+    cancel_active_by_session = AsyncMock(return_value=2)
+    monkeypatch.setattr(
+        sys_repositories,
+        "SystemOutboxRepository",
+        lambda: SimpleNamespace(cancel_active_by_session=cancel_active_by_session),
+    )
+    emit_timeline = AsyncMock()
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    session = SimpleNamespace(
+        id=305,
+        status="MANUAL_HOLD",
+        current_wait_type="COMMAND_RESULT",
+        waiting_since=object(),
+        deadline_at=None,
+        current_wait_timeout_seconds=300,
+        awaiting_device_command_code="CMD-305",
+        failure_domain="WORKLINE",
+        failure_code="MANUAL_HOLD_REQUESTED",
+        failure_message="人工暂停",
+        ended_at=None,
+        trace_id=None,
+    )
+    inbox = SimpleNamespace(id=904, payload_json={})
+
+    effect_result = await RuntimeIntentEffectApplier().apply(
+        {
+            "db": SimpleNamespace(),
+            "session": session,
+            "trace_id": "trace-manual-cancel",
+            "inbox": inbox,
+            "current_status": "MANUAL_HOLD",
+            "now": object(),
+        },
+        [
+            RuntimeIntent.cancel(
+                reason_code="MANUAL_CANCEL_REQUESTED",
+                message="现场确认取消",
+                payload={"operator_id": "operator-a"},
+            )
+        ],
+    )
+
+    assert effect_result.disposition == WriteBackDisposition.PROCESSED
+    assert session.status.value == "CANCELLED"
+    assert session.current_wait_type is None
+    assert session.awaiting_device_command_code is None
+    persist_cancelled.assert_awaited_once()
+    cancel_active_by_session.assert_awaited_once_with(
+        SimpleNamespace(),
+        session_id=305,
+        reason="MANUAL_CANCEL_REQUESTED",
+    )
+    emit_timeline.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_blocks_unregistered_device_event_with_stable_diagnostic() -> None:
+    """未注册普通 DEVICE_EVENT 应明确 block，避免回流 legacy plugin 或 null fallback。"""
+
+    orchestrator = OrchestratorService(lock_provider=lambda _lock_key: _noop_lock())
+
+    result = await orchestrator.process_inbox(
+        session=SimpleNamespace(id=306, contract_version="rough_sorter.v2"),
+        workline=SimpleNamespace(contract_version="rough_sorter.v2", plugin_key="rough_sorter"),
+        inbox=SimpleNamespace(
+            id=905,
+            kind="DEVICE_EVENT",
+            payload_json={
+                "event_type": "UNREGISTERED_EVENT",
+                "canonical_event_type": "UNREGISTERED_EVENT",
+                "device_code": "SCAN-01",
+                "data": {},
+            },
+            trace_id="trace-unregistered-event",
+        ),
+        devices_by_role={},
+        services=SimpleNamespace(),
+        trace_id="trace-unregistered-event",
+    )
+
+    assert result.success is True
+    [intent] = result.intents or []
+    assert intent.kind == RuntimeIntentKind.BLOCK
+    assert intent.reason_code == "TARGET_STATE_DEVICE_EVENT_HANDLER_MISSING"
+    assert intent.payload_json["canonical_event_type"] == "UNREGISTERED_EVENT"
+
+
+@pytest.mark.asyncio
+async def test_device_event_operation_cancel_does_not_impersonate_manual_cancel() -> None:
+    """普通设备事件里的 operation 字段不能冒充人工取消控制面。"""
+
+    orchestrator = OrchestratorService(lock_provider=lambda _lock_key: _noop_lock())
+
+    result = await orchestrator.process_inbox(
+        session=SimpleNamespace(id=307, contract_version="rough_sorter.v2"),
+        workline=SimpleNamespace(contract_version="rough_sorter.v2", plugin_key="rough_sorter"),
+        inbox=SimpleNamespace(
+            id=906,
+            kind="DEVICE_EVENT",
+            payload_json={
+                "event_type": "UNREGISTERED_EVENT",
+                "canonical_event_type": "UNREGISTERED_EVENT",
+                "device_code": "SCAN-01",
+                "data": {"operation": "CANCEL"},
+            },
+            trace_id="trace-device-operation-cancel",
+        ),
+        devices_by_role={},
+        services=SimpleNamespace(),
+        trace_id="trace-device-operation-cancel",
+    )
+
+    assert result.success is True
+    [intent] = result.intents or []
+    assert intent.kind == RuntimeIntentKind.BLOCK
+    assert intent.reason_code == "TARGET_STATE_DEVICE_EVENT_HANDLER_MISSING"
+
+
+@pytest.mark.asyncio
+async def test_continue_next_effect_clears_command_result_wait_anchor() -> None:
+    """COMMAND_RESULT 成功生成的 CONTINUE_NEXT 必须真实清理等待锚点。"""
+
+    session = SimpleNamespace(
+        id=401,
+        status="WAITING_DEVICE_RESULT",
+        current_wait_type="COMMAND_RESULT",
+        waiting_since=object(),
+        deadline_at=None,
+        current_wait_timeout_seconds=300,
+        awaiting_device_command_code="CMD-401",
+        failure_domain="COMMAND",
+        failure_code="DEVICE_BUSY",
+        failure_message="设备忙",
+        ended_at=None,
+        trace_id=None,
+    )
+
+    effect_result = await RuntimeIntentEffectApplier().apply(
+        {
+            "session": session,
+            "trace_id": "trace-continue-next",
+            "inbox": SimpleNamespace(id=777, payload_json={}),
+        },
+        [RuntimeIntent.continue_next()],
+    )
+
+    assert effect_result.disposition == WriteBackDisposition.PROCESSED
+    assert session.status.value == "RUNNING"
+    assert session.current_wait_type is None
+    assert session.awaiting_device_command_code is None
+    assert session.failure_code is None
+    assert session.last_inbox_id == 777
 
 
 def test_dispatcher_rejects_unknown_capability_without_fallback() -> None:

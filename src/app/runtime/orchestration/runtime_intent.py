@@ -41,6 +41,7 @@ class RuntimeIntentKind(str, Enum):
     RESOURCE_WAIT = "RESOURCE_WAIT"
     ROUTE = "ROUTE"
     COMPLETE = "COMPLETE"
+    CANCEL = "CANCEL"
     BLOCK = "BLOCK"
     MARK_NG = "MARK_NG"
     CONTINUE_NEXT = "CONTINUE_NEXT"
@@ -394,6 +395,21 @@ class RuntimeIntent(BaseModel):
         )
 
     @classmethod
+    def cancel(
+        cls,
+        *,
+        reason_code: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> RuntimeIntent:
+        return cls(
+            kind=RuntimeIntentKind.CANCEL,
+            reason_code=reason_code,
+            message=message,
+            payload_json=deepcopy(payload) if payload is not None else {},
+        )
+
+    @classmethod
     def mark_ng(
         cls,
         *,
@@ -509,6 +525,11 @@ class RuntimeIntent(BaseModel):
                 raise ValueError("BLOCK intent requires reason_code")
             if not self.message:
                 raise ValueError("BLOCK intent requires message")
+        if self.kind == RuntimeIntentKind.CANCEL:
+            if not self.reason_code:
+                raise ValueError("CANCEL intent requires reason_code")
+            if not self.message:
+                raise ValueError("CANCEL intent requires message")
         if self.kind == RuntimeIntentKind.MARK_NG:
             if not self.reason_code:
                 raise ValueError("MARK_NG intent requires reason_code")

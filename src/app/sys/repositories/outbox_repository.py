@@ -650,7 +650,12 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
 
     async def cancel_active_by_session(self, db: AsyncSession, *, session_id: int, reason: str) -> int:
         columns = cast("Any", SystemOutbox).__table__.c
-        active_statuses = [SystemOutboxStatus.NEW, SystemOutboxStatus.DISPATCHING, SystemOutboxStatus.SENT]
+        active_statuses = [
+            SystemOutboxStatus.NEW,
+            SystemOutboxStatus.DISPATCHING,
+            SystemOutboxStatus.SENT,
+            SystemOutboxStatus.BLOCKED_RESOURCE,
+        ]
         result = await db.execute(
             select(SystemOutbox)
             .where(columns.session_id == session_id, columns.status.in_(active_statuses))
