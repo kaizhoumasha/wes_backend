@@ -147,6 +147,16 @@ CSV 列（对齐 SPEC P0-002 矩阵字段表）：
 
 Phase5 不再用单一“清理旧代码”口径推进，删除前必须先判定 technical lane 或 business lane，并把对应证据写入 PR：
 
+当前 gate 状态：
+
+- `phase5_technical_lane_status: ready-for-technical-cleanup`
+- `phase5_business_lane_status: blocked-until-production-evidence`
+
+执行入口：
+
+- technical lane：`uv run python scripts/check_phase5_readiness_gate.py --lane technical`，并已接入 `./scripts/git-quality-gate.sh --check phase5-readiness` 与 `--profile quality`。
+- business lane：`uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`；当前仍被 production evidence 与逐项业务承载矩阵关闭状态阻塞。
+
 | lane | 适用条目 | 删除前置 | 不允许 |
 | --- | --- | --- | --- |
 | technical lane (`phase5-tech`) | debug/sandbox/fake/mock、旧 plugin 模板、已无生产 import 的 shim、仅服务开发/测试的辅助入口 | Phase2 runtime/orchestration owner guardrail 通过；Phase3 mock closure 或等价开发/测试门禁通过；`architecture-guardrails.sh` 与相关 characterization/contract test 通过；GitNexus detect-changes 确认只影响预期技术入口 | 以技术清理名义删除仍承载业务语义、API contract、trace/diagnostic evidence 或生产发布 profile 的入口 |
