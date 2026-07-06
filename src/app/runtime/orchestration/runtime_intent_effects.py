@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
+from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.material_target_resolver import resolve_destination_device
 from src.app.runtime.orchestration.models.session import SessionStatus
@@ -29,12 +30,11 @@ from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
 )
-from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
-from src.workline_plugin_registry import get_workline_plugin_definition
-from src.workline_plugins.smt_sorting_inbound.constants import (
+from src.app.workline.domain.contracts.smt_sorting_inbound import (
     SMT_SORTING_INBOUND_PLUGIN_KEY,
     SORTING_CONTEXT_SCHEMA_VERSION,
 )
+from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
 
 logger = logging.getLogger(__name__)
 
@@ -438,7 +438,7 @@ def _material_unit_status_transition_targets(
     ctx: Mapping[str, Any], *, from_state: str
 ) -> tuple[str, tuple[str, ...]] | None:
     plugin_key = _ctx_plugin_key(ctx)
-    definition = get_workline_plugin_definition(plugin_key)
+    definition = get_workline_capability_definition(plugin_key)
     if definition is None:
         return None
 
@@ -1805,7 +1805,7 @@ class RuntimeIntentEffectApplier:
             or _non_empty_text(getattr(session, "plugin_key", None))
             or _non_empty_text(payload_json.get("plugin_key"))
         )
-        plugin_definition = get_workline_plugin_definition(plugin_key)
+        plugin_definition = get_workline_capability_definition(plugin_key)
         if plugin_definition is None:
             return await self._reject_resource_wait_subject_contract(
                 ctx,

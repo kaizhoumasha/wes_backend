@@ -23,6 +23,7 @@ from src.app.device.models import Device, DeviceCommand
 from src.app.device.repositories import device_repository
 from src.app.resource.services.active_rack_snapshot_service import smt_active_rack_snapshot_service
 from src.app.runtime.capabilities.phase4.station_lease_service import station_lease_service
+from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.business_identity_bridge import resolve_payload_display_identity
 from src.app.runtime.orchestration.models import (
     InboxKind,
@@ -87,7 +88,6 @@ from src.app.workline.utils import ensure_dict
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 from src.utils.value_normalization import optional_enum_str
-from src.workline_plugin_registry import get_workline_plugin_definition
 
 T = TypeVar("T")
 
@@ -1699,7 +1699,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     @staticmethod
     def _single_layer_boundary_positions(workline: WorkLine) -> list[str]:
-        definition = get_workline_plugin_definition(getattr(workline, "plugin_key", None))
+        definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
         if definition is None:
             return []
         position_codes: list[str] = []
@@ -1712,7 +1712,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     @staticmethod
     def _manifest_position_metadata_by_code(workline: WorkLine) -> dict[str, dict[str, str]]:
-        definition = get_workline_plugin_definition(getattr(workline, "plugin_key", None))
+        definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
         if definition is None:
             return {}
 

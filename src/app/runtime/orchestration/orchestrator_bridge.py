@@ -1,37 +1,32 @@
-# 阶段 2 burn-down C5b 桥接:src.workline_runtime.orchestrator 的门面副本
-# wlr 目录在阶段 3 整体删除时,本桥接与 wlr 副本合并 / 删除。
-# 自引用 src.workline_runtime.{diagnostics, lock, null_plugin, plugin_context,
-# trace_context, utils} 已重定向到 C2/C5a/C5b 镜像。
-
 """
 OrchestratorService - 编排器核心服务
 
 负责协调 Session 的处理流程:
 1. 获取分布式锁
-2. 加载并调用插件
+2. 接收目标态 RuntimeCapability 输出的 RuntimeIntent
 3. 校验 RuntimeIntent
 4. 交给 Runtime effect 层落地命令、等待、状态和 Timeline
 
 Phase 1 简化:
 - 两阶段锁合并为单阶段锁
-- NullPlugin 非 opt-in 时抛错
 
 设计参考: 设计文档 phase2-orchestrator
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from src.app.runtime.normalization.normalizers import normalize_inbox_input
 from src.app.runtime.orchestration.diagnostics import ErrorCode, error_domain_for
 from src.app.runtime.orchestration.lock_bridge import LockAcquireError
-from src.app.workline.plugins.null_plugin import null_plugin
-from src.app.workline.plugins.plugin_context import PluginContext, PluginContextBuilder
+from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+from src.app.runtime.runtime_capability_catalog import (
+    resolve_runtime_capability_profile,
+    runtime_capability_dispatcher,
+)
 from src.app.workline.trace_context import TraceContext
-from src.app.workline.utils import ensure_dict
-from src.core.conf import settings
 from src.core.logger import logger
 
 # 类型注解用（运行时需要这些类型作为函数签名）
@@ -41,26 +36,15 @@ if TYPE_CHECKING:
 
     from src.app.runtime.orchestration.models.inbox import WorklineInbox
     from src.app.runtime.orchestration.models.session import WorklineSession
-    from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
     from src.app.workline.models import WorkLine
     from src.app.workline.runtime_services import WorklineRuntimeServices
 
 
-def _env_allows_null_plugin() -> bool:
-    enabled = os.getenv("WORKLINE_ALLOW_NULL_PLUGIN", "").strip().lower() in {"1", "true", "yes", "on"}
-    if not enabled:
-        return False
-    if settings.APP_ENV not in {"dev", "test"}:
-        raise RuntimeError("WORKLINE_ALLOW_NULL_PLUGIN is only allowed when APP_ENV is dev or test")
-    return True
-
-
-# NullPlugin 允许配置（用于测试或显式 disabled 的 workline）
-_ALLOW_NULL_PLUGIN = _env_allows_null_plugin()
+_ALLOW_NULL_PLUGIN = False
 
 
 def set_allow_null_plugin(allow: bool) -> None:
-    """设置是否允许 NullPlugin（仅用于测试或显式 disabled 场景）"""
+    """Phase5 后保留测试兼容入口；旧 NullPlugin 不再参与运行时 fallback。"""
     global _ALLOW_NULL_PLUGIN
     _ALLOW_NULL_PLUGIN = allow
 
@@ -156,6 +140,8 @@ class OrchestratorService:
     def __init__(
         self,
         lock_provider: Callable[[str], AbstractAsyncContextManager[None]] | None = None,
+        runtime_dispatcher: Any | None = None,
+        runtime_profile_resolver: Callable[[Any], Any] | None = None,
     ):
         """初始化编排器服务
 
@@ -164,7 +150,8 @@ class OrchestratorService:
                           接收锁 key，返回异步上下文管理器。
         """
         self._lock_provider = lock_provider
-        self.context_builder = PluginContextBuilder()
+        self._runtime_dispatcher = runtime_dispatcher or runtime_capability_dispatcher
+        self._runtime_profile_resolver = runtime_profile_resolver or resolve_runtime_capability_profile
 
     @staticmethod
     def _resolve_session_pk(session: Any) -> int | None:
@@ -275,9 +262,8 @@ class OrchestratorService:
         """阶段 1: READ - 读取阶段（当前非共享读）
 
         执行:
-        - 加载插件
-        - 构建上下文
-        - 契约版本检测
+        - 读取 RuntimeCapabilityDispatcher 写入的 RuntimeIntent
+        - 校验 intent 不修改 runtime-owned context key
 
         Args:
             session: WorklineSession 实体
@@ -290,37 +276,30 @@ class OrchestratorService:
         Returns:
             OrchestratorResult: 处理结果
         """
-        plugin = self._load_plugin(getattr(workline, "plugin_class", None))
-
         trace = TraceContext.from_runtime(
             session=session,
             workline=workline,
             inbox=inbox,
             trace_id=trace_id,
         )
-        ctx = self.context_builder.build(
-            session=session,
-            workline=workline,
-            devices_by_role=devices_by_role,
-            services=services,
-            trace_id=trace.trace_id or trace_id,
-            logger=logger,
-            inbox=inbox,
-            trace=trace,
-        )
+        _ = devices_by_role, services, trace
 
         session_contract = _ensure_non_empty_str(getattr(session, "contract_version", None))
-        plugin_contract = _ensure_non_empty_str(getattr(plugin, "contract_version", None))
-        if session_contract and plugin_contract and session_contract != plugin_contract:
+        workline_contract = _ensure_non_empty_str(getattr(workline, "contract_version", None))
+        if session_contract and workline_contract and session_contract != workline_contract:
             return _error_result(
                 ErrorCode.CONTRACT_MISMATCH,
-                f"Session contract {session_contract!r} != plugin {plugin_contract!r}",
+                f"Session contract {session_contract!r} != workline {workline_contract!r}",
             )
 
         try:
-            result = await self._call_plugin(plugin, ctx, inbox)
+            result = self._runtime_intents_from_dispatcher(
+                inbox,
+                workline=workline,
+                trace_id=trace.trace_id or trace_id,
+            )
         except Exception as e:
-            logger.exception("Plugin execution failed")
+            logger.exception("Runtime capability intent extraction failed")
             return _error_result(ErrorCode.PLUGIN_EXECUTION_FAILED, str(e))
 
         return self._process_intents(result, session)
@@ -368,76 +347,23 @@ class OrchestratorService:
         logger.debug(f"WRITE 阶段完成 for session {session_id}")
         return read_result
 
-    def _load_plugin(self, plugin_class: type[Any] | None) -> Any:
-        """加载插件实例。
+    def _runtime_intents_from_dispatcher(self, inbox: Any, *, workline: Any, trace_id: str) -> list[RuntimeIntent]:
+        """Normalize RuntimeInbox payload and dispatch to Phase4 runtime capability."""
 
-        已注册插件由 registry definition 维护单例实例；NullPlugin 是单例。
-
-        Phase 1 修正:
-        - 非 opt-in 时，plugin_class is None 抛错（避免 mask 配置错误）
-        - 使用 null_plugin 单例（已导出）
-
-        Args:
-            plugin_class: 插件类（可选）
-
-        Returns:
-            插件实例
-
-        Raises:
-            PluginNotFoundError: 插件未注册且未显式允许 NullPlugin
-        """
-        if plugin_class is None:
-            # 🔴 非 opt-in 时抛错，避免 silent no-op mask 配置错误
-            if not _ALLOW_NULL_PLUGIN:
-                from src.app.runtime.orchestration.exceptions import PluginNotFoundError
-
-                raise PluginNotFoundError(
-                    "Plugin not registered and null plugin not allowed. "
-                    "Enable NullPlugin only in test setup or register the plugin."
-                )
-            # 显式允许时使用单例
-            return null_plugin
-
-        from src.workline_plugin_registry import list_workline_plugin_definitions
-
-        for definition in list_workline_plugin_definitions():
-            try:
-                if definition.plugin_class is plugin_class:
-                    return definition.plugin_instance
-            except (ImportError, AttributeError, TypeError, ValueError) as exc:
-                logger.debug(f"跳过不可加载的工作线插件定义 {definition.plugin_key}: {exc}")
-
-        logger.debug(f"插件类未注册到 registry，直接创建实例: {plugin_class.__name__}")
-        return plugin_class()
-
-    async def _call_plugin(
-        self,
-        plugin: Any,
-        ctx: PluginContext,
-        inbox: Any,
-    ) -> list[RuntimeIntent]:
-        """调用插件处理事件
-
-        Args:
-            plugin: 插件实例
-            ctx: 插件上下文
-            inbox: Inbox 实体
-
-        Returns:
-            list[RuntimeIntent]: 插件返回意图
-        """
-        # 根据事件类型调用对应方法
-        inbox_type = self._resolve_inbox_type(inbox)
-        if inbox_type == "DEVICE_EVENT":
-            return await plugin.on_device_event(ctx, inbox)
-        if inbox_type == "COMMAND_RESULT":
-            return await plugin.on_command_result(ctx, inbox)
-        if inbox_type == "EXTERNAL_HTTP":
-            return await plugin.on_external_http(ctx, inbox)
-        if inbox_type == "MANUAL_OPERATION":
-            return await plugin.on_manual_operation(ctx, inbox)
-        # 默认调用 on_device_event
-        return await plugin.on_device_event(ctx, inbox)
+        normalized_input = normalize_inbox_input(
+            inbox,
+            trace_id=trace_id,
+            plugin_key=getattr(workline, "plugin_key", None),
+        )
+        profile = self._runtime_profile_resolver(normalized_input)
+        capability_result = self._runtime_dispatcher.dispatch(normalized_input, profile=profile)
+        raw_intents = getattr(capability_result, "intents", None)
+        if not isinstance(raw_intents, list) or not raw_intents:
+            raise ValueError("Runtime capability dispatcher did not produce intents")
+        return [
+            intent if isinstance(intent, RuntimeIntent) else RuntimeIntent.model_validate(intent)
+            for intent in raw_intents
+        ]
 
     def _process_intents(self, intents: list[RuntimeIntent], session: Any) -> OrchestratorResult:
         _ = session
@@ -450,24 +376,6 @@ class OrchestratorService:
                 )
 
         return OrchestratorResult(success=True, intents=intents)
-
-    def _resolve_inbox_type(self, inbox: Any) -> str:
-        """根据真实 Inbox 模型字段推导插件分发类型。"""
-        payload = ensure_dict(getattr(inbox, "payload_json", None))
-        explicit_type = payload.get("message_type")
-        if isinstance(explicit_type, str):
-            if explicit_type == "INTERNAL_EVENT":
-                return "DEVICE_EVENT"
-            return explicit_type
-
-        inbox_kind = getattr(inbox, "kind", None)
-        if inbox_kind is not None:
-            kind_value = getattr(inbox_kind, "value", inbox_kind)
-            plugin_type = _INBOX_KIND_TO_PLUGIN_TYPE.get(kind_value)
-            if plugin_type:
-                return plugin_type
-
-        return "DEVICE_EVENT"
 
 
 __all__ = ["OrchestratorResult", "OrchestratorService"]

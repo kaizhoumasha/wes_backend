@@ -9,16 +9,6 @@
 # models: 领域模型
 from .models import BarcodeDecision, BarcodeDecisionType
 
-# services: 领域服务
-from .services import (
-    BarcodeDecisionService,
-    SmtRackBinSchedulingDecision,
-    SmtRackBinSchedulingDecisionKind,
-    SmtRackBinSchedulingService,
-    SmtRackOperationRequest,
-    barcode_decision_service,
-)
-
 __all__ = [
     "BarcodeDecision",
     "BarcodeDecisionService",
@@ -29,3 +19,20 @@ __all__ = [
     "SmtRackOperationRequest",
     "barcode_decision_service",
 ]
+
+
+def __getattr__(name: str) -> object:
+    """懒加载领域服务导出，避免 contract/catalog import 时拉起 runtime model。"""
+
+    if name in {
+        "BarcodeDecisionService",
+        "SmtRackBinSchedulingDecision",
+        "SmtRackBinSchedulingDecisionKind",
+        "SmtRackBinSchedulingService",
+        "SmtRackOperationRequest",
+        "barcode_decision_service",
+    }:
+        from . import services
+
+        return getattr(services, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

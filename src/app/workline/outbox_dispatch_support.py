@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.app.workline.plugins.run_mode import normalize_run_mode
+from src.app.workline.domain.run_mode import normalize_run_mode
 from src.app.workline.trace_context import TraceContext
 from src.utils.value_normalization import enum_value
 

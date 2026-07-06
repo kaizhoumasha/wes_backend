@@ -7,8 +7,13 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 from src.app.resource.models import RackKind
+from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
+)
+from src.app.workline.domain.contracts.smt_sorting_inbound import (
+    COMMAND_SOURCE_PICK,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.app.workline.domain.services.smt_inbound_handoff_reason import (
     SMT_INBOUND_HANDOFF_REASON_CATALOG,
@@ -16,11 +21,6 @@ from src.app.workline.domain.services.smt_inbound_handoff_reason import (
     SmtInboundHandoffReasonCode,
 )
 from src.utils.timezone import timezone
-from src.workline_plugin_registry import get_workline_plugin_definition
-from src.workline_plugins.smt_sorting_inbound.constants import (
-    COMMAND_SOURCE_PICK,
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
-)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -326,7 +326,7 @@ def _source_boundary_by_position(boundaries: list[object]) -> dict[str, object]:
 
 
 def _resolve_boundary_selection(workline: object, route_config: dict[str, Any]) -> _BoundaryResolutionResult:
-    definition = get_workline_plugin_definition(getattr(workline, "plugin_key", None))
+    definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
     manifest = getattr(definition, "manifest", None)
     if manifest is None:
         return _BoundaryResolutionResult(
@@ -423,7 +423,7 @@ async def _real_ecs_status_probe(db: AsyncSession, *, workline: object, route: o
 
 
 def _source_pick_device_role(workline: object) -> str | None:
-    definition = get_workline_plugin_definition(getattr(workline, "plugin_key", None))
+    definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
     manifest = getattr(definition, "manifest", None)
     for command in getattr(manifest, "commands", ()) or ():
         if getattr(command, "command", None) == COMMAND_SOURCE_PICK:

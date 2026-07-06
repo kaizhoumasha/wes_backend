@@ -1,7 +1,7 @@
 # 阶段 2 burn-down C5a 镜像:src.workline_runtime.services 的平级副本
 # wlr 目录在阶段 3 整体删除时,本镜像改名为正式模块。
 # 自引用 src.workline_runtime.{run_mode, sandbox_catalog} 已重定向到
-# src.app.workline.plugins.run_mode (C4)
+# src.app.workline.domain.run_mode (C4)
 # + src.app.runtime.orchestration.sandbox_catalog_bridge (C5a)。
 
 """工作线运行时服务容器。
@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from src.app.runtime.orchestration.sandbox_catalog_bridge import query_sandbox_wms_inventory_rows
-from src.app.workline.plugins.run_mode import is_simulation_run_mode
+from src.app.workline.domain.run_mode import is_simulation_run_mode
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping

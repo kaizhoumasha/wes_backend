@@ -11,10 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models import Device
 from src.app.device.repositories import DeviceRepository
+from src.app.runtime.capability_catalog import get_workline_contract_version
 from src.app.workline.models import WorkLine
 from src.app.workline.repositories import WorkLineRepository
 from src.core.logger import logger
-from src.workline_plugin_registry import get_plugin_contract_version
 
 
 @dataclass
@@ -52,7 +52,7 @@ class DeviceContextService:
         contract_version = contract_candidate if isinstance(contract_candidate, str) and contract_candidate else None
         if contract_version:
             return contract_version
-        return get_plugin_contract_version(plugin_key)
+        return get_workline_contract_version(plugin_key)
 
     async def resolve(
         self,

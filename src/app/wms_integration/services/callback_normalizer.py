@@ -57,6 +57,11 @@ WMS_RCS_RACK_STATUS_REQUIRED_CALLBACK_TYPES = frozenset(
         "RCS_RACK_EXCHANGE_PROGRESS",
     }
 )
+WMS_RCS_RUNTIME_CAPABILITY_CALLBACK_TYPES = frozenset(
+    {
+        "WMS_ROUGH_SORTER_INBOUND",
+    }
+)
 
 
 class WmsExecutionCallbackNormalizer:
@@ -79,6 +84,11 @@ class WmsExecutionCallbackNormalizer:
         """校验 WMS/RCS 运行时执行回调第零阶段最小包络。"""
 
         if not callback_type.startswith(WMS_RCS_EXECUTION_PREFIXES):
+            return
+
+        if callback_type in WMS_RCS_RUNTIME_CAPABILITY_CALLBACK_TYPES:
+            _require_payload_fields(payload, (*WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS, "runtime_capability"))
+            _validate_wms_rcs_source_system(payload, callback_type)
             return
 
         _ = _require_payload_value(payload, "dispatch_key")
@@ -161,6 +171,7 @@ __all__ = [
     "WMS_RCS_FULL_BOX_EXCHANGE_REQUIRED_FIELDS",
     "WMS_RCS_RACK_CALLBACK_TYPES",
     "WMS_RCS_RACK_SOURCE_ENVELOPE_FIELDS",
+    "WMS_RCS_RUNTIME_CAPABILITY_CALLBACK_TYPES",
     "WmsExecutionCallbackNormalizer",
     "wms_execution_callback_normalizer",
 ]

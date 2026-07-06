@@ -28,6 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.repositories.command_repository import DeviceCommandRepository
 from src.app.rack.repositories import RackTaskRepository, rack_task_repository
+from src.app.runtime.capability_catalog import (
+    get_workline_contract_version,
+    resolve_workline_business_key,
+)
 from src.app.runtime.orchestration.business_identity_bridge import resolve_payload_display_identity
 from src.app.runtime.orchestration.models.inbox import InboxKind
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
@@ -36,15 +40,11 @@ from src.app.runtime.orchestration.repositories.session_repository import (
     workline_session_repository,
 )
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
-from src.app.workline.plugins.run_mode import normalize_run_mode
+from src.app.workline.domain.run_mode import normalize_run_mode
 from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import ensure_dict, non_empty_str
 from src.core.logger import logger
 from src.utils.timezone import timezone
-from src.workline_plugin_registry import (
-    get_plugin_contract_version,
-    resolve_workline_business_key,
-)
 
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.models.inbox import WorklineInbox
@@ -259,7 +259,7 @@ def _resolve_workline_contract_version(workline: "WorkLine | None") -> str | Non
         return workline_contract_version
 
     plugin_key = getattr(workline, "plugin_key", None)
-    contract_version = get_plugin_contract_version(plugin_key)
+    contract_version = get_workline_contract_version(plugin_key)
     return contract_version if isinstance(contract_version, str) and contract_version else None
 
 

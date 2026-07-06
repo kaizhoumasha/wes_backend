@@ -19,7 +19,6 @@ from yaml.constructor import ConstructorError
 from yaml.nodes import MappingNode
 
 from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
-from src.app.runtime.orchestration.models.material_unit import MaterialUnitStatus
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +60,9 @@ _MATERIAL_UNIT_SESSION_TYPE = "MATERIAL_UNIT"
 _MATERIAL_UNIT_PHYSICAL_FORM = "REEL"
 _MATERIAL_UNIT_OWNER_MODEL = "MaterialUnit"
 _MATERIAL_UNIT_OWNER_FIELD = "status"
-# 从 MaterialUnitStatus 枚举派生，避免硬编码副本与枚举漂移。
-_MATERIAL_UNIT_STATUS_VALUES = frozenset({status.value for status in MaterialUnitStatus})
-if frozenset({"IN_TRANSIT", "STORED", "COMPLETED", "NG", "RECONCILING"}) != _MATERIAL_UNIT_STATUS_VALUES:
-    raise RuntimeError(
-        f"MaterialUnitStatus 枚举与 manifest 合同状态集漂移，需同步设计文档: {sorted(_MATERIAL_UNIT_STATUS_VALUES)}"
-    )
+# manifest 是 domain 纯数据合同，不能导入 runtime/orchestration models；
+# 该集合由 MaterialUnitStatus 合同测试守护，状态新增时需同步 manifest 设计文档。
+_MATERIAL_UNIT_STATUS_VALUES = frozenset({"IN_TRANSIT", "STORED", "COMPLETED", "NG", "RECONCILING"})
 _TERMINAL_EXCEPTION_STATES = frozenset({"NG", "RECONCILING"})
 _MISSING_TOPOLOGY = object()
 _EnumT = TypeVar("_EnumT", bound=Enum)

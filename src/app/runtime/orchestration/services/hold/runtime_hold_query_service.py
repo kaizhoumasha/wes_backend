@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from src.app.device.models.command import DeviceCommand
+from src.app.runtime.capability_catalog import list_workline_ng_reasons
 from src.app.runtime.orchestration.models.runtime_hold import (
     MaterialDisposition,
     NgReturnItem,
@@ -30,7 +31,6 @@ from src.app.runtime.orchestration.services.hold.runtime_hold_release_service im
     runtime_hold_release_service,
 )
 from src.utils.value_normalization import as_dict, optional_enum_str
-from src.workline_plugin_registry import list_workline_ng_reasons
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession

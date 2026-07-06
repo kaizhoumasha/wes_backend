@@ -26,12 +26,13 @@ def test_rough_sorter_inbound_characterization_inputs_extracted():
 
     Phase 0 验证输入来源存在; Phase 4 接入目标态 capability 后转为 contract test。
     """
-    # 旧业务输入来源: rough_sorter plugin + 旧测试
+    # 旧业务输入来源已归档；目标态由 domain contract + Phase4 dispatcher/runtime 测试承接。
     sources = [
-        "src/workline_plugins/rough_sorter/plugin.py",
-        "src/workline_plugins/rough_sorter/contract.py",
+        "docs/archive/legacy-workline-plugins/src-workline_plugins/rough_sorter/plugin.py",
+        "src/app/workline/domain/contracts/rough_sorter.py",
         "tests/workline_plugins/test_rough_sorter_contract.py",
-        "tests/workline_plugins/test_rough_sorter_plugin.py",
+        "tests/workline_runtime/test_runtime_capability_dispatcher.py",
+        "tests/workline_runtime/test_sorter_inbound_runtime_service.py",
     ]
     _assert_characterization_sources_exist(sources)
 
@@ -56,14 +57,16 @@ def test_sorter_inbound_characterization_fixture_draft():
     Phase 0 可 pending, 但必须有 fixture draft。Phase 1 RuntimeIntentLog schema
     完成后升级为 contract test。
     """
-    # fixture draft 来源: src/workline_plugins/smt_sorting_inbound/ + 阶段 1 contract test。
-    # 原 tests/workline_runtime 已在阶段 3 删除 (wlr 整目录物理删除);行为契约由
-    # tests/contracts/workline/ 下游 contract 覆盖(尤其是 sorter in/runtime_intent_log)。
+    # fixture draft 来源: legacy archive + 阶段 4 runtime/capability contract test。
+    # 旧 src/workline_plugins 已在 Phase5 technical lane 退出运行路径。
     draft_sources = [
-        "src/workline_plugins/smt_sorting_inbound/plugin.py",
-        "src/workline_plugins/smt_sorting_inbound/flow_service.py",
+        "docs/archive/legacy-workline-plugins/src-workline_plugins/smt_sorting_inbound/plugin.py",
+        "docs/archive/legacy-workline-plugins/src-workline_plugins/smt_sorting_inbound/flow_service.py",
+        "src/app/runtime/capability_catalog.py",
+        "src/app/runtime/capabilities/phase4/sorter_inbound_runtime_service.py",
         "src/app/runtime/orchestration/runtime_intent_log.py",
         "tests/contracts/workline/test_rough_sorter_inbound_contract.py",
         "tests/contracts/workline/test_runtime_intent_log_dispatch_contract.py",
+        "tests/workline_runtime/test_sorter_inbound_runtime_service.py",
     ]
     _assert_characterization_sources_exist(draft_sources)

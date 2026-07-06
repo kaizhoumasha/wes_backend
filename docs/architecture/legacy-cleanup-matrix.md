@@ -159,8 +159,9 @@ Phase5 不再用单一“清理旧代码”口径推进，删除前必须先判�
 
 2026-07-06 验收记录：
 
-- technical lane 已通过 Phase2 owner guardrail、RuntimeInbox cutover、Phase3 mock closure、Phase5 technical contracts 和 quality profile，可作为后续 Phase5 纯技术残留清理的启动前置。
-- business lane 仍保持 `blocked-until-production-evidence`；旧 plugin / WorkLine 业务承载项不得仅凭 mock closure、lightweight benchmark 或缺少 Phase4 contract tests 的本地证据删除。
+- technical lane 已通过 Phase2 owner guardrail、RuntimeInbox cutover、Phase3 mock closure、Phase5 technical contracts，并完成旧 plugin runtime/import 框架清理；执行记录见 `docs/architecture/legacy-cleanup-execution-plan.md`。
+- business lane 仍保持 `blocked-until-production-evidence`；`uv run python scripts/check_phase5_readiness_gate.py --lane business` 当前失败于 `MISSING_PHASE3_PRODUCTION_CLOSURE`，缺 `phase3-p0-e2e-artifact` 与 `phase3-benchmark-artifact`。
+- 旧 `src/workline_plugins/*` 仅保留在 `docs/archive/legacy-workline-plugins/`，不得回流到 `src/` 可 import 路径；absence guardrail 负责阻断。
 
 | lane | 适用条目 | 删除前置 | 不允许 |
 | --- | --- | --- | --- |

@@ -19,9 +19,9 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItemStatus,
 )
 from src.app.sys.models.outbox import SystemOutbox
+from src.app.workline.domain.contracts.smt_sorting_inbound import SMT_SORTING_INBOUND_PLUGIN_KEY
 from src.app.workline.models.workline import WorkLine
 from src.database.base_repository import BaseRepository
-from src.workline_plugins.smt_sorting_inbound.constants import SMT_SORTING_INBOUND_PLUGIN_KEY
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession

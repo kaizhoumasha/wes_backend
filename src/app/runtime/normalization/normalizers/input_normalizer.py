@@ -1,7 +1,7 @@
 # 阶段 2 burn-down C5b 镜像:src.workline_runtime.plugin_sdk.normalizers.input_normalizer 的平级副本
 # wlr 目录在阶段 3 整体删除时,本镜像与 wlr 副本合并 / 删除。
 # 自引用 src.workline_runtime.{contracts, plugin_sdk.classifiers, plugin_sdk.contracts, utils}
-# 已重定向到 src.app.workline.domain.contracts / src.app.workline.plugins.plugin_sdk.
+# 已重定向到 src.app.workline.domain.contracts / src.app.runtime.normalization.
 # {classifiers,contracts} / src.app.workline.utils。
 
 """Inbox 输入标准化。"""
@@ -10,16 +10,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.app.workline.plugins.plugin_sdk.classifiers.result_classifier import (
+from src.app.runtime.capability_catalog import classify_workline_result, resolve_workline_business_key
+from src.app.runtime.normalization.classifiers.result_classifier import (
     classify_result,
     classify_result_category,
     normalize_result_classification,
 )
-from src.app.workline.plugins.plugin_sdk.contracts import (
+from src.app.runtime.normalization.contracts import (
     NormalizedCommandResult,
     NormalizedDeviceEvent,
     NormalizedExternalCallback,
 )
+from src.app.workline.domain.contracts.six_in_one import SixInOne
 from src.app.workline.utils import non_empty_str, payload_dict
 
 _ERROR_CODE_FIELDS = ("error_code", "code")
@@ -89,9 +91,6 @@ def _resolve_device_event_business_key(
     *,
     plugin_key: str | None = None,
 ) -> str | None:
-    from src.app.workline.domain.contracts.six_in_one import SixInOne
-    from src.workline_plugin_registry import resolve_workline_business_key
-
     try:
         plugin_business_key = resolve_workline_business_key(plugin_key, payload)
     except (TypeError, ValueError):
@@ -156,8 +155,6 @@ def _normalize_internal_event(inbox: Any, payload: dict[str, Any], *, trace_id: 
 def normalize_inbox_input(inbox: Any, *, trace_id: str = "", plugin_key: str | None = None) -> Any:
     """按 inbox 类型构建标准化输入模型。"""
 
-    from src.workline_plugin_registry import classify_workline_result
-
     payload = payload_dict(getattr(inbox, "payload_json", None))
     kind = _infer_kind(getattr(inbox, "kind", None), payload)
     if _is_internal_event(kind, payload):
@@ -186,12 +183,15 @@ def normalize_inbox_input(inbox: Any, *, trace_id: str = "", plugin_key: str | N
         )
 
     if kind == "EXTERNAL_HTTP":
+        attributes = payload_dict(payload.get("attributes"))
         return NormalizedExternalCallback(
             callback_type=str(payload.get("callback_type") or payload.get("message_type") or "EXTERNAL_HTTP"),
+            runtime_capability=non_empty_str(payload.get("runtime_capability"))
+            or non_empty_str(attributes.get("runtime_capability")),
             trace_id=_resolve_trace_id(inbox, payload, trace_id=trace_id),
             source_system=non_empty_str(payload.get("source_system")),
             payload=payload,
-            attributes=payload_dict(payload.get("attributes")),
+            attributes=attributes,
         )
 
     source_event_type = str(payload.get("event_type") or payload.get("message_type") or "UNKNOWN")
