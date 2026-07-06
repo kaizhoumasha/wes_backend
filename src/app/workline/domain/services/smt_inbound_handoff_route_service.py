@@ -7,12 +7,14 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 from src.app.resource.models import RackKind
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    workline_runtime_status_projection_service,
+)
 from src.app.workline.domain.services.smt_inbound_handoff_reason import (
     SMT_INBOUND_HANDOFF_REASON_CATALOG,
     SmtInboundHandoffReasonCatalog,
     SmtInboundHandoffReasonCode,
 )
-from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.utils.timezone import timezone
 from src.workline_plugin_registry import get_workline_plugin_definition
 from src.workline_plugins.smt_sorting_inbound.constants import (
@@ -114,7 +116,7 @@ class SmtInboundHandoffRouteService:
         if boundary_resolution.failure_code is not None:
             return self._manual_hold(boundary_resolution.failure_code, route_evidence)
 
-        if getattr(workline, "runtime_status", None) != WorkLineRuntimeStatus.READY:
+        if not workline_runtime_status_projection_service.is_ready(workline):
             return self._retry(SmtInboundHandoffReasonCode.TARGET_WORKLINE_NOT_READY, route_evidence)
 
         lease_result = await self._station_lease_service().get_station_lease_status(

@@ -17,10 +17,10 @@ READONLY_PROJECTION_VIEWS = {
     Path("src/app/runtime/orchestration/services/query/runtime_query_service.py"),
     Path("src/app/runtime/orchestration/services/trace/trace_query_service.py"),
 }
-OWNER_SENSITIVE_FILES = {
-    Path("src/app/workline/services/safety_service.py"),
-    Path("src/app/runtime/capabilities/phase4/start_admission_service.py"),
-}
+OWNER_SENSITIVE_ROOTS = (
+    Path("src/app/workline"),
+    Path("src/app/runtime/capabilities/phase4"),
+)
 DOC_PATHS = {
     Path("docs/architecture/workline-and-plugin-restructuring.md"),
     Path("docs/architecture/legacy-cleanup-matrix.md"),
@@ -95,9 +95,19 @@ def test_runtime_status_writes_are_centralized_in_projection_service() -> None:
 
 
 def test_workline_and_phase4_owner_sensitive_paths_use_projection_snapshot_for_runtime_status() -> None:
-    """WorkLine safety 与 Phase4 START admission 不能直接读取 runtime_status 作归属判断。"""
+    """WorkLine 域与 Phase4 capability 不能直接读取 runtime_status 作归属判断。
+
+    允许列表保持很窄：projection service 是唯一字段读写入口；query/trace 是
+    runtime/orchestration 只读展示层，且另有专门测试要求它们通过 snapshot 暴露。
+    """
     violations: list[str] = []
-    for rel_path in sorted(OWNER_SENSITIVE_FILES):
+    owner_sensitive_files = sorted(
+        rel_path
+        for root in OWNER_SENSITIVE_ROOTS
+        for rel_path in root.rglob("*.py")
+        if rel_path != PROJECTION_SERVICE and rel_path not in READONLY_PROJECTION_VIEWS
+    )
+    for rel_path in owner_sensitive_files:
         tree = ast.parse(_source(rel_path), filename=str(rel_path))
         lines = _direct_runtime_status_reads(tree)
         violations.extend(f"{rel_path}:{line}" for line in lines)
