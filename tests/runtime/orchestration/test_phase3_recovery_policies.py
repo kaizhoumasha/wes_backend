@@ -359,6 +359,7 @@ async def test_late_callback_pending_reconciliation_registers_owner_scoped_evide
         status=SessionStatus.MANUAL_HOLD,
         reconciliation_state=RuntimeReconciliationState.PENDING,
         reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=991,
         context_json={},
         reconciliation_late_evidence_received=False,
     )
@@ -422,6 +423,7 @@ async def test_late_callback_replay_is_idempotent_and_new_evidence_appends_witho
         status=SessionStatus.MANUAL_HOLD,
         reconciliation_state=RuntimeReconciliationState.PENDING,
         reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=991,
         context_json={},
         reconciliation_late_evidence_received=False,
     )
@@ -480,6 +482,7 @@ async def test_late_callback_registration_uses_stable_fallback_when_command_corr
         status=SessionStatus.MANUAL_HOLD,
         reconciliation_state=RuntimeReconciliationState.PENDING,
         reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=992,
         context_json={},
         reconciliation_late_evidence_received=False,
     )
@@ -518,3 +521,73 @@ async def test_late_callback_registration_uses_stable_fallback_when_command_corr
         audit["idempotency_key"]
         == "runtime-reconciliation:CALLBACK_DEADLINE_EXPIRED:late_callback:event_id:evt-no-corr"
     )
+
+
+@pytest.mark.asyncio
+async def test_late_callback_returns_false_when_locked_session_no_longer_belongs_to_command() -> None:
+    """锁定重读后若 owner 已切到别的 command，不得写入旧 late callback evidence。"""
+
+    from src.app.runtime.orchestration.models.session import (
+        RuntimeReconciliationReason,
+        RuntimeReconciliationState,
+        SessionStatus,
+    )
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        WorklineRuntimeReconciliationService,
+    )
+
+    stale_session = SimpleNamespace(
+        id=600,
+        workline_id=45,
+        trace_id="trace-stale-owner",
+        status=SessionStatus.MANUAL_HOLD,
+        reconciliation_state=RuntimeReconciliationState.PENDING,
+        reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=991,
+        context_json={},
+        reconciliation_late_evidence_received=False,
+    )
+    locked_session = SimpleNamespace(
+        id=600,
+        workline_id=45,
+        trace_id="trace-new-owner",
+        status=SessionStatus.MANUAL_HOLD,
+        reconciliation_state=RuntimeReconciliationState.PENDING,
+        reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=992,
+        context_json={},
+        reconciliation_late_evidence_received=False,
+    )
+    command = SimpleNamespace(
+        id=991,
+        command_code="CMD-OWNER-OLD",
+        device_id=7,
+        correlation_id="corr-owner-old",
+        status="ACK_RECEIVED",
+    )
+    manager = _RecordingReconciliationManager()
+    session_repository = SimpleNamespace(
+        get_pending_reconciliation_by_command_id=AsyncMock(return_value=stale_session),
+        get_for_update=AsyncMock(return_value=locked_session),
+    )
+    service = WorklineRuntimeReconciliationService(
+        session_repository=session_repository,
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace())),
+        reconciliation_manager=manager,
+    )
+    db = SimpleNamespace(flush=AsyncMock())
+
+    with patch(
+        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
+        new=AsyncMock(),
+    ):
+        recorded = await service.record_late_callback_if_pending(
+            db,
+            command=command,
+            callback_payload={"event_id": "evt-owner-old", "command_code": "CMD-OWNER-OLD", "result": "SUCCESS"},
+        )
+
+    assert recorded is False
+    assert locked_session.context_json == {}
+    assert locked_session.reconciliation_late_evidence_received is False
+    assert manager.calls == []

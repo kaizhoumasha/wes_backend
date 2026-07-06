@@ -549,10 +549,12 @@ class WorklineRuntimeReconciliationService:
         if session_id is None:
             return False
         locked_session = await self.session_repository.get_for_update(db, session_id)
-        if locked_session is None:
-            return False
         session = locked_session
-        if session.reconciliation_state != RuntimeReconciliationState.PENDING:
+        if (
+            session is None
+            or session.reconciliation_state != RuntimeReconciliationState.PENDING
+            or session.reconciliation_command_id != command_id
+        ):
             return False
         if session.reconciliation_reason not in _LATE_CALLBACK_EVIDENCE_REASONS:
             return False
