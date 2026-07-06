@@ -48,7 +48,10 @@ def _parse_scenario_evidence(raw_values: list[str]) -> dict[str, Path]:
         scenario_name, raw_path = raw_value.split("=", 1)
         if not scenario_name.strip() or not raw_path.strip():
             raise ValueError(f"scenario evidence must use SCENARIO=PATH: {raw_value}")
-        scenario_evidence[scenario_name.strip()] = Path(raw_path)
+        scenario_name = scenario_name.strip()
+        if scenario_name in scenario_evidence:
+            raise ValueError(f"DUPLICATE_SCENARIO_EVIDENCE: {scenario_name}")
+        scenario_evidence[scenario_name] = Path(raw_path)
     return scenario_evidence
 
 

@@ -44,6 +44,40 @@ class Phase3BenchmarkResult:
         }
 
 
+PHASE3_PRODUCTION_BENCHMARK_SCENARIO_METADATA: dict[str, dict[str, dict[str, Any]]] = {
+    "runtime_inbox_claim": {
+        "source": {"kind": "postgresql"},
+        "workload": {"pending_inbox_count": 1000, "worker_concurrency": 4},
+    },
+    "conveyor_queue_writer": {
+        "source": {"kind": "postgresql"},
+        "workload": {"active_membership_count": 200, "concurrent_identity_collision": True},
+    },
+    "ecs_status_command": {
+        "source": {"kind": "ecs-http"},
+        "workload": {"status_get_count": 400, "command_post_count": 400},
+    },
+    "plane_snapshot": {
+        "source": {"kind": "api-http"},
+        "workload": {
+            "workline_count": 1,
+            "queue_count": 10,
+            "device_count": 50,
+            "active_session_count": 100,
+            "active_object_count": 200,
+        },
+    },
+}
+
+
+def production_scenario_metadata(scenario_name: str) -> dict[str, dict[str, Any]]:
+    metadata = PHASE3_PRODUCTION_BENCHMARK_SCENARIO_METADATA[scenario_name]
+    return {
+        "source": dict(metadata["source"]),
+        "workload": dict(metadata["workload"]),
+    }
+
+
 def _p95_ms(samples_ns: list[int]) -> float:
     ordered = sorted(samples_ns)
     index = max(0, min(len(ordered) - 1, int(len(ordered) * 0.95) - 1))

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -161,7 +162,8 @@ def _write_phase3_closure_artifacts(tmp_path: Path) -> tuple[Path, Path]:
 
     benchmark_artifact = _benchmark_artifact()
     for scenario_name, scenario in benchmark_artifact["scenarios"].items():
-        _write_json(tmp_path / f"evidence/benchmark/{scenario_name}.json", scenario)
+        evidence_path = _write_json(tmp_path / f"evidence/benchmark/{scenario_name}.json", scenario)
+        scenario["source"]["evidence_sha256"] = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
 
     return (
         _write_json(tmp_path / "phase3-p0-e2e.json", p0_artifact),

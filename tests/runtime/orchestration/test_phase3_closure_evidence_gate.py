@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+_PLACEHOLDER_EVIDENCE_SHA256 = "0" * 64
 
 
 def _p0_e2e_artifact() -> dict[str, Any]:
@@ -62,28 +65,44 @@ def _benchmark_artifact() -> dict[str, Any]:
                 "sample_count": 5000,
                 "metrics": {"claim_p95_ms": 12.5, "duplicate_claim_count": 0},
                 "thresholds": {"claim_p95_ms": 30.0, "duplicate_claim_count": 0},
-                "source": {"kind": "postgresql", "evidence": "postgresql://phase3/runtime-inbox-claim"},
+                "source": {
+                    "kind": "postgresql",
+                    "evidence": "postgresql://phase3/runtime-inbox-claim",
+                    "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
+                },
                 "workload": {"pending_inbox_count": 1000, "worker_concurrency": 4},
             },
             "conveyor_queue_writer": {
                 "sample_count": 5000,
                 "metrics": {"write_p95_ms": 18.0, "reconciling_count": 0, "integrity_conflict_recheck_count": 7},
                 "thresholds": {"write_p95_ms": 30.0, "reconciling_count": 0, "integrity_conflict_recheck_count": 25},
-                "source": {"kind": "postgresql", "evidence": "postgresql://phase3/queue-writer"},
+                "source": {
+                    "kind": "postgresql",
+                    "evidence": "postgresql://phase3/queue-writer",
+                    "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
+                },
                 "workload": {"active_membership_count": 200, "concurrent_identity_collision": True},
             },
             "ecs_status_command": {
                 "sample_count": 2000,
                 "metrics": {"status_get_p95_ms": 20.0, "command_post_p95_ms": 24.0},
                 "thresholds": {"status_get_p95_ms": 30.0, "command_post_p95_ms": 30.0},
-                "source": {"kind": "ecs-http", "evidence": "https://ecs.example.invalid/phase3"},
+                "source": {
+                    "kind": "ecs-http",
+                    "evidence": "https://ecs.example.invalid/phase3",
+                    "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
+                },
                 "workload": {"status_get_count": 400, "command_post_count": 400},
             },
             "plane_snapshot": {
                 "sample_count": 2000,
                 "metrics": {"snapshot_p95_ms": 21.0, "snapshot_10x_p95_ms": 70.0},
                 "thresholds": {"snapshot_p95_ms": 30.0, "snapshot_10x_p95_ms": 100.0},
-                "source": {"kind": "api-http", "evidence": "https://wes.example.invalid/plane-snapshot"},
+                "source": {
+                    "kind": "api-http",
+                    "evidence": "https://wes.example.invalid/plane-snapshot",
+                    "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
+                },
                 "workload": {
                     "workline_count": 1,
                     "queue_count": 10,
@@ -139,11 +158,15 @@ def _write_closure_artifacts_with_evidence(tmp_path: Path) -> tuple[Path, Path]:
 
     benchmark_artifact = _benchmark_artifact()
     for scenario_name in benchmark_artifact["scenarios"]:
-        benchmark_artifact["scenarios"][scenario_name]["source"]["evidence"] = _write_evidence_file(
+        evidence_path = _write_evidence_file(
             tmp_path,
             f"evidence/benchmark/{scenario_name}.json",
             benchmark_artifact["scenarios"][scenario_name],
         )
+        benchmark_artifact["scenarios"][scenario_name]["source"]["evidence"] = evidence_path
+        benchmark_artifact["scenarios"][scenario_name]["source"]["evidence_sha256"] = hashlib.sha256(
+            (tmp_path / evidence_path).read_bytes()
+        ).hexdigest()
 
     p0_e2e_path = _write_json(tmp_path / "phase3-p0-e2e.json", p0_e2e_artifact)
     benchmark_path = _write_json(tmp_path / "phase3-production-benchmark.json", benchmark_artifact)

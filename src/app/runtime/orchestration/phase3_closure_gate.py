@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -242,6 +243,9 @@ def _mismatched_benchmark_evidence_files(
         if not isinstance(source, Mapping):
             continue
         evidence = _load_evidence_mapping(base_dir=artifact_path.parent, raw_path=source.get("evidence"))
+        evidence_hash = _hash_evidence_file(base_dir=artifact_path.parent, raw_path=source.get("evidence"))
+        if evidence_hash != source.get("evidence_sha256"):
+            mismatched_fields.append(f"{artifact_name}:scenarios.{scenario_name}.source.evidence_sha256")
         if _normalize_benchmark_evidence(evidence, scenario=raw_scenario) != dict(raw_scenario):
             mismatched_fields.append(f"{artifact_name}:scenarios.{scenario_name}.source.evidence")
     return tuple(mismatched_fields)
@@ -306,6 +310,18 @@ def _load_evidence_mapping(*, base_dir: Path, raw_path: object) -> dict[str, Any
     return dict(evidence) if isinstance(evidence, Mapping) else {}
 
 
+def _hash_evidence_file(*, base_dir: Path, raw_path: object) -> str | None:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    evidence_path = Path(raw_path)
+    if not evidence_path.is_absolute():
+        evidence_path = base_dir / evidence_path
+    try:
+        return hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
 def _normalize_benchmark_evidence(evidence: Mapping[str, object], *, scenario: Mapping[str, object]) -> dict[str, Any]:
     normalized = dict(evidence)
     artifact_source = scenario.get("source")
@@ -313,6 +329,7 @@ def _normalize_benchmark_evidence(evidence: Mapping[str, object], *, scenario: M
     normalized["source"] = dict(evidence_source) if isinstance(evidence_source, Mapping) else {}
     if isinstance(artifact_source, Mapping):
         normalized["source"]["evidence"] = artifact_source.get("evidence")
+        normalized["source"]["evidence_sha256"] = artifact_source.get("evidence_sha256")
     return normalized
 
 
