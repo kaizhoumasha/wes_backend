@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -102,6 +103,19 @@ def test_phase4_runtime_evidence_composer_requires_evidence_dir_for_site_profile
     assert "Phase4 site/production evidence-dir is required" in compose_result.stdout
 
 
+def test_phase4_runtime_evidence_compose_function_requires_evidence_dir_for_site_profile() -> None:
+    import pytest
+
+    from scripts.compose_phase4_runtime_evidence_artifact import compose_artifact
+
+    with pytest.raises(ValueError, match="MISSING_PHASE4_RUNTIME_EVIDENCE_DIR"):
+        compose_artifact(
+            profile="site",
+            environment="field-dry-run",
+            generated_at="2026-07-05T00:00:00Z",
+        )
+
+
 def test_phase4_runtime_evidence_composer_writes_gate_accepted_site_artifact(tmp_path) -> None:
     artifact_path = tmp_path / "phase4-runtime-evidence-site.json"
     evidence_dir = tmp_path / "evidence" / "phase4-runtime"
@@ -131,13 +145,13 @@ def test_phase4_runtime_evidence_composer_writes_gate_accepted_site_artifact(tmp
     assert compose_result.returncode == 0, compose_result.stderr + compose_result.stdout
     artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert artifact["profile"]["name"] == "site"
+    expected_evidence_path = evidence_dir / "provider-contracts" / "sorter-inbound.json"
     assert artifact["evidence_manifest"]["provider_contracts"]["sorter_inbound"] == {
         "kind": "provider-contract",
-        "evidence": "evidence/phase4-runtime/provider-contracts/sorter-inbound.json",
+        "evidence": str(expected_evidence_path.resolve()),
+        "evidence_sha256": hashlib.sha256(expected_evidence_path.read_bytes()).hexdigest(),
     }
-    assert artifact["evidence_manifest"]["callback_worker_trace"]["evidence"] == (
-        "evidence/phase4-runtime/traces/runtime-inbox-worker.json"
-    )
+    assert Path(artifact["evidence_manifest"]["callback_worker_trace"]["evidence"]).is_absolute()
 
     gate_result = subprocess.run(
         [

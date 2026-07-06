@@ -4,6 +4,8 @@
 - 接收 inbound_registry + normalizer_context + correlation + consumer_id
 - consume_sync 委托给 src.app.workline.services.inbox_batch_processor
   (wlr 内部既有实现, lazy import 阶段 3 前的过渡)
+- callback ACK 权威已切到 RuntimeInbox; 这里仅保留 legacy inbox/processor
+  的过渡消费职责, 不承担 ACK/source-of-truth 语义
 - 不实现状态机 / idempotency / RuntimeHold 推进 (阶段 3 业务迁移)
 - list_consumed_ids 返回只读视图
 """

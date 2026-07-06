@@ -25,7 +25,6 @@ from src.app.workline.repositories.safety_incident_repository import WorklineSaf
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.core.logger import logger
 from src.utils.timezone import timezone
-from src.utils.value_normalization import enum_str
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -161,9 +160,11 @@ class WorkLineSafetyService:
         workline = await self.workline_repository.get_for_update(db, workline_id)
         if workline is None:
             raise WorkLineSafetyBlocked(f"WORKLINE_NOT_FOUND: workline_id={workline_id}")
-        runtime_status = enum_str(workline.runtime_status)
-        if runtime_status != WorkLineRuntimeStatus.READY.value:
-            raise WorkLineSafetyBlocked(f"WORKLINE_{runtime_status}: workline_id={workline_id}")
+        self.workline_status_projection_service.assert_accepting_runtime_work(
+            workline,
+            workline_id=workline_id,
+            blocked_error=WorkLineSafetyBlocked,
+        )
 
     async def handle_estop(
         self,
@@ -305,7 +306,8 @@ class WorkLineSafetyService:
         workline = await self.workline_repository.get_for_update(db, workline_id)
         if workline is None:
             raise ValueError(f"工作线不存在: {workline_id}")
-        if enum_str(workline.runtime_status) != WorkLineRuntimeStatus.ESTOPPED.value:
+        runtime_snapshot = self.workline_status_projection_service.runtime_status_snapshot(workline)
+        if runtime_snapshot.runtime_status != WorkLineRuntimeStatus.ESTOPPED.value:
             raise ValueError("工作线当前不处于急停状态")
 
         incident = await self.incident_repository.get_active_for_workline(db, workline_id)

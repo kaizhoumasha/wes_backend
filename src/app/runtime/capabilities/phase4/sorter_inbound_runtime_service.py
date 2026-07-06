@@ -51,6 +51,8 @@ class Phase4SorterInboundRuntimeService:
         correlation_id = _required_text(payload, "correlation_id")
         provider_code = _required_text(payload, "provider_code")
         object_key = _required_text(payload, "object_key")
+        bin_code = _required_text_any(payload, "bin_code", "target_bin_code")
+        bin_cell_index = _required_text_any(payload, "bin_cell_index", "target_bin_cell_index", "target_cell_index")
         target_cell_code = _required_text(payload, "target_cell_code")
         pkg_code = _required_text(payload, "pkg_code")
         pallet_id = _required_text(payload, "pallet_id")
@@ -60,13 +62,21 @@ class Phase4SorterInboundRuntimeService:
         warehouse_code = _required_text(payload, "warehouse_code")
 
         reservation_payload = {
-            "object_type": "PACKAGE",
-            "object_key": object_key,
-            "target_cell_code": target_cell_code,
+            "pkg_code": pkg_code,
+            "bin_code": bin_code,
+            "bin_cell_index": bin_cell_index,
+            "bin_cell_code": target_cell_code,
+            "material_identity_key": _text(payload.get("material_identity_key")) or None,
             "correlation_id": correlation_id,
             "provider_code": provider_code,
             "source_event_id": _text(payload.get("source_event_id")),
             "source_version": _text(payload.get("source_version")),
+            "evidence_json": {
+                "request_id": request_id,
+                "object_type": "PACKAGE",
+                "object_key": object_key,
+                "target_cell_code": target_cell_code,
+            },
         }
         location_payload = {
             "object_type": "PACKAGE",
@@ -75,6 +85,7 @@ class Phase4SorterInboundRuntimeService:
             "location_code": target_cell_code,
             "business_step": "LOCAL_PHYSICAL_FACT",
             "source": "PHASE4_SORTER_INBOUND",
+            "provider_code": provider_code,
             "evidence_json": {
                 "request_id": request_id,
                 "provider_code": provider_code,
@@ -107,7 +118,7 @@ class Phase4SorterInboundRuntimeService:
             provider_code=provider_code,
             intents=[
                 RuntimeIntent.resource_reservation(
-                    operation="CELL_RESERVATION_RESERVE",
+                    operation="CLAIM_BIN_CELL",
                     payload=reservation_payload,
                     idempotency_key=f"phase4:{request_id}:cell-reservation",
                 ),
@@ -210,6 +221,7 @@ class Phase4SorterInboundRuntimeService:
                         "location_code": _required_text(payload, "target_work_position_code"),
                         "business_step": "SORTER_READY_TO_DROP",
                         "source": "PHASE4_SORTER_INBOUND",
+                        "provider_code": provider_code,
                         "evidence_json": {"request_id": request_id, "condition_results": condition_results},
                         "correlation_id": _required_text(payload, "correlation_id"),
                         "idempotency_key": f"phase4:{request_id}:sorter-ready",
@@ -302,6 +314,14 @@ def _required_text(payload: Mapping[str, Any], field_name: str) -> str:
     if not value:
         raise ValueError(f"{field_name} is required")
     return value
+
+
+def _required_text_any(payload: Mapping[str, Any], *field_names: str) -> str:
+    for field_name in field_names:
+        value = _text(payload.get(field_name))
+        if value:
+            return value
+    raise ValueError(f"{'/'.join(field_names)} is required")
 
 
 def _text(value: Any) -> str:

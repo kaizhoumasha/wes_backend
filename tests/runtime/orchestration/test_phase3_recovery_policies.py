@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from datetime import timedelta
 from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult
 from src.utils.timezone import timezone
 
 
@@ -303,3 +308,363 @@ def test_conveyor_queue_writer_resolves_placeholder_and_escalates_conflict() -> 
     assert resolve_with_existing_bin.kind == ConveyorQueueWriteDecisionKind.RESOLVE_PLACEHOLDER
     assert blocked.kind == ConveyorQueueWriteDecisionKind.BLOCKED
     assert blocked.reason == "UNKNOWN_QUEUE_CODE"
+
+
+class _RecordingReconciliationManager:
+    def __init__(self) -> None:
+        from src.app.reconciliation.manager import ReconciliationManager, ReconciliationRegistrationResult
+        from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult
+
+        self.calls: list[dict[str, Any]] = []
+        self.sync_calls: list[Any] = []
+        self._result_cls = ReconciliationRegistrationResult
+        self._claim_result = ClaimResult.NEW
+        self._manager = ReconciliationManager()
+
+    async def register_conflict_idempotent(self, db: Any, conflict: Any, **kwargs: Any) -> Any:
+        self.calls.append({"db": db, "conflict": conflict, **kwargs})
+        return self._result_cls(
+            decision=self._manager.register_conflict(conflict),
+            claim_result=self._claim_result,
+        )
+
+    def register_conflict(self, conflict: Any) -> Any:
+        self.sync_calls.append(conflict)
+        return self._manager.register_conflict(conflict)
+
+
+class _IdempotentOnlyManager:
+    def __init__(self, claim_result: ClaimResult = ClaimResult.NEW) -> None:
+        from src.app.reconciliation.manager import ReconciliationManager
+
+        self.claim_result = claim_result
+        self.calls: list[dict[str, Any]] = []
+        self._manager = ReconciliationManager()
+
+    async def register_conflict_idempotent(self, db: Any, conflict: Any, **kwargs: Any) -> Any:
+        from src.app.reconciliation.manager import ReconciliationRegistrationResult
+
+        self.calls.append({"db": db, "conflict": conflict, **kwargs})
+        return ReconciliationRegistrationResult(
+            decision=self._manager.register_conflict(conflict),
+            claim_result=self.claim_result,
+        )
+
+
+@pytest.mark.asyncio
+async def test_late_callback_pending_reconciliation_registers_owner_scoped_evidence_without_terminal_mutation() -> None:
+    """late callback 冲突必须补登记 owner-scoped reconciliation, 只保留证据并维持 RECONCILING。"""
+
+    from src.app.runtime.orchestration.models.session import (
+        RuntimeReconciliationReason,
+        RuntimeReconciliationState,
+        SessionStatus,
+    )
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        WorklineRuntimeReconciliationService,
+    )
+
+    command = SimpleNamespace(
+        id=991,
+        command_code="CMD-LATE-001",
+        device_id=7,
+        correlation_id="corr-late-callback",
+        status="ACK_RECEIVED",
+    )
+    session = SimpleNamespace(
+        id=553,
+        workline_id=45,
+        trace_id="trace-late-callback",
+        status=SessionStatus.MANUAL_HOLD,
+        reconciliation_state=RuntimeReconciliationState.PENDING,
+        reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=991,
+        context_json={},
+        reconciliation_late_evidence_received=False,
+    )
+    manager = _RecordingReconciliationManager()
+    service = WorklineRuntimeReconciliationService(
+        session_repository=SimpleNamespace(
+            get_pending_reconciliation_by_command_id=AsyncMock(return_value=session),
+            get_for_update=AsyncMock(return_value=session),
+        ),
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace())),
+        reconciliation_manager=manager,
+    )
+    db = SimpleNamespace(flush=AsyncMock())
+    callback_payload = {
+        "event_id": "evt-late-001",
+        "command_code": "CMD-LATE-001",
+        "result": "SUCCESS",
+        "finish_time": 1_760_000_000_123,
+    }
+
+    with patch(
+        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
+        new=AsyncMock(),
+    ):
+        recorded = await service.record_late_callback_if_pending(
+            db,
+            command=command,
+            callback_payload=callback_payload,
+        )
+
+    assert recorded is True
+    assert session.status == SessionStatus.MANUAL_HOLD
+    assert session.reconciliation_state == RuntimeReconciliationState.PENDING
+    assert session.reconciliation_late_evidence_received is True
+    evidence = session.context_json["runtime_reconciliation_late_callback_evidence"]
+    assert evidence[0]["evidence_key"] == "event_id:evt-late-001"
+    assert len(manager.calls) == 1
+    call = manager.calls[0]
+    assert call["business_owner_key"] == "runtime:ExecutionSession:553"
+    assert call["conflict"].owner_id == "553"
+    assert "late_callback:event_id:evt-late-001" in call["conflict"].evidence_refs
+
+
+@pytest.mark.asyncio
+async def test_late_callback_replay_is_idempotent_and_new_evidence_appends_without_overwrite() -> None:
+    """同一 late callback 重放不重复追加，不同 late callback 必须保留两条 evidence。"""
+
+    from src.app.runtime.orchestration.models.session import (
+        RuntimeReconciliationReason,
+        RuntimeReconciliationState,
+        SessionStatus,
+    )
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        WorklineRuntimeReconciliationService,
+    )
+
+    session = SimpleNamespace(
+        id=553,
+        workline_id=45,
+        trace_id="trace-late-callback-replay",
+        status=SessionStatus.MANUAL_HOLD,
+        reconciliation_state=RuntimeReconciliationState.PENDING,
+        reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=991,
+        context_json={},
+        reconciliation_late_evidence_received=False,
+    )
+    command = SimpleNamespace(
+        id=991,
+        command_code="CMD-LATE-REPLAY",
+        device_id=7,
+        correlation_id="corr-late-replay",
+        status="ACK_RECEIVED",
+    )
+    manager = _RecordingReconciliationManager()
+    session_repository = SimpleNamespace(
+        get_pending_reconciliation_by_command_id=AsyncMock(return_value=session),
+        get_for_update=AsyncMock(return_value=session),
+    )
+    service = WorklineRuntimeReconciliationService(
+        session_repository=session_repository,
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace())),
+        reconciliation_manager=manager,
+    )
+    db = SimpleNamespace(flush=AsyncMock())
+    callback_a = {"event_id": "evt-late-a", "command_code": "CMD-LATE-REPLAY", "result": "SUCCESS"}
+    callback_b = {"event_id": "evt-late-b", "command_code": "CMD-LATE-REPLAY", "result": "FAILED"}
+
+    with patch(
+        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
+        new=AsyncMock(),
+    ):
+        assert await service.record_late_callback_if_pending(db, command=command, callback_payload=callback_a) is True
+        assert await service.record_late_callback_if_pending(db, command=command, callback_payload=callback_a) is True
+        assert await service.record_late_callback_if_pending(db, command=command, callback_payload=callback_b) is True
+
+    evidence = session.context_json["runtime_reconciliation_late_callback_evidence"]
+    assert [item["evidence_key"] for item in evidence] == ["event_id:evt-late-a", "event_id:evt-late-b"]
+    assert len(manager.calls) == 2
+    session_repository.get_for_update.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_late_callback_registration_uses_stable_fallback_when_command_correlation_missing() -> None:
+    """command 缺失 correlation_id 时，late callback 仍要生成稳定 registration 审计。"""
+
+    from src.app.runtime.orchestration.models.session import (
+        RuntimeReconciliationReason,
+        RuntimeReconciliationState,
+        SessionStatus,
+    )
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        WorklineRuntimeReconciliationService,
+    )
+
+    session = SimpleNamespace(
+        id=554,
+        workline_id=46,
+        trace_id="trace-late-fallback",
+        status=SessionStatus.MANUAL_HOLD,
+        reconciliation_state=RuntimeReconciliationState.PENDING,
+        reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=992,
+        context_json={},
+        reconciliation_late_evidence_received=False,
+    )
+    command = SimpleNamespace(
+        id=992,
+        command_code="CMD-NO-CORR",
+        device_id=8,
+        correlation_id=None,
+        status="ACK_RECEIVED",
+    )
+    manager = _RecordingReconciliationManager()
+    service = WorklineRuntimeReconciliationService(
+        session_repository=SimpleNamespace(
+            get_pending_reconciliation_by_command_id=AsyncMock(return_value=session),
+            get_for_update=AsyncMock(return_value=session),
+        ),
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace())),
+        reconciliation_manager=manager,
+    )
+    db = SimpleNamespace(flush=AsyncMock())
+
+    with patch(
+        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
+        new=AsyncMock(),
+    ):
+        recorded = await service.record_late_callback_if_pending(
+            db,
+            command=command,
+            callback_payload={"event_id": "evt-no-corr", "command_code": "CMD-NO-CORR", "result": "SUCCESS"},
+        )
+
+    assert recorded is True
+    audit = session.context_json["runtime_reconciliation_registration"]
+    assert audit["correlation_id"] == "command:CMD-NO-CORR"
+    assert (
+        audit["idempotency_key"]
+        == "runtime-reconciliation:CALLBACK_DEADLINE_EXPIRED:late_callback:event_id:evt-no-corr"
+    )
+    assert manager.sync_calls and manager.calls == []
+
+
+@pytest.mark.asyncio
+async def test_late_callback_correlated_path_does_not_require_sync_register_conflict() -> None:
+    """有 correlation 的正常路径只能依赖 register_conflict_idempotent。"""
+
+    from src.app.runtime.orchestration.models.session import (
+        RuntimeReconciliationReason,
+        RuntimeReconciliationState,
+        SessionStatus,
+    )
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        WorklineRuntimeReconciliationService,
+    )
+
+    session = SimpleNamespace(
+        id=555,
+        workline_id=47,
+        trace_id="trace-late-correlated",
+        status=SessionStatus.MANUAL_HOLD,
+        reconciliation_state=RuntimeReconciliationState.PENDING,
+        reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=993,
+        context_json={},
+        reconciliation_late_evidence_received=False,
+    )
+    command = SimpleNamespace(
+        id=993,
+        command_code="CMD-CORRELATED",
+        device_id=9,
+        correlation_id="corr-late-correlated",
+        status="ACK_RECEIVED",
+    )
+    manager = _IdempotentOnlyManager(claim_result=ClaimResult.MATCH)
+    service = WorklineRuntimeReconciliationService(
+        session_repository=SimpleNamespace(
+            get_pending_reconciliation_by_command_id=AsyncMock(return_value=session),
+            get_for_update=AsyncMock(return_value=session),
+        ),
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace())),
+        reconciliation_manager=manager,
+    )
+    db = SimpleNamespace(flush=AsyncMock())
+
+    with patch(
+        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
+        new=AsyncMock(),
+    ):
+        recorded = await service.record_late_callback_if_pending(
+            db,
+            command=command,
+            callback_payload={"event_id": "evt-correlated", "command_code": "CMD-CORRELATED", "result": "SUCCESS"},
+        )
+
+    assert recorded is True
+    assert len(manager.calls) == 1
+    assert session.context_json["runtime_reconciliation_registration"]["claim_result"] == "MATCH"
+
+
+@pytest.mark.asyncio
+async def test_late_callback_returns_false_when_locked_session_no_longer_belongs_to_command() -> None:
+    """锁定重读后若 owner 已切到别的 command，不得写入旧 late callback evidence。"""
+
+    from src.app.runtime.orchestration.models.session import (
+        RuntimeReconciliationReason,
+        RuntimeReconciliationState,
+        SessionStatus,
+    )
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        WorklineRuntimeReconciliationService,
+    )
+
+    stale_session = SimpleNamespace(
+        id=600,
+        workline_id=45,
+        trace_id="trace-stale-owner",
+        status=SessionStatus.MANUAL_HOLD,
+        reconciliation_state=RuntimeReconciliationState.PENDING,
+        reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=991,
+        context_json={},
+        reconciliation_late_evidence_received=False,
+    )
+    locked_session = SimpleNamespace(
+        id=600,
+        workline_id=45,
+        trace_id="trace-new-owner",
+        status=SessionStatus.MANUAL_HOLD,
+        reconciliation_state=RuntimeReconciliationState.PENDING,
+        reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=992,
+        context_json={},
+        reconciliation_late_evidence_received=False,
+    )
+    command = SimpleNamespace(
+        id=991,
+        command_code="CMD-OWNER-OLD",
+        device_id=7,
+        correlation_id="corr-owner-old",
+        status="ACK_RECEIVED",
+    )
+    manager = _RecordingReconciliationManager()
+    session_repository = SimpleNamespace(
+        get_pending_reconciliation_by_command_id=AsyncMock(return_value=stale_session),
+        get_for_update=AsyncMock(return_value=locked_session),
+    )
+    service = WorklineRuntimeReconciliationService(
+        session_repository=session_repository,
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace())),
+        reconciliation_manager=manager,
+    )
+    db = SimpleNamespace(flush=AsyncMock())
+
+    with patch(
+        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
+        new=AsyncMock(),
+    ):
+        recorded = await service.record_late_callback_if_pending(
+            db,
+            command=command,
+            callback_payload={"event_id": "evt-owner-old", "command_code": "CMD-OWNER-OLD", "result": "SUCCESS"},
+        )
+
+    assert recorded is False
+    assert locked_session.context_json == {}
+    assert locked_session.reconciliation_late_evidence_received is False
+    assert manager.calls == []

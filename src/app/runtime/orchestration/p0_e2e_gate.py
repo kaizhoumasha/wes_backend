@@ -132,23 +132,36 @@ class RuntimeP0E2EGate:
             return RuntimeP0E2EValidation(
                 valid=False,
                 reason="MISSING_SOURCE_PROVENANCE",
-                missing_source_fields=("source.evidence", "source.kind"),
+                missing_source_fields=(
+                    "source.environment",
+                    "source.evidence",
+                    "source.evidence_sha256",
+                    "source.kind",
+                ),
             )
 
-        missing_fields = tuple(
-            field for field in ("source.evidence", "source.kind") if not _non_empty_text(source.get(field[7:]))
-        )
+        required_fields = ("source.environment", "source.evidence", "source.evidence_sha256", "source.kind")
+        missing_fields = tuple(field for field in required_fields if not _non_empty_text(source.get(field[7:])))
+        invalid_fields: list[str] = []
+        evidence_sha256 = source.get("evidence_sha256")
+        if _non_empty_text(evidence_sha256) and not _is_sha256_hex(evidence_sha256):
+            invalid_fields.append("source.evidence_sha256")
+        environment = source.get("environment")
+        if isinstance(environment, str) and environment.strip().lower() in self._FORBIDDEN_ENVIRONMENTS:
+            invalid_fields.append("source.environment")
+        if source.get("kind") not in (None, "trace-query"):
+            invalid_fields.append("source.kind")
         if missing_fields:
             return RuntimeP0E2EValidation(
                 valid=False,
                 reason="MISSING_SOURCE_PROVENANCE",
                 missing_source_fields=missing_fields,
             )
-        if source["kind"] != "trace-query":
+        if invalid_fields:
             return RuntimeP0E2EValidation(
                 valid=False,
                 reason="INVALID_SOURCE_PROVENANCE",
-                invalid_source_fields=("source.kind",),
+                invalid_source_fields=tuple(sorted(invalid_fields)),
             )
         return None
 
@@ -160,7 +173,7 @@ class RuntimeP0E2EGate:
                 failed_latency_fields=("latency.p95_seconds",),
             )
         p95_seconds = latency.get("p95_seconds")
-        if not _is_number(p95_seconds) or p95_seconds > self.max_p95_seconds:
+        if not _is_number(p95_seconds) or p95_seconds >= self.max_p95_seconds:
             return RuntimeP0E2EValidation(
                 valid=False,
                 reason="E2E_LATENCY_EXCEEDED",
@@ -187,6 +200,11 @@ class RuntimeP0E2EGate:
                 invalid_paths.append(f"{path_name}.result")
             if not _non_empty_text(raw_path.get("evidence")):
                 missing_paths.append(f"{path_name}.evidence")
+            evidence_sha256 = raw_path.get("evidence_sha256")
+            if not _non_empty_text(evidence_sha256):
+                missing_paths.append(f"{path_name}.evidence_sha256")
+            elif not _is_sha256_hex(evidence_sha256):
+                invalid_paths.append(f"{path_name}.evidence_sha256")
 
         if missing_paths:
             return RuntimeP0E2EValidation(
@@ -205,6 +223,10 @@ class RuntimeP0E2EGate:
 
 def _non_empty_text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _is_sha256_hex(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
 def _is_number(value: object) -> bool:

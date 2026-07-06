@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.response.response_code import ResourceErrorCode
 from tests.api import callback_test_support
 from tests.api.callback_test_support import (
     RequestFactory,
@@ -735,13 +736,13 @@ class TestCallbackExternalAPI:
             )
 
         assert response["code"] == "1000"
-        assert _response_data(response)["status"] == "duplicate"
+        assert _response_data(response)["status"] == "submitted"
         mock_create_inbox.assert_awaited_once()
         rack_task_service.record_callback_from_external_http.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
-        assert log_kwargs["ingress_outcome"] == "DUPLICATE"
+        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         mock_enqueue.assert_not_called()
-        mock_audit.assert_not_awaited()
+        mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_callback_external_h4_accepts_wms_rack_operation_protocol_fields(
@@ -826,3 +827,94 @@ class TestCallbackExternalAPI:
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs.get("reason_code") != "CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED"
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
+
+    @pytest.mark.asyncio
+    async def test_callback_external_duplicate_ack_comes_from_runtime_inbox(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        with (
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_external_callback",
+                new=AsyncMock(return_value=SimpleNamespace(created=False, record=SimpleNamespace(id=903))),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-runtime-dup-external"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(body=create_external_payload(), path="/api/v1/callback/external"),
+                db=db_session,
+            )
+
+        assert response["code"] == "1000"
+        assert _response_data(response)["status"] == "duplicate"
+        mock_create_inbox.assert_not_awaited()
+        mock_enqueue.assert_not_called()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "DUPLICATE"
+        mock_audit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_callback_external_conflict_maps_runtime_inbox_conflict(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxConflict
+
+        with (
+            patch(
+                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_external_callback",
+                new=AsyncMock(
+                    side_effect=RuntimeInboxConflict(
+                        provider_code="AGV",
+                        event_type="external",
+                        source_event_id="evt-ext-conflict",
+                        existing_payload_hash="hash-old",
+                        incoming_payload_hash="hash-new",
+                    )
+                ),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as mock_log_callback,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as mock_audit,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-runtime-conflict-external"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(body=create_external_payload(), path="/api/v1/callback/external"),
+                db=db_session,
+            )
+
+        assert response["code"] == ResourceErrorCode.CONFLICT.code
+        assert _response_data(response)["ack"] is False
+        mock_create_inbox.assert_not_awaited()
+        log_kwargs = _await_kwargs(mock_log_callback)
+        assert log_kwargs["ingress_outcome"] == "REJECTED"
+        assert log_kwargs["failure_stage"] == "ORCHESTRATION"
+        mock_audit.assert_awaited_once()

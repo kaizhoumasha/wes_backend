@@ -77,6 +77,9 @@ from src.app.runtime.orchestration.services.trace.trace_response_builder import 
     build_trace_session_item,
     build_trace_timeline_item,
 )
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    workline_runtime_status_projection_service,
+)
 from src.app.sys.models import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import WorkLine
 from src.app.workline.services.diagnosis_verdict_builder_service import diagnosis_verdict_builder
@@ -1429,6 +1432,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         error_devices = sum(1 for item in devices if (optional_enum_str(item.device_status) or "") == "ERROR")
         offline_devices = sum(1 for item in devices if (optional_enum_str(item.device_status) or "") == "OFFLINE")
         maintenance_devices = sum(1 for item in devices if _is_maintenance_device(item))
+        runtime_snapshot = workline_runtime_status_projection_service.runtime_status_snapshot(workline)
 
         return RuntimeWorklineSummary(
             id=_require_int_id(workline.id, "workline.id"),
@@ -1447,11 +1451,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
             offline_device_count=offline_devices,
             maintenance_device_count=maintenance_devices,
             run_mode=optional_enum_str(workline.run_mode) or "AUTO",
-            runtime_status=optional_enum_str(getattr(workline, "runtime_status", None)) or "STOPPED",
-            active_safety_incident_id=getattr(workline, "active_safety_incident_id", None),
-            stopped_at=getattr(workline, "stopped_at", None),
-            stopped_reason=getattr(workline, "stopped_reason", None),
-            resumed_at=getattr(workline, "resumed_at", None),
+            runtime_status=runtime_snapshot.runtime_status or "STOPPED",
+            active_safety_incident_id=runtime_snapshot.active_safety_incident_id,
+            stopped_at=runtime_snapshot.stopped_at,
+            stopped_reason=runtime_snapshot.stopped_reason,
+            resumed_at=runtime_snapshot.resumed_at,
             start_admission_status=getattr(workline, "start_admission_status", None),
             start_admission_message=getattr(workline, "start_admission_message", None),
             start_admission_failed_device_code=getattr(workline, "start_admission_failed_device_code", None),
@@ -1685,7 +1689,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     @staticmethod
     def _runtime_workline_readiness(workline: WorkLine) -> RuntimeWorklineReadiness:
-        runtime_status = optional_enum_str(getattr(workline, "runtime_status", None))
+        runtime_snapshot = workline_runtime_status_projection_service.runtime_status_snapshot(workline)
+        runtime_status = runtime_snapshot.runtime_status
         if runtime_status == "READY":
             return RuntimeWorklineReadiness.READY
         if runtime_status in {"STOPPED", "STARTING", "ESTOPPED", "RECONCILING"}:

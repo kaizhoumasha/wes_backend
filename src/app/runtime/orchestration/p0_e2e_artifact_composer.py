@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -34,7 +35,7 @@ class RuntimeP0E2EArtifactComposer:
         """Compose and validate a production P0 E2E artifact."""
 
         recording_path = Path(trace_recording_path)
-        recording = self._load_trace_recording(recording_path)
+        recording, recording_path, recording_hash = self._load_trace_recording(recording_path)
         artifact: dict[str, Any] = {
             "profile": {
                 "kind": "production-e2e",
@@ -43,7 +44,9 @@ class RuntimeP0E2EArtifactComposer:
             },
             "source": {
                 "kind": "trace-query",
+                "environment": environment,
                 "evidence": str(recording_path),
+                "evidence_sha256": recording_hash,
             },
             "latency": {"p95_seconds": p95_seconds},
             "recording": recording,
@@ -54,13 +57,15 @@ class RuntimeP0E2EArtifactComposer:
             raise RuntimeP0E2EArtifactCompositionError(validation.reason)
         return artifact
 
-    def _load_trace_recording(self, recording_path: Path) -> dict[str, Any]:
-        if not recording_path.exists():
+    def _load_trace_recording(self, recording_path: Path) -> tuple[dict[str, Any], Path, str]:
+        if not recording_path.is_file():
             raise RuntimeP0E2EArtifactCompositionError("MISSING_TRACE_RECORDING")
-        recording = json.loads(recording_path.read_text(encoding="utf-8"))
+        recording_path = recording_path.resolve()
+        recording_bytes = recording_path.read_bytes()
+        recording = json.loads(recording_bytes.decode("utf-8"))
         if not isinstance(recording, Mapping):
             raise RuntimeP0E2EArtifactCompositionError("INVALID_TRACE_RECORDING")
-        return dict(recording)
+        return dict(recording), recording_path, hashlib.sha256(recording_bytes).hexdigest()
 
     def _compose_exception_paths(self, raw_exception_paths: Mapping[str, str | Path]) -> dict[str, dict[str, str]]:
         unknown_paths = sorted(set(raw_exception_paths) - set(self._REQUIRED_EXCEPTION_PATHS))
@@ -74,11 +79,29 @@ class RuntimeP0E2EArtifactComposer:
             raise RuntimeP0E2EArtifactCompositionError(f"MISSING_EXCEPTION_PATHS: {', '.join(missing_paths)}")
 
         exception_paths: dict[str, dict[str, str]] = {}
+        seen_evidence_paths: set[Path] = set()
         for path_name in self._REQUIRED_EXCEPTION_PATHS:
             evidence_path = Path(raw_exception_paths[path_name])
-            if not evidence_path.exists():
+            if not evidence_path.is_file():
                 raise RuntimeP0E2EArtifactCompositionError(f"MISSING_EXCEPTION_EVIDENCE: {path_name}")
-            exception_paths[path_name] = {"result": "RECONCILING", "evidence": str(evidence_path)}
+            evidence_path = evidence_path.resolve()
+            if evidence_path in seen_evidence_paths:
+                raise RuntimeP0E2EArtifactCompositionError(f"DUPLICATE_EXCEPTION_EVIDENCE_FILE: {path_name}")
+            seen_evidence_paths.add(evidence_path)
+            evidence_bytes = evidence_path.read_bytes()
+            evidence = json.loads(evidence_bytes.decode("utf-8"))
+            if not isinstance(evidence, Mapping):
+                raise RuntimeP0E2EArtifactCompositionError(f"INVALID_EXCEPTION_EVIDENCE: {path_name}")
+            result = evidence.get("result")
+            if result != "RECONCILING":
+                raise RuntimeP0E2EArtifactCompositionError(f"INVALID_EXCEPTION_PATHS: {path_name}.result")
+            if evidence.get("case") != path_name:
+                raise RuntimeP0E2EArtifactCompositionError(f"INVALID_EXCEPTION_PATHS: {path_name}.case")
+            exception_paths[path_name] = {
+                "result": result,
+                "evidence": str(evidence_path),
+                "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+            }
         return exception_paths
 
 

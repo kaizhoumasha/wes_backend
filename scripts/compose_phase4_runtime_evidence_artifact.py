@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,35 +23,52 @@ PHASE4_SERVICE_BEHAVIOR_INVARIANT = ["provider-contract"]
 SITE_PRODUCTION_EVIDENCE_PROFILES = frozenset({"site", "production"})
 
 
-def _phase4_evidence_manifest(evidence_dir: str) -> dict[str, object]:
-    evidence_dir = evidence_dir.rstrip("/")
+def _evidence_manifest_entry(*, evidence_dir: Path, relative_path: str, kind: str) -> dict[str, object]:
+    evidence_path = (evidence_dir / relative_path).resolve()
+    if not evidence_path.is_file():
+        raise ValueError(f"MISSING_PHASE4_RUNTIME_EVIDENCE_FILE: {relative_path}")
+    return {
+        "kind": kind,
+        "evidence": str(evidence_path),
+        "evidence_sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(),
+    }
+
+
+def _phase4_evidence_manifest(evidence_dir: str | Path) -> dict[str, object]:
+    evidence_dir = Path(evidence_dir).resolve()
     return {
         "provider_contracts": {
-            "sorter_inbound": {
-                "kind": "provider-contract",
-                "evidence": f"{evidence_dir}/provider-contracts/sorter-inbound.json",
-            },
-            "smt_ng_wms_reconciliation": {
-                "kind": "provider-contract",
-                "evidence": f"{evidence_dir}/provider-contracts/smt-ng-wms-reconciliation.json",
-            },
+            "sorter_inbound": _evidence_manifest_entry(
+                evidence_dir=evidence_dir,
+                relative_path="provider-contracts/sorter-inbound.json",
+                kind="provider-contract",
+            ),
+            "smt_ng_wms_reconciliation": _evidence_manifest_entry(
+                evidence_dir=evidence_dir,
+                relative_path="provider-contracts/smt-ng-wms-reconciliation.json",
+                kind="provider-contract",
+            ),
         },
-        "effect_dispatch_trace": {
-            "kind": "runtime-trace",
-            "evidence": f"{evidence_dir}/traces/effect-dispatch.json",
-        },
-        "callback_worker_trace": {
-            "kind": "runtime-trace",
-            "evidence": f"{evidence_dir}/traces/runtime-inbox-worker.json",
-        },
-        "runtime_hold_reconciliation_trace": {
-            "kind": "runtime-trace",
-            "evidence": f"{evidence_dir}/traces/runtime-hold-reconciliation.json",
-        },
-        "benchmark": {
-            "kind": "phase4-runtime-benchmark",
-            "evidence": f"{evidence_dir}/benchmarks/phase4-runtime.json",
-        },
+        "effect_dispatch_trace": _evidence_manifest_entry(
+            evidence_dir=evidence_dir,
+            relative_path="traces/effect-dispatch.json",
+            kind="runtime-trace",
+        ),
+        "callback_worker_trace": _evidence_manifest_entry(
+            evidence_dir=evidence_dir,
+            relative_path="traces/runtime-inbox-worker.json",
+            kind="runtime-trace",
+        ),
+        "runtime_hold_reconciliation_trace": _evidence_manifest_entry(
+            evidence_dir=evidence_dir,
+            relative_path="traces/runtime-hold-reconciliation.json",
+            kind="runtime-trace",
+        ),
+        "benchmark": _evidence_manifest_entry(
+            evidence_dir=evidence_dir,
+            relative_path="benchmarks/phase4-runtime.json",
+            kind="phase4-runtime-benchmark",
+        ),
     }
 
 
@@ -95,7 +113,9 @@ def compose_artifact(
         "callback_path": list(PHASE4_CALLBACK_PATH),
         "service_behavior_invariant": list(PHASE4_SERVICE_BEHAVIOR_INVARIANT),
     }
-    if profile in SITE_PRODUCTION_EVIDENCE_PROFILES and evidence_dir:
+    if profile in SITE_PRODUCTION_EVIDENCE_PROFILES and not evidence_dir:
+        raise ValueError("MISSING_PHASE4_RUNTIME_EVIDENCE_DIR")
+    if profile in SITE_PRODUCTION_EVIDENCE_PROFILES:
         artifact["evidence_manifest"] = _phase4_evidence_manifest(evidence_dir)
     return artifact
 
@@ -106,12 +126,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.profile in SITE_PRODUCTION_EVIDENCE_PROFILES and not args.evidence_dir:
         print("Phase4 site/production evidence-dir is required")
         return 1
-    artifact = compose_artifact(
-        profile=args.profile,
-        environment=args.environment,
-        generated_at=args.generated_at,
-        evidence_dir=args.evidence_dir,
-    )
+    evidence_dir = args.evidence_dir
+    if evidence_dir:
+        evidence_dir_path = Path(evidence_dir)
+        if not evidence_dir_path.is_absolute():
+            evidence_dir = str(output_path.parent / evidence_dir_path)
+    try:
+        artifact = compose_artifact(
+            profile=args.profile,
+            environment=args.environment,
+            generated_at=args.generated_at,
+            evidence_dir=evidence_dir,
+        )
+    except ValueError as exc:
+        print(f"Phase4 runtime evidence artifact failed composition: {exc}")
+        return 1
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"Phase 4 runtime evidence artifact written: {output_path}")

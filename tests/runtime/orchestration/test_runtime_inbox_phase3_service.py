@@ -218,6 +218,34 @@ async def test_runtime_inbox_accept_rejects_same_event_different_hash(db_session
 
 
 @pytest.mark.asyncio
+async def test_runtime_inbox_accept_keeps_distinct_canonical_event_types_separate(db_session) -> None:
+    """同 source_event_id 但不同 canonical callback/event type 不得落入同一幂等空间。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    service = RuntimeInboxService()
+
+    result_record = await service.accept_received(
+        db_session,
+        provider_code="ECS",
+        event_type="DEVICE_RESULT",
+        source_event_id="evt-shared-001",
+        payload_hash="hash-result-001",
+    )
+    event_record = await service.accept_received(
+        db_session,
+        provider_code="ECS",
+        event_type="SCAN_COMPLETED",
+        source_event_id="evt-shared-001",
+        payload_hash="hash-event-001",
+    )
+
+    assert result_record.created is True
+    assert event_record.created is True
+    assert result_record.record.id != event_record.record.id
+
+
+@pytest.mark.asyncio
 async def test_runtime_inbox_accept_conflict_after_unique_conflict(db_session) -> None:
     """并发插入后发现同 source event 不同 hash 时，仍必须返回 409 conflict。"""
 
@@ -368,3 +396,99 @@ async def test_runtime_inbox_manual_replay_creates_new_record_and_audit(db_sessi
     assert audit_service.calls
     assert audit_service.calls[0]["title"] == "RuntimeInbox 人工重放"
     assert audit_service.calls[0]["args"]["actor"] == "ops-aaron"
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_accept_allows_missing_source_event_id_without_dedup(db_session) -> None:
+    """source_event_id 缺失时允许 ACK，但不做 source-event 级去重。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    service = RuntimeInboxService()
+
+    first = await service.accept_received(
+        db_session,
+        provider_code="AGV",
+        event_type="external",
+        source_event_id=None,
+        payload_hash="hash-missing-001",
+    )
+    second = await service.accept_received(
+        db_session,
+        provider_code="AGV",
+        event_type="external",
+        source_event_id=None,
+        payload_hash="hash-missing-001",
+    )
+
+    assert first.created is True
+    assert second.created is True
+    assert first.record.id != second.record.id
+
+
+@pytest.mark.parametrize(
+    ("event_type", "expected_operation_kind", "expected_domain"),
+    [
+        ("result", "device_event", "device"),
+        ("DEVICE_RESULT", "device_event", "device"),
+        ("event", "device_event", "device"),
+        ("external", "callback", "callback"),
+        ("fulfillment", "fulfillment", "wms_integration"),
+        ("device_event", "device_event", "device"),
+        ("reconciliation", "reconciliation", "reconciliation"),
+    ],
+)
+def test_runtime_inbox_conflict_audit_maps_operation_kind(
+    event_type: str,
+    expected_operation_kind: str,
+    expected_domain: str,
+) -> None:
+    """RuntimeInbox 冲突审计必须覆盖 callback/result/event 等 canonical operation_kind。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxConflict
+
+    audit_event = RuntimeInboxConflict(
+        provider_code="ECS",
+        event_type=event_type,
+        source_event_id="evt-map-001",
+        existing_payload_hash="hash-old",
+        incoming_payload_hash="hash-new",
+    ).to_audit_event()
+
+    assert audit_event["operation_kind"] == expected_operation_kind
+    assert audit_event["domain"] == expected_domain
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event_type",
+    ["result", "event", "command_result", "event_push", "device_event", "DEVICE_RESULT", "device_result"],
+)
+async def test_runtime_inbox_accept_device_event_aliases_claim_idempotency_key(db_session, event_type: str) -> None:
+    """result/event canonical 与 legacy alias 都必须归一到 device_event 并 claim IdempotencyKey。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    correlation = await _seed_execution_correlation(db_session, correlation_id=f"corr-{event_type}")
+    source_event_id = f"evt-{event_type}"
+
+    _ = await RuntimeInboxService().accept_received(
+        db_session,
+        provider_code="ECS",
+        event_type=event_type,
+        source_event_id=source_event_id,
+        payload_hash=f"hash-{event_type}",
+        correlation_id=correlation.correlation_id,
+        now_ms=NOW_MS,
+    )
+
+    stored = (
+        await db_session.execute(
+            select(IdempotencyKey).where(
+                IdempotencyKey.provider_code == "ECS",
+                IdempotencyKey.operation_kind == "device_event",
+                IdempotencyKey.idempotency_key == source_event_id,
+            )
+        )
+    ).scalar_one()
+    assert stored.request_hash == f"hash-{event_type}"

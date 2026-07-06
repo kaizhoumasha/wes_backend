@@ -13,6 +13,7 @@ from src.app.runtime.orchestration.consumers.runtime_inbox_repository import (
 )
 from src.app.runtime.orchestration.services.idempotency_guard import (
     IdempotencyGuard,
+    IdempotencyOperationSpec,
     get_idempotency_operation_spec,
 )
 from src.app.runtime.orchestration.services.idempotency_guard import (
@@ -86,15 +87,30 @@ class RuntimeInboxConflict(Exception):
     def to_audit_event(self) -> dict[str, str | None]:
         """转换为稳定安全审计 payload。"""
 
+        spec = _runtime_inbox_operation_spec(self.event_type)
         return {
             "event_type": "RUNTIME_INBOX_PAYLOAD_CONFLICT",
             "provider_code": self.provider_code,
-            "operation_kind": "callback",
+            "operation_kind": spec.operation_kind,
+            "domain": spec.domain,
             "source_event_id": self.source_event_id,
             "callback_type": self.event_type,
             "existing_payload_hash": self.existing_payload_hash,
             "incoming_payload_hash": self.incoming_payload_hash,
         }
+
+
+def _runtime_inbox_operation_spec(event_type: str) -> IdempotencyOperationSpec:
+    """将 callback channel/event_type 归一到 Phase 3 operation_kind 审计矩阵。"""
+
+    normalized = event_type.strip().lower().replace("-", "_")
+    aliases = {
+        "result": "command_result",
+        "device_result": "command_result",
+        "event": "event_push",
+        "external": "external_callback",
+    }
+    return get_idempotency_operation_spec(aliases.get(normalized, normalized))
 
 
 class RuntimeInboxService:
@@ -275,10 +291,11 @@ class RuntimeInboxService:
 
         if not source_event_id or not payload_hash or not correlation_id:
             return
-        spec = get_idempotency_operation_spec(event_type)
+        spec = _runtime_inbox_operation_spec(event_type)
         if spec.operation_kind != "device_event":
             return
 
+        claimed_now_ms = now_ms if now_ms is not None else int(timezone.now_utc().timestamp() * 1000)
         await self.idempotency_guard.claim_or_match(
             db,
             provider_code=provider_code,
@@ -286,7 +303,7 @@ class RuntimeInboxService:
             idempotency_key=source_event_id,
             request_hash=payload_hash,
             execution_correlation_id=correlation_id,
-            now_ms=now_ms if now_ms is not None else int(timezone.now_utc().timestamp() * 1000),
+            now_ms=claimed_now_ms,
             business_owner_key=f"device_event:{source_event_id}",
         )
 

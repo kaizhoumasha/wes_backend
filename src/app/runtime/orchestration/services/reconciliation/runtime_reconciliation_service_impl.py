@@ -545,6 +545,17 @@ class WorklineRuntimeReconciliationService:
         session = await self.session_repository.get_pending_reconciliation_by_command_id(db, command_id)
         if session is None:
             return False
+        session_id = _resolve_id(session)
+        if session_id is None:
+            return False
+        locked_session = await self.session_repository.get_for_update(db, session_id)
+        session = locked_session
+        if (
+            session is None
+            or session.reconciliation_state != RuntimeReconciliationState.PENDING
+            or session.reconciliation_command_id != command_id
+        ):
+            return False
         if session.reconciliation_reason not in _LATE_CALLBACK_EVIDENCE_REASONS:
             return False
 
@@ -569,6 +580,24 @@ class WorklineRuntimeReconciliationService:
         context["runtime_reconciliation_late_callback_evidence"] = evidence_items
         session.context_json = context
         session.reconciliation_late_evidence_received = True
+        now = timezone.now_for_db()
+        _ = await self._register_runtime_reconciliation_idempotent(
+            db,
+            session=session,
+            conflict_kind=enum_str(session.reconciliation_reason) or "LATE_CALLBACK_EVIDENCE",
+            reason="late callback recorded while runtime reconciliation is pending",
+            detected_at=now,
+            command=command,
+            extra_evidence_refs=[f"late_callback:{evidence_key}"],
+            source_ref_override=f"late_callback:{evidence_key}",
+        )
+        workline = await self.workline_repository.get_for_update(db, session.workline_id)
+        if workline is not None:
+            self.workline_status_projection_service.project_reconciling(
+                workline,
+                occurred_at=now,
+                reason=enum_str(session.reconciliation_reason) or "LATE_CALLBACK_EVIDENCE",
+            )
         await self._append_reconciliation_timeline(
             db,
             session=session,
@@ -580,6 +609,7 @@ class WorklineRuntimeReconciliationService:
             message="Late callback recorded as runtime reconciliation evidence.",
             payload=evidence_item,
             command=command,
+            occurred_at=now,
         )
         await db.flush()
         return True
@@ -794,6 +824,8 @@ class WorklineRuntimeReconciliationService:
         inbox: WorklineInbox | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
+        extra_evidence_refs: list[str] | None = None,
+        source_ref_override: str | None = None,
     ) -> dict[str, Any] | None:
         """runtime reconciliation 生产入口登记 owner-scoped decision 前的幂等 claim。"""
 
@@ -801,12 +833,21 @@ class WorklineRuntimeReconciliationService:
         if session_id is None:
             return None
         correlation_id = self._runtime_reconciliation_correlation_id(inbox=inbox, outbox=outbox, command=command)
-        if correlation_id is None:
-            return None
+        audit_correlation_id = correlation_id or self._runtime_reconciliation_fallback_correlation_id(command=command)
 
         owner_id = str(session_id)
-        evidence_refs = self._runtime_reconciliation_evidence_refs(inbox=inbox, outbox=outbox, command=command)
-        source_ref = self._runtime_reconciliation_source_ref(session_id=session_id, inbox=inbox, outbox=outbox)
+        evidence_refs = self._runtime_reconciliation_evidence_refs(
+            inbox=inbox,
+            outbox=outbox,
+            command=command,
+            extra_refs=extra_evidence_refs,
+        )
+        source_ref = self._runtime_reconciliation_source_ref(
+            session_id=session_id,
+            inbox=inbox,
+            outbox=outbox,
+            source_ref_override=source_ref_override,
+        )
         idempotency_key = f"runtime-reconciliation:{conflict_kind}:{source_ref}"
         business_owner_key = f"runtime:ExecutionSession:{owner_id}"
         request_hash = _canonical_json_hash(
@@ -835,27 +876,34 @@ class WorklineRuntimeReconciliationService:
                 "trace_id": getattr(session, "trace_id", None),
             },
         )
-        result = await self.reconciliation_manager.register_conflict_idempotent(
-            db,
-            conflict,
-            provider_code="WES",
-            idempotency_key=idempotency_key,
-            request_hash=request_hash,
-            execution_correlation_id=correlation_id,
-            now_ms=int(timezone.now_utc().timestamp() * 1000),
-            business_owner_key=business_owner_key,
-        )
+        claim_result_text = "UNTRACKED_NO_CORRELATION"
+        if correlation_id is not None:
+            result = await self.reconciliation_manager.register_conflict_idempotent(
+                db,
+                conflict,
+                provider_code="WES",
+                idempotency_key=idempotency_key,
+                request_hash=request_hash,
+                execution_correlation_id=correlation_id,
+                now_ms=int(timezone.now_utc().timestamp() * 1000),
+                business_owner_key=business_owner_key,
+            )
+            claim_result_text = enum_str(result.claim_result)
+            decision = result.decision
+        else:
+            decision = self.reconciliation_manager.register_conflict(conflict)
         audit_payload = {
             "provider_code": "WES",
             "operation_kind": "reconciliation",
             "idempotency_key": idempotency_key,
             "request_hash": request_hash,
-            "correlation_id": correlation_id,
+            "correlation_id": audit_correlation_id,
             "business_owner_key": business_owner_key,
-            "claim_result": enum_str(result.claim_result),
-            "decision": self._reconciliation_decision_payload(result.decision),
+            "claim_result": claim_result_text,
+            "decision": self._reconciliation_decision_payload(decision),
         }
         context = as_dict(getattr(session, "context_json", None))
+        # latest registration audit snapshot; late callback evidence history lives separately.
         context["runtime_reconciliation_registration"] = audit_payload
         session.context_json = context
         return audit_payload
@@ -877,12 +925,26 @@ class WorklineRuntimeReconciliationService:
                 return value
         return None
 
+    def _runtime_reconciliation_fallback_correlation_id(
+        self,
+        *,
+        command: DeviceCommand | None = None,
+    ) -> str | None:
+        command_code = getattr(command, "command_code", None)
+        if isinstance(command_code, str) and command_code:
+            return f"command:{command_code}"
+        command_id = _resolve_id(command)
+        if command_id is not None:
+            return f"command-id:{command_id}"
+        return None
+
     def _runtime_reconciliation_evidence_refs(
         self,
         *,
         inbox: WorklineInbox | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
+        extra_refs: list[str] | None = None,
     ) -> list[str]:
         refs: list[str] = []
         inbox_id = _resolve_id(inbox)
@@ -898,6 +960,8 @@ class WorklineRuntimeReconciliationService:
             command_code = getattr(command, "command_code", None)
             if isinstance(command_code, str) and command_code:
                 refs.append(f"command:{command_code}")
+        if extra_refs:
+            refs.extend(extra_ref for extra_ref in extra_refs if isinstance(extra_ref, str) and extra_ref)
         return refs
 
     def _runtime_reconciliation_source_ref(
@@ -906,7 +970,10 @@ class WorklineRuntimeReconciliationService:
         session_id: int,
         inbox: WorklineInbox | None = None,
         outbox: SystemOutbox | None = None,
+        source_ref_override: str | None = None,
     ) -> str:
+        if source_ref_override is not None:
+            return source_ref_override
         inbox_id = _resolve_id(inbox)
         if inbox_id is not None:
             return f"inbox:{inbox_id}"

@@ -26,6 +26,8 @@ def test_rough_sorter_runtime_builds_effect_intents_without_environment_branchin
             "correlation_id": "corr-rough-001",
             "provider_code": "WMS-A",
             "object_key": "PKG-ROUGH-001",
+            "bin_code": "BIN-A-01",
+            "bin_cell_index": "1",
             "target_cell_code": "CELL-A-01",
             "pkg_code": "PKG-ROUGH-001",
             "pallet_id": "PALLET-A-01",
@@ -51,8 +53,12 @@ def test_rough_sorter_runtime_builds_effect_intents_without_environment_branchin
         RuntimeIntentKind.EXTERNAL_REQUEST,
         RuntimeIntentKind.EXTERNAL_REQUEST,
     ]
-    assert intents_by_action["CELL_RESERVATION_RESERVE"].payload_json["target_cell_code"] == "CELL-A-01"
+    assert intents_by_action["CLAIM_BIN_CELL"].payload_json["pkg_code"] == "PKG-ROUGH-001"
+    assert intents_by_action["CLAIM_BIN_CELL"].payload_json["bin_code"] == "BIN-A-01"
+    assert intents_by_action["CLAIM_BIN_CELL"].payload_json["bin_cell_index"] == "1"
+    assert intents_by_action["CLAIM_BIN_CELL"].payload_json["bin_cell_code"] == "CELL-A-01"
     assert intents_by_action["RUNTIME_LOCATION_EVENT"].payload_json["business_step"] == "LOCAL_PHYSICAL_FACT"
+    assert intents_by_action["RUNTIME_LOCATION_EVENT"].payload_json["provider_code"] == "WMS-A"
 
     pkg_binding = plan.effect_contracts["WmsFulfillmentPort.notify_pkg_binding"]
     inventory = plan.effect_contracts["WmsInventoryTransactionPort.confirm_inbound"]
@@ -134,6 +140,7 @@ def test_sorter_runtime_success_records_ready_to_drop_location_fact() -> None:
     assert plan.intents[0].action == "RUNTIME_LOCATION_EVENT"
     assert plan.intents[0].payload_json["business_step"] == "SORTER_READY_TO_DROP"
     assert plan.intents[0].payload_json["location_code"] == "SORTER-WP-01"
+    assert plan.intents[0].payload_json["provider_code"] == "WMS-A"
 
 
 def test_rough_sorter_runtime_rejects_non_positive_quantity() -> None:
@@ -152,6 +159,8 @@ def test_rough_sorter_runtime_rejects_non_positive_quantity() -> None:
                 "correlation_id": "corr-rough-bad-quantity-001",
                 "provider_code": "WMS-A",
                 "object_key": "PKG-ROUGH-BAD-QTY-001",
+                "bin_code": "BIN-A-01",
+                "bin_cell_index": "1",
                 "target_cell_code": "CELL-A-01",
                 "pkg_code": "PKG-ROUGH-BAD-QTY-001",
                 "pallet_id": "PALLET-A-01",

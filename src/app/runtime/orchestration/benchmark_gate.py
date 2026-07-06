@@ -88,6 +88,10 @@ def _non_empty_text(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _is_sha256_hex(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
 def _is_number(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
@@ -323,6 +327,12 @@ def _collect_scenario_provenance_validation(
 
     if not _non_empty_text(source.get("evidence")):
         missing_fields.append(f"{scenario.name}.source.evidence")
+
+    evidence_sha256 = source.get("evidence_sha256")
+    if not _non_empty_text(evidence_sha256):
+        missing_fields.append(f"{scenario.name}.source.evidence_sha256")
+    elif not _is_sha256_hex(evidence_sha256):
+        invalid_fields.append(f"{scenario.name}.source.evidence_sha256")
 
 
 _PRODUCTION_WORKLOAD_REQUIREMENTS: dict[str, dict[str, int | bool]] = {

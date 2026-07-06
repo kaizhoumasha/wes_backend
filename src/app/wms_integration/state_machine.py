@@ -141,6 +141,12 @@ class WmsFulfillmentStateMachine:
                 reason="LATE_CALLBACK_WHILE_CB_BLOCKED",
                 runtime_inbox_required=True,
             )
+        if current == FulfillmentState.BLOCKED_BY_CB and event == FulfillmentEvent.DISPATCH_SENT:
+            return FulfillmentTransitionResult(
+                state=FulfillmentState.BLOCKED_BY_CB,
+                occurred_at=now,
+                reason="DISPATCH_BLOCKED_BY_CB",
+            )
 
         if event == FulfillmentEvent.DISPATCH_SENT:
             if current != FulfillmentState.REQUESTED:

@@ -6,6 +6,8 @@ from datetime import timedelta
 
 from src.utils.timezone import timezone
 
+_PLACEHOLDER_EVIDENCE_SHA256 = "0" * 64
+
 
 def _phase3_p0_production_e2e_artifact() -> dict:
     """生产 P0 E2E 证据的最小有效 artifact。"""
@@ -18,7 +20,9 @@ def _phase3_p0_production_e2e_artifact() -> dict:
         },
         "source": {
             "kind": "trace-query",
+            "environment": "field-dry-run",
             "evidence": "reports/phase3/p0-e2e/trace-prod-0001.json",
+            "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
         },
         "latency": {"p95_seconds": 18.7},
         "recording": {
@@ -70,11 +74,20 @@ def _phase3_p0_production_e2e_artifact() -> dict:
             ],
         },
         "exception_paths": {
-            "ecs_timeout": {"result": "RECONCILING", "evidence": "reports/phase3/p0-e2e/ecs-timeout.json"},
-            "wms_reject": {"result": "RECONCILING", "evidence": "reports/phase3/p0-e2e/wms-reject.json"},
+            "ecs_timeout": {
+                "result": "RECONCILING",
+                "evidence": "reports/phase3/p0-e2e/ecs-timeout.json",
+                "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
+            },
+            "wms_reject": {
+                "result": "RECONCILING",
+                "evidence": "reports/phase3/p0-e2e/wms-reject.json",
+                "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
+            },
             "callback_out_of_order": {
                 "result": "RECONCILING",
                 "evidence": "reports/phase3/p0-e2e/callback-out-of-order.json",
+                "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
             },
         },
     }
@@ -471,18 +484,22 @@ def test_phase3_benchmark_gate_rejects_production_artifact_without_workload_meta
     artifact["scenarios"]["runtime_inbox_claim"]["source"] = {
         "kind": "postgresql",
         "evidence": "reports/benchmarks/runtime-inbox-claim.json",
+        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
     }
     artifact["scenarios"]["conveyor_queue_writer"]["source"] = {
         "kind": "postgresql",
         "evidence": "reports/benchmarks/conveyor-queue-writer.json",
+        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
     }
     artifact["scenarios"]["ecs_status_command"]["source"] = {
         "kind": "ecs-http",
         "evidence": "reports/benchmarks/ecs-status-command.json",
+        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
     }
     artifact["scenarios"]["plane_snapshot"]["source"] = {
         "kind": "api-http",
         "evidence": "reports/benchmarks/plane-snapshot.json",
+        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
     }
 
     validation = RuntimeBenchmarkGate().validate_artifact(artifact)
@@ -522,6 +539,7 @@ def test_phase3_benchmark_gate_accepts_production_artifact_with_scenario_provena
     artifact["scenarios"]["runtime_inbox_claim"]["source"] = {
         "kind": "postgresql",
         "evidence": "reports/benchmarks/runtime-inbox-claim.json",
+        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
     }
     artifact["scenarios"]["runtime_inbox_claim"]["workload"] = {
         "pending_inbox_count": 1000,
@@ -530,6 +548,7 @@ def test_phase3_benchmark_gate_accepts_production_artifact_with_scenario_provena
     artifact["scenarios"]["conveyor_queue_writer"]["source"] = {
         "kind": "postgresql",
         "evidence": "reports/benchmarks/conveyor-queue-writer.json",
+        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
     }
     artifact["scenarios"]["conveyor_queue_writer"]["workload"] = {
         "active_membership_count": 200,
@@ -538,6 +557,7 @@ def test_phase3_benchmark_gate_accepts_production_artifact_with_scenario_provena
     artifact["scenarios"]["ecs_status_command"]["source"] = {
         "kind": "ecs-http",
         "evidence": "reports/benchmarks/ecs-status-command.json",
+        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
     }
     artifact["scenarios"]["ecs_status_command"]["workload"] = {
         "status_get_count": 400,
@@ -546,6 +566,7 @@ def test_phase3_benchmark_gate_accepts_production_artifact_with_scenario_provena
     artifact["scenarios"]["plane_snapshot"]["source"] = {
         "kind": "api-http",
         "evidence": "reports/benchmarks/plane-snapshot.json",
+        "evidence_sha256": _PLACEHOLDER_EVIDENCE_SHA256,
     }
     artifact["scenarios"]["plane_snapshot"]["workload"] = {
         "workline_count": 1,

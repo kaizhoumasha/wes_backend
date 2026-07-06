@@ -83,10 +83,14 @@ class WorkLineStartAdmissionService:
         status_fetcher: StatusFetcher | None = None,
         outbox_repo: SystemOutboxRepository | None = None,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
+        workline_status_projection_service: Any | None = None,
     ) -> None:
         self.status_fetcher = status_fetcher or self._fetch_status
         self.outbox_repo = outbox_repo or system_outbox_repository
         self._queue_gateway = queue_gateway
+        self.workline_status_projection_service = (
+            workline_status_projection_service or workline_runtime_status_projection_service
+        )
 
     async def admit_start_for_device(
         self,
@@ -534,7 +538,7 @@ class WorkLineStartAdmissionService:
         trace_id: str | None,
     ) -> None:
         now = timezone.now_for_db()
-        workline_runtime_status_projection_service.project_ready_after_start(workline, occurred_at=now)
+        self.workline_status_projection_service.project_ready_after_start(workline, occurred_at=now)
         workline.start_admission_status = _SUCCESS
         workline.start_admission_message = "START 准入通过"
         workline.start_admission_failed_device_code = None
@@ -604,9 +608,8 @@ class WorkLineStartAdmissionService:
         value = diagnostic.get("device_code")
         return value if isinstance(value, str) and value else None
 
-    @classmethod
-    def _is_ready(cls, workline: Any) -> bool:
-        return cls._runtime_status(workline) == _READY.value
+    def _is_ready(self, workline: Any) -> bool:
+        return self.workline_status_projection_service.is_ready(workline)
 
     @classmethod
     def _ready_idempotent_result(
@@ -650,11 +653,9 @@ class WorkLineStartAdmissionService:
                 diagnostic["device_code"] = target.device_codes[0]
         return diagnostic
 
-    @staticmethod
-    def _runtime_status(workline: Any) -> str | None:
-        value = getattr(workline, "runtime_status", None)
-        enum_value = getattr(value, "value", value)
-        return enum_value if isinstance(enum_value, str) else None
+    def _runtime_status(self, workline: Any) -> str | None:
+        runtime_snapshot = self.workline_status_projection_service.runtime_status_snapshot(workline)
+        return runtime_snapshot.runtime_status
 
     @staticmethod
     def _rejected(

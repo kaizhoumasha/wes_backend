@@ -45,7 +45,10 @@ def _parse_exception_evidence(raw_values: list[str]) -> dict[str, Path]:
         path_name, raw_path = raw_value.split("=", 1)
         if not path_name.strip() or not raw_path.strip():
             raise ValueError(f"exception evidence must use PATH_NAME=FILE: {raw_value}")
-        exception_evidence[path_name.strip()] = Path(raw_path)
+        path_name = path_name.strip()
+        if path_name in exception_evidence:
+            raise ValueError(f"DUPLICATE_EXCEPTION_EVIDENCE: {path_name}")
+        exception_evidence[path_name] = Path(raw_path)
     return exception_evidence
 
 

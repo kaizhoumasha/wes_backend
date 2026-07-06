@@ -18,6 +18,9 @@ from src.app.runtime.capabilities.phase4.station_lease_service import (
     station_lease_service,
 )
 from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import smt_inbound_handoff_service
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    workline_runtime_status_projection_service,
+)
 from src.app.sys.models import (
     DispatchEnvelope,
     SystemOutbox,
@@ -30,7 +33,6 @@ from src.app.wms_integration.services.transport_contract import (
     WmsTransportContractService,
     wms_transport_contract_service,
 )
-from src.app.workline.models.safety import WorkLineRuntimeStatus
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -115,7 +117,7 @@ class SingleLayerRackOrchestrationService:
 
         workline_code = str(getattr(workline, "line_code", "") or "")
         workline_id = getattr(workline, "id", None)
-        if getattr(workline, "runtime_status", None) != WorkLineRuntimeStatus.READY:
+        if not workline_runtime_status_projection_service.is_ready(workline):
             return SingleLayerRackOrchestrationDecision(
                 decision=SingleLayerRackOrchestrationDecisionCode.WAITING,
                 reason="WORKLINE_NOT_READY",

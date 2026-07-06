@@ -1650,6 +1650,12 @@ class RuntimeIntentEffectApplier:
             return
 
     async def _apply_resource_fact(self, ctx: Any, intent: RuntimeIntent) -> Any:
+        fact_type = str(intent.action)
+        if fact_type == "RUNTIME_LOCATION_EVENT":
+            return await self._apply_runtime_location_event_fact(ctx, intent)
+        if fact_type == "RECONCILIATION_EVIDENCE":
+            return await self._apply_reconciliation_evidence_fact(ctx, intent)
+
         service = self._resource_projection_service
         if service is None:
             from src.app.resource.services import resource_projection_service
@@ -1661,13 +1667,67 @@ class RuntimeIntentEffectApplier:
             db=ctx_map["db"],
             session=ctx_map["session"],
             workline=ctx_map["workline"],
-            fact_type=str(intent.action),
+            fact_type=fact_type,
             payload_json=dict(intent.payload_json),
             idempotency_key=intent.idempotency_key,
             trace_id=_ctx_trace_id(ctx_map),
         )
         await self._sync_rack_operation_after_resource_fact(ctx, dict(intent.payload_json))
         return result
+
+    async def _apply_runtime_location_event_fact(self, ctx: Any, intent: RuntimeIntent) -> Any:
+        from src.app.runtime.orchestration.services import runtime_location_event_service as location_event_module
+
+        ctx_map = cast("Mapping[str, Any]", ctx)
+        payload = dict(intent.payload_json)
+        return await location_event_module.runtime_location_event_service.record(
+            ctx_map["db"],
+            object_type=str(payload["object_type"]),
+            object_key=str(payload["object_key"]),
+            location_scope=str(payload["location_scope"]),
+            location_code=str(payload["location_code"]),
+            business_step=str(payload["business_step"]),
+            source=str(payload["source"]),
+            evidence_json=dict(cast("Mapping[str, Any]", payload.get("evidence_json") or {})),
+            correlation_id=_non_empty_text(payload.get("correlation_id")),
+            source_event_id=_non_empty_text(payload.get("source_event_id")),
+            source_version=_non_empty_text(payload.get("source_version")),
+            idempotency_key=intent.idempotency_key or _non_empty_text(payload.get("idempotency_key")),
+            external_reference_type=_non_empty_text(payload.get("external_reference_type")),
+            external_reference_value=_non_empty_text(payload.get("external_reference_value")),
+            provider_code=_non_empty_text(payload.get("provider_code")),
+            auto_commit=False,
+        )
+
+    async def _apply_reconciliation_evidence_fact(self, ctx: Any, intent: RuntimeIntent) -> Any:
+        from src.app.runtime.orchestration.services import runtime_location_event_service as location_event_module
+
+        ctx_map = cast("Mapping[str, Any]", ctx)
+        payload = dict(intent.payload_json)
+        external_reference = payload.get("external_reference")
+        external_reference_map = external_reference if isinstance(external_reference, Mapping) else {}
+        return await location_event_module.runtime_location_event_service.record(
+            ctx_map["db"],
+            object_type=str(payload["object_type"]),
+            object_key=str(payload["object_key"]),
+            location_scope="RECONCILIATION",
+            location_code=(
+                _non_empty_text(payload.get("reason_code"))
+                or _non_empty_text(payload.get("scenario"))
+                or "RECONCILIATION_EVIDENCE"
+            ),
+            business_step="RECONCILIATION_EVIDENCE",
+            source="PHASE4_RECONCILIATION",
+            evidence_json=payload,
+            correlation_id=_non_empty_text(payload.get("correlation_id")),
+            source_event_id=_non_empty_text(payload.get("source_event_id")),
+            source_version=_non_empty_text(payload.get("source_version")),
+            idempotency_key=intent.idempotency_key,
+            external_reference_type=_non_empty_text(external_reference_map.get("type")),
+            external_reference_value=_non_empty_text(external_reference_map.get("value")),
+            provider_code=_non_empty_text(payload.get("provider_code")),
+            auto_commit=False,
+        )
 
     async def _sync_rack_operation_after_resource_fact(self, ctx: Any, payload_json: dict[str, Any]) -> None:
         operation_key = _rack_operation_key_from_resource_fact(ctx, payload_json)

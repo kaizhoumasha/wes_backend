@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-  逐入口数据在 legacy-cleanup-matrix.csv（763 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（772 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -33,12 +33,12 @@ uv run python scripts/generate_legacy_matrix.py
 
 扫描覆盖：`src/app/workline/`、`src/workline_runtime/`、`src/workline_plugins/`、`tests/workline_runtime/`、`tests/workline_plugins/`、`docs/templates/workline_plugin/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；`src/workline_runtime/` 与 `src/workline_plugins/` 同时登记 `__all__` exported symbol。
 
-## 3. 汇总（截至 codex/phase4-production-capable-runtime @ 2026-07-05）
+## 3. 汇总（截至 codex/phase1-4-residuals @ 2026-07-06）
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **763** |
-| phase4_carrier（承载 Phase 4 业务语义） | 231 |
+| **total_entries** | **772** |
+| phase4_carrier（承载 Phase 4 业务语义） | 232 |
 | pending-review | 0 |
 
 ### total_entries_by_type
@@ -48,7 +48,7 @@ uv run python scripts/generate_legacy_matrix.py
 | service | 357 |
 | plugin | 116 |
 | domain_object | 91 |
-| test | 117 |
+| test | 126 |
 | model | 45 |
 | api_route | 21 |
 | doc_template | 8 |
@@ -59,8 +59,8 @@ uv run python scripts/generate_legacy_matrix.py
 
 | strategy | count |
 | --- | ---: |
-| rebuild | 449 |
-| keep-contract | 234 |
+| rebuild | 452 |
+| keep-contract | 240 |
 | delete | 68 |
 | move | 12 |
 
@@ -68,9 +68,9 @@ uv run python scripts/generate_legacy_matrix.py
 
 | drop_phase | count |
 | --- | ---: |
-| phase5-tech | 303 |
-| phase4 | 231 |
-| phase2 | 220 |
+| phase5-tech | 309 |
+| phase4 | 232 |
+| phase2 | 222 |
 | phase1 | 9 |
 
 ### total_entries_by_owner
@@ -79,7 +79,7 @@ uv run python scripts/generate_legacy_matrix.py
 | --- | ---: |
 | workline | 495 |
 | workline_plugins | 178 |
-| workline_runtime | 64 |
+| workline_runtime | 73 |
 | runtime | 8 |
 | handling | 6 |
 | rack | 5 |
@@ -142,6 +142,32 @@ CSV 列（对齐 SPEC P0-002 矩阵字段表）：
 | WorkLine 配置域能力 | move | phase2 | MEDIUM |
 | 测试 | keep-contract | phase5-tech | LOW |
 | doc_template / 默认 | delete / keep-contract | phase5-tech | LOW |
+
+### 6.3 Phase5 双 lane 删除前置
+
+Phase5 不再用单一“清理旧代码”口径推进，删除前必须先判定 technical lane 或 business lane，并把对应证据写入 PR：
+
+当前 gate 状态：
+
+- `phase5_technical_lane_status: ready-for-technical-cleanup`
+- `phase5_business_lane_status: blocked-until-production-evidence`
+
+执行入口：
+
+- technical lane：`uv run python scripts/check_phase5_readiness_gate.py --lane technical`，并已接入 `./scripts/git-quality-gate.sh --check phase5-readiness` 与 `--profile quality`。
+- business lane：`uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`；当前仍被 production evidence、Phase4 capability / port / contract tests 与逐项业务承载矩阵关闭状态阻塞。
+
+2026-07-06 验收记录：
+
+- technical lane 已通过 Phase2 owner guardrail、RuntimeInbox cutover、Phase3 mock closure、Phase5 technical contracts 和 quality profile，可作为后续 Phase5 纯技术残留清理的启动前置。
+- business lane 仍保持 `blocked-until-production-evidence`；旧 plugin / WorkLine 业务承载项不得仅凭 mock closure、lightweight benchmark 或缺少 Phase4 contract tests 的本地证据删除。
+
+| lane | 适用条目 | 删除前置 | 不允许 |
+| --- | --- | --- | --- |
+| technical lane (`phase5-tech`) | debug/sandbox/fake/mock、旧 plugin 模板、已无生产 import 的 shim、仅服务开发/测试的辅助入口 | Phase2 runtime/orchestration owner guardrail 通过；Phase3 mock closure 或等价开发/测试门禁通过；`architecture-guardrails.sh` 与相关 characterization/contract test 通过；GitNexus detect-changes 确认只影响预期技术入口 | 以技术清理名义删除仍承载业务语义、API contract、trace/diagnostic evidence 或生产发布 profile 的入口 |
+| business lane (`phase5-business`) | 旧 plugin / WorkLine 业务流程中仍承载 Phase4 语义、WMS/ECS evidence、生产 trace、benchmark 或人工处置合同的入口 | Phase4 capability 替代路径已生产可用；evidence manifest 引用文件齐全；production closure profile 通过；Phase4 capability / port / contract tests 全绿；旧入口 characterization/contract test 已迁为目标态测试或明确废弃；数据迁移/回填/审计留痕计划已执行 | 用 mock closure、lightweight benchmark 或缺 evidence / 缺 contract tests 的本地测试冒充业务承载删除前置 |
+
+`WorkLine.runtime_status` 这类 compatibility projection 不按普通 technical lane 直接删除；必须先确认 API / monitor / trace / safety / START admission 已迁到 runtime/orchestration 原生读模型，再进入 schema 删除或字段改名计划。
 
 ## 7. 按域说明
 

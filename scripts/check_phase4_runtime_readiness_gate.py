@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Mapping
@@ -282,6 +283,12 @@ def _site_production_evidence_failure(*, artifact_path: Path, artifact: Mapping[
     missing_evidence_files = _missing_manifest_evidence_files(base_dir=artifact_path.parent, manifest=manifest)
     if missing_evidence_files:
         return "MISSING_PHASE4_RUNTIME_EVIDENCE_FILES"
+    missing_hashes = _missing_manifest_evidence_hashes(manifest)
+    if missing_hashes:
+        return "MISSING_PHASE4_RUNTIME_EVIDENCE_HASHES"
+    mismatched_hashes = _mismatched_manifest_evidence_hashes(base_dir=artifact_path.parent, manifest=manifest)
+    if mismatched_hashes:
+        return "MISMATCHED_PHASE4_RUNTIME_EVIDENCE_HASHES"
     return None
 
 
@@ -314,6 +321,29 @@ def _missing_manifest_evidence_files(*, base_dir: Path, manifest: Mapping[str, o
     return tuple(missing_files)
 
 
+def _missing_manifest_evidence_hashes(manifest: Mapping[str, object]) -> tuple[str, ...]:
+    missing_hashes: list[str] = []
+    for manifest_key in SITE_PRODUCTION_EVIDENCE_KEYS:
+        entry = _manifest_entry(manifest, manifest_key)
+        if not isinstance(entry, Mapping):
+            continue
+        if not _is_sha256_hex(entry.get("evidence_sha256")):
+            missing_hashes.append(manifest_key)
+    return tuple(missing_hashes)
+
+
+def _mismatched_manifest_evidence_hashes(*, base_dir: Path, manifest: Mapping[str, object]) -> tuple[str, ...]:
+    mismatched_hashes: list[str] = []
+    for manifest_key in SITE_PRODUCTION_EVIDENCE_KEYS:
+        entry = _manifest_entry(manifest, manifest_key)
+        if not isinstance(entry, Mapping):
+            continue
+        evidence_hash = _hash_evidence_file(base_dir=base_dir, raw_path=entry.get("evidence"))
+        if evidence_hash != entry.get("evidence_sha256"):
+            mismatched_hashes.append(manifest_key)
+    return tuple(mismatched_hashes)
+
+
 def _manifest_entry(manifest: Mapping[str, object], dotted_key: str) -> object:
     current: object = manifest
     for key_part in dotted_key.split("."):
@@ -328,6 +358,10 @@ def _has_evidence_path(entry: Mapping[str, object]) -> bool:
     return isinstance(raw_path, str) and bool(raw_path.strip())
 
 
+def _is_sha256_hex(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
+
 def _evidence_file_exists(*, base_dir: Path, raw_path: object) -> bool:
     if not isinstance(raw_path, str) or not raw_path.strip():
         return False
@@ -335,6 +369,18 @@ def _evidence_file_exists(*, base_dir: Path, raw_path: object) -> bool:
     if not evidence_path.is_absolute():
         evidence_path = base_dir / evidence_path
     return evidence_path.is_file()
+
+
+def _hash_evidence_file(*, base_dir: Path, raw_path: object) -> str | None:
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    evidence_path = Path(raw_path)
+    if not evidence_path.is_absolute():
+        evidence_path = base_dir / evidence_path
+    try:
+        return hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def _ensure_repo_root_on_path(repo_root: Path) -> None:

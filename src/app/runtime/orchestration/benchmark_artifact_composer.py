@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -16,6 +17,10 @@ class RuntimeBenchmarkArtifactCompositionError(ValueError):
 
 class RuntimeBenchmarkArtifactComposer:
     """Build production-scale benchmark artifacts from per-scenario evidence files."""
+
+    _FORBIDDEN_PRODUCTION_ARTIFACT_ENVIRONMENTS = frozenset(
+        {"sandbox", "local-lightweight", "ci-lightweight", "lightweight"}
+    )
 
     def __init__(self, gate: RuntimeBenchmarkGate | None = None) -> None:
         self._gate = gate or RuntimeBenchmarkGate()
@@ -33,6 +38,7 @@ class RuntimeBenchmarkArtifactComposer:
     ) -> dict[str, Any]:
         """Compose and validate a production-scale benchmark artifact."""
 
+        self._reject_non_production_environment(environment)
         self._reject_unknown_scenarios(scenario_evidence_paths)
         scenarios = {
             scenario_name: self._load_scenario_evidence(scenario_name, scenario_evidence_paths[scenario_name])
@@ -61,12 +67,18 @@ class RuntimeBenchmarkArtifactComposer:
         if unknown_scenarios:
             raise RuntimeBenchmarkArtifactCompositionError(f"UNKNOWN_SCENARIOS: {', '.join(unknown_scenarios)}")
 
+    def _reject_non_production_environment(self, environment: str) -> None:
+        if environment.strip().lower() in self._FORBIDDEN_PRODUCTION_ARTIFACT_ENVIRONMENTS:
+            raise RuntimeBenchmarkArtifactCompositionError("NON_PRODUCTION_BENCHMARK_ENVIRONMENT")
+
     def _load_scenario_evidence(self, scenario_name: str, raw_path: str | Path) -> dict[str, Any]:
         evidence_path = Path(raw_path)
-        if not evidence_path.exists():
+        if not evidence_path.is_file():
             raise RuntimeBenchmarkArtifactCompositionError(f"MISSING_EVIDENCE_FILE: {scenario_name}")
+        evidence_path = evidence_path.resolve()
 
-        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence_bytes = evidence_path.read_bytes()
+        evidence = json.loads(evidence_bytes.decode("utf-8"))
         if not isinstance(evidence, Mapping):
             raise RuntimeBenchmarkArtifactCompositionError(f"INVALID_EVIDENCE_JSON: {scenario_name}")
 
@@ -74,6 +86,7 @@ class RuntimeBenchmarkArtifactComposer:
         source = result.get("source")
         result["source"] = dict(source) if isinstance(source, Mapping) else {}
         result["source"]["evidence"] = str(evidence_path)
+        result["source"]["evidence_sha256"] = hashlib.sha256(evidence_bytes).hexdigest()
         return result
 
 
