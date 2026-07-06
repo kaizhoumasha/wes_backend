@@ -877,7 +877,6 @@ class WorklineRuntimeReconciliationService:
             },
         )
         claim_result_text = "UNTRACKED_NO_CORRELATION"
-        decision = self.reconciliation_manager.register_conflict(conflict)
         if correlation_id is not None:
             result = await self.reconciliation_manager.register_conflict_idempotent(
                 db,
@@ -891,6 +890,8 @@ class WorklineRuntimeReconciliationService:
             )
             claim_result_text = enum_str(result.claim_result)
             decision = result.decision
+        else:
+            decision = self.reconciliation_manager.register_conflict(conflict)
         audit_payload = {
             "provider_code": "WES",
             "operation_kind": "reconciliation",
