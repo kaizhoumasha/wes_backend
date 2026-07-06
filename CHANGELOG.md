@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0.0] - 2026-07-06
+
+> **Note**: Phase1~Phase4 residuals 发布。本 minor 关闭 Phase5 前必须先处理的 runtime owner、callback 入站权威、late callback evidence 和生产 evidence 门禁遗留项；Phase5 technical lane 可启动，business lane 仍等待真实 production evidence。
+
+### Added
+- 新增 Phase5 readiness gate，并接入 quality profile；technical lane 校验 Phase2 owner guardrail、RuntimeInbox cutover、Phase3 mock closure 与合同测试，business lane 显式要求 Phase3/Phase4 production evidence。
+- 新增 RuntimeInbox callback cutover writer，让 result/event/external callback 在旧 Workline inbox 过渡消费前先写入 RuntimeInbox，并由 RuntimeInbox 控制对外重复 ACK 与 payload conflict。
+- 新增 Phase3 production P0 E2E、production-scale benchmark、Phase4 runtime evidence artifact 的 composer/gate 校验，统一检查 provenance、workload metadata、evidence manifest、文件存在和 hash 一致性。
+- 新增 Phase2 runtime status owner guardrail 与 Phase5 legacy cleanup matrix 校验，防止 WorkLine 域和 Phase4 capability 重新直接拥有 `WorkLine.runtime_status`。
+
+### Changed
+- WorkLine `runtime_status` 收敛为 runtime/orchestration compatibility projection；safety、START admission、query、trace 和 reconciliation 路径通过投影服务读写运行态。
+- Callback 编排改为 RuntimeInbox 优先：RuntimeInbox 重复返回 duplicate ACK，legacy inbox 重复只跳过过渡副作用，不再污染对外 ACK 语义。
+- CB late callback 与 WMS fulfillment 状态机保持 evidence-first 语义，`BLOCKED_BY_CB` 只代表出站 effect 被 circuit breaker 阻塞，不覆盖已到达的 callback evidence。
+- Phase4 runtime capability 与 evidence profile 从开发/测试 readiness 推进到 production-capable gate 口径，site/production profile 只提高 evidence 要求，不改变 runtime service 行为。
+
+### Fixed
+- 修复 RuntimeInbox 与 legacy inbox duplicate 语义混淆导致 callback idempotency/API 合同测试失败的问题，并补 result/event/external 回归覆盖。
+- 修复 reconciliation manager fallback、late callback owner 校验、source event/correlation key 与 runtime evidence 登记边界，避免无权威证据被当作业务完成或错误对账。
+- 重新生成 legacy cleanup matrix，补齐新增 Phase4 runtime intent 和 runtime status projection 测试入口，确保 Phase5 删除前的业务/技术 lane 分类完整。
+
 ## [0.11.0.0] - 2026-07-05
 
 > **Note**: Phase 4 production-capable runtime path 发布。本 minor 完成 Wave2/Wave3 runtime capability builder、evidence profile gate 和 evidence artifact composer；业务代码只面向 provider contract，不根据外部设备是真实、sandbox、MOCK 或 simulator 分支。
