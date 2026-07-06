@@ -157,6 +157,11 @@ Phase5 不再用单一“清理旧代码”口径推进，删除前必须先判�
 - technical lane：`uv run python scripts/check_phase5_readiness_gate.py --lane technical`，并已接入 `./scripts/git-quality-gate.sh --check phase5-readiness` 与 `--profile quality`。
 - business lane：`uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`；当前仍被 production evidence 与逐项业务承载矩阵关闭状态阻塞。
 
+2026-07-06 验收记录：
+
+- technical lane 已通过 Phase2 owner guardrail、RuntimeInbox cutover、Phase3 mock closure、Phase5 technical contracts 和 quality profile，可作为后续 Phase5 纯技术残留清理的启动前置。
+- business lane 仍保持 `blocked-until-production-evidence`；旧 plugin / WorkLine 业务承载项不得仅凭 mock closure 或 lightweight benchmark 删除。
+
 | lane | 适用条目 | 删除前置 | 不允许 |
 | --- | --- | --- | --- |
 | technical lane (`phase5-tech`) | debug/sandbox/fake/mock、旧 plugin 模板、已无生产 import 的 shim、仅服务开发/测试的辅助入口 | Phase2 runtime/orchestration owner guardrail 通过；Phase3 mock closure 或等价开发/测试门禁通过；`architecture-guardrails.sh` 与相关 characterization/contract test 通过；GitNexus detect-changes 确认只影响预期技术入口 | 以技术清理名义删除仍承载业务语义、API contract、trace/diagnostic evidence 或生产发布 profile 的入口 |

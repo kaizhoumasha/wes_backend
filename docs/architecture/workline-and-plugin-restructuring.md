@@ -1805,6 +1805,14 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | Phase 3 | production closure artifact、production-scale benchmark 和真实外部依赖 evidence 未作为当前开发阻塞 | 🟡 business lane 残留 | `RuntimePhase3ClosureGate` 区分 mock profile 与 production profile；mock 只允许开发/测试推进 | 技术 lane 可在 mock closure + 合同测试通过后清理纯技术残留；业务承载 legacy 删除必须等 production closure profile 通过 |
 | Phase 4 | capability runtime path 已落地，发布前仍需 evidence manifest 引用文件和生产 profile 证据 | 🟡 business lane 残留 | Phase4 capability 不能直接写 `WorkLine.runtime_status`；START admission 只读 runtime projection readiness | 业务 lane 删除旧 plugin / 旧业务流程承载入口前，必须完成 Phase4 evidence manifest、characterization/contract test 与 production closure 交叉验收 |
 
+**Phase1~4 residual closure 验收记录（2026-07-06）**：
+
+- Phase2：`WorkLine.runtime_status` 已收敛为 runtime/orchestration compatibility projection；`WorkLineRuntimeStatusProjectionService` 是唯一写入口，safety / START admission / query / trace 通过 snapshot/readiness 使用兼容字段。
+- Phase3：development/mock closure 与行为合同已通过；production closure gate 已具备真实 P0 E2E artifact、production-scale benchmark artifact 与 evidence hash 校验，但当前未提供现场 production artifact，仍属于 business lane 前置。
+- Phase4：development-mock readiness 与 runtime capability / evidence profile gate 已通过；`site/production` profile 已要求 evidence manifest、文件存在与 hash 一致，并叠加 Phase3 production closure，真实 production evidence 仍待发布/现场验收产物提供。
+- Phase5：technical lane 已通过 `scripts/check_phase5_readiness_gate.py --lane technical` 并接入 `./scripts/git-quality-gate.sh --profile quality`；business lane 仍被 Phase3 production closure、Phase4 production evidence profile 和 legacy matrix 逐项关闭状态阻塞。
+- 本轮验证：Phase1/2 定向验收 `211 passed, 1 xfailed`；Phase3 定向验收 `240 passed`；Phase4 定向验收 `94 passed`；quality profile 通过（ruff format/check、bandit、runtime toggle、Phase4 readiness、Phase5 readiness、import-linter、architecture guardrails、test topology）。
+
 **Task 1+2 收敛结论**：Phase2 的运行态字段遗留不再阻塞 Phase2 gate；它在 Phase5 前作为 compatibility projection 保留。callback / WMS / benchmark / evidence / Phase5 gate 的生产证据项属于后续业务 lane，不在本切片中扩大。
 
 **Phase 3 PR #73 已完成项（`v0.10.4.0`，2026-07-02 同步）**：
