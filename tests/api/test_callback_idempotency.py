@@ -26,6 +26,10 @@ def _response_data(response: JsonDict) -> JsonDict:
     return cast("JsonDict", data)
 
 
+def _runtime_accept_result(*, created: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(created=created, record=SimpleNamespace(id=901))
+
+
 @pytest.fixture
 def db_session() -> AsyncSession:
     mock = AsyncMock(spec=AsyncSession)
@@ -87,6 +91,9 @@ class TestCallbackResultIdempotency:
     async def test_duplicate_result_skips_business_side_effects(
         self, db_session: AsyncSession, build_request: RequestFactory
     ) -> None:
+        runtime_write = AsyncMock(
+            side_effect=[_runtime_accept_result(created=True), _runtime_accept_result(created=False)]
+        )
         existing_command = SimpleNamespace(
             trace_id="trace-001",
             task_type="PICK_AND_PUT",
@@ -145,6 +152,11 @@ class TestCallbackResultIdempotency:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
+            patch(
+                "src.app.callback.services.callback_orchestration_service."
+                "callback_orchestration_service._runtime_inbox_writer.write_result_callback",
+                new=runtime_write,
+            ),
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", side_effect=["req-001", "req-002"]),
         ):
@@ -166,13 +178,15 @@ class TestCallbackResultIdempotency:
         assert response2["code"] == "1000"
         assert _response_data(response2)["ack"] is True
         assert mock_handle.await_count == 1
-        assert mock_enqueue.call_count == 2
+        assert mock_create_inbox.await_count == 1
+        assert mock_enqueue.call_count == 1
         assert mock_log_callback.await_count == 2
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["error_message"] == "幂等重复: 已存在相同事件"
         assert log_kwargs["ingress_outcome"] == "DUPLICATE"
         assert log_kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1
+        assert runtime_write.await_count == 2
 
 
 class TestCallbackEventIdempotency:
@@ -182,6 +196,9 @@ class TestCallbackEventIdempotency:
         db_session: AsyncSession,
         build_request: RequestFactory,
     ) -> None:
+        runtime_write = AsyncMock(
+            side_effect=[_runtime_accept_result(created=True), _runtime_accept_result(created=False)]
+        )
         with (
             patch(
                 "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
@@ -213,6 +230,11 @@ class TestCallbackEventIdempotency:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
+            patch(
+                "src.app.callback.services.callback_orchestration_service."
+                "callback_orchestration_service._runtime_inbox_writer.write_event_callback",
+                new=runtime_write,
+            ),
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", side_effect=["req-101", "req-102"]),
         ):
@@ -235,14 +257,15 @@ class TestCallbackEventIdempotency:
         assert response1["code"] == "1000"
         assert response2["code"] == "1000"
         assert _response_data(response2)["status"] == "duplicate"
-        assert mock_enqueue.call_count == 2
-        assert mock_create_inbox.await_count == 2
+        assert mock_enqueue.call_count == 1
+        assert mock_create_inbox.await_count == 1
         assert mock_log_callback.await_count == 2
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["error_message"] == "幂等重复: 已存在相同事件"
         assert log_kwargs["ingress_outcome"] == "DUPLICATE"
         assert log_kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1
+        assert runtime_write.await_count == 2
 
 
 class TestCallbackExternalIdempotency:
@@ -252,6 +275,9 @@ class TestCallbackExternalIdempotency:
         db_session: AsyncSession,
         build_request: RequestFactory,
     ) -> None:
+        runtime_write = AsyncMock(
+            side_effect=[_runtime_accept_result(created=True), _runtime_accept_result(created=False)]
+        )
         with (
             patch(
                 "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
@@ -265,6 +291,11 @@ class TestCallbackExternalIdempotency:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
+            patch(
+                "src.app.callback.services.callback_orchestration_service."
+                "callback_orchestration_service._runtime_inbox_writer.write_external_callback",
+                new=runtime_write,
+            ),
             patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", side_effect=["req-ext-101", "req-ext-102"]),
         ):
@@ -285,10 +316,12 @@ class TestCallbackExternalIdempotency:
         assert response1["code"] == "1000"
         assert response2["code"] == "1000"
         assert _response_data(response2)["status"] == "duplicate"
-        assert mock_enqueue.call_count == 2
+        assert mock_create_inbox.await_count == 1
+        assert mock_enqueue.call_count == 1
         assert mock_log_callback.await_count == 2
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["error_message"] == "幂等重复: 已存在相同事件"
         assert log_kwargs["ingress_outcome"] == "DUPLICATE"
         assert log_kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1
+        assert runtime_write.await_count == 2

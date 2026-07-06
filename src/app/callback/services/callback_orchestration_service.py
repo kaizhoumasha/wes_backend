@@ -369,6 +369,7 @@ class CallbackOrchestrationService:
 
             result_inbox = None
             duplicate_inbox = None
+            legacy_duplicate = False
             try:
                 result_inbox = await inbox_service.create_command_result_inbox(
                     db=db,
@@ -391,11 +392,12 @@ class CallbackOrchestrationService:
                     exc,
                     duplicate_message=f"指令结果幂等重复，将跳过业务处理: {callback.command_code}",
                 )
+                legacy_duplicate = True
                 if duplicate_inbox is not None:
                     trace = trace.with_inbox(duplicate_inbox)
                     inherited_trace_id = trace.trace_id or inherited_trace_id
 
-            if duplicate_inbox is not None:
+            if legacy_duplicate:
                 await db.commit()
                 await publish_deferred_sse_events(db)
             else:
@@ -516,6 +518,7 @@ class CallbackOrchestrationService:
 
         if is_workline_event:
             duplicate_inbox = None
+            legacy_duplicate = False
             try:
                 _ = await inbox_service.create_device_event_inbox(
                     db=db,
@@ -538,11 +541,12 @@ class CallbackOrchestrationService:
                         f"设备事件幂等重复，将跳过业务处理: {event_request.device_code} -> {event_request.event_type}"
                     ),
                 )
+                legacy_duplicate = True
                 if duplicate_inbox is not None:
                     trace = trace.with_inbox(duplicate_inbox)
                     event_trace_id = trace.trace_id or event_trace_id
 
-            if duplicate_inbox is not None:
+            if legacy_duplicate:
                 await db.commit()
                 await publish_deferred_sse_events(db)
             else:
@@ -587,6 +591,7 @@ class CallbackOrchestrationService:
         )
         created_inbox: object | None = None
         duplicate_inbox = None
+        legacy_duplicate = False
         runtime_inbox_result = await self._runtime_inbox_writer.write_external_callback(
             db,
             payload=payload,
@@ -613,10 +618,11 @@ class CallbackOrchestrationService:
                 exc,
                 duplicate_message=f"外部回调幂等重复，将跳过业务处理: {callback_type}",
             )
+            legacy_duplicate = True
             if duplicate_inbox is not None:
                 trace = trace.with_inbox(duplicate_inbox)
 
-        if duplicate_inbox is None:
+        if not legacy_duplicate:
             await self._resolve_rack_task_service().record_callback_from_external_http(
                 db=db,
                 payload_json=payload,
@@ -634,7 +640,7 @@ class CallbackOrchestrationService:
                     raise RuntimeError("生命周期回调 Inbox 缺少 ID，无法标记已处理")
                 _ = await inbox_service.mark_as_processed(db, inbox_id, auto_commit=False)
 
-        if duplicate_inbox is not None:
+        if legacy_duplicate:
             await db.commit()
             await publish_deferred_sse_events(db)
         else:

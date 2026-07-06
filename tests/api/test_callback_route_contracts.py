@@ -41,6 +41,15 @@ def build_request() -> RequestFactory:
     return callback_test_support.build_request.__wrapped__()
 
 
+def _runtime_inbox_writer_stub(*, created: bool = True) -> SimpleNamespace:
+    result = SimpleNamespace(created=created, record=SimpleNamespace(id=901))
+    return SimpleNamespace(
+        write_result_callback=AsyncMock(return_value=result),
+        write_event_callback=AsyncMock(return_value=result),
+        write_external_callback=AsyncMock(return_value=result),
+    )
+
+
 def test_callback_log_payload_uses_trusted_proxy_client_ip(
     build_request: RequestFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -153,7 +162,10 @@ class TestCallbackEnqueueFallback:
             async def record_callback_from_external_http(self, **kwargs: Any) -> None:
                 calls.append(kwargs)
 
-        service = CallbackOrchestrationService(rack_task_service=RecordingRackTaskService())
+        service = CallbackOrchestrationService(
+            rack_task_service=RecordingRackTaskService(),
+            runtime_inbox_writer=_runtime_inbox_writer_stub(),
+        )
         service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
         payload = create_wms_external_payload(
@@ -202,6 +214,7 @@ class TestCallbackEnqueueFallback:
         service = CallbackOrchestrationService(
             rack_task_service=RecordingRackTaskService(),
             handling_operation_service=RecordingHandlingOperationService(),
+            runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
         service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
@@ -247,6 +260,7 @@ class TestCallbackEnqueueFallback:
         service = CallbackOrchestrationService(
             rack_task_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
             handling_operation_service=RecordingHandlingOperationService(),
+            runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
         service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
@@ -282,23 +296,31 @@ class TestCallbackEnqueueFallback:
         service = CallbackOrchestrationService(
             rack_task_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
             handling_operation_service=handling_operation_service,
+            runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
         service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        db = SimpleNamespace(commit=AsyncMock())
 
-        outcome = await service.process_external(
-            SimpleNamespace(),  # type: ignore[arg-type]
-            callback_type="CTU_BIN_MOVE_COMPLETED",
-            payload=create_wms_external_payload(
+        with patch(
+            "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
+            new=AsyncMock(),
+        ):
+            outcome = await service.process_external(
+                db,  # type: ignore[arg-type]
                 callback_type="CTU_BIN_MOVE_COMPLETED",
-                dispatch_key="handling:bin-operation:trace-001:move:1",
-            ),
-            request_id="req-duplicate-ctu",
-            trace_id="trace-bin-001",
-            inbox_service=FakeInboxService(),  # type: ignore[arg-type]
-            enqueue_processing=lambda: None,
-        )
+                payload=create_wms_external_payload(
+                    callback_type="CTU_BIN_MOVE_COMPLETED",
+                    dispatch_key="handling:bin-operation:trace-001:move:1",
+                ),
+                request_id="req-duplicate-ctu",
+                trace_id="trace-bin-001",
+                inbox_service=FakeInboxService(),  # type: ignore[arg-type]
+                enqueue_processing=lambda: None,
+            )
 
-        assert outcome.is_duplicate is True
+        assert outcome.is_duplicate is False
+        db.commit.assert_awaited_once()
+        service._commit_and_enqueue_workline_processing.assert_not_awaited()  # type: ignore[attr-defined]
         handling_operation_service.record_callback_from_external_http.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -326,7 +348,10 @@ class TestCallbackEnqueueFallback:
             async def record_callback_from_external_http(self, **_kwargs: Any) -> None:
                 return None
 
-        service = CallbackOrchestrationService(rack_task_service=RecordingRackTaskService())
+        service = CallbackOrchestrationService(
+            rack_task_service=RecordingRackTaskService(),
+            runtime_inbox_writer=_runtime_inbox_writer_stub(),
+        )
         service._enqueue_workline_processing = MagicMock()  # type: ignore[method-assign]
         inbox_service = FakeInboxService()
         db = SimpleNamespace(commit=AsyncMock())

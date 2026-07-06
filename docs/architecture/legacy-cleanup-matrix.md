@@ -7,7 +7,7 @@ related: docs/architecture/target-state-contract.md, docs/architecture/session-c
 data: docs/architecture/legacy-cleanup-matrix.csv
 generator: scripts/generate_legacy_matrix.py
 note: |
-  逐入口数据在 legacy-cleanup-matrix.csv（763 条，由脚本生成，可复现）。
+  逐入口数据在 legacy-cleanup-matrix.csv（772 条，由脚本生成，可复现）。
   本文档定义字段规范、策略规则、按域判定、高风险项与汇总。
   刷新: uv run python scripts/generate_legacy_matrix.py
 ---
@@ -33,12 +33,12 @@ uv run python scripts/generate_legacy_matrix.py
 
 扫描覆盖：`src/app/workline/`、`src/workline_runtime/`、`src/workline_plugins/`、`tests/workline_runtime/`、`tests/workline_plugins/`、`docs/templates/workline_plugin/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；`src/workline_runtime/` 与 `src/workline_plugins/` 同时登记 `__all__` exported symbol。
 
-## 3. 汇总（截至 codex/phase4-production-capable-runtime @ 2026-07-05）
+## 3. 汇总（截至 codex/phase1-4-residuals @ 2026-07-06）
 
 | 指标 | 数值 |
 | --- | ---: |
-| **total_entries** | **763** |
-| phase4_carrier（承载 Phase 4 业务语义） | 231 |
+| **total_entries** | **772** |
+| phase4_carrier（承载 Phase 4 业务语义） | 232 |
 | pending-review | 0 |
 
 ### total_entries_by_type
@@ -48,7 +48,7 @@ uv run python scripts/generate_legacy_matrix.py
 | service | 357 |
 | plugin | 116 |
 | domain_object | 91 |
-| test | 117 |
+| test | 126 |
 | model | 45 |
 | api_route | 21 |
 | doc_template | 8 |
@@ -59,8 +59,8 @@ uv run python scripts/generate_legacy_matrix.py
 
 | strategy | count |
 | --- | ---: |
-| rebuild | 449 |
-| keep-contract | 234 |
+| rebuild | 452 |
+| keep-contract | 240 |
 | delete | 68 |
 | move | 12 |
 
@@ -68,9 +68,9 @@ uv run python scripts/generate_legacy_matrix.py
 
 | drop_phase | count |
 | --- | ---: |
-| phase5-tech | 303 |
-| phase4 | 231 |
-| phase2 | 220 |
+| phase5-tech | 309 |
+| phase4 | 232 |
+| phase2 | 222 |
 | phase1 | 9 |
 
 ### total_entries_by_owner
@@ -79,7 +79,7 @@ uv run python scripts/generate_legacy_matrix.py
 | --- | ---: |
 | workline | 495 |
 | workline_plugins | 178 |
-| workline_runtime | 64 |
+| workline_runtime | 73 |
 | runtime | 8 |
 | handling | 6 |
 | rack | 5 |
