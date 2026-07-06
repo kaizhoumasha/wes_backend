@@ -37,6 +37,15 @@ class _RuntimeStatusProjectionSpy:
         self.inner = WorkLineRuntimeStatusProjectionService()
         self.estop_calls = []
         self.reconciling_calls = []
+        self.accepting_calls = []
+
+    def assert_accepting_runtime_work(self, workline, *, workline_id=None, blocked_error=RuntimeError):
+        self.accepting_calls.append((workline, workline_id, blocked_error))
+        return self.inner.assert_accepting_runtime_work(
+            workline,
+            workline_id=workline_id,
+            blocked_error=blocked_error,
+        )
 
     def project_estopped_active_hold(self, workline, *, reason):
         self.estop_calls.append((workline, reason))
@@ -47,12 +56,36 @@ class _RuntimeStatusProjectionSpy:
         return self.inner.project_reconciling(workline, occurred_at=occurred_at, reason=reason)
 
 
+def test_projection_ready_after_start_sets_ready_snapshot_and_resume_time():
+    projection = WorkLineRuntimeStatusProjectionService()
+    resumed_at = timezone.now_for_db()
+    workline = SimpleNamespace(
+        runtime_status=WorkLineRuntimeStatus.STOPPED,
+        stopped_at="old-stop",
+        stopped_reason="RECOVERY_CLEARED_WAITING_START",
+        resumed_at=None,
+        active_safety_incident_id=None,
+    )
+
+    projection.project_ready_after_start(workline, occurred_at=resumed_at)
+    snapshot = projection.runtime_status_snapshot(workline)
+
+    assert workline.runtime_status == WorkLineRuntimeStatus.READY
+    assert workline.stopped_reason is None
+    assert workline.resumed_at == resumed_at
+    assert snapshot.runtime_status == WorkLineRuntimeStatus.READY.value
+    assert snapshot.source == "runtime/orchestration"
+    assert snapshot.resumed_at == resumed_at
+    assert projection.is_ready(workline) is True
+
+
 def test_projection_reconciling_preserves_estopped_projection():
     projection = WorkLineRuntimeStatusProjectionService()
     workline = SimpleNamespace(
         runtime_status=WorkLineRuntimeStatus.ESTOPPED,
         stopped_at="existing-stop",
         stopped_reason="ESTOP_PRESSED",
+        resumed_at=None,
     )
 
     projected = projection.project_reconciling(workline, occurred_at="now", reason="RESOURCE_CONFLICT")
@@ -63,19 +96,79 @@ def test_projection_reconciling_preserves_estopped_projection():
     assert workline.stopped_reason == "ESTOP_PRESSED"
 
 
+def test_projection_reconciling_sets_runtime_hold_reason_and_clears_resume_time():
+    projection = WorkLineRuntimeStatusProjectionService()
+    stopped_at = timezone.now_for_db()
+    workline = SimpleNamespace(
+        runtime_status=WorkLineRuntimeStatus.READY,
+        stopped_at=None,
+        stopped_reason=None,
+        resumed_at="old-resume",
+        active_safety_incident_id=None,
+    )
+
+    projected = projection.project_reconciling(workline, occurred_at=stopped_at, reason="RESOURCE_CONFLICT")
+    snapshot = projection.runtime_status_snapshot(workline)
+
+    assert projected is True
+    assert workline.runtime_status == WorkLineRuntimeStatus.RECONCILING
+    assert workline.stopped_at == stopped_at
+    assert workline.stopped_reason == "RESOURCE_CONFLICT"
+    assert workline.resumed_at is None
+    assert snapshot.runtime_status == WorkLineRuntimeStatus.RECONCILING.value
+    assert snapshot.stopped_reason == "RESOURCE_CONFLICT"
+    assert snapshot.resumed_at is None
+
+
 def test_projection_stopped_waiting_start_clears_resume_projection():
     projection = WorkLineRuntimeStatusProjectionService()
     workline = SimpleNamespace(
         runtime_status=WorkLineRuntimeStatus.RECONCILING,
+        stopped_at="cleared-at",
         resumed_at="old-resume",
         stopped_reason="CALLBACK_DEADLINE_EXPIRED",
+        active_safety_incident_id=None,
     )
 
     projection.project_stopped_waiting_start(workline)
+    snapshot = projection.runtime_status_snapshot(workline)
 
     assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
     assert workline.resumed_at is None
     assert workline.stopped_reason == "RECOVERY_CLEARED_WAITING_START"
+    assert snapshot.runtime_status == WorkLineRuntimeStatus.STOPPED.value
+    assert snapshot.stopped_reason == "RECOVERY_CLEARED_WAITING_START"
+    assert snapshot.resumed_at is None
+
+
+def test_projection_estopped_active_hold_sets_reason_and_blocks_runtime_work():
+    projection = WorkLineRuntimeStatusProjectionService()
+    workline = SimpleNamespace(
+        id=45,
+        runtime_status=WorkLineRuntimeStatus.READY,
+        stopped_at=None,
+        stopped_reason=None,
+        resumed_at="old-resume",
+        active_safety_incident_id=9901,
+    )
+
+    projection.project_estopped_active_hold(workline, reason="ESTOP_PRESSED")
+    snapshot = projection.runtime_status_snapshot(workline)
+
+    assert workline.runtime_status == WorkLineRuntimeStatus.ESTOPPED
+    assert workline.stopped_reason == "ESTOP_PRESSED"
+    assert workline.resumed_at is None
+    assert snapshot.runtime_status == WorkLineRuntimeStatus.ESTOPPED.value
+    assert snapshot.active_safety_incident_id == 9901
+    with pytest.raises(RuntimeError, match="WORKLINE_ESTOPPED"):
+        projection.assert_accepting_runtime_work(workline, workline_id=45)
+
+
+def test_projection_assert_accepting_runtime_work_accepts_ready_only():
+    projection = WorkLineRuntimeStatusProjectionService()
+    workline = SimpleNamespace(id=45, runtime_status=WorkLineRuntimeStatus.READY)
+
+    projection.assert_accepting_runtime_work(workline, workline_id=45)
 
 
 @pytest.mark.asyncio
@@ -149,6 +242,24 @@ async def test_safety_estop_uses_compat_projection_service():
     assert workline.active_safety_incident_id == 9901
     assert workline.stopped_at is not None
     assert workline.stopped_reason == "ESTOP_PRESSED"
+
+
+@pytest.mark.asyncio
+async def test_safety_assert_accepting_work_delegates_runtime_projection_service():
+    from src.app.workline.services.safety_service import WorkLineSafetyService
+
+    workline = SimpleNamespace(id=45, runtime_status=WorkLineRuntimeStatus.READY)
+    projection = _RuntimeStatusProjectionSpy()
+    service = WorkLineSafetyService(
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=workline)),
+        workline_status_projection_service=projection,
+    )
+
+    await service.assert_accepting_work(object(), workline_id=45)
+
+    assert len(projection.accepting_calls) == 1
+    assert projection.accepting_calls[0][0] is workline
+    assert projection.accepting_calls[0][1] == 45
 
 
 @pytest.mark.asyncio

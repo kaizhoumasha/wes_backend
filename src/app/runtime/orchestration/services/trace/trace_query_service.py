@@ -61,6 +61,9 @@ from src.app.runtime.orchestration.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
 )
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    workline_runtime_status_projection_service,
+)
 from src.app.sys.models import SystemOutbox
 from src.app.workline.repositories.workline_repository import WorkLineRepository, workline_repository
 from src.app.workline.trace_context import TraceContext
@@ -523,8 +526,9 @@ class TraceQueryService(BaseService[Any, Any]):
         workline = await self.workline_repo.get_by_id(db, workline_id)
         if workline is None:
             return {}
+        runtime_snapshot = workline_runtime_status_projection_service.runtime_status_snapshot(workline)
         return {
-            "workline_runtime_status": optional_enum_str(getattr(workline, "runtime_status", None)),
+            "workline_runtime_status": runtime_snapshot.runtime_status,
             "workline_start_admission_status": coerce_optional_str(getattr(workline, "start_admission_status", None)),
             "workline_start_admission_message": coerce_optional_str(getattr(workline, "start_admission_message", None)),
             "workline_start_admission_failed_device_code": coerce_optional_str(

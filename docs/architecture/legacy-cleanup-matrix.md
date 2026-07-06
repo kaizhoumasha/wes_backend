@@ -143,6 +143,17 @@ CSV 列（对齐 SPEC P0-002 矩阵字段表）：
 | 测试 | keep-contract | phase5-tech | LOW |
 | doc_template / 默认 | delete / keep-contract | phase5-tech | LOW |
 
+### 6.3 Phase5 双 lane 删除前置
+
+Phase5 不再用单一“清理旧代码”口径推进，删除前必须先判定 technical lane 或 business lane，并把对应证据写入 PR：
+
+| lane | 适用条目 | 删除前置 | 不允许 |
+| --- | --- | --- | --- |
+| technical lane (`phase5-tech`) | debug/sandbox/fake/mock、旧 plugin 模板、已无生产 import 的 shim、仅服务开发/测试的辅助入口 | Phase2 runtime/orchestration owner guardrail 通过；Phase3 mock closure 或等价开发/测试门禁通过；`architecture-guardrails.sh` 与相关 characterization/contract test 通过；GitNexus detect-changes 确认只影响预期技术入口 | 以技术清理名义删除仍承载业务语义、API contract、trace/diagnostic evidence 或生产发布 profile 的入口 |
+| business lane (`phase5-business`) | 旧 plugin / WorkLine 业务流程中仍承载 Phase4 语义、WMS/ECS evidence、生产 trace、benchmark 或人工处置合同的入口 | Phase4 capability 替代路径已生产可用；evidence manifest 引用文件齐全；production closure profile 通过；旧入口 characterization/contract test 已迁为目标态测试或明确废弃；数据迁移/回填/审计留痕计划已执行 | 用 mock closure、lightweight benchmark 或缺 evidence 的本地测试冒充业务承载删除前置 |
+
+`WorkLine.runtime_status` 这类 compatibility projection 不按普通 technical lane 直接删除；必须先确认 API / monitor / trace / safety / START admission 已迁到 runtime/orchestration 原生读模型，再进入 schema 删除或字段改名计划。
+
 ## 7. 按域说明
 
 ### 7.1 workline（495 entries）
