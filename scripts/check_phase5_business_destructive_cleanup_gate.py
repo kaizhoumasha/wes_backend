@@ -74,6 +74,7 @@ LEDGER_REQUIRED_FIELDS = (
 MATRIX_PATH = Path("docs/architecture/legacy-cleanup-matrix.csv")
 LEDGER_PATH = Path("docs/architecture/phase5-business-destructive-cleanup-ledger.csv")
 PHASE4_CONTRACTS_ROOT = Path("src/app/runtime/capabilities/phase4/contracts")
+PHASE4_CONTRACTS_PACKAGE = "src.app.runtime.capabilities.phase4.contracts"
 
 SCAN_ROOTS = (
     Path("src"),
@@ -210,14 +211,40 @@ def strict_reference_violations(repo_root: Path, rows: Sequence[dict[str, str]])
     return tuple(sorted(set(violations)))
 
 
-def _phase4_contract_imports(path: Path) -> tuple[str, ...]:
+def _module_path_from_contract_file(repo_root: Path, path: Path) -> str:
+    module_parts = path.relative_to(repo_root).with_suffix("").parts
+    if module_parts[-1] == "__init__":
+        module_parts = module_parts[:-1]
+    return ".".join(module_parts)
+
+
+def _resolve_import_from_module(repo_root: Path, path: Path, node: ast.ImportFrom) -> str | None:
+    if node.level == 0:
+        return node.module
+
+    current_module = _module_path_from_contract_file(repo_root, path)
+    current_package = current_module if path.name == "__init__.py" else current_module.rpartition(".")[0]
+    package_parts = current_package.split(".") if current_package else []
+    keep_count = len(package_parts) - (node.level - 1)
+    if keep_count < 0:
+        return None
+
+    resolved_parts = package_parts[:keep_count]
+    if node.module:
+        resolved_parts.extend(node.module.split("."))
+    return ".".join(resolved_parts)
+
+
+def _phase4_contract_imports(repo_root: Path, path: Path) -> tuple[str, ...]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     imports: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imports.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imports.append(node.module)
+        elif isinstance(node, ast.ImportFrom):
+            module = _resolve_import_from_module(repo_root, path, node)
+            if module:
+                imports.append(module)
     return tuple(imports)
 
 
@@ -228,10 +255,8 @@ def phase4_contract_layer_violations(repo_root: Path) -> tuple[str, ...]:
 
     violations: list[str] = []
     for path in sorted(contracts_root.rglob("*.py")):
-        for module in _phase4_contract_imports(path):
-            if module == "src.app.runtime.capabilities.phase4.contracts" or module.startswith(
-                "src.app.runtime.capabilities.phase4.contracts."
-            ):
+        for module in _phase4_contract_imports(repo_root, path):
+            if module == PHASE4_CONTRACTS_PACKAGE or module.startswith(f"{PHASE4_CONTRACTS_PACKAGE}."):
                 continue
             if any(
                 module == prefix.removesuffix(".") or module.startswith(prefix)

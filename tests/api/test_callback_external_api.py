@@ -757,7 +757,7 @@ class TestCallbackExternalAPI:
         mock_enqueue.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_callback_external_duplicate_does_not_record_rack_task_again(
+    async def test_callback_external_legacy_duplicate_reports_duplicate_without_recording_rack_task_again(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,
@@ -800,13 +800,13 @@ class TestCallbackExternalAPI:
             )
 
         assert response["code"] == "1000"
-        assert _response_data(response)["status"] == "submitted"
+        assert _response_data(response)["status"] == "duplicate"
         mock_create_inbox.assert_awaited_once()
         rack_task_service.record_callback_from_external_http.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
-        assert log_kwargs["ingress_outcome"] == "ACCEPTED"
+        assert log_kwargs["ingress_outcome"] == "DUPLICATE"
         mock_enqueue.assert_not_called()
-        mock_audit.assert_awaited_once()
+        mock_audit.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_callback_external_h4_accepts_wms_rack_operation_protocol_fields(
