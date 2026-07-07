@@ -148,17 +148,17 @@ Phase5 不再用单一“清理旧代码”口径推进，删除前必须先判�
 当前 gate 状态：
 
 - `phase5_technical_lane_status: ready-for-technical-cleanup`
-- `phase5_business_lane_status: blocked-until-production-evidence`
+- `phase5_business_lane_status: ready-for-business-cleanup`
 
 执行入口：
 
 - technical lane：`uv run python scripts/check_phase5_readiness_gate.py --lane technical`，并已接入 `./scripts/git-quality-gate.sh --check phase5-readiness` 与 `--profile quality`。
-- business lane：`uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`；当前仍被 production evidence、Phase4 capability / port / contract tests 与逐项业务承载矩阵关闭状态阻塞。
+- business lane：`uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`；携带 regenerated Phase3/Phase4 artifacts 后，business lane 已通过 Phase3 production closure、Phase4 production evidence 与 Phase4 business contract tests；legacy matrix 中无 phase5-business 删除项，Phase5 business readiness gate 可进入 ready 状态。
 
 2026-07-06 验收记录：
 
 - technical lane 已通过 Phase2 owner guardrail、RuntimeInbox cutover、Phase3 mock closure、Phase5 technical contracts，并完成旧 plugin runtime/import 框架清理；执行记录见 `docs/architecture/legacy-cleanup-execution-plan.md`。
-- business lane 仍保持 `blocked-until-production-evidence`；`uv run python scripts/check_phase5_readiness_gate.py --lane business` 当前失败于 `MISSING_PHASE3_PRODUCTION_CLOSURE`，缺 `phase3-p0-e2e-artifact` 与 `phase3-benchmark-artifact`。
+- business lane 携带 regenerated Phase3/Phase4 artifacts 后已通过 readiness gate；该状态只表示业务承载 legacy 删除前置已清账，本轮不删除业务承载 legacy 数据、schema 或流程语义。
 - 旧 `src/workline_plugins/*` 仅保留在 `docs/archive/legacy-workline-plugins/`，不得回流到 `src/` 可 import 路径；absence guardrail 负责阻断。
 
 | lane | 适用条目 | 删除前置 | 不允许 |

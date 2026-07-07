@@ -4,27 +4,25 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from importlib import util
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATE_SCRIPT = REPO_ROOT / "scripts" / "check_phase5_readiness_gate.py"
-BUSINESS_LANE_CONTRACT_TESTS = (
-    "tests/contracts/test_phase4_design_docs.py",
-    "tests/contracts/test_phase4_runtime_readiness_gate.py",
-    "tests/contracts/test_phase4_runtime_evidence_artifact_composer.py",
-    "tests/mock/phase4/test_sorter_inbound_mock_contracts.py",
-    "tests/mock/phase4/test_wave2_wave3_mock_acceptance.py",
-    "tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py",
-    "tests/workline_runtime/test_runtime_location_event_service.py",
-    "tests/workline_runtime/test_material_location_query_service.py",
-    "tests/workline_runtime/test_workline_active_objects_service.py",
-    "tests/workline_runtime/test_sorter_inbound_preview_service.py",
-    "tests/workline_runtime/test_sorter_inbound_runtime_service.py",
-    "tests/workline_runtime/test_smt_ng_wms_reconciliation_preview_service.py",
-    "tests/workline_runtime/test_smt_ng_wms_reconciliation_runtime_service.py",
-    "tests/api/test_phase4_read_model_routes.py",
-    "tests/migrations/test_phase4_runtime_location_reservation_migration.py",
-)
+MATRIX_CLOSURE_GUARDRAIL = Path("tests/contracts/test_phase5_business_lane_matrix_closure.py")
+
+
+def _load_gate_business_lane_contract_tests() -> tuple[Path, ...]:
+    spec = util.spec_from_file_location("phase5_readiness_gate", GATE_SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return tuple(Path(path) for path in module.BUSINESS_LANE_CONTRACT_TESTS)
+
+
+BUSINESS_LANE_CONTRACT_TESTS = _load_gate_business_lane_contract_tests()
 
 
 def _write(path: Path, text: str) -> Path:
@@ -157,6 +155,10 @@ RuntimeInbox callback cutover 已作为删除前共同前置。
         """,
     )
     _write_business_lane_contract_tests(repo_root)
+
+
+def test_phase5_business_contract_list_includes_matrix_closure_guardrail() -> None:
+    assert MATRIX_CLOSURE_GUARDRAIL in BUSINESS_LANE_CONTRACT_TESTS
 
 
 def test_phase5_readiness_gate_technical_lane_passes() -> None:

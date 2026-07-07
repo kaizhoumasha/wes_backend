@@ -50,6 +50,7 @@ TECHNICAL_LANE_CONTRACT_TESTS = (
     Path("tests/characterization/workline_legacy"),
 )
 BUSINESS_LANE_CONTRACT_TESTS = (
+    Path("tests/contracts/test_phase5_business_lane_matrix_closure.py"),
     Path("tests/contracts/test_phase4_design_docs.py"),
     Path("tests/contracts/test_phase4_runtime_readiness_gate.py"),
     Path("tests/contracts/test_phase4_runtime_evidence_artifact_composer.py"),
