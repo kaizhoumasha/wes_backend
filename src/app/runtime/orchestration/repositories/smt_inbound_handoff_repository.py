@@ -10,6 +10,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.app.device.models.command import DeviceCommand
+from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import SMT_SORTING_INBOUND_PLUGIN_KEY
 from src.app.runtime.orchestration.models.inbox import WorklineInbox
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
@@ -19,7 +20,6 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItemStatus,
 )
 from src.app.sys.models.outbox import SystemOutbox
-from src.app.workline.domain.contracts.smt_sorting_inbound import SMT_SORTING_INBOUND_PLUGIN_KEY
 from src.app.workline.models.workline import WorkLine
 from src.database.base_repository import BaseRepository
 

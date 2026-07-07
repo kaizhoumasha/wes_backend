@@ -378,8 +378,8 @@ async def test_process_external_writes_runtime_inbox_before_legacy_transition_de
 
 
 @pytest.mark.asyncio
-async def test_process_result_keeps_runtime_ack_when_legacy_inbox_reports_duplicate() -> None:
-    """RuntimeInbox 已 created 时，legacy duplicate 不能反向把 ACK 改成 duplicate。"""
+async def test_process_result_reports_duplicate_when_legacy_inbox_reports_duplicate() -> None:
+    """RuntimeInbox 新建后若 legacy inbox 判重，ACK 仍必须返回 duplicate。"""
 
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
     from src.app.device.models.command import CommandCallbackResult
@@ -435,15 +435,15 @@ async def test_process_result_keeps_runtime_ack_when_legacy_inbox_reports_duplic
             enqueue_processing=lambda: None,
         )
 
-    assert outcome.is_duplicate is False
+    assert outcome.is_duplicate is True
     command_service.handle_callback_result.assert_not_awaited()
     inbox_service.create_command_result_inbox.assert_awaited_once()
     db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_process_event_keeps_runtime_ack_when_legacy_inbox_reports_duplicate() -> None:
-    """事件回调 RuntimeInbox 已 created 时，legacy duplicate 只能作为过渡消费副作用。"""
+async def test_process_event_reports_duplicate_when_legacy_inbox_reports_duplicate() -> None:
+    """事件回调 RuntimeInbox 新建后若 legacy inbox 判重，ACK 仍必须返回 duplicate。"""
 
     from src.app.callback.models import CallbackEventRequest
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
@@ -478,14 +478,14 @@ async def test_process_event_keeps_runtime_ack_when_legacy_inbox_reports_duplica
             enqueue_processing=lambda: None,
         )
 
-    assert outcome.is_duplicate is False
+    assert outcome.is_duplicate is True
     inbox_service.create_device_event_inbox.assert_awaited_once()
     db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_process_external_keeps_runtime_ack_when_legacy_inbox_reports_duplicate() -> None:
-    """external callback RuntimeInbox 已 created 时，legacy duplicate 不得改写 duplicate ACK。"""
+async def test_process_external_reports_duplicate_when_legacy_inbox_reports_duplicate() -> None:
+    """external callback RuntimeInbox 新建后若 legacy inbox 判重，ACK 仍必须返回 duplicate。"""
 
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
@@ -523,6 +523,6 @@ async def test_process_external_keeps_runtime_ack_when_legacy_inbox_reports_dupl
             enqueue_processing=lambda: None,
         )
 
-    assert outcome.is_duplicate is False
+    assert outcome.is_duplicate is True
     inbox_service.create_external_http_inbox.assert_awaited_once()
     db.commit.assert_awaited_once()

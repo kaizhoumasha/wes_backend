@@ -7,18 +7,18 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 from src.app.resource.models import RackKind
-from src.app.runtime.capability_catalog import get_workline_capability_definition
-from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
-    workline_runtime_status_projection_service,
-)
-from src.app.workline.domain.contracts.smt_sorting_inbound import (
-    COMMAND_SOURCE_PICK,
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
-)
-from src.app.workline.domain.services.smt_inbound_handoff_reason import (
+from src.app.runtime.capabilities.phase4.contracts.smt_inbound_handoff_reason import (
     SMT_INBOUND_HANDOFF_REASON_CATALOG,
     SmtInboundHandoffReasonCatalog,
     SmtInboundHandoffReasonCode,
+)
+from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
+    COMMAND_SOURCE_PICK,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+)
+from src.app.runtime.capability_catalog import get_workline_capability_definition
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    workline_runtime_status_projection_service,
 )
 from src.utils.timezone import timezone
 

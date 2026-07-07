@@ -31,9 +31,9 @@ note: |
 uv run python scripts/generate_legacy_matrix.py
 ```
 
-扫描覆盖现存的 `src/app/workline/`、`src/workline_runtime/`、`tests/workline_runtime/`、`tests/workline_plugins/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。生成器仍会扫描 `src/workline_plugins/` 与 `docs/templates/workline_plugin/`（若目录存在），但 Phase5 technical lane 后这两个 legacy 运行/模板路径应保持为空，absence guardrail 负责阻断回流。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；`src/workline_runtime/` 同时登记 `__all__` exported symbol。
+扫描覆盖现存的 `src/app/workline/`、`src/workline_runtime/`、`tests/workline_runtime/`、`tests/workline_plugins/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。生成器仍会扫描 `src/workline_plugins/` 与 `docs/templates/workline_plugin/`（若目录存在），但 Phase5 technical lane 后这两个 legacy 运行/模板路径应保持为空，absence guardrail 负责阻断回流。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；Phase5 business destructive cleanup 后，已迁入 `src/app/runtime/capabilities/phase4/contracts/` 与 `tests/contracts/workline/` 的业务合同/测试仍按 legacy entry_id 进入 CSV，避免删除旧路径造成 audit trace 误绿。
 
-## 3. 汇总（截至 codex/phase5-technical-lane @ 2026-07-07）
+## 3. 汇总（截至 Phase5 business destructive cleanup @ 2026-07-07）
 
 | 指标 | 数值 |
 | --- | ---: |
@@ -148,17 +148,18 @@ Phase5 不再用单一“清理旧代码”口径推进，删除前必须先判�
 当前 gate 状态：
 
 - `phase5_technical_lane_status: ready-for-technical-cleanup`
-- `phase5_business_lane_status: blocked-until-production-evidence`
+- `phase5_business_lane_status: ready-for-business-cleanup`
 
 执行入口：
 
 - technical lane：`uv run python scripts/check_phase5_readiness_gate.py --lane technical`，并已接入 `./scripts/git-quality-gate.sh --check phase5-readiness` 与 `--profile quality`。
-- business lane：`uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`；当前仍被 production evidence、Phase4 capability / port / contract tests 与逐项业务承载矩阵关闭状态阻塞。
+- business lane readiness：`uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`。
+- business destructive cleanup：`uv run python scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`，并已接入 `./scripts/git-quality-gate.sh --check phase5-business-destructive-cleanup` 与 `--profile quality`。
 
 2026-07-06 验收记录：
 
 - technical lane 已通过 Phase2 owner guardrail、RuntimeInbox cutover、Phase3 mock closure、Phase5 technical contracts，并完成旧 plugin runtime/import 框架清理；执行记录见 `docs/architecture/legacy-cleanup-execution-plan.md`。
-- business lane 仍保持 `blocked-until-production-evidence`；`uv run python scripts/check_phase5_readiness_gate.py --lane business` 当前失败于 `MISSING_PHASE3_PRODUCTION_CLOSURE`，缺 `phase3-p0-e2e-artifact` 与 `phase3-benchmark-artifact`。
+- business lane 携带 regenerated Phase3/Phase4 artifacts 后已通过 readiness gate；随后执行 destructive cleanup ledger 关闭：104 条 phase4 carrier 中 55 行 moved、10 行 test-only-migrated、18 行 kept-config-only、21 行 already-removed，0 pending。机器验收见 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 与 `scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`。
 - 旧 `src/workline_plugins/*` 仅保留在 `docs/archive/legacy-workline-plugins/`，不得回流到 `src/` 可 import 路径；absence guardrail 负责阻断。
 
 | lane | 适用条目 | 删除前置 | 不允许 |
@@ -192,8 +193,8 @@ Phase5 不再用单一“清理旧代码”口径推进，删除前必须先判�
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
-| `tests/workline_plugins/test_rough_sorter_contract.py` | rebuild | 10 条粗分机合同测试仍作为 Phase4 业务语义证据；生产代码已迁到目标态 runtime/domain |
-| `tests/workline_plugins/test_barcode_decision_service.py` | keep-contract | 1 条历史测试证据保留，用于 barcode decision 行为追踪 |
+| `tests/workline_plugins/test_rough_sorter_contract.py` | rebuild | historical entry；业务断言已迁入 `tests/contracts/workline/test_rough_sorter_inbound_contract.py` |
+| `tests/workline_plugins/test_barcode_decision_service.py` | keep-contract | historical entry；行为断言已迁入 `tests/contracts/workline/test_barcode_decision_contract.py` |
 
 ### 7.4 已删除的 legacy plugin 路径（0 entries）
 

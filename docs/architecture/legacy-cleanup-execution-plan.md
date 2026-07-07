@@ -1,8 +1,8 @@
-# Phase5 Technical Lane Legacy Cleanup Execution Plan
+# Phase5 Legacy Cleanup Execution Plan
 
 ## 结论
 
-Phase5 `phase5-tech` 已完成。`phase5-business` 继续阻塞，但 Phase3 production closure 与 Phase4 production evidence hashes 已可由 `reports/**/evidence/**` 重新生成并通过 production gates；当前 blocker 是 `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`。
+Phase5 `phase5-tech` 已完成。`phase5-business` 携带 regenerated Phase3/Phase4 artifacts 后已通过 readiness gate，并已执行 business destructive cleanup：104 条 phase4 carrier 全部在 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 关闭或保留为目标态测试证据。raw `reports/` artifacts 仍由 Git 忽略，重新验证前必须从 restored field/CI evidence 重新生成。
 
 ## 执行顺序
 
@@ -39,8 +39,8 @@ RuntimeInbox
 - `src/app/runtime/capability_catalog.py`
 - `src/app/runtime/normalization/*`
 - `src/app/runtime/orchestration/services/session/session_resolver.py`
-- `src/app/workline/domain/contracts/*`
-- `src/app/workline/domain/contexts/*`
+- `src/app/runtime/capabilities/phase4/contracts/*`
+- `src/app/runtime/capabilities/phase4/smt_inbound_handoff_route_service.py`
 
 ## 验收与门禁
 
@@ -51,14 +51,18 @@ RuntimeInbox
 - `uv run python scripts/check_phase5_readiness_gate.py --lane technical`
 - `uv run python scripts/check_phase3_closure_gate.py --closure-profile production --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
 - `uv run python scripts/check_phase4_runtime_readiness_gate.py --readiness-profile production --phase4-runtime-evidence-artifact reports/phase4/runtime-evidence-production.json --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
-- `uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --phase3-benchmark-artifact reports/phase3/phase3-production-benchmark.json --phase4-evidence-artifact reports/phase4/runtime-evidence-production.json` 必须继续失败于 legacy matrix business close，直到矩阵业务项逐项关闭。
+- `uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --phase3-benchmark-artifact reports/phase3/phase3-production-benchmark.json --phase4-evidence-artifact reports/phase4/runtime-evidence-production.json`
+  - `Phase 5 readiness passed: lane=business`
+- `uv run python scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`
+  - `Phase5 business destructive cleanup gate passed: mode=final`
 
 本轮已确认：
 
 - technical gate passed。
 - Phase3 production closure gate passed。
 - Phase4 production runtime evidence gate passed。
-- business gate failed: `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`。
+- business gate passed。
+- business destructive cleanup gate passed。
 - tracked provenance ledger: `docs/architecture/phase3-phase4-production-evidence-bundle.md`。
 
 ## 回滚
@@ -70,4 +74,4 @@ RuntimeInbox
 - Unknown capability：`RuntimeCapabilityRouteError`，不 fallback 到 null plugin。
 - Undeclared provider capability：`RuntimeCapabilityUndeclaredError`，按 `ExternalContractProfile` fail closed。
 - Legacy import 回流：`tests/architecture/test_phase5_legacy_absence_guardrail.py` 阻断。
-- Legacy matrix business 项未关闭：business gate 继续失败，禁止删除业务承载 legacy。
+- `WorkLine.runtime_status` schema/data 删除仍需独立 migration plan；本轮不包含 Alembic migration，不 drop 业务数据。

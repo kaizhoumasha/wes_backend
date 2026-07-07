@@ -50,13 +50,13 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.device.repositories import DeviceCommandRepository
+    from src.app.runtime.capabilities.phase4.contracts.ng_reason import NgReasonDefinition
     from src.app.runtime.orchestration.models.inbox import WorklineInbox
     from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
     from src.app.runtime.orchestration.repositories.inbox_repository import WorklineInboxRepository
     from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository
     from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
     from src.app.sys.repositories import SystemOutboxRepository
-    from src.app.workline.domain.ng_reason import NgReasonDefinition
     from src.app.workline.repositories.workline_repository import WorkLineRepository
 
 
@@ -426,7 +426,7 @@ class RuntimeHoldReleaseService:
         session: Any | None,
         workline: Any,
     ) -> ReturnToNgReleaseContext:
-        from src.app.workline.domain.material_identity import MaterialIdentityResolutionStatus
+        from src.app.runtime.capabilities.phase4.contracts.material_identity import MaterialIdentityResolutionStatus
 
         # ng_reason and physical_handoff_evidence already validated by _validate_release_request
 
@@ -487,7 +487,7 @@ class RuntimeHoldReleaseService:
         )
 
     def _resolve_ng_reason(self, hold: RuntimeHold, ng_reason: Any) -> NgReasonDefinition:
-        from src.app.workline.domain.ng_reason import build_ng_reason_catalog
+        from src.app.runtime.capabilities.phase4.contracts.ng_reason import build_ng_reason_catalog
 
         plugin_reasons = list_workline_ng_reasons(hold.plugin_key)
         catalog = build_ng_reason_catalog(plugin_reasons)
@@ -592,7 +592,7 @@ class RuntimeHoldReleaseService:
     def _resolve_material_identity(
         self, hold: RuntimeHold, *, request: ResolveRuntimeHoldRequest, session: Any | None
     ) -> Any:
-        from src.app.workline.domain.material_identity import MaterialIdentityInput
+        from src.app.runtime.capabilities.phase4.contracts.material_identity import MaterialIdentityInput
 
         evidence = cast("Any", request.physical_handoff_evidence)
         material_scan_payload = evidence.material_scan_payload

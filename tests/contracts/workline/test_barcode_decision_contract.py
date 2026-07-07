@@ -1,7 +1,7 @@
 """BarcodeDecisionService 回归测试。"""
 
+from src.app.runtime.capabilities.phase4.contracts.six_in_one import SixInOne
 from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
-from src.app.workline.domain.contracts import SixInOne
 
 
 class TestBarcodeDecisionService:

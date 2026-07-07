@@ -18,6 +18,10 @@ from urllib.parse import urlparse
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
+from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+    SORTING_CONTEXT_SCHEMA_VERSION,
+)
 from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.material_target_resolver import resolve_destination_device
@@ -29,10 +33,6 @@ from src.app.runtime.orchestration.runtime_intent import (
     DestinationKind,
     RuntimeIntent,
     RuntimeIntentKind,
-)
-from src.app.workline.domain.contracts.smt_sorting_inbound import (
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
-    SORTING_CONTEXT_SCHEMA_VERSION,
 )
 from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
 

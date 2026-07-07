@@ -26,6 +26,8 @@ Checks:
             Run only Phase 4 runtime readiness gate.
   phase5-readiness
             Run only Phase 5 technical lane readiness gate.
+  phase5-business-destructive-cleanup
+            Run only Phase 5 business destructive cleanup final gate.
   architecture  Run only architecture guardrails.
   import-linter  Run only import-linter capability-isolation contract check.
 
@@ -141,6 +143,11 @@ run_phase5_readiness_gate() {
     run_tool python scripts/check_phase5_readiness_gate.py --lane technical
 }
 
+run_phase5_business_destructive_cleanup_gate() {
+    log_step "phase5-business-cleanup" "check_phase5_business_destructive_cleanup_gate.py --mode final"
+    run_tool python scripts/check_phase5_business_destructive_cleanup_gate.py --mode final
+}
+
 run_architecture_check() {
     # Phase 0 默认 warn-only; Phase 1 起切 enforced。
     # Phase 2 launch PR (PR #67+) 起默认 phase1,确保每次 commit 触发 R-I3a/b/c + C1/C2/C4 + wlr guardrail。
@@ -167,6 +174,7 @@ run_quality_profile() {
     run_runtime_toggle_release_gate
     run_phase4_runtime_readiness_gate
     run_phase5_readiness_gate
+    run_phase5_business_destructive_cleanup_gate
     run_import_linter_check
     run_architecture_check
     run_test_topology_check
@@ -203,6 +211,9 @@ if [[ -n "$CHECK" ]]; then
             ;;
         phase5-readiness)
             run_phase5_readiness_gate
+            ;;
+        phase5-business-destructive-cleanup)
+            run_phase5_business_destructive_cleanup_gate
             ;;
         architecture)
             run_architecture_check

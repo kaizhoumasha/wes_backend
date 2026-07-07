@@ -20,6 +20,21 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
+from src.app.runtime.capabilities.phase4.contracts.smt_inbound_handoff_reason import (
+    SMT_INBOUND_HANDOFF_REASON_CATALOG,
+    SmtInboundHandoffReasonCatalog,
+    SmtInboundHandoffReasonCode,
+)
+from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
+    SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+)
+from src.app.runtime.capabilities.phase4.contracts.smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy
+from src.app.runtime.capabilities.phase4.contracts.sorting_inbound_context import SortingInboundContext
+from src.app.runtime.capabilities.phase4.smt_inbound_handoff_route_service import (
+    SmtInboundHandoffRouteService,
+    smt_inbound_handoff_route_service,
+)
 from src.app.runtime.orchestration.models.material_unit import MaterialUnit
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
@@ -33,21 +48,6 @@ from src.app.runtime.orchestration.repositories.smt_inbound_handoff_repository i
     smt_inbound_handoff_repository,
 )
 from src.app.runtime.orchestration.services.inbox.inbox_service import WorklineInboxService, inbox_service
-from src.app.workline.domain.contexts.smt_sorting_inbound import SortingInboundContext
-from src.app.workline.domain.contracts.smt_sorting_inbound import (
-    SMT_SORTING_INBOUND_CONTRACT_VERSION,
-    SMT_SORTING_INBOUND_PLUGIN_KEY,
-)
-from src.app.workline.domain.services.smt_inbound_handoff_reason import (
-    SMT_INBOUND_HANDOFF_REASON_CATALOG,
-    SmtInboundHandoffReasonCatalog,
-    SmtInboundHandoffReasonCode,
-)
-from src.app.workline.domain.services.smt_inbound_handoff_route_service import (
-    SmtInboundHandoffRouteService,
-    smt_inbound_handoff_route_service,
-)
-from src.app.workline.domain.services.smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 

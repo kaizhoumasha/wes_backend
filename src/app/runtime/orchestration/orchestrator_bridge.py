@@ -19,16 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from src.app.runtime.normalization.contracts import NormalizedCommandResult, NormalizedDeviceEvent
-from src.app.runtime.normalization.normalizers import normalize_inbox_input
-from src.app.runtime.orchestration.diagnostics import ErrorCode, error_domain_for
-from src.app.runtime.orchestration.lock_bridge import LockAcquireError
-from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
-from src.app.runtime.runtime_capability_catalog import (
-    resolve_runtime_capability_profile,
-    runtime_capability_dispatcher,
-)
-from src.app.workline.domain.contracts.rough_sorter import (
+from src.app.runtime.capabilities.phase4.contracts.rough_sorter import (
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
     ACTION_TARGET_ROLES,
@@ -40,11 +31,20 @@ from src.app.workline.domain.contracts.rough_sorter import (
     build_pick_and_put_payload,
     normalize_six_in_one_payload,
 )
-from src.app.workline.domain.contracts.smt_sorting_inbound import (
+from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
     COMMAND_SOURCE_PICK,
     EVENT_SOURCE_PICK_REQUESTED,
     ROLE_SORTING_SOURCE_ARM,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
+)
+from src.app.runtime.normalization.contracts import NormalizedCommandResult, NormalizedDeviceEvent
+from src.app.runtime.normalization.normalizers import normalize_inbox_input
+from src.app.runtime.orchestration.diagnostics import ErrorCode, error_domain_for
+from src.app.runtime.orchestration.lock_bridge import LockAcquireError
+from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
+from src.app.runtime.runtime_capability_catalog import (
+    resolve_runtime_capability_profile,
+    runtime_capability_dispatcher,
 )
 from src.app.workline.domain.models import BarcodeDecisionType
 from src.app.workline.trace_context import TraceContext

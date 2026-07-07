@@ -103,6 +103,40 @@ MIGRATED_SERVICE_IMPLS = {
 }
 MIGRATED_IMPL_TO_LEGACY = {impl: legacy for legacy, impl in MIGRATED_SERVICE_IMPLS.items()}
 
+# Phase5 business destructive cleanup 会把旧 WorkLine domain 业务合同迁入
+# runtime/capabilities/phase4/contracts。matrix 必须继续按 legacy entry_id 记账,
+# 否则文件删除后 audit trace 会误以为业务承载项已经消失。
+MIGRATED_DOMAIN_IMPLS = {
+    "src/app/workline/domain/contexts/rough_sorter.py": (
+        "src/app/runtime/capabilities/phase4/contracts/rough_sorter_context.py"
+    ),
+    "src/app/workline/domain/contexts/smt_sorting_inbound.py": (
+        "src/app/runtime/capabilities/phase4/contracts/sorting_inbound_context.py"
+    ),
+    "src/app/workline/domain/contracts/rough_sorter.py": "src/app/runtime/capabilities/phase4/contracts/rough_sorter.py",
+    "src/app/workline/domain/contracts/six_in_one.py": "src/app/runtime/capabilities/phase4/contracts/six_in_one.py",
+    "src/app/workline/domain/material_identity.py": "src/app/runtime/capabilities/phase4/contracts/material_identity.py",
+    "src/app/workline/domain/ng_reason.py": "src/app/runtime/capabilities/phase4/contracts/ng_reason.py",
+    "src/app/workline/domain/services/smt_inbound_handoff_reason.py": (
+        "src/app/runtime/capabilities/phase4/contracts/smt_inbound_handoff_reason.py"
+    ),
+    "src/app/workline/domain/services/smt_inbound_handoff_route_service.py": (
+        "src/app/runtime/capabilities/phase4/smt_inbound_handoff_route_service.py"
+    ),
+    "src/app/workline/domain/services/smt_usage_policy.py": (
+        "src/app/runtime/capabilities/phase4/contracts/smt_usage_policy.py"
+    ),
+}
+
+MIGRATED_TEST_IMPLS = {
+    "tests/workline_plugins/test_barcode_decision_service.py": (
+        "tests/contracts/workline/test_barcode_decision_contract.py"
+    ),
+    "tests/workline_plugins/test_rough_sorter_contract.py": (
+        "tests/contracts/workline/test_rough_sorter_inbound_contract.py"
+    ),
+}
+
 # Phase 2 burn-down F-1/F-2:workline/repositories 运行态 repository 物理迁入
 # runtime/orchestration/repositories。R-I3b seed 仍按旧入口追踪,映射回 legacy 路径。
 MIGRATED_REPOSITORIES = {
@@ -497,10 +531,38 @@ def _defined_symbols_from_python(path: Path) -> list[str]:
     ]
 
 
+def _defined_test_symbols_from_python(path: Path) -> list[str]:
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return []
+
+    return [
+        node.name
+        for node in module.body
+        if (
+            (isinstance(node, ast.ClassDef) and node.name.startswith("Test"))
+            or (isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name.startswith("test_"))
+        )
+    ]
+
+
 def _add_migrated_service_entries(add: Callable[[str, str, str, str], None]) -> None:
     for legacy_path, impl_path in MIGRATED_SERVICE_IMPLS.items():
         for symbol in _defined_symbols_from_python(REPO_ROOT / impl_path):
             add(legacy_path, symbol, "service", "workline")
+
+
+def _add_migrated_domain_entries(add: Callable[[str, str, str, str], None]) -> None:
+    for legacy_path, impl_path in MIGRATED_DOMAIN_IMPLS.items():
+        for symbol in _defined_symbols_from_python(REPO_ROOT / impl_path):
+            add(legacy_path, symbol, "domain_object", "workline")
+
+
+def _add_migrated_test_entries(add: Callable[[str, str, str, str], None]) -> None:
+    for legacy_path, impl_path in MIGRATED_TEST_IMPLS.items():
+        for symbol in _defined_test_symbols_from_python(REPO_ROOT / impl_path):
+            add(legacy_path, symbol, "test", "workline_plugins")
 
 
 def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths: list[SeedPath]) -> None:
@@ -604,6 +666,10 @@ def parse_entries() -> list[Entry]:
         if m:
             add(m.group(1), m.group(3), "domain_object", "workline")
 
+    # 5b. Phase5 business cleanup 后,已迁入 Phase4 contracts/services 的 domain
+    # 符号仍按 legacy path 进入 matrix,保证 audit trace 与 ledger 稳定。
+    _add_migrated_domain_entries(add)
+
     # 6. workline_runtime + workline_plugins (class + def)
     for line in git_grep(
         r"^class [A-Za-z_]|^def [a-z_]|^async def [a-z_]", ["src/workline_runtime", "src/workline_plugins"]
@@ -633,6 +699,10 @@ def parse_entries() -> list[Entry]:
             path = m.group(1)
             owner = "workline_plugins" if "workline_plugins" in path else "workline_runtime"
             add(path, m.group(3), "test", owner)
+
+    # 7b. 旧 plugin contract tests 迁到 target contracts 后仍按 legacy test path
+    # 记账,避免移动测试导致 cleanup matrix 误删审计行。
+    _add_migrated_test_entries(add)
 
     # 8. doc_templates (文件级)
     for tmpl in (REPO_ROOT / "docs/templates/workline_plugin").glob("*"):

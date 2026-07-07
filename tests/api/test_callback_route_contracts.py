@@ -282,7 +282,9 @@ class TestCallbackEnqueueFallback:
         assert calls[0]["payload_json"]["exchange_status"] == "BUSINESS_COMPLETED"
 
     @pytest.mark.asyncio
-    async def test_process_external_duplicate_does_not_record_handling_callback(self) -> None:
+    async def test_process_external_legacy_duplicate_reports_duplicate_without_recording_handling_callback(
+        self,
+    ) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
         duplicate_error = ValueError("已存在（幂等键重复）")
@@ -318,7 +320,7 @@ class TestCallbackEnqueueFallback:
                 enqueue_processing=lambda: None,
             )
 
-        assert outcome.is_duplicate is False
+        assert outcome.is_duplicate is True
         db.commit.assert_awaited_once()
         service._commit_and_enqueue_workline_processing.assert_not_awaited()  # type: ignore[attr-defined]
         handling_operation_service.record_callback_from_external_http.assert_not_awaited()

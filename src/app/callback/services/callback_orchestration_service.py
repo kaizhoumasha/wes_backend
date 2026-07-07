@@ -393,6 +393,7 @@ class CallbackOrchestrationService:
                     duplicate_message=f"指令结果幂等重复，将跳过业务处理: {callback.command_code}",
                 )
                 legacy_duplicate = True
+                is_duplicate = True
                 if duplicate_inbox is not None:
                     trace = trace.with_inbox(duplicate_inbox)
                     inherited_trace_id = trace.trace_id or inherited_trace_id
@@ -542,6 +543,7 @@ class CallbackOrchestrationService:
                     ),
                 )
                 legacy_duplicate = True
+                is_duplicate = True
                 if duplicate_inbox is not None:
                     trace = trace.with_inbox(duplicate_inbox)
                     event_trace_id = trace.trace_id or event_trace_id
@@ -619,6 +621,7 @@ class CallbackOrchestrationService:
                 duplicate_message=f"外部回调幂等重复，将跳过业务处理: {callback_type}",
             )
             legacy_duplicate = True
+            is_duplicate = True
             if duplicate_inbox is not None:
                 trace = trace.with_inbox(duplicate_inbox)
 

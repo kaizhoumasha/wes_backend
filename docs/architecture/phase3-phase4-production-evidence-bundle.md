@@ -8,7 +8,7 @@
 - Phase3 P0 E2E artifact: ready
 - Phase3 production benchmark artifact: ready
 - Phase4 production runtime evidence artifact: ready
-- Phase5 business next blocker: `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`
+- Phase5 business readiness: passed
 
 ## Artifact Paths
 
@@ -81,10 +81,9 @@ uv run python scripts/check_phase4_runtime_readiness_gate.py --readiness-profile
 Phase 4 runtime readiness evidence gate passed: reason=PHASE4_RUNTIME_EVIDENCE_READY evidence_profile=production
 
 uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --phase3-benchmark-artifact reports/phase3/phase3-production-benchmark.json --phase4-evidence-artifact reports/phase4/runtime-evidence-production.json
-Phase 5 readiness failed: LEGACY_MATRIX_BUSINESS_ITEMS_OPEN
-details=phase5_business_lane_status
+Phase 5 readiness passed: lane=business
 ```
 
 ## Boundary
 
-This ledger is the tracked source of artifact provenance for this closure slice. Raw files under `reports/` remain local, CI, or field evidence outputs and must not be committed unless release governance explicitly requires an artifact snapshot.
+This ledger is the tracked source of artifact provenance for this closure slice. Raw files under `reports/` remain local, CI, or field evidence outputs and must not be committed unless release governance explicitly requires an artifact snapshot. Before validation on a clean workspace, restore the archived field/CI evidence bundle and regenerate the ignored `reports/` artifacts from that evidence.
