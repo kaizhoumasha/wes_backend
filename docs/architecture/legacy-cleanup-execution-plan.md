@@ -2,7 +2,7 @@
 
 ## 结论
 
-Phase5 本轮只执行 `phase5-tech`。`phase5-business` 继续阻塞，原因是 Phase3 production closure 仍缺 `phase3-p0-e2e-artifact` 与 `phase3-benchmark-artifact` provenance。
+Phase5 `phase5-tech` 已完成。`phase5-business` 继续阻塞，但 Phase3 production closure 与 Phase4 production evidence hashes 已可由 `reports/**/evidence/**` 重新生成并通过 production gates；当前 blocker 是 `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`。
 
 ## 执行顺序
 
@@ -49,12 +49,17 @@ RuntimeInbox
 - `uv run pytest tests/architecture/test_phase5_legacy_absence_guardrail.py tests/workline_runtime/test_runtime_capability_dispatcher.py -q`
 - `uv run pytest tests/architecture/test_runtime_capability_context_routing.py tests/workline_runtime/test_sorter_inbound_runtime_service.py -q`
 - `uv run python scripts/check_phase5_readiness_gate.py --lane technical`
-- `uv run python scripts/check_phase5_readiness_gate.py --lane business` 必须继续失败，直到 production closure artifacts 补齐。
+- `uv run python scripts/check_phase3_closure_gate.py --closure-profile production --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
+- `uv run python scripts/check_phase4_runtime_readiness_gate.py --readiness-profile production --phase4-runtime-evidence-artifact reports/phase4/runtime-evidence-production.json --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
+- `uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --phase3-benchmark-artifact reports/phase3/phase3-production-benchmark.json --phase4-evidence-artifact reports/phase4/runtime-evidence-production.json` 必须继续失败于 legacy matrix business close，直到矩阵业务项逐项关闭。
 
 本轮已确认：
 
 - technical gate passed。
-- business gate failed: `MISSING_PHASE3_PRODUCTION_CLOSURE`，缺 `phase3-p0-e2e-artifact` 与 `phase3-benchmark-artifact`。
+- Phase3 production closure gate passed。
+- Phase4 production runtime evidence gate passed。
+- business gate failed: `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`。
+- tracked provenance ledger: `docs/architecture/phase3-phase4-production-evidence-bundle.md`。
 
 ## 回滚
 
@@ -65,4 +70,4 @@ RuntimeInbox
 - Unknown capability：`RuntimeCapabilityRouteError`，不 fallback 到 null plugin。
 - Undeclared provider capability：`RuntimeCapabilityUndeclaredError`，按 `ExternalContractProfile` fail closed。
 - Legacy import 回流：`tests/architecture/test_phase5_legacy_absence_guardrail.py` 阻断。
-- Phase3 production provenance 未补齐：business gate 继续失败，禁止删除业务承载 legacy。
+- Legacy matrix business 项未关闭：business gate 继续失败，禁止删除业务承载 legacy。
