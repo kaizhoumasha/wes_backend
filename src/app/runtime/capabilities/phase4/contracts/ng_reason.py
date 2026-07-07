@@ -1,8 +1,4 @@
-# 阶段 2 burn-down C3 镜像:src.workline_runtime.ng_reason 的平级副本
-# wlr 目录在阶段 3 整体删除时,本镜像改名为正式模块。
-# 镜像策略:cat wlr 原文件 + 顶部插入阶段 2 标识块;禁止只 import wlr。
-
-"""Unified NG reason taxonomy."""
+"""Phase4 unified NG reason taxonomy."""
 
 from __future__ import annotations
 

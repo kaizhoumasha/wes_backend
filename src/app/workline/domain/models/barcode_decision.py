@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
-    from src.app.workline.domain.contracts import SixInOne
+    from src.app.runtime.capabilities.phase4.contracts.six_in_one import SixInOne
 
 
 class BarcodeDecisionType(StrEnum):

@@ -6,13 +6,13 @@ import hashlib
 import json
 from typing import Any
 
-from src.app.workline.domain.material_identity import (
+from src.app.runtime.capabilities.phase4.contracts.material_identity import (
     MaterialIdentity,
     MaterialIdentityInput,
     MaterialIdentityResolutionStatus,
     hash_material_evidence,
 )
-from src.app.workline.domain.ng_reason import NgReasonDefinition, NgReasonSource
+from src.app.runtime.capabilities.phase4.contracts.ng_reason import NgReasonDefinition, NgReasonSource
 from src.app.workline.domain.plugin_manifest import (
     CommandBinding,
     DeviceRequirement,

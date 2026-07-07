@@ -35,7 +35,7 @@ from src.utils.value_normalization import as_dict, optional_enum_str
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.app.workline.domain.ng_reason import NgReasonDefinition
+    from src.app.runtime.capabilities.phase4.contracts.ng_reason import NgReasonDefinition
 
 
 _CALLBACK_TIMEOUT_CHECKS = [
@@ -117,7 +117,7 @@ class RuntimeHoldQueryService:
     def list_ng_reasons(self, *, plugin_key: str | None = None) -> list[NgReasonOption]:
         """返回插件 NG reasons + 系统 fallback。"""
 
-        from src.app.workline.domain.ng_reason import BUILTIN_NG_REASONS
+        from src.app.runtime.capabilities.phase4.contracts.ng_reason import BUILTIN_NG_REASONS
 
         reasons: list[NgReasonDefinition] = []
         reasons.extend(list_workline_ng_reasons(plugin_key))

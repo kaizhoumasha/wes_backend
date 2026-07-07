@@ -6,7 +6,7 @@
 - `BarcodeDecisionType`: 条码判定枚举
 """
 
-from src.app.workline.domain.contracts import SixInOne
+from src.app.runtime.capabilities.phase4.contracts.six_in_one import SixInOne
 
 from .barcode_decision import BarcodeDecision, BarcodeDecisionType
 

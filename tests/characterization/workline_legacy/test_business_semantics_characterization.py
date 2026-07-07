@@ -29,8 +29,8 @@ def test_rough_sorter_inbound_characterization_inputs_extracted():
     # 旧业务输入来源已归档；目标态由 domain contract + Phase4 dispatcher/runtime 测试承接。
     sources = [
         "docs/archive/legacy-workline-plugins/src-workline_plugins/rough_sorter/plugin.py",
-        "src/app/workline/domain/contracts/rough_sorter.py",
-        "tests/workline_plugins/test_rough_sorter_contract.py",
+        "src/app/runtime/capabilities/phase4/contracts/rough_sorter.py",
+        "tests/contracts/workline/test_rough_sorter_inbound_contract.py",
         "tests/workline_runtime/test_runtime_capability_dispatcher.py",
         "tests/workline_runtime/test_sorter_inbound_runtime_service.py",
     ]
@@ -45,7 +45,7 @@ def test_full_box_exchange_characterization_inputs_extracted():
     # 旧业务输入来源: 主计划 §2.2 full-box exchange + smt_inbound_handoff + rack_operation
     sources = [
         "src/app/runtime/orchestration/models/smt_inbound_handoff.py",
-        "src/app/workline/domain/services/smt_inbound_handoff_route_service.py",
+        "src/app/runtime/capabilities/phase4/smt_inbound_handoff_route_service.py",
         "docs/integration/wms_rcs_interface_requirements.md",
     ]
     _assert_characterization_sources_exist(sources)

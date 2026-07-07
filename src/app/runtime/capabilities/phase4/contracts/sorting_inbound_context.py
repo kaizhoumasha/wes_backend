@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any, cast
 
-from src.app.workline.domain.contracts.smt_sorting_inbound import SORTING_CONTEXT_SCHEMA_VERSION
+from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import SORTING_CONTEXT_SCHEMA_VERSION
 
 _SORTING_CONTEXT_KEY = "sorting"
 _SCHEMA_VERSION_KEY = "context_schema_version"

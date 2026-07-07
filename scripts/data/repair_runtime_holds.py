@@ -11,6 +11,10 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
 
+from src.app.runtime.capabilities.phase4.contracts.material_identity import (
+    MaterialIdentityInput,
+    MaterialIdentityResolutionStatus,
+)
 from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldStatus, RuntimeHoldType
 from src.app.runtime.orchestration.models.session import (
@@ -20,7 +24,6 @@ from src.app.runtime.orchestration.models.session import (
     WorklineSession,
 )
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
-from src.app.workline.domain.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
 from src.database.db import close_db, get_db_context, init_db
 
 if TYPE_CHECKING:
