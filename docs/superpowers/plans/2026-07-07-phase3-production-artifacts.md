@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Completion status (2026-07-07):** DONE. 本计划已补齐 Phase3 production closure artifacts 与 Phase4 production evidence artifact，并通过对应 production gates。执行完成时 Phase5 business handoff 进入 `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`；后续 Phase5 business readiness 与 destructive cleanup 已随 PR #79 合并到 `develop`（`v0.14.0.0`，merge SHA `8c833610c08005005406b3a774c92519f69b7886`）。
+
 **Goal:** 补齐 gate-valid 的 `phase3-p0-e2e-artifact`、`phase3-benchmark-artifact` 与 Phase4 production evidence hashes，让 Phase5 business lane 不再阻塞于 `MISSING_PHASE3_PRODUCTION_CLOSURE` 或 `MISSING_PHASE4_PRODUCTION_EVIDENCE`。
 
 **Architecture:** 以现有 evidence 文件为输入，以现有 composer 脚本生成 artifact；不要手写 artifact JSON。`reports/phase3/evidence/**` 与 `reports/phase4/evidence/phase4-runtime/**` 是来源证据，`reports/phase3/*.json` 与 `reports/phase4/runtime-evidence-production.json` 是派生产物，`RuntimePhase3ClosureGate` 与 Phase4 runtime readiness gate 是唯一验收口径。
@@ -20,7 +22,7 @@
 
 不在本计划内：
 
-- 不解除 `phase5_business_lane_status: blocked-until-production-evidence`；补完本计划后，Phase5 business lane 的当前预期 blocker 是 `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`。
+- 本计划执行时不直接解除 `phase5_business_lane_status: blocked-until-production-evidence`；补完本计划后的 handoff blocker 是 `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`。该后续 blocker 已由 Phase5 business readiness/destructive cleanup 计划在 PR #79 中关闭。
 - 不把 `reports/` 默认纳入 Git；`.gitignore` 当前忽略 `/reports/*` 与 `reports/`，artifact 默认作为本地/CI/现场证据产物使用。
 - 不伪造现场结果；若 evidence 文件不是来自真实 dry-run / benchmark，执行者必须先替换 evidence，再运行本计划命令。
 
@@ -845,7 +847,7 @@ Expected: commit succeeds with only tracked docs staged.
   - `uv run pytest tests/contracts/test_phase5_readiness_gate.py -q` passed with `12 passed`.
   - `./scripts/git-quality-gate.sh --profile quality` passed.
   - `npx gitnexus detect-changes --scope all --repo wes_backend` reported low risk, 0 affected processes.
-- Phase5 business 结果：仍按预期阻塞于 `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`；在提供 regenerated Phase3/Phase4 artifacts 后，不再失败于 `MISSING_PHASE3_PRODUCTION_CLOSURE` 或 `MISSING_PHASE4_PRODUCTION_EVIDENCE`。
+- Phase5 business handoff 结果：本计划完成时已按预期推进到 `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`；在提供 regenerated Phase3/Phase4 artifacts 后，不再失败于 `MISSING_PHASE3_PRODUCTION_CLOSURE` 或 `MISSING_PHASE4_PRODUCTION_EVIDENCE`。该 handoff blocker 已由后续 PR #79 关闭。
 - Artifact 留存：raw `reports/phase3/**` 与 `reports/phase4/**` 仍是 ignored 的本地/CI evidence 输出；tracked provenance 记录在 `docs/architecture/phase3-phase4-production-evidence-bundle.md`。
 
 ## Self-Review

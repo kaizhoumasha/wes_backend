@@ -50,6 +50,12 @@ Prior learning applied:
 - Phase5 business lane 不是本计划内的“已完成”交付物；它必须等待真实 Phase3 production artifact、Phase4 production evidence artifact、Phase4 contract tests 和 legacy matrix 业务项逐项关闭。
 - 可选 PostgreSQL 并发验证未作为本地开发阻塞；production closure 前必须提供同等生产规模 evidence。
 
+状态同步（2026-07-07）：
+
+- Phase3 production closure artifacts 与 Phase4 production evidence artifact 已由后续计划补齐并通过 production gates。
+- Phase5 technical lane 已随 PR #78 合并；Phase5 business readiness 与 business destructive cleanup 已随 PR #79 合并到 `develop`（`v0.14.0.0`，merge SHA `8c833610c08005005406b3a774c92519f69b7886`）。
+- `WorkLine.runtime_status` 物理字段删除仍不属于本计划，继续作为独立 schema/data cleanup 排期。
+
 ## 文件结构与职责
 
 ### Runtime status owner 收敛
@@ -1013,7 +1019,7 @@ Expected:
 - 对应 Phase4 capability / port / contract tests 全绿。
 - legacy cleanup matrix 中业务承载项逐项有 evidence 和删除前置条件。
 
-当前状态：business lane 仍为 `blocked-until-production-evidence`，不得仅凭 mock closure、lightweight benchmark 或本地 contract tests 删除业务承载 legacy。
+当前状态（2026-07-07 同步）：business lane 不再停留在 `blocked-until-production-evidence`；Phase3/Phase4 production evidence 与 Phase5 business cleanup 已在后续计划中闭合。仍不得仅凭 mock closure、lightweight benchmark 或本地 contract tests 删除新的业务承载 legacy；任何后续 schema/data destructive cleanup 仍需独立计划和 production evidence。
 
 ## 风险与应对
 

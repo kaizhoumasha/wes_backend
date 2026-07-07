@@ -2,7 +2,7 @@
 
 ## 结论
 
-Phase5 `phase5-tech` 已完成。`phase5-business` 携带 regenerated Phase3/Phase4 artifacts 后已通过 readiness gate，并已执行 business destructive cleanup：104 条 phase4 carrier 全部在 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 关闭或保留为目标态测试证据。raw `reports/` artifacts 仍由 Git 忽略，重新验证前必须从 restored field/CI evidence 重新生成。
+Phase5 `phase5-tech` 已完成并随 PR #78 合并。`phase5-business` 携带 regenerated Phase3/Phase4 artifacts 后已通过 readiness gate，并已随 PR #79（`v0.14.0.0`，merge SHA `8c833610c08005005406b3a774c92519f69b7886`）执行并合并 business destructive cleanup：104 条 phase4 carrier 全部在 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 关闭或保留为目标态测试证据。raw `reports/` artifacts 仍由 Git 忽略，重新验证前必须从 restored field/CI evidence 重新生成。
 
 ## 执行顺序
 
@@ -63,6 +63,7 @@ RuntimeInbox
 - Phase4 production runtime evidence gate passed。
 - business gate passed。
 - business destructive cleanup gate passed。
+- PR #79 已 merged to `develop`；未检测到 GitHub deploy workflow 且未提供生产 URL，因此 land report 记录为 `DEPLOYED (UNVERIFIED)`。
 - tracked provenance ledger: `docs/architecture/phase3-phase4-production-evidence-bundle.md`。
 
 ## 回滚

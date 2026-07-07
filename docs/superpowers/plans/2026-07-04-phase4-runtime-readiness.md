@@ -1,5 +1,7 @@
 # Phase4 Runtime Readiness 实施计划
 
+> **Completion status (2026-07-07):** DONE for Phase4 runtime readiness. Phase4 development/mock readiness、Wave2/Wave3 production-capable runtime path、evidence profile gate 与 composer 已闭合；Phase4 production evidence artifact 已由 `2026-07-07-phase3-production-artifacts.md` 生成并通过 production gate。Phase5 business cleanup 已随 PR #79 合并；真实生产发布仍需现场 evidence/canary 按发布流程执行。
+
 ## 目标
 
 根据 Phase4 SPEC 实施可测试的运行时读模型与基础事实能力：
@@ -83,4 +85,4 @@ Wave2/Wave3 后续目标是 production-capable runtime path，外部 provider �
 
 ## 当前门禁结论
 
-P0/Wave1 已可本地验证，且 MaterialLocationQuery API 第 6 入口、CellReservation TTL、reservation evidence/idempotency 口径已补齐。Wave2/Wave3 已具备 preview 语义基线与 production-capable runtime path 的 plan builder；代码只输出 `RuntimeIntent`、effect contract、RuntimeInbox evidence 与 RuntimeHold/Reconciliation plan，不关心外部 provider 是 MOCK、simulator 还是真设备。Phase1 callback admission 已在 callback API 热路径关闭。Phase3 closure 在当前开发/测试范围默认走 MOCK closure，真实 artifact 不再作为当前推进阻塞项。Phase2 `runtime_status` 兼容投影收尾已完成，开发/测试范围的 Phase4 runtime readiness gate 已关闭；Phase4 `site/production` evidence profile gate 与 artifact composer 已闭合。发布前仍必须显式提供 Phase4 evidence manifest 引用文件，并通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...` 与 Phase4 production profile gate。
+P0/Wave1 已可本地验证，且 MaterialLocationQuery API 第 6 入口、CellReservation TTL、reservation evidence/idempotency 口径已补齐。Wave2/Wave3 已具备 preview 语义基线与 production-capable runtime path 的 plan builder；代码只输出 `RuntimeIntent`、effect contract、RuntimeInbox evidence 与 RuntimeHold/Reconciliation plan，不关心外部 provider 是 MOCK、simulator 还是真设备。Phase1 callback admission 已在 callback API 热路径关闭。Phase3 closure 在当前开发/测试范围默认走 MOCK closure，真实 artifact 不再作为当前推进阻塞项。Phase2 `runtime_status` 兼容投影收尾已完成，开发/测试范围的 Phase4 runtime readiness gate 已关闭；Phase4 `site/production` evidence profile gate 与 artifact composer 已闭合。2026-07-07 已通过后续 evidence 计划生成 `reports/phase4/runtime-evidence-production.json` 并通过 Phase4 production profile gate；发布前仍必须使用对应现场/CI evidence 重新验证，并执行部署 canary。

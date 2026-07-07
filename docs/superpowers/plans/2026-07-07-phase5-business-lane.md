@@ -3,7 +3,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 将 Phase5 business lane 从 `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN` 推进到 `PHASE5_BUSINESS_READY`，同时不删除业务承载 legacy 数据或流程语义。
+> **Completion status (2026-07-07):** DONE and LANDED. 本计划的 readiness 部分已随 PR #79 合并到 `develop`（`v0.14.0.0`，merge SHA `8c833610c08005005406b3a774c92519f69b7886`）。Phase5 business readiness gate 已通过；后续 destructive cleanup 由 companion plan `2026-07-07-phase5-business-legacy-destructive-cleanup.md` 执行并同 PR 落地。
+
+**Original goal:** 将 Phase5 business lane 从 `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN` 推进到 `PHASE5_BUSINESS_READY`，同时不删除业务承载 legacy 数据或流程语义。
 
 **Architecture:** 复用现有 Phase3 production closure gate、Phase4 runtime evidence gate、Phase4 business contract tests 和 Phase5 readiness gate。执行顺序固定为 artifact preflight -> evidence/contract gates -> legacy matrix closure guardrail -> business gate wiring -> docs 状态同步 -> final quality gate。
 
@@ -11,9 +13,9 @@
 
 ---
 
-## Current Baseline
+## Execution Baseline (Historical)
 
-当前真实 blocker 已由工程评审确认：
+执行前真实 blocker 已由工程评审确认：
 
 ```text
 reports/phase3/*.json + reports/phase4/runtime-evidence-production.json
@@ -29,7 +31,7 @@ reports/phase3/*.json + reports/phase4/runtime-evidence-production.json
 - `phase5-tech` 已完成，不重开旧 plugin runtime/import 框架清理。
 - `reports/` 被 Git 忽略；本计划不得假设干净 worktree 天然存在 raw artifacts。
 - `legacy-cleanup-matrix.csv` 当前没有 `drop_phase == phase5-business` 条目；104 个 `phase4_carrier=True` 条目归属 `phase4` rebuild。
-- 本计划只推进 readiness 状态；destructive business cleanup 必须另开计划。
+- 本计划只推进 readiness 状态；destructive business cleanup 在 companion plan 中独立执行，并已随 PR #79 同步落地。
 
 ## File Structure
 
@@ -165,7 +167,7 @@ uv run python scripts/check_phase5_readiness_gate.py --lane business \
   --phase4-evidence-artifact reports/phase4/runtime-evidence-production.json
 ```
 
-Expected before matrix closure:
+Expected before matrix closure during implementation:
 
 ```text
 Phase 5 readiness failed: LEGACY_MATRIX_BUSINESS_ITEMS_OPEN
@@ -543,10 +545,21 @@ Expected: commit succeeds.
 - Artifact hashes: matched the tracked ledger for Phase3 P0 E2E, Phase3 benchmark, and Phase4 runtime evidence.
 - Matrix audit: `phase5_business 0`; `phase4_carrier 104 invalid 0`.
 - Existing readiness tests: `uv run pytest tests/contracts/test_phase5_readiness_gate.py -q` -> `12 passed`.
-- Current baseline gate: `uv run python scripts/check_phase5_readiness_gate.py --lane business ...` still fails at `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN / phase5_business_lane_status`, as expected before executing this plan.
+- Pre-implementation baseline gate: `uv run python scripts/check_phase5_readiness_gate.py --lane business ...` failed at `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN / phase5_business_lane_status`, as expected before executing this plan.
 - Outside Codex CLI review: completed read-only and produced 3 findings; all were folded into the plan.
 
+## Implementation Completion Status
+
+- **Status:** DONE / LANDED.
+- **Landing:** PR #79 merged into `develop` on 2026-07-07 as `v0.14.0.0`; merge SHA `8c833610c08005005406b3a774c92519f69b7886`.
+- **Delivered:** `phase5_business_lane_status` advanced to ready, matrix closure guardrail was wired into the business readiness gate, and current-state architecture docs no longer report Phase5 business blocked by Phase3/Phase4 evidence or legacy matrix readiness.
+- **Verification at ship:** `uv run pytest tests/ -q` passed with `1820 passed, 5 skipped`; `./scripts/git-quality-gate.sh --profile quality` passed; `check_phase5_readiness_gate.py --lane business` passed with regenerated Phase3/Phase4 artifacts.
+- **Deploy status:** PR merged; no GitHub deploy workflow or production URL was configured, so post-merge canary was skipped by user choice and recorded as `DEPLOYED (UNVERIFIED)`.
+- **Follow-up:** business destructive cleanup is no longer pending; it landed in the companion plan/PR #79. `WorkLine.runtime_status` physical schema/data deletion remains a separate cleanup plan.
+
 ## GSTACK REVIEW REPORT
+
+以下保留实施前评审记录；当前完成状态以上方 `Implementation Completion Status` 为准。
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
