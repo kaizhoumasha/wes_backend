@@ -50,11 +50,11 @@ uv run python scripts/compose_phase3_p0_e2e_artifact.py \
   --exception-evidence ecs_timeout=reports/phase3/evidence/p0-e2e/ecs_timeout.json \
   --exception-evidence wms_reject=reports/phase3/evidence/p0-e2e/wms_reject.json
 
-GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SNAPSHOT_GENERATED_AT="2026-07-07T02:46:16Z"
 uv run python scripts/compose_phase3_runtime_benchmark_artifact.py \
   --output reports/phase3/phase3-production-benchmark.json \
   --environment field-benchmark \
-  --generated-at "$GENERATED_AT" \
+  --generated-at "$SNAPSHOT_GENERATED_AT" \
   --dependency-profile postgresql-wms-ecs-http \
   --concurrency-level 64 \
   --duration-seconds 300 \
@@ -63,12 +63,11 @@ uv run python scripts/compose_phase3_runtime_benchmark_artifact.py \
   --scenario-evidence ecs_status_command=reports/phase3/evidence/benchmark/ecs_status_command.json \
   --scenario-evidence plane_snapshot=reports/phase3/evidence/benchmark/plane_snapshot.json
 
-GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 uv run python scripts/compose_phase4_runtime_evidence_artifact.py \
   --output reports/phase4/runtime-evidence-production.json \
   --profile production \
   --environment field-production \
-  --generated-at "$GENERATED_AT" \
+  --generated-at "$SNAPSHOT_GENERATED_AT" \
   --evidence-dir evidence/phase4-runtime
 ```
 

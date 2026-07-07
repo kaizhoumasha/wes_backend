@@ -388,11 +388,11 @@ extra= []
 Run:
 
 ```bash
-GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SNAPSHOT_GENERATED_AT="2026-07-07T02:46:16Z"
 uv run python scripts/compose_phase3_runtime_benchmark_artifact.py \
   --output reports/phase3/phase3-production-benchmark.json \
   --environment field-benchmark \
-  --generated-at "$GENERATED_AT" \
+  --generated-at "$SNAPSHOT_GENERATED_AT" \
   --dependency-profile postgresql-wms-ecs-http \
   --concurrency-level 64 \
   --duration-seconds 300 \
@@ -514,13 +514,13 @@ uv run python scripts/check_phase5_readiness_gate.py \
   --phase4-evidence-artifact reports/phase4/runtime-evidence-production.json
 ```
 
-Expected current result:
+Expected current result before Task 5 if the Phase4 production artifact has not been regenerated:
 
 ```text
 Phase 5 readiness failed: MISSING_PHASE4_PRODUCTION_EVIDENCE
 ```
 
-Acceptance: this command must not fail with `MISSING_PHASE3_PRODUCTION_CLOSURE`. If it fails at Phase4, Phase3 artifacts are complete and the remaining blocker is outside this plan.
+Acceptance: this command must not fail with `MISSING_PHASE3_PRODUCTION_CLOSURE`. If it fails at Phase4, Phase3 artifacts are complete; continue to Task 5 because Phase4 production evidence is in this plan's scope.
 
 ## Task 5: Compose And Validate The Phase4 Production Evidence Artifact
 
@@ -552,12 +552,12 @@ Expected: command exits `0`.
 Run:
 
 ```bash
-GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SNAPSHOT_GENERATED_AT="2026-07-07T02:46:16Z"
 uv run python scripts/compose_phase4_runtime_evidence_artifact.py \
   --output reports/phase4/runtime-evidence-production.json \
   --profile production \
   --environment field-production \
-  --generated-at "$GENERATED_AT" \
+  --generated-at "$SNAPSHOT_GENERATED_AT" \
   --evidence-dir evidence/phase4-runtime
 ```
 
