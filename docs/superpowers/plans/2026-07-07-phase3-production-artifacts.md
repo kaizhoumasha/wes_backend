@@ -156,7 +156,7 @@ Root cause:
 - Read: `reports/phase3/evidence/p0-e2e/*.json`
 - Read: `reports/phase3/evidence/benchmark/*.json`
 
-- [ ] **Step 1: Confirm artifacts currently fail for the expected reason**
+- [x] **Step 1: Confirm artifacts currently fail for the expected reason**
 
 Run:
 
@@ -174,7 +174,9 @@ Phase 3 closure evidence failed validation: INVALID_PHASE3_CLOSURE_ARTIFACTS
 invalid_artifacts=p0_e2e:MISSING_SOURCE_PROVENANCE,benchmark:MISSING_SCENARIO_PROVENANCE
 ```
 
-- [ ] **Step 2: Confirm required evidence files exist**
+执行说明（2026-07-07）：这是 regenerated artifacts 生成前记录的执行前基线。实际执行时，当前 artifacts 已通过 `check_phase3_closure_gate.py`；Task 4 与 Task 8 已再次验证不再出现 `MISSING_PHASE3_PRODUCTION_CLOSURE`。
+
+- [x] **Step 2: Confirm required evidence files exist**
 
 Run:
 
@@ -191,7 +193,7 @@ test -f reports/phase3/evidence/benchmark/plane_snapshot.json
 
 Expected: command exits `0`.
 
-- [ ] **Step 3: Inspect evidence source kinds and workload metadata**
+- [x] **Step 3: Inspect evidence source kinds and workload metadata**
 
 Run:
 
@@ -226,7 +228,7 @@ runtime_inbox_claim.json postgresql {'pending_inbox_count': 1000, 'worker_concur
 - Read: `reports/phase3/evidence/p0-e2e/wms_reject.json`
 - Verify: `scripts/check_phase3_p0_e2e_gate.py`
 
-- [ ] **Step 1: Verify the source recording has all required event groups**
+- [x] **Step 1: Verify the source recording has all required event groups**
 
 Run:
 
@@ -257,7 +259,7 @@ Expected:
 missing_event_kinds= []
 ```
 
-- [ ] **Step 2: Verify exception evidence case names**
+- [x] **Step 2: Verify exception evidence case names**
 
 Run:
 
@@ -285,7 +287,7 @@ ecs_timeout ecs_timeout RECONCILING
 wms_reject wms_reject RECONCILING
 ```
 
-- [ ] **Step 3: Generate the artifact through the composer**
+- [x] **Step 3: Generate the artifact through the composer**
 
 Run:
 
@@ -307,7 +309,7 @@ Expected:
 Phase 3 P0 E2E artifact written: reports/phase3/phase3-p0-e2e.json
 ```
 
-- [ ] **Step 4: Verify the generated provenance fields**
+- [x] **Step 4: Verify the generated provenance fields**
 
 Run:
 
@@ -336,7 +338,7 @@ ecs_timeout RECONCILING 64
 wms_reject RECONCILING 64
 ```
 
-- [ ] **Step 5: Run the P0 E2E artifact gate**
+- [x] **Step 5: Run the P0 E2E artifact gate**
 
 Run:
 
@@ -361,7 +363,7 @@ Phase 3 P0 E2E artifact passed: reports/phase3/phase3-p0-e2e.json
 - Read: `reports/phase3/evidence/benchmark/plane_snapshot.json`
 - Verify: `src/app/runtime/orchestration/benchmark_gate.py`
 
-- [ ] **Step 1: Validate scenario names before composing**
+- [x] **Step 1: Validate scenario names before composing**
 
 Run:
 
@@ -383,7 +385,7 @@ missing= []
 extra= []
 ```
 
-- [ ] **Step 2: Generate the artifact through the composer**
+- [x] **Step 2: Generate the artifact through the composer**
 
 Run:
 
@@ -408,7 +410,7 @@ Expected:
 Phase 3 production benchmark artifact written: reports/phase3/phase3-production-benchmark.json
 ```
 
-- [ ] **Step 3: Verify scenario provenance fields**
+- [x] **Step 3: Verify scenario provenance fields**
 
 Run:
 
@@ -437,7 +439,7 @@ plane_snapshot api-http True 64
 runtime_inbox_claim postgresql True 64
 ```
 
-- [ ] **Step 4: Run the benchmark artifact gate in-process**
+- [x] **Step 4: Run the benchmark artifact gate in-process**
 
 Run:
 
@@ -471,7 +473,7 @@ True OK
 - Test: `tests/runtime/orchestration/test_phase3_benchmark_artifact_composer.py`
 - Test: `tests/runtime/orchestration/test_phase3_closure_evidence_gate.py`
 
-- [ ] **Step 1: Run Phase3 production closure gate**
+- [x] **Step 1: Run Phase3 production closure gate**
 
 Run:
 
@@ -488,7 +490,7 @@ Expected:
 Phase 3 closure evidence passed
 ```
 
-- [ ] **Step 2: Run artifact composer and closure regression tests**
+- [x] **Step 2: Run artifact composer and closure regression tests**
 
 Run:
 
@@ -502,7 +504,7 @@ uv run pytest \
 
 Expected: all selected tests pass.
 
-- [ ] **Step 3: Confirm Phase5 business advances past Phase3 blocker**
+- [x] **Step 3: Confirm Phase5 business advances past Phase3 blocker**
 
 Run:
 
@@ -532,7 +534,7 @@ Acceptance: this command must not fail with `MISSING_PHASE3_PRODUCTION_CLOSURE`.
 - Read: `reports/phase4/evidence/phase4-runtime/benchmarks/phase4-runtime.json`
 - Verify: `scripts/check_phase4_runtime_readiness_gate.py`
 
-- [ ] **Step 1: Confirm required Phase4 evidence files exist**
+- [x] **Step 1: Confirm required Phase4 evidence files exist**
 
 Run:
 
@@ -547,7 +549,7 @@ test -f reports/phase4/evidence/phase4-runtime/benchmarks/phase4-runtime.json
 
 Expected: command exits `0`.
 
-- [ ] **Step 2: Generate the Phase4 production artifact through the composer**
+- [x] **Step 2: Generate the Phase4 production artifact through the composer**
 
 Run:
 
@@ -567,7 +569,7 @@ Expected:
 Phase 4 runtime evidence artifact written: reports/phase4/runtime-evidence-production.json
 ```
 
-- [ ] **Step 3: Run the Phase4 production readiness gate**
+- [x] **Step 3: Run the Phase4 production readiness gate**
 
 Run:
 
@@ -585,7 +587,7 @@ Expected:
 Phase 4 runtime readiness evidence gate passed: reason=PHASE4_RUNTIME_EVIDENCE_READY evidence_profile=production
 ```
 
-- [ ] **Step 4: Run Phase4 evidence contract tests**
+- [x] **Step 4: Run Phase4 evidence contract tests**
 
 Run:
 
@@ -598,7 +600,7 @@ uv run pytest \
 
 Expected: all selected tests pass.
 
-- [ ] **Step 5: Confirm Phase5 business advances past Phase3 and Phase4 evidence blockers**
+- [x] **Step 5: Confirm Phase5 business advances past Phase3 and Phase4 evidence blockers**
 
 Run:
 
@@ -625,7 +627,7 @@ Acceptance: this command must not fail with `MISSING_PHASE3_PRODUCTION_CLOSURE` 
 
 - Create: `docs/architecture/phase3-phase4-production-evidence-bundle.md`
 
-- [ ] **Step 1: Create the ledger with commands and gate outputs**
+- [x] **Step 1: Create the ledger with commands and gate outputs**
 
 Add this document structure:
 
@@ -674,7 +676,7 @@ Phase 5 readiness failed: LEGACY_MATRIX_BUSINESS_ITEMS_OPEN
 `reports/` is ignored by Git. Raw artifacts are local/CI/field evidence outputs, not source code. This ledger records the reproducible commands, SHA256 values and gate results; do not commit raw evidence unless release governance explicitly requires an artifact snapshot.
 ````
 
-- [ ] **Step 2: Verify the ledger has no stale blocker text**
+- [x] **Step 2: Verify the ledger has no stale blocker text**
 
 Run:
 
@@ -691,7 +693,7 @@ Expected: no output.
 - Modify: `docs/architecture/legacy-cleanup-execution-plan.md`
 - Modify: `docs/architecture/workline-and-plugin-restructuring.md`
 
-- [ ] **Step 1: Update legacy cleanup execution plan status**
+- [x] **Step 1: Update legacy cleanup execution plan status**
 
 Edit `docs/architecture/legacy-cleanup-execution-plan.md` so the Phase5 business blocker says:
 
@@ -700,7 +702,7 @@ Phase3 production closure artifacts and Phase4 production evidence artifacts can
 Phase5 business lane remains blocked by legacy matrix business close, not by missing Phase3 provenance or Phase4 evidence hashes.
 ```
 
-- [ ] **Step 2: Update the top-level architecture status**
+- [x] **Step 2: Update the top-level architecture status**
 
 Edit `docs/architecture/workline-and-plugin-restructuring.md` in §10.0.1 / §10.6 so the Phase5 status says:
 
@@ -708,7 +710,7 @@ Edit `docs/architecture/workline-and-plugin-restructuring.md` in §10.0.1 / §10
 Phase5 business lane no longer uses `MISSING_PHASE3_PRODUCTION_CLOSURE` or `MISSING_PHASE4_PRODUCTION_EVIDENCE` as the current expected blocker after regenerated Phase3/Phase4 artifacts are supplied. The next expected blocker is `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`.
 ```
 
-- [ ] **Step 3: Check the docs point to the provenance ledger**
+- [x] **Step 3: Check the docs point to the provenance ledger**
 
 Run:
 
@@ -729,7 +731,7 @@ Expected: both architecture docs reference either the ledger or both artifact pa
 - Generated but normally untracked: `reports/phase3/phase3-production-benchmark.json`
 - Generated but normally untracked: `reports/phase4/runtime-evidence-production.json`
 
-- [ ] **Step 1: Run focused verification**
+- [x] **Step 1: Run focused verification**
 
 Run:
 
@@ -768,7 +770,7 @@ Expected:
 - Selected Phase3, Phase4 and Phase5 contract tests pass.
 - Quality profile passes.
 
-- [ ] **Step 2: Confirm Phase5 business blocker moved past Phase3**
+- [x] **Step 2: Confirm Phase5 business blocker moved past Phase3**
 
 Run:
 
@@ -789,7 +791,7 @@ details=phase5_business_lane_status
 
 Acceptance: if the reason is `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`, this plan succeeded. If the reason is `MISSING_PHASE3_PRODUCTION_CLOSURE` or `MISSING_PHASE4_PRODUCTION_EVIDENCE`, return to Task 2, Task 3 or Task 5.
 
-- [ ] **Step 3: Review Git status**
+- [x] **Step 3: Review Git status**
 
 Run:
 
@@ -807,7 +809,7 @@ Expected tracked changes:
 
 `reports/phase3/**` and `reports/phase4/**` should not appear unless the team intentionally changes artifact retention policy.
 
-- [ ] **Step 4: Commit tracked documentation**
+- [x] **Step 4: Commit tracked documentation**
 
 Before commit, if any Python function, class, or method was changed while executing this plan, run GitNexus impact analysis and `gitnexus_detect_changes()` per AGENTS.md. If only reports and docs changed, record that no code symbols were modified.
 
@@ -823,6 +825,28 @@ git commit -m "docs(runtime): 补齐 Phase3/Phase4 production evidence 账本"
 ```
 
 Expected: commit succeeds with only tracked docs staged.
+
+## 执行状态
+
+- 状态：2026-07-07 已完成。
+- 执行提交：
+  - `4e545004 docs(runtime): 补齐 Phase3/Phase4 production evidence 账本`
+  - `30d31c1a docs(runtime): 固化 Phase3/Phase4 evidence 快照命令`
+- Artifact 快照时间：`2026-07-07T02:46:16Z`。
+- Artifact hashes：
+  - `reports/phase3/phase3-p0-e2e.json`: `0840947996b7e15e5847a57b16156373e174fbafc491350592e097aa9c4a60ed`
+  - `reports/phase3/phase3-production-benchmark.json`: `6d039f4210128b337ff10228228d510a45ea0caab01f331f7fdfc592bbcd71b1`
+  - `reports/phase4/runtime-evidence-production.json`: `29b6d3990296efa875b35c90ba90a4fe4ea70b150b376c97f5243706f1cb7fec`
+- 已完成验证：
+  - `uv run python scripts/check_phase3_closure_gate.py --closure-profile production --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json` passed.
+  - `uv run pytest tests/runtime/orchestration/test_phase3_p0_e2e_artifact_composer.py tests/runtime/orchestration/test_phase3_benchmark_artifact_composer.py tests/runtime/orchestration/test_phase3_closure_evidence_gate.py -q` passed with `32 passed`.
+  - `uv run python scripts/check_phase4_runtime_readiness_gate.py --readiness-profile production --phase4-runtime-evidence-artifact reports/phase4/runtime-evidence-production.json --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json` passed.
+  - `uv run pytest tests/contracts/test_phase4_runtime_evidence_artifact_composer.py tests/contracts/test_phase4_runtime_readiness_gate.py -q` passed with `18 passed`.
+  - `uv run pytest tests/contracts/test_phase5_readiness_gate.py -q` passed with `12 passed`.
+  - `./scripts/git-quality-gate.sh --profile quality` passed.
+  - `npx gitnexus detect-changes --scope all --repo wes_backend` reported low risk, 0 affected processes.
+- Phase5 business 结果：仍按预期阻塞于 `LEGACY_MATRIX_BUSINESS_ITEMS_OPEN`；在提供 regenerated Phase3/Phase4 artifacts 后，不再失败于 `MISSING_PHASE3_PRODUCTION_CLOSURE` 或 `MISSING_PHASE4_PRODUCTION_EVIDENCE`。
+- Artifact 留存：raw `reports/phase3/**` 与 `reports/phase4/**` 仍是 ignored 的本地/CI evidence 输出；tracked provenance 记录在 `docs/architecture/phase3-phase4-production-evidence-bundle.md`。
 
 ## Self-Review
 
