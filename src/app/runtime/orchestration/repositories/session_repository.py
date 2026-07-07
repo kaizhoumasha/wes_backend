@@ -402,6 +402,31 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             .execution_options(synchronize_session=False)
         )
 
+    async def persist_cancelled(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: int,
+        occurred_at: Any,
+    ) -> None:
+        """显式持久化取消态，保持人工取消与 legacy write-back 语义一致。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        await db.execute(
+            update(WorklineSession)
+            .where(columns.id == session_id)
+            .values(
+                status=SessionStatus.CANCELLED,
+                current_wait_type=None,
+                waiting_since=None,
+                deadline_at=None,
+                current_wait_timeout_seconds=None,
+                awaiting_device_command_code=None,
+                ended_at=occurred_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+
     async def get_open_session_by_awaiting_device_command_code(
         self,
         db: AsyncSession,

@@ -75,6 +75,8 @@ _RESULT_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
 _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
     {
         "callback_type",
+        "runtime_capability",
+        "attributes",
         "data",
         "trace_id",
         "event_id",
@@ -165,6 +167,7 @@ _EXTERNAL_CALLBACK_WMS_RCS_DOCUMENTED_TYPES = frozenset(
 )
 _EXTERNAL_CALLBACK_WMS_RCS_RUNTIME_TYPES = frozenset(
     {
+        "WMS_ROUGH_SORTER_INBOUND",
         "WMS_RACK_TASK_RESULT",
         "RCS_RACK_TASK_RESULT",
         "WMS_RACK_TASK_PROGRESS",

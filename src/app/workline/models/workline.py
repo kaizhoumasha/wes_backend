@@ -13,11 +13,11 @@ from sqlalchemy import JSON, Column, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
+from src.app.runtime.capability_catalog import WorklineCapabilityDefinition, get_workline_capability_definition
 from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
-from src.workline_plugin_registry import WorklinePluginDefinition, get_workline_plugin_definition
 
 
 class LineType(str, Enum):
@@ -121,8 +121,8 @@ class WorkLine(
 
     作业线是生产线或工作站的抽象，用于组织和管理设备。
 
-    除基础信息外，它还是插件运行容器：
-    - plugin_key / contract_version: 默认插件和契约来源
+    除基础信息外，它还是运行能力配置容器：
+    - plugin_key / contract_version: 默认能力和契约来源
     - runtime_config_json: 运行时行为配置
     - diagnostic_profile: 诊断展示与分类配置
     """
@@ -185,17 +185,16 @@ class WorkLine(
     is_active: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")}, description="是否启用")
 
     @property
-    def plugin_definition(self) -> WorklinePluginDefinition | None:
-        """按 plugin_key 解析插件定义。"""
+    def plugin_definition(self) -> WorklineCapabilityDefinition | None:
+        """按 plugin_key 解析运行能力定义。"""
 
-        return get_workline_plugin_definition(self.plugin_key)
+        return get_workline_capability_definition(self.plugin_key)
 
     @property
     def plugin_class(self) -> type[Any] | None:
-        """按 plugin_key 解析插件类。"""
+        """Phase5 后运行时不再通过 WorkLine 动态解析插件类。"""
 
-        definition = self.plugin_definition
-        return definition.plugin_class if definition else None
+        return None
 
     @property
     def resolved_runtime_config(self) -> dict[str, Any]:

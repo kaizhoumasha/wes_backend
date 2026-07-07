@@ -9,12 +9,12 @@ from src.app.runtime.orchestration.services.device_command_gateway import (
     _mark_outbox_blocked_by_workline_state,
 )
 from src.app.workline.diagnostic_support import _record_diagnostic
+from src.app.workline.domain.run_mode import is_simulation_run_mode
 from src.app.workline.outbox_dispatch_support import (
     _outbox_trace_extra,
     _outbox_trace_log_suffix,
     _resolve_outbox_run_mode,
 )
-from src.app.workline.plugins.run_mode import is_simulation_run_mode
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import payload_dict

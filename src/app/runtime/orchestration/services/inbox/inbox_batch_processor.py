@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from loguru import logger
 from sqlalchemy import text
 
+from src.app.runtime.capability_catalog import get_workline_capability_definition, parse_workline_six_in_one
 from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     ErrorDomain,
@@ -20,6 +21,7 @@ from src.app.runtime.orchestration.lock_bridge import RedisDistributedLock
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult, OrchestratorService
 from src.app.runtime.orchestration.repositories.inbox_repository import WorklineInboxClaim
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
+from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
 from src.app.workline.constants import (
     EXTERNAL_HTTP_INBOX_KIND,
     INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -28,7 +30,6 @@ from src.app.workline.constants import (
 )
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.domain.plugin_manifest import EventCategory
-from src.app.workline.plugins.session_resolver import SessionResolveError
 from src.app.workline.runtime_services import WorklineRuntimeServices, build_workline_runtime_services
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.utils import payload_dict
@@ -43,7 +44,6 @@ from src.utils.value_normalization import (
     resolve_required_pk,
     string_value,
 )
-from src.workline_plugin_registry import get_workline_plugin_definition, parse_workline_six_in_one
 
 if TYPE_CHECKING:
     from src.app.workline.utils import JsonDict
@@ -228,7 +228,7 @@ def _command_code_value(command: Any, payload: dict[str, Any]) -> str | None:
 def _entry_event_types_for_workline(workline: Any | None) -> frozenset[str]:
     """从插件 manifest.events 获取 ENTRY_DEVICE 入口事件类型，缺省时保留当前 SMT 入口。"""
     plugin_key = string_value(getattr(workline, "plugin_key", None)) if workline is not None else ""
-    definition = get_workline_plugin_definition(plugin_key)
+    definition = get_workline_capability_definition(plugin_key)
     if definition is None:
         return _ENTRY_DEVICE_EVENT_TYPES
     events = getattr(definition.manifest, "events", None)
@@ -687,7 +687,7 @@ async def _load_related_entities(
     from src.app.runtime.orchestration.repositories.session_repository import (
         WorklineSessionRepository,
     )
-    from src.app.workline.plugins.session_resolver import session_resolver
+    from src.app.runtime.orchestration.services.session.session_resolver import session_resolver
     from src.app.workline.repositories import WorkLineRepository
 
     session_repo = WorklineSessionRepository()
@@ -1104,7 +1104,9 @@ class InboxBatchProcessor:
                             raise RuntimeError(
                                 "Session state changed before WRITE apply; refusing stale orchestrator effects"
                             )
-                        from src.app.workline.plugins.session_resolver import reapply_pending_session_ingress_metadata
+                        from src.app.runtime.orchestration.services.session.session_resolver import (
+                            reapply_pending_session_ingress_metadata,
+                        )
 
                         _ = reapply_pending_session_ingress_metadata(_session)
                         write_back_service = self.write_back_service

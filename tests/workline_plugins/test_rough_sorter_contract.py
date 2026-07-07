@@ -2,10 +2,9 @@
 
 import pytest
 
-from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntentKind
+from src.app.workline.domain.contexts.rough_sorter import RoughSorterContext
 from src.app.workline.domain.contracts import SixInOne
-from src.workline_plugins.rough_sorter.context import RoughSorterContext
-from src.workline_plugins.rough_sorter.contract import (
+from src.app.workline.domain.contracts.rough_sorter import (
     ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
@@ -29,7 +28,6 @@ from src.workline_plugins.rough_sorter.contract import (
     normalize_six_in_one_payload,
     resolve_rough_sorter_business_key,
 )
-from src.workline_plugins.rough_sorter.plugin import RoughSorterPlugin
 
 
 def _payload_data() -> dict[str, str]:
@@ -221,28 +219,3 @@ def test_rough_sorter_context_is_serializable() -> None:
 
     assert dumped["six_in_one"]["PkgID"] == "PKG-001"
     assert dumped["phase"] == ROUGH_SORTER_SCANNED_CONTEXT_STATE
-
-
-@pytest.mark.asyncio
-async def test_registered_scan_event_dispatches_after_task2_handler_ships() -> None:
-    plugin = RoughSorterPlugin()
-    ctx = type(
-        "Ctx",
-        (),
-        {
-            "config": {},
-            "logger": type("Logger", (), {"warning": lambda *_args: None})(),
-            "trace_id": "trace-rough-sorter-contract",
-        },
-    )()
-    inbox = type("Inbox", (), {"payload_json": {"event_type": "SCAN_COMPLETED", "data": _payload_data()}})()
-
-    intents = await plugin.on_device_event(ctx, inbox)
-
-    assert [intent.kind for intent in intents] == [
-        RuntimeIntentKind.CREATE_MATERIAL_UNIT,
-        RuntimeIntentKind.UPDATE_CONTEXT,
-        RuntimeIntentKind.COMMAND,
-    ]
-    assert intents[1].context_patch["phase"] == PHASE_PICK_TO_PIPELINE
-    assert intents[2].action == ACTION_PICK_AND_PUT

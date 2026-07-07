@@ -14,6 +14,10 @@ from src.app.device.models.command import CommandResult, CommandStatus, DeviceCo
 from src.app.device.models.device import Device
 from src.app.device.repositories import device_command_repository
 from src.app.device.services.device_service import DeviceService
+from src.app.runtime.capability_catalog import (
+    list_workline_ng_reasons,
+    resolve_workline_material_identity,
+)
 from src.app.runtime.orchestration.models.inbox import InboxKind, SourceSystem
 from src.app.runtime.orchestration.models.runtime_hold import (
     MaterialDisposition,
@@ -41,10 +45,6 @@ from src.app.sys.repositories import system_outbox_repository
 from src.app.workline.repositories import workline_repository
 from src.utils.timezone import timezone
 from src.utils.value_normalization import as_dict, enum_str
-from src.workline_plugin_registry import (
-    list_workline_ng_reasons,
-    resolve_workline_material_identity,
-)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession

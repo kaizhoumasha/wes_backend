@@ -15,6 +15,7 @@ from src.app.device.repositories import (
     device_command_repository,
     device_repository,
 )
+from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.models.inbox import InboxKind, SourceSystem
 from src.app.runtime.orchestration.models.operation import (
     ResolveRuntimeReconciliationRequest,
@@ -44,7 +45,6 @@ from src.core.base_service import BaseService
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_str
-from src.workline_plugin_registry import get_workline_plugin_definition
 
 if TYPE_CHECKING:
     from src.app.rack.services import RackTaskLifecycleService
@@ -1208,7 +1208,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         if not plugin_key:
             return SandboxTemplatesResponse()
 
-        plugin_def = get_workline_plugin_definition(plugin_key)
+        plugin_def = get_workline_capability_definition(plugin_key)
         if plugin_def is None:
             return SandboxTemplatesResponse()
 

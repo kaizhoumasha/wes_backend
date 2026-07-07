@@ -104,6 +104,70 @@ class TestCallbackExternalAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_callback_external_accepts_phase5_runtime_capability_envelope(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        payload = {
+            "callback_type": "WMS_ROUGH_SORTER_INBOUND",
+            "runtime_capability": "rough_sorter_inbound",
+            "source_system": "WMS",
+            "source_event_id": "wms-rough-source-001",
+            "source_version": "wms.phase5",
+            "occurred_at": "2026-07-06T08:00:00Z",
+            "request_id": "REQ-ROUGH-INBOUND-001",
+            "timestamp": "2026-07-06T08:00:01Z",
+            "signature": "test-signature",
+            "trace_id": "trace-rough-inbound-001",
+            "data": {
+                "request_id": "rough-runtime-dispatch-001",
+                "correlation_id": "corr-rough-dispatch-001",
+                "provider_code": "WMS-A",
+                "object_key": "PKG-ROUGH-DISPATCH-001",
+                "bin_code": "BIN-A-01",
+                "bin_cell_index": "1",
+                "target_cell_code": "CELL-A-01",
+                "pkg_code": "PKG-ROUGH-DISPATCH-001",
+                "pallet_id": "PALLET-A-01",
+                "station_code": "ROUGH-OUT-01",
+                "material_code": "MAT-A",
+                "quantity": 1,
+                "warehouse_code": "WH-A",
+            },
+        }
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
+                new=AsyncMock(),
+            ) as mock_create_inbox,
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ),
+            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback.get_request_id", return_value="req-rough-inbound-001"),
+        ):
+            from src.app.callback.v1.callback import callback_external
+
+            response = await callback_external(
+                request=build_request(body=payload, path="/api/v1/callback/external"),
+                db=db_session,
+            )
+
+        assert response["code"] == "1000"
+        assert _response_data(response)["status"] == "submitted"
+        inbox_kwargs = _await_kwargs(mock_create_inbox)
+        assert inbox_kwargs["callback_type"] == "WMS_ROUGH_SORTER_INBOUND"
+        assert inbox_kwargs["payload"]["runtime_capability"] == "rough_sorter_inbound"
+        assert inbox_kwargs["payload"]["data"]["pkg_code"] == "PKG-ROUGH-DISPATCH-001"
+        mock_enqueue.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_callback_external_rejects_missing_trace_id(
         self,
         db_session: AsyncSession,

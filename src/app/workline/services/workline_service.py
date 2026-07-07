@@ -9,10 +9,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models import parse_device_capabilities
 from src.app.device.repositories import device_repository
+from src.app.runtime.capability_catalog import (
+    get_workline_capability_definition,
+    get_workline_contract_version,
+    list_workline_capability_definitions,
+    validate_workline_capability_assignment,
+)
 from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
 from src.app.runtime.orchestration.repositories.rack_position_repository import workline_rack_position_repository
 from src.app.runtime.orchestration.topology_bridge import WorklineTopologyView
+from src.app.workline.domain.run_mode import (
+    is_sandbox_allowed_environment,
+    is_simulation_run_mode,
+    normalize_run_mode,
+)
 from src.app.workline.models import (
     WorkLine,
     WorkLineConfigurationCheck,
@@ -38,23 +49,12 @@ from src.app.workline.models.workline import (
     StateMachineTransition,
     TopologySpec,
 )
-from src.app.workline.plugins.run_mode import (
-    is_sandbox_allowed_environment,
-    is_simulation_run_mode,
-    normalize_run_mode,
-)
 from src.app.workline.repositories import WorkLineRepository, workline_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.conf import settings
 from src.core.exceptions import BusinessException, OptimisticLockException
 from src.utils.device_cache import workline_device_cache
-from src.workline_plugin_registry import (
-    get_plugin_contract_version,
-    get_workline_plugin_definition,
-    list_workline_plugin_definitions,
-    validate_workline_plugin_assignment,
-)
 
 _BLOCKER = "BLOCKER"
 _FAIL = "FAIL"
@@ -250,12 +250,12 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         )
 
     def list_plugin_options(self) -> list[WorkLinePluginOption]:
-        """从插件注册表导出作业线插件/契约版本选项。"""
+        """从运行能力目录导出作业线能力/契约版本选项。"""
 
         options: list[WorkLinePluginOption] = []
-        for definition in list_workline_plugin_definitions():
+        for definition in list_workline_capability_definitions():
             manifest = definition.manifest
-            plugin_key = definition.plugin_key
+            plugin_key = definition.capability_key
             options.append(
                 WorkLinePluginOption(
                     plugin_key=plugin_key,
@@ -271,9 +271,9 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         plugin_key: str,
         contract_version: str | None = None,
     ) -> WorkLinePluginManifestSummary | None:
-        """返回单个工作线插件 manifest 摘要。"""
+        """返回单个工作线能力 manifest 摘要。"""
 
-        definition = get_workline_plugin_definition(plugin_key)
+        definition = get_workline_capability_definition(plugin_key)
         if definition is None:
             return None
 
@@ -281,7 +281,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         if contract_version and manifest.contract_version != contract_version:
             return None
 
-        plugin_key = definition.plugin_key
+        plugin_key = definition.capability_key
         return WorkLinePluginManifestSummary(
             plugin_key=plugin_key,
             contract_version=manifest.contract_version,
@@ -391,7 +391,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             line_name=data.get("line_name", getattr(current, "line_name", None)),
             plugin_key=plugin_key,
         )
-        validate_workline_plugin_assignment(plugin_key, workline_like, devices)
+        validate_workline_capability_assignment(plugin_key, workline_like, devices)
 
     async def configuration_status(self, db: AsyncSession, workline_id: int) -> WorkLineConfigurationStatus:
         """返回 WorkLine 启用前结构化配置状态。"""
@@ -537,7 +537,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     ) -> list[WorkLineConfigurationCheck]:
         checks: list[WorkLineConfigurationCheck] = []
         plugin_key = self._resolve_plugin_key({}, workline)
-        definition = get_workline_plugin_definition(plugin_key)
+        definition = get_workline_capability_definition(plugin_key)
         if plugin_key is None:
             return [
                 self._check(
@@ -891,7 +891,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _validate_plugin_key(plugin_key: object) -> None:
         if not isinstance(plugin_key, str) or not plugin_key:
             return
-        definition = get_workline_plugin_definition(plugin_key)
+        definition = get_workline_capability_definition(plugin_key)
         if definition is None:
             from src.core.exceptions import BadRequestException
 
@@ -912,7 +912,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             return
 
         plugin_key = WorkLineService._resolve_plugin_key(data, current)
-        resolved = get_plugin_contract_version(plugin_key)
+        resolved = get_workline_contract_version(plugin_key)
         if isinstance(resolved, str) and resolved and contract_version != resolved:
             from src.core.exceptions import BadRequestException
 
@@ -948,7 +948,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         if current is not None and not plugin_key_explicit and not contract_version_explicit:
             return
 
-        resolved = get_plugin_contract_version(plugin_key)
+        resolved = get_workline_contract_version(plugin_key)
         if isinstance(resolved, str) and resolved:
             data["contract_version"] = resolved
 

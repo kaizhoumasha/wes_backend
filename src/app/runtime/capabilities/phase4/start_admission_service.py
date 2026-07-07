@@ -12,6 +12,7 @@ import httpx
 
 from src.app.device.repositories import device_repository
 from src.app.device.services.device_context_service import device_context_service
+from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.runtime.orchestration.repositories.session_repository import workline_session_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
@@ -25,7 +26,6 @@ from src.app.workline.services.workline_service import WorkLineService, workline
 from src.core.logger import logger
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.timezone import timezone
-from src.workline_plugin_registry import get_workline_plugin_definition
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -311,7 +311,7 @@ class WorkLineStartAdmissionService:
         return None
 
     def _resolve_command_target_devices(self, workline: Any, devices: list[Any]) -> list[Any]:
-        definition = get_workline_plugin_definition(getattr(workline, "plugin_key", None))
+        definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
         if definition is None:
             return []
         target_map = WorkLineService._command_target_device_map(definition.manifest, devices)

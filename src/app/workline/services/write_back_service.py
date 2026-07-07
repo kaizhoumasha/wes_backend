@@ -3,6 +3,7 @@ from enum import Enum
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, TypedDict, cast
 
+from src.app.runtime.capability_catalog import get_workline_contract_version
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.services.device_command_gateway import (
@@ -15,7 +16,6 @@ from src.app.workline.trace_context import TraceContext
 from src.app.workline.utils import payload_dict
 from src.utils.timezone import timezone
 from src.utils.value_normalization import canonical_event_type, resolve_entity_id, string_value
-from src.workline_plugin_registry import get_plugin_contract_version
 
 if TYPE_CHECKING:
     from src.app.workline.utils import JsonDict
@@ -37,7 +37,7 @@ def _resolve_runtime_contract_version(*, workline: Any, plugin_key: str | None) 
     workline_contract_version = getattr(workline, "contract_version", None)
     if isinstance(workline_contract_version, str) and workline_contract_version:
         return workline_contract_version
-    contract_version = get_plugin_contract_version(plugin_key)
+    contract_version = get_workline_contract_version(plugin_key)
     return contract_version if isinstance(contract_version, str) and contract_version else None
 
 

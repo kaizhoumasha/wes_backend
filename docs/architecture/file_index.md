@@ -95,6 +95,7 @@
 | `docs/architecture/adr/0001-phase2-runtime-ownership.md` | Phase 2 launch PR ADR:runtime 域所有权固化 + wlr 严格型 allowlist + R-I3c 5 域扩展 | 📖 必读文档 |
 | `docs/architecture/runtime-ownership-map.md` | Phase 2 launch PR Runtime 域 ownership map:entity/repository/service 三层归属,wlr allowlist 严格型入口 | 📖 必读文档 |
 | `docs/architecture/legacy-runtime-migration-spec.md` | Phase 2 launch PR 迁移规格:burn-down 6 阶段执行契约 + 9 处跨域 import 修复路径 + wlr allowlist 严格型 + 8 contract gap TDD 同步 + 主计划 §10.3 启动条件 + 完成门禁追踪 | 📖 必读文档 |
+| `docs/architecture/legacy-cleanup-execution-plan.md` | Phase5 technical lane 旧 plugin runtime/import 框架清理执行记录：顺序、范围、验收、business blocker 与回滚 | 📖 必读文档 |
 | `docs/contracts/observability-contract.md` | Phase 3 稳定观测合同：callback / RuntimeInbox / intent / device command / WMS breaker 的 span、metric、log event 和 attribute 口径 | 📖 必读文档 |
 | `docs/contracts/runtime-toggle-governance.md` | Phase 3 runtime toggle 治理合同：owner、expiry、scope、default、rollback、test_matrix 与安全边界 | 📖 必读文档 |
 | `docs/integration/wms_caller_checklist.md` | WMS 同步调用方接入 checklist：RuntimeHold/诊断、错误处理和证据传播要求 | 📖 必读文档 |

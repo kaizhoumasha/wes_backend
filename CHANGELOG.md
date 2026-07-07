@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0.0] - 2026-07-07
+
+> **Note**: Phase5 technical lane 发布。本 minor 完成 legacy WorkLine plugin runtime 路径退出、RuntimeInbox 到 Phase4 runtime service 的目标链路切换，以及 absence guardrail/cleanup evidence 更新；business lane 继续被 Phase3 production closure provenance 阻塞。
+
+### Added
+- 新增 `RuntimeCapabilityDispatcher` 与 runtime capability catalog，让 RuntimeInbox 通过静态 capability wiring 路由到 Phase4 runtime service，不在热路径做动态 plugin import。
+- 新增 Phase5 legacy absence guardrail，强制阻断 `src.app.workline.plugins.*`、`src.workline_plugin_registry` 与 `src.workline_plugins.*` 回流到可 import 运行路径。
+- 新增 RuntimeInbox -> dispatcher -> Phase4 service 回归覆盖，覆盖成功路由、未知 capability、未声明 provider profile、重复 callback 和 legacy import fail 场景。
+
+### Changed
+- 将 inbound normalization、runtime config、result classifier、session resolver 等旧 plugin SDK 能力迁入 `src.app.runtime` / `src.app.workline.domain` 目标态服务与 catalog。
+- 将旧 `src/workline_plugins/*` 和旧 plugin template 迁入 `docs/archive/legacy-workline-plugins/`，仅作为历史样本，不再保留在 `src/` 可 import 路径。
+- 同步 cleanup matrix、Phase5 execution plan 与主架构设计，明确 `phase5-tech` 已关闭、`phase5-business` 仍等待 Phase3 production closure artifacts。
+
+### Fixed
+- 修复标准 RuntimeInbox result callback 取消链路在 legacy plugin 删除后无法完成 `CANCELLED` runtime intent 的问题。
+- 修复 SystemOutbox repository `_clean_metadata_for_update` 对 readonly field 的 update 过滤，避免 Phase5 callback/idempotency 路径写回时触发持久化错误。
+
 ## [0.12.0.0] - 2026-07-06
 
 > **Note**: Phase1~Phase4 residuals 发布。本 minor 关闭 Phase5 前必须先处理的 runtime owner、callback 入站权威、late callback evidence 和生产 evidence 门禁遗留项；Phase5 technical lane 可启动，business lane 仍等待真实 production evidence。

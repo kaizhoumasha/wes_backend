@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
 
+from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldStatus, RuntimeHoldType
 from src.app.runtime.orchestration.models.session import (
     RuntimeReconciliationReason,
@@ -21,7 +22,6 @@ from src.app.runtime.orchestration.models.session import (
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.workline.domain.material_identity import MaterialIdentityInput, MaterialIdentityResolutionStatus
 from src.database.db import close_db, get_db_context, init_db
-from src.workline_plugin_registry import get_workline_plugin_definition
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -102,7 +102,7 @@ def _evidence_snapshot(session: WorklineSession, reason: str) -> dict[str, Any]:
 
 
 def _material_identity_missing(session: WorklineSession, evidence: dict[str, Any]) -> bool:
-    definition = get_workline_plugin_definition(session.plugin_key)
+    definition = get_workline_capability_definition(session.plugin_key)
     if definition is None:
         return True
     identity = definition.manifest.resolve_material_identity(

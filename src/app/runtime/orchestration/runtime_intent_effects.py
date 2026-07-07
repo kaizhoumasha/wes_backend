@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
+from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.material_target_resolver import resolve_destination_device
 from src.app.runtime.orchestration.models.session import SessionStatus
@@ -29,12 +30,11 @@ from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
 )
-from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
-from src.workline_plugin_registry import get_workline_plugin_definition
-from src.workline_plugins.smt_sorting_inbound.constants import (
+from src.app.workline.domain.contracts.smt_sorting_inbound import (
     SMT_SORTING_INBOUND_PLUGIN_KEY,
     SORTING_CONTEXT_SCHEMA_VERSION,
 )
+from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +51,18 @@ _SUPPORTED_INTENT_KINDS = {
     RuntimeIntentKind.RESOURCE_RESERVATION,
     RuntimeIntentKind.RESOURCE_WAIT,
     RuntimeIntentKind.COMPLETE,
+    RuntimeIntentKind.CANCEL,
     RuntimeIntentKind.BLOCK,
     RuntimeIntentKind.CONTINUE_NEXT,
     RuntimeIntentKind.CREATE_MATERIAL_UNIT,
     RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS,
 }
-_TERMINAL_INTENT_KINDS = {RuntimeIntentKind.COMPLETE, RuntimeIntentKind.BLOCK, RuntimeIntentKind.RESOURCE_WAIT}
+_TERMINAL_INTENT_KINDS = {
+    RuntimeIntentKind.COMPLETE,
+    RuntimeIntentKind.CANCEL,
+    RuntimeIntentKind.BLOCK,
+    RuntimeIntentKind.RESOURCE_WAIT,
+}
 _DEFAULT_RACK_OPERATION_TARGET_CODE = "WMS_RCS_RACK_OPERATION"
 _FULFILLMENT_EXTERNAL_TARGET_CODES = frozenset(
     {
@@ -438,7 +444,7 @@ def _material_unit_status_transition_targets(
     ctx: Mapping[str, Any], *, from_state: str
 ) -> tuple[str, tuple[str, ...]] | None:
     plugin_key = _ctx_plugin_key(ctx)
-    definition = get_workline_plugin_definition(plugin_key)
+    definition = get_workline_capability_definition(plugin_key)
     if definition is None:
         return None
 
@@ -921,6 +927,10 @@ class RuntimeIntentEffectApplier:
                 ctx["orch_result"].complete = True
                 _ = await workline_effects._apply_completion_transition(ctx)
                 await self._cleanup_completed_material_unit(ctx)
+                continue
+
+            if intent.kind == RuntimeIntentKind.CANCEL:
+                await self._apply_cancel(ctx, intent)
                 continue
 
             if intent.kind == RuntimeIntentKind.BLOCK:
@@ -1805,7 +1815,7 @@ class RuntimeIntentEffectApplier:
             or _non_empty_text(getattr(session, "plugin_key", None))
             or _non_empty_text(payload_json.get("plugin_key"))
         )
-        plugin_definition = get_workline_plugin_definition(plugin_key)
+        plugin_definition = get_workline_capability_definition(plugin_key)
         if plugin_definition is None:
             return await self._reject_resource_wait_subject_contract(
                 ctx,
@@ -2049,6 +2059,43 @@ class RuntimeIntentEffectApplier:
                 message=str(exc),
                 suggested_action="检查设备拓扑和作业线路由配置",
             ),
+        )
+
+    async def _apply_cancel(self, ctx: Any, intent: RuntimeIntent) -> None:
+        from src.app.runtime.orchestration.models.timeline import TimelineActionType, TimelineActorType, TimelineStage
+        from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
+        from src.app.sys.repositories import SystemOutboxRepository
+        from src.app.workline.services import write_back_service as workline_effects
+
+        session = ctx["session"]
+        session_id = resolve_required_pk(session, "session")
+        workline_effects.workline_session_lifecycle_service.cancel(session, occurred_at=ctx["now"])
+        await WorklineSessionRepository().persist_cancelled(
+            ctx["db"],
+            session_id=session_id,
+            occurred_at=ctx["now"],
+        )
+        _ = await SystemOutboxRepository().cancel_active_by_session(
+            ctx["db"],
+            session_id=session_id,
+            reason=intent.reason_code or "SESSION_CANCELLED",
+        )
+
+        timeline_payload = {
+            "reason_code": intent.reason_code,
+            "message": intent.message,
+            **dict(intent.payload_json),
+        }
+        await workline_effects._emit_timeline(
+            ctx,
+            stage=TimelineStage.MANUAL,
+            action_type=TimelineActionType.SESSION_CANCELLED,
+            payload=timeline_payload,
+            from_status=ctx["current_status"],
+            to_status="CANCELLED",
+            actor_type=TimelineActorType.ORCHESTRATOR,
+            related_inbox_id=workline_effects._timeline_inbox_id(ctx),
+            message=intent.message,
         )
 
     async def _apply_block(self, ctx: Any, intent: RuntimeIntent) -> None:
