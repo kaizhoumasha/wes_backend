@@ -16,7 +16,7 @@
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
 | Phase 1 callback admission 已关闭 | NG/WMS callback 设计必须依赖 provider profile admission 和 typed normalizer |
-| Phase 2 runtime status 兼容投影未清空 | 对账状态不写 WorkLine 运行状态，使用 RuntimeHold / ReconciliationRecord |
+| Phase 2 WorkLine 运行态 final cleanup 已完成 | 对账状态不写 WorkLine 运行状态，使用 RuntimeHold / ReconciliationRecord |
 | Phase 3 closure profile | 设计与本机 MOCK 验收可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产闭环接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
 
 ## 3. 业务事实边界

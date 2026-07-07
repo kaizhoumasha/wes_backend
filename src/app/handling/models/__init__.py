@@ -1,13 +1,5 @@
 """Handling 模型导出。"""
 
-from .bin_transit_membership import (
-    BinTransitMembership,
-    BinTransitMembershipBase,
-    BinTransitMembershipCreate,
-    BinTransitMembershipResponse,
-    BinTransitMembershipStatus,
-    BinTransitQueue,
-)
 from .operation import (
     HandlingMove,
     HandlingMoveBase,
@@ -31,12 +23,6 @@ from .operation import (
 )
 
 __all__ = [
-    "BinTransitMembership",
-    "BinTransitMembershipBase",
-    "BinTransitMembershipCreate",
-    "BinTransitMembershipResponse",
-    "BinTransitMembershipStatus",
-    "BinTransitQueue",
     "HandlingMove",
     "HandlingMoveBase",
     "HandlingMoveCreate",

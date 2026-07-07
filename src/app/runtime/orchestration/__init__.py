@@ -35,6 +35,10 @@ from src.app.runtime.orchestration.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
+from src.app.runtime.orchestration.workline_runtime_status_projection import (
+    WorkLineRuntimeStatus,
+    WorklineRuntimeStatusProjection,
+)
 
 __all__ = [
     "ConveyorQueueMembership",
@@ -47,4 +51,6 @@ __all__ = [
     "RuntimeInbox",
     "RuntimeIntentLog",
     "RuntimeTimeline",
+    "WorkLineRuntimeStatus",
+    "WorklineRuntimeStatusProjection",
 ]

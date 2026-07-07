@@ -319,7 +319,10 @@ class RuntimeHoldReleaseService:
                 workline_id=hold.workline_id,
             )
             released_outbox_count = 0
-            workline_runtime_status_projection_service.project_stopped_waiting_start(workline)
+            await workline_runtime_status_projection_service.project_stopped_waiting_start(
+                db,
+                workline_id=hold.workline_id,
+            )
         else:
             released_outbox_count = await self.outbox_repo.release_blocked_by_runtime_hold_or_workline(
                 db,
@@ -327,14 +330,18 @@ class RuntimeHoldReleaseService:
                 workline_id=hold.workline_id,
                 release_workline_scope=False,
             )
-            self._project_remaining_hold_status(workline, remaining_holds)
+            await self._project_remaining_hold_status(db, workline_id=hold.workline_id, remaining_holds=remaining_holds)
 
         await db.flush()
+        runtime_snapshot = await workline_runtime_status_projection_service.runtime_status_snapshot(
+            db,
+            workline_id=hold.workline_id,
+        )
         return {
             "hold_id": hold.id,
             "status": enum_str(hold.status),
             "workline_id": hold.workline_id,
-            "workline_runtime_status": enum_str(workline.runtime_status),
+            "workline_runtime_status": runtime_snapshot.runtime_status,
             "remaining_active_blocking_holds": remaining_active_blocking_holds,
             "released_outbox_count": released_outbox_count,
             "ng_return_item_id": getattr(ng_item, "id", None),
@@ -857,16 +864,24 @@ class RuntimeHoldReleaseService:
             return "OUTBOX_DISPATCH_FAILED"
         return None
 
-    def _project_remaining_hold_status(self, workline: Any, remaining_holds: list[RuntimeHold]) -> None:
+    async def _project_remaining_hold_status(
+        self,
+        db: Any,
+        *,
+        workline_id: int,
+        remaining_holds: list[RuntimeHold],
+    ) -> None:
         first_hold = remaining_holds[0]
         if any(item.hold_type == RuntimeHoldType.SAFETY_ESTOP for item in remaining_holds):
-            workline_runtime_status_projection_service.project_estopped_active_hold(
-                workline,
+            await workline_runtime_status_projection_service.project_estopped_active_hold(
+                db,
+                workline_id=workline_id,
                 reason=first_hold.source_reason,
             )
         else:
-            workline_runtime_status_projection_service.project_reconciling(
-                workline,
+            await workline_runtime_status_projection_service.project_reconciling(
+                db,
+                workline_id=workline_id,
                 reason=first_hold.source_reason,
             )
 

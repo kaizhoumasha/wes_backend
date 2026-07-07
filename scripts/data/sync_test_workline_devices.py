@@ -46,9 +46,12 @@ from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
+from src.app.runtime.orchestration.repositories.workline_runtime_status_projection_repository import (
+    workline_runtime_status_projection_repository,
+)
+from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
 from src.app.workline.domain.run_mode import SANDBOX_ALLOWED_ENVS
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
-from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.core.conf import settings
 from src.utils.device_cache import workline_device_cache
 
@@ -73,7 +76,7 @@ class TestWorklineSeed:
     config: dict[str, Any]
     runtime_config_json: dict[str, Any]
     run_mode: WorkLineRunMode
-    runtime_status: WorkLineRuntimeStatus
+    runtime_status: "WorkLineRuntimeStatus"
     diagnostic_profile: dict[str, Any]
     description: str
     devices: tuple["TestDeviceSeed", ...]
@@ -436,14 +439,38 @@ async def _upsert_test_workline(db: AsyncSession, seed: TestWorklineSeed) -> tup
 
     workline = await _get_workline_by_code(db, seed.line_code)
     if workline is None:
-        workline = WorkLine(**values, runtime_status=seed.runtime_status)
+        workline = WorkLine(**values)
         db.add(workline)
         await db.flush()
+        await _ensure_workline_runtime_projection(db, workline, seed)
         return workline, "created"
 
     changed = _set_attrs(workline, values)
     await db.flush()
+    await _ensure_workline_runtime_projection(db, workline, seed)
     return workline, "updated" if changed else "unchanged"
+
+
+async def _ensure_workline_runtime_projection(
+    db: AsyncSession,
+    workline: WorkLine,
+    seed: TestWorklineSeed,
+) -> None:
+    workline_id = workline.id
+    if workline_id is None:
+        raise RuntimeError("测试 WorkLine 缺少主键，无法同步 runtime 状态投影")
+
+    existing = await workline_runtime_status_projection_repository.get_by_workline_id(db, workline_id)
+    if existing is not None:
+        return
+
+    await workline_runtime_status_projection_repository.upsert_status(
+        db,
+        workline_id=workline_id,
+        runtime_status=seed.runtime_status.value,
+        source="scripts/data/sync_test_workline_devices",
+        stopped_reason="DEBUG_SEED",
+    )
 
 
 async def _upsert_test_devices(db: AsyncSession, workline: WorkLine, seed: TestWorklineSeed) -> dict[str, str]:

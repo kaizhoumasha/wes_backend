@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy.exc import IntegrityError
 
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
+from src.app.runtime.orchestration.models.object_transition_event import ObjectTransitionDomain
 from src.app.runtime.orchestration.repositories.conveyor_queue_membership_repository import (
     ConveyorQueueMembershipRepository,
     conveyor_queue_membership_repository,
@@ -19,6 +20,10 @@ from src.app.runtime.orchestration.services.conveyor_queue_writer import (
     ConveyorQueueWriter,
     ConveyorQueueWriteRequest,
     conveyor_queue_writer,
+)
+from src.app.runtime.orchestration.services.inbox.object_transition_event_service import (
+    ObjectTransitionEventService,
+    object_transition_event_service,
 )
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
@@ -68,9 +73,11 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
         *,
         repository: ConveyorQueueMembershipRepository = conveyor_queue_membership_repository,
         writer: ConveyorQueueWriter = conveyor_queue_writer,
+        transition_service: ObjectTransitionEventService = object_transition_event_service,
     ) -> None:
         super().__init__(repository, enable_cache=False)
         self.writer = writer
+        self.transition_service = transition_service
 
     async def write_active(
         self,
@@ -85,6 +92,7 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
         declared_queue_codes: Iterable[str] | None = None,
         strict: bool = True,
         correlation_id: str | None = None,
+        source_event_id: str | None = None,
         evidence_json: dict[str, Any] | None = None,
         entered_at_ms: int | None = None,
         auto_commit: bool = True,
@@ -101,7 +109,11 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
             declared_queue_codes=_normalize_declared_queue_codes(declared_queue_codes),
             strict=strict,
             correlation_id=_optional_text(correlation_id),
-            evidence_json=dict(evidence_json or {}),
+            source_event_id=_resolve_source_event_id(source_event_id, evidence_json),
+            evidence_json={
+                **dict(evidence_json or {}),
+                "source_event_id": _resolve_source_event_id(source_event_id, evidence_json),
+            },
             entered_at_ms=entered_at_ms if entered_at_ms is not None else _now_ms(),
         )
         if normalized.bin_code is None and normalized.placeholder_key is None:
@@ -149,6 +161,13 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
                 normalized=normalized,
                 decision=decision,
             )
+            await self._record_queue_transition(
+                db,
+                membership=membership,
+                decision=effective_decision,
+                source_event_id=normalized.source_event_id,
+                created=False,
+            )
             await self._finish(db, membership, auto_commit=auto_commit)
             return _write_result(membership, effective_decision, created=False)
         if decision.kind == ConveyorQueueWriteDecisionKind.RECONCILING:
@@ -157,6 +176,13 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
                 active_memberships=active_memberships,
                 normalized=normalized,
                 decision=decision,
+            )
+            await self._record_queue_transition(
+                db,
+                membership=membership,
+                decision=decision,
+                source_event_id=normalized.source_event_id,
+                created=False,
             )
             await self._finish(db, membership, auto_commit=auto_commit)
             return _write_result(membership, decision, created=False)
@@ -171,12 +197,222 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
             normalized=normalized,
             decision=decision,
         )
+        if effective_decision.kind != ConveyorQueueWriteDecisionKind.IDEMPOTENT_REPLAY:
+            await self._record_queue_transition(
+                db,
+                membership=membership,
+                decision=effective_decision,
+                source_event_id=normalized.source_event_id,
+                created=created,
+            )
         await self._finish(db, membership, auto_commit=auto_commit)
         return _write_result(
             membership,
             effective_decision,
             created=created,
             reused_existing_after_integrity_conflict=reused_existing_after_integrity_conflict,
+        )
+
+    async def close_active(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        bin_code: str | None = None,
+        placeholder_key: str | None = None,
+        handling_operation_id: int | None = None,
+        handling_move_id: int | None = None,
+        workline_session_id: int | None = None,
+        trace_id: str | None = None,
+        reason_code: str = "QUEUE_LEFT",
+        source_event_id: str | None = None,
+        evidence_json: dict[str, Any] | None = None,
+        auto_commit: bool = True,
+        ignore_missing: bool = False,
+    ) -> ConveyorQueueMembership | None:
+        """关闭 ACTIVE membership，并保留 LEFT history 记录。"""
+
+        resolved_source_event_id = _resolve_source_event_id(source_event_id, evidence_json)
+        normalized_bin_code, normalized_placeholder_key = _normalize_identity(
+            bin_code=bin_code,
+            placeholder_key=placeholder_key,
+        )
+        active = await self.repo.get_one_active_by_identity(
+            db,
+            workline_id=workline_id,
+            bin_code=normalized_bin_code,
+            placeholder_key=normalized_placeholder_key,
+            for_update=True,
+        )
+        if active is None:
+            if ignore_missing:
+                return None
+            raise ValueError(
+                f"{_object_key(bin_code=normalized_bin_code, placeholder_key=normalized_placeholder_key)} 没有 active membership"
+            )
+
+        from_state = active.queue_code
+        active.membership_status = "LEFT"
+        active.left_at = _now_ms()
+        active.evidence_json = _merge_evidence(
+            active,
+            {
+                **dict(evidence_json or {}),
+                "source_event_id": resolved_source_event_id,
+            },
+        )
+        db.add(active)
+        await db.flush()
+        await self._record_membership_transition(
+            db,
+            membership=active,
+            from_state=from_state,
+            to_state="LEFT",
+            reason_code=_required_text(reason_code, "reason_code"),
+            source_event_id=resolved_source_event_id,
+            evidence_json=active.evidence_json,
+            source_ref_json={
+                "handling_operation_id": handling_operation_id,
+                "handling_move_id": handling_move_id,
+            },
+            workline_session_id=workline_session_id,
+            trace_id=trace_id,
+        )
+        await self._finish(db, active, auto_commit=auto_commit)
+        return active
+
+    async def mark_reconciling_for_identity(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        bin_code: str | None = None,
+        placeholder_key: str | None = None,
+        handling_operation_id: int | None = None,
+        handling_move_id: int | None = None,
+        workline_session_id: int | None = None,
+        trace_id: str | None = None,
+        reason_code: str = "QUEUE_MEMBERSHIP_RECONCILING",
+        source_event_id: str | None = None,
+        evidence_json: dict[str, Any] | None = None,
+        auto_commit: bool = True,
+        ignore_missing: bool = False,
+    ) -> ConveyorQueueMembership | None:
+        """将 ACTIVE membership 标记为 RECONCILING。"""
+
+        resolved_source_event_id = _resolve_source_event_id(source_event_id, evidence_json)
+        normalized_bin_code, normalized_placeholder_key = _normalize_identity(
+            bin_code=bin_code,
+            placeholder_key=placeholder_key,
+        )
+        active = await self.repo.get_one_active_by_identity(
+            db,
+            workline_id=workline_id,
+            bin_code=normalized_bin_code,
+            placeholder_key=normalized_placeholder_key,
+            for_update=True,
+        )
+        if active is None:
+            if ignore_missing:
+                return None
+            raise ValueError(
+                f"{_object_key(bin_code=normalized_bin_code, placeholder_key=normalized_placeholder_key)} 没有 active membership"
+            )
+
+        from_state = active.queue_code
+        active.membership_status = "RECONCILING"
+        active.evidence_json = _merge_evidence(
+            active,
+            {
+                **dict(evidence_json or {}),
+                "source_event_id": resolved_source_event_id,
+            },
+        )
+        db.add(active)
+        await db.flush()
+        await self._record_membership_transition(
+            db,
+            membership=active,
+            from_state=from_state,
+            to_state="RECONCILING",
+            reason_code=_required_text(reason_code, "reason_code"),
+            source_event_id=resolved_source_event_id,
+            evidence_json=active.evidence_json,
+            source_ref_json={
+                "handling_operation_id": handling_operation_id,
+                "handling_move_id": handling_move_id,
+            },
+            workline_session_id=workline_session_id,
+            trace_id=trace_id,
+        )
+        await self._finish(db, active, auto_commit=auto_commit)
+        return active
+
+    async def _record_queue_transition(
+        self,
+        db: AsyncSession,
+        *,
+        membership: ConveyorQueueMembership,
+        decision: ConveyorQueueWriteDecision,
+        source_event_id: str,
+        created: bool,
+    ) -> None:
+        from_state = None if created else membership.queue_code
+        await self._record_membership_transition(
+            db,
+            membership=membership,
+            from_state=from_state,
+            to_state=_transition_to_state(membership, decision),
+            reason_code=decision.reason,
+            source_event_id=source_event_id,
+            evidence_json=dict(getattr(membership, "evidence_json", None) or {}),
+        )
+
+    async def _record_membership_transition(
+        self,
+        db: AsyncSession,
+        *,
+        membership: ConveyorQueueMembership,
+        from_state: str | None,
+        to_state: str,
+        reason_code: str,
+        source_event_id: str,
+        evidence_json: dict[str, Any],
+        source_ref_json: dict[str, Any] | None = None,
+        workline_session_id: int | None = None,
+        trace_id: str | None = None,
+    ) -> None:
+        source_ref_json = {
+            key: value
+            for key, value in {
+                "workline_id": membership.workline_id,
+                "membership_id": membership.id,
+                "bin_code": membership.bin_code,
+                "placeholder_key": membership.placeholder_key,
+                "conveyor_code": membership.conveyor_code,
+                "queue_code": membership.queue_code,
+                "queue_role": membership.queue_role,
+                "membership_status": membership.membership_status,
+                "correlation_id": membership.correlation_id,
+                **dict(source_ref_json or {}),
+            }.items()
+            if value is not None
+        }
+        await self.transition_service.record_transition(
+            db,
+            domain=ObjectTransitionDomain.HANDLING,
+            object_type="CONVEYOR_QUEUE_MEMBERSHIP",
+            object_key=_object_key_from_membership(membership),
+            projection_type="QUEUE_MEMBERSHIP",
+            from_state=from_state,
+            to_state=_required_text(to_state, "to_state"),
+            reason_code=_required_text(reason_code, "reason_code"),
+            source_event_id=_required_text(source_event_id, "source_event_id"),
+            source_ref_json=source_ref_json,
+            evidence_json=dict(evidence_json or {}),
+            workline_session_id=workline_session_id,
+            trace_id=trace_id or membership.correlation_id,
+            auto_commit=False,
         )
 
     async def _create_active_with_conflict_recheck(
@@ -411,6 +647,7 @@ class _NormalizedWriteInput:
     declared_queue_codes: frozenset[str]
     strict: bool
     correlation_id: str | None
+    source_event_id: str
     evidence_json: dict[str, Any]
     entered_at_ms: int
 
@@ -549,6 +786,56 @@ def _merge_evidence(
         **dict(getattr(membership, "evidence_json", None) or {}),
         **dict(evidence_json or {}),
     }
+
+
+def _normalize_identity(
+    *,
+    bin_code: str | None,
+    placeholder_key: str | None,
+) -> tuple[str | None, str | None]:
+    normalized_bin_code = _optional_text(bin_code)
+    normalized_placeholder_key = _optional_text(placeholder_key)
+    if normalized_bin_code is None and normalized_placeholder_key is None:
+        raise ValueError("bin_code 或 placeholder_key 至少需要一个")
+    return normalized_bin_code, normalized_placeholder_key
+
+
+def _object_key(
+    *,
+    bin_code: str | None,
+    placeholder_key: str | None,
+) -> str:
+    normalized_bin_code, normalized_placeholder_key = _normalize_identity(
+        bin_code=bin_code,
+        placeholder_key=placeholder_key,
+    )
+    return normalized_bin_code or normalized_placeholder_key or ""
+
+
+def _object_key_from_membership(membership: ConveyorQueueMembership) -> str:
+    return _object_key(
+        bin_code=getattr(membership, "bin_code", None),
+        placeholder_key=getattr(membership, "placeholder_key", None),
+    )
+
+
+def _transition_to_state(
+    membership: ConveyorQueueMembership,
+    decision: ConveyorQueueWriteDecision,
+) -> str:
+    if decision.kind == ConveyorQueueWriteDecisionKind.RECONCILING:
+        return "RECONCILING"
+    return decision.queue_code or membership.queue_code
+
+
+def _resolve_source_event_id(
+    source_event_id: str | None,
+    evidence_json: dict[str, Any] | None,
+) -> str:
+    if source_event_id is not None:
+        return _required_text(source_event_id, "source_event_id")
+    evidence_source_event_id = dict(evidence_json or {}).get("source_event_id")
+    return _required_text(evidence_source_event_id, "source_event_id")
 
 
 def _normalize_declared_queue_codes(values: Iterable[str] | None) -> frozenset[str]:

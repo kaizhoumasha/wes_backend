@@ -8,19 +8,13 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from src.app.device.repositories.command_repository import DeviceCommandRepository
-from src.app.device.services.device_service import DeviceService
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldType
 from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
-from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
-    runtime_hold_creation_service as default_runtime_hold_creation_service,
-)
-from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
-    workline_runtime_status_projection_service,
-)
+from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
 from src.app.sys.repositories import SystemOutboxRepository
-from src.app.workline.models.safety import WorkLineRuntimeStatus, WorklineSafetyIncident, WorklineSafetyIncidentStatus
+from src.app.workline.models.safety import WorklineSafetyIncident, WorklineSafetyIncidentStatus
 from src.app.workline.repositories.safety_incident_repository import WorklineSafetyIncidentRepository
 from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.core.logger import logger
@@ -28,6 +22,8 @@ from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.app.device.services.device_service import DeviceService
 
 
 class WorkLineSafetyBlocked(RuntimeError):
@@ -140,12 +136,26 @@ class WorkLineSafetyService:
         self.session_repository = session_repository or WorklineSessionRepository()
         self.system_outbox_repository = system_outbox_repository or SystemOutboxRepository()
         self.command_repository = command_repository or DeviceCommandRepository()
-        self.device_service = device_service or DeviceService()
-        self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
+        if device_service is None:
+            from src.app.device.services.device_service import DeviceService
+
+            device_service = DeviceService()
+        self.device_service = device_service
+        if runtime_hold_creation_service is None:
+            from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
+                runtime_hold_creation_service as default_runtime_hold_creation_service,
+            )
+
+            runtime_hold_creation_service = default_runtime_hold_creation_service
+        self.runtime_hold_creation_service = runtime_hold_creation_service
         self.runtime_hold_repository = runtime_hold_repository or RuntimeHoldRepository()
-        self.workline_status_projection_service = (
-            workline_status_projection_service or workline_runtime_status_projection_service
-        )
+        if workline_status_projection_service is None:
+            from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+                workline_runtime_status_projection_service,
+            )
+
+            workline_status_projection_service = workline_runtime_status_projection_service
+        self.workline_status_projection_service = workline_status_projection_service
         if runtime_hold_release_service is None:
             from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
                 runtime_hold_release_service as default_release,
@@ -160,8 +170,8 @@ class WorkLineSafetyService:
         workline = await self.workline_repository.get_for_update(db, workline_id)
         if workline is None:
             raise WorkLineSafetyBlocked(f"WORKLINE_NOT_FOUND: workline_id={workline_id}")
-        self.workline_status_projection_service.assert_accepting_runtime_work(
-            workline,
+        await self.workline_status_projection_service.assert_accepting_runtime_work(
+            db,
             workline_id=workline_id,
             blocked_error=WorkLineSafetyBlocked,
         )
@@ -200,12 +210,13 @@ class WorkLineSafetyService:
         _ = await self.runtime_hold_creation_service.create_for_safety_estop(db, incident=incident)
 
         now = timezone.now_for_db()
-        self.workline_status_projection_service.project_estopped_active_hold(
-            workline,
+        await self.workline_status_projection_service.project_estopped_active_hold(
+            db,
+            workline_id=workline_id,
             reason="ESTOP_PRESSED",
+            active_safety_incident_id=cast("int | None", incident.id),
+            occurred_at=now,
         )
-        workline.active_safety_incident_id = incident.id
-        workline.stopped_at = workline.stopped_at or now
         await db.flush()
         await db.commit()
 
@@ -306,7 +317,10 @@ class WorkLineSafetyService:
         workline = await self.workline_repository.get_for_update(db, workline_id)
         if workline is None:
             raise ValueError(f"工作线不存在: {workline_id}")
-        runtime_snapshot = self.workline_status_projection_service.runtime_status_snapshot(workline)
+        runtime_snapshot = await self.workline_status_projection_service.runtime_status_snapshot(
+            db,
+            workline_id=workline_id,
+        )
         if runtime_snapshot.runtime_status != WorkLineRuntimeStatus.ESTOPPED.value:
             raise ValueError("工作线当前不处于急停状态")
 
@@ -332,8 +346,6 @@ class WorkLineSafetyService:
             },
             max_bytes=SAFETY_EVIDENCE_MAX_BYTES,
         )
-
-        workline.active_safety_incident_id = None
 
         active_holds = await self.runtime_hold_repository.get_active_blocking_by_workline(db, workline_id)
         hold = next(

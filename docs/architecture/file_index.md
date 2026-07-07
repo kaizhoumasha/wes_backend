@@ -376,7 +376,7 @@ Phase 3 RECONCILING 冲突登记与 owner-scoped 决议层，只产出 hold/free
 |------|------|------|------|
 | `models/` | `workline.py` | WorkLine 模型（配置域 — plugin 容器 / 运行时配置 / 诊断归属） | 🔧 架构核心 |
 | | `plane.py` | WorkLine plane scene/snapshot 读模型（`plane.scene.v1` / `plane.snapshot.v1`） | 🔧 架构核心 |
-| | `safety.py` | safety 跨域 enum + 配置域审计表（`WorkLineRuntimeStatus` / `WorklineSafetyIncident` / `WorklineSafetyIncidentStatus` / `ClearWorkLineEstopRequest` — **F-1/F-2 例外保留**:承载跨域 enum 与配置域审计,不迁 runtime） | 🔧 架构核心 |
+| | `safety.py` | WorkLine 安全事件审计与请求 schema（`WorklineSafetyIncident` / `WorklineSafetyIncidentStatus` / `ClearWorkLineEstopRequest` / `SimulateWorkLineEstopRequest`）；运行态 enum 已迁入 runtime/orchestration 投影 | 🔧 架构核心 |
 | | `__init__.py` | Model 导出（workline + safety + rack.model 透传 — 阶段 6 + F-1/F-2 后收缩为纯配置域聚合） | 🔧 架构核心 |
 | `repositories/` | `workline_repository.py` | WorkLine Repository（按 line_code 查询 — 配置域） | 🔧 架构核心 |
 | | `safety_incident_repository.py` | WorklineSafetyIncidentRepository（**F-1/F-2 例外保留**:配置域审计表,不迁 runtime） | 🔧 架构核心 |

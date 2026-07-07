@@ -526,7 +526,10 @@ class TraceQueryService(BaseService[Any, Any]):
         workline = await self.workline_repo.get_by_id(db, workline_id)
         if workline is None:
             return {}
-        runtime_snapshot = workline_runtime_status_projection_service.runtime_status_snapshot(workline)
+        runtime_snapshot = await workline_runtime_status_projection_service.runtime_status_snapshot(
+            db,
+            workline_id=workline_id,
+        )
         return {
             "workline_runtime_status": runtime_snapshot.runtime_status,
             "workline_start_admission_status": coerce_optional_str(getattr(workline, "start_admission_status", None)),

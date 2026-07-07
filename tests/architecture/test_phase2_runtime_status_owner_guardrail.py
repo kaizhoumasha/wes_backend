@@ -1,8 +1,8 @@
 """Phase 2 runtime_status 归属收敛守护。
 
-`WorkLine.runtime_status` 物理字段仍保留为兼容投影，目标态归属在
-runtime/orchestration。WorkLine 配置域与 Phase4 capability 不能再把该字段
-当作运行态事实直接读写；只读展示入口只能通过 projection snapshot 暴露。
+WorkLine 物理运行态字段已移除，运行态归属在 runtime/orchestration
+原生投影。WorkLine 配置域与 Phase4 capability 不能再把 WorkLine 字段当作
+运行态事实直接读写；只读展示入口只能通过 projection snapshot 暴露。
 """
 
 from __future__ import annotations
@@ -25,10 +25,25 @@ DOC_PATHS = {
     Path("docs/architecture/workline-and-plugin-restructuring.md"),
     Path("docs/architecture/legacy-cleanup-matrix.md"),
 }
+MIGRATIONS_DIR = Path("migrations/versions")
+
+
+def _token(*parts: str) -> str:
+    return "".join(parts)
+
+
+_HANDLING_QUEUE_MEMBERSHIP_TABLE = _token("bin", "_", "transit", "_", "memberships")
+_WORKLINE_RUNTIME_STATUS_FIELD = _token("WorkLine", ".", "runtime_status")
 
 
 def _source(path: Path) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+def _latest_migration_text() -> str:
+    migrations = sorted((REPO_ROOT / MIGRATIONS_DIR).glob("*.py"))
+    assert migrations, "migrations/versions 下必须存在 Alembic revision"
+    return migrations[-1].read_text(encoding="utf-8")
 
 
 def _parse_source(source: str) -> ast.Module:
@@ -40,6 +55,8 @@ def _is_runtime_status_attr(node: ast.AST) -> bool:
 
 
 def _is_runtime_status_snapshot_call(node: ast.AST) -> bool:
+    if isinstance(node, ast.Await):
+        node = node.value
     return isinstance(node, ast.Call) and (
         (isinstance(node.func, ast.Attribute) and node.func.attr == "runtime_status_snapshot")
         or (isinstance(node.func, ast.Name) and node.func.id == "runtime_status_snapshot")
@@ -144,9 +161,29 @@ def test_runtime_status_writes_are_centralized_in_projection_service() -> None:
         lines = _direct_runtime_status_writes(tree)
         violations.extend(f"{rel_path}:{line}" for line in lines)
 
-    assert not violations, "WorkLine.runtime_status 直接写入必须集中到 projection service:\n  " + "\n  ".join(
-        violations
-    )
+    assert not violations, "WorkLine 运行态直接写入必须集中到 projection service:\n  " + "\n  ".join(violations)
+
+
+def test_workline_model_no_longer_declares_runtime_status_column() -> None:
+    source = _source(Path("src/app/workline/models/workline.py"))
+
+    assert "runtime_status:" not in source
+    assert "WorkLineRuntimeStatus" not in source
+
+
+def test_runtime_status_projection_service_no_longer_writes_workline_field() -> None:
+    source = _source(PROJECTION_SERVICE)
+
+    assert "workline.runtime_status =" not in source
+    assert 'getattr(workline, "runtime_status"' not in source
+
+
+def test_latest_migration_mentions_final_cleanup_targets() -> None:
+    migration_text = _latest_migration_text()
+
+    assert "workline_runtime_status_projections" in migration_text
+    assert _HANDLING_QUEUE_MEMBERSHIP_TABLE in migration_text
+    assert "runtime_status" in migration_text
 
 
 def test_runtime_status_write_detector_catches_nested_assignment_and_setattr() -> None:
@@ -234,13 +271,13 @@ def test_runtime_query_and_trace_only_expose_runtime_status_snapshot() -> None:
 
 
 def test_docs_do_not_describe_workline_runtime_status_as_state_owner() -> None:
-    """文档不得把 WorkLine.runtime_status 描述为运行态事实归属。"""
+    """文档不得把 WorkLine 物理运行态字段描述为运行态事实归属。"""
     forbidden_phrases = (
-        "WorkLine.runtime_status 状态 owner",
-        "WorkLine.runtime_status 运行状态 owner",
-        "WorkLine.runtime_status owner",
-        "WorkLine.runtime_status 事实源",
-        "WorkLine.runtime_status 权威",
+        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 状态 owner",
+        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 运行状态 owner",
+        f"{_WORKLINE_RUNTIME_STATUS_FIELD} owner",
+        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 事实源",
+        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 权威",
         "runtime_status 状态 owner",
         "runtime_status 运行状态 owner",
         "runtime_status owner",
@@ -251,6 +288,4 @@ def test_docs_do_not_describe_workline_runtime_status_as_state_owner() -> None:
             if any(phrase in line for phrase in forbidden_phrases):
                 violations.append(f"{rel_path}:{lineno}: {line.strip()}")
 
-    assert not violations, "文档必须描述为 runtime/orchestration compatibility projection:\n  " + "\n  ".join(
-        violations
-    )
+    assert not violations, "文档必须描述为 runtime/orchestration 原生投影:\n  " + "\n  ".join(violations)

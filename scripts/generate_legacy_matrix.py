@@ -747,23 +747,7 @@ def parse_entries() -> list[Entry]:
             "LOW",
         ),
         # C2: 跨域 session FK
-        (
-            "src/app/handling/models/bin_transit_membership.py",
-            "handling",
-            "model",
-            "跨域 session FK (C2 seed)",
-            "phase2",
-            "HIGH",
-        ),
         ("src/app/handling/models/operation.py", "handling", "model", "跨域 session FK (C2 seed)", "phase1", "MEDIUM"),
-        (
-            "src/app/handling/services/bin_transit_membership_service.py",
-            "handling",
-            "service",
-            "跨域 session FK (C2 seed)",
-            "phase2",
-            "HIGH",
-        ),
         (
             "src/app/handling/services/lifecycle_service.py",
             "handling",

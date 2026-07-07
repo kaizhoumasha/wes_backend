@@ -66,33 +66,33 @@ class FakeSessionRepository:
 
 class FakeMembershipService:
     def __init__(self) -> None:
-        self.switch_calls: list[dict[str, Any]] = []
-        self.leave_calls: list[dict[str, Any]] = []
+        self.write_calls: list[dict[str, Any]] = []
+        self.close_calls: list[dict[str, Any]] = []
         self.reconciling_calls: list[dict[str, Any]] = []
 
-    async def switch_queue(self, _db: Any, **kwargs: Any) -> Any:
-        self.switch_calls.append(kwargs)
+    async def write_active(self, _db: Any, **kwargs: Any) -> Any:
+        self.write_calls.append(kwargs)
         return SimpleNamespace(id=9001, **kwargs)
 
-    async def leave_queue(self, _db: Any, **kwargs: Any) -> Any:
-        self.leave_calls.append(kwargs)
+    async def close_active(self, _db: Any, **kwargs: Any) -> Any:
+        self.close_calls.append(kwargs)
         return SimpleNamespace(id=9001, **kwargs)
 
-    async def mark_reconciling(self, _db: Any, **kwargs: Any) -> Any:
+    async def mark_reconciling_for_identity(self, _db: Any, **kwargs: Any) -> Any:
         self.reconciling_calls.append(kwargs)
         return SimpleNamespace(id=9001, **kwargs)
 
 
 class FailingMembershipService(FakeMembershipService):
-    async def switch_queue(self, _db: Any, **kwargs: Any) -> Any:
+    async def write_active(self, _db: Any, **kwargs: Any) -> Any:
         _ = kwargs
         raise RuntimeError("membership projection failed")
 
-    async def leave_queue(self, _db: Any, **kwargs: Any) -> Any:
+    async def close_active(self, _db: Any, **kwargs: Any) -> Any:
         _ = kwargs
         raise RuntimeError("membership projection failed")
 
-    async def mark_reconciling(self, _db: Any, **kwargs: Any) -> Any:
+    async def mark_reconciling_for_identity(self, _db: Any, **kwargs: Any) -> Any:
         _ = kwargs
         raise RuntimeError("membership projection failed")
 
@@ -243,18 +243,17 @@ async def test_record_callback_projects_membership_when_payload_exposes_queue() 
         trace_id="trace-bin-queue",
     )
 
-    assert membership_service.switch_calls == [
+    assert membership_service.write_calls == [
         {
             "bin_code": "BIN-001",
             "placeholder_key": None,
-            "to_queue": "WORKSTATION_WAIT_QUEUE",
             "workline_id": 45,
-            "workline_code": "SMT_SORTER_01",
-            "workline_session_id": 301,
-            "handling_operation_id": 700,
-            "handling_move_id": 801,
-            "trace_id": "trace-bin-queue",
-            "reason_code": "HANDLING_CALLBACK_IN_PROGRESS",
+            "conveyor_code": "SMT_SORTER_01",
+            "queue_code": "WORKSTATION_WAIT_QUEUE",
+            "queue_role": "HANDLING_CALLBACK",
+            "declared_queue_codes": {"WORKSTATION_WAIT_QUEUE"},
+            "strict": True,
+            "correlation_id": "trace-bin-queue",
             "source_event_id": "handling:bin-operation:trace-queue:move:1:IN_PROGRESS",
             "evidence_json": {
                 "callback_type": "CTU_BIN_MOVE_PROGRESS",
@@ -321,7 +320,7 @@ async def test_record_callback_projects_membership_from_move_target_code_when_pa
         trace_id="trace-bin-queue",
     )
 
-    assert membership_service.switch_calls[0]["to_queue"] == "WORKSTATION_WAIT_QUEUE"
+    assert membership_service.write_calls[0]["queue_code"] == "WORKSTATION_WAIT_QUEUE"
 
 
 @pytest.mark.asyncio
@@ -458,10 +457,12 @@ async def test_record_callback_leaves_membership_on_success_terminal_callback() 
         trace_id="trace-bin-leave",
     )
 
-    assert membership_service.leave_calls == [
+    assert membership_service.write_calls[0]["queue_code"] == "WORKSTATION_WAIT_QUEUE"
+    assert membership_service.close_calls == [
         {
             "bin_code": "BIN-001",
             "placeholder_key": None,
+            "workline_id": 45,
             "handling_operation_id": 700,
             "handling_move_id": 801,
             "trace_id": "trace-bin-leave",

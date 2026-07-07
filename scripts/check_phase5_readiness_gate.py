@@ -23,6 +23,21 @@ PHASE5_READINESS_DOCUMENTS_OPEN = "PHASE5_READINESS_DOCUMENTS_OPEN"
 MISSING_PHASE3_PRODUCTION_CLOSURE = "MISSING_PHASE3_PRODUCTION_CLOSURE"
 MISSING_PHASE4_PRODUCTION_EVIDENCE = "MISSING_PHASE4_PRODUCTION_EVIDENCE"
 LEGACY_MATRIX_BUSINESS_ITEMS_OPEN = "LEGACY_MATRIX_BUSINESS_ITEMS_OPEN"
+PHASE5_FINAL_LEGACY_RESIDUALS_FOUND = "PHASE5_FINAL_LEGACY_RESIDUALS_FOUND"
+
+
+def _token(*parts: str) -> str:
+    return "".join(parts)
+
+
+_HANDLING_QUEUE_MEMBERSHIP_MODULE = _token("bin", "_", "transit", "_", "membership")
+_HANDLING_QUEUE_MEMBERSHIP_TABLE = _token("bin", "_", "transit", "_", "memberships")
+_BIN_TRANSIT_MEMBERSHIP_SYMBOL = _token("Bin", "Transit", "Membership")
+_BIN_TRANSIT_QUEUE_SYMBOL = _token("Bin", "Transit", "Queue")
+_WORKLINE_RUNTIME_STATUS_FIELD = _token("WorkLine", ".", "runtime_status")
+_WORK_LINES_RUNTIME_STATUS_COLUMN = _token("work_lines", ".", "runtime_status")
+_RUNTIME_STATUS_ENUM_ANNOTATION = _token("runtime_status: ", "WorkLineRuntimeStatus")
+_RUNTIME_STATUS_COMPATIBILITY_PROJECTION = _token("runtime_status", " ", "compatibility", " ", "projection")
 
 PROJECTION_SERVICE = Path("src/app/runtime/orchestration/services/workline_runtime_status_projection_service.py")
 OWNER_SENSITIVE_ROOTS = (
@@ -67,6 +82,34 @@ BUSINESS_LANE_CONTRACT_TESTS = (
     Path("tests/api/test_phase4_read_model_routes.py"),
     Path("tests/migrations/test_phase4_runtime_location_reservation_migration.py"),
 )
+FINAL_FORBIDDEN_TEXT = (
+    f"src.app.handling.models.{_HANDLING_QUEUE_MEMBERSHIP_MODULE}",
+    f"src.app.handling.repositories.{_HANDLING_QUEUE_MEMBERSHIP_MODULE}_repository",
+    f"src.app.handling.services.{_HANDLING_QUEUE_MEMBERSHIP_MODULE}_service",
+    _BIN_TRANSIT_MEMBERSHIP_SYMBOL,
+    _BIN_TRANSIT_QUEUE_SYMBOL,
+    _HANDLING_QUEUE_MEMBERSHIP_TABLE,
+    _WORKLINE_RUNTIME_STATUS_FIELD,
+    _RUNTIME_STATUS_ENUM_ANNOTATION,
+    _WORK_LINES_RUNTIME_STATUS_COLUMN,
+    "work_lines.active_safety_incident_id",
+    "work_lines.stopped_at",
+    "work_lines.stopped_reason",
+    "work_lines.resumed_at",
+    _RUNTIME_STATUS_COMPATIBILITY_PROJECTION,
+)
+FINAL_SCAN_ROOTS = (
+    Path("src"),
+    Path("scripts"),
+    Path("tests/architecture"),
+    Path("tests/handling"),
+)
+FINAL_SCAN_EXCLUDED_FILES = {
+    Path("scripts/check_phase5_readiness_gate.py"),
+    Path("tests/architecture/test_phase2_runtime_status_owner_guardrail.py"),
+    Path("tests/architecture/test_phase5_legacy_absence_guardrail.py"),
+    Path("tests/architecture/test_phase5_business_legacy_absence_guardrail.py"),
+}
 
 
 @dataclass(frozen=True)
@@ -151,6 +194,8 @@ def _direct_runtime_status_writes(tree: ast.AST) -> list[int]:
 
 
 def _is_runtime_status_snapshot_call(node: ast.AST) -> bool:
+    if isinstance(node, ast.Await):
+        node = node.value
     return isinstance(node, ast.Call) and (
         (isinstance(node.func, ast.Attribute) and node.func.attr == "runtime_status_snapshot")
         or (isinstance(node.func, ast.Name) and node.func.id == "runtime_status_snapshot")
@@ -268,11 +313,11 @@ def _phase2_owner_result(repo_root: Path) -> GateResult:
         return GateResult(False, PHASE2_RUNTIME_STATUS_OWNER_OPEN, missing_tokens)
 
     forbidden_phrases = (
-        "WorkLine.runtime_status 状态 owner",
-        "WorkLine.runtime_status 运行状态 owner",
-        "WorkLine.runtime_status owner",
-        "WorkLine.runtime_status 事实源",
-        "WorkLine.runtime_status 权威",
+        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 状态 owner",
+        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 运行状态 owner",
+        f"{_WORKLINE_RUNTIME_STATUS_FIELD} owner",
+        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 事实源",
+        f"{_WORKLINE_RUNTIME_STATUS_FIELD} 权威",
         "runtime_status 状态 owner",
         "runtime_status 运行状态 owner",
         "runtime_status owner",
@@ -335,6 +380,25 @@ def _runtime_inbox_cutover_result(repo_root: Path) -> GateResult:
     if missing_tokens:
         return GateResult(False, RUNTIME_INBOX_CUTOVER_OPEN, missing_tokens)
     return GateResult(True, "RUNTIME_INBOX_CUTOVER_CLOSED")
+
+
+def _final_legacy_residuals_result(repo_root: Path) -> GateResult:
+    offenders: list[str] = []
+    for root in FINAL_SCAN_ROOTS:
+        absolute_root = repo_root / root
+        if not absolute_root.exists():
+            continue
+        for path in sorted(absolute_root.rglob("*.py")):
+            relative_path = path.relative_to(repo_root)
+            if relative_path in FINAL_SCAN_EXCLUDED_FILES:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if any(forbidden in text for forbidden in FINAL_FORBIDDEN_TEXT):
+                offenders.append(str(relative_path))
+
+    if offenders:
+        return GateResult(False, PHASE5_FINAL_LEGACY_RESIDUALS_FOUND, tuple(offenders))
+    return GateResult(True, "PHASE5_FINAL_LEGACY_RESIDUALS_CLOSED")
 
 
 def _run_gate(repo_root: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -420,18 +484,18 @@ def _document_readiness_result(repo_root: Path, *, lane: str) -> GateResult:
     if lane == "technical":
         missing_tokens.extend(
             f"{LEGACY_MATRIX}:{token}"
-            for token in ("phase5_technical_lane_status: ready-for-technical-cleanup", "phase5-tech")
+            for token in ("phase5_technical_lane_status: final-cleanup-complete", "phase5-tech")
             if token not in legacy_matrix
         )
         if missing_tokens:
             return GateResult(False, PHASE5_READINESS_DOCUMENTS_OPEN, tuple(missing_tokens))
-        return GateResult(True, "PHASE5_TECHNICAL_MATRIX_READY")
+        return GateResult(True, "PHASE5_TECHNICAL_MATRIX_FINAL_COMPLETE")
 
-    if "phase5_business_lane_status: ready-for-business-cleanup" not in legacy_matrix:
+    if "phase5_business_lane_status: final-cleanup-complete" not in legacy_matrix:
         return GateResult(False, LEGACY_MATRIX_BUSINESS_ITEMS_OPEN, ("phase5_business_lane_status",))
     if missing_tokens:
         return GateResult(False, PHASE5_READINESS_DOCUMENTS_OPEN, tuple(missing_tokens))
-    return GateResult(True, "PHASE5_BUSINESS_MATRIX_READY")
+    return GateResult(True, "PHASE5_BUSINESS_MATRIX_FINAL_COMPLETE")
 
 
 def _phase3_production_result(
@@ -513,7 +577,13 @@ def _first_failure(results: Iterable[GateResult]) -> GateResult | None:
 
 def validate_readiness(args: argparse.Namespace) -> GateResult:
     repo_root = Path(args.repo_root).resolve()
-    common_failure = _first_failure((_phase2_owner_result(repo_root), _runtime_inbox_cutover_result(repo_root)))
+    common_failure = _first_failure(
+        (
+            _phase2_owner_result(repo_root),
+            _runtime_inbox_cutover_result(repo_root),
+            _final_legacy_residuals_result(repo_root),
+        )
+    )
     if common_failure is not None:
         return common_failure
 

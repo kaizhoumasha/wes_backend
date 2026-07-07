@@ -25,9 +25,7 @@ C1|src/app/workline/runtime_services.py|wlr services 镜像 C5a 引入 3 处 wms
 C2|src/app/rack/services/gateway.py|legacy session FK, rack 域 Phase 2 迁移|2026-09-30|legacy:src/app/rack/services/gateway.py:<file>|phase2
 
 # C2: 跨域 session FK (handling/rack, drop_phase=phase1/phase2)
-C2|src/app/handling/models/bin_transit_membership.py|legacy session FK, Phase 2 删除重建 ConveyorQueueMembership|2026-09-30|legacy:src/app/handling/models/bin_transit_membership.py:<file>|phase2
 C2|src/app/handling/models/operation.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/models/operation.py:<file>|phase1
-C2|src/app/handling/services/bin_transit_membership_service.py|legacy session FK, Phase 2 随模型删除|2026-09-30|legacy:src/app/handling/services/bin_transit_membership_service.py:<file>|phase2
 C2|src/app/handling/services/lifecycle_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/services/lifecycle_service.py:<file>|phase1
 C2|src/app/handling/services/operation_service.py|legacy session FK, Phase 1 改 correlation_id|2026-09-30|legacy:src/app/handling/services/operation_service.py:<file>|phase1
 C2|src/app/rack/models/operation.py|legacy session FK, rack Phase 2 迁移|2026-09-30|legacy:src/app/rack/models/operation.py:<file>|phase2

@@ -18,8 +18,8 @@ from src.app.runtime.orchestration.repositories.session_repository import workli
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
+from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
-from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
 from src.app.workline.repositories.workline_repository import workline_repository
 from src.app.workline.services.workline_service import WorkLineService, workline_service
@@ -179,7 +179,7 @@ class WorkLineStartAdmissionService:
                 "START 准入失败: WorkLine 不存在",
                 {"workline_id": workline_id},
             )
-        if self._is_ready(current):
+        if await self._is_ready(db, workline_id):
             return self._ready_idempotent_result(
                 workline_id,
                 source_device_code=source_device_code,
@@ -187,11 +187,12 @@ class WorkLineStartAdmissionService:
             )
         final_guard = await self._guard_startable(db, current)
         if final_guard is not None:
+            runtime_status = await self._runtime_status(db, workline_id)
             await self._record_failure(
                 db,
                 current,
                 message=final_guard,
-                diagnostic={"workline_id": workline_id, "runtime_status": self._runtime_status(current)},
+                diagnostic={"workline_id": workline_id, "runtime_status": runtime_status},
                 request_id=request_id,
                 trace_id=trace_id,
             )
@@ -199,7 +200,7 @@ class WorkLineStartAdmissionService:
                 workline_id,
                 "START_ADMISSION_STATE_CHANGED",
                 final_guard,
-                {"workline_id": workline_id, "runtime_status": self._runtime_status(current)},
+                {"workline_id": workline_id, "runtime_status": runtime_status},
             )
 
         await self._record_success(
@@ -236,16 +237,17 @@ class WorkLineStartAdmissionService:
                 "START 准入失败: WorkLine 不存在",
                 {"workline_id": workline_id},
             )
-        if self._is_ready(workline):
+        if await self._is_ready(db, workline_id):
             return self._ready_idempotent_result(workline_id)
 
         guard_message = await self._guard_startable(db, workline)
         if guard_message is not None:
+            runtime_status = await self._runtime_status(db, workline_id)
             await self._record_failure(
                 db,
                 workline,
                 message=guard_message,
-                diagnostic={"workline_id": workline_id, "runtime_status": self._runtime_status(workline)},
+                diagnostic={"workline_id": workline_id, "runtime_status": runtime_status},
                 request_id=request_id,
                 trace_id=trace_id,
             )
@@ -253,7 +255,7 @@ class WorkLineStartAdmissionService:
                 workline_id,
                 "START_ADMISSION_NOT_STARTABLE",
                 guard_message,
-                {"workline_id": workline_id, "runtime_status": self._runtime_status(workline)},
+                {"workline_id": workline_id, "runtime_status": runtime_status},
             )
 
         devices = await device_repository.get_by_work_line_id(db, workline_id)
@@ -296,10 +298,14 @@ class WorkLineStartAdmissionService:
             return "START 准入失败: WorkLine ID 无效"
         if not bool(getattr(workline, "is_active", False)):
             return "START 准入失败: WorkLine 未启用"
-        runtime_status = self._runtime_status(workline)
+        runtime_snapshot = await self.workline_status_projection_service.runtime_status_snapshot(
+            db,
+            workline_id=workline_id,
+        )
+        runtime_status = runtime_snapshot.runtime_status
         if runtime_status != _STOPPED.value:
             return f"START 准入失败: WorkLine 当前运行态不是 STOPPED: {runtime_status}"
-        if getattr(workline, "active_safety_incident_id", None) is not None:
+        if runtime_snapshot.active_safety_incident_id is not None:
             return "START 准入失败: WorkLine 存在 active safety incident"
         active_incident = await workline_safety_incident_repository.get_active_for_workline(db, workline_id)
         if active_incident is not None:
@@ -456,12 +462,12 @@ class WorkLineStartAdmissionService:
                 {"workline_id": workline_id},
             )
 
-        if self._is_ready(current):
+        if await self._is_ready(db, workline_id):
             return self._ready_idempotent_result(workline_id)
 
         final_guard = await self._guard_startable(db, current)
         if final_guard is not None:
-            diagnostic = {"workline_id": workline_id, "runtime_status": self._runtime_status(current)}
+            diagnostic = {"workline_id": workline_id, "runtime_status": await self._runtime_status(db, workline_id)}
             await self._record_failure(
                 db,
                 current,
@@ -538,7 +544,11 @@ class WorkLineStartAdmissionService:
         trace_id: str | None,
     ) -> None:
         now = timezone.now_for_db()
-        self.workline_status_projection_service.project_ready_after_start(workline, occurred_at=now)
+        await self.workline_status_projection_service.project_ready_after_start(
+            db,
+            workline_id=workline.id,
+            occurred_at=now,
+        )
         workline.start_admission_status = _SUCCESS
         workline.start_admission_message = "START 准入通过"
         workline.start_admission_failed_device_code = None
@@ -608,8 +618,8 @@ class WorkLineStartAdmissionService:
         value = diagnostic.get("device_code")
         return value if isinstance(value, str) and value else None
 
-    def _is_ready(self, workline: Any) -> bool:
-        return self.workline_status_projection_service.is_ready(workline)
+    async def _is_ready(self, db: AsyncSession, workline_id: int) -> bool:
+        return await self.workline_status_projection_service.is_ready(db, workline_id=workline_id)
 
     @classmethod
     def _ready_idempotent_result(
@@ -653,8 +663,11 @@ class WorkLineStartAdmissionService:
                 diagnostic["device_code"] = target.device_codes[0]
         return diagnostic
 
-    def _runtime_status(self, workline: Any) -> str | None:
-        runtime_snapshot = self.workline_status_projection_service.runtime_status_snapshot(workline)
+    async def _runtime_status(self, db: AsyncSession, workline_id: int) -> str | None:
+        runtime_snapshot = await self.workline_status_projection_service.runtime_status_snapshot(
+            db,
+            workline_id=workline_id,
+        )
         return runtime_snapshot.runtime_status
 
     @staticmethod

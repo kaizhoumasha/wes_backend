@@ -9,14 +9,14 @@
 
 MaterialLocationQuery 是作业期位置查询能力，不是状态 owner。它只汇总已存在的本地物理事实、active projection、reservation、ExternalReference 和 WMS 对账 snapshot，向 API / 运维视图提供可解释的位置事实。
 
-不复用旧 plugin 入口，不直接读取 WMS DTO/client，不复制 WMS 主数据，不把 `WorkLine.runtime_status` 作为位置判断来源。
+不复用旧 plugin 入口，不直接读取 WMS DTO/client，不复制 WMS 主数据，不把 WorkLine 运行态作为位置判断来源。
 
 ## 2. Residual Readiness
 
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
 | Phase 1 callback normalizer admission 已关闭 | 查询响应仍必须保留 `provider_code` / `source_event_id` / `ExternalReference`，不信任裸 callback payload |
-| Phase 2 `WorkLine.runtime_status` 兼容投影未清空 | 查询接口不输出或推导 WorkLine 运行状态，只输出对象位置和 evidence |
+| Phase 2 WorkLine 运行态 final cleanup 已完成 | 查询接口不输出或推导 WorkLine 运行状态，只输出对象位置和 evidence |
 | Phase 3 RuntimeInbox / closure profile | 查询设计可落地为只读合同；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产上线前必须确认 RuntimeInbox cutover 和 `--closure-profile production` |
 
 ## 3. 查询入口

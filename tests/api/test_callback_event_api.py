@@ -7,6 +7,9 @@ import pytest
 from fastapi import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    WorkLineRuntimeStatusSnapshot,
+)
 from src.core.response.response_code import ResourceErrorCode
 from tests.api import callback_test_support
 from tests.api.callback_test_support import (
@@ -19,9 +22,25 @@ from tests.api.callback_test_support import (
 )
 
 
+def _runtime_snapshot(runtime_status: str | None = "READY") -> WorkLineRuntimeStatusSnapshot:
+    return WorkLineRuntimeStatusSnapshot(
+        runtime_status=runtime_status,
+        source="test/runtime-projection",
+        stopped_at=None,
+        stopped_reason=None,
+        resumed_at=None,
+        active_safety_incident_id=None,
+    )
+
+
 @pytest.fixture(autouse=True)
 def mock_fast_fail_check():
-    yield from callback_test_support.mock_fast_fail_check.__wrapped__()
+    with patch(
+        "src.app.callback.services.callback_ingress_service."
+        "workline_runtime_status_projection_service.runtime_status_snapshot",
+        new=AsyncMock(return_value=_runtime_snapshot()),
+    ):
+        yield from callback_test_support.mock_fast_fail_check.__wrapped__()
 
 
 @pytest.fixture
@@ -674,6 +693,11 @@ class TestCallbackEventAPI:
     ) -> None:
         http_response = Response()
         with (
+            patch(
+                "src.app.callback.services.callback_ingress_service."
+                "workline_runtime_status_projection_service.runtime_status_snapshot",
+                new=AsyncMock(return_value=_runtime_snapshot(runtime_status)),
+            ),
             patch(
                 "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
                 new=AsyncMock(

@@ -147,8 +147,8 @@ Phase5 不再用单一“清理旧代码”口径推进，删除前必须先判�
 
 当前 gate 状态：
 
-- `phase5_technical_lane_status: ready-for-technical-cleanup`
-- `phase5_business_lane_status: ready-for-business-cleanup`
+- `phase5_technical_lane_status: final-cleanup-complete`
+- `phase5_business_lane_status: final-cleanup-complete`
 
 执行入口：
 
@@ -156,18 +156,19 @@ Phase5 不再用单一“清理旧代码”口径推进，删除前必须先判�
 - business lane readiness：`uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`。
 - business destructive cleanup：`uv run python scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`，并已接入 `./scripts/git-quality-gate.sh --check phase5-business-destructive-cleanup` 与 `--profile quality`。
 
-2026-07-06 验收记录：
+2026-07-08 验收记录：
 
 - technical lane 已通过 Phase2 owner guardrail、RuntimeInbox cutover、Phase3 mock closure、Phase5 technical contracts，并完成旧 plugin runtime/import 框架清理；执行记录见 `docs/architecture/legacy-cleanup-execution-plan.md`。
 - business lane 携带 regenerated Phase3/Phase4 artifacts 后已通过 readiness gate；随后执行 destructive cleanup ledger 关闭：104 条 phase4 carrier 中 55 行 moved、10 行 test-only-migrated、18 行 kept-config-only、21 行 already-removed，0 pending。机器验收见 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 与 `scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`。
 - 旧 `src/workline_plugins/*` 仅保留在 `docs/archive/legacy-workline-plugins/`，不得回流到 `src/` 可 import 路径；absence guardrail 负责阻断。
+- final cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列；`scripts/check_phase5_readiness_gate.py` 与 absence guardrail 负责阻断回流。
 
 | lane | 适用条目 | 删除前置 | 不允许 |
 | --- | --- | --- | --- |
 | technical lane (`phase5-tech`) | debug/sandbox/fake/mock、旧 plugin 模板、已无生产 import 的 shim、仅服务开发/测试的辅助入口 | Phase2 runtime/orchestration owner guardrail 通过；Phase3 mock closure 或等价开发/测试门禁通过；`architecture-guardrails.sh` 与相关 characterization/contract test 通过；GitNexus detect-changes 确认只影响预期技术入口 | 以技术清理名义删除仍承载业务语义、API contract、trace/diagnostic evidence 或生产发布 profile 的入口 |
 | business lane (`phase5-business`) | 旧 plugin / WorkLine 业务流程中仍承载 Phase4 语义、WMS/ECS evidence、生产 trace、benchmark 或人工处置合同的入口 | Phase4 capability 替代路径已生产可用；evidence manifest 引用文件齐全；production closure profile 通过；Phase4 capability / port / contract tests 全绿；旧入口 characterization/contract test 已迁为目标态测试或明确废弃；数据迁移/回填/审计留痕计划已执行 | 用 mock closure、lightweight benchmark 或缺 evidence / 缺 contract tests 的本地测试冒充业务承载删除前置 |
 
-`WorkLine.runtime_status` 这类 compatibility projection 不按普通 technical lane 直接删除；必须先确认 API / monitor / trace / safety / START admission 已迁到 runtime/orchestration 原生读模型，再进入 schema 删除或字段改名计划。
+WorkLine 运行态物理字段已完成 final cleanup；API / monitor / trace / safety / START admission 均通过 runtime/orchestration 原生投影读取，不再把 WorkLine 配置表作为运行态 owner。
 
 ## 7. 按域说明
 

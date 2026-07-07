@@ -117,7 +117,10 @@ class SingleLayerRackOrchestrationService:
 
         workline_code = str(getattr(workline, "line_code", "") or "")
         workline_id = getattr(workline, "id", None)
-        if not workline_runtime_status_projection_service.is_ready(workline):
+        if not isinstance(workline_id, int) or not await workline_runtime_status_projection_service.is_ready(
+            db,
+            workline_id=workline_id,
+        ):
             return SingleLayerRackOrchestrationDecision(
                 decision=SingleLayerRackOrchestrationDecisionCode.WAITING,
                 reason="WORKLINE_NOT_READY",

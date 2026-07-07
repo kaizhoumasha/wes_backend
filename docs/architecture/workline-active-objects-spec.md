@@ -9,14 +9,14 @@
 
 WorklineActiveObjects 是 WorkLine 当前作业对象的只读聚合视图。它与 `ActiveObjectRegistry` 协同展示 active/current work，不拥有业务终态，不直接写 owner 状态，也不绕过 ReconciliationManager。
 
-不复用旧 plugin context，不新增跨域 session FK，不依赖 `WorkLine.runtime_status` 推导当前作业状态。
+不复用旧 plugin context，不新增跨域 session FK，不依赖 WorkLine 运行态推导当前作业状态。
 
 ## 2. Residual Readiness
 
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
 | Phase 1 callback admission 已关闭 | 所有入站来源必须保留 source/provider/evidence，视图不接受无 profile 的来源 |
-| Phase 2 运行状态投影未清空 | 视图只读 runtime/orchestration、active projection 和 evidence，不读 WorkLine 运行状态作为 owner |
+| Phase 2 WorkLine 运行态 final cleanup 已完成 | 视图只读 runtime/orchestration、active projection 和 evidence，不读 WorkLine 运行状态作为 owner |
 | Phase 3 closure profile | 允许定义视图合同；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；正式上线前必须显式通过 `--closure-profile production` |
 
 ## 3. 视图职责
@@ -58,7 +58,7 @@ WorklineActiveObjects 是 WorkLine 当前作业对象的只读聚合视图。它
 - IN_TRANSFER + ON_CONVEYOR 在 transient window 内返回 TRANSIENT，超时后返回 RECONCILING。
 - RuntimeHold open 时视图展示 freeze scope 和 allowed_next_effect_scope。
 - 父 work item 成功但子项缺失时，视图不得显示父批次业务成功。
-- `WorkLine.runtime_status` 不参与 active object 状态推导。
+- WorkLine 运行态不参与 active object 状态推导。
 
 ## 7. 实施前置条件
 

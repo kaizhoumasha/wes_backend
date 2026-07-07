@@ -24,7 +24,6 @@ from .plane import (
 )
 from .safety import (
     ClearWorkLineEstopRequest,
-    WorkLineRuntimeStatus,
     WorklineSafetyIncident,
     WorklineSafetyIncidentStatus,
 )
@@ -68,7 +67,6 @@ __all__ = [
     "WorkLinePluginOption",
     "WorkLineResponse",
     "WorkLineRunMode",
-    "WorkLineRuntimeStatus",
     "WorkLineStateTransitionRequest",
     "WorkLineUpdate",
     "WorklineSafetyIncident",
