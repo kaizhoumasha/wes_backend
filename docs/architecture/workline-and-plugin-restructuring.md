@@ -21,7 +21,7 @@ review_summary: |
   28 auto-decision 已记录到 docs/architecture/reviews/decision-audit-trail.md。
   本轮修订明确：当前系统未发布，本重构不做向后兼容；旧 WorkLine/plugin 体系只作为业务事实和测试样本输入，不作为目标态约束。
   Critical path: 目标态边界锁定 → WMS ACL → Runtime/Orchestration 骨架 → plane 最小闭环 → legacy 清理。
-  2026-07-07 同步：Phase5 technical lane 已通过 PR #78 合并到 develop（v0.13.0.0）；legacy plugin runtime/import 框架已退出 src 可 import 路径。Phase3 + Phase4 production evidence bundle 已可重新生成并通过 gate；Phase5 business lane 当前阻塞于 legacy matrix business close。
+  2026-07-07 同步：Phase5 technical lane 已通过 PR #78 合并到 develop（v0.13.0.0）；legacy plugin runtime/import 框架已退出 src 可 import 路径。Phase3 + Phase4 production evidence bundle 已可重新生成并通过 gate；Phase5 business lane readiness 已通过，destructive cleanup 必须另开计划。
 ---
 
 # WORKLINE + PLUGIN 体系全面重构顶层设计
@@ -2247,9 +2247,9 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 | --- | --- | --- | --- |
 | **ENG-014** Legacy 路径列 `src/{workline_runtime,workline_plugins}` 5 子目录清理矩阵 | S | `docs/architecture/legacy-cleanup-matrix.md`, `docs/architecture/legacy-cleanup-matrix.csv` | ✅ 当前矩阵 638 条，由 `scripts/generate_legacy_matrix.py` 可复现；0 pending-review / 0 空策略；Phase5 technical lane 后 `src/workline_plugins` 与旧 template 路径为 0 runtime/template entries |
 | 技术残留删除 PR | M | `src/workline_runtime/`, `src/workline_plugins/`, `src/app/workline/`, `src/app/runtime/` | ✅ PR #78 已完成；`check_phase5_readiness_gate.py --lane technical` 通过；absence guardrail 阻断 legacy import 回流；unknown capability 不 fallback 到 `null_plugin`；provider capability 按 `ExternalContractProfile` fail closed |
-| 业务承载 legacy 删除 PR | L | `src/app/workline/`, `src/app/runtime/capabilities/phase4/`, production evidence artifacts | 🟡 阻塞；仅在 `check_phase5_readiness_gate.py --lane business` 通过后执行；当前 regenerated evidence 已通过，仍需 legacy matrix business 项逐项关闭 |
+| 业务承载 legacy 删除 PR | L | `src/app/workline/`, `src/app/runtime/capabilities/phase4/`, production evidence artifacts | ⏭️ 另开计划；`check_phase5_readiness_gate.py --lane business` 已通过，本表项只保留 destructive cleanup 的后续执行入口；本轮不删除业务承载 legacy 数据、schema 或流程语义 |
 
-**Effort 估算**：technical lane 已完成；business lane 取决于 legacy matrix business close，继续单独排期。
+**Effort 估算**：technical lane 已完成；business readiness 已通过；业务承载 legacy destructive cleanup 继续单独排期。
 
 ### 10.7 总 Effort 估算
 
@@ -2482,7 +2482,7 @@ Phase 5 ────────────────────────
 - **Phase 2 启动时** → 写 `legacy-runtime-migration-spec.md`（旧 WorkLine/plugin/runtime 执行能力迁移、删除和 WorkLine 清空顺序）
 - **Phase 3 启动时** → 写 `fulfillment-state-machine-spec.md`（11 态机完整转移图 + 4 timeout 时长表 + BLOCKED_BY_CB 出站阻塞 + CB 恢复期 late callback 入站 evidence 合同）、`reconciliation-manager-spec.md`（触发矩阵 + 隔离动作 + owner-scoped resolution decision + 5/30 分钟升级）、`plane-read-model-spec.md`（PlaneSceneView/Snapshot 字段 + 容量上限 + RBAC 矩阵）、`external-callback-auth-spec.md`（HMAC canonical + nonce TTL + allow-list）、`device-dispatch-policy-spec.md`（能力选择 + deadline + 状态快照 TTL）、`scenario-replay-spec.md`（录制、脱敏、deterministic replay、断言矩阵）、`observability-contract.md`（span/metric/log 命名与稳定 attributes）、`runtime-toggle-governance.md`（typed toggle 分类、owner/expiry/scope/default/rollback/test matrix）
 - **Phase 4 启动时** → ✅ 已写 `cell-reservation-spec.md`、`material-location-query-spec.md`、`workline-active-objects-spec.md`、`sorter-inbound-capability-spec.md`（展开粗分机正常流、满箱交换前置分流、分拣机正常流、满箱交换区/分拣机 STATION 边界、`rack_code + rack_side` 批次分组、`CHANGE_RACK_FACE` 独立履约、已交换物料排除逐件分拣、`CellReservation`、授权料箱 resolve、扫码平台预取互锁及 manifest validator、物料 work item 与料箱 work item join 条件、本地物理事实先落与 WMS 同步/对账状态、CTU 父请求聚合子 work item 查询视图）、`smt-ng-wms-reconciliation-spec.md`；同时写入 `docs/superpowers/specs/2026-07-03-phase4-design-with-residuals.md` 记录 Phase 1/2/3 residual gates。各 SPEC 当前实施、MOCK 验收与生产门禁状态以 §10.5 的 SPEC 进度同步表为准。`fulfillment-provider-adapter-spec.md` 仅在 §10.5 RCS/AGV/CTU 直连触发条件满足时生成，生产前默认不写
-- **Phase 5 启动时** → ✅ 已写 `legacy-cleanup-execution-plan.md`；PR #78 已执行 technical lane，逐文件列出 delete / rebuild / move / keep-contract、是否承载 Phase 4 业务语义、对应 capability/port/contract tests、允许 drop 的前置条件和回滚边界。Phase3 + Phase4 production evidence ledger 已补齐，business lane 仍等待 legacy matrix business close。
+- **Phase 5 启动时** → ✅ 已写 `legacy-cleanup-execution-plan.md`；PR #78 已执行 technical lane，逐文件列出 delete / rebuild / move / keep-contract、是否承载 Phase 4 业务语义、对应 capability/port/contract tests、允许 drop 的前置条件和回滚边界。Phase3 + Phase4 production evidence ledger 已补齐，business lane readiness 已通过；业务承载 legacy destructive cleanup 必须另开计划。
 
 **为何不在本文展开**：
 
