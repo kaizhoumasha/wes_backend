@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0.0] - 2026-07-07
+
+> **Note**: Phase5 business lane 发布。本 minor 关闭业务承载 legacy cleanup 阻塞，补齐 destructive cleanup ledger/final gate，将仍有价值的 WorkLine 业务合同迁入 Phase4 runtime capability contracts，并保持 `WorkLine.runtime_status` schema/data 删除独立延期。
+
+### Added
+- 新增 Phase5 business destructive cleanup ledger 与 final gate，校验 104 个 business carrier 条目的 matrix identity、处置状态、目标 capability、reference scan、外部 alias 状态和 Phase4 contract layer 边界。
+- 新增 Phase4 business contracts 包，承载 RoughSorter、SixInOne、material identity、NG reason、SMT inbound handoff route/reason/usage policy 等低层业务合同。
+- 新增 state-aware legacy absence/no-cycle guardrails，阻断已迁移 legacy path、`src/workline_plugins` 旧入口和 Phase4 contracts 回流 service/repository/database 层。
+
+### Changed
+- 将 business lane readiness 从 production evidence blocker 推进为 `PHASE5_BUSINESS_READY`，并把 matrix closure guardrail 纳入 `check_phase5_readiness_gate.py --lane business`。
+- 将 runtime capability catalog、runtime services、repair/sync scripts 和 contract tests 改为依赖 Phase4 contracts 目标态路径。
+- 将 legacy inbox 判重后的 result/event/external callback ACK 统一标记为 duplicate，避免 RuntimeInbox cutover 后旧 inbox 重复被误报为 accepted。
+- 将 destructive cleanup final gate 接入 quality profile，让本地提交门禁和 CI 使用同一 cleanup 检查。
+
+### Fixed
+- 修复 Phase4 contracts layer guardrail 漏检相对导入的问题，`from ..service import X` 现在会解析为绝对模块并被 final gate 阻断。
+
+### Removed
+- 删除业务承载 legacy WorkLine domain/service/plugin test surfaces，业务断言迁移到 `tests/contracts/` 或反转为 absence guardrail。
+
 ## [0.13.0.0] - 2026-07-07
 
 > **Note**: Phase5 technical lane 发布。本 minor 完成 legacy WorkLine plugin runtime 路径退出、RuntimeInbox 到 Phase4 runtime service 的目标链路切换，以及 absence guardrail/cleanup evidence 更新；business lane 继续被 Phase3 production closure provenance 阻塞。
