@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
@@ -18,6 +19,14 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+@dataclass(frozen=True, slots=True)
+class EnsureDefaultProjectionResult:
+    """确保默认投影的结果，区分本事务是否实际插入。"""
+
+    projection: WorklineRuntimeStatusProjection
+    created: bool
 
 
 class WorklineRuntimeStatusProjectionRepository(BaseRepository[WorklineRuntimeStatusProjection]):
@@ -63,16 +72,45 @@ class WorklineRuntimeStatusProjectionRepository(BaseRepository[WorklineRuntimeSt
     ) -> WorklineRuntimeStatusProjection:
         """显式确保 STOPPED 默认投影存在；普通读路径不能隐式调用。"""
 
+        return (await self.ensure_default_result(db, workline_id)).projection
+
+    async def ensure_default_result(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+    ) -> EnsureDefaultProjectionResult:
+        """显式确保默认投影存在，并返回本事务是否实际创建。"""
+
         existing = await self.get_by_workline_id(db, workline_id)
         if existing is not None:
-            return existing
-        return await self.upsert_status(
-            db,
-            workline_id=workline_id,
-            runtime_status=WorkLineRuntimeStatus.STOPPED.value,
-            source="runtime/orchestration",
-            stopped_reason="DEFAULT_PROJECTION",
+            return EnsureDefaultProjectionResult(projection=existing, created=False)
+        table = cast("Any", WorklineRuntimeStatusProjection).__table__
+        values = {
+            "workline_id": workline_id,
+            "runtime_status": WorkLineRuntimeStatus.STOPPED.value,
+            "source": "runtime/orchestration",
+            "stopped_reason": "DEFAULT_PROJECTION",
+            "evidence_json": {},
+        }
+        dialect_name = db.get_bind().dialect.name
+        insert_fn = sqlite_insert if dialect_name == "sqlite" else postgresql_insert
+        statement = (
+            insert_fn(table)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=[table.c.workline_id])
+            .returning(table.c.id)
         )
+        result = await db.execute(statement)
+        projection_id = result.scalar_one_or_none()
+        if projection_id is not None:
+            projection = await self.get_by_id(db, projection_id)
+            if projection is not None:
+                return EnsureDefaultProjectionResult(projection=projection, created=True)
+
+        projection = await self.get_by_workline_id(db, workline_id)
+        if projection is None:
+            raise RuntimeError(f"WorkLine runtime status projection default ensure failed: workline_id={workline_id}")
+        return EnsureDefaultProjectionResult(projection=projection, created=False)
 
     async def upsert_status(
         self,
@@ -123,6 +161,7 @@ workline_runtime_status_projection_repository = WorklineRuntimeStatusProjectionR
 
 
 __all__ = [
+    "EnsureDefaultProjectionResult",
     "WorklineRuntimeStatusProjectionRepository",
     "workline_runtime_status_projection_repository",
 ]

@@ -48,8 +48,7 @@ def _set_destructive_statement_timeouts() -> None:
 def _drop_workline_runtime_status_constraint_if_exists() -> None:
     op.execute(
         sa.text(
-            f'ALTER TABLE "{BIZ_SCHEMA}"."{WORK_LINES_TABLE}" '
-            f'DROP CONSTRAINT IF EXISTS "{RUNTIME_STATUS_CONSTRAINT}"'
+            f'ALTER TABLE "{BIZ_SCHEMA}"."{WORK_LINES_TABLE}" DROP CONSTRAINT IF EXISTS "{RUNTIME_STATUS_CONSTRAINT}"'
         )
     )
 
@@ -59,12 +58,7 @@ def _drop_workline_index_if_exists(index_name: str) -> None:
 
 
 def _drop_workline_column_if_exists(column_name: str) -> None:
-    op.execute(
-        sa.text(
-            f'ALTER TABLE "{BIZ_SCHEMA}"."{WORK_LINES_TABLE}" '
-            f'DROP COLUMN IF EXISTS "{column_name}"'
-        )
-    )
+    op.execute(sa.text(f'ALTER TABLE "{BIZ_SCHEMA}"."{WORK_LINES_TABLE}" DROP COLUMN IF EXISTS "{column_name}"'))
 
 
 def _workline_runtime_status_enum() -> sa.Enum:
@@ -85,13 +79,13 @@ def upgrade() -> None:
     op.create_table(
         PROJECTION_TABLE,
         sa.Column("id", sa.Integer(), nullable=False),
-        sa.Column("workline_id", sa.Integer(), nullable=False, comment="WorkLine configuration id"),
+        sa.Column("workline_id", sa.BigInteger(), nullable=False, comment="WorkLine configuration id"),
         sa.Column("runtime_status", sa.String(length=20), nullable=False),
         sa.Column("source", sa.String(length=100), nullable=False),
         sa.Column("stopped_at", sa.DateTime(), nullable=True, comment="naive UTC for DB"),
         sa.Column("stopped_reason", sa.String(length=200), nullable=True),
         sa.Column("resumed_at", sa.DateTime(), nullable=True, comment="naive UTC for DB"),
-        sa.Column("active_safety_incident_id", sa.Integer(), nullable=True),
+        sa.Column("active_safety_incident_id", sa.BigInteger(), nullable=True),
         sa.Column(
             "evidence_json",
             postgresql.JSONB(astext_type=sa.Text()),
@@ -201,7 +195,9 @@ def downgrade() -> None:
         schema=BIZ_SCHEMA,
     )
     op.add_column(WORK_LINES_TABLE, sa.Column("stopped_at", sa.DateTime(), nullable=True), schema=BIZ_SCHEMA)
-    op.add_column(WORK_LINES_TABLE, sa.Column("stopped_reason", sa.String(length=200), nullable=True), schema=BIZ_SCHEMA)
+    op.add_column(
+        WORK_LINES_TABLE, sa.Column("stopped_reason", sa.String(length=200), nullable=True), schema=BIZ_SCHEMA
+    )
     op.add_column(WORK_LINES_TABLE, sa.Column("resumed_at", sa.DateTime(), nullable=True), schema=BIZ_SCHEMA)
 
     op.execute(

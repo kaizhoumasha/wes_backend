@@ -11,6 +11,7 @@ from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
 from src.core.mixins.base import BaseMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 
 
 class WorkLineRuntimeStatus(str, Enum):
@@ -50,13 +51,13 @@ class WorklineRuntimeStatusProjection(BaseMixin, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    workline_id: int = Field(index=True, description="WorkLine configuration id")
+    workline_id: int = Field(index=True, sa_type=SQL_COMPAT_BIGINT, description="WorkLine configuration id")
     runtime_status: str = Field(default=WorkLineRuntimeStatus.STOPPED.value, max_length=20, index=True)
     source: str = Field(default="runtime/orchestration", max_length=100)
     stopped_at: datetime | None = Field(default=None, description="naive UTC for DB")
     stopped_reason: str | None = Field(default=None, max_length=200)
     resumed_at: datetime | None = Field(default=None, description="naive UTC for DB")
-    active_safety_incident_id: int | None = Field(default=None, index=True)
+    active_safety_incident_id: int | None = Field(default=None, index=True, sa_type=SQL_COMPAT_BIGINT)
     evidence_json: dict[str, Any] = Field(
         default_factory=dict,
         sa_column=Column(JSON, nullable=False, default=dict),

@@ -28,6 +28,8 @@ def test_migration_creates_runtime_projection_and_unique_workline_index() -> Non
     assert 'PROJECTION_TABLE = "workline_runtime_status_projections"' in text
     assert "op.create_table(" in text
     assert '"wes_runtime"' in text
+    assert 'sa.Column("workline_id", sa.BigInteger()' in text
+    assert 'sa.Column("active_safety_incident_id", sa.BigInteger()' in text
     assert "ux_wrt_status_proj_workline" in text
     assert "runtime_status IN ('READY', 'STOPPED', 'STARTING', 'ESTOPPED', 'RECONCILING')" in text
 

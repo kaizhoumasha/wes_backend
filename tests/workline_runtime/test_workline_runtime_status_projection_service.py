@@ -2,12 +2,19 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy.dialects import postgresql, sqlite
 
+from src.app.runtime.orchestration.repositories.workline_runtime_status_projection_repository import (
+    WorklineRuntimeStatusProjectionRepository,
+)
 from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import RuntimeHoldCreationService
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusProjectionService,
 )
-from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
+from src.app.runtime.orchestration.workline_runtime_status_projection import (
+    WorkLineRuntimeStatus,
+    WorklineRuntimeStatusProjection,
+)
 from src.utils.timezone import timezone
 
 
@@ -85,6 +92,64 @@ class _ProjectionRepository:
         row = SimpleNamespace(**kwargs)
         self.rows[kwargs["workline_id"]] = row
         return row
+
+
+def test_projection_foreign_ids_use_sql_compatible_bigint():
+    from sqlalchemy import BigInteger
+
+    columns = WorklineRuntimeStatusProjection.__table__.c
+
+    assert isinstance(columns.workline_id.type, BigInteger)
+    assert isinstance(columns.active_safety_incident_id.type, BigInteger)
+    assert columns.workline_id.type.compile(dialect=postgresql.dialect()).upper() == "BIGINT"
+    assert columns.workline_id.type.compile(dialect=sqlite.dialect()).upper() == "INTEGER"
+    assert columns.active_safety_incident_id.type.compile(dialect=postgresql.dialect()).upper() == "BIGINT"
+    assert columns.active_safety_incident_id.type.compile(dialect=sqlite.dialect()).upper() == "INTEGER"
+
+
+@pytest.mark.asyncio
+async def test_projection_service_ensure_default_delegates_repository():
+    repository = _ProjectionRepository()
+    projection = WorkLineRuntimeStatusProjectionService(repository=repository)
+
+    row = await projection.ensure_default(object(), workline_id=9007199254740993)
+
+    assert row.runtime_status == WorkLineRuntimeStatus.STOPPED.value
+    assert repository.ensure_calls == [9007199254740993]
+
+
+@pytest.mark.asyncio
+async def test_projection_repository_ensure_default_does_not_overwrite_conflicting_existing_status(db_session):
+    repository = WorklineRuntimeStatusProjectionRepository()
+    existing = WorklineRuntimeStatusProjection(
+        workline_id=9007199254740993,
+        runtime_status=WorkLineRuntimeStatus.ESTOPPED.value,
+        source="runtime/orchestration",
+        stopped_reason="ESTOP_PRESSED",
+        active_safety_incident_id=9007199254740995,
+    )
+    db_session.add(existing)
+    await db_session.flush()
+
+    real_get = repository.get_by_workline_id
+    calls = 0
+
+    async def get_by_workline_id(_db, workline_id, *, for_update=False):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        return await real_get(_db, workline_id, for_update=for_update)
+
+    repository.get_by_workline_id = get_by_workline_id
+
+    row = await repository.ensure_default(db_session, 9007199254740993)
+    await db_session.refresh(existing)
+
+    assert row.runtime_status == WorkLineRuntimeStatus.ESTOPPED.value
+    assert existing.runtime_status == WorkLineRuntimeStatus.ESTOPPED.value
+    assert existing.stopped_reason == "ESTOP_PRESSED"
+    assert existing.active_safety_incident_id == 9007199254740995
 
 
 @pytest.mark.asyncio
@@ -499,3 +564,85 @@ async def test_dispatch_ack_exhausted_uses_projection_without_overwriting_estop(
     assert workline.runtime_status == WorkLineRuntimeStatus.ESTOPPED
     assert workline.stopped_at == old_stop
     assert workline.stopped_reason == "ESTOP_PRESSED"
+
+
+@pytest.mark.asyncio
+async def test_remaining_safety_estop_hold_reprojects_with_incident_id(monkeypatch):
+    import importlib
+
+    from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldType
+    from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import RuntimeHoldReleaseService
+
+    release_module = importlib.import_module("src.app.runtime.orchestration.services.hold.runtime_hold_release_service")
+    projection = _RuntimeStatusProjectionSpy()
+    service = RuntimeHoldReleaseService()
+    runtime_hold = SimpleNamespace(
+        hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION,
+        source_reason="COMMAND_ACK_EXHAUSTED",
+        evidence_snapshot_json={},
+    )
+    safety_hold = SimpleNamespace(
+        hold_type=RuntimeHoldType.SAFETY_ESTOP,
+        source_reason="ESTOP_PRESSED",
+        evidence_snapshot_json={"incident_id": 9007199254740993},
+    )
+    monkeypatch.setattr(release_module, "workline_runtime_status_projection_service", projection)
+
+    await service._project_remaining_hold_status(
+        object(),
+        workline_id=45,
+        remaining_holds=[runtime_hold, safety_hold],
+    )
+
+    assert projection.estop_calls == [
+        (
+            45,
+            "ESTOP_PRESSED",
+            {"active_safety_incident_id": 9007199254740993},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remaining_safety_estop_hold_falls_back_to_current_projection_incident(monkeypatch):
+    import importlib
+
+    from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldType
+    from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import RuntimeHoldReleaseService
+
+    release_module = importlib.import_module("src.app.runtime.orchestration.services.hold.runtime_hold_release_service")
+    projection = _RuntimeStatusProjectionSpy()
+
+    async def runtime_status_snapshot(_db, *, workline_id):
+        return SimpleNamespace(
+            runtime_status=WorkLineRuntimeStatus.ESTOPPED.value,
+            active_safety_incident_id=9007199254740997,
+        )
+
+    projection.runtime_status_snapshot = runtime_status_snapshot
+    service = RuntimeHoldReleaseService()
+    runtime_hold = SimpleNamespace(
+        hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION,
+        source_reason="COMMAND_ACK_EXHAUSTED",
+        evidence_snapshot_json={},
+    )
+    safety_hold = SimpleNamespace(
+        hold_type=RuntimeHoldType.SAFETY_ESTOP,
+        source_reason="ESTOP_PRESSED",
+        evidence_snapshot_json={},
+    )
+    monkeypatch.setattr(release_module, "workline_runtime_status_projection_service", projection)
+
+    await service._project_remaining_hold_status(
+        object(),
+        workline_id=45,
+        remaining_holds=[runtime_hold, safety_hold],
+    )
+
+    assert projection.estop_calls == [
+        (
+            45,
+            "ESTOP_PRESSED",
+            {"active_safety_incident_id": 9007199254740997},
+        )
+    ]

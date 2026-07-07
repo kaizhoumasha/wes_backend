@@ -44,7 +44,7 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
 from src.app.sys.repositories import system_outbox_repository
 from src.app.workline.repositories import workline_repository
 from src.utils.timezone import timezone
-from src.utils.value_normalization import as_dict, enum_str
+from src.utils.value_normalization import as_dict, enum_str, optional_int
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -872,11 +872,23 @@ class RuntimeHoldReleaseService:
         remaining_holds: list[RuntimeHold],
     ) -> None:
         first_hold = remaining_holds[0]
-        if any(item.hold_type == RuntimeHoldType.SAFETY_ESTOP for item in remaining_holds):
+        safety_hold = next((item for item in remaining_holds if item.hold_type == RuntimeHoldType.SAFETY_ESTOP), None)
+        if safety_hold is not None:
+            safety_evidence = as_dict(getattr(safety_hold, "evidence_snapshot_json", None))
+            active_safety_incident_id = optional_int(safety_evidence.get("incident_id")) or optional_int(
+                safety_evidence.get("safety_incident_id")
+            )
+            if active_safety_incident_id is None:
+                snapshot = await workline_runtime_status_projection_service.runtime_status_snapshot(
+                    db,
+                    workline_id=workline_id,
+                )
+                active_safety_incident_id = optional_int(getattr(snapshot, "active_safety_incident_id", None))
             await workline_runtime_status_projection_service.project_estopped_active_hold(
                 db,
                 workline_id=workline_id,
-                reason=first_hold.source_reason,
+                reason=safety_hold.source_reason,
+                active_safety_incident_id=active_safety_incident_id,
             )
         else:
             await workline_runtime_status_projection_service.project_reconciling(

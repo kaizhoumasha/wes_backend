@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from src.app.runtime.orchestration.repositories.workline_runtime_status_projection_repository import (
+    EnsureDefaultProjectionResult,
     WorklineRuntimeStatusProjectionRepository,
     workline_runtime_status_projection_repository,
 )
@@ -41,6 +42,16 @@ class WorkLineRuntimeStatusProjectionService:
         repository: WorklineRuntimeStatusProjectionRepository = workline_runtime_status_projection_repository,
     ) -> None:
         self.repository = repository
+
+    async def ensure_default(self, db: Any, *, workline_id: int) -> WorklineRuntimeStatusProjection:
+        """显式确保新建/恢复 WorkLine 具备 STOPPED 默认投影。"""
+
+        return await self.repository.ensure_default(db, workline_id)
+
+    async def ensure_default_result(self, db: Any, *, workline_id: int) -> EnsureDefaultProjectionResult:
+        """显式确保默认投影存在，并保留是否实际插入的信息。"""
+
+        return await self.repository.ensure_default_result(db, workline_id)
 
     async def runtime_status_snapshot(self, db: Any, *, workline_id: int) -> WorkLineRuntimeStatusSnapshot:
         """读取 runtime 状态快照；缺失投影不隐式创建。"""
@@ -203,6 +214,7 @@ workline_runtime_status_projection_service = WorkLineRuntimeStatusProjectionServ
 
 
 __all__ = [
+    "EnsureDefaultProjectionResult",
     "WorkLineRuntimeStatusProjectionService",
     "WorkLineRuntimeStatusSnapshot",
     "workline_runtime_status_projection_service",
