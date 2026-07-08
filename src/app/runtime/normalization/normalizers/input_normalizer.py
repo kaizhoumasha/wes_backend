@@ -1,5 +1,5 @@
-# runtime migration C5b 镜像:src.workline_runtime.plugin_sdk.normalizers.input_normalizer 的平级副本
-# wlr 目录在阶段 3 整体删除时,本镜像与 wlr 副本合并 / 删除。
+# 旧 plugin runtime 镜像实现:src.workline_runtime.plugin_sdk.normalizers.input_normalizer 的平级副本
+# 旧 runtime 入口删除后,本模块承载对应正式实现。
 # 自引用 src.workline_runtime.{contracts, plugin_sdk.classifiers, plugin_sdk.contracts, utils}
 # 已重定向到 src.app.workline.domain.contracts / src.app.runtime.normalization.
 # {classifiers,contracts} / src.app.workline.utils。

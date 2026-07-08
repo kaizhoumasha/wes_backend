@@ -1,5 +1,5 @@
-# runtime migration C5a 镜像:src.workline_runtime.device_ordering 的平级副本
-# wlr 目录在阶段 3 整体删除时,本镜像与 wlr 副本合并 / 删除。
+# 旧 runtime 镜像实现:src.workline_runtime.device_ordering 的平级副本
+# 旧 runtime 入口删除后,本模块承载对应正式实现。
 
 """Workline runtime device ordering helpers."""
 

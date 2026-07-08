@@ -1,4 +1,4 @@
-# Architecture guardrails seed allowlist (Phase 0)
+# Architecture guardrails seed allowlist (legacy matrix bootstrap)
 #
 # 格式: rule_id|path|reason|expires_at|legacy_entry_id|drop_phase
 #   rule_id          C1/C2/C3/C4/R-I3a/R-I3b/R-I3c
@@ -8,11 +8,11 @@
 #   legacy_entry_id  关联 docs/architecture/legacy-cleanup-matrix.csv 的 entry_id
 #   drop_phase       必须与 legacy-cleanup-matrix.csv 对应 entry 的 drop_phase 一致
 #
-# Phase 0 门禁: 所有 seed 条目引用存在的 legacy_entry_id, drop_phase 与 matrix 一致
-# Phase 1: enforced, allowlist 之外违规阻塞 PR
-# Phase 2+: 每 PR 至少消除一条 expired allowlist
+# baseline validation: 所有 seed 条目引用存在的 legacy_entry_id, drop_phase 与 matrix 一致
+# enforced mode: allowlist 之外违规阻塞 PR
+# expiry-check mode: 过期 allowlist 阻塞 PR
 #
-# 删除任意一行后, --phase phase1 必须对对应历史违规返回非零 (证明 enforcement 生效)
+# 删除任意一行后, --mode enforced 必须对对应历史违规返回非零 (证明 enforcement 生效)
 
 # C1: 跨域 WMS import (6 文件, drop_phase=phase2/phase5-tech)
 C1|src/app/callback/services/callback_ingress_service.py|legacy WMS normalizer import, Phase 2 迁 runtime|2026-09-30|legacy:src/app/callback/services/callback_ingress_service.py:<file>|phase2
@@ -53,7 +53,7 @@ C2|src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_
 R-I3b|src/app/runtime/orchestration/repositories/session_repository.py|legacy capability import device 实现, Phase 2 物理迁 runtime/orchestration/repositories 后保留|2026-09-30|legacy:src/app/workline/repositories/session_repository.py:<file>#R-I3b|phase2
 R-I3b|src/app/runtime/orchestration/repositories/smt_inbound_handoff_repository.py|legacy capability import device 实现, Phase 2 物理迁 runtime/orchestration/repositories 后保留|2026-09-30|legacy:src/app/workline/repositories/smt_inbound_handoff_repository.py:<file>#R-I3b|phase2
 R-I3b|src/app/workline/repositories/workline_repository.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/workline/repositories/workline_repository.py:<file>#R-I3b|phase2
-R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|legacy capability import device 实现, runtime migration 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase2
+R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase2
 R-I3b|src/app/runtime/orchestration/services/intent/operation_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/intent/operation_service.py:<file>#R-I3b|phase2
 R-I3b|src/app/runtime/orchestration/services/hold/runtime_hold_query_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/hold/runtime_hold_query_service.py:<file>#R-I3b|phase2
 R-I3b|src/app/runtime/orchestration/services/hold/runtime_hold_release_service.py|legacy capability import device 实现, Phase 2 迁 runtime|2026-09-30|legacy:src/app/runtime/orchestration/services/hold/runtime_hold_release_service.py:<file>#R-I3b|phase2

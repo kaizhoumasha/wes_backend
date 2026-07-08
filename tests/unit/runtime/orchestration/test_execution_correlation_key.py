@@ -160,7 +160,7 @@ def test_execution_correlation_can_reference_session_id():
     assert foreign_keys[0].target_fullname == "wes_runtime.execution_sessions.id"
 
 
-def test_runtime_migration_creates_execution_tables():
+def test_execution_schema_migration_creates_execution_tables():
     """Alembic revision 必须覆盖 wes_runtime schema + 两张 runtime/orchestration 表。"""
     migration_files = list(Path("migrations/versions").glob("*_add_execution_session_correlation.py"))
     assert len(migration_files) == 1

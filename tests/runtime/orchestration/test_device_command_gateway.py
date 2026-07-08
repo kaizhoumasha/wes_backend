@@ -1,6 +1,6 @@
 """device_command_gateway 迁入 runtime/orchestration 后的 runtime 行为锁定(F-7)。
 
-阶段 6 C3 把 device_command_gateway 从 workline/services/ 物理迁入
+WorkLine device gateway 收口 把 device_command_gateway 从 workline/services/ 物理迁入
 runtime/orchestration/services/。本文件锁定迁入后的 runtime 行为契约:
 - 模块路径与单例符号在 runtime/orchestration/services/ 下可导入
 - reserve_sandbox_command: 设备不存在返回 False(不抛)
@@ -30,7 +30,7 @@ from src.utils.timezone import timezone
 
 
 def test_module_relocated_to_runtime_orchestration():
-    """阶段 6 C3:gateway 必须从 runtime/orchestration/services/ 路径导出。"""
+    """WorkLine device gateway 收口:gateway 必须从 runtime/orchestration/services/ 路径导出。"""
     import importlib
 
     module = importlib.import_module("src.app.runtime.orchestration.services.device_command_gateway")

@@ -97,7 +97,7 @@
 - Create: `tests/architecture/test_process_naming_guardrail.py`
 - Modify: `tests/README.md`
 
-- [ ] **Step 1: Write the failing guardrail test**
+- [x] **Step 1: Write the failing guardrail test**
 
 Create `tests/architecture/test_process_naming_guardrail.py`.
 
@@ -123,7 +123,7 @@ src/app/runtime/orchestration/phase3_closure_gate.py: phase3 path token
 scripts/check_workline_restructuring_readiness_gate.py: phase5 script token
 ```
 
-- [ ] **Step 2: Run the guardrail and prove it fails**
+- [x] **Step 2: Run the guardrail and prove it fails**
 
 Run:
 
@@ -137,7 +137,7 @@ Expected:
 FAILED tests/architecture/test_process_naming_guardrail.py::test_active_code_does_not_use_process_phase_names
 ```
 
-- [ ] **Step 3: Document the guardrail in the test guide**
+- [x] **Step 3: Document the guardrail in the test guide**
 
 Modify `tests/README.md` under “当前治理约束” and add one bullet:
 
@@ -145,7 +145,7 @@ Modify `tests/README.md` under “当前治理约束” and add one bullet:
 - Active production code and active gates must not introduce process-stage names such as `phase4`, `Phase5`, `wave2`, `technical lane`, or `final cleanup`; use stable domain names instead. Historical docs, archived plans, and Alembic revision filenames are allowed.
 ```
 
-- [ ] **Step 4: Run topology guardrail**
+- [x] **Step 4: Run topology guardrail**
 
 Run:
 
@@ -162,7 +162,7 @@ test_test_suite_topology_guardrail.py ... passed
 
 The new guardrail must still fail at this point. The failure is the baseline for the cleanup.
 
-- [ ] **Step 5: Keep the red proof uncommitted**
+- [x] **Step 5: Keep the red proof uncommitted**
 
 Do not commit the failing guardrail baseline. The red run proves the test can detect current offenders, but the first commit containing `tests/architecture/test_process_naming_guardrail.py` must be a green commit after cleanup.
 
@@ -178,7 +178,7 @@ Record the failing examples in the implementation notes or PR description, then 
 - Modify: `scripts/architecture-guardrails.allowlist` active path fields that point into the moved package
 - Test: all tests currently importing `src.app.runtime.capabilities.phase4`
 
-- [ ] **Step 1: Run GitNexus impact analysis for affected symbols**
+- [x] **Step 1: Run GitNexus impact analysis for affected symbols**
 
 Before editing classes, run impact analysis for:
 
@@ -202,7 +202,7 @@ Required outcome:
 - Otherwise record the impacted direct callers in the PR notes.
 - Also run a package blast-radius sweep for exported classes, services, contract modules, and singleton instances under the moved package. The package move is wider than the sorter/reconciliation runtime services, so do not rely on the four original Phase4 symbols alone.
 
-- [ ] **Step 2: Move the package**
+- [x] **Step 2: Move the package**
 
 Run:
 
@@ -217,7 +217,7 @@ src/app/runtime/capabilities/material_flow/__init__.py exists
 src/app/runtime/capabilities/phase4 no longer exists in git
 ```
 
-- [ ] **Step 3: Rename public runtime capability types**
+- [x] **Step 3: Rename public runtime capability types**
 
 Modify:
 
@@ -238,7 +238,7 @@ phase4_sorter_inbound_preview_service -> sorter_inbound_preview_service
 
 Keep `SmtNgWmsReconciliationRuntimeService` and `SmtNgWmsReconciliationPreviewService`; those are business names and do not need process cleanup.
 
-- [ ] **Step 4: Update internal imports under the moved package**
+- [x] **Step 4: Update internal imports under the moved package**
 
 Run:
 
@@ -266,7 +266,7 @@ rg -n "src\\.app\\.runtime\\.capabilities\\.phase4|Phase4|phase4_sorter" src/app
 
 returns no output.
 
-- [ ] **Step 5: Update production callers**
+- [x] **Step 5: Update production callers**
 
 Modify every production caller returned by:
 
@@ -306,7 +306,7 @@ Required import target:
 from src.app.runtime.capabilities.material_flow...
 ```
 
-- [ ] **Step 6: Update architecture guardrail allowlist path fields**
+- [x] **Step 6: Update architecture guardrail allowlist path fields**
 
 Modify `scripts/architecture-guardrails.allowlist` path fields that point to the moved package:
 
@@ -338,7 +338,7 @@ Expected:
 passed
 ```
 
-- [ ] **Step 7: Update active tests to stable imports**
+- [x] **Step 7: Update active tests to stable imports**
 
 Modify every test caller returned by:
 
@@ -358,7 +358,7 @@ tests/workline_runtime/test_runtime_capability_dispatcher.py
 
 These files should import `SorterInboundRuntimeService`, `SorterInboundPreviewService`, and `RuntimeCapabilityPlan`.
 
-- [ ] **Step 8: Run import and behavior tests**
+- [x] **Step 8: Run import and behavior tests**
 
 Run:
 
@@ -380,7 +380,7 @@ Expected:
 passed
 ```
 
-- [ ] **Step 9: Confirm old package cannot be imported**
+- [x] **Step 9: Confirm old package cannot be imported**
 
 Run:
 
@@ -407,7 +407,7 @@ ABSENT src.app.runtime.capabilities.phase4
 ABSENT src.app.runtime.capabilities.phase4.sorter_inbound_runtime_service
 ```
 
-- [ ] **Step 10: Commit package rename**
+- [x] **Step 10: Commit package rename**
 
 Run:
 
@@ -426,7 +426,7 @@ git commit -m "refactor(runtime): rename phase capability package"
 - Modify: `src/app/runtime/orchestration/runtime_intent_effects.py`
 - Modify: tests asserting `phase4:` or `PHASE4_`
 
-- [ ] **Step 1: Add explicit regression assertions for stable runtime identifiers**
+- [x] **Step 1: Add explicit regression assertions for stable runtime identifiers**
 
 Modify:
 
@@ -448,7 +448,7 @@ SORTER_INBOUND_RUNTIME
 SMT_NG_WMS_RECONCILIATION
 ```
 
-- [ ] **Step 2: Run tests and verify they fail**
+- [x] **Step 2: Run tests and verify they fail**
 
 Run:
 
@@ -466,7 +466,7 @@ Expected:
 FAILED with old phase4:/PHASE4_ values
 ```
 
-- [ ] **Step 3: Replace generated runtime identifiers**
+- [x] **Step 3: Replace generated runtime identifiers**
 
 Modify `src/app/runtime/capabilities/material_flow/sorter_inbound_runtime_service.py`:
 
@@ -489,7 +489,7 @@ Modify `src/app/runtime/orchestration/runtime_intent_effects.py`:
 
 - Replace `PHASE4_RECONCILIATION` with `SMT_NG_WMS_RECONCILIATION`.
 
-- [ ] **Step 4: Verify no active runtime `phase4` identifiers remain**
+- [x] **Step 4: Verify no active runtime `phase4` identifiers remain**
 
 Run:
 
@@ -505,7 +505,7 @@ no matches in active src/tests/scripts
 
 If matches remain only in historical docs, do not change them in this task.
 
-- [ ] **Step 5: Run targeted runtime tests**
+- [x] **Step 5: Run targeted runtime tests**
 
 Run:
 
@@ -524,7 +524,7 @@ Expected:
 passed
 ```
 
-- [ ] **Step 6: Commit runtime identifier cleanup**
+- [x] **Step 6: Commit runtime identifier cleanup**
 
 Run:
 
@@ -545,7 +545,7 @@ git commit -m "refactor(runtime): stabilize material flow identifiers"
 - Modify: `src/app/runtime/orchestration/p0_e2e_artifact_composer.py`
 - Modify: scripts and tests importing closure/benchmark gate symbols
 
-- [ ] **Step 1: Run GitNexus impact analysis**
+- [x] **Step 1: Run GitNexus impact analysis**
 
 Before editing classes/functions, run impact analysis for:
 
@@ -562,7 +562,7 @@ Required outcome:
 - HIGH/CRITICAL risk stops execution for user confirmation.
 - MEDIUM or lower can proceed with targeted tests in this task.
 
-- [ ] **Step 2: Move closure gate module**
+- [x] **Step 2: Move closure gate module**
 
 Run:
 
@@ -570,7 +570,7 @@ Run:
 git mv src/app/runtime/orchestration/phase3_closure_gate.py src/app/runtime/orchestration/production_closure_gate.py
 ```
 
-- [ ] **Step 3: Rename closure gate symbols**
+- [x] **Step 3: Rename closure gate symbols**
 
 Modify `src/app/runtime/orchestration/production_closure_gate.py`:
 
@@ -589,7 +589,7 @@ MISMATCHED_PHASE3_CLOSURE_EVIDENCE_FILES -> MISMATCHED_PRODUCTION_CLOSURE_EVIDEN
 
 Keep `closure_profile` as an argument name; “closure profile” is a stable release concept when not tied to a phase number.
 
-- [ ] **Step 4: Rename benchmark default function**
+- [x] **Step 4: Rename benchmark default function**
 
 Modify `src/app/runtime/orchestration/benchmark_gate.py`:
 
@@ -599,7 +599,7 @@ default_phase3_benchmark_scenarios -> default_runtime_benchmark_scenarios
 
 Modify `src/app/runtime/orchestration/benchmark_artifact_composer.py` imports and calls accordingly.
 
-- [ ] **Step 5: Update imports in scripts and tests**
+- [x] **Step 5: Update imports in scripts and tests**
 
 Run before editing:
 
@@ -617,7 +617,7 @@ rg -n "phase3_closure_gate|RuntimePhase3Closure|runtime_phase3_closure_gate|defa
 
 returns no output.
 
-- [ ] **Step 6: Run closure and benchmark tests**
+- [x] **Step 6: Run closure and benchmark tests**
 
 Run:
 
@@ -637,7 +637,7 @@ passed
 
 The test file names are cleaned in Task 6; this task keeps behavior green while changing production symbols.
 
-- [ ] **Step 7: Commit production gate module rename**
+- [x] **Step 7: Commit production gate module rename**
 
 Run:
 
@@ -663,7 +663,7 @@ git commit -m "refactor(runtime): rename production closure gates"
 - Modify: `scripts/git-quality-gate.sh`
 - Modify: tests referencing old script names
 
-- [ ] **Step 1: Move active scripts**
+- [x] **Step 1: Move active scripts**
 
 Run the `git mv` commands exactly:
 
@@ -679,7 +679,7 @@ git mv scripts/check_workline_restructuring_readiness_gate.py scripts/check_work
 git mv scripts/check_business_legacy_absence_gate.py scripts/check_business_legacy_absence_gate.py
 ```
 
-- [ ] **Step 2: Update script internals**
+- [x] **Step 2: Update script internals**
 
 Required stable CLI argument renames:
 
@@ -720,7 +720,7 @@ architecture-guardrails.sh --mode enforced
 Keep `--closure-profile production` and `--readiness-profile production`; these are stable release concepts.
 Keep `drop_phase` in `scripts/architecture-guardrails.allowlist` and `docs/architecture/legacy-cleanup-matrix.csv`; it is historical governance data, not an active CLI mode.
 
-- [ ] **Step 3: Update quality gate profiles**
+- [x] **Step 3: Update quality gate profiles**
 
 Modify `scripts/git-quality-gate.sh`:
 
@@ -736,7 +736,7 @@ run_architecture_check must call architecture-guardrails.sh --mode ${ARCHITECTUR
 
 Do not leave old active profile aliases in `git-quality-gate.sh`; the repo is unreleased and the old names would keep process naming active.
 
-- [ ] **Step 4: Update active tests and docs references required by tests**
+- [x] **Step 4: Update active tests and docs references required by tests**
 
 Run:
 
@@ -746,7 +746,7 @@ rg -n "check_phase3|compose_phase3|run_phase3|check_phase4|compose_phase4|check_
 
 Modify active tests and current architecture docs to use stable names. Leave historical dated plans/specs from 2026-07-07 and earlier as historical records unless an active test asserts them.
 
-- [ ] **Step 5: Run gate script tests**
+- [x] **Step 5: Run gate script tests**
 
 Run:
 
@@ -768,7 +768,7 @@ Expected:
 passed
 ```
 
-- [ ] **Step 6: Run stable script commands**
+- [x] **Step 6: Run stable script commands**
 
 Run:
 
@@ -788,7 +788,7 @@ WorkLine restructuring readiness passed: scope=technical
 Business legacy absence gate passed: mode=final
 ```
 
-- [ ] **Step 7: Commit active gate rename**
+- [x] **Step 7: Commit active gate rename**
 
 Run:
 
@@ -805,7 +805,7 @@ git commit -m "refactor(scripts): stabilize restructuring gate names"
 - Move active test files whose filename contains `phase3`, `phase4`, or `phase5` but does not test immutable migration filenames or historical docs.
 - Modify imports and test references after each move.
 
-- [ ] **Step 1: Move runtime behavior tests to stable names**
+- [x] **Step 1: Move runtime behavior tests to stable names**
 
 Run:
 
@@ -820,7 +820,7 @@ git mv tests/runtime/orchestration/test_phase3_recovery_policies.py tests/runtim
 git mv tests/runtime/orchestration/test_runtime_inbox_phase3_service.py tests/runtime/orchestration/test_runtime_inbox_consumer_service.py
 ```
 
-- [ ] **Step 2: Move contract/API/architecture tests to stable names**
+- [x] **Step 2: Move contract/API/architecture tests to stable names**
 
 Run:
 
@@ -848,7 +848,7 @@ tests/architecture/test_phase2_runtime_status_owner_guardrail.py
 
 Reason: they validate immutable migration/history semantics.
 
-- [ ] **Step 3: Move explicit heavy-test paths**
+- [x] **Step 3: Move explicit heavy-test paths**
 
 Run:
 
@@ -869,7 +869,7 @@ git mv tests/resilience/fixtures/phase3_integration_lab_fixture.json tests/resil
 git mv tests/load/fixtures/runtime_benchmark_artifact.json tests/load/fixtures/runtime_benchmark_artifact.json
 ```
 
-- [ ] **Step 4: Update references after test moves**
+- [x] **Step 4: Update references after test moves**
 
 Run:
 
@@ -879,7 +879,7 @@ rg -n "test_phase3|test_phase4|test_phase5|tests/mock/material_flow|phase3_bench
 
 Update active references to the new filenames. Historical docs may keep old names only when describing past verification logs.
 
-- [ ] **Step 5: Run renamed tests**
+- [x] **Step 5: Run renamed tests**
 
 Run:
 
@@ -905,7 +905,7 @@ Expected:
 passed
 ```
 
-- [ ] **Step 6: Commit active test rename**
+- [x] **Step 6: Commit active test rename**
 
 Run:
 
@@ -921,7 +921,7 @@ git commit -m "refactor(tests): remove process names from active tests"
 **Files:**
 - Modify comments and docstrings only in active production files returned by the command below.
 
-- [ ] **Step 1: Generate the current production comment residual list**
+- [x] **Step 1: Generate the current production comment residual list**
 
 Run:
 
@@ -939,7 +939,7 @@ workline shim comments
 external_contract_profile placeholder comments
 ```
 
-- [ ] **Step 2: Rewrite comments without removing business rationale**
+- [x] **Step 2: Rewrite comments without removing business rationale**
 
 Apply these replacements by meaning, not raw text:
 
@@ -961,7 +961,7 @@ Do not delete comments that explain:
 - why a compatibility exclusion exists,
 - how a WorkLine/runtime boundary is enforced.
 
-- [ ] **Step 3: Verify comments are clean in active production code**
+- [x] **Step 3: Verify comments are clean in active production code**
 
 Run:
 
@@ -977,7 +977,7 @@ no matches, except business algorithm wording that does not identify restructuri
 
 If an algorithm legitimately has “read phase/write phase”, keep it only if it does not use numbered restructuring wording.
 
-- [ ] **Step 4: Run lint for touched files**
+- [x] **Step 4: Run lint for touched files**
 
 Run:
 
@@ -992,7 +992,7 @@ Expected:
 All checks passed
 ```
 
-- [ ] **Step 5: Commit production comment cleanup**
+- [x] **Step 5: Commit production comment cleanup**
 
 Run:
 
@@ -1014,7 +1014,7 @@ git commit -m "docs(code): remove process names from production comments"
 - Modify: `docs/architecture/business-legacy-absence-ledger.md`
 - Modify: `docs/architecture/business-legacy-absence-ledger.csv` only if active script paths are stored there
 
-- [ ] **Step 1: Write the naming policy**
+- [x] **Step 1: Write the naming policy**
 
 Create `docs/architecture/process-naming-policy.md` with these sections:
 
@@ -1040,7 +1040,7 @@ Use `material_flow`, `production_closure`, `runtime_evidence`, `workline_restruc
 Run `uv run pytest tests/architecture/test_process_naming_guardrail.py -q` before claiming this debt is closed.
 ```
 
-- [ ] **Step 2: Update the main restructuring doc with current names**
+- [x] **Step 2: Update the main restructuring doc with current names**
 
 Modify `docs/architecture/workline-and-plugin-restructuring.md`:
 
@@ -1051,7 +1051,7 @@ Modify `docs/architecture/workline-and-plugin-restructuring.md`:
   - old active script names -> new script names
 - Keep historical PR summaries intact when they describe PR #74 to #80 history.
 
-- [ ] **Step 3: Update current evidence/ledger docs**
+- [x] **Step 3: Update current evidence/ledger docs**
 
 Modify active docs so their runnable commands use the new script names:
 
@@ -1064,7 +1064,7 @@ docs/architecture/business-legacy-absence-ledger.md
 
 Historical section headings may still mention Phase3/Phase4/Phase5 if they refer to completed historical milestones.
 
-- [ ] **Step 4: Run doc reference scan**
+- [x] **Step 4: Run doc reference scan**
 
 Run:
 
@@ -1078,7 +1078,7 @@ Expected:
 only historical dated plan/spec references remain
 ```
 
-- [ ] **Step 5: Commit docs update**
+- [x] **Step 5: Commit docs update**
 
 Run:
 
@@ -1096,7 +1096,7 @@ git commit -m "docs(architecture): define stable naming policy"
 - Modify: `scripts/git-quality-gate.sh`
 - Modify: any docs/tests needed after the final guardrail pass
 
-- [ ] **Step 1: Tighten the process naming guardrail**
+- [x] **Step 1: Tighten the process naming guardrail**
 
 Update `tests/architecture/test_process_naming_guardrail.py` so it fails on:
 
@@ -1136,7 +1136,7 @@ historical dated plans/specs/reviews that are not active commands
 scripts/architecture-guardrails.allowlist historical metadata fields such as drop_phase and legacy_entry_id
 ```
 
-- [ ] **Step 2: Add guardrail to the quality profile**
+- [x] **Step 2: Add guardrail to the quality profile**
 
 Modify `scripts/git-quality-gate.sh` quality profile so it runs:
 
@@ -1150,7 +1150,7 @@ Expected log label:
 process-naming-guardrail
 ```
 
-- [ ] **Step 3: Run final active naming scans**
+- [x] **Step 3: Run final active naming scans**
 
 Run the process naming guardrail as the authoritative final scan:
 
@@ -1172,7 +1172,7 @@ Expected:
 no unallowed active-code matches; allowed historical matches must be represented in `INTENTIONAL_PROCESS_NAMING_ALLOWLIST` with a reason
 ```
 
-- [ ] **Step 4: Run targeted tests**
+- [x] **Step 4: Run targeted tests**
 
 Run:
 
@@ -1198,7 +1198,7 @@ Expected:
 passed
 ```
 
-- [ ] **Step 5: Run stable gates**
+- [x] **Step 5: Run stable gates**
 
 Run:
 
@@ -1218,7 +1218,7 @@ WorkLine restructuring readiness passed: scope=technical
 Business legacy absence gate passed: mode=final
 ```
 
-- [ ] **Step 6: Run full quality checks**
+- [x] **Step 6: Run full quality checks**
 
 Run:
 
@@ -1238,7 +1238,7 @@ pytest passes
 quality gate passes
 ```
 
-- [ ] **Step 7: Run GitNexus detect changes before final commit**
+- [x] **Step 7: Run GitNexus detect changes before final commit**
 
 Run GitNexus detect changes comparing against `develop`:
 
@@ -1251,7 +1251,7 @@ Required result:
 - Changed symbols should be limited to runtime capability naming, production/evidence gate naming, active scripts/tests/docs, and process naming guardrail.
 - If GitNexus reports unrelated HIGH/CRITICAL flow impact, stop and review before committing.
 
-- [ ] **Step 8: Commit final guardrail integration**
+- [x] **Step 8: Commit final guardrail integration**
 
 Run:
 
@@ -1393,31 +1393,31 @@ Conflict flags: Lane A and Lane B both touch tests and `scripts/`; if executed i
 
 Synthesized from this review's findings. Each task derives from a specific finding above. Run with Codex or Claude Code; checkbox as you ship.
 
-- [ ] **T1 (P1, human: ~20min / CC: ~5min)** — final verification — align final scans with process guardrail allowlist.
+- [x] **T1 (P1, human: ~20min / CC: ~5min)** — final verification — align final scans with process guardrail allowlist.
   - Surfaced by: Architecture review D2 — unfiltered `rg tests` conflicts with preserved migration/history tests.
   - Files: `tests/architecture/test_process_naming_guardrail.py`, `docs/superpowers/plans/2026-07-08-process-naming-debt-cleanup.md`
   - Verify: `uv run pytest tests/architecture/test_process_naming_guardrail.py -q`
-- [ ] **T2 (P1, human: ~30min / CC: ~8min)** — governance data — update architecture allowlist path fields after package move.
+- [x] **T2 (P1, human: ~30min / CC: ~8min)** — governance data — update architecture allowlist path fields after package move.
   - Surfaced by: Architecture review D3 — allowlist paths still point at `src/app/runtime/capabilities/phase4`.
   - Files: `scripts/architecture-guardrails.allowlist`, architecture guardrail tests
   - Verify: `uv run pytest tests/architecture/test_ri3_capability_injection_guardrail.py tests/architecture/test_wlr_import_guardrail.py tests/architecture/test_cleanup_matrix_guardrail.py -q`
-- [ ] **T3 (P1, human: ~45min / CC: ~10min)** — runtime package — expand GitNexus blast-radius sweep to all moved package exports.
+- [x] **T3 (P1, human: ~45min / CC: ~10min)** — runtime package — expand GitNexus blast-radius sweep to all moved package exports.
   - Surfaced by: Architecture review D4 — package move is wider than the four originally listed symbols.
   - Files: `src/app/runtime/capabilities/material_flow/**`, runtime/API/callback callers and tests
   - Verify: GitNexus impact/context results plus targeted runtime/API tests from Task 2.
-- [ ] **T4 (P1, human: ~2h / CC: ~25min)** — architecture guardrail CLI — rename active `--phase` mode to stable enforcement mode.
+- [x] **T4 (P1, human: ~2h / CC: ~25min)** — architecture guardrail CLI — rename active `--phase` mode to stable enforcement mode.
   - Surfaced by: Architecture review D5 — active `architecture-guardrails.sh --phase phase1` conflicts with process naming policy.
   - Files: `scripts/architecture-guardrails.sh`, `scripts/git-quality-gate.sh`, architecture tests
   - Verify: `uv run pytest tests/architecture/test_git_quality_gate_architecture_profile.py tests/architecture/test_wlr_import_guardrail.py -q`
-- [ ] **T5 (P2, human: ~15min / CC: ~5min)** — commit hygiene — keep process guardrail red proof uncommitted.
+- [x] **T5 (P2, human: ~15min / CC: ~5min)** — commit hygiene — keep process guardrail red proof uncommitted.
   - Surfaced by: Code quality review D6 — committing a deliberately failing guardrail conflicts with green commit and rollback expectations.
   - Files: plan/checklist only
   - Verify: first commit containing `test_process_naming_guardrail.py` passes.
-- [ ] **T6 (P2, human: ~20min / CC: ~5min)** — naming policy — ban process-context terms, not stable generic release words.
+- [x] **T6 (P2, human: ~20min / CC: ~5min)** — naming policy — ban process-context terms, not stable generic release words.
   - Surfaced by: Code quality review D7 — `readiness/closure/cleanup` conflicted with stable replacement vocabulary.
   - Files: `docs/architecture/process-naming-policy.md`, `tests/architecture/test_process_naming_guardrail.py`
   - Verify: process guardrail allows `production_closure` and rejects `phase3_closure`.
-- [ ] **T7 (P2, human: ~40min / CC: ~10min)** — business contract guardrail — rename internal guardrail API and keep behavior regression.
+- [x] **T7 (P2, human: ~40min / CC: ~10min)** — business contract guardrail — rename internal guardrail API and keep behavior regression.
   - Surfaced by: Test review D8 — business contract guardrail internals were not explicit in script rename task.
   - Files: `scripts/check_business_legacy_absence_gate.py`, `tests/architecture/test_business_contract_no_cycle_guardrail.py`
   - Verify: no-cycle guardrail rejects a `material_flow/contracts` relative service import.

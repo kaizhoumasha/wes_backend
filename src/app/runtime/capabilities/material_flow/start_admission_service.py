@@ -1,4 +1,4 @@
-# runtime migration 阶段 4 C4b 物理迁入
+# 已从 workline/services/ 迁入
 """WorkLine START 准入服务。"""
 
 from __future__ import annotations

@@ -241,7 +241,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         if not command or not command.id:
             raise NotFoundException(f"回调指令不存在: {callback.command_code}")
 
-        # runtime migration 阶段 5:RuntimeReconciliationFacade 物理删除,device 域直接走
+        # RuntimeReconciliationFacade 已物理删除,device 域直接走
         # workline shim 路径(impl 模块在 sys.modules 上替换此 shim,行为等价)。
         # 测试契约 `tests/contracts/device/test_device_command_service_contract.py` 已用同一路径。
         from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
@@ -458,7 +458,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         updated_command_id = updated_command.id
         if ack_received_at is not None:
-            # runtime migration 阶段 5:facade 物理删除,见上方同段注释。
+            # facade 已物理删除,见上方同段注释。
             from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
                 workline_runtime_reconciliation_service,
             )

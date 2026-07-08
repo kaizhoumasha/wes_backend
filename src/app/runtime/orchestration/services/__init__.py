@@ -30,7 +30,7 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     workline_runtime_status_projection_service,
 )
 
-# runtime migration 阶段 5:`RuntimeReconciliationFacade` 物理删除。原 facade
+# `RuntimeReconciliationFacade` 已物理删除。原 facade
 # 仅委托 workline_runtime_reconciliation_service 两个方法,device/callback
 # 域已在 C0.5 改走 workline shim。新增对账能力请直连 impl 子模块。
 

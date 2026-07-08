@@ -704,7 +704,7 @@ class OrchestratorService:
         services: WorklineRuntimeServices,
         trace_id: str,
     ) -> OrchestratorResult:
-        """阶段 1: READ - 读取阶段（当前非共享读）
+        """READ pass - 读取阶段（当前非共享读）
 
         执行:
         - 读取 RuntimeCapabilityDispatcher 写入的 RuntimeIntent
@@ -759,7 +759,7 @@ class OrchestratorService:
         trace_id: str,
         read_result: OrchestratorResult,
     ) -> OrchestratorResult:
-        """阶段 2: WRITE - 写入阶段（独占）
+        """WRITE pass - 写入阶段（独占）
 
         执行:
         - 状态迁移验证

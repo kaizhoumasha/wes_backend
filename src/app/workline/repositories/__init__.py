@@ -1,7 +1,8 @@
 """WorkLine Repository 导出。
 
-阶段 6 后收缩为纯配置域 repository 聚合:workline_repository + safety_incident_repository +
-rack.repository 透传。运行态 repository 已物理迁入 runtime/orchestration/repositories/。
+WorkLine 运行态迁出后收缩为纯配置域 repository 聚合:
+workline_repository + safety_incident_repository + rack.repository 透传。
+运行态 repository 已物理迁入 runtime/orchestration/repositories/。
 """
 
 from src.app.rack.repositories import RackTaskRepository, rack_task_repository

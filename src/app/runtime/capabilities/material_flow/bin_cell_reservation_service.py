@@ -1,4 +1,4 @@
-# runtime migration 阶段 4 C4b 物理迁入
+# 已从 workline/services/ 迁入
 """工作线料箱格位预占服务。"""
 
 from __future__ import annotations

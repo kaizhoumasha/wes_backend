@@ -9,7 +9,7 @@ import pytest
 
 
 def test_runtime_reconciliation_shim_aliases_impl_module():
-    """阶段 6:runtime_reconciliation_service shim 已物理删除,impl 仍可直连。"""
+    """WorkLine 配置域收口:runtime_reconciliation_service shim 已物理删除,impl 仍可直连。"""
     impl_module = importlib.import_module(
         "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl"
     )
@@ -24,8 +24,8 @@ def test_runtime_reconciliation_shim_aliases_impl_module():
         assert impl_module.workline_diagnostic_service is marker
 
 
-def test_runtime_reconciliation_facade_removed_after_stage5():
-    """阶段 5:`RuntimeReconciliationFacade` 必须物理删除。"""
+def test_runtime_reconciliation_facade_removed_after_facade_retirement():
+    """RuntimeReconciliationFacade 收口:`RuntimeReconciliationFacade` 必须物理删除。"""
     # 原 facade 模块在 runtime/orchestration/services/ 下,模块移除后
     # importlib.import_module 必须抛 ModuleNotFoundError。
     with __import__("pytest").raises(ModuleNotFoundError):
@@ -39,10 +39,10 @@ def test_runtime_reconciliation_facade_removed_after_stage5():
     assert "runtime_reconciliation_facade" not in services_module.__all__
 
 
-# 阶段 6:workline 域退化为纯配置域(WorkLine CRUD + manifest + plane scene +
+# WorkLine 配置域收口:workline 域退化为纯配置域(WorkLine CRUD + manifest + plane scene +
 # diagnostic_service keep-contract + rack_position_service 配置能力 + domain/ +
 # plugins/)。任何运行态 service / model / repository / v1 router 文件必须物理删除。
-_STAGE6_REMOVED_SERVICES = (
+_WORKLINE_RUNTIME_REMOVED_SERVICES = (
     "runtime_hold_creation_service",
     "runtime_hold_query_service",
     "runtime_hold_release_service",
@@ -60,7 +60,7 @@ _STAGE6_REMOVED_SERVICES = (
     "trace_response_builder",
 )
 
-_STAGE6_REMOVED_REPOSITORIES = (
+_WORKLINE_RUNTIME_REMOVED_REPOSITORIES = (
     "inbox_repository",
     "dispatch_attempt_repository",
     "object_transition_event_repository",
@@ -73,7 +73,7 @@ _STAGE6_REMOVED_REPOSITORIES = (
     "diagnostic_repository",
 )
 
-_STAGE6_REMOVED_MODELS = (
+_WORKLINE_RUNTIME_REMOVED_MODELS = (
     "runtime",
     "runtime_hold",
     "runtime_hold_api",
@@ -93,11 +93,11 @@ _STAGE6_REMOVED_MODELS = (
 # 审计表,safety_service 仍保留在 workline 域。WorkLine runtime status enum
 # 已迁入 runtime/orchestration 的原生投影模型。
 
-_STAGE6_KEPT_MODELS = ("safety",)
+_WORKLINE_CONFIG_KEPT_MODELS = ("safety",)
 
-_STAGE6_KEPT_REPOSITORIES = ("safety_incident_repository",)
+_WORKLINE_CONFIG_KEPT_REPOSITORIES = ("safety_incident_repository",)
 
-_STAGE6_REMOVED_V1_ROUTERS = (
+_WORKLINE_RUNTIME_REMOVED_V1_ROUTERS = (
     "runtime",
     "runtime_hold",
     "trace",
@@ -111,93 +111,96 @@ def _file_exists(relative_path: str) -> bool:
     return (Path(__file__).resolve().parent.parent.parent / relative_path).exists()
 
 
-def test_workline_services_shrunk_to_config_crud_after_stage6():
-    """阶段 6:workline/services/ 下运行态 service 必须物理删除。"""
-    for name in _STAGE6_REMOVED_SERVICES:
+def test_workline_services_shrunk_to_config_crud_after_runtime_split():
+    """WorkLine 配置域收口:workline/services/ 下运行态 service 必须物理删除。"""
+    for name in _WORKLINE_RUNTIME_REMOVED_SERVICES:
         assert not _file_exists(f"src/app/workline/services/{name}.py"), (
-            f"阶段 6:workline 运行态 service 必须物理删除,遗留: {name}.py"
+            f"WorkLine 配置域收口:workline 运行态 service 必须物理删除,遗留: {name}.py"
         )
 
 
-def test_workline_repositories_shrunk_to_workline_only_after_stage6():
-    """阶段 6:workline/repositories/ 下运行态 repository 必须物理删除。"""
-    for name in _STAGE6_REMOVED_REPOSITORIES:
+def test_workline_repositories_shrunk_to_workline_only_after_runtime_split():
+    """WorkLine 配置域收口:workline/repositories/ 下运行态 repository 必须物理删除。"""
+    for name in _WORKLINE_RUNTIME_REMOVED_REPOSITORIES:
         assert not _file_exists(f"src/app/workline/repositories/{name}.py"), (
-            f"阶段 6:workline 运行态 repository 必须物理删除,遗留: {name}.py"
+            f"WorkLine 配置域收口:workline 运行态 repository 必须物理删除,遗留: {name}.py"
         )
 
 
-def test_workline_kept_models_preserved_after_stage6():
-    """阶段 6:safety.py 必须保留(承载 WorkLine 安全事件审计模型)。"""
+def test_workline_kept_models_preserved_after_runtime_split():
+    """WorkLine 配置域收口:safety.py 必须保留(承载 WorkLine 安全事件审计模型)。"""
     assert _file_exists("src/app/workline/models/safety.py"), (
-        "阶段 6:safety.py 必须保留 — safety_service 配置域审计表仍依赖"
+        "WorkLine 配置域收口:safety.py 必须保留 — safety_service 配置域审计表仍依赖"
     )
 
 
-def test_workline_kept_repositories_preserved_after_stage6():
-    """阶段 6:safety_incident_repository 必须保留(支撑 safety_service 配置域)。"""
+def test_workline_kept_repositories_preserved_after_runtime_split():
+    """WorkLine 配置域收口:safety_incident_repository 必须保留(支撑 safety_service 配置域)。"""
     assert _file_exists("src/app/workline/repositories/safety_incident_repository.py"), (
-        "阶段 6:safety_incident_repository 必须保留 — safety_service 配置域审计表仍依赖"
+        "WorkLine 配置域收口:safety_incident_repository 必须保留 — safety_service 配置域审计表仍依赖"
     )
 
 
-def test_workline_models_shrunk_to_workline_only_after_stage6():
-    """阶段 6:workline/models/ 下运行态 model 文件必须物理删除。
+def test_workline_models_shrunk_to_workline_only_after_runtime_split():
+    """WorkLine 配置域收口:workline/models/ 下运行态 model 文件必须物理删除。
 
-    safety.py 例外保留,见 `_STAGE6_KEPT_MODELS`。
+    safety.py 例外保留,见 `_WORKLINE_CONFIG_KEPT_MODELS`。
     """
-    for name in _STAGE6_REMOVED_MODELS:
+    for name in _WORKLINE_RUNTIME_REMOVED_MODELS:
         assert not _file_exists(f"src/app/workline/models/{name}.py"), (
-            f"阶段 6:workline 运行态 model 必须物理删除,遗留: {name}.py"
+            f"WorkLine 配置域收口:workline 运行态 model 必须物理删除,遗留: {name}.py"
         )
 
 
-def test_workline_v1_routers_shrunk_after_stage6():
-    """阶段 6:workline/v1/ 下运行时 router 必须物理删除。"""
-    for name in _STAGE6_REMOVED_V1_ROUTERS:
+def test_workline_v1_routers_shrunk_after_runtime_split():
+    """WorkLine 配置域收口:workline/v1/ 下运行时 router 必须物理删除。"""
+    for name in _WORKLINE_RUNTIME_REMOVED_V1_ROUTERS:
         assert not _file_exists(f"src/app/workline/v1/{name}.py"), (
-            f"阶段 6:workline 运行态 v1 router 必须物理删除,遗留: {name}.py"
+            f"WorkLine 配置域收口:workline 运行态 v1 router 必须物理删除,遗留: {name}.py"
         )
 
 
-def test_workline_runtime_reconciliation_shim_alias_removed_after_stage6():
-    """阶段 6:workline/services/runtime_reconciliation_service.py shim 必须物理删除。"""
+def test_workline_runtime_reconciliation_shim_alias_removed_after_runtime_split():
+    """WorkLine 配置域收口:runtime_reconciliation_service.py shim 必须物理删除。"""
     assert not _file_exists("src/app/workline/services/runtime_reconciliation_service.py"), (
-        "阶段 6:workline runtime_reconciliation_service shim 必须物理删除"
+        "WorkLine 配置域收口:workline runtime_reconciliation_service shim 必须物理删除"
     )
 
 
-def test_device_command_gateway_module_moved_to_runtime_after_stage6():
-    """阶段 6 C3:device_command_gateway 必须从 workline 域迁入 runtime/orchestration。"""
+def test_device_command_gateway_module_moved_to_runtime_service_boundary():
+    """WorkLine device gateway 收口。
+
+    device_command_gateway 必须从 workline 域迁入 runtime/orchestration。
+    """
     import importlib
 
     runtime_module = importlib.import_module("src.app.runtime.orchestration.services.device_command_gateway")
     assert hasattr(runtime_module, "DeviceCommandGateway"), (
-        "阶段 6 C3:runtime/orchestration/services/device_command_gateway 必须暴露 DeviceCommandGateway 类"
+        "WorkLine device gateway 收口:runtime/orchestration/services/device_command_gateway 必须暴露 DeviceCommandGateway 类"
     )
     assert hasattr(runtime_module, "device_command_gateway"), (
-        "阶段 6 C3:runtime/orchestration/services/device_command_gateway 必须暴露单例符号"
+        "WorkLine device gateway 收口:runtime/orchestration/services/device_command_gateway 必须暴露单例符号"
     )
     assert not _file_exists("src/app/workline/services/device_command_gateway.py"), (
-        "阶段 6 C3:workline/services/device_command_gateway.py 必须物理删除"
+        "WorkLine device gateway 收口:workline/services/device_command_gateway.py 必须物理删除"
     )
 
 
-def test_workline_services_module_does_not_export_device_command_gateway_after_stage6():
-    """阶段 6 C3:workline.services 顶层不再导出 device_command_gateway 符号。"""
+def test_workline_services_module_does_not_export_device_command_gateway_after_runtime_split():
+    """WorkLine device gateway 收口:workline.services 顶层不再导出 device_command_gateway 符号。"""
     import importlib
 
     workline_services = importlib.import_module("src.app.workline.services")
     assert not hasattr(workline_services, "device_command_gateway"), (
-        "阶段 6 C3:workline.services 必须不再暴露 device_command_gateway 符号"
+        "WorkLine device gateway 收口:workline.services 必须不再暴露 device_command_gateway 符号"
     )
     assert not hasattr(workline_services, "DeviceCommandGateway"), (
-        "阶段 6 C3:workline.services 必须不再暴露 DeviceCommandGateway 类"
+        "WorkLine device gateway 收口:workline.services 必须不再暴露 DeviceCommandGateway 类"
     )
 
 
-def test_workline_service_config_only_after_stage6():
-    """阶段 6 C3:workline_service 配置域保留(无运行态方法)。
+def test_workline_service_config_only_after_runtime_split():
+    """WorkLine device gateway 收口:workline_service 配置域保留(无运行态方法)。
 
     F-4 行为验证:不再用 hasattr 存在性守卫,改为验证方法为 async callable
     + 签名契约(db 入参 + 返回类型注解),确保配置域方法形态稳定。
@@ -223,29 +226,31 @@ def test_workline_service_config_only_after_stage6():
     }
     for name, expected_return in expected.items():
         method = getattr(workline_service_singleton, name, None)
-        assert method is not None, f"阶段 6 C3:WorkLineService 必须保留 {name} 配置域方法"
+        assert method is not None, f"WorkLine device gateway 收口:WorkLineService 必须保留 {name} 配置域方法"
         assert asyncio.iscoroutinefunction(method), (
-            f"阶段 6 C3:WorkLineService.{name} 必须是 async callable(配置域 CRUD 契约)"
+            f"WorkLine device gateway 收口:WorkLineService.{name} 必须是 async callable(配置域 CRUD 契约)"
         )
         sig = inspect.signature(method)
-        assert "db" in sig.parameters, f"阶段 6 C3:WorkLineService.{name} 签名必须保留 db: AsyncSession 入参"
+        assert "db" in sig.parameters, (
+            f"WorkLine device gateway 收口:WorkLineService.{name} 签名必须保留 db: AsyncSession 入参"
+        )
         return_annotation = sig.return_annotation
         assert return_annotation is not inspect.Parameter.empty, (
-            f"阶段 6 C3:WorkLineService.{name} 必须声明返回类型注解"
+            f"WorkLine device gateway 收口:WorkLineService.{name} 必须声明返回类型注解"
         )
         if isinstance(expected_return, tuple):
             union_args = set(typing.get_args(return_annotation))
             assert set(expected_return).issubset(union_args), (
-                f"阶段 6 C3:WorkLineService.{name} 返回注解 {return_annotation} "
+                f"WorkLine device gateway 收口:WorkLineService.{name} 返回注解 {return_annotation} "
                 f"必须包含 {expected_return},实际 union args {union_args}"
             )
         else:
             assert return_annotation is expected_return, (
-                f"阶段 6 C3:WorkLineService.{name} 返回注解必须为 {expected_return},实际 {return_annotation}"
+                f"WorkLine device gateway 收口:WorkLineService.{name} 返回注解必须为 {expected_return},实际 {return_annotation}"
             )
 
 
-# 阶段 6 C5:workline.services.__init__ 清理 — __all__ / _LAZY_SHIM_MAP 收敛到
+# WorkLine service facade 收口:workline.services.__init__ 清理 — __all__ / _LAZY_SHIM_MAP 收敛到
 # 当前 13 个真实 module export + 3 个死引用 tombstone,其余 dead entries
 # 必须删除。`runtime_intent_effects.py:1545/1627` 与
 # `callback_orchestration_service.py:35` 3 处死引用保留(未触发,不爆),
@@ -304,39 +309,45 @@ _C5_SHIM_TOMBSTONES = frozenset(
 
 
 def test_workline_services_init_all_exports_match_real_modules_and_live_callers():
-    """阶段 6 C5:`workline.services.__init__` 的 `__all__` 必须只包含实际 module export
-    + live caller,不允许残留 dead entries。"""
+    """WorkLine service facade 收口。
+
+    `workline.services.__init__` 的 `__all__` 必须只包含实际 module export
+    + live caller,不允许残留 dead entries。
+    """
     import importlib
 
     workline_services = importlib.import_module("src.app.workline.services")
 
     expected = _C5_REAL_MODULE_EXPORTS | _C5_SHIM_TOMBSTONES
     assert set(workline_services.__all__) == expected, (
-        "阶段 6 C5:__all__ 残留 dead entries。\n"
+        "WorkLine service facade 收口:__all__ 残留 dead entries。\n"
         f"  期望: {sorted(expected)}\n"
         f"  实际: {sorted(workline_services.__all__)}"
     )
 
 
 def test_workline_services_init_shim_map_contains_only_dead_caller_tombstones():
-    """阶段 6 C5:`_LAZY_SHIM_MAP` 必须只保留死引用 tombstones,其余 49 个 dead entries
-    物理删除,让未知属性按 PEP 562 默认抛 AttributeError。"""
+    """WorkLine service facade 收口。
+
+    `_LAZY_SHIM_MAP` 必须只保留死引用 tombstones,其余 dead entries
+    物理删除,让未知属性按 PEP 562 默认抛 AttributeError。
+    """
     import importlib
 
     workline_services = importlib.import_module("src.app.workline.services")
 
     shim_map = getattr(workline_services, "_LAZY_SHIM_MAP", None)
-    assert shim_map is not None, "阶段 6 C5:_LAZY_SHIM_MAP 必须保留(承载死引用 tombstones)"
+    assert shim_map is not None, "WorkLine service facade 收口:_LAZY_SHIM_MAP 必须保留(承载死引用 tombstones)"
 
     assert set(shim_map.keys()) == _C5_SHIM_TOMBSTONES, (
-        "阶段 6 C5:_LAZY_SHIM_MAP 残留 dead entries。\n"
+        "WorkLine service facade 收口:_LAZY_SHIM_MAP 残留 dead entries。\n"
         f"  期望 keys: {sorted(_C5_SHIM_TOMBSTONES)}\n"
         f"  实际 keys: {sorted(shim_map.keys())}"
     )
 
 
 def test_workline_services_init_getattr_returns_real_exports():
-    """阶段 6 C5:`__getattr__` 必须仍能解析真实 module export,且死引用触发
+    """WorkLine service facade 收口:`__getattr__` 必须仍能解析真实 module export,且死引用触发
     ModuleNotFoundError(与 Python 默认 attribute lookup 抛 AttributeError 不同但
     语义一致 — 都是不可用)。"""
     import importlib

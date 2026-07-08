@@ -1,7 +1,7 @@
-# runtime migration C2 镜像:src.workline_runtime.utils 的平级副本。
-# wlr 目录在阶段 3 整体删除时,本镜像改名为正式模块并保留 consumers 旁路排除。
+# 旧 runtime 镜像实现:src.workline_runtime.utils 的平级副本。
+# 旧 runtime 入口删除后,本模块承载正式实现并保留 consumers 旁路排除。
 #
-# 镜像策略:cat wlr 原文件 + 顶部插入阶段 2 标识块。**禁止**只 import wlr — 那是
+# 镜像策略:保留旧 runtime 工具的本地正式实现。**禁止**只 import wlr — 那是
 # 延迟删除,违反 R-WLR guardrail(单点入口策略)。
 
 """工作线运行时通用工具函数。"""

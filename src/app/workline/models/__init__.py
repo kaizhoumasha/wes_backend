@@ -1,6 +1,6 @@
 """WorkLine 模型导出。
 
-阶段 6 后收缩为纯配置域 model 聚合:workline 配置域 model + safety 跨域 enum +
+WorkLine 运行态迁出后收缩为纯配置域 model 聚合:workline 配置域 model + safety 跨域 enum +
 rack.model 透传。运行态 model 已物理迁入 runtime/orchestration/models/。
 """
 

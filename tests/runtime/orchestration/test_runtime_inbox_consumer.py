@@ -1,6 +1,6 @@
-"""runtime migration 阶段 2 C1 — RuntimeInboxConsumer 最小实现测试。
+"""RuntimeInboxConsumer — RuntimeInboxConsumer 最小实现测试。
 
-不验证状态机业务逻辑 (阶段 3 才搬迁) ; 只验证:
+不验证状态机业务逻辑 (runtime 状态机迁入前) ; 只验证:
 - 消费者模块可 import
 - 构造函数接收所有 4 个强制依赖
 - consume_sync 把 payload 委托给 workline inbox_batch_processor (lazy)

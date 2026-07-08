@@ -170,9 +170,9 @@ def test_allowlist_rejects_invalid_expires_at(tmp_path):
     rows = [
         row.replace(
             "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
-            "legacy capability import device 实现, runtime migration 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
+            "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
             "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
-            "legacy capability import device 实现, runtime migration 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|not-a-date|",
+            "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|not-a-date|",
         )
         for row in rows
     ]
@@ -188,9 +188,9 @@ def test_allowlist_rejects_invalid_calendar_expires_at(tmp_path):
     rows = [
         row.replace(
             "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
-            "legacy capability import device 实现, runtime migration 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
+            "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
             "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
-            "legacy capability import device 实现, runtime migration 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-02-31|",
+            "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-02-31|",
         )
         for row in rows
     ]
@@ -206,9 +206,9 @@ def test_expiry_check_rejects_expired_allowlist_rows(tmp_path):
     rows = [
         row.replace(
             "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
-            "legacy capability import device 实现, runtime migration 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
+            "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
             "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
-            "legacy capability import device 实现, runtime migration 从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2000-01-01|",
+            "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2000-01-01|",
         )
         for row in rows
     ]

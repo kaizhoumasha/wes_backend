@@ -1,5 +1,5 @@
-# runtime migration C5a 桥接:src.workline_runtime.business_identity 的门面副本
-# wlr 目录在阶段 3 整体删除时,本桥接与 wlr 副本合并 / 删除。
+# 旧 runtime 桥接实现:src.workline_runtime.business_identity 的门面副本
+# 旧 runtime 入口删除后,本桥接承载对应正式边界。
 # 自引用 src.workline_runtime.utils 已重定向到 src.app.workline.utils (C2)。
 
 """Runtime business identity helpers."""

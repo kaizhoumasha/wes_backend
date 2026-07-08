@@ -1,5 +1,5 @@
-# runtime migration C5a 镜像:src.workline_runtime.runtime_intent_effects 的平级副本
-# wlr 目录在阶段 3 整体删除时,本镜像改名为正式模块。
+# 旧 runtime 镜像实现:src.workline_runtime.runtime_intent_effects 的平级副本
+# 旧 runtime 入口删除后,本模块承载正式实现。
 # 自引用 src.workline_runtime.{effect_result, material_target_resolver,
 # resource_wait_evidence, runtime_intent} 已重定向到本目录 / 本目录 bridge。
 

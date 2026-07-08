@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-# runtime migration 阶段 6:workline 域退化为纯配置域,运行态 service shim 已
+# WorkLine 运行态迁出后,workline 域退化为纯配置域,运行态 service shim 已
 # 物理删除。保留 file 是配置域 service(diagnostic_service /
 # manifest_validator / plane_service / safety_service / workline_service /
-# write_back_service)。device_command_gateway 在 C3 迁出至
+# write_back_service)。device_command_gateway 已迁出至
 # runtime/orchestration/services/。其余运行态 service 迁入 runtime/orchestration/
 # services 与 runtime/capabilities/material_flow/ 后已物理删除。
 #
-# 阶段 6 C5:__all__ / _LAZY_SHIM_MAP 收敛到当前真实 service export +
+# WorkLine service facade 收口:__all__ / _LAZY_SHIM_MAP 收敛到当前真实 service export +
 # 3 个未初始化 service 属性的 fallback tombstone(inbox_service /
 # workline_bin_cell_reservation_service / WorklineInboxService)。
 # PlaneReadPrincipal / PlaneReadSecurityPolicy / plane_read_security_policy
@@ -54,7 +54,7 @@ __all__ = [
 ]
 
 
-# 阶段 6 C5:3 个未初始化 service 属性的 fallback tombstone。caller 命中时
+# WorkLine service facade 收口:3 个未初始化 service 属性的 fallback tombstone。caller 命中时
 # 通过 importlib.import_module 触发 ModuleNotFoundError(旧 module 已物理
 # 删除),与 Python 默认 attribute lookup 抛 AttributeError 不同但对调用方
 # 语义一致(都是不可用)。不在表中的属性按 PEP 562 默认行为抛 AttributeError。

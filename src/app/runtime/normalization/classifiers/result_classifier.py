@@ -1,4 +1,4 @@
-# runtime migration C5b 镜像:
+# 旧 plugin runtime 镜像实现:
 # src.workline_runtime.plugin_sdk.classifiers.result_classifier 的平级副本。
 # wlr 目录删除后,本镜像与 wlr 副本合并 / 删除。
 
