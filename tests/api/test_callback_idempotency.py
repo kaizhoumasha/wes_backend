@@ -9,6 +9,10 @@ import pytest
 from fastapi import Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    WorkLineRuntimeStatusSnapshot,
+)
+
 JsonDict = dict[str, object]
 RequestFactory = Callable[..., Request]
 
@@ -28,6 +32,27 @@ def _response_data(response: JsonDict) -> JsonDict:
 
 def _runtime_accept_result(*, created: bool = True) -> SimpleNamespace:
     return SimpleNamespace(created=created, record=SimpleNamespace(id=901))
+
+
+def _runtime_snapshot(runtime_status: str | None = "READY") -> WorkLineRuntimeStatusSnapshot:
+    return WorkLineRuntimeStatusSnapshot(
+        runtime_status=runtime_status,
+        source="test/runtime-projection",
+        stopped_at=None,
+        stopped_reason=None,
+        resumed_at=None,
+        active_safety_incident_id=None,
+    )
+
+
+@pytest.fixture(autouse=True)
+def mock_runtime_status_snapshot():
+    with patch(
+        "src.app.callback.services.callback_ingress_service."
+        "workline_runtime_status_projection_service.runtime_status_snapshot",
+        new=AsyncMock(return_value=_runtime_snapshot()),
+    ):
+        yield
 
 
 @pytest.fixture
@@ -205,7 +230,11 @@ class TestCallbackEventIdempotency:
                 new=AsyncMock(
                     return_value=(
                         SimpleNamespace(
-                            device=None,
+                            device=SimpleNamespace(
+                                id=7,
+                                device_code="ARM_01",
+                                capabilities_json={"supports_event_types": ["SCAN_COMPLETED"]},
+                            ),
                             workline=SimpleNamespace(
                                 plugin_key="test_workline_plugin", contract_version="1.0", is_active=True
                             ),
