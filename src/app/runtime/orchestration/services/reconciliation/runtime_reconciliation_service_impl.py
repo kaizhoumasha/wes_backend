@@ -245,8 +245,9 @@ class WorklineRuntimeReconciliationService:
 
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
         if workline is not None:
-            workline_runtime_status_projection_service.project_reconciling(
-                workline,
+            await self.workline_status_projection_service.project_reconciling(
+                db,
+                workline_id=session.workline_id,
                 occurred_at=now,
                 reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
             )
@@ -426,8 +427,9 @@ class WorklineRuntimeReconciliationService:
 
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
         if workline is not None:
-            self.workline_status_projection_service.project_reconciling(
-                workline,
+            await self.workline_status_projection_service.project_reconciling(
+                db,
+                workline_id=session.workline_id,
                 occurred_at=now,
                 reason=RuntimeReconciliationReason.COMMAND_ACK_EXHAUSTED.value,
             )
@@ -593,8 +595,9 @@ class WorklineRuntimeReconciliationService:
         )
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
         if workline is not None:
-            self.workline_status_projection_service.project_reconciling(
-                workline,
+            await self.workline_status_projection_service.project_reconciling(
+                db,
+                workline_id=session.workline_id,
                 occurred_at=now,
                 reason=enum_str(session.reconciliation_reason) or "LATE_CALLBACK_EVIDENCE",
             )

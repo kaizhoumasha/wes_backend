@@ -52,10 +52,10 @@ def test_phase4_carrier_rows_remain_auditable_before_business_cleanup() -> None:
     assert invalid_rows == []
 
 
-def test_phase5_business_lane_status_is_ready_for_business_cleanup() -> None:
+def test_phase5_business_lane_status_is_final_cleanup_complete() -> None:
     text = LEGACY_CLEANUP_MATRIX_DOC.read_text(encoding="utf-8")
 
-    assert "phase5_business_lane_status: ready-for-business-cleanup" in text
+    assert "phase5_business_lane_status: final-cleanup-complete" in text
 
 
 def test_current_state_docs_do_not_keep_stale_business_blockers() -> None:

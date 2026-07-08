@@ -41,7 +41,6 @@ def _build_dispatch_ack_objects() -> tuple[Any, Any, Any, Any]:
     from src.app.device.models.command import CommandStatus
     from src.app.runtime.orchestration.models.session import SessionStatus
     from src.app.sys.models import SystemOutboxStatus
-    from src.app.workline.models.safety import WorkLineRuntimeStatus
 
     now = timezone.now_for_db()
     command = SimpleNamespace(
@@ -84,14 +83,13 @@ def _build_dispatch_ack_objects() -> tuple[Any, Any, Any, Any]:
         reconciliation_state=None,
         context_json={},
     )
-    workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)
+    workline = SimpleNamespace(id=45)
     return command, outbox, session, workline
 
 
 def _build_timer_timeout_objects() -> tuple[Any, Any, Any, Any]:
     from src.app.device.models.command import CommandStatus
     from src.app.runtime.orchestration.models.session import SessionStatus
-    from src.app.workline.models.safety import WorkLineRuntimeStatus
 
     now = timezone.now_for_db()
     deadline_at = now - timedelta(seconds=1)
@@ -132,7 +130,7 @@ def _build_timer_timeout_objects() -> tuple[Any, Any, Any, Any]:
         context_json={},
         ended_at=None,
     )
-    workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)
+    workline = SimpleNamespace(id=45)
     return command, inbox, session, workline
 
 
@@ -151,6 +149,7 @@ def _build_service(*, session: Any, workline: Any, reconciliation_manager: Any) 
         create_for_dispatch_ack_exhausted=AsyncMock(return_value=SimpleNamespace(id=9904)),
         create_for_callback_deadline_expired=AsyncMock(return_value=SimpleNamespace(id=9905)),
     )
+    workline_status_projection_service = SimpleNamespace(project_reconciling=AsyncMock(return_value=True))
     system_outbox_repository = SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=0))
     rack_task_repository = SimpleNamespace(cancel_active_by_material_session=AsyncMock(return_value=0))
     return WorklineRuntimeReconciliationService(
@@ -161,6 +160,7 @@ def _build_service(*, session: Any, workline: Any, reconciliation_manager: Any) 
         runtime_hold_creation_service=runtime_hold_creation_service,
         rack_task_repository=rack_task_repository,
         reconciliation_manager=reconciliation_manager,
+        workline_status_projection_service=workline_status_projection_service,
     )
 
 

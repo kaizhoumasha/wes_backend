@@ -13,8 +13,8 @@ from src.app.runtime.orchestration.models.session import (
     WorklineSession,
 )
 from src.app.runtime.orchestration.services.query.runtime_query_service import RuntimeQueryService
+from src.app.runtime.orchestration.workline_runtime_status_projection import WorklineRuntimeStatusProjection
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
-from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.core.conf import settings
 from src.utils.timezone import timezone
 
@@ -74,7 +74,6 @@ async def test_seed_runtime_monitor_smoke_ignores_soft_deleted_worklines(db_sess
         line_name="soft deleted base line",
         line_type=LineType.AUTO,
         run_mode=WorkLineRunMode.SIMULATION,
-        runtime_status=WorkLineRuntimeStatus.STOPPED,
     )
     soft_deleted_base.soft_delete()
     soft_deleted_fallback = WorkLine(
@@ -82,7 +81,6 @@ async def test_seed_runtime_monitor_smoke_ignores_soft_deleted_worklines(db_sess
         line_name="soft deleted fallback line",
         line_type=LineType.AUTO,
         run_mode=WorkLineRunMode.SIMULATION,
-        runtime_status=WorkLineRuntimeStatus.STOPPED,
     )
     soft_deleted_fallback.soft_delete()
     db_session.add_all([soft_deleted_base, soft_deleted_fallback])
@@ -172,7 +170,12 @@ async def test_seed_runtime_monitor_smoke_rejects_active_safety_incident(db_sess
     result = await seed_runtime_monitor_smoke(db_session, commit=False)
     workline = await db_session.get(WorkLine, result["single_layer_workline"]["id"])
     assert workline is not None
-    workline.active_safety_incident_id = 1001
+    projection = (
+        await db_session.execute(
+            select(WorklineRuntimeStatusProjection).where(WorklineRuntimeStatusProjection.workline_id == workline.id)
+        )
+    ).scalar_one()
+    projection.active_safety_incident_id = 1001
     await db_session.flush()
 
     with pytest.raises(RuntimeError, match="active safety incident"):

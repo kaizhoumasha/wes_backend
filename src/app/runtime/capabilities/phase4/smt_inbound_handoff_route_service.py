@@ -116,7 +116,11 @@ class SmtInboundHandoffRouteService:
         if boundary_resolution.failure_code is not None:
             return self._manual_hold(boundary_resolution.failure_code, route_evidence)
 
-        if not workline_runtime_status_projection_service.is_ready(workline):
+        workline_id = getattr(workline, "id", None)
+        if not isinstance(workline_id, int) or not await workline_runtime_status_projection_service.is_ready(
+            db,
+            workline_id=workline_id,
+        ):
             return self._retry(SmtInboundHandoffReasonCode.TARGET_WORKLINE_NOT_READY, route_evidence)
 
         lease_result = await self._station_lease_service().get_station_lease_status(

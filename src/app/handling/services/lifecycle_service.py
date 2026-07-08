@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from src.app.handling.models import BinTransitQueue, HandlingMoveStatus, HandlingOperationStatus, HandlingStepStatus
+from src.app.handling.models import HandlingMoveStatus, HandlingOperationStatus, HandlingStepStatus
 from src.app.handling.repositories import (
     HandlingMoveRepository,
     HandlingOperationRepository,
@@ -14,15 +14,15 @@ from src.app.handling.repositories import (
     handling_operation_repository,
     handling_step_repository,
 )
-from src.app.handling.services.bin_transit_membership_service import (
-    BinTransitMembershipService,
-    bin_transit_membership_service,
-)
 from src.app.handling.services.completion_policy import is_reconciled_exchange_operation_type
 from src.app.runtime.orchestration.models.session import SessionStatus
 from src.app.runtime.orchestration.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
+)
+from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+    ConveyorQueueMembershipWriterService,
+    conveyor_queue_membership_writer_service,
 )
 from src.core.logger import logger
 from src.utils.timezone import timezone
@@ -76,7 +76,7 @@ class HandlingOperationLifecycleService:
         move_repository: HandlingMoveRepository = handling_move_repository,
         step_repository: HandlingStepRepository = handling_step_repository,
         session_repository: WorklineSessionRepository = workline_session_repository,
-        membership_service: BinTransitMembershipService = bin_transit_membership_service,
+        membership_service: ConveyorQueueMembershipWriterService = conveyor_queue_membership_writer_service,
     ) -> None:
         self.operation_repository = operation_repository
         self.move_repository = move_repository
@@ -246,26 +246,37 @@ class HandlingOperationLifecycleService:
         if bin_code is None and placeholder_key is None:
             logger.debug(
                 "Skipping handling queue membership projection without bin_code/placeholder_key: "
-                f"move_id={move_id}, target_queue={target_queue.value if target_queue is not None else None}"
+                f"move_id={move_id}, target_queue={target_queue}"
             )
             return
 
         operation_key = coerce_optional_str(getattr(step, "operation_key", None))
         operation = await self.operation_repository.get_by_operation_key(db, operation_key) if operation_key else None
-        common_kwargs = {
+        workline_id = optional_int(getattr(operation, "workline_id", None)) if operation is not None else None
+        if workline_id is None:
+            logger.debug(
+                "Skipping handling queue membership projection without workline_id: "
+                f"move_id={move_id}, target_queue={target_queue}"
+            )
+            return
+
+        source_event_id = f"{coerce_optional_str(getattr(step, 'dispatch_key', None)) or move_id}:{step_status.value}"
+        evidence_json = dict(payload_json)
+        terminal_kwargs = {
+            "workline_id": workline_id,
             "bin_code": bin_code,
             "placeholder_key": placeholder_key,
             "handling_operation_id": optional_int(getattr(operation, "id", None)) if operation is not None else None,
             "handling_move_id": move_id,
             "trace_id": trace_id,
             "reason_code": reason_code or f"HANDLING_CALLBACK_{step_status.value}",
-            "source_event_id": f"{coerce_optional_str(getattr(step, 'dispatch_key', None)) or move_id}:{step_status.value}",
-            "evidence_json": dict(payload_json),
+            "source_event_id": source_event_id,
+            "evidence_json": evidence_json,
             "auto_commit": False,
         }
 
         if step_status == HandlingStepStatus.RECONCILING:
-            await self.membership_service.mark_reconciling(db, ignore_missing=True, **common_kwargs)
+            await self.membership_service.mark_reconciling_for_identity(db, ignore_missing=True, **terminal_kwargs)
             return
 
         if step_status in {
@@ -275,37 +286,37 @@ class HandlingOperationLifecycleService:
             HandlingStepStatus.CANCELLED,
         }:
             if target_queue is not None:
-                await self.membership_service.switch_queue(
+                await self.membership_service.write_active(
                     db,
-                    to_queue=target_queue,
-                    workline_id=optional_int(getattr(operation, "workline_id", None))
-                    if operation is not None
-                    else None,
-                    workline_code=coerce_optional_str(getattr(operation, "workline_code", None))
-                    if operation is not None
-                    else None,
-                    workline_session_id=(
-                        optional_int(getattr(operation, "material_session_id", None)) if operation is not None else None
+                    **_queue_write_kwargs(
+                        operation=operation,
+                        workline_id=workline_id,
+                        target_queue=target_queue,
+                        bin_code=bin_code,
+                        placeholder_key=placeholder_key,
+                        trace_id=trace_id,
+                        source_event_id=source_event_id,
+                        evidence_json=evidence_json,
                     ),
-                    **common_kwargs,
                 )
-            await self.membership_service.leave_queue(db, ignore_missing=True, **common_kwargs)
+            await self.membership_service.close_active(db, ignore_missing=True, **terminal_kwargs)
             return
 
         if target_queue is None:
             return
 
-        await self.membership_service.switch_queue(
+        await self.membership_service.write_active(
             db,
-            to_queue=target_queue,
-            workline_id=optional_int(getattr(operation, "workline_id", None)) if operation is not None else None,
-            workline_code=coerce_optional_str(getattr(operation, "workline_code", None))
-            if operation is not None
-            else None,
-            workline_session_id=(
-                optional_int(getattr(operation, "material_session_id", None)) if operation is not None else None
+            **_queue_write_kwargs(
+                operation=operation,
+                workline_id=workline_id,
+                target_queue=target_queue,
+                bin_code=bin_code,
+                placeholder_key=placeholder_key,
+                trace_id=trace_id,
+                source_event_id=source_event_id,
+                evidence_json=evidence_json,
             ),
-            **common_kwargs,
         )
 
     async def derive_operation_status(self, db: AsyncSession, *, operation_key: str) -> str:
@@ -534,29 +545,44 @@ def _callback_step_status(payload_json: Mapping[str, Any]) -> tuple[HandlingStep
     return _resolve_step_status(status), _raw_error_code(payload_json), _raw_error_message(payload_json)
 
 
-def _callback_target_queue(payload_json: Mapping[str, Any]) -> BinTransitQueue | None:
-    raw_queue = (
+def _queue_write_kwargs(
+    *,
+    operation: Any | None,
+    workline_id: int,
+    target_queue: str,
+    bin_code: str | None,
+    placeholder_key: str | None,
+    trace_id: str | None,
+    source_event_id: str,
+    evidence_json: dict[str, Any],
+) -> dict[str, Any]:
+    conveyor_code = coerce_optional_str(getattr(operation, "workline_code", None)) or "HANDLING_CALLBACK"
+    return {
+        "workline_id": workline_id,
+        "conveyor_code": conveyor_code,
+        "queue_code": target_queue,
+        "queue_role": "HANDLING_CALLBACK",
+        "bin_code": bin_code,
+        "placeholder_key": placeholder_key,
+        "declared_queue_codes": {target_queue},
+        "strict": True,
+        "correlation_id": trace_id,
+        "source_event_id": source_event_id,
+        "evidence_json": evidence_json,
+        "auto_commit": False,
+    }
+
+
+def _callback_target_queue(payload_json: Mapping[str, Any]) -> str | None:
+    return (
         coerce_optional_str(payload_json.get("target_queue"))
         or coerce_optional_str(payload_json.get("current_queue"))
         or coerce_optional_str(payload_json.get("queue"))
     )
-    if raw_queue is None:
-        return None
-    try:
-        return BinTransitQueue(raw_queue)
-    except ValueError:
-        logger.warning(f"Ignoring unknown handling target queue from callback: target_queue={raw_queue}")
-        return None
 
 
-def _move_target_queue(move: Any) -> BinTransitQueue | None:
-    raw_queue = coerce_optional_str(getattr(move, "target_code", None))
-    if raw_queue is None:
-        return None
-    try:
-        return BinTransitQueue(raw_queue)
-    except ValueError:
-        return None
+def _move_target_queue(move: Any) -> str | None:
+    return coerce_optional_str(getattr(move, "target_code", None))
 
 
 def _resolve_step_status(status: str | None) -> HandlingStepStatus:

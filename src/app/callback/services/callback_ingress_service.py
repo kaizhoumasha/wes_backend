@@ -44,6 +44,10 @@ from src.app.runtime.capabilities.phase4.start_admission_service import start_ad
 from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxConflict
 from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
 from src.app.runtime.orchestration.services.inbox import inbox_service
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    WorkLineRuntimeStatusSnapshot,
+    workline_runtime_status_projection_service,
+)
 from src.app.sys.models.audit_log import OperaStatus
 from src.app.sys.services import audit_log_service
 from src.app.wms_integration.services import callback_normalizer as _wms_callback_normalizer
@@ -514,10 +518,10 @@ def _optional_enum_str(value: object) -> str | None:
     return enum_value if isinstance(enum_value, str) and enum_value else None
 
 
-def _is_workline_accepting_production_events(workline: object) -> bool:
-    runtime_status = _optional_enum_str(getattr(workline, "runtime_status", None))
+def _is_workline_accepting_production_events(runtime_snapshot: WorkLineRuntimeStatusSnapshot) -> bool:
+    runtime_status = _optional_enum_str(runtime_snapshot.runtime_status)
     if runtime_status is None:
-        return True
+        return False
     return runtime_status not in _WORKLINE_NOT_ACCEPTING_PRODUCTION_STATUSES
 
 
@@ -1797,14 +1801,30 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             )
 
         if is_production_event(canonical_event_type):
-            if not _is_workline_accepting_production_events(workline):
+            workline_id = getattr(workline, "id", None)
+            if not isinstance(workline_id, int):
+                workline_id = getattr(ctx_result, "work_line_id", None)
+            runtime_snapshot = (
+                await workline_runtime_status_projection_service.runtime_status_snapshot(db, workline_id=workline_id)
+                if isinstance(workline_id, int)
+                else WorkLineRuntimeStatusSnapshot(
+                    runtime_status=None,
+                    source="runtime/orchestration:missing-workline-id",
+                    stopped_at=None,
+                    stopped_reason=None,
+                    resumed_at=None,
+                    active_safety_incident_id=None,
+                )
+            )
+            runtime_status = _optional_enum_str(runtime_snapshot.runtime_status)
+            if not _is_workline_accepting_production_events(runtime_snapshot):
                 return await _handle_event_workline_guard_rejection(
                     db,
                     request,
                     request_id=request_id,
                     event_data=event_data,
                     device_code=device_code,
-                    runtime_status=_optional_enum_str(getattr(workline, "runtime_status", None)),
+                    runtime_status=runtime_status or "UNKNOWN",
                     response_time_ms=_response_time_ms(start_time),
                 )
 

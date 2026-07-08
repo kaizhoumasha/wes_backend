@@ -517,7 +517,7 @@ BEGIN
             created_at, updated_at, version, is_deleted,
             line_code, line_name, line_type, zone_name, description, is_active,
             plugin_key, contract_version, config, runtime_config_json, diagnostic_profile,
-            run_mode, runtime_status
+            run_mode
         ) VALUES (
             now() AT TIME ZONE 'UTC', NULL, 0, false,
             'WL-ROUGH-SORTER-TEST', '粗分机作业线', 'AUTO', '生产区',
@@ -526,7 +526,7 @@ BEGIN
             'rough_sorter', 'rough_sorter.v2', '{}'::json,
             '{"run_mode":"AUTO","sandbox_enabled":false,"device_status_timeout_seconds":2.0}'::json,
             '{"owner":"WES 生产环境","seed_source":"production-init"}'::json,
-            'AUTO', 'STOPPED'
+            'AUTO'
         ) RETURNING id INTO v_line_id;
     ELSE
         UPDATE wes_biz.work_lines SET
@@ -539,10 +539,26 @@ BEGIN
             config = '{}'::json,
             runtime_config_json = '{"run_mode":"AUTO","sandbox_enabled":false,"device_status_timeout_seconds":2.0}'::json,
             diagnostic_profile = '{"owner":"WES 生产环境","seed_source":"production-init"}'::json,
-            run_mode = 'AUTO',
-            runtime_status = 'STOPPED'
+            run_mode = 'AUTO'
         WHERE id = v_line_id;
     END IF;
+
+    INSERT INTO wes_runtime.workline_runtime_status_projections (
+        workline_id, runtime_status, source, stopped_at, stopped_reason,
+        resumed_at, active_safety_incident_id, evidence_json
+    ) VALUES (
+        v_line_id, 'STOPPED', 'scripts/data/init_production_base_data',
+        now() AT TIME ZONE 'UTC', 'PRODUCTION_INIT',
+        NULL, NULL, '{}'::json
+    )
+    ON CONFLICT (workline_id) DO UPDATE SET
+        runtime_status = EXCLUDED.runtime_status,
+        source = EXCLUDED.source,
+        stopped_at = EXCLUDED.stopped_at,
+        stopped_reason = EXCLUDED.stopped_reason,
+        resumed_at = NULL,
+        active_safety_incident_id = NULL,
+        evidence_json = EXCLUDED.evidence_json;
 
     INSERT INTO wes_biz.devices (
         created_at, updated_at, version, is_deleted,

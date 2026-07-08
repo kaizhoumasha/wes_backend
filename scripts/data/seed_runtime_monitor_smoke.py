@@ -25,8 +25,10 @@ from scripts.data.sync_test_workline_devices import (
 )
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    workline_runtime_status_projection_service,
+)
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
-from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.core.conf import settings
 from src.utils.timezone import timezone
 
@@ -45,8 +47,8 @@ async def seed_runtime_monitor_smoke(db: AsyncSession, *, commit: bool = True) -
     fallback_workline = await _upsert_fallback_workline(db)
     await _assert_seed_workline_safe(db, single_layer_workline)
     await _assert_seed_workline_safe(db, fallback_workline)
-    _mark_ready(single_layer_workline)
-    _mark_ready(fallback_workline)
+    await _mark_ready(db, single_layer_workline)
+    await _mark_ready(db, fallback_workline)
 
     single_layer_sessions = await _seed_single_layer_sessions(db, single_layer_workline)
     fallback_session = await _upsert_session(
@@ -185,7 +187,6 @@ async def _upsert_fallback_workline(db: AsyncSession) -> WorkLine:
             "sandbox_enabled": True,
         },
         "run_mode": WorkLineRunMode.SIMULATION,
-        "runtime_status": WorkLineRuntimeStatus.READY,
         "diagnostic_profile": {"seed_source": "runtime-monitor-smoke"},
         "description": "Runtime monitor smoke fallback line without plugin manifest.",
         "is_active": True,
@@ -280,7 +281,11 @@ async def _assert_seed_workline_safe(db: AsyncSession, workline: WorkLine) -> No
     workline_id = workline.id
     if workline_id is None:
         raise RuntimeError(f"workline id missing for runtime monitor smoke seed: {workline.line_code}")
-    if getattr(workline, "active_safety_incident_id", None) is not None:
+    runtime_snapshot = await workline_runtime_status_projection_service.runtime_status_snapshot(
+        db,
+        workline_id=workline_id,
+    )
+    if runtime_snapshot.active_safety_incident_id is not None:
         raise RuntimeError(
             f"workline has active safety incident; resolve it before runtime monitor smoke seed: {workline.line_code}"
         )
@@ -290,12 +295,17 @@ async def _assert_seed_workline_safe(db: AsyncSession, workline: WorkLine) -> No
         )
 
 
-def _mark_ready(workline: WorkLine) -> None:
-    workline.runtime_status = WorkLineRuntimeStatus.READY
+async def _mark_ready(db: AsyncSession, workline: WorkLine) -> None:
+    workline_id = workline.id
+    if workline_id is None:
+        raise RuntimeError(f"workline id missing for runtime monitor smoke seed: {workline.line_code}")
+    await workline_runtime_status_projection_service.project_ready_after_start(
+        db,
+        workline_id=workline_id,
+        occurred_at=timezone.now_for_db(),
+        evidence_json={"source": "scripts/data/seed_runtime_monitor_smoke"},
+    )
     workline.is_active = True
-    workline.resumed_at = timezone.now_for_db()
-    workline.stopped_at = None
-    workline.stopped_reason = None
 
 
 def _workline_result(workline: WorkLine) -> dict[str, Any]:

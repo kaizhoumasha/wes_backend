@@ -151,8 +151,6 @@ def _git_tracked_files(repo_root: Path) -> set[str]:
 
 def _expected_tracked_state(row: dict[str, str], tracked_files: set[str], repo_root: Path) -> str:
     relative_path = row["relative_path"]
-    if "WorkLine.runtime_status" in row["symbol_or_route"]:
-        return "schema-deferred"
     if relative_path not in tracked_files or not (repo_root / relative_path).exists():
         return "already-removed"
     if relative_path.startswith("tests/"):

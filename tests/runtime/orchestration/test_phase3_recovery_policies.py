@@ -351,6 +351,10 @@ class _IdempotentOnlyManager:
         )
 
 
+def _runtime_status_projection_stub() -> SimpleNamespace:
+    return SimpleNamespace(project_reconciling=AsyncMock(return_value=True))
+
+
 @pytest.mark.asyncio
 async def test_late_callback_pending_reconciliation_registers_owner_scoped_evidence_without_terminal_mutation() -> None:
     """late callback 冲突必须补登记 owner-scoped reconciliation, 只保留证据并维持 RECONCILING。"""
@@ -390,6 +394,7 @@ async def test_late_callback_pending_reconciliation_registers_owner_scoped_evide
         ),
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace())),
         reconciliation_manager=manager,
+        workline_status_projection_service=_runtime_status_projection_stub(),
     )
     db = SimpleNamespace(flush=AsyncMock())
     callback_payload = {
@@ -462,6 +467,7 @@ async def test_late_callback_replay_is_idempotent_and_new_evidence_appends_witho
         session_repository=session_repository,
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace())),
         reconciliation_manager=manager,
+        workline_status_projection_service=_runtime_status_projection_stub(),
     )
     db = SimpleNamespace(flush=AsyncMock())
     callback_a = {"event_id": "evt-late-a", "command_code": "CMD-LATE-REPLAY", "result": "SUCCESS"}
@@ -520,6 +526,7 @@ async def test_late_callback_registration_uses_stable_fallback_when_command_corr
         ),
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace())),
         reconciliation_manager=manager,
+        workline_status_projection_service=_runtime_status_projection_stub(),
     )
     db = SimpleNamespace(flush=AsyncMock())
 
@@ -582,6 +589,7 @@ async def test_late_callback_correlated_path_does_not_require_sync_register_conf
         ),
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace())),
         reconciliation_manager=manager,
+        workline_status_projection_service=_runtime_status_projection_stub(),
     )
     db = SimpleNamespace(flush=AsyncMock())
 

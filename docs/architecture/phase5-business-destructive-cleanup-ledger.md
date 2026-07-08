@@ -44,5 +44,5 @@ legacy-cleanup-matrix.csv
 
 ## 当前剩余风险
 
-- `WorkLine.runtime_status` 物理字段删除不属于本 ledger；仍按独立 schema/data cleanup 决策处理。
+- WorkLine 运行态物理字段已由 final cleanup migration 迁入 runtime/orchestration 原生投影；本 ledger 当前无 schema-deferred 项。
 - `delete_commit=pending-current-pr` 表示当前工作区尚未落单独 packet commit；commit 后可替换为对应 hash。

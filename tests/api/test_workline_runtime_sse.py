@@ -554,9 +554,7 @@ def _build_ack_exhausted_fixtures(
         awaiting_device_command_code=command.command_code,
         reconciliation_state=reconciliation_state,
     )
-    from src.app.workline.models.safety import WorkLineRuntimeStatus
-
-    workline = SimpleNamespace(runtime_status=WorkLineRuntimeStatus.READY, stopped_at=None, stopped_reason=None)
+    workline = SimpleNamespace(id=45)
     return command, outbox, session, workline
 
 
@@ -571,12 +569,14 @@ def _build_reconciliation_service(*, session: Any, workline: Any) -> Any:
     runtime_hold_creation_service = SimpleNamespace(
         create_for_dispatch_ack_exhausted=AsyncMock(return_value=SimpleNamespace(id=9904))
     )
+    workline_status_projection_service = SimpleNamespace(project_reconciling=AsyncMock(return_value=True))
     return WorklineRuntimeReconciliationService(
         session_repository=session_repo,
         workline_repository=workline_repo,
         device_service=device_service,
         runtime_hold_creation_service=runtime_hold_creation_service,
         reconciliation_manager=_SseReconciliationManager(),
+        workline_status_projection_service=workline_status_projection_service,
     )
 
 

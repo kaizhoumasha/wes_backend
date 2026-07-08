@@ -94,6 +94,36 @@ class ConveyorQueueMembershipRepository(BaseRepository[ConveyorQueueMembership])
         result = await db.execute(statement)
         return list(result.scalars().all())
 
+    async def get_one_active_by_identity(
+        self,
+        db: AsyncSession,
+        *,
+        workline_id: int,
+        bin_code: str | None = None,
+        placeholder_key: str | None = None,
+        for_update: bool = False,
+    ) -> ConveyorQueueMembership | None:
+        """按写入身份读取单条 ACTIVE membership；同时给定时优先真实 bin。"""
+
+        memberships = await self.list_active_by_identity(
+            db,
+            workline_id=workline_id,
+            bin_code=bin_code,
+            placeholder_key=placeholder_key,
+            for_update=for_update,
+        )
+        if not memberships:
+            return None
+        if bin_code is not None:
+            for membership in memberships:
+                if membership.bin_code == bin_code:
+                    return membership
+        if placeholder_key is not None:
+            for membership in memberships:
+                if membership.placeholder_key == placeholder_key and membership.bin_code is None:
+                    return membership
+        return memberships[0]
+
     async def list_active_by_workline(
         self,
         db: AsyncSession,

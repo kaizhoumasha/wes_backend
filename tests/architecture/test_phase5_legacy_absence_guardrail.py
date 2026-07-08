@@ -13,15 +13,27 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PRODUCTION_ROOT = PROJECT_ROOT / "src"
+
+
+def _token(*parts: str) -> str:
+    return "".join(parts)
+
+
+_HANDLING_QUEUE_MEMBERSHIP_MODULE = _token("bin", "_", "transit", "_", "membership")
+_HANDLING_QUEUE_MEMBERSHIP_TABLE = _token("bin", "_", "transit", "_", "memberships")
 FORBIDDEN_MODULES = (
     "src.app.workline.plugins",
     "src.workline_plugin_registry",
     "src.workline_plugins",
+    f"src.app.handling.models.{_HANDLING_QUEUE_MEMBERSHIP_MODULE}",
+    f"src.app.handling.repositories.{_HANDLING_QUEUE_MEMBERSHIP_MODULE}_repository",
+    f"src.app.handling.services.{_HANDLING_QUEUE_MEMBERSHIP_MODULE}_service",
 )
 FORBIDDEN_IMPORT_TEXT = (
-    "src.app.workline.plugins",
-    "src.workline_plugin_registry",
-    "src.workline_plugins",
+    *FORBIDDEN_MODULES,
+    _token("Bin", "Transit", "Membership"),
+    _token("Bin", "Transit", "Queue"),
+    _HANDLING_QUEUE_MEMBERSHIP_TABLE,
 )
 
 

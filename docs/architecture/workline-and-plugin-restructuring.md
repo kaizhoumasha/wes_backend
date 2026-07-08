@@ -1,7 +1,7 @@
 ---
-status: Draft v5 — Phase5 technical lane 状态同步（GB/T 8567 风格）
+status: Draft v7 — WorkLine restructuring final cleanup completed（GB/T 8567 风格）
 created_at: 2026-06-23
-updated_at: 2026-07-07
+updated_at: 2026-07-08
 parent_goal: 对当前 WORKLINE + PLUGIN 体系进行全面重构/重做
 document_type: 概要设计说明书 + 详细设计（Outline Design + Detailed Design）
 audience: eng/arch lead, WES owner, WMS 集成 lead, code reviewer
@@ -21,13 +21,13 @@ review_summary: |
   28 auto-decision 已记录到 docs/architecture/reviews/decision-audit-trail.md。
   本轮修订明确：当前系统未发布，本重构不做向后兼容；旧 WorkLine/plugin 体系只作为业务事实和测试样本输入，不作为目标态约束。
   Critical path: 目标态边界锁定 → WMS ACL → Runtime/Orchestration 骨架 → plane 最小闭环 → legacy 清理。
-  2026-07-07 同步：Phase5 technical lane 已通过 PR #78 合并到 develop（v0.13.0.0）；legacy plugin runtime/import 框架已退出 src 可 import 路径。Phase3 + Phase4 production evidence bundle 已可重新生成并通过 gate；Phase5 business lane readiness 与 business destructive cleanup gate 已通过，业务执行合同已迁入 Phase4 runtime capability 目标态。`WorkLine.runtime_status` 物理字段删除仍属于独立 schema/data cleanup。
+  2026-07-08 同步：Phase5 technical lane 已通过 PR #78 合并到 develop（v0.13.0.0）；legacy plugin runtime/import 框架已退出 src 可 import 路径。Phase3 + Phase4 production evidence bundle 已可重新生成并通过 gate；Phase5 business lane readiness 与 business destructive cleanup 已通过 PR #79 合并到 develop（v0.14.0.0，merge SHA 8c833610c08005005406b3a774c92519f69b7886），业务执行合同已迁入 Phase4 runtime capability 目标态。本 final cleanup 进一步删除旧 handling 队列表面与 WorkLine 运行态物理列，运行状态由 `wes_runtime.workline_runtime_status_projections` 承接。
 ---
 
 # WORKLINE + PLUGIN 体系全面重构顶层设计
 
 > 概要设计说明书（GB/T 8567 风格）+ 详细设计
-> 版本：Draft v5（2026-07-07 Phase5 technical lane 状态同步）
+> 版本：Draft v7（2026-07-08 WorkLine restructuring final cleanup completed）
 > 父目标：对当前 WORKLINE + PLUGIN 体系进行全面重构/重做
 
 ---
@@ -205,7 +205,7 @@ P0 必须支撑以下能力（每条都是验收项）：
 
 ### 2.4 重构前体系规模基线（实测 2026-06-23）
 
-> 本表保留重构启动时的规模基线，用于解释 Phase 0-5 拆分来源。Phase5 technical lane 后，旧 `src/workline_plugins/*`、`src/app/workline/plugins/*`、`src/workline_plugin_registry.py` 和 `docs/templates/workline_plugin/*` 已退出运行/模板路径；当前逐入口状态以 `docs/architecture/legacy-cleanup-matrix.md`（638 条）和 `docs/architecture/legacy-cleanup-execution-plan.md` 为准。
+> 本表保留重构启动时的规模基线，用于解释 Phase 0-5 拆分来源。Phase5 technical lane 后，旧 `src/workline_plugins/*`、`src/app/workline/plugins/*`、`src/workline_plugin_registry.py` 和 `docs/templates/workline_plugin/*` 已退出运行/模板路径；final cleanup 后当前逐入口状态以 `docs/architecture/legacy-cleanup-matrix.md`（636 条）和 `docs/architecture/legacy-cleanup-execution-plan.md` 为准。
 
 | 范围 | 实测 LOC | 角色 | 在重构中的位置 |
 | --- | --- | --- | --- |
@@ -1782,22 +1782,22 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 
 | Phase | 状态 | 已合并 PR | 关键交付 | 待办 |
 | --- | --- | --- | --- | --- |
-| Phase 0 目标态锁定（P0-001~P0-007） | ✅ **已完成** | [#63](https://github.com) `v0.9.0.0` (2026-06-25) | 7 项必做 + 行为契约 10 BC + legacy 清理矩阵（Phase0 初始矩阵已发布；Phase5 technical lane 后当前 638 条、0 pending-review / 0 空策略）+ C1~C5/R-I3 护栏脚本 | — |
+| Phase 0 目标态锁定（P0-001~P0-007） | ✅ **已完成** | [#63](https://github.com) `v0.9.0.0` (2026-06-25) | 7 项必做 + 行为契约 10 BC + legacy 清理矩阵（Phase0 初始矩阵已发布；final cleanup 后当前 636 条、0 pending-review / 0 空策略）+ C1~C5/R-I3 护栏脚本 | — |
 | Phase 1 Packet A Foundation（CEO-005/006/012 + AP5） | ✅ **已完成** | [#64](https://github.com) Packet A (2026-06-27) | `scope/authority/source/evidence_at` schema + Authority Matrix + SafetyZone + manifest version pin | — |
 | Phase 1 Packet B ACL & WMS Ports（CEO-001 起步 + CEO-013 + H4 + ADR-0009） | ✅ **已完成** | [#64](https://github.com) Packet B (2026-06-27) | `WmsMasterDataPort` / `WmsInventoryQueryPort` / `WmsInventoryTransactionPort` 3 ports 起步 + `ExternalContractProfile` / `RuntimeCapabilityProfile` / `InboundNormalizerProfile` + provider simulator registry + H4 反注入白/黑名单 + ADR-0009 shared contracts package | 剩余 4 port（Document / Fulfillment / Event / ReconciliationQuery）→ Packet D |
 | Phase 1 Packet C Runtime 骨架（CEO-007/008/010/011 + H5） | ✅ **已完成** | [#64](https://github.com) Packet C (2026-06-27) | 7 个 runtime core 实体（ExecutionSession / ExecutionCorrelation / ExecutionWorkItem / RuntimeInbox / RuntimeTimeline / RuntimeHold / RuntimeIntentLog + IdempotencyKey） + `ConveyorQueueMembership` + DeviceCommand ECS contract + device FK ring dissolve + H5 IdempotencyGuard + callback / handling / rack 接入 runtime/orchestration | — |
 | Phase 1 Packet D Capability 边界 + 剩余 4 WMS port（CEO-009） | ✅ **已完成** | Packet D (2026-06-27) + 本分支 callback admission 收敛 | 4 剩余 WMS port（WmsDocumentPort / WmsFulfillmentPort / WmsEventPort / WmsReconciliationQueryPort）全部 7/7 落地 + InboundNormalizerRegistry + consumer-only `InboundNormalizerContext.get_inbound_normalizer()` + InboundNormalizerProfile 3 Pydantic validators + R-I3c 静态扫描 + import-linter capability-isolation contract + callback API provider profile admission 热路径接入 | — |
-| Phase 2 Runtime/Orchestration 迁移与 WorkLine 清空 | ✅ **主迁移完成，兼容投影已收敛** | launch PR `8602c33b` + 阶段 1-6 burn-down（PR #70 `v0.10.2.1`）+ F-1/F-2 收尾（PR #71 `v0.10.3.0`） | 阶段 1-6 + F-1/F-2 收尾已完成 service/v1 router 域清空、facade 物理删除、device_command_gateway 迁出和 model/repository 迁入；`WorkLine.runtime_status` 已收敛为 runtime/orchestration 兼容投影，写入口集中到 `WorkLineRuntimeStatusProjectionService`，safety / START admission / query / trace 只通过 snapshot/readiness 暴露兼容字段 | Phase5 前仅保留兼容投影；删除物理字段需满足 §10.0.1 双 lane 前置 |
+| Phase 2 Runtime/Orchestration 迁移与 WorkLine 清空 | ✅ **final cleanup 完成，运行态原生投影落地** | launch PR `8602c33b` + 阶段 1-6 burn-down（PR #70 `v0.10.2.1`）+ F-1/F-2 收尾（PR #71 `v0.10.3.0`）+ final cleanup migration | 阶段 1-6 + F-1/F-2 收尾已完成 service/v1 router 域清空、facade 物理删除、device_command_gateway 迁出和 model/repository 迁入；final cleanup 删除 WorkLine 运行态物理列，新增 `wes_runtime.workline_runtime_status_projections`，safety / START admission / query / trace 只通过 snapshot/readiness 暴露运行状态 | guardrail 与 migration smoke 负责防止 WorkLine 配置域重新承载运行态 |
 | Phase 3 执行安全与恢复能力补全 | 🟡 **本地合同/门禁已补齐，开发/测试 MOCK closure 可通过** | [#73](https://github.com/kaizhoumasha/wes_backend/pull/73) `v0.10.4.0` (2026-07-02) + 本分支 Phase 3 closure slice | callback body HMAC/nonce、RuntimeInbox 幂等/重放/backpressure、ReconciliationManager owner-scoped 决议、ActiveObjectRegistry、DeviceCommand lease、WMS fulfillment 状态机/typed evidence、WorkLine plane/manifest、ops contracts；本分支新增并接入 DeviceDispatchPolicy 到 DeviceCommandGateway 预检与 dispatch policy metrics、落地 DB-backed ConveyorQueueMembership writer service 与写入诊断结果、PostgreSQL `FOR UPDATE` active identity 锁语义和 opt-in unique race 合同、`wes_runtime.device_runtime_projections` 持久 DeviceRuntime 投影与 DeviceService 运行态同步，并补齐 ReconciliationManager 幂等登记入口、runtime reconciliation `TIMER_TIMEOUT` / dispatch ACK exhausted 热路径 claim、WMS fulfillment 幂等 opening 入口、RuntimeIntent `EXTERNAL_REQUEST` fulfillment 实际发起热路径 claim、RuntimeInbox device_event 幂等 claim、plane owner/superuser 行级过滤与 audit log、ScenarioRecorder/ReplayRunner active projection diff、IntegrationLab fixture runner、TraceQueryResult 生产录制源适配、RuntimeP0E2EGate 与 RuntimeP0E2EArtifactComposer 生产 E2E 证据门禁、RuntimeBenchmarkArtifactComposer 生产 benchmark evidence 组装门禁、RuntimePhase3ClosureGate 总门禁、RuntimeObservabilityRegistry、RuntimeOpenTelemetryBridge、RuntimeToggleRegistry、RuntimeToggleReleaseGate、RuntimeBenchmarkGate profile/provenance/workload metadata gate、ExternalReferenceCatalog、timeout 转移、full-box / RACK_BIN exchange 合同、runtime toggle quality gate、external callback allow-list 矩阵、`tests/load` 轻量 benchmark 命令、benchmark artifact 合同、CI lightweight artifact 归档、resilience replay fixture 和 simulator replay fixture、OpenTelemetry backend 接线 | 本项目未发布，当前开发/测试默认使用 MOCK closure；生产发布前再显式运行 `--closure-profile production` 并提供真实 P0 E2E 与 production-scale benchmark artifact |
 | Phase 4 后续子领域 | ✅ **SPEC 已写，P0/Wave1 已闭合，Wave2/Wave3 runtime capability 与 evidence profile gate 已落地** | 本分支 Phase 4 设计包 + Phase 4 runtime readiness 分支 | `phase4-design-with-residuals.md` + 5 份 Phase 4 SPEC；CellReservation / RuntimeLocationEvent / MaterialLocationQuery / WorklineActiveObjects P0-Wave1 已进入本机合同验证；Wave2/Wave3 已从 preview 语义推进到 production-capable runtime path builder；`site/production` evidence manifest gate 与 composer 已闭合 | Phase 1 callback admission 已关闭；当前开发/测试默认使用 MOCK closure；后续发布前仍需提供 Phase 4 evidence manifest 引用文件，并满足 Phase 3 production closure |
-| Phase 5 Legacy 删除与收尾 | ✅ **technical lane 已合并，business cleanup 已完成** | [#78](https://github.com/kaizhoumasha/wes_backend/pull/78) `v0.13.0.0` (2026-07-07) + Phase5 business readiness / destructive cleanup slice | `RuntimeCapabilityDispatcher` + runtime capability catalog + `RuntimeInbox -> InboundNormalizerRegistry -> RuntimeCapabilityDispatcher -> Phase4 runtime service -> RuntimeIntent / EffectPort` 链路 + `tests/architecture/test_phase5_legacy_absence_guardrail.py` + `docs/architecture/legacy-cleanup-execution-plan.md`；旧 plugin runtime/import 框架、旧 registry、旧 template 目录已退出 `src/` / template 可 import 或 authoring 路径；Phase3 + Phase4 production evidence ledger 见 `docs/architecture/phase3-phase4-production-evidence-bundle.md`；business readiness gate 与 `scripts/check_phase5_business_destructive_cleanup_gate.py --mode final` 已通过 | `WorkLine.runtime_status` 物理字段删除仍需独立 schema/data cleanup 计划 |
+| Phase 5 Legacy 删除与收尾 | ✅ **全部重构完成** | [#78](https://github.com/kaizhoumasha/wes_backend/pull/78) `v0.13.0.0` (2026-07-07) + [#79](https://github.com/kaizhoumasha/wes_backend/pull/79) `v0.14.0.0` (2026-07-07, merge SHA `8c833610c08005005406b3a774c92519f69b7886`) + final cleanup migration | `RuntimeCapabilityDispatcher` + runtime capability catalog + `RuntimeInbox -> InboundNormalizerRegistry -> RuntimeCapabilityDispatcher -> Phase4 runtime service -> RuntimeIntent / EffectPort` 链路 + `tests/architecture/test_phase5_legacy_absence_guardrail.py` + `docs/architecture/legacy-cleanup-execution-plan.md`；旧 plugin runtime/import 框架、旧 registry、旧 template 目录已退出 `src/` / template 可 import 或 authoring 路径；旧 `BinTransitMembership/BinTransitQueue` production surface 已删除；Phase3 + Phase4 production evidence ledger 见 `docs/architecture/phase3-phase4-production-evidence-bundle.md`；business readiness gate 与 `scripts/check_phase5_business_destructive_cleanup_gate.py --mode final` 已通过；业务合同、context 与 SMT handoff 相关语义已收口到 Phase4 runtime capability / contracts 目标态 | final cleanup gate 与 absence guardrail 负责阻断旧表面回流 |
 
 **Phase 3 / Phase 4 / Phase5 closure 状态校验（2026-07-07）**：
 
 - 结论：本项目未发布，当前开发/测试默认使用 MOCK closure；`uv run python scripts/check_phase3_closure_gate.py` 无 artifact 即按 mock profile 通过。真实 artifact 不再作为当前开发/测试推进阻塞项。
 - 生产发布 profile：`--closure-profile production` 仍要求真实 P0 E2E artifact、production-scale benchmark artifact，以及两类 artifact 引用 evidence 文件存在且内容一致；Phase4 `production` profile 仍要求 provider contract、trace、benchmark evidence manifest 文件存在且 hash 一致。
 - 本轮 evidence bundle：`reports/phase3/phase3-p0-e2e.json`、`reports/phase3/phase3-production-benchmark.json` 与 `reports/phase4/runtime-evidence-production.json` 已由现有 evidence 重新生成并通过 production gates；tracked provenance 见 `docs/architecture/phase3-phase4-production-evidence-bundle.md`。
-- 下一阶段边界：Phase 4 开发/测试能力已闭合；Phase 5 technical lane 已通过 `uv run python scripts/check_phase5_readiness_gate.py --lane technical` 并在 PR #78 合并。Phase 5 business lane 携带 regenerated Phase3/Phase4 artifacts 后已通过 `uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`；随后 business destructive cleanup 已通过 `uv run python scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`。本轮只删除业务执行 legacy code/test surface，不删除业务数据、production evidence 或 `WorkLine.runtime_status` 物理字段。
+- 下一阶段边界：Phase 4 开发/测试能力已闭合；Phase 5 technical lane 已通过 `uv run python scripts/check_phase5_readiness_gate.py --lane technical` 并在 PR #78 合并。Phase 5 business lane 携带 regenerated Phase3/Phase4 artifacts 后已通过 `uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`；随后 business destructive cleanup 已通过 `uv run python scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`，并在 PR #79 合并到 develop。2026-07-08 final cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列；PR #79 未检测到 deploy workflow 且无生产 URL，线上 canary 由后续生产发布流程或 `/canary <url>` 补做。
 - 轻量 benchmark 口径：`reports/benchmarks/phase3-runtime-benchmark.json` 的 `local-lightweight` / `lightweight` 结果可用于当前开发/测试 mock 验收；不得冒充 `--closure-profile production` 证据。
 
 ### 10.0.1 Phase1~4 residual ledger（2026-07-06）
@@ -1805,19 +1805,19 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | Phase | 遗留项 | 当前状态 | owner / guardrail | Phase5 前置 |
 | --- | --- | --- | --- | --- |
 | Phase 1 | WMS 7 port、runtime core entity、ExecutionCorrelation、InboundNormalizerProfile 等目标态骨架已落地；剩余只是生产 profile evidence 的后续运行材料 | ✅ 架构残留关闭 | Phase 1 合同测试与 R-I3/H4/H5 guardrail 保持边界 | 技术 lane 删除旧入口前必须保留 Phase 1 合同测试可通过，不能删除目标态 port/profile 证据 |
-| Phase 2 | `WorkLine.runtime_status` 物理字段仍存在 | ✅ 降级为 runtime/orchestration 兼容投影 | 唯一写入口为 `WorkLineRuntimeStatusProjectionService`；`tests/architecture/test_phase2_runtime_status_owner_guardrail.py` 禁止 WorkLine 域和 Phase4 capability 直接写入或绕过 snapshot/readiness | 删除字段或改 schema 前，API / monitor / trace / safety / START admission 的兼容字段消费者必须迁到 runtime/orchestration 原生读模型，并补迁移/回填计划 |
+| Phase 2 | WorkLine 运行态物理字段已删除 | ✅ runtime/orchestration 原生投影 | `WorkLineRuntimeStatusProjectionService` 读写 `wes_runtime.workline_runtime_status_projections`；`tests/architecture/test_phase2_runtime_status_owner_guardrail.py` 禁止 WorkLine 域和 Phase4 capability 直接写入或绕过 snapshot/readiness | final cleanup migration 已完成回填；后续只允许 runtime/orchestration 扩展投影 |
 | Phase 3 | production closure artifact、production-scale benchmark 和真实外部依赖 evidence 已具备可再生成 bundle | ✅ evidence bundle ready | `RuntimePhase3ClosureGate` 区分 mock profile 与 production profile；mock 只允许开发/测试推进；production bundle 记录在 `docs/architecture/phase3-phase4-production-evidence-bundle.md` | business readiness 已使用 regenerated artifacts 验证通过；raw `reports/` artifacts 仍需从 restored field/CI evidence 重新生成 |
-| Phase 4 | capability runtime path 已落地，production evidence manifest 引用文件和 hash profile 已具备可再生成 bundle | ✅ evidence bundle ready | Phase4 capability 不能直接写 `WorkLine.runtime_status`；START admission 只读 runtime projection readiness；production bundle 记录在 `docs/architecture/phase3-phase4-production-evidence-bundle.md` | business readiness 与 business destructive cleanup 已通过；schema/data cleanup 仍需独立 migration plan |
+| Phase 4 | capability runtime path 已落地，production evidence manifest 引用文件和 hash profile 已具备可再生成 bundle | ✅ evidence bundle ready | Phase4 capability 不能直接写 WorkLine 运行态；START admission 只读 runtime projection readiness；production bundle 记录在 `docs/architecture/phase3-phase4-production-evidence-bundle.md` | business readiness、business destructive cleanup 与 final cleanup 均已通过 |
 
 **Phase1~4 residual closure 验收记录（2026-07-07）**：
 
-- Phase2：`WorkLine.runtime_status` 已收敛为 runtime/orchestration compatibility projection；`WorkLineRuntimeStatusProjectionService` 是唯一写入口，safety / START admission / query / trace 通过 snapshot/readiness 使用兼容字段。
+- Phase2：WorkLine 运行态物理列已由 final cleanup migration 删除，`WorkLineRuntimeStatusProjectionService` 读写 runtime/orchestration 原生投影，safety / START admission / query / trace 通过 snapshot/readiness 使用运行状态。
 - Phase3：development/mock closure 与行为合同已通过；production closure gate 已具备真实 P0 E2E artifact、production-scale benchmark artifact 与 evidence hash 校验；本轮 regenerated artifacts 已通过 production closure gate。
 - Phase4：development-mock readiness 与 runtime capability / evidence profile gate 已通过；`site/production` profile 已要求 evidence manifest、文件存在与 hash 一致，并叠加 Phase3 production closure；本轮 regenerated artifact 已通过 production readiness gate。
-- Phase5：technical lane 已通过 `scripts/check_phase5_readiness_gate.py --lane technical` 并由 PR #78 合并；旧 plugin runtime/import 框架、旧 `src.workline_plugin_registry` 和旧 `docs/templates/workline_plugin/` 已退出运行/模板路径；phase5-business readiness 与 business destructive cleanup gate 已通过。业务执行合同迁入 `src/app/runtime/capabilities/phase4/contracts/`，旧业务入口由 ledger 与 absence guardrail 阻断回流；`WorkLine.runtime_status` 物理字段删除仍后移到独立 schema/data cleanup。
+- Phase5：technical lane 已通过 `scripts/check_phase5_readiness_gate.py --lane technical` 并由 PR #78 合并；旧 plugin runtime/import 框架、旧 `src.workline_plugin_registry` 和旧 `docs/templates/workline_plugin/` 已退出运行/模板路径；phase5-business readiness 与 business destructive cleanup gate 已通过。业务执行合同迁入 `src/app/runtime/capabilities/phase4/contracts/`，旧业务入口由 ledger 与 absence guardrail 阻断回流；final cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列。
 - 本轮验证：Phase3 production closure gate 通过；Phase4 production runtime evidence gate 通过；`uv run pytest tests/contracts/test_phase4_runtime_evidence_artifact_composer.py tests/contracts/test_phase4_runtime_readiness_gate.py -q` 为 `18 passed`；`uv run pytest tests/contracts/test_phase5_readiness_gate.py -q` 为 `12 passed`；携带 regenerated Phase3/Phase4 artifacts 的 business gate 通过。
 
-**Task 1+2 收敛结论**：Phase2 的运行态字段遗留不再阻塞 Phase2 gate；它作为 compatibility projection 保留到独立 schema/data cleanup。callback / WMS / benchmark / evidence / Phase5 gate 的生产证据项已由 `docs/architecture/phase3-phase4-production-evidence-bundle.md` 记录；phase5-business readiness 与 destructive cleanup gate 均已进入 passed 状态。
+**Task 1+2 收敛结论**：Phase2 的运行态字段遗留已由 final cleanup 关闭；callback / WMS / benchmark / evidence / Phase5 gate 的生产证据项已由 `docs/architecture/phase3-phase4-production-evidence-bundle.md` 记录；phase5-business readiness、destructive cleanup gate 与 final cleanup gate 均已进入 passed 状态。
 
 **Phase 3 PR #73 已完成项（`v0.10.4.0`，2026-07-02 同步）**：
 
@@ -2034,11 +2034,11 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `165711fd fix(callback): 外部回调 H4 边界 WMS 协议白名单扩展 + 子层守卫`
 - `9c790d53 fix(guardrails): 修复 C4 scanner 误报 H4 反注入实现`
 
-### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空 — ✅ launch / burn-down / F-1/F-2 主迁移完成，`WorkLine.runtime_status` 已收敛为兼容投影
+### 10.3 Phase 2: Runtime/Orchestration 迁移与 WorkLine 清空 — ✅ final cleanup 完成，WorkLine 只保留配置域
 
 **目标**：在 Phase 1 新 runtime/orchestration 骨架已独立可运行后，把旧 WorkLine/plugin/runtime 的执行状态、inbox、timeline、hold、effect dispatch 迁出或删除。旧执行入口不做兼容转发。
 
-**2026-07-06 收敛进展**：`WorkLineRuntimeStatusProjectionService` 已成为 `WorkLine.runtime_status` 的 runtime/orchestration 兼容投影入口。RuntimeHold release、resource reconciliation、callback deadline reconciliation、START admission、safety estop 与 dispatch ACK exhausted 路径均通过该服务投影；safety 接收校验、START admission、query/trace 展示均通过 snapshot/readiness 读取兼容字段。物理字段暂不删除，Phase5 前按 §10.0.1 双 lane 前置处理。
+**2026-07-08 收敛进展**：`WorkLineRuntimeStatusProjectionService` 已成为 runtime/orchestration 原生投影入口。RuntimeHold release、resource reconciliation、callback deadline reconciliation、START admission、safety estop 与 dispatch ACK exhausted 路径均通过该服务投影；safety 接收校验、START admission、query/trace 展示均通过 snapshot/readiness 读取运行状态。final cleanup migration 已完成回填并删除 WorkLine 运行态物理列。
 
 **启动条件**（满足全部才能启动 Phase 2）：
 
@@ -2074,7 +2074,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 **Phase 2 完成门禁**：
 
 - [x] `runtime/orchestration` 域独立落地（launch PR commit `d5b88562` facade bridge + `8eab4042` 跨域 import 修复）
-- [x] WorkLine 不再拥有运行状态。阶段 6 / F-1 / F-2 已完成 service/v1 router 域清空、facade 物理删除、device_command_gateway 迁出、14 model + 10 repository 物理迁入 `runtime/orchestration/{models,repositories}/`；`WorkLine.runtime_status` 仅作为 runtime/orchestration compatibility projection 保留，写入口集中到 `WorkLineRuntimeStatusProjectionService`，WorkLine 域和 Phase4 capability 不再直接写入。
+- [x] WorkLine 不再拥有运行状态。阶段 6 / F-1 / F-2 已完成 service/v1 router 域清空、facade 物理删除、device_command_gateway 迁出、14 model + 10 repository 物理迁入 `runtime/orchestration/{models,repositories}/`；final cleanup 已删除 WorkLine 运行态物理列，写入口集中到 `WorkLineRuntimeStatusProjectionService` 的 runtime/orchestration 投影，WorkLine 域和 Phase4 capability 不再直接写入。
 - [x] legacy 行为契约测试通过（launch PR commit `8602c33b`：`tests/contracts/workline/` 107 passed, 2 xfailed）
 
 **Launch PR 8 commit 落地清单（feature/phase2-launch, 8602c33b）**：
@@ -2237,8 +2237,8 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 - `phase5-tech` 已完成并合并 PR #78（`v0.13.0.0`）。生产 import 已替换到目标态 runtime/capability/normalization/domain 路径，旧 `src.app.workline.plugins.*`、`src.workline_plugin_registry`、`src/workline_plugins/*` 和 `docs/templates/workline_plugin/*` 已退出运行或模板 authoring 路径。
 - `src/workline_plugins/*` 与旧模板仅作为历史资料归档在 `docs/archive/legacy-workline-plugins/`，不得回流到 `src/` 可 import 路径。
 - `phase5-business` 已通过 readiness gate。携带 regenerated Phase3/Phase4 artifacts 的 `uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --phase3-benchmark-artifact reports/phase3/phase3-production-benchmark.json --phase4-evidence-artifact reports/phase4/runtime-evidence-production.json` 返回 `Phase 5 readiness passed: lane=business`。
-- business destructive cleanup 已执行并通过 `uv run python scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`。业务合同、context、SMT handoff route / reason / usage policy 等目标态实现收口到 `src/app/runtime/capabilities/phase4/contracts/` 与 Phase4 runtime services；旧业务承载入口由 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 和 absence guardrail 阻断回流。
-- 本轮不删除业务数据、production evidence 或 `WorkLine.runtime_status` 物理字段；该字段仍属于独立 schema/data cleanup。
+- business destructive cleanup 已执行并通过 `uv run python scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`，并已随 PR #79（`v0.14.0.0`，merge SHA `8c833610c08005005406b3a774c92519f69b7886`）合并到 develop。业务合同、context、SMT handoff route / reason / usage policy 等目标态实现收口到 `src/app/runtime/capabilities/phase4/contracts/` 与 Phase4 runtime services；旧业务承载入口由 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 和 absence guardrail 阻断回流。
+- 2026-07-08 final cleanup 已执行 schema/data migration：旧 handling 队列表面删除，WorkLine 运行态物理列迁入 runtime projection；production evidence 与业务审计数据不作为 cleanup 删除对象。
 
 **启动条件（双 lane）**：
 
@@ -2247,11 +2247,11 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 
 | Task | Effort | 关联文件 | 验证 |
 | --- | --- | --- | --- |
-| **ENG-014** Legacy 路径列 `src/{workline_runtime,workline_plugins}` 5 子目录清理矩阵 | S | `docs/architecture/legacy-cleanup-matrix.md`, `docs/architecture/legacy-cleanup-matrix.csv` | ✅ 当前矩阵 638 条，由 `scripts/generate_legacy_matrix.py` 可复现；0 pending-review / 0 空策略；Phase5 technical lane 后 `src/workline_plugins` 与旧 template 路径为 0 runtime/template entries |
+| **ENG-014** Legacy 路径列 `src/{workline_runtime,workline_plugins}` 5 子目录清理矩阵 | S | `docs/architecture/legacy-cleanup-matrix.md`, `docs/architecture/legacy-cleanup-matrix.csv` | ✅ 当前矩阵 636 条，由 `scripts/generate_legacy_matrix.py` 可复现；0 pending-review / 0 空策略；Phase5 technical lane 后 `src/workline_plugins` 与旧 template 路径为 0 runtime/template entries |
 | 技术残留删除 PR | M | `src/workline_runtime/`, `src/workline_plugins/`, `src/app/workline/`, `src/app/runtime/` | ✅ PR #78 已完成；`check_phase5_readiness_gate.py --lane technical` 通过；absence guardrail 阻断 legacy import 回流；unknown capability 不 fallback 到 `null_plugin`；provider capability 按 `ExternalContractProfile` fail closed |
-| 业务承载 legacy 删除 PR | L | `src/app/workline/`, `src/app/runtime/capabilities/phase4/`, production evidence artifacts | ✅ business readiness gate 与 destructive cleanup gate 已通过；104 条 phase4 carrier 在 `phase5-business-destructive-cleanup-ledger.csv` 中关闭或保留为目标态测试证据；`WorkLine.runtime_status` 物理字段删除另走 schema/data cleanup |
+| 业务承载 legacy 删除 PR | L | `src/app/workline/`, `src/app/runtime/capabilities/phase4/`, production evidence artifacts | ✅ PR #79 已合并；business readiness gate 与 destructive cleanup gate 已通过；104 条 phase4 carrier 在 `phase5-business-destructive-cleanup-ledger.csv` 中关闭或保留为目标态测试证据；WorkLine 运行态物理字段 final cleanup 已完成 |
 
-**Effort 估算**：technical lane 已完成；business readiness 与 business destructive cleanup 已通过；剩余工作仅限 `WorkLine.runtime_status` schema/data cleanup 独立排期。
+**Effort 估算**：technical lane 已完成；business readiness、business destructive cleanup 与 final cleanup 已合并落地；WorkLine restructuring 无剩余数据库清理阻塞项。
 
 ### 10.7 总 Effort 估算
 
@@ -2323,11 +2323,11 @@ Phase 4 ────────────────────────
       (RCS/AGV/CTU direct provider: 条件触发扩展)
                                               │
 Phase 5 ──────────────────────────────────────┘
-  ├── ENG-014 Legacy 清理矩阵: 已同步 638 条 │
+  ├── ENG-014 Legacy 清理矩阵: 已同步 636 条 │
   ├── 技术残留清理 lane: 已合并 PR #78      │
   │   旧 plugin runtime/import 框架已退出 src│
-  └── 业务承载 legacy lane: readiness + cleanup 已通过
-      runtime_status schema/data cleanup 独立计划
+  └── 业务承载 legacy lane + final cleanup: 已通过
+      WorkLine 运行态投影迁移和旧队列表面删除已完成
 ```
 
 ---
@@ -2484,7 +2484,7 @@ Phase 5 ────────────────────────
 - **Phase 2 启动时** → 写 `legacy-runtime-migration-spec.md`（旧 WorkLine/plugin/runtime 执行能力迁移、删除和 WorkLine 清空顺序）
 - **Phase 3 启动时** → 写 `fulfillment-state-machine-spec.md`（11 态机完整转移图 + 4 timeout 时长表 + BLOCKED_BY_CB 出站阻塞 + CB 恢复期 late callback 入站 evidence 合同）、`reconciliation-manager-spec.md`（触发矩阵 + 隔离动作 + owner-scoped resolution decision + 5/30 分钟升级）、`plane-read-model-spec.md`（PlaneSceneView/Snapshot 字段 + 容量上限 + RBAC 矩阵）、`external-callback-auth-spec.md`（HMAC canonical + nonce TTL + allow-list）、`device-dispatch-policy-spec.md`（能力选择 + deadline + 状态快照 TTL）、`scenario-replay-spec.md`（录制、脱敏、deterministic replay、断言矩阵）、`observability-contract.md`（span/metric/log 命名与稳定 attributes）、`runtime-toggle-governance.md`（typed toggle 分类、owner/expiry/scope/default/rollback/test matrix）
 - **Phase 4 启动时** → ✅ 已写 `cell-reservation-spec.md`、`material-location-query-spec.md`、`workline-active-objects-spec.md`、`sorter-inbound-capability-spec.md`（展开粗分机正常流、满箱交换前置分流、分拣机正常流、满箱交换区/分拣机 STATION 边界、`rack_code + rack_side` 批次分组、`CHANGE_RACK_FACE` 独立履约、已交换物料排除逐件分拣、`CellReservation`、授权料箱 resolve、扫码平台预取互锁及 manifest validator、物料 work item 与料箱 work item join 条件、本地物理事实先落与 WMS 同步/对账状态、CTU 父请求聚合子 work item 查询视图）、`smt-ng-wms-reconciliation-spec.md`；同时写入 `docs/superpowers/specs/2026-07-03-phase4-design-with-residuals.md` 记录 Phase 1/2/3 residual gates。各 SPEC 当前实施、MOCK 验收与生产门禁状态以 §10.5 的 SPEC 进度同步表为准。`fulfillment-provider-adapter-spec.md` 仅在 §10.5 RCS/AGV/CTU 直连触发条件满足时生成，生产前默认不写
-- **Phase 5 启动时** → ✅ 已写 `legacy-cleanup-execution-plan.md`；PR #78 已执行 technical lane，逐文件列出 delete / rebuild / move / keep-contract、是否承载 Phase 4 业务语义、对应 capability/port/contract tests、允许 drop 的前置条件和回滚边界。Phase3 + Phase4 production evidence ledger 已补齐，business lane readiness 已通过；business destructive cleanup 已由 `phase5-business-destructive-cleanup-ledger.csv` 和 final gate 关闭，`WorkLine.runtime_status` 物理字段删除仍保留为独立 schema/data cleanup。
+- **Phase 5 启动时** → ✅ 已写 `legacy-cleanup-execution-plan.md`；PR #78 已执行 technical lane，逐文件列出 delete / rebuild / move / keep-contract、是否承载 Phase 4 业务语义、对应 capability/port/contract tests、允许 drop 的前置条件和回滚边界。Phase3 + Phase4 production evidence ledger 已补齐，business lane readiness 已通过；business destructive cleanup 已由 PR #79、`phase5-business-destructive-cleanup-ledger.csv` 和 final gate 关闭；2026-07-08 final cleanup 已关闭旧 handling 队列和 WorkLine 运行态 schema/data 残留。
 
 **为何不在本文展开**：
 

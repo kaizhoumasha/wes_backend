@@ -8,6 +8,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 
 from src.app.runtime.orchestration.conveyor_queue_membership import ConveyorQueueMembership
+from src.app.runtime.orchestration.models.object_transition_event import ObjectTransitionEvent
 from src.app.runtime.orchestration.repositories.conveyor_queue_membership_repository import (
     ConveyorQueueMembershipRepository,
 )
@@ -89,6 +90,11 @@ class _ConveyorQueueCreateResolveUniqueRaceRepository(ConveyorQueueMembershipRep
 async def _membership_count(db_session) -> int:
     result = await db_session.execute(select(func.count()).select_from(ConveyorQueueMembership))
     return int(result.scalar_one())
+
+
+async def _transition_events(db_session) -> list[ObjectTransitionEvent]:
+    result = await db_session.execute(select(ObjectTransitionEvent).order_by(ObjectTransitionEvent.id.asc()))
+    return list(result.scalars().all())
 
 
 def test_conveyor_queue_membership_repository_builds_postgres_for_update_statement() -> None:
@@ -702,3 +708,229 @@ async def test_conveyor_queue_membership_writer_blocks_unknown_queue_without_wri
     assert exc_info.value.decision.kind == ConveyorQueueWriteDecisionKind.BLOCKED
     assert exc_info.value.decision.reason == "UNKNOWN_QUEUE_CODE"
     assert await _membership_count(db_session) == 0
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_requires_source_event_id(db_session) -> None:
+    """新 writer 写路径必须带可追溯 source_event_id。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    service = ConveyorQueueMembershipWriterService()
+
+    with pytest.raises(ValueError, match="source_event_id"):
+        await service.write_active(
+            db_session,
+            workline_id=1,
+            conveyor_code="CV-01",
+            queue_code="Q-IN",
+            queue_role="ENTRY_SCAN",
+            bin_code="BIN-004",
+            declared_queue_codes={"Q-IN"},
+            evidence_json={},
+            auto_commit=False,
+        )
+
+    with pytest.raises(ValueError, match="source_event_id"):
+        await service.write_active(
+            db_session,
+            workline_id=1,
+            conveyor_code="CV-01",
+            queue_code="Q-IN",
+            queue_role="ENTRY_SCAN",
+            bin_code="BIN-004",
+            declared_queue_codes={"Q-IN"},
+            source_event_id=" ",
+            evidence_json={"source_event_id": "evt-should-not-hide-blank"},
+            auto_commit=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_records_transition_for_non_idempotent_write(db_session) -> None:
+    """非幂等 queue 写入必须记录统一 ObjectTransitionEvent。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    service = ConveyorQueueMembershipWriterService()
+
+    first = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-005",
+        declared_queue_codes={"Q-IN"},
+        source_event_id="evt-create-transition",
+        evidence_json={"operator": "runtime-writer"},
+        auto_commit=False,
+    )
+    replay = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-005",
+        declared_queue_codes={"Q-IN"},
+        source_event_id="evt-create-transition-replay",
+        evidence_json={"operator": "runtime-writer"},
+        auto_commit=False,
+    )
+
+    events = await _transition_events(db_session)
+    assert replay.created is False
+    assert len(events) == 1
+    assert events[0].domain == "HANDLING"
+    assert events[0].object_type == "CONVEYOR_QUEUE_MEMBERSHIP"
+    assert events[0].object_key == "BIN-005"
+    assert events[0].projection_type == "QUEUE_MEMBERSHIP"
+    assert events[0].from_state is None
+    assert events[0].to_state == "Q-IN"
+    assert events[0].reason_code == "CREATE_NEW_ACTIVE_MEMBERSHIP"
+    assert events[0].source_event_id == "evt-create-transition"
+    assert events[0].source_ref_json["workline_id"] == 1
+    assert events[0].source_ref_json["membership_id"] == first.membership.id
+    assert events[0].source_ref_json["queue_code"] == "Q-IN"
+    assert events[0].evidence_json["source_event_id"] == "evt-create-transition"
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_closes_active_membership_and_records_transition(db_session) -> None:
+    """terminal adapter 必须把 ACTIVE 标记为 LEFT 并记录迁移事件。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    service = ConveyorQueueMembershipWriterService()
+    active = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-006",
+        declared_queue_codes={"Q-IN"},
+        source_event_id="evt-close-active",
+        evidence_json={},
+        auto_commit=False,
+    )
+
+    closed = await service.close_active(
+        db_session,
+        workline_id=1,
+        bin_code="BIN-006",
+        reason_code="QUEUE_LEFT",
+        source_event_id="evt-close-left",
+        evidence_json={"step": "terminal"},
+        auto_commit=False,
+    )
+    replay = await service.close_active(
+        db_session,
+        workline_id=1,
+        bin_code="BIN-006",
+        reason_code="QUEUE_LEFT",
+        source_event_id="evt-close-left",
+        auto_commit=False,
+        ignore_missing=True,
+    )
+
+    events = await _transition_events(db_session)
+    assert closed is not None
+    assert replay is None
+    assert closed.id == active.membership.id
+    assert closed.membership_status == "LEFT"
+    assert closed.left_at is not None
+    assert closed.evidence_json["source_event_id"] == "evt-close-left"
+    assert len(events) == 2
+    assert events[-1].object_key == "BIN-006"
+    assert events[-1].from_state == "Q-IN"
+    assert events[-1].to_state == "LEFT"
+    assert events[-1].reason_code == "QUEUE_LEFT"
+    assert events[-1].source_event_id == "evt-close-left"
+    assert events[-1].source_ref_json["membership_id"] == active.membership.id
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_marks_identity_reconciling_and_records_transition(db_session) -> None:
+    """reconciling adapter 必须更新 ACTIVE membership 并保留统一迁移事件。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    service = ConveyorQueueMembershipWriterService()
+    active = await service.write_active(
+        db_session,
+        workline_id=1,
+        conveyor_code="CV-01",
+        queue_code="Q-IN",
+        queue_role="ENTRY_SCAN",
+        bin_code="BIN-007",
+        declared_queue_codes={"Q-IN"},
+        source_event_id="evt-recon-active",
+        evidence_json={},
+        auto_commit=False,
+    )
+
+    reconciling = await service.mark_reconciling_for_identity(
+        db_session,
+        workline_id=1,
+        bin_code="BIN-007",
+        reason_code="QUEUE_MEMBERSHIP_RECONCILING",
+        source_event_id="evt-reconciling",
+        evidence_json={"issue": "manual-check"},
+        auto_commit=False,
+    )
+
+    events = await _transition_events(db_session)
+    assert reconciling is not None
+    assert reconciling.id == active.membership.id
+    assert reconciling.membership_status == "RECONCILING"
+    assert reconciling.evidence_json["issue"] == "manual-check"
+    assert len(events) == 2
+    assert events[-1].object_key == "BIN-007"
+    assert events[-1].from_state == "Q-IN"
+    assert events[-1].to_state == "RECONCILING"
+    assert events[-1].reason_code == "QUEUE_MEMBERSHIP_RECONCILING"
+    assert events[-1].source_event_id == "evt-reconciling"
+
+
+@pytest.mark.asyncio
+async def test_conveyor_queue_membership_writer_terminal_adapters_validate_source_event_id(db_session) -> None:
+    """terminal/reconciling 公共入口不能接受缺失或空白 source_event_id。"""
+
+    from src.app.runtime.orchestration.services.conveyor_queue_membership_writer_service import (
+        ConveyorQueueMembershipWriterService,
+    )
+
+    service = ConveyorQueueMembershipWriterService()
+
+    with pytest.raises(ValueError, match="source_event_id"):
+        await service.close_active(
+            db_session,
+            workline_id=1,
+            bin_code="BIN-008",
+            reason_code="QUEUE_LEFT",
+            evidence_json={},
+            auto_commit=False,
+            ignore_missing=True,
+        )
+
+    with pytest.raises(ValueError, match="source_event_id"):
+        await service.mark_reconciling_for_identity(
+            db_session,
+            workline_id=1,
+            bin_code="BIN-008",
+            reason_code="QUEUE_MEMBERSHIP_RECONCILING",
+            source_event_id=" ",
+            evidence_json={"source_event_id": "evt-should-not-hide-blank"},
+            auto_commit=False,
+            ignore_missing=True,
+        )

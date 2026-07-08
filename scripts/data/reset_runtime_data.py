@@ -9,7 +9,7 @@ timeline/diagnostic/resource 运行时投影等)清空,回到一个干净的"只
 - 默认 ``--dry-run``:只打印将清空的表 + 当前行数,不写库。
 - 必须显式 ``--yes`` 才真正 TRUNCATE。
 - 清空后重置设备投影字段(``current_command_id``、``device_status=IDLE``)与
-  ``work_lines.runtime_status=STOPPED``,以便干净地重跑 START。
+  ``wes_runtime.workline_runtime_status_projections=STOPPED``,以便干净地重跑 START。
 - 仅在 ``APP_DEBUG=True`` 时允许执行,生产环境直接拒绝(可用 ``--force`` 覆盖,
   仅限确有需要的人工运维场景)。
 
@@ -216,13 +216,29 @@ async def reset_runtime_data(
         )
         summary.reset_devices = int(dev_result.rowcount or 0)
 
-        # WorkLine 回到 STOPPED,重新走 START 准入。
+        # WorkLine runtime 投影回到 STOPPED,重新走 START 准入。
         wl_result = await db.execute(
             text(
-                "UPDATE wes_biz.work_lines    SET runtime_status = 'STOPPED',        start_admission_status = NULL",
+                "INSERT INTO wes_runtime.workline_runtime_status_projections ("
+                "workline_id, runtime_status, source, stopped_at, stopped_reason, "
+                "resumed_at, active_safety_incident_id, evidence_json"
+                ") "
+                "SELECT id, 'STOPPED', 'scripts/data/reset_runtime_data', "
+                "       now() AT TIME ZONE 'UTC', 'RUNTIME_RESET', NULL, NULL, '{}'::json "
+                "  FROM wes_biz.work_lines "
+                " WHERE is_deleted = false "
+                "ON CONFLICT (workline_id) DO UPDATE SET "
+                "    runtime_status = EXCLUDED.runtime_status, "
+                "    source = EXCLUDED.source, "
+                "    stopped_at = EXCLUDED.stopped_at, "
+                "    stopped_reason = EXCLUDED.stopped_reason, "
+                "    resumed_at = NULL, "
+                "    active_safety_incident_id = NULL, "
+                "    evidence_json = EXCLUDED.evidence_json",
             ),
         )
         summary.reset_worklines = int(wl_result.rowcount or 0)
+        await db.execute(text("UPDATE wes_biz.work_lines SET start_admission_status = NULL"))
         await db.commit()
 
     for qualified_name in targets:

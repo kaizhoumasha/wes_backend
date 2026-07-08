@@ -129,17 +129,17 @@ callback_runtime_inbox_writer = CallbackRuntimeInboxWriter()
         repo_root / "src" / "app" / "callback" / "services" / "callback_orchestration_service.py",
         "callback_runtime_inbox_writer\nwrite_result_callback\nwrite_event_callback\nwrite_external_callback\n",
     )
-    business_status = "ready-for-business-cleanup" if business_ready else "blocked-until-production-evidence"
+    business_status = "final-cleanup-complete" if business_ready else "blocked-until-production-evidence"
     _write(
         repo_root / "docs" / "architecture" / "legacy-cleanup-matrix.md",
         f"""# Legacy Cleanup Matrix
 
-phase5_technical_lane_status: ready-for-technical-cleanup
+phase5_technical_lane_status: final-cleanup-complete
 phase5_business_lane_status: {business_status}
 
 technical lane (`phase5-tech`) 通过 check_phase5_readiness_gate.py --lane technical 后仅删除技术残留。
 business lane (`phase5-business`) 必须通过 check_phase5_readiness_gate.py --lane business。
-WorkLine.runtime_status compatibility projection 不按普通 technical lane 直接删除。
+WorkLine 运行态物理字段 final cleanup 已完成，由 runtime/orchestration 原生投影承接。
 RuntimeInbox callback cutover gate 是两个 lane 的共同前置。
 """,
     )
@@ -150,7 +150,7 @@ RuntimeInbox callback cutover gate 是两个 lane 的共同前置。
 Phase5 readiness gate 使用 check_phase5_readiness_gate.py。
 Phase5 technical lane 允许清理纯技术残留。
 Phase5 business lane 必须等待 Phase3 production closure 与 Phase4 production evidence profile。
-WorkLine.runtime_status 是 runtime/orchestration compatibility projection。
+WorkLine 运行态物理字段 final cleanup 已完成，由 runtime/orchestration 原生投影承接。
 RuntimeInbox callback cutover 已作为删除前共同前置。
         """,
     )

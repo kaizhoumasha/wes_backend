@@ -89,11 +89,9 @@ _STAGE6_REMOVED_MODELS = (
     "bin_cell_reservation",
     "material_unit",
 )
-# `safety.py` 不在删除列表:WorkLineRuntimeStatus enum 是 WorkLine 模型字段
-# (runtime_status) 的运行状态 enum,被 8 个 runtime 服务依赖,跨域引用是合理的
-# (与 R-I3b allowlist 同类语义)。WorklineSafetyIncident 表是 safety_service 配
-# 置域审计表,safety_service 仍保留在 workline 域。后续 PR 考虑把 enum 迁到
-# runtime/models/,把 safety 表迁到 runtime 域。
+# `safety.py` 不在删除列表:WorklineSafetyIncident 表是 safety_service 配置域
+# 审计表,safety_service 仍保留在 workline 域。WorkLine runtime status enum
+# 已迁入 runtime/orchestration 的原生投影模型。
 
 _STAGE6_KEPT_MODELS = ("safety",)
 
@@ -130,9 +128,9 @@ def test_workline_repositories_shrunk_to_workline_only_after_stage6():
 
 
 def test_workline_kept_models_preserved_after_stage6():
-    """阶段 6:safety.py 必须保留(承载 WorkLineRuntimeStatus 跨域 enum)。"""
+    """阶段 6:safety.py 必须保留(承载 WorkLine 安全事件审计模型)。"""
     assert _file_exists("src/app/workline/models/safety.py"), (
-        "阶段 6:safety.py 必须保留 — WorkLineRuntimeStatus 是 WorkLine 模型字段 enum,被 runtime 域依赖"
+        "阶段 6:safety.py 必须保留 — safety_service 配置域审计表仍依赖"
     )
 
 

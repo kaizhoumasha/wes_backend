@@ -2,15 +2,17 @@
 
 > **For Kai / Codex:** REQUIRED SUB-SKILL: Use `executing-plans` to implement this plan.
 
+> **Completion status (2026-07-07):** DONE and LANDED. 本计划已随 PR #79 合并到 `develop`（`v0.14.0.0`，merge SHA `8c833610c08005005406b3a774c92519f69b7886`）。business destructive cleanup final gate 已通过；`WorkLine.runtime_status` 物理字段删除仍按独立 schema/data cleanup 计划处理。
+
 ## Goal
 
 在 Phase5 business readiness 已通过之后，安全删除仍承载业务语义的 legacy WorkLine / plugin / runtime 代码面，并把业务合同、证据、运行时入口全部收口到 Phase4 runtime capability 目标态。
 
 本计划只处理 **business-bearing legacy destructive cleanup**。它不是重新补 Phase3/Phase4 evidence，也不是 UI、运营看板或供应商联调手册建设。
 
-## Scope Check
+## Scope Check (Pre-Implementation Baseline)
 
-当前 cleanup matrix 中仍有 `phase4_carrier=True` 的 104 个条目，主要集中在：
+执行前 cleanup matrix 中仍有 `phase4_carrier=True` 的 104 个条目，主要集中在：
 
 - `src/app/workline/domain/contexts/`：粗分、分拣机入库上下文。
 - `src/app/workline/domain/contracts/`：粗分、SixInOne、material identity、NG reason 等业务合同。
@@ -411,7 +413,19 @@ cleanup ledger 的 `target_capability` 使用带 namespace 的稳定 identifier�
 - 文档和 ledger 必须与代码同 PR packet 更新，避免出现“代码已删但审计证据无法解释”的状态。
 - 执行完成后使用 code review / requesting-code-review 流程验收，直到无 actionable findings。
 
+## Implementation Completion Status
+
+- **Status:** DONE / LANDED.
+- **Landing:** PR #79 merged into `develop` on 2026-07-07 as `v0.14.0.0`; merge SHA `8c833610c08005005406b3a774c92519f69b7886`.
+- **Delivered:** 104 条 `phase4_carrier=True` business carrier 已在 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 中关闭或保留为目标态测试证据；旧 WorkLine/plugin business-bearing contracts、contexts、SMT handoff route / reason / usage policy 已收口到 Phase4 runtime capability / contracts 目标态。
+- **Guardrails:** `scripts/check_phase5_business_destructive_cleanup_gate.py --mode final` 通过，并已接入 `scripts/git-quality-gate.sh --profile quality`；absence/no-cycle/ledger guardrails 阻断 legacy business import 或 Phase4 contract layer 回流。
+- **Verification at ship:** `uv run pytest tests/ -q` passed with `1820 passed, 5 skipped`; `uv run pytest --collect-only -q -o addopts=''` collected `1825`; Phase5 technical and business readiness gates passed.
+- **Deploy status:** PR merged; no GitHub deploy workflow or production URL was configured, so post-merge canary was skipped by user choice and recorded as `DEPLOYED (UNVERIFIED)`.
+- **Remaining scope:** `WorkLine.runtime_status` schema/data deletion remains explicitly deferred to a separate migration plan; this PR did not include Alembic migration or business data drop.
+
 ## GSTACK REVIEW REPORT
+
+以下保留实施前终审记录；当前完成状态以上方 `Implementation Completion Status` 为准。
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|

@@ -26,6 +26,7 @@ from src.app.runtime.orchestration.services.runtime_snapshot_assembler import (
 )
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusProjectionService,
+    WorkLineRuntimeStatusSnapshot,
     workline_runtime_status_projection_service,
 )
 
@@ -45,6 +46,7 @@ __all__ = [
     "RuntimeSnapshotAssembler",
     "RuntimeSnapshotInput",
     "WorkLineRuntimeStatusProjectionService",
+    "WorkLineRuntimeStatusSnapshot",
     "conveyor_queue_membership_writer_service",
     "device_runtime_projection_writer_service",
     "idempotency_guard",

@@ -79,6 +79,7 @@ from src.app.runtime.orchestration.services.trace.trace_response_builder import 
     build_trace_timeline_item,
 )
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    WorkLineRuntimeStatusSnapshot,
     workline_runtime_status_projection_service,
 )
 from src.app.sys.models import SystemOutbox, SystemOutboxStatus
@@ -489,6 +490,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
         workline_ids = [item.id for item in worklines if item.id is not None]
         devices_by_workline = await self._load_devices_by_workline_ids(db, workline_ids)
         sessions_by_workline = await self._load_sessions_by_workline_ids(db, workline_ids)
+        runtime_snapshots = await workline_runtime_status_projection_service.runtime_status_snapshot_map(
+            db,
+            workline_ids=workline_ids,
+        )
 
         summaries: list[RuntimeWorklineSummary] = []
         for workline in worklines:
@@ -496,7 +501,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 continue
             devices = devices_by_workline.get(workline.id, [])
             sessions = sessions_by_workline.get(workline.id, [])
-            summaries.append(self._build_workline_summary(workline, devices, sessions))
+            summaries.append(self._build_workline_summary(workline, devices, sessions, runtime_snapshots[workline.id]))
         return summaries
 
     async def _load_workline_session_summary_counts(
@@ -566,7 +571,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
         active_hold_ids_map = await self._load_active_runtime_hold_ids_map(
             db, [item.id for item in devices if item.id is not None]
         )
-        summary = self._build_workline_summary(workline, devices, all_sessions)
+        runtime_snapshot = await workline_runtime_status_projection_service.runtime_status_snapshot(
+            db,
+            workline_id=workline_id,
+        )
+        summary = self._build_workline_summary(workline, devices, all_sessions, runtime_snapshot)
         if len(all_active_sessions) >= _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT or len(recent_failed_sessions) >= 10:
             (
                 active_status_counts,
@@ -591,7 +600,12 @@ class RuntimeQueryService(BaseService[Any, Any]):
         active_trace_items = await self._build_trace_list_items(db, active_sessions)
         failed_trace_items = await self._build_trace_list_items(db, recent_failed_sessions)
         completed_trace_items = await self._build_trace_list_items(db, recent_completed_sessions)
-        structured_boundary = await self._build_workline_runtime_boundary(db, workline, all_active_sessions)
+        structured_boundary = await self._build_workline_runtime_boundary(
+            db,
+            workline,
+            all_active_sessions,
+            runtime_snapshot=runtime_snapshot,
+        )
 
         return RuntimeWorklineDetailResponse(
             summary=summary,
@@ -689,7 +703,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 ack_code=command_row.ack_code,
                 ack_message=command_row.ack_message,
             )
-        summary = self._build_workline_summary(workline, devices, all_sessions)
+        runtime_snapshot = await workline_runtime_status_projection_service.runtime_status_snapshot(
+            db,
+            workline_id=workline_id,
+        )
+        summary = self._build_workline_summary(workline, devices, all_sessions, runtime_snapshot)
         summary.active_session_count = sum(
             active_status_counts.get(status, 0) for status in _IN_PROGRESS_SESSION_STATUSES
         )
@@ -723,6 +741,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             db,
             workline,
             boundary_active_sessions,
+            runtime_snapshot=runtime_snapshot,
             full_resource_evidence=active_sessions_total > _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT,
         )
 
@@ -1414,6 +1433,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         workline: WorkLine,
         devices: list[Device],
         sessions: list[WorklineSession],
+        runtime_snapshot: WorkLineRuntimeStatusSnapshot,
     ) -> RuntimeWorklineSummary:
         now = timezone.now_for_db()
         active_count = sum(
@@ -1432,8 +1452,6 @@ class RuntimeQueryService(BaseService[Any, Any]):
         error_devices = sum(1 for item in devices if (optional_enum_str(item.device_status) or "") == "ERROR")
         offline_devices = sum(1 for item in devices if (optional_enum_str(item.device_status) or "") == "OFFLINE")
         maintenance_devices = sum(1 for item in devices if _is_maintenance_device(item))
-        runtime_snapshot = workline_runtime_status_projection_service.runtime_status_snapshot(workline)
-
         return RuntimeWorklineSummary(
             id=_require_int_id(workline.id, "workline.id"),
             line_code=workline.line_code,
@@ -1471,6 +1489,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         workline: WorkLine,
         sessions: list[WorklineSession],
         *,
+        runtime_snapshot: WorkLineRuntimeStatusSnapshot,
         full_resource_evidence: bool = False,
     ) -> dict[str, Any]:
         station_lease = RuntimeStationLease.UNKNOWN
@@ -1514,7 +1533,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
             single_layer_rack_snapshot = RuntimeSingleLayerRackSnapshot.NON_SINGLE_LAYER_EVIDENCE
 
         return {
-            "workline_readiness": self._runtime_workline_readiness(workline).value,
+            "workline_readiness": self._runtime_workline_readiness(runtime_snapshot).value,
             "station_lease": station_lease.value,
             "single_layer_rack_snapshot": single_layer_rack_snapshot.value,
             "rack_operation_wait": rack_operation_wait.value,
@@ -1688,8 +1707,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
 
     @staticmethod
-    def _runtime_workline_readiness(workline: WorkLine) -> RuntimeWorklineReadiness:
-        runtime_snapshot = workline_runtime_status_projection_service.runtime_status_snapshot(workline)
+    def _runtime_workline_readiness(runtime_snapshot: WorkLineRuntimeStatusSnapshot) -> RuntimeWorklineReadiness:
         runtime_status = runtime_snapshot.runtime_status
         if runtime_status == "READY":
             return RuntimeWorklineReadiness.READY

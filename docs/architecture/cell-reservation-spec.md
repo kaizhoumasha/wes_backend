@@ -16,7 +16,7 @@ CellReservation 是作业期格位预约能力，用于防止粗分机、分拣�
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
 | Phase 1 callback admission 已关闭 | 预约创建、投放成功、WMS reject 和 source_version drift 只接受带 provider profile / normalizer evidence 的输入 |
-| Phase 2 `WorkLine.runtime_status` 未清空 | 预约状态归 `WorklineBinCellReservation`、`BinCellOccupancy`、`RuntimeHold` 和 `ReconciliationRecord`，不写 WorkLine 运行状态 |
+| Phase 2 WorkLine 运行态 final cleanup 已完成 | 预约状态归 `WorklineBinCellReservation`、`BinCellOccupancy`、`RuntimeHold` 和 `ReconciliationRecord`，不写 WorkLine 运行状态 |
 | Phase 3 RuntimeInbox / closure profile | 设计与本机开发/测试可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产热路径接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
 
 ## 3. 现有模型复用与状态映射

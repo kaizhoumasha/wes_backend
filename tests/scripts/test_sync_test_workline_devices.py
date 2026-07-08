@@ -38,9 +38,21 @@ from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition, WorklineRackPositionRole
+from src.app.runtime.orchestration.workline_runtime_status_projection import (
+    WorkLineRuntimeStatus,
+    WorklineRuntimeStatusProjection,
+)
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
-from src.app.workline.models.safety import WorkLineRuntimeStatus
 from src.app.workline.services.workline_service import WorkLineService
+
+
+async def _runtime_status_for(db_session, workline_id: int) -> str | None:
+    projection = (
+        await db_session.execute(
+            select(WorklineRuntimeStatusProjection).where(WorklineRuntimeStatusProjection.workline_id == workline_id)
+        )
+    ).scalar_one_or_none()
+    return projection.runtime_status if projection is not None else None
 
 
 @pytest.mark.asyncio
@@ -113,7 +125,7 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session, 
     assert workline.plugin_key == ROUGH_SORTER_PLUGIN_KEY
     assert workline.contract_version == ROUGH_SORTER_CONTRACT_VERSION
     assert workline.run_mode == WorkLineRunMode.AUTO
-    assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
+    assert await _runtime_status_for(db_session, workline.id) == WorkLineRuntimeStatus.STOPPED.value
 
     devices = (
         (
@@ -312,7 +324,6 @@ async def test_sync_test_workline_devices_seeds_rough_sorter_when_unrelated_work
             diagnostic_profile={},
             description="人工创建的开发数据",
             is_active=True,
-            runtime_status=WorkLineRuntimeStatus.READY,
         )
     )
     await db_session.commit()
@@ -348,7 +359,7 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
     assert workline.plugin_key == SMT_SORTING_INBOUND_PLUGIN_KEY
     assert workline.contract_version == SMT_SORTING_INBOUND_CONTRACT_VERSION
     assert workline.run_mode == WorkLineRunMode.SIMULATION
-    assert workline.runtime_status == WorkLineRuntimeStatus.STOPPED
+    assert await _runtime_status_for(db_session, workline.id) == WorkLineRuntimeStatus.STOPPED.value
     assert workline.is_active is True
 
     devices = (

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.15.0.0] - 2026-07-08
+
+### Added
+- 新增 runtime/orchestration 原生 WorkLine 运行状态投影表、repository/service 与 Alembic final cleanup migration smoke。
+
+### Changed
+- handling lifecycle 改为通过 `ConveyorQueueMembershipWriterService` 写入队列 membership evidence，WorkLine 安全、START admission、query、trace 与 callback 接收校验统一读取 runtime projection snapshot。
+- Phase5 readiness/final cleanup gate 与 legacy cleanup matrix 状态推进到 `final-cleanup-complete`。
+
+### Fixed
+- 修复 callback event idempotency 回归用例的 runtime projection snapshot 与设备能力 fixture，确保生产事件 guard 覆盖真实目标态输入。
+
+### Removed
+- 删除旧 `BinTransitMembership/BinTransitQueue` production surface 和 WorkLine 配置表中的运行态物理列。
+
 ## [0.14.0.0] - 2026-07-07
 
 > **Note**: Phase5 business lane 发布。本 minor 关闭业务承载 legacy cleanup 阻塞，补齐 destructive cleanup ledger/final gate，将仍有价值的 WorkLine 业务合同迁入 Phase4 runtime capability contracts，并保持 `WorkLine.runtime_status` schema/data 删除独立延期。

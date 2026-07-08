@@ -61,6 +61,10 @@ from .smt_inbound_handoff_repository import (
     SmtInboundHandoffRepository,
     smt_inbound_handoff_repository,
 )
+from .workline_runtime_status_projection_repository import (
+    WorklineRuntimeStatusProjectionRepository,
+    workline_runtime_status_projection_repository,
+)
 
 __all__ = [
     "ConveyorQueueMembershipRepository",
@@ -76,6 +80,7 @@ __all__ = [
     "WorklineDispatchAttemptRepository",
     "WorklineInboxRepository",
     "WorklineRackPositionRepository",
+    "WorklineRuntimeStatusProjectionRepository",
     "WorklineSessionRepository",
     "conveyor_queue_membership_repository",
     "device_runtime_projection_repository",
@@ -90,5 +95,6 @@ __all__ = [
     "workline_diagnostic_repository",
     "workline_dispatch_attempt_repository",
     "workline_rack_position_repository",
+    "workline_runtime_status_projection_repository",
     "workline_session_repository",
 ]

@@ -15,15 +15,6 @@ from src.core.mixins import DataTableMixin, EnterpriseMixin
 from src.database.schema_conf import SchemaType
 
 
-class WorkLineRuntimeStatus(str, Enum):
-    """WorkLine v1 运行安全状态。"""
-
-    STOPPED = "STOPPED"
-    READY = "READY"
-    RECONCILING = "RECONCILING"
-    ESTOPPED = "ESTOPPED"
-
-
 class WorklineSafetyIncidentStatus(str, Enum):
     """WorkLine 安全事件状态。"""
 
@@ -141,7 +132,6 @@ class WorklineSafetyIncident(
 __all__ = [
     "ClearWorkLineEstopRequest",
     "SimulateWorkLineEstopRequest",
-    "WorkLineRuntimeStatus",
     "WorklineSafetyIncident",
     "WorklineSafetyIncidentStatus",
 ]

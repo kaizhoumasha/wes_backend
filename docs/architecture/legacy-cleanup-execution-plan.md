@@ -2,7 +2,7 @@
 
 ## 结论
 
-Phase5 `phase5-tech` 已完成。`phase5-business` 携带 regenerated Phase3/Phase4 artifacts 后已通过 readiness gate，并已执行 business destructive cleanup：104 条 phase4 carrier 全部在 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 关闭或保留为目标态测试证据。raw `reports/` artifacts 仍由 Git 忽略，重新验证前必须从 restored field/CI evidence 重新生成。
+Phase5 `phase5-tech` 已完成并随 PR #78 合并。`phase5-business` 携带 regenerated Phase3/Phase4 artifacts 后已通过 readiness gate，并已随 PR #79（`v0.14.0.0`，merge SHA `8c833610c08005005406b3a774c92519f69b7886`）执行并合并 business destructive cleanup：104 条 phase4 carrier 全部在 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 关闭或保留为目标态测试证据。2026-07-08 final cleanup 进一步删除旧 handling 队列表面，迁移并删除 WorkLine 运行态物理列。raw `reports/` artifacts 仍由 Git 忽略，重新验证前必须从 restored field/CI evidence 重新生成。
 
 ## 执行顺序
 
@@ -63,15 +63,17 @@ RuntimeInbox
 - Phase4 production runtime evidence gate passed。
 - business gate passed。
 - business destructive cleanup gate passed。
+- final cleanup migration smoke passed；旧 handling 队列表面和 WorkLine 运行态物理列 absence guardrail passed。
+- PR #79 已 merged to `develop`；未检测到 GitHub deploy workflow 且未提供生产 URL，因此 land report 记录为 `DEPLOYED (UNVERIFIED)`。
 - tracked provenance ledger: `docs/architecture/phase3-phase4-production-evidence-bundle.md`。
 
 ## 回滚
 
-单 PR 回滚优先使用 `git revert`。本轮不包含 Alembic migration，不允许以 business lane 数据 drop 作为回滚手段。
+单 PR 回滚优先使用 `git revert`。final cleanup 包含 Alembic migration；若已升级数据库，先按发布流程评估 `alembic downgrade -1` 的数据边界，再执行代码回滚。旧 handling 队列表数据无法仅靠 downgrade 恢复，必须依赖数据库备份或生产恢复流程。
 
 失败模式：
 
 - Unknown capability：`RuntimeCapabilityRouteError`，不 fallback 到 null plugin。
 - Undeclared provider capability：`RuntimeCapabilityUndeclaredError`，按 `ExternalContractProfile` fail closed。
 - Legacy import 回流：`tests/architecture/test_phase5_legacy_absence_guardrail.py` 阻断。
-- `WorkLine.runtime_status` schema/data 删除仍需独立 migration plan；本轮不包含 Alembic migration，不 drop 业务数据。
+- WorkLine 运行态投影迁移由 final cleanup migration 与 migration smoke 证明；后续不得重新把运行态字段加回 WorkLine 配置表。

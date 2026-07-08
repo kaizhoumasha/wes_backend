@@ -5,6 +5,9 @@ Revises: f88092809f4b
 Create Date: 2026-07-04 01:58:09.792158+08:00
 
 """
+
+# ruff: noqa: S608
+
 from collections.abc import Sequence
 from typing import Union
 
@@ -22,6 +25,7 @@ SCHEMA = "wes_biz"
 RESERVATION_TABLE = "workline_bin_cell_reservations"
 LOCATION_TABLE = "runtime_location_events"
 RESERVATION_STATUS_CONSTRAINT = "bincellreservationstatus"
+RESERVATION_STATUS_NAMING_CONVENTION_CONSTRAINT = f"ck_{RESERVATION_TABLE}_{RESERVATION_STATUS_CONSTRAINT}"
 
 
 def _data_columns() -> list[sa.Column]:
@@ -43,12 +47,16 @@ def _json_object_column(name: str, *, comment: str) -> sa.Column:
 
 
 def _drop_reservation_status_constraint_if_exists() -> None:
-    op.execute(
-        sa.text(
-            f'ALTER TABLE "{SCHEMA}"."{RESERVATION_TABLE}" '
-            f'DROP CONSTRAINT IF EXISTS "{RESERVATION_STATUS_CONSTRAINT}"'
+    for constraint_name in (
+        RESERVATION_STATUS_CONSTRAINT,
+        RESERVATION_STATUS_NAMING_CONVENTION_CONSTRAINT,
+    ):
+        op.execute(
+            sa.text(
+                f'ALTER TABLE "{SCHEMA}"."{RESERVATION_TABLE}" '
+                f'DROP CONSTRAINT IF EXISTS "{constraint_name}"'
+            )
         )
-    )
 
 
 def _block_reconciling_reservations_before_downgrade() -> None:

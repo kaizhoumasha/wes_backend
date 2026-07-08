@@ -16,7 +16,7 @@
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
 | Phase 1 callback admission 已关闭 | 所有 WMS/ECS callback 只描述目标态 normalizer admission，不假设旧 callback 可扩展 |
-| Phase 2 `WorkLine.runtime_status` 未清空 | 入库流程状态归 ExecutionWorkItem、WmsFulfillmentRequest、MaterialUnit、CellReservation 等 owner，不写 WorkLine 运行状态 |
+| Phase 2 WorkLine 运行态 final cleanup 已完成 | 入库流程状态归 ExecutionWorkItem、WmsFulfillmentRequest、MaterialUnit、CellReservation 等 owner，不写 WorkLine 运行状态 |
 | Phase 3 RuntimeInbox / closure profile | 设计与本机 MOCK 验收可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产热路径接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
 
 ## 3. 粗分机正常流
