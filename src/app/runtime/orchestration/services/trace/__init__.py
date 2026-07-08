@@ -1,6 +1,6 @@
 """Trace 子目录 — Trace 视图构建/查询/时间线。
 
-Phase 2 burn-down 阶段 4 (PR):从 workline/services/ 物理迁入。
+从 workline/services/ 物理迁入。
 workline/services/ 保留 re-export shim 兼容 v1 API。
 """
 

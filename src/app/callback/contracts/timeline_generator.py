@@ -1,4 +1,4 @@
-"""Callback 域 timeline 生成器 — wlr.timeline_generator 镜像 (Phase 2 launch PR)。
+"""Callback 域 timeline 生成器 — wlr.timeline_generator 镜像。
 
 镜像说明:
 - TimelineGenerator 与 wlr.timeline_generator.TimelineGenerator 行为一致,

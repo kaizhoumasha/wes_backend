@@ -1,4 +1,4 @@
-"""Typed runtime toggle governance for Phase 3."""
+"""Typed runtime toggle governance."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Phase 2 burn-down 阶段 2 C5a — orchestration bridges 镜像与重导出。
+"""orchestration bridge mirror — orchestration bridges 镜像与重导出。
 
 C5a 镜像 13 个文件:
   - src/app/runtime/orchestration/{enums, device_ordering, runtime_intent, effect_result,

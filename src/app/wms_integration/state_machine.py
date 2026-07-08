@@ -1,4 +1,4 @@
-"""Phase 3 WMS fulfillment state machine."""
+"""WMS fulfillment state machine."""
 
 from __future__ import annotations
 

@@ -1,9 +1,9 @@
-"""WmsReconciliationQueryPort (Phase 1 CEO-001 #7, Packet D)。
+"""WmsReconciliationQueryPort。
 
 主计划 §5.1 7 port 之一: 对账 drift 只读查询 (bin / rack / full 实体一致性)。
 所有方法 query-only, 不写 WMS 业务, 与 §3.4 Authority Matrix "WES 维护
-库存作业状态, WMS 维护库存" 一致; drift 由 WES reconciliation 任务消费
-(Phase 2 范围, 本端口只提供查询入口)。
+库存作业状态, WMS 维护库存" 一致; drift 由 WES reconciliation 任务消费,
+本端口只提供查询入口。
 
 方法命名: Port.method 格式, 供 ExternalContractProfile.runtime_capabilities_query
 引用。
@@ -30,9 +30,9 @@ class WmsDriftItem(BaseModel):
 
 
 class WmsReconciliationQueryPort(Protocol):
-    """WMS 对账查询 port (Phase 1 CEO-001 #7, Packet D)。
+    """WMS 对账查询 port。
 
-    所有方法 query-only; drift 由 WES reconciliation 任务消费 (Phase 2)。
+    所有方法 query-only; drift 由 WES reconciliation 任务消费。
     Runtime capability 注入时仅暴露 query port contract (R-I3b)。
     """
 

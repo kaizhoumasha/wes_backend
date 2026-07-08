@@ -65,7 +65,7 @@ def _ctx(db: Any, correlation: ExecutionCorrelation) -> dict[str, Any]:
         id=31,
         workline_id=41,
         status=SessionStatus.RUNNING.value,
-        plugin_key="phase3-test",
+        plugin_key="runtime-test",
         contract_version="v1",
         context_json={},
         trace_id=correlation.trace_id,
@@ -79,7 +79,7 @@ def _ctx(db: Any, correlation: ExecutionCorrelation) -> dict[str, Any]:
         failure_message=None,
         ended_at=None,
     )
-    workline = SimpleNamespace(id=41, plugin_key="phase3-test", contract_version="v1")
+    workline = SimpleNamespace(id=41, plugin_key="runtime-test", contract_version="v1")
     inbox = SimpleNamespace(
         id=501,
         trace_id=correlation.trace_id,

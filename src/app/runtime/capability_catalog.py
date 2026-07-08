@@ -1,6 +1,6 @@
 """WorkLine capability catalog replacing the legacy plugin registry.
 
-Phase5 technical lane 只保留目标态业务合同查询；不再动态加载 plugin class，
+target-state runtime capability wiring 只保留目标态业务合同查询；不再动态加载 plugin class，
 也不保存旧 plugin runtime instance。
 """
 
@@ -10,27 +10,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-from src.app.runtime.capabilities.phase4.contracts.material_identity import (
+from src.app.runtime.capabilities.material_flow.contracts.material_identity import (
     MaterialIdentity,
     MaterialIdentityInput,
     MaterialIdentityResolutionStatus,
     material_identity_input_to_hash,
 )
-from src.app.runtime.capabilities.phase4.contracts.ng_reason import NgReasonDefinition, NgReasonSource
-from src.app.runtime.capabilities.phase4.contracts.rough_sorter import (
+from src.app.runtime.capabilities.material_flow.contracts.ng_reason import NgReasonDefinition, NgReasonSource
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import (
     ROUGH_SORTER_CONTRACT_VERSION,
     ROUGH_SORTER_PLUGIN_KEY,
     classify_rough_sorter_result,
     normalize_six_in_one_payload,
     resolve_rough_sorter_business_key,
 )
-from src.app.runtime.capabilities.phase4.contracts.rough_sorter_context import RoughSorterContext
-from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_context import RoughSorterContext
+from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
     NG_REASON_LOCAL_SORTING_NG,
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
-from src.app.runtime.capabilities.phase4.contracts.sorting_inbound_context import SortingInboundContext
+from src.app.runtime.capabilities.material_flow.contracts.sorting_inbound_context import SortingInboundContext
 from src.app.workline.domain.plugin_manifest import WorklinePluginManifest
 from src.app.workline.utils import payload_dict
 

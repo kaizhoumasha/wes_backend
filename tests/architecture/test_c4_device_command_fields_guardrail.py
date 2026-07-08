@@ -32,7 +32,7 @@ def test_c4_rule_exists_in_script():
 def _run_guardrails(extra_files: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """在隔离 tmp 仓库结构里跑 guardrail，避免污染主仓库。
 
-    复制 scanner 脚本 + allowlist 到 tmp，只放入指定测试文件，跑 phase1。
+    复制 scanner 脚本 + allowlist 到 tmp，只放入指定测试文件，跑 enforced mode。
     """
     import shutil
     import tempfile
@@ -51,7 +51,7 @@ def _run_guardrails(extra_files: dict[str, str] | None = None) -> subprocess.Com
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
         return subprocess.run(
-            ["bash", "scripts/architecture-guardrails.sh", "--phase", "phase1"],  # noqa: S607
+            ["bash", "scripts/architecture-guardrails.sh", "--mode", "enforced"],  # noqa: S607
             cwd=tmp_path,
             capture_output=True,
             text=True,
@@ -81,7 +81,7 @@ def test_c4_catches_real_forbidden_field_declaration():
 
 
 def test_c4_ignores_forbidden_keys_inside_blacklist_set():
-    """C4 不应误报 H4 黑名单常量集合 (Phase 1 H4 反注入实现自身)。
+    """C4 不应误报 H4 黑名单常量集合。
 
     回归测试: 工作区 review 发现 9 个 C4 false positive,
     都来自 _FORBIDDEN_PARAM_KEYS = {"plc", "plc_address", ...} 这种黑名单字面量。

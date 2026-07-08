@@ -1,4 +1,4 @@
-"""WMS 入站事件 normalizer (Phase 2 burn-down 阶段 1)。
+"""WMS 入站事件 normalizer。
 
 实现 WMS 回调入站事件 4 类 typed 转换(GRN / Pallet / Rack / Transport):
 - 4 个 normalize_wms_* 方法把 WMS 原始回调 dict 转 typed event
@@ -49,7 +49,7 @@ class _WmsNormalizerPort(Protocol):
 
 
 class WmsEventNormalizer:
-    """WMS 回调入站 normalizer (Phase 2 burn-down 阶段 1)。"""
+    """WMS 回调入站 normalizer。"""
 
     def normalize_wms_grn_received(self, raw_payload: dict) -> WmsGrnReceivedEvent:
         """标准化 WMS_GRN_RECEIVED 回调。"""

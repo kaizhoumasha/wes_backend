@@ -21,7 +21,7 @@ def test_quality_profile_runs_architecture_check(tmp_path):
     env = {
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-        "ARCHITECTURE_PHASE": "invalid-phase-for-test",
+        "ARCHITECTURE_GUARDRAIL_MODE": "invalid-mode-for-test",
     }
     result = subprocess.run(
         ["/bin/bash", str(QUALITY_GATE), "--profile", "quality"],
@@ -33,8 +33,8 @@ def test_quality_profile_runs_architecture_check(tmp_path):
     )
 
     assert result.returncode == 2
-    assert "[architecture] architecture-guardrails.sh --phase invalid-phase-for-test" in result.stdout
-    assert "未知 phase: invalid-phase-for-test" in result.stderr
+    assert "[architecture] architecture-guardrails.sh --mode invalid-mode-for-test" in result.stdout
+    assert "未知 mode: invalid-mode-for-test" in result.stderr
 
 
 def test_quality_profile_runs_runtime_toggle_release_gate(tmp_path):
@@ -72,15 +72,15 @@ exit 0
     assert "runtime toggle release gate reached" in result.stderr
 
 
-def test_quality_profile_runs_phase4_runtime_readiness_gate(tmp_path):
-    """quality profile 必须调用 Phase4 runtime readiness 门禁。"""
+def test_quality_profile_runs_runtime_evidence_readiness_gate(tmp_path):
+    """quality profile 必须调用 runtime evidence readiness 门禁。"""
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(parents=True, exist_ok=True)
     fake_uv = fake_bin / "uv"
     fake_uv.write_text(
         """#!/usr/bin/env bash
-if [[ "$*" == *"scripts/check_phase4_runtime_readiness_gate.py"* ]]; then
-  echo "phase4 runtime readiness gate reached" >&2
+if [[ "$*" == *"scripts/check_runtime_evidence_readiness_gate.py"* ]]; then
+  echo "runtime evidence readiness gate reached" >&2
   exit 24
 fi
 exit 0
@@ -103,8 +103,43 @@ exit 0
     )
 
     assert result.returncode == 24
-    assert "[phase4-readiness] check_phase4_runtime_readiness_gate.py" in result.stdout
-    assert "phase4 runtime readiness gate reached" in result.stderr
+    assert "[runtime-evidence-readiness] check_runtime_evidence_readiness_gate.py" in result.stdout
+    assert "runtime evidence readiness gate reached" in result.stderr
+
+
+def test_quality_profile_runs_process_naming_guardrail(tmp_path):
+    """quality profile 必须调用 active process naming 守卫。"""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(parents=True, exist_ok=True)
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text(
+        """#!/usr/bin/env bash
+if [[ "$*" == *"tests/architecture/test_process_naming_guardrail.py"* ]]; then
+  echo "process naming guardrail reached" >&2
+  exit 25
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
+    fake_uv.chmod(0o755)
+
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+    }
+    result = subprocess.run(
+        ["/bin/bash", str(QUALITY_GATE), "--profile", "quality"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 25
+    assert "[process-naming] pytest tests/architecture/test_process_naming_guardrail.py -q" in result.stdout
+    assert "process naming guardrail reached" in result.stderr
 
 
 def test_quality_gate_falls_back_to_script_root_without_git_metadata(tmp_path):

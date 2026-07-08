@@ -1,6 +1,6 @@
-"""Phase 1 CEO-007 Packet C 起步: ExecutionCorrelation + ExecutionSession 模型 contract test。
+"""ExecutionCorrelation + ExecutionSession 模型 contract test。
 
-主计划 §9.2 + Phase 0 P0-001 schema 对齐:
+主计划 §9.2 + target-state schema 对齐:
 - correlation_id 唯一 (跨域 stable correlation key)
 - execution_session_id 可空 (NULL 允许 inbound callback 未解析前 ACK)
 - trace_id + source_event_id + business_owner_key 跨域 trace/审计
@@ -160,7 +160,7 @@ def test_execution_correlation_can_reference_session_id():
     assert foreign_keys[0].target_fullname == "wes_runtime.execution_sessions.id"
 
 
-def test_runtime_migration_creates_execution_tables():
+def test_execution_schema_migration_creates_execution_tables():
     """Alembic revision 必须覆盖 wes_runtime schema + 两张 runtime/orchestration 表。"""
     migration_files = list(Path("migrations/versions").glob("*_add_execution_session_correlation.py"))
     assert len(migration_files) == 1

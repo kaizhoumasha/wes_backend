@@ -1,5 +1,5 @@
-# 阶段 2 burn-down C5a 桥接:src.workline_runtime.lock 的门面副本
-# wlr 目录在阶段 3 整体删除时,本桥接与 wlr 副本合并 / 删除。
+# 旧 runtime 桥接实现:src.workline_runtime.lock 的门面副本
+# 旧 runtime 入口删除后,本桥接承载对应正式边界。
 
 """
 Redis 分布式锁实现

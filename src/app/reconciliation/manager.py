@@ -1,4 +1,4 @@
-"""Phase 3 ReconciliationManager minimal decision model."""
+"""ReconciliationManager minimal decision model."""
 
 from __future__ import annotations
 

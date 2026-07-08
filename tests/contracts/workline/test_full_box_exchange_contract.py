@@ -13,7 +13,7 @@ from __future__ import annotations
 def test_full_box_exchange_uses_fulfillment_and_reconciliation_contract():
     """目标态: 满箱/换箱/换架生成外部履约、等待回调、对账 evidence, 不本地冒充完成。
 
-    Phase 3 收尾先锁住外部履约/evidence/reconciliation 语义。
+    先锁住外部履约/evidence/reconciliation 语义。
     """
 
     from src.app.reconciliation.manager import ReconciliationConflictInput, ReconciliationManager

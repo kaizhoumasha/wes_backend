@@ -1,6 +1,6 @@
 """CEO-012: WorkLine SafetyZone / shared-device manifest schema validator。
 
-主计划 §9.6 + §3.2 + Phase 1 CEO-012：
+主计划 §9.6 + §3.2：
 - DeviceRequirement 加 required 标记（required=true 不可用时 WorkLine 不启动；
   optional=true 可启动但 capability 从候选剔除）
 - SafetyZone 声明物理安全边界，区域内设备异常时按 isolation_policy 隔离

@@ -65,6 +65,7 @@
 - API 测试文件只覆盖 route、permission、response contract 和 API facade 行为。
 - service、projection、builder、orchestrator、runtime intent 等测试放回对应领域目录。
 - 共享 fixture 和 mock builder 优先放到领域内 `conftest.py` 或 `support/`，避免跨文件复制同名 `mock_db`、`mock_session`、`mock_workline`。
+- Active production code and active gates must not introduce numbered phase/wave names, lane labels, or cleanup milestone wording; use stable domain names instead. Historical docs, archived plans, and Alembic revision filenames are allowed.
 
 ### 运行默认快速回归
 

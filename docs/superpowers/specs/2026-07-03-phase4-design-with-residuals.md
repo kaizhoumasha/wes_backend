@@ -10,9 +10,9 @@
 
 本 SPEC 只推进 Phase 4 设计，不实现业务能力、不删除 legacy、不改变运行时热路径。Phase 4 设计可以先行，但生产热路径、上线和 Phase 5 删除必须受 Phase 1/2/3 residual gates 约束。
 
-2026-07-04 范围调整：本项目未发布，当前开发/测试默认使用 MOCK closure。Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。`tests/mock/phase4` 只证明 sorter inbound 与 SMT/NG/WMS 对账合同可由本机 WMS/ECS mock 表达；真实 artifact 不再作为当前开发/测试推进阻塞项。`scripts/check_phase3_closure_gate.py` 无 artifact 时自动选择 mock profile；`--closure-profile production` 保留生产发布前的严格 artifact 校验。生产热路径仍记录在 Phase 1/2/3 residual gates 中，但当前实际阻塞项为 Phase 2 runtime_status 兼容投影收尾，Phase 1 callback admission 已关闭。
+2026-07-04 范围调整：本项目未发布，当前开发/测试默认使用 MOCK closure。Wave2/Wave3 降级为本机开发环境 MOCK 验收，不做生产接入。`tests/mock/material_flow` 只证明 sorter inbound 与 SMT/NG/WMS 对账合同可由本机 WMS/ECS mock 表达；真实 artifact 不再作为当前开发/测试推进阻塞项。`scripts/check_runtime_production_closure_gate.py` 无 artifact 时自动选择 mock profile；`--closure-profile production` 保留生产发布前的严格 artifact 校验。生产热路径仍记录在 Phase 1/2/3 residual gates 中，但当前实际阻塞项为 Phase 2 runtime_status 兼容投影收尾，Phase 1 callback admission 已关闭。
 
-2026-07-06 遗留项收口：Phase4 开发/测试 mock readiness 已闭合；`scripts/check_phase4_runtime_readiness_gate.py --readiness-profile production` 已要求 Phase3 production closure artifact 与 Phase4 production evidence profile 同时成立。Phase4 production evidence profile 现在必须提供 provider contract、effect dispatch trace、RuntimeInbox worker trace、RuntimeHold/Reconciliation trace 和 benchmark 六类真实 evidence 文件，并校验每个引用文件的 SHA-256。业务承载 legacy 删除仍不得提前执行；只有真实 Phase3 production closure 与 Phase4 production evidence profile 都通过后，业务 lane 才能进入 Phase5 删除评估。
+2026-07-06 遗留项收口：material-flow 开发/测试 mock readiness 已闭合；`scripts/check_runtime_evidence_readiness_gate.py --readiness-profile production` 已要求 runtime production closure artifact 与 runtime evidence profile 同时成立。runtime evidence profile 现在必须提供 provider contract、effect dispatch trace、RuntimeInbox worker trace、RuntimeHold/Reconciliation trace 和 benchmark 六类真实 evidence 文件，并校验每个引用文件的 SHA-256。业务承载 legacy 删除仍不得提前执行；只有真实 runtime production closure 与 runtime evidence profile 都通过后，业务能力 legacy 才能进入 destructive cleanup 评估。
 
 Phase 4 目标是补全 WES 作业期完整业务语义：
 
@@ -37,7 +37,7 @@ Phase 4 目标是补全 WES 作业期完整业务语义：
 | Phase 1 | callback API 热路径接入 provider profile admission，拒绝未声明 callback/event/result normalizer | 已在 callback API result/event/external 热路径调用 `ExternalContractProfile.ensure_inbound_normalizer_declared()`，未声明 normalizer 拒绝进入 inbox | callback API 对未声明 normalizer 的拒绝路径有合同测试和热路径测试 |
 | Phase 2 | `WorkLine.runtime_status` 迁出或正式改名为兼容投影 | Phase 4 不新增对 `WorkLine.runtime_status` 的业务依赖；需要运行态时读取 runtime/orchestration 或 active projection | 兼容投影命名/迁出决策完成，文档和查询接口不再把它描述为状态 owner |
 | Phase 3 | external callback 热路径切到 `RuntimeInbox` 状态机与 worker | Phase 4 只设计 RuntimeInbox 目标路径，不把旧 `WorklineInboxService` 当成可扩展依赖 | external callback 生产热路径完成 RuntimeInbox cutover |
-| Phase 3 | P0 E2E closure profile | 当前开发/测试默认使用 MOCK closure；Phase 4 设计、P0/Wave1 与 Wave2/Wave3 本机 MOCK 验收可以继续 | 生产发布前显式运行 `scripts/check_phase3_closure_gate.py --closure-profile production ...`，并提供真实 P0 E2E artifact |
+| Phase 3 | P0 E2E closure profile | 当前开发/测试默认使用 MOCK closure；Phase 4 设计、P0/Wave1 与 Wave2/Wave3 本机 MOCK 验收可以继续 | 生产发布前显式运行 `scripts/check_runtime_production_closure_gate.py --closure-profile production ...`，并提供真实 P0 E2E artifact |
 | Phase 3 | benchmark / queue writer PostgreSQL 证据 profile | 真实 artifact 不再作为当前开发/测试推进阻塞项；性能只声明预算和合同，不声明生产能力已满足 | 生产发布 profile 必须提供 production-scale benchmark，且 benchmark 不是 lightweight / sandbox |
 | Phase 4 | production evidence profile | 开发/测试 mock readiness 已闭合；site/production 只收敛 evidence profile gate，不改变 runtime service 行为 | 生产发布 profile 必须提供六类真实 evidence 文件及 SHA-256：provider contracts、effect dispatch、RuntimeInbox worker、RuntimeHold/Reconciliation、benchmark |
 
@@ -119,9 +119,9 @@ Phase 4 目标是补全 WES 作业期完整业务语义：
 - 文档合同测试确认 Phase 4 SPEC registry 中的五份 SPEC 存在并被主计划引用。
 - 文档合同测试确认每份 SPEC 都包含边界声明、Residual Readiness（引用共享 Register + 特有门禁）、行为契约测试、实施前置条件和 Phase 5 legacy 判定。
 - 主计划不得把 Phase 4 设计状态描述为已交付运行时能力，也不得允许 Phase 5 legacy 提前删除。
-- Phase3 production closure 仍以 `scripts/check_phase3_closure_gate.py` 为 gate；当前开发/测试默认使用 MOCK closure，生产发布前必须显式切换 `--closure-profile production` 并提供真实 artifact。
-- Phase4 production evidence profile 以 `scripts/check_phase4_runtime_readiness_gate.py --readiness-profile production` 为 gate；该 gate 要求 Phase3 production closure 与 Phase4 evidence manifest 同时通过。
-- 业务承载 legacy 删除不得由 mock readiness 触发；只有真实 Phase3 production closure 与 Phase4 production evidence profile 都通过后，业务承载 legacy 才能进入 Phase5 business lane 删除评估。
+- Runtime production closure 仍以 `scripts/check_runtime_production_closure_gate.py` 为 gate；当前开发/测试默认使用 MOCK closure，生产发布前必须显式切换 `--closure-profile production` 并提供真实 artifact。
+- Runtime evidence profile 以 `scripts/check_runtime_evidence_readiness_gate.py --readiness-profile production` 为 gate；该 gate 要求 runtime production closure 与 runtime evidence manifest 同时通过。
+- 业务承载 legacy 删除不得由 mock readiness 触发；只有真实 runtime production closure 与 runtime evidence profile 都通过后，业务承载 legacy 才能进入 destructive cleanup 评估。
 
 ### 5.2 跨 SPEC 集成测试矩阵
 

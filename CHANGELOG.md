@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1.0] - 2026-07-08
+
+### Added
+- 新增过程命名策略文档，明确 `phase/stage/wave/c3/c4/ri3/WLR` 等迁移批次词只允许保留在历史证据和归档上下文中。
+- 新增过程命名架构守护测试，并接入 quality profile，阻断活跃代码、脚本和默认测试集合重新引入阶段性目录、文件、注释或测试命名。
+
+### Changed
+- 将 runtime、WorkLine、callback、device、WMS integration 等活跃 surface 的注释、docstring、测试名和工具名改为稳定领域语义。
+- 将 runtime capability、business legacy absence、runtime evidence、production closure 等脚本、测试和文档引用统一到目标态命名。
+- 将 Jenkins、git hook、质量门禁和 legacy cleanup matrix 同步到过程命名清理后的稳定入口。
+
+### Fixed
+- 修复根 Jenkinsfile 与 backend CI 仍引用阶段性架构门禁命名的问题，确保 CI 与本地 quality profile 使用同一套稳定检查入口。
+
+### Removed
+- 删除活跃代码和默认快速回归测试中的 `Phase4/Phase5/stage/wave/final cleanup` 等过程性命名残留。
+- 删除 `runtime migration`、技术/业务 lane 等阶段描述在 active surface 中的残留表述，保留历史文档和已归档证据的可追溯性。
+
 ## [0.15.0.0] - 2026-07-08
 
 ### Added

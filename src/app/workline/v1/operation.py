@@ -12,7 +12,7 @@ from src.app.callback.models.ingress_response import (
     build_callback_event_accepted_response,
     build_callback_rejected_response,
 )
-from src.app.runtime.capabilities.phase4.start_admission_service import start_admission_service
+from src.app.runtime.capabilities.material_flow.start_admission_service import start_admission_service
 from src.app.runtime.orchestration.models.operation import (
     ManualOperationRequest,
     ReplayInboxRequest,

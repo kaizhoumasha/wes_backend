@@ -1,12 +1,12 @@
-"""Phase 3 WMS fulfillment state machine contract tests."""
+"""WMS fulfillment state machine contract tests."""
 
 from __future__ import annotations
 
 from src.utils.timezone import timezone
 
 
-def test_fulfillment_state_set_matches_phase3_contract() -> None:
-    """Phase 3 外部履约必须是文档约定的 11 态, 不引入额外终态。"""
+def test_fulfillment_state_set_matches_external_contract() -> None:
+    """外部履约必须是文档约定的 11 态, 不引入额外终态。"""
 
     from src.app.wms_integration.state_machine import FulfillmentState
 
@@ -91,7 +91,7 @@ def test_circuit_breaker_open_does_not_overwrite_in_flight_fulfillment() -> None
 
 
 def test_four_timeout_paths_enter_timeout_with_distinct_reasons() -> None:
-    """Phase 3 四类 timeout 必须可观测, 不能混成同一个黑盒超时。"""
+    """四类 timeout 必须可观测, 不能混成同一个黑盒超时。"""
 
     from src.app.wms_integration.state_machine import (
         FulfillmentEvent,

@@ -1,4 +1,4 @@
-"""wms_integration 7 ports (Phase 1 CEO-001 目标态端口)。
+"""wms_integration 7 ports。
 
 按主计划 §3.5.1 + §5.1 拆分:
 1. WmsMasterDataPort (物料主数据, 包括 area/warehouse/storage_location/equipment)
@@ -9,11 +9,7 @@
 6. WmsEventPort (入站事件 normalizer: WMS_GRN_RECEIVED / WMS_PALLET_ARRIVED 等)
 7. WmsReconciliationQueryPort (对账 drift 查询)
 
-Phase 1 CEO-001 完成 7/7 ports:
-- WmsMasterDataPort (Packet B)
-- WmsInventoryQueryPort + WmsInventoryTransactionPort (Packet B)
-- WmsDocumentPort + WmsFulfillmentPort + WmsEventPort + WmsReconciliationQueryPort (Packet D)
-所有 Protocol 落地后, Phase 2 起 capability 可独立通过 port contract 注入。
+所有 Protocol 已落地，capability 可独立通过 port contract 注入。
 
 端口方法命名: ClassName.method (Port.method 合同), 与
 src/app/contracts/external_contract_profile.py runtime_capabilities_query

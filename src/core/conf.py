@@ -279,7 +279,7 @@ class Settings(BaseSettings):
             raise ValueError(f"❌ 安全错误: API_SECRET_ENCRYPTION_KEY 格式无效: {e}") from e
 
         # H6: 生产环境禁止 SKIP_API_AUTH=True (启动时 hard guard, 而非请求时)
-        # 主计划 §7.1 威胁模型 + Phase 1 H6: APP_DEBUG=False 时 SKIP_API_AUTH=True
+        # 主计划 §7.1 威胁模型 + H6: APP_DEBUG=False 时 SKIP_API_AUTH=True
         # 会旁路所有 callback 鉴权, 必须在启动时即失败, 而非请求时才发现。
         if self.SKIP_API_AUTH and not self.APP_DEBUG:
             raise ValueError(

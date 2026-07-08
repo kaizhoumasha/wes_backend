@@ -1,4 +1,4 @@
-"""RuntimeHold (Phase 1 CEO-007 #6, 主计划 §9.2)。
+"""RuntimeHold (主计划 §9.2)。
 
 暂停新 effect 的运行时闸门; 必须有 object/device/resource scope。
 解除必须声明 allowed_next_effect_scope。

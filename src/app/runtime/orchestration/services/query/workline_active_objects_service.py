@@ -1,4 +1,4 @@
-"""WorklineActiveObjects Phase4 read model service."""
+"""WorklineActiveObjects runtime read model service."""
 
 from __future__ import annotations
 

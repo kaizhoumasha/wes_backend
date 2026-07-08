@@ -1,6 +1,6 @@
 """H6: APP_DEBUG=False 时禁止 SKIP_API_AUTH=True (启动 hard guard)。
 
-主计划 §7.1 威胁模型 + Phase 1 H6: 生产/预发环境 (APP_DEBUG=False)
+主计划 §7.1 威胁模型 + H6: 生产/预发环境 (APP_DEBUG=False)
 SKIP_API_AUTH=True 会旁路所有 callback 鉴权, 必须在 settings 加载时
 (启动时) 即失败, 而非请求时才发现。
 

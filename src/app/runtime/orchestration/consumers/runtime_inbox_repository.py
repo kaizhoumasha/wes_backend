@@ -1,4 +1,4 @@
-"""RuntimeInbox repository for Phase 3 ACK/idempotency/replay consumer flows."""
+"""RuntimeInbox repository for ACK/idempotency/replay consumer flows."""
 
 from __future__ import annotations
 

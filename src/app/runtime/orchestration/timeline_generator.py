@@ -1,5 +1,5 @@
-# 阶段 2 burn-down C5b 镜像:src.workline_runtime.timeline_generator 的平级副本
-# wlr 目录在阶段 3 整体删除时,本镜像改名为正式模块。
+# 旧 plugin runtime 镜像实现:src.workline_runtime.timeline_generator 的平级副本
+# 旧 runtime 入口删除后,本模块承载正式实现。
 # 自引用 src.workline_runtime.trace_context 已重定向到 C2 镜像。
 
 """
@@ -8,7 +8,7 @@ TimelineGenerator - 时间线记录生成器
 负责从 Session 提取关联信息并生成 Timeline 记录。
 seq_no 由 AtomicWriter 从数据库序列获取。
 
-设计参考: 设计文档 phase2-orchestrator
+设计参考: runtime-orchestration 设计文档
 """
 
 from typing import Any, Protocol

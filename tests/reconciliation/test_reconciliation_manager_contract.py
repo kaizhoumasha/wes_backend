@@ -1,4 +1,4 @@
-"""Phase 3 ReconciliationManager contract tests."""
+"""ReconciliationManager contract tests."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def test_reconciliation_manager_registers_owner_scoped_decision_without_owner_mu
 
 
 def test_reconciliation_manager_escalates_after_5_and_30_minutes() -> None:
-    """Phase 3: RECONCILING 冲突 5 分钟升级 warning, 30 分钟升级 critical。"""
+    """RECONCILING 冲突 5 分钟升级 warning, 30 分钟升级 critical。"""
 
     from src.app.reconciliation.manager import (
         ReconciliationConflictInput,

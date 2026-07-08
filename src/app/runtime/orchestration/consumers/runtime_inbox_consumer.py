@@ -1,12 +1,12 @@
-"""RuntimeInboxConsumer — RuntimeInbox 单点入口 (Phase 2 burn-down 阶段 2 C1)。
+"""RuntimeInboxConsumer — RuntimeInbox 单点入口。
 
 主计划 §3.5.1 + R-WLR 严格型唯一允许 consumer:
 - 接收 inbound_registry + normalizer_context + correlation + consumer_id
-- consume_sync 委托给 src.app.workline.services.inbox_batch_processor
-  (wlr 内部既有实现, lazy import 阶段 3 前的过渡)
+- consume_sync 委托给 runtime/orchestration/services/inbox
+  (旧 workline processor 的运行态入口已迁入 runtime 域)
 - callback ACK 权威已切到 RuntimeInbox; 这里仅保留 legacy inbox/processor
   的过渡消费职责, 不承担 ACK/source-of-truth 语义
-- 不实现状态机 / idempotency / RuntimeHold 推进 (阶段 3 业务迁移)
+- 不实现状态机 / idempotency / RuntimeHold 推进, 仅保留单点 consumer facade
 - list_consumed_ids 返回只读视图
 """
 
@@ -27,12 +27,11 @@ _MAX_TRACKED_IDS = 10_000
 
 
 class RuntimeInboxConsumer:
-    """RuntimeInbox 入口消费者 facade (主计划 §3.5.1 + 阶段 2 burn-down C1)。
+    """RuntimeInbox 入口消费者 facade。
 
-    不实现 inbox 状态机业务逻辑 (阶段 3 才搬迁) ; 本类作为
+    不实现 inbox 状态机业务逻辑; 本类作为
     InboundNormalizerContext 唯一合法 consumer 的占位 facade, 委托给
     src.app.workline.services.inbox_batch_processor 既有实现。
-    阶段 3 时把内部状态机迁入。
     """
 
     def __init__(
@@ -50,12 +49,11 @@ class RuntimeInboxConsumer:
         self._consumed_ids: deque[str] = deque(maxlen=_MAX_TRACKED_IDS)
 
     async def consume(self, payload: Mapping[str, Any]) -> RuntimeInboxRecord:
-        # 阶段 3 实现真正的异步状态机推进。
-        # 当前委托给既有 workline 同步实现, 返回 RuntimeInbox 记录占位 dict。
+        # 异步入口当前委托给既有同步实现, 返回 RuntimeInbox 记录占位 dict。
         return self.consume_sync(payload)  # type: ignore[return-value]
 
     def consume_sync(self, payload: Mapping[str, Any]) -> Any:
-        # Lazy import:避免循环依赖。阶段 6 workline 域退化为配置域,
+        # Lazy import:避免循环依赖。WorkLine 运行态迁出后 workline 域退化为配置域,
         # InboxBatchProcessor 已迁入 runtime/orchestration/services/inbox/。
         from src.app.runtime.orchestration.services.inbox import inbox_batch_processor
 

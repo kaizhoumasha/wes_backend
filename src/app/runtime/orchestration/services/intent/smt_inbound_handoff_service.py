@@ -1,9 +1,9 @@
-# Phase 2 burn-down 阶段 4 C4a 物理迁入
+# 已从 workline/services/ 迁入
 # 旧位置: src/app/workline/services/smt_inbound_handoff_service.py
 # (C4a 起改为 PEP 562 re-export shim)
 # 新位置: src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py
 # cleanup-matrix strategy=rebuild,
-# target_path=src/app/runtime/orchestration/services/(同 stage4 C2/C3 shim 模式)
+# target_path=src/app/runtime/orchestration/services/(同 runtime service shim 模式)
 
 """SMT 入库 handoff 应用服务。"""
 
@@ -20,18 +20,18 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
-from src.app.runtime.capabilities.phase4.contracts.smt_inbound_handoff_reason import (
+from src.app.runtime.capabilities.material_flow.contracts.smt_inbound_handoff_reason import (
     SMT_INBOUND_HANDOFF_REASON_CATALOG,
     SmtInboundHandoffReasonCatalog,
     SmtInboundHandoffReasonCode,
 )
-from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
+from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
-from src.app.runtime.capabilities.phase4.contracts.smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy
-from src.app.runtime.capabilities.phase4.contracts.sorting_inbound_context import SortingInboundContext
-from src.app.runtime.capabilities.phase4.smt_inbound_handoff_route_service import (
+from src.app.runtime.capabilities.material_flow.contracts.smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy
+from src.app.runtime.capabilities.material_flow.contracts.sorting_inbound_context import SortingInboundContext
+from src.app.runtime.capabilities.material_flow.smt_inbound_handoff_route_service import (
     SmtInboundHandoffRouteService,
     smt_inbound_handoff_route_service,
 )
@@ -716,7 +716,7 @@ class SmtInboundHandoffService:
                 failure_code=SmtInboundHandoffReasonCode.ECS_DEVICE_NOT_IDLE.value,
                 failure_message="ECS realtime probe evidence 已过期，等待下一轮 claim 重新准入",
                 next_attempt_at=timezone.now_for_db() + timedelta(seconds=30),
-                reason="claim_phase2_probe_evidence_expired",
+                reason="claim_route_probe_evidence_expired",
             )
         if await self._target_has_open_current_material(db, workline_id=workline_id):
             return await self._release_claim_candidate_for_retry(
@@ -726,7 +726,7 @@ class SmtInboundHandoffService:
                 failure_code=SmtInboundHandoffReasonCode.TARGET_SESSION_BUSY.value,
                 failure_message=None,
                 next_attempt_at=timezone.now_for_db() + timedelta(seconds=30),
-                reason="claim_phase2_current_material_busy",
+                reason="claim_current_material_busy",
             )
         if await self._target_has_in_flight_handoff_source_item(
             db, workline_id=workline_id, source_item_id=locked_item.id
@@ -738,7 +738,7 @@ class SmtInboundHandoffService:
                 failure_code=SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value,
                 failure_message=None,
                 next_attempt_at=timezone.now_for_db() + timedelta(seconds=30),
-                reason="claim_phase2_target_in_flight",
+                reason="claim_target_in_flight",
             )
 
         session = await self._create_sorting_claim_session(

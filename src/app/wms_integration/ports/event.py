@@ -1,4 +1,4 @@
-"""WmsEventPort + InboundEventPort (Phase 1 CEO-001 #6, Packet D)。
+"""WmsEventPort + InboundEventPort。
 
 主计划 §5.1 7 port 之一: 入站事件 normalizer (WMS_GRN_RECEIVED /
 WMS_PALLET_ARRIVED / WMS_RACK_ARRIVED / WMS_TRANSPORT_COMPLETED 等回调)。
@@ -76,7 +76,7 @@ class WmsTransportCompletedEvent(BaseModel):
 
 
 class InboundEventPort(Protocol):
-    """所有入站 normalizer 的基协议 (Phase 1 CEO-001 #6 base)。
+    """所有入站 normalizer 的基协议。
 
     不导出到业务 capability (主计划 §3.5 I3 + H2 黑名单)。
     实际 normalizer (WmsEventPort 等) 继承此协议。
@@ -88,7 +88,7 @@ class InboundEventPort(Protocol):
 
 
 class WmsEventPort(Protocol):
-    """WMS 回调 normalizer (Phase 1 CEO-001 #6, Packet D)。
+    """WMS 回调 normalizer。
 
     4 个 normalizer 覆盖 WMS 主回调事件类型。normalizer 输出投递到
     RuntimeInbox, 由 RuntimeInboxConsumer 消费, 不直接调用业务 capability

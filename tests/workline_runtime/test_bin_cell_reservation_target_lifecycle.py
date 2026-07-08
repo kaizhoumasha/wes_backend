@@ -1,4 +1,4 @@
-"""Phase4 CellReservation 目标生命周期合同。"""
+"""Material-flow CellReservation 目标生命周期合同。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from src.app.runtime.capabilities.phase4.bin_cell_reservation_service import (
+from src.app.runtime.capabilities.material_flow.bin_cell_reservation_service import (
     BinCellReservationStatusCode,
     WorklineBinCellReservationService,
 )
@@ -248,7 +248,7 @@ async def test_claim_preserves_correlation_and_provider_evidence_in_idempotency_
         correlation_id="corr-evidence",
         provider_code="WMS",
         source_version="wms-v3",
-        evidence_json={"fixture_set": "phase4-local"},
+        evidence_json={"fixture_set": "material-flow-local"},
     )
 
     assert claimed.status == BinCellReservationStatusCode.CLAIMED
@@ -262,5 +262,5 @@ async def test_claim_preserves_correlation_and_provider_evidence_in_idempotency_
         "source_event_id": "evt-claim-evidence",
         "provider_code": "WMS",
         "source_version": "wms-v3",
-        "fixture_set": "phase4-local",
+        "fixture_set": "material-flow-local",
     }

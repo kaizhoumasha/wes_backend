@@ -1,18 +1,18 @@
-"""R-WLR src.workline_runtime production import 严格型 guardrail 测试 (Phase 2 launch + Stage 3)。
+"""R-WLR src.workline_runtime production import 严格型 guardrail 测试。
 
 主计划 §10.3 + Step 3: src.workline_runtime 在生产代码中**严禁**直接 import (wlr allowlist 严格型)。
-阶段 3 burn-down 完成后,EXCLUDED_PREFIXES 收回至空集,consumers/ trust zone 退出。
+runtime 重构完成后,EXCLUDED_PREFIXES 收回至空集,consumers/ trust zone 退出。
 
-历史 (阶段 2 launch PR 末态):允许以下入口直接 import (作为单点过渡):
+历史过渡态:允许以下入口直接 import (作为单点过渡):
     1. src/app/runtime/orchestration/consumers/  (单点入口)
     2. tests/                                    (测试)
     3. migrations/                               (Alembic 数据迁移)
     4. src/workline_runtime/ 自身
 
-阶段 3 后:
+runtime 重构后:
     1. tests/    (测试,允许)
     2. migrations/  (Alembic 数据迁移,允许)
-    3. src/workline_runtime/ 自身 (历史,阶段 3 后整目录已删)
+    3. src/workline_runtime/ 自身 (历史, migration 后整目录已删)
 其余 src/ 任何 production code 都不允许 import src.workline_runtime。
 """
 
@@ -27,7 +27,7 @@ GUARDRAILS_SCRIPT = REPO_ROOT / "scripts" / "architecture-guardrails.sh"
 ALLOWLIST = REPO_ROOT / "scripts" / "architecture-guardrails.allowlist"
 
 WLR_IMPORT_PATTERN = re.compile(r"from src\.workline_runtime|import src\.workline_runtime")
-# 阶段 3 终态:consumers/ 退出 trust zone
+# src.workline_runtime 删除后:consumers/ 退出 trust zone
 WLR_ALLOWED_PATHS = (
     "src/workline_runtime/",
     "tests/",
@@ -51,7 +51,7 @@ def test_wlr_rule_pattern_matches_workline_runtime_imports():
 
 
 def test_wlr_rule_excludes_legitimate_importers():
-    """rule_wlr_import 必须排除 wlr 自身 + tests + migrations (阶段 3 终态)。"""
+    """rule_wlr_import 必须排除 wlr 自身 + tests + migrations (src.workline_runtime 删除后)。"""
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
     body = text.split("# --- R-WLR:", maxsplit=1)[1].split("# --- R-I3b:", maxsplit=1)[0]
     for excluded in WLR_ALLOWED_PATHS:
@@ -63,13 +63,13 @@ def test_wlr_allowlist_entries_have_legacy_entry_id_and_drop_phase():
 
     C5b 后 R-WLR allowlist 终态 = 0, 本测试需支持两种状态:
     1. R-WLR > 0: 每条 legacy_entry_id + drop_phase 字段非空
-    2. R-WLR = 0: 直接通过 (阶段 2 burn-down 完成)
+    2. R-WLR = 0: 直接通过 (runtime 重构完成)
     """
     if not ALLOWLIST.exists():
         return
     rwlr_lines = [line for line in ALLOWLIST.read_text().splitlines() if line.startswith("R-WLR|")]
     if not rwlr_lines:
-        # 阶段 2 终态: R-WLR allowlist 清零, 字段契约不适用
+        # src.workline_runtime allowlist 清零后: R-WLR allowlist 清零, 字段契约不适用
         return
     for line in rwlr_lines:
         fields = line.split("|")
@@ -79,17 +79,17 @@ def test_wlr_allowlist_entries_have_legacy_entry_id_and_drop_phase():
         assert fields[6].startswith("phase"), f"drop_phase 格式错: {line}"
 
 
-def test_wlr_guardrail_runs_clean_in_phase1():
-    """phase1 模式运行 architecture-guardrails.sh, 当前代码无 R-WLR 未覆盖违规 (退出码 0)。"""
+def test_wlr_guardrail_runs_clean_in_enforced_mode():
+    """enforced 模式运行 architecture-guardrails.sh, 当前代码无 R-WLR 未覆盖违规 (退出码 0)。"""
     result = subprocess.run(
-        ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+        ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode == 0, (
-        f"architecture-guardrails.sh phase1 exit={result.returncode}\n"
+        f"architecture-guardrails.sh enforced exit={result.returncode}\n"
         f"stdout last 30 lines:\n{chr(10).join(result.stdout.splitlines()[-30:])}\n"
         f"stderr last 30 lines:\n{chr(10).join(result.stderr.splitlines()[-30:])}"
     )
@@ -98,7 +98,7 @@ def test_wlr_guardrail_runs_clean_in_phase1():
 def test_wlr_production_imports_all_have_allowlist_coverage():
     """所有 production code 内的 src.workline_runtime import 都必须在 R-WLR allowlist 覆盖范围。
 
-    阶段 3 终态:consumers/ 已退出 trust zone,本测试不应再有未覆盖违规。
+    src.workline_runtime 删除后:consumers/ 已退出 trust zone,本测试不应再有未覆盖违规。
     """
     src_root = REPO_ROOT / "src"
     allowlisted_paths = set()
@@ -114,7 +114,7 @@ def test_wlr_production_imports_all_have_allowlist_coverage():
         rel = py_file.relative_to(REPO_ROOT).as_posix()
         if rel.startswith("src/workline_runtime/"):
             continue
-        # 阶段 3 终态:consumers/ 不再是 trust zone
+        # src.workline_runtime 删除后:consumers/ 不再是 trust zone
         try:
             content = py_file.read_text(encoding="utf-8")
         except OSError as exc:
@@ -135,30 +135,30 @@ def test_runtime_inbox_consumer_compiles() -> None:
     assert RuntimeInboxConsumer is not None
 
 
-# --- 阶段 3 新增测试 ---
+# --- src.workline_runtime 删除后测试 ---
 
 
 def test_excluded_prefixes_does_not_contain_consumers():
-    """阶段 3 终态:EXCLUDED_PREFIXES 不再含 consumers/ (trust zone 退出)。
+    """src.workline_runtime 删除后:EXCLUDED_PREFIXES 不再含 consumers/ (trust zone 退出)。
 
     consumers/ 内 RuntimeInboxConsumer 已 wlr-free,无需 EXCLUDED_PREFIXES 保护。
     """
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
     body = text.split("# --- R-WLR:", maxsplit=1)[1].split("# --- R-I3b:", maxsplit=1)[0]
     assert "src/app/runtime/orchestration/consumers/" not in body, (
-        "阶段 3 终态:EXCLUDED_PREFIXES 不应再含 consumers/ trust zone"
+        "src.workline_runtime 删除后:EXCLUDED_PREFIXES 不应再含 consumers/ trust zone"
     )
 
 
 def test_no_consumers_in_wlr_allowed_paths():
     """WLR_ALLOWED_PATHS 模块常量不再含 consumers/。"""
     assert "src/app/runtime/orchestration/consumers/" not in WLR_ALLOWED_PATHS, (
-        "阶段 3 终态:WLR_ALLOWED_PATHS 不应再含 consumers/"
+        "src.workline_runtime 删除后:WLR_ALLOWED_PATHS 不应再含 consumers/"
     )
 
 
 def test_consumers_directory_still_exists():
-    """consumers/ 目录在阶段 3 后仍存在 (RuntimeInboxConsumer 单点入口保留)。"""
+    """consumers/ 目录在旧 runtime 入口删除后仍存在 (RuntimeInboxConsumer 单点入口保留)。"""
     consumers_dir = REPO_ROOT / "src" / "app" / "runtime" / "orchestration" / "consumers"
     assert consumers_dir.is_dir(), "consumers/ 目录应保留 (RuntimeInboxConsumer)"
     init_file = consumers_dir / "__init__.py"

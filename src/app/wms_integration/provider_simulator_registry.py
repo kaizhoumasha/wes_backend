@@ -1,7 +1,7 @@
-"""WMS Provider Simulator Registry (Phase 1 CEO-013 最小骨架)。
+"""WMS Provider Simulator Registry。
 
-Phase 1 起步版本: 仅加载 fixture_set_path 下的 FixtureCase 列表, 提供按
-case_id 查找的 API。Phase 3 之后扩展为实际 stub 模拟 WMS HTTP 响应
+当前版本仅加载 fixture_set_path 下的 FixtureCase 列表, 提供按
+case_id 查找的 API。后续扩展为实际 stub 模拟 WMS HTTP 响应
 (目前 fixture 仅作为 contract test 输入)。
 
 设计原则 (主计划 §3.5.1):
@@ -9,8 +9,8 @@ case_id 查找的 API。Phase 3 之后扩展为实际 stub 模拟 WMS HTTP 响�
 - simulator/sandbox provider 不进入生产 fallback (I3 不变量)
 - 环境隔离: fixture 只在 sandbox 环境被引用
 
-Phase 1 实施: 加载 FixtureCase + 按 case_id 查找; 不模拟 HTTP 响应
-(Phase 1c normalizer 落地后接实际响应路径)。
+当前实现: 加载 FixtureCase + 按 case_id 查找; 不模拟 HTTP 响应
+(normalizer 落地后接实际响应路径)。
 """
 
 from __future__ import annotations
@@ -25,12 +25,12 @@ from src.app.contracts.external_contract_profile import (
 
 
 class ProviderSimulatorRegistry:
-    """Provider simulator fixture registry (Phase 1 CEO-013 最小版本)。
+    """Provider simulator fixture registry。
 
     加载 ExternalContractProfile.fixture_set_path 下的 *.json fixture 文件,
     解析为 FixtureCase 列表, 提供按 case_id 查找的 API。
 
-    后续 Phase 1c/Phase 3 扩展:
+    后续扩展:
     - 实际模拟 WMS HTTP 响应 (返回 dict, normalizer 消费)
     - ECS simulator 同步实现
     - sandbox profile 跨域引用拦截

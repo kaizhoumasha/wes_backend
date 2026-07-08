@@ -1,4 +1,4 @@
-"""Active object fact provider for Phase4 read models."""
+"""Active object fact provider for runtime read models."""
 
 from __future__ import annotations
 

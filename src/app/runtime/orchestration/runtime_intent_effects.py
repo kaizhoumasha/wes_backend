@@ -1,5 +1,5 @@
-# 阶段 2 burn-down C5a 镜像:src.workline_runtime.runtime_intent_effects 的平级副本
-# wlr 目录在阶段 3 整体删除时,本镜像改名为正式模块。
+# 旧 runtime 镜像实现:src.workline_runtime.runtime_intent_effects 的平级副本
+# 旧 runtime 入口删除后,本模块承载正式实现。
 # 自引用 src.workline_runtime.{effect_result, material_target_resolver,
 # resource_wait_evidence, runtime_intent} 已重定向到本目录 / 本目录 bridge。
 
@@ -18,10 +18,11 @@ from urllib.parse import urlparse
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
-from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
+from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
     SMT_SORTING_INBOUND_PLUGIN_KEY,
     SORTING_CONTEXT_SCHEMA_VERSION,
 )
+from src.app.runtime.capabilities.material_flow.runtime_identity import RECONCILIATION_RUNTIME_SOURCE
 from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.material_target_resolver import resolve_destination_device
@@ -1727,7 +1728,7 @@ class RuntimeIntentEffectApplier:
                 or "RECONCILIATION_EVIDENCE"
             ),
             business_step="RECONCILIATION_EVIDENCE",
-            source="PHASE4_RECONCILIATION",
+            source=RECONCILIATION_RUNTIME_SOURCE,
             evidence_json=payload,
             correlation_id=_non_empty_text(payload.get("correlation_id")),
             source_event_id=_non_empty_text(payload.get("source_event_id")),

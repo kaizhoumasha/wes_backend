@@ -1,4 +1,4 @@
-"""DeviceRuntimeProjection (Phase 3 ENG-012).
+"""DeviceRuntimeProjection runtime device-state projection.
 
 设备运行态在 runtime/orchestration 域的持久投影。
 Device 表仍保留设备主数据和当前兼容字段；本表面向调度、诊断和运行态查询。

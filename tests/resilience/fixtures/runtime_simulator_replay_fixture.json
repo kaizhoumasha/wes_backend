@@ -1,0 +1,44 @@
+{
+  "scenario_id": "runtime-simulator-replay",
+  "simulator_events": [
+    {
+      "source_system": "ECS",
+      "event_id": "sim-ecs-001",
+      "kind": "device_command",
+      "occurred_at": "2026-07-02T10:00:01Z",
+      "payload": {
+        "effect_key": "device-command:CMD-SIM-001",
+        "object_key": "pkg:PKG-SIM-0001",
+        "state": "IN_FLIGHT",
+        "pkg_code": "PKG-SIM-0001",
+        "bin_code": "BIN-SIM-01",
+        "command_code": "CMD-SIM-001"
+      }
+    },
+    {
+      "source_system": "WMS",
+      "event_id": "sim-wms-001",
+      "kind": "wms_reject",
+      "occurred_at": "2026-07-02T10:00:03Z",
+      "payload": {
+        "effect_key": "wms-fulfillment:FUL-SIM-001",
+        "object_key": "fulfillment:FUL-SIM-001",
+        "state": "RECONCILING",
+        "reason": "wms_business_reject",
+        "request_id": "FUL-SIM-001"
+      }
+    },
+    {
+      "source_system": "ECS",
+      "event_id": "sim-ecs-002",
+      "kind": "callback_out_of_order",
+      "occurred_at": "2026-07-02T10:00:02Z",
+      "payload": {
+        "object_key": "pkg:PKG-SIM-0001",
+        "state": "RECONCILING",
+        "reason": "late_device_result",
+        "command_code": "CMD-SIM-001"
+      }
+    }
+  ]
+}

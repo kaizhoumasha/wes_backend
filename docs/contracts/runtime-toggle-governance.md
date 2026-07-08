@@ -1,6 +1,6 @@
-# Phase 3 Runtime Toggle Governance
+# Runtime Toggle Governance
 
-Phase 3 只允许 typed runtime toggle。toggle 用于 release / ops 调试、provider version、adapter path 或调度策略切换，不得改变状态机安全语义。
+Runtime 只允许 typed runtime toggle。toggle 用于 release / ops 调试、provider version、adapter path 或调度策略切换，不得改变状态机安全语义。
 
 ## Required Fields
 
@@ -40,6 +40,6 @@ Phase 3 只允许 typed runtime toggle。toggle 用于 release / ops 调试、pr
 
 ## Lifecycle
 
-- toggle 必须短生命周期，默认在同一 Phase 内清理。
+- toggle 必须短生命周期，默认在同一 release cycle 内清理。
 - release toggle 必须在 PR 描述中列出 owner、expiry、scope、default、rollback、test_matrix。
 - ops toggle 只允许收窄 provider/adapter 行为，不能扩大权限或绕过鉴权。

@@ -1,4 +1,4 @@
-"""Phase4 SMT/NG/WMS reconciliation runtime capability 合同。
+"""Material-flow SMT/NG/WMS reconciliation runtime capability 合同。
 
 入站 callback 的上游边界是 RuntimeInbox；本测试只约束 provider-contract 输出。
 """
@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_reconciliation_runtime_turns_wms_reject_into_object_scope_hold() -> None:
     """WMS 拒绝真实 callback 时，runtime capability 必须生成 object scope hold 与 evidence。"""
 
-    from src.app.runtime.capabilities.phase4.smt_ng_wms_reconciliation_runtime_service import (
+    from src.app.runtime.capabilities.material_flow.smt_ng_wms_reconciliation_runtime_service import (
         SmtNgWmsReconciliationRuntimeService,
     )
 
@@ -54,7 +54,7 @@ def test_reconciliation_runtime_turns_wms_reject_into_object_scope_hold() -> Non
 def test_reconciliation_runtime_merges_duplicate_callback_without_hold() -> None:
     """重复 callback 同 hash 时只合并 evidence，不创建 RuntimeHold。"""
 
-    from src.app.runtime.capabilities.phase4.smt_ng_wms_reconciliation_runtime_service import (
+    from src.app.runtime.capabilities.material_flow.smt_ng_wms_reconciliation_runtime_service import (
         SmtNgWmsReconciliationRuntimeService,
     )
 
@@ -84,7 +84,7 @@ def test_reconciliation_runtime_merges_duplicate_callback_without_hold() -> None
 def test_reconciliation_runtime_rejects_callback_without_source_event_id() -> None:
     """RuntimeInbox callback evidence 缺 source_event_id 时不能生成对账事实。"""
 
-    from src.app.runtime.capabilities.phase4.smt_ng_wms_reconciliation_runtime_service import (
+    from src.app.runtime.capabilities.material_flow.smt_ng_wms_reconciliation_runtime_service import (
         SmtNgWmsReconciliationRuntimeService,
     )
 
@@ -106,7 +106,7 @@ def test_reconciliation_runtime_rejects_callback_without_source_event_id() -> No
 def test_runtime_hold_release_plan_is_scope_only() -> None:
     """RuntimeHold 解除计划只释放声明 scope，不能顺手放行整线 effect。"""
 
-    from src.app.runtime.capabilities.phase4.smt_ng_wms_reconciliation_runtime_service import (
+    from src.app.runtime.capabilities.material_flow.smt_ng_wms_reconciliation_runtime_service import (
         SmtNgWmsReconciliationRuntimeService,
     )
 
@@ -139,7 +139,7 @@ def test_runtime_capability_service_does_not_branch_on_external_environment() ->
         / "app"
         / "runtime"
         / "capabilities"
-        / "phase4"
+        / "material_flow"
         / "smt_ng_wms_reconciliation_runtime_service.py"
     ).read_text(encoding="utf-8")
 

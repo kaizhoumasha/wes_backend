@@ -1,11 +1,11 @@
-"""Phase 2 burn-down 阶段 2 C2 — workline 域工具镜像与 wlr 原文件 AST 签名一致。
+"""workline compat mirror — workline 域工具镜像与 wlr 原文件 AST 签名一致。
 
 不验证运行时行为, 只验证:
 - src/app/workline/utils.py top-level 函数名自包含
 - src/app/workline/trace_context.py TraceContext 类存在
 - diagnostics 顶层门面导出 diagnostics 包所有公开符号
 
-阶段 3 删除 src/workline_runtime/ 后此测试改为自包含校验。
+src/workline_runtime/ 删除后此测试改为自包含校验。
 """
 
 from __future__ import annotations
@@ -26,7 +26,10 @@ def _public_symbols_from_module(ast_module: ast.Module) -> set[str]:
 
 
 def test_workline_utils_mirror_is_self_consistent_after_wlr_removal() -> None:
-    """src/app/workline/utils.py 镜像在 wlr 物理删除后仍保持自包含 (阶段 3 终态)。"""
+    """src/app/workline/utils.py 镜像在 wlr 物理删除后仍保持自包含。
+
+    该契约覆盖 src.workline_runtime 删除后的正式实现。
+    """
     mirror_path = REPO_ROOT / "src/app/workline/utils.py"
     assert mirror_path.exists(), f"镜像文件不存在: {mirror_path}"
     mirror_ast = ast.parse(mirror_path.read_text(encoding="utf-8"))

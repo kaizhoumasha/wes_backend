@@ -1,4 +1,4 @@
-"""RuntimeCapabilityContext 路由测试 (Phase 1 CEO-009 / Packet D)。
+"""RuntimeCapabilityContext 路由测试。
 
 主计划 §3.5.1 + H2: inbound normalizer 不可注入业务 capability, 只允许
 `src.app.runtime.orchestration.consumers` 通过内部 inbound context 访问

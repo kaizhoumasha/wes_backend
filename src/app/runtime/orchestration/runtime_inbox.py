@@ -1,4 +1,4 @@
-"""RuntimeInbox (Phase 1 CEO-007 #4, 主计划 §9.2)。
+"""RuntimeInbox (主计划 §9.2)。
 
 入站消息统一入口: callback API 在鉴权 + normalize + 幂等校验通过后
 立即写入 RuntimeInbox(status=RECEIVED) 并 ACK; 异步 worker 以

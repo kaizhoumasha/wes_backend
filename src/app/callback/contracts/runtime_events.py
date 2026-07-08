@@ -1,4 +1,4 @@
-"""Callback 域 runtime events 常量与判定函数 — wlr.runtime_events 镜像 (Phase 2 launch PR)。
+"""Callback 域 runtime events 常量与判定函数 — wlr.runtime_events 镜像。
 
 镜像说明:
 - PLATFORM_CONTROL_EVENTS / RESERVED_RUNTIME_EVENTS 集合与 wlr.runtime_events

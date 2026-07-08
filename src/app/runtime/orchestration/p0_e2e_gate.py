@@ -1,4 +1,4 @@
-"""Phase 3 production P0 E2E evidence gate."""
+"""Runtime production P0 E2E evidence gate."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import ClassVar
 
 @dataclass(frozen=True, slots=True)
 class RuntimeP0E2EValidation:
-    """Validation result for a Phase 3 production P0 E2E artifact."""
+    """Validation result for a runtime production P0 E2E artifact."""
 
     valid: bool
     reason: str = "OK"
@@ -25,7 +25,7 @@ class RuntimeP0E2EValidation:
 
 
 class RuntimeP0E2EGate:
-    """Validate production evidence for the Phase 3 P0 hot-path closure gate."""
+    """Validate production evidence for the runtime P0 hot-path closure gate."""
 
     max_p95_seconds = 30.0
 

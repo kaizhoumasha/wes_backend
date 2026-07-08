@@ -39,14 +39,14 @@ def calculate_body_hmac_signature(
     body_sha256: str,
     app_id: str,
 ) -> str:
-    """计算 Phase 3 external callback body HMAC 签名。"""
+    """计算 external callback body HMAC 签名。"""
 
     canonical = f"{method.upper()}\n{path}\n{timestamp}\n{nonce}\n{body_sha256}\n{app_id}"
     return hmac.new(app_secret.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def is_body_hmac_required_path(path: str) -> bool:
-    """Phase 3 起 external callback 路径必须使用 body HMAC。"""
+    """external callback 路径必须使用 body HMAC。"""
 
     from src.core.conf import settings
 

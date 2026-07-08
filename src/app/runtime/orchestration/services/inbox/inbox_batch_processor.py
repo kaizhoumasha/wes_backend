@@ -50,10 +50,10 @@ if TYPE_CHECKING:
 
 
 def process_inbox_payload(payload: dict) -> dict:
-    """RuntimeInboxConsumer 委托入口 (Phase 2 burn-down 阶段 2 C1)。
+    """RuntimeInboxConsumer 委托入口。
 
-    阶段 2 占位: 返回消费者结果 dict。
-    阶段 3 整体迁入 consumers/runtime_inbox_consumer.py。
+    当前兼容入口返回消费者结果 dict, 由 consumers/runtime_inbox_consumer.py
+    统一暴露给 inbound normalizer 上下文。
     """
     return {
         "status": "PROCESSED",

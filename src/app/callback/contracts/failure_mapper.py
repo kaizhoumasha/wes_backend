@@ -1,4 +1,4 @@
-"""Callback 域 failure mapper — wlr.diagnostics.failure_mapper 镜像 (Phase 2 launch PR)。
+"""Callback 域 failure mapper — wlr.diagnostics.failure_mapper 镜像。
 
 镜像说明:
 - FailureDomain 来源由原 wlr.enums.FailureDomain 替换为 callback 域内本地

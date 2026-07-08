@@ -40,7 +40,7 @@ from src.app.device.models.command import (
     CommandCallbackResult,
 )
 from src.app.device.services import device_command_service, device_context_service, device_service
-from src.app.runtime.capabilities.phase4.start_admission_service import start_admission_service
+from src.app.runtime.capabilities.material_flow.start_admission_service import start_admission_service
 from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxConflict
 from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
 from src.app.runtime.orchestration.services.inbox import inbox_service
@@ -73,7 +73,7 @@ _RESULT_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
     {"command_code", "device_code", "result", "finish_time", "data", "error_detail"} | _TRACE_TOP_LEVEL_FIELDS
 )
 # 外部回调顶层白名单 (H4 边界一致): 不允许 provider_code/source_event_id
-# 等业务追溯字段直接放顶层, 必须放入 data 内。Phase 0 WMS 协议 source_event_id
+# 等业务追溯字段直接放顶层, 必须放入 data 内。WMS 协议 source_event_id
 # 字段已被 wms_execution_callback_normalizer 内化到 callback_type 解析,
 # 不需要作为顶层持久化字段。
 _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
@@ -119,7 +119,7 @@ _EXTERNAL_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
         "reason_code",
         "reason_message",
         # WMS 货架操作协议 (rack_operation) 顶层业务字段, 由 wms_mock 真实
-        # 集成测试覆盖, Phase 1 H4 边界设计时未枚举全, 现补齐。这些字段是 WMS
+        # 集成测试覆盖, H4 边界设计时未枚举全, 现补齐。这些字段是 WMS
         # 协议的合法顶层业务元数据, 不是 H4 关注的安全注入面; H4 子层守卫
         # (_FORBIDDEN_PARAM_KEYS 递归扫描 callback.data) 仍阻断 plc_address /
         # coordinate 等设备控制字段, 顶层白名单扩展不削弱 H4 安全语义。
@@ -252,7 +252,7 @@ _CALLBACK_SUBJECT_ALIASES = {
 class CallbackProviderProfileAdmissionService:
     """Callback 入站 provider profile admission。
 
-    Phase 1 residual gate: callback API 热路径必须拒绝 provider profile 未声明的
+    Callback admission gate: callback API 热路径必须拒绝 provider profile 未声明的
     event/result normalizer，不能只依赖 callback_type allow-list。
     """
 
@@ -590,7 +590,7 @@ async def _read_request_json(request: Request) -> JsonDict:
 def _normalize_external_callback_payload(payload: JsonDict) -> JsonDict:
     # 延迟 import: 避免 callback_ingress_service 模块加载时反向 import
     # `src.app.wms_integration.services.callback_normalizer`, 触发与 callback_normalizer.py 顶部
-    # `from src.app.callback.utils import ...` 的循环 import (Phase 2 launch PR 修复后暴露)
+    # `from src.app.callback.utils import ...` 的循环 import
     normalized_payload = _wms_callback_normalizer.wms_execution_callback_normalizer.normalize(payload)
     callback_type = cast("str", normalized_payload["callback_type"])
     _validate_external_callback_allow_list(payload, callback_type)
@@ -663,7 +663,7 @@ def _emit_callback_normalize_observability(
 
 
 def _validate_external_callback_allow_list(payload: JsonDict, callback_type: str) -> None:
-    """校验 Phase 3 external callback callback_type 与 source_system 矩阵。"""
+    """校验 external callback callback_type 与 source_system 矩阵。"""
 
     if callback_type not in _EXTERNAL_CALLBACK_ALLOWED_TYPES:
         raise ValueError(f"callback_type is not allow-listed: {callback_type}")

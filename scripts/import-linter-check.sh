@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# import-linter capability-isolation contract 校验 (Phase 1 CEO-009 / Packet D)。
+# import-linter capability-isolation contract 校验。
 # 用法: scripts/import-linter-check.sh
 # 退出码: 0 = 全部 contract 通过; 1 = 至少一个 contract 违规
 

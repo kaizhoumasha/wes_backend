@@ -35,11 +35,11 @@ SCAN_DIRS = {
     "docs/templates/workline_plugin": "workline_runtime",
 }
 
-# Phase 2 burn-down 会把 workline/services 的实现物理迁入 runtime/orchestration
+# runtime migration 会把 workline/services 的实现物理迁入 runtime/orchestration
 # 或 runtime/capabilities，但 legacy cleanup matrix 仍需按旧入口追踪清理策略。
 MIGRATED_SERVICE_IMPLS = {
     "src/app/workline/services/bin_cell_reservation_service.py": (
-        "src/app/runtime/capabilities/phase4/bin_cell_reservation_service.py"
+        "src/app/runtime/capabilities/material_flow/bin_cell_reservation_service.py"
     ),
     "src/app/workline/services/dispatch_attempt_service.py": (
         "src/app/runtime/orchestration/services/inbox/dispatch_attempt_service.py"
@@ -52,7 +52,7 @@ MIGRATED_SERVICE_IMPLS = {
     ),
     "src/app/workline/services/inbox_service.py": "src/app/runtime/orchestration/services/inbox/inbox_service.py",
     "src/app/workline/services/ng_return_item_service.py": (
-        "src/app/runtime/capabilities/phase4/ng_return_item_service.py"
+        "src/app/runtime/capabilities/material_flow/ng_return_item_service.py"
     ),
     "src/app/workline/services/object_transition_event_service.py": (
         "src/app/runtime/orchestration/services/inbox/object_transition_event_service.py"
@@ -77,16 +77,16 @@ MIGRATED_SERVICE_IMPLS = {
         "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py"
     ),
     "src/app/workline/services/single_layer_rack_orchestration_service.py": (
-        "src/app/runtime/capabilities/phase4/single_layer_rack_orchestration_service.py"
+        "src/app/runtime/capabilities/material_flow/single_layer_rack_orchestration_service.py"
     ),
     "src/app/workline/services/smt_inbound_handoff_service.py": (
         "src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py"
     ),
     "src/app/workline/services/start_admission_service.py": (
-        "src/app/runtime/capabilities/phase4/start_admission_service.py"
+        "src/app/runtime/capabilities/material_flow/start_admission_service.py"
     ),
     "src/app/workline/services/station_lease_service.py": (
-        "src/app/runtime/capabilities/phase4/station_lease_service.py"
+        "src/app/runtime/capabilities/material_flow/station_lease_service.py"
     ),
     "src/app/workline/services/timeline_sequence_service.py": (
         "src/app/runtime/orchestration/services/trace/timeline_sequence_service.py"
@@ -103,28 +103,28 @@ MIGRATED_SERVICE_IMPLS = {
 }
 MIGRATED_IMPL_TO_LEGACY = {impl: legacy for legacy, impl in MIGRATED_SERVICE_IMPLS.items()}
 
-# Phase5 business destructive cleanup 会把旧 WorkLine domain 业务合同迁入
-# runtime/capabilities/phase4/contracts。matrix 必须继续按 legacy entry_id 记账,
+# Business legacy cleanup 会把旧 WorkLine domain 业务合同迁入
+# runtime/capabilities/material_flow/contracts。matrix 必须继续按 legacy entry_id 记账,
 # 否则文件删除后 audit trace 会误以为业务承载项已经消失。
 MIGRATED_DOMAIN_IMPLS = {
     "src/app/workline/domain/contexts/rough_sorter.py": (
-        "src/app/runtime/capabilities/phase4/contracts/rough_sorter_context.py"
+        "src/app/runtime/capabilities/material_flow/contracts/rough_sorter_context.py"
     ),
     "src/app/workline/domain/contexts/smt_sorting_inbound.py": (
-        "src/app/runtime/capabilities/phase4/contracts/sorting_inbound_context.py"
+        "src/app/runtime/capabilities/material_flow/contracts/sorting_inbound_context.py"
     ),
-    "src/app/workline/domain/contracts/rough_sorter.py": "src/app/runtime/capabilities/phase4/contracts/rough_sorter.py",
-    "src/app/workline/domain/contracts/six_in_one.py": "src/app/runtime/capabilities/phase4/contracts/six_in_one.py",
-    "src/app/workline/domain/material_identity.py": "src/app/runtime/capabilities/phase4/contracts/material_identity.py",
-    "src/app/workline/domain/ng_reason.py": "src/app/runtime/capabilities/phase4/contracts/ng_reason.py",
+    "src/app/workline/domain/contracts/rough_sorter.py": "src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py",
+    "src/app/workline/domain/contracts/six_in_one.py": "src/app/runtime/capabilities/material_flow/contracts/six_in_one.py",
+    "src/app/workline/domain/material_identity.py": "src/app/runtime/capabilities/material_flow/contracts/material_identity.py",
+    "src/app/workline/domain/ng_reason.py": "src/app/runtime/capabilities/material_flow/contracts/ng_reason.py",
     "src/app/workline/domain/services/smt_inbound_handoff_reason.py": (
-        "src/app/runtime/capabilities/phase4/contracts/smt_inbound_handoff_reason.py"
+        "src/app/runtime/capabilities/material_flow/contracts/smt_inbound_handoff_reason.py"
     ),
     "src/app/workline/domain/services/smt_inbound_handoff_route_service.py": (
-        "src/app/runtime/capabilities/phase4/smt_inbound_handoff_route_service.py"
+        "src/app/runtime/capabilities/material_flow/smt_inbound_handoff_route_service.py"
     ),
     "src/app/workline/domain/services/smt_usage_policy.py": (
-        "src/app/runtime/capabilities/phase4/contracts/smt_usage_policy.py"
+        "src/app/runtime/capabilities/material_flow/contracts/smt_usage_policy.py"
     ),
 }
 
@@ -137,7 +137,7 @@ MIGRATED_TEST_IMPLS = {
     ),
 }
 
-# Phase 2 burn-down F-1/F-2:workline/repositories 运行态 repository 物理迁入
+# runtime migration F-1/F-2:workline/repositories 运行态 repository 物理迁入
 # runtime/orchestration/repositories。R-I3b seed 仍按旧入口追踪,映射回 legacy 路径。
 MIGRATED_REPOSITORIES = {
     "src/app/workline/repositories/bin_cell_reservation_repository.py": (
@@ -372,8 +372,8 @@ def _target_phase4_capability(text: str) -> tuple[str, str]:
         (("start_admission", "admission"), "StartAdmissionCapability.evaluate"),
         (("smt_usage",), "SmtUsagePolicyCapability.evaluate"),
     ]
-    capability = _first_matching_value(text, phase4_targets, "Phase4BusinessCapability.execute")
-    return "src/app/runtime/capabilities/phase4/", capability
+    capability = _first_matching_value(text, phase4_targets, "MaterialFlowBusinessCapability.execute")
+    return "src/app/runtime/capabilities/material_flow/", capability
 
 
 def _target_runtime_capability(entry_type: str, path: str, text: str) -> tuple[str, str]:
@@ -666,7 +666,7 @@ def parse_entries() -> list[Entry]:
         if m:
             add(m.group(1), m.group(3), "domain_object", "workline")
 
-    # 5b. Phase5 business cleanup 后,已迁入 Phase4 contracts/services 的 domain
+    # 5b. Business legacy cleanup 后,已迁入 material-flow contracts/services 的 domain
     # 符号仍按 legacy path 进入 matrix,保证 audit trace 与 ledger 稳定。
     _add_migrated_domain_entries(add)
 

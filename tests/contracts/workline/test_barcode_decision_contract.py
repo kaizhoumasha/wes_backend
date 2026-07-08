@@ -1,6 +1,6 @@
 """BarcodeDecisionService 回归测试。"""
 
-from src.app.runtime.capabilities.phase4.contracts.six_in_one import SixInOne
+from src.app.runtime.capabilities.material_flow.contracts.six_in_one import SixInOne
 from src.app.workline.domain import BarcodeDecisionType, barcode_decision_service
 
 

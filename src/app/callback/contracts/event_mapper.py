@@ -1,4 +1,4 @@
-"""Callback 域事件归一化 — wlr.plugin_sdk.normalizers.event_mapper 镜像 (Phase 2 launch PR)。
+"""Callback 域事件归一化 — wlr.plugin_sdk.normalizers.event_mapper 镜像。
 
 镜像说明:
 - 生产事件 source 的 event_type_mapping 行为与 wlr.plugin_sdk.normalizers.event_mapper 对齐。

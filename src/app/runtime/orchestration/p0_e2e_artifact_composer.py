@@ -1,4 +1,4 @@
-"""Compose Phase 3 production P0 E2E artifacts from trace evidence."""
+"""Compose runtime production P0 E2E artifacts from trace evidence."""
 
 from __future__ import annotations
 

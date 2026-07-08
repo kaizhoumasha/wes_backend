@@ -1,4 +1,4 @@
-"""Callback 域诊断模型 — wlr.diagnostics.models 镜像 (Phase 2 launch PR)。"""
+"""Callback 域诊断模型 — wlr.diagnostics.models 镜像。"""
 
 from __future__ import annotations
 

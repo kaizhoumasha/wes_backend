@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.runtime.capabilities.phase4.start_admission_service import StartAdmissionResult
+from src.app.runtime.capabilities.material_flow.start_admission_service import StartAdmissionResult
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.v1 import operation as operation_api
 
@@ -95,7 +95,7 @@ def test_sandbox_workline_start_route_uses_user_update_permission() -> None:
 
 
 def test_sandbox_workline_start_imports_start_admission_service_instance() -> None:
-    # Regression: ISSUE-001 — sandbox START imported the phase4 module,
+    # Regression: ISSUE-001 — sandbox START imported the material-flow module,
     # not the service instance.
     # Found by /qa on 2026-07-08
     # Report: .gstack/qa-reports/qa-report-localhost-2026-07-08.md

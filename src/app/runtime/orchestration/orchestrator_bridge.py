@@ -7,10 +7,10 @@ OrchestratorService - 编排器核心服务
 3. 校验 RuntimeIntent
 4. 交给 Runtime effect 层落地命令、等待、状态和 Timeline
 
-Phase 1 简化:
+Runtime lock simplification:
 - 两阶段锁合并为单阶段锁
 
-设计参考: 设计文档 phase2-orchestrator
+设计参考: runtime-orchestration 设计文档
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from src.app.runtime.capabilities.phase4.contracts.rough_sorter import (
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import (
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
     ACTION_TARGET_ROLES,
@@ -31,7 +31,7 @@ from src.app.runtime.capabilities.phase4.contracts.rough_sorter import (
     build_pick_and_put_payload,
     normalize_six_in_one_payload,
 )
-from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
+from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
     COMMAND_SOURCE_PICK,
     EVENT_SOURCE_PICK_REQUESTED,
     ROLE_SORTING_SOURCE_ARM,
@@ -65,7 +65,7 @@ _ALLOW_NULL_PLUGIN = False
 
 
 def set_allow_null_plugin(allow: bool) -> None:
-    """Phase5 后保留测试兼容入口；旧 NullPlugin 不再参与运行时 fallback。"""
+    """重构完成后保留测试兼容入口；旧 NullPlugin 不再参与运行时 fallback。"""
     global _ALLOW_NULL_PLUGIN
     _ALLOW_NULL_PLUGIN = allow
 
@@ -609,7 +609,7 @@ class OrchestratorService:
     def _get_lock(self, lock_key: str) -> AbstractAsyncContextManager[None]:
         """获取锁上下文管理器。
 
-        Phase 1: 单阶段锁，不再区分 READ/WRITE。
+        单阶段锁，不再区分 READ/WRITE。
 
         Args:
             lock_key: 锁的 key
@@ -638,7 +638,7 @@ class OrchestratorService:
     ) -> OrchestratorResult:
         """处理 Inbox 事件（单阶段互斥锁）
 
-        Phase 1 简化:两阶段锁合并为单阶段。
+        两阶段锁合并为单阶段。
         stale-session guard 由 Celery worker 保留（workline.py:1646-1660）。
 
         注意:session 锁确保同一 session 的消息串行处理。
@@ -704,7 +704,7 @@ class OrchestratorService:
         services: WorklineRuntimeServices,
         trace_id: str,
     ) -> OrchestratorResult:
-        """阶段 1: READ - 读取阶段（当前非共享读）
+        """READ pass - 读取阶段（当前非共享读）
 
         执行:
         - 读取 RuntimeCapabilityDispatcher 写入的 RuntimeIntent
@@ -759,7 +759,7 @@ class OrchestratorService:
         trace_id: str,
         read_result: OrchestratorResult,
     ) -> OrchestratorResult:
-        """阶段 2: WRITE - 写入阶段（独占）
+        """WRITE pass - 写入阶段（独占）
 
         执行:
         - 状态迁移验证
@@ -793,7 +793,7 @@ class OrchestratorService:
         return read_result
 
     def _runtime_intents_from_dispatcher(self, inbox: Any, *, workline: Any, trace_id: str) -> list[RuntimeIntent]:
-        """Normalize RuntimeInbox payload and dispatch to Phase4 runtime capability."""
+        """Normalize RuntimeInbox payload and dispatch to material-flow runtime capability."""
 
         normalized_input = normalize_inbox_input(
             inbox,

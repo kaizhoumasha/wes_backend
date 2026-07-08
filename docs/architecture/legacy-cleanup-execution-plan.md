@@ -1,8 +1,8 @@
-# Phase5 Legacy Cleanup Execution Plan
+# WorkLine Legacy Cleanup Execution Plan
 
 ## 结论
 
-Phase5 `phase5-tech` 已完成并随 PR #78 合并。`phase5-business` 携带 regenerated Phase3/Phase4 artifacts 后已通过 readiness gate，并已随 PR #79（`v0.14.0.0`，merge SHA `8c833610c08005005406b3a774c92519f69b7886`）执行并合并 business destructive cleanup：104 条 phase4 carrier 全部在 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 关闭或保留为目标态测试证据。2026-07-08 final cleanup 进一步删除旧 handling 队列表面，迁移并删除 WorkLine 运行态物理列。raw `reports/` artifacts 仍由 Git 忽略，重新验证前必须从 restored field/CI evidence 重新生成。
+Technical cleanup scope 已完成并随 PR #78 合并。Business legacy cleanup scope 携带 regenerated production/runtime artifacts 后已通过 readiness gate，并已随 PR #79（`v0.14.0.0`，merge SHA `8c833610c08005005406b3a774c92519f69b7886`）执行并合并 business legacy absence cleanup：104 条 phase4 carrier 全部在 `docs/architecture/business-legacy-absence-ledger.csv` 关闭或保留为目标态测试证据。2026-07-08 restructuring cleanup 进一步删除旧 handling 队列表面，迁移并删除 WorkLine 运行态物理列。raw `reports/` artifacts 仍由 Git 忽略，重新验证前必须从 restored field/CI evidence 重新生成。
 
 ## 执行顺序
 
@@ -12,7 +12,7 @@ Phase5 `phase5-tech` 已完成并随 PR #78 合并。`phase5-business` 携带 re
 RuntimeInbox
   -> InboundNormalizerRegistry
   -> RuntimeCapabilityDispatcher
-  -> Phase4 runtime service
+  -> material-flow runtime service
   -> RuntimeIntent / EffectPort
 ```
 
@@ -39,41 +39,41 @@ RuntimeInbox
 - `src/app/runtime/capability_catalog.py`
 - `src/app/runtime/normalization/*`
 - `src/app/runtime/orchestration/services/session/session_resolver.py`
-- `src/app/runtime/capabilities/phase4/contracts/*`
-- `src/app/runtime/capabilities/phase4/smt_inbound_handoff_route_service.py`
+- `src/app/runtime/capabilities/material_flow/contracts/*`
+- `src/app/runtime/capabilities/material_flow/smt_inbound_handoff_route_service.py`
 
 ## 验收与门禁
 
 必须通过：
 
-- `uv run pytest tests/architecture/test_phase5_legacy_absence_guardrail.py tests/workline_runtime/test_runtime_capability_dispatcher.py -q`
+- `uv run pytest tests/architecture/test_legacy_absence_guardrail.py tests/workline_runtime/test_runtime_capability_dispatcher.py -q`
 - `uv run pytest tests/architecture/test_runtime_capability_context_routing.py tests/workline_runtime/test_sorter_inbound_runtime_service.py -q`
-- `uv run python scripts/check_phase5_readiness_gate.py --lane technical`
-- `uv run python scripts/check_phase3_closure_gate.py --closure-profile production --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
-- `uv run python scripts/check_phase4_runtime_readiness_gate.py --readiness-profile production --phase4-runtime-evidence-artifact reports/phase4/runtime-evidence-production.json --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
-- `uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --phase3-benchmark-artifact reports/phase3/phase3-production-benchmark.json --phase4-evidence-artifact reports/phase4/runtime-evidence-production.json`
-  - `Phase 5 readiness passed: lane=business`
-- `uv run python scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`
-  - `Phase5 business destructive cleanup gate passed: mode=final`
+- `uv run python scripts/check_workline_restructuring_readiness_gate.py --scope technical`
+- `uv run python scripts/check_runtime_production_closure_gate.py --closure-profile production --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
+- `uv run python scripts/check_runtime_evidence_readiness_gate.py --readiness-profile production --runtime-evidence-artifact reports/phase4/runtime-evidence-production.json --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
+- `uv run python scripts/check_workline_restructuring_readiness_gate.py --scope business --production-e2e-artifact reports/phase3/phase3-p0-e2e.json --runtime-benchmark-artifact reports/phase3/phase3-production-benchmark.json --runtime-evidence-artifact reports/phase4/runtime-evidence-production.json`
+  - `WorkLine restructuring readiness passed: scope=business`
+- `uv run python scripts/check_business_legacy_absence_gate.py --mode final`
+  - `Business legacy absence gate passed: mode=final`
 
 本轮已确认：
 
 - technical gate passed。
-- Phase3 production closure gate passed。
-- Phase4 production runtime evidence gate passed。
+- Runtime production closure gate passed。
+- Runtime production evidence gate passed。
 - business gate passed。
-- business destructive cleanup gate passed。
-- final cleanup migration smoke passed；旧 handling 队列表面和 WorkLine 运行态物理列 absence guardrail passed。
+- business legacy absence gate passed。
+- restructuring cleanup migration smoke passed；旧 handling 队列表面和 WorkLine 运行态物理列 absence guardrail passed。
 - PR #79 已 merged to `develop`；未检测到 GitHub deploy workflow 且未提供生产 URL，因此 land report 记录为 `DEPLOYED (UNVERIFIED)`。
 - tracked provenance ledger: `docs/architecture/phase3-phase4-production-evidence-bundle.md`。
 
 ## 回滚
 
-单 PR 回滚优先使用 `git revert`。final cleanup 包含 Alembic migration；若已升级数据库，先按发布流程评估 `alembic downgrade -1` 的数据边界，再执行代码回滚。旧 handling 队列表数据无法仅靠 downgrade 恢复，必须依赖数据库备份或生产恢复流程。
+单 PR 回滚优先使用 `git revert`。restructuring cleanup 包含 Alembic migration；若已升级数据库，先按发布流程评估 `alembic downgrade -1` 的数据边界，再执行代码回滚。旧 handling 队列表数据无法仅靠 downgrade 恢复，必须依赖数据库备份或生产恢复流程。
 
 失败模式：
 
 - Unknown capability：`RuntimeCapabilityRouteError`，不 fallback 到 null plugin。
 - Undeclared provider capability：`RuntimeCapabilityUndeclaredError`，按 `ExternalContractProfile` fail closed。
-- Legacy import 回流：`tests/architecture/test_phase5_legacy_absence_guardrail.py` 阻断。
-- WorkLine 运行态投影迁移由 final cleanup migration 与 migration smoke 证明；后续不得重新把运行态字段加回 WorkLine 配置表。
+- Legacy import 回流：`tests/architecture/test_legacy_absence_guardrail.py` 阻断。
+- WorkLine 运行态投影迁移由 restructuring cleanup migration 与 migration smoke 证明；后续不得重新把运行态字段加回 WorkLine 配置表。

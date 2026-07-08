@@ -1,8 +1,8 @@
-"""外部合同 profile Pydantic 校验模型（Phase 0 测试专用）。
+"""外部合同 profile Pydantic 校验模型（测试专用）。
 
-Phase 0 只供 fixture 校验与 contract tests import；
+只供 fixture 校验与 contract tests import；
 禁止 ``src/app/`` 下任何模块 import 本文件。
-Phase 1 CEO-013 将升级到 ``src/app/wms_integration/models/external_contract_profile.py``。
+生产路径已升级到 ``src/app/contracts/external_contract_profile.py``。
 
 字段定义对齐 ``docs/contracts/external-contract-profile.md`` §2 字段表。
 """
@@ -105,7 +105,7 @@ class ExternalContractProfile(BaseModel):
     unsupported_actions: list[str] = Field(default_factory=list)
     security_profile: dict | None = Field(
         default=None,
-        description="Phase 0 只占位，不展开 HMAC canonical",
+        description="测试 fixture 只占位，不展开 HMAC canonical",
     )
     notes: str | None = Field(default=None, max_length=2000)
 

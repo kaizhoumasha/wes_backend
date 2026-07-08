@@ -208,11 +208,11 @@ pipeline {
                     steps {
                         script {
                             echo '🔍 架构护栏检查 (§7.5 不变量)...'
-                            // Phase 0 默认 warn-only; Phase 1 起设 ARCHITECTURE_PHASE=phase1 切 enforced
+                            // 默认 enforced；可用 ARCHITECTURE_GUARDRAIL_MODE=warn 临时回退。
                             sh '''
                                 set -e
                                 docker run --rm \
-                                    -e ARCHITECTURE_PHASE=${ARCHITECTURE_PHASE:-phase0} \
+                                    -e ARCHITECTURE_GUARDRAIL_MODE=${ARCHITECTURE_GUARDRAIL_MODE:-enforced} \
                                     ${CI_IMAGE} \
                                     sh -c './scripts/git-quality-gate.sh --check architecture --ci'
                             '''

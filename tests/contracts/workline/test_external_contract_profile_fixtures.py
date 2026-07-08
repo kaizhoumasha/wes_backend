@@ -1,8 +1,8 @@
-"""P0-006 external contract profile fixtures 必须真实存在且可校验 (Phase 1 CEO-013 升级)。
+"""P0-006 external contract profile fixtures 必须真实存在且可校验。
 
-Phase 1 升级: 从 tests.support.external_contract_profile 切到生产
-src.app.contracts.external_contract_profile (共享层), 验证 fixture 通过
-provider_simulator_registry。
+测试覆盖从 tests.support.external_contract_profile 切到生产共享层
+src.app.contracts.external_contract_profile 后，fixture 仍能通过
+provider_simulator_registry 校验。
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ REQUIRED_CASES = {"success", "reject", "timeout", "duplicate", "missing_event_id
 
 
 def _wms_profile() -> ExternalContractProfile:
-    """构造 WMS sandbox 测试 profile (Phase 0 fixture 配套)。"""
+    """构造 WMS sandbox 测试 profile (默认 fixture set 配套)。"""
     return ExternalContractProfile(
         provider_code="WMS",
         contract_version="2026-06-25",
@@ -60,14 +60,14 @@ def test_wms_default_fixtures_match_schema_and_profile_identity():
         assert fixture.case_id == case_path.stem
 
 
-def test_wms_profile_validator_against_phase0_5_fixtures():
-    """Phase 0 5 个 fixture 全部过 ExternalContractProfile Pydantic 校验。"""
+def test_wms_profile_validator_against_default_fixture_set():
+    """默认 5 个 fixture 全部过 ExternalContractProfile Pydantic 校验。"""
     profile = _wms_profile()
     assert profile.fixture_set_required_cases == sorted(REQUIRED_CASES)
 
 
-def test_provider_simulator_registry_loads_phase0_fixtures():
-    """ProviderSimulatorRegistry 加载 Phase 0 5 fixture 成功。"""
+def test_provider_simulator_registry_loads_default_fixture_set():
+    """ProviderSimulatorRegistry 加载默认 5 fixture 成功。"""
     registry = ProviderSimulatorRegistry(_wms_profile(), repo_root=REPO_ROOT)
     registry.load()
     assert sorted(registry.list_cases()) == sorted(REQUIRED_CASES)

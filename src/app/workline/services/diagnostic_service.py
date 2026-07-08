@@ -85,7 +85,7 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
     ) -> WorklineDiagnostic:
         """按诊断事件创建或复用诊断记录。
 
-        callback 域在 Phase 2 launch PR 中拥有本地诊断镜像模型;进入
+        callback 域拥有本地诊断镜像模型;进入
         workline 持久化边界时统一转换为 WLR 模型,避免 Pydantic 嵌套模型类型不匹配。
         """
 

@@ -1,4 +1,4 @@
-"""Phase 1 CEO-007 剩余 3 实体 + H5 idempotency_keys contract test。
+"""Runtime 剩余实体 + H5 idempotency_keys contract test。
 
 ExecutionWorkItem (对象级执行令牌) + RuntimeTimeline (append-only 轨迹) +
 RuntimeHold (运行时闸门) + IdempotencyKey (H5 幂等键表)。
@@ -201,7 +201,7 @@ def test_runtime_schema_registered_for_database_initialization():
     assert validate_schema("wes_runtime")
 
 
-def test_remaining_runtime_migration_creates_all_tables():
+def test_remaining_runtime_schema_migration_creates_all_tables():
     """Alembic revision 必须覆盖剩余 runtime/orchestration 表和 wes_runtime schema。"""
     migration_files = list(Path("migrations/versions").glob("*_add_remaining_runtime_orchestration_.py"))
     assert len(migration_files) == 1

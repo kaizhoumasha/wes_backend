@@ -1,5 +1,5 @@
-# 阶段 2 burn-down C5b 镜像:src.workline_runtime.plugin_sdk.normalizers.input_normalizer 的平级副本
-# wlr 目录在阶段 3 整体删除时,本镜像与 wlr 副本合并 / 删除。
+# 旧 plugin runtime 镜像实现:src.workline_runtime.plugin_sdk.normalizers.input_normalizer 的平级副本
+# 旧 runtime 入口删除后,本模块承载对应正式实现。
 # 自引用 src.workline_runtime.{contracts, plugin_sdk.classifiers, plugin_sdk.contracts, utils}
 # 已重定向到 src.app.workline.domain.contracts / src.app.runtime.normalization.
 # {classifiers,contracts} / src.app.workline.utils。
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.app.runtime.capabilities.phase4.contracts.six_in_one import SixInOne
+from src.app.runtime.capabilities.material_flow.contracts.six_in_one import SixInOne
 from src.app.runtime.capability_catalog import classify_workline_result, resolve_workline_business_key
 from src.app.runtime.normalization.classifiers.result_classifier import (
     classify_result,

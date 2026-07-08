@@ -1,6 +1,6 @@
-"""RuntimeInbox 单点消费者入口 (Phase 2 burn-down 阶段 2, 主计划 §3.5.1)。
+"""RuntimeInbox 单点消费者入口。
 
-阶段 3 时把 inbox 状态机业务逻辑迁入。
+inbox 状态机业务逻辑由 runtime/orchestration/services/inbox 承载。
 """
 
 from src.app.runtime.orchestration.consumers.runtime_inbox_consumer import (

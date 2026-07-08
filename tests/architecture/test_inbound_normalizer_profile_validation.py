@@ -1,4 +1,4 @@
-"""InboundNormalizerProfile Pydantic model_validator 测试 (Phase 1 CEO-009 / Packet D)。
+"""InboundNormalizerProfile Pydantic model_validator 测试。
 
 主计划 §3.5.1 + H2 黑名单: InboundNormalizerProfile 必须拒绝不合规输入,
 防止业务 capability 错误注入 inbound normalizer (R-I3a/R-I3b/R-I3c)。

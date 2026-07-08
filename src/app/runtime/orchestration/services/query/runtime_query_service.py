@@ -1,9 +1,9 @@
-# Phase 2 burn-down 阶段 4 C4a 物理迁入
+# 已从 workline/services/ 迁入
 # 旧位置: src/app/workline/services/runtime_query_service.py
 # (C4a 起改为 PEP 562 re-export shim)
 # 新位置: src/app/runtime/orchestration/services/query/runtime_query_service.py
 # cleanup-matrix strategy=rebuild,
-# target_path=src/app/runtime/orchestration/services/(同 stage4 C2/C3 shim 模式)
+# target_path=src/app/runtime/orchestration/services/(同 runtime service shim 模式)
 
 """RuntimeQueryService - 运行监控中心只读聚合查询服务。"""
 
@@ -22,7 +22,7 @@ from src.app.callback.repositories.callback_log_repository import callback_log_r
 from src.app.device.models import Device, DeviceCommand
 from src.app.device.repositories import device_repository
 from src.app.resource.services.active_rack_snapshot_service import smt_active_rack_snapshot_service
-from src.app.runtime.capabilities.phase4.station_lease_service import station_lease_service
+from src.app.runtime.capabilities.material_flow.station_lease_service import station_lease_service
 from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.business_identity_bridge import resolve_payload_display_identity
 from src.app.runtime.orchestration.models import (

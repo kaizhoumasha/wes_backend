@@ -1,6 +1,6 @@
 # MaterialLocationQuery SPEC
 
-> 状态：Phase 4 Wave1 开发/测试已落地；生产 SLA/benchmark 随 production closure profile 验收
+> 状态：MaterialLocationQuery 开发/测试已落地；生产 SLA/benchmark 随 production closure profile 验收
 > 父计划：`workline-and-plugin-restructuring.md` §10.5
 
 ---
@@ -15,9 +15,9 @@ MaterialLocationQuery 是作业期位置查询能力，不是状态 owner。它�
 
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
-| Phase 1 callback normalizer admission 已关闭 | 查询响应仍必须保留 `provider_code` / `source_event_id` / `ExternalReference`，不信任裸 callback payload |
-| Phase 2 WorkLine 运行态 final cleanup 已完成 | 查询接口不输出或推导 WorkLine 运行状态，只输出对象位置和 evidence |
-| Phase 3 RuntimeInbox / closure profile | 查询设计可落地为只读合同；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产上线前必须确认 RuntimeInbox cutover 和 `--closure-profile production` |
+| Callback admission 已关闭 | 查询响应仍必须保留 `provider_code` / `source_event_id` / `ExternalReference`，不信任裸 callback payload |
+| WorkLine runtime projection cleanup 已完成 | 查询接口不输出或推导 WorkLine 运行状态，只输出对象位置和 evidence |
+| Runtime production closure profile | 查询设计可落地为只读合同；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产上线前必须确认 RuntimeInbox cutover 和 `--closure-profile production` |
 
 ## 3. 查询入口
 
@@ -65,7 +65,7 @@ MaterialLocationQuery 是作业期位置查询能力，不是状态 owner。它�
 
 ## 7. 实施前置条件
 
-实现前必须确认 Phase 1 callback normalizer admission 不改变 ExternalReference 字段口径；`CellReservation` 的 RESERVED/OCCUPIED/RECONCILING 与现有 `WorklineBinCellReservation` 映射已按 `cell-reservation-spec.md` 锁定；当前开发/测试默认使用 MOCK closure，生产上线前必须显式通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`。
+实现前必须确认 callback normalizer admission 不改变 ExternalReference 字段口径；`CellReservation` 的 RESERVED/OCCUPIED/RECONCILING 与现有 `WorklineBinCellReservation` 映射已按 `cell-reservation-spec.md` 锁定；当前开发/测试默认使用 MOCK closure，生产上线前必须显式通过 `scripts/check_runtime_production_closure_gate.py --closure-profile production ...`。
 
 ## 8. 性能预算
 
@@ -78,6 +78,6 @@ MaterialLocationQuery 是作业期位置查询能力，不是状态 owner。它�
 | WMS snapshot 查询超时 | 5s | 异步查询，不在请求链内；超时后跳过优先级 #4，标记 `source=WMS_UNAVAILABLE`；snapshot 新鲜度由上次成功查询时间决定 |
 | 并发查询限流 | 50 req/s per WorkLine | 超过限流返回 429 |
 
-## 9. Phase 5 legacy 判定
+## 9. Legacy cleanup 判定
 
-只有当 MaterialLocationQuery 的 6 个入口合同测试通过，且旧 plugin 中对应位置查询入口已被 characterization mapping 覆盖后，Phase 5 才能删除这些 legacy 查询入口。
+只有当 MaterialLocationQuery 的 6 个入口合同测试通过，且旧 plugin 中对应位置查询入口已被 characterization mapping 覆盖后，legacy cleanup 才能删除这些 legacy 查询入口。

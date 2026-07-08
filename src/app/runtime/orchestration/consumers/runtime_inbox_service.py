@@ -1,4 +1,4 @@
-"""RuntimeInbox Phase 3 consumer service."""
+"""RuntimeInbox consumer service."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ class RuntimeInboxConflict(Exception):
 
 
 def _runtime_inbox_operation_spec(event_type: str) -> IdempotencyOperationSpec:
-    """将 callback channel/event_type 归一到 Phase 3 operation_kind 审计矩阵。"""
+    """将 callback channel/event_type 归一到 runtime operation_kind 审计矩阵。"""
 
     normalized = event_type.strip().lower().replace("-", "_")
     aliases = {

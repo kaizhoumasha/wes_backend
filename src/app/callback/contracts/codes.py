@@ -1,4 +1,4 @@
-"""Callback 域诊断错误码 — wlr.diagnostics.codes 镜像 (Phase 2 launch PR)。
+"""Callback 域诊断错误码 — wlr.diagnostics.codes 镜像。
 
 镜像说明:
 - ErrorCode 枚举值与 wlr.diagnostics.codes 完全一致,跨域调用方按字符串

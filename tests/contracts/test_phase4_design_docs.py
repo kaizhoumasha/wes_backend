@@ -23,7 +23,7 @@ def _read(path: Path) -> str:
 
 
 def _phase4_main_plan_text(main_plan: str) -> str:
-    start = main_plan.index("### 10.5 Phase 4")
+    start = main_plan.index("### 10.5 Material-flow target capabilities")
     next_section = main_plan.find("### 10.6", start)
     phase4_section = main_plan[start:] if next_section == -1 else main_plan[start:next_section]
     phase4_startup_lines = "\n".join(line for line in main_plan.splitlines() if "Phase 4 启动时" in line)
@@ -54,7 +54,7 @@ def test_phase4_design_package_exists_and_is_linked_from_main_plan() -> None:
     assert umbrella.exists()
     umbrella_text = _read(umbrella)
     assert "Residual Readiness Register" in umbrella_text
-    assert "scripts/check_phase3_closure_gate.py" in umbrella_text
+    assert "scripts/check_runtime_production_closure_gate.py" in umbrella_text
 
     for filename in PHASE4_SPEC_FILES:
         assert filename in umbrella_text
@@ -84,14 +84,18 @@ def test_phase4_specs_keep_residual_gates_explicit() -> None:
         "Residual Readiness",
         "行为契约测试",
         "实施前置条件",
-        "Phase 5 legacy",
+        "Legacy cleanup",
     )
 
     for filename in PHASE4_SPEC_FILES:
         text = _read(REPO_ROOT / "docs" / "architecture" / filename)
         for token in required_tokens:
             assert token in text, f"{filename} missing {token}"
-        for residual in ("Phase 1", "Phase 2", "Phase 3"):
+        for residual in (
+            "Callback admission",
+            "WorkLine runtime projection cleanup",
+            "Runtime production closure profile",
+        ):
             assert residual in text, f"{filename} missing {residual} residual gate"
         assert "不复用旧 plugin" in text
 
@@ -129,19 +133,19 @@ def test_phase4_design_does_not_prematurely_close_implementation_or_legacy_drop(
         "Phase 4 实现完成",
         "Phase4 实现完成",
         "Phase 5 可以提前删除",
-        "绕过 Phase 3 closure",
+        "绕过 production closure",
     ):
         assert forbidden not in combined
 
     assert "Phase 4 设计可以先行" in combined
-    assert "Phase 5 才能删除" in combined or "Phase 5 才能删除这些 legacy" in combined
+    assert "legacy cleanup 才能删除" in combined
 
 
 def test_phase4_spec_status_headers_match_development_scope() -> None:
     expected_status_tokens = {
-        "cell-reservation-spec.md": ("P0", "开发/测试"),
-        "material-location-query-spec.md": ("Wave1", "开发/测试"),
-        "workline-active-objects-spec.md": ("Wave1", "开发/测试"),
+        "cell-reservation-spec.md": ("CellReservation", "开发/测试"),
+        "material-location-query-spec.md": ("MaterialLocationQuery", "开发/测试"),
+        "workline-active-objects-spec.md": ("WorklineActiveObjects", "开发/测试"),
         "sorter-inbound-capability-spec.md": ("runtime capability", "evidence profile"),
         "smt-ng-wms-reconciliation-spec.md": ("runtime capability", "evidence profile"),
     }
@@ -233,9 +237,9 @@ def test_smt_ng_wms_reconciliation_contract_covers_conflict_scenarios() -> None:
         assert token in text
 
 
-def test_phase4_wave2_wave3_mock_acceptance_is_non_production_scope() -> None:
+def test_material_flow_mock_acceptance_is_non_production_scope() -> None:
     docs = [
-        _read(REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-04-phase4-runtime-readiness.md"),
+        _read(REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-04-runtime-evidence-readiness.md"),
         _read(REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-07-03-phase4-design-with-residuals.md"),
         _phase4_main_plan_text(_read(REPO_ROOT / "docs" / "architecture" / "workline-and-plugin-restructuring.md")),
         _read(REPO_ROOT / "docs" / "architecture" / "sorter-inbound-capability-spec.md"),
@@ -246,16 +250,16 @@ def test_phase4_wave2_wave3_mock_acceptance_is_non_production_scope() -> None:
     for token in (
         "本机开发环境 MOCK 验收",
         "不做生产接入",
-        "tests/mock/phase4",
+        "tests/mock/material_flow",
         "生产热路径",
-        "Phase 1/2/3 residual gates",
+        "runtime residual gate",
     ):
         assert token in combined
 
 
-def test_phase3_closure_gate_is_mock_for_current_dev_test_scope() -> None:
+def test_production_closure_gate_is_mock_for_current_dev_test_scope() -> None:
     docs = [
-        _read(REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-04-phase4-runtime-readiness.md"),
+        _read(REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-04-runtime-evidence-readiness.md"),
         _read(REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-07-03-phase4-design-with-residuals.md"),
         _phase4_main_plan_text(_read(REPO_ROOT / "docs" / "architecture" / "workline-and-plugin-restructuring.md")),
         *[_read(REPO_ROOT / "docs" / "architecture" / filename) for filename in PHASE4_SPEC_FILES],
@@ -272,10 +276,10 @@ def test_phase3_closure_gate_is_mock_for_current_dev_test_scope() -> None:
     for forbidden in (
         "Wave2/Wave3 阻塞",
         "等待真实环境 evidence",
-        "Phase 3 closure artifacts 未完整",
+        "production closure artifacts 未完整",
         "正式上线前必须有 production P0 E2E artifact",
-        "必须先补齐 Phase 3 closure artifact 和 benchmark evidence",
+        "必须先补齐 production closure artifact 和 benchmark evidence",
         "生产闭环实现必须等待 RuntimeInbox cutover、P0 E2E artifact 和 production benchmark artifact",
-        "实现前必须通过 Phase 3 closure gate，尤其是 RuntimeInbox cutover 与 queue writer PostgreSQL evidence",
+        "实现前必须通过 production closure gate，尤其是 RuntimeInbox cutover 与 queue writer PostgreSQL evidence",
     ):
         assert forbidden not in combined

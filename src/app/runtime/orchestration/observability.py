@@ -1,4 +1,4 @@
-"""Phase 3 runtime observability contract registry."""
+"""Runtime observability contract registry."""
 
 from __future__ import annotations
 
@@ -136,7 +136,7 @@ class RuntimeOpenTelemetryHttpExporter:
 
 
 class RuntimeObservabilityRegistry:
-    """Registry for stable Phase 3 span/metric/log event contracts."""
+    """Registry for stable runtime span/metric/log event contracts."""
 
     def __init__(
         self,

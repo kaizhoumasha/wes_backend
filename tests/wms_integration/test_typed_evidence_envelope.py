@@ -1,4 +1,4 @@
-"""Phase 3 typed ExternalReference / EvidenceEnvelope contracts."""
+"""Typed ExternalReference / EvidenceEnvelope contracts."""
 
 from __future__ import annotations
 

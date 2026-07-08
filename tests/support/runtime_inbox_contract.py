@@ -1,8 +1,8 @@
-"""RuntimeInbox 目标态状态机契约（Phase 0 测试专用, C5）。
+"""RuntimeInbox 目标态状态机契约（测试专用, C5）。
 
 不 import legacy src.app.workline.models.inbox.WorklineInbox;
 旧 NEW/RETRY/PROCESSING 只可作 characterization 来源, 不反向决定目标态命名。
-Phase 1 CEO-007 升级到生产 runtime/orchestration。
+生产路径已升级到 runtime/orchestration。
 
 对应主计划 §9.2 RuntimeInbox 处理契约 + §7.5 C5。
 """

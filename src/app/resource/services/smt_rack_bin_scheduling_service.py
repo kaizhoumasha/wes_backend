@@ -30,7 +30,9 @@ def _smt_usage_policy() -> Any:
 
     global SMT_USAGE_POLICY
     if SMT_USAGE_POLICY is None:
-        usage_policy_module = importlib.import_module("src.app.runtime.capabilities.phase4.contracts.smt_usage_policy")
+        usage_policy_module = importlib.import_module(
+            "src.app.runtime.capabilities.material_flow.contracts.smt_usage_policy"
+        )
         SMT_USAGE_POLICY = usage_policy_module.SMT_USAGE_POLICY
     return SMT_USAGE_POLICY
 

@@ -1,4 +1,4 @@
-"""Callback 域诊断构建器 — wlr.diagnostics.builder 镜像 (Phase 2 launch PR)。
+"""Callback 域诊断构建器 — wlr.diagnostics.builder 镜像。
 
 镜像说明:
 - 与 wlr.diagnostics.builder 行为一致 (DEFAULTS 字典 + build_diagnostic_*

@@ -1,16 +1,16 @@
-"""Phase4 sorter inbound preview capability 合同。"""
+"""Material-flow sorter inbound preview capability 合同。"""
 
 from __future__ import annotations
 
-from src.app.runtime.capabilities.phase4.sorter_inbound_preview_service import (
-    Phase4SorterInboundPreviewService,
+from src.app.runtime.capabilities.material_flow.sorter_inbound_preview_service import (
+    SorterInboundPreviewService,
 )
 
 
 def test_rough_sorter_preview_keeps_local_fact_and_splits_wms_effect_ports() -> None:
     """粗分机 preview 必须拆分本地物理事实与 WMS 同步失败。"""
 
-    service = Phase4SorterInboundPreviewService()
+    service = SorterInboundPreviewService()
 
     preview = service.preview_rough_sorter_inbound(
         {
@@ -38,7 +38,7 @@ def test_rough_sorter_preview_keeps_local_fact_and_splits_wms_effect_ports() -> 
 def test_sorter_preview_enforces_join_gate_and_prefetch_manifest() -> None:
     """南向投料 join gate 与扫码平台预取能力必须独立判断。"""
 
-    service = Phase4SorterInboundPreviewService()
+    service = SorterInboundPreviewService()
 
     blocked = service.preview_sorter_inbound(
         {
@@ -101,7 +101,7 @@ def test_sorter_preview_enforces_join_gate_and_prefetch_manifest() -> None:
 def test_full_box_preview_pre_diverts_before_sorter_station_admission() -> None:
     """满箱物料必须在分拣机逐件流程前分流。"""
 
-    service = Phase4SorterInboundPreviewService()
+    service = SorterInboundPreviewService()
 
     preview = service.preview_full_box_exchange(
         {
@@ -126,7 +126,7 @@ def test_full_box_preview_pre_diverts_before_sorter_station_admission() -> None:
 def test_change_rack_face_preview_is_independent_fulfillment() -> None:
     """CHANGE_RACK_FACE 不能被 full-box exchange 成功语义吞并。"""
 
-    service = Phase4SorterInboundPreviewService()
+    service = SorterInboundPreviewService()
 
     preview = service.preview_change_rack_face(
         {
@@ -148,7 +148,7 @@ def test_change_rack_face_preview_is_independent_fulfillment() -> None:
 def test_ctu_batch_preview_parent_success_does_not_hide_child_issues() -> None:
     """CTU 父成功不能掩盖子项缺失、重复和部分失败。"""
 
-    service = Phase4SorterInboundPreviewService()
+    service = SorterInboundPreviewService()
 
     preview = service.preview_ctu_batch(
         {
