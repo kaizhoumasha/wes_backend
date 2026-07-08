@@ -63,11 +63,11 @@ RuntimeHold 解除必须声明：
 
 ## 7. 实施前置条件
 
-生产热路径实现前必须确认 RuntimeInbox production hot path 已可重试/死信/人工重放，CellReservation RECONCILING 持久化或冻结口径已按 `cell-reservation-spec.md` 锁定，并显式通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`。
+生产热路径实现前必须确认 RuntimeInbox production hot path 已可重试/死信/人工重放，CellReservation RECONCILING 持久化或冻结口径已按 `cell-reservation-spec.md` 锁定，并显式通过 `scripts/check_runtime_production_closure_gate.py --closure-profile production ...`。
 
 ### 7.1 本机开发环境 MOCK 验收
 
-Wave3 SMT/NG/WMS 对账本轮降级为本机开发环境 MOCK 验收，不做生产接入。验收入口固定为 `tests/mock/phase4` 与本机 WMS reconciliation mock：
+Wave3 SMT/NG/WMS 对账本轮降级为本机开发环境 MOCK 验收，不做生产接入。验收入口固定为 `tests/mock/material_flow` 与本机 WMS reconciliation mock：
 
 - mock 必须能表达 NG evidence、本地物理事实缺失、WMS 拒绝、目标箱回写失败、重复 callback、乱序 callback 与 source_version drift。
 - mock 返回的对账快照必须标记 `LOCAL_MOCK_ONLY`，且 `production_write_path=false`。

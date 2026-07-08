@@ -1,7 +1,7 @@
 """Phase 2 runtime_status 归属收敛守护。
 
 WorkLine 物理运行态字段已移除，运行态归属在 runtime/orchestration
-原生投影。WorkLine 配置域与 Phase4 capability 不能再把 WorkLine 字段当作
+原生投影。WorkLine 配置域与 material-flow capability 不能再把 WorkLine 字段当作
 运行态事实直接读写；只读展示入口只能通过 projection snapshot 暴露。
 """
 
@@ -19,7 +19,7 @@ READONLY_PROJECTION_VIEWS = {
 }
 OWNER_SENSITIVE_ROOTS = (
     Path("src/app/workline"),
-    Path("src/app/runtime/capabilities/phase4"),
+    Path("src/app/runtime/capabilities/material_flow"),
 )
 DOC_PATHS = {
     Path("docs/architecture/workline-and-plugin-restructuring.md"),
@@ -235,8 +235,8 @@ status = workline_snapshot.runtime_status
     assert _direct_runtime_status_reads(violation_tree) == [3]
 
 
-def test_workline_and_phase4_owner_sensitive_paths_use_projection_snapshot_for_runtime_status() -> None:
-    """WorkLine 域与 Phase4 capability 不能直接读取 runtime_status 作归属判断。
+def test_workline_and_material_flow_owner_sensitive_paths_use_projection_snapshot_for_runtime_status() -> None:
+    """WorkLine 域与 material-flow capability 不能直接读取 runtime_status 作归属判断。
 
     允许列表保持很窄：projection service 是唯一字段读写入口；query/trace 是
     runtime/orchestration 只读展示层，且另有专门测试要求它们通过 snapshot 暴露。

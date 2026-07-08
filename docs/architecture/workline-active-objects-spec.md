@@ -62,7 +62,7 @@ WorklineActiveObjects 是 WorkLine 当前作业对象的只读聚合视图。它
 
 ## 7. 实施前置条件
 
-实现可以作为只读查询薄片先行；若要展示 reservation deadline、冻结格位或 RECONCILING 来源，必须先引用 `cell-reservation-spec.md` 中的状态映射；若要接入生产运维界面，必须先通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`。
+实现可以作为只读查询薄片先行；若要展示 reservation deadline、冻结格位或 RECONCILING 来源，必须先引用 `cell-reservation-spec.md` 中的状态映射；若要接入生产运维界面，必须先通过 `scripts/check_runtime_production_closure_gate.py --closure-profile production ...`。
 
 ## 8. 性能预算
 

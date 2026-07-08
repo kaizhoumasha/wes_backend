@@ -1,4 +1,4 @@
-"""RuntimeInboxConsumer — RuntimeInbox 单点入口 (Phase 2 burn-down 阶段 2 C1)。
+"""RuntimeInboxConsumer — RuntimeInbox 单点入口 (runtime migration 阶段 2 C1)。
 
 主计划 §3.5.1 + R-WLR 严格型唯一允许 consumer:
 - 接收 inbound_registry + normalizer_context + correlation + consumer_id
@@ -27,7 +27,7 @@ _MAX_TRACKED_IDS = 10_000
 
 
 class RuntimeInboxConsumer:
-    """RuntimeInbox 入口消费者 facade (主计划 §3.5.1 + 阶段 2 burn-down C1)。
+    """RuntimeInbox 入口消费者 facade (主计划 §3.5.1 + runtime migration C1)。
 
     不实现 inbox 状态机业务逻辑 (阶段 3 才搬迁) ; 本类作为
     InboundNormalizerContext 唯一合法 consumer 的占位 facade, 委托给

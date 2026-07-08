@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.app.contracts.external_contract_profile import ExternalContractProfile
-from src.app.runtime.capabilities.phase4.sorter_inbound_runtime_service import Phase4SorterInboundRuntimeService
+from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service import SorterInboundRuntimeService
 from src.app.runtime.capability_dispatcher import (
     RuntimeCapabilityCatalog,
     RuntimeCapabilityDefinition,
@@ -40,7 +40,7 @@ class _NormalizedInput:
 def _profile(*, effect_capabilities: list[str] | None = None) -> ExternalContractProfile:
     return ExternalContractProfile(
         provider_code="WMS",
-        contract_version="2026-07-06.phase5",
+        contract_version="2026-07-06.material-flow",
         environment="sandbox",
         runtime_capabilities_query=["WmsMasterDataPort.get_material"],
         runtime_capabilities_effect=effect_capabilities or [],
@@ -49,7 +49,7 @@ def _profile(*, effect_capabilities: list[str] | None = None) -> ExternalContrac
         timeout_retry_query_timeout_seconds=10,
         timeout_retry_effect_timeout_seconds=30 if effect_capabilities else None,
         timeout_retry_retry_backoff_seconds=[1, 2, 4],
-        fixture_set_path="tests/fixtures/external_contracts/wms/phase5",
+        fixture_set_path="tests/fixtures/external_contracts/wms/default",
         fixture_set_required_cases=["success"],
     )
 
@@ -73,7 +73,7 @@ def _rough_sorter_inbound_payload() -> dict[str, object]:
         "quantity": 1,
         "warehouse_code": "WH-A",
         "source_event_id": "wms-rough-dispatch-001",
-        "source_version": "wms.phase5",
+        "source_version": "wms.material-flow",
     }
 
 
@@ -83,7 +83,7 @@ def _rough_sorter_inbound_envelope_payload() -> dict[str, object]:
         "runtime_capability": "rough_sorter_inbound",
         "source_system": "WMS",
         "source_event_id": "wms-rough-dispatch-001",
-        "source_version": "wms.phase5",
+        "source_version": "wms.material-flow",
         "occurred_at": "2026-07-06T08:00:00Z",
         "request_id": "REQ-ROUGH-INBOUND-001",
         "timestamp": "2026-07-06T08:00:01Z",
@@ -136,8 +136,8 @@ def test_dispatcher_routes_declared_capability_to_static_handler() -> None:
     assert calls == [_NormalizedInput(runtime_capability="sorter_inbound", canonical_event_type="DEVICE_SCAN")]
 
 
-def test_runtime_inbox_normalizer_dispatches_to_phase4_runtime_service() -> None:
-    """RuntimeInbox -> InboundNormalizerRegistry -> dispatcher -> Phase4 service 成功链路。"""
+def test_runtime_inbox_normalizer_dispatches_to_material_flow_runtime_service() -> None:
+    """RuntimeInbox -> normalizer registry -> dispatcher -> material-flow service 成功链路。"""
 
     class RuntimeInboxPort:
         pass
@@ -151,7 +151,7 @@ def test_runtime_inbox_normalizer_dispatches_to_phase4_runtime_service() -> None
     normalized = inbound_registry.get(RuntimeInboxPort).normalize(
         SimpleNamespace(kind="EXTERNAL_HTTP", payload_json=_rough_sorter_inbound_payload())
     )
-    service = Phase4SorterInboundRuntimeService()
+    service = SorterInboundRuntimeService()
     catalog = RuntimeCapabilityCatalog(
         [
             RuntimeCapabilityDefinition(

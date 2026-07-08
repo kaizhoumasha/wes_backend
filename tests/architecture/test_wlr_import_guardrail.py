@@ -1,7 +1,7 @@
 """R-WLR src.workline_runtime production import 严格型 guardrail 测试 (Phase 2 launch + Stage 3)。
 
 主计划 §10.3 + Step 3: src.workline_runtime 在生产代码中**严禁**直接 import (wlr allowlist 严格型)。
-阶段 3 burn-down 完成后,EXCLUDED_PREFIXES 收回至空集,consumers/ trust zone 退出。
+runtime migration 完成后,EXCLUDED_PREFIXES 收回至空集,consumers/ trust zone 退出。
 
 历史 (阶段 2 launch PR 末态):允许以下入口直接 import (作为单点过渡):
     1. src/app/runtime/orchestration/consumers/  (单点入口)
@@ -63,7 +63,7 @@ def test_wlr_allowlist_entries_have_legacy_entry_id_and_drop_phase():
 
     C5b 后 R-WLR allowlist 终态 = 0, 本测试需支持两种状态:
     1. R-WLR > 0: 每条 legacy_entry_id + drop_phase 字段非空
-    2. R-WLR = 0: 直接通过 (阶段 2 burn-down 完成)
+    2. R-WLR = 0: 直接通过 (runtime migration 完成)
     """
     if not ALLOWLIST.exists():
         return
@@ -79,17 +79,17 @@ def test_wlr_allowlist_entries_have_legacy_entry_id_and_drop_phase():
         assert fields[6].startswith("phase"), f"drop_phase 格式错: {line}"
 
 
-def test_wlr_guardrail_runs_clean_in_phase1():
-    """phase1 模式运行 architecture-guardrails.sh, 当前代码无 R-WLR 未覆盖违规 (退出码 0)。"""
+def test_wlr_guardrail_runs_clean_in_enforced_mode():
+    """enforced 模式运行 architecture-guardrails.sh, 当前代码无 R-WLR 未覆盖违规 (退出码 0)。"""
     result = subprocess.run(
-        ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+        ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode == 0, (
-        f"architecture-guardrails.sh phase1 exit={result.returncode}\n"
+        f"architecture-guardrails.sh enforced exit={result.returncode}\n"
         f"stdout last 30 lines:\n{chr(10).join(result.stdout.splitlines()[-30:])}\n"
         f"stderr last 30 lines:\n{chr(10).join(result.stderr.splitlines()[-30:])}"
     )

@@ -1,4 +1,4 @@
-# 阶段 2 burn-down C5a 镜像:src.workline_runtime.runtime_intent 的平级副本
+# runtime migration C5a 镜像:src.workline_runtime.runtime_intent 的平级副本
 # wlr 目录在阶段 3 整体删除时,本镜像改名为正式模块。
 
 """Plugin-facing Runtime intent contracts.

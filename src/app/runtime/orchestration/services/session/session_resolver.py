@@ -1,4 +1,4 @@
-# 阶段 2 burn-down C5b 镜像:src.workline_runtime.session_resolver 的平级副本
+# runtime migration C5b 镜像:src.workline_runtime.session_resolver 的平级副本
 # wlr 目录在阶段 3 整体删除时,本镜像与 wlr 副本合并 / 删除。
 # 自引用 src.workline_runtime.{business_identity, run_mode}
 # 已重定向到 C5a business_identity_bridge + C4 run_mode。
@@ -16,7 +16,7 @@ Session 归属解析器
 - TIMER_TIMEOUT: 按 session_id 恢复 Session
 - MANUAL_*: 按 session_id 恢复 Session
 
-设计参考: 设计文档 phase2-orchestrator
+设计参考: runtime-orchestration 设计文档
 """
 
 import uuid

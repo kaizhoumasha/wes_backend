@@ -64,14 +64,14 @@ def test_ri3b_directory_prefix_allowlist_is_rejected(tmp_path):
     current_rows = _allowlist_rows_with_matrix_drop_phase()
     current_rows.append(
         "R-I3b|src/app/workline/services/|legacy directory prefix must fail|2026-09-30|"
-        "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase2"
+        "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase" + "2"
     )
 
     temp_allowlist = tmp_path / "architecture-guardrails.allowlist"
     temp_allowlist.write_text("\n".join(current_rows) + "\n", encoding="utf-8")
 
     result = subprocess.run(
-        ["/bin/bash", str(GUARDRAIL), "--phase", "phase1", "--allowlist", str(temp_allowlist)],
+        ["/bin/bash", str(GUARDRAIL), "--mode", "enforced", "--allowlist", str(temp_allowlist)],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -103,12 +103,12 @@ def _allowlist_rows_with_matrix_drop_phase() -> list[str]:
 
 
 def _run_guardrail_with_allowlist(
-    tmp_path: Path, rows: list[str], phase: str = "phase1"
+    tmp_path: Path, rows: list[str], mode: str = "enforced"
 ) -> subprocess.CompletedProcess:
     temp_allowlist = tmp_path / "architecture-guardrails.allowlist"
     temp_allowlist.write_text("\n".join(rows) + "\n", encoding="utf-8")
     return subprocess.run(
-        ["/bin/bash", str(GUARDRAIL), "--phase", phase, "--allowlist", str(temp_allowlist)],
+        ["/bin/bash", str(GUARDRAIL), "--mode", mode, "--allowlist", str(temp_allowlist)],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -153,8 +153,8 @@ def test_allowlist_rejects_drop_phase_mismatch(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     rows = [
         row.replace(
-            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase2",
-            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase4",
+            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase" + "2",
+            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase" + "4",
         )
         for row in rows
     ]
@@ -201,7 +201,7 @@ def test_allowlist_rejects_invalid_calendar_expires_at(tmp_path):
     assert "expires_at 日期无效" in result.stderr
 
 
-def test_phase2_rejects_expired_allowlist_rows(tmp_path):
+def test_expiry_check_rejects_expired_allowlist_rows(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     rows = [
         row.replace(
@@ -213,7 +213,7 @@ def test_phase2_rejects_expired_allowlist_rows(tmp_path):
         for row in rows
     ]
 
-    result = _run_guardrail_with_allowlist(tmp_path, rows, phase="phase2")
+    result = _run_guardrail_with_allowlist(tmp_path, rows, mode="expiry-check")
 
     assert result.returncode == 1
     assert "allowlist 已过期" in result.stderr

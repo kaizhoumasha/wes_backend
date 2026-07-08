@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.load.phase3_benchmark_scenarios import run_conveyor_queue_writer_benchmark
+from tests.load.runtime_benchmark_scenarios import run_conveyor_queue_writer_benchmark
 
 
 def test_conveyor_queue_writer_benchmark() -> None:

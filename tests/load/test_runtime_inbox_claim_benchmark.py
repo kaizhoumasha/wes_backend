@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tests.load.phase3_benchmark_scenarios import run_runtime_inbox_claim_benchmark
+from tests.load.runtime_benchmark_scenarios import run_runtime_inbox_claim_benchmark
 
 
 def test_runtime_inbox_claim_benchmark() -> None:

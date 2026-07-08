@@ -4,7 +4,7 @@
 本文件提供 Workline 核心流程的 Celery 任务入口。
 核心业务逻辑（如 Inbox 批量处理、Orchestrator 写回、出站下发等）
 已抽离至 `src/app/workline/services/` 目录下。
-设计参考: 设计文档 phase2-orchestrator
+设计参考: runtime-orchestration 设计文档
 """
 
 from __future__ import annotations

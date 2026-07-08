@@ -31,9 +31,9 @@ note: |
 uv run python scripts/generate_legacy_matrix.py
 ```
 
-扫描覆盖现存的 `src/app/workline/`、`src/workline_runtime/`、`tests/workline_runtime/`、`tests/workline_plugins/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。生成器仍会扫描 `src/workline_plugins/` 与 `docs/templates/workline_plugin/`（若目录存在），但 Phase5 technical lane 后这两个 legacy 运行/模板路径应保持为空，absence guardrail 负责阻断回流。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；Phase5 business destructive cleanup 后，已迁入 `src/app/runtime/capabilities/phase4/contracts/` 与 `tests/contracts/workline/` 的业务合同/测试仍按 legacy entry_id 进入 CSV，避免删除旧路径造成 audit trace 误绿。
+扫描覆盖现存的 `src/app/workline/`、`src/workline_runtime/`、`tests/workline_runtime/`、`tests/workline_plugins/`，并登记 `guardrail_seed_scope` 跨域路径（callback/rack/handling/resource/wms_integration）。生成器仍会扫描 `src/workline_plugins/` 与 `docs/templates/workline_plugin/`（若目录存在），但 technical cleanup scope 后这两个 legacy 运行/模板路径应保持为空，absence guardrail 负责阻断回流。其中 `src/app/workline/services/` 按 `class` / `def` / `async def` 全量入库，不只统计 `*Service` 类；已迁入 runtime/orchestration 或 runtime/capabilities 的 WorkLine service shim 按旧入口记账、从实现文件扫描符号；business legacy absence cleanup 后，已迁入 `src/app/runtime/capabilities/material_flow/contracts/` 与 `tests/contracts/workline/` 的业务合同/测试仍按 legacy entry_id 进入 CSV，避免删除旧路径造成 audit trace 误绿。
 
-## 3. 汇总（截至 Phase5 business destructive cleanup @ 2026-07-07）
+## 3. 汇总（截至 business legacy absence cleanup @ 2026-07-07）
 
 | 指标 | 数值 |
 | --- | ---: |
@@ -141,34 +141,34 @@ CSV 列（对齐 SPEC P0-002 矩阵字段表）：
 | 测试 | keep-contract | phase5-tech | LOW |
 | doc_template / 默认 | delete / keep-contract | phase5-tech | LOW |
 
-### 6.3 Phase5 双 lane 删除前置
+### 6.3 WorkLine 重构双 scope 删除前置
 
-Phase5 不再用单一“清理旧代码”口径推进，删除前必须先判定 technical lane 或 business lane，并把对应证据写入 PR：
+WorkLine 重构收尾不再用单一“清理旧代码”口径推进，删除前必须先判定 technical scope 或 business scope，并把对应证据写入 PR：
 
 当前 gate 状态：
 
-- `phase5_technical_lane_status: final-cleanup-complete`
-- `phase5_business_lane_status: final-cleanup-complete`
+- `workline_technical_scope_status: complete`
+- `workline_business_scope_status: complete`
 
 执行入口：
 
-- technical lane：`uv run python scripts/check_phase5_readiness_gate.py --lane technical`，并已接入 `./scripts/git-quality-gate.sh --check phase5-readiness` 与 `--profile quality`。
-- business lane readiness：`uv run python scripts/check_phase5_readiness_gate.py --lane business --phase3-p0-e2e-artifact <p0.json> --phase3-benchmark-artifact <benchmark.json> --phase4-evidence-artifact <phase4.json>`。
-- business destructive cleanup：`uv run python scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`，并已接入 `./scripts/git-quality-gate.sh --check phase5-business-destructive-cleanup` 与 `--profile quality`。
+- technical scope：`uv run python scripts/check_workline_restructuring_readiness_gate.py --scope technical`，并已接入 `./scripts/git-quality-gate.sh --check workline-restructuring-readiness` 与 `--profile quality`。
+- business scope readiness：`uv run python scripts/check_workline_restructuring_readiness_gate.py --scope business --production-e2e-artifact <p0.json> --runtime-benchmark-artifact <benchmark.json> --runtime-evidence-artifact <runtime-evidence.json>`。
+- business legacy absence：`uv run python scripts/check_business_legacy_absence_gate.py --mode final`，并已接入 `./scripts/git-quality-gate.sh --check business-legacy-absence` 与 `--profile quality`。
 
 2026-07-08 验收记录：
 
-- technical lane 已通过 Phase2 owner guardrail、RuntimeInbox cutover、Phase3 mock closure、Phase5 technical contracts，并完成旧 plugin runtime/import 框架清理；执行记录见 `docs/architecture/legacy-cleanup-execution-plan.md`。
-- business lane 携带 regenerated Phase3/Phase4 artifacts 后已通过 readiness gate；随后执行 destructive cleanup ledger 关闭：104 条 phase4 carrier 中 55 行 moved、10 行 test-only-migrated、18 行 kept-config-only、21 行 already-removed，0 pending。机器验收见 `docs/architecture/phase5-business-destructive-cleanup-ledger.csv` 与 `scripts/check_phase5_business_destructive_cleanup_gate.py --mode final`。
+- technical scope 已通过运行态 owner guardrail、RuntimeInbox cutover、mock closure 与 WorkLine technical contracts，并完成旧 plugin runtime/import 框架清理；执行记录见 `docs/architecture/legacy-cleanup-execution-plan.md`。
+- business scope 携带 regenerated production/runtime artifacts 后已通过 readiness gate；随后执行 business legacy absence ledger 关闭：104 条 phase4 carrier 中 55 行 moved、10 行 test-only-migrated、18 行 kept-config-only、21 行 already-removed，0 pending。机器验收见 `docs/architecture/business-legacy-absence-ledger.csv` 与 `scripts/check_business_legacy_absence_gate.py --mode final`。
 - 旧 `src/workline_plugins/*` 仅保留在 `docs/archive/legacy-workline-plugins/`，不得回流到 `src/` 可 import 路径；absence guardrail 负责阻断。
-- final cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列；`scripts/check_phase5_readiness_gate.py` 与 absence guardrail 负责阻断回流。
+- restructuring cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列；`scripts/check_workline_restructuring_readiness_gate.py` 与 absence guardrail 负责阻断回流。
 
-| lane | 适用条目 | 删除前置 | 不允许 |
+| scope | 适用条目 | 删除前置 | 不允许 |
 | --- | --- | --- | --- |
-| technical lane (`phase5-tech`) | debug/sandbox/fake/mock、旧 plugin 模板、已无生产 import 的 shim、仅服务开发/测试的辅助入口 | Phase2 runtime/orchestration owner guardrail 通过；Phase3 mock closure 或等价开发/测试门禁通过；`architecture-guardrails.sh` 与相关 characterization/contract test 通过；GitNexus detect-changes 确认只影响预期技术入口 | 以技术清理名义删除仍承载业务语义、API contract、trace/diagnostic evidence 或生产发布 profile 的入口 |
-| business lane (`phase5-business`) | 旧 plugin / WorkLine 业务流程中仍承载 Phase4 语义、WMS/ECS evidence、生产 trace、benchmark 或人工处置合同的入口 | Phase4 capability 替代路径已生产可用；evidence manifest 引用文件齐全；production closure profile 通过；Phase4 capability / port / contract tests 全绿；旧入口 characterization/contract test 已迁为目标态测试或明确废弃；数据迁移/回填/审计留痕计划已执行 | 用 mock closure、lightweight benchmark 或缺 evidence / 缺 contract tests 的本地测试冒充业务承载删除前置 |
+| technical scope (`workline-technical`) | debug/sandbox/fake/mock、旧 plugin 模板、已无生产 import 的 shim、仅服务开发/测试的辅助入口 | runtime/orchestration owner guardrail 通过；mock closure 或等价开发/测试门禁通过；`architecture-guardrails.sh` 与相关 characterization/contract test 通过；GitNexus detect-changes 确认只影响预期技术入口 | 以技术清理名义删除仍承载业务语义、API contract、trace/diagnostic evidence 或生产发布 profile 的入口 |
+| business scope (`workline-business`) | 旧 plugin / WorkLine 业务流程中仍承载 material-flow 语义、WMS/ECS evidence、生产 trace、benchmark 或人工处置合同的入口 | material-flow capability 替代路径已生产可用；evidence manifest 引用文件齐全；production closure profile 通过；material-flow capability / port / contract tests 全绿；旧入口 characterization/contract test 已迁为目标态测试或明确废弃；数据迁移/回填/审计留痕计划已执行 | 用 mock closure、lightweight benchmark 或缺 evidence / 缺 contract tests 的本地测试冒充业务承载删除前置 |
 
-WorkLine 运行态物理字段已完成 final cleanup；API / monitor / trace / safety / START admission 均通过 runtime/orchestration 原生投影读取，不再把 WorkLine 配置表作为运行态 owner。
+WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / trace / safety / START admission 均通过 runtime/orchestration 原生投影读取，不再把 WorkLine 配置表作为运行态 owner。
 
 ## 7. 按域说明
 
@@ -178,16 +178,16 @@ WorkLine 运行态物理字段已完成 final cleanup；API / monitor / trace / 
 | --- | --- | --- |
 | WorkLine 配置类（`models/workline.py:WorkLine/WorkLineBase`、manifest/topology/safety/rack_position） | move | 保留为配置域目标，Phase 2 调整 schema 对齐目标态 WorkLine manifest |
 | 执行状态模型（`models/session.py`、`inbox.py`、`timeline.py`、`runtime_hold*.py`、`runtime.py`） | rebuild | 整体 move 到 `src/app/runtime/orchestration/models/`，内部 session_id 保留为 execution_session_id（见 P0-004 §4.6） |
-| 业务流程模型（`smt_inbound_handoff.py`、`object_transition_event.py`） | rebuild | Phase 4 按目标态 capability 重建 |
+| 业务流程模型（`smt_inbound_handoff.py`、`object_transition_event.py`） | rebuild | material-flow 按目标态 capability 重建 |
 | API routes（21 个，`v1/`） | rebuild | runtime 监控/handoff/trace/hold 路由迁 runtime 域；workline 配置 CRUD 路由保留 |
 | Services（inbox_batch_processor/outbox_dispatch/device_command_gateway 等） | rebuild | `class` / `def` / `async def` 全量登记；执行状态服务迁 runtime 域，按 EffectPort/RuntimeInbox 重建 |
-| `single_layer_rack_orchestration_service` | rebuild | [phase4] 单层机架编排，Phase 4 重建（C1 seed 关联） |
+| `single_layer_rack_orchestration_service` | rebuild | material-flow 单层机架编排，按目标态 capability 重建（C1 seed 关联） |
 
 ### 7.2 workline_runtime（83 entries）
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
-| `tests/workline_runtime/` | keep-contract / rebuild | 82 条 runtime / Phase4 characterization 与合同测试，作为目标态能力闭合和 Phase5 删除前的 blocking evidence；Phase5 dispatcher 新增测试已入矩阵 |
+| `tests/workline_runtime/` | keep-contract / rebuild | 82 条 runtime / material-flow characterization 与合同测试，作为目标态能力闭合和 legacy 删除前的 blocking evidence；dispatcher 新增测试已入矩阵 |
 | `src/workline_runtime/services.py:build_workline_runtime_services` | rebuild | guardrail seed tombstone，用于当前 allowlist 精确反查 |
 
 ### 7.3 workline_plugins（11 entries，均为测试证据）
@@ -201,7 +201,7 @@ WorkLine 运行态物理字段已完成 final cleanup；API / monitor / trace / 
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
-| `src/workline_plugins/*` | delete | Phase5 technical lane 后不得继续存在于 `src/` 可 import 路径；旧代码只允许进入 `docs/archive/...` 等非运行路径 |
+| `src/workline_plugins/*` | delete | technical cleanup scope 后不得继续存在于 `src/` 可 import 路径；旧代码只允许进入 `docs/archive/...` 等非运行路径 |
 | `docs/templates/workline_plugin/*` | delete | 旧 plugin 模板已移除，新增模板不得恢复旧 plugin authoring 入口 |
 
 ### 7.5 guardrail_seed_scope（44 entries）

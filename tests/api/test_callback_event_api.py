@@ -840,7 +840,7 @@ class TestCallbackEventAPI:
         db_session: AsyncSession,
         build_request: RequestFactory,
     ) -> None:
-        from src.app.runtime.capabilities.phase4.start_admission_service import StartAdmissionResult
+        from src.app.runtime.capabilities.material_flow.start_admission_service import StartAdmissionResult
 
         http_response = Response()
         admission_result = StartAdmissionResult(
@@ -932,7 +932,7 @@ class TestCallbackEventAPI:
         build_request: RequestFactory,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from src.app.runtime.capabilities.phase4.start_admission_service import StartAdmissionResult
+        from src.app.runtime.capabilities.material_flow.start_admission_service import StartAdmissionResult
 
         current_time = {"value": 100.01}
 
@@ -1007,7 +1007,7 @@ class TestCallbackEventAPI:
         db_session: AsyncSession,
         build_request: RequestFactory,
     ) -> None:
-        from src.app.runtime.capabilities.phase4.start_admission_service import StartAdmissionResult
+        from src.app.runtime.capabilities.material_flow.start_admission_service import StartAdmissionResult
 
         http_response = Response()
         admission_result = StartAdmissionResult(

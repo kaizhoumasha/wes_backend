@@ -1,4 +1,4 @@
-"""Phase 2 burn-down 阶段 2 C2 — workline 域工具镜像与 wlr 原文件 AST 签名一致。
+"""runtime migration 阶段 2 C2 — workline 域工具镜像与 wlr 原文件 AST 签名一致。
 
 不验证运行时行为, 只验证:
 - src/app/workline/utils.py top-level 函数名自包含

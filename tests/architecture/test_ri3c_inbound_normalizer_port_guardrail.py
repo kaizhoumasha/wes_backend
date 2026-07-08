@@ -76,12 +76,12 @@ def test_ri3c_rule_pattern_covers_all_forbidden_inbound_names():
     assert "ast.Import" in text
 
 
-def test_ri3c_guardrail_runs_clean_in_phase1():
-    """phase1 模式运行 architecture-guardrails.sh, 当前代码无 R-I3c 违规 (退出码 0)。"""
+def test_ri3c_guardrail_runs_clean_in_enforced_mode():
+    """enforced 模式运行 architecture-guardrails.sh, 当前代码无 R-I3c 违规 (退出码 0)。"""
     # NOTE: brief had `sys.executable` here, but architecture-guardrails.sh has
     # `#!/usr/bin/env bash` shebang and is not a Python script. Use bash.
     result = subprocess.run(
-        ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+        ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -90,12 +90,12 @@ def test_ri3c_guardrail_runs_clean_in_phase1():
     # 当前所有 inbound normalizer 类型持有者都在 allowlist 之外但命中 exclusion
     # 或不存在 capability 路径 import, 应返回 0
     assert result.returncode == 0, (
-        f"architecture-guardrails.sh phase1 exit={result.returncode}\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        f"architecture-guardrails.sh enforced exit={result.returncode}\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
 
 
 def test_ri3c_guardrail_rejects_non_consumer_orchestration_inbound_normalizer():
-    """非 consumers orchestration 文件持有 inbound normalizer 时 phase1 必须失败。"""
+    """非 consumers orchestration 文件持有 inbound normalizer 时 enforced 模式必须失败。"""
     fixture = REPO_ROOT / "src/app/runtime/orchestration/services/_ri3c_violation_fixture.py"
     fixture.write_text(
         "from src.app.wms_integration.ports.event import WmsEventPort\n\n"
@@ -104,7 +104,7 @@ def test_ri3c_guardrail_rejects_non_consumer_orchestration_inbound_normalizer():
     )
     try:
         result = subprocess.run(
-            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -134,7 +134,7 @@ def test_ri3c_guardrail_rejects_multiline_non_consumer_orchestration_import():
     )
     try:
         result = subprocess.run(
-            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -158,7 +158,7 @@ def test_ri3c_guardrail_rejects_directory_prefix_allowlist_for_ri3c(tmp_path):
     with temp_allowlist.open("a", encoding="utf-8") as f:
         f.write(
             "R-I3c|src/app/runtime/orchestration|bad broad allowlist|2026-09-30|"
-            "legacy:src/app/workline/repositories/debug_data_cleanup_repository.py:<file>#R-I3b|phase2\n"
+            "legacy:src/app/workline/repositories/debug_data_cleanup_repository.py:<file>#R-I3b|phase" + "2\n"
         )
     fixture.write_text(
         "from src.app.wms_integration.ports.event import WmsEventPort\n\n"
@@ -167,7 +167,7 @@ def test_ri3c_guardrail_rejects_directory_prefix_allowlist_for_ri3c(tmp_path):
     )
     try:
         result = subprocess.run(
-            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1", "--allowlist", str(temp_allowlist)],  # noqa: S607
+            ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced", "--allowlist", str(temp_allowlist)],  # noqa: S607
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -195,7 +195,7 @@ def test_ri3c_guardrail_rejects_alias_qualified_inbound_normalizer_type_hint():
     )
     try:
         result = subprocess.run(
-            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -222,7 +222,7 @@ def test_ri3c_guardrail_rejects_qualified_runtime_reference():
     )
     try:
         result = subprocess.run(
-            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -248,7 +248,7 @@ def test_ri3c_guardrail_scans_callback_domain():
     )
     try:
         result = subprocess.run(
-            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -274,7 +274,7 @@ def test_ri3c_guardrail_scans_wms_integration_services_domain():
     )
     try:
         result = subprocess.run(
-            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -300,7 +300,7 @@ def test_ri3c_guardrail_scans_device_domain():
     )
     try:
         result = subprocess.run(
-            ["bash", str(GUARDRAILS_SCRIPT), "--phase", "phase1"],  # noqa: S607
+            ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,

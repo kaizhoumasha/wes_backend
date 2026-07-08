@@ -1,4 +1,4 @@
-# 阶段 2 burn-down C5a 桥接:src.workline_runtime.business_identity 的门面副本
+# runtime migration C5a 桥接:src.workline_runtime.business_identity 的门面副本
 # wlr 目录在阶段 3 整体删除时,本桥接与 wlr 副本合并 / 删除。
 # 自引用 src.workline_runtime.utils 已重定向到 src.app.workline.utils (C2)。
 

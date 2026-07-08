@@ -1,4 +1,4 @@
-# 阶段 2 burn-down C5a 镜像:src.workline_runtime.services 的平级副本
+# runtime migration C5a 镜像:src.workline_runtime.services 的平级副本
 # wlr 目录在阶段 3 整体删除时,本镜像改名为正式模块。
 # 自引用 src.workline_runtime.{run_mode, sandbox_catalog} 已重定向到
 # src.app.workline.domain.run_mode (C4)
@@ -176,7 +176,7 @@ def build_workline_runtime_services(
     if db is not None and workline is not None:
         from src.app.rack.services import rack_operation_service
         from src.app.resource.services.active_rack_snapshot_service import smt_active_rack_snapshot_service
-        from src.app.runtime.capabilities.phase4.station_lease_service import station_lease_service
+        from src.app.runtime.capabilities.material_flow.station_lease_service import station_lease_service
 
         active_rack_snapshot_provider = smt_active_rack_snapshot_service.bind(db=db, workline=workline)
         rack_operation_status_provider = BoundRackOperationStatusProvider(

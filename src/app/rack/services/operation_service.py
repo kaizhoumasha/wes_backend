@@ -35,7 +35,7 @@ from src.app.resource.repositories.resource_repository import (
     RackPlacementRepository,
     rack_placement_repository,
 )
-from src.app.runtime.capabilities.phase4.station_lease_service import (
+from src.app.runtime.capabilities.material_flow.station_lease_service import (
     StationLeaseService,
     station_lease_service,
 )

@@ -1,4 +1,4 @@
-"""Runtime capability dispatcher for Phase5 technical lane.
+"""Runtime capability dispatcher for target-state runtime capability wiring.
 
 该模块只做静态 catalog 路由和 provider profile admission，不做动态 import，
 也不 fallback 到旧 plugin/null plugin。

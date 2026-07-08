@@ -1,4 +1,4 @@
-"""Phase4 sorter inbound runtime capability 合同。"""
+"""Material-flow sorter inbound runtime capability 合同。"""
 
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_rough_sorter_runtime_builds_effect_intents_without_environment_branching() -> None:
     """粗分机入库 runtime path 只面向 provider contract，不判断外部是真设备还是模拟器。"""
 
-    from src.app.runtime.capabilities.phase4.sorter_inbound_runtime_service import (
-        Phase4SorterInboundRuntimeService,
+    from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service import (
+        SorterInboundRuntimeService,
     )
 
-    service = Phase4SorterInboundRuntimeService()
+    service = SorterInboundRuntimeService()
 
     plan = service.build_rough_sorter_inbound_plan(
         {
@@ -62,8 +62,8 @@ def test_rough_sorter_runtime_builds_effect_intents_without_environment_branchin
 
     pkg_binding = plan.effect_contracts["WmsFulfillmentPort.notify_pkg_binding"]
     inventory = plan.effect_contracts["WmsInventoryTransactionPort.confirm_inbound"]
-    assert pkg_binding["dispatch_key"] == "phase4:rough-runtime-001:pkg-binding"
-    assert inventory["dispatch_key"] == "phase4:rough-runtime-001:inventory-confirm"
+    assert pkg_binding["dispatch_key"] == "material-flow:rough-runtime-001:pkg-binding"
+    assert inventory["dispatch_key"] == "material-flow:rough-runtime-001:inventory-confirm"
     assert pkg_binding["payload"]["package_id"] == "PKG-ROUGH-001"
     assert inventory["payload"]["warehouse_code"] == "WH-A"
 
@@ -71,11 +71,11 @@ def test_rough_sorter_runtime_builds_effect_intents_without_environment_branchin
 def test_sorter_runtime_blocks_join_gate_failure_as_object_scope_reconciliation() -> None:
     """分拣机 join gate 未满足时不得静默选边，必须生成 object scope hold intent。"""
 
-    from src.app.runtime.capabilities.phase4.sorter_inbound_runtime_service import (
-        Phase4SorterInboundRuntimeService,
+    from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service import (
+        SorterInboundRuntimeService,
     )
 
-    service = Phase4SorterInboundRuntimeService()
+    service = SorterInboundRuntimeService()
 
     plan = service.build_sorter_inbound_plan(
         {
@@ -111,11 +111,11 @@ def test_sorter_runtime_blocks_join_gate_failure_as_object_scope_reconciliation(
 def test_sorter_runtime_success_records_ready_to_drop_location_fact() -> None:
     """分拣机 join gate 全满足时只记录 ready-to-drop 本地事实，不创建 hold。"""
 
-    from src.app.runtime.capabilities.phase4.sorter_inbound_runtime_service import (
-        Phase4SorterInboundRuntimeService,
+    from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service import (
+        SorterInboundRuntimeService,
     )
 
-    service = Phase4SorterInboundRuntimeService()
+    service = SorterInboundRuntimeService()
 
     plan = service.build_sorter_inbound_plan(
         {
@@ -146,11 +146,11 @@ def test_sorter_runtime_success_records_ready_to_drop_location_fact() -> None:
 def test_rough_sorter_runtime_rejects_non_positive_quantity() -> None:
     """粗分机库存确认 payload 必须拒绝非正数数量。"""
 
-    from src.app.runtime.capabilities.phase4.sorter_inbound_runtime_service import (
-        Phase4SorterInboundRuntimeService,
+    from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service import (
+        SorterInboundRuntimeService,
     )
 
-    service = Phase4SorterInboundRuntimeService()
+    service = SorterInboundRuntimeService()
 
     with pytest.raises(ValueError, match="quantity must be positive"):
         service.build_rough_sorter_inbound_plan(
@@ -175,11 +175,11 @@ def test_rough_sorter_runtime_rejects_non_positive_quantity() -> None:
 def test_full_box_exchange_runtime_uses_fulfillment_intent_and_filters_sorting_candidates() -> None:
     """满箱交换必须通过 fulfillment contract 发起，不把已满箱对象送入逐件分拣候选。"""
 
-    from src.app.runtime.capabilities.phase4.sorter_inbound_runtime_service import (
-        Phase4SorterInboundRuntimeService,
+    from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service import (
+        SorterInboundRuntimeService,
     )
 
-    service = Phase4SorterInboundRuntimeService()
+    service = SorterInboundRuntimeService()
 
     plan = service.build_full_box_exchange_plan(
         {
@@ -211,7 +211,7 @@ def test_runtime_capability_service_does_not_branch_on_external_environment() ->
     """runtime capability 不能根据外部 provider 是否模拟来选择业务路径。"""
 
     source = (
-        REPO_ROOT / "src" / "app" / "runtime" / "capabilities" / "phase4" / "sorter_inbound_runtime_service.py"
+        REPO_ROOT / "src" / "app" / "runtime" / "capabilities" / "material_flow" / "sorter_inbound_runtime_service.py"
     ).read_text(encoding="utf-8")
 
     for forbidden in ("LOCAL_MOCK_ONLY", "production_write_path", "APP_ENV", "readiness_profile"):

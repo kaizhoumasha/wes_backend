@@ -168,7 +168,7 @@ class WorkLine(
 
     @property
     def plugin_class(self) -> type[Any] | None:
-        """Phase5 后运行时不再通过 WorkLine 动态解析插件类。"""
+        """重构完成后运行时不再通过 WorkLine 动态解析插件类。"""
 
         return None
 

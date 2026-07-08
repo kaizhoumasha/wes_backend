@@ -1,4 +1,4 @@
-# 阶段 2 burn-down C5b 镜像:src.workline_runtime.plugin_sdk.contracts.normalized_result 的平级副本
+# runtime migration C5b 镜像:src.workline_runtime.plugin_sdk.contracts.normalized_result 的平级副本
 # wlr 目录在阶段 3 整体删除时,本镜像与 wlr 副本合并 / 删除。
 
 """标准化后的命令结果输入。"""

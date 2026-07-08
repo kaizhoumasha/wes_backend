@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate, default_phase3_benchmark_scenarios
+from src.app.runtime.orchestration.benchmark_gate import RuntimeBenchmarkGate, default_runtime_benchmark_scenarios
 
 
 class RuntimeBenchmarkArtifactCompositionError(ValueError):
@@ -24,7 +24,7 @@ class RuntimeBenchmarkArtifactComposer:
 
     def __init__(self, gate: RuntimeBenchmarkGate | None = None) -> None:
         self._gate = gate or RuntimeBenchmarkGate()
-        self._required_scenario_names = tuple(scenario.name for scenario in default_phase3_benchmark_scenarios())
+        self._required_scenario_names = tuple(scenario.name for scenario in default_runtime_benchmark_scenarios())
 
     def compose_production_scale(
         self,

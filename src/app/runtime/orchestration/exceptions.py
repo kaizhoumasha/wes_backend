@@ -1,4 +1,4 @@
-# 阶段 2 burn-down C5b 桥接:src.workline_runtime.exceptions 的门面副本
+# runtime migration C5b 桥接:src.workline_runtime.exceptions 的门面副本
 # wlr 目录在阶段 3 整体删除时,本桥接与 wlr 副本合并 / 删除。
 # C5a 未单独镜像 exceptions.py,本桥接为 C5b orchestrator_bridge 的
 # PluginNotFoundError 引用提供 mirror 来源(C5a brief 漏报)。

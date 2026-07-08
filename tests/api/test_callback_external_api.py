@@ -35,7 +35,7 @@ def build_request() -> RequestFactory:
 
 
 class TestCallbackExternalAPI:
-    def test_external_callback_allow_list_includes_phase3_ecs_device_matrix(self) -> None:
+    def test_external_callback_allow_list_includes_runtime_ecs_device_matrix(self) -> None:
         expected_types = {
             "DEVICE_RESULT",
             "DEVICE_EVENT",
@@ -104,7 +104,7 @@ class TestCallbackExternalAPI:
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_callback_external_accepts_phase5_runtime_capability_envelope(
+    async def test_callback_external_accepts_material_flow_runtime_capability_envelope(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,
@@ -114,7 +114,7 @@ class TestCallbackExternalAPI:
             "runtime_capability": "rough_sorter_inbound",
             "source_system": "WMS",
             "source_event_id": "wms-rough-source-001",
-            "source_version": "wms.phase5",
+            "source_version": "wms.material-flow",
             "occurred_at": "2026-07-06T08:00:00Z",
             "request_id": "REQ-ROUGH-INBOUND-001",
             "timestamp": "2026-07-06T08:00:01Z",

@@ -1,4 +1,4 @@
-"""MaterialLocationQuery Phase4 read model service."""
+"""MaterialLocationQuery runtime read model service."""
 
 from __future__ import annotations
 
@@ -312,7 +312,7 @@ class MaterialLocationQueryService:
         query_entry: str,
         **criteria: Any,
     ) -> list[MaterialLocationEvidence]:
-        """读取 Phase4 #4/#5 外部只读 evidence；provider 缺省时保持本地查询纯只读。"""
+        """读取 runtime read-model #4/#5 外部只读 evidence；provider 缺省时保持本地查询纯只读。"""
 
         evidence: list[MaterialLocationEvidence] = []
         evidence.extend(

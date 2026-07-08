@@ -1,6 +1,6 @@
 """Hold 子目录 — Runtime Hold 创建/查询/释放。
 
-Phase 2 burn-down 阶段 4 (PR):从 workline/services/ 物理迁入。
+runtime migration 阶段 4 (PR):从 workline/services/ 物理迁入。
 workline/services/ 保留 re-export shim 兼容 v1 API。
 """
 

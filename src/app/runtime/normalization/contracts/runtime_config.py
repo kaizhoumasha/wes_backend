@@ -1,4 +1,4 @@
-# 阶段 2 burn-down C5b 镜像:src.workline_runtime.plugin_sdk.contracts.runtime_config 的平级副本
+# runtime migration C5b 镜像:src.workline_runtime.plugin_sdk.contracts.runtime_config 的平级副本
 # wlr 目录在阶段 3 整体删除时,本镜像与 wlr 副本合并 / 删除。
 # 自引用 src.workline_runtime.run_mode 已重定向到 C4 src.app.workline.domain.run_mode。
 

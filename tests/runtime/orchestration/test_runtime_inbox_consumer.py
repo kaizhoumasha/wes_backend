@@ -1,4 +1,4 @@
-"""Phase 2 burn-down 阶段 2 C1 — RuntimeInboxConsumer 最小实现测试。
+"""runtime migration 阶段 2 C1 — RuntimeInboxConsumer 最小实现测试。
 
 不验证状态机业务逻辑 (阶段 3 才搬迁) ; 只验证:
 - 消费者模块可 import

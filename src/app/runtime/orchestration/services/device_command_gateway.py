@@ -1,4 +1,4 @@
-"""DeviceCommandGateway — 设备命令下发桥接 (Phase 2 burn-down 阶段 6 C3)。
+"""DeviceCommandGateway — 设备命令下发桥接 (runtime migration 阶段 6 C3)。
 
 主计划 §3.6 + 阶段 6:DeviceCommandGateway 从 src.app.workline.services 迁入
 runtime/orchestration/services/,原位置成为跨域引用违例。

@@ -54,7 +54,7 @@ def test_phase4_design_package_exists_and_is_linked_from_main_plan() -> None:
     assert umbrella.exists()
     umbrella_text = _read(umbrella)
     assert "Residual Readiness Register" in umbrella_text
-    assert "scripts/check_phase3_closure_gate.py" in umbrella_text
+    assert "scripts/check_runtime_production_closure_gate.py" in umbrella_text
 
     for filename in PHASE4_SPEC_FILES:
         assert filename in umbrella_text
@@ -235,7 +235,7 @@ def test_smt_ng_wms_reconciliation_contract_covers_conflict_scenarios() -> None:
 
 def test_phase4_wave2_wave3_mock_acceptance_is_non_production_scope() -> None:
     docs = [
-        _read(REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-04-phase4-runtime-readiness.md"),
+        _read(REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-04-runtime-evidence-readiness.md"),
         _read(REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-07-03-phase4-design-with-residuals.md"),
         _phase4_main_plan_text(_read(REPO_ROOT / "docs" / "architecture" / "workline-and-plugin-restructuring.md")),
         _read(REPO_ROOT / "docs" / "architecture" / "sorter-inbound-capability-spec.md"),
@@ -246,16 +246,16 @@ def test_phase4_wave2_wave3_mock_acceptance_is_non_production_scope() -> None:
     for token in (
         "本机开发环境 MOCK 验收",
         "不做生产接入",
-        "tests/mock/phase4",
+        "tests/mock/material_flow",
         "生产热路径",
         "Phase 1/2/3 residual gates",
     ):
         assert token in combined
 
 
-def test_phase3_closure_gate_is_mock_for_current_dev_test_scope() -> None:
+def test_production_closure_gate_is_mock_for_current_dev_test_scope() -> None:
     docs = [
-        _read(REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-04-phase4-runtime-readiness.md"),
+        _read(REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-04-runtime-evidence-readiness.md"),
         _read(REPO_ROOT / "docs" / "superpowers" / "specs" / "2026-07-03-phase4-design-with-residuals.md"),
         _phase4_main_plan_text(_read(REPO_ROOT / "docs" / "architecture" / "workline-and-plugin-restructuring.md")),
         *[_read(REPO_ROOT / "docs" / "architecture" / filename) for filename in PHASE4_SPEC_FILES],

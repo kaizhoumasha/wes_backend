@@ -1,4 +1,4 @@
-"""Phase5 business cleanup: WorkLine domain mirrors are no longer runtime business contracts."""
+"""WorkLine domain mirrors are no longer runtime business contracts."""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ import importlib
 
 import pytest
 
-TARGET_PHASE4_CONTRACT_MODULES = (
-    "src.app.runtime.capabilities.phase4.contracts.ng_reason",
-    "src.app.runtime.capabilities.phase4.contracts.material_identity",
-    "src.app.runtime.capabilities.phase4.contracts.six_in_one",
-    "src.app.runtime.capabilities.phase4.contracts.rough_sorter",
-    "src.app.runtime.capabilities.phase4.contracts.sorting_inbound_context",
+TARGET_MATERIAL_FLOW_CONTRACT_MODULES = (
+    "src.app.runtime.capabilities.material_flow.contracts.ng_reason",
+    "src.app.runtime.capabilities.material_flow.contracts.material_identity",
+    "src.app.runtime.capabilities.material_flow.contracts.six_in_one",
+    "src.app.runtime.capabilities.material_flow.contracts.rough_sorter",
+    "src.app.runtime.capabilities.material_flow.contracts.sorting_inbound_context",
 )
 LEGACY_BUSINESS_CONTRACT_MODULES = (
     "src.app.workline.domain.ng_reason",
@@ -27,8 +27,8 @@ LEGACY_BUSINESS_CONTRACT_MODULES = (
 )
 
 
-@pytest.mark.parametrize("module_name", TARGET_PHASE4_CONTRACT_MODULES)
-def test_phase4_business_contract_modules_are_importable(module_name: str) -> None:
+@pytest.mark.parametrize("module_name", TARGET_MATERIAL_FLOW_CONTRACT_MODULES)
+def test_material_flow_business_contract_modules_are_importable(module_name: str) -> None:
     assert importlib.import_module(module_name).__name__ == module_name
 
 

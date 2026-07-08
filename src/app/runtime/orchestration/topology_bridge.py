@@ -1,4 +1,4 @@
-# 阶段 2 burn-down C5a 桥接:src.workline_runtime.topology 的门面副本
+# runtime migration C5a 桥接:src.workline_runtime.topology 的门面副本
 # wlr 目录在阶段 3 整体删除时,本桥接与 wlr 副本合并 / 删除。
 # 自引用 src.workline_runtime.device_ordering 已重定向到本目录 device_ordering (C5a)。
 # 自引用 src.workline_runtime.plugin_manifest (TYPE_CHECKING) 已重定向到

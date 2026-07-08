@@ -20,7 +20,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from src.app.device.models import Device, DeviceProtocol, DeviceStatus
 from src.app.resource.models import RackKind
-from src.app.runtime.capabilities.phase4.contracts.rough_sorter import (
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import (
     ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
@@ -33,7 +33,7 @@ from src.app.runtime.capabilities.phase4.contracts.rough_sorter import (
     ROUGH_SORTER_CONTRACT_VERSION,
     ROUGH_SORTER_PLUGIN_KEY,
 )
-from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
+from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
     COMMAND_NG_PLACE,
     COMMAND_SOURCE_PICK,
     COMMAND_TARGET_PLACE,

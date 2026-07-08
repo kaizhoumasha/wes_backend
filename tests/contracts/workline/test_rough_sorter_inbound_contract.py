@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.app.runtime.capabilities.phase4.contracts.rough_sorter import (
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import (
     ACTION_MOVE_FORWARD,
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
@@ -26,8 +26,8 @@ from src.app.runtime.capabilities.phase4.contracts.rough_sorter import (
     normalize_six_in_one_payload,
     resolve_rough_sorter_business_key,
 )
-from src.app.runtime.capabilities.phase4.contracts.rough_sorter_context import RoughSorterContext
-from src.app.runtime.capabilities.phase4.contracts.six_in_one import SixInOne
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter_context import RoughSorterContext
+from src.app.runtime.capabilities.material_flow.contracts.six_in_one import SixInOne
 
 
 def _payload_data() -> dict[str, str]:

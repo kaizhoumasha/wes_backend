@@ -134,11 +134,11 @@ Phase 4 实现前，旧业务 characterization 只能作为输入语义，不得
 
 ## 9. 实施前置条件
 
-生产热路径实现前必须明确 Phase 2 runtime status 兼容投影口径，并通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`。否则只能保留为设计、characterization mapping 和本机 MOCK 验收。
+生产热路径实现前必须明确 Phase 2 runtime status 兼容投影口径，并通过 `scripts/check_runtime_production_closure_gate.py --closure-profile production ...`。否则只能保留为设计、characterization mapping 和本机 MOCK 验收。
 
 ### 9.1 本机开发环境 MOCK 验收
 
-Wave2 入库能力本轮降级为本机开发环境 MOCK 验收，不做生产接入。验收入口固定为 `tests/mock/phase4` 与本机 WMS/ECS mock：
+Wave2 入库能力本轮降级为本机开发环境 MOCK 验收，不做生产接入。验收入口固定为 `tests/mock/material_flow` 与本机 WMS/ECS mock：
 
 - WMS mock 可以表达 `WmsFulfillmentPort.notify_pkg_binding()` 与 `WmsInventoryTransactionPort` 的职责拆分。
 - ECS mock 可以表达 ACK/RESULT callback 和设备失败/超时场景，但 callback 只能指向 localhost 本机 WES。

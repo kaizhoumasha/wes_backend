@@ -614,7 +614,7 @@ async def _emit_completion_timeline(ctx: EffectApplyContext) -> None:
 
 
 async def _apply_completion_transition(ctx: EffectApplyContext) -> bool:
-    from src.app.runtime.capabilities.phase4.ng_return_item_service import (
+    from src.app.runtime.capabilities.material_flow.ng_return_item_service import (
         NgMaterialConflictError,
         ng_return_item_service,
     )

@@ -65,7 +65,7 @@ MaterialLocationQuery 是作业期位置查询能力，不是状态 owner。它�
 
 ## 7. 实施前置条件
 
-实现前必须确认 Phase 1 callback normalizer admission 不改变 ExternalReference 字段口径；`CellReservation` 的 RESERVED/OCCUPIED/RECONCILING 与现有 `WorklineBinCellReservation` 映射已按 `cell-reservation-spec.md` 锁定；当前开发/测试默认使用 MOCK closure，生产上线前必须显式通过 `scripts/check_phase3_closure_gate.py --closure-profile production ...`。
+实现前必须确认 Phase 1 callback normalizer admission 不改变 ExternalReference 字段口径；`CellReservation` 的 RESERVED/OCCUPIED/RECONCILING 与现有 `WorklineBinCellReservation` 映射已按 `cell-reservation-spec.md` 锁定；当前开发/测试默认使用 MOCK closure，生产上线前必须显式通过 `scripts/check_runtime_production_closure_gate.py --closure-profile production ...`。
 
 ## 8. 性能预算
 

@@ -1,8 +1,8 @@
-"""Phase4 SMT/NG/WMS reconciliation preview capability 合同。"""
+"""Material-flow SMT/NG/WMS reconciliation preview capability 合同。"""
 
 from __future__ import annotations
 
-from src.app.runtime.capabilities.phase4.smt_ng_wms_reconciliation_preview_service import (
+from src.app.runtime.capabilities.material_flow.smt_ng_wms_reconciliation_preview_service import (
     SmtNgWmsReconciliationPreviewService,
 )
 

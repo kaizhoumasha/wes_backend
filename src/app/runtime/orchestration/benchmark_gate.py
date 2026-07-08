@@ -42,7 +42,7 @@ class RuntimeBenchmarkGate:
     """Registry of benchmark scenarios required by Phase 3."""
 
     def __init__(self, scenarios: list[RuntimeBenchmarkScenario] | None = None) -> None:
-        self.scenarios = scenarios or default_phase3_benchmark_scenarios()
+        self.scenarios = scenarios or default_runtime_benchmark_scenarios()
 
     def missing_required(self, available_names: set[str]) -> tuple[str, ...]:
         return tuple(sorted(scenario.name for scenario in self.scenarios if scenario.name not in available_names))
@@ -379,7 +379,7 @@ def _collect_scenario_workload_validation(
             invalid_fields.append(field_key)
 
 
-def default_phase3_benchmark_scenarios() -> list[RuntimeBenchmarkScenario]:
+def default_runtime_benchmark_scenarios() -> list[RuntimeBenchmarkScenario]:
     return [
         RuntimeBenchmarkScenario(
             name="runtime_inbox_claim",
@@ -415,6 +415,6 @@ __all__ = [
     "RuntimeBenchmarkArtifactValidation",
     "RuntimeBenchmarkGate",
     "RuntimeBenchmarkScenario",
-    "default_phase3_benchmark_scenarios",
+    "default_runtime_benchmark_scenarios",
     "runtime_benchmark_gate",
 ]

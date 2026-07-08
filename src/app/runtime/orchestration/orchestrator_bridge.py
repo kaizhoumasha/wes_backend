@@ -10,7 +10,7 @@ OrchestratorService - 编排器核心服务
 Phase 1 简化:
 - 两阶段锁合并为单阶段锁
 
-设计参考: 设计文档 phase2-orchestrator
+设计参考: runtime-orchestration 设计文档
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from src.app.runtime.capabilities.phase4.contracts.rough_sorter import (
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import (
     ACTION_MOVE_TO_NG,
     ACTION_PICK_AND_PUT,
     ACTION_TARGET_ROLES,
@@ -31,7 +31,7 @@ from src.app.runtime.capabilities.phase4.contracts.rough_sorter import (
     build_pick_and_put_payload,
     normalize_six_in_one_payload,
 )
-from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
+from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
     COMMAND_SOURCE_PICK,
     EVENT_SOURCE_PICK_REQUESTED,
     ROLE_SORTING_SOURCE_ARM,
@@ -65,7 +65,7 @@ _ALLOW_NULL_PLUGIN = False
 
 
 def set_allow_null_plugin(allow: bool) -> None:
-    """Phase5 后保留测试兼容入口；旧 NullPlugin 不再参与运行时 fallback。"""
+    """重构完成后保留测试兼容入口；旧 NullPlugin 不再参与运行时 fallback。"""
     global _ALLOW_NULL_PLUGIN
     _ALLOW_NULL_PLUGIN = allow
 
@@ -793,7 +793,7 @@ class OrchestratorService:
         return read_result
 
     def _runtime_intents_from_dispatcher(self, inbox: Any, *, workline: Any, trace_id: str) -> list[RuntimeIntent]:
-        """Normalize RuntimeInbox payload and dispatch to Phase4 runtime capability."""
+        """Normalize RuntimeInbox payload and dispatch to material-flow runtime capability."""
 
         normalized_input = normalize_inbox_input(
             inbox,

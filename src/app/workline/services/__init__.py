@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-# Phase 2 burn-down 阶段 6:workline 域退化为纯配置域,运行态 service shim 已
+# runtime migration 阶段 6:workline 域退化为纯配置域,运行态 service shim 已
 # 物理删除。保留 file 是配置域 service(diagnostic_service /
 # manifest_validator / plane_service / safety_service / workline_service /
 # write_back_service)。device_command_gateway 在 C3 迁出至
 # runtime/orchestration/services/。其余运行态 service 迁入 runtime/orchestration/
-# services 与 runtime/capabilities/phase4/ 后已物理删除。
+# services 与 runtime/capabilities/material_flow/ 后已物理删除。
 #
 # 阶段 6 C5:__all__ / _LAZY_SHIM_MAP 收敛到当前真实 service export +
 # 3 个未初始化 service 属性的 fallback tombstone(inbox_service /

@@ -1,4 +1,4 @@
-"""Static runtime capability wiring for Phase5 technical lane."""
+"""Static runtime capability wiring for target-state runtime capability wiring."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.app.contracts.external_contract_profile import ExternalContractProfile
-from src.app.runtime.capabilities.phase4.sorter_inbound_runtime_service import Phase4SorterInboundRuntimeService
+from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service import SorterInboundRuntimeService
 from src.app.runtime.capability_dispatcher import (
     RuntimeCapabilityCatalog,
     RuntimeCapabilityDefinition,
@@ -19,7 +19,7 @@ _WMS_EFFECT_CAPABILITIES = (
     "WmsFulfillmentPort.notify_pkg_binding",
     "WmsInventoryTransactionPort.confirm_inbound",
 )
-_SORTER_INBOUND_SERVICE = Phase4SorterInboundRuntimeService()
+_SORTER_INBOUND_SERVICE = SorterInboundRuntimeService()
 
 
 def _non_empty_str(value: Any) -> str | None:
@@ -33,7 +33,7 @@ def _payload_mapping(value: Any) -> Mapping[str, Any]:
 def _build_wms_profile(provider_code: str) -> ExternalContractProfile:
     return ExternalContractProfile(
         provider_code=provider_code,
-        contract_version="2026-07-06.phase5",
+        contract_version="2026-07-06.material-flow",
         environment="sandbox",
         runtime_capabilities_query=["WmsMasterDataPort.get_material"],
         runtime_capabilities_effect=list(_WMS_EFFECT_CAPABILITIES),
@@ -42,7 +42,7 @@ def _build_wms_profile(provider_code: str) -> ExternalContractProfile:
         timeout_retry_query_timeout_seconds=10,
         timeout_retry_effect_timeout_seconds=30,
         timeout_retry_retry_backoff_seconds=[1, 2, 4],
-        fixture_set_path="tests/fixtures/external_contracts/wms/phase5",
+        fixture_set_path="tests/fixtures/external_contracts/wms/default",
         fixture_set_required_cases=["success"],
     )
 

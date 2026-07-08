@@ -1,4 +1,4 @@
-# Phase 2 burn-down 阶段 4 C4a 物理迁入
+# runtime migration 阶段 4 C4a 物理迁入
 # 旧位置: src/app/workline/services/smt_inbound_handoff_service.py
 # (C4a 起改为 PEP 562 re-export shim)
 # 新位置: src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py
@@ -20,18 +20,18 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
-from src.app.runtime.capabilities.phase4.contracts.smt_inbound_handoff_reason import (
+from src.app.runtime.capabilities.material_flow.contracts.smt_inbound_handoff_reason import (
     SMT_INBOUND_HANDOFF_REASON_CATALOG,
     SmtInboundHandoffReasonCatalog,
     SmtInboundHandoffReasonCode,
 )
-from src.app.runtime.capabilities.phase4.contracts.smt_sorting_inbound import (
+from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
     SMT_SORTING_INBOUND_CONTRACT_VERSION,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
-from src.app.runtime.capabilities.phase4.contracts.smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy
-from src.app.runtime.capabilities.phase4.contracts.sorting_inbound_context import SortingInboundContext
-from src.app.runtime.capabilities.phase4.smt_inbound_handoff_route_service import (
+from src.app.runtime.capabilities.material_flow.contracts.smt_usage_policy import SMT_USAGE_POLICY, SmtUsagePolicy
+from src.app.runtime.capabilities.material_flow.contracts.sorting_inbound_context import SortingInboundContext
+from src.app.runtime.capabilities.material_flow.smt_inbound_handoff_route_service import (
     SmtInboundHandoffRouteService,
     smt_inbound_handoff_route_service,
 )

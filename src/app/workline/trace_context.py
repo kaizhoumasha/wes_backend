@@ -10,7 +10,7 @@
 
 from __future__ import annotations
 
-# 阶段 2 burn-down C2 镜像:src.workline_runtime.trace_context 的平级副本。
+# runtime migration C2 镜像:src.workline_runtime.trace_context 的平级副本。
 # wlr 目录在阶段 3 整体删除时,本镜像改名为正式模块并保留 consumers 旁路排除。
 from dataclasses import asdict, dataclass, replace
 from typing import Any

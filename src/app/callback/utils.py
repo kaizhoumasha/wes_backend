@@ -6,7 +6,7 @@
 设计:
 - 故意不引入 `src.workline_runtime` 反向依赖,避免跨域逆向耦合
 - 函数实现与 `src.workline_runtime.utils` 一一对应 (稳定 utility,无副作用)
-- Phase 2 burn-down 阶段再评估:若 callback 域迁入 runtime orchestration,
+- runtime migration 阶段再评估:若 callback 域迁入 runtime orchestration,
   本文件可删,改回 `src.app.runtime.orchestration.utils`
 """
 

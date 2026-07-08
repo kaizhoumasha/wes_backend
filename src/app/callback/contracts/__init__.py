@@ -12,7 +12,7 @@ timeline_generator,plugin_sdk.normalizers.event_mapper}`,
 - 这是镜像副本,与 wlr 源保持契约对齐 (ErrorCode 枚举值不变,
   build_diagnostic_* 函数签名不变,canonicalize_event_type 的生产事件
   source 映射行为不变; callback ingress 额外保留平台/安全事件 source 原值)。
-- Phase 2 burn-down 阶段会与 `src.app.runtime.orchestration` 的 contracts
+- runtime migration 阶段会与 `src.app.runtime.orchestration` 的 contracts
   合并,届时本包整体迁入 runtime orchestration 域。
 - 本模块不导入 `src.workline_runtime.*`,内部依赖仅限 `src.utils.*` 与
   本包内其它模块。

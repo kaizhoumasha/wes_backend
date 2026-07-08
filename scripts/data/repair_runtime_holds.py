@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
 
-from src.app.runtime.capabilities.phase4.contracts.material_identity import (
+from src.app.runtime.capabilities.material_flow.contracts.material_identity import (
     MaterialIdentityInput,
     MaterialIdentityResolutionStatus,
 )

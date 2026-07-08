@@ -351,7 +351,7 @@ class CallbackOrchestrationService:
         )
 
         if is_workline_callback:
-            # Phase 2 burn-down 阶段 5:RuntimeReconciliationFacade 物理删除。
+            # runtime migration 阶段 5:RuntimeReconciliationFacade 物理删除。
             # callback 域直接走 workline shim 路径(impl sys.modules alias,行为等价)。
             from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
                 workline_runtime_reconciliation_service,

@@ -26,10 +26,10 @@ def test_rough_sorter_inbound_characterization_inputs_extracted():
 
     Phase 0 验证输入来源存在; Phase 4 接入目标态 capability 后转为 contract test。
     """
-    # 旧业务输入来源已归档；目标态由 domain contract + Phase4 dispatcher/runtime 测试承接。
+    # 旧业务输入来源已归档；目标态由 domain contract + material-flow dispatcher/runtime 测试承接。
     sources = [
         "docs/archive/legacy-workline-plugins/src-workline_plugins/rough_sorter/plugin.py",
-        "src/app/runtime/capabilities/phase4/contracts/rough_sorter.py",
+        "src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py",
         "tests/contracts/workline/test_rough_sorter_inbound_contract.py",
         "tests/workline_runtime/test_runtime_capability_dispatcher.py",
         "tests/workline_runtime/test_sorter_inbound_runtime_service.py",
@@ -45,7 +45,7 @@ def test_full_box_exchange_characterization_inputs_extracted():
     # 旧业务输入来源: 主计划 §2.2 full-box exchange + smt_inbound_handoff + rack_operation
     sources = [
         "src/app/runtime/orchestration/models/smt_inbound_handoff.py",
-        "src/app/runtime/capabilities/phase4/smt_inbound_handoff_route_service.py",
+        "src/app/runtime/capabilities/material_flow/smt_inbound_handoff_route_service.py",
         "docs/integration/wms_rcs_interface_requirements.md",
     ]
     _assert_characterization_sources_exist(sources)
@@ -58,12 +58,12 @@ def test_sorter_inbound_characterization_fixture_draft():
     完成后升级为 contract test。
     """
     # fixture draft 来源: legacy archive + 阶段 4 runtime/capability contract test。
-    # 旧 src/workline_plugins 已在 Phase5 technical lane 退出运行路径。
+    # 旧 src/workline_plugins 已在 target-state runtime capability wiring 退出运行路径。
     draft_sources = [
         "docs/archive/legacy-workline-plugins/src-workline_plugins/smt_sorting_inbound/plugin.py",
         "docs/archive/legacy-workline-plugins/src-workline_plugins/smt_sorting_inbound/flow_service.py",
         "src/app/runtime/capability_catalog.py",
-        "src/app/runtime/capabilities/phase4/sorter_inbound_runtime_service.py",
+        "src/app/runtime/capabilities/material_flow/sorter_inbound_runtime_service.py",
         "src/app/runtime/orchestration/runtime_intent_log.py",
         "tests/contracts/workline/test_rough_sorter_inbound_contract.py",
         "tests/contracts/workline/test_runtime_intent_log_dispatch_contract.py",

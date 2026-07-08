@@ -1,4 +1,4 @@
-# 阶段 2 burn-down C2 镜像:src.workline_runtime.utils 的平级副本。
+# runtime migration C2 镜像:src.workline_runtime.utils 的平级副本。
 # wlr 目录在阶段 3 整体删除时,本镜像改名为正式模块并保留 consumers 旁路排除。
 #
 # 镜像策略:cat wlr 原文件 + 顶部插入阶段 2 标识块。**禁止**只 import wlr — 那是

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Architecture guardrails — 将主计划 §7.5 不变量映射为可执行扫描。
-# 用法: scripts/architecture-guardrails.sh --phase phase0|phase1|phase2
+# 用法: scripts/architecture-guardrails.sh --mode warn|enforced|expiry-check
 #
-# Phase 0: warn-only (退出码 0, 打印违规)
-# Phase 1: enforced (allowlist 之外违规退出码 1)
-# Phase 2+: enforced + 要求每 PR 消除一条 expired allowlist
+# warn: warn-only (退出码 0, 打印违规)
+# enforced: allowlist 之外违规退出码 1
+# expiry-check: enforced + 过期 allowlist 退出码 1
 #
 # 规则 (主计划 §7.5):
 #   C1   内部域不得 import WMS DTO/client/provider
@@ -17,15 +17,15 @@
 #   R-I3c capability 不得持有 inbound normalizer (WmsEventPort 等, 主计划 §3.5.1 + H2)
 set -euo pipefail
 
-PHASE=""
+GUARDRAIL_MODE=""
 ALLOWLIST="scripts/architecture-guardrails.allowlist"
 REPO_ROOT=""
 
 usage() {
     cat <<'EOF'
-Usage: scripts/architecture-guardrails.sh --phase phase0|phase1|phase2 [--allowlist PATH]
+Usage: scripts/architecture-guardrails.sh --mode warn|enforced|expiry-check [--allowlist PATH]
 
-  --phase      phase0=warn-only, phase1=enforced, phase2=enforced+expired 清理
+  --mode       warn=warn-only, enforced=allowlist enforced, expiry-check=expired allowlist fails
   --allowlist  allowlist 文件路径 (默认 scripts/architecture-guardrails.allowlist)
 
 规则: C1 C2 C3 C4 C5 R-I3a R-I3b R-I3c (主计划 §7.5)
@@ -34,14 +34,14 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --phase) PHASE="$2"; shift 2 ;;
+        --mode) GUARDRAIL_MODE="$2"; shift 2 ;;
         --allowlist) ALLOWLIST="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "未知参数: $1" >&2; usage; exit 2 ;;
     esac
 done
 
-if [[ -z "$PHASE" ]]; then
+if [[ -z "$GUARDRAIL_MODE" ]]; then
     usage
     exit 2
 fi
@@ -117,7 +117,7 @@ run_python() {
     return 127
 }
 
-matrix_drop_phase_for_entry() {
+matrix_drop_marker_for_entry() {
     local legacy_entry_id="$1"
     [[ -z "$legacy_entry_id" || ! -f docs/architecture/legacy-cleanup-matrix.csv ]] && return 1
     run_python - "$legacy_entry_id" <<'PY'
@@ -211,7 +211,7 @@ rule_ri3a() {
     done < <(grep -rnE "$pattern" src/app/runtime src/app/workline --include='*.py' 2>/dev/null || true)
 }
 
-# --- R-WLR: src.workline_runtime production import 严格型 (Phase 2 launch + Stage 3) ---
+# --- R-WLR: src.workline_runtime production import 严格型 ---
 # wlr 整目录已删 (阶段 3); 保留 rule 作为永久安全网防止回归:
 # 任何 src/ 下 production code import src.workline_runtime 视为违规 (wlr 已不存在)。
 # 仅以下前缀允许 (wlr 内部 import 自身 / 测试 / Alembic 迁移):
@@ -396,7 +396,7 @@ PY
 # --- allowlist 校验 ---
 validate_allowlist() {
     if [[ ! -f "$ALLOWLIST" ]]; then
-        echo "[ALLOWLIST] $ALLOWLIST 不存在 (Phase 0 允许无 allowlist)" >&2
+        echo "[ALLOWLIST] $ALLOWLIST 不存在 (warn mode 允许无 allowlist)" >&2
         return 0
     fi
     local lineno=0
@@ -429,11 +429,11 @@ validate_allowlist() {
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): expires_at 日期无效 '$expires_at'" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
         elif [[ "$expires_at" < "$TODAY" ]]; then
-            if [[ "$PHASE" == "phase2" ]]; then
+            if [[ "$GUARDRAIL_MODE" == "expiry-check" ]]; then
                 echo "[ALLOWLIST] 行 $lineno ($rule_id $path): allowlist 已过期 $expires_at" >&2
                 VIOLATIONS=$((VIOLATIONS + 1))
             else
-                echo "[ALLOWLIST] 行 $lineno ($rule_id $path): allowlist 已过期 $expires_at (phase1 warning)" >&2
+                echo "[ALLOWLIST] 行 $lineno ($rule_id $path): allowlist 已过期 $expires_at (enforced mode warning)" >&2
                 WARNINGS=$((WARNINGS + 1))
             fi
         fi
@@ -441,7 +441,7 @@ validate_allowlist() {
         # 例外: R-WLR 的 legacy_entry_id 是导入点自描述 (legacy:<path>:<file>#R-WLR),
         #       指向"反向 import src.workline_runtime 的文件"本身,不属于迁移对象矩阵。
         if [[ -n "$legacy_entry_id" && -f docs/architecture/legacy-cleanup-matrix.csv && "$rule_id" != "R-WLR" ]]; then
-            matrix_drop_phase="$(matrix_drop_phase_for_entry "$legacy_entry_id" || true)"
+            matrix_drop_phase="$(matrix_drop_marker_for_entry "$legacy_entry_id" || true)"
             if [[ -z "$matrix_drop_phase" ]]; then
                 echo "[ALLOWLIST] 行 $lineno ($rule_id $path): legacy_entry_id 精确匹配失败 '$legacy_entry_id'" >&2
                 VIOLATIONS=$((VIOLATIONS + 1))
@@ -453,7 +453,7 @@ validate_allowlist() {
     done < "$ALLOWLIST"
 }
 
-echo "=== Architecture Guardrails (phase=$PHASE) ===" >&2
+echo "=== Architecture Guardrails (mode=$GUARDRAIL_MODE) ===" >&2
 
 load_allowlist
 rule_c1
@@ -465,7 +465,7 @@ rule_wlr_import
 rule_ri3b
 rule_ri3c
 
-if [[ "$PHASE" != "phase0" ]]; then
+if [[ "$GUARDRAIL_MODE" != "warn" ]]; then
     validate_allowlist
 fi
 
@@ -474,21 +474,21 @@ echo "=== 汇总 ===" >&2
 echo "violations: $VIOLATIONS" >&2
 echo "warnings: $WARNINGS" >&2
 
-case "$PHASE" in
-    phase0)
-        echo "phase0: warn-only (退出码 0)" >&2
+case "$GUARDRAIL_MODE" in
+    warn)
+        echo "warn: warn-only (退出码 0)" >&2
         exit 0
         ;;
-    phase1|phase2)
+    enforced|expiry-check)
         if [[ $VIOLATIONS -gt 0 ]]; then
-            echo "$PHASE: $VIOLATIONS 个违规未被 allowlist 覆盖, 退出码 1" >&2
+            echo "$GUARDRAIL_MODE: $VIOLATIONS 个违规未被 allowlist 覆盖, 退出码 1" >&2
             exit 1
         fi
-        echo "$PHASE: 全部违规已被 allowlist 覆盖或无违规, 退出码 0" >&2
+        echo "$GUARDRAIL_MODE: 全部违规已被 allowlist 覆盖或无违规, 退出码 0" >&2
         exit 0
         ;;
     *)
-        echo "未知 phase: $PHASE" >&2
+        echo "未知 mode: $GUARDRAIL_MODE" >&2
         exit 2
         ;;
 esac
