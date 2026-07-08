@@ -2,8 +2,8 @@
 
 主计划 §5.1 7 port 之一: 单据查询 (GRN / 拣货单 / 出库单 / 波次 / 任务快照)。
 所有方法 query-only, 与 §3.4 Authority Matrix "WMS 是单据权威" 一致。
-Runtime capability 注入时仅暴露 query port contract (capability implementation import boundary 禁止 internal
-domain import wms_integration 实现)。
+Runtime capability 注入时仅暴露 query port contract。
+capability implementation import boundary 禁止 internal domain import wms_integration 实现。
 
 方法命名: Port.method 格式, 供 ExternalContractProfile.runtime_capabilities_query
 引用。
@@ -92,8 +92,8 @@ class WmsDocumentPort(Protocol):
     """WMS 单据 port。
 
     所有方法 query-only, 短 TTL 缓存 (主计划 §6: 60s); 业务事务/搬运不走本 port。
-    Runtime capability 注入时仅暴露 query port contract (capability implementation import boundary 禁止内部域
-    import wms_integration 实现)。
+    Runtime capability 注入时仅暴露 query port contract。
+    capability implementation import boundary 禁止内部域 import wms_integration 实现。
     """
 
     def get_grn(self, grn_id: str) -> WmsGrnInfo:

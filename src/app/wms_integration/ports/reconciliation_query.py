@@ -33,7 +33,8 @@ class WmsReconciliationQueryPort(Protocol):
     """WMS 对账查询 port。
 
     所有方法 query-only; drift 由 WES reconciliation 任务消费。
-    Runtime capability 注入时仅暴露 query port contract (capability implementation import boundary)。
+    Runtime capability 注入时仅暴露 query port contract。
+    该 port 受 capability implementation import boundary 保护。
     """
 
     def check_bin_drift(self, warehouse_code: str, *, zone_code: str | None = None) -> list[WmsDriftItem]:

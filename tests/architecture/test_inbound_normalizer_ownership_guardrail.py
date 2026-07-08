@@ -22,7 +22,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDRAILS_SCRIPT = REPO_ROOT / "scripts" / "architecture-guardrails.sh"
 
-INBOUND_NORMALIZER_OWNERSHIP_TYPE_NAMES = ("WmsEventPort", "DeviceEventPort", "InboundEventPort", "RuntimeInbox", "RuntimeInboxConsumer")
+INBOUND_NORMALIZER_OWNERSHIP_TYPE_NAMES = (
+    "WmsEventPort",
+    "DeviceEventPort",
+    "InboundEventPort",
+    "RuntimeInbox",
+    "RuntimeInboxConsumer",
+)
 INBOUND_NORMALIZER_OWNERSHIP_CONTEXT_NAMES = ("InboundNormalizerContext", "create_inbound_normalizer_context")
 INBOUND_NORMALIZER_OWNERSHIP_SCAN_SCOPE = (
     "src/app/runtime",
@@ -61,14 +67,16 @@ def test_inbound_normalizer_ownership_rule_scans_correct_paths():
 def test_inbound_normalizer_ownership_rule_excludes_legitimate_holders():
     """rule_inbound_normalizer_ownership 必须排除合法的 inbound normalizer 持有者。"""
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
-    body = text.split("# --- INBOUND_NORMALIZER_OWNERSHIP:", maxsplit=1)[1].split("# --- allowlist 校验 ---", maxsplit=1)[0]
+    body = text.split("# --- INBOUND_NORMALIZER_OWNERSHIP:", maxsplit=1)[1].split(
+        "# --- allowlist 校验 ---", maxsplit=1
+    )[0]
     assert "src/app/runtime/orchestration/*" not in body, "INBOUND_NORMALIZER_OWNERSHIP 禁止排除整个 orchestration 目录"
     for excluded in INBOUND_NORMALIZER_OWNERSHIP_EXCLUDED_PATHS:
         assert excluded in body, f"rule_inbound_normalizer_ownership 缺排除路径 {excluded}"
 
 
 def test_inbound_normalizer_ownership_rule_pattern_covers_all_forbidden_inbound_names():
-    """rule_inbound_normalizer_ownership 匹配 inbound normalizer 类型名和 runtime-only context 名。"""
+    """rule_inbound_normalizer_ownership 匹配 inbound normalizer 禁用名称。"""
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
     for name in (*INBOUND_NORMALIZER_OWNERSHIP_TYPE_NAMES, *INBOUND_NORMALIZER_OWNERSHIP_CONTEXT_NAMES):
         assert name in text, f"rule_inbound_normalizer_ownership pattern 缺禁止名称 {name}"
@@ -77,7 +85,7 @@ def test_inbound_normalizer_ownership_rule_pattern_covers_all_forbidden_inbound_
 
 
 def test_inbound_normalizer_ownership_guardrail_runs_clean_in_enforced_mode():
-    """enforced 模式运行 architecture-guardrails.sh, 当前代码无 INBOUND_NORMALIZER_OWNERSHIP 违规 (退出码 0)。"""
+    """enforced 模式运行 architecture-guardrails.sh, 当前代码无 ownership 违规。"""
     # NOTE: brief had `sys.executable` here, but architecture-guardrails.sh has
     # `#!/usr/bin/env bash` shebang and is not a Python script. Use bash.
     result = subprocess.run(
@@ -123,7 +131,10 @@ def test_inbound_normalizer_ownership_guardrail_rejects_non_consumer_orchestrati
 
 def test_inbound_normalizer_ownership_guardrail_rejects_multiline_non_consumer_orchestration_import():
     """纯多行 import 的 inbound normalizer 也不能绕过 INBOUND_NORMALIZER_OWNERSHIP。"""
-    fixture = REPO_ROOT / "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_multiline_violation_fixture.py"
+    fixture = (
+        REPO_ROOT
+        / "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_multiline_violation_fixture.py"
+    )
     fixture.write_text(
         "from src.app.wms_integration.ports.event import (\n"
         "    WmsEventPort,\n"
@@ -147,18 +158,27 @@ def test_inbound_normalizer_ownership_guardrail_rejects_multiline_non_consumer_o
         f"INBOUND_NORMALIZER_OWNERSHIP 应拒绝多行 import 的 inbound normalizer\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
     assert "INBOUND_NORMALIZER_OWNERSHIP" in result.stderr
-    assert "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_multiline_violation_fixture.py" in result.stderr
+    assert (
+        "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_multiline_violation_fixture.py"
+        in result.stderr
+    )
 
 
-def test_inbound_normalizer_ownership_guardrail_rejects_directory_prefix_allowlist_for_inbound_normalizer_ownership(tmp_path):
-    """INBOUND_NORMALIZER_OWNERSHIP 不允许用目录前缀 allowlist 吞掉未来 non-consumer orchestration 违规。"""
-    fixture = REPO_ROOT / "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_allowlist_violation_fixture.py"
+def test_inbound_normalizer_ownership_guardrail_rejects_directory_prefix_allowlist_for_inbound_normalizer_ownership(
+    tmp_path,
+):
+    """目录前缀 allowlist 不得吞掉未来 non-consumer orchestration 违规。"""
+    fixture = (
+        REPO_ROOT
+        / "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_allowlist_violation_fixture.py"
+    )
     temp_allowlist = tmp_path / "architecture-guardrails.allowlist"
     temp_allowlist.write_text((REPO_ROOT / "scripts" / "architecture-guardrails.allowlist").read_text(encoding="utf-8"))
     with temp_allowlist.open("a", encoding="utf-8") as f:
         f.write(
             "INBOUND_NORMALIZER_OWNERSHIP|src/app/runtime/orchestration|bad broad allowlist|2026-09-30|"
-            "legacy:src/app/workline/repositories/debug_data_cleanup_repository.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase" + "2\n"
+            "legacy:src/app/workline/repositories/debug_data_cleanup_repository.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase"
+            "2\n"
         )
     fixture.write_text(
         "from src.app.wms_integration.ports.event import WmsEventPort\n\n"
@@ -185,7 +205,9 @@ def test_inbound_normalizer_ownership_guardrail_rejects_directory_prefix_allowli
 
 def test_inbound_normalizer_ownership_guardrail_rejects_alias_qualified_inbound_normalizer_type_hint():
     """模块别名限定名和泛型 type hint 不能绕过 INBOUND_NORMALIZER_OWNERSHIP。"""
-    fixture = REPO_ROOT / "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_alias_violation_fixture.py"
+    fixture = (
+        REPO_ROOT / "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_alias_violation_fixture.py"
+    )
     fixture.write_text(
         "import src.app.wms_integration.ports.event as wms_events\n\n"
         "leaked_normalizers: list[wms_events.WmsEventPort] = []\n\n"
@@ -209,12 +231,18 @@ def test_inbound_normalizer_ownership_guardrail_rejects_alias_qualified_inbound_
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
     assert "INBOUND_NORMALIZER_OWNERSHIP" in result.stderr
-    assert "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_alias_violation_fixture.py" in result.stderr
+    assert (
+        "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_alias_violation_fixture.py"
+        in result.stderr
+    )
 
 
 def test_inbound_normalizer_ownership_guardrail_rejects_qualified_runtime_reference():
     """普通表达式里的 module.WmsEventPort 引用也不能绕过 INBOUND_NORMALIZER_OWNERSHIP。"""
-    fixture = REPO_ROOT / "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_reference_violation_fixture.py"
+    fixture = (
+        REPO_ROOT
+        / "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_reference_violation_fixture.py"
+    )
     fixture.write_text(
         "from src.app.wms_integration.ports import event as wms_event_module\n\n"
         "normalizer_type = wms_event_module.WmsEventPort\n",
@@ -235,7 +263,10 @@ def test_inbound_normalizer_ownership_guardrail_rejects_qualified_runtime_refere
         f"INBOUND_NORMALIZER_OWNERSHIP 应拒绝普通表达式引用 inbound normalizer 类型\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
     assert "INBOUND_NORMALIZER_OWNERSHIP" in result.stderr
-    assert "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_reference_violation_fixture.py" in result.stderr
+    assert (
+        "src/app/runtime/orchestration/services/_inbound_normalizer_ownership_reference_violation_fixture.py"
+        in result.stderr
+    )
 
 
 def test_inbound_normalizer_ownership_guardrail_scans_callback_domain():
@@ -396,7 +427,8 @@ def test_import_linter_rejects_forbidden_callback_model_import_from_inbound_regi
     source = REPO_ROOT / "src/app/runtime/inbound_normalizer_registry.py"
     original = source.read_text(encoding="utf-8")
     source.write_text(
-        original + "\nfrom src.app.callback.models import event as _inbound_normalizer_ownership_illegal_callback_event\n",
+        original
+        + "\nfrom src.app.callback.models import event as _inbound_normalizer_ownership_illegal_callback_event\n",
         encoding="utf-8",
     )
     try:

@@ -256,7 +256,7 @@ def test_workline_service_config_only_after_runtime_split():
 # `callback_orchestration_service.py:35` 3 处死引用保留(未触发,不爆),
 # 作为 lazy shim 兜底的最后一道闸,验证 `__all__` / `_LAZY_SHIM_MAP` 语义一致。
 #
-# 来源:audit_c5_shim_cleanup (2026-06-30),配置域 plane/manifest 导出同步
+# 来源:runtime inbox shim cleanup audit (2026-06-30),配置域 plane/manifest 导出同步
 #   LIVE (3):WorkLineSafetyBlocked, workline_safety_service, workline_service
 #   DEAD 但 caller 仍存在 (3):WorklineInboxService, inbox_service,
 #                              workline_bin_cell_reservation_service
@@ -272,7 +272,7 @@ def test_workline_service_config_only_after_runtime_split():
 #                        inbox_service → inbox_service,
 #                        workline_bin_cell_reservation_service
 #                        → bin_cell_reservation_service
-_C5_REAL_MODULE_EXPORTS = frozenset(
+_RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS = frozenset(
     {
         # diagnostic_service
         "WorklineDiagnosticService",
@@ -296,7 +296,7 @@ _C5_REAL_MODULE_EXPORTS = frozenset(
     }
 )
 
-_C5_SHIM_TOMBSTONES = frozenset(
+_RUNTIME_INBOX_STATE_MACHINE_SHIM_TOMBSTONES = frozenset(
     {
         # runtime_intent_effects.py:1545 死引用 — shim fake 触发 ModuleNotFoundError
         "inbox_service",
@@ -318,7 +318,7 @@ def test_workline_services_init_all_exports_match_real_modules_and_live_callers(
 
     workline_services = importlib.import_module("src.app.workline.services")
 
-    expected = _C5_REAL_MODULE_EXPORTS | _C5_SHIM_TOMBSTONES
+    expected = _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS | _RUNTIME_INBOX_STATE_MACHINE_SHIM_TOMBSTONES
     assert set(workline_services.__all__) == expected, (
         "WorkLine service facade 收口:__all__ 残留 dead entries。\n"
         f"  期望: {sorted(expected)}\n"
@@ -339,9 +339,9 @@ def test_workline_services_init_shim_map_contains_only_dead_caller_tombstones():
     shim_map = getattr(workline_services, "_LAZY_SHIM_MAP", None)
     assert shim_map is not None, "WorkLine service facade 收口:_LAZY_SHIM_MAP 必须保留(承载死引用 tombstones)"
 
-    assert set(shim_map.keys()) == _C5_SHIM_TOMBSTONES, (
+    assert set(shim_map.keys()) == _RUNTIME_INBOX_STATE_MACHINE_SHIM_TOMBSTONES, (
         "WorkLine service facade 收口:_LAZY_SHIM_MAP 残留 dead entries。\n"
-        f"  期望 keys: {sorted(_C5_SHIM_TOMBSTONES)}\n"
+        f"  期望 keys: {sorted(_RUNTIME_INBOX_STATE_MACHINE_SHIM_TOMBSTONES)}\n"
         f"  实际 keys: {sorted(shim_map.keys())}"
     )
 

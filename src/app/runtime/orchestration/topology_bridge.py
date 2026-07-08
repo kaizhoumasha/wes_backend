@@ -1,6 +1,7 @@
 # 旧 runtime 桥接实现:src.workline_runtime.topology 的门面副本
 # 旧 runtime 入口删除后,本桥接承载对应正式边界。
-# 自引用 src.workline_runtime.device_ordering 已重定向到本目录 device_ordering (stable ordering bridge)。
+# 自引用 src.workline_runtime.device_ordering 已重定向到本目录 device_ordering
+# (stable ordering bridge)。
 # 自引用 src.workline_runtime.plugin_manifest (TYPE_CHECKING) 已重定向到
 # src.app.workline.domain.plugin_manifest (stable plugin manifest mirror)。
 

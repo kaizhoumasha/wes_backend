@@ -82,7 +82,8 @@ def register_inbound_normalizers(
 ) -> None:
     """把 WmsEventNormalizer 注册到 InboundNormalizerRegistry 的 port_protocol 键下。
 
-    调用方负责传入目标 Protocol(本模块不直接引用其名字符串,避免 inbound normalizer ownership boundary 误报)。
+    调用方负责传入目标 Protocol。
+    本模块不直接引用其名字符串,避免 inbound normalizer ownership boundary 误报。
     """
     registry.register(port_protocol, WmsEventNormalizer)
 

@@ -1,9 +1,9 @@
 """Callback 域 utils + contracts mirror 完整性测试。
 
 校验 callback 域从 src.workline_runtime 解耦后,本地镜像 (callback/utils 与
-callback/contracts) 对外公开 API 与 wlr 镜像版本行为一致。
+callback/contracts) 对外公开 API 与 legacy runtime 镜像版本行为一致。
 
-注:这是 mirror 完整性测试,不重 wlr 测试,只验证本地镜像能 import + 关键
+注:这是 mirror 完整性测试,不重 legacy runtime 测试,只验证本地镜像能 import + 关键
 API 行为(TraceContext 字段填充 / TimelineGenerator 返回值 / utils 边界)。
 """
 

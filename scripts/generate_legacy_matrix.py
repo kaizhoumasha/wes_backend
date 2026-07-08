@@ -138,7 +138,8 @@ MIGRATED_TEST_IMPLS = {
 }
 
 # runtime migration F-1/F-2:workline/repositories 运行态 repository 物理迁入
-# runtime/orchestration/repositories。CAPABILITY_IMPLEMENTATION_IMPORT seed 仍按旧入口追踪,映射回 legacy 路径。
+# runtime/orchestration/repositories。CAPABILITY_IMPLEMENTATION_IMPORT seed
+# 仍按旧入口追踪,映射回 legacy 路径。
 MIGRATED_REPOSITORIES = {
     "src/app/workline/repositories/bin_cell_reservation_repository.py": (
         "src/app/runtime/orchestration/repositories/bin_cell_reservation_repository.py"
@@ -569,7 +570,9 @@ def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths
     for path, owner, etype, bs, phase, risk in seed_paths:
         sym = GUARDRAIL_SEED_SYMBOLS.get(path)
         if sym is None:
-            sym = "<file>#CAPABILITY_IMPLEMENTATION_IMPORT" if "CAPABILITY_IMPLEMENTATION_IMPORT seed" in bs else "<file>"
+            sym = (
+                "<file>#CAPABILITY_IMPLEMENTATION_IMPORT" if "CAPABILITY_IMPLEMENTATION_IMPORT seed" in bs else "<file>"
+            )
         eid = f"legacy:{path}:{sym}"
         if eid in seen:
             continue

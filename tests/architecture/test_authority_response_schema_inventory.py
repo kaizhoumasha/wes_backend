@@ -1,4 +1,6 @@
-"""AUTHORITY_METADATA_BOUNDARY inventory: 外部权威 QueryPort response 必含 AuthorityMetadata (H1 / CEO-005)。
+"""AUTHORITY_METADATA_BOUNDARY inventory.
+
+外部权威 QueryPort response 必含 AuthorityMetadata (H1 / CEO-005)。
 
 主计划 §7.5 AUTHORITY_METADATA_BOUNDARY + §3.4 Authority Matrix：查询响应强制带
 scope/authority/source/evidence_at；外部权威 QueryPort response
@@ -12,7 +14,8 @@ AuthorityMetadata（或 ExternalAuthorityMetadata）；未被声明的 Response
 
 注册表采用显式声明（而非扫描全部 *Response 类），原因：
 1. 项目 34+ Response 类散落在各域 models/，多数是本地配置/内部 DTO，
-   不属于 AUTHORITY_METADATA_BOUNDARY 范围（主计划 §7.5 AUTHORITY_METADATA_BOUNDARY 只约束"查询响应"，非全部 response）
+   不属于 AUTHORITY_METADATA_BOUNDARY 范围。
+   主计划 §7.5 AUTHORITY_METADATA_BOUNDARY 只约束"查询响应"，非全部 response。
 2. 一次性全量强制会导致 review 和回归范围失控
 3. 显式注册表让 CEO-005 可逐域渐进落地，每域一个 PR 切片
 

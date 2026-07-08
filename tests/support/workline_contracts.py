@@ -129,7 +129,7 @@ def validate_event_push_response(response: dict[str, Any]) -> tuple[bool, str | 
 # BC-09: WMS 查询响应必须含 scope/authority/source/evidence_at
 @dataclass
 class AuthorityMetadata:
-    """BC-09 / C3 authority metadata。"""
+    """BC-09 / AUTHORITY_METADATA_BOUNDARY authority metadata。"""
 
     scope: str
     authority: str

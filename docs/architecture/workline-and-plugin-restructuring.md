@@ -1952,7 +1952,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - 文档：`docs/architecture/target-state-contract.md`、`legacy-cleanup-matrix.md`（707 entries，0 pending-review / 0 empty strategy）、`session-correlation-matrix.md`、`device-command-contract.md`、`integration-lab-and-simulator.md`、`architecture-guardrails-spec.md`
 - 行为契约：`ed6e7b5 test(workline): P0-003 行为契约测试基线 (10 BC, 28 pass + 3 strict xfail)`
 - 护栏脚本：`scripts/architecture-guardrails.sh` + `scripts/architecture-guardrails.allowlist`（phase-aware enforcement）
-- 护栏测试：`tests/architecture/test_c1..c5_*`、`test_ri3_capability_injection_guardrail.py`、`test_phase0_legacy_matrix_contract.py`
+- 护栏测试：stable architecture boundary guardrail tests、`test_capability_dependency_guardrail.py`、`test_phase0_legacy_matrix_contract.py`
 
 ### 10.2 Phase 1: 目标态骨架与 WMS ACL — ✅ Packet A/B/C + Packet D 完成（PR #64 + PR Packet D + 本分支 callback admission 收敛）
 

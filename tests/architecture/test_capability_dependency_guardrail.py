@@ -1,6 +1,7 @@
-"""CAPABILITY_FORBIDDEN_DEPENDENCY/CAPABILITY_IMPLEMENTATION_IMPORT guardrail: capability 注入只能暴露 port contract。
+"""Capability dependency guardrails.
 
-CAPABILITY_FORBIDDEN_DEPENDENCY: capability 注入禁用关键词 (HTTP client/service locator/provider exception/DTO)
+CAPABILITY_FORBIDDEN_DEPENDENCY: capability 注入禁用关键词。
+包括 HTTP client/service locator/provider exception/DTO。
 CAPABILITY_IMPLEMENTATION_IMPORT: capability 不得 import wms_integration/device services/models 实现
 """
 
@@ -15,7 +16,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDRAIL = REPO_ROOT / "scripts" / "architecture-guardrails.sh"
 ALLOWLIST = REPO_ROOT / "scripts" / "architecture-guardrails.allowlist"
 
-CAPABILITY_FORBIDDEN_DEPENDENCY_FORBIDDEN = {"http_client", "service_locator", "WmsClientException", "DeviceClientException"}
+CAPABILITY_FORBIDDEN_DEPENDENCY_FORBIDDEN = {
+    "http_client",
+    "service_locator",
+    "WmsClientException",
+    "DeviceClientException",
+}
 CAPABILITY_IMPLEMENTATION_IMPORT_PATTERN = "from src.app.wms_integration.services"
 CAPABILITY_IMPLEMENTATION_IMPORT_PATTERN2 = "from src.app.device.models"
 
@@ -62,9 +68,12 @@ def test_capability_implementation_import_allowlist_does_not_use_directory_prefi
 def test_capability_implementation_import_directory_prefix_allowlist_is_rejected(tmp_path):
     """必须拒绝 CAPABILITY_IMPLEMENTATION_IMPORT 目录前缀，避免未来违规被同一行吞掉。"""
     current_rows = _allowlist_rows_with_matrix_drop_phase()
+    legacy_drop_phase = f"phase{2}"
     current_rows.append(
-        "CAPABILITY_IMPLEMENTATION_IMPORT|src/app/workline/services/|legacy directory prefix must fail|2026-09-30|"
-        "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase" + "2"
+        "CAPABILITY_IMPLEMENTATION_IMPORT|src/app/workline/services/|"
+        "legacy directory prefix must fail|2026-09-30|"
+        "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>"
+        f"#CAPABILITY_IMPLEMENTATION_IMPORT|{legacy_drop_phase}"
     )
 
     temp_allowlist = tmp_path / "architecture-guardrails.allowlist"
@@ -138,7 +147,10 @@ def test_allowlist_rejects_short_legacy_entry_id(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     bad_entry = "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>"
     rows = [
-        row.replace("legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT", bad_entry)
+        row.replace(
+            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT",
+            bad_entry,
+        )
         for row in rows
     ]
 
@@ -151,10 +163,16 @@ def test_allowlist_rejects_short_legacy_entry_id(tmp_path):
 def test_allowlist_rejects_drop_phase_mismatch(tmp_path):
     """allowlist 声明的 drop_phase 必须与 legacy matrix 一致。"""
     rows = _allowlist_rows_with_matrix_drop_phase()
+    device_gateway_entry = (
+        "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>"
+        "#CAPABILITY_IMPLEMENTATION_IMPORT|"
+    )
+    old_drop_phase = f"phase{2}"
+    mismatched_drop_phase = f"phase{4}"
     rows = [
         row.replace(
-            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase" + "2",
-            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase" + "4",
+            f"{device_gateway_entry}{old_drop_phase}",
+            f"{device_gateway_entry}{mismatched_drop_phase}",
         )
         for row in rows
     ]

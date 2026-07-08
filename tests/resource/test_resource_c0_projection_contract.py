@@ -199,7 +199,7 @@ def test_projection_integrity_service_reports_duplicates_for_all_active_projecti
             _Row(id=3, rack_code="RACK-1", rack_slot_code="A1", bin_code="BIN-1"),
             _Row(id=4, rack_code="RACK-1", rack_slot_code="A1", bin_code="BIN-2"),
             _Row(id=5, rack_code="RACK-2", rack_slot_code="B1", bin_code="BIN-3"),
-            _Row(id=6, rack_code="RACK-3", rack_slot_code="C1", bin_code="BIN-3"),
+            _Row(id=6, rack_code="RACK-3", rack_slot_code="WMS_INTEGRATION_BOUNDARY", bin_code="BIN-3"),
         ],
         bin_placements=[
             _Row(id=7, bin_code="BIN-4"),

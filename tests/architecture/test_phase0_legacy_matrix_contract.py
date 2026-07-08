@@ -151,9 +151,12 @@ def test_runtime_and_plugin_all_exports_are_inventory_entries():
 
 def test_capability_implementation_import_device_seed_targets_device_command_port():
     """只 import device 实现的 CAPABILITY_IMPLEMENTATION_IMPORT seed 必须指向 DeviceCommandPort。"""
-    # 阶段 6 AUTHORITY_METADATA_BOUNDARY:device_command_gateway 物理迁入 runtime/orchestration/services/ 后,
+    # 阶段 6 AUTHORITY_METADATA_BOUNDARY:
+    # device_command_gateway 物理迁入 runtime/orchestration/services/ 后,
     # CAPABILITY_IMPLEMENTATION_IMPORT seed 路径跟随新位置(impl 物理迁入 后 path 跟踪)。
-    entry = _entry_by_id("legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT")
+    entry = _entry_by_id(
+        "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT"
+    )
 
     assert entry is not None
     assert "capability import device 实现" in entry.business_semantics
@@ -163,7 +166,9 @@ def test_capability_implementation_import_device_seed_targets_device_command_por
 
 def test_capability_implementation_import_wms_seed_targets_wms_fulfillment_port():
     """import wms_integration 实现的 CAPABILITY_IMPLEMENTATION_IMPORT seed 仍指向 WMS 履约 port。"""
-    entry = _entry_by_id("legacy:src/app/workline/services/single_layer_rack_orchestration_service.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT")
+    entry = _entry_by_id(
+        "legacy:src/app/workline/services/single_layer_rack_orchestration_service.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT"
+    )
 
     assert entry is not None
     assert entry.business_semantics == "capability import wms_integration 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed)"

@@ -1,6 +1,7 @@
 # 旧 runtime 桥接实现:src.workline_runtime.business_identity 的门面副本
 # 旧 runtime 入口删除后,本桥接承载对应正式边界。
-# 自引用 src.workline_runtime.utils 已重定向到 src.app.workline.utils (stable workline utils mirror)。
+# 自引用 src.workline_runtime.utils 已重定向到 src.app.workline.utils
+# (stable workline utils mirror)。
 
 """Runtime business identity helpers."""
 

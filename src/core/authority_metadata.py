@@ -1,8 +1,8 @@
-"""Authority Metadata 契约（CEO-005 / C3 不变量）。
+"""Authority Metadata 契约（CEO-005 / AUTHORITY_METADATA_BOUNDARY 不变量）。
 
 为外部权威 QueryPort（WMS MasterData / Document / InventoryQuery /
 ReconciliationQuery）和作业期投影查询响应提供统一的 authority 标记，
-防止本地 active projection 冒充 WMS 全局库存（主计划 §7.5 C3 / §3.4
+防止本地 active projection 冒充 WMS 全局库存（主计划 §7.5 AUTHORITY_METADATA_BOUNDARY / §3.4
 Authority Matrix / 影子 WMS 威胁 §7.1）。
 
 四个必填字段：
@@ -24,7 +24,7 @@ Authority = str
 
 
 class AuthorityMetadata(BaseModel):
-    """C3 不变量：查询响应强制带 scope/authority/source/evidence_at。
+    """AUTHORITY_METADATA_BOUNDARY 不变量：查询响应强制带 scope/authority/source/evidence_at。
 
     用于作业期投影、本地配置查询等非外部权威响应；外部权威 QueryPort
     response 使用 ExternalAuthorityMetadata（额外强制 source_version）。

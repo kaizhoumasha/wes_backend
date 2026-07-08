@@ -16,7 +16,8 @@ from src.app.runtime.orchestration.repositories.session_repository import (
 from src.app.sys.models.outbox import DispatchEnvelope, SystemOutbox, SystemOutboxDispatchType
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository, system_outbox_repository
 
-# rack_position_service 在 stable rack-position service boundary 内保留原地(workline/services/rack_position_service.py)。
+# rack_position_service 在 stable rack-position service boundary 内保留原地
+# (workline/services/rack_position_service.py)。
 # 这里继续走 workline.services 入口以便跨层兼容。
 from src.app.workline.services.rack_position_service import (
     WorklineRackPositionService,

@@ -40,7 +40,7 @@ def test_consumer_constructor_signals_required_dependencies() -> None:
 
 
 def test_consumer_consume_sync_delegates_to_workline_batch_processor(monkeypatch: pytest.MonkeyPatch) -> None:
-    """consume_sync 委托 wlr inbox_batch_processor + 注入 consumer_id。"""
+    """consume_sync 委托 legacy runtime inbox_batch_processor + 注入 consumer_id。"""
     from src.app.runtime.orchestration.consumers import RuntimeInboxConsumer
 
     captured: dict[str, Any] = {}
@@ -51,7 +51,7 @@ def test_consumer_consume_sync_delegates_to_workline_batch_processor(monkeypatch
             captured["payload"] = payload
             return {"status": "PROCESSED", "consumer_id": payload.get("consumer_id")}
 
-    # 桩 wlr inbox_batch_processor 在 lazy import 解析
+    # 桩 legacy runtime inbox_batch_processor 在 lazy import 解析
     import src.app.runtime.orchestration.services.inbox.inbox_batch_processor as bp_module
 
     monkeypatch.setattr(bp_module, "process_inbox_payload", _FakeBatchProcessor.process_payload, raising=False)

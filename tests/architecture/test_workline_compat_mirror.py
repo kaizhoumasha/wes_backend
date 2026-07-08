@@ -1,4 +1,4 @@
-"""workline compat mirror — workline 域工具镜像与 wlr 原文件 AST 签名一致。
+"""workline compat mirror — workline 域工具镜像与 legacy runtime 原文件 AST 签名一致。
 
 不验证运行时行为, 只验证:
 - src/app/workline/utils.py top-level 函数名自包含
@@ -25,8 +25,8 @@ def _public_symbols_from_module(ast_module: ast.Module) -> set[str]:
     return symbols
 
 
-def test_workline_utils_mirror_is_self_consistent_after_wlr_removal() -> None:
-    """src/app/workline/utils.py 镜像在 wlr 物理删除后仍保持自包含。
+def test_workline_utils_mirror_is_self_consistent_after_legacy_runtime_removal() -> None:
+    """src/app/workline/utils.py 镜像在 legacy runtime 物理删除后仍保持自包含。
 
     该契约覆盖 src.workline_runtime 删除后的正式实现。
     """

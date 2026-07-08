@@ -1,6 +1,7 @@
 """LEGACY_RUNTIME_IMPORT src.workline_runtime production import 严格型 guardrail 测试。
 
-主计划 §10.3 + Step 3: src.workline_runtime 在生产代码中**严禁**直接 import (legacy runtime allowlist 严格型)。
+主计划 §10.3 + Step 3: src.workline_runtime 在生产代码中**严禁**直接 import。
+legacy runtime allowlist 使用严格型。
 runtime 重构完成后,EXCLUDED_PREFIXES 收回至空集,consumers/ trust zone 退出。
 
 历史过渡态:允许以下入口直接 import (作为单点过渡):
@@ -46,14 +47,18 @@ def test_legacy_runtime_import_rule_pattern_matches_workline_runtime_imports():
     """rule_legacy_runtime_import pattern 必须覆盖 from/import src.workline_runtime。"""
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
     # 必须在 rule_legacy_runtime_import 函数体内出现
-    body = text.split("# --- LEGACY_RUNTIME_IMPORT:", maxsplit=1)[1].split("# --- CAPABILITY_IMPLEMENTATION_IMPORT:", maxsplit=1)[0]
+    body = text.split("# --- LEGACY_RUNTIME_IMPORT:", maxsplit=1)[1].split(
+        "# --- CAPABILITY_IMPLEMENTATION_IMPORT:", maxsplit=1
+    )[0]
     assert "src\\.workline_runtime" in body, "rule_legacy_runtime_import pattern 缺 src.workline_runtime 字面量"
 
 
 def test_legacy_runtime_import_rule_excludes_legitimate_importers():
-    """rule_legacy_runtime_import 必须排除 legacy runtime 自身 + tests + migrations (src.workline_runtime 删除后)。"""
+    """rule_legacy_runtime_import 必须排除合法 importer。"""
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
-    body = text.split("# --- LEGACY_RUNTIME_IMPORT:", maxsplit=1)[1].split("# --- CAPABILITY_IMPLEMENTATION_IMPORT:", maxsplit=1)[0]
+    body = text.split("# --- LEGACY_RUNTIME_IMPORT:", maxsplit=1)[1].split(
+        "# --- CAPABILITY_IMPLEMENTATION_IMPORT:", maxsplit=1
+    )[0]
     for excluded in LEGACY_RUNTIME_ALLOWED_PATHS:
         assert excluded in body, f"rule_legacy_runtime_import 缺排除路径 {excluded}"
 
@@ -67,20 +72,22 @@ def test_legacy_runtime_import_allowlist_entries_have_legacy_entry_id_and_drop_p
     """
     if not ALLOWLIST.exists():
         return
-    legacy_runtime_import_lines = [line for line in ALLOWLIST.read_text().splitlines() if line.startswith("LEGACY_RUNTIME_IMPORT|")]
+    legacy_runtime_import_lines = [
+        line for line in ALLOWLIST.read_text().splitlines() if line.startswith("LEGACY_RUNTIME_IMPORT|")
+    ]
     if not legacy_runtime_import_lines:
-        # src.workline_runtime allowlist 清零后: LEGACY_RUNTIME_IMPORT allowlist 清零, 字段契约不适用
+        # src.workline_runtime allowlist 清零后,字段契约不适用。
         return
     for line in legacy_runtime_import_lines:
         fields = line.split("|")
-        # fields: [prefix, file, reason, expires, legacy_entry_id, "#LEGACY_RUNTIME_IMPORT", drop_phase]
+        # fields: prefix, file, reason, expires, legacy_entry_id, rule suffix, drop_phase
         assert len(fields) >= 7, f"LEGACY_RUNTIME_IMPORT 行字段不全: {line}"
         assert fields[4] != "<file>", f"legacy_entry_id 未填: {line}"
         assert fields[6].startswith("phase"), f"drop_phase 格式错: {line}"
 
 
 def test_legacy_runtime_import_guardrail_runs_clean_in_enforced_mode():
-    """enforced 模式运行 architecture-guardrails.sh, 当前代码无 LEGACY_RUNTIME_IMPORT 未覆盖违规 (退出码 0)。"""
+    """enforced 模式运行 architecture-guardrails.sh, 当前代码无未覆盖违规。"""
     result = subprocess.run(
         ["bash", str(GUARDRAILS_SCRIPT), "--mode", "enforced"],  # noqa: S607
         cwd=REPO_ROOT,
@@ -96,7 +103,7 @@ def test_legacy_runtime_import_guardrail_runs_clean_in_enforced_mode():
 
 
 def test_legacy_runtime_import_production_imports_all_have_allowlist_coverage():
-    """所有 production code 内的 src.workline_runtime import 都必须在 LEGACY_RUNTIME_IMPORT allowlist 覆盖范围。
+    """production code 内的 src.workline_runtime import 必须有 allowlist 覆盖。
 
     src.workline_runtime 删除后:consumers/ 已退出 trust zone,本测试不应再有未覆盖违规。
     """
@@ -123,8 +130,9 @@ def test_legacy_runtime_import_production_imports_all_have_allowlist_coverage():
         if LEGACY_RUNTIME_IMPORT_PATTERN.search(content) and rel not in allowlisted_paths:
             offenders.append(rel)
 
-    assert not offenders, "以下 production 文件 import src.workline_runtime 但未在 LEGACY_RUNTIME_IMPORT allowlist:\n  " + "\n  ".join(
-        sorted(offenders)
+    assert not offenders, (
+        "以下 production 文件 import src.workline_runtime 但未在 LEGACY_RUNTIME_IMPORT allowlist:\n  "
+        + "\n  ".join(sorted(offenders))
     )
 
 
@@ -144,7 +152,9 @@ def test_excluded_prefixes_does_not_contain_consumers():
     consumers/ 内 RuntimeInboxConsumer 已 legacy runtime-free,无需 EXCLUDED_PREFIXES 保护。
     """
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
-    body = text.split("# --- LEGACY_RUNTIME_IMPORT:", maxsplit=1)[1].split("# --- CAPABILITY_IMPLEMENTATION_IMPORT:", maxsplit=1)[0]
+    body = text.split("# --- LEGACY_RUNTIME_IMPORT:", maxsplit=1)[1].split(
+        "# --- CAPABILITY_IMPLEMENTATION_IMPORT:", maxsplit=1
+    )[0]
     assert "src/app/runtime/orchestration/consumers/" not in body, (
         "src.workline_runtime 删除后:EXCLUDED_PREFIXES 不应再含 consumers/ trust zone"
     )
