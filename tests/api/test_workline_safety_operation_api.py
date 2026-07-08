@@ -94,6 +94,14 @@ def test_sandbox_workline_start_route_uses_user_update_permission() -> None:
     assert permissions == ["biz:workline:update"]
 
 
+def test_sandbox_workline_start_imports_start_admission_service_instance() -> None:
+    # Regression: ISSUE-001 — sandbox START imported the phase4 module,
+    # not the service instance.
+    # Found by /qa on 2026-07-08
+    # Report: .gstack/qa-reports/qa-report-localhost-2026-07-08.md
+    assert hasattr(operation_api.start_admission_service, "admit_start")
+
+
 @pytest.mark.asyncio
 async def test_sandbox_workline_start_returns_accepted_data(
     monkeypatch: pytest.MonkeyPatch,
