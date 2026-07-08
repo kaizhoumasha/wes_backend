@@ -156,7 +156,7 @@ run_process_naming_guardrail() {
 }
 
 run_architecture_check() {
-    # 默认 enforced，确保每次 commit 触发 R-I3a/b/c + C1/C2/C4 + wlr guardrail。
+    # 默认 enforced，确保每次 commit 触发 stable architecture guardrails。
     # 允许 ARCHITECTURE_GUARDRAIL_MODE 环境变量覆盖 (测试/回滚场景)。
     local mode="${ARCHITECTURE_GUARDRAIL_MODE:-enforced}"
     log_step "architecture" "architecture-guardrails.sh --mode $mode"

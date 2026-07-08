@@ -1,4 +1,4 @@
-"""C4 guardrail: DeviceCommand 不含 PLC/坐标/关节/安全回路字段。
+"""DEVICE_COMMAND_BOUNDARY guardrail: DeviceCommand 不含 PLC/坐标/关节/安全回路字段。
 
 验证禁止字段被识别; 字段白名单见 device-command-contract.md §5。
 """
@@ -15,16 +15,16 @@ GUARDRAIL = REPO_ROOT / "scripts" / "architecture-guardrails.sh"
 FORBIDDEN_FIELDS = {"plc", "coordinate", "joint_angle", "x_coord", "y_coord", "safety_loop"}
 
 
-def test_c4_forbidden_fields_identified():
-    """C4 禁止字段集合覆盖 PLC/坐标/关节/安全回路。"""
+def test_device_command_boundary_forbidden_fields_identified():
+    """DEVICE_COMMAND_BOUNDARY 禁止字段集合覆盖 PLC/坐标/关节/安全回路。"""
     violation_field = "joint_angle: float"
     matched = {f for f in FORBIDDEN_FIELDS if f in violation_field}
     assert matched
 
 
-def test_c4_rule_exists_in_script():
+def test_device_command_boundary_rule_exists_in_script():
     content = GUARDRAIL.read_text()
-    assert "rule_c4" in content
+    assert "rule_device_command_boundary" in content
     for field in ("plc", "coordinate", "joint", "safety_loop"):
         assert field in content
 
@@ -59,8 +59,8 @@ def _run_guardrails(extra_files: dict[str, str] | None = None) -> subprocess.Com
         )
 
 
-def test_c4_catches_real_forbidden_field_declaration():
-    """C4 必须捕获真实 Pydantic 字段声明（plc_address: str = Field(...)）。"""
+def test_device_command_boundary_catches_real_forbidden_field_declaration():
+    """DEVICE_COMMAND_BOUNDARY 必须捕获真实 Pydantic 字段声明（plc_address: str = Field(...)）。"""
     result = _run_guardrails(
         extra_files={
             "src/app/device/models/evil.py": textwrap.dedent(
@@ -76,14 +76,14 @@ def test_c4_catches_real_forbidden_field_declaration():
         }
     )
     assert result.returncode != 0, f"scanner 必须捕获真实 PLC/coordinate 字段声明\nstderr={result.stderr}"
-    assert "[C4]" in result.stderr
+    assert "[DEVICE_COMMAND_BOUNDARY]" in result.stderr
     assert "evil.py" in result.stderr
 
 
-def test_c4_ignores_forbidden_keys_inside_blacklist_set():
-    """C4 不应误报 H4 黑名单常量集合。
+def test_device_command_boundary_ignores_forbidden_keys_inside_blacklist_set():
+    """DEVICE_COMMAND_BOUNDARY 不应误报 H4 黑名单常量集合。
 
-    回归测试: 工作区 review 发现 9 个 C4 false positive,
+    回归测试: 工作区 review 发现 9 个 DEVICE_COMMAND_BOUNDARY false positive,
     都来自 _FORBIDDEN_PARAM_KEYS = {"plc", "plc_address", ...} 这种黑名单字面量。
     """
     result = _run_guardrails(
@@ -108,11 +108,11 @@ def test_c4_ignores_forbidden_keys_inside_blacklist_set():
         }
     )
     assert result.returncode == 0, f"scanner 不应误报黑名单常量\nstderr={result.stderr}"
-    assert "[C4]" not in result.stderr
+    assert "[DEVICE_COMMAND_BOUNDARY]" not in result.stderr
 
 
-def test_c4_ignores_forbidden_keywords_in_docstrings():
-    """C4 不应误报 docstring/注释里描述禁止字段的文字。"""
+def test_device_command_boundary_ignores_forbidden_keywords_in_docstrings():
+    """DEVICE_COMMAND_BOUNDARY 不应误报 docstring/注释里描述禁止字段的文字。"""
     result = _run_guardrails(
         extra_files={
             "src/app/device/models/docs.py": textwrap.dedent(
@@ -132,4 +132,4 @@ def test_c4_ignores_forbidden_keywords_in_docstrings():
         }
     )
     assert result.returncode == 0, f"scanner 不应误报 docstring/注释\nstderr={result.stderr}"
-    assert "[C4]" not in result.stderr
+    assert "[DEVICE_COMMAND_BOUNDARY]" not in result.stderr

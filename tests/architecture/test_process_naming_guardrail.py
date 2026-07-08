@@ -83,6 +83,12 @@ PROCESS_NAME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "refactor process phrase",
         re.compile(r"burn[ _-]down|technical[ _-]lane|business[ _-]lane|final[ _-]cleanup", re.IGNORECASE),
     ),
+    (
+        "guardrail rule id shorthand",
+        re.compile(r"(?<![A-Za-z0-9])(?:C[1-5][a-z]?|R-?I3[a-c]?|R-WLR)(?![A-Za-z0-9])", re.IGNORECASE),
+    ),
+    ("guardrail function shorthand", re.compile(r"\brule_(?:c[1-5]|ri3[a-c]?|wlr)(?:_|$)", re.IGNORECASE)),
+    ("legacy runtime shorthand alias", re.compile(r"(?<![A-Za-z0-9])wlr(?![A-Za-z0-9])", re.IGNORECASE)),
 )
 
 
@@ -169,6 +175,21 @@ def test_process_naming_guardrail_rejects_stale_script_and_option_tokens() -> No
         "Phase B resource contract",
         "architecture-guardrails.sh --phase 4",
         "ARCHITECTURE_PHASE=phase4",
+        "tests/architecture/test_c3_authority_metadata_guardrail.py",
+        "tests/architecture/test_c4_device_command_fields_guardrail.py",
+        "tests/architecture/test_ri3c_inbound_normalizer_port_guardrail.py",
+        "tests/architecture/test_wlr_import_guardrail.py",
+        "rule_c3",
+        "rule_c4",
+        "rule_ri3b",
+        "rule_ri3c",
+        "rule_wlr_import",
+        "[C3] warning",
+        "[C4] violation",
+        "R-I3b seed allowlist",
+        "R-I3c inbound normalizer",
+        "R-WLR production import",
+        "wlr allowlist strict mode",
     )
 
     for example in examples:

@@ -1,7 +1,7 @@
-"""R-I3a/R-I3b guardrail: capability 注入只能暴露 port contract。
+"""CAPABILITY_FORBIDDEN_DEPENDENCY/CAPABILITY_IMPLEMENTATION_IMPORT guardrail: capability 注入只能暴露 port contract。
 
-R-I3a: capability 注入禁用关键词 (HTTP client/service locator/provider exception/DTO)
-R-I3b: capability 不得 import wms_integration/device services/models 实现
+CAPABILITY_FORBIDDEN_DEPENDENCY: capability 注入禁用关键词 (HTTP client/service locator/provider exception/DTO)
+CAPABILITY_IMPLEMENTATION_IMPORT: capability 不得 import wms_integration/device services/models 实现
 """
 
 from __future__ import annotations
@@ -15,43 +15,43 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDRAIL = REPO_ROOT / "scripts" / "architecture-guardrails.sh"
 ALLOWLIST = REPO_ROOT / "scripts" / "architecture-guardrails.allowlist"
 
-RI3A_FORBIDDEN = {"http_client", "service_locator", "WmsClientException", "DeviceClientException"}
-RI3B_PATTERN = "from src.app.wms_integration.services"
-RI3B_PATTERN2 = "from src.app.device.models"
+CAPABILITY_FORBIDDEN_DEPENDENCY_FORBIDDEN = {"http_client", "service_locator", "WmsClientException", "DeviceClientException"}
+CAPABILITY_IMPLEMENTATION_IMPORT_PATTERN = "from src.app.wms_integration.services"
+CAPABILITY_IMPLEMENTATION_IMPORT_PATTERN2 = "from src.app.device.models"
 
 
-def test_ri3a_forbidden_keywords_covered():
+def test_capability_forbidden_dependency_forbidden_keywords_covered():
     content = GUARDRAIL.read_text()
-    assert "rule_ri3a" in content
-    for kw in RI3A_FORBIDDEN:
+    assert "rule_capability_forbidden_dependency" in content
+    for kw in CAPABILITY_FORBIDDEN_DEPENDENCY_FORBIDDEN:
         assert kw in content
 
 
-def test_ri3b_from_import_pattern_covered():
+def test_capability_implementation_import_from_import_pattern_covered():
     content = GUARDRAIL.read_text()
-    assert "rule_ri3b" in content
+    assert "rule_capability_implementation_import" in content
     assert "wms_integration" in content
     assert "device" in content
 
 
-def test_ri3a_violation_fixture():
+def test_capability_forbidden_dependency_violation_fixture():
     """capability 持有 HTTP client 违反 I3。"""
     violation = "http_client = WmsHttpClient()"
-    assert any(kw in violation for kw in RI3A_FORBIDDEN)
+    assert any(kw in violation for kw in CAPABILITY_FORBIDDEN_DEPENDENCY_FORBIDDEN)
 
 
-def test_ri3b_violation_fixture():
+def test_capability_implementation_import_violation_fixture():
     """capability import wms_integration services 违反 I3。"""
     violation = "from src.app.wms_integration.services.transport_contract import ..."
-    assert RI3B_PATTERN in violation
+    assert CAPABILITY_IMPLEMENTATION_IMPORT_PATTERN in violation
 
 
-def test_ri3b_allowlist_does_not_use_directory_prefixes():
-    """R-I3b seed allowlist 必须枚举文件，不能用目录前缀吞掉未来违规。"""
+def test_capability_implementation_import_allowlist_does_not_use_directory_prefixes():
+    """CAPABILITY_IMPLEMENTATION_IMPORT seed allowlist 必须枚举文件，不能用目录前缀吞掉未来违规。"""
     rows = [
         row
         for row in ALLOWLIST.read_text(encoding="utf-8").splitlines()
-        if row and not row.startswith("#") and row.startswith("R-I3b|")
+        if row and not row.startswith("#") and row.startswith("CAPABILITY_IMPLEMENTATION_IMPORT|")
     ]
 
     assert rows
@@ -59,12 +59,12 @@ def test_ri3b_allowlist_does_not_use_directory_prefixes():
     assert all("|src/app/workline/repositories/|" not in row for row in rows)
 
 
-def test_ri3b_directory_prefix_allowlist_is_rejected(tmp_path):
-    """必须拒绝 R-I3b 目录前缀，避免未来违规被同一行吞掉。"""
+def test_capability_implementation_import_directory_prefix_allowlist_is_rejected(tmp_path):
+    """必须拒绝 CAPABILITY_IMPLEMENTATION_IMPORT 目录前缀，避免未来违规被同一行吞掉。"""
     current_rows = _allowlist_rows_with_matrix_drop_phase()
     current_rows.append(
-        "R-I3b|src/app/workline/services/|legacy directory prefix must fail|2026-09-30|"
-        "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase" + "2"
+        "CAPABILITY_IMPLEMENTATION_IMPORT|src/app/workline/services/|legacy directory prefix must fail|2026-09-30|"
+        "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase" + "2"
     )
 
     temp_allowlist = tmp_path / "architecture-guardrails.allowlist"
@@ -79,7 +79,7 @@ def test_ri3b_directory_prefix_allowlist_is_rejected(tmp_path):
     )
 
     assert result.returncode == 1
-    assert "R-I3b 必须逐文件枚举" in result.stderr
+    assert "CAPABILITY_IMPLEMENTATION_IMPORT 必须逐文件枚举" in result.stderr
 
 
 def _active_allowlist_rows() -> list[str]:
@@ -138,7 +138,7 @@ def test_allowlist_rejects_short_legacy_entry_id(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     bad_entry = "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>"
     rows = [
-        row.replace("legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b", bad_entry)
+        row.replace("legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT", bad_entry)
         for row in rows
     ]
 
@@ -153,8 +153,8 @@ def test_allowlist_rejects_drop_phase_mismatch(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     rows = [
         row.replace(
-            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase" + "2",
-            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b|phase" + "4",
+            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase" + "2",
+            "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT|phase" + "4",
         )
         for row in rows
     ]
@@ -169,9 +169,9 @@ def test_allowlist_rejects_invalid_expires_at(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     rows = [
         row.replace(
-            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/device_command_gateway.py|"
             "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
-            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/device_command_gateway.py|"
             "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|not-a-date|",
         )
         for row in rows
@@ -187,9 +187,9 @@ def test_allowlist_rejects_invalid_calendar_expires_at(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     rows = [
         row.replace(
-            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/device_command_gateway.py|"
             "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
-            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/device_command_gateway.py|"
             "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-02-31|",
         )
         for row in rows
@@ -205,9 +205,9 @@ def test_expiry_check_rejects_expired_allowlist_rows(tmp_path):
     rows = _allowlist_rows_with_matrix_drop_phase()
     rows = [
         row.replace(
-            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/device_command_gateway.py|"
             "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2026-09-30|",
-            "R-I3b|src/app/runtime/orchestration/services/device_command_gateway.py|"
+            "CAPABILITY_IMPLEMENTATION_IMPORT|src/app/runtime/orchestration/services/device_command_gateway.py|"
             "legacy capability import device 实现, 运行态服务从 workline/services/device_command_gateway.py 迁入 runtime/orchestration/services/|2000-01-01|",
         )
         for row in rows

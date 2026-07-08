@@ -138,7 +138,7 @@ MIGRATED_TEST_IMPLS = {
 }
 
 # runtime migration F-1/F-2:workline/repositories 运行态 repository 物理迁入
-# runtime/orchestration/repositories。R-I3b seed 仍按旧入口追踪,映射回 legacy 路径。
+# runtime/orchestration/repositories。CAPABILITY_IMPLEMENTATION_IMPORT seed 仍按旧入口追踪,映射回 legacy 路径。
 MIGRATED_REPOSITORIES = {
     "src/app/workline/repositories/bin_cell_reservation_repository.py": (
         "src/app/runtime/orchestration/repositories/bin_cell_reservation_repository.py"
@@ -470,8 +470,8 @@ SeedPath = tuple[str, str, str, str, str, str]
 
 def _ri3b_business_semantics(line: str) -> str:
     if "src.app.wms_integration." in line:
-        return "capability import wms_integration 实现 (R-I3b seed)"
-    return "capability import device 实现 (R-I3b seed)"
+        return "capability import wms_integration 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed)"
+    return "capability import device 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed)"
 
 
 def _append_ri3b_seed_paths(seed_paths: list[SeedPath]) -> None:
@@ -569,7 +569,7 @@ def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths
     for path, owner, etype, bs, phase, risk in seed_paths:
         sym = GUARDRAIL_SEED_SYMBOLS.get(path)
         if sym is None:
-            sym = "<file>#R-I3b" if "R-I3b seed" in bs else "<file>"
+            sym = "<file>#CAPABILITY_IMPLEMENTATION_IMPORT" if "CAPABILITY_IMPLEMENTATION_IMPORT seed" in bs else "<file>"
         eid = f"legacy:{path}:{sym}"
         if eid in seen:
             continue
@@ -887,7 +887,7 @@ def parse_entries() -> list[Entry]:
                 "src/app/runtime/orchestration/services/intent/operation_service.py",
                 "runtime",
                 "service",
-                "capability import device 实现 (R-I3b seed — impl 物理迁入 intent/ 后 path 跟踪)",
+                "capability import device 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed — impl 物理迁入 intent/ 后 path 跟踪)",
                 "phase2",
                 "MEDIUM",
             ),
@@ -895,7 +895,7 @@ def parse_entries() -> list[Entry]:
                 "src/app/runtime/orchestration/services/hold/runtime_hold_query_service.py",
                 "runtime",
                 "service",
-                "capability import device 实现 (R-I3b seed — impl 物理迁入 hold/ 后 path 跟踪)",
+                "capability import device 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed — impl 物理迁入 hold/ 后 path 跟踪)",
                 "phase2",
                 "MEDIUM",
             ),
@@ -903,7 +903,7 @@ def parse_entries() -> list[Entry]:
                 "src/app/runtime/orchestration/services/hold/runtime_hold_release_service.py",
                 "runtime",
                 "service",
-                "capability import device 实现 (R-I3b seed — impl 物理迁入 hold/ 后 path 跟踪)",
+                "capability import device 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed — impl 物理迁入 hold/ 后 path 跟踪)",
                 "phase2",
                 "MEDIUM",
             ),
@@ -911,7 +911,7 @@ def parse_entries() -> list[Entry]:
                 "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py",
                 "runtime",
                 "service",
-                "capability import device 实现 (R-I3b seed — impl 物理迁入 reconciliation/ 后 path 跟踪)",
+                "capability import device 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed — impl 物理迁入 reconciliation/ 后 path 跟踪)",
                 "phase2",
                 "MEDIUM",
             ),
@@ -919,7 +919,7 @@ def parse_entries() -> list[Entry]:
                 "src/app/runtime/orchestration/services/trace/trace_query_service.py",
                 "runtime",
                 "service",
-                "capability import device 实现 (R-I3b seed — impl 物理迁入 trace/ 后 path 跟踪)",
+                "capability import device 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed — impl 物理迁入 trace/ 后 path 跟踪)",
                 "phase2",
                 "MEDIUM",
             ),
@@ -927,7 +927,7 @@ def parse_entries() -> list[Entry]:
                 "src/app/runtime/orchestration/services/device_command_gateway.py",
                 "runtime",
                 "service",
-                "capability import device 实现 (R-I3b seed — impl 物理迁入 orchestration/ 后 path 跟踪)",
+                "capability import device 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed — impl 物理迁入 orchestration/ 后 path 跟踪)",
                 "phase2",
                 "MEDIUM",
             ),
