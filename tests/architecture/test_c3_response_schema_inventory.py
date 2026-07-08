@@ -5,15 +5,15 @@ scope/authority/source/evidence_at；外部权威 QueryPort response
 （WMS MasterData / Document / InventoryQuery / ReconciliationQuery）
 额外必含 source_version。
 
-Phase 1 CEO-005 实施 PR 启动时，本测试建立 Response schema 的 authority
+本测试建立 Response schema 的 authority
 metadata 注册表机制：被声明为"权威查询响应"的 Response 类必须复合
 AuthorityMetadata（或 ExternalAuthorityMetadata）；未被声明的 Response
-不检查，避免 Phase 1 PR 巨大 cascade。
+不检查，避免一次性 cascade。
 
 注册表采用显式声明（而非扫描全部 *Response 类），原因：
 1. 项目 34+ Response 类散落在各域 models/，多数是本地配置/内部 DTO，
    不属于 C3 范围（主计划 §7.5 C3 只约束"查询响应"，非全部 response）
-2. 一次性全量强制会导致 Phase 1 PR 失控
+2. 一次性全量强制会导致 review 和回归范围失控
 3. 显式注册表让 CEO-005 可逐域渐进落地，每域一个 PR 切片
 
 注册表位置：src/core/authority_registry.py（CEO-005 随各域落地逐步填充）
@@ -47,8 +47,8 @@ def _is_authority_metadata_annotated(annotation: object) -> bool:
 def _load_registry() -> list[str]:
     """加载权威查询响应注册表 (dotted path 列表)。
 
-    Phase 1 CEO-005 实施初期注册表为空，随各域 QueryPort response 落地逐步填充。
-    注册表文件 src/core/authority_registry.py 在 CEO-005 第一个域落地时创建。
+    实施初期注册表为空，随各域 QueryPort response 落地逐步填充。
+    注册表文件 src/core/authority_registry.py 在第一个域落地时创建。
     """
     try:
         module = importlib.import_module("src.core.authority_registry")
@@ -93,7 +93,7 @@ def test_external_authority_metadata_requires_source_version():
 def test_registered_authority_responses_contain_metadata_field():
     """注册表中的每个 Response 类必须含 authority_metadata 字段。
 
-    Phase 1 CEO-005 实施初期注册表为空 → 本测试 skip。
+    实施初期注册表为空 → 本测试 skip。
     随各域 QueryPort response 落地，注册表填充后本测试开始生效。
     """
     registry = _load_registry()

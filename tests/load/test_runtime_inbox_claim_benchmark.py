@@ -1,4 +1,4 @@
-"""Phase 3 RuntimeInbox claim lightweight benchmark."""
+"""RuntimeInbox claim lightweight benchmark."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Phase 3 DeviceCommand dispatch admission policy."""
+"""DeviceCommand dispatch admission policy."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ class DeviceDispatchDecision:
 
 @dataclass(frozen=True, slots=True)
 class DeviceDispatchPolicy:
-    """Dispatch admission policy from the Phase 3 device contract."""
+    """Dispatch admission policy from the runtime device contract."""
 
     status_snapshot_ttl_ms: int = 1000
     retry_delays_seconds: tuple[int, ...] = (1, 2, 4)

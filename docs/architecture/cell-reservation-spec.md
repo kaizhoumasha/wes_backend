@@ -1,6 +1,6 @@
 # CellReservation SPEC
 
-> 状态：Phase 4 P0 开发/测试已落地；生产投放热路径未接入
+> 状态：CellReservation 开发/测试已落地；生产投放热路径未接入
 > 父计划：`workline-and-plugin-restructuring.md` §10.5
 
 ---
@@ -15,9 +15,9 @@ CellReservation 是作业期格位预约能力，用于防止粗分机、分拣�
 
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
-| Phase 1 callback admission 已关闭 | 预约创建、投放成功、WMS reject 和 source_version drift 只接受带 provider profile / normalizer evidence 的输入 |
-| Phase 2 WorkLine 运行态 final cleanup 已完成 | 预约状态归 `WorklineBinCellReservation`、`BinCellOccupancy`、`RuntimeHold` 和 `ReconciliationRecord`，不写 WorkLine 运行状态 |
-| Phase 3 RuntimeInbox / closure profile | 设计与本机开发/测试可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产热路径接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
+| Callback admission 已关闭 | 预约创建、投放成功、WMS reject 和 source_version drift 只接受带 provider profile / normalizer evidence 的输入 |
+| WorkLine runtime projection cleanup 已完成 | 预约状态归 `WorklineBinCellReservation`、`BinCellOccupancy`、`RuntimeHold` 和 `ReconciliationRecord`，不写 WorkLine 运行状态 |
+| Runtime production closure profile | 设计与本机开发/测试可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产热路径接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
 
 ## 3. 现有模型复用与状态映射
 
@@ -28,7 +28,7 @@ CellReservation 是作业期格位预约能力，用于防止粗分机、分拣�
 | `RESERVED` | `BinCellReservationStatus.PLANNED` | 已预约目标格位，等待物理投放 | 继续作为 active unique 约束口径 |
 | `OCCUPIED` | `BinCellReservationStatus.CONSUMED` + `BinCellOccupancy` active fact | 投放成功并已被物理占用 | 确认投放 success evidence 与占用投影同事务或同一幂等链路 |
 | `RELEASED` | `BinCellReservationStatus.RELEASED` | 未投放或失败后的预约释放 | 释放必须移动 reservation_key 到 released namespace 或等价幂等口径 |
-| `RECONCILING` | `BinCellReservationStatusCode.RECONCILING` + `RuntimeHold` / `ReconciliationRecord` | 预约状态不确定或跨 owner 冲突 | 持久状态缺口必须在 Phase 4 实现前关闭：新增持久 enum，或明确用 hold/reconciliation 冻结格位且不释放 active 约束 |
+| `RECONCILING` | `BinCellReservationStatusCode.RECONCILING` + `RuntimeHold` / `ReconciliationRecord` | 预约状态不确定或跨 owner 冲突 | 持久状态缺口必须在 material-flow runtime capability 接入前关闭：新增持久 enum，或明确用 hold/reconciliation 冻结格位且不释放 active 约束 |
 
 现有 `CANCELLED` 只作为管理取消或历史兼容状态；目标态业务流不得把它当成投放失败、WMS reject 或 source_version drift 的常规结果。
 
@@ -68,13 +68,13 @@ RESERVED ──投放成功 evidence──> OCCUPIED
 
 ## 7. 实施前置条件
 
-实现 Phase 4 入库或对账热路径前，必须先完成下列门禁：
+实现 sorter inbound 或对账热路径前，必须先完成下列门禁：
 
 - 明确 `RECONCILING` 是否成为 `BinCellReservationStatus` 持久 enum；若不新增 enum，必须用 RuntimeHold/ReconciliationRecord 冻结格位并补合同测试。
 - 明确 `PLANNED`/`CONSUMED` 是否保留为数据库内部命名，或通过迁移改名为 `RESERVED`/`OCCUPIED`。
 - 确认现有 `WorklineBinCellReservationService.claim_bin_cell()`、`consume_bin_cell()`、`release_bin_cell()` 与目标生命周期映射一致。
-- Phase 2 residual gate 未关闭或 production closure profile 未通过时，只允许设计、characterization mapping 和本机 MOCK 验收，不允许生产热路径上线；Phase1 callback admission 证据需保持绿灯。
+- Runtime residual gate 未关闭或 production closure profile 未通过时，只允许设计、characterization mapping 和本机 MOCK 验收，不允许生产热路径上线；callback admission 证据需保持绿灯。
 
-## 8. Phase 5 legacy 判定
+## 8. Legacy cleanup 判定
 
-只有当 CellReservation 的状态映射、active/frozen 唯一约束、TTL、投放成功、失败释放、WMS reject 和 source_version drift 行为契约全部通过后，Phase 5 才能删除旧 plugin 中等价格位预约或预占逻辑。未覆盖到的 legacy 只能冻结入口并保留 characterization tests。
+只有当 CellReservation 的状态映射、active/frozen 唯一约束、TTL、投放成功、失败释放、WMS reject 和 source_version drift 行为契约全部通过后，legacy cleanup 才能删除旧 plugin 中等价格位预约或预占逻辑。未覆盖到的 legacy 只能冻结入口并保留 characterization tests。

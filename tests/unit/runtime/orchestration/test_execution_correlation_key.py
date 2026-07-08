@@ -1,6 +1,6 @@
-"""Phase 1 CEO-007 Packet C 起步: ExecutionCorrelation + ExecutionSession 模型 contract test。
+"""ExecutionCorrelation + ExecutionSession 模型 contract test。
 
-主计划 §9.2 + Phase 0 P0-001 schema 对齐:
+主计划 §9.2 + target-state schema 对齐:
 - correlation_id 唯一 (跨域 stable correlation key)
 - execution_session_id 可空 (NULL 允许 inbound callback 未解析前 ACK)
 - trace_id + source_event_id + business_owner_key 跨域 trace/审计

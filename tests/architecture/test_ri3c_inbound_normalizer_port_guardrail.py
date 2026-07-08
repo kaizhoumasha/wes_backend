@@ -1,10 +1,10 @@
-"""R-I3c inbound normalizer port 静态扫描器测试 (Phase 1 CEO-009 / Packet D / Phase 2 Step 4)。
+"""R-I3c inbound normalizer port 静态扫描器测试。
 
 主计划 §3.5.1 + H2: 业务 capability 不得持有 inbound normalizer Protocol
 (WmsEventPort / DeviceEventPort / InboundEventPort) 或 RuntimeInbox / RuntimeInboxConsumer;
 这些是 RuntimeInboxConsumer 专属依赖。
 
-Phase 2 Step 4 扩展 SCAN_ROOTS 至 5 个域:
+当前 SCAN_ROOTS 覆盖 5 个域:
   - src/app/runtime
   - src/app/workline
   - src/app/callback
@@ -52,7 +52,7 @@ def test_ri3c_rule_registered_in_guardrails_script():
 
 
 def test_ri3c_rule_scans_correct_paths():
-    """rule_ri3c 必须扫描 5 个域 (Phase 2 Step 4 扩展后)。"""
+    """rule_ri3c 必须扫描 5 个域。"""
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
     for scope in RI3C_SCAN_SCOPE:
         assert scope in text, f"rule_ri3c 缺扫描路径 {scope}"
@@ -239,7 +239,7 @@ def test_ri3c_guardrail_rejects_qualified_runtime_reference():
 
 
 def test_ri3c_guardrail_scans_callback_domain():
-    """Phase 2 Step 4: R-I3c 必须扫描 src/app/callback 新域。"""
+    """R-I3c 必须扫描 src/app/callback 域。"""
     fixture = REPO_ROOT / "src/app/callback/_ri3c_callback_violation_fixture.py"
     fixture.write_text(
         "from src.app.wms_integration.ports.event import WmsEventPort\n\n"
@@ -265,7 +265,7 @@ def test_ri3c_guardrail_scans_callback_domain():
 
 
 def test_ri3c_guardrail_scans_wms_integration_services_domain():
-    """Phase 2 Step 4: R-I3c 必须扫描 src/app/wms_integration/services 新域。"""
+    """R-I3c 必须扫描 src/app/wms_integration/services 域。"""
     fixture = REPO_ROOT / "src/app/wms_integration/services/_ri3c_wms_violation_fixture.py"
     fixture.write_text(
         "from src.app.wms_integration.ports.event import WmsEventPort\n\n"
@@ -292,7 +292,7 @@ def test_ri3c_guardrail_scans_wms_integration_services_domain():
 
 
 def test_ri3c_guardrail_scans_device_domain():
-    """Phase 2 Step 4: R-I3c 必须扫描 src/app/device 新域。"""
+    """R-I3c 必须扫描 src/app/device 域。"""
     fixture = REPO_ROOT / "src/app/device/_ri3c_device_violation_fixture.py"
     fixture.write_text(
         "from src.app.device.ports.event import DeviceEventPort\n\nleaked_normalizer: DeviceEventPort | None = None\n",

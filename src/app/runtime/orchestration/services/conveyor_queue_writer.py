@@ -1,4 +1,4 @@
-"""Phase 3 ConveyorQueueMembership writer policy."""
+"""ConveyorQueueMembership writer policy."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ class ConveyorQueueWriter:
 
     The DB repository should use this decision before insert/upsert. It keeps
     SQLite unit tests deterministic while preserving the PostgreSQL semantics
-    required by the Phase 3 gate.
+    required by the runtime release gate.
     """
 
     def plan_write(

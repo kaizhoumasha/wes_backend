@@ -1,4 +1,4 @@
-"""CEO-001 WmsInventoryQueryPort contract test (Port #3, Phase 1 起步)。"""
+"""WmsInventoryQueryPort contract test。"""
 
 from __future__ import annotations
 

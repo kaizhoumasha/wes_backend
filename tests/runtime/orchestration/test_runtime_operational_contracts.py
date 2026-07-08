@@ -1,4 +1,4 @@
-"""Phase 3 observability, toggle and replay operational contracts."""
+"""Runtime observability, toggle and replay operational contracts."""
 
 from __future__ import annotations
 

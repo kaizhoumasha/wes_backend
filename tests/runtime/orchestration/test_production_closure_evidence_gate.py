@@ -1,4 +1,4 @@
-"""Phase 3 closure evidence gate contract."""
+"""Runtime closure evidence gate contract."""
 
 from __future__ import annotations
 

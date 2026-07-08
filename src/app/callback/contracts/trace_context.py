@@ -1,4 +1,4 @@
-"""Callback 域 TraceContext — wlr.trace_context 镜像 (Phase 2 launch PR)。
+"""Callback 域 TraceContext — wlr.trace_context 镜像。
 
 镜像说明:
 - 与 wlr.trace_context.TraceContext 完整等价,所有 18 个字段 + 全部 with_*

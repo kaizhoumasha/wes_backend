@@ -1,4 +1,4 @@
-"""InboundNormalizerRegistry (Phase 1 CEO-009 / Packet D, 主计划 §3.5.1 + H2)。
+"""InboundNormalizerRegistry（主计划 §3.5.1 + H2）。
 
 入站事件 normalizer 注册表 (WmsEventPort / DeviceEventPort 等),
 与 CapabilityPortRegistry 严格分离: 注册的 normalizer 不可注入业务
@@ -12,7 +12,7 @@ RuntimeInboxConsumer 通过专用 InboundNormalizerContext 访问。
   多个 RuntimeInboxConsumer worker 并发 get() 同一 port 不会重复构造实例
 - 不重复 H2 type guard (本 registry 本身就是 inbound normalizer 合法归宿)
 
-Phase 2 launch PR 修复 (PR #67, hard blocker #4):
+并发安全修复:
 原 _instances: dict[str, Any] 单例 cache 在 async consumer 并发 get() 时
 存在 race condition (TOCTOU between `if not in _instances` 与赋值)。
 修复:double-check locking 模式,加 class-level threading.Lock。
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 class InboundNormalizerRegistry:
-    """入站 normalizer 注册表 (主计划 §3.5.1 + Phase 1 CEO-009 / H2)。
+    """入站 normalizer 注册表（主计划 §3.5.1 + H2）。
 
     与 CapabilityPortRegistry 严格分离: 注册的 normalizer 不可注入业务
     capability 上下文; 只允许 RuntimeInboxConsumer 通过

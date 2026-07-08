@@ -1,4 +1,4 @@
-"""WmsInventoryTransactionPort (Phase 1 CEO-001 #4)。
+"""WmsInventoryTransactionPort。
 
 主计划 §5.1 7 port 之一: 库存事务 (reserve_inventory / release_reservation /
 confirm_inbound / confirm_outbound / transfer_inventory)。
@@ -38,7 +38,7 @@ class WmsTransferResult(BaseModel):
 
 
 class WmsInventoryTransactionPort(Protocol):
-    """WMS 库存事务 port (Phase 1 CEO-001 #4)。
+    """WMS 库存事务 port。
 
     所有 effect 经 RuntimeIntentLog + EffectPort dispatcher; capability 不得
     绕过 Runtime 直接修改 WES 内部状态 (主计划 §3.5 I3)。

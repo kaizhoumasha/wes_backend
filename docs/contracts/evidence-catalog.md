@@ -1,4 +1,4 @@
-# Phase 3 Evidence Catalog
+# Runtime Evidence Catalog
 
 本文档锁定 WMS evidence envelope 的版本、结构化索引和 drift 分类口径。跨域 evidence 字段变更必须先更新本 catalog，再更新 Pydantic 合同、迁移和测试。
 

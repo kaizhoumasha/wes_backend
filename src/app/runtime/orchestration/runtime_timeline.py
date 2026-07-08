@@ -1,4 +1,4 @@
-"""RuntimeTimeline (Phase 1 CEO-007 #5, 主计划 §9.2)。
+"""RuntimeTimeline (主计划 §9.2)。
 
 append-only 执行轨迹, 不作为 owner 状态源。
 记录 session 生命周期内所有事件 (inbox / intent / hold / projection / device)。

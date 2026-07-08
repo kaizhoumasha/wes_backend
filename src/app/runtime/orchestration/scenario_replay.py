@@ -1,4 +1,4 @@
-"""Phase 3 deterministic scenario recording and replay contracts."""
+"""Deterministic runtime scenario recording and replay contracts."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ class ScenarioProjectionDiff:
 
 @dataclass(frozen=True, slots=True)
 class ScenarioReplayResult:
-    """Replay result used by Phase 3 gates."""
+    """Replay result used by runtime gates."""
 
     scenario_id: str
     timeline: tuple[str, ...]

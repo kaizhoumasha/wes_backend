@@ -96,8 +96,8 @@
 | `docs/architecture/runtime-ownership-map.md` | Phase 2 launch PR Runtime 域 ownership map:entity/repository/service 三层归属,wlr allowlist 严格型入口 | 📖 必读文档 |
 | `docs/architecture/legacy-runtime-migration-spec.md` | Phase 2 launch PR 迁移规格:burn-down 6 阶段执行契约 + 9 处跨域 import 修复路径 + wlr allowlist 严格型 + 8 contract gap TDD 同步 + 主计划 §10.3 启动条件 + 完成门禁追踪 | 📖 必读文档 |
 | `docs/architecture/legacy-cleanup-execution-plan.md` | technical cleanup scope 旧 plugin runtime/import 框架清理执行记录：顺序、范围、验收、business blocker 与回滚 | 📖 必读文档 |
-| `docs/contracts/observability-contract.md` | Phase 3 稳定观测合同：callback / RuntimeInbox / intent / device command / WMS breaker 的 span、metric、log event 和 attribute 口径 | 📖 必读文档 |
-| `docs/contracts/runtime-toggle-governance.md` | Phase 3 runtime toggle 治理合同：owner、expiry、scope、default、rollback、test_matrix 与安全边界 | 📖 必读文档 |
+| `docs/contracts/observability-contract.md` | Runtime 稳定观测合同：callback / RuntimeInbox / intent / device command / WMS breaker 的 span、metric、log event 和 attribute 口径 | 📖 必读文档 |
+| `docs/contracts/runtime-toggle-governance.md` | Runtime toggle 治理合同：owner、expiry、scope、default、rollback、test_matrix 与安全边界 | 📖 必读文档 |
 | `docs/integration/wms_caller_checklist.md` | WMS 同步调用方接入 checklist：RuntimeHold/诊断、错误处理和证据传播要求 | 📖 必读文档 |
 | `docs/business/smt_sorter_inbound_workflow_guide.md` | SMT 分拣入库工作流指南，含 v0.7.0.0 后端 handoff/manifest P0 闭环状态 | 📖 必读文档 |
 | `docs/superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md` | SMT 分拣入库 handoff/manifest 后端闭环合同：两阶段 claim、ledger、READY recovery | 📖 必读文档 |
@@ -144,9 +144,9 @@
 | `rbac.py` | RBAC 权限验证、超级用户检查 | 🔧 架构核心 |
 | `security.py` | JWT 认证、密码哈希、Token 管理 | 🔧 架构核心 |
 | `api_security.py` | 外部 API 签名认证逻辑；Phase 3 callback body HMAC、nonce replay guard 和短时间窗校验入口 | 🔄 常用功能 |
-| `runtime_toggles.py` | Phase 3 typed runtime toggle 定义与 owner/expiry/security-bypass validator | 🔧 架构核心 |
-| `runtime_toggle_release_gate.py` | Phase 3 release toggle 发布阻塞决策：default-off 与 test_matrix evidence 校验 | 🔧 架构核心 |
-| `runtime_toggle_catalog.py` | Phase 3 runtime toggle typed catalog；quality gate 的唯一检查清单 | 🔧 架构核心 |
+| `runtime_toggles.py` | Typed runtime toggle 定义与 owner/expiry/security-bypass validator | 🔧 架构核心 |
+| `runtime_toggle_release_gate.py` | Runtime release toggle 发布阻塞决策：default-off 与 test_matrix evidence 校验 | 🔧 架构核心 |
+| `runtime_toggle_catalog.py` | Runtime toggle typed catalog；quality gate 的唯一检查清单 | 🔧 架构核心 |
 | `conf.py` | Pydantic Settings 配置管理 | 🔧 架构核心 |
 | `logger.py` | 统一日志记录器 | 📚 参考资料 |
 | `context.py` | 请求上下文管理 | 📚 参考资料 |
@@ -480,9 +480,9 @@ Phase 3 RECONCILING 冲突登记与 owner-scoped 决议层，只产出 hold/free
 | `services/idempotency_guard.py` | IdempotencyGuard:outbound effect 幂等闸门（`ClaimResult.NEW/MATCH` + `IdempotencyConflict`） | 🔧 架构核心 |
 | `services/runtime_snapshot_assembler.py` | RuntimeSnapshotAssembler：按 BC-02 合同把 session + timeline + inbox + hold + intent log 拼装成 RuntimeSnapshot 输出 | 🔧 架构核心 |
 | `services/device_command_gateway.py` | **Phase 2 burn-down 阶段 6 迁入**:DeviceCommandGateway（30.4K 跨域桥接,原 workline 域 — 阶段 6 commit `5646d701` 物理迁出至 runtime/orchestration） | 🔧 架构核心 |
-| `services/device_command_lease.py` | Phase 3 DeviceCommand lease 策略：基于 sent_at / timeout_ms / 默认 TTL 判定过期、重放和取消许可 | 🔧 架构核心 |
+| `services/device_command_lease.py` | DeviceCommand lease 策略：基于 sent_at / timeout_ms / 默认 TTL 判定过期、重放和取消许可 | 🔧 架构核心 |
 | `services/inbox/` | **Phase 2 burn-down 阶段 4 (C1)** 物理迁入:RuntimeInboxService + InboxBatchProcessor（inbox 收件/批处理） | 🔧 架构核心 |
-| `services/inbox/backpressure.py` | Phase 3 RuntimeInbox backpressure 策略：pending / dead-letter backlog 下的 NORMAL / DEGRADED / OPERATOR_ATTENTION 判定 | 🔧 架构核心 |
+| `services/inbox/backpressure.py` | RuntimeInbox backpressure 策略：pending / dead-letter backlog 下的 NORMAL / DEGRADED / OPERATOR_ATTENTION 判定 | 🔧 架构核心 |
 | `services/hold/` | **Phase 2 burn-down 阶段 4 (C1)** 物理迁入:RuntimeHold 创建/查询/解除 service（`runtime_hold_creation_service` / `runtime_hold_query_service` / `runtime_hold_release_service`） | 🔧 架构核心 |
 | `services/intent/` | **Phase 2 burn-down 阶段 4 (C1)** 物理迁入:OperationService + SmtInboundHandoffService（operation 沙箱 + SMT handoff release/evaluate） | 🔧 架构核心 |
 | `services/query/` | **Phase 2 burn-down 阶段 4 (C1)** 物理迁入:RuntimeQueryService（运行监控总览 / WorkLine / Device / Trace 列表聚合） | 🔧 架构核心 |
@@ -504,11 +504,11 @@ Phase 3 RECONCILING 冲突登记与 owner-scoped 决议层，只产出 hold/free
 | `resource_wait_evidence_bridge.py` | **Phase 2 burn-down 阶段 2 (C5a)** wlr `resource_wait_evidence` 桥接门面:RESOURCE_WAIT evidence helper | 🔧 架构核心 |
 | `sandbox_catalog_bridge.py` | **Phase 2 burn-down 阶段 2 (C5a)** wlr `sandbox_catalog` 桥接门面:SANDBOX / MOCK 确定性样例 catalog | 🔧 架构核心 |
 | `topology_bridge.py` | **Phase 2 burn-down 阶段 2 (C5a)** wlr `topology` 桥接门面:WORKLINE 运行时拓扑视图（自引用 wlr.device_ordering / wlr.plugin_manifest 已重定向到本目录 + domain 镜像） | 🔧 架构核心 |
-| `consumers/` | **Phase 2 burn-down 阶段 3 (T3) + Phase 3** RuntimeInbox 入口子包:阶段 3 后无 wlr 真引用,阶段 2 trust zone (`EXCLUDED_PREFIXES`) 已退出,Phase 3 承载 callback ACK-before-processing 幂等入口 | 🔧 架构核心 |
+| `consumers/` | RuntimeInbox 入口子包：wlr 真引用已清空，旧 trust zone (`EXCLUDED_PREFIXES`) 已退出，当前承载 callback ACK-before-processing 幂等入口 | 🔧 架构核心 |
 | `consumers/__init__.py` | consumers 子包导出（`RuntimeInboxConsumer`） | 🔧 架构核心 |
 | `consumers/runtime_inbox_consumer.py` | **Phase 2 burn-down 阶段 2 (C1)** RuntimeInboxConsumer:RuntimeInbox 单点入口门面,委托 `src.app.workline.services.inbox_batch_processor` 实现；不实现状态机 / idempotency / RuntimeHold 推进（阶段 3 业务迁移） | 🔧 架构核心 |
-| `consumers/runtime_inbox_repository.py` | Phase 3 RuntimeInboxRepository：按 provider_code + event_type + source_event_id 查询、加锁读取和 RECEIVED 记录创建 | 🔧 架构核心 |
-| `consumers/runtime_inbox_service.py` | Phase 3 RuntimeInboxService：ACK-before-processing、source-event 幂等接收、唯一冲突重读 hash 比对、payload conflict 409、DEAD_LETTER 人工重放审计 | 🔧 架构核心 |
+| `consumers/runtime_inbox_repository.py` | RuntimeInboxRepository：按 provider_code + event_type + source_event_id 查询、加锁读取和 RECEIVED 记录创建 | 🔧 架构核心 |
+| `consumers/runtime_inbox_service.py` | RuntimeInboxService：ACK-before-processing、source-event 幂等接收、唯一冲突重读 hash 比对、payload conflict 409、DEAD_LETTER 人工重放审计 | 🔧 架构核心 |
 | `diagnostics/` | **Phase 2 burn-down 阶段 3 (T3)** wlr `diagnostics/` 子目录完整迁移:`builder` / `codes` / `failure_mapper` / `models` / `registry` 5 子模块 + 聚合层 `__init__.py`(原 `consumers/diagnostics_bridge.py` 已迁出) | 🔧 架构核心 |
 | `diagnostics.py` | **Phase 2 burn-down 阶段 3 (T3)** diagnostics 顶层门面（原 `consumers/diagnostics_bridge.py` 改名为 `diagnostics.py` 并迁出 `consumers/` 子目录） | 🔧 架构核心 |
 | `__init__.py` | 模块导出（9 entity） | 🔧 架构核心 |
@@ -665,14 +665,14 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `active_objects/` | ActiveObject 归属投影和冲突仲裁测试 | 🔧 架构核心 |
 | `reconciliation/` | Reconciliation owner-scoped 决议合同测试 | 🔧 架构核心 |
 | `benchmark/` | 性能基准测试 | 📚 参考资料 |
-| `load/` | 显式运行的负载/基准测试（Locust + Phase 3 runtime benchmark gate 四场景） | 📚 参考资料 |
-| `resilience/` | 显式运行的弹性/恢复测试（Redis 重连、降级、Phase 3 scenario replay fixture） | 📚参考资料 |
+| `load/` | 显式运行的负载/基准测试（Locust + runtime benchmark gate 四场景） | 📚 参考资料 |
+| `resilience/` | 显式运行的弹性/恢复测试（Redis 重连、降级、runtime scenario replay fixture） | 📚参考资料 |
 | `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
 | ~~`workline_runtime/`~~ | **Phase 2 burn-down 阶段 3 (T3) 已删除**：作业线运行时测试已被 `tests/contracts/workline/` 行为契约覆盖；wlr 整目录同步物理删除 | 🔧 架构核心 |
 | `wms_integration/` | WMS 对接辅助域测试（client、typed ports、evidence、breaker、cache、callback normalizer、caller contract） | 🔧 架构核心 |
 | `architecture/` | 架构守卫测试（import-linter 合同 + Phase 2 burn-down 阶段 2 mirror 测试；阶段 3 后 wlr 守卫继续作为永久安全网） | 🔧 架构核心 |
 | `runtime/orchestration/` | Runtime orchestration 测试（RuntimeInboxConsumer 单点入口测试） | 🔧 架构核心 |
-| `contracts/` | 跨模块合同测试（Phase 2 workline behavior contract + Phase 3 ops contract 文档存在性） | 🔧 架构核心 |
+| `contracts/` | 跨模块合同测试（workline behavior contract + runtime ops contract 文档存在性） | 🔧 架构核心 |
 | `contracts/workline/` | Phase 2 launch PR behavior contract gap TDD 同步测试 | 🔧 架构核心 |
 | `workline/` | WorkLine 配置域测试（manifest activation validator、plane read model） | 🔧 架构核心 |
 | `workline_plugins/` | 作业线插件测试（rough_sorter / smt_sorting_inbound / barcode_decision 等） | 🔧 架构核心 |
@@ -694,13 +694,13 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | 文件 | 用途 | 分类 |
 |------|------|------|
 | `runtime/orchestration/test_runtime_inbox_consumer.py` | **Phase 2 burn-down 阶段 2 (C1)** RuntimeInboxConsumer 单点入口测试:wlr 唯一允许的非 wlr/non-migration production consumer 入口（consume / consume_sync / list_consumed_ids / inbound normalizer routing） | 🔧 架构核心 |
-| `runtime/orchestration/test_runtime_inbox_phase3_service.py` | Phase 3 RuntimeInboxService 幂等接收、唯一冲突重读、payload conflict 409 和人工重放审计测试 | 🔧 架构核心 |
-| `runtime/orchestration/test_conveyor_queue_membership_writer_service.py` | Phase 3 ConveyorQueueMembershipWriter DB-backed 写入、幂等、placeholder resolve、RECONCILING、诊断和 PostgreSQL `FOR UPDATE` 合同测试 | 🔧 架构核心 |
+| `runtime/orchestration/test_runtime_inbox_consumer_service.py` | RuntimeInboxService 幂等接收、唯一冲突重读、payload conflict 409 和人工重放审计测试 | 🔧 架构核心 |
+| `runtime/orchestration/test_conveyor_queue_membership_writer_service.py` | ConveyorQueueMembershipWriter DB-backed 写入、幂等、placeholder resolve、RECONCILING、诊断和 PostgreSQL `FOR UPDATE` 合同测试 | 🔧 架构核心 |
 | `runtime/orchestration/test_idempotency_audit_contract.py` | IdempotencyGuard conflict audit payload 测试 | 🔧 架构核心 |
-| `runtime/orchestration/test_phase3_recovery_policies.py` | Phase 3 RuntimeInbox backpressure 与 DeviceCommand lease 恢复策略测试 | 🔧 架构核心 |
-| `integration/test_phase3_conveyor_queue_membership_concurrency.py` | Phase 3 ConveyorQueueMembershipWriter opt-in PostgreSQL partial unique index 并发冲突与 existing 重读测试 | 🔧 架构核心 |
+| `runtime/orchestration/test_runtime_recovery_policies.py` | RuntimeInbox backpressure 与 DeviceCommand lease 恢复策略测试 | 🔧 架构核心 |
+| `integration/test_conveyor_queue_membership_concurrency.py` | ConveyorQueueMembershipWriter opt-in PostgreSQL partial unique index 并发冲突与 existing 重读测试 | 🔧 架构核心 |
 
-**Phase 3 执行安全与恢复测试文件**：
+**Runtime 执行安全与恢复测试文件**：
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
@@ -708,7 +708,7 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `reconciliation/test_reconciliation_manager_contract.py` | ReconciliationManager owner-scoped decision、resource freeze 和升级阈值测试 | 🔧 架构核心 |
 | `core/test_api_security_body_hmac.py` | callback body HMAC canonical signature、必填 header、短时间窗和 API_PATH 前缀测试 | 🔧 架构核心 |
 | `core/test_redis_cache_set_if_absent.py` | RedisCache `set_if_absent()` 固定 TTL、NX 语义和 Redis 不可用返回 None 测试 | 🔧 架构核心 |
-| `contracts/test_phase3_ops_contract_docs.py` | Phase 3 observability / runtime toggle governance 合同文档存在性与关键字段测试 | 🔧 架构核心 |
+| `contracts/test_runtime_ops_contract_docs.py` | Runtime observability / runtime toggle governance 合同文档存在性与关键字段测试 | 🔧 架构核心 |
 | `workline/test_manifest_activation_validator.py` | WorkLine manifest 激活前 queue/device/capability 引用 blocker 测试 | 🔧 架构核心 |
 | `workline/test_plane_read_model.py` | WorkLine plane scene/snapshot 读模型 schema 和 queue 节点派生测试 | 🔧 架构核心 |
 
@@ -803,8 +803,8 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `business/smt_sorter_inbound_workflow_guide.md` | SMT 分拣入库业务流程、资源边界、事件口径和 v0.7.0.0 后端 handoff/manifest 落地状态 | 📖 必读文档 |
 | `superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md` | SMT 分拣入库 handoff/manifest 后端闭环合同 | 📖 必读文档 |
 | `superpowers/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md` | SMT 分拣入库 handoff/manifest 后端闭环实施计划与验证记录 | 📚 参考资料 |
-| `contracts/observability-contract.md` | Phase 3 runtime / callback / device / WMS 稳定观测合同 | 📖 必读文档 |
-| `contracts/runtime-toggle-governance.md` | Phase 3 typed runtime toggle 治理和安全边界合同 | 📖 必读文档 |
+| `contracts/observability-contract.md` | Runtime / callback / device / WMS 稳定观测合同 | 📖 必读文档 |
+| `contracts/runtime-toggle-governance.md` | Typed runtime toggle 治理和安全边界合同 | 📖 必读文档 |
 | `architecture/adr/2026-05-26-wms-integration-domain.md` | WMS 对接辅助域 ADR | 📖 必读文档 |
 | `api_authentication_design.md` | API 认证设计文档 | 📚 参考资料 |
 | `api_authentication_summary.md` | API 认证功能摘要 | 📚 参考资料 |
@@ -830,7 +830,7 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `start_e2e_env.sh` | E2E 测试环境管理（启动/停止/日志） | 🔄 常用功能 |
 | `run_performance_test.sh` | 运行 Locust/AB 性能测试 | 📚 参考资料 |
 | `test_api_signature.sh` | API 签名验证测试 | 📚 参考资料 |
-| `check_runtime_toggle_release_gate.py` | Phase 3 runtime toggle 发布门禁入口，供 `git-quality-gate.sh --check runtime-toggle-release` 调用 | 🔧 架构核心 |
+| `check_runtime_toggle_release_gate.py` | Runtime toggle 发布门禁入口，供 `git-quality-gate.sh --check runtime-toggle-release` 调用 | 🔧 架构核心 |
 | `docker-deploy-simple.sh` | 简化 Docker 部署 | 📚 参考资料 |
 | `init-deploy-servers.sh` | 部署服务器初始化 | 📚 参考资料 |
 

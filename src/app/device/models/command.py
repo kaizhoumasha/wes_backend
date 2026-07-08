@@ -122,8 +122,8 @@ class CommandBase(BaseMixin):
     """指令基础字段 - 用于 Schema 复用
 
     H4: extra="forbid" 禁止未声明字段透传, 阻断 attacker 通过 params 注入
-    plc_address / coordinate 等禁止字段; 同 key 不同 hash 拒绝 (Phase 1 实现
-    RuntimeIntentLog outbound 最小版本, 完整 409 审计留 Phase 3 ENG-009)。
+    plc_address / coordinate 等禁止字段; 同 key 不同 hash 拒绝已由
+    RuntimeIntentLog outbound 最小版本覆盖, 完整 409 审计由跨域幂等审计矩阵承载。
     """
 
     model_config = SQLModelConfig(from_attributes=True, extra="forbid")
@@ -312,7 +312,7 @@ class DeviceCommand(
         index=True,
         description="跨域 correlation key（引用 ExecutionCorrelation.correlation_id, 无 session FK）",
     )
-    # Phase 1 AP2 消解: 旧 session_id/session_id_int 已删除。DeviceCommand
+    # session FK 环消解: 旧 session_id/session_id_int 已删除。DeviceCommand
     # 只持 correlation_id; session 等待关系通过 WorklineSession.awaiting_device_command_code
     # 引用 command_code, 不再形成 device ↔ session FK 环。
 

@@ -1,4 +1,4 @@
-"""Phase 3 ECS status + command dispatch lightweight benchmark."""
+"""ECS status + command dispatch lightweight benchmark."""
 
 from __future__ import annotations
 

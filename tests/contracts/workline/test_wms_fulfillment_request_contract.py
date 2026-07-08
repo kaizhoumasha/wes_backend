@@ -2,7 +2,7 @@
 
 验收: WmsFulfillmentPort 6 effect 方法均经 RuntimeIntentLog 闭环;
        accepted/reason 互斥语义正确 (主计划 §3.5 I3 + §5.1);
-       pallet binding 返回字段完整 (Phase 1 CEO-001 #5)。
+       pallet binding 返回字段完整。
 mock 仅允许 `src/app/wms_integration/ports/fulfillment.py` 内的 Port Protocol。
 """
 

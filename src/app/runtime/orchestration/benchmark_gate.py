@@ -1,4 +1,4 @@
-"""Phase 3 benchmark gate definitions."""
+"""Runtime benchmark gate definitions."""
 
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ class RuntimeBenchmarkScenario:
     command: str
     required_metrics: frozenset[str]
     production_source_kinds: frozenset[str] = frozenset()
-    blocks_phase_gate: bool = True
+    blocks_release_gate: bool = True
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeBenchmarkArtifactValidation:
-    """Validation result for a structured Phase 3 benchmark artifact."""
+    """Validation result for a structured runtime benchmark artifact."""
 
     valid: bool
     reason: str = "OK"
@@ -39,7 +39,7 @@ class RuntimeBenchmarkArtifactValidation:
 
 
 class RuntimeBenchmarkGate:
-    """Registry of benchmark scenarios required by Phase 3."""
+    """Registry of benchmark scenarios required by the runtime release gate."""
 
     def __init__(self, scenarios: list[RuntimeBenchmarkScenario] | None = None) -> None:
         self.scenarios = scenarios or default_runtime_benchmark_scenarios()

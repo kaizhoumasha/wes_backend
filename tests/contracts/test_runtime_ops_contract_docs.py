@@ -1,4 +1,4 @@
-"""Phase 3 observability and toggle governance documentation contracts."""
+"""Runtime observability and toggle governance documentation contracts."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""ExecutionSession (Phase 1 Packet C 起步, 主计划 §9.2)。
+"""ExecutionSession (主计划 §9.2)。
 
 Session 是 runtime/orchestration 域的聚合根, 唯一 session PK 拥有者
 (主计划 §3.2)。Session 不持工作状态 (work item 是 ExecutionWorkItem 的责任),
@@ -35,13 +35,13 @@ class ExecutionSession(BaseMixin, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
 
-    # WorkLine 关联 (FK 到 workline.work_lines, Phase 1 保留)
+    # WorkLine 配置引用 (FK 到 workline.work_lines)
     workline_id: int = Field(
         index=True,
-        description="关联 WorkLine (Phase 1 保留 Phase 0 workline_id 引用)",
+        description="关联 WorkLine 配置 (保留 workline_id 引用)",
     )
 
-    # manifest version pin (Phase 1 CEO-011)
+    # manifest version pin (RUNNING session 固定版本)
     manifest_version: str = Field(
         min_length=1,
         max_length=60,

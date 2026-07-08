@@ -1,6 +1,6 @@
-# Phase 3 Observability Contract
+# Runtime Observability Contract
 
-本文档锁定 Phase 3 runtime / callback / device / WMS 的稳定观测口径。临时 debug log 不能替代本合同中的 span、metric、log event 和 evidence。
+本文档锁定 runtime / callback / device / WMS 的稳定观测口径。临时 debug log 不能替代本合同中的 span、metric、log event 和 evidence。
 
 ## Stable Signals
 

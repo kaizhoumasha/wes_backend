@@ -1,4 +1,4 @@
-"""CI entrypoint for Phase 3 runtime toggle release governance."""
+"""CI entrypoint for runtime toggle release governance."""
 
 from __future__ import annotations
 

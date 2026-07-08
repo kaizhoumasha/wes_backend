@@ -1,4 +1,4 @@
-"""WmsMasterDataPort (Phase 1 CEO-001 #1)。
+"""WmsMasterDataPort。
 
 主计划 §5.1 7 port 之一: 物料主数据 (material/area/warehouse/storage_location/equipment)。
 所有方法 query-only, 不写 WMS 业务, 与 §3.4 Authority Matrix "WMS 是
@@ -28,7 +28,7 @@ class WmsMasterDataItem(BaseModel):
 
 
 class WmsMasterDataPort(Protocol):
-    """WMS 物料主数据 port (Phase 1 CEO-001 #1)。
+    """WMS 物料主数据 port。
 
     所有方法 query-only, 短 TTL 缓存 (主计划 §6: 30s)。
     Runtime capability 注入时仅暴露 query port contract (R-I3b 禁止内部域

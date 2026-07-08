@@ -251,7 +251,7 @@ def test_workline_service_config_only_after_stage6():
 # `callback_orchestration_service.py:35` 3 处死引用保留(未触发,不爆),
 # 作为 lazy shim 兜底的最后一道闸,验证 `__all__` / `_LAZY_SHIM_MAP` 语义一致。
 #
-# 来源:audit_c5_shim_cleanup (2026-06-30),Phase 3 配置域 plane/manifest 导出同步
+# 来源:audit_c5_shim_cleanup (2026-06-30),配置域 plane/manifest 导出同步
 #   LIVE (3):WorkLineSafetyBlocked, workline_safety_service, workline_service
 #   DEAD 但 caller 仍存在 (3):WorklineInboxService, inbox_service,
 #                              workline_bin_cell_reservation_service

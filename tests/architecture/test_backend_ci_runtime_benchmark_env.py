@@ -1,4 +1,4 @@
-"""Backend CI Phase 3 benchmark stage must load test environment secrets."""
+"""Backend CI runtime benchmark stage must load test environment secrets."""
 
 from __future__ import annotations
 
@@ -18,6 +18,6 @@ def _stage_body(stage_name: str) -> str:
 
 def test_runtime_benchmark_artifact_stage_loads_test_env_file():
     """benchmark artifact 生成会导入 settings，CI 容器必须加载 .env.test。"""
-    stage = _stage_body("Phase 3 Benchmark Artifact")
+    stage = _stage_body("Runtime Benchmark Artifact")
 
     assert '--env-file "$WORKSPACE/.env.test"' in stage

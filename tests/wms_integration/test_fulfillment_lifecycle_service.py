@@ -1,4 +1,4 @@
-"""Phase 3 WMS fulfillment lifecycle service tests."""
+"""WMS fulfillment lifecycle service tests."""
 
 from __future__ import annotations
 

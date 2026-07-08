@@ -1,4 +1,4 @@
-"""Phase 3 body HMAC canonical signature tests."""
+"""Body HMAC canonical signature tests."""
 
 from __future__ import annotations
 

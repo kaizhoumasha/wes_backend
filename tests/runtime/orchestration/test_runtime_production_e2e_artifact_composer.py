@@ -1,4 +1,4 @@
-"""Phase 3 production P0 E2E artifact composer contract."""
+"""Runtime production P0 E2E artifact composer contract."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Phase 1 CEO-007 剩余 3 实体 + H5 idempotency_keys contract test。
+"""Runtime 剩余实体 + H5 idempotency_keys contract test。
 
 ExecutionWorkItem (对象级执行令牌) + RuntimeTimeline (append-only 轨迹) +
 RuntimeHold (运行时闸门) + IdempotencyKey (H5 幂等键表)。

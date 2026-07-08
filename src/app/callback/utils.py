@@ -1,4 +1,4 @@
-"""Callback 域本地工具函数 (Phase 2 launch PR,跨域 import 修复)。
+"""Callback 域本地工具函数（跨域 import 解耦）。
 
 `src.workline_runtime.utils` 的本地副本,仅承载 callback 域真正使用的轻量
 工具 (JsonDict 类型别名 + resolve_first_str/ensure_dict/payload_dict)。
@@ -6,7 +6,7 @@
 设计:
 - 故意不引入 `src.workline_runtime` 反向依赖,避免跨域逆向耦合
 - 函数实现与 `src.workline_runtime.utils` 一一对应 (稳定 utility,无副作用)
-- runtime migration 阶段再评估:若 callback 域迁入 runtime orchestration,
+- runtime migration 收敛时再评估:若 callback 域迁入 runtime orchestration,
   本文件可删,改回 `src.app.runtime.orchestration.utils`
 """
 

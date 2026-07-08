@@ -1,4 +1,4 @@
-"""ConveyorQueueMembership (Phase 1 CEO-008, 主计划 §4.4)。
+"""ConveyorQueueMembership (主计划 §4.4)。
 
 动态队列 active 投影, 以 manifest pipeline_queues.code 作为 queue_code。
 替代旧中心枚举队列方案。

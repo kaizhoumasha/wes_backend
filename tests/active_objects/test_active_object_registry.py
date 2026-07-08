@@ -1,4 +1,4 @@
-"""Phase 3 ActiveObjectRegistry conflict policy tests."""
+"""ActiveObjectRegistry conflict policy tests."""
 
 from __future__ import annotations
 

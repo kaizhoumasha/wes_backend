@@ -1,4 +1,4 @@
-"""Phase 3 runtime reconciliation 热路径幂等登记测试。"""
+"""Runtime reconciliation 热路径幂等登记测试。"""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Run Phase 3 lightweight runtime benchmarks and emit a gate-valid artifact."""
+"""Run lightweight runtime benchmarks and emit a gate-valid artifact."""
 
 from __future__ import annotations
 
@@ -61,10 +61,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     if not validation.valid:
-        print(f"Phase 3 benchmark artifact failed validation: {validation.reason}")
+        print(f"Runtime benchmark artifact failed validation: {validation.reason}")
         return 1
 
-    print(f"Phase 3 benchmark artifact written: {output_path}")
+    print(f"Runtime benchmark artifact written: {output_path}")
     return 0
 
 

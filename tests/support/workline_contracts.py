@@ -1,7 +1,7 @@
-"""WorkLine 目标态行为契约 guard（Phase 0 测试专用）。
+"""WorkLine 目标态行为契约 guard（测试专用）。
 
 表达目标态行为约束的 contract 壳, 供 tests/contracts/ 引用。
-Phase 1 把这些 contract 升级到生产 runtime/orchestration 实现。
+这些 contract 已升级到生产 runtime/orchestration 实现。
 
 对应 SPEC P0-003 的 BC-01 ~ BC-10。
 """
@@ -69,7 +69,7 @@ class ActiveOwnership:
     object_key: str
     workline_id: str
     is_active: bool = True
-    transient_until: float | None = None  # Phase 1 占位; 主计划 §6.6 N=30s
+    transient_until: float | None = None  # transient owner TTL 占位; 主计划 §6.6 N=30s
 
 
 def assert_single_active_ownership(

@@ -7,7 +7,7 @@ OrchestratorService - 编排器核心服务
 3. 校验 RuntimeIntent
 4. 交给 Runtime effect 层落地命令、等待、状态和 Timeline
 
-Phase 1 简化:
+Runtime lock simplification:
 - 两阶段锁合并为单阶段锁
 
 设计参考: runtime-orchestration 设计文档
@@ -609,7 +609,7 @@ class OrchestratorService:
     def _get_lock(self, lock_key: str) -> AbstractAsyncContextManager[None]:
         """获取锁上下文管理器。
 
-        Phase 1: 单阶段锁，不再区分 READ/WRITE。
+        单阶段锁，不再区分 READ/WRITE。
 
         Args:
             lock_key: 锁的 key
@@ -638,7 +638,7 @@ class OrchestratorService:
     ) -> OrchestratorResult:
         """处理 Inbox 事件（单阶段互斥锁）
 
-        Phase 1 简化:两阶段锁合并为单阶段。
+        两阶段锁合并为单阶段。
         stale-session guard 由 Celery worker 保留（workline.py:1646-1660）。
 
         注意:session 锁确保同一 session 的消息串行处理。

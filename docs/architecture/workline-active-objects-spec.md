@@ -1,6 +1,6 @@
 # WorklineActiveObjects / WorklineCurrentWorkView SPEC
 
-> 状态：Phase 4 Wave1 开发/测试已落地；生产 SLA/benchmark 随 production closure profile 验收
+> 状态：WorklineActiveObjects 开发/测试已落地；生产 SLA/benchmark 随 production closure profile 验收
 > 父计划：`workline-and-plugin-restructuring.md` §10.5
 
 ---
@@ -15,9 +15,9 @@ WorklineActiveObjects 是 WorkLine 当前作业对象的只读聚合视图。它
 
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
-| Phase 1 callback admission 已关闭 | 所有入站来源必须保留 source/provider/evidence，视图不接受无 profile 的来源 |
-| Phase 2 WorkLine 运行态 final cleanup 已完成 | 视图只读 runtime/orchestration、active projection 和 evidence，不读 WorkLine 运行状态作为 owner |
-| Phase 3 closure profile | 允许定义视图合同；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；正式上线前必须显式通过 `--closure-profile production` |
+| Callback admission 已关闭 | 所有入站来源必须保留 source/provider/evidence，视图不接受无 profile 的来源 |
+| WorkLine runtime projection cleanup 已完成 | 视图只读 runtime/orchestration、active projection 和 evidence，不读 WorkLine 运行状态作为 owner |
+| Runtime production closure profile | 允许定义视图合同；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；正式上线前必须显式通过 `--closure-profile production` |
 
 ## 3. 视图职责
 
@@ -75,6 +75,6 @@ WorklineActiveObjects 是 WorkLine 当前作业对象的只读聚合视图。它
 | transient_until 默认窗口 | 30s | 超时后 TRANSIENT → RECONCILING |
 | 缓存策略 | 无缓存（active projection 实时性优先） | 每次查询实时聚合 |
 
-## 9. Phase 5 legacy 判定
+## 9. Legacy cleanup 判定
 
-当 WorklineActiveObjects 覆盖旧当前作业视图、旧 active projection 查询和相关 characterization tests 后，Phase 5 才能删除对应 legacy 读入口。承载业务写入或恢复动作的 legacy 入口不得因本视图存在而删除。
+当 WorklineActiveObjects 覆盖旧当前作业视图、旧 active projection 查询和相关 characterization tests 后，legacy cleanup 才能删除对应 legacy 读入口。承载业务写入或恢复动作的 legacy 入口不得因本视图存在而删除。

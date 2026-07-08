@@ -1,4 +1,4 @@
-"""RuntimeIntentLog (Phase 1 CEO-007 #7, 主计划 §9.2)。
+"""RuntimeIntentLog runtime effect ledger。
 
 outbox/effect ledger: Runtime 曾尝试发出的意图记录。
 不是下游状态源 — 下游状态仍归 handling/device/resource/material/wms_integration
@@ -10,8 +10,8 @@ dispatch_status 5 态 (主计划 §9.2):
 崩溃重放: 进程崩溃恢复时只重放 PENDING 或过期 DISPATCHING 且 request_hash
 一致的记录; 不允许重新构造 payload 发起新 effect。
 
-H5 (Phase 1 最小版本): 同 key 不同 hash 拒绝 (outbound effect replay 不双发);
-完整 409 安全审计留 Phase 3 ENG-009。
+Runtime idempotency minimum contract: 同 key 不同 hash 拒绝 (outbound effect replay 不双发);
+完整 409 安全审计由 runtime audit matrix 覆盖。
 """
 
 from __future__ import annotations

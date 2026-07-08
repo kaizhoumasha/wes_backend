@@ -8,20 +8,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 SCAN_ROOTS = (
+    Path("Jenkinsfile.backend-ci"),
     Path("src"),
     Path("scripts"),
-    Path("tests/architecture"),
-    Path("tests/contracts"),
-    Path("tests/workline_runtime"),
-    Path("tests/api"),
-    Path("tests/runtime"),
-    Path("tests/unit"),
-    Path("tests/core"),
-    Path("tests/database"),
-    Path("tests/resource"),
-    Path("tests/workline"),
-    Path("tests/wms_integration"),
-    Path("tests/load"),
+    Path("tests"),
 )
 
 IGNORED_PARTS = frozenset(
@@ -73,13 +63,21 @@ INTENTIONAL_PROCESS_NAMING_ALLOWLIST: dict[Path, str] = {
 PROCESS_NAME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "path/import phase token",
-        re.compile(r"phase[0-9](?=[^0-9]|$)|phase_[0-9]|phase[_ -][a-z](?=[^a-z0-9]|$)", re.IGNORECASE),
+        re.compile(
+            r"(?<![a-z0-9])phase[ _-]?[0-9]+(?=[^0-9]|$)|(?<![a-z0-9])phase[_ -][a-z](?=[^a-z0-9]|$)",
+            re.IGNORECASE,
+        ),
     ),
     ("symbol phase token", re.compile(r"\bPhase[0-9]\b|\bPhase[_ -][A-Z]\b|\bPHASE[0-9]_|\bPHASE[_ -][A-Z]\b")),
     ("runtime phase prefix", re.compile(r"\bphase[0-9]:", re.IGNORECASE)),
     ("script phase token", re.compile(r"(?:check|compose|run)_phase[0-9](?=[^0-9]|$)", re.IGNORECASE)),
+    ("wave token", re.compile(r"(?<![a-z0-9])wave[ _-]?[0-9]+(?=[^0-9]|$)", re.IGNORECASE)),
+    ("packet milestone token", re.compile(r"(?<![a-z0-9])packet[ _-][a-z](?=[^a-z0-9]|$)", re.IGNORECASE)),
     ("architecture phase option", re.compile(r"architecture-guardrails\.sh\s+--phase|\bARCHITECTURE_PHASE\b")),
-    ("refactor process phrase", re.compile(r"burn-down|technical lane|business lane|final cleanup", re.IGNORECASE)),
+    (
+        "refactor process phrase",
+        re.compile(r"burn[ _-]down|technical[ _-]lane|business[ _-]lane|final[ _-]cleanup", re.IGNORECASE),
+    ),
 )
 
 
@@ -133,12 +131,31 @@ def test_active_code_does_not_use_process_phase_names() -> None:
     assert not offenders, "Active code/test/script paths contain process-stage names:\n" + "\n".join(offenders[:200])
 
 
+def test_process_naming_guardrail_scans_default_test_tree_and_ci_file() -> None:
+    assert Path("tests") in SCAN_ROOTS
+    assert Path("Jenkinsfile.backend-ci") in SCAN_ROOTS
+
+
 def test_process_naming_guardrail_rejects_stale_script_and_option_tokens() -> None:
     examples = (
         "scripts/check_phase3_closure_gate.py",
         "scripts/compose_phase3_runtime_artifact.py",
         "scripts/run_phase3_runtime_benchmarks.py",
         "tests/resource/test_resource_phase_b_contract.py",
+        "tests/mock/material_flow/test_wave2_wave3_mock_acceptance.py",
+        "Wave2 runtime capability builder",
+        "Wave 2 runtime capability builder",
+        "wave-2 runtime capability builder",
+        "Phase 1 runtime entity",
+        "phase 3 benchmark artifact",
+        "Packet C runtime entity",
+        "packet C runtime entity",
+        "packet-c runtime entity",
+        "packet_c runtime entity",
+        "TECHNICAL_LANE_FORBIDDEN_MODULES",
+        "business-lane cleanup",
+        "final_cleanup gate",
+        "burn_down ledger",
         "Phase B resource contract",
         "architecture-guardrails.sh --phase 4",
         "ARCHITECTURE_PHASE=phase4",

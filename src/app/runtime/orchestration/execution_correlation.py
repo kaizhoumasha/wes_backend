@@ -1,8 +1,8 @@
-"""ExecutionCorrelation (Phase 1 Packet C 起步, 主计划 §9.2)。
+"""ExecutionCorrelation (主计划 §9.2)。
 
-跨域 correlation key, 替代旧跨域 session FK 强引用 (Phase 0 P0-004 §4.6)。
+跨域 correlation key, 替代旧跨域 session FK 强引用 (target-state-contract.md §4.6)。
 
-字段对齐 Phase 0 P0-001 target-state-contract.md §3 + 主计划 §9.2 ExecutionCorrelation
+字段对齐 target-state-contract.md §3 + 主计划 §9.2 ExecutionCorrelation
 字段组:
 - correlation_id: 跨域稳定 correlation key, 唯一
 - execution_session_id: runtime/orchestration 内部强 FK (NULL 允许 inbound
@@ -13,7 +13,7 @@
 
 idempotency_keys 是独立表 (主计划 §5.4), 复合主键
 (provider_code, operation_kind, idempotency_key), 通过 execution_correlation_id 引用
-本表, 不重复 storage (P0-001 schema 对齐)。
+本表, 不重复 storage (schema 对齐)。
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from src.core.mixins.base import BaseMixin
 class ExecutionCorrelation(BaseMixin, table=True):
     """跨域 correlation key (主计划 §9.2)。
 
-    替代 Phase 0 旧 session FK 强引用, 跨域只持本表 correlation_id (无 session FK)。
+    替代旧跨域 session FK 强引用, 跨域只持本表 correlation_id (无 session FK)。
     execution_session_id 是 NULL 允许 inbound callback 在解析前先 ACK (主计划 §9.2
     RuntimeInbox 处理契约)。
     """

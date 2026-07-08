@@ -338,6 +338,23 @@ def test_runtime_benchmark_gate_lists_all_required_runtime_scenarios() -> None:
     assert "integrity_conflict_recheck_count" in conveyor_queue_writer.required_metrics
 
 
+def test_runtime_benchmark_scenarios_expose_release_gate_blocking_contract() -> None:
+    from src.app.runtime.orchestration.benchmark_gate import (
+        RuntimeBenchmarkScenario,
+        default_runtime_benchmark_scenarios,
+    )
+
+    assert all(scenario.blocks_release_gate is True for scenario in default_runtime_benchmark_scenarios())
+    non_blocking = RuntimeBenchmarkScenario(
+        name="diagnostic_only",
+        command="uv run pytest tests/load/test_runtime_inbox_claim_benchmark.py -q",
+        required_metrics=frozenset({"claim_p95_ms"}),
+        blocks_release_gate=False,
+    )
+
+    assert non_blocking.blocks_release_gate is False
+
+
 def test_runtime_benchmark_gate_validates_structured_artifact() -> None:
     import json
     from pathlib import Path

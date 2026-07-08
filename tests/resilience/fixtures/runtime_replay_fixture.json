@@ -1,5 +1,5 @@
 {
-  "scenario_id": "phase3-runtime-resilience-replay",
+  "scenario_id": "runtime-resilience-replay",
   "schema_version": "scenario.v1",
   "events": [
     {

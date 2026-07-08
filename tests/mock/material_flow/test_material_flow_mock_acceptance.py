@@ -1,4 +1,4 @@
-"""Phase 4 Wave2/Wave3 本机 MOCK 验收。
+"""Material-flow 本机 MOCK 验收。
 
 这些测试只验证本机 mock 能表达目标合同，不代表 evidence profile 闭合。
 """
@@ -46,14 +46,14 @@ def setup_function() -> None:
     wms_mock_server.reset_mock_wms_state()
 
 
-def test_wave2_mock_acceptance_separates_pkg_binding_from_inventory_transaction() -> None:
+def test_sorter_inbound_mock_acceptance_separates_pkg_binding_from_inventory_transaction() -> None:
     """PKG binding 走 fulfillment mock，库存事务走 inventory mock。"""
 
     with TestClient(wms_mock_server.app) as client:
         binding_response = client.post(
             "/api/wms/fulfillment/pkg-binding",
             json={
-                "request_id": "mock-wave2-binding-001",
+                "request_id": "mock-sorter-binding-001",
                 "package_id": "PKG-CAP001-LOT-A-001",
                 "pallet_id": "PALLET-A",
                 "station_code": "SORTER-STATION-A",
@@ -62,14 +62,14 @@ def test_wave2_mock_acceptance_separates_pkg_binding_from_inventory_transaction(
         inventory_response = client.post(
             "/api/wms/inbound/confirm",
             json={
-                "request_id": "mock-wave2-inbound-001",
+                "request_id": "mock-sorter-inbound-001",
                 "inbound_key": "INBOUND-PKG-CAP001-LOT-A-001",
             },
         )
 
     assert binding_response.status_code == 200
     assert binding_response.json()["data"] == {
-        "request_id": "mock-wave2-binding-001",
+        "request_id": "mock-sorter-binding-001",
         "binding_key": "PKG-CAP001-LOT-A-001:PALLET-A:SORTER-STATION-A",
         "package_id": "PKG-CAP001-LOT-A-001",
         "pallet_id": "PALLET-A",
@@ -80,14 +80,14 @@ def test_wave2_mock_acceptance_separates_pkg_binding_from_inventory_transaction(
     assert inventory_response.json()["data"]["confirmed"] is True
 
 
-def test_wave2_mock_acceptance_models_full_box_pre_diversion_contract() -> None:
+def test_sorter_inbound_mock_acceptance_models_full_box_pre_diversion_contract() -> None:
     """满箱交换必须在分拣机逐件流程前分流，且已满箱物料不得进入逐件候选集。"""
 
     with TestClient(wms_mock_server.app) as client:
         response = client.post(
             "/api/wms/fulfillment/full-box-exchange",
             json={
-                "request_id": "mock-wave2-full-box-001",
+                "request_id": "mock-sorter-full-box-001",
                 "rack_code": "RACK-6CELL-001",
                 "rack_side": "A",
                 "exchange_zone": "FULL_BOX_EXCHANGE_ZONE_A",
@@ -98,7 +98,7 @@ def test_wave2_mock_acceptance_models_full_box_pre_diversion_contract() -> None:
         no_exchange_response = client.post(
             "/api/wms/fulfillment/full-box-exchange",
             json={
-                "request_id": "mock-wave2-no-full-box-001",
+                "request_id": "mock-sorter-no-full-box-001",
                 "rack_code": "RACK-6CELL-002",
                 "rack_side": "B",
                 "exchange_zone": "FULL_BOX_EXCHANGE_ZONE_A",
@@ -124,15 +124,15 @@ def test_wave2_mock_acceptance_models_full_box_pre_diversion_contract() -> None:
     assert no_exchange_data["sorting_candidate_object_keys"] == ["PKG-PIECE-002"]
 
 
-def test_wave2_mock_acceptance_keeps_change_rack_face_as_independent_fulfillment() -> None:
+def test_sorter_inbound_mock_acceptance_keeps_change_rack_face_as_independent_fulfillment() -> None:
     """CHANGE_RACK_FACE 是独立履约，不能被 full-box exchange 成功吞并。"""
 
     with TestClient(wms_mock_server.app) as client:
         response = client.post(
             "/api/wms/fulfillment/change-rack-face",
             json={
-                "request_id": "mock-wave2-change-face-001",
-                "parent_request_id": "mock-wave2-full-box-001",
+                "request_id": "mock-sorter-change-face-001",
+                "parent_request_id": "mock-sorter-full-box-001",
                 "rack_code": "RACK-6CELL-001",
                 "from_rack_side": "A",
                 "to_rack_side": "B",
@@ -144,12 +144,12 @@ def test_wave2_mock_acceptance_keeps_change_rack_face_as_independent_fulfillment
     assert data["environment"] == "LOCAL_MOCK_ONLY"
     assert data["production_write_path"] is False
     assert data["fulfillment_action"] == "CHANGE_RACK_FACE"
-    assert data["parent_request_id"] == "mock-wave2-full-box-001"
+    assert data["parent_request_id"] == "mock-sorter-full-box-001"
     assert data["independent_fulfillment"] is True
     assert data["does_not_mark_full_box_exchange_completed"] is True
 
 
-def test_wave2_mock_acceptance_uses_ecs_mock_without_production_callback(monkeypatch) -> None:
+def test_sorter_inbound_mock_acceptance_uses_ecs_mock_without_production_callback(monkeypatch) -> None:
     """ECS mock 可以本机闭环 ACK/RESULT callback，但只打 localhost WES callback。"""
 
     monkeypatch.setattr(ecs_mock_server.httpx, "AsyncClient", _CapturingAsyncClient)
@@ -160,7 +160,7 @@ def test_wave2_mock_acceptance_uses_ecs_mock_without_production_callback(monkeyp
             "/api/v1/device/command",
             json={
                 "device_code": "RS-CONVEYOR-01",
-                "command_code": "CMD-PHASE4-MOCK-001",
+                "command_code": "CMD-MATERIAL-FLOW-MOCK-001",
                 "task_type": "MOVE_FORWARD",
                 "params": {"queue_code": "ROUGH_SORTER_OUTBOUND"},
             },
@@ -172,7 +172,7 @@ def test_wave2_mock_acceptance_uses_ecs_mock_without_production_callback(monkeyp
     assert _CapturingAsyncClient.requests[0]["url"].startswith("http://localhost:8001/")
 
 
-def test_wave3_mock_acceptance_models_reconciliation_conflicts_locally() -> None:
+def test_reconciliation_mock_acceptance_models_conflicts_locally() -> None:
     """SMT/NG/WMS 对账 mock 表达冲突场景，但不推进生产写路径。"""
 
     scenarios = {
@@ -205,7 +205,7 @@ def test_wave3_mock_acceptance_models_reconciliation_conflicts_locally() -> None
             assert data["production_write_path"] is False
 
 
-def test_wave3_mock_acceptance_runtime_hold_release_is_scope_only() -> None:
+def test_reconciliation_mock_acceptance_runtime_hold_release_is_scope_only() -> None:
     """RuntimeHold 人工解除只能释放声明 scope，不得顺手放行整线 effect。"""
 
     with TestClient(wms_mock_server.app) as client:

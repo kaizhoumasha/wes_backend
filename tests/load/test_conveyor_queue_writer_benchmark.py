@@ -1,4 +1,4 @@
-"""Phase 3 conveyor queue writer lightweight benchmark."""
+"""Conveyor queue writer lightweight benchmark."""
 
 from __future__ import annotations
 

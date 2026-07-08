@@ -1,4 +1,4 @@
-"""Phase 3 RuntimeInbox production service contract tests."""
+"""RuntimeInbox production service contract tests."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""ExecutionWorkItem (Phase 1 CEO-007 #3, 主计划 §9.2)。
+"""ExecutionWorkItem (主计划 §9.2)。
 
 对象级执行令牌: runtime capability 的最小推进单位。
 粗分机单个料盘、分拣机单个物料、滚筒线单个料箱都必须有独立 correlation。

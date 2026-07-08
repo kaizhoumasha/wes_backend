@@ -178,7 +178,7 @@ class WorkLinePlaneService:
     def build_snapshot(self, workline: WorkLine) -> PlaneSnapshot:
         """从 active projection 派生首版 plane snapshot。
 
-        Phase 3 首个 PR 先提供稳定响应壳，后续 projection assembler 接入后
+        当前先提供稳定响应壳，后续 projection assembler 接入后
         在本方法内部补 objects/extremes，不改变 API 合同。
         """
 

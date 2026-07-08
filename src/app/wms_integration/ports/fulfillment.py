@@ -1,4 +1,4 @@
-"""WmsFulfillmentPort (Phase 1 CEO-001 #5, Packet D)。
+"""WmsFulfillmentPort。
 
 主计划 §5.1 7 port 之一: 履约 (搬运/补给/换面/满箱交换/notify pkg binding)。
 所有 effect 必先写 RuntimeIntentLog + EffectPort dispatcher (主计划 §3.5 I3 边界),
@@ -38,7 +38,7 @@ class WmsPalletBindingResult(BaseModel):
 
 
 class WmsFulfillmentPort(Protocol):
-    """WMS 履约 port (Phase 1 CEO-001 #5, Packet D)。
+    """WMS 履约 port。
 
     7 个 effect 方法覆盖 WES → WMS 的出站履约调用。所有 effect 经
     RuntimeIntentLog + EffectPort dispatcher; capability 不得绕过 Runtime

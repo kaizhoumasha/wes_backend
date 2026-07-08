@@ -1,4 +1,4 @@
-"""Phase 3 PostgreSQL concurrency checks for ConveyorQueueMembership writer."""
+"""PostgreSQL concurrency checks for ConveyorQueueMembership writer."""
 
 from __future__ import annotations
 

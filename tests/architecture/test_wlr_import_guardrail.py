@@ -1,18 +1,18 @@
-"""R-WLR src.workline_runtime production import 严格型 guardrail 测试 (Phase 2 launch + Stage 3)。
+"""R-WLR src.workline_runtime production import 严格型 guardrail 测试。
 
 主计划 §10.3 + Step 3: src.workline_runtime 在生产代码中**严禁**直接 import (wlr allowlist 严格型)。
 runtime migration 完成后,EXCLUDED_PREFIXES 收回至空集,consumers/ trust zone 退出。
 
-历史 (阶段 2 launch PR 末态):允许以下入口直接 import (作为单点过渡):
+历史过渡态:允许以下入口直接 import (作为单点过渡):
     1. src/app/runtime/orchestration/consumers/  (单点入口)
     2. tests/                                    (测试)
     3. migrations/                               (Alembic 数据迁移)
     4. src/workline_runtime/ 自身
 
-阶段 3 后:
+runtime migration 后:
     1. tests/    (测试,允许)
     2. migrations/  (Alembic 数据迁移,允许)
-    3. src/workline_runtime/ 自身 (历史,阶段 3 后整目录已删)
+    3. src/workline_runtime/ 自身 (历史, migration 后整目录已删)
 其余 src/ 任何 production code 都不允许 import src.workline_runtime。
 """
 

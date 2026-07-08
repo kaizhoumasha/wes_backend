@@ -1,4 +1,4 @@
-"""CEO-001 WmsMasterDataPort contract test (Port #1, Phase 1 起步)。"""
+"""WmsMasterDataPort contract test。"""
 
 from __future__ import annotations
 

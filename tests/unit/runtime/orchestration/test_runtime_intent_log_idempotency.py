@@ -1,4 +1,4 @@
-"""Phase 1 H5 IdempotencyGuard 行为测试 (主计划 §5.4)。
+"""H5 IdempotencyGuard 行为测试 (主计划 §5.4)。
 
 SPEC §569 文件清单点名: `tests/unit/runtime/orchestration/test_runtime_intent_log_idempotency.py`。
 
@@ -7,7 +7,7 @@ SPEC §569 文件清单点名: `tests/unit/runtime/orchestration/test_runtime_in
 - MATCH: 同 (provider, op_kind, key) + 同 request_hash 已存在, 调用方安全跳过 (崩溃重放)
 - 同 key 不同 hash → IdempotencyConflict, 调用方中止 dispatch (防双发)
 
-完整 409 + 安全审计留 Phase 3 ENG-009 (SPEC §586 out-of-scope)。
+完整 409 + 安全审计留安全审计扩展 (SPEC §586 out-of-scope)。
 """
 
 from __future__ import annotations

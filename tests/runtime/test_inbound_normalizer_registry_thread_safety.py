@@ -1,4 +1,4 @@
-"""InboundNormalizerRegistry thread-safety 单测 (Phase 2 launch PR, hard blocker #4)。
+"""InboundNormalizerRegistry thread-safety 单测。
 
 覆盖场景:
 1. 单线程 sequential get() 同一 port → singleton 行为正确
@@ -9,7 +9,7 @@
 6. get() 未注册 port → KeyError
 7. 100 并发线程同时首次 get() 同一 port → factory 只调用一次 (DCL 验证)
 8. RuntimeCapabilityContext 集成: InboundNormalizerRegistry 与 CapabilityPortRegistry
-   协作无竞态 (Phase 1 Packet D 已落地的协作模式)
+   协作无竞态
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ def test_get_unregistered_port_raises_key_error() -> None:
 def test_concurrent_get_same_port_returns_same_instance() -> None:
     """Concurrent get() on same port must return the same singleton instance.
 
-    Phase 2 hard blocker #4:在多 RuntimeInboxConsumer worker 并发 get()
+    多 RuntimeInboxConsumer worker 并发 get()
     同一 port 时,double-check locking 必须保证只调用 factory() 一次。
     """
     registry = InboundNormalizerRegistry()

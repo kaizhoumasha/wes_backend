@@ -1,4 +1,4 @@
-"""Phase 3 closure profile gate."""
+"""Runtime production closure profile gate."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from src.app.runtime.orchestration.p0_e2e_gate import RuntimeP0E2EGate
 
 @dataclass(frozen=True, slots=True)
 class RuntimeProductionClosureValidation:
-    """Validation result for a Phase 3 closure profile."""
+    """Validation result for a runtime production closure profile."""
 
     valid: bool
     reason: str = "OK"
@@ -26,7 +26,7 @@ class RuntimeProductionClosureValidation:
 
 
 class RuntimeProductionClosureGate:
-    """Validate Phase 3 closure evidence for current deployment profile."""
+    """Validate runtime closure evidence for current deployment profile."""
 
     _REQUIRED_ARTIFACTS: ClassVar[tuple[str, ...]] = ("p0_e2e", "benchmark")
     _MOCK_CLOSURE_PROFILES: ClassVar[frozenset[str]] = frozenset({"mock", "development-mock", "test-mock"})

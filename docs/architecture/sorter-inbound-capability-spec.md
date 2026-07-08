@@ -1,6 +1,6 @@
 # Sorter Inbound Capability SPEC
 
-> 状态：Phase 4 runtime capability 已落地；evidence profile 未闭合
+> 状态：sorter inbound runtime capability 已落地；evidence profile 未闭合
 > 父计划：`workline-and-plugin-restructuring.md` §10.5
 
 ---
@@ -15,9 +15,9 @@
 
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
-| Phase 1 callback admission 已关闭 | 所有 WMS/ECS callback 只描述目标态 normalizer admission，不假设旧 callback 可扩展 |
-| Phase 2 WorkLine 运行态 final cleanup 已完成 | 入库流程状态归 ExecutionWorkItem、WmsFulfillmentRequest、MaterialUnit、CellReservation 等 owner，不写 WorkLine 运行状态 |
-| Phase 3 RuntimeInbox / closure profile | 设计与本机 MOCK 验收可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产热路径接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
+| Callback admission 已关闭 | 所有 WMS/ECS callback 只描述目标态 normalizer admission，不假设旧 callback 可扩展 |
+| WorkLine runtime projection cleanup 已完成 | 入库流程状态归 ExecutionWorkItem、WmsFulfillmentRequest、MaterialUnit、CellReservation 等 owner，不写 WorkLine 运行状态 |
+| Runtime production closure profile | 设计与本机 MOCK 验收可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产热路径接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
 
 ## 3. 粗分机正常流
 
@@ -64,7 +64,7 @@
 
 ## 6. CellReservation 消费合同
 
-CellReservation 表示目标格位预约，不表示物理完成。它是 Phase 4 三个 SPEC（sorter-inbound、material-location-query、smt-ng-wms-reconciliation）的共同依赖，完整生命周期、目标语义与现有 `WorklineBinCellReservation` 状态映射以 `cell-reservation-spec.md` 为准。
+CellReservation 表示目标格位预约，不表示物理完成。它是 material-flow 三个 SPEC（sorter-inbound、material-location-query、smt-ng-wms-reconciliation）的共同依赖，完整生命周期、目标语义与现有 `WorklineBinCellReservation` 状态映射以 `cell-reservation-spec.md` 为准。
 
 本 SPEC 只声明入库流程如何消费 CellReservation：
 
@@ -124,26 +124,26 @@ CTU 批量履约必须保留父请求和逐对象子 work item。查询视图展
 
 ### 8.1 characterization-to-target contract mapping
 
-Phase 4 实现前，旧业务 characterization 只能作为输入语义，不得继续复用旧 plugin 入口。目标合同必须把旧流程映射到 runtime/orchestration、WMS port 和本地事实模型：
+Material-flow runtime capability 接入前，旧业务 characterization 只能作为输入语义，不得继续复用旧 plugin 入口。目标合同必须把旧流程映射到 runtime/orchestration、WMS port 和本地事实模型：
 
 | characterization | 旧能力语义 | 目标合同 |
 | --- | --- | --- |
 | BC-05 | 粗分机正常入库 | 本地投格先写 `RuntimeLocationEvent`，格位预约复用 `WorklineBinCellReservation`；PKG 绑定只走 `WmsFulfillmentPort.notify_pkg_binding`，库存事务只走 `WmsInventoryTransactionPort` |
 | BC-06 | 满箱交换前置分流 | `FULL_BOX_EXCHANGE` 与 `CHANGE_RACK_FACE` 分别进入 `WmsFulfillmentPort`，父子 `ExecutionWorkItem` 保留批次和逐对象收敛状态 |
-| BC-07 | 分拣机入库 | SCAN 授权、NG/RuntimeHold、CellReservation、`RuntimeLocationEvent` 和 WMS 同步按对象级合同串联；未覆盖语义保留 characterization tests，不进入 Phase 5 drop |
+| BC-07 | 分拣机入库 | SCAN 授权、NG/RuntimeHold、CellReservation、`RuntimeLocationEvent` 和 WMS 同步按对象级合同串联；未覆盖语义保留 characterization tests，不进入 legacy cleanup |
 
 ## 9. 实施前置条件
 
-生产热路径实现前必须明确 Phase 2 runtime status 兼容投影口径，并通过 `scripts/check_runtime_production_closure_gate.py --closure-profile production ...`。否则只能保留为设计、characterization mapping 和本机 MOCK 验收。
+生产热路径实现前必须明确 runtime status 兼容投影口径，并通过 `scripts/check_runtime_production_closure_gate.py --closure-profile production ...`。否则只能保留为设计、characterization mapping 和本机 MOCK 验收。
 
 ### 9.1 本机开发环境 MOCK 验收
 
-Wave2 入库能力本轮降级为本机开发环境 MOCK 验收，不做生产接入。验收入口固定为 `tests/mock/material_flow` 与本机 WMS/ECS mock：
+Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不做生产接入。验收入口固定为 `tests/mock/material_flow` 与本机 WMS/ECS mock：
 
 - WMS mock 可以表达 `WmsFulfillmentPort.notify_pkg_binding()` 与 `WmsInventoryTransactionPort` 的职责拆分。
 - ECS mock 可以表达 ACK/RESULT callback 和设备失败/超时场景，但 callback 只能指向 localhost 本机 WES。
 - mock 验收不得注册生产 router、Celery worker、真实 WMS/ECS client 或任何 sorter inbound 生产热路径。
-- 生产热路径仍必须等待 Phase 2 residual gate 与 production closure profile 通过，并保持 Phase1 callback admission 证据绿灯；mock 通过不等于 Phase 4 业务上线完成。
+- 生产热路径仍必须等待 runtime residual gate 与 production closure profile 通过，并保持 callback admission 证据绿灯；mock 通过不等于 material-flow 业务上线完成。
 
 ## 10. Runtime 集成映射
 
@@ -203,6 +203,6 @@ Wave2 入库能力本轮降级为本机开发环境 MOCK 验收，不做生产�
 | DeviceCommand 下发 → ECS ACK | < 500ms | ACK 超时 → `DeviceCommand` lease 过期 → `RuntimeReconciliation` |
 | 全链路 (SCAN1 → 投料完成) | P95 < 30s | 任一步骤超时 → 该对象 `RuntimeHold`，不阻塞其他对象 |
 
-## 12. Phase 5 legacy 判定
+## 12. Legacy cleanup 判定
 
 旧 rough_sorter / smt_sorting_inbound / full-box 相关入口只有在对应目标态 behavior contract 通过后才能删除。未被合同覆盖的 legacy 只能冻结入口并保留 characterization tests。

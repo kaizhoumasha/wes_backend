@@ -1,4 +1,4 @@
-"""Phase 1 Packet D CEO-009 + H2/H3 contract test。
+"""Runtime capability port registry + H2/H3 contract test。
 
 RuntimeCapabilityContext / CapabilityPortRegistry:
 - H2: type guard 拒绝 inbound normalizer 注册

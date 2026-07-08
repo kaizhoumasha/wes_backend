@@ -1,4 +1,4 @@
-"""Validate a Phase 3 production P0 E2E artifact."""
+"""Validate a runtime production P0 E2E artifact."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _ensure_repo_root_on_path() -> None:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("artifact", help="Path to the Phase 3 production P0 E2E artifact JSON.")
+    parser.add_argument("artifact", help="Path to the runtime production P0 E2E artifact JSON.")
     return parser.parse_args(argv)
 
 

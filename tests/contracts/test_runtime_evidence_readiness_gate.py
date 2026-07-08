@@ -224,14 +224,14 @@ def _write_minimal_runtime_docs(repo_root: Path, *, stale_status: bool = False) 
     (repo_root / "src" / "app" / "runtime" / "capabilities" / "material_flow").mkdir(parents=True, exist_ok=True)
 
     status_by_file = {
-        "cell-reservation-spec.md": "Phase 4 P0 开发/测试已落地；生产投放热路径未接入",
-        "material-location-query-spec.md": "Phase 4 Wave1 开发/测试已落地",
-        "workline-active-objects-spec.md": "Phase 4 Wave1 开发/测试已落地",
-        "sorter-inbound-capability-spec.md": "Phase 4 runtime capability 已落地；evidence profile 未闭合",
-        "smt-ng-wms-reconciliation-spec.md": "Phase 4 runtime capability 已落地；evidence profile 未闭合",
+        "cell-reservation-spec.md": "CellReservation 开发/测试已落地；生产投放热路径未接入",
+        "material-location-query-spec.md": "MaterialLocationQuery 开发/测试已落地",
+        "workline-active-objects-spec.md": "WorklineActiveObjects 开发/测试已落地",
+        "sorter-inbound-capability-spec.md": "sorter inbound runtime capability 已落地；evidence profile 未闭合",
+        "smt-ng-wms-reconciliation-spec.md": "SMT/NG/WMS reconciliation runtime capability 已落地；evidence profile 未闭合",
     }
     if stale_status:
-        status_by_file["cell-reservation-spec.md"] = "Phase 4 P0 前置设计 SPEC，未实现"
+        status_by_file["cell-reservation-spec.md"] = "CellReservation 前置设计 SPEC，未实现"
 
     for filename, status in status_by_file.items():
         (docs_architecture / filename).write_text(
@@ -241,26 +241,26 @@ def _write_minimal_runtime_docs(repo_root: Path, *, stale_status: bool = False) 
 
     (repo_root / "docs" / "superpowers" / "plans" / "2026-07-04-runtime-evidence-readiness.md").write_text(
         """# material-flow Runtime Readiness 实施计划
-Wave2/Wave3 后续目标是 production-capable runtime path，外部 provider 可替换。
+sorter inbound 与 SMT/NG/WMS reconciliation 后续目标是 production-capable runtime path，外部 provider 可替换。
 开发/测试范围的 Runtime evidence readiness gate 已关闭。
-- [x] Wave2 runtime capability builder：已输出 RuntimeIntent/effect contract/evidence。
-- [x] Wave3 runtime capability builder：已输出 RuntimeIntent/RuntimeInbox evidence/RuntimeHold plan。
-- [x] Wave2 evidence profile gate：site/production manifest 已要求 provider contract 证据。
-- [x] Wave3 evidence profile gate：site/production manifest 已要求 RuntimeInbox worker trace。
+- [x] sorter inbound runtime capability builder：已输出 RuntimeIntent/effect contract/evidence。
+- [x] SMT/NG/WMS reconciliation runtime capability builder：已输出 RuntimeIntent/RuntimeInbox evidence/RuntimeHold plan。
+- [x] sorter inbound evidence profile gate：site/production manifest 已要求 provider contract 证据。
+- [x] SMT/NG/WMS reconciliation evidence profile gate：site/production manifest 已要求 RuntimeInbox worker trace。
 证据文件本身属于 reports/、CI 或部署验收产物。
 """,
         encoding="utf-8",
     )
     (repo_root / "docs" / "architecture" / "workline-and-plugin-restructuring.md").write_text(
-        """### 10.5 Phase 4: 后续子领域
-Wave2/Wave3 后续目标是 production-capable runtime path，外部 provider 可替换。
+        """### 10.5 Material-flow target capabilities
+sorter inbound 与 SMT/NG/WMS reconciliation 后续目标是 production-capable runtime path，外部 provider 可替换。
 site/production evidence manifest gate 只改变验收证据要求，不改变 service 行为。
 - [x] 分拣机/粗分机入库能力 runtime capability builder 已按目标态 capability / port 重建，不保留旧插件兼容入口
 ### 10.6 target-state
 """,
         encoding="utf-8",
     )
-    (repo_root / "tests" / "mock" / "material_flow" / "test_wave2_wave3_mock_acceptance.py").write_text(
+    (repo_root / "tests" / "mock" / "material_flow" / "test_material_flow_mock_acceptance.py").write_text(
         '"""本机 MOCK 验收，不代表 evidence profile 闭合。"""\n',
         encoding="utf-8",
     )

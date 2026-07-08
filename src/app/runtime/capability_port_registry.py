@@ -1,4 +1,4 @@
-"""CapabilityPortRegistry (Phase 1 CEO-009 + H2, 主计划 §3.5 + §9.2)。
+"""CapabilityPortRegistry（主计划 §3.5 + §9.2）。
 
 capability 注入边界: 只允许 query/effect port contract 注册;
 inbound normalizer (WmsEventPort / DeviceEventPort / RuntimeInbox consumer)

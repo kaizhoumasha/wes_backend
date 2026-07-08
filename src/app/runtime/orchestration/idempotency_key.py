@@ -1,13 +1,13 @@
-"""IdempotencyKey (Phase 1 H5, 主计划 §5.4)。
+"""IdempotencyKey runtime idempotency ledger。
 
 独立表, 复合主键 (provider_code, operation_kind, idempotency_key)。
 通过 execution_correlation_id 引用 ExecutionCorrelation。
 
-H5 (Phase 1 最小版本):
+Runtime idempotency minimum contract:
 - 表落地 (schema-only)
 - WES 内部 key 命名约束: WES-{OPERATION_KIND}-{HASH}
 - RuntimeIntentLog outbound effect 最小同 key 不同 hash 拒绝
-- 完整 409 安全审计留 Phase 3 ENG-009
+- 完整 409 安全审计由 runtime audit matrix 覆盖
 """
 
 from __future__ import annotations

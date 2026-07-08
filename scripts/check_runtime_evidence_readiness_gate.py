@@ -16,14 +16,14 @@ if TYPE_CHECKING:
 
 
 RUNTIME_SPEC_STATUS_TOKENS: dict[str, tuple[str, ...]] = {
-    "cell-reservation-spec.md": ("P0", "开发/测试"),
-    "material-location-query-spec.md": ("Wave1", "开发/测试"),
-    "workline-active-objects-spec.md": ("Wave1", "开发/测试"),
+    "cell-reservation-spec.md": ("CellReservation", "开发/测试"),
+    "material-location-query-spec.md": ("MaterialLocationQuery", "开发/测试"),
+    "workline-active-objects-spec.md": ("WorklineActiveObjects", "开发/测试"),
     "sorter-inbound-capability-spec.md": ("runtime capability", "evidence profile"),
     "smt-ng-wms-reconciliation-spec.md": ("runtime capability", "evidence profile"),
 }
 RUNTIME_MOCK_TEST_FILES = (
-    "tests/mock/material_flow/test_wave2_wave3_mock_acceptance.py",
+    "tests/mock/material_flow/test_material_flow_mock_acceptance.py",
     "tests/mock/material_flow/test_sorter_inbound_mock_contracts.py",
 )
 RUNTIME_CAPABILITY_FILES = (
@@ -132,17 +132,17 @@ def validate_mock_readiness(repo_root: Path) -> RuntimeEvidenceReadinessValidati
         reconciliation_preview_test = _read(repo_root, RUNTIME_CAPABILITY_FILES[3])
         required_tokens_by_source = {
             RUNTIME_READINESS_PLAN: (
-                "Wave2/Wave3 后续目标是 production-capable runtime path",
+                "sorter inbound 与 SMT/NG/WMS reconciliation 后续目标是 production-capable runtime path",
                 "外部 provider 可替换",
                 "开发/测试范围的 Runtime evidence readiness gate 已关闭",
-                "- [x] Wave2 runtime capability builder",
-                "- [x] Wave3 runtime capability builder",
-                "- [x] Wave2 evidence profile gate",
-                "- [x] Wave3 evidence profile gate",
+                "- [x] sorter inbound runtime capability builder",
+                "- [x] SMT/NG/WMS reconciliation runtime capability builder",
+                "- [x] sorter inbound evidence profile gate",
+                "- [x] SMT/NG/WMS reconciliation evidence profile gate",
                 "证据文件本身属于",
             ),
             MAIN_PLAN: (
-                "### 10.5 Phase 4",
+                "### 10.5 Material-flow target capabilities",
                 "production-capable runtime path",
                 "evidence manifest gate",
             ),

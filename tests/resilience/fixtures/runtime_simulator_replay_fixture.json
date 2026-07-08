@@ -1,5 +1,5 @@
 {
-  "scenario_id": "phase3-simulator-replay",
+  "scenario_id": "runtime-simulator-replay",
   "simulator_events": [
     {
       "source_system": "ECS",

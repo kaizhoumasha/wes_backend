@@ -1,4 +1,4 @@
-"""Phase 1 CEO-007 RuntimeInbox + RuntimeIntentLog contract test。
+"""RuntimeInbox + RuntimeIntentLog contract test。
 
 主计划 §9.2 RuntimeInbox 处理契约 + RuntimeIntentLog effect ledger:
 - RuntimeInbox 5 态状态机 + ACK-before-processing

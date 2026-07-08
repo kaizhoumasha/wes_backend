@@ -1,4 +1,4 @@
-"""IdempotencyGuard (Phase 1 H5 最小实现, 主计划 §5.4)。
+"""IdempotencyGuard runtime idempotency implementation。
 
 WES outbound effect 幂等闸门: dispatch 前对 RuntimeIntentLog / DeviceCommand
 等出站操作做 claim, 防止崩溃重放或重试导致下游双发。
@@ -6,7 +6,8 @@ WES outbound effect 幂等闸门: dispatch 前对 RuntimeIntentLog / DeviceComma
 核心语义:
 - NEW    首次 claim, 写入 IdempotencyKey, 调用方可继续 dispatch
 - MATCH  同 (provider, op_kind, key) 已存在且 request_hash 一致, 调用方安全跳过
-- 同 key 不同 hash → 抛 IdempotencyConflict, 调用方必须中止 dispatch 并输出 Phase 3 审计矩阵 payload
+- 同 key 不同 hash → 抛 IdempotencyConflict
+- 调用方必须中止 dispatch 并输出 runtime audit matrix payload
 
 WES 内部 key 命名: `WES-{OPERATION_KIND}-{HASH}` (主计划 §5.4)。
 外部 provider 提供的 key (e.g. WMS 回调 source_event_id) 不强制此前缀。
@@ -42,7 +43,7 @@ class ClaimResult(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class IdempotencyOperationSpec:
-    """Phase 3 ENG-009 跨域幂等审计矩阵条目。"""
+    """跨域幂等审计矩阵条目。"""
 
     operation_kind: str
     domain: str
@@ -75,7 +76,7 @@ def _normalize_operation_kind(operation_kind: str) -> str:
 
 
 def default_idempotency_operation_matrix() -> dict[str, IdempotencyOperationSpec]:
-    """返回 Phase 3 要求覆盖的 canonical operation_kind 审计矩阵。"""
+    """返回 canonical operation_kind 审计矩阵。"""
 
     return dict(_IDEMPOTENCY_OPERATION_MATRIX)
 

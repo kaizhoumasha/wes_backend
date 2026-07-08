@@ -1,4 +1,4 @@
-"""Callback 域 utils + contracts mirror 完整性测试 (Phase 2 launch PR)。
+"""Callback 域 utils + contracts mirror 完整性测试。
 
 校验 callback 域从 src.workline_runtime 解耦后,本地镜像 (callback/utils 与
 callback/contracts) 对外公开 API 与 wlr 镜像版本行为一致。

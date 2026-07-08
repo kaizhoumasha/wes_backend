@@ -1,5 +1,5 @@
 {
-  "scenario_id": "phase3-integration-lab-wms-ecs-full-chain",
+  "scenario_id": "integration-lab-wms-ecs-full-chain",
   "environment": "sandbox",
   "required_cases": [
     "happy_path",

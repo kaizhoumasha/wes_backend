@@ -1,4 +1,4 @@
-"""Phase 3 plane snapshot lightweight benchmark."""
+"""Plane snapshot lightweight benchmark."""
 
 from __future__ import annotations
 

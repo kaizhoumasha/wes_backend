@@ -1,10 +1,10 @@
 """H4: DeviceCommand typed params + extra=forbid + 同 key 不同 hash 拒绝。
 
-主计划 §9.6 + §5.3 + Phase 1 H4:
+主计划 §9.6 + §5.3 + H4:
 - `params` 改 typed Pydantic union (按 task_type 区分), 禁用 `dict[str, Any]`
 - `CommandBase` 显式 `extra="forbid"` 阻断未声明字段透传
-- 同 key(command_code)不同 request_hash 应拒绝 (Phase 1 outbound 最小版本)
-- 完整 409 安全审计留 Phase 3 ENG-009
+- 同 key(command_code)不同 request_hash 应拒绝 (outbound 最小版本)
+- 完整 409 安全审计留安全审计扩展
 
 注意: 本测试只覆盖 H4 三个子任务的 schema 层面, 完整 C4 字段白名单
 (禁止 plc/coordinate/joint/safety_loop) 由 architecture-guardrails.sh C4
@@ -138,11 +138,11 @@ def test_external_contract_profile_query_format_rejects_underscore_prefix():
     assert "Port.method" in str(exc_info.value)
 
 
-# ---- 现有 baseline 验证 (Phase 0 行为不退化) ----
+# ---- 现有 baseline 验证 ----
 
 
 def test_command_callback_result_baseline_extra_forbid():
-    """Phase 0 已有的 CommandCallbackResult extra='forbid' baseline 仍生效。
+    """CommandCallbackResult extra='forbid' baseline 仍生效。
 
     不因 CommandBase 新增 extra='forbid' 而影响 callback result schema。
     """
@@ -168,7 +168,7 @@ def test_command_callback_result_baseline_extra_forbid():
 def test_device_command_params_column_is_json():
     """DB 层 params 字段是 JSON column (sa_column=Column(JSON))。
 
-    Phase 0 已就绪, typed Pydantic union 替换时需保持 JSON 存储以
+    当前已就绪, typed Pydantic union 替换时需保持 JSON 存储以
     避免 Alembic migration 复杂度。DeviceCommand 是表 model, 含 __table__。
     """
     table = DeviceCommand.__table__

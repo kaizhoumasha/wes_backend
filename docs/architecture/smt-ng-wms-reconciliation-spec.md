@@ -1,6 +1,6 @@
 # SMT / NG / WMS Reconciliation SPEC
 
-> 状态：Phase 4 runtime capability 已落地；evidence profile 未闭合
+> 状态：SMT/NG/WMS reconciliation runtime capability 已落地；evidence profile 未闭合
 > 父计划：`workline-and-plugin-restructuring.md` §10.5
 
 ---
@@ -15,9 +15,9 @@
 
 | 遗留门禁 | 本 SPEC 处理方式 |
 | --- | --- |
-| Phase 1 callback admission 已关闭 | NG/WMS callback 设计必须依赖 provider profile admission 和 typed normalizer |
-| Phase 2 WorkLine 运行态 final cleanup 已完成 | 对账状态不写 WorkLine 运行状态，使用 RuntimeHold / ReconciliationRecord |
-| Phase 3 closure profile | 设计与本机 MOCK 验收可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产闭环接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
+| Callback admission 已关闭 | NG/WMS callback 设计必须依赖 provider profile admission 和 typed normalizer |
+| WorkLine runtime projection cleanup 已完成 | 对账状态不写 WorkLine 运行状态，使用 RuntimeHold / ReconciliationRecord |
+| Runtime production closure profile | 设计与本机 MOCK 验收可完成；当前开发/测试默认使用 MOCK closure，真实 artifact 不再作为当前开发/测试推进阻塞项；生产闭环接入前必须通过 RuntimeInbox cutover 与 `--closure-profile production` |
 
 ## 3. 业务事实边界
 
@@ -67,13 +67,13 @@ RuntimeHold 解除必须声明：
 
 ### 7.1 本机开发环境 MOCK 验收
 
-Wave3 SMT/NG/WMS 对账本轮降级为本机开发环境 MOCK 验收，不做生产接入。验收入口固定为 `tests/mock/material_flow` 与本机 WMS reconciliation mock：
+SMT/NG/WMS 对账本轮限定为本机开发环境 MOCK 验收，不做生产接入。验收入口固定为 `tests/mock/material_flow` 与本机 WMS reconciliation mock：
 
 - mock 必须能表达 NG evidence、本地物理事实缺失、WMS 拒绝、目标箱回写失败、重复 callback、乱序 callback 与 source_version drift。
 - mock 返回的对账快照必须标记 `LOCAL_MOCK_ONLY`，且 `production_write_path=false`。
 - mock 验收不得注册生产 callback cutover、真实 WMS reconciliation query client、RuntimeInbox worker 或 SMT/NG/WMS 生产热路径。
-- 生产热路径仍必须等待 Phase 2 residual gate 与 production closure profile 通过，并保持 Phase1 callback admission 证据绿灯；mock 通过只说明本机合同可验收。
+- 生产热路径仍必须等待 runtime residual gate 与 production closure profile 通过，并保持 callback admission 证据绿灯；mock 通过只说明本机合同可验收。
 
-## 8. Phase 5 legacy 判定
+## 8. Legacy cleanup 判定
 
 旧 SMT/NG/WMS 对账入口只有在上述行为契约通过，并能用 ExternalReference 追溯所有旧关键场景后才能删除。仍承载 NG/PDA/WMS 主数据语义的 legacy 不得删除，只能冻结或迁出 owner。

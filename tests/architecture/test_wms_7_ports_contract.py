@@ -1,4 +1,4 @@
-"""7-port contract tests (Phase 1 Packet D, 主计划 §5.1 + Phase 1 SPEC §139-140).
+"""7-port contract tests (主计划 §5.1).
 
 每个 WMS port 必须满足:
 - Port.method 命名 (ClassName.method 格式)
@@ -183,7 +183,7 @@ def test_wms_reconciliation_query_data_classes_are_pydantic():
 
 
 def test_all_seven_wms_ports_present():
-    """Phase 1 CEO-001 完成 7/7 ports (主计划 §5.1)。"""
+    """7/7 WMS ports 已落地 (主计划 §5.1)。"""
     from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort
     from src.app.wms_integration.ports.inventory_transaction import WmsInventoryTransactionPort
     from src.app.wms_integration.ports.master_data import WmsMasterDataPort

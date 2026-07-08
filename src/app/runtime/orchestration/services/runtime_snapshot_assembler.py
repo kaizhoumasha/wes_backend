@@ -19,7 +19,7 @@ class RuntimeSnapshotInput:
 
 
 class RuntimeSnapshotAssembler:
-    """把 Phase 1 runtime/orchestration 行装配为 BC-02 视图。"""
+    """把 runtime/orchestration 行装配为 BC-02 视图。"""
 
     def assemble(self, data: RuntimeSnapshotInput) -> dict[str, Any]:
         session = data.session

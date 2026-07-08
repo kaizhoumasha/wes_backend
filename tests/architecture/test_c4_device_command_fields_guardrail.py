@@ -81,7 +81,7 @@ def test_c4_catches_real_forbidden_field_declaration():
 
 
 def test_c4_ignores_forbidden_keys_inside_blacklist_set():
-    """C4 不应误报 H4 黑名单常量集合 (Phase 1 H4 反注入实现自身)。
+    """C4 不应误报 H4 黑名单常量集合。
 
     回归测试: 工作区 review 发现 9 个 C4 false positive,
     都来自 _FORBIDDEN_PARAM_KEYS = {"plc", "plc_address", ...} 这种黑名单字面量。

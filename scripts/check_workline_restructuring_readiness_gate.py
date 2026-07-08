@@ -72,7 +72,7 @@ BUSINESS_SCOPE_CONTRACT_TESTS = (
     Path("tests/contracts/test_runtime_evidence_readiness_gate.py"),
     Path("tests/contracts/test_runtime_evidence_artifact_composer.py"),
     Path("tests/mock/material_flow/test_sorter_inbound_mock_contracts.py"),
-    Path("tests/mock/material_flow/test_wave2_wave3_mock_acceptance.py"),
+    Path("tests/mock/material_flow/test_material_flow_mock_acceptance.py"),
     Path("tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py"),
     Path("tests/workline_runtime/test_runtime_location_event_service.py"),
     Path("tests/workline_runtime/test_material_location_query_service.py"),

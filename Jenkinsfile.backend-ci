@@ -222,7 +222,7 @@ pipeline {
                     }
                 }
 
-                stage('Phase 3 Benchmark Artifact') {
+                stage('Runtime Benchmark Artifact') {
                     steps {
                         sh '''
                             set -e
@@ -232,15 +232,15 @@ pipeline {
                                 -v "$WORKSPACE/reports:/artifacts/reports" \
                                 "${CI_IMAGE}" \
                                 sh -c '
-                                    python scripts/run_phase3_runtime_benchmarks.py \
-                                        --output /artifacts/reports/benchmarks/phase3-runtime-benchmark.json \
+                                    python scripts/run_runtime_benchmarks.py \
+                                        --output /artifacts/reports/benchmarks/runtime-benchmark.json \
                                         --environment ci-lightweight
                                 '
                         '''
                     }
                     post {
                         always {
-                            archiveArtifacts artifacts: 'reports/benchmarks/phase3-runtime-benchmark.json', allowEmptyArchive: true
+                            archiveArtifacts artifacts: 'reports/benchmarks/runtime-benchmark.json', allowEmptyArchive: true
                         }
                     }
                 }

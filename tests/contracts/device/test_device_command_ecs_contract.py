@@ -1,6 +1,6 @@
 """CEO-010: DeviceCommand ECS API 完整契约 (12 case)。
 
-主计划 §9.6 + Phase 0 device-command-contract.md + 第三方设备白皮书:
+主计划 §9.6 + device-command-contract.md + 第三方设备白皮书:
 - Command-Ack-Callback 异步闭环
 - 设备 6 态 (IDLE/RUNNING/ERROR/OFFLINE/UNKNOWN/MAINTENANCE)
 - dispatch 前 IDLE 校验
@@ -10,10 +10,10 @@
 - 同一 command_code 幂等 (去重)
 - DeviceRuntime 状态快照 TTL + DeviceDispatchPolicy
 - in-flight 限制
-- WorkLine manifest version pin (Phase 1 CEO-011 后续)
+- WorkLine manifest version pin
 
 本测试覆盖主计划 §10.2 CEO-010 验证栏 12 case; 部分行为依赖
-Phase 1 CEO-007 runtime worker 落地, 完整 stub 留 Packet C。
+runtime worker 落地, 完整 stub 留后续 runtime worker 测试。
 """
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ def test_command_result_enum_success_failed():
 
 def test_command_status_transition_pending_to_sent():
     """PENDING -> SENT (dispatch 触发)。"""
-    # 仅 enum 验证, 完整 dispatch 行为依赖 runtime worker (Phase 1 CEO-007)
+    # 仅 enum 验证, 完整 dispatch 行为依赖 runtime worker
     assert CommandStatus.PENDING.value == "PENDING"
     assert CommandStatus.SENT.value == "SENT"
 
@@ -134,9 +134,9 @@ def test_command_status_transition_to_failed():
 
 
 def test_command_status_transition_to_timeout():
-    """RUNNING 超时 -> TIMEOUT (Phase 1 CEO-007 runtime worker 落地后细化)。
+    """RUNNING 超时 -> TIMEOUT (runtime worker 落地后细化)。
 
-    timeout_seconds 与 payload 字段对齐 (Phase 1c 补 runnable 状态机)。
+    timeout_seconds 与 payload 字段对齐 (后续补 runnable 状态机)。
     """
     assert CommandStatus.TIMEOUT.value == "TIMEOUT"
 
@@ -178,7 +178,7 @@ def test_command_ack_required_fields():
         CommandAck()  # 缺必填字段
 
 
-# ---- 8-10. DeviceRuntime 状态快照 TTL + DeviceDispatchPolicy + in-flight 限制 (Phase 1c 依赖) ----
+# ---- 8-10. DeviceRuntime 状态快照 TTL + dispatch policy + in-flight 限制 ----
 
 
 def test_command_base_extra_forbid_blocks_unknown_field():
@@ -196,7 +196,7 @@ def test_command_base_extra_forbid_blocks_unknown_field():
         )
 
 
-# ---- 11-12. Phase 0 baseline 行为不退化 ----
+# ---- 11-12. baseline 行为不退化 ----
 
 
 def test_command_request_params_default_empty_dict():

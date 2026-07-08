@@ -1,4 +1,4 @@
-"""WmsInventoryQueryPort (Phase 1 CEO-001 #3)。
+"""WmsInventoryQueryPort。
 
 主计划 §5.1 7 port 之一: 库存只读查询 (query_inventory, query_empty_bins)。
 由 typed_ports.WmsInventoryPort 拆 query 部分; transaction 部分迁至
@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class WmsInventoryItem(BaseModel):
-    """库存项 (Phase 1 CEO-001 复用 Phase 0 typed_ports.WmsInventoryItem schema)。"""
+    """库存项（复用 typed_ports.WmsInventoryItem schema）。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -27,9 +27,9 @@ class WmsInventoryItem(BaseModel):
 
 
 class WmsInventoryQueryPort(Protocol):
-    """WMS 库存只读查询 port (Phase 1 CEO-001 #3)。
+    """WMS 库存只读查询 port。
 
-    query-only; 业务事务走 WmsInventoryTransactionPort (CEO-001 #4)。
+    query-only; 业务事务走 WmsInventoryTransactionPort。
     短 TTL 缓存 (主计划 §6: 30s) 避免高频轮询; cache_ttl_seconds 在
     ExternalContractProfile 中声明。
     """

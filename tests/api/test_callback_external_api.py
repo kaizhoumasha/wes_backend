@@ -831,7 +831,7 @@ class TestCallbackExternalAPI:
             callback_type="WMS_RACK_ARRIVED",
             dispatch_key="external:smt:release-001:RACK_OPERATION:1",
             status="SUCCEEDED",
-            # WMS 协议顶层业务字段 (Phase 1 H4 边界白名单扩展):
+            # WMS 协议顶层业务字段 (H4 边界白名单扩展):
             rack_code="RACK-3C-001",
             rack_kind="SINGLE_LAYER",
             position_code="SINGLE_LAYER_A",

@@ -1,4 +1,4 @@
-"""Compose a Phase 3 production P0 E2E artifact."""
+"""Compose a runtime production P0 E2E artifact."""
 
 from __future__ import annotations
 

@@ -24,7 +24,7 @@ def _token(*parts: str) -> str:
 
 _HANDLING_QUEUE_MEMBERSHIP_MODULE = _token("bin", "_", "transit", "_", "membership")
 _HANDLING_QUEUE_MEMBERSHIP_TABLE = _token("bin", "_", "transit", "_", "memberships")
-TECHNICAL_LANE_FORBIDDEN_MODULES = (
+LEGACY_RUNTIME_FORBIDDEN_MODULES = (
     "src.app.workline.plugins",
     "src.workline_plugin_registry",
     "src.workline_plugins",
@@ -32,7 +32,7 @@ TECHNICAL_LANE_FORBIDDEN_MODULES = (
     f"src.app.handling.repositories.{_HANDLING_QUEUE_MEMBERSHIP_MODULE}_repository",
     f"src.app.handling.services.{_HANDLING_QUEUE_MEMBERSHIP_MODULE}_service",
 )
-TECHNICAL_LANE_FORBIDDEN_TEXT = (
+LEGACY_RUNTIME_FORBIDDEN_TEXT = (
     _token("Bin", "Transit", "Membership"),
     _token("Bin", "Transit", "Queue"),
     _HANDLING_QUEUE_MEMBERSHIP_TABLE,
@@ -44,7 +44,7 @@ def _ledger_rows() -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
-@pytest.mark.parametrize("module_name", TECHNICAL_LANE_FORBIDDEN_MODULES)
+@pytest.mark.parametrize("module_name", LEGACY_RUNTIME_FORBIDDEN_MODULES)
 def test_legacy_plugin_runtime_surfaces_stay_absent(module_name: str) -> None:
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module(module_name)
@@ -54,7 +54,7 @@ def test_bin_transit_runtime_surfaces_stay_absent_from_production_source() -> No
     offenders: list[str] = []
     for path in sorted(PRODUCTION_ROOT.rglob("*.py")):
         text = path.read_text(encoding="utf-8")
-        if any(forbidden in text for forbidden in TECHNICAL_LANE_FORBIDDEN_TEXT):
+        if any(forbidden in text for forbidden in LEGACY_RUNTIME_FORBIDDEN_TEXT):
             offenders.append(str(path.relative_to(REPO_ROOT)))
 
     assert offenders == []

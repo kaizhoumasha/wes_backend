@@ -1,4 +1,4 @@
-"""Compose Phase 3 production benchmark artifacts from scenario evidence."""
+"""Compose runtime production benchmark artifacts from scenario evidence."""
 
 from __future__ import annotations
 

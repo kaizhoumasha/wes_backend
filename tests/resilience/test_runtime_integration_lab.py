@@ -1,4 +1,4 @@
-"""Phase 3 IntegrationLab fixture runner contract."""
+"""IntegrationLab fixture runner contract."""
 
 from __future__ import annotations
 

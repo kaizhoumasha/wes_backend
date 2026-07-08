@@ -1,4 +1,4 @@
-"""Phase 3 ScenarioReplayRunner resilience fixture replay."""
+"""ScenarioReplayRunner resilience fixture replay."""
 
 from __future__ import annotations
 

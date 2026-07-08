@@ -1,4 +1,4 @@
-"""Phase 3 RuntimeInbox backpressure and DeviceCommand lease policies."""
+"""RuntimeInbox backpressure and DeviceCommand lease policies."""
 
 from __future__ import annotations
 
