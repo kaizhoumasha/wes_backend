@@ -1,9 +1,9 @@
-"""Callback 域 failure mapper — wlr.diagnostics.failure_mapper 镜像。
+"""Callback 域 failure mapper — legacy runtime.diagnostics.failure_mapper 镜像。
 
 镜像说明:
-- FailureDomain 来源由原 wlr.enums.FailureDomain 替换为 callback 域内本地
-  字符串映射 (避免反向依赖 wlr.enums)。
-- 错误码与域映射行为与 wlr.diagnostics.failure_mapper 一致。
+- FailureDomain 来源由原 legacy runtime.enums.FailureDomain 替换为 callback 域内本地
+  字符串映射 (避免反向依赖 legacy runtime.enums)。
+- 错误码与域映射行为与 legacy runtime.diagnostics.failure_mapper 一致。
 """
 
 from __future__ import annotations

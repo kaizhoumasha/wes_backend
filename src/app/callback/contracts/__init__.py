@@ -9,7 +9,7 @@ timeline_generator,plugin_sdk.normalizers.event_mapper}`,
 跨域修复要求)。
 
 约束:
-- 这是镜像副本,与 wlr 源保持契约对齐 (ErrorCode 枚举值不变,
+- 这是镜像副本,与 legacy runtime 源保持契约对齐 (ErrorCode 枚举值不变,
   build_diagnostic_* 函数签名不变,canonicalize_event_type 的生产事件
   source 映射行为不变; callback ingress 额外保留平台/安全事件 source 原值)。
 - runtime 重构收口时会与 `src.app.runtime.orchestration` 的 contracts

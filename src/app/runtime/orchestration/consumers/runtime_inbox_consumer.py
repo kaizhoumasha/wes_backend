@@ -1,6 +1,6 @@
 """RuntimeInboxConsumer — RuntimeInbox 单点入口。
 
-主计划 §3.5.1 + R-WLR 严格型唯一允许 consumer:
+主计划 §3.5.1 + legacy runtime import boundary 严格型唯一允许 consumer:
 - 接收 inbound_registry + normalizer_context + correlation + consumer_id
 - consume_sync 委托给 runtime/orchestration/services/inbox
   (旧 workline processor 的运行态入口已迁入 runtime 域)

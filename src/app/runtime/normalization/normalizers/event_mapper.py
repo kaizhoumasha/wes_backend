@@ -1,6 +1,6 @@
 # 旧 plugin runtime 镜像实现:src.workline_runtime.plugin_sdk.normalizers.event_mapper 的平级副本
 # 旧 runtime 入口删除后,本模块承载对应正式实现。
-# 自引用 src.workline_runtime.runtime_events 已重定向到 C5a events_bridge。
+# 自引用 src.workline_runtime.runtime_events 已重定向到 stable runtime events bridge。
 
 """设备事件 canonical mapping。"""
 

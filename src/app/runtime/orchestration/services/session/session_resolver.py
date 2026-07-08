@@ -1,7 +1,7 @@
 # 旧 plugin runtime 镜像实现:src.workline_runtime.session_resolver 的平级副本
 # 旧 runtime 入口删除后,本模块承载对应正式实现。
 # 自引用 src.workline_runtime.{business_identity, run_mode}
-# 已重定向到 C5a business_identity_bridge + C4 run_mode。
+# 已重定向到 business identity bridge + stable workline run_mode。
 
 """
 Session 归属解析器

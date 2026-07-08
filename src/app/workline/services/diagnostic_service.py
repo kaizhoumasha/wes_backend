@@ -47,7 +47,7 @@ def _redact(value: Any) -> Any:
 
 
 def _coerce_diagnostic_event(event: Any) -> DiagnosticEvent:
-    """将同形状的诊断镜像模型归一为 WLR DiagnosticEvent。"""
+    """将同形状的诊断镜像模型归一为 legacy runtime DiagnosticEvent。"""
 
     if isinstance(event, DiagnosticEvent):
         return event
@@ -86,7 +86,7 @@ class WorklineDiagnosticService(BaseService[WorklineDiagnostic, WorklineDiagnost
         """按诊断事件创建或复用诊断记录。
 
         callback 域拥有本地诊断镜像模型;进入
-        workline 持久化边界时统一转换为 WLR 模型,避免 Pydantic 嵌套模型类型不匹配。
+        workline 持久化边界时统一转换为 legacy runtime 模型,避免 Pydantic 嵌套模型类型不匹配。
         """
 
         event = _coerce_diagnostic_event(event)

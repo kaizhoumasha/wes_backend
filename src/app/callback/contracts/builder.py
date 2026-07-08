@@ -1,7 +1,7 @@
-"""Callback 域诊断构建器 — wlr.diagnostics.builder 镜像。
+"""Callback 域诊断构建器 — legacy runtime.diagnostics.builder 镜像。
 
 镜像说明:
-- 与 wlr.diagnostics.builder 行为一致 (DEFAULTS 字典 + build_diagnostic_*
+- 与 legacy runtime.diagnostics.builder 行为一致 (DEFAULTS 字典 + build_diagnostic_*
   三个函数)。
 - _resolve_diagnostic_device_code / _resolve_diagnostic_plugin_key 复用
   TraceContext 内部字段,wirings 由 callback 域本地 TraceContext 提供。

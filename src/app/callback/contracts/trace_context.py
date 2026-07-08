@@ -1,11 +1,11 @@
-"""Callback 域 TraceContext — wlr.trace_context 镜像。
+"""Callback 域 TraceContext — legacy runtime.trace_context 镜像。
 
 镜像说明:
-- 与 wlr.trace_context.TraceContext 完整等价,所有 18 个字段 + 全部 with_*
+- 与 legacy runtime.trace_context.TraceContext 完整等价,所有 18 个字段 + 全部 with_*
   方法 + project_timeline_payload / project_outbox_trace / as_dict 投影方法。
 - 字段命名、属性名、取值约定保留 (跨域调用方按 attribute 访问)。
-- 非空字符串标准化由 callback.utils.non_empty_str 提供,不使用 wlr.utils。
-- 所有跨域调用方改为本地 TraceContext,避免 callback 域反向依赖 wlr。
+- 非空字符串标准化由 callback.utils.non_empty_str 提供,不使用 legacy runtime.utils。
+- 所有跨域调用方改为本地 TraceContext,避免 callback 域反向依赖 legacy runtime。
 """
 
 from __future__ import annotations

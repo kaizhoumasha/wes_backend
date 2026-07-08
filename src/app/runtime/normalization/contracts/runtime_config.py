@@ -1,6 +1,6 @@
 # 旧 plugin runtime 镜像实现:src.workline_runtime.plugin_sdk.contracts.runtime_config 的平级副本
 # 旧 runtime 入口删除后,本模块承载对应正式实现。
-# 自引用 src.workline_runtime.run_mode 已重定向到 C4 src.app.workline.domain.run_mode。
+# 自引用 src.workline_runtime.run_mode 已重定向到 stable workline run_mode mirror。
 
 """运行时解析后的 Device / Workline 配置模型。"""
 

@@ -8,7 +8,7 @@ runtime/orchestration/services/,原位置成为跨域引用违例。
 - workline 域调用方改为 src.app.runtime.orchestration.services.device_command_gateway
 - 内部对 src.app.runtime.orchestration.services.reconciliation
   .runtime_reconciliation_service_impl.workline_runtime_reconciliation_service
-  的引用已修正(原 workline shim 在 C2 已物理删除)
+  的引用已修正(原 workline shim 已物理删除)
 """
 
 from collections.abc import Mapping

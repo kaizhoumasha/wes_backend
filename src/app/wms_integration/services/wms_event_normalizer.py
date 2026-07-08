@@ -6,7 +6,7 @@
 
 设计边界:
 - 纯函数转换: 不调用任何业务 capability / DB / 外部 HTTP
-- Protocol 名字符串不在本模块出现, R-I3c 5 域扫描不会触发误报
+- Protocol 名字符串不在本模块出现, inbound normalizer ownership boundary 5 域扫描不会触发误报
   (调用方负责传入 port_protocol 参数,本模块仅按 type 接口契约注册)
 - 单例由 InboundNormalizerRegistry 管理, 本类无 persistent state
 - correlation_id 解析策略留给 InboundNormalizerProfile.correlation_resolution
@@ -39,7 +39,7 @@ class _WmsNormalizerPort(Protocol):
     """本地 type 契约, 仅用于 register_inbound_normalizers 的 type hint。
 
     实际注册时由调用方传入目标 Protocol,本模块不直接写其名字符串,
-    避免 R-I3c 在 5 域扫描中触发误报。
+    避免 inbound normalizer ownership boundary 在 5 域扫描中触发误报。
     """
 
     def normalize_wms_grn_received(self, raw_payload: dict) -> WmsGrnReceivedEvent: ...
@@ -82,7 +82,7 @@ def register_inbound_normalizers(
 ) -> None:
     """把 WmsEventNormalizer 注册到 InboundNormalizerRegistry 的 port_protocol 键下。
 
-    调用方负责传入目标 Protocol(本模块不直接引用其名字符串,避免 R-I3c 误报)。
+    调用方负责传入目标 Protocol(本模块不直接引用其名字符串,避免 inbound normalizer ownership boundary 误报)。
     """
     registry.register(port_protocol, WmsEventNormalizer)
 

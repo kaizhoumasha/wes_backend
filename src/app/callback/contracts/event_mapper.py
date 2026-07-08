@@ -1,9 +1,9 @@
-"""Callback 域事件归一化 — wlr.plugin_sdk.normalizers.event_mapper 镜像。
+"""Callback 域事件归一化 — legacy runtime.plugin_sdk.normalizers.event_mapper 镜像。
 
 镜像说明:
-- 生产事件 source 的 event_type_mapping 行为与 wlr.plugin_sdk.normalizers.event_mapper 对齐。
+- 生产事件 source 的 event_type_mapping 行为与 legacy runtime.plugin_sdk.normalizers.event_mapper 对齐。
 - callback ingress 额外保留平台/安全事件 source 原值,避免 START/ESTOP 被工作线映射改写。
-- 不再依赖 wlr.plugin_sdk,callback 域内独立维护事件类型归一化规则。
+- 不再依赖 legacy runtime.plugin_sdk,callback 域内独立维护事件类型归一化规则。
 """
 
 from __future__ import annotations
