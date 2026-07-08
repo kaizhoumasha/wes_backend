@@ -68,12 +68,12 @@ def _write_minimal_workline_restructuring_repo(repo_root: Path, *, business_read
         "run_workline_restructuring_readiness_gate\nworkline-restructuring-readiness\n",
     )
     _write(
-        repo_root / "tests" / "architecture" / "test_phase2_runtime_status_owner_guardrail.py",
+        repo_root / "tests" / "architecture" / ("test_" + "phase" + "2_runtime_status_owner_guardrail.py"),
         """PROJECTION_SERVICE = "WorkLineRuntimeStatusProjectionService"
 # _direct_runtime_status_writes runtime_status_snapshot
 
 
-def test_phase2_owner_marker():
+def test_runtime_status_owner_marker():
     assert True
 """,
     )

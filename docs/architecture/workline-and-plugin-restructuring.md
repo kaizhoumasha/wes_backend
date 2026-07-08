@@ -1862,7 +1862,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `uv run pytest tests/ -q`：1544 passed, 5 skipped, 1 xfailed, 3 warnings
 - `uv run pytest tests/runtime/orchestration/test_device_command_gateway.py -q`：10 passed
 - `uv run pytest tests/runtime/orchestration/test_conveyor_queue_membership_writer_service.py -q`：7 passed
-- `uv run pytest tests/api/test_workline_routes.py tests/workline/test_plane_read_model_phase3.py -q`：23 passed
+- `uv run pytest tests/api/test_workline_routes.py tests/workline/test_plane_read_model.py -q`：23 passed
 - `uv run pytest tests/runtime/orchestration/test_runtime_recovery_policies.py tests/runtime/orchestration/test_phase3_p0_closure_contract.py tests/runtime/orchestration/test_runtime_operational_contracts.py -q`：15 passed
 - `uv run pytest tests/runtime/orchestration/test_runtime_operational_contracts.py tests/contracts/test_runtime_ops_contract_docs.py -q`：11 passed
 - `uv run pytest tests/wms_integration/test_circuit_breaker.py tests/wms_integration/test_wms_client.py tests/wms_integration/test_fulfillment_state_machine.py -q`：49 passed

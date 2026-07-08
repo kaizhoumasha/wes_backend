@@ -23,7 +23,7 @@ RESOURCE_STATE_COLUMNS = {"version", "created_by", "updated_by", "deleted_by", "
 
 
 def test_resource_ref_covers_wes_runtime_resource_types() -> None:
-    """ResourceRef 只覆盖 Phase B 后保留的资源主对象类型。"""
+    """ResourceRef 只覆盖资源域保留的主对象类型。"""
 
     from src.app.resource.models import ResourceRef, ResourceType
 
@@ -150,8 +150,8 @@ def test_bin_cell_occupancy_depth_columns_use_numeric_decimal_contract() -> None
         assert column_type.asdecimal is True
 
 
-def test_phase_b_removed_resource_tables_are_not_registered() -> None:
-    """Phase B 后迁出/删除的旧 resource 职责不再注册为 resource 表。"""
+def test_removed_resource_tables_are_not_registered() -> None:
+    """迁出/删除的旧 resource 职责不再注册为 resource 表。"""
 
     removed_tables = {
         "wes_biz.resource_execution_zones",

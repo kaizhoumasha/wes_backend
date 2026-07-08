@@ -716,7 +716,7 @@ class SmtInboundHandoffService:
                 failure_code=SmtInboundHandoffReasonCode.ECS_DEVICE_NOT_IDLE.value,
                 failure_message="ECS realtime probe evidence 已过期，等待下一轮 claim 重新准入",
                 next_attempt_at=timezone.now_for_db() + timedelta(seconds=30),
-                reason="claim_phase2_probe_evidence_expired",
+                reason="claim_route_probe_evidence_expired",
             )
         if await self._target_has_open_current_material(db, workline_id=workline_id):
             return await self._release_claim_candidate_for_retry(
@@ -726,7 +726,7 @@ class SmtInboundHandoffService:
                 failure_code=SmtInboundHandoffReasonCode.TARGET_SESSION_BUSY.value,
                 failure_message=None,
                 next_attempt_at=timezone.now_for_db() + timedelta(seconds=30),
-                reason="claim_phase2_current_material_busy",
+                reason="claim_current_material_busy",
             )
         if await self._target_has_in_flight_handoff_source_item(
             db, workline_id=workline_id, source_item_id=locked_item.id
@@ -738,7 +738,7 @@ class SmtInboundHandoffService:
                 failure_code=SmtInboundHandoffReasonCode.SOURCE_ITEM_CLAIM_CONFLICT.value,
                 failure_message=None,
                 next_attempt_at=timezone.now_for_db() + timedelta(seconds=30),
-                reason="claim_phase2_target_in_flight",
+                reason="claim_target_in_flight",
             )
 
         session = await self._create_sorting_claim_session(

@@ -57,8 +57,8 @@ def test_reconciliation_preview_keeps_duplicate_callback_idempotent() -> None:
     assert preview["reconciliation_action"] == "MERGE_EVIDENCE_ONLY"
 
 
-def test_reconciliation_preview_maps_expected_wave3_scenarios() -> None:
-    """Wave3 mock 约定的冲突、乱序、拒绝、版本漂移场景必须显式映射。"""
+def test_reconciliation_preview_maps_expected_conflict_scenarios() -> None:
+    """本机 mock 约定的冲突、乱序、拒绝、版本漂移场景必须显式映射。"""
 
     service = SmtNgWmsReconciliationPreviewService()
     expected_reasons = {

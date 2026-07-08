@@ -1,4 +1,4 @@
-"""Reusable Phase 3 benchmark scenarios and artifact builder."""
+"""Reusable runtime benchmark scenarios and artifact builder."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class Phase3BenchmarkResult:
-    """Structured result emitted by a lightweight Phase 3 benchmark scenario."""
+class RuntimeBenchmarkResult:
+    """Structured result emitted by a lightweight runtime benchmark scenario."""
 
     sample_count: int
     metrics: dict[str, float | int]
@@ -44,7 +44,7 @@ class Phase3BenchmarkResult:
         }
 
 
-PHASE3_PRODUCTION_BENCHMARK_SCENARIO_METADATA: dict[str, dict[str, dict[str, Any]]] = {
+RUNTIME_PRODUCTION_BENCHMARK_SCENARIO_METADATA: dict[str, dict[str, dict[str, Any]]] = {
     "runtime_inbox_claim": {
         "source": {"kind": "postgresql"},
         "workload": {"pending_inbox_count": 1000, "worker_concurrency": 4},
@@ -71,7 +71,7 @@ PHASE3_PRODUCTION_BENCHMARK_SCENARIO_METADATA: dict[str, dict[str, dict[str, Any
 
 
 def production_scenario_metadata(scenario_name: str) -> dict[str, dict[str, Any]]:
-    metadata = PHASE3_PRODUCTION_BENCHMARK_SCENARIO_METADATA[scenario_name]
+    metadata = RUNTIME_PRODUCTION_BENCHMARK_SCENARIO_METADATA[scenario_name]
     return {
         "source": dict(metadata["source"]),
         "workload": dict(metadata["workload"]),
@@ -93,7 +93,7 @@ def _measure(operation: Callable[[], None], *, iterations: int) -> float:
     return _p95_ms(samples)
 
 
-def run_runtime_inbox_claim_benchmark() -> Phase3BenchmarkResult:
+def run_runtime_inbox_claim_benchmark() -> RuntimeBenchmarkResult:
     pending = deque(f"evt-{index}" for index in range(512))
     claimed: set[str] = set()
     duplicate_claim_count = 0
@@ -110,14 +110,14 @@ def run_runtime_inbox_claim_benchmark() -> Phase3BenchmarkResult:
 
     claim_p95_ms = _measure(claim_next, iterations=512)
 
-    return Phase3BenchmarkResult(
+    return RuntimeBenchmarkResult(
         sample_count=512,
         metrics={"claim_p95_ms": claim_p95_ms, "duplicate_claim_count": duplicate_claim_count},
         thresholds={"claim_p95_ms": 1.0, "duplicate_claim_count": 0},
     )
 
 
-def run_conveyor_queue_writer_benchmark() -> Phase3BenchmarkResult:
+def run_conveyor_queue_writer_benchmark() -> RuntimeBenchmarkResult:
     writer = ConveyorQueueWriter()
     active_memberships = [
         ConveyorQueueMembershipSnapshot(workline_id=1, queue_code="Q-A", bin_code="BIN-A"),
@@ -177,7 +177,7 @@ def run_conveyor_queue_writer_benchmark() -> Phase3BenchmarkResult:
 
     write_p95_ms = _measure(plan_write, iterations=400)
 
-    return Phase3BenchmarkResult(
+    return RuntimeBenchmarkResult(
         sample_count=400,
         metrics={
             "write_p95_ms": write_p95_ms,
@@ -192,7 +192,7 @@ def run_conveyor_queue_writer_benchmark() -> Phase3BenchmarkResult:
     )
 
 
-def run_ecs_status_command_benchmark() -> Phase3BenchmarkResult:
+def run_ecs_status_command_benchmark() -> RuntimeBenchmarkResult:
     now = datetime(2026, 7, 2, tzinfo=UTC)
     policy = DeviceDispatchPolicy()
     request = DeviceDispatchRequest(
@@ -224,7 +224,7 @@ def run_ecs_status_command_benchmark() -> Phase3BenchmarkResult:
     status_get_p95_ms = _measure(status_get_path, iterations=400)
     command_post_p95_ms = _measure(command_post_path, iterations=400)
 
-    return Phase3BenchmarkResult(
+    return RuntimeBenchmarkResult(
         sample_count=400,
         metrics={"status_get_p95_ms": status_get_p95_ms, "command_post_p95_ms": command_post_p95_ms},
         thresholds={"status_get_p95_ms": 1.0, "command_post_p95_ms": 1.0},
@@ -254,7 +254,7 @@ def _snapshot_payload(*, object_count: int) -> dict[str, object]:
     }
 
 
-def run_plane_snapshot_benchmark() -> Phase3BenchmarkResult:
+def run_plane_snapshot_benchmark() -> RuntimeBenchmarkResult:
     payload = _snapshot_payload(object_count=100)
     payload_10x = _snapshot_payload(object_count=1000)
 
@@ -269,7 +269,7 @@ def run_plane_snapshot_benchmark() -> Phase3BenchmarkResult:
     snapshot_p95_ms = _measure(build_snapshot, iterations=120)
     snapshot_10x_p95_ms = _measure(build_snapshot_10x, iterations=40)
 
-    return Phase3BenchmarkResult(
+    return RuntimeBenchmarkResult(
         sample_count=160,
         metrics={"snapshot_p95_ms": snapshot_p95_ms, "snapshot_10x_p95_ms": snapshot_10x_p95_ms},
         thresholds={"snapshot_p95_ms": 20.0, "snapshot_10x_p95_ms": 100.0},

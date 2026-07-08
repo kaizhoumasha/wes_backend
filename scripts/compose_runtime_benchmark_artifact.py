@@ -1,4 +1,4 @@
-"""Compose a Phase 3 production-scale runtime benchmark artifact."""
+"""Compose a production-scale runtime benchmark artifact."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="append",
         default=[],
         metavar="SCENARIO=PATH",
-        help="Per-scenario evidence JSON. Repeat for all Phase 3 benchmark scenarios.",
+        help="Per-scenario evidence JSON. Repeat for all required runtime benchmark scenarios.",
     )
     return parser.parse_args(argv)
 

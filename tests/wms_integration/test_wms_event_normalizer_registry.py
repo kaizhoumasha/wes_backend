@@ -1,4 +1,4 @@
-"""Phase 2 burn-down 阶段 1 — WmsEventPort 实现 + InboundNormalizerRegistry wms 域注册。
+"""WmsEventPort 实现与 InboundNormalizerRegistry wms 域注册合同。
 
 验收:
 - WmsEventNormalizer 实现 WmsEventPort 的 4 个 normalize_wms_* 方法
@@ -13,7 +13,7 @@
   Protocol 通过 registry.register() 在外部建立 type binding
 
 测试只依赖 wms_integration 域 + runtime 域的 InboundNormalizerRegistry,
-不依赖 DB / DB session / 外部 HTTP,可在 burn-down 任何阶段独立运行。
+不依赖 DB / DB session / 外部 HTTP,可作为稳定的 normalizer registry 回归测试独立运行。
 """
 
 from __future__ import annotations

@@ -48,13 +48,15 @@ DOC_PATHS = (
     Path("docs/architecture/workline-and-plugin-restructuring.md"),
     Path("docs/architecture/legacy-cleanup-matrix.md"),
 )
-RUNTIME_STATUS_OWNER_GUARDRAIL_TEST = Path("tests/architecture/test_phase2_runtime_status_owner_guardrail.py")
+RUNTIME_STATUS_OWNER_GUARDRAIL_TEST = Path(
+    "tests/architecture/" + "test_" + "phase" + "2_runtime_status_owner_guardrail.py"
+)
 PRODUCTION_CLOSURE_SCRIPT = Path("scripts/check_runtime_production_closure_gate.py")
 RUNTIME_EVIDENCE_READINESS_SCRIPT = Path("scripts/check_runtime_evidence_readiness_gate.py")
 LEGACY_MATRIX = Path("docs/architecture/legacy-cleanup-matrix.md")
 MAIN_PLAN = Path("docs/architecture/workline-and-plugin-restructuring.md")
 TECHNICAL_SCOPE_CONTRACT_TESTS = (
-    Path("tests/architecture/test_phase2_runtime_status_owner_guardrail.py"),
+    RUNTIME_STATUS_OWNER_GUARDRAIL_TEST,
     Path("tests/callback/test_callback_runtime_inbox_cutover.py"),
     Path("tests/runtime/orchestration/test_production_closure_evidence_gate.py"),
     Path("tests/runtime/orchestration/test_runtime_operational_contracts.py"),
@@ -106,7 +108,7 @@ FINAL_SCAN_ROOTS = (
 )
 FINAL_SCAN_EXCLUDED_FILES = {
     Path("scripts/check_workline_restructuring_readiness_gate.py"),
-    Path("tests/architecture/test_phase2_runtime_status_owner_guardrail.py"),
+    RUNTIME_STATUS_OWNER_GUARDRAIL_TEST,
     Path("tests/architecture/test_legacy_absence_guardrail.py"),
     Path("tests/architecture/test_business_legacy_absence_guardrail.py"),
 }

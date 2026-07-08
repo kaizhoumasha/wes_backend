@@ -18,6 +18,10 @@ SCAN_ROOTS = (
     Path("tests/unit"),
     Path("tests/core"),
     Path("tests/database"),
+    Path("tests/resource"),
+    Path("tests/workline"),
+    Path("tests/wms_integration"),
+    Path("tests/load"),
 )
 
 IGNORED_PARTS = frozenset(
@@ -67,9 +71,14 @@ INTENTIONAL_PROCESS_NAMING_ALLOWLIST: dict[Path, str] = {
 }
 
 PROCESS_NAME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("path/import phase token", re.compile(r"\bphase[0-9]\b|phase_[0-9]|phase4|phase5", re.IGNORECASE)),
-    ("symbol phase token", re.compile(r"\bPhase4\b|\bPhase5\b|\bPHASE4_|\bPHASE5_")),
-    ("runtime phase prefix", re.compile(r"\bphase4:|\bphase5:")),
+    (
+        "path/import phase token",
+        re.compile(r"phase[0-9](?=[^0-9]|$)|phase_[0-9]|phase[_ -][a-z](?=[^a-z0-9]|$)", re.IGNORECASE),
+    ),
+    ("symbol phase token", re.compile(r"\bPhase[0-9]\b|\bPhase[_ -][A-Z]\b|\bPHASE[0-9]_|\bPHASE[_ -][A-Z]\b")),
+    ("runtime phase prefix", re.compile(r"\bphase[0-9]:", re.IGNORECASE)),
+    ("script phase token", re.compile(r"(?:check|compose|run)_phase[0-9](?=[^0-9]|$)", re.IGNORECASE)),
+    ("architecture phase option", re.compile(r"architecture-guardrails\.sh\s+--phase|\bARCHITECTURE_PHASE\b")),
     ("refactor process phrase", re.compile(r"burn-down|technical lane|business lane|final cleanup", re.IGNORECASE)),
 )
 
@@ -122,3 +131,18 @@ def test_active_code_does_not_use_process_phase_names() -> None:
         offenders.extend(_matches(relative_path))
 
     assert not offenders, "Active code/test/script paths contain process-stage names:\n" + "\n".join(offenders[:200])
+
+
+def test_process_naming_guardrail_rejects_stale_script_and_option_tokens() -> None:
+    examples = (
+        "scripts/check_phase3_closure_gate.py",
+        "scripts/compose_phase3_runtime_artifact.py",
+        "scripts/run_phase3_runtime_benchmarks.py",
+        "tests/resource/test_resource_phase_b_contract.py",
+        "Phase B resource contract",
+        "architecture-guardrails.sh --phase 4",
+        "ARCHITECTURE_PHASE=phase4",
+    )
+
+    for example in examples:
+        assert any(pattern.search(example) for _, pattern in PROCESS_NAME_PATTERNS), example

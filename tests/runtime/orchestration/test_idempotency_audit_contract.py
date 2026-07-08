@@ -1,4 +1,4 @@
-"""Phase 3 idempotency security audit contract tests."""
+"""Idempotency security audit contract tests."""
 
 from __future__ import annotations
 
@@ -33,8 +33,8 @@ def test_idempotency_conflict_exposes_security_audit_payload() -> None:
     }
 
 
-def test_idempotency_audit_matrix_covers_phase3_domains() -> None:
-    """ENG-009 跨域矩阵必须覆盖所有 Phase 3 幂等审计域。"""
+def test_idempotency_audit_matrix_covers_runtime_domains() -> None:
+    """ENG-009 跨域矩阵必须覆盖所有 runtime 幂等审计域。"""
 
     from src.app.runtime.orchestration.services.idempotency_guard import (
         default_idempotency_operation_matrix,

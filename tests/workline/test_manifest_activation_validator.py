@@ -1,4 +1,4 @@
-"""Phase 3 WorkLine manifest activation validator tests."""
+"""WorkLine manifest activation validator tests."""
 
 from __future__ import annotations
 

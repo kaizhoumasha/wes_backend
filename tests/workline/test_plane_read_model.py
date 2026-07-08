@@ -1,4 +1,4 @@
-"""Phase 3 PlaneSceneView / PlaneSnapshot schema contract tests."""
+"""PlaneSceneView / PlaneSnapshot schema contract tests."""
 
 from __future__ import annotations
 
