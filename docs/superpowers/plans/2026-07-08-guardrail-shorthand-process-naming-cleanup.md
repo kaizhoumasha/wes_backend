@@ -927,27 +927,27 @@ Recommended execution: run Task 1 first, then launch Task 2, Task 3, and Task 4 
 
 Synthesized from the engineering review findings. Each task derives from a specific finding above.
 
-- [ ] **T1 (P1, human: ~45min / CC: ~8min)** - Guardrails - Migrate runtime IDs, allowlist keys, and guardrail tests atomically.
+- [x] **T1 (P1, human: ~45min / CC: ~8min)** - Guardrails - Migrate runtime IDs, allowlist keys, and guardrail tests atomically.
   - Surfaced by: Architecture Finding 1, D2.
   - Files: `scripts/architecture-guardrails.sh`, `scripts/architecture-guardrails.allowlist`, `.githooks/pre-commit`, `scripts/git-quality-gate.sh`, `tests/architecture`.
   - Verify: `bash scripts/architecture-guardrails.sh --mode enforced` and renamed guardrail pytest command in Task 2.
 
-- [ ] **T2 (P1, human: ~25min / CC: ~5min)** - Legacy Matrix - Update generated matrix suffixes and exact consumer tests in the same atomic change.
+- [x] **T2 (P1, human: ~25min / CC: ~5min)** - Legacy Matrix - Update generated matrix suffixes and exact consumer tests in the same atomic change.
   - Surfaced by: Architecture Finding 2, D3.
   - Files: `scripts/generate_legacy_matrix.py`, `docs/architecture/legacy-cleanup-matrix.csv`, `docs/architecture/legacy-cleanup-matrix.md`, `tests/architecture/test_phase0_legacy_matrix_contract.py`, `tests/architecture/test_cleanup_matrix_guardrail.py`.
   - Verify: `uv run pytest tests/architecture/test_phase0_legacy_matrix_contract.py tests/architecture/test_cleanup_matrix_guardrail.py -q`.
 
-- [ ] **T3 (P2, human: ~45min / CC: ~8min)** - Process Naming - Add persistent current-architecture-doc coverage with narrow historical exceptions.
+- [x] **T3 (P2, human: ~45min / CC: ~8min)** - Process Naming - Add persistent current-architecture-doc coverage with narrow historical exceptions.
   - Surfaced by: Architecture Finding 3, D4.
   - Files: `tests/architecture/test_process_naming_guardrail.py`, `docs/architecture/process-naming-policy.md`, `tests/README.md`.
   - Verify: `uv run pytest tests/architecture/test_process_naming_guardrail.py -q`.
 
-- [ ] **T4 (P2, human: ~2min / CC: ~1min)** - TDD Evidence - Record red baseline evidence without committing a failing state.
+- [x] **T4 (P2, human: ~2min / CC: ~1min)** - TDD Evidence - Record red baseline evidence without committing a failing state.
   - Surfaced by: Code Quality Finding 1, D5.
   - Files: implementation notes only.
   - Verify: first red run command, exit code, and first 20 offenders are recorded before Task 2.
 
-- [ ] **T5 (P2, human: ~10min / CC: ~2min)** - Final Verification - Make process naming pytest the authoritative final signal and keep raw `rg` diagnostic-only.
+- [x] **T5 (P2, human: ~10min / CC: ~2min)** - Final Verification - Make process naming pytest the authoritative final signal and keep raw `rg` diagnostic-only.
   - Surfaced by: Test Finding 1, D6.
   - Files: `docs/superpowers/plans/2026-07-08-guardrail-shorthand-process-naming-cleanup.md`.
   - Verify: Final Verification section runs process naming pytest before optional diagnostic scan.
@@ -1014,9 +1014,9 @@ Synthesized from the engineering review findings. Each task derives from a speci
 ### Task 3 Production Comment Cleanup
 
 - Initial residual scan found comments/docstrings plus one executable business rack slot alias in `src/app/resource/services/smt_rack_bin_scheduling_service.py`.
-- GitNexus impact for `_canonical_rack_slot_code`: LOW risk, 3 direct callers, 1 affected process (`plan_allocation`). The value-preserving change extracts the `C1` rack slot alias behind a semantic class constant so source scanning no longer sees a process shorthand token.
+- GitNexus impact for `_canonical_rack_slot_code`: LOW risk, 3 direct callers, 1 affected process (`plan_allocation`). The value-preserving change keeps the real `C1` rack slot alias behind a semantic class constant and allows only that exact constant line in the process-naming guardrail.
 - Verification:
-  - Production residual scan exited `1` with no output after cleanup.
+  - Production residual scan became diagnostic-only; the authoritative signal is `uv run pytest tests/architecture/test_process_naming_guardrail.py -q`, which owns the exact `RACK_SLOT_C_NUMERIC_ALIAS` business exception and rejects non-exact shorthand lines.
   - Focused pytest command exited `0` with `45 passed`.
   - Slot alias runtime assertion for `C1`/`C01` exited `0`.
   - `detect_changes(repo="wes_backend", scope="all")` still returned no changes due the worktree GitNexus index boundary noted above.
@@ -1047,10 +1047,10 @@ Synthesized from the engineering review findings. Each task derives from a speci
   - the `tests/README.md` policy line that names old shorthand examples
 - Replaced remaining shorthand in active test/support comments and docstrings; ruff W505 comment wrapping required follow-up wording splits after stable names made some lines longer.
 - Verification:
-  - `uv run pytest tests/architecture/test_process_naming_guardrail.py -q` exited `0` with `6 passed`.
-  - `uv run pytest tests/architecture -q` exited `0` with `219 passed, 1 skipped`.
+  - `uv run pytest tests/architecture/test_process_naming_guardrail.py -q` exited `0` with `8 passed`.
+  - `uv run pytest tests/architecture -q` exited `0` with `220 passed, 1 skipped`.
   - `uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q` exited `0` with `4 passed`.
-  - `uv run pytest --collect-only -q -o addopts='' | tail -5` exited `0` with `1849 tests collected`.
+  - `uv run pytest --collect-only -q -o addopts='' | tail -5` exited `0` with `1852 tests collected`.
   - `./scripts/git-quality-gate.sh --profile quality` exited `0`; ruff, bandit, runtime gates, process naming, import-linter, architecture guardrails, and topology all passed.
   - `git diff --check` exited `0` with no output.
 - GitNexus detect-changes:

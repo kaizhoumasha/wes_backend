@@ -123,7 +123,7 @@ class SmtRackBinSchedulingService:
     THREE_CELL_SEVEN_INCH_SUFFIXES: ClassVar[frozenset[str]] = frozenset({"1", "2"})
     LARGE_CELL_SUFFIXES: ClassVar[frozenset[str]] = frozenset({"7"})
     RACK_SLOT_CODES: ClassVar[tuple[str, ...]] = ("A", "B", "C", "D")
-    RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = f"C{1}"
+    RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = "C1"
     RACK_SLOT_SIDE_BY_CODE: ClassVar[dict[str, str]] = {"A": "0", "B": "0", "C": "1", "D": "1"}
     RELEASE_BIN_STATUSES: ClassVar[frozenset[str]] = frozenset(
         {

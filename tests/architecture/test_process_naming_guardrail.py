@@ -10,6 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCAN_ROOTS = (
     Path("Jenkinsfile"),
     Path("Jenkinsfile.backend-ci"),
+    Path(".githooks"),
     Path("src"),
     Path("scripts"),
     Path("tests"),
@@ -93,7 +94,7 @@ PROCESS_NAME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "guardrail rule id shorthand",
-        re.compile(r"(?<![A-Za-z0-9])(?:C[1-5][a-z]?|R-?I3[a-c]?|R-WLR)(?![A-Za-z0-9])"),
+        re.compile(r"(?<![A-Za-z0-9])(?:C[1-5][a-z]?|R-?I3[a-c]?|R-WLR|c[3-5][a-z]?|r-?i3[a-c]?|r-wlr)(?![A-Za-z0-9])"),
     ),
     (
         "guardrail filename shorthand",
@@ -139,6 +140,8 @@ def _iter_scan_files() -> list[Path]:
 
 
 def _is_intentional_historical_line(relative_path: Path, line: str) -> bool:
+    if relative_path == Path("src/app/resource/services/smt_rack_bin_scheduling_service.py"):
+        return line.strip() == 'RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = "C1"'
     if relative_path == Path("docs/architecture/process-naming-policy.md") and "old restructuring shorthand" in line:
         return True
     if relative_path == Path("docs/architecture/file_index.md") and line.startswith("| 2026-"):
@@ -193,8 +196,10 @@ def test_active_code_does_not_use_process_phase_names() -> None:
 
 def test_process_naming_guardrail_scans_default_test_tree_and_ci_file() -> None:
     assert Path("tests") in SCAN_ROOTS
+    assert Path(".githooks") in SCAN_ROOTS
     assert Path("Jenkinsfile") in SCAN_ROOTS
     assert Path("Jenkinsfile.backend-ci") in SCAN_ROOTS
+    assert Path(".githooks/pre-commit") in set(_iter_scan_files())
 
 
 def test_process_naming_guardrail_scans_current_architecture_docs_with_narrow_scope() -> None:
@@ -233,12 +238,30 @@ def test_process_naming_guardrail_rejects_guardrail_shorthand_examples() -> None
         "tests/architecture/test_c3_authority_metadata_guardrail.py",
         "rule_c4",
         "R-I3c inbound normalizer",
+        "ri3c inbound normalizer",
+        "r-i3c inbound normalizer",
+        "c3 authority metadata",
         "R-WLR import guardrail",
         "wlr mirror",
     )
 
     for example in examples:
         assert any(pattern.search(example) for _, pattern in PROCESS_NAME_PATTERNS), example
+
+
+def test_process_naming_guardrail_allows_narrow_business_slot_code_alias() -> None:
+    line = '    RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = "C1"'
+
+    assert not _line_has_forbidden_process_name(
+        Path("src/app/resource/services/smt_rack_bin_scheduling_service.py"), line
+    )
+
+
+def test_process_naming_guardrail_keeps_business_slot_code_exception_exact() -> None:
+    path = Path("src/app/resource/services/smt_rack_bin_scheduling_service.py")
+
+    assert _line_has_forbidden_process_name(path, '    RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = "C1"  # R-I3c')
+    assert _line_has_forbidden_process_name(path, '# RACK_SLOT_C_NUMERIC_ALIAS: ClassVar[str] = "C1"')
 
 
 def test_process_naming_guardrail_rejects_stale_script_and_option_tokens() -> None:
