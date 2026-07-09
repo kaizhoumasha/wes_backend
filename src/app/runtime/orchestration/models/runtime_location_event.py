@@ -46,7 +46,7 @@ class RuntimeLocationEventBase(BaseMixin):
 class RuntimeLocationEvent(RuntimeLocationEventBase, DataTableMixin, table=True):
     """append-only 作业期位置事实表。"""
 
-    __tablename__: ClassVar[str] = "runtime_location_events"
+    __tablename__: ClassVar[str] = "runtime_location_events"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index(

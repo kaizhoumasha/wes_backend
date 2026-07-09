@@ -545,7 +545,7 @@ class RuntimeIntent(BaseModel):
         from src.app.runtime.orchestration.models.material_unit import MaterialUnitStatus
 
         try:
-            MaterialUnitStatus(raw)
+            _ = MaterialUnitStatus(raw)
         except ValueError as exc:
             raise ValueError(
                 f"{self.kind.value} intent {field_name} must be a valid MaterialUnitStatus, got: {raw!r}"

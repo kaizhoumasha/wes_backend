@@ -110,11 +110,7 @@ class WmsExecutionCallbackNormalizer:
 
         if not resolve_first_str(payload, WMS_RCS_EXECUTION_STATUS_ALIASES):
             raise ValueError("status is required")
-        source_system = resolve_first_str(payload, ("source_system",))
-        if source_system is not None and source_system not in {"WMS", "RCS"}:
-            raise ValueError("source_system must be WMS or RCS")
-        if source_system is not None:
-            _validate_callback_source_match(callback_type, source_system)
+        _validate_wms_rcs_source_system(payload, callback_type)
 
 
 def _resolve_optional_str(payload: JsonDict, aliases: tuple[str, ...]) -> str | None:

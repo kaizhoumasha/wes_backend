@@ -166,14 +166,14 @@ class WorklineStationLeaseService:
         allow_active_operation_key: str | None = None,
     ) -> StationLeaseResult:
         if lock_position:
-            await self.rack_position_service.require_enabled_position_for_update(
+            _ = await self.rack_position_service.require_enabled_position_for_update(
                 db,
                 workline_code=workline_code,
                 position_code=position_code,
                 rack_kind=rack_kind,
             )
         else:
-            await self.rack_position_service.require_enabled_position(
+            _ = await self.rack_position_service.require_enabled_position(
                 db,
                 workline_code=workline_code,
                 position_code=position_code,

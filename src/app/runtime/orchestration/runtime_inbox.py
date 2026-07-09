@@ -34,7 +34,7 @@ class RuntimeInbox(BaseMixin, table=True):
     ACK-before-processing 边界: 未解析入站事件允许暂时无 session/correlation。
     """
 
-    __tablename__ = "runtime_inbox"
+    __tablename__ = "runtime_inbox"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         Index(

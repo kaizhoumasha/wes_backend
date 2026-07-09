@@ -27,7 +27,7 @@ class WorkLineRuntimeStatus(str, Enum):
 class WorklineRuntimeStatusProjection(BaseMixin, table=True):
     """Runtime/orchestration-owned WorkLine status projection."""
 
-    __tablename__ = "workline_runtime_status_projections"
+    __tablename__ = "workline_runtime_status_projections"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__: ClassVar[tuple[Any, ...]] = (
         Index(

@@ -12,7 +12,8 @@ usage() {
 Usage: scripts/git-quality-gate.sh [--profile PROFILE] [--check CHECK] [--bandit-json PATH] [--ci]
 
 Profiles:
-  quality   Run Ruff format check, Ruff lint, and Bandit security scan.
+  quality   Run Ruff, Bandit, runtime gates, runtime contract guardrails, legacy absence, process naming,
+            and architecture guardrails.
   ci-smoke  Run the quality profile plus API signature smoke tests.
   full      Run the quality profile plus the full pytest suite.
 
@@ -24,8 +25,10 @@ Checks:
             Run only runtime toggle release gate.
   runtime-evidence-readiness
             Run only runtime evidence readiness gate.
-  workline-restructuring-readiness
-            Run only WorkLine restructuring technical-scope readiness gate.
+  runtime-production-closure
+            Run only runtime production closure gate.
+  runtime-contract-guardrails
+            Run only runtime owner, RuntimeInbox authority, and runtime contract pytest guardrails.
   business-legacy-absence
             Run only business legacy absence final gate.
   process-naming
@@ -140,9 +143,27 @@ run_runtime_evidence_readiness_gate() {
     run_tool python scripts/check_runtime_evidence_readiness_gate.py
 }
 
-run_workline_restructuring_readiness_gate() {
-    log_step "workline-restructuring-readiness" "check_workline_restructuring_readiness_gate.py --scope technical"
-    run_tool python scripts/check_workline_restructuring_readiness_gate.py --scope technical
+run_runtime_production_closure_gate() {
+    log_step "runtime-production-closure" "check_runtime_production_closure_gate.py"
+    run_tool python scripts/check_runtime_production_closure_gate.py
+}
+
+run_runtime_contract_guardrails() {
+    # 旧 restructuring readiness gate 退役后，保留其关键 runtime pytest guardrail 覆盖。
+    local tests=(
+        tests/architecture/test_runtime_status_owner_guardrail.py
+        tests/callback/test_callback_runtime_inbox_authority.py
+        tests/runtime/orchestration/test_production_closure_evidence_gate.py
+        tests/runtime/orchestration/test_runtime_production_closure_contract.py
+        tests/runtime/orchestration/test_runtime_operational_contracts.py
+        tests/runtime/orchestration/test_runtime_recovery_policies.py
+        tests/runtime/orchestration/test_runtime_inbox_consumer_service.py
+        tests/contracts/test_runtime_ops_contract_docs.py
+        tests/contracts/workline
+        tests/characterization/workline_legacy
+    )
+    log_step "runtime-contract-guardrails" "pytest ${tests[*]} -q"
+    run_tool pytest "${tests[@]}" -q
 }
 
 run_business_legacy_absence_gate() {
@@ -179,7 +200,8 @@ run_quality_profile() {
     run_security_check
     run_runtime_toggle_release_gate
     run_runtime_evidence_readiness_gate
-    run_workline_restructuring_readiness_gate
+    run_runtime_production_closure_gate
+    run_runtime_contract_guardrails
     run_business_legacy_absence_gate
     run_process_naming_guardrail
     run_import_linter_check
@@ -216,8 +238,11 @@ if [[ -n "$CHECK" ]]; then
         runtime-evidence-readiness)
             run_runtime_evidence_readiness_gate
             ;;
-        workline-restructuring-readiness)
-            run_workline_restructuring_readiness_gate
+        runtime-production-closure)
+            run_runtime_production_closure_gate
+            ;;
+        runtime-contract-guardrails)
+            run_runtime_contract_guardrails
             ;;
         business-legacy-absence)
             run_business_legacy_absence_gate

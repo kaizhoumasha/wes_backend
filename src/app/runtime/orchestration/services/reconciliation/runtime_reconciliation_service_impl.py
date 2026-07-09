@@ -245,7 +245,7 @@ class WorklineRuntimeReconciliationService:
 
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
         if workline is not None:
-            await self.workline_status_projection_service.project_reconciling(
+            _ = await self.workline_status_projection_service.project_reconciling(
                 db,
                 workline_id=session.workline_id,
                 occurred_at=now,
@@ -427,7 +427,7 @@ class WorklineRuntimeReconciliationService:
 
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
         if workline is not None:
-            await self.workline_status_projection_service.project_reconciling(
+            _ = await self.workline_status_projection_service.project_reconciling(
                 db,
                 workline_id=session.workline_id,
                 occurred_at=now,
@@ -495,14 +495,18 @@ class WorklineRuntimeReconciliationService:
     ) -> SystemOutbox | None:
         """WorkLine RECONCILING 时，将尚未 ACK 的 outbox 暂停为 BLOCKED_RESOURCE。"""
 
-        owner = await self.session_repository.get_pending_reconciliation_owner_for_workline(db, outbox.workline_id)
+        workline_id = outbox.workline_id
+        if workline_id is None:
+            return None
+
+        owner = await self.session_repository.get_pending_reconciliation_owner_for_workline(db, workline_id)
         owner_id = _resolve_id(owner)
         if owner_id is None:
             return None
         outbox_id = _resolve_id(outbox)
         if outbox_id is None:
             return None
-        active_holds = await self.runtime_hold_repository.get_active_blocking_by_workline(db, outbox.workline_id)
+        active_holds = await self.runtime_hold_repository.get_active_blocking_by_workline(db, workline_id)
         runtime_hold = next(
             (
                 hold
@@ -520,7 +524,7 @@ class WorklineRuntimeReconciliationService:
                 owner_session_id=owner_id,
                 reason=reason,
                 blocked_device_id=getattr(owner, "reconciliation_device_id", None),
-                blocked_workline_id=outbox.workline_id,
+                blocked_workline_id=workline_id,
             )
         return await self.system_outbox_repository.mark_as_blocked_by_workline_state(
             db,
@@ -528,7 +532,7 @@ class WorklineRuntimeReconciliationService:
             owner_session_id=owner_id,
             reason=reason,
             blocked_device_id=getattr(owner, "reconciliation_device_id", None),
-            blocked_workline_id=outbox.workline_id,
+            blocked_workline_id=workline_id,
         )
 
     async def record_late_callback_if_pending(
@@ -595,7 +599,7 @@ class WorklineRuntimeReconciliationService:
         )
         workline = await self.workline_repository.get_for_update(db, session.workline_id)
         if workline is not None:
-            await self.workline_status_projection_service.project_reconciling(
+            _ = await self.workline_status_projection_service.project_reconciling(
                 db,
                 workline_id=session.workline_id,
                 occurred_at=now,

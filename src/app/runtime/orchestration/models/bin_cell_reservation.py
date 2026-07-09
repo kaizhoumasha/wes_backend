@@ -55,7 +55,7 @@ class WorklineBinCellReservationBase(BaseMixin):
 class WorklineBinCellReservation(WorklineBinCellReservationBase, DataTableMixin, table=True):
     """工作线料箱格位计划预占。"""
 
-    __tablename__: ClassVar[Literal["workline_bin_cell_reservations"]] = "workline_bin_cell_reservations"
+    __tablename__: ClassVar[Literal["workline_bin_cell_reservations"]] = "workline_bin_cell_reservations"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_workline_bin_cell_reservations_key", "reservation_key", unique=True),

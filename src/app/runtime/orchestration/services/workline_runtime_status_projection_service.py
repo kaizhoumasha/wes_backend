@@ -147,7 +147,7 @@ class WorkLineRuntimeStatusProjectionService:
         current = await self.repository.get_by_workline_id(db, workline_id, for_update=True)
         if _status_value(getattr(current, "runtime_status", None)) == WorkLineRuntimeStatus.ESTOPPED.value:
             return False
-        await self.repository.upsert_status(
+        _ = await self.repository.upsert_status(
             db,
             workline_id=workline_id,
             runtime_status=WorkLineRuntimeStatus.RECONCILING.value,

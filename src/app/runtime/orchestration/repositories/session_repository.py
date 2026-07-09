@@ -126,24 +126,23 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             SessionStatus.WAITING_EXTERNAL,
             SessionStatus.MANUAL_HOLD,
         ]
+        station_clauses = [
+            columns.context_json["station"]["position_code"].as_string() == position_code,
+            columns.context_json["position_code"].as_string() == position_code,
+            columns.context_json["active_bin_rack"]["position_code"].as_string() == position_code,
+            columns.context_json["rack_operation"]["target_position_code"].as_string() == position_code,
+            columns.context_json["rack_operation"]["work_position_code"].as_string() == position_code,
+        ]
+        if position_code == _SMT_SORTING_TARGET_STATION_CODE:
+            station_clauses.append(
+                columns.context_json["sorting"]["pending_target_placement"]["target_bin_code"].as_string().isnot(None)
+            )
         result = await db.execute(
             select(WorklineSession)
             .where(
                 columns.workline_id == workline_id,
                 columns.status.in_(open_statuses),
-                or_(
-                    columns.context_json["station"]["position_code"].as_string() == position_code,
-                    columns.context_json["position_code"].as_string() == position_code,
-                    columns.context_json["active_bin_rack"]["position_code"].as_string() == position_code,
-                    columns.context_json["rack_operation"]["target_position_code"].as_string() == position_code,
-                    columns.context_json["rack_operation"]["work_position_code"].as_string() == position_code,
-                    and_(
-                        position_code == _SMT_SORTING_TARGET_STATION_CODE,
-                        columns.context_json["sorting"]["pending_target_placement"]["target_bin_code"]
-                        .as_string()
-                        .isnot(None),
-                    ),
-                ),
+                or_(*station_clauses),
             )
             .order_by(columns.created_at.asc(), columns.id.asc())
         )
@@ -290,7 +289,7 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         """显式持久化命令 Result 等待态，避免异步懒加载丢失会话状态写回。"""
 
         columns = cast("Any", WorklineSession).__table__.c
-        await db.execute(
+        _ = await db.execute(
             update(WorklineSession)
             .where(columns.id == session_id)
             .values(
@@ -321,7 +320,7 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         """显式持久化外部等待态，避免 rack/handling 等待只停留在 ORM 对象内存中。"""
 
         columns = cast("Any", WorklineSession).__table__.c
-        await db.execute(
+        _ = await db.execute(
             update(WorklineSession)
             .where(columns.id == session_id)
             .values(
@@ -384,7 +383,7 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
 
         _ = occurred_at  # 保留状态发生时间参数，与 wait/complete 持久化接口语义一致。
         columns = cast("Any", WorklineSession).__table__.c
-        await db.execute(
+        _ = await db.execute(
             update(WorklineSession)
             .where(columns.id == session_id)
             .values(
@@ -412,7 +411,7 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         """显式持久化取消态，保持人工取消与 legacy write-back 语义一致。"""
 
         columns = cast("Any", WorklineSession).__table__.c
-        await db.execute(
+        _ = await db.execute(
             update(WorklineSession)
             .where(columns.id == session_id)
             .values(

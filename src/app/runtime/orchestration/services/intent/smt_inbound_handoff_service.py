@@ -635,7 +635,7 @@ class SmtInboundHandoffService:
         self._apply_item_failure(locked_item, str(route.failure_code), message=getattr(route, "failure_message", None))
         self._apply_failure(locked_demand, str(route.failure_code), message=getattr(route, "failure_message", None))
         db.add(locked_item)
-        await self.recalculate_demand_status(db, locked_demand, reason="claim_route_manual_hold")
+        _ = await self.recalculate_demand_status(db, locked_demand, reason="claim_route_manual_hold")
         return route
 
     async def _retry_claim_candidate(
@@ -683,7 +683,7 @@ class SmtInboundHandoffService:
         self._apply_item_failure(locked_item, SmtInboundHandoffReasonCode.ROUTE_NOT_FOUND.value)
         self._apply_failure(locked_demand, SmtInboundHandoffReasonCode.ROUTE_NOT_FOUND.value)
         db.add(locked_item)
-        await self.recalculate_demand_status(db, locked_demand, reason="claim_route_invalid")
+        _ = await self.recalculate_demand_status(db, locked_demand, reason="claim_route_invalid")
         return self._claim_result("MANUAL_HOLD", failure_code=SmtInboundHandoffReasonCode.ROUTE_NOT_FOUND.value)
 
     async def _claim_selected_route_source_item(
@@ -775,7 +775,7 @@ class SmtInboundHandoffService:
         locked_demand.failure_message = None
         db.add(locked_item)
         db.add(locked_demand)
-        await self.recalculate_demand_status(db, locked_demand, reason="claim_source_item")
+        _ = await self.recalculate_demand_status(db, locked_demand, reason="claim_source_item")
         return self._claim_result(
             "CLAIMED",
             demand=locked_demand,
@@ -835,7 +835,7 @@ class SmtInboundHandoffService:
         demand.next_attempt_at = retry_at
         db.add(item)
         db.add(demand)
-        await self.recalculate_demand_status(db, demand, reason=reason)
+        _ = await self.recalculate_demand_status(db, demand, reason=reason)
         return self._claim_result(
             "RETRY",
             failure_code=reason_definition.failure_code,
@@ -918,7 +918,7 @@ class SmtInboundHandoffService:
             demand.failure_code = None
             demand.failure_message = None
             db.add(demand)
-            await self.recalculate_demand_status(db, demand, reason="release_source_pick_dead_letter_for_retry")
+            _ = await self.recalculate_demand_status(db, demand, reason="release_source_pick_dead_letter_for_retry")
         else:
             await db.flush()
         return item
@@ -965,7 +965,7 @@ class SmtInboundHandoffService:
             demand.failure_code = None
             demand.failure_message = None
             db.add(demand)
-            await self.recalculate_demand_status(db, demand, reason="source_pick_command_correlation")
+            _ = await self.recalculate_demand_status(db, demand, reason="source_pick_command_correlation")
         else:
             await db.flush()
         return item
@@ -1039,7 +1039,7 @@ class SmtInboundHandoffService:
                 demand.failure_code = None
                 demand.failure_message = None
                 db.add(demand)
-                await self.recalculate_demand_status(db, demand, reason="source_pick_success")
+                _ = await self.recalculate_demand_status(db, demand, reason="source_pick_success")
             else:
                 await db.flush()
             return SimpleNamespace(
@@ -1188,7 +1188,7 @@ class SmtInboundHandoffService:
         db.add(item)
         db.add(demand)
         db.add(session)
-        await self.recalculate_demand_status(db, demand, reason="source_item_terminal_result")
+        _ = await self.recalculate_demand_status(db, demand, reason="source_item_terminal_result")
         return SimpleNamespace(
             outcome="advanced",
             advanced=True,
@@ -1265,7 +1265,7 @@ class SmtInboundHandoffService:
         db.add(item)
         db.add(demand)
         db.add(session)
-        await self.recalculate_demand_status(db, demand, reason="source_item_terminal_conflict")
+        _ = await self.recalculate_demand_status(db, demand, reason="source_item_terminal_conflict")
         return SimpleNamespace(
             outcome="manual_hold",
             advanced=False,
@@ -1312,7 +1312,7 @@ class SmtInboundHandoffService:
             for demand in due_demands:
                 summary["scanned"] += 1
                 before_status = demand.status
-                await self.recalculate_demand_status(db, demand, reason="recovery_due_demand_scan")
+                _ = await self.recalculate_demand_status(db, demand, reason="recovery_due_demand_scan")
                 if demand.status != before_status:
                     summary["advanced"] += 1
 
@@ -1443,7 +1443,7 @@ class SmtInboundHandoffService:
             demand.failure_code = None
             demand.failure_message = None
             db.add(demand)
-            await self.recalculate_demand_status(db, demand, reason="source_pick_inbox_retryable_failed")
+            _ = await self.recalculate_demand_status(db, demand, reason="source_pick_inbox_retryable_failed")
             outcome = "retry_scheduled"
         elif inbox_status == InboxStatus.DEAD_LETTER.value:
             await self._manual_hold_source_pick_recovery(
@@ -1522,7 +1522,7 @@ class SmtInboundHandoffService:
         self._apply_failure(demand, failure_code, message=message)
         db.add(item)
         db.add(demand)
-        await self.recalculate_demand_status(db, demand, reason="source_pick_recovery_manual_hold")
+        _ = await self.recalculate_demand_status(db, demand, reason="source_pick_recovery_manual_hold")
 
     @staticmethod
     def _empty_recovery_summary() -> dict[str, int]:

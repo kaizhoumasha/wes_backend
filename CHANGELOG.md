@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.3.0] - 2026-07-09
+
+### Changed
+- 将退役的 WorkLine restructuring readiness gate 替换为 runtime production closure 与 RuntimeInbox authority 等稳定合同护栏，并接入 quality profile。
+- Callback result/event/external 入站 ACK 统一以 RuntimeInbox 为权威，过渡 Workline inbox 的重复仅跳过兼容副作用，不再污染对外幂等语义。
+- 收束默认快速回归中的过期 mirror/compat/restructuring 测试命名，测试拓扑和架构文档同步到稳定 runtime/workline 边界。
+
+### Fixed
+- 修复 basedpyright 异常并补齐相关回归，保持 `uv run basedpyright .` 零错误零警告。
+- 补齐 Inbox batch processor 的 resource retry 回归，确保资源等待被统计为 `resource_wait` 并停放重试，而不是误标为已处理。
+
+### Removed
+- 删除已退役的 `check_workline_restructuring_readiness_gate.py` 及对应过期 readiness/mirror/compat 测试文件。
+
 ## [0.15.2.0] - 2026-07-09
 
 ### Added

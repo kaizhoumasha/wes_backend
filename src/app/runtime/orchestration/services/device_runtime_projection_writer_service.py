@@ -52,7 +52,7 @@ def _positive_int(value: Any, *, default: int) -> int:
 
 def _normalize_runtime_status(value: Any) -> str:
     status = _optional_text(_enum_value(value))
-    if status in DeviceRuntimeStatus.__members__:
+    if status is not None and status in DeviceRuntimeStatus.__members__:
         return status
     return DeviceRuntimeStatus.UNKNOWN.value
 

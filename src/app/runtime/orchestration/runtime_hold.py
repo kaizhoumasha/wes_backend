@@ -24,7 +24,7 @@ from src.core.mixins.base import BaseMixin
 class RuntimeHold(BaseMixin, table=True):
     """运行时闸门 (主计划 §9.2)。"""
 
-    __tablename__ = "runtime_holds"
+    __tablename__ = "runtime_holds"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
 

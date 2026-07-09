@@ -91,7 +91,7 @@ class InMemoryNonceReplayGuard:
     def _prune(self, now: int) -> None:
         expired = [key for key, expires_at in self._seen.items() if expires_at <= now]
         for key in expired:
-            self._seen.pop(key, None)
+            _ = self._seen.pop(key, None)
 
 
 def _is_ip_allowed(client_ip: str, ip_whitelist: list[str]) -> bool:
@@ -163,6 +163,7 @@ async def verify_api_auth(request: Request, db: AsyncSessionDep, cache: CacheDep
     nonce = request.headers.get("X-Nonce")
     body_sha256 = request.headers.get("X-Body-SHA256")
     if body_hmac_required:
+        body_sha256 = request.headers["X-Body-SHA256"]
         body = await request.body()
         calculated_body_hash = hashlib.sha256(body).hexdigest()
         if body_sha256 != calculated_body_hash:

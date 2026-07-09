@@ -126,7 +126,7 @@ class HandlingOperationBase(BaseMixin):
 class HandlingOperation(HandlingOperationBase, DataTableMixin, table=True):
     """系统级 Handling operation。"""
 
-    __tablename__: ClassVar[Literal["handling_operations"]] = "handling_operations"
+    __tablename__: ClassVar[Literal["handling_operations"]] = "handling_operations"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_handling_operations_key", "operation_key", unique=True),
@@ -176,7 +176,7 @@ class HandlingMoveBase(BaseMixin):
 class HandlingMove(HandlingMoveBase, DataTableMixin, table=True):
     """系统级 Handling move。"""
 
-    __tablename__: ClassVar[Literal["handling_operation_moves"]] = "handling_operation_moves"
+    __tablename__: ClassVar[Literal["handling_operation_moves"]] = "handling_operation_moves"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_handling_moves_operation_sequence", "operation_key", "sequence_no", unique=True),
@@ -253,7 +253,7 @@ class HandlingStepBase(BaseMixin):
 class HandlingStep(HandlingStepBase, DataTableMixin, table=True):
     """系统级 Handling step。"""
 
-    __tablename__: ClassVar[Literal["handling_operation_steps"]] = "handling_operation_steps"
+    __tablename__: ClassVar[Literal["handling_operation_steps"]] = "handling_operation_steps"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_handling_steps_key", "step_key", unique=True),

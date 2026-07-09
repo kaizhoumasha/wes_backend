@@ -50,13 +50,13 @@
 
 ### 当前治理约束
 
-本轮测试套件治理后的当前基线：
+本轮测试套件治理后的长期约束：
 
-- `tests/` 下共有 `271` 个 `test_*.py` 文件。
-- `tests/` 根目录下没有 `test_*.py` 文件。
-- 默认快速回归 collect 为 `2669` 个测试。
-- 原 `tests/api/test_callback_api.py` 已按 route contract、result、event、external 和共享支撑拆分。
-- 当前没有超过 `3000` 行的测试文件，最大测试文件为 `tests/rack/test_rack_operation_service.py`（`2898` 行）。
+- `tests/` 根目录下不得新增 `test_*.py` 文件。
+- 默认快速回归 collect 由 `pyproject.toml` 的 `norecursedirs` 和测试文件命名规则共同决定，不在文档中固化数量。
+- 如需查看实时测试文件数量，运行 `find tests -type f -name 'test_*.py' | wc -l`。
+- 如需查看实时默认 collect，运行 `uv run pytest --collect-only -q -o addopts='' | tail -5`。
+- 单文件超过 `3000` 行会触发测试拓扑 guardrail。
 
 后续新增或调整测试时遵循以下约束：
 

@@ -420,7 +420,7 @@ async def _real_ecs_status_probe(db: AsyncSession, *, workline: object, route: o
         import httpx
 
         async with httpx.AsyncClient() as client:
-            await _ensure_realtime_device_status_ready(client=client, device=device, device_code=str(device_code))
+            _ = await _ensure_realtime_device_status_ready(client=client, device=device, device_code=str(device_code))
     except Exception as exc:
         return _ProbeResult(available=False, reason_code=getattr(exc, "code", type(exc).__name__))
     return _ProbeResult()

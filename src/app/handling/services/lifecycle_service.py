@@ -276,7 +276,7 @@ class HandlingOperationLifecycleService:
         }
 
         if step_status == HandlingStepStatus.RECONCILING:
-            await self.membership_service.mark_reconciling_for_identity(db, ignore_missing=True, **terminal_kwargs)
+            _ = await self.membership_service.mark_reconciling_for_identity(db, ignore_missing=True, **terminal_kwargs)
             return
 
         if step_status in {
@@ -286,7 +286,7 @@ class HandlingOperationLifecycleService:
             HandlingStepStatus.CANCELLED,
         }:
             if target_queue is not None:
-                await self.membership_service.write_active(
+                _ = await self.membership_service.write_active(
                     db,
                     **_queue_write_kwargs(
                         operation=operation,
@@ -299,13 +299,13 @@ class HandlingOperationLifecycleService:
                         evidence_json=evidence_json,
                     ),
                 )
-            await self.membership_service.close_active(db, ignore_missing=True, **terminal_kwargs)
+            _ = await self.membership_service.close_active(db, ignore_missing=True, **terminal_kwargs)
             return
 
         if target_queue is None:
             return
 
-        await self.membership_service.write_active(
+        _ = await self.membership_service.write_active(
             db,
             **_queue_write_kwargs(
                 operation=operation,

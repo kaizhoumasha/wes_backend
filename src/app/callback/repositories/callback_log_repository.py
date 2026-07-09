@@ -5,8 +5,8 @@
 from types import SimpleNamespace
 from typing import Any, cast
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
 
 from src.app.callback.models import CallbackLog
 from src.database.base_repository import BaseRepository
@@ -20,7 +20,8 @@ class CallbackLogRepository(BaseRepository[CallbackLog]):
 
     async def get_by_request_id(self, db: AsyncSession, request_id: str) -> CallbackLog | None:
         """根据 request_id 查询回调日志"""
-        result = await db.execute(select(CallbackLog).where(CallbackLog.request_id == request_id))
+        columns = cast("Any", CallbackLog).__table__.c
+        result = await db.execute(select(CallbackLog).where(columns.request_id == request_id))
         return result.scalar_one_or_none()
 
     async def get_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[CallbackLog]:

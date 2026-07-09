@@ -131,6 +131,8 @@ class HandlingOperationService:
                 "started_at": now,
             },
         )
+        if operation is None:
+            raise RuntimeError(f"创建 Handling operation 失败: operation_key={operation_key}")
 
         for sequence_no, raw_move in enumerate(moves, start=1):
             move = await self.move_repository.create(
@@ -156,6 +158,8 @@ class HandlingOperationService:
                     "metadata_json": dict(raw_move),
                 },
             )
+            if move is None:
+                raise RuntimeError(f"创建 Handling move 失败: operation_key={operation_key}, sequence_no={sequence_no}")
             envelope = self.gateway.build_ctu_move_envelope(operation=operation, move=move, sequence_no=sequence_no)
             outbox = await self.outbox_repository.create(
                 db,
@@ -173,7 +177,11 @@ class HandlingOperationService:
                     "trace_id": trace_id,
                 },
             )
-            await self.step_repository.create(
+            if outbox is None:
+                raise RuntimeError(
+                    f"创建 Handling outbox 失败: operation_key={operation_key}, sequence_no={sequence_no}"
+                )
+            _ = await self.step_repository.create(
                 db,
                 {
                     "operation_id": operation.id,

@@ -649,7 +649,7 @@ def _emit_callback_normalize_observability(
 
     callback_type = cast("str", normalized_payload["callback_type"])
     try:
-        runtime_observability_registry.emit(
+        _ = runtime_observability_registry.emit(
             "callback.normalize",
             {
                 "trace_id": _callback_normalize_trace_id(callback_type, payload, normalized_payload, request_id),
@@ -1470,7 +1470,6 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             causation_id=_resolve_callback_causation_id(callback_data),
             command_service=device_command_service,
             device_service=device_service,
-            inbox_service=inbox_service,
             enqueue_processing=enqueue_processing,
         )
         is_duplicate = outcome.is_duplicate
@@ -1893,10 +1892,10 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             request_id=request_id,
             is_workline_event=is_workline_event,
             canonical_event_type=canonical_event_type,
+            inbox_service=inbox_service,
             trace_id=_resolve_callback_trace_id(event_data),
             event_id=_resolve_callback_event_id(event_data),
             causation_id=_resolve_callback_causation_id(event_data),
-            inbox_service=inbox_service,
             enqueue_processing=enqueue_processing,
         )
         is_duplicate = outcome.is_duplicate
@@ -2093,10 +2092,10 @@ async def handle_callback_external(
             callback_type=callback_type,
             payload=callback_data,
             request_id=request_id,
+            inbox_service=inbox_service,
             trace_id=external_trace_id,
             event_id=_resolve_callback_event_id(callback_data),
             causation_id=_resolve_callback_causation_id(callback_data),
-            inbox_service=inbox_service,
             enqueue_processing=enqueue_processing,
         )
         is_duplicate = outcome.is_duplicate

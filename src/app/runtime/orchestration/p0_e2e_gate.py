@@ -173,7 +173,13 @@ class RuntimeP0E2EGate:
                 failed_latency_fields=("latency.p95_seconds",),
             )
         p95_seconds = latency.get("p95_seconds")
-        if not _is_number(p95_seconds) or p95_seconds >= self.max_p95_seconds:
+        if not isinstance(p95_seconds, int | float) or isinstance(p95_seconds, bool):
+            return RuntimeP0E2EValidation(
+                valid=False,
+                reason="E2E_LATENCY_EXCEEDED",
+                failed_latency_fields=("latency.p95_seconds",),
+            )
+        if p95_seconds >= self.max_p95_seconds:
             return RuntimeP0E2EValidation(
                 valid=False,
                 reason="E2E_LATENCY_EXCEEDED",

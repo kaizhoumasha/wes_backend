@@ -22,7 +22,7 @@ from src.core.mixins.base import BaseMixin
 class ExecutionWorkItem(BaseMixin, table=True):
     """对象级执行令牌 (主计划 §9.2)。"""
 
-    __tablename__ = "execution_work_items"
+    __tablename__ = "execution_work_items"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         UniqueConstraint("correlation_id", name="uq_wes_runtime_execution_work_items_correlation_id"),

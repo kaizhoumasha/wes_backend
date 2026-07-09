@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from src.app.rack.models.operation import (
     RackTask,
@@ -260,7 +260,7 @@ class RackTaskLifecycleService:
     async def _finish_sent_external_outbox(self, db: AsyncSession, *, task: RackTask, dispatch_key: str) -> None:
         if not hasattr(task, "outbox_id"):
             return
-        await self.outbox_repository.finish_sent_external_by_dispatch_key(db, dispatch_key)
+        _ = await self.outbox_repository.finish_sent_external_by_dispatch_key(db, dispatch_key)
 
     def _resolve_rack_operation_service(self) -> Any:
         if self._rack_operation_service is None:
@@ -287,7 +287,7 @@ class RackTaskLifecycleService:
         operation_service = self._resolve_rack_operation_service()
         persist_operation_status = getattr(operation_service, "_persist_operation_status", None)
         if callable(persist_operation_status):
-            operation_status = await persist_operation_status(db, operation_key=operation_key)
+            operation_status = await cast("Any", persist_operation_status)(db, operation_key=operation_key)
         else:
             operation_status = await operation_service.derive_operation_status(db, operation_key=operation_key)
         if workline_id is None:

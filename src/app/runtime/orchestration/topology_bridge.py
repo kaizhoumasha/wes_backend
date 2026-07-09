@@ -124,7 +124,7 @@ class WorklineTopologyView:
 def validate_topology_manifest(manifest: WorklinePluginManifest, topology: WorklineTopologyView) -> None:
     """校验工作线拓扑是否满足插件 manifest。"""
 
-    for requirement in manifest.devices:
+    for requirement in manifest.devices or ():
         devices = topology.devices_for_role(requirement.role)
         count = len(devices)
         if count < requirement.min_count:
@@ -136,7 +136,7 @@ def validate_topology_manifest(manifest: WorklinePluginManifest, topology: Workl
                 f"插件 {manifest.plugin_key} 要求角色 {requirement.role} 最多 {requirement.max_count} 个设备，当前 {count} 个"
             )
 
-        required_capabilities = frozenset(requirement.hardware_capabilities)
+        required_capabilities = frozenset(requirement.hardware_capabilities or ())
         if required_capabilities:
             for device in devices:
                 missing_capabilities = required_capabilities - device.capabilities
@@ -149,13 +149,14 @@ def validate_topology_manifest(manifest: WorklinePluginManifest, topology: Workl
         category = getattr(getattr(event, "category", None), "value", getattr(event, "category", None))
         if category != "ENTRY_DEVICE":
             continue
+        source_device_roles = tuple(event.source_device_roles or ())
         if not any(
             device.supports_event(event.event)
-            for role in event.source_device_roles
+            for role in source_device_roles
             for device in topology.devices_for_role(role)
         ):
             raise ValueError(
-                f"插件 {manifest.plugin_key} 事件 {event.event} 没有可用来源设备角色: {', '.join(event.source_device_roles)}"
+                f"插件 {manifest.plugin_key} 事件 {event.event} 没有可用来源设备角色: {', '.join(source_device_roles)}"
             )
 
     for command in manifest.commands:

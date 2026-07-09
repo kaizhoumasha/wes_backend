@@ -32,7 +32,7 @@ class RuntimeIntentLog(BaseMixin, table=True):
     request_hash, 用于崩溃恢复、幂等复查和乱序回调归因。
     """
 
-    __tablename__ = "runtime_intent_logs"
+    __tablename__ = "runtime_intent_logs"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
 

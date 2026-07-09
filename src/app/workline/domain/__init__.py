@@ -6,6 +6,8 @@
 - `services`: 领域服务，承载可复用的业务规则与判定逻辑
 """
 
+# pyright: reportUnsupportedDunderAll=false
+
 # models: 领域模型
 from .models import BarcodeDecision, BarcodeDecisionType
 

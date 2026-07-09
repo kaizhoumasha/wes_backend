@@ -1798,7 +1798,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - 结论：本项目未发布，当前开发/测试默认使用 MOCK closure；`uv run python scripts/check_runtime_production_closure_gate.py` 无 artifact 即按 mock profile 通过。真实 artifact 不再作为当前开发/测试推进阻塞项。
 - 生产发布 profile：`--closure-profile production` 仍要求真实 P0 E2E artifact、production-scale benchmark artifact，以及两类 artifact 引用 evidence 文件存在且内容一致；Phase4 `production` profile 仍要求 provider contract、trace、benchmark evidence manifest 文件存在且 hash 一致。
 - 本轮 evidence bundle：`reports/phase3/phase3-p0-e2e.json`、`reports/phase3/phase3-production-benchmark.json` 与 `reports/phase4/runtime-evidence-production.json` 已由现有 evidence 重新生成并通过 production gates；tracked provenance 见 `docs/architecture/phase3-phase4-production-evidence-bundle.md`。
-- 下一阶段边界：Phase 4 开发/测试能力已闭合；technical cleanup scope 已通过 `uv run python scripts/check_workline_restructuring_readiness_gate.py --scope technical` 并在 PR #78 合并。business legacy cleanup scope 携带 regenerated production/runtime artifacts 后已通过 `uv run python scripts/check_workline_restructuring_readiness_gate.py --scope business --production-e2e-artifact <p0.json> --runtime-benchmark-artifact <benchmark.json> --runtime-evidence-artifact <runtime-evidence.json>`；随后 business legacy absence gate 已通过 `uv run python scripts/check_business_legacy_absence_gate.py --mode final`，并在 PR #79 合并到 develop。2026-07-08 restructuring cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列；PR #79 未检测到 deploy workflow 且无生产 URL，线上 canary 由后续生产发布流程或 `/canary <url>` 补做。
+- 下一阶段边界：Phase 4 开发/测试能力已闭合；technical cleanup scope 已在 PR #78 合并。business legacy cleanup scope 携带 regenerated production/runtime artifacts 后已通过 runtime production closure、runtime evidence 与 business legacy absence gate；随后 business legacy absence gate 已通过 `uv run python scripts/check_business_legacy_absence_gate.py --mode final`，并在 PR #79 合并到 develop。2026-07-08 restructuring cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列；当前提交前入口使用 `./scripts/git-quality-gate.sh --profile quality` 覆盖长期门禁。PR #79 未检测到 deploy workflow 且无生产 URL，线上 canary 由后续生产发布流程或 `/canary <url>` 补做。
 - 轻量 benchmark 口径：`reports/benchmarks/runtime-benchmark.json` 的 `local-lightweight` / `lightweight` 结果可用于当前开发/测试 mock 验收；不得冒充 `--closure-profile production` 证据。
 
 ### 10.0.1 Phase1~4 residual ledger（2026-07-06）
@@ -1806,7 +1806,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 | Phase | 遗留项 | 当前状态 | owner / guardrail | Phase5 前置 |
 | --- | --- | --- | --- | --- |
 | Target-state contracts | WMS 7 port、runtime core entity、ExecutionCorrelation、InboundNormalizerProfile 等目标态骨架已落地；剩余只是生产 profile evidence 的后续运行材料 | ✅ 架构残留关闭 | Target-state 合同测试与 capability/H4/H5 guardrail 保持边界 | 删除旧入口前必须保留 target-state 合同测试可通过，不能删除目标态 port/profile 证据 |
-| Phase 2 | WorkLine 运行态物理字段已删除 | ✅ runtime/orchestration 原生投影 | `WorkLineRuntimeStatusProjectionService` 读写 `wes_runtime.workline_runtime_status_projections`；`tests/architecture/test_phase2_runtime_status_owner_guardrail.py` 禁止 WorkLine 域和 material-flow capability 直接写入或绕过 snapshot/readiness | restructuring cleanup migration 已完成回填；后续只允许 runtime/orchestration 扩展投影 |
+| Phase 2 | WorkLine 运行态物理字段已删除 | ✅ runtime/orchestration 原生投影 | `WorkLineRuntimeStatusProjectionService` 读写 `wes_runtime.workline_runtime_status_projections`；`tests/architecture/test_runtime_status_owner_guardrail.py` 禁止 WorkLine 域和 material-flow capability 直接写入或绕过 snapshot/readiness | restructuring cleanup migration 已完成回填；后续只允许 runtime/orchestration 扩展投影 |
 | Phase 3 | production closure artifact、production-scale benchmark 和真实外部依赖 evidence 已具备可再生成 bundle | ✅ evidence bundle ready | `RuntimeProductionClosureGate` 区分 mock profile 与 production profile；mock 只允许开发/测试推进；production bundle 记录在 `docs/architecture/phase3-phase4-production-evidence-bundle.md` | business readiness 已使用 regenerated artifacts 验证通过；raw `reports/` artifacts 仍需从 restored field/CI evidence 重新生成 |
 | Phase 4 | material-flow capability runtime path 已落地，production evidence manifest 引用文件和 hash profile 已具备可再生成 bundle | ✅ evidence bundle ready | material-flow capability 不能直接写 WorkLine 运行态；START admission 只读 runtime projection readiness；production bundle 记录在 `docs/architecture/phase3-phase4-production-evidence-bundle.md` | business readiness、business legacy absence gate 与 restructuring cleanup 均已通过 |
 
@@ -1815,8 +1815,8 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - Phase2：WorkLine 运行态物理列已由 restructuring cleanup migration 删除，`WorkLineRuntimeStatusProjectionService` 读写 runtime/orchestration 原生投影，safety / START admission / query / trace 通过 snapshot/readiness 使用运行状态。
 - Phase3：development/mock closure 与行为合同已通过；production closure gate 已具备真实 P0 E2E artifact、production-scale benchmark artifact 与 evidence hash 校验；本轮 regenerated artifacts 已通过 production closure gate。
 - Phase4：development-mock readiness 与 runtime capability / evidence profile gate 已通过；`site/production` profile 已要求 evidence manifest、文件存在与 hash 一致，并叠加 Phase3 production closure；本轮 regenerated artifact 已通过 production readiness gate。
-- Phase5：technical cleanup scope 已通过 `scripts/check_workline_restructuring_readiness_gate.py --scope technical` 并由 PR #78 合并；旧 plugin runtime/import 框架、旧 `src.workline_plugin_registry` 和旧 `docs/templates/workline_plugin/` 已退出运行/模板路径；business legacy cleanup scope readiness 与 business legacy absence gate 已通过。业务执行合同迁入 `src/app/runtime/capabilities/material_flow/contracts/`，旧业务入口由 ledger 与 absence guardrail 阻断回流；restructuring cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列。
-- 本轮验证：Phase3 production closure gate 通过；Runtime production evidence gate 通过；`uv run pytest tests/contracts/test_runtime_evidence_artifact_composer.py tests/contracts/test_runtime_evidence_readiness_gate.py -q` 为 `18 passed`；`uv run pytest tests/contracts/test_workline_restructuring_readiness_gate.py -q` 为 `12 passed`；携带 regenerated Phase3/material-flow artifacts 的 business gate 通过。
+- Phase5：technical cleanup scope 已由 PR #78 合并；旧 plugin runtime/import 框架、旧 `src.workline_plugin_registry` 和旧 `docs/templates/workline_plugin/` 已退出运行/模板路径；business legacy cleanup scope readiness 与 business legacy absence gate 已通过。业务执行合同迁入 `src/app/runtime/capabilities/material_flow/contracts/`，旧业务入口由 ledger 与 absence guardrail 阻断回流；restructuring cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列。
+- 本轮验证：Phase3 production closure gate 通过；Runtime production evidence gate 通过；`uv run pytest tests/contracts/test_runtime_evidence_artifact_composer.py tests/contracts/test_runtime_evidence_readiness_gate.py -q` 为 `18 passed`；当前长期提交前入口为 `./scripts/git-quality-gate.sh --profile quality`，覆盖 runtime production closure、runtime evidence、business legacy absence、process naming、architecture guardrails 与 import-linter。
 
 **Task 1+2 收敛结论**：Phase2 的运行态字段遗留已由 restructuring cleanup 关闭；callback / WMS / benchmark / evidence / WorkLine restructuring gate 的生产证据项已由 `docs/architecture/phase3-phase4-production-evidence-bundle.md` 记录；business legacy cleanup readiness、business legacy absence gate 与 restructuring cleanup gate 均已进入 passed 状态。
 
@@ -1952,7 +1952,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - 文档：`docs/architecture/target-state-contract.md`、`legacy-cleanup-matrix.md`（707 entries，0 pending-review / 0 empty strategy）、`session-correlation-matrix.md`、`device-command-contract.md`、`integration-lab-and-simulator.md`、`architecture-guardrails-spec.md`
 - 行为契约：`ed6e7b5 test(workline): P0-003 行为契约测试基线 (10 BC, 28 pass + 3 strict xfail)`
 - 护栏脚本：`scripts/architecture-guardrails.sh` + `scripts/architecture-guardrails.allowlist`（phase-aware enforcement）
-- 护栏测试：stable architecture boundary guardrail tests、`test_capability_dependency_guardrail.py`、`test_phase0_legacy_matrix_contract.py`
+- 护栏测试：stable architecture boundary guardrail tests、`test_capability_dependency_guardrail.py`、`test_legacy_matrix_contract.py`
 
 ### 10.2 Phase 1: 目标态骨架与 WMS ACL — ✅ Packet A/B/C + Packet D 完成（PR #64 + PR Packet D + 本分支 callback admission 收敛）
 
@@ -2237,19 +2237,19 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 
 - `workline-technical` scope 已完成并合并 PR #78（`v0.13.0.0`）。生产 import 已替换到目标态 runtime/capability/normalization/domain 路径，旧 `src.app.workline.plugins.*`、`src.workline_plugin_registry`、`src/workline_plugins/*` 和 `docs/templates/workline_plugin/*` 已退出运行或模板 authoring 路径。
 - `src/workline_plugins/*` 与旧模板仅作为历史资料归档在 `docs/archive/legacy-workline-plugins/`，不得回流到 `src/` 可 import 路径。
-- `workline-business` business scope 已通过 readiness gate。携带 regenerated production/runtime artifacts 的 `uv run python scripts/check_workline_restructuring_readiness_gate.py --scope business --production-e2e-artifact reports/production/runtime-production-e2e.json --runtime-benchmark-artifact reports/runtime/runtime-production-benchmark.json --runtime-evidence-artifact reports/runtime/runtime-evidence-production.json` 返回 `WorkLine restructuring readiness passed: scope=business`。
+- `workline-business` business scope 已通过 runtime production closure、runtime evidence 与 business legacy absence gate。携带 regenerated production/runtime artifacts 的目标态验证记录保存在 `docs/architecture/phase3-phase4-production-evidence-bundle.md`。
 - business legacy absence gate 已执行并通过 `uv run python scripts/check_business_legacy_absence_gate.py --mode final`，并已随 PR #79（`v0.14.0.0`，merge SHA `8c833610c08005005406b3a774c92519f69b7886`）合并到 develop。业务合同、context、SMT handoff route / reason / usage policy 等目标态实现收口到 `src/app/runtime/capabilities/material_flow/contracts/` 与 material-flow runtime services；旧业务承载入口由 `docs/architecture/business-legacy-absence-ledger.csv` 和 absence guardrail 阻断回流。
 - 2026-07-08 restructuring cleanup 已执行 schema/data migration：旧 handling 队列表面删除，WorkLine 运行态物理列迁入 runtime projection；production evidence 与业务审计数据不作为 cleanup 删除对象。
 
 **启动条件（双 scope）**：
 
-- **技术残留清理 scope**：必须先通过 `uv run python scripts/check_workline_restructuring_readiness_gate.py --scope technical`。该 gate 统一检查 runtime owner guardrail、RuntimeInbox callback cutover、mock closure，以及 technical scope 行为契约测试集；通过后只允许删除无业务语义的旧 plugin 框架、旧队列 enum、旧 API 兼容转发和 dead code。
-- **业务承载 legacy scope**：必须先通过 `uv run python scripts/check_workline_restructuring_readiness_gate.py --scope business --production-e2e-artifact <p0.json> --runtime-benchmark-artifact <benchmark.json> --runtime-evidence-artifact <runtime-evidence.json>`。该 gate 统一检查 runtime production closure、runtime evidence production profile、material-flow capability / port / contract tests 和 `legacy-cleanup-matrix.md` 中业务承载项关闭状态；未通过前只能冻结入口并保留 characterization tests，不得提前 drop 承载业务语义的数据或代码。
+- **技术残留清理 scope**：必须先通过 runtime owner guardrail、RuntimeInbox authority tests、mock closure 或等价开发/测试门禁，以及 technical scope 行为契约测试集；当前提交前统一入口为 `./scripts/git-quality-gate.sh --profile quality`。通过后只允许删除无业务语义的旧 plugin 框架、旧队列 enum、旧 API 兼容转发和 dead code。
+- **业务承载 legacy scope**：必须先通过 runtime production closure、runtime evidence production profile、material-flow capability / port / contract tests、business legacy absence gate 和 `legacy-cleanup-matrix.md` 中业务承载项关闭状态；未通过前只能冻结入口并保留 characterization tests，不得提前 drop 承载业务语义的数据或代码。
 
 | Task | Effort | 关联文件 | 验证 |
 | --- | --- | --- | --- |
 | **ENG-014** Legacy 路径列 `src/{workline_runtime,workline_plugins}` 5 子目录清理矩阵 | S | `docs/architecture/legacy-cleanup-matrix.md`, `docs/architecture/legacy-cleanup-matrix.csv` | ✅ 当前矩阵 636 条，由 `scripts/generate_legacy_matrix.py` 可复现；0 pending-review / 0 空策略；technical cleanup scope 后 `src/workline_plugins` 与旧 template 路径为 0 runtime/template entries |
-| 技术残留删除 PR | M | `src/workline_runtime/`, `src/workline_plugins/`, `src/app/workline/`, `src/app/runtime/` | ✅ PR #78 已完成；`check_workline_restructuring_readiness_gate.py --scope technical` 通过；absence guardrail 阻断 legacy import 回流；unknown capability 不 fallback 到 `null_plugin`；provider capability 按 `ExternalContractProfile` fail closed |
+| 技术残留删除 PR | M | `src/workline_runtime/`, `src/workline_plugins/`, `src/app/workline/`, `src/app/runtime/` | ✅ PR #78 已完成；quality profile 与 absence guardrail 阻断 legacy import 回流；unknown capability 不 fallback 到 `null_plugin`；provider capability 按 `ExternalContractProfile` fail closed |
 | 业务承载 legacy 删除 PR | L | `src/app/workline/`, `src/app/runtime/capabilities/material_flow/`, production evidence artifacts | ✅ PR #79 已合并；business readiness gate 与 business legacy absence gate 已通过；104 条 phase4 carrier 在 `business-legacy-absence-ledger.csv` 中关闭或保留为目标态测试证据；WorkLine 运行态物理字段 restructuring cleanup 已完成 |
 
 **Effort 估算**：technical cleanup scope 已完成；business readiness、business legacy absence gate 与 restructuring cleanup 已合并落地；WorkLine restructuring 无剩余数据库清理阻塞项。
@@ -2389,8 +2389,8 @@ Phase 5 ────────────────────────
 1. **业务语义提取**：用 characterization tests 固化旧能力中仍需要的业务语义。
 2. **目标态骨架落地**：先建立 `runtime/orchestration`、`material`、`ConveyorQueueMembership`、WMS ACL ports。
 3. **旧入口分类**：先按清理矩阵标记技术残留、业务承载 legacy、一次性迁移脚本；不做转发兼容。
-4. **技术残留删除**：无业务语义的旧入口、旧 enum、旧 plugin 框架和 dead code 进入 technical cleanup scope；前置条件是 `check_workline_restructuring_readiness_gate.py --scope technical` 通过。
-5. **业务承载 legacy 延迟删除**：仍承载 material-flow 业务语义的代码或数据进入 business legacy cleanup scope；只能在 `check_workline_restructuring_readiness_gate.py --scope business` 通过后 drop。
+4. **技术残留删除**：无业务语义的旧入口、旧 enum、旧 plugin 框架和 dead code 进入 technical cleanup scope；前置条件是 runtime owner guardrail、RuntimeInbox authority tests、mock closure 或等价开发/测试门禁通过。
+5. **业务承载 legacy 延迟删除**：仍承载 material-flow 业务语义的代码或数据进入 business legacy cleanup scope；只能在 runtime production closure、runtime evidence production profile、business legacy absence gate 与 material-flow 合同测试通过后 drop。
 6. **数据迁移与 drop**：迁移必要 evidence 后 drop 旧表/旧 enum/旧字段；不可逆 drop 必须有快照点和清理矩阵勾选。
 7. **全局校验**：确认 WorkLine 只保留配置职责，新代码不 import 旧 plugin/runtime 包。
 

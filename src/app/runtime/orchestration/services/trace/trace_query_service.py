@@ -550,7 +550,7 @@ class TraceQueryService(BaseService[Any, Any]):
         commands: list[DeviceCommand],
         timelines: list[WorklineTimeline],
     ) -> int | None:
-        if session is not None and session.workline_id is not None:
+        if session is not None:
             return cast("int", session.workline_id)
         for source in (outboxes, commands, timelines):
             for item in source:

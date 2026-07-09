@@ -1053,7 +1053,7 @@ class InboxBatchProcessor:
 
                 write_effects_applied = False
                 enqueue_outbox_dispatch = False
-                write_disposition = WriteBackDisposition.PROCESSED
+                write_disposition_state: dict[str, WriteBackDisposition | None] = {"value": None}
                 session_snapshot = _session_write_snapshot(session)
                 sse_workline_id = resolve_entity_id(workline)
                 sse_session_id = resolve_entity_id(session)
@@ -1071,8 +1071,9 @@ class InboxBatchProcessor:
                     _sse_workline_id: int | None = sse_workline_id,
                     _sse_session_id: int | None = sse_session_id,
                     _processor_token: str = processor_token,
+                    _write_disposition_state: dict[str, WriteBackDisposition | None] = write_disposition_state,
                 ) -> None:
-                    nonlocal write_disposition, write_effects_applied, enqueue_outbox_dispatch
+                    nonlocal write_effects_applied, enqueue_outbox_dispatch
                     try:
                         await db.refresh(_session)
                         _payload = payload_dict(getattr(_inbox, "payload_json", None))
@@ -1095,7 +1096,7 @@ class InboxBatchProcessor:
                                 db, _inbox_pk, processor_token=_processor_token, auto_commit=False
                             )
                             await db.commit()
-                            write_disposition = WriteBackDisposition.PROCESSED
+                            _write_disposition_state["value"] = WriteBackDisposition.PROCESSED
                             write_effects_applied = True
                             enqueue_outbox_dispatch = False
                             return
@@ -1125,6 +1126,7 @@ class InboxBatchProcessor:
                             orch_result=write_result,
                         )
                         write_disposition = effect_result.disposition
+                        _write_disposition_state["value"] = write_disposition
                         if write_disposition == WriteBackDisposition.RESOURCE_RETRY:
                             _ = await inbox_service.park_for_retry(
                                 db,
@@ -1201,6 +1203,7 @@ class InboxBatchProcessor:
                     if not write_effects_applied:
                         raise RuntimeError("WRITE lock callback was not executed for successful orchestrator result")
 
+                    write_disposition = write_disposition_state["value"]
                     if write_disposition == WriteBackDisposition.RESOURCE_RETRY:
                         result["resource_wait"] += 1
                         logger.info(f"Inbox {inbox_pk} resource wait, parked for retry")

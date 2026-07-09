@@ -591,22 +591,21 @@ def scan_smt_inbound_handoff_demands_batch(
                 smt_inbound_handoff_service,
             )
 
-            return cast(
-                "SmtInboundHandoffRecoveryResult",
-                await smt_inbound_handoff_service.scan_smt_inbound_handoff_demands_batch(
+            if legacy_limit is not None:
+                recovery_result = await smt_inbound_handoff_service.scan_smt_inbound_handoff_demands_batch(
                     db,
                     stale_after_seconds=stale_after_seconds,
-                    **(
-                        {"limit": legacy_limit}
-                        if legacy_limit is not None
-                        else {
-                            "scan_limit": scan_limit,
-                            "recovery_limit": recovery_limit,
-                            "claim_limit": claim_limit,
-                        }
-                    ),
-                ),
-            )
+                    limit=legacy_limit,
+                )
+            else:
+                recovery_result = await smt_inbound_handoff_service.scan_smt_inbound_handoff_demands_batch(
+                    db,
+                    stale_after_seconds=stale_after_seconds,
+                    scan_limit=scan_limit,
+                    recovery_limit=recovery_limit,
+                    claim_limit=claim_limit,
+                )
+            return cast("SmtInboundHandoffRecoveryResult", recovery_result)
 
     try:
         result = _run_async(_scan())

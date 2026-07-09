@@ -40,16 +40,20 @@ def _canonical_payload_hash(payload: dict[str, Any]) -> str:
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _resolve_source_event_id(payload: dict[str, Any], request_id: str | None) -> str | None:
-    return _resolve_first_str(payload, ("event_id", "source_event_id", "request_id")) or request_id
+def _resolve_payload_source_event_id(payload: dict[str, Any], *, fallback_prefix: str) -> str:
+    return _resolve_first_str(payload, ("event_id", "source_event_id")) or (
+        f"{fallback_prefix}:{_canonical_payload_hash(payload)}"
+    )
 
 
 def _resolve_external_source_event_id(payload: dict[str, Any], request_id: str | None) -> str | None:
+    _ = request_id
+    callback_type = _resolve_first_str(payload, ("callback_type",)) or "UNKNOWN"
     return (
         _resolve_first_str(payload, ("event_id", "source_event_id"))
         or _resolve_nested_str(payload, ("data", "source_event_id"))
         or _resolve_first_str(payload, ("request_id",))
-        or request_id
+        or f"callback-external:{callback_type}:{_canonical_payload_hash(payload)}"
     )
 
 
@@ -68,11 +72,12 @@ class CallbackRuntimeInboxWriter:
         canonical_result_type: str,
         correlation_id: str | None = None,
     ) -> RuntimeInboxAcceptResult:
+        _ = request_id
         return await self._service.accept_received(
             db,
             provider_code="ECS",
             event_type=canonical_result_type,
-            source_event_id=_resolve_source_event_id(payload, request_id),
+            source_event_id=_resolve_payload_source_event_id(payload, fallback_prefix="callback-result"),
             payload_hash=_canonical_payload_hash(payload),
             correlation_id=correlation_id,
         )
@@ -85,11 +90,12 @@ class CallbackRuntimeInboxWriter:
         request_id: str | None,
         canonical_event_type: str,
     ) -> RuntimeInboxAcceptResult:
+        _ = request_id
         return await self._service.accept_received(
             db,
             provider_code="ECS",
             event_type=canonical_event_type,
-            source_event_id=_resolve_source_event_id(payload, request_id),
+            source_event_id=_resolve_payload_source_event_id(payload, fallback_prefix="callback-event"),
             payload_hash=_canonical_payload_hash(payload),
             correlation_id=None,
         )

@@ -203,7 +203,7 @@ class TestCallbackResultIdempotency:
         assert response2["code"] == "1000"
         assert _response_data(response2)["ack"] is True
         assert mock_handle.await_count == 1
-        assert mock_create_inbox.await_count == 1
+        mock_create_inbox.assert_not_awaited()
         assert mock_enqueue.call_count == 1
         assert mock_log_callback.await_count == 2
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -216,7 +216,7 @@ class TestCallbackResultIdempotency:
 
 class TestCallbackEventIdempotency:
     @pytest.mark.asyncio
-    async def test_duplicate_event_requeues_processing_but_skips_audit(
+    async def test_runtime_duplicate_event_skips_transition_inbox_and_audit(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,
@@ -299,7 +299,7 @@ class TestCallbackEventIdempotency:
 
 class TestCallbackExternalIdempotency:
     @pytest.mark.asyncio
-    async def test_duplicate_external_callback_requeues_processing_but_skips_audit(
+    async def test_runtime_duplicate_external_callback_skips_transition_inbox_and_audit(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,

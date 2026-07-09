@@ -142,9 +142,10 @@ class SingleLayerRackOrchestrationService:
                 station_code=station_code,
             )
             diagnostics: dict[str, Any] = {}
-            if self._should_invoke_handoff_release_producer(db):
+            handoff_service = self.smt_inbound_handoff_service
+            if handoff_service is not None and self._should_invoke_handoff_release_producer(db):
                 handoff_trace_id = _non_empty_text(recorded_fact_payload.get("trace_id"))
-                handoff_demand = await self.smt_inbound_handoff_service.create_or_get_from_release(
+                handoff_demand = await handoff_service.create_or_get_from_release(
                     db,
                     **self._handoff_release_producer_payload(
                         recorded_fact_payload,
@@ -154,13 +155,13 @@ class SingleLayerRackOrchestrationService:
                 )
                 diagnostics["handoff_demand_id"] = getattr(handoff_demand, "id", None)
                 diagnostics["handoff_demand_key"] = getattr(handoff_demand, "demand_key", None)
-                handoff_demand = await self.smt_inbound_handoff_service.evaluate(
+                handoff_demand = await handoff_service.evaluate(
                     db,
                     demand=handoff_demand,
                     prefer_full_box_exchange=False,
                     trace_id=handoff_trace_id,
                 )
-                claim_result = await self.smt_inbound_handoff_service.claim_next_source_item(
+                claim_result = await handoff_service.claim_next_source_item(
                     db,
                     trace_id=handoff_trace_id,
                     demand_id=getattr(handoff_demand, "id", None),
@@ -171,7 +172,9 @@ class SingleLayerRackOrchestrationService:
                 diagnostics["handoff_claim_failure_message"] = getattr(claim_result, "failure_message", None)
                 claim_next_attempt_at = getattr(claim_result, "next_attempt_at", None)
                 diagnostics["handoff_claim_next_attempt_at"] = (
-                    claim_next_attempt_at.isoformat() if hasattr(claim_next_attempt_at, "isoformat") else None
+                    claim_next_attempt_at.isoformat()
+                    if claim_next_attempt_at is not None and hasattr(claim_next_attempt_at, "isoformat")
+                    else None
                 )
                 diagnostics["handoff_claim_source_item_id"] = getattr(
                     getattr(claim_result, "source_item", None), "id", None
@@ -343,7 +346,7 @@ class SingleLayerRackOrchestrationService:
             ]
         scoped_tasks: list[dict[str, Any]] = []
         for index, task in enumerate(rack_tasks, start=1):
-            task_payload = dict(task) if isinstance(task, Mapping) else {"sequence_no": index}
+            task_payload: dict[str, Any] = dict(task) if isinstance(task, Mapping) else {"sequence_no": index}
             task_payload.setdefault("sequence_no", index)
             is_move_out = SingleLayerRackOrchestrationService._is_move_out_action(task_payload)
             task_type = SingleLayerRackOrchestrationService._rack_task_type(task_payload.get("task_type"))
@@ -359,9 +362,9 @@ class SingleLayerRackOrchestrationService:
                 task_payload["target_position_code"] = station_code
             request_json = task_payload.get("request_json")
             if isinstance(request_json, Mapping):
-                request_payload = dict(request_json)
+                request_payload: dict[str, Any] = dict(request_json)
                 station = request_payload.get("station")
-                station_payload = dict(station) if isinstance(station, Mapping) else {}
+                station_payload: dict[str, Any] = dict(station) if isinstance(station, Mapping) else {}
                 station_payload["position_code"] = station_code
                 request_payload["station"] = station_payload
                 request_payload["station_code"] = station_code
@@ -476,7 +479,7 @@ class SingleLayerRackOrchestrationService:
         station_payload = dict(station) if isinstance(station, Mapping) else {}
         station_payload.setdefault("position_code", str(operation_payload.get("station_code") or ""))
         payload["station"] = station_payload
-        payload.setdefault("station_code", operation_payload.get("station_code"))
+        _ = payload.setdefault("station_code", operation_payload.get("station_code"))
         return payload
 
     @staticmethod

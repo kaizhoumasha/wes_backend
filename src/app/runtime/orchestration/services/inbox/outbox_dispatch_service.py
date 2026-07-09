@@ -111,7 +111,7 @@ def _emit_runtime_intent_dispatch_observability(outbox: Any) -> None:
 
     payload = payload_dict(getattr(outbox, "payload_json", None))
     try:
-        runtime_observability_registry.emit(
+        _ = runtime_observability_registry.emit(
             "runtime_intent.dispatch",
             {
                 "trace_id": _runtime_intent_dispatch_trace_id(outbox, payload),

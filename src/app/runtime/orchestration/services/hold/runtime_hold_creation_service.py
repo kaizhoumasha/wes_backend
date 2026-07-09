@@ -197,7 +197,7 @@ class RuntimeHoldCreationService:
         workline = await self.workline_repository.get_for_update(db, workline_id)
         if workline is None:
             return
-        await self.workline_status_projection_service.project_reconciling(
+        _ = await self.workline_status_projection_service.project_reconciling(
             db,
             workline_id=workline_id,
             occurred_at=None,

@@ -131,8 +131,7 @@ class TestCallbackResultAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["ack"] is True
-        assert mock_create_inbox.call_args.kwargs["task_type"] == "PICK_AND_PUT"
-        assert "command_type" not in mock_create_inbox.call_args.kwargs
+        mock_create_inbox.assert_not_awaited()
         mock_mark_finished.assert_awaited_once_with(
             db_session,
             device_id=7,
@@ -141,7 +140,6 @@ class TestCallbackResultAPI:
             error_code=None,
             auto_commit=False,
         )
-        assert mock_create_inbox.call_args.kwargs["source_message_id"] == "req-001"
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["trace_id"] == "trace-001"
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"

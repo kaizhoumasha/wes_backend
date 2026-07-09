@@ -434,7 +434,7 @@ class ResourceProjectionService:
                     if active_placement_id is None:
                         raise ValueError(f"active rack placement missing id: {active_rack_code}")
                     previous_status = enum_str(getattr(active_placement, "placement_status", None))
-                    await self.rack_placement_repo.update(
+                    _ = await self.rack_placement_repo.update(
                         db,
                         active_placement_id,
                         {
@@ -525,7 +525,7 @@ class ResourceProjectionService:
             active_rack_id = getattr(active_by_rack, "id", None)
             if active_rack_id is None:
                 raise ValueError(f"active rack placement missing id: {rack_code}")
-            await self.rack_placement_repo.update(
+            _ = await self.rack_placement_repo.update(
                 db,
                 active_rack_id,
                 {
@@ -1260,7 +1260,7 @@ class ResourceProjectionService:
         trace_id: str | None,
         occurred_at: datetime,
     ) -> None:
-        await self.object_transition_event_service.record_transition(
+        _ = await self.object_transition_event_service.record_transition(
             db,
             domain=ObjectTransitionDomain.RESOURCE,
             object_type=object_type,
@@ -1291,7 +1291,7 @@ class ResourceProjectionService:
     ) -> None:
         if not pkg_code:
             return
-        await self.material_unit_repository.update_current_location_by_pkg_code(
+        _ = await self.material_unit_repository.update_current_location_by_pkg_code(
             db,
             pkg_code=pkg_code,
             current_location=current_location,

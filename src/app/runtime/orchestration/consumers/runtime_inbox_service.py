@@ -296,7 +296,7 @@ class RuntimeInboxService:
             return
 
         claimed_now_ms = now_ms if now_ms is not None else int(timezone.now_utc().timestamp() * 1000)
-        await self.idempotency_guard.claim_or_match(
+        _ = await self.idempotency_guard.claim_or_match(
             db,
             provider_code=provider_code,
             operation_kind=spec.operation_kind,
@@ -316,7 +316,7 @@ class RuntimeInboxService:
 
             service = audit_log_service
 
-        await service.create_audit_log(
+        _ = await service.create_audit_log(
             db,
             method="POST",
             title="RuntimeInbox 人工重放",

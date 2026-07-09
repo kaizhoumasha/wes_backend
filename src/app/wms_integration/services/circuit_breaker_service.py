@@ -287,7 +287,7 @@ class WmsCircuitBreakerService(BaseService[WmsCircuitBreakerState, WmsCircuitBre
         if self._observability_emit is None or trace_id is None or state.state == previous_state:
             return
         try:
-            self._observability_emit(
+            _ = self._observability_emit(
                 "wms_breaker.transition",
                 {
                     "trace_id": trace_id,
