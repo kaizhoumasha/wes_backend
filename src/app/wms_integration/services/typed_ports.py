@@ -112,7 +112,7 @@ class WmsTypedPortService:
             return cached_response
 
         response = await self._execute("query_inventory", request, QueryInventoryResponse)
-        await self.query_cache.set_query_inventory(request, response)
+        _ = await self.query_cache.set_query_inventory(request, response)
         return response
 
     async def reserve_inventory(self, request: ReserveInventoryRequest) -> ReserveInventoryResponse:
@@ -294,7 +294,7 @@ class WmsTypedPortService:
             ) from exc
 
         try:
-            await self._record_success_and_breaker(
+            _ = await self._record_success_and_breaker(
                 endpoint=endpoint,
                 evidence_key=evidence_key,
                 request=request,
@@ -363,7 +363,7 @@ class WmsTypedPortService:
                     retryable=False,
                     started_at=started_at,
                 )
-                await self.breaker_service.record_success(
+                _ = await self.breaker_service.record_success(
                     db,
                     target_code=endpoint.target_code,
                     operation_name=endpoint.operation_name,
@@ -405,7 +405,7 @@ class WmsTypedPortService:
                     retryable=False,
                     started_at=started_at,
                 )
-                await self.breaker_service.record_success(
+                _ = await self.breaker_service.record_success(
                     db,
                     target_code=endpoint.target_code,
                     operation_name=endpoint.operation_name,
@@ -447,7 +447,7 @@ class WmsTypedPortService:
                     retryable=True,
                     started_at=started_at,
                 )
-                await self.breaker_service.record_failure(
+                _ = await self.breaker_service.record_failure(
                     db,
                     target_code=endpoint.target_code,
                     operation_name=endpoint.operation_name,
@@ -538,7 +538,7 @@ class WmsTypedPortService:
     ) -> None:
         if self._observability_emit is None or request.trace_id is None:
             return
-        self._observability_emit(
+        _ = self._observability_emit(
             "wms_evidence.persistence_failure",
             {
                 "trace_id": request.trace_id,

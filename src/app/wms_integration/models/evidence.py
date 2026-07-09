@@ -35,7 +35,7 @@ class WmsEvidenceStatus(str, Enum):
 class WmsCallEvidence(DataTableMixin, table=True):
     """WMS 同步/异步对接调用证据。"""
 
-    __tablename__: ClassVar[Literal["wms_call_evidence"]] = "wms_call_evidence"
+    __tablename__: ClassVar[Literal["wms_call_evidence"]] = "wms_call_evidence"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_wms_call_evidence_key", "evidence_key", unique=True),
@@ -90,7 +90,7 @@ class WmsCallEvidence(DataTableMixin, table=True):
 class WmsCallEvidenceArchive(DataTableMixin, table=True):
     """WMS 调用证据归档表。"""
 
-    __tablename__: ClassVar[Literal["wms_call_evidence_archive"]] = "wms_call_evidence_archive"
+    __tablename__: ClassVar[Literal["wms_call_evidence_archive"]] = "wms_call_evidence_archive"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_wms_call_evidence_archive_original_id", "original_evidence_id", unique=True),

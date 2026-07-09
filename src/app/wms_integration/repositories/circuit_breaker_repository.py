@@ -57,7 +57,7 @@ class WmsCircuitBreakerRepository(BaseRepository[WmsCircuitBreakerState]):
 
         if _dialect_name(db) != "postgresql":
             return
-        await db.execute(
+        _ = await db.execute(
             text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
             {"lock_key": f"wms_circuit_breaker:{target_code}:{operation_name}"},
         )

@@ -63,6 +63,24 @@ def test_callback_normalizer_rejects_non_rack_wms_callback_without_trace_id() ->
         WmsExecutionCallbackNormalizer().normalize(payload)
 
 
+@pytest.mark.parametrize("source_system", ["", None])
+def test_callback_normalizer_rejects_non_rack_wms_callback_without_source_system(
+    source_system: str | None,
+) -> None:
+    payload = {
+        "callback_type": "WMS_INVENTORY_STATUS",
+        "dispatch_key": "inventory:sync:001",
+        "status": "SUCCEEDED",
+        "source_system": source_system,
+        "trace_id": "trace-wms-001",
+    }
+    if source_system is None:
+        payload.pop("source_system")
+
+    with pytest.raises(ValueError, match="source_system must be WMS or RCS"):
+        WmsExecutionCallbackNormalizer().normalize(payload)
+
+
 def test_callback_normalizer_rejects_invalid_wms_rcs_source_system() -> None:
     payload = _rack_payload(callback_type="RCS_RACK_TASK_RESULT", status="SUCCEEDED", source_system="ERP")
 

@@ -166,7 +166,7 @@ class SystemOutboxBase(BaseMixin):
 class SystemOutbox(SystemOutboxBase, DataTableMixin, table=True):
     """系统级发件箱。"""
 
-    __tablename__: ClassVar[Literal["system_outbox"]] = "system_outbox"
+    __tablename__: ClassVar[Literal["system_outbox"]] = "system_outbox"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_system_outbox_dispatch_key", "dispatch_key", unique=True),

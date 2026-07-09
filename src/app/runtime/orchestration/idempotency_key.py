@@ -25,7 +25,7 @@ from src.core.mixins.base import BaseMixin
 class IdempotencyKey(BaseMixin, table=True):
     """幂等键表 (主计划 §5.4)。"""
 
-    __tablename__ = "idempotency_keys"
+    __tablename__ = "idempotency_keys"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
 

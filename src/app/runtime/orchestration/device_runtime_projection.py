@@ -19,7 +19,7 @@ from src.core.mixins.base import BaseMixin
 class DeviceRuntimeProjection(BaseMixin, table=True):
     """设备运行态持久投影。"""
 
-    __tablename__ = "device_runtime_projections"
+    __tablename__ = "device_runtime_projections"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         Index("ux_wes_runtime_device_runtime_projections_device_code", "device_code", unique=True),

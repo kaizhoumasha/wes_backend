@@ -90,7 +90,7 @@ def _emit_device_command_result_observability(command: object, callback: Command
         getattr(callback, "command_code", None)
     )
     try:
-        runtime_observability_registry.emit(
+        _ = runtime_observability_registry.emit(
             "device_command.result",
             {
                 "trace_id": _device_command_result_trace_id(command, callback),

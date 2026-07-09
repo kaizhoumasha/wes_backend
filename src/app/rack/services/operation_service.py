@@ -210,7 +210,7 @@ class RackOperationService:
             )
             created_tasks.append(task)
 
-        await self.sync_operation_status(db, operation_key=operation_key)
+        _ = await self.sync_operation_status(db, operation_key=operation_key)
         return created_tasks
 
     async def _get_or_create_operation(
@@ -446,7 +446,7 @@ class RackOperationService:
             and operation_status == RackOperationStatus.SUCCEEDED.value
         ):
             result_json_patch["reconciliation_expected"] = True
-        await self.rack_operation_repository.mark_status(
+        _ = await self.rack_operation_repository.mark_status(
             db,
             operation_key=operation_key,
             operation_status=operation_status,

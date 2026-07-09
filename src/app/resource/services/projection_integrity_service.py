@@ -64,7 +64,7 @@ class ResourceProjectionIntegrityService:
             for occupancy in occupancies
             if (occupancy_id := getattr(occupancy, "id", None)) is not None
         }
-        session_ids = {int(session_id) for session_id in sessions if session_id is not None}
+        session_ids = {int(session_id) for session_id in sessions}
 
         self._append_orphan_mount_issues(report, mounts=mounts, occupancy_by_id=occupancy_by_id)
         self._append_orphan_session_issues(report, rows=active_session_rows, session_ids=session_ids)

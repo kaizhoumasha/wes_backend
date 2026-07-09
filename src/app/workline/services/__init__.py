@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+# pyright: reportUnsupportedDunderAll=false
 from typing import Any
 
 # WorkLine 运行态迁出后,workline 域退化为纯配置域,运行态 service shim 已

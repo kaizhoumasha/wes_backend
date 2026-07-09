@@ -689,7 +689,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
             db, [item.id for item in devices if item.id is not None]
         )
         current_command_ids = [
-            device.current_command_id for device in devices if getattr(device, "current_command_id", None) is not None
+            _require_int_id(device.current_command_id, "device.current_command_id")
+            for device in devices
+            if getattr(device, "current_command_id", None) is not None
         ]
         current_command_rows = await self._load_command_map_by_ids(db, current_command_ids)
         current_command_snapshots: dict[int, RuntimeMonitorCommandSnapshot] = {}
@@ -726,7 +728,9 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 blocked_outbox_summary=blocked_outbox_projection.summary_by_device_id.get(device.id or 0),
                 active_runtime_hold_ids=active_hold_ids_map.get(device.id or 0, []),
                 current_command=(
-                    current_command_snapshots.get(device.current_command_id)
+                    current_command_snapshots.get(
+                        _require_int_id(device.current_command_id, "device.current_command_id")
+                    )
                     if getattr(device, "current_command_id", None) is not None
                     else None
                 ),

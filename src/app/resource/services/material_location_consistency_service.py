@@ -187,13 +187,13 @@ class MaterialLocationConsistencyService:
 
     def _update_current_location(self, material_unit: Any, current_location: str) -> None:
         if self.persistence is not None and hasattr(self.persistence, "update_current_location"):
-            self.persistence.update_current_location(material_unit, current_location)
+            _ = self.persistence.update_current_location(material_unit, current_location)
             return
         material_unit.current_location = current_location
 
     def _mark_reconciling(self, issue: MaterialLocationConsistencyIssue) -> None:
         if self.persistence is not None and hasattr(self.persistence, "mark_reconciling"):
-            self.persistence.mark_reconciling(issue.material_unit, issue.reason_code)
+            _ = self.persistence.mark_reconciling(issue.material_unit, issue.reason_code)
         elif issue.material_unit is not None:
             issue.material_unit.status = "RECONCILING"
         if self.hold_creator is not None and hasattr(self.hold_creator, "create_hold"):

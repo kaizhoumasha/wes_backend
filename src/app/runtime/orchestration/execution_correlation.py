@@ -39,7 +39,7 @@ class ExecutionCorrelation(BaseMixin, table=True):
     RuntimeInbox 处理契约)。
     """
 
-    __tablename__ = "execution_correlations"
+    __tablename__ = "execution_correlations"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA  # runtime 域新 schema (区别 workline/wes_biz)
     __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
     model_config = SQLModelConfig(from_attributes=True, extra="forbid")

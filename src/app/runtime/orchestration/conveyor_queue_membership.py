@@ -19,7 +19,7 @@ from src.core.mixins.base import BaseMixin
 class ConveyorQueueMembership(BaseMixin, table=True):
     """动态输送线队列 membership active/history 投影。"""
 
-    __tablename__ = "conveyor_queue_memberships"
+    __tablename__ = "conveyor_queue_memberships"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
         Index(

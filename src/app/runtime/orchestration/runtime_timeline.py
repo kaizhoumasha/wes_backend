@@ -19,7 +19,7 @@ from src.core.mixins.base import BaseMixin
 class RuntimeTimeline(BaseMixin, table=True):
     """append-only 执行轨迹 (主计划 §9.2)。"""
 
-    __tablename__ = "runtime_timelines"
+    __tablename__ = "runtime_timelines"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
 

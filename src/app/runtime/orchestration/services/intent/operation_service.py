@@ -783,8 +783,6 @@ class WorklineOperationService(BaseService[Any, Any]):
             inbox_data,
             idempotency_key=idempotency_key,
         )
-        if inbox is None:
-            raise RuntimeError(f"创建沙箱外部回调失败: dispatch_key={dispatch_key}")
 
         if existing_inbox is None:
             await self.rack_task_lifecycle_service.record_callback_from_external_http(

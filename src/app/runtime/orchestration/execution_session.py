@@ -28,7 +28,7 @@ class ExecutionSession(BaseMixin, table=True):
     ExecutionCorrelation.correlation_id, 不持强 session FK。
     """
 
-    __tablename__ = "execution_sessions"
+    __tablename__ = "execution_sessions"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA  # runtime 域新 schema
     __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
     model_config = SQLModelConfig(from_attributes=True, extra="forbid")

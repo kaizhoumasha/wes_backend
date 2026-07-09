@@ -22,6 +22,9 @@ from src.app.runtime.orchestration.models.runtime_hold import (
     NgReturnItem,
     NgReturnItemStatus,
 )
+from src.app.runtime.orchestration.models.runtime_hold import (
+    NgReasonSource as RuntimeNgReasonSource,
+)
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
 from src.utils.value_normalization import as_dict
 
@@ -140,7 +143,7 @@ class NgReturnItemService:
                     material_identity_json=material_identity_json,
                     physical_handoff_evidence_json=evidence,
                     disposition=MaterialDisposition.RETURN_TO_NG,
-                    ng_reason_source=reason.source,
+                    ng_reason_source=RuntimeNgReasonSource(reason.source.value),
                     ng_reason_code=reason.canonical_code,
                     ng_reason_label=reason.label,
                     created_from_runtime_hold_id=None,

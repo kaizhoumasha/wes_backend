@@ -91,7 +91,7 @@ class WorklineDiagnosticRepository(BaseRepository[WorklineDiagnostic]):
         """幂等更新 RESOURCE_WAIT 诊断证据。"""
 
         columns = cast("Any", WorklineDiagnostic).__table__.c
-        await db.execute(
+        _ = await db.execute(
             update(WorklineDiagnostic)
             .where(columns.diagnostic_key == diagnostic_key)
             .values(

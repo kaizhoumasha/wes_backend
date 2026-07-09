@@ -169,7 +169,7 @@ def _emit_device_command_ack_observability(
         payload.get("command_code")
     )
     try:
-        runtime_observability_registry.emit(
+        _ = runtime_observability_registry.emit(
             "device_command.ack",
             {
                 "trace_id": coerce_string_value(getattr(command, "trace_id", None))
@@ -654,7 +654,7 @@ def _emit_device_dispatch_policy_observability(
         or "UNKNOWN_DEVICE"
     )
     try:
-        runtime_observability_registry.emit(
+        _ = runtime_observability_registry.emit(
             "device_command.dispatch_policy",
             {
                 "trace_id": coerce_string_value(getattr(command, "trace_id", None))

@@ -649,7 +649,7 @@ def _emit_callback_normalize_observability(
 
     callback_type = cast("str", normalized_payload["callback_type"])
     try:
-        runtime_observability_registry.emit(
+        _ = runtime_observability_registry.emit(
             "callback.normalize",
             {
                 "trace_id": _callback_normalize_trace_id(callback_type, payload, normalized_payload, request_id),

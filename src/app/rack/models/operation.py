@@ -91,7 +91,7 @@ class RackOperationBase(BaseMixin):
 class RackOperation(RackOperationBase, DataTableMixin, table=True):
     """系统级货架业务操作。"""
 
-    __tablename__: ClassVar[Literal["rack_operations"]] = "rack_operations"
+    __tablename__: ClassVar[Literal["rack_operations"]] = "rack_operations"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_rack_operations_key", "operation_key", unique=True),
@@ -169,7 +169,7 @@ class RackTaskBase(BaseMixin):
 class RackTask(RackTaskBase, DataTableMixin, table=True):
     """货架级任务。"""
 
-    __tablename__: ClassVar[Literal["rack_tasks"]] = "rack_tasks"
+    __tablename__: ClassVar[Literal["rack_tasks"]] = "rack_tasks"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_rack_tasks_key", "task_key", unique=True),

@@ -544,7 +544,7 @@ class WorkLineStartAdmissionService:
         trace_id: str | None,
     ) -> None:
         now = timezone.now_for_db()
-        await self.workline_status_projection_service.project_ready_after_start(
+        _ = await self.workline_status_projection_service.project_ready_after_start(
             db,
             workline_id=workline.id,
             occurred_at=now,

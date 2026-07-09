@@ -50,7 +50,7 @@ def _require_positive_int(field_name: str, value: int) -> int:
 
 def _require_json_serializable(field_name: str, value: Any) -> Any:
     try:
-        json.dumps(value, allow_nan=False)
+        _ = json.dumps(value, allow_nan=False)
     except (TypeError, ValueError) as exc:
         raise SortingInboundContextError(f"{field_name} must be JSON serializable") from exc
     return value

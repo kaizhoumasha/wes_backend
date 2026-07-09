@@ -265,7 +265,7 @@ def _post_runtime_open_telemetry_json(
 
     with httpx.Client(timeout=timeout_seconds, trust_env=False) as client:
         response = client.post(endpoint, json=dict(payload), headers=dict(headers))
-        response.raise_for_status()
+        _ = response.raise_for_status()
 
 
 def default_runtime_observability_signals() -> dict[str, RuntimeObservabilitySignal]:

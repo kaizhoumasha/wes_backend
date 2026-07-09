@@ -58,7 +58,7 @@ class WorklineRackPositionService:
     ) -> int:
         """统一读取并校验停靠位容量。"""
 
-        if position.capacity is None or position.capacity < 1:
+        if position.capacity < 1:
             raise ValueError(f"workline rack position capacity invalid: {workline_code}/{position_code}")
         return position.capacity
 

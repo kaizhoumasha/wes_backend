@@ -452,6 +452,7 @@ exclude = [
     ".mypy_cache",
     "backups",
     "claudedocs",
+    "docs/archive",
     "migrations",
     "node_modules",
     "scripts",

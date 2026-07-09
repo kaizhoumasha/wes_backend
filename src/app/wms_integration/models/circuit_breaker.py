@@ -26,7 +26,7 @@ class WmsCircuitBreakerStatus(str, Enum):
 class WmsCircuitBreakerState(DataTableMixin, table=True):
     """按 target_code + operation_name 共享的 WMS 熔断状态。"""
 
-    __tablename__: ClassVar[Literal["wms_circuit_breaker_state"]] = "wms_circuit_breaker_state"
+    __tablename__: ClassVar[Literal["wms_circuit_breaker_state"]] = "wms_circuit_breaker_state"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_wms_circuit_breaker_target_operation", "target_code", "operation_name", unique=True),

@@ -239,7 +239,7 @@ class WmsCallEvidenceService(BaseService[WmsCallEvidence, WmsCallEvidenceReposit
 
         archived_ids: list[int] = []
         for evidence in expired_rows:
-            original_id = int(evidence.id)
+            original_id = _require_evidence_id(evidence.id)
             existing_archive = await self.archive_repo.get_by_original_evidence_id(db, original_id)
             if existing_archive is None:
                 created = await self.archive_repo.create(
@@ -282,6 +282,12 @@ def _build_async_evidence_summary(summary: dict[str, Any]) -> dict[str, Any]:
         if _is_scalar(value):
             evidence_summary[key] = _truncate_metadata_value(value)
     return evidence_summary
+
+
+def _require_evidence_id(value: int | None) -> int:
+    if value is None:
+        raise ValueError("wms evidence id must not be None when archiving")
+    return value
 
 
 def _is_scalar(value: Any) -> bool:
@@ -332,7 +338,7 @@ def _archive_evidence_data(
     retention_cutoff_at: datetime,
 ) -> dict[str, Any]:
     return {
-        "original_evidence_id": int(evidence.id),
+        "original_evidence_id": _require_evidence_id(evidence.id),
         "evidence_key": evidence.evidence_key,
         "operation_name": evidence.operation_name,
         "target_code": evidence.target_code,

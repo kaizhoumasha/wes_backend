@@ -313,13 +313,13 @@ class RuntimeHoldReleaseService:
         remaining_active_blocking_holds = len(remaining_holds)
         release_workline_scope = remaining_active_blocking_holds == 0
         if release_workline_scope:
-            await self.outbox_repo.park_blocked_by_runtime_hold_until_start(
+            _ = await self.outbox_repo.park_blocked_by_runtime_hold_until_start(
                 db,
                 runtime_hold_id=cast("int", hold.id),
                 workline_id=hold.workline_id,
             )
             released_outbox_count = 0
-            await workline_runtime_status_projection_service.project_stopped_waiting_start(
+            _ = await workline_runtime_status_projection_service.project_stopped_waiting_start(
                 db,
                 workline_id=hold.workline_id,
             )
@@ -405,7 +405,7 @@ class RuntimeHoldReleaseService:
                     material_identity_json=asdict(material_identity),
                     physical_handoff_evidence_json=release_context.physical_handoff_evidence,
                     disposition=MaterialDisposition.RETURN_TO_NG,
-                    ng_reason_source=ng_reason.source,
+                    ng_reason_source=NgReasonSource(ng_reason.source.value),
                     ng_reason_code=ng_reason.canonical_code,
                     ng_reason_label=ng_reason.label,
                     operator_note=request.operator_note,
@@ -886,14 +886,14 @@ class RuntimeHoldReleaseService:
                     workline_id=workline_id,
                 )
                 active_safety_incident_id = optional_int(getattr(snapshot, "active_safety_incident_id", None))
-            await workline_runtime_status_projection_service.project_estopped_active_hold(
+            _ = await workline_runtime_status_projection_service.project_estopped_active_hold(
                 db,
                 workline_id=workline_id,
                 reason=safety_hold.source_reason,
                 active_safety_incident_id=active_safety_incident_id,
             )
         else:
-            await workline_runtime_status_projection_service.project_reconciling(
+            _ = await workline_runtime_status_projection_service.project_reconciling(
                 db,
                 workline_id=workline_id,
                 reason=first_hold.source_reason,

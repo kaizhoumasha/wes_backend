@@ -398,7 +398,7 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
             }.items()
             if value is not None
         }
-        await self.transition_service.record_transition(
+        _ = await self.transition_service.record_transition(
             db,
             domain=ObjectTransitionDomain.HANDLING,
             object_type="CONVEYOR_QUEUE_MEMBERSHIP",

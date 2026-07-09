@@ -14,6 +14,7 @@ from src.app.runtime.orchestration.models.inbox import (
     WorklineInbox,
 )
 from src.app.runtime.orchestration.repositories import inbox_repository
+from src.app.runtime.orchestration.repositories.inbox_repository import WorklineInboxClaim, WorklineInboxRepository
 from src.app.workline.inbox_claim_bucket import build_claim_bucket_key
 from src.core.base_service import BaseService
 from src.core.exceptions import ConflictException
@@ -76,14 +77,14 @@ def _claim_payload_text(payload: dict[str, Any], *field_names: str) -> str | Non
     return None
 
 
-def _runtime_inbox_claim_trace_id(claim: inbox_repository.WorklineInboxClaim) -> str:
+def _runtime_inbox_claim_trace_id(claim: WorklineInboxClaim) -> str:
     payload = claim.payload_json
     return (
         coerce_optional_str(claim.trace_id) or _claim_payload_text(payload, "trace_id") or f"runtime-inbox:{claim.id}"
     )
 
 
-def _runtime_inbox_claim_correlation_id(claim: inbox_repository.WorklineInboxClaim) -> str:
+def _runtime_inbox_claim_correlation_id(claim: WorklineInboxClaim) -> str:
     payload = claim.payload_json
     correlation_id = _claim_payload_text(payload, "correlation_id", "execution_correlation_id")
     if correlation_id:
@@ -99,17 +100,17 @@ def _runtime_inbox_claim_correlation_id(claim: inbox_repository.WorklineInboxCla
     return f"inbox:{claim.id}"
 
 
-def _runtime_inbox_claim_operation_kind(claim: inbox_repository.WorklineInboxClaim) -> str:
+def _runtime_inbox_claim_operation_kind(claim: WorklineInboxClaim) -> str:
     return coerce_optional_str(enum_value(claim.kind)) or "UNKNOWN"
 
 
-def _emit_runtime_inbox_claim_observability(claim: inbox_repository.WorklineInboxClaim) -> None:
+def _emit_runtime_inbox_claim_observability(claim: WorklineInboxClaim) -> None:
     """发出 RuntimeInbox claim 观测事件；观测失败不改变 claim 业务状态。"""
 
     from src.app.runtime.orchestration.observability import runtime_observability_registry
 
     try:
-        runtime_observability_registry.emit(
+        _ = runtime_observability_registry.emit(
             "runtime_inbox.claim",
             {
                 "trace_id": _runtime_inbox_claim_trace_id(claim),
@@ -122,7 +123,7 @@ def _emit_runtime_inbox_claim_observability(claim: inbox_repository.WorklineInbo
         logger.warning(f"RuntimeInbox claim 观测事件发射失败: inbox_id={claim.id}, error={exc}")
 
 
-class WorklineInboxService(BaseService[WorklineInbox, type(inbox_repository)]):
+class WorklineInboxService(BaseService[WorklineInbox, WorklineInboxRepository]):
     """作业线收件箱业务逻辑层"""
 
     def __init__(self) -> None:

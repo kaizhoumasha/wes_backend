@@ -55,7 +55,7 @@ class WorklineRackPositionBase(BaseMixin):
 class WorklineRackPosition(WorklineRackPositionBase, DataTableMixin, table=True):
     """工作线可停靠货架位置配置。"""
 
-    __tablename__: ClassVar[Literal["workline_rack_positions"]] = "workline_rack_positions"
+    __tablename__: ClassVar[Literal["workline_rack_positions"]] = "workline_rack_positions"  # pyright: ignore[reportIncompatibleVariableOverride]
     __schema__ = SchemaType.BIZ.value
     __table_args__ = (
         Index("ux_workline_rack_positions_line_position", "workline_code", "position_code", unique=True),

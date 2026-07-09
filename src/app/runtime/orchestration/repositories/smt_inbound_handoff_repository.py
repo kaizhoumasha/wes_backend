@@ -102,7 +102,7 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
             .values(values)
             .on_conflict_do_nothing(index_elements=[table.c.handoff_demand_id, table.c.item_key])
         )
-        await db.execute(statement)
+        _ = await db.execute(statement)
         await db.flush()
 
     async def list_source_items(
