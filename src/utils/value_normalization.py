@@ -116,12 +116,17 @@ def canonical_event_type(payload: dict[str, Any]) -> str | None:
 # ── 跨域值提取与校验（消除 DRY 违规） ──
 
 
-def require_text(payload: Mapping[str, Any], field_name: str) -> str:
-    """从 Mapping 中取必填非空字符串，缺失或为空抛出 ValueError。"""
-    value = coerce_string_value(payload.get(field_name))
-    if not value:
+def require_text(value: Any, field_name: str) -> str:
+    """校验 value 是非空字符串，否则抛出 ValueError。
+
+    字段名仅用于错误信息与单值场景的语义标注，不参与取值。
+    """
+    if value is None:
         raise ValueError(f"{field_name} is required")
-    return value
+    text = str(value).strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    return text
 
 
 def require_text_any(payload: Mapping[str, Any], *field_names: str) -> str:

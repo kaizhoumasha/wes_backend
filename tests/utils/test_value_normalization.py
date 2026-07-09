@@ -17,19 +17,15 @@ from src.utils.value_normalization import (
 
 class TestRequireText:
     def test_returns_value_when_present(self) -> None:
-        assert require_text({"a": "hello"}, "a") == "hello"
-
-    def test_raises_when_missing(self) -> None:
-        with pytest.raises(ValueError, match="a is required"):
-            require_text({}, "a")
+        assert require_text("hello", "a") == "hello"
 
     def test_raises_when_empty_string(self) -> None:
         with pytest.raises(ValueError, match="a is required"):
-            require_text({"a": ""}, "a")
+            require_text("", "a")
 
     def test_raises_when_none(self) -> None:
         with pytest.raises(ValueError, match="a is required"):
-            require_text({"a": None}, "a")
+            require_text(None, "a")
 
 
 class TestRequireTextAny:
