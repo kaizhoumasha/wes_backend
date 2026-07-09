@@ -181,7 +181,7 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 | 业务流程模型（`smt_inbound_handoff.py`、`object_transition_event.py`） | rebuild | material-flow 按目标态 capability 重建 |
 | API routes（21 个，`v1/`） | rebuild | runtime 监控/handoff/trace/hold 路由迁 runtime 域；workline 配置 CRUD 路由保留 |
 | Services（inbox_batch_processor/outbox_dispatch/device_command_gateway 等） | rebuild | `class` / `def` / `async def` 全量登记；执行状态服务迁 runtime 域，按 EffectPort/RuntimeInbox 重建 |
-| `single_layer_rack_orchestration_service` | rebuild | material-flow 单层机架编排，按目标态 capability 重建（C1 seed 关联） |
+| `single_layer_rack_orchestration_service` | rebuild | material-flow 单层机架编排，按目标态 capability 重建（WMS_INTEGRATION_BOUNDARY seed 关联） |
 
 ### 7.2 workline_runtime（83 entries）
 
@@ -210,8 +210,8 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 | seed rule | 路径 | owner | drop_phase |
 | --- | --- | --- | --- |
-| C1（WMS import，5 条） | callback_ingress_service.py、rack/gateway.py、handling/gateway.py、single_layer_rack_orchestration_service.py、`src/workline_runtime/services.py:build_workline_runtime_services` | callback/rack/handling/workline/workline_runtime | phase2/phase5-tech |
-| C2（session FK） | resource/projection_service.py、projection_integrity_service.py、resource.py、wms_integration/transport_contract.py | resource/wms_integration | phase1 |
+| WMS_INTEGRATION_BOUNDARY（WMS import，5 条） | callback_ingress_service.py、rack/gateway.py、handling/gateway.py、single_layer_rack_orchestration_service.py、`src/workline_runtime/services.py:build_workline_runtime_services` | callback/rack/handling/workline/workline_runtime | phase2/phase5-tech |
+| EXECUTION_CORRELATION_BOUNDARY（session FK） | resource/projection_service.py、projection_integrity_service.py、resource.py、wms_integration/transport_contract.py | resource/wms_integration | phase1 |
 | CAPABILITY_IMPLEMENTATION_IMPORT（capability forbidden import，18 条） | workline services/repositories 及已迁入 runtime 实现中逐文件枚举的 device/wms_integration services/models import | workline/runtime | phase2 |
 
 > seed_scope 非对应域完整清理矩阵，仅为 P0-007 seed allowlist 建立可追踪 `legacy_entry_id`。每条 seed allowlist 违规必须能反查本矩阵 entry，且 `drop_phase` 一致。CAPABILITY_IMPLEMENTATION_IMPORT allowlist 禁止目录前缀，必须逐文件枚举，避免未来新增违规被历史豁免吞掉。
@@ -220,14 +220,14 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 | 风险项 | phase | 说明 |
 | --- | --- | --- |
-| 执行状态迁移（192 条执行状态语义；phase2 rebuild 总计 227 条） | phase2 | 整体迁 runtime/orchestration，须保证崩溃重放不丢 intent；旧 `WorklineInbox` 只作 characterization（C5 约束） |
+| 执行状态迁移（192 条执行状态语义；phase2 rebuild 总计 227 条） | phase2 | 整体迁 runtime/orchestration，须保证崩溃重放不丢 intent；旧 `WorklineInbox` 只作 characterization（RUNTIME_INBOX_STATE_MACHINE 约束） |
 | phase4 业务流程（104 entries） | phase4 | 粗分机/满箱交换/分拣机/SMT/NG 语义重建，须 characterization + contract test 先行 |
-| `single_layer_rack_orchestration_service`（C1 seed） | phase2 | 跨域 WMS import，Phase 2 迁移时消除 |
+| `single_layer_rack_orchestration_service`（WMS_INTEGRATION_BOUNDARY seed） | phase2 | 跨域 WMS import，Phase 2 迁移时消除 |
 | device `session_id_int` ↔ session `awaiting_command_id` 外键环 | phase1 | 见 P0-004 §4.4，Phase 1 CEO-010 同步处理 |
 
 ## 9. 验收（SPEC P0-002）
 
-1. ✅ 每个旧入口都有且只有一个主策略（CSV 638 条，strategy 字段非空）
+1. ✅ 每个旧入口都有且只有一个主策略（CSV 641 条，strategy 字段非空）
 2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，104 条）
 3. ✅ 标记删除、迁移或重建前置条件（`blocking_tests` 字段非空）
 4. ✅ pending-review 归零（全部 final）

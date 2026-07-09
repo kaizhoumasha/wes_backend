@@ -442,13 +442,13 @@ def resolve_blocking_tests(business_semantics: str, entry_type: str, path: str, 
         ),
         (
             ("执行状态",),
-            "tests/architecture/test_c5_runtime_inbox_state_machine.py;"
+            "tests/architecture/test_runtime_inbox_state_machine_guardrail.py;"
             "tests/contracts/workline/test_runtime_snapshot_contract.py",
         ),
-        (("跨域 session",), "tests/architecture/test_c2_cross_domain_fk_guardrail.py"),
+        (("跨域 session",), "tests/architecture/test_execution_correlation_boundary_guardrail.py"),
         (
             ("跨域 WMS import",),
-            "tests/architecture/test_c1_wms_import_guardrail.py;"
+            "tests/architecture/test_wms_integration_boundary_guardrail.py;"
             "tests/contracts/workline/test_external_contract_profile_fixtures.py",
         ),
         (
@@ -469,21 +469,21 @@ def resolve_blocking_tests(business_semantics: str, entry_type: str, path: str, 
 SeedPath = tuple[str, str, str, str, str, str]
 
 
-def _ri3b_business_semantics(line: str) -> str:
+def _capability_implementation_import_business_semantics(line: str) -> str:
     if "src.app.wms_integration." in line:
         return "capability import wms_integration 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed)"
     return "capability import device 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed)"
 
 
-def _append_ri3b_seed_paths(seed_paths: list[SeedPath]) -> None:
-    ri3b_pattern = r"from src\.app\.(wms_integration|device)\.(services|models)\..* import"
+def _append_capability_implementation_import_seed_paths(seed_paths: list[SeedPath]) -> None:
+    capability_implementation_import_pattern = r"from src\.app\.(wms_integration|device)\.(services|models)\..* import"
     scan_paths = [
         "src/app/workline/services",
         "src/app/workline/repositories",
         "src/app/runtime/orchestration/repositories",
         *MIGRATED_SERVICE_IMPLS.values(),
     ]
-    for line in git_grep(ri3b_pattern, scan_paths):
+    for line in git_grep(capability_implementation_import_pattern, scan_paths):
         m = re.match(r"([^:]+):(\d+):", line)
         if not m:
             continue
@@ -494,7 +494,7 @@ def _append_ri3b_seed_paths(seed_paths: list[SeedPath]) -> None:
                 path,
                 "workline",
                 etype,
-                _ri3b_business_semantics(line),
+                _capability_implementation_import_business_semantics(line),
                 "phase2",
                 "MEDIUM",
             )
@@ -715,21 +715,28 @@ def parse_entries() -> list[Entry]:
     # 9. guardrail_seed_scope: P0-007 seed allowlist 命中的跨域路径
     # (callback/rack/handling/resource/wms_integration, 非完整清理, 仅供 allowlist 追踪)
     seed_paths = [
-        # C1: 跨域 WMS import
+        # WMS_INTEGRATION_BOUNDARY: 跨域 WMS import
         (
             "src/app/callback/services/callback_ingress_service.py",
             "callback",
             "service",
-            "跨域 WMS import (C1 seed)",
+            "跨域 WMS import (WMS_INTEGRATION_BOUNDARY seed)",
             "phase2",
             "MEDIUM",
         ),
-        ("src/app/rack/services/gateway.py", "rack", "service", "跨域 WMS import (C1 seed)", "phase2", "MEDIUM"),
+        (
+            "src/app/rack/services/gateway.py",
+            "rack",
+            "service",
+            "跨域 WMS import (WMS_INTEGRATION_BOUNDARY seed)",
+            "phase2",
+            "MEDIUM",
+        ),
         (
             "src/app/handling/services/gateway.py",
             "handling",
             "service",
-            "跨域 WMS import (C1 seed)",
+            "跨域 WMS import (WMS_INTEGRATION_BOUNDARY seed)",
             "phase2",
             "MEDIUM",
         ),
@@ -737,7 +744,7 @@ def parse_entries() -> list[Entry]:
             "src/app/workline/services/single_layer_rack_orchestration_service.py",
             "workline",
             "service",
-            "跨域 WMS import (C1 seed)",
+            "跨域 WMS import (WMS_INTEGRATION_BOUNDARY seed)",
             "phase2",
             "MEDIUM",
         ),
@@ -745,17 +752,24 @@ def parse_entries() -> list[Entry]:
             "src/workline_runtime/services.py",
             "workline_runtime",
             "runtime_helper",
-            "跨域 WMS import (C1 seed)",
+            "跨域 WMS import (WMS_INTEGRATION_BOUNDARY seed)",
             "phase5-tech",
             "LOW",
         ),
-        # C2: 跨域 session FK
-        ("src/app/handling/models/operation.py", "handling", "model", "跨域 session FK (C2 seed)", "phase1", "MEDIUM"),
+        # EXECUTION_CORRELATION_BOUNDARY: 跨域 session FK
+        (
+            "src/app/handling/models/operation.py",
+            "handling",
+            "model",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
+            "phase1",
+            "MEDIUM",
+        ),
         (
             "src/app/handling/services/lifecycle_service.py",
             "handling",
             "service",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase1",
             "MEDIUM",
         ),
@@ -763,16 +777,23 @@ def parse_entries() -> list[Entry]:
             "src/app/handling/services/operation_service.py",
             "handling",
             "service",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase1",
             "MEDIUM",
         ),
-        ("src/app/rack/models/operation.py", "rack", "model", "跨域 session FK (C2 seed)", "phase2", "HIGH"),
+        (
+            "src/app/rack/models/operation.py",
+            "rack",
+            "model",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
+            "phase2",
+            "HIGH",
+        ),
         (
             "src/app/rack/repositories/operation_repository.py",
             "rack",
             "repository",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase2",
             "MEDIUM",
         ),
@@ -780,7 +801,7 @@ def parse_entries() -> list[Entry]:
             "src/app/rack/services/operation_service.py",
             "rack",
             "service",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase2",
             "MEDIUM",
         ),
@@ -788,7 +809,7 @@ def parse_entries() -> list[Entry]:
             "src/app/rack/services/task_lifecycle_service.py",
             "rack",
             "service",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase2",
             "MEDIUM",
         ),
@@ -796,7 +817,7 @@ def parse_entries() -> list[Entry]:
             "src/app/resource/services/projection_service.py",
             "resource",
             "service",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase1",
             "MEDIUM",
         ),
@@ -804,7 +825,7 @@ def parse_entries() -> list[Entry]:
             "src/app/resource/services/projection_integrity_service.py",
             "resource",
             "service",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase1",
             "MEDIUM",
         ),
@@ -812,7 +833,7 @@ def parse_entries() -> list[Entry]:
             "src/app/resource/services/relation_service.py",
             "resource",
             "service",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase1",
             "MEDIUM",
         ),
@@ -820,16 +841,23 @@ def parse_entries() -> list[Entry]:
             "src/app/resource/services/smt_rack_bin_scheduling_service.py",
             "resource",
             "service",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase1",
             "MEDIUM",
         ),
-        ("src/app/resource/models/resource.py", "resource", "model", "跨域 session FK (C2 seed)", "phase1", "MEDIUM"),
+        (
+            "src/app/resource/models/resource.py",
+            "resource",
+            "model",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
+            "phase1",
+            "MEDIUM",
+        ),
         (
             "src/app/wms_integration/services/transport_contract.py",
             "wms_integration",
             "service",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase1",
             "MEDIUM",
         ),
@@ -837,7 +865,7 @@ def parse_entries() -> list[Entry]:
             "src/app/workline/models/object_transition_event.py",
             "workline",
             "model",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase2",
             "MEDIUM",
         ),
@@ -845,7 +873,7 @@ def parse_entries() -> list[Entry]:
             "src/app/workline/repositories/object_transition_event_repository.py",
             "workline",
             "repository",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase2",
             "LOW",
         ),
@@ -853,7 +881,7 @@ def parse_entries() -> list[Entry]:
             "src/app/workline/services/object_transition_event_service.py",
             "workline",
             "service",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase2",
             "MEDIUM",
         ),
@@ -861,7 +889,7 @@ def parse_entries() -> list[Entry]:
             "src/app/runtime/orchestration/services/inbox/object_transition_event_service.py",
             "runtime",
             "service",
-            "跨域 session FK (C2 seed — impl 物理迁入 inbox/ 后 path 跟踪)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed — impl 物理迁入 inbox/ 后 path 跟踪)",
             "phase2",
             "MEDIUM",
         ),
@@ -869,7 +897,7 @@ def parse_entries() -> list[Entry]:
             "src/app/workline/services/runtime_reconciliation_service.py",
             "workline",
             "service",
-            "跨域 session FK (C2 seed)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed)",
             "phase2",
             "MEDIUM",
         ),
@@ -877,13 +905,13 @@ def parse_entries() -> list[Entry]:
             "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py",
             "runtime",
             "service",
-            "跨域 session FK (C2 seed — impl 物理迁入 reconciliation/ 后 path 跟踪)",
+            "跨域 session FK (EXECUTION_CORRELATION_BOUNDARY seed — impl 物理迁入 reconciliation/ 后 path 跟踪)",
             "phase2",
             "MEDIUM",
         ),
     ]
 
-    _append_ri3b_seed_paths(seed_paths)
+    _append_capability_implementation_import_seed_paths(seed_paths)
     seed_paths.extend(
         [
             (

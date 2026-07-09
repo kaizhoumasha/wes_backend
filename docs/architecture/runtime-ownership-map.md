@@ -1,6 +1,6 @@
 # Runtime Ownership Map
 
-> 目标态契约：明确 `src/app/runtime/orchestration/` 域的所有面，固化业务 capability、域服务、入站消费者对 runtime 能力的访问边界。  
+> 目标态契约：明确 `src/app/runtime/orchestration/` 域的所有面，固化业务 capability、域服务、入站消费者对 runtime 能力的访问边界。
 > 配套阅读：[`./workline-and-plugin-restructuring.md`](./workline-and-plugin-restructuring.md) 与 [`./adr/0001-phase2-runtime-ownership.md`](./adr/0001-phase2-runtime-ownership.md)。
 
 ## 1. 适用范围

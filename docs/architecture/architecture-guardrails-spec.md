@@ -10,8 +10,8 @@ note: |
 
 # Architecture Guardrails
 
-> 脚本：`scripts/architecture-guardrails.sh`  
-> allowlist：`scripts/architecture-guardrails.allowlist`  
+> 脚本：`scripts/architecture-guardrails.sh`
+> allowlist：`scripts/architecture-guardrails.allowlist`
 > 测试：`tests/architecture/`
 
 ## 1. 编写目的

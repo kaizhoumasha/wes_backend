@@ -295,11 +295,17 @@ def test_process_naming_guardrail_rejects_stale_script_and_option_tokens() -> No
         "tests/architecture/test_c4_device_command_fields_guardrail.py",
         "tests/architecture/test_ri3c_inbound_normalizer_port_guardrail.py",
         "tests/architecture/test_wlr_import_guardrail.py",
+        "tests/architecture/test_c1_wms_import_guardrail.py",
+        "tests/architecture/test_c2_cross_domain_fk_guardrail.py",
+        "tests/architecture/test_c5_runtime_inbox_state_machine.py",
         "rule_c3",
         "rule_c4",
         "rule_ri3b",
         "rule_ri3c",
         "rule_wlr_import",
+        "_append_ri3b_seed_paths",
+        "C1 seed",
+        "C2 seed",
         "[C3] warning",
         "[C4] violation",
         "R-I3b seed allowlist",
@@ -310,3 +316,20 @@ def test_process_naming_guardrail_rejects_stale_script_and_option_tokens() -> No
 
     for example in examples:
         assert any(pattern.search(example) for _, pattern in PROCESS_NAME_PATTERNS), example
+
+
+def test_legacy_matrix_generator_uses_stable_guardrail_seed_names() -> None:
+    content = (REPO_ROOT / "scripts/generate_legacy_matrix.py").read_text(encoding="utf-8")
+    forbidden_patterns = {
+        "old test file path": re.compile(r"test_c[1-5]_|test_ri3[a-c]?_|test_wlr_", re.IGNORECASE),
+        "old helper shorthand": re.compile(r"\b_?(?:ri3[a-c]?|wlr)_", re.IGNORECASE),
+        "old seed shorthand": re.compile(r"\b(?:C[1-5]|R-I3[a-c]?|R-WLR) seed\b"),
+    }
+
+    offenders = [
+        f"{label}: {match.group(0)}"
+        for label, pattern in forbidden_patterns.items()
+        for match in pattern.finditer(content)
+    ]
+
+    assert offenders == []
