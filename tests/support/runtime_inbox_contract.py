@@ -1,10 +1,10 @@
-"""RuntimeInbox 目标态状态机契约（测试专用, C5）。
+"""RuntimeInbox 目标态状态机契约（测试专用, RUNTIME_INBOX_STATE_MACHINE）。
 
 不 import legacy src.app.workline.models.inbox.WorklineInbox;
 旧 NEW/RETRY/PROCESSING 只可作 characterization 来源, 不反向决定目标态命名。
 生产路径已升级到 runtime/orchestration。
 
-对应主计划 §9.2 RuntimeInbox 处理契约 + §7.5 C5。
+对应主计划 §9.2 RuntimeInbox 处理契约 + §7.5 RUNTIME_INBOX_STATE_MACHINE。
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Literal
 
 InboxStatus = Literal["RECEIVED", "PROCESSING", "PROCESSED", "FAILED", "DEAD_LETTER"]
 
-# 合法状态转移 (主计划 §9.2 + SPEC P0-007 C5)
+# 合法状态转移 (主计划 §9.2 + SPEC P0-007 RUNTIME_INBOX_STATE_MACHINE)
 LEGAL_TRANSITIONS: dict[str, set[str]] = {
     "RECEIVED": {"PROCESSING"},
     "PROCESSING": {"PROCESSED", "FAILED", "RECEIVED"},  # PROCESSED 成功 / FAILED 可重试 / lease 过期回 RECEIVED

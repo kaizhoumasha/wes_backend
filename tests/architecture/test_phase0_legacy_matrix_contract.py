@@ -149,11 +149,14 @@ def test_runtime_and_plugin_all_exports_are_inventory_entries():
     assert missing == []
 
 
-def test_ri3b_device_seed_targets_device_command_port():
-    """只 import device 实现的 R-I3b seed 必须指向 DeviceCommandPort。"""
-    # 阶段 6 C3:device_command_gateway 物理迁入 runtime/orchestration/services/ 后,
-    # R-I3b seed 路径跟随新位置(impl 物理迁入 后 path 跟踪)。
-    entry = _entry_by_id("legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#R-I3b")
+def test_capability_implementation_import_device_seed_targets_device_command_port():
+    """只 import device 实现的 CAPABILITY_IMPLEMENTATION_IMPORT seed 必须指向 DeviceCommandPort。"""
+    # 阶段 6 AUTHORITY_METADATA_BOUNDARY:
+    # device_command_gateway 物理迁入 runtime/orchestration/services/ 后,
+    # CAPABILITY_IMPLEMENTATION_IMPORT seed 路径跟随新位置(impl 物理迁入 后 path 跟踪)。
+    entry = _entry_by_id(
+        "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT"
+    )
 
     assert entry is not None
     assert "capability import device 实现" in entry.business_semantics
@@ -161,11 +164,13 @@ def test_ri3b_device_seed_targets_device_command_port():
     assert entry.target_capability == "DeviceCommandPort.dispatch"
 
 
-def test_ri3b_wms_seed_targets_wms_fulfillment_port():
-    """import wms_integration 实现的 R-I3b seed 仍指向 WMS 履约 port。"""
-    entry = _entry_by_id("legacy:src/app/workline/services/single_layer_rack_orchestration_service.py:<file>#R-I3b")
+def test_capability_implementation_import_wms_seed_targets_wms_fulfillment_port():
+    """import wms_integration 实现的 CAPABILITY_IMPLEMENTATION_IMPORT seed 仍指向 WMS 履约 port。"""
+    entry = _entry_by_id(
+        "legacy:src/app/workline/services/single_layer_rack_orchestration_service.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT"
+    )
 
     assert entry is not None
-    assert entry.business_semantics == "capability import wms_integration 实现 (R-I3b seed)"
+    assert entry.business_semantics == "capability import wms_integration 实现 (CAPABILITY_IMPLEMENTATION_IMPORT seed)"
     assert entry.target_path == "src/app/runtime/orchestration/ports/wms_fulfillment.py"
     assert entry.target_capability == "WmsFulfillmentPort.request_transport"

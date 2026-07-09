@@ -1,7 +1,7 @@
 # 旧 plugin runtime 桥接实现:src.workline_runtime.exceptions 的门面副本
 # 旧 runtime 入口删除后,本桥接承载对应正式边界。
-# C5a 未单独镜像 exceptions.py,本桥接为 C5b orchestrator_bridge 的
-# PluginNotFoundError 引用提供 mirror 来源(C5a brief 漏报)。
+# stable runtime mirror 未单独镜像 exceptions.py,本桥接为 stable orchestrator bridge 的
+# PluginNotFoundError 引用提供 mirror 来源。
 
 """Workline Runtime 异常定义。"""
 

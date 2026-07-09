@@ -1,4 +1,4 @@
-"""Callback 域诊断模型 — wlr.diagnostics.models 镜像。"""
+"""Callback 域诊断模型 — legacy runtime.diagnostics.models 镜像。"""
 
 from __future__ import annotations
 

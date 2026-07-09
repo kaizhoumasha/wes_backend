@@ -1,4 +1,4 @@
-"""C3 guardrail: 查询响应强制 scope/authority/source/evidence_at。
+"""AUTHORITY_METADATA_BOUNDARY guardrail: 查询响应强制 scope/authority/source/evidence_at。
 
 复用 tests/support/workline_contracts.py 的 authority validator。
 """
@@ -11,13 +11,13 @@ from tests.support.workline_contracts import (
 )
 
 
-def test_c3_complete_authority_metadata_accepted():
+def test_authority_metadata_boundary_complete_authority_metadata_accepted():
     meta = AuthorityMetadata(scope="s", authority="WMS", source="wms", evidence_at="t")
     ok, _ = validate_authority_metadata(meta)
     assert ok
 
 
-def test_c3_missing_any_field_rejected():
+def test_authority_metadata_boundary_missing_any_field_rejected():
     for missing in ("scope", "authority", "source", "evidence_at"):
         kwargs = {"scope": "s", "authority": "WMS", "source": "wms", "evidence_at": "t"}
         kwargs[missing] = ""

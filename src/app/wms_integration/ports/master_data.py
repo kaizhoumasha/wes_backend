@@ -31,8 +31,8 @@ class WmsMasterDataPort(Protocol):
     """WMS 物料主数据 port。
 
     所有方法 query-only, 短 TTL 缓存 (主计划 §6: 30s)。
-    Runtime capability 注入时仅暴露 query port contract (R-I3b 禁止内部域
-    import wms_integration 实现)。
+    Runtime capability 注入时仅暴露 query port contract。
+    capability implementation import boundary 禁止内部域 import wms_integration 实现。
     """
 
     def get_material(self, material_code: str) -> WmsMasterDataItem:

@@ -19,7 +19,7 @@
 - RuntimeIntentLog 是 outbox/effect ledger, dispatch_status:
   PENDING -> DISPATCHING -> DISPATCHED/ACKED/FAILED
 - InboundEventPort / WmsEventPort / DeviceEventPort / RuntimeInbox consumer
-  不在业务 capability 注册表 (R-I3a/R-I3b)
+  不在业务 capability 注册表 (capability dependency guardrails)
 
 runtime core 实体已落地; ConveyorQueueMembership active/history 投影随 runtime schema 管理。
 """

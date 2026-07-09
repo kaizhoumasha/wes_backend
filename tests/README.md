@@ -66,6 +66,7 @@
 - service、projection、builder、orchestrator、runtime intent 等测试放回对应领域目录。
 - 共享 fixture 和 mock builder 优先放到领域内 `conftest.py` 或 `support/`，避免跨文件复制同名 `mock_db`、`mock_session`、`mock_workline`。
 - Active production code and active gates must not introduce numbered phase/wave names, lane labels, or cleanup milestone wording; use stable domain names instead. Historical docs, archived plans, and Alembic revision filenames are allowed.
+- Active guardrail IDs, test filenames, script functions, and production comments must use stable domain names such as `AUTHORITY_METADATA_BOUNDARY`, `DEVICE_COMMAND_BOUNDARY`, `CAPABILITY_IMPLEMENTATION_IMPORT`, `INBOUND_NORMALIZER_OWNERSHIP`, and `LEGACY_RUNTIME_IMPORT`; old restructuring shorthand like `C3`, `C4`, `R-I3c`, `R-WLR`, or `wlr` is only allowed in historical records.
 
 ### 运行默认快速回归
 

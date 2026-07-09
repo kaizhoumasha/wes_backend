@@ -2,7 +2,8 @@
 
 验收: DeviceCommand 状态机 PENDING → SENT → ACK_RECEIVED → COMPLETED 正确推进;
        H4 反注入禁止字段 (plc/coordinate/joint_angle/x_coord/y_coord/safety_loop)
-       被 params 阻断; correlation_id 跨域稳定; 不含 session FK (主计划 §7.5 C4)。
+       被 params 阻断; correlation_id 跨域稳定; 不含 session FK。
+       主计划 §7.5 DEVICE_COMMAND_BOUNDARY。
 mock 仅允许 `src/app/device/models/command.py` 内的 skeleton 模型, 不依赖 DB。
 """
 
@@ -108,7 +109,7 @@ def test_command_request_params_accept_normal_business_fields():
 
 def test_device_command_correlation_id_links_to_execution_correlation():
     """happy path: correlation_id 引用 ExecutionCorrelation.correlation_id,
-    无 session FK (主计划 §7.5 C4)。"""
+    无 session FK (主计划 §7.5 DEVICE_COMMAND_BOUNDARY)。"""
     cmd = DeviceCommand(
         device_id=1,
         workline_id=7,

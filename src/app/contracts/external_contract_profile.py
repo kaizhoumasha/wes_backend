@@ -4,10 +4,12 @@
 共享层, 供 wms_integration / device / runtime/orchestration 域 import 使用。
 
 设计理由 (AP1 ADR-0009):
-- 共享 contract 层避免 R-I3b 误报 (tests/support/ 升级到 src/app/wms_integration/models/
-  会让 wms_integration 内部域反向被 runtime 引用, 触发 C1/R-I3b)
+- 共享 contract 层避免 capability implementation import boundary 误报。
+  如果 tests/support/ 升级到 src/app/wms_integration/models/, 会让
+  wms_integration 内部域反向被 runtime 引用, 触发 WMS integration 和
+  capability implementation import boundaries。
 - 三个 typed DTO 共享同一包, 避免 InboundNormalizerProfile 与 RuntimeCapabilityProfile
-  分散在不同域导致 R-I3 type guard 难以统一维护
+  分散在不同域导致 capability dependency type guard 难以统一维护
 - security_profile 占位: external-callback-auth-spec.md 完整落地时填充 HMAC canonical
 """
 
@@ -202,7 +204,8 @@ class InboundNormalizerProfile(BaseModel):
     """inbound normalizer (callback event/result → RuntimeInbox) 合同。
 
     与 RuntimeCapabilityProfile 严格分离: normalizer 是入站边界, capability
-    是出站业务调用。I3 不变量 + R-I3a/R-I3b 禁止 normalizer 进入业务 capability。
+    是出站业务调用。I3 不变量 + capability dependency guardrails
+    禁止 normalizer 进入业务 capability。
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -220,7 +223,8 @@ class InboundNormalizerProfile(BaseModel):
         """inbound normalizer 静态校验。
 
         主计划 §3.5.1 + H2 黑名单: 拒绝不合规输入, 防止业务 capability 错误
-        注入 inbound normalizer (R-I3a/R-I3b/R-I3c)。
+        注入 inbound normalizer
+        (capability dependency and inbound normalizer ownership guardrails)。
         """
         valid_prefixes = ("WMS_", "ECS_", "DEVICE_")
         if not any(self.event_type.startswith(p) for p in valid_prefixes):

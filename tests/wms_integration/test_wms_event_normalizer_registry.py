@@ -4,12 +4,12 @@
 - WmsEventNormalizer 实现 WmsEventPort 的 4 个 normalize_wms_* 方法
 - register_inbound_normalizers(registry, port_protocol) 模块级函数把
   WmsEventNormalizer 注册到 registry 中,port_protocol 由调用方提供
-  (避免 R-I3c 在 wms_event_normalizer.py 文件中扫描 'WmsEventPort' 字符串)
+  (避免 INBOUND_NORMALIZER_OWNERSHIP 在 wms_event_normalizer.py 文件中扫描 'WmsEventPort' 字符串)
 - 通过 registry get(port_protocol) 返回的实例调用 normalize_wms_grn_received
   拿到 typed WmsGrnReceivedEvent
 - 4 个事件类型字段映射正确(envelope 字段嵌套在 envelope 键下),
   未知 event_type 通过 dispatch 入口抛 ValueError
-- WmsEventNormalizer 类自身不直接引用字符串 "WmsEventPort"(避免 R-I3c 误报),
+- WmsEventNormalizer 类自身不直接引用字符串 "WmsEventPort"(避免 INBOUND_NORMALIZER_OWNERSHIP 误报),
   Protocol 通过 registry.register() 在外部建立 type binding
 
 测试只依赖 wms_integration 域 + runtime 域的 InboundNormalizerRegistry,
@@ -146,7 +146,7 @@ def test_normalizer_obtained_via_registry_singleton() -> None:
 
 
 def test_wms_event_normalizer_class_does_not_reference_wms_event_port_string() -> None:
-    """R-I3c 边界: 实现类文件自身不直接出现 "WmsEventPort" 字符串。
+    """INBOUND_NORMALIZER_OWNERSHIP 边界: 实现类文件自身不直接出现 "WmsEventPort" 字符串。
 
     Protocol 通过 register_inbound_normalizers(registry, WmsEventPort) 在外部
     建立 type binding,避免 guardrail 误报。
@@ -159,5 +159,5 @@ def test_wms_event_normalizer_class_does_not_reference_wms_event_port_string() -
     assert "WmsEventPort" not in content, (
         "wms_event_normalizer.py 不应直接引用 'WmsEventPort' 字符串,"
         "Protocol 类型绑定应通过调用方传入 port_protocol 参数建立,"
-        "避免 R-I3c 在 5 域扫描中误报"
+        "避免 INBOUND_NORMALIZER_OWNERSHIP 在 5 域扫描中误报"
     )

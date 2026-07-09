@@ -1,25 +1,34 @@
 #!/usr/bin/env bash
-# Architecture guardrails — 将主计划 §7.5 不变量映射为可执行扫描。
+# Architecture guardrails — 将当前架构不变量映射为可执行扫描。
 # 用法: scripts/architecture-guardrails.sh --mode warn|enforced|expiry-check
 #
 # warn: warn-only (退出码 0, 打印违规)
 # enforced: allowlist 之外违规退出码 1
 # expiry-check: enforced + 过期 allowlist 退出码 1
 #
-# 规则 (主计划 §7.5):
-#   C1   内部域不得 import WMS DTO/client/provider
-#   C2   跨域 session FK 收敛为 ExecutionCorrelation
-#   C3   查询响应强制 scope/authority/source/evidence_at
-#   C4   DeviceCommand 不含 PLC/坐标/关节/安全回路字段
-#   C5   RuntimeInbox 状态机契约 (tests/architecture/ 覆盖)
-#   R-I3a capability 注入禁用关键词
-#   R-I3b capability 不得 import wms_integration/device services/models
-#   R-I3c capability 不得持有 inbound normalizer (WmsEventPort 等, 主计划 §3.5.1 + H2)
+# 规则:
+#   WMS_INTEGRATION_BOUNDARY             内部域不得 import WMS DTO/client/provider
+#   EXECUTION_CORRELATION_BOUNDARY       跨域 session FK 收敛为 ExecutionCorrelation
+#   AUTHORITY_METADATA_BOUNDARY          查询响应强制 scope/authority/source/evidence_at
+#   DEVICE_COMMAND_BOUNDARY              DeviceCommand 不含 PLC/坐标/关节/安全回路字段
+#   RUNTIME_INBOX_STATE_MACHINE          RuntimeInbox 状态机契约 (tests/architecture/ 覆盖)
+#   CAPABILITY_FORBIDDEN_DEPENDENCY      capability 注入禁用关键词
+#   CAPABILITY_IMPLEMENTATION_IMPORT     capability 不得 import wms_integration/device services/models
+#   INBOUND_NORMALIZER_OWNERSHIP         capability 不得持有 inbound normalizer (WmsEventPort 等)
 set -euo pipefail
 
 GUARDRAIL_MODE=""
 ALLOWLIST="scripts/architecture-guardrails.allowlist"
 REPO_ROOT=""
+RULE_WMS_INTEGRATION_BOUNDARY="WMS_INTEGRATION_BOUNDARY"
+RULE_EXECUTION_CORRELATION_BOUNDARY="EXECUTION_CORRELATION_BOUNDARY"
+RULE_AUTHORITY_METADATA_BOUNDARY="AUTHORITY_METADATA_BOUNDARY"
+RULE_DEVICE_COMMAND_BOUNDARY="DEVICE_COMMAND_BOUNDARY"
+RULE_RUNTIME_INBOX_STATE_MACHINE="RUNTIME_INBOX_STATE_MACHINE"
+RULE_CAPABILITY_FORBIDDEN_DEPENDENCY="CAPABILITY_FORBIDDEN_DEPENDENCY"
+RULE_CAPABILITY_IMPLEMENTATION_IMPORT="CAPABILITY_IMPLEMENTATION_IMPORT"
+RULE_INBOUND_NORMALIZER_OWNERSHIP="INBOUND_NORMALIZER_OWNERSHIP"
+RULE_LEGACY_RUNTIME_IMPORT="LEGACY_RUNTIME_IMPORT"
 
 usage() {
     cat <<'EOF'
@@ -28,7 +37,7 @@ Usage: scripts/architecture-guardrails.sh --mode warn|enforced|expiry-check [--a
   --mode       warn=warn-only, enforced=allowlist enforced, expiry-check=expired allowlist fails
   --allowlist  allowlist 文件路径 (默认 scripts/architecture-guardrails.allowlist)
 
-规则: C1 C2 C3 C4 C5 R-I3a R-I3b R-I3c (主计划 §7.5)
+规则: WMS_INTEGRATION_BOUNDARY EXECUTION_CORRELATION_BOUNDARY AUTHORITY_METADATA_BOUNDARY DEVICE_COMMAND_BOUNDARY RUNTIME_INBOX_STATE_MACHINE CAPABILITY_FORBIDDEN_DEPENDENCY CAPABILITY_IMPLEMENTATION_IMPORT INBOUND_NORMALIZER_OWNERSHIP LEGACY_RUNTIME_IMPORT
 EOF
 }
 
@@ -72,8 +81,8 @@ is_allowlisted() {
     if printf '%s\n' "$ALLOWLIST_KEYS" | grep -qxF "$key"; then
         return 0
     fi
-    # R-I3b/R-I3c 只能逐文件枚举，不能靠目录前缀覆盖未来 capability import。
-    if [[ "$rule" == "R-I3b" || "$rule" == "R-I3c" ]]; then
+    # capability implementation import / inbound normalizer ownership 只能逐文件枚举，不能靠目录前缀覆盖未来违规。
+    if [[ "$rule" == "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" || "$rule" == "$RULE_INBOUND_NORMALIZER_OWNERSHIP" ]]; then
         return 1
     fi
     # 前缀匹配 (allowlist path 可为目录前缀)
@@ -146,108 +155,108 @@ is_valid_date() {
     [[ "$parsed" == "$value" ]]
 }
 
-# --- C1: 内部域不得 import WMS DTO/client/provider ---
-rule_c1() {
+# --- WMS_INTEGRATION_BOUNDARY: 内部域不得 import WMS DTO/client/provider ---
+rule_wms_integration_boundary() {
     local pattern='from src\.app\.wms_integration\.(services|models|clients|providers).* import|import src\.app\.wms_integration\.(services|models|clients|providers)'
     while IFS=: read -r file line _content; do
         [[ -z "$file" ]] && continue
         # 排除 wms_integration 自身
         [[ "$file" == src/app/wms_integration/* ]] && continue
-        emit_violation "C1" "$file" "$line" \
+        emit_violation "$RULE_WMS_INTEGRATION_BOUNDARY" "$file" "$line" \
             "内部域 import WMS implementation/DTO/client/provider" \
             "依赖 WmsMasterDataPort contract 而非 wms_integration 实现"
     done < <(grep -rnE "$pattern" src/app --include='*.py' 2>/dev/null || true)
 }
 
-# --- C2: 跨域 session FK (workline_session_id / material_session_id) ---
-rule_c2() {
+# --- EXECUTION_CORRELATION_BOUNDARY: 跨域 session FK (workline_session_id / material_session_id) ---
+rule_execution_correlation_boundary() {
     local pattern='workline_session_id|material_session_id'
     while IFS=: read -r file line _content; do
         [[ -z "$file" ]] && continue
         # 允许 runtime/orchestration 内部
         [[ "$file" == src/app/runtime/orchestration/* ]] && continue
-        emit_violation "C2" "$file" "$line" \
+        emit_violation "$RULE_EXECUTION_CORRELATION_BOUNDARY" "$file" "$line" \
             "跨域 session FK 未收敛为 ExecutionCorrelation.correlation_id" \
             "改为 correlation_id 引用, 详见 session-correlation-matrix.md"
     done < <(grep -rnE "$pattern" src/app --include='*.py' 2>/dev/null || true)
 }
 
-# --- C3: 查询响应缺 authority metadata (schema 测试覆盖, 脚本只做静态提示) ---
-rule_c3() {
-    # C3 主要由 tests/architecture/test_c3_authority_metadata_guardrail.py 覆盖
+# --- AUTHORITY_METADATA_BOUNDARY: 查询响应缺 authority metadata (schema 测试覆盖, 脚本只做静态提示) ---
+rule_authority_metadata_boundary() {
+    # authority metadata boundary 主要由 tests/architecture/test_authority_metadata_boundary_guardrail.py 覆盖
     # 脚本扫描 AuthorityMetadata 使用点, 确保存在校验
     if ! grep -rn "validate_authority_metadata\|AuthorityMetadata" tests/ src/app/wms_integration --include='*.py' -l 2>/dev/null | grep -q .; then
-        echo "[C3] warning: 未发现 AuthorityMetadata 校验点 (由 tests/architecture 覆盖)" >&2
+        echo "[$RULE_AUTHORITY_METADATA_BOUNDARY] warning: 未发现 AuthorityMetadata 校验点 (由 tests/architecture 覆盖)" >&2
         WARNINGS=$((WARNINGS + 1))
     fi
 }
 
-# --- C4: DeviceCommand/manifest/runtime 不含禁止字段 ---
+# --- DEVICE_COMMAND_BOUNDARY: DeviceCommand/manifest/runtime 不含禁止字段 ---
 # 只匹配 "字段声明" 语义 (Pydantic 风格):
 #   plc_address: str = Field(...)        <- catch
 #   coordinate: float = ...              <- catch
 # 不匹配:
-#   "plc",                               <- ignore (黑名单字面量, H4 反注入实现)
+#   "plc",                               <- ignore (黑名单字面量, device command 反注入实现)
 #   plc_address / coordinate 等禁止字段   <- ignore (docstring/注释)
 #   if key in _FORBIDDEN_PARAM_KEYS:     <- ignore (变量引用)
-rule_c4() {
+rule_device_command_boundary() {
     local pattern='^[[:space:]]+(plc|coordinate|joint_angle|x_coord|y_coord|safety_loop)[a-z_]*[[:space:]]*[:=]'
     while IFS=: read -r file line _content; do
         [[ -z "$file" ]] && continue
-        emit_violation "C4" "$file" "$line" \
+        emit_violation "$RULE_DEVICE_COMMAND_BOUNDARY" "$file" "$line" \
             "DeviceCommand/manifest/runtime 出现禁止字段 (PLC/坐标/关节/安全回路)" \
             "WES 不与 PLC 通讯, 不下发坐标/关节/安全回路指令"
     done < <(grep -rnE "$pattern" src/app/device src/app/workline src/app/runtime --include='*.py' 2>/dev/null || true)
 }
 
-# --- R-I3a: capability 注入禁用关键词 ---
-rule_ri3a() {
+# --- CAPABILITY_FORBIDDEN_DEPENDENCY: capability 注入禁用关键词 ---
+rule_capability_forbidden_dependency() {
     local pattern='http_client|service_locator|WmsClientException|DeviceClientException'
     while IFS=: read -r file line _content; do
         [[ -z "$file" ]] && continue
-        emit_violation "R-I3a" "$file" "$line" \
+        emit_violation "$RULE_CAPABILITY_FORBIDDEN_DEPENDENCY" "$file" "$line" \
             "capability 注入禁用对象 (HTTP client/service locator/provider exception/DTO)" \
             "capability 只能依赖 port contract"
     done < <(grep -rnE "$pattern" src/app/runtime src/app/workline --include='*.py' 2>/dev/null || true)
 }
 
-# --- R-WLR: src.workline_runtime production import 严格型 ---
-# wlr 整目录已删; 保留 rule 作为永久安全网防止回归:
-# 任何 src/ 下 production code import src.workline_runtime 视为违规 (wlr 已不存在)。
-# 仅以下前缀允许 (wlr 内部 import 自身 / 测试 / Alembic 迁移):
+# --- LEGACY_RUNTIME_IMPORT: src.workline_runtime production import 严格型 ---
+# legacy runtime 整目录已删; 保留 rule 作为永久安全网防止回归:
+# 任何 src/ 下 production code import src.workline_runtime 视为违规 (legacy runtime 已不存在)。
+# 仅以下前缀允许 (legacy runtime 内部 import 自身 / 测试 / Alembic 迁移):
 #   1. tests/     (测试)
 #   2. migrations/  (Alembic 数据迁移)
-rule_wlr_import() {
+rule_legacy_runtime_import() {
     local pattern='from src\.workline_runtime|import src\.workline_runtime'
     while IFS=: read -r file line _content; do
         [[ -z "$file" ]] && continue
-        # 排除 wlr 自身内部 import (历史允许,旧 runtime 入口删除后 wlr 目录已删,此分支防御性保留)
+        # 排除 legacy runtime 自身内部 import (历史允许,旧 runtime 入口删除后目录已删,此分支防御性保留)
         [[ "$file" == src/workline_runtime/* ]] && continue
         # 排除测试 + 迁移 (allowlist 前缀覆盖)
         [[ "$file" == tests/* ]] && continue
         [[ "$file" == migrations/* ]] && continue
-        emit_violation "R-WLR" "$file" "$line" \
-            "production code import src.workline_runtime (wlr allowlist 严格型违规)" \
+        emit_violation "$RULE_LEGACY_RUNTIME_IMPORT" "$file" "$line" \
+            "production code import src.workline_runtime (legacy runtime import boundary 违规)" \
             "src/workline_runtime/ 整目录已删,不可直接 import; 改用 src.app.runtime.orchestration 或 src.app.workline 域内 mirror"
     done < <(grep -rnE "$pattern" src --include='*.py' 2>/dev/null || true)
 }
 
-# --- R-I3b: capability 不得 import wms_integration/device services/models ---
-rule_ri3b() {
+# --- CAPABILITY_IMPLEMENTATION_IMPORT: capability 不得 import wms_integration/device services/models ---
+rule_capability_implementation_import() {
     local pattern='from src\.app\.(wms_integration|device)\.(services|models)\..* import'
     while IFS=: read -r file line _content; do
         [[ -z "$file" ]] && continue
-        emit_violation "R-I3b" "$file" "$line" \
+        emit_violation "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" "$file" "$line" \
             "capability import 了 wms_integration/device 的 services/models 实现" \
             "依赖 port contract, 不依赖实现对象"
     done < <(grep -rnE "$pattern" src/app/runtime src/app/workline --include='*.py' 2>/dev/null || true)
 }
 
-# --- R-I3c: capability 不得持有 inbound normalizer 类型 (主计划 §3.5.1 + H2) ---
-rule_ri3c() {
+# --- INBOUND_NORMALIZER_OWNERSHIP: capability 不得持有 inbound normalizer 类型 ---
+rule_inbound_normalizer_ownership() {
     while IFS=$'\t' read -r file line reason; do
         [[ -z "$file" ]] && continue
-        emit_violation "R-I3c" "$file" "$line" \
+        emit_violation "$RULE_INBOUND_NORMALIZER_OWNERSHIP" "$file" "$line" \
             "$reason" \
             "inbound normalizer 仅 RuntimeInboxConsumer 允许; capability 走 query/effect port contract"
     done < <(run_python - <<'PY'
@@ -343,7 +352,7 @@ def visit_file(path: Path) -> None:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
     except SyntaxError as exc:
         line = exc.lineno or 1
-        print(f"{rel}\t{line}\tR-I3c 无法解析 Python AST, 静态边界无法确认")
+        print(f"{rel}\t{line}\tinbound normalizer ownership boundary 无法解析 Python AST, 静态边界无法确认")
         return
 
     forbidden_aliases: set[str] = set()
@@ -418,7 +427,7 @@ validate_allowlist() {
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 drop_phase" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
         fi
-        if [[ ( "$rule_id" == "R-I3b" || "$rule_id" == "R-I3c" ) && ( "$path" == */ || -d "$path" ) ]]; then
+        if [[ ( "$rule_id" == "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" || "$rule_id" == "$RULE_INBOUND_NORMALIZER_OWNERSHIP" ) && ( "$path" == */ || -d "$path" ) ]]; then
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): $rule_id 必须逐文件枚举, 禁止目录前缀" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
         fi
@@ -438,9 +447,9 @@ validate_allowlist() {
             fi
         fi
         # legacy_entry_id 必须能在 legacy-cleanup-matrix.csv 找到
-        # 例外: R-WLR 的 legacy_entry_id 是导入点自描述 (legacy:<path>:<file>#R-WLR),
+        # 例外: legacy runtime import 的 legacy_entry_id 是导入点自描述,
         #       指向"反向 import src.workline_runtime 的文件"本身,不属于迁移对象矩阵。
-        if [[ -n "$legacy_entry_id" && -f docs/architecture/legacy-cleanup-matrix.csv && "$rule_id" != "R-WLR" ]]; then
+        if [[ -n "$legacy_entry_id" && -f docs/architecture/legacy-cleanup-matrix.csv && "$rule_id" != "$RULE_LEGACY_RUNTIME_IMPORT" ]]; then
             matrix_drop_phase="$(matrix_drop_marker_for_entry "$legacy_entry_id" || true)"
             if [[ -z "$matrix_drop_phase" ]]; then
                 echo "[ALLOWLIST] 行 $lineno ($rule_id $path): legacy_entry_id 精确匹配失败 '$legacy_entry_id'" >&2
@@ -456,14 +465,14 @@ validate_allowlist() {
 echo "=== Architecture Guardrails (mode=$GUARDRAIL_MODE) ===" >&2
 
 load_allowlist
-rule_c1
-rule_c2
-rule_c3
-rule_c4
-rule_ri3a
-rule_wlr_import
-rule_ri3b
-rule_ri3c
+rule_wms_integration_boundary
+rule_execution_correlation_boundary
+rule_authority_metadata_boundary
+rule_device_command_boundary
+rule_capability_forbidden_dependency
+rule_legacy_runtime_import
+rule_capability_implementation_import
+rule_inbound_normalizer_ownership
 
 if [[ "$GUARDRAIL_MODE" != "warn" ]]; then
     validate_allowlist

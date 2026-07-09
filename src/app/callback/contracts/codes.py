@@ -1,10 +1,10 @@
-"""Callback 域诊断错误码 — wlr.diagnostics.codes 镜像。
+"""Callback 域诊断错误码 — legacy runtime.diagnostics.codes 镜像。
 
 镜像说明:
-- ErrorCode 枚举值与 wlr.diagnostics.codes 完全一致,跨域调用方按字符串
+- ErrorCode 枚举值与 legacy runtime.diagnostics.codes 完全一致,跨域调用方按字符串
   比对 (例如 runtime_query_service 输出 DiagnosticCard.error_code.value),
   镜像保留兼容。
-- _ERROR_CODE_TO_DOMAIN 映射与 wlr 一致,error_domain_for() 行为不变。
+- _ERROR_CODE_TO_DOMAIN 映射与 legacy runtime 一致,error_domain_for() 行为不变。
 """
 
 from enum import Enum

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.2.0] - 2026-07-09
+
+### Added
+- 新增过程缩写命名回归护栏，覆盖 active code、脚本、git hook、默认测试集合和当前架构文档，防止 `C3`、`R-I3c`、`R-WLR`、`wlr` 等重构短码重新进入当前 surface。
+- 新增 legacy matrix generator 和 SMT 货架槽位别名回归测试，确保稳定 guardrail seed 名称可重复生成，并保留真实业务槽位 `C1` 的映射行为。
+
+### Changed
+- 将 architecture guardrails 的 rule ID、函数名、allowlist、测试文件名和 quality gate 注释迁移到稳定架构边界名。
+- 将 legacy cleanup matrix、当前架构文档和生产注释中的过程缩写表述改为稳定领域语义，历史审计记录仍保留可追溯事实。
+
+### Fixed
+- 修复 legacy matrix 生成器仍会产出旧测试路径、旧 helper 名和旧 seed 名称的问题，避免重新生成时带回过程命名残留。
+- 将 SMT 货架槽位 `C1` 业务别名收束为语义常量，让过程命名护栏只允许这个精确业务例外。
+
+### Removed
+- 删除默认快速回归测试和 active guardrail surface 中的 `C1`/`C2`/`C3`/`C4`/`C5`、`R-I3*`、`R-WLR`、`wlr` 过程命名。
+
 ## [0.15.1.0] - 2026-07-08
 
 ### Added

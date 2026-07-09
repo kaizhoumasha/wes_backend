@@ -4,6 +4,8 @@
 
 生产代码、active gate 脚本、默认回归测试必须使用稳定的业务或架构命名，不使用实现里程碑命名，例如 `phase4`、`Phase5`、`wave2`、`business lane` 或 `final cleanup`。
 
+Active production code, active gates, default regression tests, and current architecture docs must not use old restructuring shorthand such as `C3`, `C4`, `R-I3c`, `R-WLR`, or `wlr` for new/current concepts. Use stable names like `AUTHORITY_METADATA_BOUNDARY`, `DEVICE_COMMAND_BOUNDARY`, `INBOUND_NORMALIZER_OWNERSHIP`, and `LEGACY_RUNTIME_IMPORT`.
+
 `closure`、`readiness`、`cleanup` 这类通用发布词可以使用，但不能与阶段编号、wave、lane、burn-down 或 final-cleanup 过程语境绑定。稳定示例包括 `production_closure`、`runtime_evidence_readiness`、`workline_restructuring_readiness` 和 `business_legacy_absence`。
 
 ## Allowed Historical Records
@@ -31,4 +33,3 @@
 ```bash
 uv run pytest tests/architecture/test_process_naming_guardrail.py -q
 ```
-

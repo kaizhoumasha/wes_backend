@@ -1,4 +1,4 @@
-"""Callback 域诊断码登记表 — wlr.diagnostics.registry 镜像。"""
+"""Callback 域诊断码登记表 — legacy runtime.diagnostics.registry 镜像。"""
 
 from __future__ import annotations
 

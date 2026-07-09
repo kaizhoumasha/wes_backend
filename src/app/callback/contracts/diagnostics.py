@@ -1,4 +1,4 @@
-"""Callback 域诊断模块 — wlr.diagnostics 镜像。"""
+"""Callback 域诊断模块 — legacy runtime.diagnostics 镜像。"""
 
 from .builder import build_diagnostic_card, build_diagnostic_context, build_diagnostic_event
 from .codes import ErrorCode, ErrorDomain, ProblemClass, Recoverability, Severity, error_domain_for

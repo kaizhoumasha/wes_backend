@@ -4,7 +4,7 @@
 立即写入 RuntimeInbox(status=RECEIVED) 并 ACK; 异步 worker 以
 RECEIVED -> PROCESSING -> PROCESSED 为唯一成功路径。
 
-状态机 5 态 (P0-007 C5 锁定):
+状态机 5 态 (RuntimeInbox state machine guardrail 锁定):
   RECEIVED -> PROCESSING -> PROCESSED
   PROCESSING -> FAILED (可重试)
   FAILED -> RECEIVED (到 next_retry_at 且未超 max_retries)

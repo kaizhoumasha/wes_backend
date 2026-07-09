@@ -6,8 +6,8 @@
 - 同 key(command_code)不同 request_hash 应拒绝 (outbound 最小版本)
 - 完整 409 安全审计留安全审计扩展
 
-注意: 本测试只覆盖 H4 三个子任务的 schema 层面, 完整 C4 字段白名单
-(禁止 plc/coordinate/joint/safety_loop) 由 architecture-guardrails.sh C4
+注意: 本测试只覆盖 H4 三个子任务的 schema 层面, 完整 DEVICE_COMMAND_BOUNDARY 字段白名单
+(禁止 plc/coordinate/joint/safety_loop) 由 architecture-guardrails.sh DEVICE_COMMAND_BOUNDARY
 脚本扫描保障, 不在本文件。
 """
 

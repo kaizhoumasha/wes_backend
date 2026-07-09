@@ -1,6 +1,6 @@
 # 已从 workline/services/ 迁入
 # 旧位置: src/app/workline/services/smt_inbound_handoff_service.py
-# (C4a 起改为 PEP 562 re-export shim)
+# (stable PEP 562 re-export shim)
 # 新位置: src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py
 # cleanup-matrix strategy=rebuild,
 # target_path=src/app/runtime/orchestration/services/(同 runtime service shim 模式)

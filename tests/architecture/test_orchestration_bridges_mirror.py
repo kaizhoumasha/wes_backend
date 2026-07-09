@@ -1,6 +1,6 @@
 """orchestration bridge mirror — orchestration bridges 镜像与重导出。
 
-C5a 镜像 13 个文件:
+RUNTIME_INBOX_STATE_MACHINE 镜像 13 个文件:
   - src/app/runtime/orchestration/{enums, device_ordering, runtime_intent, effect_result,
                                      material_target_resolver}.py (5 clean leaves)
   - src/app/runtime/orchestration/{business_identity_bridge, lock_bridge,
@@ -8,7 +8,7 @@ C5a 镜像 13 个文件:
                                      events_bridge, topology_bridge, runtime_intent_effects}.py
   - src/app/workline/runtime_services.py
 
-(plugin_* 推迟到 C5b)
+(plugin_* 推迟到 RUNTIME_INBOX_STATE_MACHINE)
 
 不验证运行时行为, 只验证 mirror 文件存在 + 关键公开类/函数已导出。
 """
@@ -127,8 +127,8 @@ def test_workline_runtime_services_mirror_exposes_public_factories() -> None:
     assert hasattr(runtime_services, "build_workline_runtime_services")
 
 
-def test_no_wlr_self_imports_in_new_mirrors() -> None:
-    """新 mirror 文件不能含 wlr 自引用(R-WLR guardrail clean)。"""
+def test_no_legacy_runtime_self_imports_in_new_mirrors() -> None:
+    """新 mirror 文件不能含 legacy runtime 自引用(LEGACY_RUNTIME_IMPORT guardrail clean)。"""
     import subprocess
 
     files_to_check = [
@@ -159,7 +159,7 @@ def test_no_wlr_self_imports_in_new_mirrors() -> None:
         check=False,
     )
     bad = result.stdout.strip().split("\n") if result.stdout.strip() else []
-    assert bad == [], f"以下 mirror 文件仍含 wlr 自引用: {bad}"
+    assert bad == [], f"以下 mirror 文件仍含 legacy runtime 自引用: {bad}"
 
 
 def test_orchestration_subpackage_imports_cleanly() -> None:

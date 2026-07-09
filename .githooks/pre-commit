@@ -5,7 +5,7 @@ set -euo pipefail
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 PROFILE="${WES_GIT_QUALITY_PROFILE:-quality}"
 
-# 默认以 enforced 模式触发 R-I3a/b/c + C1/C2/C4 + wlr guardrail。
+# 默认以 enforced 模式触发 stable architecture guardrails。
 # 允许通过 WES_ARCHITECTURE_GUARDRAIL_MODE_OVERRIDE 环境变量临时回退 (测试/调试场景)。
 export ARCHITECTURE_GUARDRAIL_MODE="${WES_ARCHITECTURE_GUARDRAIL_MODE_OVERRIDE:-enforced}"
 
