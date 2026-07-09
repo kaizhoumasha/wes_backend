@@ -152,8 +152,7 @@ WorkLine 重构收尾不再用单一“清理旧代码”口径推进，删除�
 
 执行入口：
 
-- technical scope：`uv run python scripts/check_workline_restructuring_readiness_gate.py --scope technical`，并已接入 `./scripts/git-quality-gate.sh --check workline-restructuring-readiness` 与 `--profile quality`。
-- business scope readiness：`uv run python scripts/check_workline_restructuring_readiness_gate.py --scope business --production-e2e-artifact <p0.json> --runtime-benchmark-artifact <benchmark.json> --runtime-evidence-artifact <runtime-evidence.json>`。
+- 当前提交前入口使用 `./scripts/git-quality-gate.sh --profile quality`；runtime production closure、runtime evidence、business legacy absence、process naming、architecture guardrails 分别作为长期门禁执行。
 - business legacy absence：`uv run python scripts/check_business_legacy_absence_gate.py --mode final`，并已接入 `./scripts/git-quality-gate.sh --check business-legacy-absence` 与 `--profile quality`。
 
 2026-07-08 验收记录：
@@ -161,7 +160,7 @@ WorkLine 重构收尾不再用单一“清理旧代码”口径推进，删除�
 - technical scope 已通过运行态 owner guardrail、RuntimeInbox cutover、mock closure 与 WorkLine technical contracts，并完成旧 plugin runtime/import 框架清理；执行记录见 `docs/architecture/legacy-cleanup-execution-plan.md`。
 - business scope 携带 regenerated production/runtime artifacts 后已通过 readiness gate；随后执行 business legacy absence ledger 关闭：104 条 phase4 carrier 中 55 行 moved、10 行 test-only-migrated、18 行 kept-config-only、21 行 already-removed，0 pending。机器验收见 `docs/architecture/business-legacy-absence-ledger.csv` 与 `scripts/check_business_legacy_absence_gate.py --mode final`。
 - 旧 `src/workline_plugins/*` 仅保留在 `docs/archive/legacy-workline-plugins/`，不得回流到 `src/` 可 import 路径；absence guardrail 负责阻断。
-- restructuring cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列；`scripts/check_workline_restructuring_readiness_gate.py` 与 absence guardrail 负责阻断回流。
+- restructuring cleanup 已删除旧 handling 队列表面和 WorkLine 运行态物理列；quality profile 中的 runtime production closure、runtime evidence、business legacy absence 与 architecture guardrails 负责阻断回流。
 
 | scope | 适用条目 | 删除前置 | 不允许 |
 | --- | --- | --- | --- |

@@ -98,7 +98,7 @@ LEDGER_AUDIT_DOCS = frozenset(
         Path("docs/architecture/business-legacy-absence-ledger.md"),
         Path("docs/superpowers/plans/2026-07-07-" + "phase" + "5-business-legacy-destructive-cleanup.md"),
         Path("scripts/generate_legacy_matrix.py"),
-        Path("tests/architecture/test_workline_domain_mirror.py"),
+        Path("tests/architecture/test_workline_domain_boundary.py"),
         Path("tests/architecture/test_business_legacy_absence_guardrail.py"),
     }
 )

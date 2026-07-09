@@ -1,4 +1,4 @@
-"""WorkLine domain mirrors are no longer runtime business contracts."""
+"""WorkLine domain boundary keeps runtime business contracts out of workline."""
 
 from __future__ import annotations
 

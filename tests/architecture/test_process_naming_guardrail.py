@@ -51,10 +51,6 @@ INTENTIONAL_PROCESS_NAMING_ALLOWLIST: dict[Path, str] = {
     Path(
         "tests/architecture/test_cleanup_matrix_guardrail.py"
     ): "legacy cleanup matrix schema guardrail owns historical audit fields",
-    Path("tests/architecture/test_phase0_legacy_matrix_contract.py"): "historical matrix baseline contract",
-    Path("tests/architecture/test_phase2_runtime_status_owner_guardrail.py"): (
-        "historical runtime-status ownership guardrail kept under original milestone name"
-    ),
     Path("tests/architecture/test_process_naming_guardrail.py"): "guardrail defines the forbidden tokens it enforces",
     Path(
         "tests/contracts/test_business_legacy_matrix_closure.py"
@@ -218,6 +214,23 @@ def test_process_naming_guardrail_scans_current_architecture_docs_with_narrow_sc
     assert Path("docs/architecture/adr/0001-phase2-runtime-ownership.md") not in scanned
     assert Path("docs/architecture/reviews/workline-restructuring-v4-review-2026-06-23.md") not in scanned
     assert not any(path.is_relative_to(Path("docs/superpowers")) for path in scanned)
+
+
+def test_callback_runtime_inbox_tests_do_not_use_cutover_names() -> None:
+    active_callback_tests = {path.as_posix() for path in Path("tests/callback").glob("test_*.py")}
+    retired_cutover_path = "tests/callback/test_callback_runtime_inbox_" + "cutover.py"
+
+    assert retired_cutover_path not in active_callback_tests
+    assert "tests/callback/test_callback_runtime_inbox_authority.py" in active_callback_tests
+
+
+def test_active_guardrail_allowlist_no_longer_contains_retired_phase_test_paths() -> None:
+    retired_paths = {
+        Path("tests/architecture/test_" + "phase0_legacy_matrix_contract.py"),
+        Path("tests/architecture/test_" + "phase2_runtime_status_owner_guardrail.py"),
+    }
+
+    assert retired_paths.isdisjoint(INTENTIONAL_PROCESS_NAMING_ALLOWLIST)
 
 
 def test_process_naming_guardrail_keeps_current_doc_historical_exceptions_narrow() -> None:

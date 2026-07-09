@@ -1,4 +1,4 @@
-"""Callback 入站 ACK 切换到 RuntimeInbox 的服务级回归测试。"""
+"""Callback 入站 ACK 以 RuntimeInbox 为唯一权威的服务级回归测试。"""
 
 from __future__ import annotations
 
@@ -6,14 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-
-class _LegacyDuplicateError(ValueError):
-    """模拟旧 Workline inbox duplicate 信号。"""
-
-    def __init__(self, message: str, *, existing_inbox: object | None = None) -> None:
-        super().__init__(message)
-        self.existing_inbox = existing_inbox
 
 
 def _runtime_accept_result(*, created: bool, record_id: int = 1) -> SimpleNamespace:
@@ -151,8 +143,126 @@ async def test_callback_runtime_inbox_writer_external_uses_data_source_event_id_
 
 
 @pytest.mark.asyncio
-async def test_process_result_writes_runtime_inbox_before_legacy_workline_inbox() -> None:
-    """结果回调必须先写 RuntimeInbox，再委托旧 Workline inbox 过渡消费。"""
+async def test_callback_runtime_inbox_writer_external_fallback_source_event_id_is_payload_stable() -> None:
+    """external 缺少业务 source id 时，不能退回到每次 HTTP request_id。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    accepted_calls: list[dict[str, object]] = []
+
+    class RuntimeInboxServiceStub:
+        async def accept_received(self, _db, **kwargs):
+            accepted_calls.append(kwargs)
+            return _runtime_accept_result(created=True, record_id=len(accepted_calls))
+
+    writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
+    payload = {
+        "callback_type": "AGV_TASK_RESULT",
+        "source_system": "AGV",
+        "trace_id": "trace-agv-001",
+        "command_code": "AGV-CMD-001",
+        "result": "SUCCESS",
+        "data": {"to_location": "STATION-01"},
+    }
+
+    _ = await writer.write_external_callback(
+        SimpleNamespace(),
+        payload=payload,
+        request_id="http-ext-001",
+    )
+    _ = await writer.write_external_callback(
+        SimpleNamespace(),
+        payload=payload,
+        request_id="http-ext-002",
+    )
+
+    source_event_ids = [call["source_event_id"] for call in accepted_calls]
+    assert source_event_ids[0] == source_event_ids[1]
+    assert source_event_ids[0] not in {"http-ext-001", "http-ext-002"}
+
+
+@pytest.mark.asyncio
+async def test_callback_runtime_inbox_writer_result_fallback_source_event_id_is_payload_stable() -> None:
+    """result 缺少 event_id/source_event_id 时，不能退回到每次 HTTP request_id。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    accepted_calls: list[dict[str, object]] = []
+
+    class RuntimeInboxServiceStub:
+        async def accept_received(self, _db, **kwargs):
+            accepted_calls.append(kwargs)
+            return _runtime_accept_result(created=True, record_id=len(accepted_calls))
+
+    writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
+    payload = {
+        "command_code": "CMD-STABLE-001",
+        "device_code": "ARM_01",
+        "result": "SUCCESS",
+        "finish_time": 1_702_627_250_000,
+        "data": {"pkg_id": "PKG-001"},
+    }
+
+    _ = await writer.write_result_callback(
+        SimpleNamespace(),
+        payload=payload,
+        request_id="http-req-001",
+        canonical_result_type="DEVICE_RESULT",
+    )
+    _ = await writer.write_result_callback(
+        SimpleNamespace(),
+        payload=payload,
+        request_id="http-req-002",
+        canonical_result_type="DEVICE_RESULT",
+    )
+
+    source_event_ids = [call["source_event_id"] for call in accepted_calls]
+    assert source_event_ids[0] == source_event_ids[1]
+    assert source_event_ids[0] not in {"http-req-001", "http-req-002"}
+
+
+@pytest.mark.asyncio
+async def test_callback_runtime_inbox_writer_event_fallback_source_event_id_is_payload_stable() -> None:
+    """event 缺少 event_id/source_event_id 时，重复上报必须命中同一个 RuntimeInbox key。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    accepted_calls: list[dict[str, object]] = []
+
+    class RuntimeInboxServiceStub:
+        async def accept_received(self, _db, **kwargs):
+            accepted_calls.append(kwargs)
+            return _runtime_accept_result(created=True, record_id=len(accepted_calls))
+
+    writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
+    payload = {
+        "device_code": "ARM_01",
+        "event_type": "SCAN_COMPLETED",
+        "timestamp": 1_702_627_300_000,
+        "data": {"LotCode": "LOT-001"},
+    }
+
+    _ = await writer.write_event_callback(
+        SimpleNamespace(),
+        payload=payload,
+        request_id="http-req-101",
+        canonical_event_type="SCAN_COMPLETED",
+    )
+    _ = await writer.write_event_callback(
+        SimpleNamespace(),
+        payload=payload,
+        request_id="http-req-102",
+        canonical_event_type="SCAN_COMPLETED",
+    )
+
+    source_event_ids = [call["source_event_id"] for call in accepted_calls]
+    assert source_event_ids[0] == source_event_ids[1]
+    assert source_event_ids[0] not in {"http-req-101", "http-req-102"}
+
+
+@pytest.mark.asyncio
+async def test_process_result_uses_runtime_inbox_as_authority() -> None:
+    """结果回调 accepted 后继续业务处理，但不再委托旧 Workline inbox。"""
 
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
     from src.app.device.models.command import CommandCallbackResult
@@ -165,11 +275,6 @@ async def test_process_result_writes_runtime_inbox_before_legacy_workline_inbox(
             call_order.append("runtime")
             writer_kwargs.update(kwargs)
             return _runtime_accept_result(created=True, record_id=101)
-
-    class InboxServiceStub:
-        async def create_command_result_inbox(self, **_kwargs):
-            call_order.append("legacy")
-            return SimpleNamespace(id=301)
 
     callback = CommandCallbackResult.model_validate(
         {
@@ -197,6 +302,8 @@ async def test_process_result_writes_runtime_inbox_before_legacy_workline_inbox(
     handled_command.get_duration_ms.return_value = 100
     handled_command.trace_id = "trace-001"
 
+    legacy_inbox_service = SimpleNamespace(create_command_result_inbox=AsyncMock())
+    command_service = SimpleNamespace(handle_callback_result=AsyncMock(return_value=handled_command))
     service = CallbackOrchestrationService(runtime_inbox_writer=WriterStub())
     service._is_workline_command_callback = AsyncMock(return_value=True)  # type: ignore[method-assign]
     service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
@@ -213,16 +320,18 @@ async def test_process_result_writes_runtime_inbox_before_legacy_workline_inbox(
             existing_command=existing_command,
             request_id="req-result-001",
             resolved_contract_version="1.0",
-            command_service=SimpleNamespace(handle_callback_result=AsyncMock(return_value=handled_command)),
+            command_service=command_service,
             device_service=SimpleNamespace(),
-            inbox_service=InboxServiceStub(),  # type: ignore[arg-type]
             enqueue_processing=lambda: None,
         )
 
     assert outcome.is_duplicate is False
     assert outcome.trace_id == "trace-001"
-    assert call_order[:2] == ["runtime", "legacy"]
+    assert call_order == ["runtime"]
     assert writer_kwargs["canonical_result_type"] == "DEVICE_RESULT"
+    legacy_inbox_service.create_command_result_inbox.assert_not_awaited()
+    command_service.handle_callback_result.assert_awaited_once()
+    service._commit_and_enqueue_workline_processing.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -233,7 +342,7 @@ async def test_process_result_duplicate_uses_runtime_inbox_ack_and_skips_legacy_
     from src.app.device.models.command import CommandCallbackResult
 
     writer = SimpleNamespace(write_result_callback=AsyncMock(return_value=_runtime_accept_result(created=False)))
-    inbox_service = SimpleNamespace(create_command_result_inbox=AsyncMock())
+    legacy_inbox_service = SimpleNamespace(create_command_result_inbox=AsyncMock())
     command_service = SimpleNamespace(handle_callback_result=AsyncMock())
 
     callback = CommandCallbackResult.model_validate(
@@ -266,19 +375,19 @@ async def test_process_result_duplicate_uses_runtime_inbox_ack_and_skips_legacy_
         resolved_contract_version="1.0",
         command_service=command_service,  # type: ignore[arg-type]
         device_service=SimpleNamespace(),
-        inbox_service=inbox_service,  # type: ignore[arg-type]
         enqueue_processing=lambda: None,
     )
 
     assert outcome.is_duplicate is True
     writer.write_result_callback.assert_awaited_once()
-    inbox_service.create_command_result_inbox.assert_not_awaited()
+    legacy_inbox_service.create_command_result_inbox.assert_not_awaited()
     command_service.handle_callback_result.assert_not_awaited()
+    service._commit_and_enqueue_workline_processing.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_process_event_writes_runtime_inbox_before_legacy_workline_inbox() -> None:
-    """事件回调 ACK 先写 RuntimeInbox，旧 inbox 只能作为过渡消费。"""
+async def test_process_event_uses_runtime_inbox_as_authority() -> None:
+    """事件回调 accepted 后写过渡 Workline inbox 供现有消费者处理。"""
 
     from src.app.callback.models import CallbackEventRequest
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
@@ -292,11 +401,7 @@ async def test_process_event_writes_runtime_inbox_before_legacy_workline_inbox()
             writer_kwargs.update(kwargs)
             return _runtime_accept_result(created=True, record_id=201)
 
-    class InboxServiceStub:
-        async def create_device_event_inbox(self, **_kwargs):
-            call_order.append("legacy")
-            return SimpleNamespace(id=401)
-
+    legacy_inbox_service = SimpleNamespace(create_device_event_inbox=AsyncMock())
     service = CallbackOrchestrationService(runtime_inbox_writer=WriterStub())
     service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
 
@@ -313,18 +418,20 @@ async def test_process_event_writes_runtime_inbox_before_legacy_workline_inbox()
         request_id="req-event-001",
         is_workline_event=True,
         canonical_event_type="SCAN_COMPLETED",
-        inbox_service=InboxServiceStub(),  # type: ignore[arg-type]
+        inbox_service=legacy_inbox_service,
         enqueue_processing=lambda: None,
     )
 
     assert outcome.is_duplicate is False
-    assert call_order[:2] == ["runtime", "legacy"]
+    assert call_order == ["runtime"]
     assert writer_kwargs["canonical_event_type"] == "SCAN_COMPLETED"
+    legacy_inbox_service.create_device_event_inbox.assert_awaited_once()
+    service._commit_and_enqueue_workline_processing.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_process_external_writes_runtime_inbox_before_legacy_transition_delegate() -> None:
-    """external callback 必须先创建 RuntimeInbox，再过渡委托 legacy 消费链路。"""
+async def test_process_external_uses_runtime_inbox_as_authority() -> None:
+    """external callback accepted 后写过渡 Workline inbox 并记录 lifecycle。"""
 
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
@@ -337,15 +444,7 @@ async def test_process_external_writes_runtime_inbox_before_legacy_transition_de
             writer_kwargs.update(kwargs)
             return _runtime_accept_result(created=True, record_id=301)
 
-    class InboxServiceStub:
-        async def create_external_http_inbox(self, **kwargs):
-            call_order.append("legacy")
-            return SimpleNamespace(id=501, trace_id=kwargs["trace_id"])
-
-        async def mark_as_processed(self, *_args, **_kwargs):
-            call_order.append("legacy-processed")
-            return SimpleNamespace(id=501)
-
+    legacy_inbox_service = SimpleNamespace(create_external_http_inbox=AsyncMock(), mark_as_processed=AsyncMock())
     rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
     service = CallbackOrchestrationService(
         rack_task_service=rack_task_service,
@@ -366,163 +465,94 @@ async def test_process_external_writes_runtime_inbox_before_legacy_transition_de
             "data": {"to_location": "STATION-01"},
         },
         request_id="req-external-001",
-        inbox_service=InboxServiceStub(),  # type: ignore[arg-type]
+        inbox_service=legacy_inbox_service,
         trace_id="trace-ext-001",
         enqueue_processing=lambda: None,
     )
 
     assert outcome.is_duplicate is False
     assert outcome.trace_id == "trace-ext-001"
-    assert call_order[:2] == ["runtime", "legacy"]
+    assert call_order == ["runtime"]
     assert writer_kwargs["payload"]["callback_type"] == "AGV_TASK_RESULT"
+    legacy_inbox_service.create_external_http_inbox.assert_awaited_once()
+    legacy_inbox_service.mark_as_processed.assert_not_awaited()
+    rack_task_service.record_callback_from_external_http.assert_awaited_once()
+    service._commit_and_enqueue_workline_processing.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_process_result_reports_duplicate_when_legacy_inbox_reports_duplicate() -> None:
-    """RuntimeInbox 新建后若 legacy inbox 判重，ACK 仍必须返回 duplicate。"""
-
-    from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
-    from src.app.device.models.command import CommandCallbackResult
-
-    callback = CommandCallbackResult.model_validate(
-        {
-            "command_code": "CMD-LEGACY-DUP-001",
-            "device_code": "ARM_01",
-            "result": "SUCCESS",
-            "finish_time": 1_702_627_250_000,
-            "data": {"task_type": "PICK_AND_PUT"},
-        }
-    )
-    existing_command = SimpleNamespace(
-        id=21,
-        trace_id="trace-legacy-result",
-        task_type="PICK_AND_PUT",
-        params={},
-        workline_id=1,
-        device_id=7,
-    )
-
-    writer = SimpleNamespace(write_result_callback=AsyncMock(return_value=_runtime_accept_result(created=True)))
-    inbox_service = SimpleNamespace(
-        create_command_result_inbox=AsyncMock(
-            side_effect=_LegacyDuplicateError("已存在（幂等键重复）", existing_inbox=SimpleNamespace(id=611))
-        )
-    )
-    command_service = SimpleNamespace(handle_callback_result=AsyncMock())
-    service = CallbackOrchestrationService(runtime_inbox_writer=writer)
-    service._is_workline_command_callback = AsyncMock(return_value=True)  # type: ignore[method-assign]
-
-    db = SimpleNamespace(commit=AsyncMock())
-    with (
-        patch(
-            "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
-            new=AsyncMock(),
-        ),
-        patch(
-            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_runtime_reconciliation_service.record_late_callback_if_pending",
-            new=AsyncMock(return_value=False),
-        ),
-    ):
-        outcome = await service.process_result(
-            db,  # type: ignore[arg-type]
-            callback=callback,
-            existing_command=existing_command,
-            request_id="req-legacy-result",
-            resolved_contract_version="1.0",
-            command_service=command_service,  # type: ignore[arg-type]
-            device_service=SimpleNamespace(),
-            inbox_service=inbox_service,  # type: ignore[arg-type]
-            enqueue_processing=lambda: None,
-        )
-
-    assert outcome.is_duplicate is True
-    command_service.handle_callback_result.assert_not_awaited()
-    inbox_service.create_command_result_inbox.assert_awaited_once()
-    db.commit.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_process_event_reports_duplicate_when_legacy_inbox_reports_duplicate() -> None:
-    """事件回调 RuntimeInbox 新建后若 legacy inbox 判重，ACK 仍必须返回 duplicate。"""
+async def test_process_event_duplicate_uses_runtime_inbox_ack_and_skips_legacy_sources() -> None:
+    """事件 duplicate ACK 只能来自 RuntimeInbox，不能再触发旧 Workline inbox/processor。"""
 
     from src.app.callback.models import CallbackEventRequest
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
-    writer = SimpleNamespace(write_event_callback=AsyncMock(return_value=_runtime_accept_result(created=True)))
-    inbox_service = SimpleNamespace(
-        create_device_event_inbox=AsyncMock(
-            side_effect=_LegacyDuplicateError("已存在（幂等键重复）", existing_inbox=SimpleNamespace(id=612))
-        )
-    )
+    writer = SimpleNamespace(write_event_callback=AsyncMock(return_value=_runtime_accept_result(created=False)))
+    legacy_inbox_service = SimpleNamespace(create_device_event_inbox=AsyncMock())
     service = CallbackOrchestrationService(runtime_inbox_writer=writer)
+    service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
 
-    db = SimpleNamespace(commit=AsyncMock())
-    with patch(
-        "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
-        new=AsyncMock(),
-    ):
-        outcome = await service.process_event(
-            db,  # type: ignore[arg-type]
-            event_request=CallbackEventRequest.model_validate(
-                {
-                    "device_code": "ARM_01",
-                    "event_type": "SCAN_COMPLETED",
-                    "timestamp": 1_702_627_300_000,
-                    "data": {"LotCode": "LOT-001"},
-                }
-            ),
-            request_id="req-legacy-event",
-            is_workline_event=True,
-            canonical_event_type="SCAN_COMPLETED",
-            inbox_service=inbox_service,  # type: ignore[arg-type]
-            enqueue_processing=lambda: None,
-        )
+    outcome = await service.process_event(
+        SimpleNamespace(),  # type: ignore[arg-type]
+        event_request=CallbackEventRequest.model_validate(
+            {
+                "device_code": "ARM_01",
+                "event_type": "SCAN_COMPLETED",
+                "timestamp": 1_702_627_300_000,
+                "data": {"LotCode": "LOT-001"},
+            }
+        ),
+        request_id="req-event-dup",
+        is_workline_event=True,
+        canonical_event_type="SCAN_COMPLETED",
+        inbox_service=legacy_inbox_service,
+        enqueue_processing=lambda: None,
+    )
 
     assert outcome.is_duplicate is True
-    inbox_service.create_device_event_inbox.assert_awaited_once()
-    db.commit.assert_awaited_once()
+    writer.write_event_callback.assert_awaited_once()
+    legacy_inbox_service.create_device_event_inbox.assert_not_awaited()
+    service._commit_and_enqueue_workline_processing.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
-async def test_process_external_reports_duplicate_when_legacy_inbox_reports_duplicate() -> None:
-    """external callback RuntimeInbox 新建后若 legacy inbox 判重，ACK 仍必须返回 duplicate。"""
+async def test_process_external_duplicate_uses_runtime_inbox_ack_and_skips_legacy_sources() -> None:
+    """external duplicate ACK 只能来自 RuntimeInbox，不能再触发旧 Workline inbox/processor。"""
 
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
-    writer = SimpleNamespace(write_external_callback=AsyncMock(return_value=_runtime_accept_result(created=True)))
-    inbox_service = SimpleNamespace(
-        create_external_http_inbox=AsyncMock(
-            side_effect=_LegacyDuplicateError("已存在（幂等键重复）", existing_inbox=SimpleNamespace(id=613))
-        )
-    )
+    writer = SimpleNamespace(write_external_callback=AsyncMock(return_value=_runtime_accept_result(created=False)))
+    legacy_inbox_service = SimpleNamespace(create_external_http_inbox=AsyncMock(), mark_as_processed=AsyncMock())
+    rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
+    handling_operation_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
     service = CallbackOrchestrationService(
-        rack_task_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
-        handling_operation_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
+        rack_task_service=rack_task_service,
+        handling_operation_service=handling_operation_service,
         runtime_inbox_writer=writer,
     )
+    service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
 
-    db = SimpleNamespace(commit=AsyncMock())
-    with patch(
-        "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
-        new=AsyncMock(),
-    ):
-        outcome = await service.process_external(
-            db,  # type: ignore[arg-type]
-            callback_type="AGV_TASK_RESULT",
-            payload={
-                "callback_type": "AGV_TASK_RESULT",
-                "trace_id": "trace-ext-dup",
-                "request_id": "REQ-EXT-DUP-001",
-                "command_code": "AGV-REQ-DUP-001",
-                "result": "SUCCESS",
-                "data": {"to_location": "STATION-01"},
-            },
-            request_id="req-legacy-external",
-            inbox_service=inbox_service,  # type: ignore[arg-type]
-            trace_id="trace-ext-dup",
-            enqueue_processing=lambda: None,
-        )
+    outcome = await service.process_external(
+        SimpleNamespace(),  # type: ignore[arg-type]
+        callback_type="CTU_BIN_MOVE_COMPLETED",
+        payload={
+            "callback_type": "CTU_BIN_MOVE_COMPLETED",
+            "trace_id": "trace-ext-dup",
+            "request_id": "REQ-EXT-DUP-001",
+            "command_code": "AGV-REQ-DUP-001",
+            "result": "SUCCESS",
+            "data": {"to_location": "STATION-01"},
+        },
+        request_id="req-external-dup",
+        inbox_service=legacy_inbox_service,
+        trace_id="trace-ext-dup",
+        enqueue_processing=lambda: None,
+    )
 
     assert outcome.is_duplicate is True
-    inbox_service.create_external_http_inbox.assert_awaited_once()
-    db.commit.assert_awaited_once()
+    writer.write_external_callback.assert_awaited_once()
+    legacy_inbox_service.create_external_http_inbox.assert_not_awaited()
+    legacy_inbox_service.mark_as_processed.assert_not_awaited()
+    rack_task_service.record_callback_from_external_http.assert_not_awaited()
+    handling_operation_service.record_callback_from_external_http.assert_not_awaited()
+    service._commit_and_enqueue_workline_processing.assert_not_awaited()  # type: ignore[attr-defined]

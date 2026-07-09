@@ -12,7 +12,7 @@ usage() {
 Usage: scripts/git-quality-gate.sh [--profile PROFILE] [--check CHECK] [--bandit-json PATH] [--ci]
 
 Profiles:
-  quality   Run Ruff format check, Ruff lint, and Bandit security scan.
+  quality   Run Ruff, Bandit, runtime closure, legacy absence, process naming, and architecture guardrails.
   ci-smoke  Run the quality profile plus API signature smoke tests.
   full      Run the quality profile plus the full pytest suite.
 
@@ -24,8 +24,8 @@ Checks:
             Run only runtime toggle release gate.
   runtime-evidence-readiness
             Run only runtime evidence readiness gate.
-  workline-restructuring-readiness
-            Run only WorkLine restructuring technical-scope readiness gate.
+  runtime-production-closure
+            Run only runtime production closure gate.
   business-legacy-absence
             Run only business legacy absence final gate.
   process-naming
@@ -140,9 +140,9 @@ run_runtime_evidence_readiness_gate() {
     run_tool python scripts/check_runtime_evidence_readiness_gate.py
 }
 
-run_workline_restructuring_readiness_gate() {
-    log_step "workline-restructuring-readiness" "check_workline_restructuring_readiness_gate.py --scope technical"
-    run_tool python scripts/check_workline_restructuring_readiness_gate.py --scope technical
+run_runtime_production_closure_gate() {
+    log_step "runtime-production-closure" "check_runtime_production_closure_gate.py"
+    run_tool python scripts/check_runtime_production_closure_gate.py
 }
 
 run_business_legacy_absence_gate() {
@@ -179,7 +179,7 @@ run_quality_profile() {
     run_security_check
     run_runtime_toggle_release_gate
     run_runtime_evidence_readiness_gate
-    run_workline_restructuring_readiness_gate
+    run_runtime_production_closure_gate
     run_business_legacy_absence_gate
     run_process_naming_guardrail
     run_import_linter_check
@@ -216,8 +216,8 @@ if [[ -n "$CHECK" ]]; then
         runtime-evidence-readiness)
             run_runtime_evidence_readiness_gate
             ;;
-        workline-restructuring-readiness)
-            run_workline_restructuring_readiness_gate
+        runtime-production-closure)
+            run_runtime_production_closure_gate
             ;;
         business-legacy-absence)
             run_business_legacy_absence_gate

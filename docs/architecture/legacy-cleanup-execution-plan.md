@@ -48,20 +48,18 @@ RuntimeInbox
 
 - `uv run pytest tests/architecture/test_legacy_absence_guardrail.py tests/workline_runtime/test_runtime_capability_dispatcher.py -q`
 - `uv run pytest tests/architecture/test_runtime_capability_context_routing.py tests/workline_runtime/test_sorter_inbound_runtime_service.py -q`
-- `uv run python scripts/check_workline_restructuring_readiness_gate.py --scope technical`
 - `uv run python scripts/check_runtime_production_closure_gate.py --closure-profile production --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
 - `uv run python scripts/check_runtime_evidence_readiness_gate.py --readiness-profile production --runtime-evidence-artifact reports/phase4/runtime-evidence-production.json --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json`
-- `uv run python scripts/check_workline_restructuring_readiness_gate.py --scope business --production-e2e-artifact reports/phase3/phase3-p0-e2e.json --runtime-benchmark-artifact reports/phase3/phase3-production-benchmark.json --runtime-evidence-artifact reports/phase4/runtime-evidence-production.json`
-  - `WorkLine restructuring readiness passed: scope=business`
 - `uv run python scripts/check_business_legacy_absence_gate.py --mode final`
   - `Business legacy absence gate passed: mode=final`
+- `./scripts/git-quality-gate.sh --profile quality`
+  - runtime production closure、runtime evidence、business legacy absence、process naming、architecture guardrails 与 import-linter 长期门禁通过。
 
 本轮已确认：
 
 - technical gate passed。
 - Runtime production closure gate passed。
 - Runtime production evidence gate passed。
-- business gate passed。
 - business legacy absence gate passed。
 - restructuring cleanup migration smoke passed；旧 handling 队列表面和 WorkLine 运行态物理列 absence guardrail passed。
 - PR #79 已 merged to `develop`；未检测到 GitHub deploy workflow 且未提供生产 URL，因此 land report 记录为 `DEPLOYED (UNVERIFIED)`。

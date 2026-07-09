@@ -19,9 +19,12 @@ runtime 重构后:
 
 from __future__ import annotations
 
+import importlib
 import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDRAILS_SCRIPT = REPO_ROOT / "scripts" / "architecture-guardrails.sh"
@@ -34,6 +37,65 @@ LEGACY_RUNTIME_ALLOWED_PATHS = (
     "tests/",
     "migrations/",
 )
+STABLE_RUNTIME_PUBLIC_SURFACES = (
+    ("src.app.runtime.orchestration.enums", ("FailureDomain",)),
+    ("src.app.runtime.orchestration.device_ordering", ("device_sort_key",)),
+    (
+        "src.app.runtime.orchestration.runtime_intent",
+        ("RuntimeIntent", "BlockScope", "Destination", "RuntimeIntentKind"),
+    ),
+    ("src.app.runtime.orchestration.effect_result", ("RuntimeIntentEffectResult", "WriteBackDisposition")),
+    ("src.app.runtime.orchestration.material_target_resolver", ("resolve_destination_device",)),
+    ("src.app.runtime.orchestration.business_identity_bridge", ("resolve_payload_display_identity",)),
+    ("src.app.runtime.orchestration.lock_bridge", ("RedisDistributedLock",)),
+    ("src.app.runtime.orchestration.resource_wait_evidence_bridge", ("ResourceWaitEvidence",)),
+    ("src.app.runtime.orchestration.sandbox_catalog_bridge", ("rough_sorter_scan_completed_payload",)),
+    ("src.app.runtime.orchestration.events_bridge", ("assert_not_reserved_runtime_event", "RESERVED_RUNTIME_EVENTS")),
+    ("src.app.runtime.orchestration.topology_bridge", ("WorklineTopologyView", "validate_topology_manifest")),
+    ("src.app.runtime.orchestration.runtime_intent_effects", ("RuntimeIntentEffectApplier",)),
+    ("src.app.workline.trace_context", ("TraceContext",)),
+    ("src.app.workline.runtime_services", ("WorklineRuntimeServices", "build_workline_runtime_services")),
+)
+
+
+@pytest.mark.parametrize(("module_name", "required_symbols"), STABLE_RUNTIME_PUBLIC_SURFACES)
+def test_stable_runtime_public_surfaces_import_without_legacy_runtime(
+    module_name: str,
+    required_symbols: tuple[str, ...],
+) -> None:
+    module = importlib.import_module(module_name)
+
+    assert module.__name__ == module_name
+    missing = [symbol for symbol in required_symbols if not hasattr(module, symbol)]
+    assert not missing, f"{module_name} missing stable public symbols: {missing}"
+
+
+def test_stable_runtime_diagnostics_facade_reexports_public_symbols() -> None:
+    from src.app.runtime.orchestration import diagnostics
+
+    expected = {
+        "DiagnosticCard",
+        "DiagnosticCodeDefinition",
+        "DiagnosticContext",
+        "DiagnosticEvent",
+        "ErrorCode",
+        "ErrorDomain",
+        "ProblemClass",
+        "Recoverability",
+        "Severity",
+        "build_diagnostic_card",
+        "build_diagnostic_context",
+        "build_diagnostic_event",
+        "error_domain_for",
+        "get_diagnostic_code_definition",
+        "list_diagnostic_code_definitions",
+        "map_failure_to_diagnostic",
+    }
+    exported = set(getattr(diagnostics, "__all__", [])) | {
+        name for name in vars(diagnostics) if not name.startswith("_")
+    }
+
+    assert not expected - exported
 
 
 def test_legacy_runtime_import_rule_registered_in_guardrails_script():

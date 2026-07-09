@@ -1,9 +1,4 @@
-"""Phase 2 runtime_status 归属收敛守护。
-
-WorkLine 物理运行态字段已移除，运行态归属在 runtime/orchestration
-原生投影。WorkLine 配置域与 material-flow capability 不能再把 WorkLine 字段当作
-运行态事实直接读写；只读展示入口只能通过 projection snapshot 暴露。
-"""
+"""Runtime status ownership guardrail."""
 
 from __future__ import annotations
 
@@ -178,7 +173,7 @@ def test_runtime_status_projection_service_no_longer_writes_workline_field() -> 
     assert 'getattr(workline, "runtime_status"' not in source
 
 
-def test_latest_migration_mentions_final_cleanup_targets() -> None:
+def test_latest_migration_mentions_runtime_status_targets() -> None:
     migration_text = _latest_migration_text()
 
     assert "workline_runtime_status_projections" in migration_text

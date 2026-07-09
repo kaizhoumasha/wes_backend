@@ -82,8 +82,8 @@ Runtime production closure evidence passed
 uv run python scripts/check_runtime_evidence_readiness_gate.py --readiness-profile production --runtime-evidence-artifact reports/phase4/runtime-evidence-production.json --p0-e2e-artifact reports/phase3/phase3-p0-e2e.json --benchmark-artifact reports/phase3/phase3-production-benchmark.json
 Runtime evidence readiness gate passed: reason=RUNTIME_EVIDENCE_READY evidence_profile=production
 
-uv run python scripts/check_workline_restructuring_readiness_gate.py --scope business --production-e2e-artifact reports/phase3/phase3-p0-e2e.json --runtime-benchmark-artifact reports/phase3/phase3-production-benchmark.json --runtime-evidence-artifact reports/phase4/runtime-evidence-production.json
-WorkLine restructuring readiness passed: scope=business
+./scripts/git-quality-gate.sh --profile quality
+quality profile includes runtime production closure, runtime evidence, business legacy absence, process naming, architecture guardrails, and import-linter.
 ```
 
 ## Boundary

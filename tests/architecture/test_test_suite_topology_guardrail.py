@@ -1,3 +1,4 @@
+import re
 import tomllib
 from pathlib import Path
 
@@ -44,3 +45,14 @@ def test_readme_documents_default_fast_regression_exclusions() -> None:
     assert "重测试目录" in readme_text
     for excluded_dir in sorted(DEFAULT_EXCLUDED_TEST_DIRS):
         assert excluded_dir in readme_text
+
+
+def test_readme_does_not_publish_fixed_test_inventory_counts() -> None:
+    readme_text = (REPO_ROOT / "tests" / "README.md").read_text(encoding="utf-8")
+
+    stale_patterns = (
+        r"下共有\s*`\d+`\s*个\s*`test_\*\.py`\s*文件",
+        r"collect\s*为\s*`\d+`\s*个测试",
+    )
+
+    assert not any(re.search(pattern, readme_text) for pattern in stale_patterns)

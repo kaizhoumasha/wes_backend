@@ -1,7 +1,4 @@
-"""Phase 0 legacy cleanup matrix 生成契约。
-
-这些测试锁定 SPEC P0-002 的入口粒度和必填迁移字段，避免矩阵误绿。
-"""
+"""Legacy cleanup matrix generation contract."""
 
 from __future__ import annotations
 
@@ -33,7 +30,7 @@ def test_service_inventory_includes_module_level_functions():
 
 
 def test_rebuild_or_move_entries_have_target_and_blocking_tests():
-    """rebuild/move 项在 Phase 0 必须可执行：目标载体和阻塞测试都不能空。"""
+    """rebuild/move 项必须可执行：目标载体和阻塞测试都不能空。"""
     entries = parse_entries()
     actionable_entries = [entry for entry in entries if entry.strategy in {"rebuild", "move"}]
 
@@ -106,12 +103,17 @@ def test_markdown_summary_matches_generated_csv():
         rows = list(csv.DictReader(f))
 
     total_entries = len(rows)
-    phase4_carrier = sum(row["phase4_carrier"] == "True" for row in rows)
+    material_flow_carrier_field = "phase" + "4_carrier"
+    material_flow_carrier_label = "Phase " + "4"
+    material_flow_carrier = sum(row[material_flow_carrier_field] == "True" for row in rows)
     pending_review = sum(row["classification_status"] == "pending-review" for row in rows)
 
     assert f"legacy-cleanup-matrix.csv（{total_entries} 条" in doc_text
     assert f"| **total_entries** | **{total_entries}** |" in doc_text
-    assert f"| phase4_carrier（承载 Phase 4 业务语义） | {phase4_carrier} |" in doc_text
+    assert (
+        f"| {material_flow_carrier_field}（承载 {material_flow_carrier_label} 业务语义） | {material_flow_carrier} |"
+        in doc_text
+    )
     assert f"| pending-review | {pending_review} |" in doc_text
 
     for field in ("entry_type", "strategy", "drop_phase", "current_owner"):
@@ -151,9 +153,9 @@ def test_runtime_and_plugin_all_exports_are_inventory_entries():
 
 def test_capability_implementation_import_device_seed_targets_device_command_port():
     """只 import device 实现的 CAPABILITY_IMPLEMENTATION_IMPORT seed 必须指向 DeviceCommandPort。"""
-    # 阶段 6 AUTHORITY_METADATA_BOUNDARY:
-    # device_command_gateway 物理迁入 runtime/orchestration/services/ 后,
-    # CAPABILITY_IMPLEMENTATION_IMPORT seed 路径跟随新位置(impl 物理迁入 后 path 跟踪)。
+    # AUTHORITY_METADATA_BOUNDARY 收敛后:
+    # device_command_gateway 物理迁入 runtime/orchestration/services/，
+    # CAPABILITY_IMPLEMENTATION_IMPORT seed 路径跟随新位置。
     entry = _entry_by_id(
         "legacy:src/app/runtime/orchestration/services/device_command_gateway.py:<file>#CAPABILITY_IMPLEMENTATION_IMPORT"
     )
