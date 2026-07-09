@@ -14,6 +14,7 @@ from src.app.runtime.orchestration.scenario_replay import (
     ScenarioReplayRunner,
 )
 from src.app.wms_integration.provider_simulator_registry import ProviderSimulatorRegistry
+from src.utils.value_normalization import require_text
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,8 +46,8 @@ class IntegrationLabScenarioRunner:
     def run(self, fixture: Mapping[str, Any]) -> IntegrationLabRunResult:
         """Validate fixture coverage and replay simulator events."""
 
-        scenario_id = _required_text(fixture, "scenario_id")
-        _require_sandbox(_required_text(fixture, "environment"), "scenario")
+        scenario_id = require_text(fixture, "scenario_id")
+        _require_sandbox(require_text(fixture, "environment"), "scenario")
 
         registries = self._load_provider_registries(fixture.get("provider_profiles"))
         scenario_cases = _scenario_case_refs(fixture.get("scenario_cases"))
@@ -102,13 +103,6 @@ class IntegrationLabScenarioRunner:
                     raise ValueError(f"scenario_case={case_id} 引用了未知 provider: {provider_code}")
                 if not registry.has_case(provider_case_id):
                     raise ValueError(f"scenario_case={case_id} 引用了缺失 fixture: {provider_code}.{provider_case_id}")
-
-
-def _required_text(fixture: Mapping[str, Any], field_name: str) -> str:
-    value = fixture.get(field_name)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"IntegrationLab fixture 缺少字段: {field_name}")
-    return value
 
 
 def _required_text_tuple(fixture: Mapping[str, Any], field_name: str) -> tuple[str, ...]:

@@ -5,16 +5,11 @@ from __future__ import annotations
 from hashlib import md5
 from typing import Any
 
+from src.utils.value_normalization import coerce_optional_str
+
 CLAIM_BUCKET_KEY_MAX_LENGTH = 200
 _CLAIM_BUCKET_KEY_DIGEST_LENGTH = 16
 _CLAIM_BUCKET_KEY_HEAD_LENGTH = CLAIM_BUCKET_KEY_MAX_LENGTH - _CLAIM_BUCKET_KEY_DIGEST_LENGTH - 1
-
-
-def _non_empty_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
 
 
 def _fit_claim_bucket_key(raw_key: str) -> str:
@@ -39,24 +34,24 @@ def build_claim_bucket_key(
 ) -> str:
     """Build the materialized claim conflict key for Inbox hot-queue fencing."""
 
-    session_key = _non_empty_text(session_id)
+    session_key = coerce_optional_str(session_id)
     if session_key is not None:
         return _bucket_key("session", session_key)
 
-    device_key = _non_empty_text(device_id)
+    device_key = coerce_optional_str(device_id)
     if device_key is not None:
         return _bucket_key("device", device_key)
 
     payload = payload_json or {}
-    device_code = _non_empty_text(payload.get("device_code"))
+    device_code = coerce_optional_str(payload.get("device_code"))
     if device_code is not None:
         return _bucket_key("device_code", device_code)
 
-    location = _non_empty_text(payload.get("location"))
+    location = coerce_optional_str(payload.get("location"))
     if location is not None:
         return _bucket_key("device_code", location)
 
-    workline_key = _non_empty_text(workline_id)
+    workline_key = coerce_optional_str(workline_id)
     if workline_key is not None:
         return _bucket_key("workline", workline_key)
 

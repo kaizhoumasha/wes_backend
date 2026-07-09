@@ -15,6 +15,14 @@ from src.app.runtime.capabilities.material_flow.runtime_identity import (
     SORTER_INBOUND_RUNTIME_SOURCE,
 )
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
+from src.utils.value_normalization import (
+    coerce_string_value,
+    positive_quantity,
+    positive_timeout_seconds,
+    require_text,
+    require_text_any,
+    string_list,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -51,30 +59,30 @@ class SorterInboundRuntimeService:
     def build_rough_sorter_inbound_plan(self, payload: Mapping[str, Any]) -> RuntimeCapabilityPlan:
         """构建粗分机入库运行计划。"""
 
-        request_id = _required_text(payload, "request_id")
-        correlation_id = _required_text(payload, "correlation_id")
-        provider_code = _required_text(payload, "provider_code")
-        object_key = _required_text(payload, "object_key")
-        bin_code = _required_text_any(payload, "bin_code", "target_bin_code")
-        bin_cell_index = _required_text_any(payload, "bin_cell_index", "target_bin_cell_index", "target_cell_index")
-        target_cell_code = _required_text(payload, "target_cell_code")
-        pkg_code = _required_text(payload, "pkg_code")
-        pallet_id = _required_text(payload, "pallet_id")
-        station_code = _required_text(payload, "station_code")
-        material_code = _required_text(payload, "material_code")
-        quantity = _positive_quantity(payload.get("quantity"))
-        warehouse_code = _required_text(payload, "warehouse_code")
+        request_id = require_text(payload, "request_id")
+        correlation_id = require_text(payload, "correlation_id")
+        provider_code = require_text(payload, "provider_code")
+        object_key = require_text(payload, "object_key")
+        bin_code = require_text_any(payload, "bin_code", "target_bin_code")
+        bin_cell_index = require_text_any(payload, "bin_cell_index", "target_bin_cell_index", "target_cell_index")
+        target_cell_code = require_text(payload, "target_cell_code")
+        pkg_code = require_text(payload, "pkg_code")
+        pallet_id = require_text(payload, "pallet_id")
+        station_code = require_text(payload, "station_code")
+        material_code = require_text(payload, "material_code")
+        quantity = positive_quantity(payload.get("quantity"))
+        warehouse_code = require_text(payload, "warehouse_code")
 
         reservation_payload = {
             "pkg_code": pkg_code,
             "bin_code": bin_code,
             "bin_cell_index": bin_cell_index,
             "bin_cell_code": target_cell_code,
-            "material_identity_key": _text(payload.get("material_identity_key")) or None,
+            "material_identity_key": coerce_string_value(payload.get("material_identity_key")) or None,
             "correlation_id": correlation_id,
             "provider_code": provider_code,
-            "source_event_id": _text(payload.get("source_event_id")),
-            "source_version": _text(payload.get("source_version")),
+            "source_event_id": coerce_string_value(payload.get("source_event_id")),
+            "source_version": coerce_string_value(payload.get("source_version")),
             "evidence_json": {
                 "request_id": request_id,
                 "object_type": "PACKAGE",
@@ -93,12 +101,12 @@ class SorterInboundRuntimeService:
             "evidence_json": {
                 "request_id": request_id,
                 "provider_code": provider_code,
-                "source_event_id": _text(payload.get("source_event_id")),
-                "source_version": _text(payload.get("source_version")),
+                "source_event_id": coerce_string_value(payload.get("source_event_id")),
+                "source_version": coerce_string_value(payload.get("source_version")),
             },
             "correlation_id": correlation_id,
-            "source_event_id": _text(payload.get("source_event_id")),
-            "source_version": _text(payload.get("source_version")),
+            "source_event_id": coerce_string_value(payload.get("source_event_id")),
+            "source_version": coerce_string_value(payload.get("source_version")),
             "idempotency_key": f"{MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE}:{request_id}:location-fact",
         }
         pkg_binding_payload = {
@@ -173,12 +181,12 @@ class SorterInboundRuntimeService:
     def build_sorter_inbound_plan(self, payload: Mapping[str, Any]) -> RuntimeCapabilityPlan:
         """构建分拣机入库运行计划。"""
 
-        request_id = _required_text(payload, "request_id")
-        provider_code = _required_text(payload, "provider_code")
-        object_key = _required_text(payload, "object_key")
+        request_id = require_text(payload, "request_id")
+        provider_code = require_text(payload, "provider_code")
+        object_key = require_text(payload, "object_key")
         condition_results = {
-            "AUTHORIZED_BIN_RESOLVED": _text(payload.get("actual_scanned_bin_id"))
-            in set(_string_list(payload, "expected_authorized_bin_ids")),
+            "AUTHORIZED_BIN_RESOLVED": coerce_string_value(payload.get("actual_scanned_bin_id"))
+            in set(string_list(payload, "expected_authorized_bin_ids")),
             "TARGET_BIN_AT_WORK_POSITION": payload.get("target_bin_position_state") == "AT_WORK_POSITION",
             "TARGET_CELL_RESERVABLE": bool(payload.get("target_cell_reservable")),
             "CELL_RESERVATION_RESERVED": payload.get("cell_reservation_state") == "RESERVED",
@@ -222,12 +230,12 @@ class SorterInboundRuntimeService:
                         "object_type": "PACKAGE",
                         "object_key": object_key,
                         "location_scope": "WORK_POSITION",
-                        "location_code": _required_text(payload, "target_work_position_code"),
+                        "location_code": require_text(payload, "target_work_position_code"),
                         "business_step": "SORTER_READY_TO_DROP",
                         "source": SORTER_INBOUND_RUNTIME_SOURCE,
                         "provider_code": provider_code,
                         "evidence_json": {"request_id": request_id, "condition_results": condition_results},
-                        "correlation_id": _required_text(payload, "correlation_id"),
+                        "correlation_id": require_text(payload, "correlation_id"),
                         "idempotency_key": f"{MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE}:{request_id}:sorter-ready",
                     },
                     idempotency_key=f"{MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE}:{request_id}:sorter-ready",
@@ -243,17 +251,15 @@ class SorterInboundRuntimeService:
     def build_full_box_exchange_plan(self, payload: Mapping[str, Any]) -> RuntimeCapabilityPlan:
         """构建满箱交换运行计划。"""
 
-        request_id = _required_text(payload, "request_id")
-        correlation_id = _required_text(payload, "correlation_id")
-        provider_code = _required_text(payload, "provider_code")
-        rack_code = _required_text(payload, "rack_code")
-        empty_box_id = _required_text(payload, "empty_box_id")
-        full_box_id = _required_text(payload, "full_box_id")
-        full_box_set = set(_string_list(payload, "full_box_object_keys"))
+        request_id = require_text(payload, "request_id")
+        correlation_id = require_text(payload, "correlation_id")
+        provider_code = require_text(payload, "provider_code")
+        rack_code = require_text(payload, "rack_code")
+        empty_box_id = require_text(payload, "empty_box_id")
+        full_box_id = require_text(payload, "full_box_id")
+        full_box_set = set(string_list(payload, "full_box_object_keys"))
         sorting_candidate_object_keys = [
-            object_key
-            for object_key in _string_list(payload, "remaining_object_keys")
-            if object_key not in full_box_set
+            object_key for object_key in string_list(payload, "remaining_object_keys") if object_key not in full_box_set
         ]
         operation_key = f"{MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE}:{request_id}:full-box-exchange"
 
@@ -267,14 +273,14 @@ class SorterInboundRuntimeService:
                     moves=[
                         {
                             "rack_code": rack_code,
-                            "rack_side": _text(payload.get("rack_side")),
+                            "rack_side": coerce_string_value(payload.get("rack_side")),
                             "empty_box_id": empty_box_id,
                             "full_box_id": full_box_id,
                             "correlation_id": correlation_id,
                             "provider_code": provider_code,
                         }
                     ],
-                    timeout_seconds=_positive_timeout_seconds(payload.get("timeout_seconds")),
+                    timeout_seconds=positive_timeout_seconds(payload.get("timeout_seconds")),
                 )
             ],
             effect_contracts={
@@ -289,7 +295,7 @@ class SorterInboundRuntimeService:
             },
             evidence={
                 "request_id": request_id,
-                "batch_key": f"{rack_code}:{_text(payload.get('rack_side'))}",
+                "batch_key": f"{rack_code}:{coerce_string_value(payload.get('rack_side'))}",
                 "sorting_candidate_object_keys": sorting_candidate_object_keys,
             },
         )
@@ -307,62 +313,10 @@ def _external_effect_intent(
     return RuntimeIntent.external_request(
         dispatch_key=dispatch_key,
         target_code=target_code,
-        source_system=_text(payload.get("provider_code")),
+        source_system=coerce_string_value(payload.get("provider_code")),
         payload=effect_payload,
         timeout_seconds=30,
     )
-
-
-def _required_text(payload: Mapping[str, Any], field_name: str) -> str:
-    value = _text(payload.get(field_name))
-    if not value:
-        raise ValueError(f"{field_name} is required")
-    return value
-
-
-def _required_text_any(payload: Mapping[str, Any], *field_names: str) -> str:
-    for field_name in field_names:
-        value = _text(payload.get(field_name))
-        if value:
-            return value
-    raise ValueError(f"{'/'.join(field_names)} is required")
-
-
-def _text(value: Any) -> str:
-    return str(value or "")
-
-
-def _string_list(payload: Mapping[str, Any], field_name: str) -> list[str]:
-    raw_value = payload.get(field_name)
-    if raw_value is None:
-        return []
-    if isinstance(raw_value, str):
-        return [raw_value]
-    if not isinstance(raw_value, list):
-        return []
-    return [str(item) for item in raw_value if str(item)]
-
-
-def _positive_quantity(value: Any) -> float:
-    try:
-        quantity = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("quantity must be positive") from exc
-    if quantity <= 0:
-        raise ValueError("quantity must be positive")
-    return quantity
-
-
-def _positive_timeout_seconds(value: Any) -> int:
-    if value is None:
-        return 300
-    try:
-        timeout_seconds = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("timeout_seconds must be positive") from exc
-    if timeout_seconds <= 0:
-        raise ValueError("timeout_seconds must be positive")
-    return timeout_seconds
 
 
 sorter_inbound_runtime_service = SorterInboundRuntimeService()

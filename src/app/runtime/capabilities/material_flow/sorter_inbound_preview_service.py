@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from src.utils.value_normalization import coerce_string_value, string_list
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -61,7 +63,7 @@ class SorterInboundPreviewService:
         """预览粗分机正常流，拆分本地物理事实与 WMS 同步状态。"""
 
         local_physical_completed = bool(payload.get("local_physical_completed"))
-        wms_pkg_binding_result = _text(payload.get("wms_pkg_binding_result") or "ACCEPTED").upper()
+        wms_pkg_binding_result = coerce_string_value(payload.get("wms_pkg_binding_result") or "ACCEPTED").upper()
         wms_sync_state = "READY_TO_SYNC"
         business_completion_state = "LOCAL_PHYSICAL_COMPLETED"
         if local_physical_completed and wms_pkg_binding_result not in {"ACCEPTED", "CONFIRMED"}:
@@ -88,8 +90,8 @@ class SorterInboundPreviewService:
     def preview_sorter_inbound(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """预览分拣机入库 join gate 与扫码平台预取策略。"""
 
-        expected_authorized_bin_ids = set(_string_list(payload, "expected_authorized_bin_ids"))
-        actual_scanned_bin_id = _text(payload.get("actual_scanned_bin_id"))
+        expected_authorized_bin_ids = set(string_list(payload, "expected_authorized_bin_ids"))
+        actual_scanned_bin_id = coerce_string_value(payload.get("actual_scanned_bin_id"))
         condition_results = {
             "AUTHORIZED_BIN_RESOLVED": actual_scanned_bin_id in expected_authorized_bin_ids,
             "TARGET_BIN_AT_WORK_POSITION": payload.get("target_bin_position_state") == "AT_WORK_POSITION",
@@ -131,14 +133,12 @@ class SorterInboundPreviewService:
     def preview_full_box_exchange(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """预览满箱交换前置分流。"""
 
-        rack_code = _text(payload.get("rack_code"))
-        rack_side = _text(payload.get("rack_side"))
-        full_box_object_keys = _string_list(payload, "full_box_object_keys")
+        rack_code = coerce_string_value(payload.get("rack_code"))
+        rack_side = coerce_string_value(payload.get("rack_side"))
+        full_box_object_keys = string_list(payload, "full_box_object_keys")
         full_box_set = set(full_box_object_keys)
         sorting_candidate_object_keys = [
-            object_key
-            for object_key in _string_list(payload, "remaining_object_keys")
-            if object_key not in full_box_set
+            object_key for object_key in string_list(payload, "remaining_object_keys") if object_key not in full_box_set
         ]
         exchange_required = bool(full_box_object_keys)
 
@@ -165,9 +165,9 @@ class SorterInboundPreviewService:
             "request_id": payload.get("request_id", ""),
             "parent_request_id": payload.get("parent_request_id", ""),
             "fulfillment_action": "CHANGE_RACK_FACE",
-            "rack_code": _text(payload.get("rack_code")),
-            "from_rack_side": _text(payload.get("from_rack_side")),
-            "to_rack_side": _text(payload.get("to_rack_side")),
+            "rack_code": coerce_string_value(payload.get("rack_code")),
+            "from_rack_side": coerce_string_value(payload.get("from_rack_side")),
+            "to_rack_side": coerce_string_value(payload.get("to_rack_side")),
             "independent_fulfillment": True,
             "does_not_mark_full_box_exchange_completed": True,
             "completion_policy": "CALLBACK_AND_RECONCILIATION_REQUIRED",
@@ -180,18 +180,18 @@ class SorterInboundPreviewService:
         child_items = raw_child_items if isinstance(raw_child_items, list) else []
         sequence_nos = [_safe_int(item.get("sequence_no"), default=0) for item in child_items if isinstance(item, dict)]
         missing_resolved_placeholders = [
-            _text(item.get("placeholder_key"))
+            coerce_string_value(item.get("placeholder_key"))
             for item in child_items
             if isinstance(item, dict) and not item.get("resolved_bin_id")
         ]
         failed_child_placeholders = [
-            _text(item.get("placeholder_key"))
+            coerce_string_value(item.get("placeholder_key"))
             for item in child_items
             if isinstance(item, dict) and item.get("stage_status") != "COMPLETED"
         ]
         duplicate_sequence_nos = _duplicate_int_values(sequence_nos)
         has_child_issues = bool(missing_resolved_placeholders or failed_child_placeholders or duplicate_sequence_nos)
-        parent_callback_state = _text(payload.get("parent_callback_state") or "PENDING").upper()
+        parent_callback_state = coerce_string_value(payload.get("parent_callback_state") or "PENDING").upper()
         parent_business_completed = parent_callback_state == "SUCCESS" and not has_child_issues
         operator_summary_state = "COMPLETED" if parent_business_completed else "RECONCILING"
 
@@ -217,21 +217,6 @@ def _preview_boundary() -> dict[str, Any]:
         "production_write_path": False,
         "legacy_plugin_entry_used": False,
     }
-
-
-def _text(value: Any) -> str:
-    return str(value or "")
-
-
-def _string_list(payload: Mapping[str, Any], field_name: str) -> list[str]:
-    raw_value = payload.get(field_name)
-    if raw_value is None:
-        return []
-    if isinstance(raw_value, str):
-        return [raw_value]
-    if not isinstance(raw_value, list):
-        return []
-    return [str(item) for item in raw_value if str(item)]
 
 
 def _source_arm_prefetch_capacity(payload: Mapping[str, Any]) -> int:

@@ -53,7 +53,7 @@ from src.app.workline.services.rack_position_service import (
     workline_rack_position_service,
 )
 from src.utils.timezone import timezone
-from src.utils.value_normalization import coerce_optional_int, coerce_optional_str, enum_value
+from src.utils.value_normalization import coerce_optional_int, coerce_optional_str, enum_value, require_text
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -127,13 +127,13 @@ class RackOperationService:
     ) -> list[Any]:
         """按插件给出的低级货架 task 描述创建可追踪的 operation 任务。"""
 
-        operation_key = _required_text(operation_key, "operation_key")
-        operation_type = _required_text(operation_type, "operation_type")
+        operation_key = require_text(operation_key, "operation_key")
+        operation_type = require_text(operation_type, "operation_type")
         workline_code = coerce_optional_str(getattr(workline, "line_code", None))
         workline_id = coerce_optional_int(getattr(workline, "id", None))
         material_session_id = coerce_optional_int(getattr(session, "id", None))
         target_code = coerce_optional_str(target_code) or DEFAULT_RACK_OPERATION_ENDPOINT
-        trace_id = _required_text(trace_id, "trace_id")
+        trace_id = require_text(trace_id, "trace_id")
         specs = self._normalize_task_specs(
             operation_key=operation_key,
             operation_type=operation_type,
@@ -413,7 +413,7 @@ class RackOperationService:
     ) -> str:
         """按 sibling task 与 resource projection 派生 operation 状态。"""
 
-        operation_key = _required_text(operation_key, "operation_key")
+        operation_key = require_text(operation_key, "operation_key")
         operation = await self.rack_operation_repository.get_by_operation_key(db, operation_key)
         completion_policy = resolve_operation_completion_policy(operation)
         tasks = await self.rack_task_repository.list_by_operation_key(
@@ -1149,6 +1149,13 @@ def _task_type(task: Any) -> str | None:
     return enum_value(getattr(task, "task_type", None))
 
 
+def _required_int(value: Any, field_name: str) -> int:
+    number = coerce_optional_int(value)
+    if number is None:
+        raise ValueError(f"{field_name} is required")
+    return number
+
+
 def _rack_kind(value: RackKind | str) -> RackKind:
     raw_value = enum_value(value)
     try:
@@ -1171,20 +1178,6 @@ def _rack_task_type(value: Any) -> str:
         return RackTaskType(str(raw_value)).value
     except ValueError as exc:
         raise ValueError(f"unsupported rack task_type: {raw_value}") from exc
-
-
-def _required_text(value: Any, field_name: str) -> str:
-    text = coerce_optional_str(value)
-    if text is None:
-        raise ValueError(f"{field_name} is required")
-    return text
-
-
-def _required_int(value: Any, field_name: str) -> int:
-    number = coerce_optional_int(value)
-    if number is None:
-        raise ValueError(f"{field_name} is required")
-    return number
 
 
 rack_operation_service = RackOperationService()

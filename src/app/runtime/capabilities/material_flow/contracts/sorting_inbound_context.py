@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import copy
 import json
-from collections.abc import Mapping
-from decimal import Decimal
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any
 
 from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import SORTING_CONTEXT_SCHEMA_VERSION
+from src.utils.value_normalization import json_safe, mapping_copy
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+    from decimal import Decimal
 
 _SORTING_CONTEXT_KEY = "sorting"
 _SCHEMA_VERSION_KEY = "context_schema_version"
@@ -16,24 +19,6 @@ _SCHEMA_VERSION_KEY = "context_schema_version"
 
 class SortingInboundContextError(ValueError):
     """分拣入库 Session context 不满足自动运行合同。"""
-
-
-def _dict_copy(value: Any) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        return {}
-    return dict(cast("Mapping[str, Any]", value))
-
-
-def _json_safe(value: Any) -> Any:
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, Mapping):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, tuple):
-        return [_json_safe(item) for item in value]
-    return value
 
 
 def _require_text(field_name: str, value: str) -> str:
@@ -68,8 +53,8 @@ class SortingInboundContext:
     def initialize(cls, session: Any) -> SortingInboundContext:
         """初始化 sorting 子树，并通过替换 context_json 触发 ORM JSON 变更感知。"""
 
-        root_context = _dict_copy(getattr(session, "context_json", None))
-        sorting = _dict_copy(root_context.get(_SORTING_CONTEXT_KEY))
+        root_context = mapping_copy(getattr(session, "context_json", None))
+        sorting = mapping_copy(root_context.get(_SORTING_CONTEXT_KEY))
         sorting[_SCHEMA_VERSION_KEY] = SORTING_CONTEXT_SCHEMA_VERSION
         context = cls(session, root_context=root_context, sorting=sorting)
         context._writeback()
@@ -79,8 +64,8 @@ class SortingInboundContext:
     def load_for_automatic(cls, session: Any) -> SortingInboundContext:
         """加载自动运行 context；缺失或版本不兼容时拒绝继续自动分拣。"""
 
-        root_context = _dict_copy(getattr(session, "context_json", None))
-        sorting = _dict_copy(root_context.get(_SORTING_CONTEXT_KEY))
+        root_context = mapping_copy(getattr(session, "context_json", None))
+        sorting = mapping_copy(root_context.get(_SORTING_CONTEXT_KEY))
         version = sorting.get(_SCHEMA_VERSION_KEY)
         if version is None:
             raise SortingInboundContextError("sorting.context_schema_version 缺失，拒绝自动分拣")
@@ -107,18 +92,18 @@ class SortingInboundContext:
                 "source_bin_code": _require_text("source_bin_code", source_bin_code),
                 "source_cell_code": _require_text("source_cell_code", source_cell_code),
                 "material_identity_key": _require_text("material_identity_key", material_identity_key),
-                "reel_thickness_mm": _json_safe(reel_thickness_mm),
-                "evidence": _json_safe(dict(evidence or {})),
+                "reel_thickness_mm": json_safe(reel_thickness_mm),
+                "evidence": json_safe(dict(evidence or {})),
             },
         )
 
     def update_current_material(self, **patch: Any) -> None:
         """局部更新当前物料，保留 Decimal 字符串证据。"""
 
-        current_material = _dict_copy(self.sorting.get("current_material"))
+        current_material = mapping_copy(self.sorting.get("current_material"))
         if not current_material:
             raise SortingInboundContextError("current_material 缺失，无法更新")
-        current_material.update(_json_safe(patch))
+        current_material.update(json_safe(patch))
         self._set_sorting_value("current_material", current_material)
 
     def close_current_material(self) -> None:
@@ -143,7 +128,7 @@ class SortingInboundContext:
 
         safe_route_evidence = _require_json_serializable(
             "route_evidence",
-            _json_safe(dict(route_evidence or {})),
+            json_safe(dict(route_evidence or {})),
         )
         self._set_sorting_value(
             "source_pick_request",
@@ -163,7 +148,7 @@ class SortingInboundContext:
     def get_source_pick_request(self) -> dict[str, Any]:
         """读取源站取料请求上下文；缺失时返回空 dict。"""
 
-        return copy.deepcopy(_dict_copy(self.sorting.get("source_pick_request")))
+        return copy.deepcopy(mapping_copy(self.sorting.get("source_pick_request")))
 
     def write_pending_target_placement(
         self,
@@ -181,8 +166,8 @@ class SortingInboundContext:
             "target_bin_code": _require_text("target_bin_code", target_bin_code),
             "target_cell_code": _require_text("target_cell_code", target_cell_code),
             "material_identity_key": _require_text("material_identity_key", material_identity_key),
-            "reel_thickness_mm": _json_safe(reel_thickness_mm),
-            "capacity_evidence": _json_safe(dict(capacity_evidence or {})),
+            "reel_thickness_mm": json_safe(reel_thickness_mm),
+            "capacity_evidence": json_safe(dict(capacity_evidence or {})),
         }
         if allocation_snapshot_version is not None:
             placement["allocation_snapshot_version"] = allocation_snapshot_version
@@ -204,7 +189,7 @@ class SortingInboundContext:
 
         rejection = {
             "reason_code": _require_text("reason_code", reason_code),
-            "capacity_evidence": _json_safe(dict(capacity_evidence or {})),
+            "capacity_evidence": json_safe(dict(capacity_evidence or {})),
         }
         if message:
             rejection["message"] = message
@@ -225,7 +210,7 @@ class SortingInboundContext:
 
         sorting = dict(self.sorting)
         if scan_platform is not None:
-            stations = _dict_copy(sorting.get("stations"))
+            stations = mapping_copy(sorting.get("stations"))
             stations["scan_platform"] = _require_text("scan_platform", scan_platform)
             sorting["stations"] = stations
         if business_phase is not None:
@@ -235,7 +220,7 @@ class SortingInboundContext:
 
     def _set_sorting_value(self, key: str, value: Any) -> None:
         sorting = dict(self.sorting)
-        sorting[key] = _json_safe(value)
+        sorting[key] = json_safe(value)
         self.sorting = sorting
         self._writeback()
 

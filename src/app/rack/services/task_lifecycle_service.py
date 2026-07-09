@@ -21,7 +21,7 @@ from src.app.runtime.orchestration.repositories.session_repository import (
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository, outbox_repository
 from src.core.logger import logger
 from src.utils.timezone import timezone
-from src.utils.value_normalization import coerce_optional_str, enum_value, optional_int
+from src.utils.value_normalization import coerce_optional_str, enum_value, optional_int, require_text
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -108,8 +108,8 @@ class RackTaskLifecycleService:
     ) -> RackTask:
         """记录 rack task 请求，并保证 task_key 只能指向同一个低级动作。"""
 
-        operation_key = _required_text(operation_key, "operation_key")
-        operation_type = _required_text(operation_type, "operation_type")
+        operation_key = require_text(operation_key, "operation_key")
+        operation_type = require_text(operation_type, "operation_type")
         if sequence_no <= 0:
             raise ValueError("operation sequence_no 必须大于 0")
         normalized_task_type = _rack_task_type(task_type)
@@ -509,13 +509,6 @@ def _source_event_id(payload_json: Mapping[str, Any]) -> str | None:
         or coerce_optional_str(payload_json.get("event_id"))
         or coerce_optional_str(payload_json.get("request_id"))
     )
-
-
-def _required_text(value: Any, field_name: str) -> str:
-    text = coerce_optional_str(value)
-    if text is None:
-        raise ValueError(f"operation {field_name} 不能为空")
-    return text
 
 
 def _required_int(value: Any, field_name: str) -> int:

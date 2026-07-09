@@ -27,6 +27,7 @@ from src.app.runtime.orchestration.services.inbox.object_transition_event_servic
 )
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
+from src.utils.value_normalization import coerce_optional_str, require_text
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -101,14 +102,14 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
 
         normalized = _NormalizedWriteInput(
             workline_id=workline_id,
-            conveyor_code=_required_text(conveyor_code, "conveyor_code"),
-            queue_code=_required_text(queue_code, "queue_code"),
-            queue_role=_required_text(queue_role, "queue_role"),
-            bin_code=_optional_text(bin_code),
-            placeholder_key=_optional_text(placeholder_key),
+            conveyor_code=require_text(conveyor_code, "conveyor_code"),
+            queue_code=require_text(queue_code, "queue_code"),
+            queue_role=require_text(queue_role, "queue_role"),
+            bin_code=coerce_optional_str(bin_code),
+            placeholder_key=coerce_optional_str(placeholder_key),
             declared_queue_codes=_normalize_declared_queue_codes(declared_queue_codes),
             strict=strict,
-            correlation_id=_optional_text(correlation_id),
+            correlation_id=coerce_optional_str(correlation_id),
             source_event_id=_resolve_source_event_id(source_event_id, evidence_json),
             evidence_json={
                 **dict(evidence_json or {}),
@@ -268,7 +269,7 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
             membership=active,
             from_state=from_state,
             to_state="LEFT",
-            reason_code=_required_text(reason_code, "reason_code"),
+            reason_code=require_text(reason_code, "reason_code"),
             source_event_id=resolved_source_event_id,
             evidence_json=active.evidence_json,
             source_ref_json={
@@ -335,7 +336,7 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
             membership=active,
             from_state=from_state,
             to_state="RECONCILING",
-            reason_code=_required_text(reason_code, "reason_code"),
+            reason_code=require_text(reason_code, "reason_code"),
             source_event_id=resolved_source_event_id,
             evidence_json=active.evidence_json,
             source_ref_json={
@@ -405,9 +406,9 @@ class ConveyorQueueMembershipWriterService(BaseService[ConveyorQueueMembership, 
             object_key=_object_key_from_membership(membership),
             projection_type="QUEUE_MEMBERSHIP",
             from_state=from_state,
-            to_state=_required_text(to_state, "to_state"),
-            reason_code=_required_text(reason_code, "reason_code"),
-            source_event_id=_required_text(source_event_id, "source_event_id"),
+            to_state=require_text(to_state, "to_state"),
+            reason_code=require_text(reason_code, "reason_code"),
+            source_event_id=require_text(source_event_id, "source_event_id"),
             source_ref_json=source_ref_json,
             evidence_json=dict(evidence_json or {}),
             workline_session_id=workline_session_id,
@@ -793,8 +794,8 @@ def _normalize_identity(
     bin_code: str | None,
     placeholder_key: str | None,
 ) -> tuple[str | None, str | None]:
-    normalized_bin_code = _optional_text(bin_code)
-    normalized_placeholder_key = _optional_text(placeholder_key)
+    normalized_bin_code = coerce_optional_str(bin_code)
+    normalized_placeholder_key = coerce_optional_str(placeholder_key)
     if normalized_bin_code is None and normalized_placeholder_key is None:
         raise ValueError("bin_code 或 placeholder_key 至少需要一个")
     return normalized_bin_code, normalized_placeholder_key
@@ -833,27 +834,13 @@ def _resolve_source_event_id(
     evidence_json: dict[str, Any] | None,
 ) -> str:
     if source_event_id is not None:
-        return _required_text(source_event_id, "source_event_id")
+        return require_text(source_event_id, "source_event_id")
     evidence_source_event_id = dict(evidence_json or {}).get("source_event_id")
-    return _required_text(evidence_source_event_id, "source_event_id")
+    return require_text(evidence_source_event_id, "source_event_id")
 
 
 def _normalize_declared_queue_codes(values: Iterable[str] | None) -> frozenset[str]:
     return frozenset(normalized for value in values or () if (normalized := str(value).strip()))
-
-
-def _required_text(value: Any, field_name: str) -> str:
-    text = _optional_text(value)
-    if text is None:
-        raise ValueError(f"{field_name} 不能为空")
-    return text
-
-
-def _optional_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
 
 
 def _now_ms() -> int:

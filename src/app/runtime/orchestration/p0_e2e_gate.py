@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import ClassVar
 
+from src.utils.value_normalization import coerce_optional_str
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeP0E2EValidation:
@@ -101,7 +103,7 @@ class RuntimeP0E2EGate:
             )
 
         missing_fields = tuple(
-            f"profile.{field}" for field in required_fields if not _non_empty_text(profile.get(field))
+            f"profile.{field}" for field in required_fields if not coerce_optional_str(profile.get(field))
         )
         if missing_fields:
             return RuntimeP0E2EValidation(
@@ -141,10 +143,10 @@ class RuntimeP0E2EGate:
             )
 
         required_fields = ("source.environment", "source.evidence", "source.evidence_sha256", "source.kind")
-        missing_fields = tuple(field for field in required_fields if not _non_empty_text(source.get(field[7:])))
+        missing_fields = tuple(field for field in required_fields if not coerce_optional_str(source.get(field[7:])))
         invalid_fields: list[str] = []
         evidence_sha256 = source.get("evidence_sha256")
-        if _non_empty_text(evidence_sha256) and not _is_sha256_hex(evidence_sha256):
+        if coerce_optional_str(evidence_sha256) and not _is_sha256_hex(evidence_sha256):
             invalid_fields.append("source.evidence_sha256")
         environment = source.get("environment")
         if isinstance(environment, str) and environment.strip().lower() in self._FORBIDDEN_ENVIRONMENTS:
@@ -204,10 +206,10 @@ class RuntimeP0E2EGate:
                 continue
             if raw_path.get("result") != "RECONCILING":
                 invalid_paths.append(f"{path_name}.result")
-            if not _non_empty_text(raw_path.get("evidence")):
+            if not coerce_optional_str(raw_path.get("evidence")):
                 missing_paths.append(f"{path_name}.evidence")
             evidence_sha256 = raw_path.get("evidence_sha256")
-            if not _non_empty_text(evidence_sha256):
+            if not coerce_optional_str(evidence_sha256):
                 missing_paths.append(f"{path_name}.evidence_sha256")
             elif not _is_sha256_hex(evidence_sha256):
                 invalid_paths.append(f"{path_name}.evidence_sha256")
@@ -225,10 +227,6 @@ class RuntimeP0E2EGate:
                 invalid_exception_paths=tuple(sorted(invalid_paths)),
             )
         return None
-
-
-def _non_empty_text(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
 
 
 def _is_sha256_hex(value: object) -> bool:

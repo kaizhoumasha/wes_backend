@@ -31,6 +31,7 @@ from src.core.exceptions import NotFoundException
 from src.core.logger import logger
 from src.database.redis_cache import get_cache
 from src.utils.timezone import timezone
+from src.utils.value_normalization import coerce_optional_str
 
 
 @dataclass(frozen=True)
@@ -41,42 +42,34 @@ class DeviceCallbackResultOutcome:
     late_callback_recorded: bool = False
 
 
-def _non_empty_text(value: object) -> str | None:
-    candidate = getattr(value, "value", value)
-    if candidate is None:
-        return None
-    text = str(candidate).strip()
-    return text or None
-
-
 def _device_command_result_trace_id(command: object, callback: CommandCallbackResult) -> str | None:
     return (
-        _non_empty_text(getattr(callback, "trace_id", None))
-        or _non_empty_text(getattr(command, "trace_id", None))
+        coerce_optional_str(getattr(callback, "trace_id", None))
+        or coerce_optional_str(getattr(command, "trace_id", None))
         or _device_command_result_source_event_id(command, callback)
     )
 
 
 def _device_command_result_correlation_id(command: object, callback: CommandCallbackResult) -> str | None:
-    command_code = _non_empty_text(getattr(command, "command_code", None)) or _non_empty_text(
+    command_code = coerce_optional_str(getattr(command, "command_code", None)) or coerce_optional_str(
         getattr(callback, "command_code", None)
     )
     return (
-        _non_empty_text(getattr(command, "correlation_id", None))
-        or _non_empty_text(getattr(callback, "causation_id", None))
+        coerce_optional_str(getattr(command, "correlation_id", None))
+        or coerce_optional_str(getattr(callback, "causation_id", None))
         or (f"command:{command_code}" if command_code else None)
     )
 
 
 def _device_command_result_source_event_id(command: object, callback: CommandCallbackResult) -> str | None:
-    command_code = _non_empty_text(getattr(command, "command_code", None)) or _non_empty_text(
+    command_code = coerce_optional_str(getattr(command, "command_code", None)) or coerce_optional_str(
         getattr(callback, "command_code", None)
     )
-    finish_time = _non_empty_text(getattr(callback, "finish_time", None))
+    finish_time = coerce_optional_str(getattr(callback, "finish_time", None))
     return (
-        _non_empty_text(getattr(callback, "event_id", None))
-        or _non_empty_text(getattr(command, "event_id", None))
-        or _non_empty_text(getattr(callback, "causation_id", None))
+        coerce_optional_str(getattr(callback, "event_id", None))
+        or coerce_optional_str(getattr(command, "event_id", None))
+        or coerce_optional_str(getattr(callback, "causation_id", None))
         or (f"command_result:{command_code}:{finish_time}" if command_code and finish_time else None)
     )
 
@@ -86,7 +79,7 @@ def _emit_device_command_result_observability(command: object, callback: Command
 
     from src.app.runtime.orchestration.observability import runtime_observability_registry
 
-    command_code = _non_empty_text(getattr(command, "command_code", None)) or _non_empty_text(
+    command_code = coerce_optional_str(getattr(command, "command_code", None)) or coerce_optional_str(
         getattr(callback, "command_code", None)
     )
     try:

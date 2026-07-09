@@ -10,6 +10,7 @@ from copy import deepcopy
 from typing import Any
 
 from src.app.sys.models import DispatchEnvelope, SystemOutboxDispatchType, SystemOutboxTargetType
+from src.utils.value_normalization import require_text
 
 DEFAULT_RACK_OPERATION_ENDPOINT = "WMS_RCS_RACK_OPERATION"
 BIN_OPERATION_ENDPOINT = "WMS_RCS_BIN_OPERATION"
@@ -79,7 +80,7 @@ class WmsTransportContractService:
         _attach_single_layer_request_json(resolved_payload)
 
         return {
-            "operation_type": _required_text(operation_type, "operation_type"),
+            "operation_type": require_text(operation_type, "operation_type"),
             "operation_key": resolved_dispatch_key,
             "target_code": _logical_target_code(target_code),
             "payload": resolved_payload,
@@ -250,23 +251,16 @@ def _single_layer_rack_dispatch_key(
     endpoint_code: str,
 ) -> str:
     if dispatch_key is not None:
-        return _required_text(dispatch_key, "dispatch_key")
+        return require_text(dispatch_key, "dispatch_key")
     return "wms-rack-operation:{business_demand_key}:{workline_code}:{endpoint_code}".format(
-        business_demand_key=_required_text(business_demand_key, "business_demand_key"),
-        workline_code=_required_text(workline_code, "workline_code"),
-        endpoint_code=_required_text(endpoint_code, "endpoint_code"),
+        business_demand_key=require_text(business_demand_key, "business_demand_key"),
+        workline_code=require_text(workline_code, "workline_code"),
+        endpoint_code=require_text(endpoint_code, "endpoint_code"),
     )
 
 
-def _required_text(value: str | None, field_name: str) -> str:
-    normalized = str(value or "").strip()
-    if not normalized:
-        raise ValueError(f"single-layer rack operation requires {field_name}")
-    return normalized
-
-
 def _single_layer_rack_kind(value: str) -> str:
-    rack_kind = _required_text(value, "rack_kind")
+    rack_kind = require_text(value, "rack_kind")
     if rack_kind != SINGLE_LAYER_RACK_KIND:
         raise ValueError("single-layer rack operation rack_kind must be SINGLE_LAYER")
     return rack_kind

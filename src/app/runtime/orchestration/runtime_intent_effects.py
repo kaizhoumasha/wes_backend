@@ -35,7 +35,7 @@ from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
 )
-from src.utils.value_normalization import optional_int, resolve_required_pk, string_value
+from src.utils.value_normalization import coerce_optional_str, optional_int, resolve_required_pk, string_value
 
 logger = logging.getLogger(__name__)
 
@@ -204,8 +204,8 @@ def _rack_operation_key_from_resource_fact(ctx: Mapping[str, Any], payload_json:
     session = ctx.get("session")
     context_json = getattr(session, "context_json", None)
     context = context_json if isinstance(context_json, Mapping) else {}
-    waiting_operation_key = _non_empty_text(context.get("waiting_rack_operation_key"))
-    payload_operation_key = _non_empty_text(payload_json.get("operation_key"))
+    waiting_operation_key = coerce_optional_str(context.get("waiting_rack_operation_key"))
+    payload_operation_key = coerce_optional_str(payload_json.get("operation_key"))
     if waiting_operation_key is not None and (
         payload_operation_key is None or payload_operation_key == waiting_operation_key
     ):
@@ -213,23 +213,16 @@ def _rack_operation_key_from_resource_fact(ctx: Mapping[str, Any], payload_json:
 
     rack_operation = context.get("rack_operation")
     if isinstance(rack_operation, Mapping):
-        context_operation_key = _non_empty_text(rack_operation.get("operation_key"))
+        context_operation_key = coerce_optional_str(rack_operation.get("operation_key"))
         if payload_operation_key is not None and payload_operation_key != context_operation_key:
             return None
         return context_operation_key
     return None
 
 
-def _non_empty_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
 def _mapping_text(value: Mapping[str, Any], *field_names: str) -> str | None:
     for field_name in field_names:
-        if (text := _non_empty_text(value.get(field_name))) is not None:
+        if (text := coerce_optional_str(value.get(field_name))) is not None:
             return text
     return None
 
@@ -246,7 +239,7 @@ def _is_fulfillment_external_request(*, target_code: str, payload_json: Mapping[
 def _fulfillment_provider_code(intent: RuntimeIntent, *, target_code: str, payload_json: Mapping[str, Any]) -> str:
     return (
         _mapping_text(payload_json, "provider_code", "source_system", "provider")
-        or _non_empty_text(intent.source_system)
+        or coerce_optional_str(intent.source_system)
         or ("WMS" if target_code.startswith("WMS") else target_code)
     )
 
@@ -330,7 +323,7 @@ def _required_rack_task_specs(payload_json: Mapping[str, Any]) -> list[dict[str,
 
 def _station_position_code_from_mapping(value: Mapping[str, Any]) -> str | None:
     for key in ("target_position_code", "work_position_code", "position_code", "endpoint_code"):
-        if (position_code := _non_empty_text(value.get(key))) is not None:
+        if (position_code := coerce_optional_str(value.get(key))) is not None:
             return position_code
 
     station = value.get("station")
@@ -388,11 +381,11 @@ def _rack_task_type(task: Any) -> str | None:
 
 
 def _rack_task_dispatch_key(task: Any) -> str | None:
-    return _non_empty_text(getattr(task, "dispatch_key", None))
+    return coerce_optional_str(getattr(task, "dispatch_key", None))
 
 
 def _rack_task_rack_code(task: Any) -> str | None:
-    return _non_empty_text(getattr(task, "rack_code", None))
+    return coerce_optional_str(getattr(task, "rack_code", None))
 
 
 def _rack_task_required(task: Any) -> bool:
@@ -406,8 +399,8 @@ def _rack_task_is_releasing_source(task: Any) -> bool:
     return (
         _rack_task_required(task)
         and _rack_task_type(task) == "MOVE_RACK"
-        and _non_empty_text(getattr(task, "source_position_code", None)) is not None
-        and _non_empty_text(getattr(task, "target_position_code", None)) is None
+        and coerce_optional_str(getattr(task, "source_position_code", None)) is not None
+        and coerce_optional_str(getattr(task, "target_position_code", None)) is None
     )
 
 
@@ -415,7 +408,7 @@ def _rack_operation_target_position_code(tasks: list[Any]) -> str | None:
     target_position_codes = {
         target_position_code
         for task in tasks
-        if (target_position_code := _non_empty_text(getattr(task, "target_position_code", None))) is not None
+        if (target_position_code := coerce_optional_str(getattr(task, "target_position_code", None))) is not None
     }
     if len(target_position_codes) != 1:
         return None
@@ -1390,7 +1383,7 @@ class RuntimeIntentEffectApplier:
             service = rack_operation_service
 
         ctx_map = cast("Mapping[str, Any]", ctx)
-        trace_id = _non_empty_text(payload_json.get("trace_id")) or _non_empty_text(_ctx_trace_id(ctx_map))
+        trace_id = coerce_optional_str(payload_json.get("trace_id")) or coerce_optional_str(_ctx_trace_id(ctx_map))
         if trace_id is None:
             raise ValueError("RACK_OPERATION_REQUEST intent requires trace_id")
         task_specs = _required_rack_task_specs(payload_json)
@@ -1546,7 +1539,7 @@ class RuntimeIntentEffectApplier:
             service = handling_operation_service
 
         ctx_map = cast("Mapping[str, Any]", ctx)
-        trace_id = _non_empty_text(payload_json.get("trace_id")) or _non_empty_text(_ctx_trace_id(ctx_map))
+        trace_id = coerce_optional_str(payload_json.get("trace_id")) or coerce_optional_str(_ctx_trace_id(ctx_map))
         if trace_id is None:
             raise ValueError(f"{intent.kind.value} intent requires trace_id")
         moves = _required_handling_move_specs(payload_json, intent.kind)
@@ -1556,14 +1549,14 @@ class RuntimeIntentEffectApplier:
             operation_key=operation_key,
             operation_type=operation_type,
             workline_id=optional_int(getattr(ctx_map["workline"], "id", None)),
-            workline_code=_non_empty_text(
+            workline_code=coerce_optional_str(
                 getattr(ctx_map["workline"], "line_code", None) or getattr(ctx_map["workline"], "workline_code", None)
             ),
             material_session_id=optional_int(getattr(session, "id", None)),
             trace_id=trace_id,
             moves=moves,
             carrier_type=str(payload_json["carrier_type"]),
-            carrier_code=_non_empty_text(payload_json.get("carrier_code")),
+            carrier_code=coerce_optional_str(payload_json.get("carrier_code")),
             timeout_seconds=timeout_seconds,
         )
 
@@ -1572,7 +1565,7 @@ class RuntimeIntentEffectApplier:
             operation_key=operation_key,
             operation_type=operation_type,
             moves=moves,
-            rack_code=_non_empty_text(payload_json.get("rack_code")),
+            rack_code=coerce_optional_str(payload_json.get("rack_code")),
             timeout_seconds=timeout_seconds,
         )
 
@@ -1700,13 +1693,13 @@ class RuntimeIntentEffectApplier:
             business_step=str(payload["business_step"]),
             source=str(payload["source"]),
             evidence_json=dict(cast("Mapping[str, Any]", payload.get("evidence_json") or {})),
-            correlation_id=_non_empty_text(payload.get("correlation_id")),
-            source_event_id=_non_empty_text(payload.get("source_event_id")),
-            source_version=_non_empty_text(payload.get("source_version")),
-            idempotency_key=intent.idempotency_key or _non_empty_text(payload.get("idempotency_key")),
-            external_reference_type=_non_empty_text(payload.get("external_reference_type")),
-            external_reference_value=_non_empty_text(payload.get("external_reference_value")),
-            provider_code=_non_empty_text(payload.get("provider_code")),
+            correlation_id=coerce_optional_str(payload.get("correlation_id")),
+            source_event_id=coerce_optional_str(payload.get("source_event_id")),
+            source_version=coerce_optional_str(payload.get("source_version")),
+            idempotency_key=intent.idempotency_key or coerce_optional_str(payload.get("idempotency_key")),
+            external_reference_type=coerce_optional_str(payload.get("external_reference_type")),
+            external_reference_value=coerce_optional_str(payload.get("external_reference_value")),
+            provider_code=coerce_optional_str(payload.get("provider_code")),
             auto_commit=False,
         )
 
@@ -1723,20 +1716,20 @@ class RuntimeIntentEffectApplier:
             object_key=str(payload["object_key"]),
             location_scope="RECONCILIATION",
             location_code=(
-                _non_empty_text(payload.get("reason_code"))
-                or _non_empty_text(payload.get("scenario"))
+                coerce_optional_str(payload.get("reason_code"))
+                or coerce_optional_str(payload.get("scenario"))
                 or "RECONCILIATION_EVIDENCE"
             ),
             business_step="RECONCILIATION_EVIDENCE",
             source=RECONCILIATION_RUNTIME_SOURCE,
             evidence_json=payload,
-            correlation_id=_non_empty_text(payload.get("correlation_id")),
-            source_event_id=_non_empty_text(payload.get("source_event_id")),
-            source_version=_non_empty_text(payload.get("source_version")),
+            correlation_id=coerce_optional_str(payload.get("correlation_id")),
+            source_event_id=coerce_optional_str(payload.get("source_event_id")),
+            source_version=coerce_optional_str(payload.get("source_version")),
             idempotency_key=intent.idempotency_key,
-            external_reference_type=_non_empty_text(external_reference_map.get("type")),
-            external_reference_value=_non_empty_text(external_reference_map.get("value")),
-            provider_code=_non_empty_text(payload.get("provider_code")),
+            external_reference_type=coerce_optional_str(external_reference_map.get("type")),
+            external_reference_value=coerce_optional_str(external_reference_map.get("value")),
+            provider_code=coerce_optional_str(payload.get("provider_code")),
             auto_commit=False,
         )
 
@@ -1812,9 +1805,9 @@ class RuntimeIntentEffectApplier:
         subject_key = str(payload_json["subject_key"])
         projection_type = str(payload_json["projection_type"])
         plugin_key = (
-            _non_empty_text(getattr(workline, "plugin_key", None))
-            or _non_empty_text(getattr(session, "plugin_key", None))
-            or _non_empty_text(payload_json.get("plugin_key"))
+            coerce_optional_str(getattr(workline, "plugin_key", None))
+            or coerce_optional_str(getattr(session, "plugin_key", None))
+            or coerce_optional_str(payload_json.get("plugin_key"))
         )
         plugin_definition = get_workline_capability_definition(plugin_key)
         if plugin_definition is None:
@@ -1863,7 +1856,7 @@ class RuntimeIntentEffectApplier:
             session_id=optional_int(getattr(session, "id", None)),
             workline_id=optional_int(getattr(workline, "id", None))
             or optional_int(getattr(session, "workline_id", None)),
-            trace_id=_non_empty_text(_ctx_trace_id(cast("Mapping[str, Any]", ctx))),
+            trace_id=coerce_optional_str(_ctx_trace_id(cast("Mapping[str, Any]", ctx))),
             details={
                 key: value
                 for key, value in payload_json.items()
@@ -1971,7 +1964,7 @@ class RuntimeIntentEffectApplier:
             session_id=optional_int(getattr(session, "id", None)),
             workline_id=optional_int(getattr(workline, "id", None))
             or optional_int(getattr(session, "workline_id", None)),
-            trace_id=_non_empty_text(_ctx_trace_id(cast("Mapping[str, Any]", ctx))),
+            trace_id=coerce_optional_str(_ctx_trace_id(cast("Mapping[str, Any]", ctx))),
             details=details,
         )
         context = build_diagnostic_context(
