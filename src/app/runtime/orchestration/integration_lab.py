@@ -1,4 +1,10 @@
-"""IntegrationLab fixture runner contracts."""
+"""IntegrationLab fixture runner — @yagni: 全量联调前为占位能力。
+
+当前状态: 完整实现但无生产调用方。当前里程碑使用 tests/mock/ 中的
+ecs_mock_server + wms_mock_server 进行合同测试。
+
+激活条件: 硬件未到位时需要 simulator 验证完整业务链路。
+"""
 
 from __future__ import annotations
 

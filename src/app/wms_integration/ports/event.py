@@ -1,4 +1,10 @@
-"""WmsEventPort + InboundEventPort。
+"""WmsEventPort + InboundEventPort — @deferred to 全量联调。
+
+本 Port 定义 WMS 事件接收能力合同。当前里程碑的粗分机/分拣机流程
+通过 RuntimeInbox + callback normalizer 处理外部事件，
+不需要独立的 WMS 事件 Port。
+
+激活条件: WMS 全量集成或 WMS 主动推送事件需求明确。
 
 主计划 §5.1 7 port 之一: 入站事件 normalizer (WMS_GRN_RECEIVED /
 WMS_PALLET_ARRIVED / WMS_RACK_ARRIVED / WMS_TRANSPORT_COMPLETED 等回调)。

@@ -1,4 +1,9 @@
-"""Deterministic runtime scenario recording and replay contracts."""
+"""ScenarioReplay 录制/回放 — @yagni: 全量联调前为占位能力。
+
+当前状态: ScenarioRecorder + ScenarioReplayRunner 完整实现但无生产调用方。
+
+激活条件: 现场联调需要录制/回放乱序、重复、超时场景。
+"""
 
 from __future__ import annotations
 

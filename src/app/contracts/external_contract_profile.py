@@ -1,4 +1,10 @@
-"""ExternalContractProfile 生产路径。
+"""ExternalContractProfile 生产路径 — @yagni: 全量联调前为占位合同。
+
+当前状态: 被 capability_dispatcher 和 runtime_capability_catalog 引用，
+但所有 WMS/ECS provider 使用默认 profile。当前里程碑的粗分机/分拣机流程
+不需要动态合同切换能力。
+
+激活条件: 多 provider 并行联调或 WMS/ECS 合同版本差异需要运行时切换。
 
 从 tests/support/external_contract_profile.py 升级到 src/app/contracts/
 共享层, 供 wms_integration / device / runtime/orchestration 域 import 使用。

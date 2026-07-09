@@ -1,4 +1,10 @@
-"""WmsReconciliationQueryPort。
+"""WmsReconciliationQueryPort — @deferred to 全量联调。
+
+本 Port 定义 WMS 对账 drift 只读查询能力合同。当前里程碑的粗分机/分拣机
+流程通过 RuntimeInbox + callback evidence 满足对账需求，
+不需要独立的 WMS 对账查询 Port。
+
+激活条件: 生产环境出现跨系统 drift 需要自动检测和分类。
 
 主计划 §5.1 7 port 之一: 对账 drift 只读查询 (bin / rack / full 实体一致性)。
 所有方法 query-only, 不写 WMS 业务, 与 §3.4 Authority Matrix "WES 维护
