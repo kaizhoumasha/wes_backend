@@ -32,10 +32,7 @@ from src.app.runtime.orchestration.models.session import (
     RuntimeReconciliationState,
     SessionStatus,
 )
-from src.app.runtime.orchestration.repositories import (
-    inbox_repository,
-    workline_session_repository,
-)
+from src.app.runtime.orchestration.repositories import workline_session_repository
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
@@ -51,9 +48,6 @@ if TYPE_CHECKING:
     from src.app.device.repositories import DeviceCommandRepository
     from src.app.runtime.capabilities.material_flow.contracts.ng_reason import NgReasonDefinition
     from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
-    from src.app.runtime.orchestration.repositories.inbox_repository import (
-        WorklineInboxRepository,
-    )  # TODO(Task 7c): migrate to RuntimeInbox
     from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository
     from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
     from src.app.sys.repositories import SystemOutboxRepository
@@ -153,7 +147,6 @@ class RuntimeHoldReleaseService:
         workline_repo: WorkLineRepository | None = None,
         session_repo: WorklineSessionRepository | None = None,
         outbox_repo: SystemOutboxRepository | None = None,
-        inbox_repo: WorklineInboxRepository | None = None,  # TODO(Task 7c): migrate to RuntimeInboxRepository
         command_repo: DeviceCommandRepository | None = None,
         device_service: DeviceService | None = None,
     ) -> None:
@@ -161,7 +154,6 @@ class RuntimeHoldReleaseService:
         self.workline_repo = workline_repo or workline_repository
         self.session_repo = session_repo or workline_session_repository
         self.outbox_repo = outbox_repo or system_outbox_repository
-        self.inbox_repo = inbox_repo or inbox_repository
         self.command_repo = command_repo or device_command_repository
         self.device_service = device_service or DeviceService()
 
@@ -193,14 +185,8 @@ class RuntimeHoldReleaseService:
         operator_id: int,
         *,
         allow_safety_estop: bool = False,
-        idempotency_key: str | None = None,  # noqa: ARG002  # reserved for future RuntimeInbox idempotency hook (Task 7c-c-2+)
     ) -> dict[str, Any]:
-        """解除 RuntimeHold，并在最后一个 active blocking hold 解除后恢复 WorkLine。
-
-        ``idempotency_key`` 由调用方 (API Idempotency-Key Header) 传入，预留给
-        后续 RuntimeInbox 幂等钩子 (Task 7c-c-2+); 当前 RuntimeInboxService.accept_command_result
-        内部派生 source_event_id, 暂未使用该参数。
-        """
+        """解除 RuntimeHold，并在最后一个 active blocking hold 解除后恢复 WorkLine。"""
 
         hold = await self.runtime_hold_repo.get_for_update(db, hold_id)
         if hold is None:
