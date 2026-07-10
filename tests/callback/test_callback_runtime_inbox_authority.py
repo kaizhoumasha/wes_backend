@@ -403,10 +403,9 @@ async def test_process_event_uses_runtime_inbox_as_authority() -> None:
 
     legacy_inbox_service = SimpleNamespace(create_device_event_inbox=AsyncMock())
     service = CallbackOrchestrationService(runtime_inbox_writer=WriterStub())
-    service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
 
     outcome = await service.process_event(
-        SimpleNamespace(),  # type: ignore[arg-type]
+        AsyncMock(),  # type: ignore[arg-type]
         event_request=CallbackEventRequest.model_validate(
             {
                 "device_code": "ARM_01",
@@ -422,11 +421,11 @@ async def test_process_event_uses_runtime_inbox_as_authority() -> None:
         enqueue_processing=lambda: None,
     )
 
+    # Plan Task 4: 双写已删, RuntimeInbox 唯一事实源.
     assert outcome.is_duplicate is False
     assert call_order == ["runtime"]
     assert writer_kwargs["canonical_event_type"] == "SCAN_COMPLETED"
-    legacy_inbox_service.create_device_event_inbox.assert_awaited_once()
-    service._commit_and_enqueue_workline_processing.assert_awaited_once()  # type: ignore[attr-defined]
+    legacy_inbox_service.create_device_event_inbox.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -448,11 +448,13 @@ class CallbackOrchestrationService:
         request_id: str | None,
         is_workline_event: bool,
         canonical_event_type: str,
-        inbox_service: WorklineInboxService,
+        # Plan Task 4: 删双写后 inbox_service / enqueue_processing 不再使用,
+        # 保留参数待调用方更新.
+        inbox_service: WorklineInboxService,  # noqa: ARG002
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
-        enqueue_processing: Callable[[], None] | None = None,
+        enqueue_processing: Callable[[], None] | None = None,  # noqa: ARG002
     ) -> EventCallbackOutcome:
         event_timestamp = event_request.timestamp
         if event_timestamp is None:
@@ -480,46 +482,11 @@ class CallbackOrchestrationService:
         if not runtime_inbox_result.created:
             return EventCallbackOutcome(trace_id=event_trace_id, is_duplicate=True)
 
-        if is_workline_event:
-            transition_duplicate = False
-            try:
-                _ = await inbox_service.create_device_event_inbox(
-                    db=db,
-                    device_code=event_request.device_code,
-                    event_type=event_request.event_type,
-                    timestamp=event_timestamp,
-                    data=cast("dict[str, Any]", event_request.data or {}),
-                    source_message_id=trace.request_id,
-                    trace_id=trace.trace_id,
-                    event_id=trace.event_id,
-                    causation_id=trace.causation_id,
-                    canonical_event_type=canonical_event_type,
-                    auto_commit=False,
-                )
-                logger.info(
-                    f"设备事件已写入过渡 Workline Inbox: {event_request.device_code} -> {event_request.event_type}"
-                )
-            except ValueError as exc:
-                duplicate_inbox = self._resolve_duplicate_inbox_error(
-                    exc,
-                    duplicate_message=(
-                        "设备事件过渡 Workline Inbox 幂等重复，RuntimeInbox ACK 保持 accepted: "
-                        f"{event_request.device_code} -> {event_request.event_type}"
-                    ),
-                )
-                transition_duplicate = True
-                if duplicate_inbox is not None:
-                    trace = trace.with_inbox(duplicate_inbox)
-                    event_trace_id = trace.trace_id or event_trace_id
+        # Plan Task 4: 删 WorklineInbox 双写. RuntimeInbox 已是唯一事实源.
+        # (formerly: if is_workline_event: ... create_device_event_inbox ...)
 
-            if transition_duplicate:
-                await db.commit()
-                await publish_deferred_sse_events(db)
-            else:
-                await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
-        else:
-            await db.commit()
-            await publish_deferred_sse_events(db)
+        await db.commit()
+        await publish_deferred_sse_events(db)
 
         return EventCallbackOutcome(
             trace_id=event_trace_id,
@@ -562,6 +529,8 @@ class CallbackOrchestrationService:
         if not runtime_inbox_result.created:
             return ExternalCallbackOutcome(trace_id=trace.trace_id or "", is_duplicate=True)
 
+        # Plan Task 4 partial: 保留 WorklineInbox 兼容双写用于 lifecycle_only 路径
+        # (rack_task / handling_operation 依赖 created_inbox). RuntimeInbox 为主事实源.
         created_inbox: object | None = None
         transition_duplicate = False
         try:
