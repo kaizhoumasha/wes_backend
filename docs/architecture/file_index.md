@@ -506,7 +506,7 @@ Phase 3 RECONCILING 冲突登记与 owner-scoped 决议层，只产出 hold/free
 | `topology_bridge.py` | **stable migration mirror** legacy runtime `topology` 桥接门面:WORKLINE 运行时拓扑视图（自引用 legacy runtime.device_ordering / legacy runtime.plugin_manifest 已重定向到本目录 + domain 镜像） | 🔧 架构核心 |
 | `consumers/` | RuntimeInbox 入口子包：legacy runtime 真引用已清空，旧 trust zone (`EXCLUDED_PREFIXES`) 已退出，当前承载 callback ACK-before-processing 幂等入口 | 🔧 架构核心 |
 | `consumers/__init__.py` | consumers 子包导出（`RuntimeInboxConsumer`） | 🔧 架构核心 |
-| `consumers/runtime_inbox_consumer.py` | **stable migration mirror** RuntimeInboxConsumer:RuntimeInbox 单点入口门面,委托 `src.app.workline.services.inbox_batch_processor` 实现；不实现状态机 / idempotency / RuntimeHold 推进（stable 业务迁移） | 🔧 架构核心 |
+| `consumers/runtime_inbox_consumer.py` | **stable migration mirror** RuntimeInboxConsumer:RuntimeInbox 单点入口门面,委托 `src.app.workline.services.inbox_batch_processor` 实现；不实现状态机 / idempotency / RuntimeHold 推进（stable 业务迁移）。Plan Task 7 将物理删除（feature/runtime-inbox-single-source-of-truth） | 🔧 架构核心 |
 | `consumers/runtime_inbox_repository.py` | RuntimeInboxRepository：按 provider_code + event_type + source_event_id 查询、加锁读取和 RECEIVED 记录创建 | 🔧 架构核心 |
 | `consumers/runtime_inbox_service.py` | RuntimeInboxService：ACK-before-processing、source-event 幂等接收、唯一冲突重读 hash 比对、payload conflict 409、DEAD_LETTER 人工重放审计 | 🔧 架构核心 |
 | `diagnostics/` | **stable migration mirror** legacy runtime `diagnostics/` 子目录完整迁移:`builder` / `codes` / `failure_mapper` / `models` / `registry` 5 子模块 + 聚合层 `__init__.py`(原 `consumers/diagnostics_bridge.py` 已迁出) | 🔧 架构核心 |

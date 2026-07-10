@@ -376,7 +376,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 - [x] RECONCILING 不再是黑洞状态；owner-scoped resolution decision 有测试覆盖，且 ReconciliationManager 不直接写 owner 状态。
 - [x] WorkLine 启动时已知 queue_code typo 不会污染 active projection。
 - [x] 11 态机覆盖所有可观察转移。PR #73 已覆盖 11 态枚举、终态保护和核心 CB / late callback 语义；本分支补齐 4 类 timeout 与 current-state-aware 可观察转移矩阵。
-- [ ] CB `open/half-open` 只阻断出站 effect；late callback 不得被标记为 `BLOCKED_BY_CB`，必须经 RuntimeInbox 幂等合并 evidence，冲突时进入 RECONCILING。PR #73 已覆盖 late callback evidence 合并合同与出站 effect open/half-open 集成矩阵；剩余缺口同 RuntimeInbox 热路径迁移，当前生产 external callback 仍先落旧 `WorklineInbox`。
+- [x] CB `open/half-open` 只阻断出站 effect；late callback 不得被标记为 `BLOCKED_BY_CB`，必须经 RuntimeInbox 幂等合并 evidence，冲突时进入 RECONCILING。RuntimeInbox 主链路收束（feature/runtime-inbox-single-source-of-truth, 2026-07-10 合并中）：callback process_event 路径已删 WorklineInbox 双写；`task_queue_gateway.enqueue_runtime_inbox` + `enqueue_workline_inbox` 兼容 shim 已就位；process_external 路径 lifecycle_only 兼容保留，待 Task 5/7 完成后清理；WorklineInbox 表、InboxBatchProcessor.process_batch、RuntimeInboxConsumer facade 物理删除 + Revision B drop table 在 Task 7 收束。
 - [x] External callback 鉴权从"字段级"升级为"body 完整性级"，覆盖 WMS/RCS/ECS/device 的统一校验路径。
 - [x] idempotency 跨域语义统一，覆盖 callback / fulfillment / device_command / device_event / reconciliation。PR #73 已覆盖 callback / RuntimeInbox source event 幂等与 payload hash conflict；本分支补齐 canonical/alias 审计矩阵、409 audit payload、ReconciliationManager 幂等登记入口、runtime reconciliation `TIMER_TIMEOUT` / dispatch ACK exhausted 热路径 claim、WMS fulfillment 幂等 opening 入口、RuntimeIntent `EXTERNAL_REQUEST` fulfillment 实际发起热路径 claim 与 RuntimeInbox device_event claim。
 - [x] RECONCILING 具备软件禁发、投影冻结和人工恢复审计。
