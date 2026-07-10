@@ -1,6 +1,7 @@
 """value_normalization 新增函数单元测试。"""
 
 from decimal import Decimal
+from enum import Enum
 
 import pytest
 
@@ -15,6 +16,10 @@ from src.utils.value_normalization import (
 )
 
 
+class SampleEnum(Enum):
+    VALUE = "value"
+
+
 class TestRequireText:
     def test_returns_value_when_present(self) -> None:
         assert require_text("hello", "a") == "hello"
@@ -26,6 +31,18 @@ class TestRequireText:
     def test_raises_when_none(self) -> None:
         with pytest.raises(ValueError, match="a is required"):
             require_text(None, "a")
+
+    def test_strips_surrounding_whitespace(self) -> None:
+        assert require_text("  hello  ", "a") == "hello"
+
+    def test_raises_when_blank_string(self) -> None:
+        with pytest.raises(ValueError, match="a is required"):
+            require_text("   ", "a")
+
+    @pytest.mark.parametrize("value", [0, False, SampleEnum.VALUE])
+    def test_raises_when_value_is_not_string(self, value: object) -> None:
+        with pytest.raises(ValueError, match="a is required"):
+            require_text(value, "a")
 
 
 class TestRequireTextAny:

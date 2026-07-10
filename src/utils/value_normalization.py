@@ -121,9 +121,9 @@ def require_text(value: Any, field_name: str) -> str:
 
     字段名仅用于错误信息与单值场景的语义标注，不参与取值。
     """
-    if value is None:
-        raise ValueError(f"{field_name} is required")
-    text = str(value).strip()
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} is required")  # noqa: TRY004
+    text = value.strip()
     if not text:
         raise ValueError(f"{field_name} is required")
     return text

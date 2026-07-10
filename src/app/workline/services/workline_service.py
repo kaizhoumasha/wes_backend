@@ -134,10 +134,6 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _manifest_value(value: object) -> object:
         return getattr(value, "value", value)
 
-        if isinstance(value, Iterable):
-            return [str(item) for item in value]
-        return []
-
     @classmethod
     def _build_device_requirement_summary(cls, requirement: object) -> DeviceRequirement:
         return DeviceRequirement(

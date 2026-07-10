@@ -364,7 +364,7 @@ def _target_phase4_capability(text: str) -> tuple[str, str]:
         (("full_box", "满箱"), "FullBoxExchangeCapability.execute"),
         (("sorter_inbound", "smt_sorting", "分拣机"), "SorterInboundCapability.run"),
         (("smt_inbound",), "SmtInboundHandoffCapability.execute"),
-        (("ng_return", "ng"), "NgReturnCapability.process"),
+        (("ng_return", "ng 退货"), "NgReturnCapability.process"),
         (("single_layer_rack", "单层机架"), "SingleLayerRackCapability.orchestrate"),
         (("station_lease",), "StationLeaseCapability.reserve"),
         (("bin_cell_reservation",), "BinCellReservationCapability.reserve"),
