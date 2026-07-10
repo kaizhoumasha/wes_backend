@@ -807,7 +807,7 @@ class RuntimeHoldReleaseService:
         session_id: int,
         session: Any | None,
         idempotency_key: str | None = None,
-    ) -> WorklineInbox:  # TODO(Task 7c): migrate _create_continue_command_result_inbox to RuntimeInbox
+    ) -> WorklineInbox:  # TODO(Task 7c-c): remove WorklineInbox return type after dual-write removed
         if command.id is None:
             raise ValueError(f"DeviceCommand 缺少主键: {command.command_code}")
         if command.workline_id is None:
@@ -829,11 +829,27 @@ class RuntimeHoldReleaseService:
         # 当调用方提供 Idempotency-Key 时, 用其派生 inbox 行 idempotency_key,
         # 保证同一 client 重试不会重复落库 (H5 幂等: WES-RESOLVE_HOLD-{key})。
         client_idem = f"WES-RESOLVE_HOLD-{idempotency_key}" if idempotency_key else f"runtime-hold:resolve:{hold.id}"
-        # TODO(Task 7c): migrate inbox_repo.create to RuntimeInboxService.accept_command_result.
-        # 阻塞原因: RuntimeInboxService 缺 COMMAND_RESULT 适配方法 (本场景是
-        # 人工 resolve hold 时 synthesize 出的 command result, 不同于外部 callback
-        # 路径, 没有 provider_code / source_event_id, 需新增 accept_command_result
-        # 适配方法或重写 RuntimeInboxRepository.create 路径)。
+        # Task 7c-b: dual-write command result to RuntimeInbox via accept_command_result.
+        # 新写入由 RuntimeInboxService.accept_command_result 承担 (kind=COMMAND_RESULT,
+        # provider_code=DEVICE_RESULT 有 device_code, 缺省 RUNTIME); 保留下方
+        # inbox_repo.create 调用作为 legacy 兼容双写, Task 7c-c 整体切换后删除。
+        from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+            runtime_inbox_service,
+        )
+
+        _ = await runtime_inbox_service.accept_command_result(
+            db,
+            command_code=command.command_code,
+            device_code=device.device_code,
+            workline_id=command.workline_id,
+            device_id=command.device_id,
+            command_id=command.id,
+            trace_id=command.trace_id or hold.trace_id,
+            event_id=f"runtime-hold:result:{hold.id}:{command.command_code}",
+            causation_id=hold.trace_id,
+            payload_json=payload,
+            auto_commit=False,
+        )
         inbox = await self.inbox_repo.create(
             db,
             {
