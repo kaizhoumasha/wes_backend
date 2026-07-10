@@ -386,26 +386,29 @@ class RuntimeInboxService:
             stale_after_seconds=stale_after_seconds,
             limit=limit,
         )
-        # 重置为 RECEIVED 状态, 等待下次 claim
+        if not stale:
+            return 0
+
+        # bulk update: 把所有候选行重置为 RECEIVED
         from sqlalchemy import update
 
         from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 
         cast("Any", RuntimeInbox)
-        for row in stale:
-            row_id = getattr(row, "id", None)
-            if row_id is None:
-                continue
-            await db.execute(
-                update(RuntimeInbox)
-                .where(cast("Any", RuntimeInbox).__table__.c.id == row_id)
-                .values(
-                    status="RECEIVED",
-                    processor_token=None,
-                    lease_until=None,
-                )
+        inbox_ids = [row["id"] if isinstance(row, dict) else getattr(row, "id", None) for row in stale]
+        inbox_ids = [i for i in inbox_ids if i is not None]
+        if not inbox_ids:
+            return 0
+        await db.execute(
+            update(RuntimeInbox)
+            .where(cast("Any", RuntimeInbox).__table__.c.id.in_(inbox_ids))
+            .values(
+                status="RECEIVED",
+                processor_token=None,
+                lease_until=None,
             )
-        return len(stale)
+        )
+        return len(inbox_ids)
 
     async def mark_processed(
         self,

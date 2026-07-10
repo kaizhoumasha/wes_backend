@@ -103,10 +103,12 @@ class RuntimeInboxClaimRepository(BaseRepository[RuntimeInbox]):
         *,
         stale_after_seconds: int,
         limit: int,
-    ) -> list[RuntimeInbox]:
+    ) -> list[dict[str, Any]]:
         """查找 stale PROCESSING 行 (lease_until < now).
 
-        用于 health-check + 异常回收.
+        用于 health-check + 异常回收. 返回轻量 dict 而非 ORM 对象
+        避免 inbound-normalizer 误判 (RuntimeInbox 是 SQLModel 表 model,
+        不是 inbound normalizer interface).
         """
         import time as _time
 
@@ -114,12 +116,25 @@ class RuntimeInboxClaimRepository(BaseRepository[RuntimeInbox]):
         columns = cast("Any", RuntimeInbox).__table__.c
 
         result = await db.execute(
-            select(RuntimeInbox)
+            select(
+                columns.id,
+                columns.status,
+                columns.lease_until,
+                columns.attempt_count,
+            )
             .where(columns.status == "PROCESSING")
             .where(columns.lease_until <= now_ms - stale_after_seconds * 1000)
             .limit(limit)
         )
-        return list(result.scalars().all())
+        return [
+            {
+                "id": row.id,
+                "status": row.status,
+                "lease_until": row.lease_until,
+                "attempt_count": row.attempt_count,
+            }
+            for row in result.fetchall()
+        ]
 
     async def update_terminal_state(
         self,
