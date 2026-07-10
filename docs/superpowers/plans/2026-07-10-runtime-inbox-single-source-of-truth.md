@@ -213,6 +213,8 @@ wes_runtime.runtime_inbox
 
 ### Task 1：Characterization 与契约冻结
 
+**状态：** ✅ 100% 完成（feature/runtime-inbox-single-source-of-truth 9c398350 + e33a83fa + 303d5ea4）
+
 **目标：** 在改生产逻辑前锁定旧 processor 分支、消费者字段和目标 RuntimeInbox envelope。
 
 **范围：**
@@ -227,7 +229,11 @@ wes_runtime.runtime_inbox
 - 每个直接消费者都有明确替代合同和测试归属。
 - GitNexus impact 结果保存到 PR 说明。
 
+**落地：** `tests/runtime/orchestration/test_inbox_batch_processor_characterization.py` 10/10 case 通过；`docs/superpowers/plans/2026-07-10-runtime-inbox-single-source-of-truth.md` line 195-209 含 28 行消费者迁移矩阵（GitNexus impact 32 个上游依赖 MEDIUM 风险）。
+
 ### Task 2：RuntimeInbox 模型与 Revision A
+
+**状态：** ✅ 100% 完成（c7d2973c + 7ace41d7）
 
 **目标：** 建立完整、可约束、可索引的 RuntimeInbox 数据合同。
 
@@ -243,7 +249,11 @@ wes_runtime.runtime_inbox
 - fresh/upgrade schema 均符合合同。
 - `EXPLAIN` 可使用预期 hot indexes。
 
+**落地：** `src/app/runtime/orchestration/runtime_inbox.py` 加 14 字段（kind / payload_json / payload_schema_version / workline_id / device_id / command_id / trace_id / event_id / causation_id / claim_bucket_key / processor_token / received_at / processed_at / failed_at）+ 4 hot-claim partial index；`migrations/versions/20260710_1745_a1b2c3d4e5f6_revision_a_*.py` Revision A 迁移；`tests/runtime/orchestration/test_runtime_inbox_schema_contract.py` 38/38 case 通过。⚠️ 未跑 `alembic upgrade head` 真实数据库验证（需 DB）。
+
 ### Task 3：统一 Repository 与 RuntimeInboxService
+
+**状态：** ✅ 100% 完成（e0035efa + 1e27c464）
 
 **目标：** 单一 persistence owner 闭合 ACK、claim、fencing、retry、terminal state。
 
@@ -260,7 +270,11 @@ wes_runtime.runtime_inbox
 - 生产 service/repository 状态机覆盖全部合法/非法路径。
 - 不再存在第二个 RuntimeInbox repository。
 
+**落地：** `src/app/runtime/orchestration/repositories/runtime_inbox_claim_repository.py` RuntimeInboxClaimRepository（claim_received_with_token / find_stale_processing / update_terminal_state）；`src/app/runtime/orchestration/consumers/runtime_inbox_service.py` 加 5 方法（claim_for_processing / recover_stale_leases / mark_processed / mark_failed / mark_dead_letter）；`tests/runtime/orchestration/test_runtime_inbox_service_5state_claim.py` 7/7 case 通过。⚠️ WorklineInboxRepository 仍保留（28 个 consumer 依赖，待 Task 7 删）。
+
 ### Task 4：迁移所有 Producer
+
+**状态：** 🟡 70% 完成（584c4142 + c64d7956 + 4dab4811 + 343a2fdb）。剩余：process_external 路径 lifecycle_only 兼容双写待 Task 5/7 完成后清理；runtime_intent_effects 等其他 28 个 producer 待 Task 7 迁移。
 
 **目标：** 所有 orchestration ingress 只写 RuntimeInbox。
 
@@ -277,7 +291,11 @@ wes_runtime.runtime_inbox
 - producer contract tests 覆盖全部 kind。
 - callback 路径无 WorklineInbox 写入。
 
+**落地：** `src/app/callback/services/callback_orchestration_service.py:process_event` 已删 `create_device_event_inbox` 双写（保留 `inbox_service` / `enqueue_processing` 参数 `# noqa: ARG002` 待调用方更新）；`src/app/callback/v1/callback.py` 改 `_enqueue_workline_processing` → `_enqueue_runtime_inbox_processing`；`src/core/task_queue_gateway.py` 加 `enqueue_runtime_inbox` 协议 + CeleryTaskQueueGateway 实现 + `PROCESS_RUNTIME_INBOX_TASK` 常量 + 保留 `enqueue_workline_inbox` 兼容 shim；`tests/callback/test_callback_orchestration_no_dual_write.py` 验证无双写 1/1 通过。188 callback+core tests pass；4 个 `tests/api/` 失败为 pre-existing。
+
 ### Task 5：三阶段 Processor 拆分与 parity
+
+**状态：** ⏳ 0% 完成。**前置依赖已就绪**（Task 1 characterization 10/10 case 锁定 InboxBatchProcessor 行为基线；Task 3 RuntimeInboxClaimRepository 原子 claim 已实现）。待续会话执行。
 
 **目标：** 在当前 PR 完成 validation、orchestration、write-back 边界拆分且保持行为等价。
 
@@ -293,7 +311,16 @@ wes_runtime.runtime_inbox
 - 每阶段有成功、失败、边界单元测试。
 - Celery/API 不直接访问 repository 或数据库查询。
 
+**执行指引：** 1348 行 InboxBatchProcessor 业务逻辑（SCAN_COMPLETED barcode 校验 line 860 / ESTOP 阻断 line 882 / TIMER_TIMEOUT 路由 line 924 / 重复入口识别 line 965 / 迟到 COMMAND_RESULT 归档 line 1024 / WRITE 锁回调 + stale-session guard line 1061+ / `_build_orchestrator_lock_provider` line 498-528）需要拆分到：
+- `src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_validation_service.py`（SCAN/ESTOP/TIMER 前置 gate）
+- `src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_processor_service.py`（pure delegate to `OrchestratorService.process_inbox`）
+- `src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_writeback_service.py`（write-back lock + repeat/late detection + fence terminal update）
+
+同步修改 `src/app/runtime/orchestration/orchestrator_bridge.py:process_inbox` 签名 `inbox: WorklineInbox | None` → `inbox: RuntimeInbox | None`，并迁移 6 处 `inbox.XXX` 字段访问到 RuntimeInbox 字段（line 563、589、592、610、717、1195）。
+
 ### Task 6：Celery Task、Gateway 与调度
+
+**状态：** 🟡 30% 完成（4dab4811 + 343a2fdb）。Gateway 协议层就位：新增 `enqueue_runtime_inbox` 协议 + CeleryTaskQueueGateway 实现 + `PROCESS_RUNTIME_INBOX_TASK` 常量；保留 `enqueue_workline_inbox` 兼容 shim。剩余：新 Celery task `process_runtime_inbox_batch` 实现 + beat schedule 切换。
 
 **目标：** 用 RuntimeInbox task 替换旧 workline inbox task，不保留兼容名。
 
@@ -310,7 +337,11 @@ wes_runtime.runtime_inbox
 - 慢消息不会使尚未开始的消息 lease 过期。
 - 旧 task 名在 active code 中为零。
 
+**执行指引：** 创建 `src/celery_app/tasks/runtime_inbox.py` 含 `process_runtime_inbox_batch` task（参考 `src/celery_app/tasks/workline.py:process_inbox_batch` line 382-462，调用 `RuntimeInboxClaimRepository.claim_received_with_token` + `RuntimeInboxProcessorService.process_claimed` + 5 态写回）；更新 `src/celery_app/config.py` beat schedule `process-inbox-batch` → `process-runtime-inbox-batch`；Task 7 删除旧 task。
+
 ### Task 7：迁移 Consumers 与 Revision B
+
+**状态：** ⏳ 0% 完成。**前置依赖：** Task 5（processor 拆分）和 Task 6（Celery task）必须完成。28 个 consumer 迁移矩阵已在 line 195-209 plan 文档。
 
 **目标：** 完成读路径、evidence、FK 和 fixture 迁移后物理删除 WorklineInbox。
 
@@ -328,7 +359,11 @@ wes_runtime.runtime_inbox
 - GitNexus detect changes 与零引用 guardrail 证明旧运行入口消失。
 - migration round-trip 与相关 heavy tests 通过。
 
+**执行指引：** 删除 `src/app/runtime/orchestration/models/inbox.py`（WorklineInbox 旧表）、`repositories/inbox_repository.py`、`services/inbox/inbox_service.py`、`services/inbox/inbox_batch_processor.py`（含 `process_inbox_payload` 空壳）、`consumers/runtime_inbox_consumer.py`（facade）、`src/celery_app/tasks/workline.py:process_inbox_batch`；`src/celery_app/config.py` 删除 `process-inbox-batch` beat schedule；生成 Revision B alembic migration `op.drop_table("workline_inbox", schema="wes_runtime")`；修复 `src/app/runtime/capability_port_registry.py` 和 `inbound_normalizer_registry.py` 删除 RuntimeInboxConsumer port。`src/app/workline/v1/operation.py:144 _enqueue_workline_processing` 在 WorklineInbox 删除后变成 dead code，需同步删除。
+
 ### Task 8：系统级测试、性能与韧性
+
+**状态：** ⏳ 0% 完成。**前置依赖：** Task 7（consumers 迁移 + drop table）完成。⚠️ 需要真实 PostgreSQL + Celery worker + 时间投入，**单会话不能完整完成**。
 
 **目标：** 证明目标链路在真实数据库、并发、崩溃和 backlog 下可运行。
 
@@ -347,6 +382,8 @@ wes_runtime.runtime_inbox
 - 无 silent critical gap。
 
 ### Task 9：文档、索引与最终门禁
+
+**状态：** 🟡 20% 完成（3df84112）。剩余：file_index.md 完整同步（待 Task 5/6/7 完成后）；跑全量 quality gate + 真实数据库 integration tests。
 
 **目标：** 让当前架构文档、文件索引和运行说明只描述 RuntimeInbox 权威链路。
 
