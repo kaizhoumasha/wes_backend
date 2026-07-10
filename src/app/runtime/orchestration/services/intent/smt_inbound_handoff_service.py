@@ -1693,34 +1693,53 @@ class SmtInboundHandoffService:
             raise TypeError("source pick request requires persisted demand, source item and session")
         event_id = self._source_pick_event_id(item)
         resolved_trace_id = self._text_or_none(trace_id) or self._text_or_none(demand.trace_id) or event_id
-        # TODO(Task 7c): migrate create_internal_event_inbox call to
-        # RuntimeInboxService.accept_internal_event.
-        # 阻塞原因: RuntimeInboxService 缺 INTERNAL_EVENT 适配方法 (INTERNAL_EVENT
-        # 是一种 RuntimeInbox.kind 但目前 RuntimeInboxService.accept_received
-        # 没有为内部事件提供 provider_code/source_event_id 标准化契约)。
+        causation_id = f"handoff-source-item:{item_id}"
+        event_type = _SOURCE_PICK_REQUESTED_EVENT
+        data = {
+            "handoff_demand_id": demand_id,
+            "handoff_source_item_id": item_id,
+            "claim_attempt_no": item.claim_attempt_no,
+            "rack_release_id": demand.rack_release_id,
+            "single_layer_rack_code": demand.single_layer_rack_code,
+            "bin_code": item.bin_code,
+            "bin_cell_index": item.bin_cell_index,
+            "bin_cell_code": item.bin_cell_code,
+            "material_identity_key": item.material_identity_key,
+            "pkg_code": item.pkg_code,
+            "reel_thickness_mm": str(item.reel_thickness_mm) if item.reel_thickness_mm is not None else None,
+            "route_evidence": self._dict_or_empty(route_evidence),
+        }
+
+        # Task 7c-b: dual-write internal event to RuntimeInbox via accept_internal_event.
+        # 新写入由 RuntimeInboxService.accept_internal_event 承担 (kind=INTERNAL_EVENT,
+        # provider_code=RUNTIME); 保留下方 create_internal_event_inbox 调用作为
+        # legacy 兼容双写, 仍用作 item.source_pick_inbox_id 的写入源 (Task 7c-c
+        # 整体切换后此处 read 路径同步切到 RuntimeInbox)。
+        from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+            runtime_inbox_service,
+        )
+
+        _ = await runtime_inbox_service.accept_internal_event(
+            db,
+            event_type=event_type,
+            payload_json=data,
+            trace_id=resolved_trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
+            workline_id=workline_id,
+            execution_session_id=session_id,
+            auto_commit=False,
+        )
         return await self.inbox_service.create_internal_event_inbox(
             db,
-            event_type=_SOURCE_PICK_REQUESTED_EVENT,
-            canonical_event_type=_SOURCE_PICK_REQUESTED_EVENT,
-            data={
-                "handoff_demand_id": demand_id,
-                "handoff_source_item_id": item_id,
-                "claim_attempt_no": item.claim_attempt_no,
-                "rack_release_id": demand.rack_release_id,
-                "single_layer_rack_code": demand.single_layer_rack_code,
-                "bin_code": item.bin_code,
-                "bin_cell_index": item.bin_cell_index,
-                "bin_cell_code": item.bin_cell_code,
-                "material_identity_key": item.material_identity_key,
-                "pkg_code": item.pkg_code,
-                "reel_thickness_mm": str(item.reel_thickness_mm) if item.reel_thickness_mm is not None else None,
-                "route_evidence": self._dict_or_empty(route_evidence),
-            },
+            event_type=event_type,
+            canonical_event_type=event_type,
+            data=data,
             session_id=session_id,
             workline_id=workline_id,
             trace_id=resolved_trace_id,
             event_id=event_id,
-            causation_id=f"handoff-source-item:{item_id}",
+            causation_id=causation_id,
             auto_commit=False,
         )
 
