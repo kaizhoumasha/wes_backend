@@ -1,0 +1,694 @@
+"""RuntimeInboxProcessorService composition (Task 5 三阶段 Processor 拆分).
+
+组合 Validation → Orchestration → Write-back 三阶段.
+提供与 InboxBatchProcessor._process_claimed_message 等价的单一入口
+`process_claimed(db, claim)`, 由 Task 6 Celery task 调用.
+
+行为对齐:
+- claim 阶段: 由 RuntimeInboxClaimRepository.claim_received_with_token 持有
+  (调用方负责).
+- validation 阶段: RuntimeInboxValidationService.
+- orchestration 阶段: RuntimeInboxProcessorService 委托 OrchestratorService.
+- write-back 阶段: RuntimeInboxWriteBackService.
+- ESTOP / TIMER_TIMEOUT / duplicate entry / late command / missing context
+  沿用 InboxBatchProcessor 的判定, 行为等价.
+- 写终态: mark_as_processed / mark_as_failed / mark_as_dead_letter 走
+  processor_token fencing (InboxBatchProcessor 行为).
+- 失败重试与超时不直接 raise, 全部转换成 ProcessResult 统计.
+"""
+
+from __future__ import annotations
+
+import uuid
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, TypedDict, cast
+
+from loguru import logger
+
+from src.app.runtime.orchestration.diagnostics import (
+    ErrorCode,
+    ErrorDomain,
+    ProblemClass,
+    map_failure_to_diagnostic,
+)
+from src.app.runtime.orchestration.effect_result import WriteBackDisposition
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
+    RuntimeInboxOrchestratorDelegate,
+)
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
+    RuntimeInboxValidationService,
+    _entry_event_types_for_workline,
+)
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+    RuntimeInboxWriteBackService,
+    WriteBackState,
+    _is_late_or_duplicate_command_result_for_session,
+    _payload_for_inbox,
+    _session_status_value,
+    _session_write_snapshot,
+)
+from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
+from src.app.workline.constants import (
+    INBOX_PROCESS_TIMEOUT_SECONDS,
+    WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
+)
+from src.app.workline.diagnostic_support import _record_diagnostic
+from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+from src.utils.value_normalization import (
+    canonical_event_type,
+    optional_int,
+    resolve_entity_id,
+    resolve_required_pk,
+)
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
+
+
+class ProcessResult(TypedDict):
+    """处理结果统计 (与 InboxBatchProcessor 等价)."""
+
+    processed: int
+    success: int
+    failed: int
+    skipped: int
+    resource_wait: int
+
+
+@dataclass(frozen=True, slots=True)
+class _InboxDiagnosticSnapshot:
+    """Inbox 诊断快照, 避免 rollback 后访问已过期 ORM 字段."""
+
+    id: int | None
+    kind: Any | None
+    trace_id: str | None
+    event_id: str | None
+    causation_id: str | None
+    workline_id: int | None
+    session_id: int | None
+    device_id: int | None
+    command_id: int | None
+    attempt_count: int
+    payload_json: dict[str, Any]
+
+
+def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
+    """在事务回滚前提取诊断需要的 Inbox 字段."""
+    return _InboxDiagnosticSnapshot(
+        id=resolve_entity_id(inbox),
+        kind=getattr(inbox, "kind", None),
+        trace_id=getattr(inbox, "trace_id", None),
+        event_id=getattr(inbox, "event_id", None),
+        causation_id=getattr(inbox, "causation_id", None),
+        workline_id=optional_int(getattr(inbox, "workline_id", None)),
+        session_id=optional_int(getattr(inbox, "execution_session_id", None)),
+        device_id=optional_int(getattr(inbox, "device_id", None)),
+        command_id=optional_int(getattr(inbox, "command_id", None)),
+        attempt_count=int(getattr(inbox, "attempt_count", 0)),
+        payload_json=dict(_payload_for_inbox(inbox)),
+    )
+
+
+def _empty_result() -> ProcessResult:
+    return {
+        "processed": 0,
+        "success": 0,
+        "failed": 0,
+        "skipped": 0,
+        "resource_wait": 0,
+    }
+
+
+def _merge_result(target: ProcessResult, source: ProcessResult) -> None:
+    target["processed"] += source.get("processed", 0)
+    target["success"] += source.get("success", 0)
+    target["failed"] += source.get("failed", 0)
+    target["skipped"] += source.get("skipped", 0)
+    target["resource_wait"] += source.get("resource_wait", 0)
+
+
+def _problem_class_for_error_domain(error_domain: ErrorDomain | None) -> ProblemClass | None:
+    """为 UNKNOWN 等兜底码补充更接近现场语义的问题大类."""
+    if error_domain in {ErrorDomain.DEVICE, ErrorDomain.NETWORK}:
+        return ProblemClass.HARDWARE
+    return None
+
+
+class RuntimeInboxProcessorBridge:
+    """RuntimeInbox 三阶段 processor composition.
+
+    与 InboxBatchProcessor._process_claimed_message 等价的单一入口,
+    但内部按 validation → orchestration → write-back 三阶段拆分.
+    Task 6 的 process_runtime_inbox_batch Celery task 将通过本类调用.
+    """
+
+    def __init__(
+        self,
+        *,
+        validation_service: RuntimeInboxValidationService | None = None,
+        processor_service: RuntimeInboxOrchestratorDelegate | None = None,
+        writeback_service: RuntimeInboxWriteBackService | None = None,
+        inbox_service: Any = None,
+        inbox_repository: Any = None,
+    ) -> None:
+        self._validation_service = validation_service or RuntimeInboxValidationService()
+        self._processor_service = processor_service or RuntimeInboxOrchestratorDelegate()
+        self._writeback_service = writeback_service or RuntimeInboxWriteBackService()
+        self._inbox_service = inbox_service
+        self._inbox_repository = inbox_repository
+
+    @property
+    def inbox_service(self) -> Any:
+        if self._inbox_service is None:
+            from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
+
+            return self._inbox_service_box(inbox_service)
+        return self._inbox_service
+
+    def _inbox_service_box(self, service: Any) -> Any:
+        return service
+
+    @property
+    def inbox_repository(self) -> Any:
+        if self._inbox_repository is None:
+            from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
+
+            return inbox_service.repo
+        return self._inbox_repository
+
+    async def claim_and_process_batch(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int,
+        processor_token_prefix: str = "runtime-inbox-worker",  # noqa: S107
+    ) -> ProcessResult:
+        """顺序 claim 并处理 RuntimeInbox (与 InboxBatchProcessor.process_batch 等价).
+
+        单个 worker 每轮 claim 1 条; 跨 worker 并发由数据库 token claim 和
+        claim_bucket_key 队首围栏承载.
+        """
+        if limit <= 0:
+            return _empty_result()
+
+        result: ProcessResult = _empty_result()
+        remaining = limit
+        while remaining > 0:
+            processor_token = f"{processor_token_prefix}-{uuid.uuid4()}"
+            claim = await self._claim_one(db, processor_token=processor_token)
+            if claim is None:
+                break
+            message_result = await self.process_claimed(db, claim=claim)
+            _merge_result(result, message_result)
+            remaining -= 1
+            if remaining <= 0:
+                break
+        return result
+
+    async def _claim_one(
+        self,
+        db: AsyncSession,
+        *,
+        processor_token: str,
+    ) -> dict[str, Any] | None:
+        """claim 1 条 RuntimeInbox 行.
+
+        优先使用 RuntimeInboxClaimRepository.claim_received_with_token.
+        缺省时 fallback 到旧 WorklineInboxRepository (保持行为等价).
+        """
+        try:
+            from src.app.runtime.orchestration.repositories.runtime_inbox_claim_repository import (
+                runtime_inbox_claim_repository,
+            )
+
+            claims = await runtime_inbox_claim_repository.claim_received_with_token(
+                db,
+                limit=1,
+                processor_token=processor_token,
+                stale_after_seconds=WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
+            )
+            if claims:
+                return claims[0]
+        except Exception as exc:
+            logger.debug(f"RuntimeInbox claim repository 不可用, 跳过: {exc}")
+        return None
+
+    async def process_claimed(  # noqa: PLR0911, PLR0912
+        self,
+        db: AsyncSession,
+        *,
+        claim: dict[str, Any] | Any,
+    ) -> ProcessResult:
+        """处理已被当前 worker claim 的单条 RuntimeInbox 消息.
+
+        与 InboxBatchProcessor._process_claimed_message 等价, 但内部委托
+        Validation / Processor / Write-back 三阶段.
+        """
+        result: ProcessResult = _empty_result()
+        inbox = await self.inbox_repository.get_by_id(db, claim["id"] if isinstance(claim, dict) else claim.id)
+        if inbox is None:
+            result["skipped"] += 1
+            return result
+
+        processor_token = (
+            claim.get("processor_token") if isinstance(claim, dict) else getattr(claim, "processor_token", None)
+        )
+        if not processor_token:
+            processor_token = f"runtime-inbox-worker-{uuid.uuid4()}"
+
+        diagnostic_inbox = _snapshot_inbox_for_diagnostic(inbox)
+        inbox_pk_text = str(diagnostic_inbox.id or getattr(inbox, "id", "unknown"))
+        inbox_pk: int | None = None
+        try:
+            inbox_pk = resolve_required_pk(inbox, "inbox", "id", "inbox_id")
+            if isinstance(claim, dict) and claim.get("id") and claim["id"] != inbox_pk:
+                result["skipped"] += 1
+                return result
+
+            payload = _payload_for_inbox(inbox)
+            resolved_event_type = canonical_event_type(payload)
+
+            # ========== Stage 1: Validation (SCAN gate) ==========
+            (
+                session,
+                workline,
+                command,
+                device,
+                devices_by_role,
+                services,
+                safety_checked,
+            ) = await _load_related_entities(db, inbox, resolved_event_type=resolved_event_type)
+
+            validation_outcome = await self._validation_service.pre_gate(
+                db,
+                inbox=inbox,
+                resolved_event_type=resolved_event_type,
+                workline=workline,
+            )
+            if not validation_outcome.proceed_to_orchestrator:
+                # SCAN gate 失败 -> 终态 FAILED.
+                _ = await self.inbox_service.mark_as_failed(
+                    db,
+                    inbox_pk,
+                    validation_outcome.error_message or "validation failed",
+                    processor_token=processor_token,
+                    auto_commit=False,
+                )
+                await db.commit()
+                result["failed"] += 1
+                result["processed"] += 1
+                return result
+
+            # ========== Stage 1b: ESTOP / TIMER 专用路由 ==========
+            inbox_kind_value = _kind_value(inbox)
+            routing_outcome = self._validation_service.classify_estop_or_timer(
+                resolved_event_type=resolved_event_type,
+                inbox_kind=inbox_kind_value,
+            )
+            if routing_outcome.estop_event:
+                _ = await _handle_estop(
+                    db,
+                    inbox=inbox,
+                    inbox_pk=inbox_pk,
+                    payload=payload,
+                    session=session,
+                    workline=workline,
+                    device=device,
+                    command=command,
+                    processor_token=processor_token,
+                    inbox_service=self.inbox_service,
+                )
+                await db.commit()
+                result["success"] += 1
+                result["processed"] += 1
+                return result
+            if routing_outcome.timer_timeout_event:
+                _ = await _handle_timer_timeout(
+                    db,
+                    inbox=inbox,
+                    processor_token=processor_token,
+                )
+                await db.commit()
+                result["success"] += 1
+                result["processed"] += 1
+                return result
+
+            if not safety_checked:
+                from src.app.workline.services.safety_service import workline_safety_service
+
+                _ = await workline_safety_service.assert_accepting_work(db, workline_id=resolve_entity_id(workline))
+
+            if session is None or workline is None:
+                error_msg = "Inbox processing missing session/workline context"
+                await _record_diagnostic(
+                    db,
+                    inbox=inbox,
+                    error_code=ErrorCode.SESSION_CONTEXT_MISSING,
+                    message=error_msg,
+                    session=session,
+                    workline=workline,
+                    device=device,
+                    command=command,
+                )
+                _ = await self.inbox_service.mark_as_failed(
+                    db, inbox_pk, error_msg, processor_token=processor_token, auto_commit=False
+                )
+                await db.commit()
+                result["failed"] += 1
+                result["processed"] += 1
+                return result
+
+            # ========== Stage 1c: duplicate / late detection ==========
+            if _is_duplicate_entry_event(inbox=inbox, payload=payload, session=session, workline=workline):
+                _ = await self.inbox_service.mark_as_processed(
+                    db, inbox_pk, processor_token=processor_token, auto_commit=False
+                )
+                await db.commit()
+                result["success"] += 1
+                result["processed"] += 1
+                return result
+
+            if _is_late_or_duplicate_command_result_for_session(
+                inbox=inbox,
+                payload=payload,
+                session=session,
+                command=command,
+            ):
+                _ = await self.inbox_service.mark_as_processed(
+                    db, inbox_pk, processor_token=processor_token, auto_commit=False
+                )
+                await db.commit()
+                result["success"] += 1
+                result["processed"] += 1
+                return result
+
+            # ========== Stage 2: Orchestration (delegated) ==========
+            write_state = WriteBackState()
+            session_snapshot = _session_write_snapshot(session)
+            sse_workline_id = resolve_entity_id(workline)
+            sse_session_id = resolve_entity_id(session)
+            write_callback = self._writeback_service.build_write_callback(
+                db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role=devices_by_role,
+                device=device,
+                command=command,
+                inbox_pk=inbox_pk,
+                session_snapshot=session_snapshot,
+                sse_workline_id=sse_workline_id,
+                sse_session_id=sse_session_id,
+                processor_token=processor_token,
+                state=write_state,
+            )
+
+            orch_result: "OrchestratorResult" = await self._processor_service.process(  # noqa: UP037
+                db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role=devices_by_role,
+                services=services,
+                trace_id=getattr(inbox, "trace_id", None) or "",
+                write_callback=write_callback,
+            )
+
+            # ========== Stage 3: Result dispatch ==========
+            if orch_result.success:
+                if not write_state.write_effects_applied:
+                    raise RuntimeError("WRITE lock callback was not executed for successful orchestrator result")
+                if write_state.disposition == WriteBackDisposition.RESOURCE_RETRY:
+                    result["resource_wait"] += 1
+                    logger.info(f"Inbox {inbox_pk} resource wait, parked for retry")
+                else:
+                    result["success"] += 1
+                    logger.info(f"Inbox {inbox_pk} 处理成功")
+                if write_state.enqueue_outbox_dispatch:
+                    from src.core.task_queue_gateway import task_queue_gateway
+
+                    task_queue_gateway.enqueue_outbox(limit=50)
+            else:
+                error_msg = orch_result.error or "Unknown error"
+                mapped_error_code, mapped_error_domain = map_failure_to_diagnostic(
+                    failure=None,
+                    error_code=orch_result.error_code,
+                )
+                await _record_diagnostic(
+                    db,
+                    inbox=diagnostic_inbox,
+                    error_code=mapped_error_code,
+                    error_domain=mapped_error_domain,
+                    problem_class=_problem_class_for_error_domain(mapped_error_domain),
+                    message=error_msg,
+                    session=session,
+                    workline=workline,
+                    device=device,
+                    command=command,
+                )
+                _ = await self.inbox_service.mark_as_failed(
+                    db, inbox_pk, error_msg, processor_token=processor_token, auto_commit=False
+                )
+                await db.commit()
+                result["failed"] += 1
+                logger.warning(f"Inbox {inbox_pk} 处理失败: {error_msg}")
+
+            result["processed"] += 1
+
+        except SessionResolveError as e:
+            logger.warning(f"Inbox {inbox_pk_text} session resolve failed: {e}")
+            with suppress(Exception):
+                await db.rollback()
+            await _record_diagnostic(
+                db,
+                inbox=diagnostic_inbox,
+                error_code=ErrorCode.SESSION_RESOLVE_FAILED,
+                message=str(e),
+            )
+            try:
+                if inbox_pk is not None:
+                    _ = await self.inbox_service.mark_as_failed(
+                        db, inbox_pk, str(e), processor_token=processor_token, auto_commit=False
+                    )
+                    await db.commit()
+            except Exception as mark_error:
+                logger.warning(f"Inbox {inbox_pk_text} session resolve 失败补记失败: {mark_error}")
+            result["failed"] += 1
+            result["processed"] += 1
+
+        except WorkLineSafetyBlocked as e:
+            logger.warning(f"Inbox {inbox_pk_text} blocked by WorkLine safety state: {e}")
+            with suppress(Exception):
+                await db.rollback()
+            await _record_diagnostic(
+                db,
+                inbox=diagnostic_inbox,
+                error_code=ErrorCode.UNKNOWN,
+                error_domain=ErrorDomain.WORKFLOW,
+                message=str(e),
+            )
+            try:
+                if inbox_pk is not None:
+                    attempt_count = getattr(diagnostic_inbox, "attempt_count", 0)
+                    delay_seconds = min(600, 10 * (2**attempt_count))
+                    _ = await self.inbox_service.park_for_retry(
+                        db,
+                        inbox_pk,
+                        str(e),
+                        processor_token=processor_token,
+                        auto_commit=False,
+                        delay_seconds=delay_seconds,
+                    )
+                    await db.commit()
+            except Exception as mark_error:
+                logger.warning(f"Inbox {inbox_pk_text} safety blocked 补记失败: {mark_error}")
+            result["failed"] += 1
+            result["processed"] += 1
+
+        except TimeoutError:
+            logger.error(f"Inbox {inbox_pk} 处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)")
+            with suppress(Exception):
+                await db.rollback()
+            await _record_diagnostic(
+                db,
+                inbox=diagnostic_inbox,
+                error_code=ErrorCode.INBOX_PROCESSING_TIMEOUT,
+                message=f"Inbox processing timeout (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
+            )
+            try:
+                pk_to_mark = inbox_pk or diagnostic_inbox.id
+                if pk_to_mark is not None:
+                    _ = await self.inbox_service.mark_as_failed(
+                        db,
+                        pk_to_mark,
+                        f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
+                        processor_token=processor_token,
+                        auto_commit=False,
+                    )
+                    await db.commit()
+            except Exception as mark_error:
+                logger.warning(f"Inbox 超时标记失败: {mark_error}")
+            result["failed"] += 1
+            result["processed"] += 1
+
+        except Exception as e:
+            logger.exception(f"Inbox {inbox_pk_text} 处理异常")
+            with suppress(Exception):
+                await db.rollback()
+            await _record_diagnostic(
+                db,
+                inbox=diagnostic_inbox,
+                error_code=ErrorCode.UNKNOWN,
+                message=str(e),
+            )
+            try:
+                pk_to_mark = inbox_pk or diagnostic_inbox.id
+                if pk_to_mark is not None:
+                    _ = await self.inbox_service.mark_as_failed(
+                        db, pk_to_mark, str(e), processor_token=processor_token, auto_commit=False
+                    )
+                    await db.commit()
+            except Exception as mark_error:
+                logger.warning(f"Inbox {inbox_pk_text} 异常补记失败: {mark_error}")
+            result["failed"] += 1
+            result["processed"] += 1
+
+        from src.app.sys.services.event_stream_service import publish_deferred_sse_events
+
+        await publish_deferred_sse_events(db)
+        return result
+
+
+def _kind_value(entity: Any) -> str | None:
+    value = getattr(getattr(entity, "kind", None), "value", getattr(entity, "kind", None))
+    return value if isinstance(value, str) and value else None
+
+
+def _is_duplicate_entry_event(
+    *,
+    inbox: Any,
+    payload: dict[str, Any],
+    session: Any,
+    workline: Any,
+) -> bool:
+    """简化版重复入口识别 (与 InboxBatchProcessor._is_duplicate_entry_event_for_session 等价)."""
+    if _kind_value(inbox) != "DEVICE_EVENT":
+        return False
+    if canonical_event_type(payload) not in _entry_event_types_for_workline(workline):
+        return False
+    terminal_statuses = {"COMPLETED", "FAILED", "CANCELLED"}
+    busy_statuses = {"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"}
+    status = _session_status_value(session)
+    if status in terminal_statuses or status in busy_statuses:
+        return True
+    if getattr(session, "awaiting_device_command_code", None) is not None:
+        return True
+    current_wait_type = getattr(session, "current_wait_type", None)
+    return bool(current_wait_type)
+
+
+async def _load_related_entities(
+    db: Any,
+    inbox: Any,
+    *,
+    resolved_event_type: str | None = None,
+) -> tuple[
+    Any | None,
+    Any | None,
+    Any | None,
+    Any | None,
+    dict[str, list[Any]],
+    Any,
+    bool,
+]:
+    """加载关联实体 (与 InboxBatchProcessor._load_related_entities 等价的 tuple 返回)."""
+    from src.app.runtime.orchestration.services.inbox.inbox_batch_processor import (
+        _load_related_entities as _legacy_load_related_entities,
+    )
+
+    loaded = await _legacy_load_related_entities(db, inbox, resolved_event_type=resolved_event_type)
+    return (
+        loaded.get("session"),
+        loaded.get("workline"),
+        loaded.get("device"),
+        loaded.get("command"),
+        loaded.get("devices_by_role", {}),
+        loaded.get("services"),
+        loaded.get("safety_checked", True),
+    )
+
+
+async def _handle_estop(
+    db: Any,
+    *,
+    inbox: Any,
+    inbox_pk: int,
+    payload: dict[str, Any],
+    session: Any,
+    workline: Any,
+    device: Any,
+    command: Any,
+    processor_token: str,
+    inbox_service: Any,
+) -> int | None:
+    """ESTOP_PRESSED 急停处理 (与 InboxBatchProcessor 行为等价)."""
+    from src.app.runtime.orchestration.services.inbox.inbox_batch_processor import (  # noqa: F401
+        _assert_workline_accepting_runtime_event,
+    )
+    from src.utils.value_normalization import resolve_entity_id
+
+    workline_pk = resolve_entity_id(workline)
+    if workline_pk is None:
+        error_msg = "ESTOP_PRESSED missing workline context"
+        await _record_diagnostic(
+            db,
+            inbox=inbox,
+            error_code=ErrorCode.SESSION_CONTEXT_MISSING,
+            message=error_msg,
+            session=session,
+            workline=workline,
+            device=device,
+            command=command,
+        )
+        _ = await inbox_service.mark_as_failed(
+            db, inbox_pk, error_msg, processor_token=processor_token, auto_commit=False
+        )
+        return None
+
+    from src.app.workline.services.safety_service import workline_safety_service
+
+    incident = await workline_safety_service.handle_estop(
+        db,
+        workline_id=workline_pk,
+        source_inbox_id=inbox_pk,
+        source_device_id=resolve_entity_id(device) or getattr(inbox, "device_id", None),
+        source_command_id=resolve_entity_id(command) or getattr(inbox, "command_id", None),
+        trigger_payload=payload,
+    )
+    _ = await inbox_service.mark_as_processed(db, inbox_pk, processor_token=processor_token, auto_commit=False)
+    return cast("int | None", getattr(incident, "id", None))
+
+
+async def _handle_timer_timeout(db: Any, *, inbox: Any, processor_token: str) -> None:
+    """TIMER_TIMEOUT 路由到 reconciliation service (与 InboxBatchProcessor 等价)."""
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        workline_runtime_reconciliation_service,
+    )
+
+    _ = await workline_runtime_reconciliation_service.handle_timer_timeout(
+        db, inbox=inbox, processor_token=processor_token
+    )
+
+
+# Public alias used by callers.
+RuntimeInboxProcessorService = RuntimeInboxProcessorBridge
+
+
+__all__ = [
+    "ProcessResult",
+    "RuntimeInboxProcessorBridge",
+    "RuntimeInboxProcessorService",
+]

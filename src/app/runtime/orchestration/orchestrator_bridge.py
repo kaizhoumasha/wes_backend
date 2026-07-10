@@ -58,6 +58,7 @@ if TYPE_CHECKING:
 
     from src.app.runtime.orchestration.models.inbox import WorklineInbox
     from src.app.runtime.orchestration.models.session import WorklineSession
+    from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
     from src.app.workline.models import WorkLine
     from src.app.workline.runtime_services import WorklineRuntimeServices
 
@@ -627,7 +628,7 @@ class OrchestratorService:
         self,
         session: WorklineSession | None,
         workline: WorkLine | None,
-        inbox: WorklineInbox | None,
+        inbox: WorklineInbox | RuntimeInbox | None,
         devices_by_role: dict[str, list[Any]],
         services: WorklineRuntimeServices,
         trace_id: str,

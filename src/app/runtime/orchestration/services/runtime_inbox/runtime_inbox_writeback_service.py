@@ -1,0 +1,369 @@
+"""RuntimeInboxWriteBackService (Task 5 三阶段 Processor 拆分).
+
+WRITE 锁回调: stale session snapshot guard + 业务 effects + 重复/迟到检测
++ fence terminal update.
+
+与 InboxBatchProcessor._write_callback (line 1061+) 等价, 但只承担
+write-back 职责, 不再关心 SCAN/ESTOP/TIMER 前置 gate.
+
+关键约束:
+- 必须在锁内执行 (OrchestratorService 已经获取 session lock).
+- 必须用 processor_token fencing 写终态 (避免旧 owner 复活).
+- session snapshot guard: 锁内 session state 若与锁前 snapshot 不一致,
+  抛 RuntimeError, 由 Composition 层回滚并 mark_failed.
+- RESOURCE_WAIT 走 park_for_retry, 不消耗 attempt.
+"""
+
+from __future__ import annotations
+
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from loguru import logger
+
+from src.app.runtime.orchestration.effect_result import (
+    RuntimeIntentEffectResult,
+    WriteBackDisposition,
+)
+from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
+from src.app.runtime.orchestration.services.session.session_resolver import (
+    reapply_pending_session_ingress_metadata,
+)
+from src.app.workline.constants import WORKLINE_RESOURCE_WAIT_RETRY_SECONDS
+from src.app.workline.services.write_back_service import orchestrator_write_back_service
+from src.app.workline.utils import payload_dict
+from src.utils.value_normalization import (
+    optional_int,
+    string_value,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
+
+
+@dataclass
+class WriteBackState:
+    """Write-back 阶段 state, 在 write_callback 闭包内外共享."""
+
+    write_effects_applied: bool = False
+    enqueue_outbox_dispatch: bool = False
+    disposition: WriteBackDisposition | None = None
+
+
+def _session_write_snapshot(session: Any) -> tuple[Any, Any]:
+    """提取写入前的最小 session 快照, 用于锁内防止 stale write."""
+    return (
+        getattr(session, "status", None),
+        getattr(session, "awaiting_device_command_code", None),
+    )
+
+
+def _session_status_value(session: Any) -> str | None:
+    value = getattr(getattr(session, "status", None), "value", getattr(session, "status", None))
+    return value if isinstance(value, str) and value else None
+
+
+def _kind_value(entity: Any) -> str | None:
+    value = getattr(getattr(entity, "kind", None), "value", getattr(entity, "kind", None))
+    return value if isinstance(value, str) and value else None
+
+
+def _command_status_value(command: Any) -> str | None:
+    value = getattr(getattr(command, "status", None), "value", getattr(command, "status", None))
+    return value if isinstance(value, str) else None
+
+
+def _is_current_wait_command_result(*, session: Any, command: Any, payload: dict[str, Any]) -> bool:
+    """判断 COMMAND_RESULT 是否仍对应 session 当前声明的等待锚点."""
+    _ = payload
+    command_code = getattr(command, "command_code", None)
+    awaiting_command_code = getattr(session, "awaiting_device_command_code", None)
+    return isinstance(command_code, str) and command_code == awaiting_command_code
+
+
+def _is_late_or_duplicate_command_result_for_session(
+    *,
+    inbox: Any,
+    payload: dict[str, Any],
+    session: Any | None,
+    command: Any | None,
+) -> bool:
+    """识别已消费过或迟到的 COMMAND_RESULT (与 InboxBatchProcessor 等价)."""
+    if session is None or command is None:
+        return False
+    if _kind_value(inbox) != "COMMAND_RESULT":
+        return False
+    terminal_command_statuses = {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"}
+    command_status = _command_status_value(command)
+    if command_status not in terminal_command_statuses:
+        return False
+    terminal_session_statuses = {"COMPLETED", "FAILED", "CANCELLED"}
+    if _session_status_value(session) in terminal_session_statuses:
+        return True
+    return not _is_current_wait_command_result(session=session, command=command, payload=payload)
+
+
+def _result_requires_outbox_dispatch(result: "OrchestratorResult") -> bool:  # noqa: UP037
+    """判断 OrchestratorResult 是否需要 outbox dispatch."""
+    for intent in result.intents or []:
+        if intent.kind in {
+            RuntimeIntentKind.COMMAND,
+            RuntimeIntentKind.EXTERNAL_REQUEST,
+            RuntimeIntentKind.RACK_OPERATION_REQUEST,
+        }:
+            return True
+        if intent.kind == RuntimeIntentKind.CONTINUE_NEXT and intent.action:
+            return True
+    return False
+
+
+async def _record_late_command_result_archive_timeline(
+    db: Any,
+    *,
+    session: Any,
+    workline: Any,
+    inbox: Any,
+    command: Any,
+    payload: dict[str, Any],
+    reason: str,
+) -> None:
+    """为迟到/重复 COMMAND_RESULT 归档留一条显式 timeline 证据."""
+    from src.app.runtime.orchestration.models.timeline import (
+        TimelineActionType,
+        TimelineActorType,
+        TimelineStage,
+        TimelineStatus,
+        WorklineTimeline,
+    )
+    from src.app.runtime.orchestration.services.trace.timeline_sequence_service import (
+        add_timeline_with_sequence,
+    )
+    from src.utils.timezone import timezone
+    from src.utils.value_normalization import optional_str, resolve_entity_id
+
+    session_id = resolve_entity_id(session)
+    workline_id = resolve_entity_id(workline) or optional_int(getattr(session, "workline_id", None))
+    if session_id is None or workline_id is None:
+        return
+    timeline = WorklineTimeline(
+        session_id=session_id,
+        workline_id=workline_id,
+        trace_id=optional_str(getattr(inbox, "trace_id", None)) or optional_str(getattr(session, "trace_id", None)),
+        seq_no=0,
+        occurred_at=timezone.now_for_db(),
+        stage=TimelineStage.INGEST,
+        action_type=TimelineActionType.EVENT_PROCESSED,
+        actor_type=TimelineActorType.ORCHESTRATOR,
+        actor_code="runtime-inbox-writeback",
+        status=TimelineStatus.SUCCESS,
+        message="LATE_COMMAND_RESULT_ARCHIVED",
+        payload_json={
+            "reason": reason,
+            "command_code": getattr(command, "command_code", None),
+            "command_status": _command_status_value(command),
+            "inbox_id": resolve_entity_id(inbox),
+            "session_status": _session_status_value(session),
+            "awaiting_device_command_code": getattr(session, "awaiting_device_command_code", None),
+            "current_wait_type": string_value(getattr(session, "current_wait_type", None)),
+        },
+        related_inbox_id=resolve_entity_id(inbox),
+        related_command_id=resolve_entity_id(command),
+    )
+    try:
+        _ = await add_timeline_with_sequence(db, timeline, seq_no=0)
+    except Exception as exc:
+        logger.warning(f"迟到命令结果归档 timeline 记录失败: {exc}")
+
+
+def _payload_for_inbox(inbox: Any) -> dict[str, Any]:
+    return payload_dict(getattr(inbox, "payload_json", None))
+
+
+def _payload_for_session(session: Any) -> dict[str, Any]:
+    raw = getattr(session, "context_json", None)
+    if isinstance(raw, dict):
+        return dict(raw)
+    return {}
+
+
+def _build_runtime_session_updated_event_payload(*, workline_id: int | None, session_id: int | None) -> dict[str, Any]:
+    """保持与 InboxBatchProcessor 行为一致的事件 payload 形态."""
+    return {
+        "domain": "workline_runtime",
+        "entity": "session",
+        "action": "updated",
+        "keys": {
+            "workline_id": workline_id,
+            "session_id": session_id,
+        },
+    }
+
+
+class RuntimeInboxWriteBackService:
+    """RuntimeInbox write-back 服务.
+
+    单一职责: 在 OrchestratorService 锁内回调时, 执行 stale session guard
+    + 业务 effects + 重复/迟到检测 + fence terminal update.
+    """
+
+    def __init__(
+        self,
+        *,
+        write_back_service: Any = None,
+        inbox_service: Any = None,
+    ) -> None:
+        self._write_back_service = write_back_service
+        self._inbox_service = inbox_service
+
+    @property
+    def write_back_service(self) -> Any:
+        if self._write_back_service is None:
+            return orchestrator_write_back_service
+        return self._write_back_service
+
+    @property
+    def inbox_service(self) -> Any:
+        if self._inbox_service is None:
+            from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
+
+            return inbox_service
+        return self._inbox_service
+
+    def build_write_callback(
+        self,
+        db: Any,
+        *,
+        session: Any,
+        workline: Any,
+        inbox: Any,
+        devices_by_role: dict[str, list[Any]],
+        device: Any | None,
+        command: Any | None,
+        inbox_pk: int,
+        session_snapshot: tuple[Any, Any],
+        sse_workline_id: int | None,
+        sse_session_id: int | None,
+        processor_token: str,
+        state: WriteBackState,
+    ) -> "Callable[[OrchestratorResult], Awaitable[None]]":  # noqa: UP037
+        """构造 OrchestratorService 写回调闭包."""
+
+        async def _write_callback(write_result: "OrchestratorResult") -> None:  # noqa: UP037
+            try:
+                await db.refresh(session)
+                payload = _payload_for_inbox(inbox)
+                if _is_late_or_duplicate_command_result_for_session(
+                    inbox=inbox,
+                    payload=payload,
+                    session=session,
+                    command=command,
+                ):
+                    await _record_late_command_result_archive_timeline(
+                        db,
+                        session=session,
+                        workline=workline,
+                        inbox=inbox,
+                        command=command,
+                        payload=payload,
+                        reason="COMMAND_RESULT_BECAME_STALE_BEFORE_WRITE",
+                    )
+                    _ = await self.inbox_service.mark_as_processed(
+                        db, inbox_pk, processor_token=processor_token, auto_commit=False
+                    )
+                    await db.commit()
+                    state.disposition = WriteBackDisposition.PROCESSED
+                    state.write_effects_applied = True
+                    state.enqueue_outbox_dispatch = False
+                    return
+
+                if _session_write_snapshot(session) != session_snapshot:
+                    raise RuntimeError("Session state changed before WRITE apply; refusing stale orchestrator effects")
+
+                _ = reapply_pending_session_ingress_metadata(session)
+
+                effect_result: RuntimeIntentEffectResult = await self.write_back_service.write_back(
+                    db,
+                    session=session,
+                    workline=workline,
+                    inbox=inbox,
+                    devices_by_role=devices_by_role,
+                    source_device=device,
+                    orch_result=write_result,
+                )
+                write_disposition = effect_result.disposition
+                state.disposition = write_disposition
+                if write_disposition == WriteBackDisposition.RESOURCE_RETRY:
+                    _ = await self.inbox_service.park_for_retry(
+                        db,
+                        inbox_pk,
+                        "RESOURCE_WAIT",
+                        processor_token=processor_token,
+                        auto_commit=False,
+                        delay_seconds=WORKLINE_RESOURCE_WAIT_RETRY_SECONDS,
+                    )
+                elif write_disposition == WriteBackDisposition.PROCESSED:
+                    _ = await self.inbox_service.mark_as_processed(
+                        db, inbox_pk, processor_token=processor_token, auto_commit=False
+                    )
+                    session_context = dict(_payload_for_session(session))
+                    resource_wait_context = payload_dict(session_context.get("resource_wait"))
+                    if optional_int(resource_wait_context.get("inbox_id")) == inbox_pk and resource_wait_context.get(
+                        "subject_key"
+                    ):
+                        from src.app.workline.services.diagnostic_service import (
+                            workline_diagnostic_service,
+                        )
+
+                        _ = await workline_diagnostic_service.resolve_resource_wait_diagnostics(
+                            db,
+                            inbox_id=inbox_pk,
+                            subject_type=str(resource_wait_context["subject_type"]),
+                            subject_key=str(resource_wait_context["subject_key"]),
+                            projection_type=str(resource_wait_context["projection_type"]),
+                            auto_commit=False,
+                        )
+                        session_context.pop("resource_wait", None)
+                        session.context_json = session_context
+                else:
+                    raise RuntimeError(f"Unsupported write-back disposition: {write_disposition}")
+
+                await db.commit()
+                state.write_effects_applied = True
+                state.enqueue_outbox_dispatch = (
+                    write_disposition == WriteBackDisposition.PROCESSED
+                    and _result_requires_outbox_dispatch(write_result)
+                )
+
+                from src.app.sys.services.event_stream_service import (
+                    WORKLINE_RUNTIME_CHANGED_EVENT,
+                    defer_sse_event,
+                )
+
+                defer_sse_event(
+                    db,
+                    WORKLINE_RUNTIME_CHANGED_EVENT,
+                    _build_runtime_session_updated_event_payload(
+                        workline_id=sse_workline_id,
+                        session_id=sse_session_id,
+                    ),
+                )
+            except Exception:
+                with suppress(Exception):
+                    await db.rollback()
+                raise
+
+        return _write_callback
+
+
+__all__ = [
+    "RuntimeInboxWriteBackService",
+    "WriteBackState",
+    "_is_late_or_duplicate_command_result_for_session",
+    "_record_late_command_result_archive_timeline",
+    "_result_requires_outbox_dispatch",
+    "_session_status_value",
+    "_session_write_snapshot",
+]
