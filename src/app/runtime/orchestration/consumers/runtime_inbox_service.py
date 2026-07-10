@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from sqlalchemy.exc import IntegrityError
 
@@ -119,10 +119,20 @@ class RuntimeInboxService:
     def __init__(
         self,
         repository: RuntimeInboxRepository = runtime_inbox_repository,
+        claim_repo: Any | None = None,
         audit_service: _AuditService | None = None,
         idempotency_guard: IdempotencyGuard = default_idempotency_guard,
     ) -> None:
         self.repository = repository
+        # 5 态 claim + write-back 依赖的 claim repository.
+        # 缺省 lazy import, 避免循环依赖.
+        if claim_repo is None:
+            from src.app.runtime.orchestration.repositories.runtime_inbox_claim_repository import (
+                runtime_inbox_claim_repository,
+            )
+
+            claim_repo = runtime_inbox_claim_repository
+        self.claim_repo = claim_repo
         self.audit_service = audit_service
         self.idempotency_guard = idempotency_guard
 
@@ -330,6 +340,154 @@ class RuntimeInboxService:
             status=OperaStatus.SUCCESS,
             code="200",
             msg="RuntimeInbox dead-letter replay created",
+        )
+
+    # ============================================================
+    # 5-state claim + write-back (Task 3 主计划 §3)
+    # ============================================================
+
+    async def claim_for_processing(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int,
+        processor_token: str,
+        stale_after_seconds: int,
+    ) -> list[dict[str, Any]]:
+        """原子 claim RECEIVED 行（含 stale PROCESSING 回收）。
+
+        委托 claim_repo.claim_received_with_token。
+        底层 SQL 匹配:
+        - status='RECEIVED'
+        - status='FAILED' AND next_retry_at <= now AND attempt_count < max_retries
+        - status='PROCESSING' AND lease_until <= now (stale reclaim)
+        """
+        return await self.claim_repo.claim_received_with_token(
+            db,
+            limit=limit,
+            processor_token=processor_token,
+            stale_after_seconds=stale_after_seconds,
+        )
+
+    async def recover_stale_leases(
+        self,
+        db: AsyncSession,
+        *,
+        stale_after_seconds: int,
+        limit: int,
+    ) -> int:
+        """回收 stale PROCESSING 行（lease_until < now）为 RECEIVED。
+
+        由 claim_repo.find_stale_processing 列出候选行, 然后
+        把 state='RECEIVED', processor_token=None, lease_until=None 重置。
+        """
+        stale = await self.claim_repo.find_stale_processing(
+            db,
+            stale_after_seconds=stale_after_seconds,
+            limit=limit,
+        )
+        # 重置为 RECEIVED 状态, 等待下次 claim
+        from sqlalchemy import update
+
+        from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+
+        cast("Any", RuntimeInbox)
+        for row in stale:
+            row_id = getattr(row, "id", None)
+            if row_id is None:
+                continue
+            await db.execute(
+                update(RuntimeInbox)
+                .where(cast("Any", RuntimeInbox).__table__.c.id == row_id)
+                .values(
+                    status="RECEIVED",
+                    processor_token=None,
+                    lease_until=None,
+                )
+            )
+        return len(stale)
+
+    async def mark_processed(
+        self,
+        db: AsyncSession,
+        *,
+        inbox_id: int,
+        lease_token: str,
+    ) -> bool:
+        """写终态 PROCESSED + processed_at, 匹配 processor_token (fencing)."""
+        from src.utils.timezone import timezone
+
+        now = timezone.now_for_db()
+        now_ms = int(now.timestamp() * 1000) if hasattr(now, "timestamp") else None
+        extra_values: dict[str, Any] | None = {"processed_at": now_ms} if now_ms is not None else None
+        return await self.claim_repo.update_terminal_state(
+            db,
+            inbox_id=inbox_id,
+            lease_token=lease_token,
+            target_state="PROCESSED",
+            extra_values=extra_values,
+        )
+
+    async def mark_failed(
+        self,
+        db: AsyncSession,
+        *,
+        inbox_id: int,
+        lease_token: str,
+        error_message: str,
+        retryable: bool,
+    ) -> bool:
+        """写终态 FAILED + failed_at. retryable=True 时设置 next_retry_at."""
+        from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+        from src.utils.timezone import timezone
+
+        now = timezone.now_for_db()
+        now_ms = int(now.timestamp() * 1000) if hasattr(now, "timestamp") else None
+        extra: dict[str, Any] = {"last_error_message": error_message}
+        if now_ms is not None:
+            extra["failed_at"] = now_ms
+        if retryable:
+            # 指数退避 (10s, 20s, 40s, ... 600s cap)
+            # attempt_count 从当前行读
+            from sqlalchemy import select
+
+            inbox = (
+                await db.execute(select(RuntimeInbox).where(cast("Any", RuntimeInbox).__table__.c.id == inbox_id))
+            ).scalar_one_or_none()
+            attempt_count = int(getattr(inbox, "attempt_count", 0) or 0)
+            delay_seconds = min(600, 10 * (2**attempt_count))
+            if now_ms is not None:
+                extra["next_retry_at"] = now_ms + delay_seconds * 1000
+        return await self.claim_repo.update_terminal_state(
+            db,
+            inbox_id=inbox_id,
+            lease_token=lease_token,
+            target_state="FAILED",
+            extra_values=extra,
+        )
+
+    async def mark_dead_letter(
+        self,
+        db: AsyncSession,
+        *,
+        inbox_id: int,
+        lease_token: str,
+        error_message: str,
+    ) -> bool:
+        """写终态 DEAD_LETTER + failed_at。"""
+        from src.utils.timezone import timezone
+
+        now = timezone.now_for_db()
+        now_ms = int(now.timestamp() * 1000) if hasattr(now, "timestamp") else None
+        extra: dict[str, Any] = {"last_error_message": error_message}
+        if now_ms is not None:
+            extra["failed_at"] = now_ms
+        return await self.claim_repo.update_terminal_state(
+            db,
+            inbox_id=inbox_id,
+            lease_token=lease_token,
+            target_state="DEAD_LETTER",
+            extra_values=extra,
         )
 
 
