@@ -47,7 +47,10 @@ from src.app.runtime.orchestration.repositories.smt_inbound_handoff_repository i
     SmtInboundHandoffRepository,
     smt_inbound_handoff_repository,
 )
-from src.app.runtime.orchestration.services.inbox.inbox_service import WorklineInboxService, inbox_service
+from src.app.runtime.orchestration.services.inbox.inbox_service import (
+    WorklineInboxService,
+    inbox_service,
+)  # TODO(Task 7c): migrate to RuntimeInboxService.accept_received - blocked on RuntimeInboxService.accept_internal_event method
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 
@@ -1418,11 +1421,18 @@ class SmtInboundHandoffService:
         now: Any,
     ) -> str | None:
         from src.app.device.models.command import CommandResult, CommandStatus, DeviceCommand
-        from src.app.runtime.orchestration.models.inbox import InboxStatus, WorklineInbox
+        from src.app.runtime.orchestration.models.inbox import (
+            InboxStatus,
+            WorklineInbox,
+        )  # TODO(Task 7c): migrate _recover_stuck_source_item to RuntimeInbox - blocked on RuntimeInboxService.accept_internal_event method
 
         demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
         if demand is None:
             raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
+        # TODO(Task 7c): read inbox should target RuntimeInbox after accept_internal_event exists.
+        # 当前 source_pick_inbox_id 仍指向 WorklineInbox 行, 等 accept_internal_event
+        # 实现后, create_internal_event_inbox 改用 RuntimeInboxService, 此处
+        # db.get(WorklineInbox, ...) 同步切换。
         inbox = await db.get(WorklineInbox, item.source_pick_inbox_id)
         inbox_status = self._enum_text(getattr(inbox, "status", None))
         outcome: str | None = None
@@ -1683,6 +1693,11 @@ class SmtInboundHandoffService:
             raise TypeError("source pick request requires persisted demand, source item and session")
         event_id = self._source_pick_event_id(item)
         resolved_trace_id = self._text_or_none(trace_id) or self._text_or_none(demand.trace_id) or event_id
+        # TODO(Task 7c): migrate create_internal_event_inbox call to
+        # RuntimeInboxService.accept_internal_event.
+        # 阻塞原因: RuntimeInboxService 缺 INTERNAL_EVENT 适配方法 (INTERNAL_EVENT
+        # 是一种 RuntimeInbox.kind 但目前 RuntimeInboxService.accept_received
+        # 没有为内部事件提供 provider_code/source_event_id 标准化契约)。
         return await self.inbox_service.create_internal_event_inbox(
             db,
             event_type=_SOURCE_PICK_REQUESTED_EVENT,
