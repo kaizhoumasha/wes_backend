@@ -794,13 +794,11 @@ class RuntimeIntentEffectApplier:
         *,
         rack_operation_service: Any | None = None,
         handling_operation_service: Any | None = None,
-        inbox_service: Any | None = None,
         resource_projection_service: Any | None = None,
         bin_cell_reservation_service: Any | None = None,
     ) -> None:
         self._rack_operation_service = rack_operation_service
         self._handling_operation_service = handling_operation_service
-        self._inbox_service = inbox_service
         self._resource_projection_service = resource_projection_service
         self._bin_cell_reservation_service = bin_cell_reservation_service
 
