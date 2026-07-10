@@ -33,7 +33,7 @@ from src.app.wms_integration.services.transport_contract import (
     WmsTransportContractService,
     wms_transport_contract_service,
 )
-from src.utils.value_normalization import coerce_optional_str
+from src.utils.value_normalization import coerce_optional_str, enum_value
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -588,7 +588,7 @@ def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: 
 
 
 def _is_active_station_claim_outbox(outbox: SystemOutbox) -> bool:
-    status = coerce_optional_str(getattr(outbox, "status", None))
+    status = coerce_optional_str(enum_value(getattr(outbox, "status", None)))
     if status not in _ACTIVE_STATION_CLAIM_STATUSES:
         return False
     return getattr(outbox, "finished_at", None) is None or status == SystemOutboxStatus.BLOCKED_RESOURCE.value

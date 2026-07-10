@@ -41,15 +41,15 @@ class SmtNgWmsReconciliationRuntimeService:
     def build_reconciliation_plan(self, payload: Mapping[str, Any]) -> RuntimeCapabilityPlan:
         """构建 callback 对账运行计划。"""
 
-        provider_code = require_text(payload, "provider_code")
+        provider_code = require_text(payload.get("provider_code"), "provider_code")
         scenario = coerce_string_value(payload.get("scenario") or "OK").upper()
         conflict_state = _conflict_state(scenario)
         reason_code = _reason_code(scenario, conflict_state)
-        source_event_id = require_text(payload, "source_event_id")
-        source_version = require_text(payload, "source_version")
-        object_type = require_text(payload, "object_type")
-        object_key = require_text(payload, "object_key")
-        correlation_id = require_text(payload, "correlation_id")
+        source_event_id = require_text(payload.get("source_event_id"), "source_event_id")
+        source_version = require_text(payload.get("source_version"), "source_version")
+        object_type = require_text(payload.get("object_type"), "object_type")
+        object_key = require_text(payload.get("object_key"), "object_key")
+        correlation_id = require_text(payload.get("correlation_id"), "correlation_id")
         external_reference = _external_reference(payload)
         evidence_payload = {
             "scenario": scenario,
@@ -111,7 +111,7 @@ class SmtNgWmsReconciliationRuntimeService:
     def build_runtime_hold_release_plan(self, payload: Mapping[str, Any]) -> RuntimeCapabilityPlan:
         """构建 RuntimeHold scope-only release 运行计划。"""
 
-        provider_code = require_text(payload, "provider_code")
+        provider_code = require_text(payload.get("provider_code"), "provider_code")
         allowed_scope = coerce_string_value(payload.get("allowed_next_effect_scope") or "OBJECT_ONLY").upper()
         requested_scope = coerce_string_value(payload.get("requested_release_scope") or allowed_scope).upper()
         released_effect_scopes = RELEASED_EFFECT_SCOPES_BY_ALLOWED_SCOPE.get(allowed_scope, ["OBJECT"])
@@ -122,9 +122,9 @@ class SmtNgWmsReconciliationRuntimeService:
             reconciliation_required=requires_manual_review,
             allowed_next_effect_scope=allowed_scope,
             evidence={
-                "hold_id": require_text(payload, "hold_id"),
-                "scope_type": require_text(payload, "scope_type"),
-                "scope_key": require_text(payload, "scope_key"),
+                "hold_id": require_text(payload.get("hold_id"), "hold_id"),
+                "scope_type": require_text(payload.get("scope_type"), "scope_type"),
+                "scope_key": require_text(payload.get("scope_key"), "scope_key"),
                 "requested_release_scope": requested_scope,
                 "released_effect_scopes": released_effect_scopes,
                 "blocked_effect_scopes": blocked_effect_scopes,

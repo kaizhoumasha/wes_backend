@@ -52,8 +52,8 @@ class IntegrationLabScenarioRunner:
     def run(self, fixture: Mapping[str, Any]) -> IntegrationLabRunResult:
         """Validate fixture coverage and replay simulator events."""
 
-        scenario_id = require_text(fixture, "scenario_id")
-        _require_sandbox(require_text(fixture, "environment"), "scenario")
+        scenario_id = require_text(fixture.get("scenario_id"), "scenario_id")
+        _require_sandbox(require_text(fixture.get("environment"), "environment"), "scenario")
 
         registries = self._load_provider_registries(fixture.get("provider_profiles"))
         scenario_cases = _scenario_case_refs(fixture.get("scenario_cases"))

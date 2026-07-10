@@ -59,19 +59,19 @@ class SorterInboundRuntimeService:
     def build_rough_sorter_inbound_plan(self, payload: Mapping[str, Any]) -> RuntimeCapabilityPlan:
         """构建粗分机入库运行计划。"""
 
-        request_id = require_text(payload, "request_id")
-        correlation_id = require_text(payload, "correlation_id")
-        provider_code = require_text(payload, "provider_code")
-        object_key = require_text(payload, "object_key")
+        request_id = require_text(payload.get("request_id"), "request_id")
+        correlation_id = require_text(payload.get("correlation_id"), "correlation_id")
+        provider_code = require_text(payload.get("provider_code"), "provider_code")
+        object_key = require_text(payload.get("object_key"), "object_key")
         bin_code = require_text_any(payload, "bin_code", "target_bin_code")
         bin_cell_index = require_text_any(payload, "bin_cell_index", "target_bin_cell_index", "target_cell_index")
-        target_cell_code = require_text(payload, "target_cell_code")
-        pkg_code = require_text(payload, "pkg_code")
-        pallet_id = require_text(payload, "pallet_id")
-        station_code = require_text(payload, "station_code")
-        material_code = require_text(payload, "material_code")
+        target_cell_code = require_text(payload.get("target_cell_code"), "target_cell_code")
+        pkg_code = require_text(payload.get("pkg_code"), "pkg_code")
+        pallet_id = require_text(payload.get("pallet_id"), "pallet_id")
+        station_code = require_text(payload.get("station_code"), "station_code")
+        material_code = require_text(payload.get("material_code"), "material_code")
         quantity = positive_quantity(payload.get("quantity"))
-        warehouse_code = require_text(payload, "warehouse_code")
+        warehouse_code = require_text(payload.get("warehouse_code"), "warehouse_code")
 
         reservation_payload = {
             "pkg_code": pkg_code,
@@ -181,9 +181,9 @@ class SorterInboundRuntimeService:
     def build_sorter_inbound_plan(self, payload: Mapping[str, Any]) -> RuntimeCapabilityPlan:
         """构建分拣机入库运行计划。"""
 
-        request_id = require_text(payload, "request_id")
-        provider_code = require_text(payload, "provider_code")
-        object_key = require_text(payload, "object_key")
+        request_id = require_text(payload.get("request_id"), "request_id")
+        provider_code = require_text(payload.get("provider_code"), "provider_code")
+        object_key = require_text(payload.get("object_key"), "object_key")
         condition_results = {
             "AUTHORIZED_BIN_RESOLVED": coerce_string_value(payload.get("actual_scanned_bin_id"))
             in set(string_list(payload, "expected_authorized_bin_ids")),
@@ -230,12 +230,14 @@ class SorterInboundRuntimeService:
                         "object_type": "PACKAGE",
                         "object_key": object_key,
                         "location_scope": "WORK_POSITION",
-                        "location_code": require_text(payload, "target_work_position_code"),
+                        "location_code": require_text(
+                            payload.get("target_work_position_code"), "target_work_position_code"
+                        ),
                         "business_step": "SORTER_READY_TO_DROP",
                         "source": SORTER_INBOUND_RUNTIME_SOURCE,
                         "provider_code": provider_code,
                         "evidence_json": {"request_id": request_id, "condition_results": condition_results},
-                        "correlation_id": require_text(payload, "correlation_id"),
+                        "correlation_id": require_text(payload.get("correlation_id"), "correlation_id"),
                         "idempotency_key": f"{MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE}:{request_id}:sorter-ready",
                     },
                     idempotency_key=f"{MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE}:{request_id}:sorter-ready",
@@ -251,12 +253,12 @@ class SorterInboundRuntimeService:
     def build_full_box_exchange_plan(self, payload: Mapping[str, Any]) -> RuntimeCapabilityPlan:
         """构建满箱交换运行计划。"""
 
-        request_id = require_text(payload, "request_id")
-        correlation_id = require_text(payload, "correlation_id")
-        provider_code = require_text(payload, "provider_code")
-        rack_code = require_text(payload, "rack_code")
-        empty_box_id = require_text(payload, "empty_box_id")
-        full_box_id = require_text(payload, "full_box_id")
+        request_id = require_text(payload.get("request_id"), "request_id")
+        correlation_id = require_text(payload.get("correlation_id"), "correlation_id")
+        provider_code = require_text(payload.get("provider_code"), "provider_code")
+        rack_code = require_text(payload.get("rack_code"), "rack_code")
+        empty_box_id = require_text(payload.get("empty_box_id"), "empty_box_id")
+        full_box_id = require_text(payload.get("full_box_id"), "full_box_id")
         full_box_set = set(string_list(payload, "full_box_object_keys"))
         sorting_candidate_object_keys = [
             object_key for object_key in string_list(payload, "remaining_object_keys") if object_key not in full_box_set
