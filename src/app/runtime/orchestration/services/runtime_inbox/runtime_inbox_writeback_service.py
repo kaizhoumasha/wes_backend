@@ -237,7 +237,7 @@ class RuntimeInboxWriteBackService:
         #   - park_for_retry(db, inbox_pk, error, processor_token, *, auto_commit, delay_seconds)
         #     → runtime_inbox_service.mark_failed(db, *, inbox_id, lease_token,
         #                                          error_message, retryable=True)
-        #     (delay_seconds 失去, RuntimeInboxService 内部按 attempt_count 自计算)
+        #     (delay_seconds 消失, RuntimeInboxService 内部按 attempt_count 自计算)
         # 阻塞原因 (Task 7b): 改动跨 2 个新文件 + 1 个测试 fake, 超出 7b 范围。
         if self._inbox_service is None:
             from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
