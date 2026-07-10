@@ -12,8 +12,9 @@
 - write-back 阶段: RuntimeInboxWriteBackService.
 - ESTOP / TIMER_TIMEOUT / duplicate entry / late command / missing context
   沿用 InboxBatchProcessor 的判定, 行为等价.
-- 写终态: mark_as_processed / mark_as_failed / mark_as_dead_letter 走
-  processor_token fencing (InboxBatchProcessor 行为).
+- 写终态: mark_processed / mark_failed / mark_dead_letter 走
+  RuntimeInboxService (processor_token 作为 lease_token fencing, 作用于
+  RuntimeInbox 表, 不再 fallback 到 legacy WorklineInboxService).
 - 失败重试与超时不直接 raise, 全部转换成 ProcessResult 统计.
 """
 
@@ -26,6 +27,14 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from loguru import logger
 
+from src.app.runtime.orchestration.consumers.runtime_inbox_repository import (
+    RuntimeInboxRepository,
+    runtime_inbox_repository,
+)
+from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    RuntimeInboxService,
+    runtime_inbox_service,
+)
 from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     ErrorDomain,
@@ -151,50 +160,32 @@ class RuntimeInboxProcessorBridge:
         validation_service: RuntimeInboxValidationService | None = None,
         processor_service: RuntimeInboxOrchestratorDelegate | None = None,
         writeback_service: RuntimeInboxWriteBackService | None = None,
-        inbox_service: Any = None,
-        inbox_repository: Any = None,
+        inbox_service: RuntimeInboxService | None = None,
+        inbox_repository: RuntimeInboxRepository | None = None,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._processor_service = processor_service or RuntimeInboxOrchestratorDelegate()
         self._writeback_service = writeback_service or RuntimeInboxWriteBackService()
-        self._inbox_service = inbox_service
-        self._inbox_repository = inbox_repository
+        self._inbox_service = inbox_service or runtime_inbox_service
+        self._inbox_repository = inbox_repository or runtime_inbox_repository
 
     @property
-    def inbox_service(self) -> Any:
-        # TODO(Task 7c): 当前 lazy import legacy WorklineInboxService (inbox_service)
-        # 用于 mark_as_processed / mark_as_failed / mark_as_dead_letter / park_for_retry
-        # 终态写回。但 RuntimeInboxProcessorBridge.process_claimed 处理的 inbox
-        # 实际是 RuntimeInbox (id 来自 claim_received_with_token), 写终态必须用
-        # RuntimeInboxService, 否则会查 WorklineInbox 表失败 ("消息不存在")。
-        # Task 7c 必须迁移到 RuntimeInboxService:
-        #   - mark_as_processed(db, inbox_pk, processor_token, *, auto_commit)
-        #     → runtime_inbox_service.mark_processed(db, *, inbox_id, lease_token)
-        #   - mark_as_failed(db, inbox_pk, error, processor_token, *, auto_commit)
-        #     → runtime_inbox_service.mark_failed(db, *, inbox_id, lease_token,
-        #                                          error_message, retryable=False)
-        #   - mark_as_dead_letter(db, inbox_pk, error, processor_token, *, auto_commit)
-        #     → runtime_inbox_service.mark_dead_letter(db, *, inbox_id, lease_token,
-        #                                              error_message)
-        #   - park_for_retry(db, inbox_pk, error, processor_token, *, auto_commit, delay_seconds)
-        #     → runtime_inbox_service.mark_failed(db, *, inbox_id, lease_token,
-        #                                          error_message, retryable=True)
-        # 阻塞原因 (Task 7b): 改动跨 2 个新文件 + 1 个测试 fake, 超出 7b 范围。
-        if self._inbox_service is None:
-            from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
+    def inbox_service(self) -> RuntimeInboxService:
+        """RuntimeInboxService 实例。
 
-            return inbox_service
+        终态写回（mark_processed / mark_failed / mark_dead_letter）一律走
+        RuntimeInboxService，作用于 RuntimeInbox 表的 processor_token fencing。
+        不再 fallback 到 legacy WorklineInboxService（Task 7c-5 修复）。
+        """
         return self._inbox_service
 
     @property
-    def inbox_repository(self) -> Any:
-        # TODO(Task 7c): 同上, 当前 fallback 到 legacy WorklineInboxService.repo
-        # (WorklineInboxRepository), 用于 get_by_id 重新加载 ORM。RuntimeInbox id
-        # 查 WorklineInbox 表会返回 None, 应改用 RuntimeInboxRepository.get_by_id。
-        if self._inbox_repository is None:
-            from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
+    def inbox_repository(self) -> RuntimeInboxRepository:
+        """RuntimeInboxRepository 实例。
 
-            return inbox_service.repo
+        加载 RuntimeInbox ORM（get_by_id）走 RuntimeInboxRepository，
+        不再 fallback 到 legacy WorklineInboxRepository（Task 7c-5 修复）。
+        """
         return self._inbox_repository
 
     async def claim_and_process_batch(
@@ -308,12 +299,12 @@ class RuntimeInboxProcessorBridge:
             )
             if not validation_outcome.proceed_to_orchestrator:
                 # SCAN gate 失败 -> 终态 FAILED.
-                _ = await self.inbox_service.mark_as_failed(
+                _ = await self.inbox_service.mark_failed(
                     db,
-                    inbox_pk,
-                    validation_outcome.error_message or "validation failed",
-                    processor_token=processor_token,
-                    auto_commit=False,
+                    inbox_id=inbox_pk,
+                    lease_token=processor_token,
+                    error_message=validation_outcome.error_message or "validation failed",
+                    retryable=False,
                 )
                 await db.commit()
                 result["failed"] += 1
@@ -371,8 +362,12 @@ class RuntimeInboxProcessorBridge:
                     device=device,
                     command=command,
                 )
-                _ = await self.inbox_service.mark_as_failed(
-                    db, inbox_pk, error_msg, processor_token=processor_token, auto_commit=False
+                _ = await self.inbox_service.mark_failed(
+                    db,
+                    inbox_id=inbox_pk,
+                    lease_token=processor_token,
+                    error_message=error_msg,
+                    retryable=False,
                 )
                 await db.commit()
                 result["failed"] += 1
@@ -381,9 +376,7 @@ class RuntimeInboxProcessorBridge:
 
             # ========== Stage 1c: duplicate / late detection ==========
             if _is_duplicate_entry_event(inbox=inbox, payload=payload, session=session, workline=workline):
-                _ = await self.inbox_service.mark_as_processed(
-                    db, inbox_pk, processor_token=processor_token, auto_commit=False
-                )
+                _ = await self.inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
                 await db.commit()
                 result["success"] += 1
                 result["processed"] += 1
@@ -395,9 +388,7 @@ class RuntimeInboxProcessorBridge:
                 session=session,
                 command=command,
             ):
-                _ = await self.inbox_service.mark_as_processed(
-                    db, inbox_pk, processor_token=processor_token, auto_commit=False
-                )
+                _ = await self.inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
                 await db.commit()
                 result["success"] += 1
                 result["processed"] += 1
@@ -467,8 +458,12 @@ class RuntimeInboxProcessorBridge:
                     device=device,
                     command=command,
                 )
-                _ = await self.inbox_service.mark_as_failed(
-                    db, inbox_pk, error_msg, processor_token=processor_token, auto_commit=False
+                _ = await self.inbox_service.mark_failed(
+                    db,
+                    inbox_id=inbox_pk,
+                    lease_token=processor_token,
+                    error_message=error_msg,
+                    retryable=False,
                 )
                 await db.commit()
                 result["failed"] += 1
@@ -488,8 +483,12 @@ class RuntimeInboxProcessorBridge:
             )
             try:
                 if inbox_pk is not None:
-                    _ = await self.inbox_service.mark_as_failed(
-                        db, inbox_pk, str(e), processor_token=processor_token, auto_commit=False
+                    _ = await self.inbox_service.mark_failed(
+                        db,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                        error_message=str(e),
+                        retryable=False,
                     )
                     await db.commit()
             except Exception as mark_error:
@@ -510,15 +509,14 @@ class RuntimeInboxProcessorBridge:
             )
             try:
                 if inbox_pk is not None:
-                    attempt_count = getattr(diagnostic_inbox, "attempt_count", 0)
-                    delay_seconds = min(600, 10 * (2**attempt_count))
-                    _ = await self.inbox_service.park_for_retry(
+                    # RuntimeInboxService.mark_failed(retryable=True) 内部按
+                    # attempt_count 计算指数退避 next_retry_at, 等价 park_for_retry 语义。
+                    _ = await self.inbox_service.mark_failed(
                         db,
-                        inbox_pk,
-                        str(e),
-                        processor_token=processor_token,
-                        auto_commit=False,
-                        delay_seconds=delay_seconds,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                        error_message=str(e),
+                        retryable=True,
                     )
                     await db.commit()
             except Exception as mark_error:
@@ -539,12 +537,12 @@ class RuntimeInboxProcessorBridge:
             try:
                 pk_to_mark = inbox_pk or diagnostic_inbox.id
                 if pk_to_mark is not None:
-                    _ = await self.inbox_service.mark_as_failed(
+                    _ = await self.inbox_service.mark_failed(
                         db,
-                        pk_to_mark,
-                        f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
-                        processor_token=processor_token,
-                        auto_commit=False,
+                        inbox_id=pk_to_mark,
+                        lease_token=processor_token,
+                        error_message=f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
+                        retryable=False,
                     )
                     await db.commit()
             except Exception as mark_error:
@@ -565,8 +563,12 @@ class RuntimeInboxProcessorBridge:
             try:
                 pk_to_mark = inbox_pk or diagnostic_inbox.id
                 if pk_to_mark is not None:
-                    _ = await self.inbox_service.mark_as_failed(
-                        db, pk_to_mark, str(e), processor_token=processor_token, auto_commit=False
+                    _ = await self.inbox_service.mark_failed(
+                        db,
+                        inbox_id=pk_to_mark,
+                        lease_token=processor_token,
+                        error_message=str(e),
+                        retryable=False,
                     )
                     await db.commit()
             except Exception as mark_error:
@@ -650,7 +652,7 @@ async def _handle_estop(
     device: Any,
     command: Any,
     processor_token: str,
-    inbox_service: Any,
+    inbox_service: RuntimeInboxService,
 ) -> int | None:
     """ESTOP_PRESSED 急停处理 (与 InboxBatchProcessor 行为等价)."""
     from src.app.runtime.orchestration.services.inbox.inbox_batch_processor import (  # noqa: F401
@@ -671,8 +673,12 @@ async def _handle_estop(
             device=device,
             command=command,
         )
-        _ = await inbox_service.mark_as_failed(
-            db, inbox_pk, error_msg, processor_token=processor_token, auto_commit=False
+        _ = await inbox_service.mark_failed(
+            db,
+            inbox_id=inbox_pk,
+            lease_token=processor_token,
+            error_message=error_msg,
+            retryable=False,
         )
         return None
 
@@ -686,7 +692,7 @@ async def _handle_estop(
         source_command_id=resolve_entity_id(command) or getattr(inbox, "command_id", None),
         trigger_payload=payload,
     )
-    _ = await inbox_service.mark_as_processed(db, inbox_pk, processor_token=processor_token, auto_commit=False)
+    _ = await inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
     return cast("int | None", getattr(incident, "id", None))
 
 
