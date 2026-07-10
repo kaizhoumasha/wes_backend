@@ -1637,6 +1637,11 @@ class RuntimeIntentEffectApplier:
         payload = dict(intent.payload_json)
         from src.app.runtime.orchestration.services.inbox.inbox_service import DuplicateInboxError
 
+        # TODO(Task 7c): migrate _apply_device_event to RuntimeInboxService.accept_received
+        # 现状: synthesize 出的 device event 仍写入 WorklineInbox (legacy 兼容表)。
+        # 阻塞原因: RuntimeInboxService 缺 DEVICE_EVENT 适配方法 (event_type 来自
+        # intent.payload_json，无 provider_code/source_event_id 标准化契约)。
+        # 临时保留 create_device_event_inbox 调用以维持运行时语义不变。
         try:
             _ = await service.create_device_event_inbox(
                 db=ctx_map["db"],
