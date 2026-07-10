@@ -18,7 +18,10 @@ from src.app.runtime.capability_catalog import (
     list_workline_ng_reasons,
     resolve_workline_material_identity,
 )
-from src.app.runtime.orchestration.models.inbox import InboxKind, SourceSystem
+from src.app.runtime.orchestration.models.inbox import (  # TODO(Task 7c): migrate to RuntimeInbox - blocked on RuntimeInboxService.accept_command_result method
+    InboxKind,
+    SourceSystem,
+)
 from src.app.runtime.orchestration.models.runtime_hold import (
     MaterialDisposition,
     NgReasonSource,
@@ -51,9 +54,11 @@ if TYPE_CHECKING:
 
     from src.app.device.repositories import DeviceCommandRepository
     from src.app.runtime.capabilities.material_flow.contracts.ng_reason import NgReasonDefinition
-    from src.app.runtime.orchestration.models.inbox import WorklineInbox
+    from src.app.runtime.orchestration.models.inbox import WorklineInbox  # TODO(Task 7c): migrate to RuntimeInbox
     from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
-    from src.app.runtime.orchestration.repositories.inbox_repository import WorklineInboxRepository
+    from src.app.runtime.orchestration.repositories.inbox_repository import (
+        WorklineInboxRepository,
+    )  # TODO(Task 7c): migrate to RuntimeInbox
     from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository
     from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
     from src.app.sys.repositories import SystemOutboxRepository
@@ -153,7 +158,7 @@ class RuntimeHoldReleaseService:
         workline_repo: WorkLineRepository | None = None,
         session_repo: WorklineSessionRepository | None = None,
         outbox_repo: SystemOutboxRepository | None = None,
-        inbox_repo: WorklineInboxRepository | None = None,
+        inbox_repo: WorklineInboxRepository | None = None,  # TODO(Task 7c): migrate to RuntimeInboxRepository
         command_repo: DeviceCommandRepository | None = None,
         device_service: DeviceService | None = None,
     ) -> None:
@@ -802,7 +807,7 @@ class RuntimeHoldReleaseService:
         session_id: int,
         session: Any | None,
         idempotency_key: str | None = None,
-    ) -> WorklineInbox:
+    ) -> WorklineInbox:  # TODO(Task 7c): migrate _create_continue_command_result_inbox to RuntimeInbox
         if command.id is None:
             raise ValueError(f"DeviceCommand 缺少主键: {command.command_code}")
         if command.workline_id is None:
@@ -824,6 +829,11 @@ class RuntimeHoldReleaseService:
         # 当调用方提供 Idempotency-Key 时, 用其派生 inbox 行 idempotency_key,
         # 保证同一 client 重试不会重复落库 (H5 幂等: WES-RESOLVE_HOLD-{key})。
         client_idem = f"WES-RESOLVE_HOLD-{idempotency_key}" if idempotency_key else f"runtime-hold:resolve:{hold.id}"
+        # TODO(Task 7c): migrate inbox_repo.create to RuntimeInboxService.accept_command_result.
+        # 阻塞原因: RuntimeInboxService 缺 COMMAND_RESULT 适配方法 (本场景是
+        # 人工 resolve hold 时 synthesize 出的 command result, 不同于外部 callback
+        # 路径, 没有 provider_code / source_event_id, 需新增 accept_command_result
+        # 适配方法或重写 RuntimeInboxRepository.create 路径)。
         inbox = await self.inbox_repo.create(
             db,
             {
