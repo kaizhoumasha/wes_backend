@@ -226,6 +226,19 @@ class RuntimeInboxWriteBackService:
 
     @property
     def inbox_service(self) -> Any:
+        # TODO(Task 7c): 当前 lazy import legacy WorklineInboxService (inbox_service)
+        # 用于 mark_as_processed / park_for_retry 终态写回。但 RuntimeInboxProcessorBridge
+        # 处理的 inbox 实际是 RuntimeInbox (id 来自 claim_received_with_token), 写终态
+        # 必须用 RuntimeInboxService.mark_processed / mark_failed(retryable=True) /
+        # mark_dead_letter, 否则会查 WorklineInbox 表失败 ("消息不存在")。
+        # Task 7c 必须迁移到 RuntimeInboxService:
+        #   - mark_as_processed(db, inbox_pk, processor_token, *, auto_commit)
+        #     → runtime_inbox_service.mark_processed(db, *, inbox_id, lease_token)
+        #   - park_for_retry(db, inbox_pk, error, processor_token, *, auto_commit, delay_seconds)
+        #     → runtime_inbox_service.mark_failed(db, *, inbox_id, lease_token,
+        #                                          error_message, retryable=True)
+        #     (delay_seconds 失去, RuntimeInboxService 内部按 attempt_count 自计算)
+        # 阻塞原因 (Task 7b): 改动跨 2 个新文件 + 1 个测试 fake, 超出 7b 范围。
         if self._inbox_service is None:
             from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
 
