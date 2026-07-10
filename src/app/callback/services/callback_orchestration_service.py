@@ -531,8 +531,9 @@ class CallbackOrchestrationService:
         if not runtime_inbox_result.created:
             return ExternalCallbackOutcome(trace_id=trace.trace_id or "", is_duplicate=True)
 
-        # Plan Task 4 partial: 保留 WorklineInbox 兼容双写用于 lifecycle_only 路径
-        # (rack_task / handling_operation 依赖 created_inbox). RuntimeInbox 为主事实源.
+        # Plan Task 4 partial: process_external 仍写 WorklineInbox (不只 lifecycle_only)
+        # 因为 rack_task_service / handling_operation_service 依赖 created_inbox.
+        # Task 7 完成后删除这段兼容双写, RuntimeInbox 才是唯一主事实源.
         created_inbox: object | None = None
         transition_duplicate = False
         try:
