@@ -1637,21 +1637,42 @@ class RuntimeIntentEffectApplier:
         payload = dict(intent.payload_json)
         from src.app.runtime.orchestration.services.inbox.inbox_service import DuplicateInboxError
 
-        # TODO(Task 7c): migrate _apply_device_event to RuntimeInboxService.accept_received
-        # 现状: synthesize 出的 device event 仍写入 WorklineInbox (legacy 兼容表)。
-        # 阻塞原因: RuntimeInboxService 缺 DEVICE_EVENT 适配方法 (event_type 来自
-        # intent.payload_json，无 provider_code/source_event_id 标准化契约)。
-        # 临时保留 create_device_event_inbox 调用以维持运行时语义不变。
+        device_code = str(payload["device_code"])
+        event_type = str(payload["event_type"])
+        data = dict(payload["data"])
+        trace_id = _ctx_trace_id(ctx_map)
+        event_id = payload.get("event_id")
+        causation_id = payload.get("causation_id")
+        workline_id = optional_int(getattr(ctx_map["workline"], "id", None))
+
+        # Task 7c-b: dual-write device event to RuntimeInbox via accept_device_event.
+        # 新写入由 RuntimeInboxService.accept_device_event 承担 (kind=DEVICE_EVENT);
+        # 保留下方 create_device_event_inbox 调用作为 legacy 兼容双写, Task 7c-c 移除。
+        from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+            runtime_inbox_service,
+        )
+
+        _ = await runtime_inbox_service.accept_device_event(
+            ctx_map["db"],
+            device_code=device_code,
+            event_type=event_type,
+            payload_json={"data": data},
+            workline_id=workline_id,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
+            auto_commit=False,
+        )
         try:
             _ = await service.create_device_event_inbox(
                 db=ctx_map["db"],
-                device_code=str(payload["device_code"]),
-                event_type=str(payload["event_type"]),
+                device_code=device_code,
+                event_type=event_type,
                 timestamp=int(payload["timestamp"]),
-                data=dict(payload["data"]),
-                trace_id=_ctx_trace_id(ctx_map),
-                event_id=payload.get("event_id"),
-                causation_id=payload.get("causation_id"),
+                data=data,
+                trace_id=trace_id,
+                event_id=event_id,
+                causation_id=causation_id,
                 canonical_event_type=payload.get("canonical_event_type"),
                 auto_commit=False,
             )
