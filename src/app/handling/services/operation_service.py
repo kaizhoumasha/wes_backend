@@ -29,7 +29,7 @@ from src.app.sys.models import (
 )
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.utils.timezone import timezone
-from src.utils.value_normalization import optional_int
+from src.utils.value_normalization import coerce_optional_str, optional_int, require_text
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,9 +85,9 @@ class HandlingOperationService:
         调用方只传内部 move 语义；WMS/RCS 目标、dispatch_key 和 outbox 包络由本服务生成。
         """
 
-        operation_key = _required_text(operation_key, "operation_key")
-        operation_type = _required_text(operation_type, "operation_type")
-        trace_id = _required_text(trace_id, "trace_id")
+        operation_key = require_text(operation_key, "operation_key")
+        operation_type = require_text(operation_type, "operation_type")
+        trace_id = require_text(trace_id, "trace_id")
         if not moves:
             raise ValueError("moves 不能为空")
         _reject_external_move_fields(moves)
@@ -118,11 +118,11 @@ class HandlingOperationService:
                 "operation_status": HandlingOperationStatus.REQUESTED.value,
                 "completion_policy": resolve_request_completion_policy(operation_type),
                 "workline_id": workline_id,
-                "workline_code": _optional_text(workline_code),
+                "workline_code": coerce_optional_str(workline_code),
                 "material_session_id": material_session_id,
                 "trace_id": trace_id,
                 "carrier_type": carrier_type,
-                "carrier_code": _optional_text(carrier_code),
+                "carrier_code": coerce_optional_str(carrier_code),
                 "request_json": {
                     "moves": [dict(move) for move in moves],
                     "timeout_seconds": timeout_seconds,
@@ -143,17 +143,17 @@ class HandlingOperationService:
                     "sequence_no": sequence_no,
                     "object_type": HandlingObjectType.BIN.value,
                     "move_status": HandlingMoveStatus.REQUESTED.value,
-                    "rack_code": _optional_text(raw_move.get("rack_code")),
-                    "rack_slot_code": _optional_text(raw_move.get("rack_slot_code")),
-                    "bin_code": _optional_text(raw_move.get("bin_code")),
-                    "placeholder_key": _optional_text(raw_move.get("placeholder_key")),
+                    "rack_code": coerce_optional_str(raw_move.get("rack_code")),
+                    "rack_slot_code": coerce_optional_str(raw_move.get("rack_slot_code")),
+                    "bin_code": coerce_optional_str(raw_move.get("bin_code")),
+                    "placeholder_key": coerce_optional_str(raw_move.get("placeholder_key")),
                     "candidate_authorized_bin_ids": _candidate_ids(raw_move.get("candidate_authorized_bin_ids")),
-                    "source_type": _required_text(raw_move.get("source_type"), "move.source_type"),
-                    "source_code": _required_text(raw_move.get("source_code"), "move.source_code"),
-                    "target_type": _required_text(raw_move.get("target_type"), "move.target_type"),
-                    "target_code": _required_text(raw_move.get("target_code"), "move.target_code"),
+                    "source_type": require_text(raw_move.get("source_type"), "move.source_type"),
+                    "source_code": require_text(raw_move.get("source_code"), "move.source_code"),
+                    "target_type": require_text(raw_move.get("target_type"), "move.target_type"),
+                    "target_code": require_text(raw_move.get("target_code"), "move.target_code"),
                     "carrier_type": carrier_type,
-                    "carrier_code": _optional_text(carrier_code),
+                    "carrier_code": coerce_optional_str(carrier_code),
                     "required": bool(raw_move.get("required", True)),
                     "metadata_json": dict(raw_move),
                 },
@@ -169,9 +169,9 @@ class HandlingOperationService:
                     "operation_domain": "HANDLING",
                     "operation_key": operation_key,
                     "dispatch_type": SystemOutboxDispatchType.EXTERNAL_HTTP.value,
-                    "dispatch_key": _required_text(envelope.get("dispatch_key"), "dispatch_key"),
+                    "dispatch_key": require_text(envelope.get("dispatch_key"), "dispatch_key"),
                     "target_type": SystemOutboxTargetType.HTTP_ENDPOINT.value,
-                    "target_code": _required_text(envelope.get("target_code"), "target_code"),
+                    "target_code": require_text(envelope.get("target_code"), "target_code"),
                     "payload_json": _mapping(envelope.get("payload_json"), "payload_json"),
                     "status": SystemOutboxStatus.NEW.value,
                     "trace_id": trace_id,
@@ -202,20 +202,6 @@ class HandlingOperationService:
         return operation
 
 
-def _required_text(value: Any, field_name: str) -> str:
-    text = _optional_text(value)
-    if text is None:
-        raise ValueError(f"{field_name} 不能为空")
-    return text
-
-
-def _optional_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
 def _reject_external_move_fields(moves: Sequence[Mapping[str, Any]]) -> None:
     for move in moves:
         leaked = _FORBIDDEN_CALLER_MOVE_FIELDS.intersection(move)
@@ -237,19 +223,19 @@ def _validate_existing_operation_matches_request(
     timeout_seconds: int | None,
 ) -> None:
     mismatches: list[str] = []
-    if _optional_text(getattr(existing, "operation_type", None)) != operation_type:
+    if coerce_optional_str(getattr(existing, "operation_type", None)) != operation_type:
         mismatches.append("operation_type")
     if optional_int(getattr(existing, "workline_id", None)) != workline_id:
         mismatches.append("workline_id")
-    if _optional_text(getattr(existing, "workline_code", None)) != _optional_text(workline_code):
+    if coerce_optional_str(getattr(existing, "workline_code", None)) != coerce_optional_str(workline_code):
         mismatches.append("workline_code")
     if optional_int(getattr(existing, "material_session_id", None)) != material_session_id:
         mismatches.append("material_session_id")
-    if _optional_text(getattr(existing, "trace_id", None)) != trace_id:
+    if coerce_optional_str(getattr(existing, "trace_id", None)) != trace_id:
         mismatches.append("trace_id")
-    if _optional_text(getattr(existing, "carrier_type", None)) != _optional_text(carrier_type):
+    if coerce_optional_str(getattr(existing, "carrier_type", None)) != coerce_optional_str(carrier_type):
         mismatches.append("carrier_type")
-    if _optional_text(getattr(existing, "carrier_code", None)) != _optional_text(carrier_code):
+    if coerce_optional_str(getattr(existing, "carrier_code", None)) != coerce_optional_str(carrier_code):
         mismatches.append("carrier_code")
 
     request_json = getattr(existing, "request_json", None)
@@ -281,7 +267,7 @@ def _candidate_ids(value: Any) -> list[str]:
         return []
     if not isinstance(value, list):
         raise TypeError("candidate_authorized_bin_ids 必须是字符串列表")
-    return [_required_text(item, "candidate_authorized_bin_ids[]") for item in value]
+    return [require_text(item, "candidate_authorized_bin_ids[]") for item in value]
 
 
 def _mapping(value: Any, field_name: str) -> dict[str, Any]:

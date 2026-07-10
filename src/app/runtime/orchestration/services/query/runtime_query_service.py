@@ -88,7 +88,7 @@ from src.app.workline.services.diagnosis_verdict_builder_service import diagnosi
 from src.app.workline.utils import ensure_dict
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
-from src.utils.value_normalization import optional_enum_str
+from src.utils.value_normalization import coerce_optional_str, optional_enum_str
 
 T = TypeVar("T")
 
@@ -2718,7 +2718,7 @@ def _runtime_set_metadata_default_value(payload: dict[str, Any], key: str, value
     if isinstance(current, dict):
         if current:
             return
-    elif _non_empty_text(current) is not None:
+    elif coerce_optional_str(current) is not None:
         return
     payload[key] = value
 
@@ -2837,7 +2837,7 @@ def _runtime_resource_evidence_metadata(
         "source_session_id": _int_or_none(getattr(session, "id", None)),
         "source_trace_id": _first_text(payload, ("source_trace_id", "trace_id"))
         or _first_text(context_payload, ("source_trace_id", "trace_id"))
-        or _non_empty_text(getattr(session, "trace_id", None)),
+        or coerce_optional_str(getattr(session, "trace_id", None)),
         "occurred_at": _datetime_or_none(
             payload.get("occurred_at")
             or payload.get("received_at")
@@ -2906,10 +2906,10 @@ def _make_runtime_resource_evidence_item(
     evidence_kind: RuntimeResourceEvidenceKind,
     metadata: dict[str, Any],
 ) -> RuntimeResourceEvidenceItem | None:
-    normalized_code = _non_empty_text(resource_code)
+    normalized_code = coerce_optional_str(resource_code)
     if normalized_code is None:
         return None
-    normalized_display_label = _non_empty_text(display_label)
+    normalized_display_label = coerce_optional_str(display_label)
     return RuntimeResourceEvidenceItem(
         resource_kind=resource_kind,
         resource_code=normalized_code,
@@ -2979,7 +2979,7 @@ def _runtime_resource_evidence_item_sort_key(item: RuntimeResourceEvidenceItem) 
 
 def _first_text(payload: dict[str, Any], aliases: tuple[str, ...]) -> str | None:
     for alias in aliases:
-        value = _non_empty_text(payload.get(alias))
+        value = coerce_optional_str(payload.get(alias))
         if value is not None:
             return value
     return None
@@ -2990,13 +2990,6 @@ def _first_value(payload: dict[str, Any], aliases: tuple[str, ...]) -> Any:
         if alias in payload and payload[alias] is not None:
             return payload[alias]
     return None
-
-
-def _non_empty_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(getattr(value, "value", value)).strip()
-    return text or None
 
 
 def _int_or_none(value: Any) -> int | None:

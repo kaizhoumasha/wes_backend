@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from src.app.runtime.capabilities.material_flow.runtime_identity import MATERIAL_FLOW_IDEMPOTENCY_NAMESPACE
 from src.app.runtime.capabilities.material_flow.sorter_inbound_runtime_service import RuntimeCapabilityPlan
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent
+from src.utils.value_normalization import coerce_string_value, require_text
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -40,15 +41,15 @@ class SmtNgWmsReconciliationRuntimeService:
     def build_reconciliation_plan(self, payload: Mapping[str, Any]) -> RuntimeCapabilityPlan:
         """构建 callback 对账运行计划。"""
 
-        provider_code = _required_text(payload, "provider_code")
-        scenario = _text(payload.get("scenario") or "OK").upper()
+        provider_code = require_text(payload.get("provider_code"), "provider_code")
+        scenario = coerce_string_value(payload.get("scenario") or "OK").upper()
         conflict_state = _conflict_state(scenario)
         reason_code = _reason_code(scenario, conflict_state)
-        source_event_id = _required_text(payload, "source_event_id")
-        source_version = _required_text(payload, "source_version")
-        object_type = _required_text(payload, "object_type")
-        object_key = _required_text(payload, "object_key")
-        correlation_id = _required_text(payload, "correlation_id")
+        source_event_id = require_text(payload.get("source_event_id"), "source_event_id")
+        source_version = require_text(payload.get("source_version"), "source_version")
+        object_type = require_text(payload.get("object_type"), "object_type")
+        object_key = require_text(payload.get("object_key"), "object_key")
+        correlation_id = require_text(payload.get("correlation_id"), "correlation_id")
         external_reference = _external_reference(payload)
         evidence_payload = {
             "scenario": scenario,
@@ -61,7 +62,7 @@ class SmtNgWmsReconciliationRuntimeService:
             "source_event_id": source_event_id,
             "source_version": source_version,
             "external_reference": external_reference,
-            "payload_hash": _text(payload.get("payload_hash")),
+            "payload_hash": coerce_string_value(payload.get("payload_hash")),
             "dedupe_result": conflict_state,
         }
         intents = [
@@ -110,9 +111,9 @@ class SmtNgWmsReconciliationRuntimeService:
     def build_runtime_hold_release_plan(self, payload: Mapping[str, Any]) -> RuntimeCapabilityPlan:
         """构建 RuntimeHold scope-only release 运行计划。"""
 
-        provider_code = _required_text(payload, "provider_code")
-        allowed_scope = _text(payload.get("allowed_next_effect_scope") or "OBJECT_ONLY").upper()
-        requested_scope = _text(payload.get("requested_release_scope") or allowed_scope).upper()
+        provider_code = require_text(payload.get("provider_code"), "provider_code")
+        allowed_scope = coerce_string_value(payload.get("allowed_next_effect_scope") or "OBJECT_ONLY").upper()
+        requested_scope = coerce_string_value(payload.get("requested_release_scope") or allowed_scope).upper()
         released_effect_scopes = RELEASED_EFFECT_SCOPES_BY_ALLOWED_SCOPE.get(allowed_scope, ["OBJECT"])
         blocked_effect_scopes = [scope for scope in ALL_EFFECT_SCOPES if scope not in released_effect_scopes]
         requires_manual_review = requested_scope != allowed_scope
@@ -121,9 +122,9 @@ class SmtNgWmsReconciliationRuntimeService:
             reconciliation_required=requires_manual_review,
             allowed_next_effect_scope=allowed_scope,
             evidence={
-                "hold_id": _required_text(payload, "hold_id"),
-                "scope_type": _required_text(payload, "scope_type"),
-                "scope_key": _required_text(payload, "scope_key"),
+                "hold_id": require_text(payload.get("hold_id"), "hold_id"),
+                "scope_type": require_text(payload.get("scope_type"), "scope_type"),
+                "scope_key": require_text(payload.get("scope_key"), "scope_key"),
                 "requested_release_scope": requested_scope,
                 "released_effect_scopes": released_effect_scopes,
                 "blocked_effect_scopes": blocked_effect_scopes,
@@ -157,25 +158,14 @@ def _reconciliation_action(conflict_state: str) -> str:
 
 
 def _external_reference(payload: Mapping[str, Any]) -> dict[str, str] | None:
-    reference_type = _text(payload.get("external_reference_type"))
-    reference_value = _text(payload.get("external_reference_value"))
+    reference_type = coerce_string_value(payload.get("external_reference_type"))
+    reference_value = coerce_string_value(payload.get("external_reference_value"))
     if not reference_type and not reference_value:
         return None
     return {
         "type": reference_type,
         "value": reference_value,
     }
-
-
-def _required_text(payload: Mapping[str, Any], field_name: str) -> str:
-    value = _text(payload.get(field_name))
-    if not value:
-        raise ValueError(f"{field_name} is required")
-    return value
-
-
-def _text(value: Any) -> str:
-    return str(value or "")
 
 
 smt_ng_wms_reconciliation_runtime_service = SmtNgWmsReconciliationRuntimeService()

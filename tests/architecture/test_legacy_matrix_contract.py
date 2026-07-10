@@ -8,6 +8,8 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
+import pytest
+
 from scripts import generate_legacy_matrix
 from scripts.generate_legacy_matrix import parse_entries
 
@@ -92,6 +94,50 @@ def test_generated_csv_matches_parse_entries_for_required_fields():
     for entry_id, fields in expected.items():
         for field, value in fields.items():
             assert rows[entry_id][field] == value
+
+
+@pytest.mark.parametrize(
+    ("business_semantics", "path", "symbol", "expected_capability"),
+    [
+        pytest.param(
+            "[phase" + "4] NG 退货/处理业务流程",
+            "src/app/workline/services/ng_return_item_service.py",
+            "NgReturnItemService",
+            "NgReturnCapability.process",
+            id="ng-return",
+        ),
+        pytest.param(
+            "[phase" + "4] 单层机架编排业务流程",
+            "tests/workline_runtime/test_single_layer_rack_orchestration_service.py",
+            "test_station_claim_active_status_accepts_system_outbox_status_enum",
+            "SingleLayerRackCapability.orchestrate",
+            id="single-layer-rack",
+        ),
+        pytest.param(
+            "[phase" + "4] Bin Cell 预约业务流程",
+            "tests/workline_runtime/test_bin_cell_reservation_target_lifecycle.py",
+            "test_reconciling_reservation_cannot_be_released_by_normal_failure_path",
+            "BinCellReservationCapability.reserve",
+            id="bin-cell-reconciling",
+        ),
+    ],
+)
+def test_material_flow_target_marker_classification(
+    business_semantics: str,
+    path: str,
+    symbol: str,
+    expected_capability: str,
+) -> None:
+    target_path, target_capability = generate_legacy_matrix.resolve_migration_target(
+        business_semantics,
+        "test",
+        path,
+        symbol,
+        "rebuild",
+    )
+
+    assert target_path == "src/app/runtime/capabilities/material_flow/"
+    assert target_capability == expected_capability
 
 
 def test_markdown_summary_matches_generated_csv():

@@ -19,6 +19,7 @@ from src.app.runtime.orchestration.services.device_dispatch_policy import (
 )
 from src.core.base_service import BaseService
 from src.utils.timezone import timezone
+from src.utils.value_normalization import require_text
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,13 +34,6 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
-
-
-def _required_text(value: Any, *, field_name: str) -> str:
-    text = _optional_text(value)
-    if text is None:
-        raise ValueError(f"{field_name} 不能为空")
-    return text
 
 
 def _positive_int(value: Any, *, default: int) -> int:
@@ -95,7 +89,7 @@ class DeviceRuntimeProjectionWriterService(BaseService[DeviceRuntimeProjection, 
         """从 Device 当前运行态同步一条持久投影。"""
 
         now = timezone.now_for_db()
-        device_code = _required_text(getattr(device, "device_code", None), field_name="device_code")
+        device_code = require_text(getattr(device, "device_code", None), field_name="device_code")
         runtime_status = _normalize_runtime_status(getattr(device, "device_status", None))
         current_command_id = getattr(device, "current_command_id", None)
         concurrency_limit = _positive_int(getattr(device, "max_concurrent_tasks", None), default=1)

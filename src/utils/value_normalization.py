@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from decimal import Decimal
 from enum import Enum
 from typing import Any, cast
 
@@ -111,6 +113,90 @@ def canonical_event_type(payload: dict[str, Any]) -> str | None:
     return optional_str(payload.get("canonical_event_type")) or optional_str(payload.get("event_type"))
 
 
+# ── 跨域值提取与校验（消除 DRY 违规） ──
+
+
+def require_text(value: Any, field_name: str) -> str:
+    """校验 value 是非空字符串，否则抛出 ValueError。
+
+    字段名仅用于错误信息与单值场景的语义标注，不参与取值。
+    """
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} is required")  # noqa: TRY004
+    text = value.strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    return text
+
+
+def require_text_any(payload: Mapping[str, Any], *field_names: str) -> str:
+    """从多个候选字段中取第一个非空字符串值，全部缺失抛出 ValueError。"""
+    for field_name in field_names:
+        value = coerce_string_value(payload.get(field_name))
+        if value:
+            return value
+    raise ValueError(f"{'/'.join(field_names)} is required")
+
+
+def string_list(payload: Mapping[str, Any], field_name: str) -> list[str]:
+    """从 Mapping 中安全取字符串列表。"""
+    raw = payload.get(field_name)
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw]
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if str(item)]
+
+
+def mapping_copy(value: Any) -> dict[str, Any]:
+    """安全浅拷贝 Mapping 为 dict，非 Mapping 返回 {}。
+
+    区别于 as_dict()：as_dict 仅接受 dict 类型，本函数接受任何 Mapping。
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    return dict(value)
+
+
+def json_safe(value: Any) -> Any:
+    """递归转换 Decimal/tuple 为 JSON 可序列化类型。"""
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    return value
+
+
+def positive_quantity(value: Any) -> float:
+    """正数校验，非正数抛出 ValueError。"""
+    try:
+        qty = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("quantity must be positive") from exc
+    if qty <= 0:
+        raise ValueError("quantity must be positive")
+    return qty
+
+
+def positive_timeout_seconds(value: Any) -> int:
+    """正整数超时校验，None 默认 300。"""
+    if value is None:
+        return 300
+    try:
+        secs = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("timeout_seconds must be positive") from exc
+    if secs <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    return secs
+
+
 __all__ = [
     "as_dict",
     "canonical_event_type",
@@ -120,13 +206,20 @@ __all__ = [
     "dict_attr",
     "enum_str",
     "enum_value",
+    "json_safe",
+    "mapping_copy",
     "optional_enum_str",
     "optional_int",
     "optional_int_attr",
     "optional_str",
     "optional_str_attr",
+    "positive_quantity",
+    "positive_timeout_seconds",
+    "require_text",
+    "require_text_any",
     "required_int_attr",
     "resolve_entity_id",
     "resolve_required_pk",
+    "string_list",
     "string_value",
 ]

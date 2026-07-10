@@ -27,7 +27,11 @@ def _phase4_main_plan_text(main_plan: str) -> str:
     next_section = main_plan.find("### 10.6", start)
     phase4_section = main_plan[start:] if next_section == -1 else main_plan[start:next_section]
     phase4_startup_lines = "\n".join(line for line in main_plan.splitlines() if "Phase 4 启动时" in line)
-    return f"{phase4_section}\n{phase4_startup_lines}"
+    implementation = _read(REPO_ROOT / "docs" / "architecture" / "workline-restructuring-implementation.md")
+    impl_start = implementation.index("### 10.5 Material-flow target capabilities")
+    impl_next = implementation.find("### 10.6", impl_start)
+    impl_phase4_section = implementation[impl_start:] if impl_next == -1 else implementation[impl_start:impl_next]
+    return f"{phase4_section}\n{phase4_startup_lines}\n{impl_phase4_section}"
 
 
 def _extract_spec_references(*texts: str) -> set[str]:

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from src.utils.value_normalization import coerce_string_value
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -40,7 +42,7 @@ class SmtNgWmsReconciliationPreviewService:
     def preview_reconciliation_snapshot(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """预览 WMS/NG 对账快照，不推进任何生产写路径。"""
 
-        scenario = _text(payload.get("scenario") or "OK").upper()
+        scenario = coerce_string_value(payload.get("scenario") or "OK").upper()
         conflict_state = self._conflict_state(scenario)
         requires_runtime_hold = conflict_state == "RECONCILING"
         reason_code = self._reason_code(scenario, conflict_state)
@@ -64,8 +66,8 @@ class SmtNgWmsReconciliationPreviewService:
     def preview_runtime_hold_release(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """预览 RuntimeHold scope-only release。"""
 
-        allowed_scope = _text(payload.get("allowed_next_effect_scope") or "OBJECT_ONLY").upper()
-        requested_scope = _text(payload.get("requested_release_scope") or allowed_scope).upper()
+        allowed_scope = coerce_string_value(payload.get("allowed_next_effect_scope") or "OBJECT_ONLY").upper()
+        requested_scope = coerce_string_value(payload.get("requested_release_scope") or allowed_scope).upper()
         released_effect_scopes = RELEASED_EFFECT_SCOPES_BY_ALLOWED_SCOPE.get(allowed_scope, ["OBJECT"])
         blocked_effect_scopes = [scope for scope in ALL_EFFECT_SCOPES if scope not in released_effect_scopes]
         return {
@@ -112,18 +114,14 @@ def _preview_boundary() -> dict[str, Any]:
 
 
 def _external_reference(payload: Mapping[str, Any]) -> dict[str, str] | None:
-    reference_type = _text(payload.get("external_reference_type"))
-    reference_value = _text(payload.get("external_reference_value"))
+    reference_type = coerce_string_value(payload.get("external_reference_type"))
+    reference_value = coerce_string_value(payload.get("external_reference_value"))
     if not reference_type and not reference_value:
         return None
     return {
         "type": reference_type,
         "value": reference_value,
     }
-
-
-def _text(value: Any) -> str:
-    return str(value or "")
 
 
 smt_ng_wms_reconciliation_preview_service = SmtNgWmsReconciliationPreviewService()

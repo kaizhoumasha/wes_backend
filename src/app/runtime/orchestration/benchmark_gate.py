@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from src.utils.value_normalization import coerce_optional_str
+
 
 @dataclass(frozen=True, slots=True)
 class RuntimeBenchmarkScenario:
@@ -50,7 +52,9 @@ class RuntimeBenchmarkGate:
     def validate_artifact(self, artifact: Mapping[str, object]) -> RuntimeBenchmarkArtifactValidation:
         """Validate the production-scale benchmark artifact contract."""
 
-        if not _non_empty_text(artifact.get("environment")) or not _non_empty_text(artifact.get("generated_at")):
+        if not coerce_optional_str(artifact.get("environment")) or not coerce_optional_str(
+            artifact.get("generated_at")
+        ):
             return RuntimeBenchmarkArtifactValidation(valid=False, reason="MISSING_METADATA")
 
         raw_scenarios = artifact.get("scenarios")
@@ -82,10 +86,6 @@ class RuntimeBenchmarkGate:
         if scenario_result_validation is not None:
             return scenario_result_validation
         return RuntimeBenchmarkArtifactValidation(valid=True)
-
-
-def _non_empty_text(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
 
 
 def _is_sha256_hex(value: object) -> bool:
@@ -137,7 +137,7 @@ def _validate_profile_metadata(profile: object) -> RuntimeBenchmarkArtifactValid
     invalid_fields: list[str] = []
     if profile["database_backend"] != "postgresql":
         invalid_fields.append("profile.database_backend")
-    if not _non_empty_text(profile["dependency_profile"]):
+    if not coerce_optional_str(profile["dependency_profile"]):
         invalid_fields.append("profile.dependency_profile")
     if not _is_number(profile["concurrency_level"]) or profile["concurrency_level"] < 2:
         invalid_fields.append("profile.concurrency_level")
@@ -320,16 +320,16 @@ def _collect_scenario_provenance_validation(
         return
 
     source_kind = source.get("kind")
-    if not _non_empty_text(source_kind):
+    if not coerce_optional_str(source_kind):
         missing_fields.append(f"{scenario.name}.source.kind")
     elif scenario.production_source_kinds and source_kind not in scenario.production_source_kinds:
         invalid_fields.append(f"{scenario.name}.source.kind")
 
-    if not _non_empty_text(source.get("evidence")):
+    if not coerce_optional_str(source.get("evidence")):
         missing_fields.append(f"{scenario.name}.source.evidence")
 
     evidence_sha256 = source.get("evidence_sha256")
-    if not _non_empty_text(evidence_sha256):
+    if not coerce_optional_str(evidence_sha256):
         missing_fields.append(f"{scenario.name}.source.evidence_sha256")
     elif not _is_sha256_hex(evidence_sha256):
         invalid_fields.append(f"{scenario.name}.source.evidence_sha256")

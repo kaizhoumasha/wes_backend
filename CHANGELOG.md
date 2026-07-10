@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.4.0] - 2026-07-10
+
+### Changed
+- 统一 runtime、handling、rack、device、WMS integration 等域的值规范化入口，减少重复转换逻辑并明确必填文本只接受真实非空字符串。
+- 将 WorkLine restructuring 顶层设计拆分为概览、架构、模块、接口、数据、状态、安全、非功能和实施文档，保留可追踪的设计计划与验收边界。
+- 标记延后实现的实体并清理活跃代码中的过程阶段标记，使当前架构表面保持稳定领域命名。
+
+### Fixed
+- 修复 sorter inbound 必填字段取值、plugin manifest iterable 摘要和 station claim 枚举状态判断回归，并补齐对应单元与运行时测试。
+- 修复 legacy matrix 生成器把 single-layer rack 和名称含 `reconciling` 的 Bin Cell 条目误归为 NG return 的问题，同步 matrix、absence ledger 与文档统计校验。
+- 收紧 legacy 审计契约，校验 matrix 与 ledger 的条目、业务语义、目标能力和 seed 分类统计一致。
+
 ## [0.15.3.0] - 2026-07-09
 
 ### Changed

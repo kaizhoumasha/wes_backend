@@ -49,6 +49,7 @@ from src.app.runtime.runtime_capability_catalog import (
 from src.app.workline.domain.models import BarcodeDecisionType
 from src.app.workline.trace_context import TraceContext
 from src.core.logger import logger
+from src.utils.value_normalization import mapping_copy
 
 # 类型注解用（运行时需要这些类型作为函数签名）
 if TYPE_CHECKING:
@@ -117,10 +118,6 @@ def _context_patch_has_reserved_key(context_patch: dict[str, Any] | None) -> boo
     if not context_patch:
         return False
     return any(key in _RESERVED_CONTEXT_KEYS for key in context_patch)
-
-
-def _dict_copy(value: Any) -> dict[str, Any]:
-    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _payload_text(payload_json: Mapping[str, Any], data: Mapping[str, Any], *field_names: str) -> str | None:
@@ -328,7 +325,7 @@ def _smt_source_pick_requested_intents(event: NormalizedDeviceEvent, *, inbox: A
         "pkg_code": _payload_text(payload_json, data, "pkg_code", "PkgID"),
         "reel_thickness": reel_thickness,
         "reel_thickness_mm": reel_thickness,
-        "route_evidence": _dict_copy(data.get("route_evidence")),
+        "route_evidence": mapping_copy(data.get("route_evidence")),
     }
     missing_fields = [
         field_name

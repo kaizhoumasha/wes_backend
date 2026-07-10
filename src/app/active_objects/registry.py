@@ -1,4 +1,10 @@
-"""ActiveObjectRegistry read-model conflict policy."""
+"""ActiveObjectRegistry 读模型 — @yagni: 3路UNION冲突仲裁暂不需要。
+
+当前状态: 被 workline_active_objects_service 引用，但粗分机/分拣机
+流程中料箱/料盘并发度低，跨投影冲突概率极小。
+
+激活条件: 生产环境出现同对象多投影归属冲突需要自动仲裁。
+"""
 
 from __future__ import annotations
 

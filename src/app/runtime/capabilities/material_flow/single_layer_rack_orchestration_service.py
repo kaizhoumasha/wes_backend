@@ -33,6 +33,7 @@ from src.app.wms_integration.services.transport_contract import (
     WmsTransportContractService,
     wms_transport_contract_service,
 )
+from src.utils.value_normalization import coerce_optional_str, enum_value
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -144,7 +145,7 @@ class SingleLayerRackOrchestrationService:
             diagnostics: dict[str, Any] = {}
             handoff_service = self.smt_inbound_handoff_service
             if handoff_service is not None and self._should_invoke_handoff_release_producer(db):
-                handoff_trace_id = _non_empty_text(recorded_fact_payload.get("trace_id"))
+                handoff_trace_id = coerce_optional_str(recorded_fact_payload.get("trace_id"))
                 handoff_demand = await handoff_service.create_or_get_from_release(
                     db,
                     **self._handoff_release_producer_payload(
@@ -427,7 +428,7 @@ class SingleLayerRackOrchestrationService:
         workline_code: str,
         station_code: str,
     ) -> str:
-        explicit_dispatch_key = _non_empty_text(dispatch_key)
+        explicit_dispatch_key = coerce_optional_str(dispatch_key)
         if explicit_dispatch_key is not None:
             return explicit_dispatch_key
         return f"wms-rack-operation:{business_demand_key}:{workline_code}:{station_code}"
@@ -559,9 +560,13 @@ class SingleLayerRackOrchestrationService:
 
 
 def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: DispatchEnvelope) -> None:
-    if _enum_text(outbox.dispatch_type) != _enum_text(envelope.dispatch_type):
+    if coerce_optional_str(getattr(outbox.dispatch_type, "value", outbox.dispatch_type)) != coerce_optional_str(
+        getattr(envelope.dispatch_type, "value", envelope.dispatch_type)
+    ):
         raise ValueError("existing station dispatch outbox dispatch_type differs from request")
-    if _enum_text(outbox.target_type) != _enum_text(envelope.target_type):
+    if coerce_optional_str(getattr(outbox.target_type, "value", outbox.target_type)) != coerce_optional_str(
+        getattr(envelope.target_type, "value", envelope.target_type)
+    ):
         raise ValueError("existing station dispatch outbox target_type differs from request")
     if outbox.target_code != envelope.target_code:
         raise ValueError("existing station dispatch outbox target_code differs from request")
@@ -583,7 +588,7 @@ def _ensure_existing_station_claim_outbox_shape(outbox: SystemOutbox, envelope: 
 
 
 def _is_active_station_claim_outbox(outbox: SystemOutbox) -> bool:
-    status = _enum_text(getattr(outbox, "status", None))
+    status = coerce_optional_str(enum_value(getattr(outbox, "status", None)))
     if status not in _ACTIVE_STATION_CLAIM_STATUSES:
         return False
     return getattr(outbox, "finished_at", None) is None or status == SystemOutboxStatus.BLOCKED_RESOURCE.value
@@ -593,26 +598,14 @@ def _station_position_from_payload(payload_json: Mapping[str, Any] | None) -> st
     payload = dict(payload_json or {})
     station = payload.get("station")
     if isinstance(station, Mapping):
-        position_code = _non_empty_text(station.get("position_code"))
+        position_code = coerce_optional_str(station.get("position_code"))
         if position_code is not None:
             return position_code
     for key in ("position_code", "target_position_code", "station_code"):
-        position_code = _non_empty_text(payload.get(key))
+        position_code = coerce_optional_str(payload.get(key))
         if position_code is not None:
             return position_code
     return None
-
-
-def _enum_text(value: Any) -> str | None:
-    raw_value = getattr(value, "value", value)
-    return _non_empty_text(raw_value)
-
-
-def _non_empty_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
 
 
 single_layer_rack_orchestration_service = SingleLayerRackOrchestrationService()

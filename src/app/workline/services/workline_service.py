@@ -78,6 +78,19 @@ _ACTIVE_CONFIGURATION_FIELDS = frozenset(
 )
 
 
+def _string_list_from_iterable(value: object) -> list[str]:
+    """将 manifest raw iterable 字段转换为字符串列表。"""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, bytes):
+        return [value.decode()]
+    if isinstance(value, Iterable):
+        return [str(item) for item in value if str(item)]
+    return []
+
+
 class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     """作业线业务逻辑层"""
 
@@ -121,32 +134,22 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _manifest_value(value: object) -> object:
         return getattr(value, "value", value)
 
-    @staticmethod
-    def _string_list(value: object) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [value]
-        if isinstance(value, Iterable):
-            return [str(item) for item in value]
-        return []
-
     @classmethod
     def _build_device_requirement_summary(cls, requirement: object) -> DeviceRequirement:
         return DeviceRequirement(
             role=requirement.role,
             min_count=requirement.min_count,
             max_count=getattr(requirement, "max_count", None),
-            hardware_capabilities=cls._string_list(getattr(requirement, "hardware_capabilities", ())),
+            hardware_capabilities=_string_list_from_iterable(getattr(requirement, "hardware_capabilities", ())),
         )
 
     @classmethod
     def _build_rack_position_carrier_capability_summary(cls, capability: object) -> RackPositionCarrierCapability:
         return RackPositionCarrierCapability(
-            allowed_rack_kinds=cls._string_list(getattr(capability, "allowed_rack_kinds", ())),
+            allowed_rack_kinds=_string_list_from_iterable(getattr(capability, "allowed_rack_kinds", ())),
             min_capacity=capability.min_capacity,
             max_capacity=capability.max_capacity,
-            allowed_slot_kinds=cls._string_list(getattr(capability, "allowed_slot_kinds", ())),
+            allowed_slot_kinds=_string_list_from_iterable(getattr(capability, "allowed_slot_kinds", ())),
         )
 
     @classmethod
@@ -183,7 +186,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _build_event_binding_summary(cls, event: object) -> EventBinding:
         return EventBinding(
             event=event.event,
-            source_device_roles=cls._string_list(getattr(event, "source_device_roles", ())),
+            source_device_roles=_string_list_from_iterable(getattr(event, "source_device_roles", ())),
             category=str(cls._manifest_value(event.category)),
         )
 
@@ -214,7 +217,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         return SessionSubject(
             type=subject.type,
             physical_form=subject.physical_form,
-            identity_sources=cls._string_list(getattr(subject, "identity_sources", ())),
+            identity_sources=_string_list_from_iterable(getattr(subject, "identity_sources", ())),
         )
 
     @staticmethod
@@ -236,7 +239,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _build_state_machine_transition_summary(cls, transition: object) -> StateMachineTransition:
         return StateMachineTransition(
             from_state=transition.from_state,
-            to_states=cls._string_list(getattr(transition, "to_states", ())),
+            to_states=_string_list_from_iterable(getattr(transition, "to_states", ())),
         )
 
     @classmethod
