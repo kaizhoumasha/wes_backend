@@ -453,6 +453,52 @@ Legend: ★★★ behavior + edge + error | →E2E integration/resilience bounda
 
 本轮无新增 TODO：当前 PR 通过 Task 5（三阶段 Processor 拆分与 parity）覆盖了"稳定后拆分 processor"的潜在 TODO。现有"统一运营看板、告警与 Runbook"P2 项保持不变。
 
+## WorklineInbox 消费者迁移矩阵（GitNexus impact 报告）
+
+由 `mcp__gitnexus__impact(target="WorklineInboxClaim", direction="upstream")` 拉取，基线 `a18a8bd2`（plan 起点）：
+
+**风险等级**：MEDIUM（32 个上游依赖 / 5 depth=1 / 13 depth=2 / 14 depth=3）
+
+下表覆盖 14 个直接消费者（plan §WorklineInbox 消费者迁移矩阵要求"至少 16 个"，本表覆盖最关键的 14 个 + depth=3 提及 18 个）：
+
+| # | 文件/符号 | 使用 WorklineInbox 字段 | RuntimeInbox 替代 |
+|---|---|---|---|
+| 1 | `src/app/runtime/orchestration/services/inbox/inbox_service.py:WorklineInboxService` | `create_*_inbox` / `mark_as_*` / `park_for_retry` / `claim_pending_messages` | 全部映射 RuntimeInbox（Task 3） |
+| 2 | `src/app/runtime/orchestration/services/inbox/inbox_batch_processor.py:InboxBatchProcessor` | `_process_claimed_message` 全部分支 | 三阶段 RuntimeInboxProcessorService（Task 5） |
+| 3 | `src/app/runtime/orchestration/services/intent/operation_service.py` | `runtime_intent_effects` 创建 inbox | 改用 `RuntimeInboxService`（Task 4） |
+| 4 | `src/app/runtime/orchestration/services/hold/runtime_hold_release_service.py` | `runtime_hold` 关联 inbox 查询 | 改用 `RuntimeInboxRepository`（Task 3） |
+| 5 | `src/celery_app/tasks/workline.py:process_inbox_batch` | `WorklineInboxClaim` claim + 调 `InboxBatchProcessor` | 替换为 `process_runtime_inbox_batch`（Task 6） |
+| 6 | `src/app/workline/unit_of_work.py` | WorklineInbox 状态查询 | 删除（runtime UoW 统一 runtime_inbox） |
+| 7 | `src/app/workline/services/safety_service.py` | `assert_accepting_work` 读 inbox | 不变（不读 inbox） |
+| 8 | `src/app/runtime/orchestration/runtime_intent_effects.py` | `create_device_event_inbox` | 改用 `RuntimeInboxService.accept_received`（Task 4） |
+| 9 | `src/app/resource/services/projection_service.py` | inbox active 状态 | 改用 `RuntimeInboxRepository` 投影 |
+| 10 | `src/app/resource/services/active_rack_snapshot_service.py` | inbox active 状态 | 改用 `RuntimeInboxRepository` |
+| 11 | `src/app/runtime/orchestration/services/trace/trace_query_service.py` | `WorklineInbox` 类型注解 | 改 RuntimeInbox |
+| 12 | `src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py` | `WorklineInboxClaim` 类型 | 改 RuntimeInbox |
+| 13 | `src/app/runtime/orchestration/services/intent/smt_inbound_handoff_service.py` | SMT handoff inbox | 改用 `RuntimeInboxService`（Task 4） |
+| 14 | `src/app/workline/v1/operation.py` | `enqueue_workline_inbox` | 改用 `enqueue_runtime_inbox`（Task 6） |
+| 15 | `src/app/callback/services/callback_orchestration_service.py` | 双写 `create_device_event_inbox` | 删双写（Task 5） |
+| 16 | `src/app/callback/v1/callback.py` | `_enqueue_workline_processing` | 改 `_enqueue_runtime_inbox_processing`（Task 5） |
+| 17 | `src/app/runtime/orchestration/consumers/runtime_inbox_consumer.py` | `consume_sync` 委托 `process_inbox_payload` | 删 facade（Task 7） |
+| 18 | `src/app/runtime/capability_port_registry.py` | `RuntimeInboxConsumer` port 注册 | 迁移矩阵必覆盖（Task 7） |
+| 19 | `src/app/runtime/inbound_normalizer_registry.py` | `RuntimeInboxConsumer` normalizer 上下文 | 迁移矩阵必覆盖（Task 7） |
+| 20 | `src/app/runtime/orchestration/services/query/runtime_query_service.py` | WorklineInbox 查询 | 改 RuntimeInbox |
+| 21 | `src/app/runtime/orchestration/services/inbox/outbox_dispatch_service.py` | WorklineInbox 引用 | 删除依赖 |
+| 22 | `src/app/sys/repositories/outbox_repository.py` | 间接依赖 | 不变 |
+| 23 | `src/app/workline/repositories/workline_repository.py` | 间接依赖 | 不变 |
+| 24 | `src/app/workline/services/__init__.py` | re-export inbox_service | 删除 re-export |
+| 25 | `src/app/runtime/orchestration/models/__init__.py` | re-export WorklineInbox | 删除 re-export |
+| 26 | `src/app/runtime/orchestration/repositories/__init__.py` | re-export WorklineInboxRepository | 删除 re-export |
+| 27 | `src/app/runtime/orchestration/services/inbox/__init__.py` | re-export inbox_service | 删除 re-export |
+| 28 | `src/app/workline/services/safety_service.py` | 间接 | 不变 |
+
+迁移状态（实时）：
+
+- 1-5: pending（Task 2-7 推进）
+- 6-28: pending（Task 7 完成）
+
+只有当 1-28 全部迁移完成、characterization case table 全部 parity 通过、`grep -rn "WorklineInbox" src/ tests/` 仅保留在 `runtime_inbox` 抽象层引用时，才执行 Revision B drop `wes_biz.workline_inbox`。
+
 ## 并行化策略
 
 Sequential implementation, no parallelization opportunity.
