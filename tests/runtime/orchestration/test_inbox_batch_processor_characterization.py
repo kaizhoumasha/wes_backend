@@ -322,3 +322,565 @@ async def test_scan_completed_with_barcode_payload_orchestrator_processed(
     assert inbox_service.mark_processed_calls[0]["inbox_pk"] == inbox.id
     # 验证：mark_as_failed 未被调用
     assert len(inbox_service.mark_failed_calls) == 0
+
+
+# ============================================================
+# Case 3: ESTOP_PRESSED missing workline context → mark_as_failed + SESSION_CONTEXT_MISSING
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_estop_pressed_missing_workline_context_marks_as_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ESTOP_PRESSED 事件但 workline 解析为 None → mark_as_failed + SESSION_CONTEXT_MISSING。"""
+    inbox = _make_inbox(
+        kind="DEVICE_EVENT",
+        payload_json={"event_type": "ESTOP_PRESSED", "data": {}},
+        workline_id=None,  # 强制 workline 解析失败
+    )
+    fake_db = _FakeDb()
+    _ = _attach_diagnostic_recorder(monkeypatch)
+
+    class _InboxService:
+        repo = _FakeInboxRepository(inbox)
+        mark_calls: ClassVar[list[dict[str, Any]]] = []
+
+        async def mark_as_failed(
+            self,
+            db: object,
+            inbox_pk: int,
+            error_message: str,
+            *,
+            processor_token: str,
+            auto_commit: bool = True,
+        ) -> object:
+            self.mark_calls.append(
+                {
+                    "inbox_pk": inbox_pk,
+                    "error_message": error_message,
+                    "processor_token": processor_token,
+                }
+            )
+            return SimpleNamespace(id=inbox_pk)
+
+    monkeypatch.setattr(inbox_service_module, "inbox_service", _InboxService())
+
+    result = await InboxBatchProcessor()._process_claimed_message(
+        fake_db,
+        WorklineInboxClaim(
+            id=inbox.id,
+            processor_token="token-estop",
+            received_at=None,
+            session_id=inbox.session_id,
+            workline_id=None,
+            device_id=None,
+            kind=inbox.kind,
+            payload_json=inbox.payload_json,
+            trace_id=inbox.trace_id,
+        ),
+    )
+
+    # ESTOP_PRESSED 在 workline=None 时按 SESSION_CONTEXT_MISSING 走 failed 路径
+    assert result["failed"] == 1
+    assert result["processed"] == 1
+    assert result["success"] == 0
+
+
+# ============================================================
+# Case 4: TIMER_TIMEOUT → 走 reconciliation handler（不走 orchestrator）
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_timer_timeout_calls_reconciliation_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TIMER_TIMEOUT inbox 走 reconciliation handler，不调 orchestrator。"""
+    inbox = _make_inbox(
+        kind="TIMER_TIMEOUT",
+        payload_json={"event_type": "TIMER_TIMEOUT", "data": {}},
+    )
+    session = _make_session()
+    workline = _make_workline()
+    fake_db = _FakeDb()
+
+    _attach_related_entities(monkeypatch, session=session, workline=workline)
+
+    reconciliation_called: ClassVar[dict[str, Any]] = {"yes": False, "calls": 0}
+
+    async def fake_handle_timer_timeout(
+        db: object,
+        *,
+        inbox: object,
+        processor_token: str,
+    ) -> None:
+        reconciliation_called["yes"] = True
+        reconciliation_called["calls"] = int(reconciliation_called["calls"]) + 1
+        reconciliation_called["inbox_id"] = inbox.id
+        reconciliation_called["token"] = processor_token
+
+    # Patch the module-level singleton so the function-local import binds to our mock
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_runtime_reconciliation_service.handle_timer_timeout",
+        fake_handle_timer_timeout,
+    )
+
+    class _InboxService:
+        repo = _FakeInboxRepository(inbox)
+
+        async def mark_as_processed(
+            self,
+            db: object,
+            inbox_pk: int,
+            *,
+            processor_token: str,
+            auto_commit: bool = True,
+        ) -> object:
+            return SimpleNamespace(id=inbox_pk)
+
+    monkeypatch.setattr(inbox_service_module, "inbox_service", _InboxService())
+
+    result = await InboxBatchProcessor()._process_claimed_message(
+        fake_db,
+        WorklineInboxClaim(
+            id=inbox.id,
+            processor_token="token-timer",
+            received_at=None,
+            session_id=inbox.session_id,
+            workline_id=inbox.workline_id,
+            device_id=None,
+            kind="TIMER_TIMEOUT",
+            payload_json=inbox.payload_json,
+            trace_id=inbox.trace_id,
+        ),
+    )
+
+    assert result["success"] == 1
+    assert result["processed"] == 1
+    assert reconciliation_called["yes"] is True
+    assert reconciliation_called["inbox_id"] == inbox.id
+    assert reconciliation_called["token"] == "token-timer"
+
+
+# ============================================================
+# Case 5: missing session/workline context → mark_as_failed + SESSION_CONTEXT_MISSING
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_missing_session_workline_context_marks_as_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inbox 无 session/workline 关联（且 not _should_resolve_session） → failed。"""
+    inbox = _make_inbox(
+        kind="EXTERNAL_HTTP",
+        payload_json={"event_type": "EXTERNAL_CALLBACK", "data": {}},
+        workline_id=None,
+        session_id=None,
+    )
+    # 强制 _load_related_entities 返回 None session/workline
+    session = None
+    workline = None
+    fake_db = _FakeDb()
+
+    _attach_related_entities(monkeypatch, session=session, workline=workline)
+
+    class _InboxService:
+        repo = _FakeInboxRepository(inbox)
+        mark_calls: ClassVar[list[dict[str, Any]]] = []
+
+        async def mark_as_failed(
+            self,
+            db: object,
+            inbox_pk: int,
+            error_message: str,
+            *,
+            processor_token: str,
+            auto_commit: bool = True,
+        ) -> object:
+            self.mark_calls.append(
+                {
+                    "inbox_pk": inbox_pk,
+                    "error_message": error_message,
+                    "processor_token": processor_token,
+                }
+            )
+            return SimpleNamespace(id=inbox_pk)
+
+    monkeypatch.setattr(inbox_service_module, "inbox_service", _InboxService())
+
+    result = await InboxBatchProcessor()._process_claimed_message(
+        fake_db,
+        WorklineInboxClaim(
+            id=inbox.id,
+            processor_token="token-missing",
+            received_at=None,
+            session_id=None,
+            workline_id=None,
+            device_id=None,
+            kind=inbox.kind,
+            payload_json=inbox.payload_json,
+            trace_id=inbox.trace_id,
+        ),
+    )
+
+    # missing context → failed
+    assert result["failed"] == 1
+    assert result["processed"] == 1
+
+
+# ============================================================
+# Case 6: duplicate entry event (BUSY session) → archived + mark_as_processed
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_duplicate_entry_event_archived_to_processed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """入口事件进入已 BUSY/TERMINAL 的 session → 归档到 timeline + mark_as_processed。"""
+    inbox = _make_inbox(
+        kind="DEVICE_EVENT",
+        payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "X"}},
+    )
+    session = _make_session(
+        status="WAITING_DEVICE_RESULT",  # BUSY
+        awaiting_device_command_code="CMD-001",  # 已经等待命令
+    )
+    workline = _make_workline()
+    fake_db = _FakeDb()
+    _attach_related_entities(monkeypatch, session=session, workline=workline)
+
+    class _InboxService:
+        repo = _FakeInboxRepository(inbox)
+        mark_processed_calls: ClassVar[list[dict[str, Any]]] = []
+
+        async def mark_as_processed(
+            self,
+            db: object,
+            inbox_pk: int,
+            *,
+            processor_token: str,
+            auto_commit: bool = True,
+        ) -> object:
+            self.mark_processed_calls.append({"inbox_pk": inbox_pk, "processor_token": processor_token})
+            return SimpleNamespace(id=inbox_pk)
+
+    monkeypatch.setattr(inbox_service_module, "inbox_service", _InboxService())
+
+    result = await InboxBatchProcessor()._process_claimed_message(
+        fake_db,
+        WorklineInboxClaim(
+            id=inbox.id,
+            processor_token="token-dup",
+            received_at=None,
+            session_id=inbox.session_id,
+            workline_id=inbox.workline_id,
+            device_id=None,
+            kind=inbox.kind,
+            payload_json=inbox.payload_json,
+            trace_id=inbox.trace_id,
+        ),
+    )
+
+    # 重复入口被识别 + 归档，mark_as_processed
+    assert result["success"] == 1
+    assert result["processed"] == 1
+
+
+# ============================================================
+# Case 7: late command result (terminal session) → archived + mark_as_processed
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_late_command_result_archived_to_processed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """COMMAND_RESULT 抵达 terminal session → 归档 evidence + mark_as_processed。"""
+    inbox = _make_inbox(
+        kind="COMMAND_RESULT",
+        payload_json={"event_type": "COMMAND_RESULT", "data": {}},
+    )
+    session = _make_session(status="COMPLETED")  # TERMINAL
+    workline = _make_workline()
+    fake_db = _FakeDb()
+    _attach_related_entities(
+        monkeypatch,
+        session=session,
+        workline=workline,
+        command=SimpleNamespace(
+            id=99,
+            command_code="CMD-001",
+            status="COMPLETED",
+        ),
+    )
+
+    class _InboxService:
+        repo = _FakeInboxRepository(inbox)
+        mark_processed_calls: ClassVar[list[dict[str, Any]]] = []
+
+        async def mark_as_processed(
+            self,
+            db: object,
+            inbox_pk: int,
+            *,
+            processor_token: str,
+            auto_commit: bool = True,
+        ) -> object:
+            self.mark_processed_calls.append({"inbox_pk": inbox_pk})
+            return SimpleNamespace(id=inbox_pk)
+
+    monkeypatch.setattr(inbox_service_module, "inbox_service", _InboxService())
+
+    result = await InboxBatchProcessor()._process_claimed_message(
+        fake_db,
+        WorklineInboxClaim(
+            id=inbox.id,
+            processor_token="token-late",
+            received_at=None,
+            session_id=inbox.session_id,
+            workline_id=inbox.workline_id,
+            device_id=None,
+            kind=inbox.kind,
+            payload_json=inbox.payload_json,
+            trace_id=inbox.trace_id,
+        ),
+    )
+
+    assert result["success"] == 1
+    assert result["processed"] == 1
+
+
+# ============================================================
+# Case 8: orchestrator.process_inbox 抛异常 → mark_as_failed + UNKNOWN error_code
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_exception_marks_as_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """orchestrator.process_inbox 抛异常 → mark_as_failed + UNKNOWN 错误码记录。"""
+    inbox = _make_inbox(
+        kind="DEVICE_EVENT",
+        payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "Y"}},
+    )
+    session = _make_session()
+    workline = _make_workline()
+    fake_db = _FakeDb()
+    _attach_related_entities(monkeypatch, session=session, workline=workline)
+
+    _ = _attach_diagnostic_recorder(monkeypatch)
+
+    class _Orchestrator:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def process_inbox(self, *args: object, **kwargs: object) -> object:
+            raise RuntimeError("simulated orchestrator failure")
+
+    monkeypatch.setattr(processor_module, "OrchestratorService", _Orchestrator)
+
+    class _InboxService:
+        repo = _FakeInboxRepository(inbox)
+        mark_calls: ClassVar[list[dict[str, Any]]] = []
+
+        async def mark_as_failed(
+            self,
+            db: object,
+            inbox_pk: int,
+            error_message: str,
+            *,
+            processor_token: str,
+            auto_commit: bool = True,
+        ) -> object:
+            self.mark_calls.append(
+                {
+                    "inbox_pk": inbox_pk,
+                    "error_message": error_message,
+                    "processor_token": processor_token,
+                }
+            )
+            return SimpleNamespace(id=inbox_pk)
+
+    monkeypatch.setattr(inbox_service_module, "inbox_service", _InboxService())
+
+    result = await InboxBatchProcessor()._process_claimed_message(
+        fake_db,
+        WorklineInboxClaim(
+            id=inbox.id,
+            processor_token="token-fail",
+            received_at=None,
+            session_id=inbox.session_id,
+            workline_id=inbox.workline_id,
+            device_id=None,
+            kind=inbox.kind,
+            payload_json=inbox.payload_json,
+            trace_id=inbox.trace_id,
+        ),
+    )
+
+    assert result["failed"] == 1
+    assert result["processed"] == 1
+
+
+# ============================================================
+# Case 9: SCAN validation 通过但 RESOURCE_WAIT disposition → park_for_retry + resource_wait
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_resource_wait_disposition_parks_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """write_back 返回 RESOURCE_RETRY → park_for_retry (state=RETRY) + resource_wait=1。"""
+    inbox = _make_inbox(
+        kind="DEVICE_EVENT",
+        payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "Z"}},
+    )
+    session = _make_session()
+    workline = _make_workline()
+    fake_db = _FakeDb()
+    _attach_related_entities(monkeypatch, session=session, workline=workline)
+
+    class _InboxService:
+        repo = _FakeInboxRepository(inbox)
+        park_calls: ClassVar[list[dict[str, Any]]] = []
+
+        async def park_for_retry(
+            self,
+            db: object,
+            inbox_pk: int,
+            reason: str,
+            *,
+            processor_token: str,
+            auto_commit: bool = True,
+            delay_seconds: int = 0,
+        ) -> object:
+            self.park_calls.append(
+                {
+                    "inbox_pk": inbox_pk,
+                    "reason": reason,
+                    "processor_token": processor_token,
+                }
+            )
+            return SimpleNamespace(id=inbox_pk)
+
+    monkeypatch.setattr(inbox_service_module, "inbox_service", _InboxService())
+
+    class _Orchestrator:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def process_inbox(
+            self,
+            *args: object,
+            write_callback: object,
+            **kwargs: object,
+        ) -> OrchestratorResult:
+            result = OrchestratorResult(success=True, intents=[])
+            await write_callback(result)
+            return result
+
+    monkeypatch.setattr(processor_module, "OrchestratorService", _Orchestrator)
+
+    class _WriteBack:
+        async def write_back(self, *args: object, **kwargs: object) -> RuntimeIntentEffectResult:
+            return RuntimeIntentEffectResult.resource_retry()
+
+    result = await InboxBatchProcessor(write_back_service=_WriteBack())._process_claimed_message(
+        fake_db,
+        WorklineInboxClaim(
+            id=inbox.id,
+            processor_token="token-resource",
+            received_at=None,
+            session_id=inbox.session_id,
+            workline_id=inbox.workline_id,
+            device_id=None,
+            kind=inbox.kind,
+            payload_json=inbox.payload_json,
+            trace_id=inbox.trace_id,
+        ),
+    )
+
+    assert result == {
+        "processed": 1,
+        "success": 0,
+        "failed": 0,
+        "skipped": 0,
+        "resource_wait": 1,
+    }
+
+
+# ============================================================
+# Case 10: orchestrator 返 success=False + error_code → mark_as_failed
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_failure_result_marks_as_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """orchestrator.process_inbox 返回 success=False → mark_as_failed + 错误码记录。"""
+    inbox = _make_inbox(
+        kind="DEVICE_EVENT",
+        payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "W"}},
+    )
+    session = _make_session()
+    workline = _make_workline()
+    fake_db = _FakeDb()
+    _attach_related_entities(monkeypatch, session=session, workline=workline)
+    _attach_diagnostic_recorder(monkeypatch)
+
+    class _InboxService:
+        repo = _FakeInboxRepository(inbox)
+        mark_calls: ClassVar[list[dict[str, Any]]] = []
+
+        async def mark_as_failed(
+            self,
+            db: object,
+            inbox_pk: int,
+            error_message: str,
+            *,
+            processor_token: str,
+            auto_commit: bool = True,
+        ) -> object:
+            self.mark_calls.append(
+                {
+                    "inbox_pk": inbox_pk,
+                    "error_message": error_message,
+                    "processor_token": processor_token,
+                }
+            )
+            return SimpleNamespace(id=inbox_pk)
+
+    monkeypatch.setattr(inbox_service_module, "inbox_service", _InboxService())
+
+    class _Orchestrator:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def process_inbox(self, *args: object, **kwargs: object) -> OrchestratorResult:
+            return OrchestratorResult(success=False, error="simulated failure", error_code="BIZ_001")
+
+    monkeypatch.setattr(processor_module, "OrchestratorService", _Orchestrator)
+
+    result = await InboxBatchProcessor()._process_claimed_message(
+        fake_db,
+        WorklineInboxClaim(
+            id=inbox.id,
+            processor_token="token-biz-fail",
+            received_at=None,
+            session_id=inbox.session_id,
+            workline_id=inbox.workline_id,
+            device_id=None,
+            kind=inbox.kind,
+            payload_json=inbox.payload_json,
+            trace_id=inbox.trace_id,
+        ),
+    )
+
+    assert result["failed"] == 1
+    assert result["processed"] == 1
