@@ -1424,15 +1424,18 @@ class SmtInboundHandoffService:
         from src.app.runtime.orchestration.models.inbox import (
             InboxStatus,
             WorklineInbox,
-        )  # TODO(Task 7c): migrate _recover_stuck_source_item to RuntimeInbox - blocked on RuntimeInboxService.accept_internal_event method
+        )  # TODO(Task 7c-c-2): remove WorklineInbox import after read path migrates to RuntimeInbox
 
         demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
         if demand is None:
             raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
-        # TODO(Task 7c): read inbox should target RuntimeInbox after accept_internal_event exists.
-        # 当前 source_pick_inbox_id 仍指向 WorklineInbox 行, 等 accept_internal_event
-        # 实现后, create_internal_event_inbox 改用 RuntimeInboxService, 此处
-        # db.get(WorklineInbox, ...) 同步切换。
+        # TODO(Task 7c-c-2): migrate this read to RuntimeInboxRepository.get_by_id
+        # - will fail until then
+        # Task 7c-c-1: source_pick_inbox_id 现指向 RuntimeInbox, 但下方 db.get(WorklineInbox, ...)
+        # 仍按 WorklineInbox 查找, 会返回 None, 进入 manual_hold 分支。Task 7c-c-2 需要:
+        # 1) 在 RuntimeInboxRepository 添加 get_by_id 读方法 (或 RuntimeInboxService 适配方法);
+        # 2) 把下方 db.get(WorklineInbox, item.source_pick_inbox_id) 切到 RuntimeInbox 查询;
+        # 3) inbox.status / inbox.error_message / inbox.next_retry_at 字段映射保持语义一致。
         inbox = await db.get(WorklineInbox, item.source_pick_inbox_id)
         inbox_status = self._enum_text(getattr(inbox, "status", None))
         outcome: str | None = None
@@ -1710,16 +1713,13 @@ class SmtInboundHandoffService:
             "route_evidence": self._dict_or_empty(route_evidence),
         }
 
-        # Task 7c-b: dual-write internal event to RuntimeInbox via accept_internal_event.
-        # 新写入由 RuntimeInboxService.accept_internal_event 承担 (kind=INTERNAL_EVENT,
-        # provider_code=RUNTIME); 保留下方 create_internal_event_inbox 调用作为
-        # legacy 兼容双写, 仍用作 item.source_pick_inbox_id 的写入源 (Task 7c-c
-        # 整体切换后此处 read 路径同步切到 RuntimeInbox)。
+        # Task 7c-c-1: 移除 WorklineInbox 双写, RuntimeInbox 成为 INTERNAL_EVENT 唯一事实源
+        # (item.source_pick_inbox_id 现指向 RuntimeInbox, 不再指向 WorklineInbox)。
         from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
             runtime_inbox_service,
         )
 
-        _ = await runtime_inbox_service.accept_internal_event(
+        runtime_inbox_result = await runtime_inbox_service.accept_internal_event(
             db,
             event_type=event_type,
             payload_json=data,
@@ -1730,18 +1730,7 @@ class SmtInboundHandoffService:
             execution_session_id=session_id,
             auto_commit=False,
         )
-        return await self.inbox_service.create_internal_event_inbox(
-            db,
-            event_type=event_type,
-            canonical_event_type=event_type,
-            data=data,
-            session_id=session_id,
-            workline_id=workline_id,
-            trace_id=resolved_trace_id,
-            event_id=event_id,
-            causation_id=causation_id,
-            auto_commit=False,
-        )
+        return runtime_inbox_result.record
 
     @staticmethod
     def _source_pick_event_id(item: SmtInboundHandoffSourceItem) -> str:
