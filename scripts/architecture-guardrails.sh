@@ -309,6 +309,19 @@ EXCLUDED_FILES = frozenset(
         "src/app/runtime/orchestration/repositories/runtime_inbox_claim_repository.py",
         "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
         "src/app/runtime/orchestration/consumers/runtime_inbox_repository.py",
+        # Task 5 三阶段 Processor 拆分: validation / orchestrator-delegate /
+        # writeback / composition 全部驻留在 runtime_inbox/ 目录, 是
+        # RuntimeInbox 主链路收束的 processor 实现, 不是 inbound normalizer
+        # capability. 锁定 plan Task 5.
+        "src/app/runtime/orchestration/services/runtime_inbox/__init__.py",
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_validation_service.py",
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_processor_service.py",
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_writeback_service.py",
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py",
+        # OrchestratorService 是 RuntimeInbox 主链路收束的 orchestration 入口,
+        # process_inbox 签名从 WorklineInbox | None 过渡为 WorklineInbox | RuntimeInbox | None,
+        # 必须显式接收两者. 不是 inbound normalizer capability. 锁定 plan Task 5.
+        "src/app/runtime/orchestration/orchestrator_bridge.py",
     }
 )
 EXCLUDED_PREFIXES = ("src/app/runtime/orchestration/consumers/",)
