@@ -165,11 +165,8 @@ class RuntimeInboxProcessorBridge:
         if self._inbox_service is None:
             from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
 
-            return self._inbox_service_box(inbox_service)
+            return inbox_service
         return self._inbox_service
-
-    def _inbox_service_box(self, service: Any) -> Any:
-        return service
 
     @property
     def inbox_repository(self) -> Any:
