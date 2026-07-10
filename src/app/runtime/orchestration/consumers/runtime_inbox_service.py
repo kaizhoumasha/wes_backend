@@ -237,6 +237,204 @@ class RuntimeInboxService:
             record = await self.repository.add_received(db, record_data)
         return RuntimeInboxAcceptResult(record=record, created=True)
 
+    # ============================================================
+    # Internal event acceptors (Task 7c-a) — device event / internal
+    # event / command result, all writing RuntimeInbox directly and
+    # skipping source_event_id idempotency.
+    # ============================================================
+
+    @staticmethod
+    def _derive_provider_code_for_device(device_code: str) -> str:
+        """从 device_code 前缀派生 provider_code (ARM_01 -> ARM, OVEN_01 -> OVEN)."""
+
+        if not isinstance(device_code, str) or not device_code:
+            return "ECS"
+        prefix = device_code.split("_", 1)[0].strip().upper()
+        return prefix or "ECS"
+
+    async def _resolve_correlation_id_by_trace(
+        self,
+        db: AsyncSession,
+        *,
+        trace_id: str | None,
+    ) -> str | None:
+        """按 trace_id 查 ExecutionCorrelation, 命中返回 correlation_id; 未命中返回 None。"""
+
+        if not trace_id:
+            return None
+        from sqlalchemy import select
+
+        from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+
+        correlation = (
+            await db.execute(select(ExecutionCorrelation).where(ExecutionCorrelation.trace_id == trace_id))
+        ).scalar_one_or_none()
+        return correlation.correlation_id if correlation is not None else None
+
+    async def accept_device_event(
+        self,
+        db: AsyncSession,
+        *,
+        device_code: str,
+        event_type: str,
+        payload_json: dict[str, Any],
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
+        workline_id: int | None = None,
+        device_id: int | None = None,
+        command_id: int | None = None,
+        auto_commit: bool = False,
+    ) -> RuntimeInboxAcceptResult:
+        """接收 device event 写入 RuntimeInbox (kind=DEVICE_EVENT).
+
+        区别于 accept_received:
+        - 不做 source_event_id 幂等检查 (内部事件, source_event_id 可能为空或可重复)。
+        - provider_code 从 device_code 前缀派生 (ARM_01 -> ARM), 默认 "ECS"。
+        - execution_session_id 留空 (Task 5 processor 在后续解析时填充)。
+        - correlation_id 通过 trace_id 反查 ExecutionCorrelation, 查不到则回退 trace_id。
+        """
+
+        if not isinstance(event_type, str) or not event_type:
+            raise ValueError("device event requires event_type")
+        if not isinstance(payload_json, dict):
+            raise TypeError("device event payload_json must be a dict")
+
+        provider_code = self._derive_provider_code_for_device(device_code)
+        source_event_id = event_id
+        correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
+        if correlation_id is None and trace_id:
+            correlation_id = trace_id
+
+        record_data: dict[str, Any] = {
+            "kind": "DEVICE_EVENT",
+            "provider_code": provider_code,
+            "event_type": event_type,
+            "source_event_id": source_event_id,
+            "payload_hash": None,
+            "status": "RECEIVED",
+            "attempt_count": 0,
+            "max_retries": 5,
+            "workline_id": workline_id,
+            "device_id": device_id,
+            "command_id": command_id,
+            "trace_id": trace_id,
+            "event_id": event_id,
+            "causation_id": causation_id,
+            "correlation_id": correlation_id,
+            "payload_json": payload_json,
+        }
+
+        record = await self.repository.add_received(db, record_data)
+        if auto_commit:
+            _ = await db.commit()
+        return RuntimeInboxAcceptResult(record=record, created=True)
+
+    async def accept_internal_event(
+        self,
+        db: AsyncSession,
+        *,
+        event_type: str,
+        payload_json: dict[str, Any],
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
+        workline_id: int | None = None,
+        execution_session_id: int | None = None,
+        correlation_id: str | None = None,
+        auto_commit: bool = False,
+    ) -> RuntimeInboxAcceptResult:
+        """接收内部事件写入 RuntimeInbox (kind=INTERNAL_EVENT).
+
+        - provider_code 固定 "RUNTIME"。
+        - 不做 source_event_id 幂等检查 (内部事件, source_event_id 可缺失)。
+        - correlation_id 缺省时按 trace_id 反查, 再回退 trace_id。
+        """
+
+        if not isinstance(event_type, str) or not event_type:
+            raise ValueError("internal event requires event_type")
+        if not isinstance(payload_json, dict):
+            raise TypeError("internal event payload_json must be a dict")
+
+        if correlation_id is None:
+            correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
+        if correlation_id is None and trace_id:
+            correlation_id = trace_id
+
+        record_data: dict[str, Any] = {
+            "kind": "INTERNAL_EVENT",
+            "provider_code": "RUNTIME",
+            "event_type": event_type,
+            "source_event_id": event_id,
+            "payload_hash": None,
+            "status": "RECEIVED",
+            "attempt_count": 0,
+            "max_retries": 5,
+            "workline_id": workline_id,
+            "trace_id": trace_id,
+            "event_id": event_id,
+            "causation_id": causation_id,
+            "execution_session_id": execution_session_id,
+            "correlation_id": correlation_id,
+            "payload_json": payload_json,
+        }
+
+        record = await self.repository.add_received(db, record_data)
+        if auto_commit:
+            _ = await db.commit()
+        return RuntimeInboxAcceptResult(record=record, created=True)
+
+    async def accept_command_result(
+        self,
+        db: AsyncSession,
+        *,
+        command_code: str,
+        device_code: str | None = None,
+        workline_id: int | None = None,
+        device_id: int | None = None,
+        command_id: int | None = None,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
+        payload_json: dict[str, Any] | None = None,
+        auto_commit: bool = False,
+    ) -> RuntimeInboxAcceptResult:
+        """接收 command result 写入 RuntimeInbox (kind=COMMAND_RESULT).
+
+        - provider_code: 有 device_code 走 "DEVICE_RESULT", 缺省走 "RUNTIME"。
+        - source_event_id: 优先 event_id, 否则按 command_code+event_id 派生稳定 key。
+        - 不做 source_event_id 幂等检查 (synthesize 出的 command result 场景)。
+        """
+
+        if not isinstance(command_code, str) or not command_code:
+            raise ValueError("command result requires command_code")
+
+        provider_code = "DEVICE_RESULT" if device_code else "RUNTIME"
+        source_event_id = event_id or f"command-result:{command_code}:{event_id or 'synth'}"
+
+        record_data: dict[str, Any] = {
+            "kind": "COMMAND_RESULT",
+            "provider_code": provider_code,
+            "event_type": "COMMAND_RESULT",
+            "source_event_id": source_event_id,
+            "payload_hash": None,
+            "status": "RECEIVED",
+            "attempt_count": 0,
+            "max_retries": 5,
+            "workline_id": workline_id,
+            "device_id": device_id,
+            "command_id": command_id,
+            "trace_id": trace_id,
+            "event_id": event_id,
+            "causation_id": causation_id,
+            "payload_json": payload_json or {"command_code": command_code, "device_code": device_code},
+        }
+
+        record = await self.repository.add_received(db, record_data)
+        if auto_commit:
+            _ = await db.commit()
+        return RuntimeInboxAcceptResult(record=record, created=True)
+
     async def replay_from_dead_letter(
         self,
         db: AsyncSession,
