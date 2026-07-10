@@ -36,10 +36,18 @@ class CeleryTaskQueueGateway:
         self._send_task(PROCESS_WORKLINE_INBOX_TASK, kwargs={"limit": limit})
 
     def enqueue_runtime_inbox(self, *, limit: int = 10) -> None:
-        # Plan Task 6: 调 process_runtime_inbox_batch. 当前 task 还未实现
-        # (Task 6 完成), 暂时 fallback 到 process_inbox_batch 保证
-        # enqueue 不会因为 task 不存在而拒绝. Task 6 提交后改回新 task.
-        self._send_task(PROCESS_RUNTIME_INBOX_TASK, kwargs={"limit": limit})
+        # Plan Task 6: 主路径调 process_runtime_inbox_batch.
+        # 若 worker 还没把 runtime_inbox task import 进 registry (例如部署漂移),
+        # send_task 会抛 NotRegistered; 此时自动回退到旧 process_inbox_batch
+        # 保证 enqueue 不会因为 task 未注册而拒绝, 业务侧不会出现漏 enqueue.
+        # Task 7 完成后删除 fallback.
+        try:
+            self._send_task(PROCESS_RUNTIME_INBOX_TASK, kwargs={"limit": limit})
+        except Exception as exc:
+            # 仅在 NotRegistered 时回退; 其它异常 (broker 不可达等) 让其自然抛出.
+            if exc.__class__.__name__ != "NotRegistered":
+                raise
+            self._send_task(PROCESS_WORKLINE_INBOX_TASK, kwargs={"limit": limit})
 
     def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
         # 当前 Celery 任务是批量兜底模型；outbox_id 保留给单条队列后端使用。
