@@ -119,11 +119,6 @@ from typing import cast  # noqa: E402  (after _run_async to keep import grouped)
 # 任务结果 TypedDict
 # ============================================================
 
-
-class ProcessResult(cast("dict[str, int]", type("ProcessResult", (), {}))):
-    """保留兼容, 实际用 dict[str, int]"""
-
-
 # RuntimeInbox claim / 终态写回 5 态结果统计.
 ClaimBatchResult = dict[str, int]
 
