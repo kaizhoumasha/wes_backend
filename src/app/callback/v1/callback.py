@@ -30,13 +30,15 @@ from src.utils.audit import get_request_id
 router = APIRouter()
 
 
-def _enqueue_workline_processing() -> None:
-    """触发 Workline Inbox 异步处理。"""
+def _enqueue_runtime_inbox_processing() -> None:
+    """触发 Runtime Inbox 异步处理 (Plan Task 4 + 6 过渡)."""
 
     try:
+        # Plan Task 6 将 enqueue_workline_inbox 替换为 enqueue_runtime_inbox.
+        # 暂保留 workline task name 作为兼容 (直到 Task 6 提交后)。
         task_queue_gateway.enqueue_workline_inbox(limit=10)
     except Exception as exc:
-        logger.warning(f"Callback 已入库，但即时触发 Workline Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
+        logger.warning(f"Callback 已入库，但即时触发 Runtime Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
 
 
 @router.post(
@@ -58,7 +60,7 @@ async def callback_result(
         db,
         request_id=get_request_id(),
         start_time=time.time(),
-        enqueue_processing=_enqueue_workline_processing,
+        enqueue_processing=_enqueue_runtime_inbox_processing,
     )
 
 
@@ -82,7 +84,7 @@ async def callback_event(
         db,
         request_id=get_request_id(),
         start_time=time.time(),
-        enqueue_processing=_enqueue_workline_processing,
+        enqueue_processing=_enqueue_runtime_inbox_processing,
     )
     response.status_code = decision.http_status
     return decision.body
@@ -105,7 +107,7 @@ async def callback_external(
         db,
         request_id=get_request_id(),
         start_time=time.time(),
-        enqueue_processing=_enqueue_workline_processing,
+        enqueue_processing=_enqueue_runtime_inbox_processing,
     )
 
 
