@@ -137,11 +137,13 @@ class CallbackOrchestrationService:
             return candidate
         return None
 
-    def _enqueue_workline_processing(self) -> None:
+    def _enqueue_runtime_inbox_processing(self) -> None:
         try:
-            self._queue_gateway.enqueue_workline_inbox(limit=10)
+            # Plan Task 6: 调 enqueue_runtime_inbox (新 gateway 协议).
+            # 兼容期仍可走 workline inbox (Task 6 完成后才完全切到 runtime task).
+            self._queue_gateway.enqueue_runtime_inbox(limit=10)
         except Exception as exc:
-            logger.warning(f"Callback 已入库，但即时触发 Workline Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
+            logger.warning(f"Callback 已入库，但即时触发 Runtime Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
 
     def _enqueue_outbox_dispatch(self) -> None:
         try:
@@ -228,7 +230,7 @@ class CallbackOrchestrationService:
         )
         _ = await add_timeline_with_sequence(db, timeline)
 
-    async def _commit_and_enqueue_workline_processing(
+    async def _commit_and_enqueue_runtime_inbox_processing(
         self,
         db: AsyncSession,
         *,
@@ -238,7 +240,7 @@ class CallbackOrchestrationService:
         await publish_deferred_sse_events(db)
         try:
             if enqueue_processing is None:
-                self._enqueue_workline_processing()
+                self._enqueue_runtime_inbox_processing()
                 return
             enqueue_processing()
         except Exception as exc:
@@ -396,7 +398,7 @@ class CallbackOrchestrationService:
                 )
             trace = trace.with_command(command)
             inherited_trace_id = trace.trace_id or inherited_trace_id
-            await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
+            await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
             if released_outboxes:
                 self._enqueue_outbox_dispatch()
             logger.info(
@@ -577,7 +579,7 @@ class CallbackOrchestrationService:
             await db.commit()
             await publish_deferred_sse_events(db)
         else:
-            await self._commit_and_enqueue_workline_processing(
+            await self._commit_and_enqueue_runtime_inbox_processing(
                 db,
                 enqueue_processing=_skip_workline_processing_enqueue if lifecycle_only else enqueue_processing,
             )

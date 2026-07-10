@@ -182,7 +182,7 @@ class TestCallbackResultIdempotency:
                 "callback_orchestration_service._runtime_inbox_writer.write_result_callback",
                 new=runtime_write,
             ),
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", side_effect=["req-001", "req-002"]),
         ):
             from src.app.callback.v1.callback import callback_result
@@ -264,7 +264,7 @@ class TestCallbackEventIdempotency:
                 "callback_orchestration_service._runtime_inbox_writer.write_event_callback",
                 new=runtime_write,
             ),
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", side_effect=["req-101", "req-102"]),
         ):
             from src.app.callback.v1.callback import callback_event
@@ -325,7 +325,7 @@ class TestCallbackExternalIdempotency:
                 "callback_orchestration_service._runtime_inbox_writer.write_external_callback",
                 new=runtime_write,
             ),
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", side_effect=["req-ext-101", "req-ext-102"]),
         ):
             from src.app.callback.v1.callback import callback_external

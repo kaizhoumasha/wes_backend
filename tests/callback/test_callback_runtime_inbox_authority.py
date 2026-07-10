@@ -306,7 +306,7 @@ async def test_process_result_uses_runtime_inbox_as_authority() -> None:
     command_service = SimpleNamespace(handle_callback_result=AsyncMock(return_value=handled_command))
     service = CallbackOrchestrationService(runtime_inbox_writer=WriterStub())
     service._is_workline_command_callback = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+    service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
     service._mark_callback_device_finished = AsyncMock(return_value=0)  # type: ignore[method-assign]
     service._load_command_session = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
@@ -331,7 +331,7 @@ async def test_process_result_uses_runtime_inbox_as_authority() -> None:
     assert writer_kwargs["canonical_result_type"] == "DEVICE_RESULT"
     legacy_inbox_service.create_command_result_inbox.assert_not_awaited()
     command_service.handle_callback_result.assert_awaited_once()
-    service._commit_and_enqueue_workline_processing.assert_awaited_once()  # type: ignore[attr-defined]
+    service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -365,7 +365,7 @@ async def test_process_result_duplicate_uses_runtime_inbox_ack_and_skips_legacy_
 
     service = CallbackOrchestrationService(runtime_inbox_writer=writer)
     service._is_workline_command_callback = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+    service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
 
     outcome = await service.process_result(
         SimpleNamespace(),  # type: ignore[arg-type]
@@ -382,7 +382,7 @@ async def test_process_result_duplicate_uses_runtime_inbox_ack_and_skips_legacy_
     writer.write_result_callback.assert_awaited_once()
     legacy_inbox_service.create_command_result_inbox.assert_not_awaited()
     command_service.handle_callback_result.assert_not_awaited()
-    service._commit_and_enqueue_workline_processing.assert_not_awaited()  # type: ignore[attr-defined]
+    service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -450,7 +450,7 @@ async def test_process_external_uses_runtime_inbox_as_authority() -> None:
         handling_operation_service=SimpleNamespace(record_callback_from_external_http=AsyncMock()),
         runtime_inbox_writer=WriterStub(),
     )
-    service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+    service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
 
     outcome = await service.process_external(
         SimpleNamespace(),  # type: ignore[arg-type]
@@ -476,7 +476,7 @@ async def test_process_external_uses_runtime_inbox_as_authority() -> None:
     legacy_inbox_service.create_external_http_inbox.assert_awaited_once()
     legacy_inbox_service.mark_as_processed.assert_not_awaited()
     rack_task_service.record_callback_from_external_http.assert_awaited_once()
-    service._commit_and_enqueue_workline_processing.assert_awaited_once()  # type: ignore[attr-defined]
+    service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -489,7 +489,7 @@ async def test_process_event_duplicate_uses_runtime_inbox_ack_and_skips_legacy_s
     writer = SimpleNamespace(write_event_callback=AsyncMock(return_value=_runtime_accept_result(created=False)))
     legacy_inbox_service = SimpleNamespace(create_device_event_inbox=AsyncMock())
     service = CallbackOrchestrationService(runtime_inbox_writer=writer)
-    service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+    service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
 
     outcome = await service.process_event(
         SimpleNamespace(),  # type: ignore[arg-type]
@@ -511,7 +511,7 @@ async def test_process_event_duplicate_uses_runtime_inbox_ack_and_skips_legacy_s
     assert outcome.is_duplicate is True
     writer.write_event_callback.assert_awaited_once()
     legacy_inbox_service.create_device_event_inbox.assert_not_awaited()
-    service._commit_and_enqueue_workline_processing.assert_not_awaited()  # type: ignore[attr-defined]
+    service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio
@@ -529,7 +529,7 @@ async def test_process_external_duplicate_uses_runtime_inbox_ack_and_skips_legac
         handling_operation_service=handling_operation_service,
         runtime_inbox_writer=writer,
     )
-    service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+    service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
 
     outcome = await service.process_external(
         SimpleNamespace(),  # type: ignore[arg-type]
@@ -554,4 +554,4 @@ async def test_process_external_duplicate_uses_runtime_inbox_ack_and_skips_legac
     legacy_inbox_service.mark_as_processed.assert_not_awaited()
     rack_task_service.record_callback_from_external_http.assert_not_awaited()
     handling_operation_service.record_callback_from_external_http.assert_not_awaited()
-    service._commit_and_enqueue_workline_processing.assert_not_awaited()  # type: ignore[attr-defined]
+    service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]

@@ -146,7 +146,7 @@ class TestCallbackEnqueueFallback:
             "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
             new=AsyncMock(),
         ):
-            await service._commit_and_enqueue_workline_processing(
+            await service._commit_and_enqueue_runtime_inbox_processing(
                 db_session,
                 enqueue_processing=MagicMock(side_effect=RuntimeError("celery down")),
             )
@@ -167,7 +167,7 @@ class TestCallbackEnqueueFallback:
             rack_task_service=RecordingRackTaskService(),
             runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
-        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
         payload = create_wms_external_payload(
             callback_type="WMS_RACK_TASK_RESULT",
@@ -210,7 +210,7 @@ class TestCallbackEnqueueFallback:
             handling_operation_service=RecordingHandlingOperationService(),
             runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
-        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
         payload = create_wms_external_payload(
             callback_type="CTU_BIN_MOVE_COMPLETED",
@@ -249,7 +249,7 @@ class TestCallbackEnqueueFallback:
             handling_operation_service=RecordingHandlingOperationService(),
             runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
-        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
         payload = create_full_box_exchange_external_payload(dispatch_key="external:smt_full_box_exchange:release-001")
 
@@ -283,7 +283,7 @@ class TestCallbackEnqueueFallback:
             handling_operation_service=handling_operation_service,
             runtime_inbox_writer=runtime_writer,
         )
-        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace(commit=AsyncMock())
 
         outcome = await service.process_external(
@@ -302,7 +302,7 @@ class TestCallbackEnqueueFallback:
         assert outcome.is_duplicate is True
         runtime_writer.write_external_callback.assert_awaited_once()
         db.commit.assert_not_awaited()
-        service._commit_and_enqueue_workline_processing.assert_not_awaited()  # type: ignore[attr-defined]
+        service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]
         rack_task_service.record_callback_from_external_http.assert_not_awaited()
         handling_operation_service.record_callback_from_external_http.assert_not_awaited()
 
@@ -318,7 +318,7 @@ class TestCallbackEnqueueFallback:
             rack_task_service=RecordingRackTaskService(),
             runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
-        service._enqueue_workline_processing = MagicMock()  # type: ignore[method-assign]
+        service._enqueue_runtime_inbox_processing = MagicMock()  # type: ignore[method-assign]
         db = SimpleNamespace(commit=AsyncMock())
         payload = create_wms_external_payload(
             callback_type="WMS_RACK_TASK_RESULT",
@@ -340,7 +340,7 @@ class TestCallbackEnqueueFallback:
             )
 
         db.commit.assert_awaited_once()
-        service._enqueue_workline_processing.assert_not_called()
+        service._enqueue_runtime_inbox_processing.assert_not_called()
 
 
 class TestCallbackContractBoundary:

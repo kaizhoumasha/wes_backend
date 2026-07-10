@@ -65,7 +65,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch(
                 "src.app.callback.v1.callback.get_request_id",
                 return_value="req-ext-001",
@@ -149,7 +149,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ),
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-rough-inbound-001"),
         ):
             from src.app.callback.v1.callback import callback_external
@@ -361,7 +361,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ),
-            patch("src.app.callback.v1.callback._enqueue_workline_processing"),
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing"),
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-no-trace"),
         ):
             from src.app.callback.v1.callback import callback_external
@@ -456,7 +456,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-rack-arrived"),
         ):
             from src.app.callback.v1.callback import callback_external
@@ -614,7 +614,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="REQ-FULL-BOX-001"),
         ):
             from src.app.callback.v1.callback import callback_external
@@ -666,7 +666,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-rack-success"),
         ):
             from src.app.callback.v1.callback import callback_external
@@ -724,7 +724,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ),
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-rack-failed"),
         ):
             from src.app.callback.v1.callback import callback_external
@@ -782,7 +782,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-duplicate"),
         ):
             from src.app.callback.v1.callback import callback_external
@@ -871,7 +871,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ),
-            patch("src.app.callback.v1.callback._enqueue_workline_processing"),
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing"),
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-wms-rack-op-h4"),
         ):
             from src.app.callback.v1.callback import callback_external
@@ -915,7 +915,7 @@ class TestCallbackExternalAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-runtime-dup-external"),
         ):
             from src.app.callback.v1.callback import callback_external

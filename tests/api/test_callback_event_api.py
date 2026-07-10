@@ -107,7 +107,7 @@ class TestCallbackEventAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-003"),
             patch("src.app.runtime.orchestration.observability.runtime_observability_registry.emit") as emit,
         ):
@@ -385,7 +385,7 @@ class TestCallbackEventAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing"),
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing"),
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-004"),
         ):
             from src.app.callback.v1.callback import callback_event
@@ -452,7 +452,7 @@ class TestCallbackEventAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch(
                 "src.app.callback.v1.callback.get_request_id",
                 return_value="req-canonical-001",
@@ -522,7 +522,7 @@ class TestCallbackEventAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-raw-alias-admission"),
         ):
             from src.app.callback.v1.callback import callback_event
@@ -593,7 +593,7 @@ class TestCallbackEventAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch(
                 "src.app.callback.v1.callback.get_request_id", return_value=f"req-{reserved_target.lower()}-mapping-001"
             ),
@@ -733,7 +733,7 @@ class TestCallbackEventAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch(
                 "src.app.callback.v1.callback.get_request_id",
                 return_value=f"req-workline-{runtime_status.lower()}",
@@ -810,7 +810,7 @@ class TestCallbackEventAPI:
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
                 new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=814))),
             ),
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-estop-001"),
         ):
             from src.app.callback.v1.callback import callback_event
@@ -894,7 +894,7 @@ class TestCallbackEventAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-start-001"),
         ):
             from src.app.callback.v1.callback import callback_event
@@ -1058,7 +1058,7 @@ class TestCallbackEventAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-start-fail"),
         ):
             from src.app.callback.v1.callback import callback_event
@@ -1136,7 +1136,7 @@ class TestCallbackEventAPI:
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
                 new=AsyncMock(),
             ) as mock_audit,
-            patch("src.app.callback.v1.callback._enqueue_workline_processing") as mock_enqueue,
+            patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-runtime-dup-event"),
         ):
             from src.app.callback.v1.callback import callback_event
