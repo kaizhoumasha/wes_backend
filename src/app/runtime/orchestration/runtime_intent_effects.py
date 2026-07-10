@@ -1627,15 +1627,11 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_device_event(self, ctx: Any, intent: RuntimeIntent) -> None:
-        service = self._inbox_service
-        if service is None:
-            from src.app.workline.services import inbox_service
-
-            service = inbox_service
-
         ctx_map = cast("Mapping[str, Any]", ctx)
         payload = dict(intent.payload_json)
-        from src.app.runtime.orchestration.services.inbox.inbox_service import DuplicateInboxError
+        from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+            runtime_inbox_service,
+        )
 
         device_code = str(payload["device_code"])
         event_type = str(payload["event_type"])
@@ -1645,13 +1641,8 @@ class RuntimeIntentEffectApplier:
         causation_id = payload.get("causation_id")
         workline_id = optional_int(getattr(ctx_map["workline"], "id", None))
 
-        # Task 7c-b: dual-write device event to RuntimeInbox via accept_device_event.
-        # 新写入由 RuntimeInboxService.accept_device_event 承担 (kind=DEVICE_EVENT);
-        # 保留下方 create_device_event_inbox 调用作为 legacy 兼容双写, Task 7c-c 移除。
-        from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
-            runtime_inbox_service,
-        )
-
+        # Task 7c-c-1: 移除 WorklineInbox 双写, RuntimeInbox 成为 device event 唯一事实源
+        # (accept_device_event 不做 source_event_id 幂等检查, 7c-a 已说明)。
         _ = await runtime_inbox_service.accept_device_event(
             ctx_map["db"],
             device_code=device_code,
@@ -1663,21 +1654,6 @@ class RuntimeIntentEffectApplier:
             causation_id=causation_id,
             auto_commit=False,
         )
-        try:
-            _ = await service.create_device_event_inbox(
-                db=ctx_map["db"],
-                device_code=device_code,
-                event_type=event_type,
-                timestamp=int(payload["timestamp"]),
-                data=data,
-                trace_id=trace_id,
-                event_id=event_id,
-                causation_id=causation_id,
-                canonical_event_type=payload.get("canonical_event_type"),
-                auto_commit=False,
-            )
-        except DuplicateInboxError:
-            return
 
     async def _apply_resource_fact(self, ctx: Any, intent: RuntimeIntent) -> Any:
         fact_type = str(intent.action)
