@@ -1421,22 +1421,24 @@ class SmtInboundHandoffService:
         now: Any,
     ) -> str | None:
         from src.app.device.models.command import CommandResult, CommandStatus, DeviceCommand
-        from src.app.runtime.orchestration.models.inbox import (
-            InboxStatus,
-            WorklineInbox,
-        )  # TODO(Task 7c-c-2): remove WorklineInbox import after read path migrates to RuntimeInbox
+        from src.app.runtime.orchestration.consumers.runtime_inbox_repository import (
+            runtime_inbox_repository,
+        )
 
         demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
         if demand is None:
             raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
-        # TODO(Task 7c-c-2): migrate this read to RuntimeInboxRepository.get_by_id
-        # - will fail until then
-        # Task 7c-c-1: source_pick_inbox_id 现指向 RuntimeInbox, 但下方 db.get(WorklineInbox, ...)
-        # 仍按 WorklineInbox 查找, 会返回 None, 进入 manual_hold 分支。Task 7c-c-2 需要:
-        # 1) 在 RuntimeInboxRepository 添加 get_by_id 读方法 (或 RuntimeInboxService 适配方法);
-        # 2) 把下方 db.get(WorklineInbox, item.source_pick_inbox_id) 切到 RuntimeInbox 查询;
-        # 3) inbox.status / inbox.error_message / inbox.next_retry_at 字段映射保持语义一致。
-        inbox = await db.get(WorklineInbox, item.source_pick_inbox_id)
+        # Task 7c-c-2: 切换 read 路径到 RuntimeInbox (Task 7c-c-1 后, item.source_pick_inbox_id
+        # 现指向 RuntimeInbox.id).
+        # - 状态映射: RuntimeInbox 5 态 (RECEIVED/PROCESSING/PROCESSED/FAILED/DEAD_LETTER),
+        #   旧 WorklineInbox 的 NEW/PROCESSING/RETRY/FAILED/PROCESSED/DEAD_LETTER 中,
+        #   "in progress" = {RECEIVED, PROCESSING};
+        #   可重试 = FAILED + next_retry_at 已设置 (旧 RETRY 也归此类);
+        #   终态失败 = DEAD_LETTER; 成功 = PROCESSED.
+        # - 字段名差异: WorklineInbox.error_message → RuntimeInbox.last_error_message.
+        # - next_retry_at 单位: RuntimeInbox 使用 Unix 毫秒, item.next_attempt_at 是
+        #   naive datetime, 通过 timezone.to_utc() 转换。
+        inbox = await runtime_inbox_repository.get_by_id_for_update(db, item.source_pick_inbox_id)
         inbox_status = self._enum_text(getattr(inbox, "status", None))
         outcome: str | None = None
         if inbox is None:
@@ -1448,26 +1450,32 @@ class SmtInboundHandoffService:
                 message="source pick inbox 不存在，无法确认内部事件处理结果",
             )
             outcome = "manual_hold"
-        elif inbox_status in {InboxStatus.NEW.value, InboxStatus.PROCESSING.value, InboxStatus.RETRY.value}:
+        elif inbox_status in {"RECEIVED", "PROCESSING"}:
             outcome = None
-        elif inbox_status == InboxStatus.FAILED.value:
-            self._release_item_for_source_pick_retry(item, next_attempt_at=getattr(inbox, "next_retry_at", None) or now)
+        elif inbox_status == "FAILED":
+            raw_next_retry_at = getattr(inbox, "next_retry_at", None)
+            retry_at: Any = None
+            if isinstance(raw_next_retry_at, (int, float)):
+                retry_at = timezone.to_utc(raw_next_retry_at / 1000)
+            else:
+                retry_at = None
+            self._release_item_for_source_pick_retry(item, next_attempt_at=retry_at or now)
             db.add(item)
             demand.failure_code = None
             demand.failure_message = None
             db.add(demand)
             _ = await self.recalculate_demand_status(db, demand, reason="source_pick_inbox_retryable_failed")
             outcome = "retry_scheduled"
-        elif inbox_status == InboxStatus.DEAD_LETTER.value:
+        elif inbox_status == "DEAD_LETTER":
             await self._manual_hold_source_pick_recovery(
                 db,
                 demand=demand,
                 item=item,
                 failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_INBOX_DEAD_LETTER.value,
-                message=getattr(inbox, "error_message", None),
+                message=getattr(inbox, "last_error_message", None),
             )
             outcome = "manual_hold"
-        elif inbox_status == InboxStatus.PROCESSED.value and item.source_pick_command_id is None:
+        elif inbox_status == "PROCESSED" and item.source_pick_command_id is None:
             await self._manual_hold_source_pick_recovery(
                 db,
                 demand=demand,
