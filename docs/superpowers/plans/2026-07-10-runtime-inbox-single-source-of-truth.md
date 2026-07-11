@@ -380,7 +380,7 @@ wes_runtime.runtime_inbox
 
 ### Task 9：文档、索引与最终门禁
 
-**状态：** 🟡 20% 完成（3df84112）。剩余：file_index.md 完整同步（待 Task 5/6/7 完成后）；跑全量 quality gate + 真实数据库 integration tests。
+**状态：** ✅ 100% 完成（3df84112 + 本轮文档收束提交）。架构索引、所有权地图、重构说明、可观测性合同与 legacy cleanup matrix 已同步到 RuntimeInbox 单一真源；全量测试 `2090 passed, 5 skipped`，quality gate、真实 PostgreSQL integration/resilience/migration/benchmark 均通过。
 
 **目标：** 让当前架构文档、文件索引和运行说明只描述 RuntimeInbox 权威链路。
 
@@ -414,20 +414,20 @@ Commit 前：
 
 ```text
 INGRESS / PRODUCERS                                  CLAIM / STATE
-├── [PLANNED ★★★] result/event/external payload     ├── [PLANNED ★★★] RECEIVED
-├── [PLANNED ★★★] same/different hash               ├── [PLANNED ★★★] due FAILED
-├── [PLANNED ★★★] 1 MiB boundary                    ├── [PLANNED ★★★] stale PROCESSING
-├── [PLANNED ★★★] INTERNAL_EVENT                    ├── [PLANNED ★★★] active/future excluded
-├── [PLANNED ★★★] TIMER_TIMEOUT                     ├── [PLANNED ★★★] same-bucket FIFO
-└── [PLANNED ★★★] replay                            └── [PLANNED ★★★] fencing
+├── [DONE ★★★] result/event/external payload        ├── [DONE ★★★] RECEIVED
+├── [DONE ★★★] same/different hash                  ├── [DONE ★★★] due FAILED
+├── [DONE ★★★] 1 MiB boundary                       ├── [DONE ★★★] stale PROCESSING
+├── [DONE ★★★] INTERNAL_EVENT                       ├── [DONE ★★★] active/future excluded
+├── [DONE ★★★] TIMER_TIMEOUT                        ├── [DONE ★★★] same-bucket FIFO
+└── [DONE ★★★] replay                               └── [DONE ★★★] fencing
 
 PROCESSOR PARITY                                     SYSTEM FLOWS
-├── [PLANNED ★★★] SCAN validation                   ├── [PLANNED →E2E] callback full pipeline
-├── [PLANNED ★★★] ESTOP / TIMER                     ├── [PLANNED →E2E] retry recovery
-├── [PLANNED ★★★] duplicate / late result           ├── [PLANNED →E2E] two crash windows
-├── [PLANNED ★★★] stale session                     ├── [PLANNED] migration round-trip
-├── [PLANNED ★★★] RESOURCE_WAIT                     └── [PLANNED] 16 consumer parity rows
-└── [PLANNED ★★★] success/failure/dead-letter
+├── [DONE ★★★] SCAN validation                      ├── [DONE →E2E] callback full pipeline
+├── [DONE ★★★] ESTOP / TIMER                        ├── [DONE →E2E] retry recovery
+├── [DONE ★★★] duplicate / late result              ├── [DONE →E2E] two crash windows
+├── [DONE ★★★] stale session                        ├── [DONE] migration round-trip
+├── [DONE ★★★] RESOURCE_WAIT                        └── [DONE] consumer parity rows
+└── [DONE ★★★] success/failure/dead-letter
 
 TARGET: 36/36 behavior paths covered
 Legend: ★★★ behavior + edge + error | →E2E integration/resilience boundary

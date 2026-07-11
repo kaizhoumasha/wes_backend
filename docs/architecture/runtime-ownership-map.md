@@ -34,6 +34,7 @@
 | Repository | 文件 | 关键方法 |
 | --- | --- | --- |
 | `IdempotencyKeyRepository` | `repositories/idempotency_key_repository.py` | `claim_if_absent` + `get_by_identity` |
+| `RuntimeInboxRepository` | `repositories/runtime_inbox_repository.py` | canonical 持久化、FIFO `SKIP LOCKED` claim、lease reclaim、fenced terminal、只读 SLI snapshot |
 
 其余 runtime 实体默认使用 `BaseRepository`，仅在 upsert、并发保护或查询契约复杂时拆出专用 repository。
 
@@ -43,18 +44,20 @@
 | --- | --- | --- |
 | `IdempotencyGuard` | `services/idempotency_guard.py` | outbound effect 幂等闸门；`ClaimResult.NEW/MATCH` + `IdempotencyConflict` |
 | `RuntimeSnapshotAssembler` | `services/runtime_snapshot_assembler.py` | RuntimeSnapshot 装配：session + timeline + inbox + hold + intent log |
-| `RuntimeReconciliationFacade` | `services/runtime_reconciliation_service.py` | device/callback 域对账能力唯一入口；当前委托 runtime reconciliation implementation |
+| `RuntimeInboxProcessorBridge` | `services/runtime_inbox/runtime_inbox_orchestrator_bridge.py` | validation → orchestration → fenced write-back 三阶段处理 |
+| `RuntimeReconciliationServiceImpl` | `services/reconciliation/runtime_reconciliation_service_impl.py` | runtime 域对账实现；调用方通过稳定 service contract 使用，不再经过 facade |
 
-`RuntimeReconciliationFacade` 是反向依赖的受控出口：device/callback 只 import facade，不直接 import workline 域。
+旧 `RuntimeReconciliationFacade` 已物理删除；device/callback 不得因此回流 import WorkLine 实现，跨域仍遵循 runtime service/port 边界。
 
 ## 6. 消费者入口
 
 | 路径 | 角色 |
 | --- | --- |
-| `src/app/runtime/orchestration/consumers/` | `RuntimeInboxConsumer` 单点入口；唯一允许直接 import inbound normalizer port 的位置 |
+| `src/app/runtime/orchestration/consumers/runtime_inbox_service.py` | RuntimeInbox ACK-before-processing、幂等接收、五态状态机；INBOUND_NORMALIZER_OWNERSHIP 对 RuntimeInbox 持有的显式例外 |
+| `src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py` | callback ingress 写入 RuntimeInbox 的薄适配器，不消费、不编排 |
 | 其他 capability | 通过 `RuntimeCapabilityContext` 获取 query/effect port contract，不直接 import inbound normalizer |
 
-`INBOUND_NORMALIZER_OWNERSHIP` guardrail 扫描 runtime、workline、callback、wms_integration/services 和 device 域，拒绝任何 capability 持有 `WmsEventPort` / `DeviceEventPort` / `InboundEventPort` / `RuntimeInbox` / `RuntimeInboxConsumer` / `InboundNormalizerContext` / `create_inbound_normalizer_context` 类型 hint。
+`INBOUND_NORMALIZER_OWNERSHIP` guardrail 扫描 runtime、workline、callback、wms_integration/services 和 device 域，拒绝 capability 持有 `WmsEventPort` / `DeviceEventPort` / `InboundEventPort` / `RuntimeInbox`；仅 registry、RuntimeInbox entity/repository/service 等逐文件例外可持有。旧 `RuntimeInboxConsumer` 与 `InboundNormalizerContext` facade 已物理删除，不保留兼容入口。
 
 ## 7. Legacy Runtime Import Boundary
 
@@ -71,6 +74,6 @@
 ## 8. 验收
 
 - `uv run python -c "from src.app.runtime.orchestration import ExecutionSession, ExecutionCorrelation, ExecutionWorkItem, RuntimeInbox, RuntimeTimeline, RuntimeHold, RuntimeIntentLog, IdempotencyKey, ConveyorQueueMembership"` 全部 import 成功。
-- `uv run python -c "from src.app.runtime.orchestration.services import RuntimeReconciliationFacade, IdempotencyGuard, RuntimeSnapshotAssembler"` 全部 import 成功。
+- `uv run python -c "from src.app.runtime.orchestration.services import IdempotencyGuard, RuntimeSnapshotAssembler"` 全部 import 成功。
 - `bash scripts/architecture-guardrails.sh --mode enforced` 退出码 0。
 - `uv run pytest tests/architecture/test_legacy_runtime_import_guardrail.py tests/architecture/test_inbound_normalizer_ownership_guardrail.py -q` 全部通过。

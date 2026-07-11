@@ -276,11 +276,6 @@ def default_runtime_observability_signals() -> dict[str, RuntimeObservabilitySig
             "span+metric+log",
             common | {"provider_code", "source_event_id"},
         ),
-        "runtime_inbox.claim": RuntimeObservabilitySignal(
-            "runtime_inbox.claim",
-            "span+metric",
-            common | {"operation_kind", "inbox_id"},
-        ),
         "runtime_inbox.claim_batch": RuntimeObservabilitySignal(
             "runtime_inbox.claim_batch",
             "metric",

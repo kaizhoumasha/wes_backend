@@ -128,21 +128,22 @@ CREATED → RUNNING → CLOSED
 
 ### 2.5 RuntimeInbox — 入站消息
 
-**文件**: `src/app/runtime/orchestration/models/inbox.py` (模型) + `src/app/runtime/orchestration/consumers/runtime_inbox_service.py` (服务)
-**表**: `wes_biz.workline_inboxes`
+**文件**: `src/app/runtime/orchestration/runtime_inbox.py`（模型）+ `repositories/runtime_inbox_repository.py`（唯一仓储）+ `consumers/runtime_inbox_service.py`（接收/状态机服务）
+**表**: `wes_runtime.runtime_inbox`
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | int (PK) | 自增主键 |
-| `session_id` | int (FK) | 关联 WorklineSession |
-| `kind` | InboxKind | 消息类型: `DEVICE_EVENT` / `COMMAND_RESULT` / `EXTERNAL_HTTP` / `INTERNAL_EVENT` / `TIMER_TIMEOUT` / `MANUAL_*` / `REPLAY_REQUEST` |
-| `status` | InboxStatus | `NEW` → `PROCESSING` → `PROCESSED` / `FAILED` / `RETRY` / `DEAD_LETTER` |
-| `source_system` | SourceSystem | 来源: `DEVICE` / `WCS` / `MES` / `ERP` / `MANUAL` / `SYSTEM` |
+| `workline_session_id` / `execution_session_id` | int? (FK) | WorklineSession 与 ExecutionSession 独立命名空间，不互相回退 |
+| `kind` | str? | `DEVICE_EVENT` / `COMMAND_RESULT` / `EXTERNAL_HTTP` / `INTERNAL_EVENT` / `TIMER_TIMEOUT` / `REPLAY_REQUEST` |
+| `status` | str | `RECEIVED` → `PROCESSING` → `PROCESSED` / `FAILED` / `DEAD_LETTER` 五态 |
 | `source_event_id` | str? | 来源事件 ID |
-| `provider_code` | str? | provider 标识 |
-| `payload` | JSON | 消息体 |
+| `provider_code` / `event_type` | str | source-event 幂等身份；二者与 `source_event_id` 组成唯一键 |
+| `payload_json` | JSON | canonical 消息体，应用层默认限制 1 MiB |
 | `payload_hash` | str? | payload 哈希（幂等校验） |
-| `attempt_count` | int | 重试次数 |
+| `claim_bucket_key` / `processor_token` | str? | 同桶 FIFO 与终态 fencing owner |
+| `attempt_count` / `max_retries` | int | 重试预算 |
+| `next_retry_at` / `lease_until` | bigint? | Unix 毫秒时间；到期 FAILED 与 stale PROCESSING 可重新 claim |
 | `next_retry_at` | datetime? | 下次重试时间 |
 | `dead_letter_at` | datetime? | 进入死信时间 |
 | `processor_token` | str? | 处理者令牌（并发控制） |
@@ -282,8 +283,8 @@ NEW → (claim) → PROCESSING → PROCESSED
 
 | Schema | 用途 | 包含表 |
 |--------|------|--------|
-| `wes_runtime` | runtime/orchestration 域新 schema | `execution_sessions`, `execution_correlations`, `execution_work_items`, `runtime_intent_logs`, `idempotency_keys`, `conveyor_queue_memberships`, `device_runtime_projections` |
-| `wes_biz` | 业务数据（兼容旧表） | `workline_sessions`, `workline_inboxes`, `workline_timelines`, `runtime_holds` |
+| `wes_runtime` | runtime/orchestration 域 schema | `runtime_inbox`, `execution_sessions`, `execution_correlations`, `execution_work_items`, `runtime_intent_logs`, `idempotency_keys`, `conveyor_queue_memberships`, `device_runtime_projections` |
+| `wes_biz` | WorkLine 业务与投影数据 | `workline_sessions`, `workline_timelines`, `runtime_holds` |
 
 ### 4.2 迁移文件
 
@@ -293,6 +294,8 @@ NEW → (claim) → PROCESSING → PROCESSED
 | `20260626_1200_0e9de1e6c7e3` | Device FK ring dissolve |
 | `20260626_1719_f04718a3f04f` | 剩余 runtime/orchestration 表（ExecutionWorkItem, IdempotencyKey, RuntimeIntentLog, RuntimeTimeline, ConveyorQueueMembership, RuntimeHold） |
 | `20260702_1913_f88092809f4b` | DeviceRuntimeProjection 建表 |
+| `20260711_1815_b8a28e1bfec8` | RuntimeInbox canonical envelope、五态 claim/fencing 字段与 hot indexes |
+| `20260711_1819_ec426c628516` | 增加显式 WorklineSession FK，迁移依赖后删除旧 `wes_biz.workline_inbox` |
 
 ---
 
@@ -300,9 +303,7 @@ NEW → (claim) → PROCESSING → PROCESSED
 
 ### 5.1 为什么 ExecutionSession 和 WorklineSession 并存？
 
-`WorklineSession`（`wes_biz.workline_sessions`）是旧表，承载现有生产 session 数据和丰富的业务字段（`business_key`, `barcode`, `context_json`, `awaiting_device_command_code` 等）。`ExecutionSession`（`wes_runtime.execution_sessions`）是目标态聚合根，字段精简，只持 lifecycle state 和 manifest version。
-
-当前阶段两者并存：`WorklineSession` 继续服务旧 consumer 路径，`ExecutionSession` 服务新 runtime/orchestration 路径。Phase 4+ 逐步将 `WorklineSession` 的业务字段迁移到 `ExecutionSession` 或对应的 work item / correlation。
+`WorklineSession`（`wes_biz.workline_sessions`）承载 WorkLine 业务会话与设备等待字段；`ExecutionSession`（`wes_runtime.execution_sessions`）承载跨域执行生命周期和 manifest version。两者是并存的显式业务边界，不是兼容期主从表。RuntimeInbox 分别使用 `workline_session_id` 与 `execution_session_id`，相同数值也不得跨命名空间推导。
 
 ### 5.2 为什么 ExecutionCorrelation 允许 NULL execution_session_id？
 
@@ -332,7 +333,7 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 | Service | 文件 | 职责 |
 |---------|------|------|
 | `RuntimeInboxService` | `consumers/runtime_inbox_service.py` | ACK-before-processing、重试、死信、人工重放 |
-| `RuntimeInboxConsumer` | `consumers/runtime_inbox_consumer.py` | inbox 消息消费调度 |
+| `RuntimeInboxProcessorBridge` | `services/runtime_inbox/runtime_inbox_orchestrator_bridge.py` | validation → orchestration → fenced write-back 三阶段处理 |
 | `DeviceCommandGateway` | `services/device_command_gateway.py` | 设备命令下发网关 |
 | `DeviceDispatchPolicy` | `services/device_dispatch_policy.py` | 设备调度策略（能力选择、优先级、deadline、限流） |
 | `ConveyorQueueMembershipWriterService` | `services/conveyor_queue_membership_writer_service.py` | 队列 membership 写入 |

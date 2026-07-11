@@ -24,6 +24,7 @@ def test_runtime_inbox_sli_signals_require_stable_attributes() -> None:
     invalid = registry.validate("runtime_inbox.processing", {"inbox_id": 1, "duration_ms": 3.4})
     assert invalid.valid is False
     assert invalid.missing_attributes == ("outcome",)
+    assert registry.validate("runtime_inbox.claim", {}).reason == "UNKNOWN_SIGNAL"
 
 
 def test_runtime_observability_registry_requires_stable_attributes() -> None:
