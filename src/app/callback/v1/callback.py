@@ -14,6 +14,8 @@
 import time
 
 from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 
 from src.app.callback.models import (
     CallbackEventIngressResponse,
@@ -23,6 +25,7 @@ from src.app.callback.models import (
 from src.app.callback.services import callback_ingress_service
 from src.core.api_security import RequireAPIPermission
 from src.core.logger import logger
+from src.core.response.response_code import ResourceErrorCode
 from src.core.task_queue_gateway import task_queue_gateway
 from src.database.dependencies import AsyncSessionDep
 from src.utils.audit import get_request_id
@@ -52,14 +55,17 @@ def _enqueue_runtime_inbox_processing() -> None:
 async def callback_result(
     request: Request,
     db: AsyncSessionDep,
-) -> CallbackResultIngressResponse:
-    return await callback_ingress_service.handle_result(
+) -> CallbackResultIngressResponse | Response:
+    result = await callback_ingress_service.handle_result(
         request,
         db,
         request_id=get_request_id(),
         start_time=time.time(),
         enqueue_processing=_enqueue_runtime_inbox_processing,
     )
+    if result["code"] == ResourceErrorCode.CONFLICT.code:
+        return JSONResponse(status_code=409, content=jsonable_encoder(result))
+    return result
 
 
 @router.post(
@@ -99,14 +105,17 @@ async def callback_event(
 async def callback_external(
     request: Request,
     db: AsyncSessionDep,
-) -> CallbackExternalIngressResponse:
-    return await callback_ingress_service.handle_external(
+) -> CallbackExternalIngressResponse | Response:
+    result = await callback_ingress_service.handle_external(
         request,
         db,
         request_id=get_request_id(),
         start_time=time.time(),
         enqueue_processing=_enqueue_runtime_inbox_processing,
     )
+    if result["code"] == ResourceErrorCode.CONFLICT.code:
+        return JSONResponse(status_code=409, content=jsonable_encoder(result))
+    return result
 
 
 __all__ = ["router"]

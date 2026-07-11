@@ -1166,6 +1166,7 @@ class TestCallbackEventAPI:
         from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxConflict
 
         http_response = Response()
+        db_session.rollback.side_effect = RuntimeError("rollback unavailable")
         with (
             patch(
                 "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
@@ -1203,7 +1204,7 @@ class TestCallbackEventAPI:
             ),
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
-                new=AsyncMock(),
+                new=AsyncMock(side_effect=RuntimeError("callback log unavailable")),
             ) as mock_log_callback,
             patch(
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
@@ -1225,4 +1226,5 @@ class TestCallbackEventAPI:
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["response_status"] == 409
         assert log_kwargs["ingress_outcome"] == "REJECTED"
-        mock_audit.assert_awaited_once()
+        db_session.rollback.assert_awaited_once()
+        mock_audit.assert_not_awaited()

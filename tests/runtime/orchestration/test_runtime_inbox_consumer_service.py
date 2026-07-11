@@ -102,6 +102,21 @@ class _RuntimeInboxStaleReadRepository:
         return await self.real_repository.add_received(db, data)
 
 
+class _RuntimeInboxCorrelationValidationRaceRepository:
+    """模拟首次查询后、correlation 校验前由并发方插入既有 identity。"""
+
+    def __init__(self, existing: Any) -> None:
+        self.existing = existing
+        self.read_count = 0
+
+    async def get_by_source_event_identity(self, *_args: Any, **_kwargs: Any) -> Any | None:
+        self.read_count += 1
+        return None if self.read_count == 1 else self.existing
+
+    async def add_received(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("correlation 校验失败后不应继续 INSERT")
+
+
 class _IdempotencyGuardSpy:
     """记录 claim 调用，验证归属冲突不会产生幂等副作用。"""
 
@@ -276,6 +291,40 @@ async def test_accept_received_existing_different_hash_conflicts_before_unknown_
             payload_hash="hash-changed",
             correlation_id="corr-no-longer-present",
         )
+
+
+@pytest.mark.parametrize("incoming_hash", ["hash-race", "hash-changed"], ids=["same-hash", "different-hash"])
+@pytest.mark.asyncio
+async def test_accept_received_correlation_validation_race_rechecks_existing_identity(
+    db_session,
+    incoming_hash: str,
+) -> None:
+    """关联校验失败时必须回读并发插入的 identity，再按 K/H 收敛为 ACK 或 409。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+        RuntimeInboxConflict,
+        RuntimeInboxService,
+    )
+
+    existing = SimpleNamespace(id=701, payload_hash="hash-race", workline_session_id=None)
+    service = RuntimeInboxService(repository=_RuntimeInboxCorrelationValidationRaceRepository(existing))
+
+    call = _accept_received(
+        service,
+        db_session,
+        provider_code="WMS",
+        event_type="WMS_TASK_CHANGE",
+        source_event_id="evt-correlation-validation-race",
+        payload_hash=incoming_hash,
+        correlation_id="corr-no-longer-present",
+    )
+    if incoming_hash == existing.payload_hash:
+        result = await call
+        assert result.created is False
+        assert result.record is existing
+    else:
+        with pytest.raises(RuntimeInboxConflict):
+            await call
 
 
 @pytest.mark.asyncio

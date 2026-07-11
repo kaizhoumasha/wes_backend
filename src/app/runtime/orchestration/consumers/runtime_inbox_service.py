@@ -380,7 +380,34 @@ class RuntimeInboxService:
 
             # 既有 identity 的 ACK/冲突语义优先；只有确需新增时才校验关联 FK。
             if correlation_id is not None:
-                correlation_id = await self._require_existing_correlation_id(db, correlation_id=correlation_id)
+                try:
+                    correlation_id = await self._require_existing_correlation_id(db, correlation_id=correlation_id)
+                except RuntimeInboxCorrelationUnavailable:
+                    # 查询与关联校验之间可能已有并发方插入；再次按既有 identity 语义收敛。
+                    existing = await self.repository.get_by_source_event_identity(
+                        db,
+                        provider_code=provider_code,
+                        event_type=event_type,
+                        source_event_id=source_event_id,
+                    )
+                    if existing is None:
+                        raise
+                    _require_same_workline_session_owner(
+                        existing,
+                        provider_code=provider_code,
+                        event_type=event_type,
+                        source_event_id=source_event_id,
+                        incoming_workline_session_id=workline_session_id,
+                    )
+                    if existing.payload_hash != payload_hash:
+                        raise RuntimeInboxConflict(
+                            provider_code=provider_code,
+                            event_type=event_type,
+                            source_event_id=source_event_id,
+                            existing_payload_hash=existing.payload_hash,
+                            incoming_payload_hash=payload_hash,
+                        ) from None
+                    return RuntimeInboxAcceptResult(record=existing, created=False)
                 record_data["correlation_id"] = correlation_id
             try:
                 async with db.begin_nested():

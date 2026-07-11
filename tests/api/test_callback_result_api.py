@@ -1,5 +1,6 @@
 """Callback result API 测试。"""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -947,7 +948,7 @@ class TestCallbackResultAPI:
             ),
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
-                new=AsyncMock(),
+                new=AsyncMock(side_effect=RuntimeError("callback log unavailable")),
             ) as mock_log_callback,
             patch(
                 "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
@@ -962,9 +963,11 @@ class TestCallbackResultAPI:
                 db=db_session,
             )
 
-        assert response["code"] == ResourceErrorCode.CONFLICT.code
-        assert _response_data(response)["ack"] is False
+        assert response.status_code == 409
+        response_body = json.loads(response.body)
+        assert response_body["code"] == ResourceErrorCode.CONFLICT.code
+        assert _response_data(response_body)["ack"] is False
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
         assert log_kwargs["failure_stage"] == "ORCHESTRATION"
-        mock_audit.assert_awaited_once()
+        mock_audit.assert_not_awaited()

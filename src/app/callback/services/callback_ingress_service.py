@@ -746,25 +746,32 @@ async def _handle_runtime_inbox_conflict(
     event_id: str | None = None,
     causation_id: str | None = None,
 ) -> CallbackRejectedIngressResponse:
-    await _log_callback_outcome(
-        db,
-        request,
-        callback_type=callback_type,
-        subject_code=_resolve_callback_subject(callback_type, request_body),
-        request_body=request_body,
-        request_id=request_id,
-        trace_id=trace_id or _resolve_callback_trace_id(request_body),
-        event_id=event_id or _resolve_callback_event_id(request_body),
-        causation_id=causation_id or _resolve_callback_causation_id(request_body),
-        response_status=409,
-        response_time_ms=response_time_ms,
-        success=False,
-        record_audit=True,
-        audit_title=_resolve_callback_audit_title(callback_type),
-        error_message=message,
-        ingress_outcome=_INGRESS_OUTCOME_REJECTED,
-        failure_stage=_FAILURE_STAGE_ORCHESTRATION,
-    )
+    try:
+        await _log_callback_outcome(
+            db,
+            request,
+            callback_type=callback_type,
+            subject_code=_resolve_callback_subject(callback_type, request_body),
+            request_body=request_body,
+            request_id=request_id,
+            trace_id=trace_id or _resolve_callback_trace_id(request_body),
+            event_id=event_id or _resolve_callback_event_id(request_body),
+            causation_id=causation_id or _resolve_callback_causation_id(request_body),
+            response_status=409,
+            response_time_ms=response_time_ms,
+            success=False,
+            record_audit=True,
+            audit_title=_resolve_callback_audit_title(callback_type),
+            error_message=message,
+            ingress_outcome=_INGRESS_OUTCOME_REJECTED,
+            failure_stage=_FAILURE_STAGE_ORCHESTRATION,
+        )
+    except Exception as log_error:
+        logger.warning(f"RuntimeInbox 冲突日志写入失败，继续返回 409: {log_error}")
+        try:
+            await db.rollback()
+        except Exception as rollback_error:
+            logger.error(f"RuntimeInbox 冲突日志失败后的 rollback 失败: {rollback_error}")
     return _build_conflict_fail(message, reason_code="RUNTIME_INBOX_CONFLICT")
 
 
