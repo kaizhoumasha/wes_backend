@@ -18,6 +18,12 @@ FORBIDDEN_TOKENS = (
     "WorklineInboxRepository",
     "WorklineInboxService",
     "wes_biz.workline_inbox",
+    "callback_ingress_service.inbox_service",
+    "create_device_event_inbox",
+    "create_command_result_inbox",
+    "create_external_http_inbox",
+    "create_internal_event_inbox",
+    "create_timeout_inbox",
 )
 
 

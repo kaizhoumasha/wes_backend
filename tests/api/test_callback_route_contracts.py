@@ -50,14 +50,6 @@ def _runtime_inbox_writer_stub(*, created: bool = True) -> SimpleNamespace:
     )
 
 
-def _transition_inbox_service_stub() -> SimpleNamespace:
-    return SimpleNamespace(
-        create_device_event_inbox=AsyncMock(return_value=SimpleNamespace(id=801)),
-        create_external_http_inbox=AsyncMock(return_value=SimpleNamespace(id=802)),
-        mark_as_processed=AsyncMock(),
-    )
-
-
 def test_callback_log_payload_uses_trusted_proxy_client_ip(
     build_request: RequestFactory,
     monkeypatch: pytest.MonkeyPatch,

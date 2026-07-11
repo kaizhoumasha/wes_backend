@@ -352,7 +352,6 @@ async def test_process_result_uses_runtime_inbox_as_authority() -> None:
     handled_command.get_duration_ms.return_value = 100
     handled_command.trace_id = "trace-001"
 
-    legacy_inbox_service = SimpleNamespace(create_command_result_inbox=AsyncMock())
     command_service = SimpleNamespace(handle_callback_result=AsyncMock(return_value=handled_command))
     service = CallbackOrchestrationService(runtime_inbox_writer=WriterStub())
     service._is_workline_command_callback = AsyncMock(return_value=True)  # type: ignore[method-assign]
@@ -379,7 +378,6 @@ async def test_process_result_uses_runtime_inbox_as_authority() -> None:
     assert outcome.trace_id == "trace-001"
     assert call_order == ["runtime"]
     assert writer_kwargs["canonical_result_type"] == "DEVICE_RESULT"
-    legacy_inbox_service.create_command_result_inbox.assert_not_awaited()
     command_service.handle_callback_result.assert_awaited_once()
     service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()  # type: ignore[attr-defined]
 
@@ -392,7 +390,6 @@ async def test_process_result_duplicate_uses_runtime_inbox_ack_and_skips_legacy_
     from src.app.device.models.command import CommandCallbackResult
 
     writer = SimpleNamespace(write_result_callback=AsyncMock(return_value=_runtime_accept_result(created=False)))
-    legacy_inbox_service = SimpleNamespace(create_command_result_inbox=AsyncMock())
     command_service = SimpleNamespace(handle_callback_result=AsyncMock())
 
     callback = CommandCallbackResult.model_validate(
@@ -430,7 +427,6 @@ async def test_process_result_duplicate_uses_runtime_inbox_ack_and_skips_legacy_
 
     assert outcome.is_duplicate is True
     writer.write_result_callback.assert_awaited_once()
-    legacy_inbox_service.create_command_result_inbox.assert_not_awaited()
     command_service.handle_callback_result.assert_not_awaited()
     service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]
 

@@ -162,10 +162,6 @@ class TestCallbackResultIdempotency:
                 ),
             ),
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_command_result_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.device_command_service.handle_callback_result",
                 new=AsyncMock(return_value=handled_command),
             ) as mock_handle,
@@ -192,8 +188,6 @@ class TestCallbackResultIdempotency:
                 db=db_session,
             )
 
-            mock_create_inbox.side_effect = ValueError("指令结果已存在（幂等键重复）: duplicate")
-
             response2 = await callback_result(
                 request=build_request(body=create_result_payload(), path="/api/v1/callback/result"),
                 db=db_session,
@@ -203,7 +197,6 @@ class TestCallbackResultIdempotency:
         assert response2["code"] == "1000"
         assert _response_data(response2)["ack"] is True
         assert mock_handle.await_count == 1
-        mock_create_inbox.assert_not_awaited()
         assert mock_enqueue.call_count == 1
         assert mock_log_callback.await_count == 2
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -212,6 +205,9 @@ class TestCallbackResultIdempotency:
         assert log_kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1
         assert runtime_write.await_count == 2
+        for call in runtime_write.await_args_list:
+            assert {key: call.kwargs["payload"][key] for key in create_result_payload()} == create_result_payload()
+            assert call.kwargs["canonical_result_type"] == "DEVICE_RESULT"
 
 
 class TestCallbackEventIdempotency:
@@ -248,10 +244,6 @@ class TestCallbackEventIdempotency:
                 ),
             ),
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -275,8 +267,6 @@ class TestCallbackEventIdempotency:
                 response=Response(),
             )
 
-            mock_create_inbox.side_effect = ValueError("设备事件已存在（幂等键重复）: duplicate")
-
             response2 = await callback_event(
                 request=build_request(body=create_event_payload(), path="/api/v1/callback/event"),
                 db=db_session,
@@ -287,7 +277,6 @@ class TestCallbackEventIdempotency:
         assert response2["code"] == "1000"
         assert _response_data(response2)["status"] == "duplicate"
         assert mock_enqueue.call_count == 1
-        assert mock_create_inbox.await_count == 1
         assert mock_log_callback.await_count == 2
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["error_message"] == "幂等重复: 已存在相同事件"
@@ -295,6 +284,9 @@ class TestCallbackEventIdempotency:
         assert log_kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1
         assert runtime_write.await_count == 2
+        for call in runtime_write.await_args_list:
+            assert {key: call.kwargs["payload"][key] for key in create_event_payload()} == create_event_payload()
+            assert call.kwargs["canonical_event_type"] == "SCAN_COMPLETED"
 
 
 class TestCallbackExternalIdempotency:
@@ -308,10 +300,6 @@ class TestCallbackExternalIdempotency:
             side_effect=[_runtime_accept_result(created=True), _runtime_accept_result(created=False)]
         )
         with (
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
@@ -335,8 +323,6 @@ class TestCallbackExternalIdempotency:
                 db=db_session,
             )
 
-            mock_create_inbox.side_effect = ValueError("外部 HTTP 回调已存在（幂等键重复）: duplicate")
-
             response2 = await callback_external(
                 request=build_request(body=create_external_payload(), path="/api/v1/callback/external"),
                 db=db_session,
@@ -345,7 +331,6 @@ class TestCallbackExternalIdempotency:
         assert response1["code"] == "1000"
         assert response2["code"] == "1000"
         assert _response_data(response2)["status"] == "duplicate"
-        assert mock_create_inbox.await_count == 0
         assert mock_enqueue.call_count == 1
         assert mock_log_callback.await_count == 2
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -354,3 +339,6 @@ class TestCallbackExternalIdempotency:
         assert log_kwargs["failure_stage"] is None
         assert mock_audit.await_count == 1
         assert runtime_write.await_count == 2
+        for call in runtime_write.await_args_list:
+            assert call.kwargs["payload"] == create_external_payload()
+            assert call.kwargs["trace_id"] == "trace-agv-001"
