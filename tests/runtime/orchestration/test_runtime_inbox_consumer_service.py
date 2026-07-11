@@ -137,6 +137,50 @@ async def test_accept_received_rejects_workline_session_namespace_mismatch(db_se
 
 
 @pytest.mark.asyncio
+async def test_accept_received_rejects_unknown_explicit_correlation_before_repository_write(db_session) -> None:
+    """统一入口必须在 repository 写入前拒绝不存在的 ExecutionCorrelation。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    with pytest.raises(ValueError, match="unknown correlation_id"):
+        await _accept_received(
+            RuntimeInboxService(),
+            db_session,
+            provider_code="ECS",
+            event_type="COMMAND_RESULT",
+            source_event_id="evt-unknown-correlation",
+            payload_hash="hash-unknown-correlation",
+            correlation_id="corr-not-persisted",
+        )
+
+    rows = (await db_session.execute(select(RuntimeInbox))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_callback_result_writer_rejects_unknown_command_correlation(db_session) -> None:
+    """result writer 不得把 DeviceCommand 上的孤立 correlation 传入 RuntimeInbox FK。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    with pytest.raises(ValueError, match="unknown correlation_id"):
+        await CallbackRuntimeInboxWriter().write_result_callback(
+            db_session,
+            payload={
+                "command_code": "CMD-UNKNOWN-CORR",
+                "device_code": "ARM_01",
+                "result": "SUCCESS",
+            },
+            request_id="req-unknown-corr",
+            canonical_result_type="DEVICE_RESULT",
+            correlation_id="corr-command-not-persisted",
+        )
+
+    rows = (await db_session.execute(select(RuntimeInbox))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
 async def test_runtime_inbox_accept_returns_existing_ack_for_same_hash(db_session) -> None:
     """同 source event 且 payload_hash 一致时返回既有 ACK, 不新建记录。"""
 
@@ -173,6 +217,10 @@ async def test_accept_received_retry_without_owner_keeps_processor_assigned_owne
 
     from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
 
+    correlation = await _seed_execution_correlation(
+        db_session,
+        correlation_id="corr-owner-filled-by-processor",
+    )
     guard = _IdempotencyGuardSpy()
     service = RuntimeInboxService(idempotency_guard=guard)  # type: ignore[arg-type]
     first = await _accept_received(
@@ -182,7 +230,7 @@ async def test_accept_received_retry_without_owner_keeps_processor_assigned_owne
         event_type="DEVICE_EVENT",
         source_event_id="evt-owner-filled-by-processor",
         payload_hash="hash-owner-filled-by-processor",
-        correlation_id="corr-owner-filled-by-processor",
+        correlation_id=correlation.correlation_id,
     )
     await db_session.flush()
 
@@ -197,7 +245,7 @@ async def test_accept_received_retry_without_owner_keeps_processor_assigned_owne
         event_type="DEVICE_EVENT",
         source_event_id="evt-owner-filled-by-processor",
         payload_hash="hash-owner-filled-by-processor",
-        correlation_id="corr-owner-filled-by-processor",
+        correlation_id=correlation.correlation_id,
     )
 
     await db_session.refresh(first.record)
@@ -257,6 +305,10 @@ async def test_accept_received_unique_race_without_owner_acks_processor_assigned
         workline_session_id=41,
     )
     repository = _RuntimeInboxUniqueRaceRepository(existing)
+    correlation = await _seed_execution_correlation(
+        db_session,
+        correlation_id="corr-owner-race-unspecified",
+    )
     guard = _IdempotencyGuardSpy()
     service = RuntimeInboxService(repository=repository, idempotency_guard=guard)  # type: ignore[arg-type]
 
@@ -267,7 +319,7 @@ async def test_accept_received_unique_race_without_owner_acks_processor_assigned
         event_type="DEVICE_EVENT",
         source_event_id="evt-owner-race-unspecified",
         payload_hash="hash-owner-race-unspecified",
-        correlation_id="corr-owner-race-unspecified",
+        correlation_id=correlation.correlation_id,
     )
 
     assert retry.created is False
@@ -286,6 +338,7 @@ async def test_accept_received_rejects_existing_identity_owned_by_another_workli
         RuntimeInboxSessionOwnershipConflict,
     )
 
+    correlation = await _seed_execution_correlation(db_session, correlation_id="corr-session-owner")
     guard = _IdempotencyGuardSpy()
     service = RuntimeInboxService(idempotency_guard=guard)  # type: ignore[arg-type]
     first = await _accept_received(
@@ -295,7 +348,7 @@ async def test_accept_received_rejects_existing_identity_owned_by_another_workli
         event_type="COMMAND_RESULT",
         source_event_id="evt-session-owner",
         payload_hash="hash-session-owner",
-        correlation_id="corr-session-owner",
+        correlation_id=correlation.correlation_id,
         workline_session_id=41,
     )
 
@@ -307,7 +360,7 @@ async def test_accept_received_rejects_existing_identity_owned_by_another_workli
             event_type="COMMAND_RESULT",
             source_event_id="evt-session-owner",
             payload_hash="hash-session-owner",
-            correlation_id="corr-session-owner",
+            correlation_id=correlation.correlation_id,
             workline_session_id=42,
         )
 
@@ -333,6 +386,7 @@ async def test_accept_received_unique_race_rejects_another_session_before_idempo
         workline_session_id=41,
     )
     repository = _RuntimeInboxUniqueRaceRepository(existing)
+    correlation = await _seed_execution_correlation(db_session, correlation_id="corr-session-race")
     guard = _IdempotencyGuardSpy()
     service = RuntimeInboxService(repository=repository, idempotency_guard=guard)  # type: ignore[arg-type]
 
@@ -344,7 +398,7 @@ async def test_accept_received_unique_race_rejects_another_session_before_idempo
             event_type="COMMAND_RESULT",
             source_event_id="evt-session-race",
             payload_hash="hash-session-race",
-            correlation_id="corr-session-race",
+            correlation_id=correlation.correlation_id,
             workline_session_id=42,
         )
 
@@ -781,6 +835,13 @@ async def test_runtime_inbox_accept_received_writes_stable_bucket_and_received_a
     session = ExecutionSession(workline_id=17, manifest_version="manifest-v1", state="RUNNING")
     db_session.add(session)
     await db_session.flush()
+    correlation = ExecutionCorrelation(
+        correlation_id="corr-lower-priority",
+        execution_session_id=session.id,
+        trace_id="trace-lower-priority",
+    )
+    db_session.add(correlation)
+    await db_session.flush()
 
     result = await _accept_received(
         RuntimeInboxService(),
@@ -790,7 +851,7 @@ async def test_runtime_inbox_accept_received_writes_stable_bucket_and_received_a
         source_event_id="evt-bucket-001",
         payload_hash="hash-bucket-001",
         execution_session_id=session.id,
-        correlation_id="corr-lower-priority",
+        correlation_id=correlation.correlation_id,
         now_ms=NOW_MS,
     )
 
