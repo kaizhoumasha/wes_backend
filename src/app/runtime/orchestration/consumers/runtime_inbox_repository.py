@@ -26,7 +26,7 @@ class RuntimeInboxPayloadTooLarge(Exception):
         self.max_bytes = max_bytes
 
 
-def _validate_canonical_payload_size(payload_json: object) -> None:
+def validate_canonical_payload_size(payload_json: object) -> None:
     """在 db.add/flush/ACK 前校验 canonical JSON 的 UTF-8 bytes。"""
 
     if not isinstance(payload_json, dict):
@@ -79,7 +79,7 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
     async def add_received(self, db: AsyncSession, data: dict[str, Any]) -> RuntimeInbox:
         """新建 RECEIVED RuntimeInbox 并 flush，调用方控制事务提交。"""
 
-        _validate_canonical_payload_size(data.get("payload_json"))
+        validate_canonical_payload_size(data.get("payload_json"))
         record = RuntimeInbox(**data)
         db.add(record)
         await db.flush()
@@ -90,4 +90,9 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
 runtime_inbox_repository = RuntimeInboxRepository()
 
 
-__all__ = ["RuntimeInboxPayloadTooLarge", "RuntimeInboxRepository", "runtime_inbox_repository"]
+__all__ = [
+    "RuntimeInboxPayloadTooLarge",
+    "RuntimeInboxRepository",
+    "runtime_inbox_repository",
+    "validate_canonical_payload_size",
+]

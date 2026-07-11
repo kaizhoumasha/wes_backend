@@ -12,6 +12,7 @@ from src.app.runtime.orchestration.consumers.runtime_inbox_repository import (
     RuntimeInboxPayloadTooLarge,
     RuntimeInboxRepository,
     runtime_inbox_repository,
+    validate_canonical_payload_size,
 )
 from src.app.runtime.orchestration.services.idempotency_guard import (
     IdempotencyGuard,
@@ -221,6 +222,7 @@ class RuntimeInboxService:
         做幂等；同 hash 返回既有记录，不同 hash 409。
         """
 
+        validate_canonical_payload_size(payload_json)
         record_data = {
             "kind": kind,
             "payload_json": payload_json,
