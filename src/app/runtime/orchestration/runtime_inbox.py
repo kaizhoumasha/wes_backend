@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import JSON, Index, text
+from sqlalchemy import JSON, BigInteger, Index, text
 from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
@@ -159,13 +159,21 @@ class RuntimeInbox(BaseMixin, table=True):
     # 重试字段
     attempt_count: int = Field(default=0)
     max_retries: int = Field(default=5)
-    next_retry_at: int | None = Field(default=None, description="Unix timestamp")
-    lease_until: int | None = Field(default=None, description="claim lease 过期时间")
+    next_retry_at: int | None = Field(default=None, sa_type=BigInteger, description="Unix timestamp ms")
+    lease_until: int | None = Field(default=None, sa_type=BigInteger, description="claim lease 过期时间 (Unix ms)")
 
     last_error_code: str | None = Field(default=None, max_length=120)
     last_error_message: str | None = Field(default=None, max_length=500)
 
     # 时间 (Revision A 扩展, naive UTC from timezone.now_for_db())
-    received_at: int | None = Field(default=None, description="Unix timestamp, 写库时填充")
-    processed_at: int | None = Field(default=None, description="Unix timestamp, 写终态 PROCESSED 时填充")
-    failed_at: int | None = Field(default=None, description="Unix timestamp, 写终态 FAILED/DEAD_LETTER 时填充")
+    received_at: int | None = Field(default=None, sa_type=BigInteger, description="Unix timestamp ms, 写库时填充")
+    processed_at: int | None = Field(
+        default=None,
+        sa_type=BigInteger,
+        description="Unix timestamp ms, 写终态 PROCESSED 时填充",
+    )
+    failed_at: int | None = Field(
+        default=None,
+        sa_type=BigInteger,
+        description="Unix timestamp ms, 写终态 FAILED/DEAD_LETTER 时填充",
+    )

@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any, get_type_hints
 
 import pytest
+from sqlalchemy import BigInteger, Integer
 
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 
@@ -166,6 +167,17 @@ def test_received_processed_failed_at_are_int_timestamps() -> None:
     hints = get_type_hints(RuntimeInbox)
     for field_name in ("received_at", "processed_at", "failed_at", "next_retry_at", "lease_until"):
         assert hints[field_name] == int | None, f"{field_name} should be int | None, got {hints[field_name]}"
+
+
+def test_millisecond_timestamps_use_bigint_without_widening_retry_counters() -> None:
+    """Unix 毫秒必须用 BIGINT；attempt/max_retries 仍保持普通 INTEGER。"""
+
+    columns = RuntimeInbox.__table__.c
+    for field_name in ("received_at", "processed_at", "failed_at", "next_retry_at", "lease_until"):
+        assert isinstance(columns[field_name].type, BigInteger)
+    for field_name in ("attempt_count", "max_retries"):
+        assert isinstance(columns[field_name].type, Integer)
+        assert not isinstance(columns[field_name].type, BigInteger)
 
 
 # ============================================================

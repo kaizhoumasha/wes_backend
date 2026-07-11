@@ -37,7 +37,8 @@ DEPENDENT_COLUMNS = {
 
 
 def _database_url(database: str, *, sqlalchemy_driver: bool) -> str:
-    url = make_url(settings.DATABASE_URL)
+    # Heavy integration 可显式指向隔离 PostgreSQL；未设置时保留本地默认行为。
+    url = make_url(os.getenv("INTEGRATION_DATABASE_URL") or settings.DATABASE_URL)
     drivername = "postgresql+asyncpg" if sqlalchemy_driver else "postgresql"
     return url.set(drivername=drivername, database=database).render_as_string(hide_password=False)
 
@@ -203,6 +204,38 @@ async def _assert_revision_b_schema(connection: asyncpg.Connection) -> None:
         """
     )
     assert tuple(session_fk_target.values()) == ("wes_biz", "workline_sessions")
+
+    timestamp_columns = await connection.fetch(
+        """
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'wes_runtime'
+          AND table_name = 'runtime_inbox'
+          AND column_name = ANY($1::text[])
+        """,
+        ["received_at", "processed_at", "failed_at", "next_retry_at", "lease_until"],
+    )
+    assert {row["column_name"]: row["data_type"] for row in timestamp_columns} == {
+        "received_at": "bigint",
+        "processed_at": "bigint",
+        "failed_at": "bigint",
+        "next_retry_at": "bigint",
+        "lease_until": "bigint",
+    }
+    retry_columns = await connection.fetch(
+        """
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'wes_runtime'
+          AND table_name = 'runtime_inbox'
+          AND column_name = ANY($1::text[])
+        """,
+        ["attempt_count", "max_retries"],
+    )
+    assert {row["column_name"]: row["data_type"] for row in retry_columns} == {
+        "attempt_count": "integer",
+        "max_retries": "integer",
+    }
 
 
 async def _assert_revision_a_downgrade_schema(connection: asyncpg.Connection) -> None:
