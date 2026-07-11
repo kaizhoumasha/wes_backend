@@ -393,7 +393,6 @@ async def test_repository_emits_reclaim_fencing_resource_wait_and_dead_letter_sl
     )
 
     assert [name for name, _attrs in emit_calls] == [
-        "runtime_inbox.lease_reclaim",
         "runtime_inbox.resource_wait",
         "runtime_inbox.dead_letter",
         "runtime_inbox.fencing_reject",

@@ -13,12 +13,15 @@ def test_runtime_inbox_claim_benchmark() -> None:
     evidence_path = Path(evidence_path_value) if evidence_path_value else None
     result = run_runtime_inbox_postgresql_benchmark(evidence_path)
     metrics = result["metrics"]
+    thresholds = result["thresholds"]
 
     assert isinstance(metrics, dict)
     assert metrics["processed_count"] == 1_000
     assert metrics["duplicate_claim_count"] == 0
+    assert 0 < metrics["claim_sample_count"] < 1_000
     assert metrics["claim_p50_ms"] <= metrics["claim_p95_ms"]
-    assert metrics["throughput_per_second"] > 0
+    assert metrics["claim_p95_ms"] <= thresholds["claim_p95_ms"]
+    assert metrics["throughput_per_second"] >= thresholds["throughput_per_second"]
     assert result["query_plan"]
     assert result["sli_before"] == {
         "status_counts": {

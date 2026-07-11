@@ -358,7 +358,7 @@ wes_runtime.runtime_inbox
 
 ### Task 8：系统级测试、性能与韧性
 
-**状态：** 🟡 55% 完成（fd9e6b5a + 77bdd093 + 5c15a00）。真实 PostgreSQL 已覆盖完整生产处理链路、claim 后崩溃、write-back 后终态更新前崩溃，以及 Revision A/B 升降级回环；成功前任务队列唤醒为 0，最终成功后恰好为 1，heavy test 不接触真实 broker。剩余：1000 条/4 worker benchmark 与 SLI 验收。
+**状态：** ✅ 100% 完成（fd9e6b5a + 77bdd093 + 5c15a00 + 97af9ed + 9a7087d，含后续审查修复）。真实 PostgreSQL 已覆盖完整生产处理链路、两个 crash window、Revision A/B 升降级回环，以及 1000 条混合 backlog / 4 worker 并发 benchmark；成功前任务队列唤醒为 0，最终成功后恰好为 1，heavy test 不接触真实 broker。
 
 **目标：** 证明目标链路在真实数据库、并发、崩溃和 backlog 下可运行。
 
@@ -376,7 +376,7 @@ wes_runtime.runtime_inbox
 - 真实 benchmark 基线通过评审后锁定阈值。
 - 无 silent critical gap。
 
-**落地：** 两个 crash window 均通过 lease reclaim、新 token fencing 和事务回滚幂等收敛，最终只生成一条目标 timeline、设备命令与 outbox；旧 owner 无法写终态。RuntimeInbox 毫秒时间字段从最初建表 revision 起即为 BIGINT，A→parent→A 使用真实毫秒值验证无窄化和数据损坏。所有 heavy test 强制要求显式 `INTEGRATION_DATABASE_URL`，只操作安全前缀临时库，并已在独立非 5432 TimescaleDB 容器验证 5 项通过后清理。
+**落地：** 两个 crash window 均通过 lease reclaim、新 token fencing 和事务回滚幂等收敛，最终只生成一条目标 timeline、设备命令与 outbox；旧 owner 无法写终态。RuntimeInbox 毫秒时间字段从最初建表 revision 起即为 BIGINT，A→parent→A 使用真实毫秒值验证无窄化和数据损坏。所有 heavy test 强制要求显式 `INTEGRATION_DATABASE_URL`，只操作安全前缀临时库。最终 benchmark 使用 700 RECEIVED、200 到期 FAILED、100 stale PROCESSING，100 个 FIFO bucket；40 次真实 claim 调用的 p50 31.739ms、p95 76.214ms、吞吐 1593.023 条/秒，重复 claim 与等待锁均为 0，门禁锁定为 p95 ≤150ms、吞吐 ≥1000 条/秒。SLI 已覆盖五态数量、实际 FIFO 可推进的最老 claimable age、claim/processing duration、lease reclaim、fencing reject、RESOURCE_WAIT 与 dead-letter；批次 claim/reclaim 指标在 commit 后发射，不阻塞 repository 热路径。独立非 5432 TimescaleDB 验证完成后均已清理。
 
 ### Task 9：文档、索引与最终门禁
 

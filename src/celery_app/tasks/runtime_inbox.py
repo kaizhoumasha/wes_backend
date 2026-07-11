@@ -145,6 +145,24 @@ def _emit_processing_sli(*, inbox_id: object, started_at: float, outcome: str) -
         logger.warning(f"RuntimeInbox processing SLI 发射失败: inbox_id={inbox_id}, error={exc}")
 
 
+def _emit_batch_sli(*, claimed_count: int, claim_duration_ms: float, reclaimed_count: int) -> None:
+    """事务提交后发射批次 claim/reclaim SLI，避免观测阻塞 repository 热路径。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    try:
+        _ = runtime_observability_registry.emit(
+            "runtime_inbox.claim_batch",
+            {"claimed_count": claimed_count, "duration_ms": claim_duration_ms},
+        )
+        _ = runtime_observability_registry.emit(
+            "runtime_inbox.lease_reclaim",
+            {"reclaimed_count": reclaimed_count},
+        )
+    except Exception as exc:  # pragma: no cover - 观测 backend 故障不反向影响 worker
+        logger.warning(f"RuntimeInbox batch SLI 发射失败: error={exc}")
+
+
 def _processing_outcome(result: ClaimBatchResult) -> str:
     if result.get("resource_wait", 0):
         return "resource_wait"
@@ -195,8 +213,11 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
             processor = RuntimeInboxProcessorBridge()
 
             remaining = limit
+            claimed_count = 0
+            claim_duration_ms = 0.0
             while remaining > 0:
                 processor_token = str(uuid.uuid4())
+                claim_started_at = time.perf_counter()
                 claims = await runtime_inbox_service.claim_for_processing(
                     db,
                     limit=1,
@@ -204,12 +225,15 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
                     stale_after_seconds=WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
                 )
                 if not claims:
+                    claim_duration_ms += (time.perf_counter() - claim_started_at) * 1_000
                     break
 
                 claim = claims[0]
+                claimed_count += 1
                 # claim 的 PROCESSING/token/attempt 必须先独立提交。后续 processor
                 # rollback 只回滚业务处理事务，lease 保留到 stale recovery。
                 await db.commit()
+                claim_duration_ms += (time.perf_counter() - claim_started_at) * 1_000
                 processing_started_at = time.perf_counter()
                 try:
                     message_result = await asyncio.wait_for(
@@ -247,6 +271,7 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
                 remaining -= 1
 
             # 回收 stale leases
+            recovered = 0
             try:
                 recovered = await runtime_inbox_service.recover_stale_leases(
                     db,
@@ -259,6 +284,11 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
                 logger.warning(f"回收 stale lease 失败: {exc}")
 
             await db.commit()
+            _emit_batch_sli(
+                claimed_count=claimed_count,
+                claim_duration_ms=claim_duration_ms,
+                reclaimed_count=recovered,
+            )
             return result
 
     try:

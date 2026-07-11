@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 PENDING_INBOX_COUNT = 1_000
 WORKER_CONCURRENCY = 4
 CLAIM_BATCH_SIZE = 25
+CLAIM_P95_THRESHOLD_MS = 150.0
+THROUGHPUT_THRESHOLD_PER_SECOND = 1_000.0
 
 
 @dataclass(slots=True)
@@ -173,9 +175,8 @@ async def _claim_worker(
             elapsed_ms = (time.perf_counter() - started_at) * 1_000
             if not claims:
                 break
-            per_row_ms = elapsed_ms / len(claims)
             async with state.lock:
-                state.claim_samples_ms.extend([per_row_ms] * len(claims))
+                state.claim_samples_ms.append(elapsed_ms)
                 for claim in claims:
                     inbox_id = int(claim["id"])
                     if inbox_id in state.claimed_ids:
@@ -243,6 +244,7 @@ async def _run_benchmark() -> dict[str, object]:
             "metrics": {
                 "claim_p50_ms": round(_percentile(state.claim_samples_ms, 0.50), 3),
                 "claim_p95_ms": round(_percentile(state.claim_samples_ms, 0.95), 3),
+                "claim_sample_count": len(state.claim_samples_ms),
                 "throughput_per_second": round(PENDING_INBOX_COUNT / elapsed_seconds, 3),
                 "elapsed_seconds": round(elapsed_seconds, 3),
                 "duplicate_claim_count": state.duplicate_claim_count,
@@ -251,6 +253,11 @@ async def _run_benchmark() -> dict[str, object]:
                 "processed_count": processed_count,
             },
             "query_plan": query_plan,
+            "thresholds": {
+                "claim_p95_ms": CLAIM_P95_THRESHOLD_MS,
+                "throughput_per_second": THROUGHPUT_THRESHOLD_PER_SECOND,
+                "duplicate_claim_count": 0,
+            },
             "sli_before": sli_before,
             "sli_after": sli_after,
         }

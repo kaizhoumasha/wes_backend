@@ -145,7 +145,7 @@ def test_runtime_inbox_task_emits_processing_duration_sli(monkeypatch: pytest.Mo
     monkeypatch.setattr(task_module.process_runtime_inbox_batch, "_db", db)
     monkeypatch.setattr(task_module, "_run_async", asyncio.run)
     monkeypatch.setattr(runtime_inbox_service, "claim_for_processing", AsyncMock(side_effect=claims))
-    monkeypatch.setattr(runtime_inbox_service, "recover_stale_leases", AsyncMock(return_value=0))
+    monkeypatch.setattr(runtime_inbox_service, "recover_stale_leases", AsyncMock(return_value=2))
     monkeypatch.setattr(runtime_inbox_orchestrator_bridge, "RuntimeInboxProcessorBridge", ProcessorStub)
     monkeypatch.setattr(runtime_observability_registry, "emit", emit)
 
@@ -153,7 +153,14 @@ def test_runtime_inbox_task_emits_processing_duration_sli(monkeypatch: pytest.Mo
 
     assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
     processing_events = [call for call in emit.call_args_list if call.args[0] == "runtime_inbox.processing"]
+    claim_events = [call for call in emit.call_args_list if call.args[0] == "runtime_inbox.claim_batch"]
+    reclaim_events = [call for call in emit.call_args_list if call.args[0] == "runtime_inbox.lease_reclaim"]
     assert len(processing_events) == 1
+    assert len(claim_events) == 1
+    assert claim_events[0].args[1]["claimed_count"] == 1
+    assert claim_events[0].args[1]["duration_ms"] >= 0
+    assert len(reclaim_events) == 1
+    assert reclaim_events[0].args[1] == {"reclaimed_count": 2}
     assert processing_events[0].args[1]["inbox_id"] == 1
     assert processing_events[0].args[1]["outcome"] == "failed"
     assert processing_events[0].args[1]["duration_ms"] >= 0

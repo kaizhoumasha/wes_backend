@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -256,7 +255,6 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             .limit(limit)
             .with_for_update(skip_locked=True)
         )
-        started_at = time.perf_counter()
         result = await db.execute(
             update(table)
             .where(columns.id.in_(candidate_ids))
@@ -297,13 +295,6 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             for row in result.mappings().all()
         ]
         claims.sort(key=lambda row: (row["received_at"] is None, row["received_at"] or 0, row["id"]))
-        _emit_runtime_inbox_sli(
-            "runtime_inbox.claim_batch",
-            {
-                "claimed_count": len(claims),
-                "duration_ms": (time.perf_counter() - started_at) * 1_000,
-            },
-        )
         return claims
 
     async def recover_stale_leases(
@@ -352,12 +343,7 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             .returning(columns.id, columns.status)
             .execution_options(synchronize_session=False)
         )
-        recovered_count = len(result.mappings().all())
-        _emit_runtime_inbox_sli(
-            "runtime_inbox.lease_reclaim",
-            {"reclaimed_count": recovered_count},
-        )
-        return recovered_count
+        return len(result.mappings().all())
 
     async def update_terminal_state(
         self,
