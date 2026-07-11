@@ -1999,7 +1999,7 @@ class SmtInboundHandoffService:
     ) -> dict[str, Any] | None:
         if inbox_id is None:
             return None
-        inbox = await self.repository.get_workline_inbox_by_id(db, inbox_id)
+        inbox = await self.repository.get_runtime_inbox_by_id(db, inbox_id)
         if inbox is None:
             return None
         return {
@@ -2007,10 +2007,12 @@ class SmtInboundHandoffService:
             "status": enum_value(inbox.status),
             "event_id": inbox.event_id,
             "attempt_count": inbox.attempt_count,
-            "max_attempts": inbox.max_attempts,
+            "max_retries": inbox.max_retries,
             "next_retry_at": inbox.next_retry_at,
             "processed_at": inbox.processed_at,
-            "error_message": inbox.error_message,
+            "failed_at": inbox.failed_at,
+            "last_error_code": inbox.last_error_code,
+            "last_error_message": inbox.last_error_message,
         }
 
     async def _source_pick_command_evidence(

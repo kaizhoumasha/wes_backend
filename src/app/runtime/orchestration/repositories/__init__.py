@@ -49,6 +49,10 @@ from .runtime_hold_repository import (
     RuntimeHoldRepository,
     runtime_hold_repository,
 )
+from .runtime_inbox_repository import (
+    RuntimeInboxRepository,
+    runtime_inbox_repository,
+)
 from .runtime_location_event_repository import (
     RuntimeLocationEventRepository,
     runtime_location_event_repository,
@@ -73,6 +77,7 @@ __all__ = [
     "MaterialUnitRepository",
     "ObjectTransitionEventRepository",
     "RuntimeHoldRepository",
+    "RuntimeInboxRepository",
     "RuntimeLocationEventRepository",
     "SmtInboundHandoffRepository",
     "WorklineBinCellReservationRepository",
@@ -89,6 +94,7 @@ __all__ = [
     "material_unit_repository",
     "object_transition_event_repository",
     "runtime_hold_repository",
+    "runtime_inbox_repository",
     "runtime_location_event_repository",
     "smt_inbound_handoff_repository",
     "workline_bin_cell_reservation_repository",

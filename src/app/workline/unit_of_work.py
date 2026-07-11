@@ -12,7 +12,6 @@ from src.app.runtime.orchestration.repositories import (
     RuntimeHoldRepository,
     WorklineDiagnosticRepository,
     WorklineDispatchAttemptRepository,
-    WorklineInboxRepository,
     WorklineSessionRepository,
 )
 from src.app.sys.repositories import SystemOutboxRepository
@@ -46,7 +45,6 @@ class WorklineUnitOfWork:
         self._db: AsyncSession | None = None
 
         self.sessions = WorklineSessionRepository()
-        self.inboxes = WorklineInboxRepository()
         self.worklines = WorkLineRepository()
         self.runtime_holds = RuntimeHoldRepository()
         self.diagnostics = WorklineDiagnosticRepository()
