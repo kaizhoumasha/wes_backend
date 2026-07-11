@@ -141,10 +141,10 @@ def _operation_error_response(exc: Exception) -> dict[str, Any]:
     return response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=message)
 
 
-def _enqueue_workline_processing() -> None:
-    """触发 Workline Inbox 异步处理。"""
+def _enqueue_runtime_inbox_processing() -> None:
+    """触发 Runtime Inbox 异步处理。"""
 
-    task_queue_gateway.enqueue_workline_inbox(limit=10)
+    task_queue_gateway.enqueue_runtime_inbox(limit=10)
 
 
 @router.get(
@@ -208,7 +208,7 @@ async def replay_inbox(
         )
     except (ValueError, WorkLineSafetyBlocked) as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    _enqueue_workline_processing()
+    _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(replay)))
 
 
@@ -260,7 +260,7 @@ async def create_manual_operation(
         )
     except (ValueError, WorkLineSafetyBlocked) as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    _enqueue_workline_processing()
+    _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
 
@@ -389,7 +389,7 @@ async def submit_sandbox_event(
         )
     except ValueError as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    _enqueue_workline_processing()
+    _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
 
@@ -442,7 +442,7 @@ async def submit_sandbox_external_callback(
         )
     except ValueError as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    _enqueue_workline_processing()
+    _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
 
@@ -470,7 +470,7 @@ async def submit_sandbox_result(
     except ValueError as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     await publish_deferred_sse_events(db)
-    _enqueue_workline_processing()
+    _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
 

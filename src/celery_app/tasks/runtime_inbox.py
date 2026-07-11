@@ -154,8 +154,9 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
 
     async def _process() -> ClaimBatchResult:
         async with self.db as db:
-            from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
-                runtime_inbox_service,
+            from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
+            from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
+                RuntimeInboxProcessorBridge,
             )
             from src.app.workline.constants import (
                 INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -169,60 +170,37 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
                 "skipped": 0,
                 "resource_wait": 0,
             }
+            processor = RuntimeInboxProcessorBridge()
 
             remaining = limit
             while remaining > 0:
                 processor_token = str(uuid.uuid4())
-                try:
-                    claims = await asyncio.wait_for(
-                        runtime_inbox_service.claim_for_processing(
-                            db,
-                            limit=1,
-                            processor_token=processor_token,
-                            stale_after_seconds=WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
-                        ),
-                        timeout=INBOX_PROCESS_TIMEOUT_SECONDS,
-                    )
-                except TimeoutError:
-                    logger.error("RuntimeInbox claim 超时")
-                    break
+                claims = await runtime_inbox_service.claim_for_processing(
+                    db,
+                    limit=1,
+                    processor_token=processor_token,
+                    stale_after_seconds=WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
+                )
                 if not claims:
                     break
 
-                for claim in claims:
-                    try:
-                        # Plan Task 5: 调 RuntimeInboxProcessorService.process_claimed.
-                        # 当前 commit 后 Task 5 待执行, 此处只做简单的 5 态写回.
-                        # fallback: 直接 mark_processed 跳过业务逻辑 (占位).
-                        # 等 Task 5 完成后替换此处: processor_service.process_claimed
-                        await asyncio.wait_for(
-                            runtime_inbox_service.mark_processed(
-                                db,
-                                inbox_id=claim["id"],
-                                lease_token=processor_token,
-                            ),
-                            timeout=INBOX_PROCESS_TIMEOUT_SECONDS,
-                        )
-                        result["success"] += 1
-                    except TimeoutError:
-                        logger.error(f"RuntimeInbox {claim.get('id')} 处理超时")
-                        result["failed"] += 1
-                    except Exception as exc:
-                        logger.exception(f"RuntimeInbox {claim.get('id')} 处理异常: {exc}")
-                        with suppress(Exception):
-                            await runtime_inbox_service.mark_failed(
-                                db,
-                                inbox_id=claim["id"],
-                                lease_token=processor_token,
-                                error_message=str(exc),
-                                retryable=True,
-                            )
-                        result["failed"] += 1
-                    finally:
-                        result["processed"] += 1
-                        remaining -= 1
-                if remaining <= 0:
-                    break
+                claim = claims[0]
+                try:
+                    message_result = await asyncio.wait_for(
+                        processor.process_claimed(db, claim=claim),
+                        timeout=INBOX_PROCESS_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    # processor 被单条 timeout 取消后不越权写终态；回滚当前事务，
+                    # lease 由后续 stale recovery 重新开放。
+                    await db.rollback()
+                    logger.error(f"RuntimeInbox {claim.get('id')} 处理超时")
+                    result["processed"] += 1
+                    result["failed"] += 1
+                else:
+                    for key in result:
+                        result[key] += message_result.get(key, 0)
+                remaining -= 1
 
             # 回收 stale leases
             try:

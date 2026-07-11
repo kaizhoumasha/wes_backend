@@ -31,12 +31,10 @@ router = APIRouter()
 
 
 def _enqueue_runtime_inbox_processing() -> None:
-    """触发 Runtime Inbox 异步处理 (Plan Task 4 + 6 过渡)."""
+    """触发 Runtime Inbox 异步处理。"""
 
     try:
-        # Plan Task 6 将 enqueue_workline_inbox 替换为 enqueue_runtime_inbox.
-        # 暂保留 workline task name 作为兼容 (直到 Task 6 提交后)。
-        task_queue_gateway.enqueue_workline_inbox(limit=10)
+        task_queue_gateway.enqueue_runtime_inbox(limit=10)
     except Exception as exc:
         logger.warning(f"Callback 已入库，但即时触发 Runtime Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
 

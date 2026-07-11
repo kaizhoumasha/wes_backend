@@ -2,18 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Protocol, cast
 
-# Plan Task 6: 替换 workline_inbox → runtime_inbox
-# 旧 task 名称保留作为兼容 shim (Task 7 完成后删除)
 PROCESS_RUNTIME_INBOX_TASK = "src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch"
-PROCESS_WORKLINE_INBOX_TASK = "src.celery_app.tasks.workline.process_inbox_batch"
 DISPATCH_SYSTEM_OUTBOX_TASK = "src.celery_app.tasks.sys.dispatch_system_outbox_batch"
 PROCESS_INTERNAL_SIGNAL_TASK_TEMPLATE = "src.celery_app.tasks.{target_code}.process_signal"
 
 
 class TaskQueueGateway(Protocol):
     """应用层排队端口，隐藏 Celery/Redis Stream/Kafka 等具体实现。"""
-
-    def enqueue_workline_inbox(self, *, limit: int = 10) -> None: ...
 
     def enqueue_runtime_inbox(self, *, limit: int = 10) -> None: ...
 
@@ -30,24 +25,8 @@ class CeleryTaskQueueGateway:
 
         cast("Any", celery_app).send_task(task_name, kwargs=kwargs)
 
-    def enqueue_workline_inbox(self, *, limit: int = 10) -> None:
-        # 兼容 shim: 旧 workline_inbox 仍调 process_inbox_batch.
-        # Plan Task 6 后, 应改为 enqueue_runtime_inbox.
-        self._send_task(PROCESS_WORKLINE_INBOX_TASK, kwargs={"limit": limit})
-
     def enqueue_runtime_inbox(self, *, limit: int = 10) -> None:
-        # Plan Task 6: 主路径调 process_runtime_inbox_batch.
-        # 若 worker 还没把 runtime_inbox task import 进 registry (例如部署漂移),
-        # send_task 会抛 NotRegistered; 此时自动回退到旧 process_inbox_batch
-        # 保证 enqueue 不会因为 task 未注册而拒绝, 业务侧不会出现漏 enqueue.
-        # Task 7 完成后删除 fallback.
-        try:
-            self._send_task(PROCESS_RUNTIME_INBOX_TASK, kwargs={"limit": limit})
-        except Exception as exc:
-            # 仅在 NotRegistered 时回退; 其它异常 (broker 不可达等) 让其自然抛出.
-            if exc.__class__.__name__ != "NotRegistered":
-                raise
-            self._send_task(PROCESS_WORKLINE_INBOX_TASK, kwargs={"limit": limit})
+        self._send_task(PROCESS_RUNTIME_INBOX_TASK, kwargs={"limit": limit})
 
     def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
         # 当前 Celery 任务是批量兜底模型；outbox_id 保留给单条队列后端使用。
@@ -67,7 +46,6 @@ __all__ = [
     "DISPATCH_SYSTEM_OUTBOX_TASK",
     "PROCESS_INTERNAL_SIGNAL_TASK_TEMPLATE",
     "PROCESS_RUNTIME_INBOX_TASK",
-    "PROCESS_WORKLINE_INBOX_TASK",
     "CeleryTaskQueueGateway",
     "TaskQueueGateway",
     "task_queue_gateway",
