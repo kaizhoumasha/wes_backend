@@ -134,30 +134,40 @@ def test_runtime_inbox_task_times_out_only_the_claimed_message(monkeypatch: pyte
     from src.celery_app.tasks import runtime_inbox as task_module
 
     db = _SessionStub()
-    claim_for_processing = AsyncMock(
-        side_effect=[
-            [{"id": 1, "processor_token": "token-1"}],
-            [],
-        ]
-    )
+    claim_committed = False
+
+    async def commit() -> None:
+        nonlocal claim_committed
+        claim_committed = True
+
+    db.commit.side_effect = commit
+
+    async def claim_for_processing(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        if claim_committed:
+            return []
+        return [{"id": 1, "processor_token": "token-1"}]
+
+    claim_mock = AsyncMock(side_effect=claim_for_processing)
 
     class SlowProcessorStub:
         async def process_claimed(self, _db: object, *, claim: dict[str, object]) -> dict[str, int]:
             _ = claim
+            assert claim_committed is True
             await asyncio.sleep(0.05)
             return _empty_result()
 
     monkeypatch.setattr(task_module.process_runtime_inbox_batch, "_db", db)
     monkeypatch.setattr(task_module, "_run_async", asyncio.run)
     monkeypatch.setattr(constants, "INBOX_PROCESS_TIMEOUT_SECONDS", 0.001)
-    monkeypatch.setattr(runtime_inbox_service, "claim_for_processing", claim_for_processing)
+    monkeypatch.setattr(runtime_inbox_service, "claim_for_processing", claim_mock)
     monkeypatch.setattr(runtime_inbox_service, "recover_stale_leases", AsyncMock(return_value=0))
     monkeypatch.setattr(runtime_inbox_orchestrator_bridge, "RuntimeInboxProcessorBridge", SlowProcessorStub)
 
     result = task_module.process_runtime_inbox_batch.run(limit=2)
 
     assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
-    assert claim_for_processing.await_count == 2
+    assert claim_mock.await_count == 2
+    assert db.commit.await_count >= 2
     db.rollback.assert_awaited_once()
 
 
@@ -182,3 +192,43 @@ def test_runtime_inbox_task_retries_batch_infrastructure_failure(monkeypatch: py
 
     assert isinstance(retry.call_args.kwargs["exc"], ConnectionError)
     assert retry.call_args.kwargs["countdown"] == 10
+
+
+def test_runtime_inbox_task_rolls_back_processor_exception_after_claim_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge
+    from src.celery_app.tasks import runtime_inbox as task_module
+
+    db = _SessionStub()
+    claim_committed = False
+
+    async def commit() -> None:
+        nonlocal claim_committed
+        claim_committed = True
+
+    class FailingProcessorStub:
+        async def process_claimed(self, _db: object, *, claim: dict[str, object]) -> dict[str, int]:
+            _ = claim
+            assert claim_committed is True
+            raise ConnectionError("processor database error")
+
+    retry = MagicMock(side_effect=RuntimeError("retry requested"))
+    db.commit.side_effect = commit
+    monkeypatch.setattr(task_module.process_runtime_inbox_batch, "_db", db)
+    monkeypatch.setattr(task_module, "_run_async", asyncio.run)
+    monkeypatch.setattr(
+        runtime_inbox_service,
+        "claim_for_processing",
+        AsyncMock(return_value=[{"id": 1, "processor_token": "token-1"}]),
+    )
+    monkeypatch.setattr(runtime_inbox_orchestrator_bridge, "RuntimeInboxProcessorBridge", FailingProcessorStub)
+    monkeypatch.setattr(task_module.process_runtime_inbox_batch, "retry", retry)
+
+    with pytest.raises(RuntimeError, match="retry requested"):
+        task_module.process_runtime_inbox_batch.run(limit=1)
+
+    db.commit.assert_awaited_once()
+    db.rollback.assert_awaited_once()
+    assert isinstance(retry.call_args.kwargs["exc"], ConnectionError)

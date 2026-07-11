@@ -593,6 +593,7 @@ class TestBuildWriteCallback:
                 "lease_token": "lease-resource",
                 "error_message": "RESOURCE_WAIT",
                 "retryable": True,
+                "consume_attempt": False,
             }
         ]
         assert state.disposition == WriteBackDisposition.RESOURCE_RETRY

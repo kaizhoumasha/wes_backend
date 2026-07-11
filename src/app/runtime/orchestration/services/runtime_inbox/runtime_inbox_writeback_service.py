@@ -383,6 +383,7 @@ class RuntimeInboxWriteBackService:
                             lease_token=processor_token,
                             error_message="RESOURCE_WAIT",
                             retryable=True,
+                            consume_attempt=False,
                         ),
                         action="mark_failed",
                         inbox_id=inbox_pk,

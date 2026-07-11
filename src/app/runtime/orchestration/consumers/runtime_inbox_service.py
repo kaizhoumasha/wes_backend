@@ -637,8 +637,9 @@ class RuntimeInboxService:
         lease_token: str,
         error_message: str,
         retryable: bool,
+        consume_attempt: bool = True,
     ) -> bool:
-        """写终态 FAILED + failed_at. retryable=True 时设置 next_retry_at."""
+        """按 retry/attempt 状态机 fenced 写入 FAILED 或 DEAD_LETTER。"""
         from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
         from src.utils.timezone import timezone
 
@@ -647,23 +648,38 @@ class RuntimeInboxService:
         extra: dict[str, Any] = {"last_error_message": error_message}
         if now_ms is not None:
             extra["failed_at"] = now_ms
+
+        attempt_count = 0
+        max_retries = 0
         if retryable:
-            # 指数退避 (10s, 20s, 40s, ... 600s cap)
-            # attempt_count 从当前行读
             from sqlalchemy import select
 
             inbox = (
                 await db.execute(select(RuntimeInbox).where(cast("Any", RuntimeInbox).__table__.c.id == inbox_id))
             ).scalar_one_or_none()
             attempt_count = int(getattr(inbox, "attempt_count", 0) or 0)
-            delay_seconds = min(600, 10 * (2**attempt_count))
+            max_retries = int(getattr(inbox, "max_retries", 0) or 0)
+
+        effective_attempt_count = max(0, attempt_count - (0 if consume_attempt else 1))
+        exhausted = retryable and effective_attempt_count >= max_retries
+        target_state = "DEAD_LETTER" if not retryable or exhausted else "FAILED"
+
+        if not consume_attempt:
+            # RESOURCE_WAIT 在 claim 时已 +1；fenced 写 FAILED 时原子恢复，且不低于 0。
+            extra["attempt_count"] = effective_attempt_count
+
+        if target_state == "FAILED":
+            # 指数退避 (10s, 20s, 40s, ... 600s cap)
+            delay_seconds = min(600, 10 * (2**effective_attempt_count))
             if now_ms is not None:
                 extra["next_retry_at"] = now_ms + delay_seconds * 1000
+        else:
+            extra["next_retry_at"] = None
         return await self.claim_repo.update_terminal_state(
             db,
             inbox_id=inbox_id,
             lease_token=lease_token,
-            target_state="FAILED",
+            target_state=target_state,
             extra_values=extra,
         )
 

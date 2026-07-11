@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from sqlalchemy.dialects import postgresql
@@ -10,6 +10,10 @@ from sqlalchemy.dialects import postgresql
 from src.app.runtime.orchestration.repositories.runtime_inbox_claim_repository import (
     RuntimeInboxClaimRepository,
 )
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class _StatementCaptured(Exception):
@@ -111,3 +115,57 @@ async def test_claim_returns_only_atomic_update_returning_rows() -> None:
 
     assert len(db.statements) == 1
     assert claims == [rows[0] | {"payload_json": {"event_type": "SCAN_COMPLETED"}}]
+
+
+@pytest.mark.asyncio
+async def test_legacy_terminal_failed_rows_do_not_block_bucket_head(db_session: AsyncSession) -> None:
+    """无推进路径的 legacy FAILED 不能永久阻塞同 bucket 后续消息。"""
+
+    rows = [
+        RuntimeInbox(
+            provider_code="TEST",
+            event_type="DEVICE_EVENT",
+            source_event_id="legacy-exhausted",
+            payload_json={},
+            status="FAILED",
+            claim_bucket_key="bucket-legacy",
+            received_at=1,
+            attempt_count=3,
+            max_retries=3,
+            next_retry_at=0,
+        ),
+        RuntimeInbox(
+            provider_code="TEST",
+            event_type="DEVICE_EVENT",
+            source_event_id="legacy-nonretry",
+            payload_json={},
+            status="FAILED",
+            claim_bucket_key="bucket-legacy",
+            received_at=2,
+            attempt_count=1,
+            max_retries=3,
+            next_retry_at=None,
+        ),
+        RuntimeInbox(
+            provider_code="TEST",
+            event_type="DEVICE_EVENT",
+            source_event_id="current-received",
+            payload_json={},
+            status="RECEIVED",
+            claim_bucket_key="bucket-legacy",
+            received_at=3,
+            attempt_count=0,
+            max_retries=3,
+        ),
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+
+    claims = await RuntimeInboxClaimRepository().claim_received_with_token(
+        db_session,
+        limit=1,
+        processor_token="worker-current",
+        stale_after_seconds=30,
+    )
+
+    assert [claim["source_event_id"] for claim in claims] == ["current-received"]

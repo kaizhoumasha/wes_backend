@@ -185,18 +185,24 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
                     break
 
                 claim = claims[0]
+                # claim 的 PROCESSING/token/attempt 必须先独立提交。后续 processor
+                # rollback 只回滚业务处理事务，lease 保留到 stale recovery。
+                await db.commit()
                 try:
                     message_result = await asyncio.wait_for(
                         processor.process_claimed(db, claim=claim),
                         timeout=INBOX_PROCESS_TIMEOUT_SECONDS,
                     )
                 except TimeoutError:
-                    # processor 被单条 timeout 取消后不越权写终态；回滚当前事务，
-                    # lease 由后续 stale recovery 重新开放。
+                    # processor 被单条 timeout 取消后不越权写终态；已提交的
+                    # PROCESSING lease 不受本次 rollback 影响，由 stale recovery 重开。
                     await db.rollback()
                     logger.error(f"RuntimeInbox {claim.get('id')} 处理超时")
                     result["processed"] += 1
                     result["failed"] += 1
+                except Exception:
+                    await db.rollback()
+                    raise
                 else:
                     for key in result:
                         result[key] += message_result.get(key, 0)

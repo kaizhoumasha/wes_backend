@@ -246,13 +246,13 @@ async def test_mark_processed_rejects_stale_token() -> None:
 
 
 # ============================================================
-# Case 5: mark_failed 写终态 FAILED (retryable=False 避免 db.execute)
+# Case 5: mark_failed 非重试失败写终态 DEAD_LETTER
 # ============================================================
 
 
 @pytest.mark.asyncio
 async def test_mark_failed_writes_terminal_state() -> None:
-    """mark_failed 调 claim_repo.update_terminal_state(target=FAILED)。"""
+    """mark_failed(retryable=False) 调 claim_repo 写 DEAD_LETTER。"""
     service = runtime_inbox_service_module.runtime_inbox_service
 
     captured: list[dict[str, Any]] = []
@@ -293,7 +293,7 @@ async def test_mark_failed_writes_terminal_state() -> None:
     call = captured[0]
     assert call["inbox_id"] == 42
     assert call["lease_token"] == "tok-42"
-    assert call["target_state"] == "FAILED"
+    assert call["target_state"] == "DEAD_LETTER"
     assert call["extra_values"]["last_error_message"] == "processing failed"
 
 

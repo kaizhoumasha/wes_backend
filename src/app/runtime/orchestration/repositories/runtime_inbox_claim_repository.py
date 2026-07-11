@@ -60,11 +60,20 @@ class RuntimeInboxClaimRepository(BaseRepository[RuntimeInbox]):
             | ((candidate_columns.status == "FAILED") & (candidate_columns.next_retry_at <= now_value))
             | ((candidate_columns.status == "PROCESSING") & (candidate_columns.lease_until <= now_value))
         ) & (candidate_columns.attempt_count < candidate_columns.max_retries)
+        earlier_can_still_advance = (
+            (earlier_columns.status == "RECEIVED")
+            | (earlier_columns.status == "PROCESSING")
+            | (
+                (earlier_columns.status == "FAILED")
+                & earlier_columns.next_retry_at.is_not(None)
+                & (earlier_columns.attempt_count < earlier_columns.max_retries)
+            )
+        )
         earlier_message_in_bucket = exists(
             select(1)
             .select_from(earlier_inbox)
             .where(
-                earlier_columns.status.in_(["RECEIVED", "FAILED", "PROCESSING"]),
+                earlier_can_still_advance,
                 earlier_columns.claim_bucket_key == candidate_columns.claim_bucket_key,
                 tuple_(earlier_columns.received_at, earlier_columns.id)
                 < tuple_(candidate_columns.received_at, candidate_columns.id),
