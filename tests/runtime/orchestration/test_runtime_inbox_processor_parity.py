@@ -204,6 +204,25 @@ class _FakeDb:
         self.rolled_back += 1
 
 
+class _StatefulSafetyFake:
+    """模拟 active incident repository，重复 ESTOP 复用当前 incident。"""
+
+    def __init__(self) -> None:
+        self.active_incident: SimpleNamespace | None = None
+        self.create_count = 0
+        self.call_count = 0
+
+    async def handle_estop(self, db: _FakeDb, **kwargs: object) -> SimpleNamespace:
+        _ = kwargs
+        self.call_count += 1
+        if self.active_incident is None:
+            self.create_count += 1
+            self.active_incident = SimpleNamespace(id=122 + self.create_count)
+        db.safety_effects.add(self.active_incident.id)
+        await db.commit()
+        return self.active_incident
+
+
 class _Repository:
     def __init__(self, inbox: object) -> None:
         self.inbox = inbox
@@ -316,6 +335,7 @@ async def _run_case(
     processor_kind: ProcessorKind,
     case: ParityCase,
     accept_updates: bool = True,
+    safety_state: _StatefulSafetyFake | None = None,
 ) -> tuple[
     dict[str, int],
     list[str],
@@ -330,6 +350,7 @@ async def _run_case(
     archives: list[str] = []
     diagnostics: list[dict[str, Any]] = []
     interactions: list[dict[str, Any]] = []
+    safety_state = safety_state or _StatefulSafetyFake()
 
     async def load_related(*args: object, **kwargs: object) -> dict[str, object]:
         _ = args, kwargs
@@ -387,8 +408,7 @@ async def _run_case(
 
     async def estop_handler(*args: object, **kwargs: object) -> object:
         estop_db = args[0]
-        estop_db.safety_effects.add(123)
-        await estop_db.commit()
+        incident = await safety_state.handle_estop(estop_db, **kwargs)
         interactions.append(
             {
                 "kind": "estop",
@@ -396,7 +416,7 @@ async def _run_case(
                 "source_command_id": kwargs.get("source_command_id"),
             }
         )
-        return SimpleNamespace(id=123)
+        return incident
 
     effect = (
         RuntimeIntentEffectResult.resource_retry()
@@ -602,10 +622,25 @@ async def test_repeated_estop_reuses_active_fail_safe_effect(
     """重复 ESTOP 使用同一 active incident effect，仍分别执行 fenced 终态。"""
     case = next(item for item in PARITY_CASES if item.name == "estop_with_device_and_command")
 
-    first = await _run_case(monkeypatch, processor_kind="three_stage", case=case)
-    second = await _run_case(monkeypatch, processor_kind="three_stage", case=case)
+    safety_state = _StatefulSafetyFake()
+    first = await _run_case(
+        monkeypatch,
+        processor_kind="three_stage",
+        case=case,
+        safety_state=safety_state,
+    )
+    second = await _run_case(
+        monkeypatch,
+        processor_kind="three_stage",
+        case=case,
+        safety_state=safety_state,
+    )
 
+    assert safety_state.call_count == 2
+    assert safety_state.create_count == 1
     assert first[-1].safety_effects == {123}
     assert second[-1].safety_effects == {123}
     assert first[0]["success"] == 1
     assert second[0]["success"] == 1
+    assert first[2][0]["action"] == "processed"
+    assert second[2][0]["action"] == "processed"
