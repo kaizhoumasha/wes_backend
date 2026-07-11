@@ -37,7 +37,11 @@ from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound im
     ROLE_SORTING_SOURCE_ARM,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
-from src.app.runtime.normalization.contracts import NormalizedCommandResult, NormalizedDeviceEvent
+from src.app.runtime.normalization.contracts import (
+    NormalizedCommandResult,
+    NormalizedDeviceEvent,
+    NormalizedExternalCallback,
+)
 from src.app.runtime.normalization.normalizers import normalize_inbox_input
 from src.app.runtime.orchestration.diagnostics import ErrorCode, error_domain_for
 from src.app.runtime.orchestration.lock_bridge import LockAcquireError
@@ -531,6 +535,10 @@ def _standard_inbox_intents(
         return _command_result_intents(normalized_input)
     if isinstance(normalized_input, NormalizedDeviceEvent):
         return _device_event_intents(normalized_input, inbox=inbox, workline=workline, trace_id=trace_id)
+    if isinstance(normalized_input, NormalizedExternalCallback):
+        # 无 runtime_capability 的 external callback 属于 lifecycle-only evidence。
+        # lifecycle 已在 ingress 同事务完成，processor 只通过空 intents 触发 fenced PROCESSED 写回。
+        return []
     raise ValueError(f"target-state runtime inbox handler is not registered for {type(normalized_input).__name__}")
 
 
