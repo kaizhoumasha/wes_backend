@@ -168,8 +168,8 @@ class WorklineOperationService(BaseService[Any, Any]):
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         received_at_ms = None
         if received_at is not None:
-            received_at_ms = timezone.to_utc_timestamp(received_at) * 1000
-        result = await self.runtime_inbox_service.accept_received(
+            received_at_ms = int(timezone.to_utc(received_at).timestamp() * 1000)
+        return await self.runtime_inbox_service.accept_received(
             db,
             provider_code="MANUAL",
             event_type=event_type,
@@ -187,7 +187,6 @@ class WorklineOperationService(BaseService[Any, Any]):
             workline_session_id=workline_session_id,
             now_ms=received_at_ms,
         )
-        return result.record
 
     async def get_sandbox_pending(
         self,
@@ -576,7 +575,7 @@ class WorklineOperationService(BaseService[Any, Any]):
                 "replay_operator_id": operator_id,
             }
         )
-        replay = await self._accept_runtime_message(
+        replay_result = await self._accept_runtime_message(
             db,
             kind=original.kind,
             event_type=original.event_type,
@@ -592,7 +591,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         )
         if auto_commit:
             await self._commit_mutation(db)
-        return replay
+        return replay_result.record
 
     async def create_manual_operation(
         self,
@@ -635,7 +634,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             "reason": reason,
             "session_id": session_id,
         }
-        inbox = await self._accept_runtime_message(
+        inbox_result = await self._accept_runtime_message(
             db,
             kind=kind,
             event_type=kind,
@@ -648,7 +647,7 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         if auto_commit:
             await self._commit_mutation(db)
-        return inbox
+        return inbox_result.record
 
     async def submit_sandbox_event(
         self,
@@ -676,7 +675,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         event_payload["sandbox_mode"] = True
 
         sandbox_event_id = f"sandbox:{event_type}:{uuid.uuid4().hex}"
-        inbox = await self._accept_runtime_message(
+        inbox_result = await self._accept_runtime_message(
             db,
             kind="DEVICE_EVENT",
             event_type=event_type,
@@ -691,7 +690,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         )
         if auto_commit:
             await self._commit_mutation(db)
-        return inbox
+        return inbox_result.record
 
     async def submit_sandbox_external_callback(
         self,
@@ -766,7 +765,22 @@ class WorklineOperationService(BaseService[Any, Any]):
         trace_id = trace_id.strip()
 
         callback_received_at = timestamp if isinstance(timestamp, datetime) else timezone.now_for_db()
-        event_occurred_at = occurred_at if isinstance(occurred_at, datetime) else callback_received_at
+        # 接收时间用于 RuntimeInbox 排序；canonical payload 只使用显式时间或稳定业务时间，
+        # 避免同一 dispatch_key 重试因当前时间变化而产生 payload_hash 冲突。
+        stable_message_at = next(
+            (
+                value
+                for value in (
+                    timestamp,
+                    occurred_at,
+                    getattr(outbox, "created_at", None),
+                    getattr(session, "created_at", None),
+                )
+                if isinstance(value, datetime)
+            ),
+            timezone.to_utc(0),
+        )
+        event_occurred_at = occurred_at if isinstance(occurred_at, datetime) else stable_message_at
         resolved_source_event_id = source_event_id or raw_payload.get("source_event_id")
         if not isinstance(resolved_source_event_id, str) or not resolved_source_event_id.strip():
             dispatch_event_hash = uuid.uuid5(uuid.NAMESPACE_URL, dispatch_key).hex
@@ -774,7 +788,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         resolved_source_event_id = resolved_source_event_id.strip()
         resolved_request_id = request_id or raw_payload.get("request_id")
         if not isinstance(resolved_request_id, str) or not resolved_request_id.strip():
-            resolved_request_id = f"sandbox:external:{uuid.uuid4().hex}"
+            resolved_request_id = f"sandbox:external:{resolved_source_event_id}"
         resolved_request_id = resolved_request_id.strip()
 
         inbox_payload = {
@@ -788,17 +802,11 @@ class WorklineOperationService(BaseService[Any, Any]):
             "source_version": source_version,
             "occurred_at": event_occurred_at.isoformat(),
             "request_id": resolved_request_id,
-            "timestamp": callback_received_at.isoformat(),
+            "timestamp": stable_message_at.isoformat(),
             "signature": signature,
             "sandbox_mode": True,
         }
-        existing_inbox = await self.inbox_repo.get_by_source_event_identity(
-            db,
-            provider_code="MANUAL",
-            event_type=resolved_callback_type,
-            source_event_id=resolved_source_event_id,
-        )
-        inbox = await self._accept_runtime_message(
+        inbox_result = await self._accept_runtime_message(
             db,
             kind="EXTERNAL_HTTP",
             event_type=resolved_callback_type,
@@ -807,10 +815,11 @@ class WorklineOperationService(BaseService[Any, Any]):
             workline_session_id=session.id,
             trace_id=trace_id,
             event_id=resolved_source_event_id,
+            received_at=callback_received_at,
             payload=inbox_payload,
         )
 
-        if existing_inbox is None:
+        if inbox_result.created:
             await self.rack_task_lifecycle_service.record_callback_from_external_http(
                 db=db,
                 payload_json=inbox_payload,
@@ -827,7 +836,7 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         if auto_commit:
             await self._commit_mutation(db)
-        return inbox
+        return inbox_result.record
 
     async def submit_sandbox_ack(
         self,
@@ -1043,7 +1052,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             pass
 
         result_event_id = f"sandbox:result:{command_code}:{uuid.uuid4().hex}"
-        inbox = await self._accept_runtime_message(
+        inbox_result = await self._accept_runtime_message(
             db,
             kind="COMMAND_RESULT",
             event_type="COMMAND_RESULT",
@@ -1071,7 +1080,7 @@ class WorklineOperationService(BaseService[Any, Any]):
 
         if auto_commit:
             await self._commit_mutation(db)
-        return inbox
+        return inbox_result.record
 
     DEFAULT_EVENT_PAYLOAD_TEMPLATES = _DEFAULT_EVENT_PAYLOAD_TEMPLATES
 
