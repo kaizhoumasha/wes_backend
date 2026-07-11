@@ -85,7 +85,7 @@ class DiagnosisVerdictBuilder:
                 state="failed",
                 severity="danger",
                 title="Inbox 处理失败",
-                summary=coerce_optional_str(getattr(failed_inbox, "error_message", None)) or "入口事件处理失败。",
+                summary=coerce_optional_str(getattr(failed_inbox, "last_error_message", None)) or "入口事件处理失败。",
                 requires_operator_action=True,
                 primary_action="查看 inbox 错误和诊断证据，修复后重放或重试入口事件",
                 blocking_point="inbox",

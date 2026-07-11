@@ -807,6 +807,8 @@ class TraceQueryService(BaseService[Any, Any]):
                     "kind": getattr(inbox, "kind", None),
                     "status": getattr(inbox, "status", None),
                     "attempt_count": getattr(inbox, "attempt_count", None),
+                    "last_error_code": getattr(inbox, "last_error_code", None),
+                    "last_error_message": getattr(inbox, "last_error_message", None),
                 },
             )
             for inbox in inboxes
@@ -907,21 +909,26 @@ class TraceQueryService(BaseService[Any, Any]):
             context = build_diagnostic_context(
                 trace=trace.with_inbox(dead_letter_inbox),
                 inbox=dead_letter_inbox,
-                extra={"source": "inbox", "error_message": getattr(dead_letter_inbox, "error_message", None)},
+                extra={
+                    "source": "inbox",
+                    "last_error_code": getattr(dead_letter_inbox, "last_error_code", None),
+                    "last_error_message": getattr(dead_letter_inbox, "last_error_message", None),
+                },
             )
             return self._blocking_response(
                 trace=trace,
                 trace_id=trace_id,
                 blocking_point="inbox",
                 error_code=ErrorCode.INBOX_RETRY_EXHAUSTED,
-                message=getattr(dead_letter_inbox, "error_message", None) or "Inbox 重试耗尽",
+                message=getattr(dead_letter_inbox, "last_error_message", None) or "Inbox 重试耗尽",
                 context=context,
                 verdict=verdict,
                 evidence={
                     "inbox": {
                         "id": getattr(dead_letter_inbox, "id", None),
                         "status": optional_enum_str(getattr(dead_letter_inbox, "status", None)),
-                        "error_message": getattr(dead_letter_inbox, "error_message", None),
+                        "last_error_code": getattr(dead_letter_inbox, "last_error_code", None),
+                        "last_error_message": getattr(dead_letter_inbox, "last_error_message", None),
                     }
                 },
             )
@@ -937,7 +944,7 @@ class TraceQueryService(BaseService[Any, Any]):
             error_code = self._diagnostic_error_code(matched_diagnostic) or ErrorCode.SESSION_RESOLVE_FAILED
             message = (
                 (matched_diagnostic.extra.get("message") if matched_diagnostic is not None else None)
-                or getattr(failed_inbox, "error_message", None)
+                or getattr(failed_inbox, "last_error_message", None)
                 or "Inbox 处理失败"
             )
             context = build_diagnostic_context(
@@ -945,7 +952,8 @@ class TraceQueryService(BaseService[Any, Any]):
                 inbox=failed_inbox,
                 extra={
                     "source": "inbox",
-                    "error_message": getattr(failed_inbox, "error_message", None),
+                    "last_error_code": getattr(failed_inbox, "last_error_code", None),
+                    "last_error_message": getattr(failed_inbox, "last_error_message", None),
                     "diagnostic": matched_diagnostic.extra if matched_diagnostic is not None else None,
                 },
             )
@@ -961,7 +969,8 @@ class TraceQueryService(BaseService[Any, Any]):
                     "inbox": {
                         "id": getattr(failed_inbox, "id", None),
                         "status": optional_enum_str(getattr(failed_inbox, "status", None)),
-                        "error_message": getattr(failed_inbox, "error_message", None),
+                        "last_error_code": getattr(failed_inbox, "last_error_code", None),
+                        "last_error_message": getattr(failed_inbox, "last_error_message", None),
                     },
                     "diagnostic": matched_diagnostic.extra if matched_diagnostic is not None else None,
                 },

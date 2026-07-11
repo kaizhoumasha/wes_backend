@@ -161,7 +161,7 @@ class TraceContext:
             or non_empty_str(payload.get("causation_id"))
             or self.causation_id,
             workline_id=_attr_int(inbox, "workline_id") or self.workline_id,
-            session_id=_attr_int(inbox, "session_id") or self.session_id,
+            session_id=_attr_int(inbox, "workline_session_ref") or _attr_int(inbox, "session_id") or self.session_id,
             inbox_id=_attr_int(inbox, "id") or self.inbox_id,
             device_id=_attr_int(inbox, "device_id") or self.device_id,
             command_id=_attr_int(inbox, "command_id") or self.command_id,

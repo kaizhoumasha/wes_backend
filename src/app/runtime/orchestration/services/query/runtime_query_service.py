@@ -2277,7 +2277,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
                         label=f"INBOX {optional_enum_str(inbox.kind) or ''}",
                         status=optional_enum_str(inbox.status),
                         timestamp=inbox.processed_at or inbox.received_at,
-                        message=inbox.error_message,
+                        message=inbox.last_error_message,
                     )
                 )
 
