@@ -28,6 +28,7 @@ NOW_MS = 1_700_000_000_000
 
 runtime_inbox_service_module = importlib.import_module("src.app.runtime.orchestration.consumers.runtime_inbox_service")
 RuntimeInboxService = runtime_inbox_service_module.RuntimeInboxService
+RuntimeInboxCorrelationUnavailable = runtime_inbox_service_module.RuntimeInboxCorrelationUnavailable
 
 
 def test_claim_bucket_separates_workline_and_execution_session_namespaces() -> None:
@@ -344,13 +345,15 @@ async def test_accept_internal_event_rejects_unknown_explicit_correlation_id(db_
 
     service = RuntimeInboxService()
 
-    with pytest.raises(ValueError, match="unknown correlation_id"):
+    with pytest.raises(RuntimeInboxCorrelationUnavailable) as exc_info:
         await service.accept_internal_event(
             db_session,
             event_type="INTERNAL_HEARTBEAT",
             payload_json={},
             correlation_id="corr-not-persisted",
         )
+
+    assert exc_info.value.correlation_id == "corr-not-persisted"
 
 
 @pytest.mark.asyncio
