@@ -15,6 +15,7 @@ from src.app.contracts.runtime_inbox_query import (
     RuntimeInboxProjection,
     RuntimeInboxWorkloadSample,
 )
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.core.conf import settings
 from src.core.logger import logger
@@ -43,6 +44,14 @@ class RuntimeInboxSliSnapshot:
     oldest_claimable_age_ms: int | None
     stale_processing_count: int
     resource_wait_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeInboxRetryMetadata:
+    """失败状态判定所需的最小重试元数据。"""
+
+    attempt_count: int
+    max_retries: int
 
 
 def _emit_runtime_inbox_sli(name: str, attributes: dict[str, object]) -> None:
@@ -131,6 +140,44 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             )
         )
         return result.scalar_one_or_none()
+
+    async def resolve_unique_correlation_id_by_trace(self, db: AsyncSession, *, trace_id: str) -> str | None:
+        """按 trace_id 查唯一关联；零条或多条命中均返回未关联。"""
+
+        columns = cast("Any", ExecutionCorrelation).__table__.c
+        correlation_ids = (
+            (
+                await db.execute(
+                    select(columns.correlation_id).where(columns.trace_id == trace_id).order_by(columns.id).limit(2)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return str(correlation_ids[0]) if len(correlation_ids) == 1 else None
+
+    async def correlation_id_exists(self, db: AsyncSession, *, correlation_id: str) -> bool:
+        """检查 RuntimeInbox 外键目标是否已持久化。"""
+
+        columns = cast("Any", ExecutionCorrelation).__table__.c
+        result = await db.execute(
+            select(columns.correlation_id).where(columns.correlation_id == correlation_id).limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def get_retry_metadata(self, db: AsyncSession, *, inbox_id: int) -> RuntimeInboxRetryMetadata | None:
+        """读取失败状态判定所需的 attempt/max_retries。"""
+
+        columns = cast("Any", RuntimeInbox).__table__.c
+        row = (
+            await db.execute(select(columns.attempt_count, columns.max_retries).where(columns.id == inbox_id).limit(1))
+        ).one_or_none()
+        if row is None:
+            return None
+        return RuntimeInboxRetryMetadata(
+            attempt_count=int(row[0] or 0),
+            max_retries=int(row[1] or 0),
+        )
 
     async def get_by_id_for_update(self, db: AsyncSession, inbox_id: int) -> RuntimeInbox | None:
         """锁定读取单条 RuntimeInbox，用于人工重放。"""

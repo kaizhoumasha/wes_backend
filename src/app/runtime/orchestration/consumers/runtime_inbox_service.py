@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -206,6 +207,19 @@ def _fit_runtime_identity(raw_value: str, *, max_length: int) -> str:
         return raw_value
     digest = sha256(raw_value.encode("utf-8")).hexdigest()[:16]
     return f"{raw_value[: max_length - len(digest) - 1]}:{digest}"
+
+
+def _canonical_payload_hash(payload_json: dict[str, Any]) -> str:
+    """生成与 canonical JSON 持久化语义一致的稳定内容摘要。"""
+
+    encoded = json.dumps(
+        payload_json,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
 
 
 def _runtime_claim_bucket_key(
@@ -455,8 +469,8 @@ class RuntimeInboxService:
 
     # ============================================================
     # Internal event acceptors (Task 7c-a) — device event / internal
-    # event / command result, all writing RuntimeInbox directly and
-    # skipping source_event_id idempotency.
+    # event / command result, all writing RuntimeInbox through the same
+    # source identity idempotency contract when an identity is available.
     # ============================================================
 
     @staticmethod
@@ -478,40 +492,14 @@ class RuntimeInboxService:
 
         if not trace_id:
             return None
-        from sqlalchemy import select
+        return await self.repository.resolve_unique_correlation_id_by_trace(db, trace_id=trace_id)
 
-        from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
-
-        correlation_ids = (
-            (
-                await db.execute(
-                    select(ExecutionCorrelation.correlation_id)
-                    .where(ExecutionCorrelation.trace_id == trace_id)
-                    .order_by(ExecutionCorrelation.id)
-                    .limit(2)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        return correlation_ids[0] if len(correlation_ids) == 1 else None
-
-    @staticmethod
-    async def _require_existing_correlation_id(db: AsyncSession, *, correlation_id: str) -> str:
+    async def _require_existing_correlation_id(self, db: AsyncSession, *, correlation_id: str) -> str:
         """验证显式 correlation_id 已持久化，避免把 FK 错误推迟到 flush。"""
 
-        from sqlalchemy import select
-
-        from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
-
-        existing = (
-            await db.execute(
-                select(ExecutionCorrelation.correlation_id).where(ExecutionCorrelation.correlation_id == correlation_id)
-            )
-        ).scalar_one_or_none()
-        if existing is None:
+        if not await self.repository.correlation_id_exists(db, correlation_id=correlation_id):
             raise RuntimeInboxCorrelationUnavailable(correlation_id=correlation_id)
-        return existing
+        return correlation_id
 
     async def accept_device_event(
         self,
@@ -530,8 +518,7 @@ class RuntimeInboxService:
     ) -> RuntimeInboxAcceptResult:
         """接收 device event 写入 RuntimeInbox (kind=DEVICE_EVENT).
 
-        区别于 accept_received:
-        - 不做 source_event_id 幂等检查 (内部事件, source_event_id 可能为空或可重复)。
+        - event_id 存在时作为 source identity，同 hash ACK、异 hash 冲突；缺失时允许重复。
         - provider_code 从 device_code 前缀派生 (ARM_01 -> ARM), 默认 "ECS"。
         - 本入口没有 ExecutionSession 映射参数，因此 execution_session_id 留空；
           processor 不得从 WorklineSession ID 推导该字段。
@@ -546,42 +533,26 @@ class RuntimeInboxService:
         provider_code = self._derive_provider_code_for_device(device_code)
         source_event_id = event_id
         correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
-
-        record_data: dict[str, Any] = {
-            "kind": "DEVICE_EVENT",
-            "provider_code": provider_code,
-            "event_type": event_type,
-            "source_event_id": source_event_id,
-            "payload_hash": None,
-            "status": "RECEIVED",
-            "attempt_count": 0,
-            "max_retries": 5,
-            "workline_id": workline_id,
-            "device_id": device_id,
-            "command_id": command_id,
-            "workline_session_id": _canonical_workline_session_id(payload_json),
-            "trace_id": trace_id,
-            "event_id": event_id,
-            "causation_id": causation_id,
-            "correlation_id": correlation_id,
-            "payload_json": payload_json,
-            "claim_bucket_key": _runtime_claim_bucket_key(
-                session_id=_canonical_workline_session_id(payload_json),
-                device_id=device_id,
-                correlation_id=correlation_id,
-                workline_id=workline_id,
-                command_id=command_id,
-                provider_code=provider_code,
-                event_type=event_type,
-                source_event_id=source_event_id,
-            ),
-            "received_at": _received_at_ms(),
-        }
-
-        record = await self.repository.add_received(db, record_data)
+        result = await self.accept_received(
+            db,
+            provider_code=provider_code,
+            event_type=event_type,
+            source_event_id=source_event_id,
+            payload_hash=_canonical_payload_hash(payload_json),
+            kind="DEVICE_EVENT",
+            payload_json=payload_json,
+            payload_schema_version=1,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
+            workline_id=workline_id,
+            device_id=device_id,
+            command_id=command_id,
+            correlation_id=correlation_id,
+        )
         if auto_commit:
             _ = await db.commit()
-        return RuntimeInboxAcceptResult(record=record, created=True)
+        return result
 
     async def accept_internal_event(
         self,
@@ -600,7 +571,7 @@ class RuntimeInboxService:
         """接收内部事件写入 RuntimeInbox (kind=INTERNAL_EVENT).
 
         - provider_code 固定 "RUNTIME"。
-        - 不做 source_event_id 幂等检查 (内部事件, source_event_id 可缺失)。
+        - event_id 存在时作为 source identity，同 hash ACK、异 hash 冲突；缺失时允许重复。
         - correlation_id 缺省时按 trace_id 反查；未命中时保持为空，避免伪造外键。
         """
 
@@ -609,44 +580,28 @@ class RuntimeInboxService:
         if not isinstance(payload_json, dict):
             raise TypeError("internal event payload_json must be a dict")
 
-        if correlation_id is not None:
-            correlation_id = await self._require_existing_correlation_id(db, correlation_id=correlation_id)
-        else:
+        if correlation_id is None:
             correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
 
-        record_data: dict[str, Any] = {
-            "kind": "INTERNAL_EVENT",
-            "provider_code": "RUNTIME",
-            "event_type": event_type,
-            "source_event_id": event_id,
-            "payload_hash": None,
-            "status": "RECEIVED",
-            "attempt_count": 0,
-            "max_retries": 5,
-            "workline_id": workline_id,
-            "workline_session_id": _canonical_workline_session_id(payload_json),
-            "trace_id": trace_id,
-            "event_id": event_id,
-            "causation_id": causation_id,
-            "execution_session_id": execution_session_id,
-            "correlation_id": correlation_id,
-            "payload_json": payload_json,
-            "claim_bucket_key": _runtime_claim_bucket_key(
-                session_id=_canonical_workline_session_id(payload_json),
-                execution_session_id=execution_session_id,
-                correlation_id=correlation_id,
-                workline_id=workline_id,
-                provider_code="RUNTIME",
-                event_type=event_type,
-                source_event_id=event_id,
-            ),
-            "received_at": _received_at_ms(),
-        }
-
-        record = await self.repository.add_received(db, record_data)
+        result = await self.accept_received(
+            db,
+            provider_code="RUNTIME",
+            event_type=event_type,
+            source_event_id=event_id,
+            payload_hash=_canonical_payload_hash(payload_json),
+            kind="INTERNAL_EVENT",
+            payload_json=payload_json,
+            payload_schema_version=1,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
+            workline_id=workline_id,
+            execution_session_id=execution_session_id,
+            correlation_id=correlation_id,
+        )
         if auto_commit:
             _ = await db.commit()
-        return RuntimeInboxAcceptResult(record=record, created=True)
+        return result
 
     async def accept_command_result(
         self,
@@ -666,8 +621,8 @@ class RuntimeInboxService:
         """接收 command result 写入 RuntimeInbox (kind=COMMAND_RESULT).
 
         - provider_code: 有 device_code 走 "DEVICE_RESULT", 缺省走 "RUNTIME"。
-        - source_event_id: 优先 event_id, 否则按 command_code+event_id 派生稳定 key。
-        - 不做 source_event_id 幂等检查 (synthesize 出的 command result 场景)。
+        - source_event_id: 优先 event_id, 否则按 command_code 派生稳定 key。
+        - 稳定 source identity 同 hash ACK、异 hash 冲突。
         """
 
         if not isinstance(command_code, str) or not command_code:
@@ -677,39 +632,25 @@ class RuntimeInboxService:
         source_event_id = event_id or f"command-result:{command_code}:{event_id or 'synth'}"
 
         canonical_payload = payload_json or {"command_code": command_code, "device_code": device_code}
-        record_data: dict[str, Any] = {
-            "kind": "COMMAND_RESULT",
-            "provider_code": provider_code,
-            "event_type": "COMMAND_RESULT",
-            "source_event_id": source_event_id,
-            "payload_hash": None,
-            "status": "RECEIVED",
-            "attempt_count": 0,
-            "max_retries": 5,
-            "workline_id": workline_id,
-            "device_id": device_id,
-            "command_id": command_id,
-            "workline_session_id": _canonical_workline_session_id(canonical_payload),
-            "trace_id": trace_id,
-            "event_id": event_id,
-            "causation_id": causation_id,
-            "payload_json": canonical_payload,
-            "claim_bucket_key": _runtime_claim_bucket_key(
-                session_id=_canonical_workline_session_id(canonical_payload),
-                device_id=device_id,
-                workline_id=workline_id,
-                command_id=command_id,
-                provider_code=provider_code,
-                event_type="COMMAND_RESULT",
-                source_event_id=source_event_id,
-            ),
-            "received_at": _received_at_ms(),
-        }
-
-        record = await self.repository.add_received(db, record_data)
+        result = await self.accept_received(
+            db,
+            provider_code=provider_code,
+            event_type="COMMAND_RESULT",
+            source_event_id=source_event_id,
+            payload_hash=_canonical_payload_hash(canonical_payload),
+            kind="COMMAND_RESULT",
+            payload_json=canonical_payload,
+            payload_schema_version=1,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
+            workline_id=workline_id,
+            device_id=device_id,
+            command_id=command_id,
+        )
         if auto_commit:
             _ = await db.commit()
-        return RuntimeInboxAcceptResult(record=record, created=True)
+        return result
 
     async def accept_timer_timeout(
         self,
@@ -996,7 +937,6 @@ class RuntimeInboxService:
         consume_attempt: bool = True,
     ) -> bool:
         """按 retry/attempt 状态机 fenced 写入 FAILED 或 DEAD_LETTER。"""
-        from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
         from src.utils.timezone import timezone
 
         now = timezone.now_for_db()
@@ -1008,13 +948,10 @@ class RuntimeInboxService:
         attempt_count = 0
         max_retries = 0
         if retryable:
-            from sqlalchemy import select
-
-            inbox = (
-                await db.execute(select(RuntimeInbox).where(cast("Any", RuntimeInbox).__table__.c.id == inbox_id))
-            ).scalar_one_or_none()
-            attempt_count = int(getattr(inbox, "attempt_count", 0) or 0)
-            max_retries = int(getattr(inbox, "max_retries", 0) or 0)
+            retry_metadata = await self.repository.get_retry_metadata(db, inbox_id=inbox_id)
+            if retry_metadata is not None:
+                attempt_count = retry_metadata.attempt_count
+                max_retries = retry_metadata.max_retries
 
         effective_attempt_count = max(0, attempt_count - (0 if consume_attempt else 1))
         exhausted = retryable and effective_attempt_count >= max_retries

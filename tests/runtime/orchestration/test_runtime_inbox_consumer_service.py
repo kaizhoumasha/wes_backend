@@ -82,6 +82,9 @@ class _RuntimeInboxUniqueRaceRepository:
         self.add_calls += 1
         raise IntegrityError("INSERT INTO runtime_inbox", {}, Exception("unique source event"))
 
+    async def correlation_id_exists(self, *_args: Any, **_kwargs: Any) -> bool:
+        return True
+
 
 class _RuntimeInboxStaleReadRepository:
     """用真实 add_received 触发唯一索引冲突，同时模拟第一次读到旧快照。"""
@@ -115,6 +118,9 @@ class _RuntimeInboxCorrelationValidationRaceRepository:
 
     async def add_received(self, *_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("correlation 校验失败后不应继续 INSERT")
+
+    async def correlation_id_exists(self, *_args: Any, **_kwargs: Any) -> bool:
+        return False
 
 
 class _IdempotencyGuardSpy:

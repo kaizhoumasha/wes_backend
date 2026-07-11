@@ -3,7 +3,7 @@
 覆盖 accept_device_event / accept_internal_event / accept_command_result 三个统一持久化方法。
 
 约束:
-- 跳过 source_event_id 幂等检查 (内部事件, source_event_id 不保证唯一)。
+- source_event_id 存在时同 hash ACK、异 hash 冲突；缺失时允许重复。
 - provider_code 按调用方语义派生 (device_code 前缀 / 固定 RUNTIME / 固定 DEVICE_RESULT)。
 - kind 字段为字符串 (Revision A), 与 accept_received 的 source_event_id-based 路径并存。
 """
@@ -29,6 +29,7 @@ NOW_MS = 1_700_000_000_000
 runtime_inbox_service_module = importlib.import_module("src.app.runtime.orchestration.consumers.runtime_inbox_service")
 RuntimeInboxService = runtime_inbox_service_module.RuntimeInboxService
 RuntimeInboxCorrelationUnavailable = runtime_inbox_service_module.RuntimeInboxCorrelationUnavailable
+RuntimeInboxConflict = runtime_inbox_service_module.RuntimeInboxConflict
 
 
 def test_claim_bucket_separates_workline_and_execution_session_namespaces() -> None:
@@ -615,6 +616,62 @@ async def test_internal_producers_write_non_empty_priority_bucket_and_received_a
         isinstance(result.record.received_at, int) and result.record.received_at > 0
         for result in (device, internal, command, fallback)
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("producer_kind", ["device", "internal", "command"])
+async def test_internal_producers_ack_duplicate_source_identity_with_same_payload(
+    db_session, producer_kind: str
+) -> None:
+    """内部 producer 的稳定 source identity 必须同 hash ACK，不能把唯一索引冲突泄漏给调用方。"""
+
+    service = RuntimeInboxService()
+    payload = {"event_type": "DUPLICATE_TEST", "data": {"value": 1}}
+
+    if producer_kind == "device":
+        accept = service.accept_device_event
+        kwargs = {
+            "device_code": "ARM_01",
+            "event_type": "DUPLICATE_TEST",
+            "event_id": "evt-internal-duplicate-001",
+            "payload_json": payload,
+        }
+    elif producer_kind == "internal":
+        accept = service.accept_internal_event
+        kwargs = {
+            "event_type": "DUPLICATE_TEST",
+            "event_id": "evt-internal-duplicate-001",
+            "payload_json": payload,
+        }
+    else:
+        accept = service.accept_command_result
+        kwargs = {
+            "command_code": "CMD-INTERNAL-DUPLICATE-001",
+            "payload_json": payload,
+        }
+
+    first = await accept(db_session, **kwargs)
+    duplicate = await accept(db_session, **kwargs)
+
+    assert first.created is True
+    assert duplicate.created is False
+    assert duplicate.record.id == first.record.id
+    assert first.record.payload_hash
+
+
+@pytest.mark.asyncio
+async def test_internal_producer_rejects_duplicate_source_identity_with_different_payload(db_session) -> None:
+    """同一内部 source identity 的不同 canonical payload 必须走显式冲突合同。"""
+
+    service = RuntimeInboxService()
+    common = {
+        "event_type": "DUPLICATE_TEST",
+        "event_id": "evt-internal-conflict-001",
+    }
+    await service.accept_internal_event(db_session, payload_json={"value": 1}, **common)
+
+    with pytest.raises(RuntimeInboxConflict):
+        await service.accept_internal_event(db_session, payload_json={"value": 2}, **common)
 
 
 @pytest.mark.asyncio
