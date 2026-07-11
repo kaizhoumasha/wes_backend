@@ -336,7 +336,7 @@ wes_runtime.runtime_inbox
 
 ### Task 7：迁移 Consumers 与 Revision B
 
-**状态：** 🟡 35% 完成。已迁移 runtime intent、SMT handoff、RuntimeHold release、timeout 与 external callback 的 RuntimeInbox 读写/处理路径，并完成新 processor、task、gateway 主链。剩余主体：active code 仍有 WorklineInbox model/repository/service/processor/consumer facade、旧 task/export、query/reconciliation/session/trace/UoW 等读路径；Revision B、旧表和 capability/normalizer wiring 尚未删除。
+**状态：** 🟡 55% 完成（补充提交：f0b25364 + f86dc88 + d4601208 + 6e000ff8 + 3a8e1b21）。已删除 RuntimeInboxConsumer facade、专用 capability/normalizer wiring 与旧 InboxBatchProcessor，并完成新 processor、task、gateway 主链；canonical WorklineSession 与 ExecutionSession 的诊断/FIFO 命名空间已隔离。剩余主体：WorklineInbox model/repository/service、query/reconciliation/trace/UoW 等读路径、相关 exports/fixtures 与 Revision B。
 
 **目标：** 完成读路径、evidence、FK 和 fixture 迁移后物理删除 WorklineInbox。
 
@@ -354,7 +354,7 @@ wes_runtime.runtime_inbox
 - GitNexus detect changes 与零引用 guardrail 证明旧运行入口消失。
 - migration round-trip 与相关 heavy tests 通过。
 
-**执行指引：** 删除 `src/app/runtime/orchestration/models/inbox.py`（WorklineInbox 旧表）、`repositories/inbox_repository.py`、`services/inbox/inbox_service.py`、`services/inbox/inbox_batch_processor.py`（含 `process_inbox_payload` 空壳）、`consumers/runtime_inbox_consumer.py`（facade）、`src/celery_app/tasks/workline.py:process_inbox_batch`；`src/celery_app/config.py` 删除 `process-inbox-batch` beat schedule；生成 Revision B alembic migration `op.drop_table("workline_inbox", schema="wes_runtime")`；修复 `src/app/runtime/capability_port_registry.py` 和 `inbound_normalizer_registry.py` 删除 RuntimeInboxConsumer port。`src/app/workline/v1/operation.py:144 _enqueue_workline_processing` 在 WorklineInbox 删除后变成 dead code，需同步删除。
+**执行指引：** 下一步迁移 query/reconciliation/trace/UoW、RuntimeHold/SMT/outbox 等剩余读路径与 FK，随后删除 `src/app/runtime/orchestration/models/inbox.py`、`repositories/inbox_repository.py`、`services/inbox/inbox_service.py` 及 exports/fixtures。active code、测试 fixture 和数据库 FK 零引用后，用 Alembic generator 创建 Revision B，drop `wes_biz.workline_inbox` 并验证 upgrade/downgrade/upgrade。
 
 ### Task 8：系统级测试、性能与韧性
 
@@ -524,12 +524,13 @@ Legend: ★★★ behavior + edge + error | →E2E integration/resilience bounda
 | 27 | `src/app/runtime/orchestration/services/inbox/__init__.py` | re-export inbox_service | 删除 re-export |
 | 28 | `src/app/workline/services/safety_service.py` | 间接 | 不变 |
 
-迁移状态（同步于 2026-07-11，HEAD `f315795f`）：
+迁移状态（同步于 2026-07-11，HEAD `3a8e1b21`）：
 
 - 已完成写路径切换：8（runtime intent effects）、13 的 RuntimeInbox write/read evidence 主路径（SMT inbound handoff）、RuntimeHold release 的 command result producer。
-- 已完成新实现但未完成运行入口切换：2（三阶段 processor/bridge）、5（RuntimeInbox Celery task 文件与注册）。
-- 部分完成：1（新 RuntimeInboxService 已承接新 producer，但旧 WorklineInboxService 仍存活）、4（release 写路径已迁移，旧 FK/其余读路径未迁移）、15（event 双写已删，external 仍双写）、16（函数已改名但仍调用 `enqueue_workline_inbox`）。
-- 待迁移/删除：3、6-7、9-12、14、17-28，以及 Revision B、旧表和旧 task/Beat/gateway。
+- 已完成并删除旧表面：2（三阶段 processor 已接管并删除旧 InboxBatchProcessor）、5（RuntimeInbox Celery 主链已接管旧 task）、17-19（facade、port 与专用 normalizer context 已删除）。
+- 已完成写路径/入口：3、8、13-16；callback、timeout、runtime intent、SMT 与 RuntimeHold producer 均只写 RuntimeInbox。
+- 部分完成：1（RuntimeInboxService 已承接生产写入，但旧 WorklineInboxService 尚未删除）、4（release 写路径已迁移，旧 FK/其余读路径未迁移）。
+- 待迁移/删除：6-7、9-12、20-28，以及 Revision B、旧 model/repository/service/fixtures。
 
 只有当 1-28 全部迁移完成、characterization case table 全部 parity 通过、`grep -rn "WorklineInbox" src/ tests/` 仅保留在 `runtime_inbox` 抽象层引用时，才执行 Revision B drop `wes_biz.workline_inbox`。
 
