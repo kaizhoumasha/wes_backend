@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -87,9 +88,9 @@ from src.database.schema_conf import get_all_schemas
 # access to the values within the .ini file in use.
 config = context.config
 
-# 从项目配置中设置数据库 URL
-# 这样就不需要在 alembic.ini 中硬编码数据库连接
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# 显式 override 仅供迁移工具/隔离测试使用，不修改共享 .env 或应用 settings。
+# 未提供时仍使用项目配置，避免在 alembic.ini 中硬编码数据库连接。
+config.set_main_option("sqlalchemy.url", os.environ.get("ALEMBIC_DATABASE_URL", settings.DATABASE_URL))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
