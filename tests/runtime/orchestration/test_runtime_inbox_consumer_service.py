@@ -426,6 +426,31 @@ async def test_runtime_inbox_accept_allows_missing_source_event_id_without_dedup
     assert first.record.id != second.record.id
 
 
+@pytest.mark.asyncio
+async def test_runtime_inbox_accept_received_writes_stable_bucket_and_received_at(db_session) -> None:
+    """普通入站必须写毫秒接收时间，并按 session 优先生成稳定桶键。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    session = ExecutionSession(workline_id=17, manifest_version="manifest-v1", state="RUNNING")
+    db_session.add(session)
+    await db_session.flush()
+
+    result = await RuntimeInboxService().accept_received(
+        db_session,
+        provider_code="WMS",
+        event_type="WMS_TASK_CHANGE",
+        source_event_id="evt-bucket-001",
+        payload_hash="hash-bucket-001",
+        execution_session_id=session.id,
+        correlation_id="corr-lower-priority",
+        now_ms=NOW_MS,
+    )
+
+    assert result.record.claim_bucket_key == f"session:{session.id}"
+    assert result.record.received_at == NOW_MS
+
+
 @pytest.mark.parametrize(
     ("event_type", "expected_operation_kind", "expected_domain"),
     [

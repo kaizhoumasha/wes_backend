@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from sqlalchemy.exc import IntegrityError
@@ -113,6 +114,60 @@ def _runtime_inbox_operation_spec(event_type: str) -> IdempotencyOperationSpec:
     return get_idempotency_operation_spec(aliases.get(normalized, normalized))
 
 
+def _fit_runtime_identity(raw_value: str, *, max_length: int) -> str:
+    """将可审计 identity 稳定压缩到数据库字段上限。"""
+
+    if len(raw_value) <= max_length:
+        return raw_value
+    digest = sha256(raw_value.encode("utf-8")).hexdigest()[:16]
+    return f"{raw_value[: max_length - len(digest) - 1]}:{digest}"
+
+
+def _runtime_claim_bucket_key(
+    *,
+    execution_session_id: int | None = None,
+    device_id: int | None = None,
+    correlation_id: str | None = None,
+    workline_id: int | None = None,
+    command_id: int | None = None,
+    provider_code: str,
+    event_type: str,
+    source_event_id: str | None,
+) -> str:
+    """按稳定业务身份生成 RuntimeInbox FIFO 桶键。"""
+
+    candidates = (
+        ("session", execution_session_id),
+        ("device", device_id),
+        ("correlation", correlation_id),
+        ("workline", workline_id),
+        ("command", command_id),
+    )
+    for prefix, value in candidates:
+        if value is not None and str(value).strip():
+            return _fit_runtime_identity(f"{prefix}:{value}", max_length=120)
+
+    fallback = f"source:{provider_code}:{event_type}:{source_event_id or 'anonymous'}"
+    return _fit_runtime_identity(fallback, max_length=120)
+
+
+def _received_at_ms(now_ms: int | None = None) -> int:
+    """返回 RuntimeInbox 使用的 Unix 毫秒接收时间。"""
+
+    return now_ms if now_ms is not None else int(timezone.now_utc().timestamp() * 1000)
+
+
+def _format_runtime_temporal(value: object | None) -> str:
+    """将 timeout identity/payload 的时间值归一为稳定字符串。"""
+
+    if value is None:
+        return "unknown"
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return str(isoformat())
+    return str(value)
+
+
 class RuntimeInboxService:
     """RuntimeInbox ACK-before-processing 与人工重放服务。"""
 
@@ -165,6 +220,14 @@ class RuntimeInboxService:
             "status": "RECEIVED",
             "attempt_count": 0,
             "max_retries": max_retries,
+            "claim_bucket_key": _runtime_claim_bucket_key(
+                execution_session_id=execution_session_id,
+                correlation_id=correlation_id,
+                provider_code=provider_code,
+                event_type=event_type,
+                source_event_id=source_event_id,
+            ),
+            "received_at": _received_at_ms(now_ms),
         }
 
         if source_event_id:
@@ -323,6 +386,16 @@ class RuntimeInboxService:
             "causation_id": causation_id,
             "correlation_id": correlation_id,
             "payload_json": payload_json,
+            "claim_bucket_key": _runtime_claim_bucket_key(
+                device_id=device_id,
+                correlation_id=correlation_id,
+                workline_id=workline_id,
+                command_id=command_id,
+                provider_code=provider_code,
+                event_type=event_type,
+                source_event_id=source_event_id,
+            ),
+            "received_at": _received_at_ms(),
         }
 
         record = await self.repository.add_received(db, record_data)
@@ -377,6 +450,15 @@ class RuntimeInboxService:
             "execution_session_id": execution_session_id,
             "correlation_id": correlation_id,
             "payload_json": payload_json,
+            "claim_bucket_key": _runtime_claim_bucket_key(
+                execution_session_id=execution_session_id,
+                correlation_id=correlation_id,
+                workline_id=workline_id,
+                provider_code="RUNTIME",
+                event_type=event_type,
+                source_event_id=event_id,
+            ),
+            "received_at": _received_at_ms(),
         }
 
         record = await self.repository.add_received(db, record_data)
@@ -428,9 +510,113 @@ class RuntimeInboxService:
             "event_id": event_id,
             "causation_id": causation_id,
             "payload_json": payload_json or {"command_code": command_code, "device_code": device_code},
+            "claim_bucket_key": _runtime_claim_bucket_key(
+                device_id=device_id,
+                workline_id=workline_id,
+                command_id=command_id,
+                provider_code=provider_code,
+                event_type="COMMAND_RESULT",
+                source_event_id=source_event_id,
+            ),
+            "received_at": _received_at_ms(),
         }
 
         record = await self.repository.add_received(db, record_data)
+        if auto_commit:
+            _ = await db.commit()
+        return RuntimeInboxAcceptResult(record=record, created=True)
+
+    async def accept_timer_timeout(
+        self,
+        db: AsyncSession,
+        *,
+        execution_session_id: int,
+        workline_id: int,
+        deadline_at: object | None = None,
+        trace_id: str | None = None,
+        wait_token: str | None = None,
+        wait_type: str | None = None,
+        awaiting_device_command_code: str | None = None,
+        command_code: str | None = None,
+        device_id: int | None = None,
+        device_code: str | None = None,
+        command_id: int | None = None,
+        command_status: str | None = None,
+        ack_received_at: object | None = None,
+        now_ms: int | None = None,
+        auto_commit: bool = False,
+    ) -> RuntimeInboxAcceptResult:
+        """幂等接收系统 TIMER_TIMEOUT 并保存 canonical payload。"""
+
+        deadline_key = _format_runtime_temporal(deadline_at)
+        wait_key = wait_token or "no-wait-token"
+        command_key = awaiting_device_command_code or command_code or "no-command"
+        source_event_id = _fit_runtime_identity(
+            f"timeout:{execution_session_id}:{deadline_key}:{wait_key}:{command_key}",
+            max_length=160,
+        )
+        existing = await self.repository.get_by_source_event_identity(
+            db,
+            provider_code="RUNTIME",
+            event_type="TIMER_TIMEOUT",
+            source_event_id=source_event_id,
+        )
+        if existing is not None:
+            return RuntimeInboxAcceptResult(record=existing, created=False)
+
+        payload_data = {
+            "session_id": execution_session_id,
+            "workline_id": workline_id,
+            "deadline_at": deadline_key,
+            "wait_token": wait_token,
+            "wait_type": wait_type,
+            "awaiting_device_command_code": awaiting_device_command_code,
+            "command_code": command_code,
+            "device_id": device_id,
+            "device_code": device_code,
+            "command_status": command_status,
+            "ack_received_at": _format_runtime_temporal(ack_received_at),
+        }
+        record_data: dict[str, Any] = {
+            "kind": "TIMER_TIMEOUT",
+            "execution_session_id": execution_session_id,
+            "workline_id": workline_id,
+            "device_id": device_id,
+            "command_id": command_id,
+            "trace_id": trace_id,
+            "provider_code": "RUNTIME",
+            "event_type": "TIMER_TIMEOUT",
+            "source_event_id": source_event_id,
+            "payload_hash": None,
+            "payload_json": {"event_type": "TIMER_TIMEOUT", "data": payload_data},
+            "status": "RECEIVED",
+            "attempt_count": 0,
+            "max_retries": 5,
+            "claim_bucket_key": _runtime_claim_bucket_key(
+                execution_session_id=execution_session_id,
+                device_id=device_id,
+                workline_id=workline_id,
+                command_id=command_id,
+                provider_code="RUNTIME",
+                event_type="TIMER_TIMEOUT",
+                source_event_id=source_event_id,
+            ),
+            "received_at": _received_at_ms(now_ms),
+        }
+        try:
+            async with db.begin_nested():
+                record = await self.repository.add_received(db, record_data)
+        except IntegrityError:
+            existing = await self.repository.get_by_source_event_identity(
+                db,
+                provider_code="RUNTIME",
+                event_type="TIMER_TIMEOUT",
+                source_event_id=source_event_id,
+            )
+            if existing is None:
+                raise
+            return RuntimeInboxAcceptResult(record=existing, created=False)
+
         if auto_commit:
             _ = await db.commit()
         return RuntimeInboxAcceptResult(record=record, created=True)

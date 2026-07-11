@@ -210,10 +210,10 @@ class TimeoutScanner:
                 "errors": 错误数
             }
         """
+        from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
         from src.app.runtime.orchestration.repositories.session_repository import (
             WorklineSessionRepository,
         )
-        from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
         from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
             workline_runtime_reconciliation_service,
         )
@@ -247,10 +247,10 @@ class TimeoutScanner:
                     raise ValueError(f"Timed out session awaiting command missing: session_id={session_pk}")
                 command_device_id = getattr(command, "device_id", None)
                 device = await device_repository.get_by_id(db, command_device_id) if command_device_id else None
-                # 幂等创建系统 timeout Inbox
-                _ = await inbox_service.create_timeout_inbox(
-                    db=db,
-                    session_id=session_pk,
+                # 幂等创建系统 RuntimeInbox timeout 消息
+                _ = await runtime_inbox_service.accept_timer_timeout(
+                    db,
+                    execution_session_id=session_pk,
                     workline_id=session.workline_id,
                     deadline_at=session.deadline_at,
                     trace_id=session.trace_id,
@@ -260,6 +260,7 @@ class TimeoutScanner:
                     command_code=getattr(command, "command_code", None),
                     device_id=command_device_id,
                     device_code=getattr(device, "device_code", None),
+                    command_id=resolve_entity_id(command),
                     command_status=enum_value(getattr(command, "status", None)) if command is not None else None,
                     ack_received_at=getattr(command, "ack_received_at", None),
                     auto_commit=False,
