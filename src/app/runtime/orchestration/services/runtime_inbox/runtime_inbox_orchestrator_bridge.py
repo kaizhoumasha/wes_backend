@@ -234,9 +234,7 @@ class RuntimeInboxProcessorBridge:
 
         使用唯一 RuntimeInboxRepository.claim_received_with_token。
         """
-        from src.app.runtime.orchestration.repositories.runtime_inbox_repository import runtime_inbox_repository
-
-        claims = await runtime_inbox_repository.claim_received_with_token(
+        claims = await self.inbox_repository.claim_received_with_token(
             db,
             limit=1,
             processor_token=processor_token,

@@ -349,7 +349,7 @@ def _trace_action_source(
     return "NONE"
 
 
-def _device_session_clause(session_columns: Any, device_id: int, inbox_session_ids: list[int]) -> Any:
+def _device_session_clause(session_columns: Any, device_id: int, inbox_session_ref_exists: Any) -> Any:
     command_columns = cast("Any", DeviceCommand).__table__.c
     return or_(
         exists(
@@ -358,7 +358,7 @@ def _device_session_clause(session_columns: Any, device_id: int, inbox_session_i
                 command_columns.command_code == session_columns.awaiting_device_command_code,
             )
         ),
-        session_columns.id.in_(inbox_session_ids),
+        inbox_session_ref_exists,
     )
 
 
@@ -432,8 +432,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
         filters: list[Any] = []
 
         if payload.device_id is not None:
-            inbox_session_ids = await self.inbox_query.list_workline_session_refs_by_device(db, payload.device_id)
-            filters.append(_device_session_clause(columns, payload.device_id, inbox_session_ids))
+            inbox_session_ref_exists = self.inbox_query.workline_session_ref_exists_for_device(
+                payload.device_id, columns.id
+            )
+            filters.append(_device_session_clause(columns, payload.device_id, inbox_session_ref_exists))
 
         if payload.workline_id is not None:
             filters.append(columns.workline_id == payload.workline_id)
@@ -1252,11 +1254,13 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     async def _load_active_sessions_for_device(self, db: Any, device_id: int, limit: int) -> list[WorklineSession]:
         session_columns = cast("Any", WorklineSession).__table__.c
-        inbox_session_ids = await self.inbox_query.list_workline_session_refs_by_device(db, device_id)
+        inbox_session_ref_exists = self.inbox_query.workline_session_ref_exists_for_device(
+            device_id, session_columns.id
+        )
         result = await db.execute(
             select(WorklineSession)
             .where(
-                _device_session_clause(session_columns, device_id, inbox_session_ids),
+                _device_session_clause(session_columns, device_id, inbox_session_ref_exists),
                 session_columns.status.in_(list(_ACTIVE_SESSION_STATUSES)),
             )
             .order_by(session_columns.last_ingress_at.desc().nullslast(), session_columns.id.desc())

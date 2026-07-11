@@ -5,6 +5,7 @@ from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
     RuntimeInboxConflict,
     RuntimeInboxReplayResult,
     RuntimeInboxService,
+    RuntimeInboxSessionOwnershipConflict,
     runtime_inbox_service,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "RuntimeInboxConflict",
     "RuntimeInboxReplayResult",
     "RuntimeInboxService",
+    "RuntimeInboxSessionOwnershipConflict",
     "runtime_inbox_service",
 ]

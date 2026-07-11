@@ -103,6 +103,74 @@ class RuntimeInboxConflict(Exception):
         }
 
 
+class RuntimeInboxSessionOwnershipConflict(RuntimeInboxConflict):
+    """同一入站幂等身份不能跨 WorklineSession 归属复用。"""
+
+    status_code = 409
+
+    def __init__(
+        self,
+        *,
+        provider_code: str,
+        event_type: str,
+        source_event_id: str,
+        existing_workline_session_id: int | None,
+        incoming_workline_session_id: int | None,
+    ) -> None:
+        Exception.__init__(
+            self,
+            "runtime inbox session ownership conflict: "
+            f"provider={provider_code} event={event_type} source_event_id={source_event_id} "
+            f"existing_workline_session_id={existing_workline_session_id} "
+            f"incoming_workline_session_id={incoming_workline_session_id}",
+        )
+        self.provider_code = provider_code
+        self.event_type = event_type
+        self.source_event_id = source_event_id
+        self.existing_workline_session_id = existing_workline_session_id
+        self.incoming_workline_session_id = incoming_workline_session_id
+
+    def to_audit_event(self) -> dict[str, str | None]:
+        """转换为不包含 payload 的稳定归属冲突审计证据。"""
+
+        spec = _runtime_inbox_operation_spec(self.event_type)
+        return {
+            "event_type": "RUNTIME_INBOX_SESSION_OWNERSHIP_CONFLICT",
+            "provider_code": self.provider_code,
+            "operation_kind": spec.operation_kind,
+            "domain": spec.domain,
+            "source_event_id": self.source_event_id,
+            "callback_type": self.event_type,
+            "existing_workline_session_id": (
+                str(self.existing_workline_session_id) if self.existing_workline_session_id is not None else None
+            ),
+            "incoming_workline_session_id": (
+                str(self.incoming_workline_session_id) if self.incoming_workline_session_id is not None else None
+            ),
+        }
+
+
+def _require_same_workline_session_owner(
+    existing: Any,
+    *,
+    provider_code: str,
+    event_type: str,
+    source_event_id: str,
+    incoming_workline_session_id: int | None,
+) -> None:
+    """在 ACK 或幂等 claim 前校验既有记录的 WorklineSession 归属。"""
+
+    existing_workline_session_id = cast("int | None", getattr(existing, "workline_session_id", None))
+    if existing_workline_session_id != incoming_workline_session_id:
+        raise RuntimeInboxSessionOwnershipConflict(
+            provider_code=provider_code,
+            event_type=event_type,
+            source_event_id=source_event_id,
+            existing_workline_session_id=existing_workline_session_id,
+            incoming_workline_session_id=incoming_workline_session_id,
+        )
+
+
 def _runtime_inbox_operation_spec(event_type: str) -> IdempotencyOperationSpec:
     """将 callback channel/event_type 归一到 runtime operation_kind 审计矩阵。"""
 
@@ -278,6 +346,13 @@ class RuntimeInboxService:
                 source_event_id=source_event_id,
             )
             if existing is not None:
+                _require_same_workline_session_owner(
+                    existing,
+                    provider_code=provider_code,
+                    event_type=event_type,
+                    source_event_id=source_event_id,
+                    incoming_workline_session_id=workline_session_id,
+                )
                 if existing.payload_hash != payload_hash:
                     raise RuntimeInboxConflict(
                         provider_code=provider_code,
@@ -299,6 +374,7 @@ class RuntimeInboxService:
 
             try:
                 async with db.begin_nested():
+                    record = await self.repository.add_received(db, record_data)
                     await self._claim_device_event_idempotency_if_needed(
                         db,
                         provider_code=provider_code,
@@ -308,7 +384,6 @@ class RuntimeInboxService:
                         correlation_id=correlation_id,
                         now_ms=now_ms,
                     )
-                    record = await self.repository.add_received(db, record_data)
             except IntegrityError:
                 existing = await self.repository.get_by_source_event_identity(
                     db,
@@ -318,6 +393,13 @@ class RuntimeInboxService:
                 )
                 if existing is None:
                     raise
+                _require_same_workline_session_owner(
+                    existing,
+                    provider_code=provider_code,
+                    event_type=event_type,
+                    source_event_id=source_event_id,
+                    incoming_workline_session_id=workline_session_id,
+                )
                 if existing.payload_hash != payload_hash:
                     raise RuntimeInboxConflict(
                         provider_code=provider_code,
@@ -936,5 +1018,6 @@ __all__ = [
     "RuntimeInboxPayloadTooLarge",
     "RuntimeInboxReplayResult",
     "RuntimeInboxService",
+    "RuntimeInboxSessionOwnershipConflict",
     "runtime_inbox_service",
 ]

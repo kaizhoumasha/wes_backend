@@ -415,15 +415,16 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
         )
         return [self._to_projection(item) for item in result.scalars().all()]
 
-    async def list_workline_session_refs_by_device(self, db: AsyncSession, device_id: int) -> list[int]:
-        """按显式列列出设备关联的 WorklineSession ID。"""
+    def workline_session_ref_exists_for_device(self, device_id: int, outer_ref_column: Any) -> Any:
+        """返回可组合的设备/WorklineSession 相关 EXISTS 表达式。"""
+
         columns = cast("Any", RuntimeInbox).__table__.c
-        result = await db.execute(
-            select(columns.workline_session_id)
-            .where(columns.device_id == device_id, columns.workline_session_id.is_not(None))
-            .distinct()
+        return exists(
+            select(literal(1)).where(
+                columns.device_id == device_id,
+                columns.workline_session_id == outer_ref_column,
+            )
         )
-        return [int(value) for value in result.scalars().all()]
 
 
 runtime_inbox_repository = RuntimeInboxRepository()

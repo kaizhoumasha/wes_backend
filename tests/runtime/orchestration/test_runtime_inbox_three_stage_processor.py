@@ -45,6 +45,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
     _result_requires_outbox_dispatch,
     _session_write_snapshot,
 )
+from src.app.workline.constants import WORKLINE_INBOX_PROCESSING_STALE_SECONDS
 from src.app.workline.trace_context import TraceContext
 
 # ============================================================
@@ -79,6 +80,33 @@ def _make_inbox(
         command_id=command_id,
         attempt_count=attempt_count,
     )
+
+
+@pytest.mark.asyncio
+async def test_claim_one_uses_injected_runtime_inbox_repository() -> None:
+    """claim 必须服从构造器注入，不能旁路到全局 singleton。"""
+
+    calls: list[dict[str, Any]] = []
+
+    class _InjectedRepository:
+        async def claim_received_with_token(self, db: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            calls.append({"db": db, **kwargs})
+            return [{"id": 71, "processor_token": kwargs["processor_token"]}]
+
+    db = object()
+    bridge = RuntimeInboxProcessorBridge(inbox_repository=_InjectedRepository())  # type: ignore[arg-type]
+
+    claim = await bridge._claim_one(db, processor_token="injected-token")  # type: ignore[arg-type]
+
+    assert claim == {"id": 71, "processor_token": "injected-token"}
+    assert calls == [
+        {
+            "db": db,
+            "limit": 1,
+            "processor_token": "injected-token",
+            "stale_after_seconds": WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
+        }
+    ]
 
 
 def _make_session(

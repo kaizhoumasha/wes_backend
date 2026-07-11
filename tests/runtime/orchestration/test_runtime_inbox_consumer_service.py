@@ -102,6 +102,17 @@ class _RuntimeInboxStaleReadRepository:
         return await self.real_repository.add_received(db, data)
 
 
+class _IdempotencyGuardSpy:
+    """记录 claim 调用，验证归属冲突不会产生幂等副作用。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def claim_or_match(self, _db: Any, **kwargs: Any) -> object:
+        self.calls.append(kwargs)
+        return object()
+
+
 @pytest.mark.asyncio
 async def test_accept_received_rejects_workline_session_namespace_mismatch(db_session) -> None:
     """显式 WorklineSession FK 与 canonical ref 不一致时不得落库。"""
@@ -154,6 +165,81 @@ async def test_runtime_inbox_accept_returns_existing_ack_for_same_hash(db_sessio
     assert second.created is False
     assert second.record.id == first.record.id
     assert second.record.status == "RECEIVED"
+
+
+@pytest.mark.asyncio
+async def test_accept_received_rejects_existing_identity_owned_by_another_workline_session(db_session) -> None:
+    """K/H 相同也不能跨 WorklineSession 归属复用 ACK。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+        RuntimeInboxService,
+        RuntimeInboxSessionOwnershipConflict,
+    )
+
+    guard = _IdempotencyGuardSpy()
+    service = RuntimeInboxService(idempotency_guard=guard)  # type: ignore[arg-type]
+    first = await _accept_received(
+        service,
+        db_session,
+        provider_code="ECS",
+        event_type="COMMAND_RESULT",
+        source_event_id="evt-session-owner",
+        payload_hash="hash-session-owner",
+        correlation_id="corr-session-owner",
+        workline_session_id=41,
+    )
+
+    with pytest.raises(RuntimeInboxSessionOwnershipConflict) as exc_info:
+        await _accept_received(
+            service,
+            db_session,
+            provider_code="ECS",
+            event_type="COMMAND_RESULT",
+            source_event_id="evt-session-owner",
+            payload_hash="hash-session-owner",
+            correlation_id="corr-session-owner",
+            workline_session_id=42,
+        )
+
+    await db_session.refresh(first.record)
+    assert exc_info.value.status_code == 409
+    assert first.record.workline_session_id == 41
+    assert len(guard.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_accept_received_unique_race_rejects_another_session_before_idempotency_claim(db_session) -> None:
+    """唯一键竞态回读到其他会话归属时，不得留下 claim 副作用。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+        RuntimeInboxService,
+        RuntimeInboxSessionOwnershipConflict,
+    )
+
+    existing = SimpleNamespace(
+        id=9,
+        payload_hash="hash-session-race",
+        status="RECEIVED",
+        workline_session_id=41,
+    )
+    repository = _RuntimeInboxUniqueRaceRepository(existing)
+    guard = _IdempotencyGuardSpy()
+    service = RuntimeInboxService(repository=repository, idempotency_guard=guard)  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeInboxSessionOwnershipConflict):
+        await _accept_received(
+            service,
+            db_session,
+            provider_code="ECS",
+            event_type="COMMAND_RESULT",
+            source_event_id="evt-session-race",
+            payload_hash="hash-session-race",
+            correlation_id="corr-session-race",
+            workline_session_id=42,
+        )
+
+    assert repository.add_calls == 1
+    assert guard.calls == []
 
 
 @pytest.mark.asyncio

@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import SimpleNamespace
+from typing import get_type_hints
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.dialects import postgresql
 
+from src.app.contracts.runtime_inbox_query import RuntimeInboxProjection
+from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
-from src.app.runtime.orchestration.services.query.runtime_query_service import RuntimeQueryService
+from src.app.runtime.orchestration.services.query.runtime_query_service import (
+    RuntimeQueryService,
+    _device_session_clause,
+)
 from src.app.runtime.orchestration.services.trace.trace_query_service import TraceQueryResult, TraceQueryService
 from src.app.workline.trace_context import TraceContext
 
@@ -84,3 +93,77 @@ async def test_trace_context_propagates_only_workline_session_ref_from_projectio
     execution_only = await _persist_projection(db_session, workline_session_ref=None, execution_session_id=702)
     assert TraceContext.from_request().with_inbox(execution_only).session_id is None
     assert TraceContext.from_request().with_inbox(SimpleNamespace(session_id=703)).session_id == 703
+
+
+def test_device_filter_compiles_correlated_runtime_inbox_exists_without_materialized_id_list() -> None:
+    """设备过滤必须保持单 SQL correlated EXISTS，不随历史量膨胀 IN 参数。"""
+
+    repository = RuntimeInboxRepository()
+    session_columns = WorklineSession.__table__.c
+    inbox_exists = repository.workline_session_ref_exists_for_device(901, session_columns.id)
+    statement = select(session_columns.id).where(_device_session_clause(session_columns, 901, inbox_exists))
+
+    sql = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    assert "EXISTS" in sql
+    assert "runtime_inbox.device_id = 901" in sql
+    assert "runtime_inbox.workline_session_id = wes_biz.workline_sessions.id" in sql
+    assert "workline_sessions.id IN" not in sql
+
+
+@pytest.mark.asyncio
+async def test_active_session_device_filter_executes_one_statement_with_correlated_exists() -> None:
+    """即使 RuntimeInbox 历史量很大，查询服务也只提交一条不展开历史 ID 的 SQL。"""
+
+    statements: list[object] = []
+
+    class _Result:
+        def scalars(self) -> _Result:
+            return self
+
+        def all(self) -> list[object]:
+            return []
+
+    class _Db:
+        async def execute(self, statement: object) -> _Result:
+            statements.append(statement)
+            return _Result()
+
+    service = RuntimeQueryService(inbox_query=RuntimeInboxRepository())
+    sessions = await service._load_active_sessions_for_device(_Db(), device_id=901, limit=200)
+
+    assert sessions == []
+    assert len(statements) == 1
+    sql = str(
+        statements[0].compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})  # type: ignore[attr-defined]
+    )
+    assert "EXISTS" in sql
+    assert "runtime_inbox.workline_session_id = wes_biz.workline_sessions.id" in sql
+    assert "workline_sessions.id IN" not in sql
+
+
+def test_runtime_inbox_projection_declares_payload_as_read_only_mapping() -> None:
+    """冻结外壳的 payload 合同使用 Mapping，避免类型层暗示 dict 可写。"""
+
+    assert get_type_hints(RuntimeInboxProjection)["payload_json"].__origin__ is Mapping
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_projection_payload_is_deep_copy_isolated_from_orm(db_session) -> None:
+    """修改 DTO payload 快照不得回写 ORM JSON。"""
+
+    inbox = RuntimeInbox(
+        provider_code="TEST",
+        event_type="PROJECTION_ISOLATION",
+        source_event_id="projection-isolation",
+        payload_hash="hash-projection-isolation",
+        kind="DEVICE_EVENT",
+        payload_json={"data": {"nested": "original"}},
+        status="RECEIVED",
+    )
+    db_session.add(inbox)
+    await db_session.flush()
+
+    projection = RuntimeInboxRepository()._to_projection(inbox)
+    projection.payload_json["data"]["nested"] = "changed"  # type: ignore[index]
+
+    assert inbox.payload_json == {"data": {"nested": "original"}}

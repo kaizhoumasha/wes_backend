@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping  # noqa: TC003 - runtime type introspection contract
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -34,14 +35,14 @@ class RuntimeInboxWorkloadSample:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeInboxProjection:
-    """查询、trace 与 evidence 使用的快照 DTO；payload_json 为独立副本且消费者只读。"""
+    """查询、trace 与 evidence 使用的冻结外壳；payload_json 是深拷贝快照。"""
 
     id: int
     kind: str | None
     provider_code: str
     event_type: str
     source_event_id: str | None
-    payload_json: dict[str, Any]
+    payload_json: Mapping[str, Any]
     payload_hash: str | None
     payload_schema_version: int | None
     workline_session_ref: int | None
@@ -85,7 +86,7 @@ class RuntimeInboxQueryPort(Protocol):
         self, db: Any, workline_session_ref: int
     ) -> list[RuntimeInboxProjection]: ...
 
-    async def list_workline_session_refs_by_device(self, db: Any, device_id: int) -> list[int]: ...
+    def workline_session_ref_exists_for_device(self, device_id: int, outer_ref_column: Any) -> Any: ...
 
 
 __all__ = [
