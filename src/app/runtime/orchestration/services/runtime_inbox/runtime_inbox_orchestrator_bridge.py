@@ -351,7 +351,10 @@ class RuntimeInboxProcessorBridge:
                 _ = await _handle_timer_timeout(
                     db,
                     inbox=inbox,
+                    inbox_pk=inbox_pk,
+                    payload=payload,
                     processor_token=processor_token,
+                    inbox_service=self.inbox_service,
                 )
                 await db.commit()
                 result["success"] += 1
@@ -915,14 +918,39 @@ async def _handle_estop(
     return True
 
 
-async def _handle_timer_timeout(db: Any, *, inbox: Any, processor_token: str) -> None:
+async def _handle_timer_timeout(
+    db: Any,
+    *,
+    inbox: Any,
+    inbox_pk: int,
+    payload: dict[str, Any],
+    processor_token: str,
+    inbox_service: RuntimeInboxService,
+) -> None:
     """TIMER_TIMEOUT 路由到 reconciliation service (与 InboxBatchProcessor 等价)."""
     from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
         workline_runtime_reconciliation_service,
     )
 
+    payload_data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    execution_session_id = optional_int(getattr(inbox, "execution_session_id", None))
+    session_id = execution_session_id or optional_int(payload_data.get("session_id"))
     _ = await workline_runtime_reconciliation_service.handle_timer_timeout(
-        db, inbox=inbox, processor_token=processor_token
+        db,
+        session_id=session_id,
+        inbox_id=inbox_pk,
+        payload=payload,
+        correlation_id=string_value(getattr(inbox, "correlation_id", None)) or None,
+        trace_id=string_value(getattr(inbox, "trace_id", None)) or None,
+    )
+    _require_fenced_update(
+        await inbox_service.mark_processed(
+            db,
+            inbox_id=inbox_pk,
+            lease_token=processor_token,
+        ),
+        action="mark_processed",
+        inbox_id=inbox_pk,
     )
 
 

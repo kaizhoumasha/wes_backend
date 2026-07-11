@@ -87,7 +87,7 @@ PARITY_CASES = (
         name="timer_timeout",
         kind="TIMER_TIMEOUT",
         payload={"event_type": "TIMER_TIMEOUT", "data": {}},
-        expected_terminal=None,
+        expected_terminal="processed",
         expected_reconciliation=True,
     ),
     ParityCase(
@@ -401,8 +401,7 @@ async def _run_case(
         interactions.append(
             {
                 "kind": "reconciliation",
-                "inbox_id": getattr(kwargs.get("inbox"), "id", None),
-                "processor_token": kwargs.get("processor_token"),
+                "inbox_id": kwargs.get("inbox_id"),
             }
         )
 
@@ -499,7 +498,10 @@ async def _run_case(
     monkeypatch.setattr(bridge_module, "_record_diagnostic", record_diagnostic)
     monkeypatch.setattr(bridge_module, "_record_duplicate_entry_archive_timeline", record_duplicate, raising=False)
     monkeypatch.setattr(bridge_module, "_record_late_command_result_archive_timeline", record_late, raising=False)
-    monkeypatch.setattr(bridge_module, "_handle_timer_timeout", timer_handler)
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_runtime_reconciliation_service.handle_timer_timeout",
+        timer_handler,
+    )
     monkeypatch.setattr(bridge_module, "logger", _LoggerRecorder())
     monkeypatch.setattr(
         "src.app.workline.services.safety_service.workline_safety_service.handle_estop",
@@ -549,11 +551,7 @@ async def test_processor_characterization_parity(
         late_calls = [call for call in interactions if call["kind"] == "late_archive"]
         assert late_calls == [{"kind": "late_archive", "command_id": case.expected_late_command_id}]
     reconciliation_calls = [call for call in interactions if call["kind"] == "reconciliation"]
-    assert reconciliation_calls == (
-        [{"kind": "reconciliation", "inbox_id": 1, "processor_token": "token-parity"}]
-        if case.expected_reconciliation
-        else []
-    )
+    assert reconciliation_calls == ([{"kind": "reconciliation", "inbox_id": 1}] if case.expected_reconciliation else [])
     if case.expected_writeback_calls is not None:
         assert len([call for call in interactions if call["kind"] == "writeback"]) == case.expected_writeback_calls
 

@@ -223,14 +223,15 @@ async def test_timer_timeout_registers_reconciliation_idempotency_with_command_c
         async def get_by_command_code(self, _db: Any, _command_code: str) -> Any:
             return command
 
+    legacy_terminal_writer = AsyncMock()
     with (
         patch(
             "src.app.device.repositories.command_repository.DeviceCommandRepository",
             _CommandRepo,
         ),
         patch(
-            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.inbox_service.mark_as_processed",
-            new=AsyncMock(),
+            "src.app.runtime.orchestration.services.inbox.inbox_service.inbox_service.mark_as_processed",
+            new=legacy_terminal_writer,
         ),
         patch(
             "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.add_timeline_with_sequence",
@@ -241,8 +242,18 @@ async def test_timer_timeout_registers_reconciliation_idempotency_with_command_c
             new=AsyncMock(),
         ),
     ):
-        _ = await service.handle_timer_timeout(db, inbox=inbox, processor_token="worker-1")
+        result = await service.handle_timer_timeout(
+            db,
+            session_id=553,
+            inbox_id=901,
+            payload={"event_type": "TIMER_TIMEOUT", "data": inbox.payload_json},
+            correlation_id="corr-runtime-reconciliation-timer",
+            trace_id="trace-timer-reconciliation",
+        )
 
+    assert result.disposition == "RECONCILED"
+    assert result.session is session
+    legacy_terminal_writer.assert_not_awaited()
     assert len(manager.calls) == 1
     call = manager.calls[0]
     assert call["idempotency_key"] == "runtime-reconciliation:CALLBACK_DEADLINE_EXPIRED:inbox:901"
@@ -254,3 +265,72 @@ async def test_timer_timeout_registers_reconciliation_idempotency_with_command_c
     assert audit["claim_result"] == "MATCH"
     assert audit["correlation_id"] == "corr-runtime-reconciliation-timer"
     assert audit["decision"]["runtime_hold_required"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session", "expected_disposition"),
+    [
+        (None, "SESSION_MISSING"),
+        (SimpleNamespace(id=553, status="COMPLETED"), "SESSION_NOT_WAITING"),
+    ],
+)
+async def test_timer_timeout_returns_structured_ignored_result_without_terminal_write(
+    session: Any,
+    expected_disposition: str,
+) -> None:
+    """Session 不存在或已终态时仅返回结构化结果，由 processor 负责终态。"""
+
+    manager = _RecordingReconciliationManager()
+    service = _build_service(session=session, workline=None, reconciliation_manager=manager)
+    legacy_terminal_writer = AsyncMock()
+
+    with patch(
+        "src.app.runtime.orchestration.services.inbox.inbox_service.inbox_service.mark_as_processed",
+        new=legacy_terminal_writer,
+    ):
+        result = await service.handle_timer_timeout(
+            _ReconciliationDb(),
+            session_id=553,
+            inbox_id=901,
+            payload={"event_type": "TIMER_TIMEOUT", "data": {"deadline_at": "2026-07-11T08:00:00"}},
+        )
+
+    assert result.disposition == expected_disposition
+    assert result.session is session
+    legacy_terminal_writer.assert_not_awaited()
+    assert manager.calls == []
+
+
+@pytest.mark.asyncio
+async def test_timer_timeout_rejects_non_ack_command_evidence_without_terminal_write() -> None:
+    """命令未 ACK 的 timeout evidence 不进入对账，终态仍由 processor fenced 写回。"""
+
+    command, inbox, session, workline = _build_timer_timeout_objects()
+    command.status = "SENT"
+    manager = _RecordingReconciliationManager()
+    service = _build_service(session=session, workline=workline, reconciliation_manager=manager)
+    legacy_terminal_writer = AsyncMock()
+
+    class _CommandRepo:
+        async def get_by_command_code(self, _db: Any, _command_code: str) -> Any:
+            return command
+
+    with (
+        patch("src.app.device.repositories.command_repository.DeviceCommandRepository", _CommandRepo),
+        patch(
+            "src.app.runtime.orchestration.services.inbox.inbox_service.inbox_service.mark_as_processed",
+            new=legacy_terminal_writer,
+        ),
+    ):
+        result = await service.handle_timer_timeout(
+            _ReconciliationDb(command=command),
+            session_id=553,
+            inbox_id=901,
+            payload={"event_type": "TIMER_TIMEOUT", "data": inbox.payload_json},
+        )
+
+    assert result.disposition == "EVIDENCE_STALE"
+    assert result.session is session
+    legacy_terminal_writer.assert_not_awaited()
+    assert manager.calls == []
