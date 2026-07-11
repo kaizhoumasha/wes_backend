@@ -8,10 +8,12 @@ write-back 职责, 不再关心 SCAN/ESTOP/TIMER 前置 gate.
 
 关键约束:
 - 必须在锁内执行 (OrchestratorService 已经获取 session lock).
-- 必须用 processor_token fencing 写终态 (避免旧 owner 复活).
+- 必须用 lease_token fencing 写终态 (避免旧 owner 复活), 作用于
+  RuntimeInbox 表 (RuntimeInboxService.mark_processed / mark_failed).
 - session snapshot guard: 锁内 session state 若与锁前 snapshot 不一致,
   抛 RuntimeError, 由 Composition 层回滚并 mark_failed.
-- RESOURCE_WAIT 走 park_for_retry, 不消耗 attempt.
+- RESOURCE_WAIT 走 mark_failed(retryable=True), RuntimeInboxService
+  内部按 attempt_count 自计算指数退避, 不消耗 attempt.
 """
 
 from __future__ import annotations
@@ -22,6 +24,10 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    RuntimeInboxService,
+    runtime_inbox_service,
+)
 from src.app.runtime.orchestration.effect_result import (
     RuntimeIntentEffectResult,
     WriteBackDisposition,
@@ -30,7 +36,6 @@ from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 from src.app.runtime.orchestration.services.session.session_resolver import (
     reapply_pending_session_ingress_metadata,
 )
-from src.app.workline.constants import WORKLINE_RESOURCE_WAIT_RETRY_SECONDS
 from src.app.workline.services.write_back_service import orchestrator_write_back_service
 from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import (
@@ -213,7 +218,7 @@ class RuntimeInboxWriteBackService:
         self,
         *,
         write_back_service: Any = None,
-        inbox_service: Any = None,
+        inbox_service: RuntimeInboxService | None = None,
     ) -> None:
         self._write_back_service = write_back_service
         self._inbox_service = inbox_service
@@ -225,24 +230,15 @@ class RuntimeInboxWriteBackService:
         return self._write_back_service
 
     @property
-    def inbox_service(self) -> Any:
-        # TODO(Task 7c): 当前 lazy import legacy WorklineInboxService (inbox_service)
-        # 用于 mark_as_processed / park_for_retry 终态写回。但 RuntimeInboxProcessorBridge
-        # 处理的 inbox 实际是 RuntimeInbox (id 来自 claim_received_with_token), 写终态
-        # 必须用 RuntimeInboxService.mark_processed / mark_failed(retryable=True) /
-        # mark_dead_letter, 否则会查 WorklineInbox 表失败 ("消息不存在")。
-        # Task 7c 必须迁移到 RuntimeInboxService:
-        #   - mark_as_processed(db, inbox_pk, processor_token, *, auto_commit)
-        #     → runtime_inbox_service.mark_processed(db, *, inbox_id, lease_token)
-        #   - park_for_retry(db, inbox_pk, error, processor_token, *, auto_commit, delay_seconds)
-        #     → runtime_inbox_service.mark_failed(db, *, inbox_id, lease_token,
-        #                                          error_message, retryable=True)
-        #     (delay_seconds 消失, RuntimeInboxService 内部按 attempt_count 自计算)
-        # 阻塞原因 (Task 7b): 改动跨 2 个新文件 + 1 个测试 fake, 超出 7b 范围。
-        if self._inbox_service is None:
-            from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
+    def inbox_service(self) -> RuntimeInboxService:
+        """RuntimeInboxService 实例.
 
-            return inbox_service
+        终态写回 (mark_processed / mark_failed) 一律走 RuntimeInboxService,
+        作用于 RuntimeInbox 表的 lease_token fencing. 不再 fallback 到
+        legacy WorklineInboxService (Task 7c-5b 修复).
+        """
+        if self._inbox_service is None:
+            return runtime_inbox_service
         return self._inbox_service
 
     def build_write_callback(
@@ -283,9 +279,7 @@ class RuntimeInboxWriteBackService:
                         payload=payload,
                         reason="COMMAND_RESULT_BECAME_STALE_BEFORE_WRITE",
                     )
-                    _ = await self.inbox_service.mark_as_processed(
-                        db, inbox_pk, processor_token=processor_token, auto_commit=False
-                    )
+                    _ = await self.inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
                     await db.commit()
                     state.disposition = WriteBackDisposition.PROCESSED
                     state.write_effects_applied = True
@@ -309,18 +303,15 @@ class RuntimeInboxWriteBackService:
                 write_disposition = effect_result.disposition
                 state.disposition = write_disposition
                 if write_disposition == WriteBackDisposition.RESOURCE_RETRY:
-                    _ = await self.inbox_service.park_for_retry(
+                    _ = await self.inbox_service.mark_failed(
                         db,
-                        inbox_pk,
-                        "RESOURCE_WAIT",
-                        processor_token=processor_token,
-                        auto_commit=False,
-                        delay_seconds=WORKLINE_RESOURCE_WAIT_RETRY_SECONDS,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                        error_message="RESOURCE_WAIT",
+                        retryable=True,
                     )
                 elif write_disposition == WriteBackDisposition.PROCESSED:
-                    _ = await self.inbox_service.mark_as_processed(
-                        db, inbox_pk, processor_token=processor_token, auto_commit=False
-                    )
+                    _ = await self.inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
                     session_context = dict(_payload_for_session(session))
                     resource_wait_context = payload_dict(session_context.get("resource_wait"))
                     if optional_int(resource_wait_context.get("inbox_id")) == inbox_pk and resource_wait_context.get(

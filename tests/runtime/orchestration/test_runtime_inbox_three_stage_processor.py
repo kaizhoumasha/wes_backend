@@ -356,16 +356,15 @@ class TestBuildWriteCallback:
             def __init__(self) -> None:
                 self.mark_processed_calls: list[dict[str, Any]] = []
 
-            async def mark_as_processed(
+            async def mark_processed(
                 self,
                 db: object,
-                inbox_pk: int,
                 *,
-                processor_token: str,
-                auto_commit: bool = True,
+                inbox_id: int,
+                lease_token: str,
             ) -> object:
-                self.mark_processed_calls.append({"inbox_pk": inbox_pk, "processor_token": processor_token})
-                return SimpleNamespace(id=inbox_pk)
+                self.mark_processed_calls.append({"inbox_id": inbox_id, "lease_token": lease_token})
+                return SimpleNamespace(id=inbox_id)
 
         state = WriteBackState()
         write_callback = RuntimeInboxWriteBackService(
