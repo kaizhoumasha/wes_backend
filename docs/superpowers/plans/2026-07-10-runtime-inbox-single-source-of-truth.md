@@ -358,7 +358,7 @@ wes_runtime.runtime_inbox
 
 ### Task 8：系统级测试、性能与韧性
 
-**状态：** 🟡 15% 完成。Task 7 前置依赖已满足；真实 PostgreSQL migration fresh/upgrade/downgrade/upgrade 已完成并固化为 heavy integration。剩余：端到端 worker 链路、两个 crash window、1000 条/4 worker benchmark 与 SLI 验收。
+**状态：** 🟡 55% 完成（fd9e6b5a + 77bdd093 + 5c15a00）。真实 PostgreSQL 已覆盖完整生产处理链路、claim 后崩溃、write-back 后终态更新前崩溃，以及 Revision A/B 升降级回环；成功前任务队列唤醒为 0，最终成功后恰好为 1，heavy test 不接触真实 broker。剩余：1000 条/4 worker benchmark 与 SLI 验收。
 
 **目标：** 证明目标链路在真实数据库、并发、崩溃和 backlog 下可运行。
 
@@ -375,6 +375,8 @@ wes_runtime.runtime_inbox
 - 两个 crash window 均幂等收敛，不产生重复设备命令/outbox。
 - 真实 benchmark 基线通过评审后锁定阈值。
 - 无 silent critical gap。
+
+**落地：** 两个 crash window 均通过 lease reclaim、新 token fencing 和事务回滚幂等收敛，最终只生成一条目标 timeline、设备命令与 outbox；旧 owner 无法写终态。RuntimeInbox 毫秒时间字段从最初建表 revision 起即为 BIGINT，A→parent→A 使用真实毫秒值验证无窄化和数据损坏。所有 heavy test 强制要求显式 `INTEGRATION_DATABASE_URL`，只操作安全前缀临时库，并已在独立非 5432 TimescaleDB 容器验证 5 项通过后清理。
 
 ### Task 9：文档、索引与最终门禁
 
