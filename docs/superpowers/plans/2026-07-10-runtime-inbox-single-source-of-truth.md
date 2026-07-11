@@ -274,7 +274,7 @@ wes_runtime.runtime_inbox
 
 ### Task 4：迁移所有 Producer
 
-**状态：** 🟡 80% 完成（584c4142 + c64d7956 + 4dab4811 + 343a2fdb + b883e60a + 0f29d6c8 + ec7df1f8 + 1ee732e4 + 14a50b76 + 44a09776 + 3b4ab89f + 445471dd + 88ab3ce5 + b59b6ace）。`runtime_intent_effects`、SMT inbound handoff、RuntimeHold release 已改为只写 RuntimeInbox，相关旧双写已删除。剩余：`process_external` 仍兼容双写 WorklineInbox；timeout scanner 仍调用 `create_timeout_inbox`；callback/workline enqueue caller 仍使用旧 gateway 方法。
+**状态：** ✅ 100% 完成（补充提交：95ed6a58 + 2e2082f2 + e7d5a04a + 0e57ed66 + 3467fb37 + 1e2f7b0f + d87e1ad8 + 77589f1c + 7722ec04）。callback result/event/external、timeout scanner、runtime intent、SMT handoff 与 RuntimeHold release 均只写 RuntimeInbox；active producer 已无 WorklineInbox create 调用。
 
 **目标：** 所有 orchestration ingress 只写 RuntimeInbox。
 
@@ -291,11 +291,11 @@ wes_runtime.runtime_inbox
 - producer contract tests 覆盖全部 kind。
 - callback 路径无 WorklineInbox 写入。
 
-**落地：** `src/app/callback/services/callback_orchestration_service.py:process_event` 已删 `create_device_event_inbox` 双写（保留 `inbox_service` / `enqueue_processing` 参数 `# noqa: ARG002` 待调用方更新）；`src/app/callback/v1/callback.py` 改 `_enqueue_workline_processing` → `_enqueue_runtime_inbox_processing`；`src/core/task_queue_gateway.py` 加 `enqueue_runtime_inbox` 协议 + CeleryTaskQueueGateway 实现 + `PROCESS_RUNTIME_INBOX_TASK` 常量 + 保留 `enqueue_workline_inbox` 兼容 shim；`tests/callback/test_callback_orchestration_no_dual_write.py` 验证无双写 1/1 通过。188 callback+core tests pass；4 个 `tests/api/` 失败为 pre-existing。
+**落地：** 三类 callback 一次性写入完整 canonical envelope，external duplicate 在 lifecycle/enqueue 前早返，新消息按“持久化与 lifecycle 同事务提交 → enqueue”执行；canonical UTF-8 JSON 默认限制 1 MiB，超限在幂等查询前返回 413、零新增记录，审计仅保存大小与身份摘要。timeout scanner 使用 RuntimeInbox，并隔离 execution session、legacy hold 与 source identity 命名空间。lifecycle-only external 由生产 processor 规范化为空 intents 后 fenced `PROCESSED`，不重复 ingress lifecycle。主线程关键回归 127/127 通过。
 
 ### Task 5：三阶段 Processor 拆分与 parity
 
-**状态：** 🟡 80% 完成（26ee26b6 + 83cacf15 + e18d7a32 + f8c7f6e4 + fb32ce6f + 921ed5fb + f315795f）。validation、orchestration、write-back 三阶段 service 与组合 bridge 已落地；`tests/runtime/orchestration/test_runtime_inbox_three_stage_processor.py` 24/24 通过。剩余：新 Celery task 尚未调用 `RuntimeInboxProcessorService.process_claimed`，仍直接 `mark_processed`；旧 `InboxBatchProcessor` 及其运行入口尚未删除；原 10-case characterization table 尚未全部以同表 parity 方式运行新实现。
+**状态：** ✅ 100% 完成（补充提交：1b24dad4 + a26d29c8 + 7b13a364 + 90c68678 + e3fa67b6 + 7af7c283 + 439a4d79）。validation、orchestration、write-back 三阶段 service 与 RuntimeInbox bridge 已覆盖 characterization parity、重复/迟到、stale snapshot、RESOURCE_WAIT、失败/死信和 ESTOP 特例；旧 processor 文件的物理删除归 Task 7。
 
 **目标：** 在当前 PR 完成 validation、orchestration、write-back 边界拆分且保持行为等价。
 
@@ -311,11 +311,11 @@ wes_runtime.runtime_inbox
 - 每阶段有成功、失败、边界单元测试。
 - Celery/API 不直接访问 repository 或数据库查询。
 
-**剩余执行指引：** 三阶段文件和组合 bridge 已落地。下一步把 `src/celery_app/tasks/runtime_inbox.py:process_runtime_inbox_batch` 的占位 `mark_processed` 替换为 `RuntimeInboxProcessorService.process_claimed`，让原 10-case characterization table 同时覆盖旧、新入口；确认 parity 后再随 Task 7 删除旧 `InboxBatchProcessor`。`orchestrator_bridge.py` 目前仍接受 `WorklineInbox | RuntimeInbox | None`，最终删除旧类型前需完成其余 consumer 迁移。
+**落地：** RuntimeInbox Celery 链路已调用生产三阶段 processor；同一 parity case table 验证旧、新入口。ESTOP 安全副作用保持 fail-safe 独立提交，terminal write 仍受 token fencing；普通路径保持单条事务围栏。`orchestrator_bridge.py` 的旧类型与 `InboxBatchProcessor` 仅作为 Task 7 待删除表面保留，不再是 runtime task 入口。
 
 ### Task 6：Celery Task、Gateway 与调度
 
-**状态：** 🟡 45% 完成（4dab4811 + 343a2fdb + 4266e800 + d59f1a03 + c4ccd1e1 + 8211213f + 7dde434c）。新 `process_runtime_inbox_batch` task 已创建并加入 Celery include，gateway 新协议和 task 常量已就位。当前 task 仍是不可投产占位实现：claim 后直接 `mark_processed`，未调用三阶段 processor；Beat、callback/workline caller 仍指向旧 `process_inbox_batch` / `enqueue_workline_inbox`；NotRegistered fallback 与旧 task 兼容 shim 尚未删除；task 注册、retry、空批次和 processor 调用缺少独立验收测试。
+**状态：** ✅ 100% 完成（补充提交：ecf38b00 + 7c1f95e5 + c128bd50 + 1d6bf0e3）。RuntimeInbox task、gateway、Beat 与即时 enqueue caller 已切换到新任务名；claim-one/process-one、timeout、retry、空批次、过期 lease 恢复和终态状态机均已验收。旧 task/Beat/gateway 表面的物理删除归 Task 7。
 
 **目标：** 用 RuntimeInbox task 替换旧 workline inbox task，不保留兼容名。
 
@@ -332,11 +332,11 @@ wes_runtime.runtime_inbox
 - 慢消息不会使尚未开始的消息 lease 过期。
 - 旧 task 名在 active code 中为零。
 
-**剩余执行指引：** `src/celery_app/tasks/runtime_inbox.py` 与 Celery include 已存在，但 task 仍直接标记成功。接入 `RuntimeInboxProcessorService.process_claimed` 后，补 task 注册、路由、空批次、timeout、retry 和即时 enqueue 测试；再把 `src/celery_app/config.py` beat schedule 及 callback/workline caller 切到 runtime task，删除 NotRegistered fallback、`enqueue_workline_inbox` shim 和旧 task。
+**落地：** task 在 claim commit 后调用生产 processor，失败按 retryable/exhausted/RESOURCE_WAIT 分流，stale recovery 使用原子领取并将耗尽记录置为 DEAD_LETTER；Beat 保持 10 秒兜底，即时 enqueue 失败不回滚已提交消息。task 注册、路由、批次、timeout、retry 和 gateway 合同均通过独立测试。
 
 ### Task 7：迁移 Consumers 与 Revision B
 
-**状态：** 🟡 25% 完成（324617e7 + b883e60a + 0f29d6c8 + ec7df1f8 + 1ee732e4 + 14a50b76 + 44a09776 + 3b4ab89f + 445471dd + 88ab3ce5 + b59b6ace + 921ed5fb + f315795f）。已迁移 runtime intent、SMT handoff、RuntimeHold release 的 RuntimeInbox 写路径，并修正 SMT evidence 读路径、processor bridge 和 write-back 使用 RuntimeInboxService。剩余主体仍未完成：active code 仍有 WorklineInbox model/repository/service/processor/consumer facade、旧 Celery task/Beat/gateway、query/reconciliation/session/trace/UoW 等读路径；Revision B 尚未生成，旧表及 capability/normalizer wiring 尚未删除。
+**状态：** 🟡 35% 完成。已迁移 runtime intent、SMT handoff、RuntimeHold release、timeout 与 external callback 的 RuntimeInbox 读写/处理路径，并完成新 processor、task、gateway 主链。剩余主体：active code 仍有 WorklineInbox model/repository/service/processor/consumer facade、旧 task/export、query/reconciliation/session/trace/UoW 等读路径；Revision B、旧表和 capability/normalizer wiring 尚未删除。
 
 **目标：** 完成读路径、evidence、FK 和 fixture 迁移后物理删除 WorklineInbox。
 
