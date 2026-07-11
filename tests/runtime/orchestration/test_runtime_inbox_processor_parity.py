@@ -191,6 +191,7 @@ class _FakeDb:
         self.committed = 0
         self.rolled_back = 0
         self.stale_session_on_write = stale_session_on_write
+        self.safety_effects: set[int] = set()
 
     async def refresh(self, value: object) -> None:
         if self.stale_session_on_write:
@@ -385,7 +386,9 @@ async def _run_case(
         )
 
     async def estop_handler(*args: object, **kwargs: object) -> object:
-        _ = args
+        estop_db = args[0]
+        estop_db.safety_effects.add(123)
+        await estop_db.commit()
         interactions.append(
             {
                 "kind": "estop",
@@ -465,11 +468,19 @@ async def _run_case(
         async def process(self, *args: object, write_callback: object, **kwargs: object) -> OrchestratorResult:
             return await _Orchestrator().process_inbox(*args, write_callback=write_callback, **kwargs)
 
+    class _LoggerRecorder:
+        def __getattr__(self, level: str) -> object:
+            def record(message: object) -> None:
+                interactions.append({"kind": "log", "level": level, "message": str(message)})
+
+            return record
+
     monkeypatch.setattr(bridge_module, "_load_related_entities", load_related_tuple)
     monkeypatch.setattr(bridge_module, "_record_diagnostic", record_diagnostic)
     monkeypatch.setattr(bridge_module, "_record_duplicate_entry_archive_timeline", record_duplicate, raising=False)
     monkeypatch.setattr(bridge_module, "_record_late_command_result_archive_timeline", record_late, raising=False)
     monkeypatch.setattr(bridge_module, "_handle_timer_timeout", timer_handler)
+    monkeypatch.setattr(bridge_module, "logger", _LoggerRecorder())
     monkeypatch.setattr(
         "src.app.workline.services.safety_service.workline_safety_service.handle_estop",
         estop_handler,
@@ -559,3 +570,42 @@ async def test_three_stage_lost_fencing_rolls_back_without_success(
     assert terminal_actions[0]["action"] == first_action
     assert db.committed == 0
     assert db.rolled_back >= 1
+
+
+@pytest.mark.asyncio
+async def test_estop_lost_fencing_preserves_fail_safe_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ESTOP safety effects 已内部提交，外层 rollback 只清理当前未提交事务。"""
+    case = next(item for item in PARITY_CASES if item.name == "estop_with_device_and_command")
+
+    result, _, terminal_actions, _, interactions, db = await _run_case(
+        monkeypatch,
+        processor_kind="three_stage",
+        case=case,
+        accept_updates=False,
+    )
+
+    assert db.safety_effects == {123}
+    assert db.committed == 1
+    assert db.rolled_back >= 1
+    assert result["success"] == 0
+    assert result["failed"] == 1
+    assert terminal_actions[0]["action"] == "processed"
+    assert any("lease lost" in call["message"] for call in interactions if call["kind"] == "log")
+
+
+@pytest.mark.asyncio
+async def test_repeated_estop_reuses_active_fail_safe_effect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重复 ESTOP 使用同一 active incident effect，仍分别执行 fenced 终态。"""
+    case = next(item for item in PARITY_CASES if item.name == "estop_with_device_and_command")
+
+    first = await _run_case(monkeypatch, processor_kind="three_stage", case=case)
+    second = await _run_case(monkeypatch, processor_kind="three_stage", case=case)
+
+    assert first[-1].safety_effects == {123}
+    assert second[-1].safety_effects == {123}
+    assert first[0]["success"] == 1
+    assert second[0]["success"] == 1

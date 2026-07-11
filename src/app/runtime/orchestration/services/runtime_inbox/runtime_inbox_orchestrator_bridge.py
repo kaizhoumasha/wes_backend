@@ -893,6 +893,8 @@ async def _handle_estop(
 
     from src.app.workline.services.safety_service import workline_safety_service
 
+    # Fail-safe fencing 特例：handle_estop 内部立即提交安全冻结/排空；
+    # RuntimeInbox 终态 fencing 必须后置，绝不能把两者重构为同一可回滚事务。
     _ = await workline_safety_service.handle_estop(
         db,
         workline_id=workline_pk,
