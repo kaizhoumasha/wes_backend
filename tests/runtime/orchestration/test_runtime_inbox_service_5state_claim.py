@@ -354,29 +354,25 @@ async def test_mark_dead_letter_writes_terminal_state() -> None:
 
 @pytest.mark.asyncio
 async def test_recover_stale_leases_resets_to_received() -> None:
-    """recover_stale_leases 把 stale PROCESSING + lease_until 过期的回滚为 RECEIVED。"""
+    """recover_stale_leases 只委托 repository 的原子恢复入口。"""
     service = runtime_inbox_service_module.runtime_inbox_service
 
-    _recovered: list[dict[str, Any]] = []  # placeholder; not asserted in this mock
+    calls: list[dict[str, int]] = []
 
     class _FakeRepo:
         @staticmethod
-        async def find_stale_processing(
+        async def recover_stale_leases(
             db: object,
             *,
             stale_after_seconds: int,
             limit: int,
-        ) -> list[RuntimeInbox]:
-            # Mock find_stale_processing 返回 3 行 (避免真实 DB)
-            return [
-                _make_runtime_inbox_record(inbox_id=1, status="PROCESSING", lease_until=1),
-                _make_runtime_inbox_record(inbox_id=2, status="PROCESSING", lease_until=1),
-                _make_runtime_inbox_record(inbox_id=3, status="PROCESSING", lease_until=1),
-            ]
+        ) -> int:
+            _ = db
+            calls.append({"stale_after_seconds": stale_after_seconds, "limit": limit})
+            return 3
 
     service.claim_repo = _FakeRepo()
 
-    # recover_stale_leases 会调 db.execute 重置, 我们 mock db 让它忽略 update
     n = await service.recover_stale_leases(
         db=AsyncMock(),  # type: ignore[arg-type]
         stale_after_seconds=300,
@@ -384,3 +380,4 @@ async def test_recover_stale_leases_resets_to_received() -> None:
     )
 
     assert n == 3
+    assert calls == [{"stale_after_seconds": 300, "limit": 100}]

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import BigInteger, exists, literal, select, tuple_, update
+from sqlalchemy import BigInteger, case, exists, literal, select, tuple_, update
 
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.database.base_repository import BaseRepository
@@ -131,44 +131,62 @@ class RuntimeInboxClaimRepository(BaseRepository[RuntimeInbox]):
         claims.sort(key=lambda row: (row["received_at"] is None, row["received_at"] or 0, row["id"]))
         return claims
 
-    async def find_stale_processing(
+    async def recover_stale_leases(
         self,
         db: AsyncSession,
         *,
         stale_after_seconds: int,
         limit: int,
-    ) -> list[dict[str, Any]]:
-        """查找 stale PROCESSING 行 (lease_until < now).
+    ) -> int:
+        """原子恢复 stale lease；耗尽预算的行直接进入 DEAD_LETTER。"""
+        if limit <= 0:
+            return 0
 
-        用于 health-check + 异常回收. 返回轻量 dict 而非 ORM 对象
-        避免 inbound-normalizer 误判 (RuntimeInbox 是 SQLModel 表 model,
-        不是 inbound normalizer interface).
-        """
         import time as _time
 
-        now_ms = _time.time() * 1000
-        columns = cast("Any", RuntimeInbox).__table__.c
+        _ = stale_after_seconds  # lease_until 已是绝对到期时间，参数保留调用合同。
+        now_ms = int(_time.time() * 1000)
+        now_value = literal(now_ms, type_=BigInteger())
+        table = cast("Any", RuntimeInbox).__table__
+        columns = table.c
+        stale_candidate = table.alias("stale_candidate")
+        candidate_columns = stale_candidate.c
+        stale_ids = (
+            select(candidate_columns.id)
+            .select_from(stale_candidate)
+            .where(
+                candidate_columns.status == "PROCESSING",
+                candidate_columns.lease_until <= now_value,
+            )
+            .order_by(candidate_columns.received_at, candidate_columns.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        exhausted = columns.attempt_count >= columns.max_retries
 
         result = await db.execute(
-            select(
-                columns.id,
-                columns.status,
-                columns.lease_until,
-                columns.attempt_count,
+            update(table)
+            .where(
+                columns.id.in_(stale_ids),
+                columns.status == "PROCESSING",
+                columns.lease_until <= now_value,
             )
-            .where(columns.status == "PROCESSING")
-            .where(columns.lease_until <= now_ms - stale_after_seconds * 1000)
-            .limit(limit)
+            .values(
+                status=case((exhausted, "DEAD_LETTER"), else_="RECEIVED"),
+                processor_token=None,
+                lease_until=None,
+                next_retry_at=None,
+                failed_at=case((exhausted, now_value), else_=columns.failed_at),
+                last_error_code=case((exhausted, "INBOX_RETRY_EXHAUSTED"), else_=columns.last_error_code),
+                last_error_message=case(
+                    (exhausted, "PROCESSING_LEASE_EXPIRED_RETRY_EXHAUSTED"),
+                    else_=columns.last_error_message,
+                ),
+            )
+            .returning(columns.id, columns.status)
+            .execution_options(synchronize_session=False)
         )
-        return [
-            {
-                "id": row.id,
-                "status": row.status,
-                "lease_until": row.lease_until,
-                "attempt_count": row.attempt_count,
-            }
-            for row in result.fetchall()
-        ]
+        return len(result.mappings().all())
 
     async def update_terminal_state(
         self,

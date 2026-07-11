@@ -118,6 +118,36 @@ async def test_claim_returns_only_atomic_update_returning_rows() -> None:
 
 
 @pytest.mark.asyncio
+async def test_recovery_compiles_as_atomic_limited_skip_locked_update() -> None:
+    """stale recovery 必须在单条 SQL 内锁候选、限量、分流并更新。"""
+
+    repository = RuntimeInboxClaimRepository()
+
+    with pytest.raises(_StatementCaptured) as captured:
+        await repository.recover_stale_leases(
+            _CapturingDb(),  # type: ignore[arg-type]
+            stale_after_seconds=30,
+            limit=5,
+        )
+
+    sql = str(
+        captured.value.statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).upper()
+    assert sql.startswith("UPDATE WES_RUNTIME.RUNTIME_INBOX")
+    assert "STATUS = 'PROCESSING'" in sql
+    assert "LEASE_UNTIL <=" in sql
+    assert "ORDER BY" in sql and "RECEIVED_AT" in sql
+    assert "LIMIT 5" in sql
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "CASE WHEN" in sql
+    assert "DEAD_LETTER" in sql and "RECEIVED" in sql
+    assert "RETURNING" in sql
+
+
+@pytest.mark.asyncio
 async def test_legacy_terminal_failed_rows_do_not_block_bucket_head(db_session: AsyncSession) -> None:
     """无推进路径的 legacy FAILED 不能永久阻塞同 bucket 后续消息。"""
 

@@ -574,39 +574,12 @@ class RuntimeInboxService:
         stale_after_seconds: int,
         limit: int,
     ) -> int:
-        """回收 stale PROCESSING 行（lease_until < now）为 RECEIVED。
-
-        由 claim_repo.find_stale_processing 列出候选行, 然后
-        把 state='RECEIVED', processor_token=None, lease_until=None 重置。
-        """
-        stale = await self.claim_repo.find_stale_processing(
+        """原子回收 stale PROCESSING；耗尽预算时直接 DEAD_LETTER。"""
+        return await self.claim_repo.recover_stale_leases(
             db,
             stale_after_seconds=stale_after_seconds,
             limit=limit,
         )
-        if not stale:
-            return 0
-
-        # bulk update: 把所有候选行重置为 RECEIVED
-        from sqlalchemy import update
-
-        from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
-
-        cast("Any", RuntimeInbox)
-        inbox_ids = [row["id"] if isinstance(row, dict) else getattr(row, "id", None) for row in stale]
-        inbox_ids = [i for i in inbox_ids if i is not None]
-        if not inbox_ids:
-            return 0
-        await db.execute(
-            update(RuntimeInbox)
-            .where(cast("Any", RuntimeInbox).__table__.c.id.in_(inbox_ids))
-            .values(
-                status="RECEIVED",
-                processor_token=None,
-                lease_until=None,
-            )
-        )
-        return len(inbox_ids)
 
     async def mark_processed(
         self,

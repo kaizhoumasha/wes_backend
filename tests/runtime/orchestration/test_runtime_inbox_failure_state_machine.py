@@ -188,3 +188,112 @@ async def test_stale_owner_cannot_overwrite_failure_state(db_session: AsyncSessi
     assert updated is False
     assert inbox.status == "PROCESSING"
     assert inbox.last_error_message is None
+
+
+@pytest.mark.asyncio
+async def test_atomic_recovery_respects_limit_active_lease_and_retry_budget(db_session: AsyncSession) -> None:
+    rows = [
+        await _processing_inbox(
+            db_session,
+            source_event_id="stale-retryable",
+            attempt_count=1,
+            max_retries=3,
+            token="stale-1",
+        ),
+        await _processing_inbox(
+            db_session,
+            source_event_id="stale-exhausted",
+            attempt_count=3,
+            max_retries=3,
+            token="stale-2",
+        ),
+        await _processing_inbox(
+            db_session,
+            source_event_id="active-lease",
+            attempt_count=1,
+            max_retries=3,
+            token="active",
+        ),
+    ]
+    rows[0].received_at = 1
+    rows[0].lease_until = 0
+    rows[1].received_at = 2
+    rows[1].lease_until = 0
+    rows[2].received_at = 3
+    rows[2].lease_until = 9_999_999_999_999
+    await db_session.commit()
+    service = RuntimeInboxService(claim_repo=RuntimeInboxClaimRepository())
+
+    recovered = await service.recover_stale_leases(db_session, stale_after_seconds=30, limit=2)
+    await db_session.commit()
+    for row in rows:
+        await db_session.refresh(row)
+
+    assert recovered == 2
+    assert rows[0].status == "RECEIVED"
+    assert rows[0].attempt_count == 1
+    assert rows[0].processor_token is None and rows[0].lease_until is None
+    assert rows[1].status == "DEAD_LETTER"
+    assert rows[1].attempt_count == 3
+    assert rows[1].processor_token is None and rows[1].lease_until is None
+    assert rows[1].failed_at is not None
+    assert rows[1].last_error_code == "INBOX_RETRY_EXHAUSTED"
+    assert rows[1].last_error_message == "PROCESSING_LEASE_EXPIRED_RETRY_EXHAUSTED"
+    assert rows[2].status == "PROCESSING"
+    assert rows[2].processor_token == "active"
+
+
+@pytest.mark.asyncio
+async def test_last_budget_crash_recovers_to_dead_letter_and_unblocks_bucket(db_session: AsyncSession) -> None:
+    first = RuntimeInbox(
+        provider_code="TEST",
+        event_type="DEVICE_EVENT",
+        source_event_id="last-budget",
+        payload_json={},
+        status="RECEIVED",
+        claim_bucket_key="bucket:last-budget",
+        received_at=1,
+        attempt_count=1,
+        max_retries=2,
+    )
+    following = RuntimeInbox(
+        provider_code="TEST",
+        event_type="DEVICE_EVENT",
+        source_event_id="after-last-budget",
+        payload_json={},
+        status="RECEIVED",
+        claim_bucket_key="bucket:last-budget",
+        received_at=2,
+        attempt_count=0,
+        max_retries=2,
+    )
+    db_session.add_all([first, following])
+    await db_session.commit()
+    service = RuntimeInboxService(claim_repo=RuntimeInboxClaimRepository())
+
+    claims = await service.claim_for_processing(
+        db_session,
+        limit=1,
+        processor_token="last-worker",
+        stale_after_seconds=30,
+    )
+    await db_session.commit()
+    assert [claim["source_event_id"] for claim in claims] == ["last-budget"]
+    await db_session.refresh(first)
+    assert first.status == "PROCESSING" and first.attempt_count == 2
+
+    first.lease_until = 0
+    await db_session.commit()
+    recovered = await service.recover_stale_leases(db_session, stale_after_seconds=30, limit=1)
+    await db_session.commit()
+    await db_session.refresh(first)
+    assert recovered == 1
+    assert first.status == "DEAD_LETTER"
+
+    next_claims = await service.claim_for_processing(
+        db_session,
+        limit=1,
+        processor_token="next-worker",
+        stale_after_seconds=30,
+    )
+    assert [claim["source_event_id"] for claim in next_claims] == ["after-last-budget"]
