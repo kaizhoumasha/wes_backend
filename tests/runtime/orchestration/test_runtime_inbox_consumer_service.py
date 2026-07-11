@@ -168,6 +168,116 @@ async def test_runtime_inbox_accept_returns_existing_ack_for_same_hash(db_sessio
 
 
 @pytest.mark.asyncio
+async def test_accept_received_retry_without_owner_keeps_processor_assigned_owner(db_session) -> None:
+    """未声明 owner 的相同 K/H 重试应 ACK processor 已回填的 owner，且不重复 claim。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    guard = _IdempotencyGuardSpy()
+    service = RuntimeInboxService(idempotency_guard=guard)  # type: ignore[arg-type]
+    first = await _accept_received(
+        service,
+        db_session,
+        provider_code="ECS",
+        event_type="DEVICE_EVENT",
+        source_event_id="evt-owner-filled-by-processor",
+        payload_hash="hash-owner-filled-by-processor",
+        correlation_id="corr-owner-filled-by-processor",
+    )
+    await db_session.flush()
+
+    # 模拟 processor 在 ACK 后解析业务上下文并持久化会话归属。
+    first.record.workline_session_id = 41
+    await db_session.flush()
+
+    retry = await _accept_received(
+        service,
+        db_session,
+        provider_code="ECS",
+        event_type="DEVICE_EVENT",
+        source_event_id="evt-owner-filled-by-processor",
+        payload_hash="hash-owner-filled-by-processor",
+        correlation_id="corr-owner-filled-by-processor",
+    )
+
+    await db_session.refresh(first.record)
+    assert retry.created is False
+    assert retry.record.id == first.record.id
+    assert retry.record.workline_session_id == 41
+    assert first.record.workline_session_id == 41
+    assert len(guard.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_accept_received_explicit_owner_acks_existing_unspecified_owner_without_backfill(db_session) -> None:
+    """既有记录未定 owner 时，incoming 明确 owner 可 ACK，但 ACK 路径不得回填归属。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    service = RuntimeInboxService()
+    first = await _accept_received(
+        service,
+        db_session,
+        provider_code="WMS",
+        event_type="WMS_TASK_CHANGE",
+        source_event_id="evt-existing-owner-unspecified",
+        payload_hash="hash-existing-owner-unspecified",
+    )
+    await db_session.flush()
+
+    retry = await _accept_received(
+        service,
+        db_session,
+        provider_code="WMS",
+        event_type="WMS_TASK_CHANGE",
+        source_event_id="evt-existing-owner-unspecified",
+        payload_hash="hash-existing-owner-unspecified",
+        workline_session_id=41,
+    )
+
+    await db_session.refresh(first.record)
+    assert retry.created is False
+    assert retry.record.id == first.record.id
+    assert retry.record.workline_session_id is None
+    assert first.record.workline_session_id is None
+
+
+@pytest.mark.asyncio
+async def test_accept_received_unique_race_without_owner_acks_processor_assigned_owner_without_claim(
+    db_session,
+) -> None:
+    """唯一键竞态回读 owner=41 时，未声明 owner 的重试应直接 ACK 且不 claim。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    existing = SimpleNamespace(
+        id=10,
+        payload_hash="hash-owner-race-unspecified",
+        status="RECEIVED",
+        workline_session_id=41,
+    )
+    repository = _RuntimeInboxUniqueRaceRepository(existing)
+    guard = _IdempotencyGuardSpy()
+    service = RuntimeInboxService(repository=repository, idempotency_guard=guard)  # type: ignore[arg-type]
+
+    retry = await _accept_received(
+        service,
+        db_session,
+        provider_code="ECS",
+        event_type="DEVICE_EVENT",
+        source_event_id="evt-owner-race-unspecified",
+        payload_hash="hash-owner-race-unspecified",
+        correlation_id="corr-owner-race-unspecified",
+    )
+
+    assert retry.created is False
+    assert retry.record is existing
+    assert existing.workline_session_id == 41
+    assert repository.add_calls == 1
+    assert guard.calls == []
+
+
+@pytest.mark.asyncio
 async def test_accept_received_rejects_existing_identity_owned_by_another_workline_session(db_session) -> None:
     """K/H 相同也不能跨 WorklineSession 归属复用 ACK。"""
 

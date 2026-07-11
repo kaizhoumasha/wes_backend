@@ -161,7 +161,12 @@ def _require_same_workline_session_owner(
     """在 ACK 或幂等 claim 前校验既有记录的 WorklineSession 归属。"""
 
     existing_workline_session_id = cast("int | None", getattr(existing, "workline_session_id", None))
-    if existing_workline_session_id != incoming_workline_session_id:
+    # None 表示入站方未声明 owner；只有双方都明确声明且不一致时才构成归属冲突。
+    if (
+        existing_workline_session_id is not None
+        and incoming_workline_session_id is not None
+        and existing_workline_session_id != incoming_workline_session_id
+    ):
         raise RuntimeInboxSessionOwnershipConflict(
             provider_code=provider_code,
             event_type=event_type,
@@ -361,15 +366,6 @@ class RuntimeInboxService:
                         existing_payload_hash=existing.payload_hash,
                         incoming_payload_hash=payload_hash,
                     )
-                await self._claim_device_event_idempotency_if_needed(
-                    db,
-                    provider_code=provider_code,
-                    event_type=event_type,
-                    source_event_id=source_event_id,
-                    payload_hash=payload_hash,
-                    correlation_id=correlation_id,
-                    now_ms=now_ms,
-                )
                 return RuntimeInboxAcceptResult(record=existing, created=False)
 
             try:
@@ -408,15 +404,6 @@ class RuntimeInboxService:
                         existing_payload_hash=existing.payload_hash,
                         incoming_payload_hash=payload_hash,
                     ) from None
-                await self._claim_device_event_idempotency_if_needed(
-                    db,
-                    provider_code=provider_code,
-                    event_type=event_type,
-                    source_event_id=source_event_id,
-                    payload_hash=payload_hash,
-                    correlation_id=correlation_id,
-                    now_ms=now_ms,
-                )
                 return RuntimeInboxAcceptResult(record=existing, created=False)
         else:
             record = await self.repository.add_received(db, record_data)
