@@ -331,12 +331,16 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
         target_state: str,
         extra_values: dict[str, Any] | None = None,
     ) -> bool:
-        """按 PROCESSING + processor_token 围栏原子写回终态。"""
+        """按 PROCESSING + processor_token 围栏写回结果并释放 worker 所有权。"""
 
         columns = cast("Any", RuntimeInbox).__table__.c
         values: dict[str, Any] = {"status": target_state}
         if extra_values:
             values.update(extra_values)
+        # FAILED 等待重试、PROCESSED/DEAD_LETTER 终态都已离开 PROCESSING，
+        # processor token 与 lease 必须同步释放，且不允许 extra_values 覆盖该不变量。
+        values["processor_token"] = None
+        values["lease_until"] = None
         result = await db.execute(
             update(RuntimeInbox)
             .where(

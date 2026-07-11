@@ -908,7 +908,7 @@ class RuntimeInboxService:
 
         now = timezone.now_for_db()
         now_ms = int(now.timestamp() * 1000) if hasattr(now, "timestamp") else None
-        extra_values: dict[str, Any] | None = {"processed_at": now_ms} if now_ms is not None else None
+        extra_values: dict[str, Any] = {"processed_at": now_ms}
         return await self.repository.update_terminal_state(
             db,
             inbox_id=inbox_id,

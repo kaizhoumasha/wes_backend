@@ -1,0 +1,235 @@
+"""RuntimeInbox PostgreSQL 正常处理与崩溃恢复共用的真实生产链路。"""
+
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from src.app.device.models.command import DeviceCommand
+from src.app.device.models.device import Device, DeviceStatus
+from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
+from src.app.runtime.orchestration.models.timeline import TimelineActionType, WorklineTimeline
+from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorService
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
+    RuntimeInboxProcessorBridge,
+)
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
+    RuntimeInboxOrchestratorDelegate,
+)
+from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
+    workline_runtime_status_projection_service,
+)
+from src.app.sys.models import SystemOutbox
+from src.app.workline.models.workline import LineType, WorkLine
+from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+
+@asynccontextmanager
+async def _noop_session_lock(_lock_key: str):
+    """仅替换外部锁基础设施；持久化、编排和 write-back 均使用生产实现。"""
+
+    yield
+
+
+def _production_orchestrator_factory(**_kwargs: object) -> OrchestratorService:
+    return OrchestratorService(lock_provider=_noop_session_lock)
+
+
+@dataclass(frozen=True, slots=True)
+class SeededScanFlow:
+    inbox_id: int
+    session_id: int
+    workline_id: int
+    arm_id: int
+    trace_id: str
+
+
+def processor(service: RuntimeInboxService) -> RuntimeInboxProcessorBridge:
+    return RuntimeInboxProcessorBridge(
+        processor_service=RuntimeInboxOrchestratorDelegate(
+            orchestrator_factory=_production_orchestrator_factory,
+        ),
+        inbox_service=service,
+    )
+
+
+async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
+    trace_id = "it-runtime-inbox-trace"
+    workline = WorkLine(
+        line_code="IT-RUNTIME-INBOX-SCAN",
+        line_name="RuntimeInbox Production Flow",
+        line_type=LineType.AUTO,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        config={"pipeline_input_location": "PIPELINE-IN-IT"},
+        is_active=True,
+    )
+    db.add(workline)
+    await db.flush()
+    await workline_runtime_status_projection_service.project_ready_after_start(db, workline_id=workline.id)
+    scanner = Device(
+        device_code="IT-SCANNER-01",
+        device_name="Integration Scanner",
+        work_line_id=workline.id,
+        device_role="ROUGH_SORTER_SCANNER",
+        device_status=DeviceStatus.IDLE,
+    )
+    arm = Device(
+        device_code="IT-ARM-01",
+        device_name="Integration Input Arm",
+        work_line_id=workline.id,
+        device_role="ROUGH_SORTER_INPUT_ARM",
+        device_status=DeviceStatus.IDLE,
+    )
+    db.add_all([scanner, arm])
+    await db.flush()
+    session = WorklineSession(
+        session_code="IT-RUNTIME-INBOX-SESSION",
+        workline_id=workline.id,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        status=SessionStatus.RUNNING,
+        trace_id=trace_id,
+    )
+    db.add_all(
+        [
+            session,
+            ExecutionCorrelation(
+                correlation_id="it-runtime-inbox-correlation",
+                trace_id=trace_id,
+                source_event_id="it-runtime-inbox-event",
+                business_owner_key="it-runtime-inbox-scan",
+            ),
+        ]
+    )
+    await db.flush()
+    accepted = await RuntimeInboxService().accept_device_event(
+        db,
+        device_code=scanner.device_code,
+        event_type="SCAN_COMPLETED",
+        payload_json={
+            "event_type": "SCAN_COMPLETED",
+            "canonical_event_type": "SCAN_COMPLETED",
+            "device_code": scanner.device_code,
+            "data": {
+                "session_id": session.id,
+                "HHPN": "MAT-IT-001",
+                "MfrPN": "VENDOR-IT-001",
+                "Qty": "10",
+                "DateCode": "20260711",
+                "LotCode": "LOT-IT-001",
+                "PkgID": "PKG-IT-001",
+            },
+        },
+        trace_id=trace_id,
+        event_id="it-runtime-inbox-event",
+        workline_id=workline.id,
+        device_id=scanner.id,
+    )
+    await db.commit()
+    assert all(value is not None for value in (accepted.record.id, session.id, workline.id, arm.id))
+    return SeededScanFlow(
+        inbox_id=int(accepted.record.id),
+        session_id=int(session.id),
+        workline_id=int(workline.id),
+        arm_id=int(arm.id),
+        trace_id=trace_id,
+    )
+
+
+async def claim(db: AsyncSession, service: RuntimeInboxService, *, token: str) -> dict[str, object]:
+    claims = await service.claim_for_processing(db, limit=1, processor_token=token, stale_after_seconds=60)
+    assert len(claims) == 1
+    await db.commit()
+    return claims[0]
+
+
+async def expire_and_recover(db: AsyncSession, service: RuntimeInboxService, *, inbox_id: int) -> None:
+    # 用确定性 DB 时间推进替代 sleep，模拟 worker lease 已经过期。
+    await db.execute(update(RuntimeInbox).where(RuntimeInbox.id == inbox_id).values(lease_until=0))
+    await db.commit()
+    assert await service.recover_stale_leases(db, stale_after_seconds=60, limit=1) == 1
+    await db.commit()
+
+
+async def assert_effects(db: AsyncSession, seeded: SeededScanFlow, *, expected_count: int) -> None:
+    """按本场景稳定业务键精确核验 command/outbox/目标 timeline。"""
+
+    session = await db.get(WorklineSession, seeded.session_id)
+    assert session is not None
+    if expected_count:
+        assert session.status == SessionStatus.WAITING_DEVICE_RESULT
+        assert session.awaiting_device_command_code is not None
+        command = await db.scalar(
+            select(DeviceCommand).where(DeviceCommand.command_code == session.awaiting_device_command_code)
+        )
+        assert command is not None and command.device_id == seeded.arm_id
+    else:
+        assert session.status == SessionStatus.RUNNING
+        assert session.awaiting_device_command_code is None
+
+    command_count = await db.scalar(
+        select(func.count())
+        .select_from(DeviceCommand)
+        .where(DeviceCommand.workline_id == seeded.workline_id, DeviceCommand.trace_id == seeded.trace_id)
+    )
+    outbox_count = await db.scalar(
+        select(func.count()).select_from(SystemOutbox).where(SystemOutbox.session_id == seeded.session_id)
+    )
+    target_timeline_count = await db.scalar(
+        select(func.count())
+        .select_from(WorklineTimeline)
+        .where(
+            WorklineTimeline.session_id == seeded.session_id,
+            WorklineTimeline.trace_id == seeded.trace_id,
+            WorklineTimeline.related_inbox_id == seeded.inbox_id,
+            WorklineTimeline.action_type == TimelineActionType.COMMAND_SENT,
+        )
+    )
+    assert command_count == expected_count
+    assert outbox_count == expected_count
+    assert target_timeline_count == expected_count
+
+
+async def assert_processed_terminal(db: AsyncSession, *, inbox_id: int) -> None:
+    db.expire_all()
+    inbox = await db.get(RuntimeInbox, inbox_id)
+    assert inbox is not None
+    assert inbox.status == "PROCESSED"
+    assert inbox.processor_token is None
+    assert inbox.lease_until is None
+
+
+async def with_temporary_runtime_database(
+    scenario: Callable[[async_sessionmaker[AsyncSession]], Awaitable[None]],
+) -> None:
+    async with temporary_database() as (_database, database_url):
+        run_alembic("upgrade", "head", database_url=database_url)
+        engine = create_async_engine(database_url, pool_pre_ping=True)
+        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        try:
+            await scenario(session_factory)
+        finally:
+            await engine.dispose()
+
+
+__all__ = [
+    "SeededScanFlow",
+    "assert_effects",
+    "assert_processed_terminal",
+    "claim",
+    "expire_and_recover",
+    "processor",
+    "seed_scan_flow",
+    "with_temporary_runtime_database",
+]

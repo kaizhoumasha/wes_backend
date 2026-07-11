@@ -60,6 +60,8 @@ async def test_nonretryable_failure_becomes_dead_letter(db_session: AsyncSession
     assert inbox.next_retry_at is None
     assert inbox.last_error_message == "invalid payload"
     assert inbox.failed_at is not None
+    assert inbox.processor_token is None
+    assert inbox.lease_until is None
 
 
 @pytest.mark.asyncio
@@ -81,6 +83,8 @@ async def test_retryable_failure_schedules_retry_before_exhaustion(db_session: A
     assert inbox.status == "FAILED"
     assert inbox.attempt_count == 1
     assert inbox.next_retry_at is not None
+    assert inbox.processor_token is None
+    assert inbox.lease_until is None
 
 
 @pytest.mark.asyncio
@@ -101,6 +105,8 @@ async def test_retryable_failure_becomes_dead_letter_when_exhausted(db_session: 
     assert updated is True
     assert inbox.status == "DEAD_LETTER"
     assert inbox.next_retry_at is None
+    assert inbox.processor_token is None
+    assert inbox.lease_until is None
 
 
 @pytest.mark.asyncio
@@ -166,6 +172,8 @@ async def test_resource_wait_does_not_consume_attempt_across_repeated_claims(db_
         assert inbox.status == "FAILED"
         assert inbox.attempt_count == 0
         assert inbox.next_retry_at is not None
+        assert inbox.processor_token is None
+        assert inbox.lease_until is None
         inbox.next_retry_at = 0
         await db_session.commit()
 

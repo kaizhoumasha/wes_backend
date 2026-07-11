@@ -7,25 +7,15 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import subprocess
-import sys
-from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import TYPE_CHECKING
-from uuid import uuid4
 
-import asyncpg
 import pytest
-from sqlalchemy.engine import make_url
 
-from src.core.conf import settings
+from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    import asyncpg
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SAFE_DATABASE_PREFIX = "wes_tmp_runtime_inbox_"
 REVISION_A = "b8a28e1bfec8"
 REVISION_B = "ec426c628516"
 
@@ -34,49 +24,6 @@ DEPENDENT_COLUMNS = {
     "runtime_holds": "source_inbox_id",
     "smt_inbound_handoff_source_items": "source_pick_inbox_id",
 }
-
-
-def _database_url(database: str, *, sqlalchemy_driver: bool) -> str:
-    # Heavy integration 可显式指向隔离 PostgreSQL；未设置时保留本地默认行为。
-    url = make_url(os.getenv("INTEGRATION_DATABASE_URL") or settings.DATABASE_URL)
-    drivername = "postgresql+asyncpg" if sqlalchemy_driver else "postgresql"
-    return url.set(drivername=drivername, database=database).render_as_string(hide_password=False)
-
-
-async def _drop_database(admin: asyncpg.Connection, database: str) -> None:
-    assert database.startswith(SAFE_DATABASE_PREFIX)
-    quoted_database = '"' + database.replace('"', '""') + '"'
-    await admin.execute(f"DROP DATABASE IF EXISTS {quoted_database} WITH (FORCE)")
-
-
-@asynccontextmanager
-async def _temporary_database() -> AsyncIterator[tuple[str, str]]:
-    database = f"{SAFE_DATABASE_PREFIX}{uuid4().hex}"
-    admin = await asyncpg.connect(_database_url("postgres", sqlalchemy_driver=False))
-    try:
-        quoted_database = '"' + database.replace('"', '""') + '"'
-        await admin.execute(f"CREATE DATABASE {quoted_database}")
-        yield database, _database_url(database, sqlalchemy_driver=True)
-    finally:
-        await _drop_database(admin, database)
-        await admin.close()
-
-
-def _run_alembic(*args: str, database_url: str) -> subprocess.CompletedProcess[str]:
-    env = os.environ.copy()
-    env["ALEMBIC_DATABASE_URL"] = database_url
-    return subprocess.run(
-        [sys.executable, "-m", "alembic", *args],
-        cwd=REPO_ROOT,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-
-async def _connect(database: str) -> asyncpg.Connection:
-    return await asyncpg.connect(_database_url(database, sqlalchemy_driver=False))
 
 
 async def _insert_legacy_references(connection: asyncpg.Connection) -> int:
@@ -165,6 +112,30 @@ async def _foreign_key_targets(connection: asyncpg.Connection) -> dict[tuple[str
     }
 
 
+async def _assert_runtime_inbox_numeric_types(connection: asyncpg.Connection) -> None:
+    """所有迁移阶段都必须保持毫秒时间 BIGINT、重试计数 INTEGER。"""
+
+    columns = await connection.fetch(
+        """
+        SELECT column_name, data_type
+        FROM information_schema.columns
+        WHERE table_schema = 'wes_runtime'
+          AND table_name = 'runtime_inbox'
+          AND column_name = ANY($1::text[])
+        """,
+        ["received_at", "processed_at", "failed_at", "next_retry_at", "lease_until", "attempt_count", "max_retries"],
+    )
+    assert {row["column_name"]: row["data_type"] for row in columns} == {
+        "received_at": "bigint",
+        "processed_at": "bigint",
+        "failed_at": "bigint",
+        "next_retry_at": "bigint",
+        "lease_until": "bigint",
+        "attempt_count": "integer",
+        "max_retries": "integer",
+    }
+
+
 async def _assert_revision_b_schema(connection: asyncpg.Connection) -> None:
     for table_name, column_name in DEPENDENT_COLUMNS.items():
         value = await connection.fetchval(f'SELECT {column_name} FROM wes_biz."{table_name}"')
@@ -205,40 +176,11 @@ async def _assert_revision_b_schema(connection: asyncpg.Connection) -> None:
     )
     assert tuple(session_fk_target.values()) == ("wes_biz", "workline_sessions")
 
-    timestamp_columns = await connection.fetch(
-        """
-        SELECT column_name, data_type
-        FROM information_schema.columns
-        WHERE table_schema = 'wes_runtime'
-          AND table_name = 'runtime_inbox'
-          AND column_name = ANY($1::text[])
-        """,
-        ["received_at", "processed_at", "failed_at", "next_retry_at", "lease_until"],
-    )
-    assert {row["column_name"]: row["data_type"] for row in timestamp_columns} == {
-        "received_at": "bigint",
-        "processed_at": "bigint",
-        "failed_at": "bigint",
-        "next_retry_at": "bigint",
-        "lease_until": "bigint",
-    }
-    retry_columns = await connection.fetch(
-        """
-        SELECT column_name, data_type
-        FROM information_schema.columns
-        WHERE table_schema = 'wes_runtime'
-          AND table_name = 'runtime_inbox'
-          AND column_name = ANY($1::text[])
-        """,
-        ["attempt_count", "max_retries"],
-    )
-    assert {row["column_name"]: row["data_type"] for row in retry_columns} == {
-        "attempt_count": "integer",
-        "max_retries": "integer",
-    }
+    await _assert_runtime_inbox_numeric_types(connection)
 
 
 async def _assert_revision_a_downgrade_schema(connection: asyncpg.Connection) -> None:
+    await _assert_runtime_inbox_numeric_types(connection)
     assert await connection.fetchval("SELECT to_regclass('wes_biz.workline_inbox')") is not None
     column_count = await connection.fetchval(
         """
@@ -285,8 +227,8 @@ def test_alembic_database_url_targets_isolated_database() -> None:
     """Alembic 显式 override 不得回退连接共享 ``wes_db``。"""
 
     async def scenario() -> None:
-        async with _temporary_database() as (_database, database_url):
-            result = _run_alembic("current", database_url=database_url)
+        async with temporary_database() as (_database, database_url):
+            result = run_alembic("current", database_url=database_url)
             assert "f0851c5bcfdb" not in result.stdout
 
     asyncio.run(scenario())
@@ -297,36 +239,37 @@ def test_runtime_inbox_revision_a_b_postgresql_roundtrip() -> None:
     """A → B → A → B 在真实 PostgreSQL 上保持完整 DDL 契约。"""
 
     async def scenario() -> None:
-        async with _temporary_database() as (database, database_url):
-            _run_alembic("upgrade", REVISION_A, database_url=database_url)
-            connection = await _connect(database)
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", REVISION_A, database_url=database_url)
+            connection = await connect(database)
             try:
                 assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_A
+                await _assert_runtime_inbox_numeric_types(connection)
                 await _insert_legacy_references(connection)
             finally:
                 await connection.close()
 
-            _run_alembic("upgrade", REVISION_B, database_url=database_url)
-            connection = await _connect(database)
+            run_alembic("upgrade", REVISION_B, database_url=database_url)
+            connection = await connect(database)
             try:
                 assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_B
                 await _assert_revision_b_schema(connection)
             finally:
                 await connection.close()
 
-            _run_alembic("downgrade", REVISION_A, database_url=database_url)
-            connection = await _connect(database)
+            run_alembic("downgrade", REVISION_A, database_url=database_url)
+            connection = await connect(database)
             try:
                 assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_A
                 await _assert_revision_a_downgrade_schema(connection)
             finally:
                 await connection.close()
 
-            _run_alembic("upgrade", REVISION_B, database_url=database_url)
-            connection = await _connect(database)
+            run_alembic("upgrade", REVISION_B, database_url=database_url)
+            connection = await connect(database)
             try:
                 assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_B
-                assert await connection.fetchval("SELECT to_regclass('wes_biz.workline_inbox')") is None
+                await _assert_revision_b_schema(connection)
             finally:
                 await connection.close()
 

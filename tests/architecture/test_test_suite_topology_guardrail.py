@@ -56,3 +56,16 @@ def test_readme_does_not_publish_fixed_test_inventory_counts() -> None:
     )
 
     assert not any(re.search(pattern, readme_text) for pattern in stale_patterns)
+
+
+def test_runtime_inbox_postgresql_crash_scenarios_live_in_resilience() -> None:
+    """真实崩溃恢复属于 resilience；integration 仅保留正常闭环。"""
+
+    integration_source = (REPO_ROOT / "tests/integration/test_runtime_inbox_processing_postgresql.py").read_text(
+        encoding="utf-8"
+    )
+    resilience_path = REPO_ROOT / "tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py"
+
+    assert "test_claim_crash_recovers_with_new_owner_and_rejects_old_fence" not in integration_source
+    assert "test_writeback_crash_rolls_back_effects_before_reprocessing_once" not in integration_source
+    assert resilience_path.is_file()

@@ -168,7 +168,8 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
     await db_session.refresh(stored)
     assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
     assert stored.status == "PROCESSED"
-    assert stored.processor_token == "runtime-timer-worker-001"
+    assert stored.processor_token is None
+    assert stored.lease_until is None
     assert stored.processed_at is not None
     hold = (await db_session.execute(select(RuntimeHold))).scalar_one()
     assert hold.source_inbox_id == stored.id
