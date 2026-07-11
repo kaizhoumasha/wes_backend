@@ -336,7 +336,7 @@ wes_runtime.runtime_inbox
 
 ### Task 7：迁移 Consumers 与 Revision B
 
-**状态：** 🟡 55% 完成（补充提交：f0b25364 + f86dc88 + d4601208 + 6e000ff8 + 3a8e1b21）。已删除 RuntimeInboxConsumer facade、专用 capability/normalizer wiring 与旧 InboxBatchProcessor，并完成新 processor、task、gateway 主链；canonical WorklineSession 与 ExecutionSession 的诊断/FIFO 命名空间已隔离。剩余主体：WorklineInbox model/repository/service、query/reconciliation/trace/UoW 等读路径、相关 exports/fixtures 与 Revision B。
+**状态：** ✅ 100% 完成（补充提交：e56ad2eb + e1f19c17 + 34c4fed1 + 881e4e54 + c3fd9c08 + 3b89125c + fe6c307 + df286887 + 583e9b93 + b07a96ab + 05b6ca23 + 906790b1）。query/reconciliation/trace/UoW/outbox 已迁至唯一 RuntimeInbox repository 与 typed projection；旧 model/repository/service/facade/processor/fixtures 已物理删除；Revision B `ec426c628516` 已重绑三个 FK、增加 WorklineSession 显式列并退役 `wes_biz.workline_inbox`。
 
 **目标：** 完成读路径、evidence、FK 和 fixture 迁移后物理删除 WorklineInbox。
 
@@ -354,11 +354,11 @@ wes_runtime.runtime_inbox
 - GitNexus detect changes 与零引用 guardrail 证明旧运行入口消失。
 - migration round-trip 与相关 heavy tests 通过。
 
-**执行指引：** 下一步迁移 query/reconciliation/trace/UoW、RuntimeHold/SMT/outbox 等剩余读路径与 FK，随后删除 `src/app/runtime/orchestration/models/inbox.py`、`repositories/inbox_repository.py`、`services/inbox/inbox_service.py` 及 exports/fixtures。active code、测试 fixture 和数据库 FK 零引用后，用 Alembic generator 创建 Revision B，drop `wes_biz.workline_inbox` 并验证 upgrade/downgrade/upgrade。
+**落地：** RuntimeInbox 显式区分 `workline_session_id` 与 `execution_session_id`，FIFO bucket、diagnostic 和 trace 均不跨命名空间回退；三个旧 FK 的不可映射值在迁移中安全清空后改指 RuntimeInbox。Revision B 在隔离 PostgreSQL 临时库完成 A→B→A→B 回环，downgrade 恢复旧表 24 列、8 constraints、19 indexes；可重复 heavy integration 已纳入测试，临时库全部清理，共享 dev 保持 `f0851c5bcfdb`。
 
 ### Task 8：系统级测试、性能与韧性
 
-**状态：** ⏳ 0% 完成。**前置依赖：** Task 7（consumers 迁移 + drop table）完成。⚠️ 需要真实 PostgreSQL + Celery worker + 时间投入，**单会话不能完整完成**。
+**状态：** 🟡 15% 完成。Task 7 前置依赖已满足；真实 PostgreSQL migration fresh/upgrade/downgrade/upgrade 已完成并固化为 heavy integration。剩余：端到端 worker 链路、两个 crash window、1000 条/4 worker benchmark 与 SLI 验收。
 
 **目标：** 证明目标链路在真实数据库、并发、崩溃和 backlog 下可运行。
 
@@ -524,13 +524,12 @@ Legend: ★★★ behavior + edge + error | →E2E integration/resilience bounda
 | 27 | `src/app/runtime/orchestration/services/inbox/__init__.py` | re-export inbox_service | 删除 re-export |
 | 28 | `src/app/workline/services/safety_service.py` | 间接 | 不变 |
 
-迁移状态（同步于 2026-07-11，HEAD `3a8e1b21`）：
+迁移状态（同步于 2026-07-11，HEAD `906790b1`）：
 
 - 已完成写路径切换：8（runtime intent effects）、13 的 RuntimeInbox write/read evidence 主路径（SMT inbound handoff）、RuntimeHold release 的 command result producer。
-- 已完成并删除旧表面：2（三阶段 processor 已接管并删除旧 InboxBatchProcessor）、5（RuntimeInbox Celery 主链已接管旧 task）、17-19（facade、port 与专用 normalizer context 已删除）。
-- 已完成写路径/入口：3、8、13-16；callback、timeout、runtime intent、SMT 与 RuntimeHold producer 均只写 RuntimeInbox。
-- 部分完成：1（RuntimeInboxService 已承接生产写入，但旧 WorklineInboxService 尚未删除）、4（release 写路径已迁移，旧 FK/其余读路径未迁移）。
-- 待迁移/删除：6-7、9-12、20-28，以及 Revision B、旧 model/repository/service/fixtures。
+- 1-28 全部完成：生产写入、claim/fencing、query/trace/reconciliation/UoW/outbox、callback/timeout/SMT/RuntimeHold、exports 与测试 fixture 均已迁移。
+- 旧 model/repository/service/processor/facade/task API 已物理删除，active source/tests 由零引用 guardrail 锁定。
+- Revision B `ec426c628516` 已生成并通过 PostgreSQL upgrade/downgrade/upgrade；旧表及其数据库 FK 已退役。
 
 只有当 1-28 全部迁移完成、characterization case table 全部 parity 通过、`grep -rn "WorklineInbox" src/ tests/` 仅保留在 `runtime_inbox` 抽象层引用时，才执行 Revision B drop `wes_biz.workline_inbox`。
 
