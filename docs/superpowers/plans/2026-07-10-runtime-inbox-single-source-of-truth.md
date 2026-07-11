@@ -249,7 +249,7 @@ wes_runtime.runtime_inbox
 - fresh/upgrade schema 均符合合同。
 - `EXPLAIN` 可使用预期 hot indexes。
 
-**落地：** `src/app/runtime/orchestration/runtime_inbox.py` 加 14 字段（kind / payload_json / payload_schema_version / workline_id / device_id / command_id / trace_id / event_id / causation_id / claim_bucket_key / processor_token / received_at / processed_at / failed_at）+ 4 hot-claim partial index；`migrations/versions/20260710_1745_a1b2c3d4e5f6_revision_a_*.py` Revision A 迁移；`tests/runtime/orchestration/test_runtime_inbox_schema_contract.py` 38/38 case 通过。⚠️ 未跑 `alembic upgrade head` 真实数据库验证（需 DB）。
+**落地：** `src/app/runtime/orchestration/runtime_inbox.py` 加 14 字段（kind / payload_json / payload_schema_version / workline_id / device_id / command_id / trace_id / event_id / causation_id / claim_bucket_key / processor_token / received_at / processed_at / failed_at）+ 4 hot-claim partial index；`migrations/versions/20260711_1815_b8a28e1bfec8_extend_runtime_inbox.py` Revision A 迁移；`tests/runtime/orchestration/test_runtime_inbox_schema_contract.py` 38/38 case 通过。⚠️ 未跑 `alembic upgrade head` 真实数据库验证（需 DB）。
 
 ### Task 3：统一 Repository 与 RuntimeInboxService
 
