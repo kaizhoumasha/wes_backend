@@ -17,6 +17,8 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from src.app.contracts.runtime_inbox_query import RuntimeInboxQueryPort
+
 
 class SystemOutboxRepository(BaseRepository[SystemOutbox]):
     """系统级发件箱数据访问层。"""
@@ -810,6 +812,8 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
     async def get_sandbox_completed_messages(
         self,
         db: AsyncSession,
+        *,
+        inbox_query: RuntimeInboxQueryPort,
         limit: int = 50,
         workline_id: int | None = None,
         device_id: int | None = None,
@@ -817,19 +821,13 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
         """获取沙箱已完成 outbox，按 Session 分组。"""
 
         from src.app.device.models import Device
-        from src.app.runtime.orchestration.models.inbox import InboxKind, WorklineInbox
         from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 
         columns = cast("Any", SystemOutbox).__table__.c
         session_columns = cast("Any", WorklineSession).__table__.c
-        inbox_columns = cast("Any", WorklineInbox).__table__.c
         query = (
-            select(SystemOutbox, WorklineSession, WorklineInbox)
+            select(SystemOutbox, WorklineSession)
             .join(WorklineSession, columns.session_id == session_columns.id)
-            .outerjoin(
-                WorklineInbox,
-                (columns.session_id == inbox_columns.session_id) & (inbox_columns.kind == InboxKind.DEVICE_EVENT),
-            )
             .where(
                 session_columns.run_mode == RunMode.SIMULATION,
                 session_columns.status.in_([SessionStatus.COMPLETED, SessionStatus.FAILED, SessionStatus.CANCELLED]),
@@ -850,9 +848,16 @@ class SystemOutboxRepository(BaseRepository[SystemOutbox]):
             query.order_by(session_columns.created_at.desc(), columns.created_at.asc()).limit(limit * 3)
         )
         rows = result.all()
+        session_refs = sorted({session.id for _outbox, session in rows if isinstance(session.id, int)})
+        latest_inboxes = await inbox_query.latest_by_workline_session_refs(
+            db,
+            workline_session_refs=session_refs,
+            kind="DEVICE_EVENT",
+        )
         sessions: dict[int, dict[str, Any]] = {}
-        for outbox, session, inbox in rows:
+        for outbox, session in rows:
             sid = session.id
+            inbox = latest_inboxes.get(sid)
             if sid not in sessions:
                 event_payload: dict[str, Any] | None = None
                 event_type: str | None = None

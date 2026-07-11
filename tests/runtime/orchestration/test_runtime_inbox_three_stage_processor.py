@@ -184,16 +184,29 @@ class TestRelatedEntitiesContract:
         assert trace.session_id == expected
 
     @pytest.mark.parametrize("kind", ("INTERNAL_EVENT", "TIMER_TIMEOUT", "MANUAL_HOLD"))
-    def test_workline_session_id_comes_only_from_canonical_payload(self, kind: str) -> None:
+    def test_workline_session_id_uses_explicit_column_with_canonical_consistency(self, kind: str) -> None:
         inbox = RuntimeInbox(
             provider_code="TEST",
             event_type=kind,
             kind=kind,
             payload_json={"event_type": kind, "data": {"session_id": 41}},
+            workline_session_id=41,
             execution_session_id=999,
         )
 
         assert context_loader._canonical_workline_session_id(inbox) == 41
+
+    def test_workline_session_id_rejects_explicit_canonical_mismatch(self) -> None:
+        inbox = RuntimeInbox(
+            provider_code="TEST",
+            event_type="INTERNAL_EVENT",
+            kind="INTERNAL_EVENT",
+            payload_json={"data": {"session_id": 41}},
+            workline_session_id=42,
+        )
+
+        with pytest.raises(ValueError, match="workline_session_id mismatch"):
+            context_loader._canonical_workline_session_id(inbox)
 
     def test_execution_session_id_is_not_a_workline_session_fallback(self) -> None:
         inbox = RuntimeInbox(

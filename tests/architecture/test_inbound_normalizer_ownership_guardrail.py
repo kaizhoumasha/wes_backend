@@ -42,7 +42,6 @@ INBOUND_NORMALIZER_OWNERSHIP_EXCLUDED_PATHS = (
     "src/app/contracts/external_contract_profile.py",
     "src/app/runtime/orchestration/__init__.py",
     "src/app/runtime/orchestration/runtime_inbox.py",
-    "src/app/runtime/orchestration/repositories/runtime_inbox_claim_repository.py",
     "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
     "src/app/runtime/orchestration/consumers/runtime_inbox_service.py",
 )

@@ -11,6 +11,10 @@ MIGRATED_FILES = (
     "src/app/runtime/orchestration/repositories/smt_inbound_handoff_repository.py",
     "src/app/workline/repositories/workline_repository.py",
     "src/app/workline/unit_of_work.py",
+    "src/app/runtime/orchestration/services/query/runtime_query_service.py",
+    "src/app/runtime/orchestration/services/trace/trace_query_service.py",
+    "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py",
+    "src/app/sys/repositories/outbox_repository.py",
 )
 
 
@@ -30,6 +34,13 @@ def test_runtime_inbox_has_one_repository_owner() -> None:
     forbidden_import = "src.app.runtime.orchestration.consumers.runtime_inbox_repository"
     for path in (REPOSITORY_ROOT / "src").rglob("*.py"):
         assert forbidden_import not in path.read_text(encoding="utf-8"), f"{path} 仍 import 旧 repository owner"
+
+    claim_repository = REPOSITORY_ROOT / "src/app/runtime/orchestration/repositories/runtime_inbox_claim_repository.py"
+    assert not claim_repository.exists(), "claim/fencing 仍由第二个 RuntimeInbox repository 持有"
+
+    claim_import = "runtime_inbox_claim_repository"
+    for path in (REPOSITORY_ROOT / "src").rglob("*.py"):
+        assert claim_import not in path.read_text(encoding="utf-8"), f"{path} 仍 import 第二个 claim repository"
 
 
 def test_business_repositories_require_query_port_without_concrete_persistence_import() -> None:

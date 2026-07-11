@@ -8,9 +8,7 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from src.app.runtime.orchestration.consumers.runtime_inbox_service import _runtime_claim_bucket_key
-from src.app.runtime.orchestration.repositories.runtime_inbox_claim_repository import (
-    RuntimeInboxClaimRepository,
-)
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 
 if TYPE_CHECKING:
@@ -31,7 +29,7 @@ class _CapturingDb:
 async def test_claim_compiles_postgresql_atomic_fifo_limit_with_skip_locked() -> None:
     """limit/FIFO/同桶队首围栏必须全部进入单条 PostgreSQL UPDATE。"""
 
-    repository = RuntimeInboxClaimRepository()
+    repository = RuntimeInboxRepository()
 
     with pytest.raises(_StatementCaptured) as captured:
         await repository.claim_received_with_token(
@@ -107,7 +105,7 @@ async def test_claim_returns_only_atomic_update_returning_rows() -> None:
     ]
     db = _RecordingDb(rows)
 
-    claims = await RuntimeInboxClaimRepository().claim_received_with_token(
+    claims = await RuntimeInboxRepository().claim_received_with_token(
         db,  # type: ignore[arg-type]
         limit=1,
         processor_token="worker-1",
@@ -122,7 +120,7 @@ async def test_claim_returns_only_atomic_update_returning_rows() -> None:
 async def test_recovery_compiles_as_atomic_limited_skip_locked_update() -> None:
     """stale recovery 必须在单条 SQL 内锁候选、限量、分流并更新。"""
 
-    repository = RuntimeInboxClaimRepository()
+    repository = RuntimeInboxRepository()
 
     with pytest.raises(_StatementCaptured) as captured:
         await repository.recover_stale_leases(
@@ -192,7 +190,7 @@ async def test_legacy_terminal_failed_rows_do_not_block_bucket_head(db_session: 
     db_session.add_all(rows)
     await db_session.commit()
 
-    claims = await RuntimeInboxClaimRepository().claim_received_with_token(
+    claims = await RuntimeInboxRepository().claim_received_with_token(
         db_session,
         limit=1,
         processor_token="worker-current",
@@ -235,7 +233,7 @@ async def test_same_numeric_id_in_distinct_session_namespaces_does_not_cross_blo
     db_session.add_all(rows)
     await db_session.commit()
 
-    claims = await RuntimeInboxClaimRepository().claim_received_with_token(
+    claims = await RuntimeInboxRepository().claim_received_with_token(
         db_session,
         limit=2,
         processor_token="worker-namespaces",
@@ -246,3 +244,90 @@ async def test_same_numeric_id_in_distinct_session_namespaces_does_not_cross_blo
         "workline-session-event",
         "execution-session-event",
     }
+
+
+@pytest.mark.asyncio
+async def test_latest_by_workline_session_uses_explicit_namespace_column(db_session: AsyncSession) -> None:
+    """WorklineSession 热查询必须使用独立显式列，不能借用 ExecutionSession 或扫描 JSON。"""
+
+    db_session.add_all(
+        [
+            RuntimeInbox(
+                provider_code="TEST",
+                event_type="DEVICE_EVENT",
+                source_event_id="older",
+                payload_json={"data": {"session_id": 41}},
+                workline_session_id=41,
+                execution_session_id=None,
+                kind="DEVICE_EVENT",
+                status="PROCESSED",
+                received_at=1,
+            ),
+            RuntimeInbox(
+                provider_code="TEST",
+                event_type="DEVICE_EVENT",
+                source_event_id="latest",
+                payload_json={"data": {"session_id": 41}},
+                workline_session_id=41,
+                execution_session_id=99,
+                kind="DEVICE_EVENT",
+                status="RECEIVED",
+                received_at=2,
+            ),
+            RuntimeInbox(
+                provider_code="TEST",
+                event_type="DEVICE_EVENT",
+                source_event_id="same-execution-namespace",
+                payload_json={"data": {"session_id": 99}},
+                workline_session_id=99,
+                execution_session_id=41,
+                kind="DEVICE_EVENT",
+                status="RECEIVED",
+                received_at=3,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    result = await RuntimeInboxRepository().latest_by_workline_session_refs(
+        db_session,
+        workline_session_refs=[41],
+    )
+
+    assert set(result) == {41}
+    assert result[41].source_event_id == "latest"
+    assert result[41].workline_session_ref == 41
+    assert result[41].execution_session_id == 99
+
+
+@pytest.mark.asyncio
+async def test_trace_query_uses_explicit_trace_column(db_session: AsyncSession) -> None:
+    """trace 读取只匹配显式列，不从 canonical payload 猜测 trace 关系。"""
+
+    db_session.add_all(
+        [
+            RuntimeInbox(
+                provider_code="TEST",
+                event_type="DEVICE_EVENT",
+                source_event_id="explicit-trace",
+                payload_json={"data": {}},
+                trace_id="trace-explicit",
+                status="PROCESSED",
+                received_at=1,
+            ),
+            RuntimeInbox(
+                provider_code="TEST",
+                event_type="DEVICE_EVENT",
+                source_event_id="payload-only-trace",
+                payload_json={"trace_id": "trace-explicit", "data": {}},
+                trace_id=None,
+                status="PROCESSED",
+                received_at=2,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    rows = await RuntimeInboxRepository().list_by_trace_id(db_session, "trace-explicit")
+
+    assert [row.source_event_id for row in rows] == ["explicit-trace"]

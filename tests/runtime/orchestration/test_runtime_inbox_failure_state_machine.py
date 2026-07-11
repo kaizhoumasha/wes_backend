@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
-from src.app.runtime.orchestration.repositories.runtime_inbox_claim_repository import RuntimeInboxClaimRepository
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 
 if TYPE_CHECKING:
@@ -43,7 +43,7 @@ async def _processing_inbox(
 @pytest.mark.asyncio
 async def test_nonretryable_failure_becomes_dead_letter(db_session: AsyncSession) -> None:
     inbox = await _processing_inbox(db_session, source_event_id="nonretry", attempt_count=1, max_retries=3)
-    service = RuntimeInboxService(claim_repo=RuntimeInboxClaimRepository())
+    service = RuntimeInboxService(repository=RuntimeInboxRepository())
 
     updated = await service.mark_failed(
         db_session,
@@ -65,7 +65,7 @@ async def test_nonretryable_failure_becomes_dead_letter(db_session: AsyncSession
 @pytest.mark.asyncio
 async def test_retryable_failure_schedules_retry_before_exhaustion(db_session: AsyncSession) -> None:
     inbox = await _processing_inbox(db_session, source_event_id="retryable", attempt_count=1, max_retries=3)
-    service = RuntimeInboxService(claim_repo=RuntimeInboxClaimRepository())
+    service = RuntimeInboxService(repository=RuntimeInboxRepository())
 
     updated = await service.mark_failed(
         db_session,
@@ -86,7 +86,7 @@ async def test_retryable_failure_schedules_retry_before_exhaustion(db_session: A
 @pytest.mark.asyncio
 async def test_retryable_failure_becomes_dead_letter_when_exhausted(db_session: AsyncSession) -> None:
     inbox = await _processing_inbox(db_session, source_event_id="exhausted", attempt_count=3, max_retries=3)
-    service = RuntimeInboxService(claim_repo=RuntimeInboxClaimRepository())
+    service = RuntimeInboxService(repository=RuntimeInboxRepository())
 
     updated = await service.mark_failed(
         db_session,
@@ -106,7 +106,7 @@ async def test_retryable_failure_becomes_dead_letter_when_exhausted(db_session: 
 @pytest.mark.asyncio
 async def test_zero_retry_budget_is_already_exhausted(db_session: AsyncSession) -> None:
     inbox = await _processing_inbox(db_session, source_event_id="zero-budget", attempt_count=0, max_retries=0)
-    service = RuntimeInboxService(claim_repo=RuntimeInboxClaimRepository())
+    service = RuntimeInboxService(repository=RuntimeInboxRepository())
 
     updated = await service.mark_failed(
         db_session,
@@ -138,7 +138,7 @@ async def test_resource_wait_does_not_consume_attempt_across_repeated_claims(db_
     db_session.add(inbox)
     await db_session.commit()
     await db_session.refresh(inbox)
-    service = RuntimeInboxService(claim_repo=RuntimeInboxClaimRepository())
+    service = RuntimeInboxService(repository=RuntimeInboxRepository())
 
     for attempt in range(4):
         token = f"resource-worker-{attempt}"
@@ -173,7 +173,7 @@ async def test_resource_wait_does_not_consume_attempt_across_repeated_claims(db_
 @pytest.mark.asyncio
 async def test_stale_owner_cannot_overwrite_failure_state(db_session: AsyncSession) -> None:
     inbox = await _processing_inbox(db_session, source_event_id="fenced", attempt_count=1, max_retries=3)
-    service = RuntimeInboxService(claim_repo=RuntimeInboxClaimRepository())
+    service = RuntimeInboxService(repository=RuntimeInboxRepository())
 
     updated = await service.mark_failed(
         db_session,
@@ -222,7 +222,7 @@ async def test_atomic_recovery_respects_limit_active_lease_and_retry_budget(db_s
     rows[2].received_at = 3
     rows[2].lease_until = 9_999_999_999_999
     await db_session.commit()
-    service = RuntimeInboxService(claim_repo=RuntimeInboxClaimRepository())
+    service = RuntimeInboxService(repository=RuntimeInboxRepository())
 
     recovered = await service.recover_stale_leases(db_session, stale_after_seconds=30, limit=2)
     await db_session.commit()
@@ -269,7 +269,7 @@ async def test_last_budget_crash_recovers_to_dead_letter_and_unblocks_bucket(db_
     )
     db_session.add_all([first, following])
     await db_session.commit()
-    service = RuntimeInboxService(claim_repo=RuntimeInboxClaimRepository())
+    service = RuntimeInboxService(repository=RuntimeInboxRepository())
 
     claims = await service.claim_for_processing(
         db_session,

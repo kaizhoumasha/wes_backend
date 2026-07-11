@@ -34,7 +34,7 @@ from src.app.runtime.orchestration.repositories import (
 from src.app.runtime.orchestration.repositories.inbox_repository import WorklineInboxRepository  # noqa: TC001
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository  # noqa: TC001
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository  # noqa: TC001
-from src.app.runtime.orchestration.repository_wiring import workline_repository
+from src.app.runtime.orchestration.repository_wiring import runtime_inbox_query, workline_repository
 from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
@@ -171,7 +171,11 @@ class WorklineOperationService(BaseService[Any, Any]):
         """查询 SIMULATION 模式下已完成的 outbox，按 Session 分组。"""
 
         groups = await self.outbox_repo.get_sandbox_completed_messages(
-            db, limit=limit, workline_id=workline_id, device_id=device_id
+            db,
+            inbox_query=runtime_inbox_query,
+            limit=limit,
+            workline_id=workline_id,
+            device_id=device_id,
         )
         for group in groups:
             await self._enrich_sandbox_history_group(db, group)

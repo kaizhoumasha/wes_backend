@@ -67,7 +67,7 @@ from src.utils.timezone import timezone
 from src.utils.value_normalization import as_dict, enum_str
 
 if TYPE_CHECKING:
-    from src.app.runtime.orchestration.models.inbox import WorklineInbox
+    from src.app.contracts.runtime_inbox_query import RuntimeInboxProjection
     from src.app.sys.models import SystemOutbox
     from src.app.workline.repositories.workline_repository import WorkLineRepository
 
@@ -792,7 +792,7 @@ class WorklineRuntimeReconciliationService:
         actor_code: str | None = "runtime_reconciliation",
         from_status: str | None = None,
         to_status: str | None = None,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
         occurred_at: datetime | None = None,
@@ -830,7 +830,7 @@ class WorklineRuntimeReconciliationService:
         session: WorklineSession,
         error_code: ErrorCode,
         message: str,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
         evidence: dict[str, Any] | None = None,
@@ -862,7 +862,7 @@ class WorklineRuntimeReconciliationService:
         conflict_kind: str,
         reason: str,
         detected_at: datetime,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
         extra_evidence_refs: list[str] | None = None,
@@ -952,7 +952,7 @@ class WorklineRuntimeReconciliationService:
     def _runtime_reconciliation_correlation_id(
         self,
         *,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
     ) -> str | None:
@@ -982,7 +982,7 @@ class WorklineRuntimeReconciliationService:
     def _runtime_reconciliation_evidence_refs(
         self,
         *,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
         extra_refs: list[str] | None = None,
@@ -1009,7 +1009,7 @@ class WorklineRuntimeReconciliationService:
         self,
         *,
         session_id: int,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         source_ref_override: str | None = None,
     ) -> str:

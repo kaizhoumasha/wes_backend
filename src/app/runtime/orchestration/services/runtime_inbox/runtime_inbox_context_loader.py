@@ -29,10 +29,17 @@ def _kind_value(entity: Any) -> str | None:
 
 
 def _canonical_workline_session_id(inbox: Any) -> int | None:
-    """只从 canonical payload 读取 WorklineSession ID。"""
+    """从显式列读取 WorklineSession ID，并校验 canonical 合同一致。"""
+
+    explicit = optional_int(getattr(inbox, "workline_session_id", None))
     payload = payload_dict(getattr(inbox, "payload_json", None))
     data = payload_dict(payload.get("data"))
-    return optional_int(data.get("session_id"))
+    canonical = optional_int(data.get("session_id"))
+    if explicit is not None and canonical is not None and explicit != canonical:
+        raise ValueError(
+            f"RuntimeInbox workline_session_id mismatch: explicit={explicit}, canonical.data.session_id={canonical}"
+        )
+    return explicit or canonical
 
 
 def _should_resolve_session(inbox: Any, *, session_id: int | None) -> bool:
@@ -221,6 +228,10 @@ async def load_related_entities(
                     workline=workline,
                     resolved_event_type=resolved_event_type,
                 )
+    if session is not None:
+        resolved_session_id = resolve_entity_id(session)
+        if resolved_session_id is not None:
+            inbox.workline_session_id = resolved_session_id
     if device is None and session is not None:
         device = _resolve_effect_source_device(inbox, session, devices_by_role)
     return {

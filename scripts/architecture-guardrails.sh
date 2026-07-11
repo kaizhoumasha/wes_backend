@@ -302,7 +302,6 @@ EXCLUDED_FILES = frozenset(
         "src/app/contracts/external_contract_profile.py",
         # RuntimeInbox claim/write-back 是 runtime 域内表 repository,
         # 不是 inbound normalizer interface. Plan Task 3 主计划 §3 锁定.
-        "src/app/runtime/orchestration/repositories/runtime_inbox_claim_repository.py",
         "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
         "src/app/runtime/orchestration/consumers/runtime_inbox_repository.py",
         "src/app/runtime/orchestration/consumers/runtime_inbox_service.py",

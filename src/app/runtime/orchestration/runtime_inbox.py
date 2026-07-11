@@ -89,6 +89,12 @@ class RuntimeInbox(BaseMixin, table=True):
         foreign_key=f"{RUNTIME_SCHEMA}.execution_sessions.id",
         index=True,
     )
+    workline_session_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.workline_sessions.id",
+        index=True,
+        description="关联 WorklineSession；与 execution_session_id 分属不同命名空间",
+    )
     correlation_id: str | None = Field(
         default=None,
         foreign_key=f"{RUNTIME_SCHEMA}.execution_correlations.correlation_id",

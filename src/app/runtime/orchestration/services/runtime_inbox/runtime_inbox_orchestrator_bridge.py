@@ -4,7 +4,7 @@
 提供 RuntimeInbox 唯一生产入口 `process_claimed(db, claim)`，由 Celery task 调用。
 
 行为对齐:
-- claim 阶段: 由 RuntimeInboxClaimRepository.claim_received_with_token 持有
+- claim 阶段: 由唯一 RuntimeInboxRepository.claim_received_with_token 持有
   (调用方负责).
 - validation 阶段: RuntimeInboxValidationService.
 - orchestration 阶段: RuntimeInboxProcessorService 委托 OrchestratorService.
@@ -232,25 +232,17 @@ class RuntimeInboxProcessorBridge:
     ) -> dict[str, Any] | None:
         """claim 1 条 RuntimeInbox 行.
 
-        优先使用 RuntimeInboxClaimRepository.claim_received_with_token.
-        缺省时 fallback 到旧 WorklineInboxRepository (保持行为等价).
+        使用唯一 RuntimeInboxRepository.claim_received_with_token。
         """
-        try:
-            from src.app.runtime.orchestration.repositories.runtime_inbox_claim_repository import (
-                runtime_inbox_claim_repository,
-            )
+        from src.app.runtime.orchestration.repositories.runtime_inbox_repository import runtime_inbox_repository
 
-            claims = await runtime_inbox_claim_repository.claim_received_with_token(
-                db,
-                limit=1,
-                processor_token=processor_token,
-                stale_after_seconds=WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
-            )
-            if claims:
-                return claims[0]
-        except Exception as exc:
-            logger.debug(f"RuntimeInbox claim repository 不可用, 跳过: {exc}")
-        return None
+        claims = await runtime_inbox_repository.claim_received_with_token(
+            db,
+            limit=1,
+            processor_token=processor_token,
+            stale_after_seconds=WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
+        )
+        return claims[0] if claims else None
 
     async def process_claimed(  # noqa: PLR0911, PLR0912
         self,

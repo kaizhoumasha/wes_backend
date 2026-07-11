@@ -103,6 +103,29 @@ class _RuntimeInboxStaleReadRepository:
 
 
 @pytest.mark.asyncio
+async def test_accept_received_rejects_workline_session_namespace_mismatch(db_session) -> None:
+    """显式 WorklineSession FK 与 canonical ref 不一致时不得落库。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    with pytest.raises(ValueError, match="workline_session_id mismatch"):
+        await RuntimeInboxService().accept_received(
+            db_session,
+            provider_code="TEST",
+            event_type="INTERNAL_EVENT",
+            source_event_id="mismatch-session-ref",
+            payload_hash="hash",
+            kind="INTERNAL_EVENT",
+            payload_json={"event_type": "INTERNAL_EVENT", "data": {"session_id": 41}},
+            payload_schema_version=1,
+            workline_session_id=42,
+        )
+
+    rows = (await db_session.execute(select(RuntimeInbox))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
 async def test_runtime_inbox_accept_returns_existing_ack_for_same_hash(db_session) -> None:
     """同 source event 且 payload_hash 一致时返回既有 ACK, 不新建记录。"""
 

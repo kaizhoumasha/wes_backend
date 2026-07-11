@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import BigInteger, case, exists, func, literal, select, tuple_, update
 
 from src.app.contracts.runtime_inbox_query import (
     RUNTIME_INBOX_UNFINISHED_STATUSES,
     RuntimeInboxEvidence,
+    RuntimeInboxProjection,
     RuntimeInboxWorkloadSample,
 )
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
@@ -53,6 +55,39 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
 
     def __init__(self) -> None:
         super().__init__(RuntimeInbox)
+
+    @staticmethod
+    def _to_projection(record: RuntimeInbox) -> RuntimeInboxProjection:
+        if record.id is None:
+            raise ValueError("RuntimeInbox projection requires persisted id")
+        return RuntimeInboxProjection(
+            id=record.id,
+            kind=record.kind,
+            provider_code=record.provider_code,
+            event_type=record.event_type,
+            source_event_id=record.source_event_id,
+            payload_json=deepcopy(record.payload_json or {}),
+            payload_hash=record.payload_hash,
+            payload_schema_version=record.payload_schema_version,
+            workline_session_ref=record.workline_session_id,
+            execution_session_id=record.execution_session_id,
+            workline_id=record.workline_id,
+            device_id=record.device_id,
+            command_id=record.command_id,
+            correlation_id=record.correlation_id,
+            trace_id=record.trace_id,
+            event_id=record.event_id,
+            causation_id=record.causation_id,
+            status=record.status,
+            attempt_count=record.attempt_count,
+            max_retries=record.max_retries,
+            next_retry_at=record.next_retry_at,
+            received_at=record.received_at,
+            processed_at=record.processed_at,
+            failed_at=record.failed_at,
+            last_error_code=record.last_error_code,
+            last_error_message=record.last_error_message,
+        )
 
     async def get_by_source_event_identity(
         self,
@@ -145,6 +180,250 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
         if row is None:
             return None
         return RuntimeInboxWorkloadSample(id=int(row[0]), status=str(row[1]))
+
+    async def claim_received_with_token(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int,
+        processor_token: str,
+        stale_after_seconds: int,
+    ) -> list[dict[str, Any]]:
+        """原子 claim RECEIVED、到期 FAILED 与过期 PROCESSING，并保持同桶 FIFO。"""
+
+        if limit <= 0:
+            return []
+        import time as _time
+
+        now_ms = int(_time.time() * 1000)
+        lease_until = now_ms + (max(stale_after_seconds, 1) * 1000)
+        now_value = literal(now_ms, type_=BigInteger())
+        lease_until_value = literal(lease_until, type_=BigInteger())
+        table = cast("Any", RuntimeInbox).__table__
+        columns = table.c
+        candidate = table.alias("claim_candidate")
+        earlier = table.alias("earlier_inbox")
+        cc = candidate.c
+        ec = earlier.c
+        claimable = (
+            (cc.status == "RECEIVED")
+            | ((cc.status == "FAILED") & (cc.next_retry_at <= now_value))
+            | ((cc.status == "PROCESSING") & (cc.lease_until <= now_value))
+        ) & (cc.attempt_count < cc.max_retries)
+        earlier_can_advance = (
+            (ec.status == "RECEIVED")
+            | (ec.status == "PROCESSING")
+            | ((ec.status == "FAILED") & ec.next_retry_at.is_not(None) & (ec.attempt_count < ec.max_retries))
+        )
+        earlier_in_bucket = exists(
+            select(1)
+            .select_from(earlier)
+            .where(
+                earlier_can_advance,
+                ec.claim_bucket_key == cc.claim_bucket_key,
+                tuple_(ec.received_at, ec.id) < tuple_(cc.received_at, cc.id),
+            )
+        )
+        candidate_ids = (
+            select(cc.id)
+            .select_from(candidate)
+            .where(claimable, ~earlier_in_bucket)
+            .order_by(cc.received_at, cc.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        result = await db.execute(
+            update(table)
+            .where(columns.id.in_(candidate_ids))
+            .values(
+                status="PROCESSING",
+                processor_token=processor_token,
+                lease_until=lease_until_value,
+                attempt_count=columns.attempt_count + 1,
+            )
+            .returning(
+                columns.id,
+                columns.processor_token,
+                columns.provider_code,
+                columns.event_type,
+                columns.source_event_id,
+                columns.payload_json,
+                columns.correlation_id,
+                columns.execution_session_id,
+                columns.workline_session_id,
+                columns.workline_id,
+                columns.device_id,
+                columns.command_id,
+                columns.kind,
+                columns.trace_id,
+                columns.event_id,
+                columns.causation_id,
+                columns.claim_bucket_key,
+                columns.received_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        claims = [
+            {
+                **dict(row),
+                "processor_token": str(row["processor_token"]),
+                "payload_json": dict(row["payload_json"] or {}),
+            }
+            for row in result.mappings().all()
+        ]
+        claims.sort(key=lambda row: (row["received_at"] is None, row["received_at"] or 0, row["id"]))
+        return claims
+
+    async def recover_stale_leases(
+        self,
+        db: AsyncSession,
+        *,
+        stale_after_seconds: int,
+        limit: int,
+    ) -> int:
+        """原子恢复 stale lease；耗尽预算的记录直接进入 DEAD_LETTER。"""
+
+        if limit <= 0:
+            return 0
+        import time as _time
+
+        _ = stale_after_seconds
+        now_value = literal(int(_time.time() * 1000), type_=BigInteger())
+        table = cast("Any", RuntimeInbox).__table__
+        columns = table.c
+        candidate = table.alias("stale_candidate")
+        cc = candidate.c
+        stale_ids = (
+            select(cc.id)
+            .select_from(candidate)
+            .where(cc.status == "PROCESSING", cc.lease_until <= now_value)
+            .order_by(cc.received_at, cc.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        exhausted = columns.attempt_count >= columns.max_retries
+        result = await db.execute(
+            update(table)
+            .where(columns.id.in_(stale_ids), columns.status == "PROCESSING", columns.lease_until <= now_value)
+            .values(
+                status=case((exhausted, "DEAD_LETTER"), else_="RECEIVED"),
+                processor_token=None,
+                lease_until=None,
+                next_retry_at=None,
+                failed_at=case((exhausted, now_value), else_=columns.failed_at),
+                last_error_code=case((exhausted, "INBOX_RETRY_EXHAUSTED"), else_=columns.last_error_code),
+                last_error_message=case(
+                    (exhausted, "PROCESSING_LEASE_EXPIRED_RETRY_EXHAUSTED"),
+                    else_=columns.last_error_message,
+                ),
+            )
+            .returning(columns.id, columns.status)
+            .execution_options(synchronize_session=False)
+        )
+        return len(result.mappings().all())
+
+    async def update_terminal_state(
+        self,
+        db: AsyncSession,
+        *,
+        inbox_id: int,
+        lease_token: str,
+        target_state: str,
+        extra_values: dict[str, Any] | None = None,
+    ) -> bool:
+        """按 PROCESSING + processor_token 围栏原子写回终态。"""
+
+        columns = cast("Any", RuntimeInbox).__table__.c
+        values: dict[str, Any] = {"status": target_state}
+        if extra_values:
+            values.update(extra_values)
+        result = await db.execute(
+            update(RuntimeInbox)
+            .where(
+                columns.id == inbox_id,
+                columns.status == "PROCESSING",
+                columns.processor_token == lease_token,
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        return result.rowcount > 0
+
+    async def count_by_statuses(self, db: AsyncSession, statuses: set[str]) -> int:
+        """按 RuntimeInbox 五态统计记录。"""
+
+        columns = cast("Any", RuntimeInbox).__table__.c
+        result = await db.execute(select(func.count()).select_from(RuntimeInbox).where(columns.status.in_(statuses)))
+        return int(result.scalar_one() or 0)
+
+    async def latest_by_workline_session_refs(
+        self,
+        db: AsyncSession,
+        *,
+        workline_session_refs: list[int],
+        kind: str | None = None,
+    ) -> dict[int, RuntimeInboxProjection]:
+        """按显式 WorklineSession FK 返回各会话最新 RuntimeInbox。"""
+
+        if not workline_session_refs:
+            return {}
+        columns = cast("Any", RuntimeInbox).__table__.c
+        filters = [columns.workline_session_id.in_(workline_session_refs)]
+        if kind is not None:
+            filters.append(columns.kind == kind)
+        ranked = (
+            select(
+                columns.id.label("id"),
+                func.row_number()
+                .over(
+                    partition_by=columns.workline_session_id,
+                    order_by=(columns.received_at.desc(), columns.id.desc()),
+                )
+                .label("rn"),
+            )
+            .where(*filters)
+            .subquery()
+        )
+        result = await db.execute(select(RuntimeInbox).join(ranked, columns.id == ranked.c.id).where(ranked.c.rn == 1))
+        return {
+            item.workline_session_id: self._to_projection(item)
+            for item in result.scalars().all()
+            if isinstance(item.workline_session_id, int)
+        }
+
+    async def list_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[RuntimeInboxProjection]:
+        """按显式 trace_id 稳定返回 RuntimeInbox。"""
+
+        columns = cast("Any", RuntimeInbox).__table__.c
+        result = await db.execute(
+            select(RuntimeInbox)
+            .where(columns.trace_id == trace_id)
+            .order_by(columns.received_at.asc(), columns.id.asc())
+        )
+        return [self._to_projection(item) for item in result.scalars().all()]
+
+    async def list_by_workline_session_ref(
+        self, db: AsyncSession, workline_session_ref: int
+    ) -> list[RuntimeInboxProjection]:
+        """按显式 WorklineSession FK 稳定返回 RuntimeInbox。"""
+
+        columns = cast("Any", RuntimeInbox).__table__.c
+        result = await db.execute(
+            select(RuntimeInbox)
+            .where(columns.workline_session_id == workline_session_ref)
+            .order_by(columns.received_at.asc(), columns.id.asc())
+        )
+        return [self._to_projection(item) for item in result.scalars().all()]
+
+    async def list_workline_session_refs_by_device(self, db: AsyncSession, device_id: int) -> list[int]:
+        """按显式列列出设备关联的 WorklineSession ID。"""
+        columns = cast("Any", RuntimeInbox).__table__.c
+        result = await db.execute(
+            select(columns.workline_session_id)
+            .where(columns.device_id == device_id, columns.workline_session_id.is_not(None))
+            .distinct()
+        )
+        return [int(value) for value in result.scalars().all()]
 
 
 runtime_inbox_repository = RuntimeInboxRepository()

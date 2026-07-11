@@ -172,26 +172,26 @@ def _format_runtime_temporal(value: object | None) -> str:
     return str(value)
 
 
+def _canonical_workline_session_id(payload_json: dict[str, Any]) -> int | None:
+    """从锁定的 canonical payload.data.session_id 合同提取 WorklineSession ID。"""
+
+    data = payload_json.get("data")
+    if not isinstance(data, dict):
+        return None
+    value = data.get("session_id")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 class RuntimeInboxService:
     """RuntimeInbox ACK-before-processing 与人工重放服务。"""
 
     def __init__(
         self,
         repository: RuntimeInboxRepository = runtime_inbox_repository,
-        claim_repo: Any | None = None,
         audit_service: _AuditService | None = None,
         idempotency_guard: IdempotencyGuard = default_idempotency_guard,
     ) -> None:
         self.repository = repository
-        # 5 态 claim + write-back 依赖的 claim repository.
-        # 缺省 lazy import, 避免循环依赖.
-        if claim_repo is None:
-            from src.app.runtime.orchestration.repositories.runtime_inbox_claim_repository import (
-                runtime_inbox_claim_repository,
-            )
-
-            claim_repo = runtime_inbox_claim_repository
-        self.claim_repo = claim_repo
         self.audit_service = audit_service
         self.idempotency_guard = idempotency_guard
 
@@ -212,6 +212,7 @@ class RuntimeInboxService:
         workline_id: int | None = None,
         device_id: int | None = None,
         command_id: int | None = None,
+        workline_session_id: int | None = None,
         execution_session_id: int | None = None,
         correlation_id: str | None = None,
         max_retries: int = 5,
@@ -224,6 +225,17 @@ class RuntimeInboxService:
         """
 
         validate_canonical_payload_size(payload_json)
+        canonical_session_id = _canonical_workline_session_id(payload_json)
+        if (
+            workline_session_id is not None
+            and canonical_session_id is not None
+            and workline_session_id != canonical_session_id
+        ):
+            raise ValueError(
+                "RuntimeInbox workline_session_id mismatch: "
+                f"explicit={workline_session_id}, canonical.data.session_id={canonical_session_id}"
+            )
+        workline_session_id = workline_session_id if workline_session_id is not None else canonical_session_id
         record_data = {
             "kind": kind,
             "payload_json": payload_json,
@@ -234,6 +246,7 @@ class RuntimeInboxService:
             "workline_id": workline_id,
             "device_id": device_id,
             "command_id": command_id,
+            "workline_session_id": workline_session_id,
             "execution_session_id": execution_session_id,
             "correlation_id": correlation_id,
             "provider_code": provider_code,
@@ -244,6 +257,7 @@ class RuntimeInboxService:
             "attempt_count": 0,
             "max_retries": max_retries,
             "claim_bucket_key": _runtime_claim_bucket_key(
+                session_id=workline_session_id,
                 execution_session_id=execution_session_id,
                 workline_id=workline_id,
                 device_id=device_id,
@@ -408,12 +422,14 @@ class RuntimeInboxService:
             "workline_id": workline_id,
             "device_id": device_id,
             "command_id": command_id,
+            "workline_session_id": _canonical_workline_session_id(payload_json),
             "trace_id": trace_id,
             "event_id": event_id,
             "causation_id": causation_id,
             "correlation_id": correlation_id,
             "payload_json": payload_json,
             "claim_bucket_key": _runtime_claim_bucket_key(
+                session_id=_canonical_workline_session_id(payload_json),
                 device_id=device_id,
                 correlation_id=correlation_id,
                 workline_id=workline_id,
@@ -471,6 +487,7 @@ class RuntimeInboxService:
             "attempt_count": 0,
             "max_retries": 5,
             "workline_id": workline_id,
+            "workline_session_id": _canonical_workline_session_id(payload_json),
             "trace_id": trace_id,
             "event_id": event_id,
             "causation_id": causation_id,
@@ -478,6 +495,7 @@ class RuntimeInboxService:
             "correlation_id": correlation_id,
             "payload_json": payload_json,
             "claim_bucket_key": _runtime_claim_bucket_key(
+                session_id=_canonical_workline_session_id(payload_json),
                 execution_session_id=execution_session_id,
                 correlation_id=correlation_id,
                 workline_id=workline_id,
@@ -521,6 +539,7 @@ class RuntimeInboxService:
         provider_code = "DEVICE_RESULT" if device_code else "RUNTIME"
         source_event_id = event_id or f"command-result:{command_code}:{event_id or 'synth'}"
 
+        canonical_payload = payload_json or {"command_code": command_code, "device_code": device_code}
         record_data: dict[str, Any] = {
             "kind": "COMMAND_RESULT",
             "provider_code": provider_code,
@@ -533,11 +552,13 @@ class RuntimeInboxService:
             "workline_id": workline_id,
             "device_id": device_id,
             "command_id": command_id,
+            "workline_session_id": _canonical_workline_session_id(canonical_payload),
             "trace_id": trace_id,
             "event_id": event_id,
             "causation_id": causation_id,
-            "payload_json": payload_json or {"command_code": command_code, "device_code": device_code},
+            "payload_json": canonical_payload,
             "claim_bucket_key": _runtime_claim_bucket_key(
+                session_id=_canonical_workline_session_id(canonical_payload),
                 device_id=device_id,
                 workline_id=workline_id,
                 command_id=command_id,
@@ -607,6 +628,7 @@ class RuntimeInboxService:
         }
         record_data: dict[str, Any] = {
             "kind": "TIMER_TIMEOUT",
+            "workline_session_id": session_id,
             "execution_session_id": execution_session_id,
             "workline_id": workline_id,
             "device_id": device_id,
@@ -688,6 +710,7 @@ class RuntimeInboxService:
             workline_id=source.workline_id,
             device_id=source.device_id,
             command_id=source.command_id,
+            workline_session_id=source.workline_session_id,
             execution_session_id=source.execution_session_id,
             correlation_id=source.correlation_id,
             max_retries=source.max_retries,
@@ -777,13 +800,13 @@ class RuntimeInboxService:
     ) -> list[dict[str, Any]]:
         """原子 claim RECEIVED 行（含 stale PROCESSING 回收）。
 
-        委托 claim_repo.claim_received_with_token。
+        委托唯一 RuntimeInboxRepository.claim_received_with_token。
         底层 SQL 匹配:
         - status='RECEIVED'
         - status='FAILED' AND next_retry_at <= now AND attempt_count < max_retries
         - status='PROCESSING' AND lease_until <= now (stale reclaim)
         """
-        return await self.claim_repo.claim_received_with_token(
+        return await self.repository.claim_received_with_token(
             db,
             limit=limit,
             processor_token=processor_token,
@@ -798,7 +821,7 @@ class RuntimeInboxService:
         limit: int,
     ) -> int:
         """原子回收 stale PROCESSING；耗尽预算时直接 DEAD_LETTER。"""
-        return await self.claim_repo.recover_stale_leases(
+        return await self.repository.recover_stale_leases(
             db,
             stale_after_seconds=stale_after_seconds,
             limit=limit,
@@ -817,7 +840,7 @@ class RuntimeInboxService:
         now = timezone.now_for_db()
         now_ms = int(now.timestamp() * 1000) if hasattr(now, "timestamp") else None
         extra_values: dict[str, Any] | None = {"processed_at": now_ms} if now_ms is not None else None
-        return await self.claim_repo.update_terminal_state(
+        return await self.repository.update_terminal_state(
             db,
             inbox_id=inbox_id,
             lease_token=lease_token,
@@ -871,7 +894,7 @@ class RuntimeInboxService:
                 extra["next_retry_at"] = now_ms + delay_seconds * 1000
         else:
             extra["next_retry_at"] = None
-        return await self.claim_repo.update_terminal_state(
+        return await self.repository.update_terminal_state(
             db,
             inbox_id=inbox_id,
             lease_token=lease_token,
@@ -895,7 +918,7 @@ class RuntimeInboxService:
         extra: dict[str, Any] = {"last_error_message": error_message}
         if now_ms is not None:
             extra["failed_at"] = now_ms
-        return await self.claim_repo.update_terminal_state(
+        return await self.repository.update_terminal_state(
             db,
             inbox_id=inbox_id,
             lease_token=lease_token,

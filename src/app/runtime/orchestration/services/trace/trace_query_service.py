@@ -2,7 +2,7 @@
 
 只负责把已有事实表/投影表按统一 trace 键拼成可读视图：
 - callback_logs
-- workline_inbox
+- runtime_inbox
 - workline_sessions
 - device_commands
 - system_outbox
@@ -47,7 +47,6 @@ from src.app.runtime.orchestration.diagnostics import (
     get_diagnostic_code_definition,
 )
 from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
-from src.app.runtime.orchestration.models.inbox import WorklineInbox
 from src.app.runtime.orchestration.models.runtime import (
     DiagnosisVerdictResponse,
     DiagnosticCardResponse,
@@ -55,13 +54,12 @@ from src.app.runtime.orchestration.models.runtime import (
 )
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
-from src.app.runtime.orchestration.repositories import inbox_repository
 from src.app.runtime.orchestration.repositories.diagnostic_repository import workline_diagnostic_repository
 from src.app.runtime.orchestration.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
 )
-from src.app.runtime.orchestration.repository_wiring import workline_repository
+from src.app.runtime.orchestration.repository_wiring import runtime_inbox_query, workline_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
@@ -78,6 +76,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from src.app.contracts.runtime_inbox_query import RuntimeInboxProjection, RuntimeInboxQueryPort
     from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
     from src.app.runtime.orchestration.models.session import WorklineSession
     from src.app.runtime.orchestration.repositories.diagnostic_repository import WorklineDiagnosticRepository
@@ -110,7 +109,7 @@ class TraceQueryResult:
 
     trace: TraceContext
     callback_logs: list[Any] = field(default_factory=list)
-    inboxes: list[WorklineInbox] = field(default_factory=list)
+    inboxes: list[RuntimeInboxProjection] = field(default_factory=list)
     session: WorklineSession | None = None
     sessions: list[WorklineSession] = field(default_factory=list)
     commands: list[DeviceCommand] = field(default_factory=list)
@@ -183,18 +182,18 @@ class TraceQueryService(BaseService[Any, Any]):
         callback_log_repo: CallbackLogRepository | None = None,
         session_repo: WorklineSessionRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
-        inbox_repo: Any | None = None,
+        inbox_repo: RuntimeInboxQueryPort = runtime_inbox_query,
         diagnostic_repo: WorklineDiagnosticRepository | None = None,
         workline_repo: WorkLineRepository | None = None,
         verdict_builder: DiagnosisVerdictBuilder | None = None,
     ) -> None:
         from src.app.workline.services.diagnosis_verdict_builder_service import diagnosis_verdict_builder
 
-        super().__init__(inbox_repository, enable_cache=False)
+        super().__init__(inbox_repo, enable_cache=False)
         self.callback_log_repo = callback_log_repo or callback_log_repository
         self.session_repo = session_repo or workline_session_repository
         self.command_repo = command_repo or device_command_repository
-        self.inbox_repo = inbox_repo or inbox_repository
+        self.inbox_repo = inbox_repo
         self.diagnostic_repo = diagnostic_repo or workline_diagnostic_repository
         self.workline_repo = workline_repo or workline_repository
         self.verdict_builder = verdict_builder or diagnosis_verdict_builder
@@ -266,7 +265,7 @@ class TraceQueryService(BaseService[Any, Any]):
         commands: list[DeviceCommand] = []
         outboxes: list[SystemOutbox] = []
         dispatch_attempts: list[WorklineDispatchAttempt] = []
-        inboxes: list[WorklineInbox] = []
+        inboxes: list[RuntimeInboxProjection] = []
         timelines: list[WorklineTimeline] = []
         diagnostics: list[DiagnosticContext] = []
 
@@ -407,7 +406,7 @@ class TraceQueryService(BaseService[Any, Any]):
         sessions: list[WorklineSession] = []
         commands: list[DeviceCommand] = []
         outboxes: list[SystemOutbox] = []
-        inboxes: list[WorklineInbox] = []
+        inboxes: list[RuntimeInboxProjection] = []
         timelines: list[WorklineTimeline] = []
         diagnostics: list[DiagnosticContext] = []
 
@@ -629,21 +628,16 @@ class TraceQueryService(BaseService[Any, Any]):
         result = await db.execute(select(RuntimeHold).where(or_(*predicates)).order_by(columns.created_at.asc()))
         return list(result.scalars().all())
 
-    async def _load_inboxes_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[WorklineInbox]:
-        columns = cast("Any", WorklineInbox).__table__.c
-        result = await db.execute(
-            select(WorklineInbox).where(columns.trace_id == trace_id).order_by(columns.received_at.asc())
-        )
-        return list(result.scalars().all())
+    async def _load_inboxes_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[RuntimeInboxProjection]:
+        return await self.inbox_repo.list_by_trace_id(db, trace_id)
 
     async def _load_inboxes_for_session(
-        self, db: AsyncSession, session: WorklineSession, existing: list[WorklineInbox]
-    ) -> list[WorklineInbox]:
-        columns = cast("Any", WorklineInbox).__table__.c
-        result = await db.execute(
-            select(WorklineInbox).where(columns.session_id == session.id).order_by(columns.received_at.asc())
-        )
-        return _merge_unique_by_id(existing, list(result.scalars().all()))
+        self, db: AsyncSession, session: WorklineSession, existing: list[RuntimeInboxProjection]
+    ) -> list[RuntimeInboxProjection]:
+        if not isinstance(session.id, int):
+            return existing
+        rows = await self.inbox_repo.list_by_workline_session_ref(db, session.id)
+        return _merge_unique_by_id(existing, rows)
 
     async def _load_commands_for_session(
         self,
@@ -801,7 +795,9 @@ class TraceQueryService(BaseService[Any, Any]):
             )
         ]
 
-    def _diagnostic_for_inboxes(self, trace: TraceContext, inboxes: list[WorklineInbox]) -> list[DiagnosticContext]:
+    def _diagnostic_for_inboxes(
+        self, trace: TraceContext, inboxes: list[RuntimeInboxProjection]
+    ) -> list[DiagnosticContext]:
         return [
             build_diagnostic_context(
                 trace=trace.with_inbox(inbox),

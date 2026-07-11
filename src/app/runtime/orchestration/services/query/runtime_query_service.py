@@ -13,7 +13,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from sqlalchemy import and_, exists, func, or_, select
 
@@ -26,9 +26,7 @@ from src.app.runtime.capabilities.material_flow.station_lease_service import sta
 from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.business_identity_bridge import resolve_payload_display_identity
 from src.app.runtime.orchestration.models import (
-    InboxKind,
     MaterialUnit,
-    WorklineInbox,
     WorklineSession,
     WorklineTimeline,
 )
@@ -71,6 +69,7 @@ from src.app.runtime.orchestration.models.runtime import (
     TraceQueryRequest,
 )
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.runtime.orchestration.repository_wiring import runtime_inbox_query
 from src.app.runtime.orchestration.services.trace.trace_resource_view_builder import build_trace_resource_view
 from src.app.runtime.orchestration.services.trace.trace_response_builder import (
     _blocked_wait_seconds,
@@ -90,6 +89,9 @@ from src.core.base_service import BaseService
 from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_str, optional_enum_str
 
+if TYPE_CHECKING:
+    from src.app.contracts.runtime_inbox_query import RuntimeInboxProjection, RuntimeInboxQueryPort
+
 T = TypeVar("T")
 
 _ACTIVE_SESSION_STATUSES = {
@@ -105,7 +107,7 @@ _FAILURE_SESSION_STATUSES = {"FAILED", "CANCELLED"}
 _COMPLETED_SESSION_STATUSES = {"COMPLETED"}
 _ABNORMAL_DEVICE_STATUSES = {"ERROR", "OFFLINE", "MAINTENANCE"}
 _PENDING_COMMAND_STATUSES = {"PENDING", "SENT", "ACK_RECEIVED"}
-_INBOX_BACKLOG_STATUSES = {"NEW", "RETRY", "PROCESSING"}
+_INBOX_BACKLOG_STATUSES = {"RECEIVED", "FAILED", "PROCESSING"}
 _OUTBOX_BACKLOG_STATUSES = {"NEW", "DISPATCHING"}
 _RECENT_FAILURE_HOURS = 24
 _RUNTIME_DETAIL_ACTIVE_SESSION_LIMIT = 200
@@ -315,7 +317,7 @@ def _require_int_id(value: int | None, field_name: str) -> int:
 
 def _resolve_trace_device(
     command: DeviceCommand | None,
-    inbox: WorklineInbox | None,
+    inbox: RuntimeInboxProjection | None,
     device_map: dict[int, Device],
 ) -> Device | None:
     if command is not None:
@@ -347,9 +349,8 @@ def _trace_action_source(
     return "NONE"
 
 
-def _device_session_clause(session_columns: Any, device_id: int) -> Any:
+def _device_session_clause(session_columns: Any, device_id: int, inbox_session_ids: list[int]) -> Any:
     command_columns = cast("Any", DeviceCommand).__table__.c
-    inbox_columns = cast("Any", WorklineInbox).__table__.c
     return or_(
         exists(
             select(command_columns.id).where(
@@ -357,12 +358,7 @@ def _device_session_clause(session_columns: Any, device_id: int) -> Any:
                 command_columns.command_code == session_columns.awaiting_device_command_code,
             )
         ),
-        exists(
-            select(inbox_columns.id).where(
-                inbox_columns.device_id == device_id,
-                inbox_columns.session_id == session_columns.id,
-            )
-        ),
+        session_columns.id.in_(inbox_session_ids),
     )
 
 
@@ -386,8 +382,9 @@ def _latest_rows_subquery(
 class RuntimeQueryService(BaseService[Any, Any]):
     """运行监控中心只读聚合查询服务。"""
 
-    def __init__(self) -> None:
+    def __init__(self, inbox_query: RuntimeInboxQueryPort = runtime_inbox_query) -> None:
         super().__init__(device_repository, enable_cache=False)
+        self.inbox_query = inbox_query
 
     async def get_overview(self, db: Any, *, include_sim: bool = False) -> RuntimeOverviewResponse:
         worklines = await self.list_worklines(db, exclude_simulation=not include_sim)
@@ -402,7 +399,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         )
         waiting_sessions = await self._count_waiting_sessions(db, exclude_workline_ids=sim_workline_ids)
         failed_sessions = await self._count_failed_or_timed_out_sessions(db, exclude_workline_ids=sim_workline_ids)
-        inbox_backlog = await self._count_by_status(db, WorklineInbox, _INBOX_BACKLOG_STATUSES)
+        inbox_backlog = await self.inbox_query.count_by_statuses(db, _INBOX_BACKLOG_STATUSES)
         outbox_backlog = await self._count_by_status(db, SystemOutbox, _OUTBOX_BACKLOG_STATUSES)
         abnormal_devices = device_health.abnormal
 
@@ -435,7 +432,8 @@ class RuntimeQueryService(BaseService[Any, Any]):
         filters: list[Any] = []
 
         if payload.device_id is not None:
-            filters.append(_device_session_clause(columns, payload.device_id))
+            inbox_session_ids = await self.inbox_query.list_workline_session_refs_by_device(db, payload.device_id)
+            filters.append(_device_session_clause(columns, payload.device_id, inbox_session_ids))
 
         if payload.workline_id is not None:
             filters.append(columns.workline_id == payload.workline_id)
@@ -1254,10 +1252,11 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     async def _load_active_sessions_for_device(self, db: Any, device_id: int, limit: int) -> list[WorklineSession]:
         session_columns = cast("Any", WorklineSession).__table__.c
+        inbox_session_ids = await self.inbox_query.list_workline_session_refs_by_device(db, device_id)
         result = await db.execute(
             select(WorklineSession)
             .where(
-                _device_session_clause(session_columns, device_id),
+                _device_session_clause(session_columns, device_id, inbox_session_ids),
                 session_columns.status.in_(list(_ACTIVE_SESSION_STATUSES)),
             )
             .order_by(session_columns.last_ingress_at.desc().nullslast(), session_columns.id.desc())
@@ -1368,43 +1367,20 @@ class RuntimeQueryService(BaseService[Any, Any]):
                 mapping[session_id] = item
         return mapping
 
-    async def _load_latest_inbox_by_session(self, db: Any, session_ids: list[int]) -> dict[int, WorklineInbox]:
-        if not session_ids:
-            return {}
-        columns = cast("Any", WorklineInbox).__table__.c
-        latest_ids = _latest_rows_subquery(
-            columns=columns,
-            partition_by=columns.session_id,
-            order_by=(columns.received_at.desc(), columns.id.desc()),
-            filters=[columns.session_id.in_(session_ids)],
+    async def _load_latest_inbox_by_session(self, db: Any, session_ids: list[int]) -> dict[int, RuntimeInboxProjection]:
+        return await self.inbox_query.latest_by_workline_session_refs(
+            db,
+            workline_session_refs=session_ids,
         )
-        result = await db.execute(
-            select(WorklineInbox).join(latest_ids, columns.id == latest_ids.c.id).where(latest_ids.c.rn == 1)
-        )
-        mapping: dict[int, WorklineInbox] = {}
-        for item in result.scalars().all():
-            if item.session_id is not None and item.session_id not in mapping:
-                mapping[item.session_id] = item
-        return mapping
 
-    async def _load_latest_event_inbox_by_session(self, db: Any, session_ids: list[int]) -> dict[int, WorklineInbox]:
-        if not session_ids:
-            return {}
-        columns = cast("Any", WorklineInbox).__table__.c
-        latest_ids = _latest_rows_subquery(
-            columns=columns,
-            partition_by=columns.session_id,
-            order_by=(columns.received_at.desc(), columns.id.desc()),
-            filters=[columns.session_id.in_(session_ids), columns.kind == InboxKind.DEVICE_EVENT],
+    async def _load_latest_event_inbox_by_session(
+        self, db: Any, session_ids: list[int]
+    ) -> dict[int, RuntimeInboxProjection]:
+        return await self.inbox_query.latest_by_workline_session_refs(
+            db,
+            workline_session_refs=session_ids,
+            kind="DEVICE_EVENT",
         )
-        result = await db.execute(
-            select(WorklineInbox).join(latest_ids, columns.id == latest_ids.c.id).where(latest_ids.c.rn == 1)
-        )
-        mapping: dict[int, WorklineInbox] = {}
-        for item in result.scalars().all():
-            if item.session_id is not None and item.session_id not in mapping:
-                mapping[item.session_id] = item
-        return mapping
 
     async def _load_latest_timeline_by_session(self, db: Any, session_ids: list[int]) -> dict[int, WorklineTimeline]:
         if not session_ids:
@@ -2181,7 +2157,7 @@ class RuntimeQueryService(BaseService[Any, Any]):
         timeline: WorklineTimeline | None,
         now: Any,
         *,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         latest_device: Device | None,
         action_source: str,
     ) -> RuntimeTraceListItem:
