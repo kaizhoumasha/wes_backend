@@ -933,8 +933,9 @@ async def _handle_timer_timeout(
     )
 
     payload_data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    execution_session_id = optional_int(getattr(inbox, "execution_session_id", None))
-    session_id = execution_session_id or optional_int(payload_data.get("session_id"))
+    # WorklineSession 与 ExecutionSession 分属不同 ID 空间；
+    # 业务路由只认 canonical legacy session_id。
+    session_id = optional_int(payload_data.get("session_id"))
     _ = await workline_runtime_reconciliation_service.handle_timer_timeout(
         db,
         session_id=session_id,

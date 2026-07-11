@@ -11,7 +11,16 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_timeout_scanner_uses_runtime_inbox_acceptor_and_keeps_batch_statistics(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("created", "expected_timeouts_created"),
+    [(True, 1), (False, 0)],
+    ids=["new-runtime-inbox", "existing-runtime-inbox"],
+)
+async def test_timeout_scanner_uses_runtime_inbox_acceptor_and_keeps_batch_statistics(
+    monkeypatch,
+    created: bool,
+    expected_timeouts_created: int,
+) -> None:
     """Session timeout 扫描必须切到 RuntimeInbox，且保留统计与批次提交语义。"""
 
     from src.app.device.repositories.command_repository import DeviceCommandRepository
@@ -62,7 +71,7 @@ async def test_timeout_scanner_uses_runtime_inbox_acceptor_and_keeps_batch_stati
     monkeypatch.setattr(device_repository, "get_by_id", AsyncMock(return_value=device))
     monkeypatch.setattr(SystemOutboxRepository, "get_by_dispatch_key", AsyncMock(return_value=None))
 
-    accept_timeout = AsyncMock(return_value=SimpleNamespace(created=True))
+    accept_timeout = AsyncMock(return_value=SimpleNamespace(created=created))
     monkeypatch.setattr(runtime_inbox_service, "accept_timer_timeout", accept_timeout, raising=False)
     legacy_create_timeout = AsyncMock(return_value=SimpleNamespace(id=999))
     monkeypatch.setattr(inbox_service, "create_timeout_inbox", legacy_create_timeout)
@@ -74,7 +83,7 @@ async def test_timeout_scanner_uses_runtime_inbox_acceptor_and_keeps_batch_stati
 
     assert result == {
         "scanned": 1,
-        "timeouts_created": 1,
+        "timeouts_created": expected_timeouts_created,
         "ack_timeouts_reconciled": 0,
         "errors": 0,
     }

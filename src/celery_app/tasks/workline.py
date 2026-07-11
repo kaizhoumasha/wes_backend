@@ -248,7 +248,7 @@ class TimeoutScanner:
                 command_device_id = getattr(command, "device_id", None)
                 device = await device_repository.get_by_id(db, command_device_id) if command_device_id else None
                 # 幂等创建系统 RuntimeInbox timeout 消息
-                _ = await runtime_inbox_service.accept_timer_timeout(
+                accepted = await runtime_inbox_service.accept_timer_timeout(
                     db,
                     session_id=session_pk,
                     workline_id=session.workline_id,
@@ -265,8 +265,9 @@ class TimeoutScanner:
                     ack_received_at=getattr(command, "ack_received_at", None),
                     auto_commit=False,
                 )
-                result["timeouts_created"] += 1
-                logger.info(f"Session {session_pk} 超时，已创建 Timeout Inbox")
+                if accepted.created:
+                    result["timeouts_created"] += 1
+                    logger.info(f"Session {session_pk} 超时，已创建 Timeout Inbox")
             except Exception as e:
                 session_pk = resolve_entity_id(session)
                 logger.error(f"Session {session_pk or 'unknown'} 创建超时 Inbox 失败: {e}")

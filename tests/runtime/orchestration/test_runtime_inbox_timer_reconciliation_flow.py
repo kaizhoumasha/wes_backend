@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from src.app.device.models.command import CommandStatus
+from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.models.inbox import InboxKind, SourceSystem, WorklineInbox
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
@@ -40,13 +41,28 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
     legacy_inbox_service_module = importlib.import_module("src.app.runtime.orchestration.services.inbox.inbox_service")
 
     runtime_session = WorklineSession(
+        id=1001,
         session_code="session-runtime-timer-001",
         workline_id=45,
         plugin_key="test_workline_plugin",
         run_mode=RunMode.SIMULATION,
         status=SessionStatus.WAITING_DEVICE_RESULT,
     )
-    db_session.add(runtime_session)
+    wrong_id_sentinel = WorklineSession(
+        id=9001,
+        session_code="session-runtime-timer-wrong-id-sentinel",
+        workline_id=45,
+        plugin_key="test_workline_plugin",
+        run_mode=RunMode.SIMULATION,
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+    )
+    execution_session = ExecutionSession(
+        id=9001,
+        workline_id=45,
+        manifest_version="test-manifest-v1",
+        state="RUNNING",
+    )
+    db_session.add_all([runtime_session, wrong_id_sentinel, execution_session])
     await db_session.flush()
     assert runtime_session.id is not None
 
@@ -68,12 +84,20 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
     runtime_session.deadline_at = deadline_at
     runtime_session.awaiting_device_command_code = command.command_code
     runtime_session.context_json = {}
+    wrong_id_sentinel.trace_id = "trace-wrong-id-sentinel"
+    wrong_id_sentinel.current_wait_type = "COMMAND_RESULT"
+    wrong_id_sentinel.current_wait_timeout_seconds = 300
+    wrong_id_sentinel.waiting_since = runtime_session.waiting_since
+    wrong_id_sentinel.deadline_at = deadline_at
+    wrong_id_sentinel.awaiting_device_command_code = command.command_code
+    wrong_id_sentinel.context_json = {}
     workline = SimpleNamespace(id=45)
 
     service = RuntimeInboxService()
     accepted = await service.accept_timer_timeout(
         db_session,
         session_id=runtime_session.id,
+        execution_session_id=execution_session.id,
         workline_id=45,
         deadline_at=deadline_at,
         trace_id="trace-runtime-timer-001",
@@ -85,7 +109,7 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         command_status=CommandStatus.ACK_RECEIVED.value,
         ack_received_at=ack_received_at,
     )
-    assert accepted.record.execution_session_id is None
+    assert accepted.record.execution_session_id == execution_session.id
     assert accepted.record.payload_json["data"]["session_id"] == runtime_session.id
     await db_session.commit()
     claims = await service.claim_for_processing(
@@ -102,11 +126,6 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         AsyncMock(return_value=(runtime_session, workline, None, command, {}, SimpleNamespace(), True)),
     )
     monkeypatch.setattr(
-        workline_runtime_reconciliation_service.session_repository,
-        "get_for_update",
-        AsyncMock(return_value=runtime_session),
-    )
-    monkeypatch.setattr(
         workline_runtime_reconciliation_service.workline_repository,
         "get_for_update",
         AsyncMock(return_value=workline),
@@ -121,15 +140,17 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         "mark_callback_deadline_expired",
         AsyncMock(return_value=None),
     )
+    cancel_outbox = AsyncMock(return_value=0)
     monkeypatch.setattr(
         workline_runtime_reconciliation_service.system_outbox_repository,
         "cancel_active_by_session",
-        AsyncMock(return_value=0),
+        cancel_outbox,
     )
+    cancel_rack_task = AsyncMock(return_value=0)
     monkeypatch.setattr(
         workline_runtime_reconciliation_service.rack_task_repository,
         "cancel_active_by_material_session",
-        AsyncMock(return_value=0),
+        cancel_rack_task,
     )
 
     class _CommandRepo:
@@ -158,6 +179,20 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
     assert hold.source_idempotency_key == f"callback-timeout:runtime-inbox:{runtime_session.id}:{stored.id}"
     assert hold.evidence_snapshot_json["inbox_id"] == stored.id
     assert hold.evidence_snapshot_json["inbox_store"] == "runtime_inbox"
+    await db_session.refresh(runtime_session)
+    await db_session.refresh(wrong_id_sentinel)
+    assert runtime_session.status == SessionStatus.MANUAL_HOLD
+    assert wrong_id_sentinel.status == SessionStatus.WAITING_DEVICE_RESULT
+    cancel_outbox.assert_awaited_once_with(
+        db_session,
+        session_id=runtime_session.id,
+        reason="CALLBACK_DEADLINE_EXPIRED",
+    )
+    cancel_rack_task.assert_awaited_once_with(
+        db_session,
+        material_session_id=runtime_session.id,
+        reason="CALLBACK_DEADLINE_EXPIRED",
+    )
     legacy_terminal_writer.assert_not_awaited()
 
 
@@ -288,10 +323,11 @@ async def test_runtime_timer_terminal_rejects_lost_processor_token(monkeypatch) 
         _handle_timer_timeout,
     )
 
+    missing_session_lookup = AsyncMock(return_value=None)
     monkeypatch.setattr(
         workline_runtime_reconciliation_service.session_repository,
         "get_for_update",
-        AsyncMock(return_value=None),
+        missing_session_lookup,
     )
     runtime_terminal_writer = SimpleNamespace(mark_processed=AsyncMock(return_value=False))
     db = SimpleNamespace()
@@ -315,3 +351,4 @@ async def test_runtime_timer_terminal_rejects_lost_processor_token(monkeypatch) 
         inbox_id=901,
         lease_token="stale-worker-token",
     )
+    missing_session_lookup.assert_not_awaited()
