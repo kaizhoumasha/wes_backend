@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from sqlalchemy.exc import IntegrityError
 
 from src.app.runtime.orchestration.consumers.runtime_inbox_repository import (
+    RuntimeInboxPayloadTooLarge,
     RuntimeInboxRepository,
     runtime_inbox_repository,
 )
@@ -200,6 +201,15 @@ class RuntimeInboxService:
         event_type: str,
         source_event_id: str | None,
         payload_hash: str | None,
+        kind: str,
+        payload_json: dict[str, Any],
+        payload_schema_version: int,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
+        workline_id: int | None = None,
+        device_id: int | None = None,
+        command_id: int | None = None,
         execution_session_id: int | None = None,
         correlation_id: str | None = None,
         max_retries: int = 5,
@@ -212,6 +222,15 @@ class RuntimeInboxService:
         """
 
         record_data = {
+            "kind": kind,
+            "payload_json": payload_json,
+            "payload_schema_version": payload_schema_version,
+            "trace_id": trace_id,
+            "event_id": event_id,
+            "causation_id": causation_id,
+            "workline_id": workline_id,
+            "device_id": device_id,
+            "command_id": command_id,
             "execution_session_id": execution_session_id,
             "correlation_id": correlation_id,
             "provider_code": provider_code,
@@ -223,6 +242,9 @@ class RuntimeInboxService:
             "max_retries": max_retries,
             "claim_bucket_key": _runtime_claim_bucket_key(
                 execution_session_id=execution_session_id,
+                workline_id=workline_id,
+                device_id=device_id,
+                command_id=command_id,
                 correlation_id=correlation_id,
                 provider_code=provider_code,
                 event_type=event_type,
@@ -653,6 +675,15 @@ class RuntimeInboxService:
             event_type=source.event_type,
             source_event_id=replay_source_event_id,
             payload_hash=source.payload_hash,
+            kind=source.kind,
+            payload_json=dict(source.payload_json or {}),
+            payload_schema_version=source.payload_schema_version or 1,
+            trace_id=source.trace_id,
+            event_id=source.event_id,
+            causation_id=source.causation_id,
+            workline_id=source.workline_id,
+            device_id=source.device_id,
+            command_id=source.command_id,
             execution_session_id=source.execution_session_id,
             correlation_id=source.correlation_id,
             max_retries=source.max_retries,
@@ -875,6 +906,7 @@ runtime_inbox_service = RuntimeInboxService()
 __all__ = [
     "RuntimeInboxAcceptResult",
     "RuntimeInboxConflict",
+    "RuntimeInboxPayloadTooLarge",
     "RuntimeInboxReplayResult",
     "RuntimeInboxService",
     "runtime_inbox_service",

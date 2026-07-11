@@ -712,9 +712,6 @@ async def _load_related_entities(
             workline=workline,
             devices_by_role=devices_by_role,
         )
-        session_pk = resolve_entity_id(session)
-        if session_pk is not None:
-            inbox.session_id = session_pk
         if workline is None:
             workline = await _load_workline_entity(db, inbox, session, workline_repo)
             if workline is None and device is not None:
@@ -878,6 +875,9 @@ class InboxBatchProcessor:
                 entities = await _load_related_entities(db, inbox, resolved_event_type=resolved_event_type)
                 session = entities["session"]
                 workline = entities["workline"]
+                session_pk = resolve_entity_id(session)
+                if session_pk is not None:
+                    inbox.session_id = session_pk
 
                 if resolved_event_type == "ESTOP_PRESSED":
                     from src.app.workline.services.safety_service import workline_safety_service

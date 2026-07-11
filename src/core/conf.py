@@ -4,7 +4,7 @@ from functools import lru_cache
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import computed_field, field_validator, model_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.core.path_conf import BasePath
@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     APP_DEBUG: bool = False
     APP_HOST: str = "0.0.0.0"  # nosec B104 - service must bind all interfaces in container/server deployments
     APP_PORT: int = 8000
+    runtime_inbox_payload_max_bytes: int = Field(default=1024 * 1024, ge=1)
 
     # ==================== 日志配置 ====================
 

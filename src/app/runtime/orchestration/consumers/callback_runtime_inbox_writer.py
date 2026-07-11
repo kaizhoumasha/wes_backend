@@ -79,6 +79,9 @@ class CallbackRuntimeInboxWriter:
             event_type=canonical_result_type,
             source_event_id=_resolve_payload_source_event_id(payload, fallback_prefix="callback-result"),
             payload_hash=_canonical_payload_hash(payload),
+            kind="COMMAND_RESULT",
+            payload_json=dict(payload),
+            payload_schema_version=1,
             correlation_id=correlation_id,
         )
 
@@ -97,6 +100,9 @@ class CallbackRuntimeInboxWriter:
             event_type=canonical_event_type,
             source_event_id=_resolve_payload_source_event_id(payload, fallback_prefix="callback-event"),
             payload_hash=_canonical_payload_hash(payload),
+            kind="DEVICE_EVENT",
+            payload_json=dict(payload),
+            payload_schema_version=1,
             correlation_id=None,
         )
 
@@ -113,24 +119,20 @@ class CallbackRuntimeInboxWriter:
         provider_code = _resolve_first_str(payload, ("source_system",))
         callback_type = _resolve_first_str(payload, ("callback_type",)) or "UNKNOWN"
         normalized_provider = provider_code or callback_type.split("_", 1)[0] or "UNKNOWN"
-        accepted = await self._service.accept_received(
+        return await self._service.accept_received(
             db,
             provider_code=normalized_provider,
             event_type=callback_type,
             source_event_id=_resolve_external_source_event_id(payload, request_id),
             payload_hash=_canonical_payload_hash(payload),
+            kind="EXTERNAL_HTTP",
+            payload_json=dict(payload),
+            payload_schema_version=1,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
             correlation_id=None,
         )
-        if accepted.created:
-            # RuntimeInbox record 是 external callback 唯一事实源，同时也是异步
-            # processor 的 canonical evidence；identity ACK 完成后在同一事务补齐。
-            accepted.record.kind = "EXTERNAL_HTTP"
-            accepted.record.payload_json = dict(payload)
-            accepted.record.payload_schema_version = 1
-            accepted.record.trace_id = trace_id
-            accepted.record.event_id = event_id
-            accepted.record.causation_id = causation_id
-        return accepted
 
 
 callback_runtime_inbox_writer = CallbackRuntimeInboxWriter()

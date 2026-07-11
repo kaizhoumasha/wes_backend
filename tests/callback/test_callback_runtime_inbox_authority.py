@@ -187,18 +187,21 @@ async def test_callback_runtime_inbox_writer_external_record_is_canonical_proces
 
     from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
 
-    record = SimpleNamespace(
-        id=301,
-        kind=None,
-        payload_json=None,
-        payload_schema_version=None,
-        trace_id=None,
-        event_id=None,
-        causation_id=None,
-    )
+    accepted_kwargs: dict[str, object] = {}
+    record = SimpleNamespace(id=301)
 
     class RuntimeInboxServiceStub:
-        async def accept_received(self, _db, **_kwargs):
+        async def accept_received(self, _db, **kwargs):
+            accepted_kwargs.update(kwargs)
+            for field_name in (
+                "kind",
+                "payload_json",
+                "payload_schema_version",
+                "trace_id",
+                "event_id",
+                "causation_id",
+            ):
+                setattr(record, field_name, kwargs[field_name])
             return SimpleNamespace(created=True, record=record)
 
     writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
@@ -218,6 +221,7 @@ async def test_callback_runtime_inbox_writer_external_record_is_canonical_proces
     )
 
     assert result.record is record
+    assert accepted_kwargs["kind"] == "EXTERNAL_HTTP"
     assert record.kind == "EXTERNAL_HTTP"
     assert record.payload_json == payload
     assert record.payload_json is not payload

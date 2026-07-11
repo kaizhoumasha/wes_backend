@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Literal, cast
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from pydantic import ValidationError
 
 from src.app.callback.contracts import (
@@ -41,7 +41,10 @@ from src.app.device.models.command import (
 )
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.runtime.capabilities.material_flow.start_admission_service import start_admission_service
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxConflict
+from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    RuntimeInboxConflict,
+    RuntimeInboxPayloadTooLarge,
+)
 from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
 from src.app.runtime.orchestration.services.inbox import inbox_service
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
@@ -2133,6 +2136,36 @@ async def handle_callback_external(
             ),
         )
 
+    except RuntimeInboxPayloadTooLarge as exc:
+        logger.error(f"外部回调 RuntimeInbox payload 超限: {exc}")
+        oversized_evidence: JsonDict = {
+            "callback_type": callback_type,
+            "source_system": callback_data.get("source_system"),
+            "source_event_id": callback_data.get("source_event_id"),
+            "trace_id": external_trace_id,
+            "actual_bytes": exc.actual_bytes,
+            "max_bytes": exc.max_bytes,
+        }
+        await _log_callback_outcome(
+            db,
+            request,
+            callback_type="external",
+            subject_code=callback_type,
+            request_body=oversized_evidence,
+            request_id=request_id,
+            trace_id=external_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
+            response_status=413,
+            response_time_ms=_response_time_ms(start_time),
+            success=False,
+            record_audit=True,
+            audit_title="外部系统回调",
+            error_message=str(exc),
+            ingress_outcome=_INGRESS_OUTCOME_REJECTED,
+            failure_stage=_FAILURE_STAGE_ORCHESTRATION,
+        )
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except ValueError as exc:
         logger.error(f"外部回调契约校验失败: {exc}")
         return await _handle_external_validation_failure(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,6 +20,25 @@ from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.workline.models import WorkLine
 
 NOW_MS = 1_700_000_000_000
+
+
+def _canonical_payload_size(payload: dict[str, Any]) -> int:
+    return len(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    )
+
+
+async def _accept_received(service: Any, db: Any, **kwargs: Any) -> Any:
+    """使用全量 canonical contract 调用 RuntimeInboxService.accept_received。"""
+    event_type = str(kwargs["event_type"])
+    kind = "COMMAND_RESULT" if "RESULT" in event_type.upper() else "EXTERNAL_HTTP"
+    return await service.accept_received(
+        db,
+        kind=kind,
+        payload_json={"event_type": event_type},
+        payload_schema_version=1,
+        **kwargs,
+    )
 
 
 async def _seed_execution_correlation(db_session, *, correlation_id: str = "corr-device-event-001"):
@@ -90,14 +110,16 @@ async def test_runtime_inbox_accept_returns_existing_ack_for_same_hash(db_sessio
 
     service = RuntimeInboxService()
 
-    first = await service.accept_received(
+    first = await _accept_received(
+        service,
         db_session,
         provider_code="WMS",
         event_type="WMS_TASK_CHANGE",
         source_event_id="evt-001",
         payload_hash="hash-001",
     )
-    second = await service.accept_received(
+    second = await _accept_received(
+        service,
         db_session,
         provider_code="WMS",
         event_type="WMS_TASK_CHANGE",
@@ -112,6 +134,99 @@ async def test_runtime_inbox_accept_returns_existing_ack_for_same_hash(db_sessio
 
 
 @pytest.mark.asyncio
+async def test_runtime_inbox_accepts_canonical_payload_at_exact_utf8_byte_limit(
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UTF-8 canonical JSON bytes 等于上限时允许持久化。"""
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.core.conf import settings
+
+    payload = {"message": "中文边界"}
+    monkeypatch.setattr(settings, "runtime_inbox_payload_max_bytes", _canonical_payload_size(payload))
+
+    accepted = await RuntimeInboxService().accept_received(
+        db_session,
+        provider_code="WMS",
+        event_type="WMS_RACK_TASK_RESULT",
+        source_event_id="evt-payload-boundary",
+        payload_hash="hash-boundary",
+        kind="EXTERNAL_HTTP",
+        payload_json=payload,
+        payload_schema_version=1,
+        trace_id="trace-payload-boundary",
+    )
+
+    assert accepted.created is True
+    assert accepted.record.payload_json == payload
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_rejects_oversized_canonical_payload_before_repository_add(
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """canonical payload 超限必须在 RuntimeInbox add/ACK 前失败并保持零落库。"""
+    from sqlalchemy import func
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+        RuntimeInboxPayloadTooLarge,
+        RuntimeInboxService,
+    )
+    from src.core.conf import settings
+
+    payload = {"message": "中文超限"}
+    payload_size = _canonical_payload_size(payload)
+    monkeypatch.setattr(settings, "runtime_inbox_payload_max_bytes", payload_size - 1)
+
+    with pytest.raises(RuntimeInboxPayloadTooLarge) as exc_info:
+        await RuntimeInboxService().accept_received(
+            db_session,
+            provider_code="WMS",
+            event_type="WMS_RACK_TASK_RESULT",
+            source_event_id="evt-payload-too-large",
+            payload_hash="hash-too-large",
+            kind="EXTERNAL_HTTP",
+            payload_json=payload,
+            payload_schema_version=1,
+            trace_id="trace-payload-too-large",
+        )
+
+    assert exc_info.value.actual_bytes == payload_size
+    assert exc_info.value.max_bytes == payload_size - 1
+    count = await db_session.scalar(select(func.count()).select_from(RuntimeInbox))
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_internal_producer_uses_same_canonical_payload_size_guard(
+    db_session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """内部 producer 与 external 必须共用 repository add 前的 bytes guard。"""
+    from sqlalchemy import func
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+        RuntimeInboxPayloadTooLarge,
+        RuntimeInboxService,
+    )
+    from src.core.conf import settings
+
+    monkeypatch.setattr(settings, "runtime_inbox_payload_max_bytes", 1)
+
+    with pytest.raises(RuntimeInboxPayloadTooLarge):
+        await RuntimeInboxService().accept_device_event(
+            db_session,
+            device_code="ARM_01",
+            event_type="SCAN_COMPLETED",
+            payload_json={"event_type": "SCAN_COMPLETED", "data": {"barcode": "TOO-LARGE"}},
+        )
+
+    count = await db_session.scalar(select(func.count()).select_from(RuntimeInbox))
+    assert count == 0
+
+
+@pytest.mark.asyncio
 async def test_runtime_inbox_accept_returns_existing_after_unique_conflict(db_session) -> None:
     """并发插入撞唯一索引时，必须重新读取既有记录并返回幂等 ACK。"""
 
@@ -121,7 +236,8 @@ async def test_runtime_inbox_accept_returns_existing_after_unique_conflict(db_se
     repository = _RuntimeInboxUniqueRaceRepository(existing)
     service = RuntimeInboxService(repository=repository)
 
-    result = await service.accept_received(
+    result = await _accept_received(
+        service,
         db_session,
         provider_code="WMS",
         event_type="WMS_TASK_CHANGE",
@@ -154,7 +270,8 @@ async def test_runtime_inbox_accept_keeps_session_usable_after_real_unique_confl
     repository = _RuntimeInboxStaleReadRepository()
     service = RuntimeInboxService(repository=repository)
 
-    result = await service.accept_received(
+    result = await _accept_received(
+        service,
         db_session,
         provider_code="WMS",
         event_type="WMS_TASK_CHANGE",
@@ -193,7 +310,8 @@ async def test_runtime_inbox_accept_rejects_same_event_different_hash(db_session
     )
 
     service = RuntimeInboxService()
-    _ = await service.accept_received(
+    _ = await _accept_received(
+        service,
         db_session,
         provider_code="ECS",
         event_type="DEVICE_EVENT",
@@ -202,7 +320,8 @@ async def test_runtime_inbox_accept_rejects_same_event_different_hash(db_session
     )
 
     with pytest.raises(RuntimeInboxConflict) as exc_info:
-        _ = await service.accept_received(
+        _ = await _accept_received(
+            service,
             db_session,
             provider_code="ECS",
             event_type="DEVICE_EVENT",
@@ -225,14 +344,16 @@ async def test_runtime_inbox_accept_keeps_distinct_canonical_event_types_separat
 
     service = RuntimeInboxService()
 
-    result_record = await service.accept_received(
+    result_record = await _accept_received(
+        service,
         db_session,
         provider_code="ECS",
         event_type="DEVICE_RESULT",
         source_event_id="evt-shared-001",
         payload_hash="hash-result-001",
     )
-    event_record = await service.accept_received(
+    event_record = await _accept_received(
+        service,
         db_session,
         provider_code="ECS",
         event_type="SCAN_COMPLETED",
@@ -259,7 +380,8 @@ async def test_runtime_inbox_accept_conflict_after_unique_conflict(db_session) -
     service = RuntimeInboxService(repository=repository)
 
     with pytest.raises(RuntimeInboxConflict) as exc_info:
-        await service.accept_received(
+        await _accept_received(
+            service,
             db_session,
             provider_code="WMS",
             event_type="WMS_TASK_CHANGE",
@@ -280,7 +402,8 @@ async def test_runtime_inbox_device_event_accept_claims_idempotency_key(db_sessi
     correlation = await _seed_execution_correlation(db_session)
     service = RuntimeInboxService()
 
-    first = await service.accept_received(
+    first = await _accept_received(
+        service,
         db_session,
         provider_code="ECS",
         event_type="COMMAND_RESULT",
@@ -289,7 +412,8 @@ async def test_runtime_inbox_device_event_accept_claims_idempotency_key(db_sessi
         correlation_id=correlation.correlation_id,
         now_ms=NOW_MS,
     )
-    second = await service.accept_received(
+    second = await _accept_received(
+        service,
         db_session,
         provider_code="ECS",
         event_type="COMMAND_RESULT",
@@ -336,7 +460,8 @@ async def test_runtime_inbox_device_event_accept_rejects_existing_idempotency_ha
     await db_session.flush()
 
     with pytest.raises(IdempotencyConflict) as exc_info:
-        await RuntimeInboxService().accept_received(
+        await _accept_received(
+            RuntimeInboxService(),
             db_session,
             provider_code="ECS",
             event_type="EVENT_PUSH",
@@ -406,14 +531,16 @@ async def test_runtime_inbox_accept_allows_missing_source_event_id_without_dedup
 
     service = RuntimeInboxService()
 
-    first = await service.accept_received(
+    first = await _accept_received(
+        service,
         db_session,
         provider_code="AGV",
         event_type="external",
         source_event_id=None,
         payload_hash="hash-missing-001",
     )
-    second = await service.accept_received(
+    second = await _accept_received(
+        service,
         db_session,
         provider_code="AGV",
         event_type="external",
@@ -436,7 +563,8 @@ async def test_runtime_inbox_accept_received_writes_stable_bucket_and_received_a
     db_session.add(session)
     await db_session.flush()
 
-    result = await RuntimeInboxService().accept_received(
+    result = await _accept_received(
+        RuntimeInboxService(),
         db_session,
         provider_code="WMS",
         event_type="WMS_TASK_CHANGE",
@@ -497,7 +625,8 @@ async def test_runtime_inbox_accept_device_event_aliases_claim_idempotency_key(d
     correlation = await _seed_execution_correlation(db_session, correlation_id=f"corr-{event_type}")
     source_event_id = f"evt-{event_type}"
 
-    _ = await RuntimeInboxService().accept_received(
+    _ = await _accept_received(
+        RuntimeInboxService(),
         db_session,
         provider_code="ECS",
         event_type=event_type,

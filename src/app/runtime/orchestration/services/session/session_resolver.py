@@ -505,7 +505,6 @@ class SessionResolver:
             if isinstance(session_id, int):
                 session_by_dispatch_key = await self.session_repo.get_by_id(db, session_id)
                 if session_by_dispatch_key is not None:
-                    inbox.session_id = session_by_dispatch_key.id
                     inbox.workline_id = getattr(session_by_dispatch_key, "workline_id", None)
                     return session_by_dispatch_key
 
@@ -521,7 +520,6 @@ class SessionResolver:
         if not session:
             raise ValueError(f"Session not found for trace_id: {trace_id}")
 
-        inbox.session_id = session.id
         inbox.workline_id = getattr(session, "workline_id", None)
         return session
 
@@ -571,7 +569,6 @@ class SessionResolver:
             )
             return None
 
-        inbox.session_id = session.id
         inbox.workline_id = getattr(session, "workline_id", inbox.workline_id)
         return session
 
@@ -617,7 +614,6 @@ class SessionResolver:
             )
             return None
 
-        inbox.session_id = session.id
         inbox.workline_id = getattr(session, "workline_id", inbox.workline_id)
         return session
 
