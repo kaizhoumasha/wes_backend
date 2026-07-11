@@ -140,9 +140,12 @@ async def test_accept_received_rejects_workline_session_namespace_mismatch(db_se
 async def test_accept_received_rejects_unknown_explicit_correlation_before_repository_write(db_session) -> None:
     """统一入口必须在 repository 写入前拒绝不存在的 ExecutionCorrelation。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+        RuntimeInboxCorrelationUnavailable,
+        RuntimeInboxService,
+    )
 
-    with pytest.raises(ValueError, match="unknown correlation_id"):
+    with pytest.raises(RuntimeInboxCorrelationUnavailable, match="correlation is unavailable"):
         await _accept_received(
             RuntimeInboxService(),
             db_session,
@@ -162,8 +165,9 @@ async def test_callback_result_writer_rejects_unknown_command_correlation(db_ses
     """result writer 不得把 DeviceCommand 上的孤立 correlation 传入 RuntimeInbox FK。"""
 
     from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxCorrelationUnavailable
 
-    with pytest.raises(ValueError, match="unknown correlation_id"):
+    with pytest.raises(RuntimeInboxCorrelationUnavailable, match="correlation is unavailable"):
         await CallbackRuntimeInboxWriter().write_result_callback(
             db_session,
             payload={
@@ -209,6 +213,69 @@ async def test_runtime_inbox_accept_returns_existing_ack_for_same_hash(db_sessio
     assert second.created is False
     assert second.record.id == first.record.id
     assert second.record.status == "RECEIVED"
+
+
+@pytest.mark.asyncio
+async def test_accept_received_existing_same_hash_acks_before_unknown_correlation_validation(db_session) -> None:
+    """已落库的同 K/H 重试应直接 ACK，不受迟到或已清理 correlation 影响。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+
+    service = RuntimeInboxService()
+    first = await _accept_received(
+        service,
+        db_session,
+        provider_code="WMS",
+        event_type="WMS_TASK_CHANGE",
+        source_event_id="evt-existing-before-correlation",
+        payload_hash="hash-existing-before-correlation",
+    )
+
+    retry = await _accept_received(
+        service,
+        db_session,
+        provider_code="WMS",
+        event_type="WMS_TASK_CHANGE",
+        source_event_id="evt-existing-before-correlation",
+        payload_hash="hash-existing-before-correlation",
+        correlation_id="corr-no-longer-present",
+    )
+
+    assert retry.created is False
+    assert retry.record.id == first.record.id
+
+
+@pytest.mark.asyncio
+async def test_accept_received_existing_different_hash_conflicts_before_unknown_correlation_validation(
+    db_session,
+) -> None:
+    """既有 identity 的 hash 冲突必须保持 409 优先级，不能被关联完整性错误遮蔽。"""
+
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+        RuntimeInboxConflict,
+        RuntimeInboxService,
+    )
+
+    service = RuntimeInboxService()
+    await _accept_received(
+        service,
+        db_session,
+        provider_code="WMS",
+        event_type="WMS_TASK_CHANGE",
+        source_event_id="evt-conflict-before-correlation",
+        payload_hash="hash-original",
+    )
+
+    with pytest.raises(RuntimeInboxConflict):
+        await _accept_received(
+            service,
+            db_session,
+            provider_code="WMS",
+            event_type="WMS_TASK_CHANGE",
+            source_event_id="evt-conflict-before-correlation",
+            payload_hash="hash-changed",
+            correlation_id="corr-no-longer-present",
+        )
 
 
 @pytest.mark.asyncio

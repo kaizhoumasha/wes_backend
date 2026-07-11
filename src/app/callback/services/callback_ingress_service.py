@@ -43,6 +43,7 @@ from src.app.device.services import device_command_service, device_context_servi
 from src.app.runtime.capabilities.material_flow.start_admission_service import start_admission_service
 from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
     RuntimeInboxConflict,
+    RuntimeInboxCorrelationUnavailable,
     RuntimeInboxPayloadTooLarge,
 )
 from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
@@ -951,6 +952,49 @@ async def _log_payload_too_large_best_effort(
             logger.error(f"RuntimeInbox payload 超限日志失败后的 rollback 失败: {rollback_error}")
 
 
+async def _log_correlation_unavailable_best_effort(
+    db: AsyncSessionDep,
+    request: Request,
+    *,
+    subject_code: str,
+    evidence: JsonDict,
+    request_id: str | None,
+    trace_id: str | None,
+    event_id: str | None,
+    causation_id: str | None,
+    response_time_ms: int,
+) -> None:
+    """尽力记录孤立关联的有限证据；日志故障不得覆盖确定的 HTTP 503。"""
+
+    bounded_evidence = {key: value[:200] if isinstance(value, str) else value for key, value in evidence.items()}
+    try:
+        await _log_callback_outcome(
+            db,
+            request,
+            callback_type="result",
+            subject_code=subject_code[:50],
+            request_body=bounded_evidence,
+            request_id=request_id[:100] if request_id else None,
+            trace_id=trace_id[:100] if trace_id else None,
+            event_id=event_id[:200] if event_id else None,
+            causation_id=causation_id[:200] if causation_id else None,
+            response_status=503,
+            response_time_ms=response_time_ms,
+            success=False,
+            record_audit=True,
+            audit_title="设备回调结果",
+            error_message="RuntimeInbox correlation unavailable",
+            ingress_outcome=_INGRESS_OUTCOME_FAILED,
+            failure_stage=_FAILURE_STAGE_ORCHESTRATION,
+        )
+    except Exception as log_error:
+        logger.warning(f"RuntimeInbox 孤立关联日志写入失败，继续返回 503: {log_error}")
+        try:
+            await db.rollback()
+        except Exception as rollback_error:
+            logger.error(f"RuntimeInbox 孤立关联日志失败后的 rollback 失败: {rollback_error}")
+
+
 async def _handle_validation_failure(
     db: AsyncSessionDep,
     request: Request,
@@ -1579,6 +1623,27 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             error_message=str(exc),
         )
         raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except RuntimeInboxCorrelationUnavailable as exc:
+        logger.error("指令结果回调 RuntimeInbox correlation 不可用")
+        await _log_correlation_unavailable_best_effort(
+            db,
+            request,
+            subject_code=device_code,
+            evidence={
+                "callback_type": "DEVICE_RESULT",
+                "command_code": command_code,
+                "device_code": device_code,
+                "trace_id": resolved_trace_id,
+                "event_id": _resolve_callback_event_id(callback_data),
+                "reason_code": "RUNTIME_INBOX_CORRELATION_UNAVAILABLE",
+            },
+            request_id=request_id,
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
+            response_time_ms=_response_time_ms(start_time),
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValidationError as exc:
         logger.error(f"指令结果回调模型校验失败: {exc}")
         await _record_callback_diagnostic(

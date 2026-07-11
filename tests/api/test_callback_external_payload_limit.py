@@ -164,6 +164,55 @@ async def test_result_payload_too_large_uses_real_writer_and_stays_413_when_call
 
 
 @pytest.mark.asyncio
+async def test_result_unknown_command_correlation_returns_retryable_503_when_callback_log_fails(
+    db_session,
+) -> None:
+    """命令上的孤立 correlation 属于服务端完整性故障，并且日志失败不得覆盖可重试 503。"""
+    context = SimpleNamespace(
+        device=SimpleNamespace(id=7, capabilities_json={"supports_result_callback": True}),
+        workline=SimpleNamespace(is_active=True),
+        contract_version="1.0",
+    )
+
+    with (
+        patch(
+            "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    trace_id="trace-result-orphan-correlation",
+                    correlation_id="corr-command-not-persisted",
+                    device_id=7,
+                    contract_version="1.0",
+                )
+            ),
+        ),
+        patch(
+            "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
+            new=AsyncMock(return_value=(context, None)),
+        ),
+        patch(
+            "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+            new=AsyncMock(side_effect=RuntimeError("callback log unavailable")),
+        ),
+        patch(
+            "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+            new=AsyncMock(),
+        ),
+    ):
+        from src.app.callback.v1.callback import callback_result
+
+        with pytest.raises(HTTPException) as exc_info:
+            await callback_result(
+                request=_request(create_result_payload(), path="/api/v1/callback/result"),
+                db=db_session,
+            )
+
+    assert exc_info.value.status_code == 503
+    count = await db_session.scalar(select(func.count()).select_from(RuntimeInbox))
+    assert count == 0
+
+
+@pytest.mark.asyncio
 async def test_event_payload_too_large_uses_real_writer_and_stays_413_when_callback_log_fails(
     db_session,
     monkeypatch: pytest.MonkeyPatch,

@@ -103,6 +103,16 @@ class RuntimeInboxConflict(Exception):
         }
 
 
+class RuntimeInboxCorrelationUnavailable(RuntimeError):
+    """显式关联未持久化，调用方应按服务端完整性故障重试。"""
+
+    status_code = 503
+
+    def __init__(self, *, correlation_id: str) -> None:
+        super().__init__("runtime inbox correlation is unavailable")
+        self.correlation_id = correlation_id
+
+
 class RuntimeInboxSessionOwnershipConflict(RuntimeInboxConflict):
     """同一入站幂等身份不能跨 WorklineSession 归属复用。"""
 
@@ -298,8 +308,6 @@ class RuntimeInboxService:
         """
 
         validate_canonical_payload_size(payload_json)
-        if correlation_id is not None:
-            correlation_id = await self._require_existing_correlation_id(db, correlation_id=correlation_id)
         canonical_session_id = _canonical_workline_session_id(payload_json)
         if (
             workline_session_id is not None
@@ -370,6 +378,10 @@ class RuntimeInboxService:
                     )
                 return RuntimeInboxAcceptResult(record=existing, created=False)
 
+            # 既有 identity 的 ACK/冲突语义优先；只有确需新增时才校验关联 FK。
+            if correlation_id is not None:
+                correlation_id = await self._require_existing_correlation_id(db, correlation_id=correlation_id)
+                record_data["correlation_id"] = correlation_id
             try:
                 async with db.begin_nested():
                     record = await self.repository.add_received(db, record_data)
@@ -408,6 +420,9 @@ class RuntimeInboxService:
                     ) from None
                 return RuntimeInboxAcceptResult(record=existing, created=False)
         else:
+            if correlation_id is not None:
+                correlation_id = await self._require_existing_correlation_id(db, correlation_id=correlation_id)
+                record_data["correlation_id"] = correlation_id
             record = await self.repository.add_received(db, record_data)
         return RuntimeInboxAcceptResult(record=record, created=True)
 
@@ -468,7 +483,7 @@ class RuntimeInboxService:
             )
         ).scalar_one_or_none()
         if existing is None:
-            raise ValueError(f"unknown correlation_id: {correlation_id}")
+            raise RuntimeInboxCorrelationUnavailable(correlation_id=correlation_id)
         return existing
 
     async def accept_device_event(
@@ -1028,6 +1043,7 @@ runtime_inbox_service = RuntimeInboxService()
 __all__ = [
     "RuntimeInboxAcceptResult",
     "RuntimeInboxConflict",
+    "RuntimeInboxCorrelationUnavailable",
     "RuntimeInboxPayloadTooLarge",
     "RuntimeInboxReplayResult",
     "RuntimeInboxService",
