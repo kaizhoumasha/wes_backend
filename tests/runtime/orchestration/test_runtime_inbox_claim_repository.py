@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from src.app.runtime.orchestration.consumers.runtime_inbox_service import _runtime_claim_bucket_key
 from src.app.runtime.orchestration.repositories.runtime_inbox_claim_repository import (
     RuntimeInboxClaimRepository,
 )
@@ -199,3 +200,49 @@ async def test_legacy_terminal_failed_rows_do_not_block_bucket_head(db_session: 
     )
 
     assert [claim["source_event_id"] for claim in claims] == ["current-received"]
+
+
+@pytest.mark.asyncio
+async def test_same_numeric_id_in_distinct_session_namespaces_does_not_cross_block(
+    db_session: AsyncSession,
+) -> None:
+    """WorklineSession 与 ExecutionSession 同号时必须落入不同 FIFO bucket。"""
+    common = {
+        "provider_code": "TEST",
+        "event_type": "INTERNAL_EVENT",
+        "source_event_id": "unused",
+    }
+    rows = [
+        RuntimeInbox(
+            provider_code="TEST",
+            event_type="INTERNAL_EVENT",
+            source_event_id="workline-session-event",
+            payload_json={"data": {"session_id": 41}},
+            status="RECEIVED",
+            claim_bucket_key=_runtime_claim_bucket_key(session_id=41, **common),
+            received_at=1,
+        ),
+        RuntimeInbox(
+            provider_code="TEST",
+            event_type="INTERNAL_EVENT",
+            source_event_id="execution-session-event",
+            payload_json={"data": {}},
+            status="RECEIVED",
+            claim_bucket_key=_runtime_claim_bucket_key(execution_session_id=41, **common),
+            received_at=2,
+        ),
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+
+    claims = await RuntimeInboxClaimRepository().claim_received_with_token(
+        db_session,
+        limit=2,
+        processor_token="worker-namespaces",
+        stale_after_seconds=30,
+    )
+
+    assert {claim["source_event_id"] for claim in claims} == {
+        "workline-session-event",
+        "execution-session-event",
+    }

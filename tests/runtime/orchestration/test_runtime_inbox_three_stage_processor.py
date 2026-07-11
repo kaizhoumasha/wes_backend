@@ -25,6 +25,7 @@ from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_c
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
     _load_related_entities,
+    _snapshot_inbox_for_diagnostic,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
     RuntimeInboxOrchestratorDelegate,
@@ -44,6 +45,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
     _result_requires_outbox_dispatch,
     _session_write_snapshot,
 )
+from src.app.workline.trace_context import TraceContext
 
 # ============================================================
 # Helpers
@@ -159,6 +161,28 @@ class _EmptyDb:
 
 
 class TestRelatedEntitiesContract:
+    @pytest.mark.parametrize(("session_id", "expected"), ((41, 41), (None, None)))
+    def test_diagnostic_snapshot_uses_only_canonical_workline_session_id(
+        self,
+        session_id: int | None,
+        expected: int | None,
+    ) -> None:
+        data = {"session_id": session_id} if session_id is not None else {}
+        inbox = RuntimeInbox(
+            id=1,
+            provider_code="TEST",
+            event_type="INTERNAL_EVENT",
+            kind="INTERNAL_EVENT",
+            payload_json={"event_type": "INTERNAL_EVENT", "data": data},
+            execution_session_id=999,
+        )
+
+        snapshot = _snapshot_inbox_for_diagnostic(inbox)
+        trace = TraceContext.from_runtime(inbox=snapshot)
+
+        assert snapshot.session_id == expected
+        assert trace.session_id == expected
+
     @pytest.mark.parametrize("kind", ("INTERNAL_EVENT", "TIMER_TIMEOUT", "MANUAL_HOLD"))
     def test_workline_session_id_comes_only_from_canonical_payload(self, kind: str) -> None:
         inbox = RuntimeInbox(

@@ -38,6 +38,27 @@ runtime_inbox_service_module = importlib.import_module("src.app.runtime.orchestr
 RuntimeInboxService = runtime_inbox_service_module.RuntimeInboxService
 
 
+def test_claim_bucket_separates_workline_and_execution_session_namespaces() -> None:
+    common = {
+        "provider_code": "TEST",
+        "event_type": "INTERNAL_EVENT",
+        "source_event_id": "evt-1",
+    }
+
+    workline_key = runtime_inbox_service_module._runtime_claim_bucket_key(session_id=41, **common)
+    execution_key = runtime_inbox_service_module._runtime_claim_bucket_key(execution_session_id=41, **common)
+    both_key = runtime_inbox_service_module._runtime_claim_bucket_key(
+        session_id=41,
+        execution_session_id=41,
+        **common,
+    )
+
+    assert workline_key == "workline-session:41"
+    assert execution_key == "execution-session:41"
+    assert workline_key != execution_key
+    assert both_key == workline_key
+
+
 # ============================================================
 # accept_device_event
 # ============================================================
@@ -523,7 +544,7 @@ async def test_internal_producers_write_non_empty_priority_bucket_and_received_a
     )
 
     assert device.record.claim_bucket_key == "device:91"
-    assert internal.record.claim_bucket_key == f"session:{session.id}"
+    assert internal.record.claim_bucket_key == f"execution-session:{session.id}"
     assert command.record.claim_bucket_key == "workline:31"
     assert fallback.record.claim_bucket_key
     assert fallback.record.claim_bucket_key.startswith("source:RUNTIME:RUNTIME_HEARTBEAT:evt-fallback-001")
@@ -575,7 +596,7 @@ async def test_accept_timer_timeout_writes_canonical_idempotent_runtime_inbox(db
     assert record.device_id == 51
     assert record.command_id == 61
     assert record.trace_id == "trace-timeout-001"
-    assert record.claim_bucket_key == f"session:{legacy_session_id}"
+    assert record.claim_bucket_key == f"workline-session:{legacy_session_id}"
     assert record.received_at == NOW_MS
     assert record.payload_json == {
         "event_type": "TIMER_TIMEOUT",
@@ -614,7 +635,7 @@ async def test_accept_timer_timeout_keeps_legacy_and_execution_session_identitie
     )
 
     assert result.record.execution_session_id == execution_session.id
-    assert result.record.claim_bucket_key == f"session:{legacy_session_id}"
+    assert result.record.claim_bucket_key == f"workline-session:{legacy_session_id}"
     assert result.record.source_event_id.startswith(f"timeout:{legacy_session_id}:")
     assert result.record.payload_json["data"]["session_id"] == legacy_session_id
 

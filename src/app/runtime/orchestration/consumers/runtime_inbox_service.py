@@ -140,7 +140,8 @@ def _runtime_claim_bucket_key(
     """按稳定业务身份生成 RuntimeInbox FIFO 桶键。"""
 
     candidates = (
-        ("session", session_id if session_id is not None else execution_session_id),
+        ("workline-session", session_id),
+        ("execution-session", execution_session_id),
         ("device", device_id),
         ("correlation", correlation_id),
         ("workline", workline_id),
@@ -379,7 +380,8 @@ class RuntimeInboxService:
         区别于 accept_received:
         - 不做 source_event_id 幂等检查 (内部事件, source_event_id 可能为空或可重复)。
         - provider_code 从 device_code 前缀派生 (ARM_01 -> ARM), 默认 "ECS"。
-        - execution_session_id 留空 (Task 5 processor 在后续解析时填充)。
+        - 本入口没有 ExecutionSession 映射参数，因此 execution_session_id 留空；
+          processor 不得从 WorklineSession ID 推导该字段。
         - correlation_id 通过 trace_id 反查 ExecutionCorrelation, 查不到则回退 trace_id。
         """
 

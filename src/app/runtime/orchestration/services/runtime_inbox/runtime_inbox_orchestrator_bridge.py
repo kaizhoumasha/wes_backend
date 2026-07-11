@@ -42,6 +42,9 @@ from src.app.runtime.orchestration.diagnostics import (
     map_failure_to_diagnostic,
 )
 from src.app.runtime.orchestration.effect_result import WriteBackDisposition
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
+    _canonical_workline_session_id,
+)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
     RuntimeInboxOrchestratorDelegate,
 )
@@ -118,7 +121,7 @@ def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
         event_id=getattr(inbox, "event_id", None),
         causation_id=getattr(inbox, "causation_id", None),
         workline_id=optional_int(getattr(inbox, "workline_id", None)),
-        session_id=optional_int(getattr(inbox, "execution_session_id", None)),
+        session_id=_canonical_workline_session_id(inbox),
         device_id=optional_int(getattr(inbox, "device_id", None)),
         command_id=optional_int(getattr(inbox, "command_id", None)),
         attempt_count=int(getattr(inbox, "attempt_count", 0)),

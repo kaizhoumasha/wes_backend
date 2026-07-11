@@ -575,7 +575,7 @@ async def test_runtime_inbox_accept_received_writes_stable_bucket_and_received_a
         now_ms=NOW_MS,
     )
 
-    assert result.record.claim_bucket_key == f"session:{session.id}"
+    assert result.record.claim_bucket_key == f"execution-session:{session.id}"
     assert result.record.received_at == NOW_MS
 
 
