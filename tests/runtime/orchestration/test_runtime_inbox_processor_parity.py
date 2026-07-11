@@ -50,6 +50,8 @@ class ParityCase:
     expected_source_device_id: int | None = None
     expected_late_command_id: int | None = None
     expected_reconciliation: bool = False
+    stale_session_on_write: bool = False
+    expected_writeback_calls: int | None = None
 
 
 PARITY_CASES = (
@@ -159,6 +161,16 @@ PARITY_CASES = (
         expected_error="simulated orchestrator failure",
     ),
     ParityCase(
+        name="stale_session_snapshot",
+        payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "STALE"}},
+        stale_session_on_write=True,
+        expected=(1, 0, 1, 0, 0),
+        expected_terminal="failed",
+        expected_error="Session state changed before WRITE apply",
+        expected_diagnostic="UNKNOWN",
+        expected_writeback_calls=0,
+    ),
+    ParityCase(
         name="resource_wait",
         payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "WAIT"}},
         writeback="resource_wait",
@@ -178,12 +190,14 @@ PARITY_CASES = (
 
 
 class _FakeDb:
-    def __init__(self) -> None:
+    def __init__(self, *, stale_session_on_write: bool = False) -> None:
         self.committed = 0
         self.rolled_back = 0
+        self.stale_session_on_write = stale_session_on_write
 
     async def refresh(self, value: object) -> None:
-        _ = value
+        if self.stale_session_on_write:
+            value.status = "WAITING_DEVICE_RESULT"
 
     async def commit(self) -> None:
         self.committed += 1
@@ -304,7 +318,7 @@ async def _run_case(
     case: ParityCase,
 ) -> tuple[dict[str, int], list[str], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     inbox, session, workline, device, command = _build_entities(case)
-    db = _FakeDb()
+    db = _FakeDb(stale_session_on_write=case.stale_session_on_write)
     terminal = _TerminalRecorder(inbox)
     archives: list[str] = []
     diagnostics: list[dict[str, Any]] = []
@@ -503,3 +517,5 @@ async def test_processor_characterization_parity(
         if case.expected_reconciliation
         else []
     )
+    if case.expected_writeback_calls is not None:
+        assert len([call for call in interactions if call["kind"] == "writeback"]) == case.expected_writeback_calls
