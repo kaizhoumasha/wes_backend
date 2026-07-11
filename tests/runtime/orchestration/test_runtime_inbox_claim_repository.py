@@ -247,6 +247,160 @@ async def test_same_numeric_id_in_distinct_session_namespaces_does_not_cross_blo
 
 
 @pytest.mark.asyncio
+async def test_sli_snapshot_counts_states_and_oldest_claimable_age(db_session: AsyncSession) -> None:
+    rows = [
+        RuntimeInbox(
+            provider_code="TEST",
+            event_type="SLI",
+            source_event_id="received",
+            status="RECEIVED",
+            received_at=1_000,
+        ),
+        RuntimeInbox(
+            provider_code="TEST",
+            event_type="SLI",
+            source_event_id="failed-due",
+            status="FAILED",
+            received_at=2_000,
+            next_retry_at=0,
+            last_error_message="RESOURCE_WAIT",
+        ),
+        RuntimeInbox(
+            provider_code="TEST",
+            event_type="SLI",
+            source_event_id="failed-future",
+            status="FAILED",
+            received_at=500,
+            next_retry_at=20_000,
+        ),
+        RuntimeInbox(
+            provider_code="TEST",
+            event_type="SLI",
+            source_event_id="processing-stale",
+            status="PROCESSING",
+            received_at=3_000,
+            lease_until=0,
+            processor_token="old-owner",
+        ),
+        RuntimeInbox(
+            provider_code="TEST",
+            event_type="SLI",
+            source_event_id="dead-letter",
+            status="DEAD_LETTER",
+            received_at=100,
+        ),
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+
+    snapshot = await RuntimeInboxRepository().get_sli_snapshot(db_session, now_ms=10_000)
+
+    assert snapshot.status_counts == {
+        "RECEIVED": 1,
+        "PROCESSING": 1,
+        "PROCESSED": 0,
+        "FAILED": 2,
+        "DEAD_LETTER": 1,
+    }
+    assert snapshot.oldest_claimable_age_ms == 9_000
+    assert snapshot.stale_processing_count == 1
+    assert snapshot.resource_wait_count == 1
+
+
+@pytest.mark.asyncio
+async def test_sli_oldest_claimable_age_respects_bucket_fifo_blocker(db_session: AsyncSession) -> None:
+    db_session.add_all(
+        [
+            RuntimeInbox(
+                provider_code="TEST",
+                event_type="SLI",
+                source_event_id="active-head",
+                status="PROCESSING",
+                received_at=100,
+                lease_until=20_000,
+                processor_token="active-owner",
+                claim_bucket_key="bucket-a",
+            ),
+            RuntimeInbox(
+                provider_code="TEST",
+                event_type="SLI",
+                source_event_id="blocked-tail",
+                status="RECEIVED",
+                received_at=200,
+                claim_bucket_key="bucket-a",
+            ),
+            RuntimeInbox(
+                provider_code="TEST",
+                event_type="SLI",
+                source_event_id="claimable-other-bucket",
+                status="RECEIVED",
+                received_at=500,
+                claim_bucket_key="bucket-b",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    snapshot = await RuntimeInboxRepository().get_sli_snapshot(db_session, now_ms=1_000)
+
+    assert snapshot.oldest_claimable_age_ms == 500
+
+
+@pytest.mark.asyncio
+async def test_repository_emits_reclaim_fencing_resource_wait_and_dead_letter_sli(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    rows = [
+        RuntimeInbox(
+            provider_code="TEST",
+            event_type="SLI",
+            source_event_id=f"event-{index}",
+            status="PROCESSING",
+            received_at=index,
+            lease_until=0 if index == 1 else 9_000_000_000_000_000,
+            processor_token=f"token-{index}",
+        )
+        for index in range(1, 5)
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+    emit_calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(runtime_observability_registry, "emit", lambda name, attrs: emit_calls.append((name, attrs)))
+    repository = RuntimeInboxRepository()
+
+    assert await repository.recover_stale_leases(db_session, stale_after_seconds=60, limit=10) == 1
+    assert await repository.update_terminal_state(
+        db_session,
+        inbox_id=rows[1].id,
+        lease_token="token-2",
+        target_state="FAILED",
+        extra_values={"last_error_message": "RESOURCE_WAIT"},
+    )
+    assert await repository.update_terminal_state(
+        db_session,
+        inbox_id=rows[2].id,
+        lease_token="token-3",
+        target_state="DEAD_LETTER",
+    )
+    assert not await repository.update_terminal_state(
+        db_session,
+        inbox_id=rows[3].id,
+        lease_token="wrong-token",
+        target_state="PROCESSED",
+    )
+
+    assert [name for name, _attrs in emit_calls] == [
+        "runtime_inbox.lease_reclaim",
+        "runtime_inbox.resource_wait",
+        "runtime_inbox.dead_letter",
+        "runtime_inbox.fencing_reject",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_latest_by_workline_session_uses_explicit_namespace_column(db_session: AsyncSession) -> None:
     """WorklineSession 热查询必须使用独立显式列，不能借用 ExecutionSession 或扫描 JSON。"""
 

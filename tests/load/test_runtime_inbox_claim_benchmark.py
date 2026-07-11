@@ -20,3 +20,17 @@ def test_runtime_inbox_claim_benchmark() -> None:
     assert metrics["claim_p50_ms"] <= metrics["claim_p95_ms"]
     assert metrics["throughput_per_second"] > 0
     assert result["query_plan"]
+    assert result["sli_before"] == {
+        "status_counts": {
+            "RECEIVED": 700,
+            "PROCESSING": 100,
+            "PROCESSED": 0,
+            "FAILED": 200,
+            "DEAD_LETTER": 0,
+        },
+        "oldest_claimable_age_ms": result["sli_before"]["oldest_claimable_age_ms"],
+        "stale_processing_count": 100,
+        "resource_wait_count": 0,
+    }
+    assert result["sli_before"]["oldest_claimable_age_ms"] >= 0
+    assert result["sli_after"]["status_counts"]["PROCESSED"] == 1_000

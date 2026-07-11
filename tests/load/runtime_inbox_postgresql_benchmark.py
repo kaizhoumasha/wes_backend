@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
 
@@ -204,6 +205,9 @@ async def _run_benchmark() -> dict[str, object]:
         engine = create_async_engine(database_url, pool_size=WORKER_CONCURRENCY + 1, max_overflow=0)
         session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         service = RuntimeInboxService()
+        repository = RuntimeInboxRepository()
+        async with session_factory() as db:
+            sli_before = asdict(await repository.get_sli_snapshot(db, now_ms=int(time.time() * 1_000)))
         state = _BenchmarkState()
         done = asyncio.Event()
         monitor = asyncio.create_task(_monitor_waiting_locks(database, state, done))
@@ -224,6 +228,7 @@ async def _run_benchmark() -> dict[str, object]:
                 )
                 or 0
             )
+            sli_after = asdict(await repository.get_sli_snapshot(db, now_ms=int(time.time() * 1_000)))
         await engine.dispose()
 
         evidence: dict[str, object] = {
@@ -246,6 +251,8 @@ async def _run_benchmark() -> dict[str, object]:
                 "processed_count": processed_count,
             },
             "query_plan": query_plan,
+            "sli_before": sli_before,
+            "sli_after": sli_after,
         }
         return evidence
 

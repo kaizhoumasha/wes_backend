@@ -127,6 +127,38 @@ def test_runtime_inbox_task_claims_and_processes_one_at_a_time(monkeypatch: pyte
     assert result == {"processed": 2, "success": 2, "failed": 0, "skipped": 0, "resource_wait": 0}
 
 
+def test_runtime_inbox_task_emits_processing_duration_sli(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge
+    from src.celery_app.tasks import runtime_inbox as task_module
+
+    db = _SessionStub()
+    claims = [[{"id": 1, "processor_token": "token-1"}], []]
+
+    class ProcessorStub:
+        async def process_claimed(self, _db: object, *, claim: dict[str, object]) -> dict[str, int]:
+            _ = claim
+            return {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+
+    emit = MagicMock()
+    monkeypatch.setattr(task_module.process_runtime_inbox_batch, "_db", db)
+    monkeypatch.setattr(task_module, "_run_async", asyncio.run)
+    monkeypatch.setattr(runtime_inbox_service, "claim_for_processing", AsyncMock(side_effect=claims))
+    monkeypatch.setattr(runtime_inbox_service, "recover_stale_leases", AsyncMock(return_value=0))
+    monkeypatch.setattr(runtime_inbox_orchestrator_bridge, "RuntimeInboxProcessorBridge", ProcessorStub)
+    monkeypatch.setattr(runtime_observability_registry, "emit", emit)
+
+    result = task_module.process_runtime_inbox_batch.run(limit=2)
+
+    assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+    processing_events = [call for call in emit.call_args_list if call.args[0] == "runtime_inbox.processing"]
+    assert len(processing_events) == 1
+    assert processing_events[0].args[1]["inbox_id"] == 1
+    assert processing_events[0].args[1]["outcome"] == "failed"
+    assert processing_events[0].args[1]["duration_ms"] >= 0
+
+
 def test_runtime_inbox_task_times_out_only_the_claimed_message(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
     from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge

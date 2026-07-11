@@ -12,6 +12,7 @@ RuntimeInboxService，确保 processor_token fencing 作用于同一事实源。
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from contextlib import suppress
 from typing import Any
@@ -126,6 +127,34 @@ from typing import cast  # noqa: E402  (after _run_async to keep import grouped)
 ClaimBatchResult = dict[str, int]
 
 
+def _emit_processing_sli(*, inbox_id: object, started_at: float, outcome: str) -> None:
+    """发射单条处理时延；观测失败不改变 worker 结果。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    try:
+        _ = runtime_observability_registry.emit(
+            "runtime_inbox.processing",
+            {
+                "inbox_id": int(inbox_id),
+                "duration_ms": (time.perf_counter() - started_at) * 1_000,
+                "outcome": outcome,
+            },
+        )
+    except Exception as exc:  # pragma: no cover - 观测 backend 故障不反向影响 worker
+        logger.warning(f"RuntimeInbox processing SLI 发射失败: inbox_id={inbox_id}, error={exc}")
+
+
+def _processing_outcome(result: ClaimBatchResult) -> str:
+    if result.get("resource_wait", 0):
+        return "resource_wait"
+    if result.get("failed", 0):
+        return "failed"
+    if result.get("skipped", 0) and not result.get("success", 0):
+        return "skipped"
+    return "success"
+
+
 # ============================================================
 # 主任务: process_runtime_inbox_batch
 # ============================================================
@@ -181,6 +210,7 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
                 # claim 的 PROCESSING/token/attempt 必须先独立提交。后续 processor
                 # rollback 只回滚业务处理事务，lease 保留到 stale recovery。
                 await db.commit()
+                processing_started_at = time.perf_counter()
                 try:
                     message_result = await asyncio.wait_for(
                         processor.process_claimed(db, claim=claim),
@@ -193,12 +223,27 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
                     logger.error(f"RuntimeInbox {claim.get('id')} 处理超时")
                     result["processed"] += 1
                     result["failed"] += 1
+                    _emit_processing_sli(
+                        inbox_id=claim.get("id"),
+                        started_at=processing_started_at,
+                        outcome="timeout",
+                    )
                 except Exception:
                     await db.rollback()
+                    _emit_processing_sli(
+                        inbox_id=claim.get("id"),
+                        started_at=processing_started_at,
+                        outcome="error",
+                    )
                     raise
                 else:
                     for key in result:
                         result[key] += message_result.get(key, 0)
+                    _emit_processing_sli(
+                        inbox_id=claim.get("id"),
+                        started_at=processing_started_at,
+                        outcome=_processing_outcome(message_result),
+                    )
                 remaining -= 1
 
             # 回收 stale leases

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import time
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import BigInteger, case, exists, func, literal, select, tuple_, update
@@ -16,6 +18,7 @@ from src.app.contracts.runtime_inbox_query import (
 )
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.core.conf import settings
+from src.core.logger import logger
 from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:
@@ -31,6 +34,27 @@ class RuntimeInboxPayloadTooLarge(Exception):
         super().__init__(f"runtime inbox payload too large: actual_bytes={actual_bytes}, max_bytes={max_bytes}")
         self.actual_bytes = actual_bytes
         self.max_bytes = max_bytes
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeInboxSliSnapshot:
+    """RuntimeInbox 当前状态与可推进 backlog 的数据库 SLI 快照。"""
+
+    status_counts: dict[str, int]
+    oldest_claimable_age_ms: int | None
+    stale_processing_count: int
+    resource_wait_count: int
+
+
+def _emit_runtime_inbox_sli(name: str, attributes: dict[str, object]) -> None:
+    """观测链路失败不得改变 Inbox 事务结果。"""
+
+    from src.app.runtime.orchestration.observability import runtime_observability_registry
+
+    try:
+        _ = runtime_observability_registry.emit(name, attributes)
+    except Exception as exc:  # pragma: no cover - 观测 backend 故障不反向影响事实源
+        logger.warning(f"RuntimeInbox SLI 发射失败: signal={name}, error={exc}")
 
 
 def validate_canonical_payload_size(payload_json: object) -> None:
@@ -232,6 +256,7 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             .limit(limit)
             .with_for_update(skip_locked=True)
         )
+        started_at = time.perf_counter()
         result = await db.execute(
             update(table)
             .where(columns.id.in_(candidate_ids))
@@ -272,6 +297,13 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             for row in result.mappings().all()
         ]
         claims.sort(key=lambda row: (row["received_at"] is None, row["received_at"] or 0, row["id"]))
+        _emit_runtime_inbox_sli(
+            "runtime_inbox.claim_batch",
+            {
+                "claimed_count": len(claims),
+                "duration_ms": (time.perf_counter() - started_at) * 1_000,
+            },
+        )
         return claims
 
     async def recover_stale_leases(
@@ -320,7 +352,12 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             .returning(columns.id, columns.status)
             .execution_options(synchronize_session=False)
         )
-        return len(result.mappings().all())
+        recovered_count = len(result.mappings().all())
+        _emit_runtime_inbox_sli(
+            "runtime_inbox.lease_reclaim",
+            {"reclaimed_count": recovered_count},
+        )
+        return recovered_count
 
     async def update_terminal_state(
         self,
@@ -351,7 +388,69 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             .values(**values)
             .execution_options(synchronize_session=False)
         )
-        return result.rowcount > 0
+        updated = result.rowcount > 0
+        if not updated:
+            _emit_runtime_inbox_sli(
+                "runtime_inbox.fencing_reject",
+                {"inbox_id": inbox_id, "target_state": target_state},
+            )
+        elif target_state == "DEAD_LETTER":
+            _emit_runtime_inbox_sli("runtime_inbox.dead_letter", {"inbox_id": inbox_id})
+        elif target_state == "FAILED" and values.get("last_error_message") == "RESOURCE_WAIT":
+            _emit_runtime_inbox_sli("runtime_inbox.resource_wait", {"inbox_id": inbox_id})
+        return updated
+
+    async def get_sli_snapshot(self, db: AsyncSession, *, now_ms: int) -> RuntimeInboxSliSnapshot:
+        """读取五态数量、最老可 claim 年龄及关键积压分类。"""
+
+        table = cast("Any", RuntimeInbox).__table__
+        columns = table.c
+        now_value = literal(now_ms, type_=BigInteger())
+        status_rows = await db.execute(select(columns.status, func.count()).group_by(columns.status))
+        status_counts = dict.fromkeys(("RECEIVED", "PROCESSING", "PROCESSED", "FAILED", "DEAD_LETTER"), 0)
+        status_counts.update({str(status): int(count) for status, count in status_rows.all()})
+        candidate = table.alias("sli_claim_candidate")
+        earlier = table.alias("sli_earlier_inbox")
+        cc = candidate.c
+        ec = earlier.c
+        claimable = (
+            (cc.status == "RECEIVED")
+            | ((cc.status == "FAILED") & (cc.next_retry_at <= now_value))
+            | ((cc.status == "PROCESSING") & (cc.lease_until <= now_value))
+        ) & (cc.attempt_count < cc.max_retries)
+        earlier_can_advance = (
+            (ec.status == "RECEIVED")
+            | (ec.status == "PROCESSING")
+            | ((ec.status == "FAILED") & ec.next_retry_at.is_not(None) & (ec.attempt_count < ec.max_retries))
+        )
+        earlier_in_bucket = exists(
+            select(1)
+            .select_from(earlier)
+            .where(
+                earlier_can_advance,
+                ec.claim_bucket_key == cc.claim_bucket_key,
+                tuple_(ec.received_at, ec.id) < tuple_(cc.received_at, cc.id),
+            )
+        )
+        oldest_received_at = await db.scalar(
+            select(func.min(cc.received_at)).select_from(candidate).where(claimable, ~earlier_in_bucket)
+        )
+        aggregates = (
+            await db.execute(
+                select(
+                    func.count().filter((columns.status == "PROCESSING") & (columns.lease_until <= now_value)),
+                    func.count().filter((columns.status == "FAILED") & (columns.last_error_message == "RESOURCE_WAIT")),
+                )
+            )
+        ).one()
+        return RuntimeInboxSliSnapshot(
+            status_counts=status_counts,
+            oldest_claimable_age_ms=(
+                max(0, now_ms - int(oldest_received_at)) if oldest_received_at is not None else None
+            ),
+            stale_processing_count=int(aggregates[0] or 0),
+            resource_wait_count=int(aggregates[1] or 0),
+        )
 
     async def count_by_statuses(self, db: AsyncSession, statuses: set[str]) -> int:
         """按 RuntimeInbox 五态统计记录。"""
@@ -437,6 +536,7 @@ runtime_inbox_repository = RuntimeInboxRepository()
 __all__ = [
     "RuntimeInboxPayloadTooLarge",
     "RuntimeInboxRepository",
+    "RuntimeInboxSliSnapshot",
     "runtime_inbox_repository",
     "validate_canonical_payload_size",
 ]

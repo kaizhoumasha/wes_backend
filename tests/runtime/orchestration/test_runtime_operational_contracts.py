@@ -5,6 +5,27 @@ from __future__ import annotations
 from datetime import date
 
 
+def test_runtime_inbox_sli_signals_require_stable_attributes() -> None:
+    from src.app.runtime.orchestration.observability import RuntimeObservabilityRegistry
+
+    registry = RuntimeObservabilityRegistry()
+    signals = {
+        "runtime_inbox.claim_batch": {"claimed_count": 2, "duration_ms": 1.2},
+        "runtime_inbox.processing": {"inbox_id": 1, "duration_ms": 3.4, "outcome": "success"},
+        "runtime_inbox.lease_reclaim": {"reclaimed_count": 1},
+        "runtime_inbox.fencing_reject": {"inbox_id": 1, "target_state": "PROCESSED"},
+        "runtime_inbox.resource_wait": {"inbox_id": 1},
+        "runtime_inbox.dead_letter": {"inbox_id": 1},
+    }
+
+    for name, attributes in signals.items():
+        assert registry.validate(name, attributes).valid is True
+
+    invalid = registry.validate("runtime_inbox.processing", {"inbox_id": 1, "duration_ms": 3.4})
+    assert invalid.valid is False
+    assert invalid.missing_attributes == ("outcome",)
+
+
 def test_runtime_observability_registry_requires_stable_attributes() -> None:
     from src.app.runtime.orchestration.observability import RuntimeObservabilityRegistry
 
