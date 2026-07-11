@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from sqlalchemy.exc import IntegrityError
 
-from src.app.runtime.orchestration.consumers.runtime_inbox_repository import (
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import (
     RuntimeInboxPayloadTooLarge,
     RuntimeInboxRepository,
     runtime_inbox_repository,

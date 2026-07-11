@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.app.runtime.orchestration.consumers.runtime_inbox_repository import RuntimeInboxRepository
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 from src.app.runtime.orchestration.repositories.smt_inbound_handoff_repository import SmtInboundHandoffRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import SmtInboundHandoffService
@@ -35,7 +35,9 @@ async def test_smt_source_pick_evidence_reads_runtime_inbox(db_session) -> None:
     db_session.add(inbox)
     await db_session.flush()
 
-    loaded = await SmtInboundHandoffRepository().get_runtime_inbox_by_id(db_session, inbox.id)
+    loaded = await SmtInboundHandoffRepository(runtime_inbox_query=RuntimeInboxRepository()).get_runtime_inbox_by_id(
+        db_session, inbox.id
+    )
 
     assert type(loaded).__name__ == "RuntimeInboxEvidence"
     assert loaded.id == inbox.id
@@ -104,7 +106,9 @@ async def test_unfinished_workload_counts_runtime_inbox_five_state_contract(
     )
     await db_session.flush()
 
-    summary = await WorkLineRepository().get_unfinished_workload_summary(db_session, 710)
+    summary = await WorkLineRepository(runtime_inbox_query=RuntimeInboxRepository()).get_unfinished_workload_summary(
+        db_session, 710
+    )
 
     assert summary["by_type"]["inboxes"] == expected_count
     assert summary["count"] == expected_count

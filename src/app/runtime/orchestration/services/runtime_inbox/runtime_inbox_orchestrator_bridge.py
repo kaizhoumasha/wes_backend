@@ -27,10 +27,6 @@ from typing import TYPE_CHECKING, Any, TypedDict
 from loguru import logger
 
 from src.app.runtime.capability_catalog import parse_workline_six_in_one
-from src.app.runtime.orchestration.consumers.runtime_inbox_repository import (
-    RuntimeInboxRepository,
-    runtime_inbox_repository,
-)
 from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
     RuntimeInboxService,
     runtime_inbox_service,
@@ -42,6 +38,10 @@ from src.app.runtime.orchestration.diagnostics import (
     map_failure_to_diagnostic,
 )
 from src.app.runtime.orchestration.effect_result import WriteBackDisposition
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import (
+    RuntimeInboxRepository,
+    runtime_inbox_repository,
+)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
     _canonical_workline_session_id,
 )

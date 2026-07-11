@@ -63,7 +63,6 @@ from .session_repository import (
 )
 from .smt_inbound_handoff_repository import (
     SmtInboundHandoffRepository,
-    smt_inbound_handoff_repository,
 )
 from .workline_runtime_status_projection_repository import (
     WorklineRuntimeStatusProjectionRepository,
@@ -96,7 +95,6 @@ __all__ = [
     "runtime_hold_repository",
     "runtime_inbox_repository",
     "runtime_location_event_repository",
-    "smt_inbound_handoff_repository",
     "workline_bin_cell_reservation_repository",
     "workline_diagnostic_repository",
     "workline_dispatch_attempt_repository",

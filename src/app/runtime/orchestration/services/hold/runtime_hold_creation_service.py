@@ -10,11 +10,11 @@ from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
     RuntimeHoldRepository,
     runtime_hold_repository,
 )
+from src.app.runtime.orchestration.repository_wiring import workline_repository as default_workline_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusProjectionService,
     workline_runtime_status_projection_service,
 )
-from src.app.workline.repositories.workline_repository import workline_repository as default_workline_repository
 from src.utils.value_normalization import dict_attr, optional_int_attr, optional_str_attr, required_int_attr
 
 if TYPE_CHECKING:

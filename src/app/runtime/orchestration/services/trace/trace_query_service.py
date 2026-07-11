@@ -61,11 +61,11 @@ from src.app.runtime.orchestration.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
 )
+from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
 from src.app.sys.models import SystemOutbox
-from src.app.workline.repositories.workline_repository import WorkLineRepository, workline_repository
 from src.app.workline.trace_context import TraceContext
 
 # 导入公共工具函数
@@ -81,6 +81,7 @@ if TYPE_CHECKING:
     from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
     from src.app.runtime.orchestration.models.session import WorklineSession
     from src.app.runtime.orchestration.repositories.diagnostic_repository import WorklineDiagnosticRepository
+    from src.app.workline.repositories.workline_repository import WorkLineRepository
     from src.app.workline.services.diagnosis_verdict_builder_service import DiagnosisVerdictBuilder
 
 _SESSION_FAILURE_CODE_MAP: dict[str, ErrorCode] = {

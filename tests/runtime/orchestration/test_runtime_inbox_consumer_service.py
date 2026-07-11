@@ -87,7 +87,7 @@ class _RuntimeInboxStaleReadRepository:
     """用真实 add_received 触发唯一索引冲突，同时模拟第一次读到旧快照。"""
 
     def __init__(self) -> None:
-        from src.app.runtime.orchestration.consumers.runtime_inbox_repository import RuntimeInboxRepository
+        from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 
         self.real_repository = RuntimeInboxRepository()
         self.read_count = 0

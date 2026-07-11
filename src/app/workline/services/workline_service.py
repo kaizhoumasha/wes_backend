@@ -18,6 +18,7 @@ from src.app.runtime.capability_catalog import (
 from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
 from src.app.runtime.orchestration.repositories.rack_position_repository import workline_rack_position_repository
+from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusProjectionService,
     workline_runtime_status_projection_service,
@@ -53,7 +54,7 @@ from src.app.workline.models.workline import (
     StateMachineTransition,
     TopologySpec,
 )
-from src.app.workline.repositories import WorkLineRepository, workline_repository
+from src.app.workline.repositories import WorkLineRepository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.conf import settings

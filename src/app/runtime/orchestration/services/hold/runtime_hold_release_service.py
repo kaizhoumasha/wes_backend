@@ -34,11 +34,11 @@ from src.app.runtime.orchestration.models.session import (
 )
 from src.app.runtime.orchestration.repositories import workline_session_repository
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
 from src.app.sys.repositories import system_outbox_repository
-from src.app.workline.repositories import workline_repository
 from src.utils.timezone import timezone
 from src.utils.value_normalization import as_dict, enum_str, optional_int
 

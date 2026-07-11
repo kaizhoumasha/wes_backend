@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.app.device.models import Device
 from src.app.device.repositories import DeviceRepository
 from src.app.runtime.capability_catalog import get_workline_contract_version
+from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.workline.models import WorkLine
-from src.app.workline.repositories import WorkLineRepository
 from src.core.logger import logger
 
 
@@ -34,7 +34,7 @@ class DeviceContextService:
 
     def __init__(self) -> None:
         self._device_repo = DeviceRepository()
-        self._workline_repo = WorkLineRepository()
+        self._workline_repo = workline_repository
 
     def _resolve_plugin_key(self, device: Device, workline: WorkLine | None) -> str | None:
         candidate = getattr(workline, "plugin_key", None) if workline else getattr(device, "plugin_key", None)

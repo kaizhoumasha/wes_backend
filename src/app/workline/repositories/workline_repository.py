@@ -9,7 +9,6 @@ from src.app.contracts.runtime_inbox_query import RuntimeInboxQueryPort
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.runtime.orchestration.models import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
-from src.app.runtime.orchestration.repositories.runtime_inbox_repository import runtime_inbox_repository
 from src.app.sys.models.outbox import SystemOutbox, SystemOutboxStatus
 from src.app.workline.models import WorkLine
 from src.database.base_repository import BaseRepository
@@ -18,7 +17,7 @@ from src.database.base_repository import BaseRepository
 class WorkLineRepository(BaseRepository[WorkLine]):
     """作业线数据访问层"""
 
-    def __init__(self, *, runtime_inbox_query: RuntimeInboxQueryPort = runtime_inbox_repository) -> None:
+    def __init__(self, *, runtime_inbox_query: RuntimeInboxQueryPort) -> None:
         """初始化作业线仓库"""
         super().__init__(WorkLine)
         self.runtime_inbox_query = runtime_inbox_query
@@ -184,7 +183,3 @@ class WorkLineRepository(BaseRepository[WorkLine]):
         if runtime_hold_count:
             return {"type": "runtime_hold", "count": runtime_hold_count, "status": "ACTIVE_BLOCKING"}
         return None
-
-
-# 创建单例
-workline_repository = WorkLineRepository()

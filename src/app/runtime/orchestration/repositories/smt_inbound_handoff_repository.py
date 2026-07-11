@@ -18,7 +18,6 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItem,
     SmtInboundHandoffSourceItemStatus,
 )
-from src.app.runtime.orchestration.repositories.runtime_inbox_repository import runtime_inbox_repository
 from src.app.sys.models.outbox import SystemOutbox
 from src.app.workline.models.workline import WorkLine
 from src.database.base_repository import BaseRepository
@@ -32,7 +31,7 @@ if TYPE_CHECKING:
 class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
     """SMT 入库 handoff demand/source item 数据访问层。"""
 
-    def __init__(self, *, runtime_inbox_query: RuntimeInboxQueryPort = runtime_inbox_repository) -> None:
+    def __init__(self, *, runtime_inbox_query: RuntimeInboxQueryPort) -> None:
         super().__init__(SmtInboundHandoffDemand)
         self.runtime_inbox_query = runtime_inbox_query
 
@@ -503,10 +502,4 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         return values
 
 
-smt_inbound_handoff_repository = SmtInboundHandoffRepository()
-
-
-__all__ = [
-    "SmtInboundHandoffRepository",
-    "smt_inbound_handoff_repository",
-]
+__all__ = ["SmtInboundHandoffRepository"]

@@ -43,10 +43,7 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItem,
     SmtInboundHandoffSourceItemStatus,
 )
-from src.app.runtime.orchestration.repositories.smt_inbound_handoff_repository import (
-    SmtInboundHandoffRepository,
-    smt_inbound_handoff_repository,
-)
+from src.app.runtime.orchestration.repository_wiring import smt_inbound_handoff_repository
 from src.app.runtime.orchestration.services.inbox.inbox_service import (
     WorklineInboxService,
     inbox_service,
@@ -64,6 +61,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.handling.services import HandlingOperationService
+    from src.app.runtime.orchestration.repositories.smt_inbound_handoff_repository import SmtInboundHandoffRepository
 
 
 _FULL_BOX_EXCHANGE_OPERATION_TYPE = "SINGLE_LAYER_FULL_BOX_EXCHANGE"
@@ -1421,7 +1419,7 @@ class SmtInboundHandoffService:
         now: Any,
     ) -> str | None:
         from src.app.device.models.command import CommandResult, CommandStatus, DeviceCommand
-        from src.app.runtime.orchestration.consumers.runtime_inbox_repository import (
+        from src.app.runtime.orchestration.repositories.runtime_inbox_repository import (
             runtime_inbox_repository,
         )
 

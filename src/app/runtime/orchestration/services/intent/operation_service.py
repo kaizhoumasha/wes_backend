@@ -34,11 +34,11 @@ from src.app.runtime.orchestration.repositories import (
 from src.app.runtime.orchestration.repositories.inbox_repository import WorklineInboxRepository  # noqa: TC001
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository  # noqa: TC001
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository  # noqa: TC001
+from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.models.workline import WorkLineRunMode
-from src.app.workline.repositories import workline_repository
 from src.app.workline.repositories.workline_repository import WorkLineRepository  # noqa: TC001
 from src.app.workline.trace_context import TraceContext
 from src.core.base_service import BaseService

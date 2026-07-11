@@ -12,11 +12,11 @@ from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldType
 from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
+from src.app.runtime.orchestration.repository_wiring import workline_repository as default_workline_repository
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.models.safety import WorklineSafetyIncident, WorklineSafetyIncidentStatus
 from src.app.workline.repositories.safety_incident_repository import WorklineSafetyIncidentRepository
-from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.core.logger import logger
 from src.utils.timezone import timezone
 
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.device.services.device_service import DeviceService
+    from src.app.workline.repositories.workline_repository import WorkLineRepository
 
 
 class WorkLineSafetyBlocked(RuntimeError):
@@ -131,7 +132,7 @@ class WorkLineSafetyService:
     ) -> None:
         """初始化安全服务依赖。"""
 
-        self.workline_repository = workline_repository or WorkLineRepository()
+        self.workline_repository = workline_repository or default_workline_repository
         self.incident_repository = incident_repository or WorklineSafetyIncidentRepository()
         self.session_repository = session_repository or WorklineSessionRepository()
         self.system_outbox_repository = system_outbox_repository or SystemOutboxRepository()

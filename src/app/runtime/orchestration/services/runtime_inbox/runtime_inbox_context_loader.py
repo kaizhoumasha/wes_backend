@@ -181,11 +181,11 @@ async def load_related_entities(
     from src.app.device.repositories import DeviceRepository
     from src.app.device.repositories.command_repository import DeviceCommandRepository
     from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
+    from src.app.runtime.orchestration.repository_wiring import workline_repository
     from src.app.runtime.orchestration.services.session.session_resolver import session_resolver
-    from src.app.workline.repositories import WorkLineRepository
 
     session_repo = WorklineSessionRepository()
-    workline_repo = WorkLineRepository()
+    workline_repo = workline_repository
     device_repo = DeviceRepository()
     command_repo = DeviceCommandRepository()
     session_id = _canonical_workline_session_id(inbox)

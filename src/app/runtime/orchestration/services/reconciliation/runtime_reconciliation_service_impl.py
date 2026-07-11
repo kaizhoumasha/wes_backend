@@ -44,6 +44,7 @@ from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
     runtime_hold_repository as default_runtime_hold_repository,
 )
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
+from src.app.runtime.orchestration.repository_wiring import workline_repository as default_workline_repository
 from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
     runtime_hold_creation_service as default_runtime_hold_creation_service,
 )
@@ -60,7 +61,6 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
 from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
-from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 from src.core.logger import logger
 from src.utils.timezone import timezone
@@ -69,6 +69,7 @@ from src.utils.value_normalization import as_dict, enum_str
 if TYPE_CHECKING:
     from src.app.runtime.orchestration.models.inbox import WorklineInbox
     from src.app.sys.models import SystemOutbox
+    from src.app.workline.repositories.workline_repository import WorkLineRepository
 
 
 from src.app.runtime.orchestration.services.hold.runtime_hold_query_service import (
@@ -169,7 +170,7 @@ class WorklineRuntimeReconciliationService:
         workline_status_projection_service: Any | None = None,
     ) -> None:
         self.session_repository = session_repository or WorklineSessionRepository()
-        self.workline_repository = workline_repository or WorkLineRepository()
+        self.workline_repository = workline_repository or default_workline_repository
         self.system_outbox_repository = system_outbox_repository or SystemOutboxRepository()
         self.device_service = device_service or DeviceService()
         self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
