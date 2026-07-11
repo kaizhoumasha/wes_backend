@@ -23,7 +23,7 @@ from __future__ import annotations
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from loguru import logger
 
@@ -54,6 +54,8 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
     WriteBackState,
     _is_late_or_duplicate_command_result_for_session,
     _payload_for_inbox,
+    _record_duplicate_entry_archive_timeline,
+    _record_late_command_result_archive_timeline,
     _session_status_value,
     _session_write_snapshot,
 )
@@ -318,7 +320,7 @@ class RuntimeInboxProcessorBridge:
                 inbox_kind=inbox_kind_value,
             )
             if routing_outcome.estop_event:
-                _ = await _handle_estop(
+                estop_processed = await _handle_estop(
                     db,
                     inbox=inbox,
                     inbox_pk=inbox_pk,
@@ -331,7 +333,10 @@ class RuntimeInboxProcessorBridge:
                     inbox_service=self.inbox_service,
                 )
                 await db.commit()
-                result["success"] += 1
+                if estop_processed:
+                    result["success"] += 1
+                else:
+                    result["failed"] += 1
                 result["processed"] += 1
                 return result
             if routing_outcome.timer_timeout_event:
@@ -376,6 +381,14 @@ class RuntimeInboxProcessorBridge:
 
             # ========== Stage 1c: duplicate / late detection ==========
             if _is_duplicate_entry_event(inbox=inbox, payload=payload, session=session, workline=workline):
+                await _record_duplicate_entry_archive_timeline(
+                    db,
+                    session=session,
+                    workline=workline,
+                    inbox=inbox,
+                    payload=payload,
+                    reason="SESSION_ALREADY_IN_PROGRESS_OR_TERMINAL",
+                )
                 _ = await self.inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
                 await db.commit()
                 result["success"] += 1
@@ -388,6 +401,15 @@ class RuntimeInboxProcessorBridge:
                 session=session,
                 command=command,
             ):
+                await _record_late_command_result_archive_timeline(
+                    db,
+                    session=session,
+                    workline=workline,
+                    inbox=inbox,
+                    command=command,
+                    payload=payload,
+                    reason="COMMAND_RESULT_NO_LONGER_MATCHES_SESSION_WAIT",
+                )
                 _ = await self.inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
                 await db.commit()
                 result["success"] += 1
@@ -653,7 +675,7 @@ async def _handle_estop(
     command: Any,
     processor_token: str,
     inbox_service: RuntimeInboxService,
-) -> int | None:
+) -> bool:
     """ESTOP_PRESSED 急停处理 (与 InboxBatchProcessor 行为等价)."""
     from src.app.runtime.orchestration.services.inbox.inbox_batch_processor import (  # noqa: F401
         _assert_workline_accepting_runtime_event,
@@ -680,11 +702,11 @@ async def _handle_estop(
             error_message=error_msg,
             retryable=False,
         )
-        return None
+        return False
 
     from src.app.workline.services.safety_service import workline_safety_service
 
-    incident = await workline_safety_service.handle_estop(
+    _ = await workline_safety_service.handle_estop(
         db,
         workline_id=workline_pk,
         source_inbox_id=inbox_pk,
@@ -693,7 +715,7 @@ async def _handle_estop(
         trigger_payload=payload,
     )
     _ = await inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
-    return cast("int | None", getattr(incident, "id", None))
+    return True
 
 
 async def _handle_timer_timeout(db: Any, *, inbox: Any, processor_token: str) -> None:

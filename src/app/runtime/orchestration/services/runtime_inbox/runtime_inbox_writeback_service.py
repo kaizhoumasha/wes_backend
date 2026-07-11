@@ -39,6 +39,7 @@ from src.app.runtime.orchestration.services.session.session_resolver import (
 from src.app.workline.services.write_back_service import orchestrator_write_back_service
 from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import (
+    canonical_event_type,
     optional_int,
     string_value,
 )
@@ -181,6 +182,60 @@ async def _record_late_command_result_archive_timeline(
         _ = await add_timeline_with_sequence(db, timeline, seq_no=0)
     except Exception as exc:
         logger.warning(f"迟到命令结果归档 timeline 记录失败: {exc}")
+
+
+async def _record_duplicate_entry_archive_timeline(
+    db: Any,
+    *,
+    session: Any,
+    workline: Any,
+    inbox: Any,
+    payload: dict[str, Any],
+    reason: str,
+) -> None:
+    """为重复入口事件归档显式 timeline 证据。"""
+    from src.app.runtime.orchestration.models.timeline import (
+        TimelineActionType,
+        TimelineActorType,
+        TimelineStage,
+        TimelineStatus,
+        WorklineTimeline,
+    )
+    from src.app.runtime.orchestration.services.trace.timeline_sequence_service import (
+        add_timeline_with_sequence,
+    )
+    from src.utils.timezone import timezone
+    from src.utils.value_normalization import optional_str, resolve_entity_id
+
+    session_id = resolve_entity_id(session)
+    workline_id = resolve_entity_id(workline) or optional_int(getattr(session, "workline_id", None))
+    if session_id is None or workline_id is None:
+        return
+    timeline = WorklineTimeline(
+        session_id=session_id,
+        workline_id=workline_id,
+        trace_id=optional_str(getattr(inbox, "trace_id", None)) or optional_str(getattr(session, "trace_id", None)),
+        seq_no=0,
+        occurred_at=timezone.now_for_db(),
+        stage=TimelineStage.INGEST,
+        action_type=TimelineActionType.EVENT_PROCESSED,
+        actor_type=TimelineActorType.ORCHESTRATOR,
+        actor_code="runtime-inbox-writeback",
+        status=TimelineStatus.SUCCESS,
+        message="DUPLICATE_ENTRY_ARCHIVED",
+        payload_json={
+            "reason": reason,
+            "event_type": canonical_event_type(payload),
+            "inbox_id": resolve_entity_id(inbox),
+            "session_status": _session_status_value(session),
+            "awaiting_device_command_code": getattr(session, "awaiting_device_command_code", None),
+        },
+        related_inbox_id=resolve_entity_id(inbox),
+    )
+    try:
+        _ = await add_timeline_with_sequence(db, timeline, seq_no=0)
+    except Exception as exc:
+        logger.warning(f"重复入口归档 timeline 记录失败: {exc}")
 
 
 def _payload_for_inbox(inbox: Any) -> dict[str, Any]:
@@ -366,6 +421,7 @@ __all__ = [
     "RuntimeInboxWriteBackService",
     "WriteBackState",
     "_is_late_or_duplicate_command_result_for_session",
+    "_record_duplicate_entry_archive_timeline",
     "_record_late_command_result_archive_timeline",
     "_result_requires_outbox_dispatch",
     "_session_status_value",
