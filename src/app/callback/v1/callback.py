@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from src.app.callback.models import (
     CallbackEventIngressResponse,
     CallbackExternalIngressResponse,
+    CallbackHTTPExceptionResponse,
     CallbackResultIngressResponse,
 )
 from src.app.callback.services import callback_ingress_service
@@ -46,6 +47,11 @@ def _enqueue_runtime_inbox_processing() -> None:
     "/result",
     response_model=CallbackResultIngressResponse,
     status_code=status.HTTP_200_OK,
+    responses={
+        409: {"model": CallbackResultIngressResponse, "description": "RuntimeInbox 幂等身份冲突"},
+        413: {"model": CallbackHTTPExceptionResponse, "description": "RuntimeInbox payload 超限"},
+        503: {"model": CallbackHTTPExceptionResponse, "description": "RuntimeInbox 关联暂不可用"},
+    },
     summary="任务结果回传",
     dependencies=[
         Depends(RequireAPIPermission("api:callback:result")),
@@ -72,6 +78,10 @@ async def callback_result(
     "/event",
     response_model=CallbackEventIngressResponse,
     status_code=status.HTTP_200_OK,
+    responses={
+        409: {"model": CallbackEventIngressResponse, "description": "RuntimeInbox 幂等身份冲突"},
+        413: {"model": CallbackHTTPExceptionResponse, "description": "RuntimeInbox payload 超限"},
+    },
     summary="设备事件上报",
     dependencies=[
         Depends(RequireAPIPermission("api:callback:event")),
@@ -98,6 +108,10 @@ async def callback_event(
     "/external",
     response_model=CallbackExternalIngressResponse,
     status_code=status.HTTP_200_OK,
+    responses={
+        409: {"model": CallbackExternalIngressResponse, "description": "RuntimeInbox 幂等身份冲突"},
+        413: {"model": CallbackHTTPExceptionResponse, "description": "RuntimeInbox payload 超限"},
+    },
     summary="外部系统回调",
     dependencies=[Depends(RequireAPIPermission("api:callback:event"))],
     description="库位分配、AGV 等外部系统异步回调入口",

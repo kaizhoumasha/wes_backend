@@ -102,6 +102,23 @@ class TestCallbackIngressRouteContracts:
 
             assert "fast_fail_check" not in route_dependency_names
 
+    def test_ingress_routes_publish_runtime_inbox_http_error_contracts(self) -> None:
+        """OpenAPI 必须公开真实 409/413/503，供生成式客户端按 HTTP 语义处理。"""
+        from main import app
+
+        paths = app.openapi()["paths"]
+        expected_statuses = {
+            "/api/v1/callback/result": {"200", "409", "413", "503"},
+            "/api/v1/callback/event": {"200", "409", "413"},
+            "/api/v1/callback/external": {"200", "409", "413"},
+        }
+
+        for path, expected in expected_statuses.items():
+            responses = paths[path]["post"]["responses"]
+            assert expected <= responses.keys()
+            for status_code in expected - {"200"}:
+                assert "application/json" in responses[status_code]["content"]
+
 
 class TestCallbackEnqueueFallback:
     @pytest.mark.asyncio
