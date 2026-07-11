@@ -142,8 +142,8 @@ async def test_accept_device_event_with_all_optional_args(db_session) -> None:
 
 
 @pytest.mark.asyncio
-async def test_accept_device_event_trace_id_falls_back_when_correlation_missing(db_session) -> None:
-    """trace_id 在 ExecutionCorrelation 查不到时, correlation_id 回退为 trace_id 自身。"""
+async def test_accept_device_event_orphan_trace_does_not_synthesize_correlation_id(db_session) -> None:
+    """trace_id 查不到 ExecutionCorrelation 时，不得写入受外键约束的 correlation_id。"""
 
     service = RuntimeInboxService()
 
@@ -156,7 +156,7 @@ async def test_accept_device_event_trace_id_falls_back_when_correlation_missing(
     )
 
     assert result.created is True
-    assert result.record.correlation_id == "trace-orphan-001"
+    assert result.record.correlation_id is None
 
 
 @pytest.mark.parametrize(
@@ -330,6 +330,23 @@ async def test_accept_internal_event_uses_explicit_correlation_id(db_session) ->
 
     assert result.created is True
     assert result.record.correlation_id == "corr-explicit-001"
+
+
+@pytest.mark.asyncio
+async def test_accept_internal_event_orphan_trace_does_not_synthesize_correlation_id(db_session) -> None:
+    """内部事件的孤立 trace_id 只用于追踪，不得冒充 ExecutionCorrelation 外键。"""
+
+    service = RuntimeInboxService()
+
+    result = await service.accept_internal_event(
+        db_session,
+        event_type="SMT_SOURCE_PICK_REQUESTED",
+        payload_json={"source_item_id": 101},
+        trace_id="evt-smt-source-pick-101",
+    )
+
+    assert result.record.trace_id == "evt-smt-source-pick-101"
+    assert result.record.correlation_id is None
 
 
 @pytest.mark.asyncio

@@ -4,8 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxPayloadTooLarge
 from src.core.response.response_code import ResourceErrorCode
 from tests.api import callback_test_support
 from tests.api.callback_test_support import (
@@ -32,6 +34,65 @@ def build_request() -> RequestFactory:
 
 
 class TestCallbackResultAPI:
+    @pytest.mark.asyncio
+    async def test_callback_result_payload_too_large_returns_413_with_limited_evidence(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        """result payload 超限应返回 413，审计不得复制原始 data。"""
+        existing_command = SimpleNamespace(
+            trace_id="trace-result-limit",
+            device_id=7,
+            contract_version="1.0",
+        )
+        context = SimpleNamespace(
+            device=SimpleNamespace(id=7, capabilities_json={"supports_result_callback": True}),
+            workline=SimpleNamespace(is_active=True),
+            contract_version="1.0",
+        )
+
+        with (
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_command_service.get_command_by_code",
+                new=AsyncMock(return_value=existing_command),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.device_context_service.resolve",
+                new=AsyncMock(return_value=(context, None)),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_orchestration_service.process_result",
+                new=AsyncMock(side_effect=RuntimeInboxPayloadTooLarge(actual_bytes=2048, max_bytes=1024)),
+            ),
+            patch(
+                "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
+                new=AsyncMock(),
+            ) as callback_log,
+            patch(
+                "src.app.callback.services.callback_ingress_service.audit_log_service.create_audit_log",
+                new=AsyncMock(),
+            ) as audit_log,
+        ):
+            from src.app.callback.v1.callback import callback_result
+
+            with pytest.raises(HTTPException) as exc_info:
+                await callback_result(
+                    request=build_request(
+                        body=create_result_payload(data={"secret": "x" * 2048}),
+                        path="/api/v1/callback/result",
+                    ),
+                    db=db_session,
+                )
+
+        assert exc_info.value.status_code == 413
+        logged_body = callback_log.await_args.kwargs["request_body"]
+        audited_body = audit_log.await_args.kwargs["args"]
+        assert logged_body == audited_body
+        assert logged_body["actual_bytes"] == 2048
+        assert logged_body["max_bytes"] == 1024
+        assert "data" not in logged_body
+
     @pytest.mark.asyncio
     async def test_callback_result_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
         existing_command = SimpleNamespace(

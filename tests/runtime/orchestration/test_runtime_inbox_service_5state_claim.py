@@ -64,7 +64,7 @@ def _make_runtime_inbox_record(
 
 
 @pytest.mark.asyncio
-async def test_claim_received_returns_claim_with_new_token() -> None:
+async def test_claim_received_returns_claim_with_new_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """claim_received_for_processing 接收 RECEIVED 行，生成新 processor_token。"""
     service = runtime_inbox_service_module.runtime_inbox_service
 
@@ -99,7 +99,7 @@ async def test_claim_received_returns_claim_with_new_token() -> None:
             )
             return [claim_data]
 
-    service.repository = _FakeRepo()
+    monkeypatch.setattr(service, "repository", _FakeRepo())
 
     claims = await service.claim_for_processing(
         db=AsyncMock(),  # type: ignore[arg-type]
@@ -123,7 +123,7 @@ async def test_claim_received_returns_claim_with_new_token() -> None:
 
 
 @pytest.mark.asyncio
-async def test_claim_received_picks_up_stale_processing_rows() -> None:
+async def test_claim_received_picks_up_stale_processing_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     """stale PROCESSING 行（lease_until < now）应该被新 claim 接管。"""
     service = runtime_inbox_service_module.runtime_inbox_service
 
@@ -149,7 +149,7 @@ async def test_claim_received_picks_up_stale_processing_rows() -> None:
         ) -> list[dict[str, Any]]:
             return [claim_data]
 
-    service.repository = _FakeRepo()
+    monkeypatch.setattr(service, "repository", _FakeRepo())
 
     claims = await service.claim_for_processing(
         db=AsyncMock(),  # type: ignore[arg-type]
@@ -168,7 +168,7 @@ async def test_claim_received_picks_up_stale_processing_rows() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mark_processed_writes_terminal_state() -> None:
+async def test_mark_processed_writes_terminal_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """mark_processed 调 claim_repo.update_terminal_state(target=PROCESSED)。"""
     service = runtime_inbox_service_module.runtime_inbox_service
 
@@ -194,7 +194,7 @@ async def test_mark_processed_writes_terminal_state() -> None:
             )
             return True
 
-    service.repository = _FakeRepo()
+    monkeypatch.setattr(service, "repository", _FakeRepo())
 
     ok = await service.mark_processed(
         db=AsyncMock(),  # type: ignore[arg-type]
@@ -218,7 +218,7 @@ async def test_mark_processed_writes_terminal_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mark_processed_rejects_stale_token() -> None:
+async def test_mark_processed_rejects_stale_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """旧 token 写终态必须返回 false (fencing reject 指标)。"""
     service = runtime_inbox_service_module.runtime_inbox_service
 
@@ -234,7 +234,7 @@ async def test_mark_processed_rejects_stale_token() -> None:
         ) -> bool:
             return False
 
-    service.repository = _FakeRepo()
+    monkeypatch.setattr(service, "repository", _FakeRepo())
 
     ok = await service.mark_processed(
         db=AsyncMock(),  # type: ignore[arg-type]
@@ -251,7 +251,7 @@ async def test_mark_processed_rejects_stale_token() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mark_failed_writes_terminal_state() -> None:
+async def test_mark_failed_writes_terminal_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """mark_failed(retryable=False) 调 claim_repo 写 DEAD_LETTER。"""
     service = runtime_inbox_service_module.runtime_inbox_service
 
@@ -277,7 +277,7 @@ async def test_mark_failed_writes_terminal_state() -> None:
             )
             return True
 
-    service.repository = _FakeRepo()
+    monkeypatch.setattr(service, "repository", _FakeRepo())
 
     # retryable=False 避免 db.execute (真实 DB)
     ok = await service.mark_failed(
@@ -303,7 +303,7 @@ async def test_mark_failed_writes_terminal_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mark_dead_letter_writes_terminal_state() -> None:
+async def test_mark_dead_letter_writes_terminal_state(monkeypatch: pytest.MonkeyPatch) -> None:
     """mark_dead_letter 调 claim_repo.update_terminal_state(target=DEAD_LETTER)。"""
     service = runtime_inbox_service_module.runtime_inbox_service
 
@@ -329,7 +329,7 @@ async def test_mark_dead_letter_writes_terminal_state() -> None:
             )
             return True
 
-    service.repository = _FakeRepo()
+    monkeypatch.setattr(service, "repository", _FakeRepo())
 
     ok = await service.mark_dead_letter(
         db=AsyncMock(),  # type: ignore[arg-type]
@@ -353,7 +353,7 @@ async def test_mark_dead_letter_writes_terminal_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_recover_stale_leases_resets_to_received() -> None:
+async def test_recover_stale_leases_resets_to_received(monkeypatch: pytest.MonkeyPatch) -> None:
     """recover_stale_leases 只委托 repository 的原子恢复入口。"""
     service = runtime_inbox_service_module.runtime_inbox_service
 
@@ -371,7 +371,7 @@ async def test_recover_stale_leases_resets_to_received() -> None:
             calls.append({"stale_after_seconds": stale_after_seconds, "limit": limit})
             return 3
 
-    service.repository = _FakeRepo()
+    monkeypatch.setattr(service, "repository", _FakeRepo())
 
     n = await service.recover_stale_leases(
         db=AsyncMock(),  # type: ignore[arg-type]

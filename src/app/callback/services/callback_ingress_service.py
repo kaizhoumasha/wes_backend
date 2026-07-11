@@ -1507,6 +1507,37 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             ),
         )
 
+    except RuntimeInboxPayloadTooLarge as exc:
+        logger.error(f"指令结果回调 RuntimeInbox payload 超限: {exc}")
+        oversized_evidence: JsonDict = {
+            "callback_type": "DEVICE_RESULT",
+            "command_code": command_code,
+            "device_code": device_code,
+            "trace_id": resolved_trace_id,
+            "event_id": _resolve_callback_event_id(callback_data),
+            "actual_bytes": exc.actual_bytes,
+            "max_bytes": exc.max_bytes,
+        }
+        await _log_callback_outcome(
+            db,
+            request,
+            callback_type="result",
+            subject_code=device_code,
+            request_body=oversized_evidence,
+            request_id=request_id,
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
+            response_status=413,
+            response_time_ms=_response_time_ms(start_time),
+            success=False,
+            record_audit=True,
+            audit_title="设备回调结果",
+            error_message=str(exc),
+            ingress_outcome=_INGRESS_OUTCOME_REJECTED,
+            failure_stage=_FAILURE_STAGE_ORCHESTRATION,
+        )
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except ValidationError as exc:
         logger.error(f"指令结果回调模型校验失败: {exc}")
         await _record_callback_diagnostic(
@@ -1943,6 +1974,37 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             ),
         )
 
+    except RuntimeInboxPayloadTooLarge as exc:
+        logger.error(f"设备事件上报 RuntimeInbox payload 超限: {exc}")
+        oversized_evidence: JsonDict = {
+            "callback_type": "DEVICE_EVENT",
+            "device_code": device_code,
+            "event_type": canonical_event_type,
+            "trace_id": _resolve_callback_trace_id(event_data),
+            "event_id": _resolve_callback_event_id(event_data),
+            "actual_bytes": exc.actual_bytes,
+            "max_bytes": exc.max_bytes,
+        }
+        await _log_callback_outcome(
+            db,
+            request,
+            callback_type="event",
+            subject_code=device_code,
+            request_body=oversized_evidence,
+            request_id=request_id,
+            trace_id=_resolve_callback_trace_id(event_data),
+            event_id=_resolve_callback_event_id(event_data),
+            causation_id=_resolve_callback_causation_id(event_data),
+            response_status=413,
+            response_time_ms=_response_time_ms(start_time),
+            success=False,
+            record_audit=True,
+            audit_title="设备事件上报",
+            error_message=str(exc),
+            ingress_outcome=_INGRESS_OUTCOME_REJECTED,
+            failure_stage=_FAILURE_STAGE_ORCHESTRATION,
+        )
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except Exception as exc:
         if isinstance(exc, (RuntimeInboxConflict, IdempotencyConflict)):
             logger.error(f"设备事件上报 RuntimeInbox 冲突: {exc}")

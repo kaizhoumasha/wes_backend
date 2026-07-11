@@ -476,8 +476,6 @@ class RuntimeInboxService:
         provider_code = self._derive_provider_code_for_device(device_code)
         source_event_id = event_id
         correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
-        if correlation_id is None and trace_id:
-            correlation_id = trace_id
 
         record_data: dict[str, Any] = {
             "kind": "DEVICE_EVENT",
@@ -533,7 +531,7 @@ class RuntimeInboxService:
 
         - provider_code 固定 "RUNTIME"。
         - 不做 source_event_id 幂等检查 (内部事件, source_event_id 可缺失)。
-        - correlation_id 缺省时按 trace_id 反查, 再回退 trace_id。
+        - correlation_id 缺省时按 trace_id 反查；未命中时保持为空，避免伪造外键。
         """
 
         if not isinstance(event_type, str) or not event_type:
@@ -543,8 +541,6 @@ class RuntimeInboxService:
 
         if correlation_id is None:
             correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
-        if correlation_id is None and trace_id:
-            correlation_id = trace_id
 
         record_data: dict[str, Any] = {
             "kind": "INTERNAL_EVENT",
