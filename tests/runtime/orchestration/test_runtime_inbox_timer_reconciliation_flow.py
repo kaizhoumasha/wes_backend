@@ -11,8 +11,9 @@ import pytest
 from sqlalchemy import select
 
 from src.app.device.models.command import CommandStatus
-from src.app.runtime.orchestration.execution_session import ExecutionSession
-from src.app.runtime.orchestration.models.session import SessionStatus
+from src.app.runtime.orchestration.models.inbox import InboxKind, SourceSystem, WorklineInbox
+from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
+from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.utils.timezone import timezone
 
@@ -38,42 +39,41 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
     command_repository_module = importlib.import_module("src.app.device.repositories.command_repository")
     legacy_inbox_service_module = importlib.import_module("src.app.runtime.orchestration.services.inbox.inbox_service")
 
-    execution_session = ExecutionSession(workline_id=45, manifest_version="manifest-v1", state="RUNNING")
-    db_session.add(execution_session)
+    runtime_session = WorklineSession(
+        session_code="session-runtime-timer-001",
+        workline_id=45,
+        plugin_key="test_workline_plugin",
+        run_mode=RunMode.SIMULATION,
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+    )
+    db_session.add(runtime_session)
     await db_session.flush()
-    assert execution_session.id is not None
+    assert runtime_session.id is not None
 
     now = timezone.now_for_db()
     deadline_at = now - timedelta(seconds=1)
     ack_received_at = now - timedelta(seconds=30)
     command = SimpleNamespace(
-        id=991,
+        id=None,
         command_code="CMD-RUNTIME-TIMER-001",
-        device_id=7,
+        device_id=None,
         correlation_id=None,
         status=CommandStatus.ACK_RECEIVED,
         ack_received_at=ack_received_at,
     )
-    runtime_session = SimpleNamespace(
-        id=execution_session.id,
-        workline_id=45,
-        trace_id="trace-runtime-timer-001",
-        status=SessionStatus.WAITING_DEVICE_RESULT,
-        current_wait_type="COMMAND_RESULT",
-        current_wait_timeout_seconds=300,
-        waiting_since=now - timedelta(seconds=400),
-        deadline_at=deadline_at,
-        awaiting_device_command_code=command.command_code,
-        reconciliation_state=None,
-        context_json={},
-        ended_at=None,
-    )
+    runtime_session.trace_id = "trace-runtime-timer-001"
+    runtime_session.current_wait_type = "COMMAND_RESULT"
+    runtime_session.current_wait_timeout_seconds = 300
+    runtime_session.waiting_since = now - timedelta(seconds=400)
+    runtime_session.deadline_at = deadline_at
+    runtime_session.awaiting_device_command_code = command.command_code
+    runtime_session.context_json = {}
     workline = SimpleNamespace(id=45)
 
     service = RuntimeInboxService()
     accepted = await service.accept_timer_timeout(
         db_session,
-        execution_session_id=execution_session.id,
+        session_id=runtime_session.id,
         workline_id=45,
         deadline_at=deadline_at,
         trace_id="trace-runtime-timer-001",
@@ -81,12 +81,12 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         wait_type="COMMAND_RESULT",
         awaiting_device_command_code=command.command_code,
         command_code=command.command_code,
-        device_id=7,
         device_code="ARM_07",
-        command_id=991,
         command_status=CommandStatus.ACK_RECEIVED.value,
         ack_received_at=ack_received_at,
     )
+    assert accepted.record.execution_session_id is None
+    assert accepted.record.payload_json["data"]["session_id"] == runtime_session.id
     await db_session.commit()
     claims = await service.claim_for_processing(
         db_session,
@@ -131,11 +131,6 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         "cancel_active_by_material_session",
         AsyncMock(return_value=0),
     )
-    monkeypatch.setattr(
-        workline_runtime_reconciliation_service.runtime_hold_creation_service,
-        "create_for_callback_deadline_expired",
-        AsyncMock(return_value=SimpleNamespace(id=9905)),
-    )
 
     class _CommandRepo:
         async def get_by_command_code(self, _db, _command_code):
@@ -158,7 +153,50 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
     assert stored.status == "PROCESSED"
     assert stored.processor_token == "runtime-timer-worker-001"
     assert stored.processed_at is not None
+    hold = (await db_session.execute(select(RuntimeHold))).scalar_one()
+    assert hold.source_inbox_id is None
+    assert hold.source_idempotency_key == f"callback-timeout:{runtime_session.id}:{stored.id}"
+    assert hold.evidence_snapshot_json["inbox_id"] == stored.id
     legacy_terminal_writer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_timeout_hold_persists_only_legacy_inbox_fk(db_session) -> None:
+    """Legacy caller 可保存旧 WorklineInbox FK，evidence id 与幂等键保持一致。"""
+
+    from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import RuntimeHoldCreationService
+
+    session = WorklineSession(
+        session_code="session-legacy-timer-001",
+        workline_id=45,
+        plugin_key="test_workline_plugin",
+        run_mode=RunMode.SIMULATION,
+        status=SessionStatus.MANUAL_HOLD,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    inbox = WorklineInbox(
+        kind=InboxKind.TIMER_TIMEOUT,
+        idempotency_key="legacy-timeout-inbox-001",
+        source_system=SourceSystem.SYSTEM,
+        session_id=session.id,
+        workline_id=45,
+        payload_json={"event_type": "TIMER_TIMEOUT", "data": {}},
+    )
+    db_session.add(inbox)
+    await db_session.flush()
+    assert inbox.id is not None
+
+    hold = await RuntimeHoldCreationService().create_for_callback_deadline_expired(
+        db_session,
+        session=session,
+        inbox=inbox,
+        source_inbox_id=inbox.id,
+    )
+
+    assert hold.source_inbox_id == inbox.id
+    assert hold.source_idempotency_key == f"callback-timeout:{session.id}:{inbox.id}"
+    assert hold.evidence_snapshot_json["inbox_id"] == inbox.id
 
 
 @pytest.mark.asyncio

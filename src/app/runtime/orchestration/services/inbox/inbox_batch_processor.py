@@ -936,6 +936,7 @@ class InboxBatchProcessor:
                         session_id=session_id,
                         inbox_id=inbox_pk,
                         payload=payload,
+                        legacy_source_inbox_id=inbox_pk,
                         correlation_id=string_value(getattr(inbox, "correlation_id", None)) or None,
                         trace_id=string_value(getattr(inbox, "trace_id", None)) or None,
                     )

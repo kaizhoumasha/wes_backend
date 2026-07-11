@@ -250,7 +250,7 @@ class TimeoutScanner:
                 # 幂等创建系统 RuntimeInbox timeout 消息
                 _ = await runtime_inbox_service.accept_timer_timeout(
                     db,
-                    execution_session_id=session_pk,
+                    session_id=session_pk,
                     workline_id=session.workline_id,
                     deadline_at=session.deadline_at,
                     trace_id=session.trace_id,

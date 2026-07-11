@@ -125,6 +125,7 @@ def _fit_runtime_identity(raw_value: str, *, max_length: int) -> str:
 
 def _runtime_claim_bucket_key(
     *,
+    session_id: int | None = None,
     execution_session_id: int | None = None,
     device_id: int | None = None,
     correlation_id: str | None = None,
@@ -137,7 +138,7 @@ def _runtime_claim_bucket_key(
     """按稳定业务身份生成 RuntimeInbox FIFO 桶键。"""
 
     candidates = (
-        ("session", execution_session_id),
+        ("session", session_id if session_id is not None else execution_session_id),
         ("device", device_id),
         ("correlation", correlation_id),
         ("workline", workline_id),
@@ -530,7 +531,8 @@ class RuntimeInboxService:
         self,
         db: AsyncSession,
         *,
-        execution_session_id: int,
+        session_id: int,
+        execution_session_id: int | None = None,
         workline_id: int,
         deadline_at: object | None = None,
         trace_id: str | None = None,
@@ -552,7 +554,7 @@ class RuntimeInboxService:
         wait_key = wait_token or "no-wait-token"
         command_key = awaiting_device_command_code or command_code or "no-command"
         source_event_id = _fit_runtime_identity(
-            f"timeout:{execution_session_id}:{deadline_key}:{wait_key}:{command_key}",
+            f"timeout:{session_id}:{deadline_key}:{wait_key}:{command_key}",
             max_length=160,
         )
         existing = await self.repository.get_by_source_event_identity(
@@ -565,7 +567,7 @@ class RuntimeInboxService:
             return RuntimeInboxAcceptResult(record=existing, created=False)
 
         payload_data = {
-            "session_id": execution_session_id,
+            "session_id": session_id,
             "workline_id": workline_id,
             "deadline_at": deadline_key,
             "wait_token": wait_token,
@@ -593,7 +595,7 @@ class RuntimeInboxService:
             "attempt_count": 0,
             "max_retries": 5,
             "claim_bucket_key": _runtime_claim_bucket_key(
-                execution_session_id=execution_session_id,
+                session_id=session_id,
                 device_id=device_id,
                 workline_id=workline_id,
                 command_id=command_id,

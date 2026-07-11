@@ -80,7 +80,7 @@ async def test_timeout_scanner_uses_runtime_inbox_acceptor_and_keeps_batch_stati
     }
     accept_timeout.assert_awaited_once_with(
         db,
-        execution_session_id=101,
+        session_id=101,
         workline_id=11,
         deadline_at=deadline_at,
         trace_id="trace-timeout-scan-001",

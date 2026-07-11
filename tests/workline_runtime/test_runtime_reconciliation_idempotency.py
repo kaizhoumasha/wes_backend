@@ -247,6 +247,7 @@ async def test_timer_timeout_registers_reconciliation_idempotency_with_command_c
             session_id=553,
             inbox_id=901,
             payload={"event_type": "TIMER_TIMEOUT", "data": inbox.payload_json},
+            legacy_source_inbox_id=None,
             correlation_id="corr-runtime-reconciliation-timer",
             trace_id="trace-timer-reconciliation",
         )
@@ -294,6 +295,7 @@ async def test_timer_timeout_returns_structured_ignored_result_without_terminal_
             session_id=553,
             inbox_id=901,
             payload={"event_type": "TIMER_TIMEOUT", "data": {"deadline_at": "2026-07-11T08:00:00"}},
+            legacy_source_inbox_id=None,
         )
 
     assert result.disposition == expected_disposition
@@ -328,6 +330,7 @@ async def test_timer_timeout_rejects_non_ack_command_evidence_without_terminal_w
             session_id=553,
             inbox_id=901,
             payload={"event_type": "TIMER_TIMEOUT", "data": inbox.payload_json},
+            legacy_source_inbox_id=None,
         )
 
     assert result.disposition == "EVIDENCE_STALE"

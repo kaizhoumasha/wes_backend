@@ -216,6 +216,7 @@ class WorklineRuntimeReconciliationService:
         session_id: int | None,
         inbox_id: int,
         payload: dict[str, Any],
+        legacy_source_inbox_id: int | None,
         correlation_id: str | None = None,
         trace_id: str | None = None,
     ) -> TimerTimeoutReconciliationResult:
@@ -304,6 +305,7 @@ class WorklineRuntimeReconciliationService:
             db,
             session=session,
             inbox=evidence,
+            source_inbox_id=legacy_source_inbox_id,
             command=command,
         )
         runtime_hold_id = _resolve_id(runtime_hold)

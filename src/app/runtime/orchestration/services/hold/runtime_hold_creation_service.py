@@ -47,6 +47,7 @@ class RuntimeHoldCreationService:
         *,
         session: Any,
         inbox: Any,
+        source_inbox_id: int | None,
         command: Any | None = None,
     ) -> RuntimeHold:
         """Callback deadline expired 时幂等创建 RuntimeHold。"""
@@ -75,7 +76,7 @@ class RuntimeHoldCreationService:
             source_kind="TIMER_TIMEOUT",
             source_reason=source_reason,
             source_idempotency_key=f"callback-timeout:{session_id}:{inbox_id}",
-            source_inbox_id=inbox_id,
+            source_inbox_id=source_inbox_id,
             source_command_id=command_id,
             source_device_id=device_id,
             evidence_snapshot_json={

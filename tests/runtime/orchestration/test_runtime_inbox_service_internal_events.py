@@ -538,12 +538,10 @@ async def test_accept_timer_timeout_writes_canonical_idempotent_runtime_inbox(db
     """TIMER_TIMEOUT 必须保存 canonical payload、完整路由证据和稳定 source identity。"""
 
     service = RuntimeInboxService()
-    session = ExecutionSession(workline_id=41, manifest_version="manifest-v1", state="RUNNING")
-    db_session.add(session)
-    await db_session.flush()
+    legacy_session_id = 941
 
     kwargs = {
-        "execution_session_id": session.id,
+        "session_id": legacy_session_id,
         "workline_id": 41,
         "deadline_at": "2026-07-11T08:00:00",
         "trace_id": "trace-timeout-001",
@@ -569,18 +567,20 @@ async def test_accept_timer_timeout_writes_canonical_idempotent_runtime_inbox(db
     assert record.kind == "TIMER_TIMEOUT"
     assert record.event_type == "TIMER_TIMEOUT"
     assert record.provider_code == "RUNTIME"
-    assert record.source_event_id == (f"timeout:{session.id}:2026-07-11T08:00:00:CMD-TIMEOUT-001:CMD-TIMEOUT-001")
-    assert record.execution_session_id == session.id
+    assert record.source_event_id == (
+        f"timeout:{legacy_session_id}:2026-07-11T08:00:00:CMD-TIMEOUT-001:CMD-TIMEOUT-001"
+    )
+    assert record.execution_session_id is None
     assert record.workline_id == 41
     assert record.device_id == 51
     assert record.command_id == 61
     assert record.trace_id == "trace-timeout-001"
-    assert record.claim_bucket_key == f"session:{session.id}"
+    assert record.claim_bucket_key == f"session:{legacy_session_id}"
     assert record.received_at == NOW_MS
     assert record.payload_json == {
         "event_type": "TIMER_TIMEOUT",
         "data": {
-            "session_id": session.id,
+            "session_id": legacy_session_id,
             "workline_id": 41,
             "deadline_at": "2026-07-11T08:00:00",
             "wait_token": "CMD-TIMEOUT-001",
@@ -593,3 +593,27 @@ async def test_accept_timer_timeout_writes_canonical_idempotent_runtime_inbox(db
             "ack_received_at": "2026-07-11T07:59:00",
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_accept_timer_timeout_keeps_legacy_and_execution_session_identities_separate(db_session) -> None:
+    """仅有真实 runtime 映射时写 execution FK，业务 identity 仍使用 legacy session。"""
+
+    execution_session = ExecutionSession(workline_id=41, manifest_version="manifest-v1", state="RUNNING")
+    db_session.add(execution_session)
+    await db_session.flush()
+    legacy_session_id = 1941
+
+    result = await RuntimeInboxService().accept_timer_timeout(
+        db_session,
+        session_id=legacy_session_id,
+        execution_session_id=execution_session.id,
+        workline_id=41,
+        deadline_at="2026-07-11T09:00:00",
+        wait_token="WAIT-MAPPED-001",
+    )
+
+    assert result.record.execution_session_id == execution_session.id
+    assert result.record.claim_bucket_key == f"session:{legacy_session_id}"
+    assert result.record.source_event_id.startswith(f"timeout:{legacy_session_id}:")
+    assert result.record.payload_json["data"]["session_id"] == legacy_session_id
