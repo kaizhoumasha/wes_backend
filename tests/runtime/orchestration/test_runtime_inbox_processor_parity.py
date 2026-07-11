@@ -33,6 +33,7 @@ class ParityCase:
     payload: dict[str, Any] | None = None
     session_status: str | None = "RUNNING"
     workline_present: bool = True
+    device_id: int | None = None
     awaiting_command: str | None = None
     current_wait_type: str | None = None
     failure_code: str | None = None
@@ -46,6 +47,9 @@ class ParityCase:
     expected_terminal: str | None = "processed"
     expected_error: str | None = None
     expected_diagnostic: str | None = None
+    expected_source_device_id: int | None = None
+    expected_late_command_id: int | None = None
+    expected_reconciliation: bool = False
 
 
 PARITY_CASES = (
@@ -59,6 +63,8 @@ PARITY_CASES = (
     ParityCase(
         name="scan_valid",
         payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "ABC123"}},
+        device_id=77,
+        expected_source_device_id=77,
     ),
     ParityCase(
         name="estop_missing_workline",
@@ -69,10 +75,18 @@ PARITY_CASES = (
         expected_error="ESTOP_PRESSED missing workline context",
     ),
     ParityCase(
+        name="estop_with_device_and_command",
+        payload={"event_type": "ESTOP_PRESSED", "data": {}},
+        device_id=77,
+        command_status="PENDING",
+        expected_source_device_id=77,
+    ),
+    ParityCase(
         name="timer_timeout",
         kind="TIMER_TIMEOUT",
         payload={"event_type": "TIMER_TIMEOUT", "data": {}},
         expected_terminal=None,
+        expected_reconciliation=True,
     ),
     ParityCase(
         name="missing_context",
@@ -134,6 +148,7 @@ PARITY_CASES = (
         session_status="COMPLETED",
         command_status="COMPLETED",
         expected_archive="LATE_COMMAND_RESULT_ARCHIVED",
+        expected_late_command_id=99,
     ),
     ParityCase(
         name="orchestrator_exception",
@@ -234,7 +249,9 @@ class _TerminalRecorder:
         return True
 
 
-def _build_entities(case: ParityCase) -> tuple[SimpleNamespace, object | None, object | None, object | None]:
+def _build_entities(
+    case: ParityCase,
+) -> tuple[SimpleNamespace, object | None, object | None, object | None, object | None]:
     inbox = SimpleNamespace(
         id=1,
         kind=case.kind,
@@ -246,7 +263,7 @@ def _build_entities(case: ParityCase) -> tuple[SimpleNamespace, object | None, o
         workline_id=20 if case.workline_present else None,
         session_id=10 if case.session_status is not None else None,
         execution_session_id=10 if case.session_status is not None else None,
-        device_id=None,
+        device_id=case.device_id,
         command_id=99 if case.command_status else None,
         attempt_count=0,
     )
@@ -263,10 +280,11 @@ def _build_entities(case: ParityCase) -> tuple[SimpleNamespace, object | None, o
             context_json=case.session_context or {},
         )
     workline = SimpleNamespace(id=20, plugin_key=case.plugin_key) if case.workline_present else None
+    device = SimpleNamespace(id=case.device_id, device_code="DEVICE-77") if case.device_id is not None else None
     command = None
     if case.command_status is not None:
         command = SimpleNamespace(id=99, command_code="CMD-001", status=case.command_status)
-    return inbox, session, workline, command
+    return inbox, session, workline, device, command
 
 
 def _as_tuple(result: dict[str, int]) -> tuple[int, int, int, int, int]:
@@ -284,19 +302,20 @@ async def _run_case(
     *,
     processor_kind: ProcessorKind,
     case: ParityCase,
-) -> tuple[dict[str, int], list[str], list[dict[str, Any]], list[dict[str, Any]]]:
-    inbox, session, workline, command = _build_entities(case)
+) -> tuple[dict[str, int], list[str], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    inbox, session, workline, device, command = _build_entities(case)
     db = _FakeDb()
     terminal = _TerminalRecorder(inbox)
     archives: list[str] = []
     diagnostics: list[dict[str, Any]] = []
+    interactions: list[dict[str, Any]] = []
 
     async def load_related(*args: object, **kwargs: object) -> dict[str, object]:
         _ = args, kwargs
         return {
             "session": session,
             "workline": workline,
-            "device": None,
+            "device": device,
             "command": command,
             "devices_by_role": {},
             "services": SimpleNamespace(),
@@ -308,8 +327,8 @@ async def _run_case(
         return (
             loaded["session"],
             loaded["workline"],
-            loaded["command"],
             loaded["device"],
+            loaded["command"],
             loaded["devices_by_role"],
             loaded["services"],
             loaded["safety_checked"],
@@ -331,11 +350,30 @@ async def _run_case(
         archives.append("DUPLICATE_ENTRY_ARCHIVED")
 
     async def record_late(*args: object, **kwargs: object) -> None:
-        _ = args, kwargs
+        _ = args
         archives.append("LATE_COMMAND_RESULT_ARCHIVED")
+        interactions.append({"kind": "late_archive", "command_id": getattr(kwargs.get("command"), "id", None)})
 
     async def timer_handler(*args: object, **kwargs: object) -> None:
-        _ = args, kwargs
+        _ = args
+        interactions.append(
+            {
+                "kind": "reconciliation",
+                "inbox_id": getattr(kwargs.get("inbox"), "id", None),
+                "processor_token": kwargs.get("processor_token"),
+            }
+        )
+
+    async def estop_handler(*args: object, **kwargs: object) -> object:
+        _ = args
+        interactions.append(
+            {
+                "kind": "estop",
+                "source_device_id": kwargs.get("source_device_id"),
+                "source_command_id": kwargs.get("source_command_id"),
+            }
+        )
+        return SimpleNamespace(id=123)
 
     effect = (
         RuntimeIntentEffectResult.resource_retry()
@@ -345,7 +383,13 @@ async def _run_case(
 
     class _WriteBack:
         async def write_back(self, *args: object, **kwargs: object) -> RuntimeIntentEffectResult:
-            _ = args, kwargs
+            _ = args
+            interactions.append(
+                {
+                    "kind": "writeback",
+                    "source_device_id": getattr(kwargs.get("source_device"), "id", None),
+                }
+            )
             return effect
 
     class _Orchestrator:
@@ -377,6 +421,10 @@ async def _run_case(
             "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_runtime_reconciliation_service.handle_timer_timeout",
             timer_handler,
         )
+        monkeypatch.setattr(
+            "src.app.workline.services.safety_service.workline_safety_service.handle_estop",
+            estop_handler,
+        )
         result = await InboxBatchProcessor(write_back_service=_WriteBack())._process_claimed_message(
             db,
             WorklineInboxClaim(
@@ -385,13 +433,13 @@ async def _run_case(
                 received_at=None,
                 session_id=inbox.session_id,
                 workline_id=inbox.workline_id,
-                device_id=None,
+                device_id=case.device_id,
                 kind=case.kind,
                 payload_json=case.payload or {},
                 trace_id=inbox.trace_id,
             ),
         )
-        return result, archives, terminal.actions, diagnostics
+        return result, archives, terminal.actions, diagnostics, interactions
 
     class _Delegate:
         async def process(self, *args: object, write_callback: object, **kwargs: object) -> OrchestratorResult:
@@ -402,6 +450,10 @@ async def _run_case(
     monkeypatch.setattr(bridge_module, "_record_duplicate_entry_archive_timeline", record_duplicate, raising=False)
     monkeypatch.setattr(bridge_module, "_record_late_command_result_archive_timeline", record_late, raising=False)
     monkeypatch.setattr(bridge_module, "_handle_timer_timeout", timer_handler)
+    monkeypatch.setattr(
+        "src.app.workline.services.safety_service.workline_safety_service.handle_estop",
+        estop_handler,
+    )
     processor = RuntimeInboxProcessorBridge(
         processor_service=_Delegate(),  # type: ignore[arg-type]
         writeback_service=RuntimeInboxWriteBackService(write_back_service=_WriteBack(), inbox_service=terminal),
@@ -409,7 +461,7 @@ async def _run_case(
         inbox_repository=_Repository(inbox),  # type: ignore[arg-type]
     )
     result = await processor.process_claimed(db, claim={"id": 1, "processor_token": "token-parity"})
-    return result, archives, terminal.actions, diagnostics
+    return result, archives, terminal.actions, diagnostics, interactions
 
 
 @pytest.mark.asyncio
@@ -421,7 +473,7 @@ async def test_processor_characterization_parity(
     case: ParityCase,
 ) -> None:
     """同一 characterization table 必须约束 legacy 与 three-stage 两个入口。"""
-    result, archives, terminal_actions, diagnostics = await _run_case(
+    result, archives, terminal_actions, diagnostics, interactions = await _run_case(
         monkeypatch,
         processor_kind=processor_kind,
         case=case,
@@ -439,3 +491,15 @@ async def test_processor_characterization_parity(
         assert case.expected_error.lower() in str(terminal_actions[0]["error"]).lower()
     if case.expected_diagnostic is not None:
         assert diagnostics[-1]["error_code"] == case.expected_diagnostic
+    if case.expected_source_device_id is not None:
+        source_calls = [call for call in interactions if call["kind"] in {"writeback", "estop"}]
+        assert source_calls[-1]["source_device_id"] == case.expected_source_device_id
+    if case.expected_late_command_id is not None:
+        late_calls = [call for call in interactions if call["kind"] == "late_archive"]
+        assert late_calls == [{"kind": "late_archive", "command_id": case.expected_late_command_id}]
+    reconciliation_calls = [call for call in interactions if call["kind"] == "reconciliation"]
+    assert reconciliation_calls == (
+        [{"kind": "reconciliation", "inbox_id": 1, "processor_token": "token-parity"}]
+        if case.expected_reconciliation
+        else []
+    )

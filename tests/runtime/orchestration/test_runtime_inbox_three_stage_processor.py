@@ -20,6 +20,9 @@ from src.app.runtime.orchestration.effect_result import (
     WriteBackDisposition,
 )
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
+    _load_related_entities,
+)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
     RuntimeInboxOrchestratorDelegate,
 )
@@ -149,6 +152,46 @@ class _EmptyDb:
 
     async def rollback(self) -> None:
         pass
+
+
+class TestRelatedEntitiesContract:
+    @pytest.mark.asyncio
+    async def test_wrapper_returns_device_before_command_with_distinct_sentinels(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """真实 legacy wrapper 合同固定为 session/workline/device/command。"""
+
+        class _DeviceSentinel:
+            pass
+
+        class _CommandSentinel:
+            pass
+
+        device = _DeviceSentinel()
+        command = _CommandSentinel()
+
+        async def legacy_loader(*args: object, **kwargs: object) -> dict[str, object]:
+            _ = args, kwargs
+            return {
+                "session": "session",
+                "workline": "workline",
+                "device": device,
+                "command": command,
+                "devices_by_role": {},
+                "services": "services",
+                "safety_checked": True,
+            }
+
+        monkeypatch.setattr(
+            "src.app.runtime.orchestration.services.inbox.inbox_batch_processor._load_related_entities",
+            legacy_loader,
+        )
+
+        loaded = await _load_related_entities(SimpleNamespace(), SimpleNamespace(id=1))
+
+        assert loaded[2] is device
+        assert loaded[3] is command
 
 
 class TestEstopTimerRouting:

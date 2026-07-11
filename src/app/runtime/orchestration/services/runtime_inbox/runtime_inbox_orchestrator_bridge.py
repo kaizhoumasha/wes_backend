@@ -289,8 +289,8 @@ class RuntimeInboxProcessorBridge:
             (
                 session,
                 workline,
-                command,
                 device,
+                command,
                 devices_by_role,
                 services,
                 safety_checked,
