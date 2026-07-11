@@ -10,6 +10,7 @@ import pytest
 from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from tests.support.runtime_inbox_processing_postgresql import (
+    RecordingTaskQueueGateway,
     assert_effects,
     assert_processed_terminal,
     claim,
@@ -36,7 +37,9 @@ class _CrashBeforeTerminalService(RuntimeInboxService):
 def test_claim_crash_recovers_with_new_owner_and_rejects_old_fence() -> None:
     """claim 提交后崩溃：新 owner 收敛，旧 token 不得写终态或重复 effect。"""
 
-    async def scenario(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
         service = RuntimeInboxService()
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
@@ -49,10 +52,12 @@ def test_claim_crash_recovers_with_new_owner_and_rejects_old_fence() -> None:
             await db.rollback()
             new_claim = await claim(db, service, token="it-crash-a-new-owner")
             assert new_claim["processor_token"] != old_token
+            assert queue_gateway.outbox_enqueues == []
             result = await processor(service).process_claimed(db, claim=new_claim)
             assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
             await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
             await assert_effects(db, seeded, expected_count=1)
+            assert queue_gateway.outbox_enqueues == [(None, 50)]
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
@@ -60,7 +65,9 @@ def test_claim_crash_recovers_with_new_owner_and_rejects_old_fence() -> None:
 def test_writeback_crash_rolls_back_effects_before_reprocessing_once() -> None:
     """effects 后、终态前崩溃必须整事务回滚；恢复重跑后只落一次副作用。"""
 
-    async def scenario(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
         real_service = RuntimeInboxService()
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
@@ -69,6 +76,8 @@ def test_writeback_crash_rolls_back_effects_before_reprocessing_once() -> None:
         with pytest.raises(_SimulatedWorkerCrash):
             async with session_factory() as crashed_db:
                 await processor(_CrashBeforeTerminalService()).process_claimed(crashed_db, claim=old_claim)
+
+        assert queue_gateway.outbox_enqueues == []
 
         async with session_factory() as db:
             await assert_effects(db, seeded, expected_count=0)
@@ -84,5 +93,6 @@ def test_writeback_crash_rolls_back_effects_before_reprocessing_once() -> None:
             assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
             await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
             await assert_effects(db, seeded, expected_count=1)
+            assert queue_gateway.outbox_enqueues == [(None, 50)]
 
     asyncio.run(with_temporary_runtime_database(scenario))

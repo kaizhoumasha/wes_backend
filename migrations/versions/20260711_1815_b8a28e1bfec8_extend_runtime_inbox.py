@@ -40,8 +40,6 @@ _COLUMNS: tuple[sa.Column, ...] = (
     sa.Column("failed_at", sa.BigInteger(), nullable=True),
 )
 
-_MILLISECOND_COLUMNS = ("next_retry_at", "lease_until")
-
 _INDEXES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("ix_wes_runtime_runtime_inbox_status_received", ("status", "received_at"), "status = 'RECEIVED'"),
     ("ix_wes_runtime_runtime_inbox_failed_retry_at", ("status", "next_retry_at"), "status = 'FAILED'"),
@@ -58,16 +56,6 @@ def upgrade() -> None:
     """扩展 canonical envelope、claim 字段与 hot-claim indexes。"""
     inspector = sa.inspect(op.get_bind())
     existing_columns = {column["name"] for column in inspector.get_columns("runtime_inbox", schema=RUNTIME_SCHEMA)}
-    for column_name in _MILLISECOND_COLUMNS:
-        if column_name in existing_columns:
-            op.alter_column(
-                "runtime_inbox",
-                column_name,
-                schema=RUNTIME_SCHEMA,
-                existing_type=sa.Integer(),
-                type_=sa.BigInteger(),
-                existing_nullable=True,
-            )
     for column in _COLUMNS:
         if column.name not in existing_columns:
             op.add_column("runtime_inbox", column, schema=RUNTIME_SCHEMA)
@@ -92,16 +80,6 @@ def downgrade() -> None:
     for name, _columns, _predicate in reversed(_INDEXES):
         if name in existing_indexes:
             op.drop_index(name, table_name="runtime_inbox", schema=RUNTIME_SCHEMA)
-
-    for column_name in reversed(_MILLISECOND_COLUMNS):
-        op.alter_column(
-            "runtime_inbox",
-            column_name,
-            schema=RUNTIME_SCHEMA,
-            existing_type=sa.BigInteger(),
-            type_=sa.Integer(),
-            existing_nullable=True,
-        )
 
     existing_columns = {column["name"] for column in inspector.get_columns("runtime_inbox", schema=RUNTIME_SCHEMA)}
     for column in reversed(_COLUMNS):

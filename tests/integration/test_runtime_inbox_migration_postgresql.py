@@ -18,6 +18,8 @@ if TYPE_CHECKING:
 
 REVISION_A = "b8a28e1bfec8"
 REVISION_B = "ec426c628516"
+REVISION_A_PARENT = "f0851c5bcfdb"
+MILLISECOND_VALUE = 1_783_699_200_123
 
 DEPENDENT_COLUMNS = {
     "workline_diagnostics": "inbox_id",
@@ -112,7 +114,9 @@ async def _foreign_key_targets(connection: asyncpg.Connection) -> dict[tuple[str
     }
 
 
-async def _assert_runtime_inbox_numeric_types(connection: asyncpg.Connection) -> None:
+async def _assert_runtime_inbox_numeric_types(
+    connection: asyncpg.Connection, *, include_revision_a_columns: bool = True
+) -> None:
     """所有迁移阶段都必须保持毫秒时间 BIGINT、重试计数 INTEGER。"""
 
     columns = await connection.fetch(
@@ -125,15 +129,40 @@ async def _assert_runtime_inbox_numeric_types(connection: asyncpg.Connection) ->
         """,
         ["received_at", "processed_at", "failed_at", "next_retry_at", "lease_until", "attempt_count", "max_retries"],
     )
-    assert {row["column_name"]: row["data_type"] for row in columns} == {
-        "received_at": "bigint",
-        "processed_at": "bigint",
-        "failed_at": "bigint",
+    expected_types = {
         "next_retry_at": "bigint",
         "lease_until": "bigint",
         "attempt_count": "integer",
         "max_retries": "integer",
     }
+    if include_revision_a_columns:
+        expected_types.update(received_at="bigint", processed_at="bigint", failed_at="bigint")
+    assert {row["column_name"]: row["data_type"] for row in columns} == expected_types
+
+
+async def _insert_millisecond_row(connection: asyncpg.Connection) -> int:
+    return await connection.fetchval(
+        """
+        INSERT INTO wes_runtime.runtime_inbox (
+            provider_code, event_type, status, attempt_count, max_retries,
+            next_retry_at, lease_until
+        ) VALUES ('pg-roundtrip', 'MILLISECONDS', 'FAILED', 1, 5, $1, $1)
+        RETURNING id
+        """,
+        MILLISECOND_VALUE,
+    )
+
+
+async def _assert_millisecond_row(connection: asyncpg.Connection, inbox_id: int) -> None:
+    values = await connection.fetchrow(
+        """
+        SELECT next_retry_at, lease_until
+        FROM wes_runtime.runtime_inbox
+        WHERE id = $1
+        """,
+        inbox_id,
+    )
+    assert tuple(values.values()) == (MILLISECOND_VALUE, MILLISECOND_VALUE)
 
 
 async def _assert_revision_b_schema(connection: asyncpg.Connection) -> None:
@@ -245,6 +274,25 @@ def test_runtime_inbox_revision_a_b_postgresql_roundtrip() -> None:
             try:
                 assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_A
                 await _assert_runtime_inbox_numeric_types(connection)
+                millisecond_inbox_id = await _insert_millisecond_row(connection)
+            finally:
+                await connection.close()
+
+            # Revision A 的父版本已直接使用 BIGINT；A → parent → A 必须保值且不发生窄化溢出。
+            run_alembic("downgrade", REVISION_A_PARENT, database_url=database_url)
+            connection = await connect(database)
+            try:
+                await _assert_runtime_inbox_numeric_types(connection, include_revision_a_columns=False)
+                await _assert_millisecond_row(connection, millisecond_inbox_id)
+            finally:
+                await connection.close()
+
+            run_alembic("upgrade", REVISION_A, database_url=database_url)
+            connection = await connect(database)
+            try:
+                await _assert_runtime_inbox_numeric_types(connection)
+                await _assert_millisecond_row(connection, millisecond_inbox_id)
+                await connection.execute("DELETE FROM wes_runtime.runtime_inbox WHERE id = $1", millisecond_inbox_id)
                 await _insert_legacy_references(connection)
             finally:
                 await connection.close()

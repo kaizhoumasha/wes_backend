@@ -13,8 +13,6 @@ from uuid import uuid4
 import asyncpg
 from sqlalchemy.engine import make_url
 
-from src.core.conf import settings
-
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -25,7 +23,10 @@ SAFE_DATABASE_PREFIX = "wes_tmp_runtime_inbox_"
 def database_url(database: str, *, sqlalchemy_driver: bool) -> str:
     """从显式 heavy-test URL 派生临时数据库连接串。"""
 
-    url = make_url(os.getenv("INTEGRATION_DATABASE_URL") or settings.DATABASE_URL)
+    integration_database_url = os.getenv("INTEGRATION_DATABASE_URL")
+    if not integration_database_url:
+        raise RuntimeError("RuntimeInbox heavy tests require an explicit INTEGRATION_DATABASE_URL")
+    url = make_url(integration_database_url)
     drivername = "postgresql+asyncpg" if sqlalchemy_driver else "postgresql"
     return url.set(drivername=drivername, database=database).render_as_string(hide_password=False)
 
@@ -37,7 +38,8 @@ async def connect(database: str) -> asyncpg.Connection:
 
 
 async def _drop_database(admin: asyncpg.Connection, database: str) -> None:
-    assert database.startswith(SAFE_DATABASE_PREFIX)
+    if not database.startswith(SAFE_DATABASE_PREFIX):
+        raise ValueError(f"Refusing to drop database without safe prefix: {database}")
     quoted_database = '"' + database.replace('"', '""') + '"'
     await admin.execute(f"DROP DATABASE IF EXISTS {quoted_database} WITH (FORCE)")
 

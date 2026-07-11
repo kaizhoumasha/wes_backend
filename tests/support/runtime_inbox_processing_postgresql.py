@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -52,6 +53,16 @@ class SeededScanFlow:
     workline_id: int
     arm_id: int
     trace_id: str
+
+
+@dataclass(slots=True)
+class RecordingTaskQueueGateway:
+    """记录出队唤醒请求，确保 heavy test 不接触真实 Celery broker。"""
+
+    outbox_enqueues: list[tuple[int | None, int]] = field(default_factory=list)
+
+    def enqueue_outbox(self, outbox_id: int | None = None, *, limit: int = 50) -> None:
+        self.outbox_enqueues.append((outbox_id, limit))
 
 
 def processor(service: RuntimeInboxService) -> RuntimeInboxProcessorBridge:
@@ -211,19 +222,22 @@ async def assert_processed_terminal(db: AsyncSession, *, inbox_id: int) -> None:
 
 
 async def with_temporary_runtime_database(
-    scenario: Callable[[async_sessionmaker[AsyncSession]], Awaitable[None]],
+    scenario: Callable[[async_sessionmaker[AsyncSession], RecordingTaskQueueGateway], Awaitable[None]],
 ) -> None:
     async with temporary_database() as (_database, database_url):
         run_alembic("upgrade", "head", database_url=database_url)
         engine = create_async_engine(database_url, pool_pre_ping=True)
         session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        queue_gateway = RecordingTaskQueueGateway()
         try:
-            await scenario(session_factory)
+            with patch("src.core.task_queue_gateway.task_queue_gateway", queue_gateway):
+                await scenario(session_factory, queue_gateway)
         finally:
             await engine.dispose()
 
 
 __all__ = [
+    "RecordingTaskQueueGateway",
     "SeededScanFlow",
     "assert_effects",
     "assert_processed_terminal",
