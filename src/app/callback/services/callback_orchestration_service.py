@@ -34,7 +34,6 @@ if TYPE_CHECKING:
     from src.app.callback.models import CallbackEventRequest
     from src.app.device.models.command import CommandCallbackResult
     from src.app.device.services import DeviceCommandService, DeviceService
-    from src.app.workline.services import WorklineInboxService
 
 from src.core.logger import logger
 from src.utils.timezone import timezone
@@ -429,13 +428,10 @@ class CallbackOrchestrationService:
         request_id: str | None,
         is_workline_event: bool,
         canonical_event_type: str,
-        # Plan Task 4: 删双写后 inbox_service / enqueue_processing 不再使用,
-        # 保留参数待调用方更新.
-        inbox_service: WorklineInboxService,  # noqa: ARG002
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
-        enqueue_processing: Callable[[], None] | None = None,  # noqa: ARG002
+        enqueue_processing: Callable[[], None] | None = None,
     ) -> EventCallbackOutcome:
         event_timestamp = event_request.timestamp
         if event_timestamp is None:
@@ -463,11 +459,7 @@ class CallbackOrchestrationService:
         if not runtime_inbox_result.created:
             return EventCallbackOutcome(trace_id=event_trace_id, is_duplicate=True)
 
-        # Plan Task 4: 删 WorklineInbox 双写. RuntimeInbox 已是唯一事实源.
-        # (formerly: if is_workline_event: ... create_device_event_inbox ...)
-
-        await db.commit()
-        await publish_deferred_sse_events(db)
+        await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
 
         return EventCallbackOutcome(
             trace_id=event_trace_id,

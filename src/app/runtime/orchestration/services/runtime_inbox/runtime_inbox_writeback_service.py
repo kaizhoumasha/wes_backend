@@ -298,8 +298,7 @@ class RuntimeInboxWriteBackService:
         """RuntimeInboxService 实例.
 
         终态写回 (mark_processed / mark_failed) 一律走 RuntimeInboxService,
-        作用于 RuntimeInbox 表的 lease_token fencing. 不再 fallback 到
-        legacy WorklineInboxService (Task 7c-5b 修复).
+        作用于 RuntimeInbox 表的 lease_token fencing.
         """
         if self._inbox_service is None:
             return runtime_inbox_service

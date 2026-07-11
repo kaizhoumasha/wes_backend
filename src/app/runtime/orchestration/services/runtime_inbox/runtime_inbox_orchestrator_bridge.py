@@ -13,7 +13,7 @@
   均由 RuntimeInbox-owned 三阶段服务承载。
 - 写终态: mark_processed / mark_failed / mark_dead_letter 走
   RuntimeInboxService (processor_token 作为 lease_token fencing, 作用于
-  RuntimeInbox 表, 不再 fallback 到 legacy WorklineInboxService).
+  RuntimeInbox 表，不存在跨表 fallback)。
 - 失败重试与超时不直接 raise, 全部转换成 ProcessResult 统计.
 """
 
@@ -182,7 +182,7 @@ class RuntimeInboxProcessorBridge:
 
         终态写回（mark_processed / mark_failed / mark_dead_letter）一律走
         RuntimeInboxService，作用于 RuntimeInbox 表的 processor_token fencing。
-        不再 fallback 到 legacy WorklineInboxService（Task 7c-5 修复）。
+        处理状态始终写回 RuntimeInboxService。
         """
         return self._inbox_service
 
@@ -191,7 +191,7 @@ class RuntimeInboxProcessorBridge:
         """RuntimeInboxRepository 实例。
 
         加载 RuntimeInbox ORM（get_by_id）走 RuntimeInboxRepository，
-        不再 fallback 到 legacy WorklineInboxRepository（Task 7c-5 修复）。
+        claim 与上下文加载始终使用 RuntimeInboxRepository。
         """
         return self._inbox_repository
 
@@ -928,7 +928,7 @@ async def _handle_timer_timeout(
         session_id=session_id,
         inbox_id=inbox_pk,
         payload=payload,
-        legacy_source_inbox_id=None,
+        source_inbox_id=inbox_pk,
         correlation_id=string_value(getattr(inbox, "correlation_id", None)) or None,
         trace_id=string_value(getattr(inbox, "trace_id", None)) or None,
     )

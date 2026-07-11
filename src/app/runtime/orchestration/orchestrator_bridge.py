@@ -60,7 +60,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from contextlib import AbstractAsyncContextManager
 
-    from src.app.runtime.orchestration.models.inbox import WorklineInbox
     from src.app.runtime.orchestration.models.session import WorklineSession
     from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
     from src.app.workline.models import WorkLine
@@ -636,7 +635,7 @@ class OrchestratorService:
         self,
         session: WorklineSession | None,
         workline: WorkLine | None,
-        inbox: WorklineInbox | RuntimeInbox | None,
+        inbox: RuntimeInbox | None,
         devices_by_role: dict[str, list[Any]],
         services: WorklineRuntimeServices,
         trace_id: str,
@@ -653,7 +652,7 @@ class OrchestratorService:
         Args:
             session: WorklineSession 实体
             workline: WorkLine 实体
-            inbox: WorklineInbox 实体
+            inbox: RuntimeInbox 实体
             devices_by_role: 按角色分组的设备映射
             services: 运行时领域服务容器
             trace_id: Trace ID
@@ -719,7 +718,7 @@ class OrchestratorService:
         Args:
             session: WorklineSession 实体
             workline: WorkLine 实体
-            inbox: WorklineInbox 实体
+            inbox: RuntimeInbox 实体
             devices_by_role: 按角色分组的设备映射
             services: 运行时领域服务容器
             trace_id: Trace ID
@@ -778,7 +777,7 @@ class OrchestratorService:
         Args:
             session: WorklineSession 实体
             workline: WorkLine 实体
-            inbox: WorklineInbox 实体
+            inbox: RuntimeInbox 实体
             devices_by_role: 按角色分组的设备映射
             services: 运行时领域服务容器
             trace_id: Trace ID

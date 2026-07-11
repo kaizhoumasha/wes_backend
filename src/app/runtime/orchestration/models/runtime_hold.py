@@ -119,8 +119,8 @@ class RuntimeHold(
     source_inbox_id: int | None = Field(
         default=None,
         index=True,
-        foreign_key="wes_biz.workline_inbox.id",
-        description="来源 Inbox ID",
+        foreign_key="wes_runtime.runtime_inbox.id",
+        description="来源 RuntimeInbox ID",
     )
     source_outbox_id: int | None = Field(
         default=None,

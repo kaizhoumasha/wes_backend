@@ -1639,7 +1639,7 @@ class RuntimeIntentEffectApplier:
         causation_id = payload.get("causation_id")
         workline_id = optional_int(getattr(ctx_map["workline"], "id", None))
 
-        # Task 7c-c-1: 移除 WorklineInbox 双写, RuntimeInbox 成为 device event 唯一事实源
+        # RuntimeInbox 是 device event 唯一事实源。
         # (accept_device_event 不做 source_event_id 幂等检查, 7c-a 已说明)。
         _ = await runtime_inbox_service.accept_device_event(
             ctx_map["db"],

@@ -54,10 +54,6 @@ class TestCallbackExternalAPI:
     async def test_callback_external_success(self, db_session: AsyncSession, build_request: RequestFactory) -> None:
         with (
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -81,7 +77,6 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["trace_id"] == "trace-agv-001"
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
@@ -135,10 +130,6 @@ class TestCallbackExternalAPI:
         }
         with (
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ),
@@ -158,7 +149,6 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_not_awaited()
         mock_enqueue.assert_called_once()
 
     @pytest.mark.asyncio
@@ -207,10 +197,6 @@ class TestCallbackExternalAPI:
     ) -> None:
         with (
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -232,7 +218,6 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "2004"
         assert _response_data(response)["ack"] is False
-        mock_create_inbox.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
         assert "callback_type is not allow-listed" in str(log_kwargs["error_message"])
@@ -251,10 +236,6 @@ class TestCallbackExternalAPI:
                 new=SimpleNamespace(admit=admission),
                 create=True,
             ),
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
@@ -279,7 +260,6 @@ class TestCallbackExternalAPI:
             callback_type="AGV_TASK_RESULT",
             direction="result",
         )
-        mock_create_inbox.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["failure_stage"] == "CONTRACT_VALIDATE"
         assert "未声明 result normalizer" in str(log_kwargs["error_message"])
@@ -292,10 +272,6 @@ class TestCallbackExternalAPI:
         build_request: RequestFactory,
     ) -> None:
         with (
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
@@ -321,7 +297,6 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "2004"
         assert _response_data(response)["ack"] is False
-        mock_create_inbox.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
         assert "source_system must match callback_type provider" in str(log_kwargs["error_message"])
@@ -335,14 +310,6 @@ class TestCallbackExternalAPI:
     ) -> None:
         rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
         with (
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(return_value=SimpleNamespace(id=321, trace_id="trace-generated-001")),
-            ) as mock_create_inbox,
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.mark_as_processed",
-                new=AsyncMock(),
-            ) as mock_mark_processed,
             patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
                 return_value=rack_task_service,
@@ -374,9 +341,7 @@ class TestCallbackExternalAPI:
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
         assert _response_data(response)["trace_id"] == "req-wms-no-trace"
-        mock_create_inbox.assert_not_awaited()
         rack_task_service.record_callback_from_external_http.assert_awaited_once()
-        mock_mark_processed.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["trace_id"] == "req-wms-no-trace"
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
@@ -388,10 +353,6 @@ class TestCallbackExternalAPI:
         build_request: RequestFactory,
     ) -> None:
         with (
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
@@ -414,7 +375,6 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "2004"
         assert _response_data(response)["ack"] is False
-        mock_create_inbox.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
@@ -429,14 +389,6 @@ class TestCallbackExternalAPI:
     ) -> None:
         rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
         with (
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(return_value=SimpleNamespace(id=321, trace_id="trace-wms-rack-success")),
-            ) as mock_create_inbox,
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.mark_as_processed",
-                new=AsyncMock(),
-            ) as mock_mark_processed,
             patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
                 return_value=rack_task_service,
@@ -466,9 +418,7 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_not_awaited()
         rack_task_service.record_callback_from_external_http.assert_awaited_once()
-        mock_mark_processed.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         mock_enqueue.assert_called_once()
@@ -498,10 +448,6 @@ class TestCallbackExternalAPI:
         payload.pop(missing_field)
         with (
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -520,7 +466,6 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "2004"
         assert _response_data(response)["ack"] is False
-        mock_create_inbox.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
@@ -554,10 +499,6 @@ class TestCallbackExternalAPI:
         payload.pop(missing_field)
         with (
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -576,7 +517,6 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "2004"
         assert _response_data(response)["ack"] is False
-        mock_create_inbox.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["failure_stage"] == "ENVELOPE_VALIDATE"
@@ -591,10 +531,6 @@ class TestCallbackExternalAPI:
     ) -> None:
         handling_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
         with (
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(return_value=SimpleNamespace(id=321, trace_id="trace-full-box-001")),
-            ) as mock_create_inbox,
             patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_handling_operation_service",
                 return_value=handling_service,
@@ -622,7 +558,6 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_not_awaited()
         handling_service.record_callback_from_external_http.assert_awaited_once()
         callback_kwargs = handling_service.record_callback_from_external_http.await_args.kwargs
         assert callback_kwargs["payload_json"]["exchange_status"] == "BUSINESS_COMPLETED"
@@ -639,14 +574,6 @@ class TestCallbackExternalAPI:
     ) -> None:
         rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
         with (
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(return_value=SimpleNamespace(id=321, trace_id="trace-wms-rack-success")),
-            ) as mock_create_inbox,
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.mark_as_processed",
-                new=AsyncMock(),
-            ) as mock_mark_processed,
             patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
                 return_value=rack_task_service,
@@ -678,9 +605,7 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_not_awaited()
         rack_task_service.record_callback_from_external_http.assert_awaited_once()
-        mock_mark_processed.assert_not_awaited()
         callback_kwargs = rack_task_service.record_callback_from_external_http.await_args.kwargs
         assert callback_kwargs["payload_json"]["dispatch_key"] == "external:smt:release-001:RACK_OPERATION:1"
         assert callback_kwargs["payload_json"]["status"] == "SUCCEEDED"
@@ -697,14 +622,6 @@ class TestCallbackExternalAPI:
     ) -> None:
         rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
         with (
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(return_value=SimpleNamespace(id=322, trace_id="trace-wms-rack-failed")),
-            ),
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.mark_as_processed",
-                new=AsyncMock(),
-            ) as mock_mark_processed,
             patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
                 return_value=rack_task_service,
@@ -741,7 +658,6 @@ class TestCallbackExternalAPI:
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
         rack_task_service.record_callback_from_external_http.assert_awaited_once()
-        mock_mark_processed.assert_not_awaited()
         callback_kwargs = rack_task_service.record_callback_from_external_http.await_args.kwargs
         assert callback_kwargs["payload_json"]["task_status"] == "FAILED"
         assert callback_kwargs["payload_json"]["reason_code"] == "RCS_RACK_OPERATION_FAILED"
@@ -759,10 +675,6 @@ class TestCallbackExternalAPI:
         duplicate_error.existing_inbox = SimpleNamespace(id=99, trace_id="trace-wms-001")  # type: ignore[attr-defined]
         rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
         with (
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(side_effect=duplicate_error),
-            ) as mock_create_inbox,
             patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
                 return_value=rack_task_service,
@@ -794,7 +706,6 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_not_awaited()
         rack_task_service.record_callback_from_external_http.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
@@ -845,14 +756,6 @@ class TestCallbackExternalAPI:
         )
         with (
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(return_value=SimpleNamespace(id=421, trace_id="trace-wms-rack-op")),
-            ) as mock_create_inbox,
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.mark_as_processed",
-                new=AsyncMock(),
-            ),
-            patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._resolve_rack_task_service",
                 return_value=rack_task_service,
             ),
@@ -879,7 +782,6 @@ class TestCallbackExternalAPI:
             f"H4 边界应接受 WMS 协议字段, 实际 code={response.get('code')}: {response.get('message', '')}"
         )
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_not_awaited()
         # 验证 H4 失败原因码没出现在日志中 (即顶层字段未被拒绝)
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs.get("reason_code") != "CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED"
@@ -896,10 +798,6 @@ class TestCallbackExternalAPI:
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_external_callback",
                 new=AsyncMock(return_value=SimpleNamespace(created=False, record=SimpleNamespace(id=903))),
             ),
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
@@ -920,7 +818,6 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "duplicate"
-        mock_create_inbox.assert_not_awaited()
         mock_enqueue.assert_not_called()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "DUPLICATE"
@@ -948,10 +845,6 @@ class TestCallbackExternalAPI:
                 ),
             ),
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_external_http_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -970,7 +863,6 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == ResourceErrorCode.CONFLICT.code
         assert _response_data(response)["ack"] is False
-        mock_create_inbox.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
         assert log_kwargs["failure_stage"] == "ORCHESTRATION"

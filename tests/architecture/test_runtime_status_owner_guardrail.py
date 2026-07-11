@@ -150,13 +150,27 @@ def test_runtime_status_writes_are_centralized_in_projection_service() -> None:
     violations: list[str] = []
     for rel_path in sorted(Path("src/app").glob("**/*.py")):
         path = REPO_ROOT / rel_path
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(rel_path))
+        try:
+            source = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # 其它 guardrail 会短暂创建并删除违规 fixture；不应把 collection 缓存转成竞态。
+            source = None
+        if source is None:
+            continue
+        tree = ast.parse(source, filename=str(rel_path))
         if rel_path == PROJECTION_SERVICE:
             continue
         lines = _direct_runtime_status_writes(tree)
         violations.extend(f"{rel_path}:{line}" for line in lines)
 
     assert not violations, "WorkLine 运行态直接写入必须集中到 projection service:\n  " + "\n  ".join(violations)
+
+
+def test_runtime_status_scan_tolerates_disappearing_guardrail_fixture(monkeypatch) -> None:
+    missing = Path("src/app/runtime/orchestration/services/_deleted_guardrail_fixture.py")
+    monkeypatch.setattr(Path, "glob", lambda _self, _pattern: iter((missing,)))
+
+    test_runtime_status_writes_are_centralized_in_projection_service()
 
 
 def test_workline_model_no_longer_declares_runtime_status_column() -> None:

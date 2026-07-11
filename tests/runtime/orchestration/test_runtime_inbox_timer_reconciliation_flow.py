@@ -12,7 +12,6 @@ from sqlalchemy import select
 
 from src.app.device.models.command import CommandStatus
 from src.app.runtime.orchestration.execution_session import ExecutionSession
-from src.app.runtime.orchestration.models.inbox import InboxKind, SourceSystem, WorklineInbox
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
@@ -38,7 +37,6 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl"
     )
     command_repository_module = importlib.import_module("src.app.device.repositories.command_repository")
-    legacy_inbox_service_module = importlib.import_module("src.app.runtime.orchestration.services.inbox.inbox_service")
 
     runtime_session = WorklineSession(
         id=1001,
@@ -160,8 +158,6 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
     monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", _CommandRepo)
     monkeypatch.setattr(reconciliation_module, "add_timeline_with_sequence", AsyncMock())
     monkeypatch.setattr(reconciliation_module.workline_diagnostic_service, "record_event", AsyncMock())
-    legacy_terminal_writer = AsyncMock()
-    monkeypatch.setattr(legacy_inbox_service_module.inbox_service, "mark_as_processed", legacy_terminal_writer)
 
     result = await RuntimeInboxProcessorBridge(inbox_service=service).process_claimed(
         db_session,
@@ -175,7 +171,7 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
     assert stored.processor_token == "runtime-timer-worker-001"
     assert stored.processed_at is not None
     hold = (await db_session.execute(select(RuntimeHold))).scalar_one()
-    assert hold.source_inbox_id is None
+    assert hold.source_inbox_id == stored.id
     assert hold.source_idempotency_key == f"callback-timeout:runtime-inbox:{runtime_session.id}:{stored.id}"
     assert hold.evidence_snapshot_json["inbox_id"] == stored.id
     assert hold.evidence_snapshot_json["inbox_store"] == "runtime_inbox"
@@ -193,123 +189,6 @@ async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(
         material_session_id=runtime_session.id,
         reason="CALLBACK_DEADLINE_EXPIRED",
     )
-    legacy_terminal_writer.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_legacy_timeout_hold_persists_only_legacy_inbox_fk(db_session) -> None:
-    """Legacy caller 可保存旧 WorklineInbox FK，evidence id 与幂等键保持一致。"""
-
-    from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import RuntimeHoldCreationService
-
-    session = WorklineSession(
-        session_code="session-legacy-timer-001",
-        workline_id=45,
-        plugin_key="test_workline_plugin",
-        run_mode=RunMode.SIMULATION,
-        status=SessionStatus.MANUAL_HOLD,
-    )
-    db_session.add(session)
-    await db_session.flush()
-    inbox = WorklineInbox(
-        kind=InboxKind.TIMER_TIMEOUT,
-        idempotency_key="legacy-timeout-inbox-001",
-        source_system=SourceSystem.SYSTEM,
-        session_id=session.id,
-        workline_id=45,
-        payload_json={"event_type": "TIMER_TIMEOUT", "data": {}},
-    )
-    db_session.add(inbox)
-    await db_session.flush()
-    assert inbox.id is not None
-
-    hold = await RuntimeHoldCreationService().create_for_callback_deadline_expired(
-        db_session,
-        session=session,
-        inbox=inbox,
-        source_inbox_id=inbox.id,
-    )
-
-    assert hold.source_inbox_id == inbox.id
-    assert hold.source_idempotency_key == f"callback-timeout:{session.id}:{inbox.id}"
-    assert hold.evidence_snapshot_json["inbox_id"] == inbox.id
-    assert hold.evidence_snapshot_json["inbox_store"] == "workline_inbox"
-
-
-@pytest.mark.asyncio
-async def test_timeout_hold_idempotency_separates_runtime_and_legacy_inbox_id_spaces(db_session) -> None:
-    """相同数值 ID 的 RuntimeInbox/WorklineInbox 必须各自创建并幂等复用 Hold。"""
-
-    from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import RuntimeHoldCreationService
-
-    session = WorklineSession(
-        session_code="session-cross-store-timer-001",
-        workline_id=45,
-        plugin_key="test_workline_plugin",
-        run_mode=RunMode.SIMULATION,
-        status=SessionStatus.MANUAL_HOLD,
-    )
-    db_session.add(session)
-    await db_session.flush()
-    shared_inbox_id = 7001
-    legacy_inbox = WorklineInbox(
-        id=shared_inbox_id,
-        kind=InboxKind.TIMER_TIMEOUT,
-        idempotency_key="legacy-cross-store-timeout-001",
-        source_system=SourceSystem.SYSTEM,
-        session_id=session.id,
-        workline_id=45,
-        payload_json={"event_type": "TIMER_TIMEOUT", "data": {"store": "legacy"}},
-    )
-    runtime_inbox = RuntimeInbox(
-        id=shared_inbox_id,
-        provider_code="SYSTEM",
-        event_type="TIMER_TIMEOUT",
-        source_event_id="runtime-cross-store-timeout-001",
-        payload_json={"event_type": "TIMER_TIMEOUT", "data": {"store": "runtime"}},
-    )
-    db_session.add_all([legacy_inbox, runtime_inbox])
-    await db_session.flush()
-
-    service = RuntimeHoldCreationService()
-    legacy_hold = await service.create_for_callback_deadline_expired(
-        db_session,
-        session=session,
-        inbox=legacy_inbox,
-        source_inbox_id=legacy_inbox.id,
-    )
-    legacy_replay = await service.create_for_callback_deadline_expired(
-        db_session,
-        session=session,
-        inbox=legacy_inbox,
-        source_inbox_id=legacy_inbox.id,
-    )
-    runtime_hold = await service.create_for_callback_deadline_expired(
-        db_session,
-        session=session,
-        inbox=runtime_inbox,
-        source_inbox_id=None,
-    )
-    runtime_replay = await service.create_for_callback_deadline_expired(
-        db_session,
-        session=session,
-        inbox=runtime_inbox,
-        source_inbox_id=None,
-    )
-
-    holds = list((await db_session.execute(select(RuntimeHold).order_by(RuntimeHold.id))).scalars().all())
-    assert len(holds) == 2
-    assert legacy_replay.id == legacy_hold.id
-    assert runtime_replay.id == runtime_hold.id
-    assert legacy_hold.id != runtime_hold.id
-    assert legacy_hold.source_idempotency_key == f"callback-timeout:{session.id}:{shared_inbox_id}"
-    assert runtime_hold.source_idempotency_key == (f"callback-timeout:runtime-inbox:{session.id}:{shared_inbox_id}")
-    assert legacy_hold.source_inbox_id == shared_inbox_id
-    assert runtime_hold.source_inbox_id is None
-    assert legacy_hold.evidence_snapshot_json["inbox_store"] == "workline_inbox"
-    assert runtime_hold.evidence_snapshot_json["inbox_store"] == "runtime_inbox"
-    assert legacy_hold.evidence_snapshot_json["inbox_id"] == shared_inbox_id
-    assert runtime_hold.evidence_snapshot_json["inbox_id"] == shared_inbox_id
 
 
 @pytest.mark.asyncio

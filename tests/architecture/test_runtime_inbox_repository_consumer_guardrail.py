@@ -1,4 +1,4 @@
-"""锁定 repository/UoW 消费者不再引用 legacy WorklineInbox。"""
+"""锁定 repository/UoW 消费者只使用 RuntimeInbox query port。"""
 
 import inspect
 from pathlib import Path
@@ -19,12 +19,10 @@ MIGRATED_FILES = (
 
 
 def test_repository_uow_consumers_have_no_legacy_workline_inbox_reference() -> None:
-    forbidden_tokens = ("WorklineInbox", "WorklineInboxRepository")
-
     for relative_path in MIGRATED_FILES:
         source = (REPOSITORY_ROOT / relative_path).read_text(encoding="utf-8")
-        for token in forbidden_tokens:
-            assert token not in source, f"{relative_path} 仍引用 legacy {token}"
+        assert "models.inbox" not in source
+        assert "repositories.inbox_repository" not in source
 
 
 def test_runtime_inbox_has_one_repository_owner() -> None:

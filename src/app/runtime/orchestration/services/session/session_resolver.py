@@ -8,7 +8,7 @@ Session 归属解析器
 
 根据 Inbox 类型和归属规则解析或创建 Session。
 
-规则（按 InboxKind）:
+规则（按 RuntimeInbox.kind）:
 - DEVICE_EVENT: 按 device_id + business_key 查找或创建
 - COMMAND_RESULT: 按 command_code -> awaiting_device_command_code 恢复 Session
 - EXTERNAL_HTTP: 优先按 dispatch_key -> rack task operation 恢复 Session，回退 outbox/trace_id
@@ -33,7 +33,6 @@ from src.app.runtime.capability_catalog import (
     resolve_workline_business_key,
 )
 from src.app.runtime.orchestration.business_identity_bridge import resolve_payload_display_identity
-from src.app.runtime.orchestration.models.inbox import InboxKind
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.repositories.session_repository import (
     WorklineSessionRepository,
@@ -47,16 +46,15 @@ from src.core.logger import logger
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
-    from src.app.runtime.orchestration.models.inbox import WorklineInbox
     from src.app.workline.models.workline import WorkLine
 
 _SESSION_ID_KINDS = {
-    InboxKind.TIMER_TIMEOUT,
-    InboxKind.MANUAL_HOLD,
-    InboxKind.MANUAL_RESUME,
-    InboxKind.MANUAL_CANCEL,
-    InboxKind.REPLAY_REQUEST,
-    InboxKind.INTERNAL_EVENT,
+    "TIMER_TIMEOUT",
+    "MANUAL_HOLD",
+    "MANUAL_RESUME",
+    "MANUAL_CANCEL",
+    "REPLAY_REQUEST",
+    "INTERNAL_EVENT",
 }
 
 # 无业务条码、但每次事件实例都必须独立归属的事件。
@@ -225,7 +223,7 @@ def reapply_pending_session_ingress_metadata(session: WorklineSession) -> bool:
     return True
 
 
-def _bind_reused_session_to_inbox(inbox: "WorklineInbox", session: WorklineSession) -> None:
+def _bind_reused_session_to_inbox(inbox: Any, session: WorklineSession) -> None:
     """复用已有 session 时，把 inbox trace 锚点对齐到 session 主链。"""
     session_trace_id = getattr(session, "trace_id", None)
     if isinstance(session_trace_id, str) and session_trace_id:
@@ -233,7 +231,7 @@ def _bind_reused_session_to_inbox(inbox: "WorklineInbox", session: WorklineSessi
 
 
 def _reuse_existing_session(
-    inbox: "WorklineInbox",
+    inbox: Any,
     session: WorklineSession,
     *,
     trace: TraceContext,
@@ -297,7 +295,7 @@ class SessionResolver:
     async def resolve_or_create(
         self,
         db: AsyncSession,
-        inbox: "WorklineInbox",
+        inbox: Any,
         workline: "WorkLine | None",
         devices_by_role: dict[str, list[Any]],
         *,
@@ -320,22 +318,22 @@ class SessionResolver:
         _ = devices_by_role
         kind = inbox.kind
 
-        if kind == InboxKind.DEVICE_EVENT:
+        if kind == "DEVICE_EVENT":
             if workline is None:
                 raise ValueError("workline is required for DEVICE_EVENT")
             return await self._resolve_device_event(db, inbox, workline)
-        if kind == InboxKind.COMMAND_RESULT:
+        if kind == "COMMAND_RESULT":
             return await self._resolve_command_result(db, inbox)
-        if kind == InboxKind.EXTERNAL_HTTP:
+        if kind == "EXTERNAL_HTTP":
             return await self._resolve_external_http(db, inbox)
         if kind in _SESSION_ID_KINDS:
             return await self._resolve_by_session_id(db, inbox, session_id=session_id)
-        raise ValueError(f"Unsupported InboxKind: {kind}")
+        raise ValueError(f"Unsupported RuntimeInbox kind: {kind}")
 
     async def _resolve_device_event(
         self,
         db: AsyncSession,
-        inbox: "WorklineInbox",
+        inbox: Any,
         workline: "WorkLine",
     ) -> WorklineSession:
         """处理 DEVICE_EVENT 类型的 Session 解析
@@ -430,7 +428,7 @@ class SessionResolver:
     async def _resolve_command_result(
         self,
         db: AsyncSession,
-        inbox: "WorklineInbox",
+        inbox: Any,
     ) -> WorklineSession:
         """处理 COMMAND_RESULT 类型的 Session 解析。"""
         payload_json = ensure_dict(inbox.payload_json)
@@ -461,7 +459,7 @@ class SessionResolver:
     async def _resolve_external_http(
         self,
         db: AsyncSession,
-        inbox: "WorklineInbox",
+        inbox: Any,
     ) -> WorklineSession:
         """处理 EXTERNAL_HTTP 类型的 Session 解析
 
@@ -522,7 +520,7 @@ class SessionResolver:
     async def _resolve_rack_task_material_session(
         self,
         db: AsyncSession,
-        inbox: "WorklineInbox",
+        inbox: Any,
         dispatch_key: str,
     ) -> WorklineSession | None:
         """通过 rack task operation_key 找回被挂起的物料 session。"""
@@ -571,7 +569,7 @@ class SessionResolver:
     async def _resolve_handling_operation_material_session(
         self,
         db: AsyncSession,
-        inbox: "WorklineInbox",
+        inbox: Any,
         dispatch_key: str,
     ) -> WorklineSession | None:
         """通过 handling step operation_key 找回被挂起的物料 session。"""
@@ -616,7 +614,7 @@ class SessionResolver:
     async def _resolve_by_session_id(
         self,
         db: AsyncSession,
-        inbox: "WorklineInbox",
+        inbox: Any,
         *,
         session_id: int | None,
     ) -> WorklineSession:
@@ -642,7 +640,7 @@ class SessionResolver:
         if not session:
             raise ValueError(f"Session not found: {session_id}")
 
-        if inbox.kind == InboxKind.INTERNAL_EVENT:
+        if inbox.kind == "INTERNAL_EVENT":
             inbox_workline_id = getattr(inbox, "workline_id", None)
             session_workline_id = getattr(session, "workline_id", None)
             if (

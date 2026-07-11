@@ -89,16 +89,8 @@ class TestCallbackEventAPI:
             ),
             patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
-                new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=811))),
-            ),
-            patch(
-                "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
                 new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=814))),
-            ),
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
+            ) as mock_runtime_writer,
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
@@ -121,20 +113,19 @@ class TestCallbackEventAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        create_inbox_kwargs = mock_create_inbox.call_args.kwargs
-        event_trace_id = create_inbox_kwargs["trace_id"]
-        assert create_inbox_kwargs["event_type"] == "SCAN_COMPLETED"
-        assert create_inbox_kwargs["source_message_id"] == "req-003"
+        writer_kwargs = mock_runtime_writer.call_args.kwargs
+        assert writer_kwargs["canonical_event_type"] == "SCAN_COMPLETED"
+        assert writer_kwargs["request_id"] == "req-003"
         # 验证 data 包含完整的 SixInOne 字段（对齐硬件约定）
-        assert create_inbox_kwargs["data"]["LotCode"] == "LOTABC123"
-        assert create_inbox_kwargs["data"]["DateCode"] == "20260409"
-        assert create_inbox_kwargs["data"]["Qty"] == "100"
-        assert create_inbox_kwargs["data"]["ProductNo"] == "PN001"
-        assert create_inbox_kwargs["data"]["MfrPN"] == "MFR002"
-        assert create_inbox_kwargs["data"]["PONumber"] == "PO2026040901"
-        assert isinstance(event_trace_id, str)
-        assert event_trace_id.startswith("trace_")
+        data = writer_kwargs["payload"]["data"]
+        assert data["LotCode"] == "LOTABC123"
+        assert data["DateCode"] == "20260409"
+        assert data["Qty"] == "100"
+        assert data["ProductNo"] == "PN001"
+        assert data["MfrPN"] == "MFR002"
+        assert data["PONumber"] == "PO2026040901"
         log_kwargs = _await_kwargs(mock_log_callback)
+        event_trace_id = log_kwargs["trace_id"]
         assert log_kwargs["trace_id"] == event_trace_id
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
         assert log_kwargs["failure_stage"] is None
@@ -374,10 +365,6 @@ class TestCallbackEventAPI:
                 new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=812))),
             ),
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -402,7 +389,6 @@ class TestCallbackEventAPI:
         assert response["code"] == "2004"
         assert _response_data(response)["ack"] is False
         assert "未声明 event normalizer" in response["message"]
-        mock_create_inbox.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["failure_stage"] == "CONTRACT_VALIDATE"
         mock_log_callback.assert_awaited_once()
@@ -439,11 +425,7 @@ class TestCallbackEventAPI:
             patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
                 new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=813))),
-            ),
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
+            ) as mock_runtime_writer,
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
@@ -471,9 +453,9 @@ class TestCallbackEventAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        inbox_kwargs = _await_kwargs(mock_create_inbox)
-        assert inbox_kwargs["event_type"] == "SCAN_FINISH"
-        assert inbox_kwargs["canonical_event_type"] == "SCAN_COMPLETED"
+        writer_kwargs = _await_kwargs(mock_runtime_writer)
+        assert writer_kwargs["payload"]["event_type"] == "SCAN_FINISH"
+        assert writer_kwargs["canonical_event_type"] == "SCAN_COMPLETED"
         mock_enqueue.assert_called_once()
         mock_log_callback.assert_awaited_once()
         mock_audit.assert_awaited_once()
@@ -509,11 +491,7 @@ class TestCallbackEventAPI:
             patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
                 new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=814))),
-            ),
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
+            ) as _mock_runtime_writer,
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
@@ -539,7 +517,6 @@ class TestCallbackEventAPI:
         assert response["code"] == "2004"
         assert _response_data(response)["ack"] is False
         assert "UNDECLARED_SCAN_ALIAS" in response["message"]
-        mock_create_inbox.assert_not_awaited()
         mock_enqueue.assert_not_called()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["failure_stage"] == "CONTRACT_VALIDATE"
@@ -582,10 +559,6 @@ class TestCallbackEventAPI:
                 new=AsyncMock(),
             ) as mock_admit_start,
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -613,7 +586,6 @@ class TestCallbackEventAPI:
         data = _response_data(response)
         assert data["ack"] is False
         mock_admit_start.assert_not_awaited()
-        mock_create_inbox.assert_not_awaited()
         mock_enqueue.assert_not_called()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -648,11 +620,7 @@ class TestCallbackEventAPI:
             patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
                 new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=814))),
-            ),
-            patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
+            ) as _mock_runtime_writer,
             patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
@@ -676,7 +644,6 @@ class TestCallbackEventAPI:
 
         assert response["code"] == "2004"
         assert _response_data(response)["ack"] is False
-        mock_create_inbox.assert_not_called()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "REJECTED"
@@ -722,10 +689,6 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -752,7 +715,6 @@ class TestCallbackEventAPI:
         data = _response_data(response)
         assert data["ack"] is False
         assert data["reason_code"] == "WORKLINE_NOT_ACCEPTING_WORK"
-        mock_create_inbox.assert_not_awaited()
         mock_enqueue.assert_not_called()
         db_session.commit.assert_not_awaited()
         mock_log_callback.assert_awaited_once()
@@ -795,10 +757,6 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -809,7 +767,7 @@ class TestCallbackEventAPI:
             patch(
                 "src.app.callback.services.callback_orchestration_service.callback_orchestration_service._runtime_inbox_writer.write_event_callback",
                 new=AsyncMock(return_value=SimpleNamespace(created=True, record=SimpleNamespace(id=814))),
-            ),
+            ) as mock_runtime_writer,
             patch("src.app.callback.v1.callback._enqueue_runtime_inbox_processing") as mock_enqueue,
             patch("src.app.callback.v1.callback.get_request_id", return_value="req-estop-001"),
         ):
@@ -827,9 +785,9 @@ class TestCallbackEventAPI:
         assert http_response.status_code == 200
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        inbox_kwargs = _await_kwargs(mock_create_inbox)
-        assert inbox_kwargs["event_type"] == "ESTOP_PRESSED"
-        assert inbox_kwargs["canonical_event_type"] == "ESTOP_PRESSED"
+        writer_kwargs = _await_kwargs(mock_runtime_writer)
+        assert writer_kwargs["payload"]["event_type"] == "ESTOP_PRESSED"
+        assert writer_kwargs["canonical_event_type"] == "ESTOP_PRESSED"
         mock_enqueue.assert_called_once()
         mock_log_callback.assert_awaited_once()
         mock_audit.assert_awaited_once()
@@ -883,10 +841,6 @@ class TestCallbackEventAPI:
                 new=AsyncMock(return_value=admission_result),
             ) as mock_admit_start,
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -920,7 +874,6 @@ class TestCallbackEventAPI:
         admit_kwargs = _await_kwargs(mock_admit_start)
         assert admit_kwargs["device_code"] == "ARM_01"
         assert admit_kwargs["request_id"] == "req-start-001"
-        mock_create_inbox.assert_not_awaited()
         mock_enqueue.assert_not_called()
         mock_log_callback.assert_awaited_once()
         mock_audit.assert_awaited_once()
@@ -1047,10 +1000,6 @@ class TestCallbackEventAPI:
                 new=AsyncMock(return_value=admission_result),
             ) as mock_admit_start,
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -1083,7 +1032,6 @@ class TestCallbackEventAPI:
         assert response_model_data["reason_code"] == "START_ADMISSION_DEVICE_NOT_IDLE"
         assert response_model_data["diagnostic"]["device_code"] == "RS-CONV-01"
         mock_admit_start.assert_awaited_once()
-        mock_create_inbox.assert_not_awaited()
         mock_enqueue.assert_not_called()
         mock_log_callback.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -1125,10 +1073,6 @@ class TestCallbackEventAPI:
                 new=AsyncMock(return_value=SimpleNamespace(created=False, record=SimpleNamespace(id=902))),
             ),
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -1149,7 +1093,6 @@ class TestCallbackEventAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "duplicate"
-        mock_create_inbox.assert_not_awaited()
         mock_enqueue.assert_not_called()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "DUPLICATE"
@@ -1200,10 +1143,6 @@ class TestCallbackEventAPI:
                 ),
             ),
             patch(
-                "src.app.callback.services.callback_ingress_service.inbox_service.create_device_event_inbox",
-                new=AsyncMock(),
-            ) as mock_create_inbox,
-            patch(
                 "src.app.callback.services.callback_ingress_service.callback_log_service.log_callback",
                 new=AsyncMock(),
             ) as mock_log_callback,
@@ -1224,7 +1163,6 @@ class TestCallbackEventAPI:
         assert http_response.status_code == 409
         assert response["code"] == ResourceErrorCode.CONFLICT.code
         assert _response_data(response)["ack"] is False
-        mock_create_inbox.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["response_status"] == 409
         assert log_kwargs["ingress_outcome"] == "REJECTED"

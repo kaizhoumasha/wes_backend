@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from copy import deepcopy
 from datetime import datetime
@@ -16,7 +18,7 @@ from src.app.device.repositories import (
     device_repository,
 )
 from src.app.runtime.capability_catalog import get_workline_capability_definition
-from src.app.runtime.orchestration.models.inbox import InboxKind, SourceSystem
+from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.orchestration.models.operation import (
     ResolveRuntimeReconciliationRequest,
     SandboxEventTemplate,
@@ -27,12 +29,12 @@ from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldType
 from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
 from src.app.runtime.orchestration.models.session import RuntimeReconciliationResolution, SessionStatus
 from src.app.runtime.orchestration.repositories import (
-    inbox_repository,
     runtime_hold_repository,
+    runtime_inbox_repository,
     workline_session_repository,
 )
-from src.app.runtime.orchestration.repositories.inbox_repository import WorklineInboxRepository  # noqa: TC001
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository  # noqa: TC001
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository  # noqa: TC001
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository  # noqa: TC001
 from src.app.runtime.orchestration.repository_wiring import runtime_inbox_query, workline_repository
 from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
@@ -74,9 +76,9 @@ _TERMINAL_COMMAND_STATUSES = {
 }
 
 _MANUAL_OPERATION_KIND = {
-    "HOLD": InboxKind.MANUAL_HOLD,
-    "RESUME": InboxKind.MANUAL_RESUME,
-    "CANCEL": InboxKind.MANUAL_CANCEL,
+    "HOLD": "MANUAL_HOLD",
+    "RESUME": "MANUAL_RESUME",
+    "CANCEL": "MANUAL_CANCEL",
 }
 
 _SANDBOX_OPERATOR_VISIBLE_EVENT_CATEGORIES = frozenset({"ENTRY_DEVICE", "OPERATOR", "SAFETY"})
@@ -113,7 +115,7 @@ class WorklineOperationService(BaseService[Any, Any]):
     def __init__(
         self,
         *,
-        inbox_repo: WorklineInboxRepository | None = None,
+        inbox_repo: RuntimeInboxRepository | None = None,
         session_repo: WorklineSessionRepository | None = None,
         outbox_repo: SystemOutboxRepository | None = None,
         workline_repo: WorkLineRepository | None = None,
@@ -123,8 +125,9 @@ class WorklineOperationService(BaseService[Any, Any]):
         rack_task_lifecycle_service: RackTaskLifecycleService | None = None,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
-        super().__init__(inbox_repo or inbox_repository, enable_cache=False)
-        self.inbox_repo = inbox_repo or inbox_repository
+        super().__init__(inbox_repo or runtime_inbox_repository, enable_cache=False)
+        self.inbox_repo = inbox_repo or runtime_inbox_repository
+        self.runtime_inbox_service = RuntimeInboxService(repository=self.inbox_repo)
         self.session_repo = session_repo or workline_session_repository
         self.outbox_repo = outbox_repo or system_outbox_repository
         self.workline_repo = workline_repo or workline_repository
@@ -144,6 +147,47 @@ class WorklineOperationService(BaseService[Any, Any]):
 
     def _enqueue_outbox_dispatch(self) -> None:
         self._queue_gateway.enqueue_outbox(limit=50)
+
+    async def _accept_runtime_message(
+        self,
+        db: Any,
+        *,
+        kind: str,
+        event_type: str,
+        payload: dict[str, Any],
+        source_event_id: str | None,
+        workline_id: int | None = None,
+        device_id: int | None = None,
+        command_id: int | None = None,
+        workline_session_id: int | None = None,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
+        received_at: Any | None = None,
+    ) -> Any:
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        received_at_ms = None
+        if received_at is not None:
+            received_at_ms = timezone.to_utc_timestamp(received_at) * 1000
+        result = await self.runtime_inbox_service.accept_received(
+            db,
+            provider_code="MANUAL",
+            event_type=event_type,
+            source_event_id=source_event_id,
+            payload_hash=hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+            kind=kind,
+            payload_json=payload,
+            payload_schema_version=1,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
+            workline_id=workline_id,
+            device_id=device_id,
+            command_id=command_id,
+            workline_session_id=workline_session_id,
+            now_ms=received_at_ms,
+        )
+        return result.record
 
     async def get_sandbox_pending(
         self,
@@ -512,8 +556,8 @@ class WorklineOperationService(BaseService[Any, Any]):
         if original.workline_id is None:
             raise ValueError(f"Inbox 未关联工作线: {inbox_id}")
         _ = await self._lock_active_workline_for_runtime_write(db, original.workline_id)
-        if original.session_id is not None:
-            session = await self.session_repo.get_by_id(db, original.session_id)
+        if original.workline_session_id is not None:
+            session = await self.session_repo.get_by_id(db, original.workline_session_id)
             if session is not None:
                 from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
                     workline_runtime_reconciliation_service,
@@ -532,26 +576,20 @@ class WorklineOperationService(BaseService[Any, Any]):
                 "replay_operator_id": operator_id,
             }
         )
-        replay = await self.inbox_repo.create(
+        replay = await self._accept_runtime_message(
             db,
-            {
-                "kind": original.kind,
-                "idempotency_key": f"replay:{inbox_id}:{uuid.uuid4().hex}",
-                "source_system": SourceSystem.MANUAL,
-                "source_message_id": f"replay:{inbox_id}:{uuid.uuid4().hex}",
-                "workline_id": original.workline_id,
-                "device_id": original.device_id,
-                "command_id": original.command_id,
-                "session_id": original.session_id,
-                "trace_id": original.trace_id,
-                "event_id": replay_event_id,
-                "causation_id": original_event_id,
-                "payload_json": payload,
-                "received_at": timezone.now_for_db(),
-            },
+            kind=original.kind,
+            event_type=original.event_type,
+            source_event_id=f"replay:{inbox_id}:{uuid.uuid4().hex}",
+            workline_id=original.workline_id,
+            device_id=original.device_id,
+            command_id=original.command_id,
+            workline_session_id=original.workline_session_id,
+            trace_id=original.trace_id,
+            event_id=replay_event_id,
+            causation_id=original_event_id,
+            payload=payload,
         )
-        if replay is None:
-            raise RuntimeError(f"创建 replay inbox 失败: {inbox_id}")
         if auto_commit:
             await self._commit_mutation(db)
         return replay
@@ -597,22 +635,16 @@ class WorklineOperationService(BaseService[Any, Any]):
             "reason": reason,
             "session_id": session_id,
         }
-        inbox = await self.inbox_repo.create(
+        inbox = await self._accept_runtime_message(
             db,
-            {
-                "kind": kind,
-                "idempotency_key": f"manual:{session_id}:{normalized_operation}:{uuid.uuid4().hex}",
-                "source_system": SourceSystem.MANUAL,
-                "source_message_id": f"manual:{uuid.uuid4().hex}",
-                "session_id": session_id,
-                "workline_id": session.workline_id,
-                "trace_id": trace.trace_id,
-                "payload_json": payload,
-                "received_at": timezone.now_for_db(),
-            },
+            kind=kind,
+            event_type=kind,
+            source_event_id=f"manual:{session_id}:{normalized_operation}:{uuid.uuid4().hex}",
+            workline_session_id=session_id,
+            workline_id=session.workline_id,
+            trace_id=trace.trace_id,
+            payload=payload,
         )
-        if inbox is None:
-            raise RuntimeError(f"创建人工操作 inbox 失败: session_id={session_id}")
 
         if auto_commit:
             await self._commit_mutation(db)
@@ -643,24 +675,20 @@ class WorklineOperationService(BaseService[Any, Any]):
         event_payload["event_type"] = event_type
         event_payload["sandbox_mode"] = True
 
-        inbox = await self.inbox_repo.create(
+        sandbox_event_id = f"sandbox:{event_type}:{uuid.uuid4().hex}"
+        inbox = await self._accept_runtime_message(
             db,
-            {
-                "kind": InboxKind.DEVICE_EVENT,
-                "idempotency_key": f"sandbox:event:{event_trace_id}:{uuid.uuid4().hex}",
-                "source_system": SourceSystem.MANUAL,
-                "source_message_id": f"sandbox:{uuid.uuid4().hex}",
-                "workline_id": workline_id,
-                "device_id": device_id,
-                "session_id": session_id,
-                "trace_id": event_trace_id,
-                "event_id": f"sandbox:{event_type}:{uuid.uuid4().hex}",
-                "payload_json": event_payload,
-                "received_at": timestamp or timezone.now_for_db(),
-            },
+            kind="DEVICE_EVENT",
+            event_type=event_type,
+            source_event_id=sandbox_event_id,
+            workline_id=workline_id,
+            device_id=device_id,
+            workline_session_id=session_id,
+            trace_id=event_trace_id,
+            event_id=sandbox_event_id,
+            received_at=timestamp,
+            payload=event_payload,
         )
-        if inbox is None:
-            raise RuntimeError(f"创建沙箱 Event 失败: workline_id={workline_id}")
         if auto_commit:
             await self._commit_mutation(db)
         return inbox
@@ -764,28 +792,22 @@ class WorklineOperationService(BaseService[Any, Any]):
             "signature": signature,
             "sandbox_mode": True,
         }
-        idempotency_key = self.inbox_repo.calculate_external_http_idempotency_key(
-            callback_type=resolved_callback_type,
-            trace_id=trace_id,
-            payload=inbox_payload,
-        )
-        existing_inbox = await self.inbox_repo.get_by_idempotency_key(db, idempotency_key)
-        inbox_data = {
-            "kind": InboxKind.EXTERNAL_HTTP,
-            "idempotency_key": idempotency_key,
-            "source_system": SourceSystem.MANUAL,
-            "source_message_id": resolved_request_id,
-            "workline_id": session.workline_id,
-            "session_id": session.id,
-            "trace_id": trace_id,
-            "event_id": resolved_source_event_id,
-            "payload_json": inbox_payload,
-            "received_at": callback_received_at,
-        }
-        inbox = await self.inbox_repo.create_idempotent(
+        existing_inbox = await self.inbox_repo.get_by_source_event_identity(
             db,
-            inbox_data,
-            idempotency_key=idempotency_key,
+            provider_code="MANUAL",
+            event_type=resolved_callback_type,
+            source_event_id=resolved_source_event_id,
+        )
+        inbox = await self._accept_runtime_message(
+            db,
+            kind="EXTERNAL_HTTP",
+            event_type=resolved_callback_type,
+            source_event_id=resolved_source_event_id,
+            workline_id=session.workline_id,
+            workline_session_id=session.id,
+            trace_id=trace_id,
+            event_id=resolved_source_event_id,
+            payload=inbox_payload,
         )
 
         if existing_inbox is None:
@@ -1020,25 +1042,21 @@ class WorklineOperationService(BaseService[Any, Any]):
             # 本地设备投影仅用于诊断；blocked outbox 放行必须由下一轮 ECS admission probe 决定。
             pass
 
-        inbox = await self.inbox_repo.create(
+        result_event_id = f"sandbox:result:{command_code}:{uuid.uuid4().hex}"
+        inbox = await self._accept_runtime_message(
             db,
-            {
-                "kind": InboxKind.COMMAND_RESULT,
-                "idempotency_key": f"sandbox:result:{command_code}:{uuid.uuid4().hex}",
-                "source_system": SourceSystem.MANUAL,
-                "source_message_id": f"sandbox:result:{uuid.uuid4().hex}",
-                "workline_id": workline_id,
-                "device_id": device_id,
-                "command_id": command.id,
-                "session_id": session.id,
-                "trace_id": command.trace_id,
-                "event_id": f"sandbox:result:{command_code}",
-                "payload_json": result_payload,
-                "received_at": timestamp or timezone.now_for_db(),
-            },
+            kind="COMMAND_RESULT",
+            event_type="COMMAND_RESULT",
+            source_event_id=result_event_id,
+            workline_id=workline_id,
+            device_id=device_id,
+            command_id=command.id,
+            workline_session_id=session.id,
+            trace_id=command.trace_id,
+            event_id=result_event_id,
+            received_at=timestamp,
+            payload=result_payload,
         )
-        if inbox is None:
-            raise RuntimeError(f"创建沙箱 Result 失败: command_code={command_code}")
 
         from src.app.sys.services.event_stream_service import defer_command_status_changed_event
 

@@ -342,7 +342,8 @@ class _SandboxSingleRepoStub:
 class _SandboxInboxRepoStub:
     def __init__(self) -> None:
         self.created: dict[str, Any] | None = None
-        self.create = AsyncMock(side_effect=self._create)
+        self.get_by_source_event_identity = AsyncMock(return_value=None)
+        self.add_received = AsyncMock(side_effect=self._create)
 
     async def _create(self, _db: Any, data: dict[str, Any]) -> Any:
         self.created = dict(data)
@@ -459,6 +460,8 @@ async def test_sandbox_result_path_defers_command_status_changed_event() -> None
     fake_device_service = SimpleNamespace(
         mark_command_finished=AsyncMock(return_value=SimpleNamespace(device_status="IDLE", current_command_id=None))
     )
+    nested_transaction = AsyncMock()
+    db = SimpleNamespace(begin_nested=lambda: nested_transaction)
     helper_spy = MagicMock()
 
     with (
@@ -466,7 +469,7 @@ async def test_sandbox_result_path_defers_command_status_changed_event() -> None
         patch(_HELPER_PATCH_TARGET, new=helper_spy),
     ):
         _ = await service.submit_sandbox_result(
-            object(),
+            db,
             command_code="CMD-001",
             device_code="ARM01",
             result="SUCCESS",

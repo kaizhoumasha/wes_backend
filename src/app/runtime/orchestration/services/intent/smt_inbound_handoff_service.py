@@ -44,10 +44,6 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItemStatus,
 )
 from src.app.runtime.orchestration.repository_wiring import smt_inbound_handoff_repository
-from src.app.runtime.orchestration.services.inbox.inbox_service import (
-    WorklineInboxService,
-    inbox_service,
-)  # TODO(Task 7c): migrate to RuntimeInboxService.accept_received - blocked on RuntimeInboxService.accept_internal_event method
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 
@@ -120,14 +116,12 @@ class SmtInboundHandoffService:
         reason_catalog: SmtInboundHandoffReasonCatalog = SMT_INBOUND_HANDOFF_REASON_CATALOG,
         handling_operation_service: HandlingOperationService | None = None,
         route_service: SmtInboundHandoffRouteService = smt_inbound_handoff_route_service,
-        inbox_service: WorklineInboxService = inbox_service,
     ) -> None:
         self.repository = repository
         self.usage_policy = usage_policy
         self.reason_catalog = reason_catalog
         self.handling_operation_service = handling_operation_service
         self.route_service = route_service
-        self.inbox_service = inbox_service
 
     async def create_or_get_from_release(
         self,
@@ -1426,14 +1420,10 @@ class SmtInboundHandoffService:
         demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
         if demand is None:
             raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
-        # Task 7c-c-2: 切换 read 路径到 RuntimeInbox (Task 7c-c-1 后, item.source_pick_inbox_id
-        # 现指向 RuntimeInbox.id).
-        # - 状态映射: RuntimeInbox 5 态 (RECEIVED/PROCESSING/PROCESSED/FAILED/DEAD_LETTER),
-        #   旧 WorklineInbox 的 NEW/PROCESSING/RETRY/FAILED/PROCESSED/DEAD_LETTER 中,
-        #   "in progress" = {RECEIVED, PROCESSING};
-        #   可重试 = FAILED + next_retry_at 已设置 (旧 RETRY 也归此类);
+        # source_pick_inbox_id 指向 RuntimeInbox；状态映射如下：
+        # - "in progress" = {RECEIVED, PROCESSING};
+        # - 可重试 = FAILED + next_retry_at 已设置；
         #   终态失败 = DEAD_LETTER; 成功 = PROCESSED.
-        # - 字段名差异: WorklineInbox.error_message → RuntimeInbox.last_error_message.
         # - next_retry_at 单位: RuntimeInbox 使用 Unix 毫秒, item.next_attempt_at 是
         #   naive datetime, 通过 timezone.to_utc() 转换。
         inbox = await runtime_inbox_repository.get_by_id_for_update(db, item.source_pick_inbox_id)
@@ -1720,8 +1710,7 @@ class SmtInboundHandoffService:
             "route_evidence": self._dict_or_empty(route_evidence),
         }
 
-        # Task 7c-c-1: 移除 WorklineInbox 双写, RuntimeInbox 成为 INTERNAL_EVENT 唯一事实源
-        # (item.source_pick_inbox_id 现指向 RuntimeInbox, 不再指向 WorklineInbox)。
+        # RuntimeInbox 是 INTERNAL_EVENT 唯一事实源，item.source_pick_inbox_id 指向该记录。
         from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
             runtime_inbox_service,
         )

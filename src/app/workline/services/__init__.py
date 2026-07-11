@@ -12,19 +12,16 @@ from typing import Any
 # runtime/orchestration/services/。其余运行态 service 迁入 runtime/orchestration/
 # services 与 runtime/capabilities/material_flow/ 后已物理删除。
 #
-# WorkLine service facade 收口:__all__ / _LAZY_SHIM_MAP 收敛到当前真实 service export +
-# 3 个未初始化 service 属性的 fallback tombstone(inbox_service /
-# workline_bin_cell_reservation_service / WorklineInboxService)。
+# WorkLine service facade 收口:__all__ / _LAZY_SHIM_MAP 收敛到当前真实 service export
+# 与尚未初始化的 bin cell reservation fallback tombstone。
 # PlaneReadPrincipal / PlaneReadSecurityPolicy / plane_read_security_policy
 # 是 plane_service 的安全 helper,由具体模块直接导入,不放在 package facade。
-# 这 3 个符号历史上由 workline.services 域暴露,底层 module 已物理删除
-# (迁入 runtime/orchestration/services/ 与 repositories/)。3 处 caller 仍按
+# 该符号历史上由 workline.services 域暴露,底层 module 已物理删除
+# (迁入 runtime/orchestration/services/ 与 repositories/)。caller 仍按
 # `from src.app.workline.services import ...` 旧路径访问:
-#   - runtime_intent_effects.py:1545/1627 — `self._inbox_service` /
-#     `self._bin_cell_reservation_service` 属性未注入时的 fallback import
+#   - runtime_intent_effects.py — `self._bin_cell_reservation_service`
+#     属性未注入时的 fallback import
 #     (属性注入后不触发,路径是活的防御性兜底,非死代码)
-#   - callback_orchestration_service.py:35 — TYPE_CHECKING 块内 type hint
-#     (运行时不触发,静态类型检查用)
 # PEP 562 __getattr__ 命中 _LAZY_SHIM_MAP 后 import 旧路径,因 module 已删除
 # 抛 ModuleNotFoundError,让调用方明确感知"属性不可用"。其他 dead entries
 # 已物理删除。
@@ -43,8 +40,6 @@ __all__ = [
     "WorkLineSafetyService",
     "WorkLineService",
     "WorklineDiagnosticService",
-    "WorklineInboxService",
-    "inbox_service",
     "orchestrator_write_back_service",
     "workline_bin_cell_reservation_service",
     "workline_diagnostic_service",
@@ -55,14 +50,12 @@ __all__ = [
 ]
 
 
-# WorkLine service facade 收口:3 个未初始化 service 属性的 fallback tombstone。caller 命中时
+# WorkLine service facade 收口:未初始化 service 属性的 fallback tombstone。caller 命中时
 # 通过 importlib.import_module 触发 ModuleNotFoundError(旧 module 已物理
 # 删除),与 Python 默认 attribute lookup 抛 AttributeError 不同但对调用方
 # 语义一致(都是不可用)。不在表中的属性按 PEP 562 默认行为抛 AttributeError。
 _LAZY_SHIM_MAP = {
-    "inbox_service": "inbox_service",
     "workline_bin_cell_reservation_service": "bin_cell_reservation_service",
-    "WorklineInboxService": "inbox_service",
 }
 
 

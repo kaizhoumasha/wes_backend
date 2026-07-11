@@ -1,6 +1,6 @@
 """RuntimeInbox 目标态状态机契约（测试专用, RUNTIME_INBOX_STATE_MACHINE）。
 
-不 import legacy src.app.workline.models.inbox.WorklineInbox;
+不依赖已退役的旧 Inbox ORM；
 旧 NEW/RETRY/PROCESSING 只可作 characterization 来源, 不反向决定目标态命名。
 生产路径已升级到 runtime/orchestration。
 

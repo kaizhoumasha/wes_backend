@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
 from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorService
@@ -59,9 +60,11 @@ async def test_external_callback_persists_claims_and_processes_without_repeating
 
     rack_lifecycle = SimpleNamespace(record_callback_from_external_http=AsyncMock(return_value=None))
     handling_lifecycle = SimpleNamespace(record_callback_from_external_http=AsyncMock(return_value=None))
+    inbox_service = RuntimeInboxService()
     orchestration = CallbackOrchestrationService(
         rack_task_service=rack_lifecycle,
         handling_operation_service=handling_lifecycle,
+        runtime_inbox_writer=CallbackRuntimeInboxWriter(service=inbox_service),
     )
     payload = {
         "callback_type": "WMS_RACK_TASK_RESULT",
@@ -95,7 +98,6 @@ async def test_external_callback_persists_claims_and_processes_without_repeating
     rack_lifecycle.record_callback_from_external_http.assert_awaited_once()
     handling_lifecycle.record_callback_from_external_http.assert_not_awaited()
 
-    inbox_service = RuntimeInboxService()
     claims = await inbox_service.claim_for_processing(
         db_session,
         limit=1,

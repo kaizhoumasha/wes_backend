@@ -27,7 +27,6 @@ async def test_timeout_scanner_uses_runtime_inbox_acceptor_and_keeps_batch_stati
     from src.app.device.repositories.device_repository import device_repository
     from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
     from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
-    from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
     from src.app.sys.repositories import SystemOutboxRepository
     from src.celery_app.tasks.workline import TimeoutScanner
 
@@ -73,8 +72,6 @@ async def test_timeout_scanner_uses_runtime_inbox_acceptor_and_keeps_batch_stati
 
     accept_timeout = AsyncMock(return_value=SimpleNamespace(created=created))
     monkeypatch.setattr(runtime_inbox_service, "accept_timer_timeout", accept_timeout, raising=False)
-    legacy_create_timeout = AsyncMock(return_value=SimpleNamespace(id=999))
-    monkeypatch.setattr(inbox_service, "create_timeout_inbox", legacy_create_timeout)
     publish = AsyncMock()
     monkeypatch.setattr(event_stream_service_module, "publish_deferred_sse_events", publish)
 
@@ -104,6 +101,5 @@ async def test_timeout_scanner_uses_runtime_inbox_acceptor_and_keeps_batch_stati
         ack_received_at=ack_received_at,
         auto_commit=False,
     )
-    legacy_create_timeout.assert_not_awaited()
     db.commit.assert_awaited_once_with()
     publish.assert_awaited_once_with(db)

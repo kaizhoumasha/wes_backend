@@ -374,7 +374,7 @@ def scan_timeouts_batch(self: WorklineTask, limit: int = 100) -> ScanResult:
         手动调用：scan_timeouts_batch.delay(limit=100)
     注意：
         - 使用幂等性键防止重复创建 timeout Inbox
-        - 创建的 Inbox 类型为 InboxKind.TIMER_TIMEOUT
+        - 创建的 RuntimeInbox kind 为 TIMER_TIMEOUT
     """
     logger.info(f"开始扫描超时 Session, limit={limit}")
 

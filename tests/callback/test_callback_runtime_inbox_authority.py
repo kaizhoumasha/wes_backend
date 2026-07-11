@@ -437,7 +437,7 @@ async def test_process_result_duplicate_uses_runtime_inbox_ack_and_skips_legacy_
 
 @pytest.mark.asyncio
 async def test_process_event_uses_runtime_inbox_as_authority() -> None:
-    """事件回调 accepted 后写过渡 Workline inbox 供现有消费者处理。"""
+    """事件回调 accepted 后仅写 RuntimeInbox。"""
 
     from src.app.callback.models import CallbackEventRequest
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
@@ -451,7 +451,6 @@ async def test_process_event_uses_runtime_inbox_as_authority() -> None:
             writer_kwargs.update(kwargs)
             return _runtime_accept_result(created=True, record_id=201)
 
-    legacy_inbox_service = SimpleNamespace(create_device_event_inbox=AsyncMock())
     service = CallbackOrchestrationService(runtime_inbox_writer=WriterStub())
 
     outcome = await service.process_event(
@@ -467,7 +466,6 @@ async def test_process_event_uses_runtime_inbox_as_authority() -> None:
         request_id="req-event-001",
         is_workline_event=True,
         canonical_event_type="SCAN_COMPLETED",
-        inbox_service=legacy_inbox_service,
         enqueue_processing=lambda: None,
     )
 
@@ -475,7 +473,6 @@ async def test_process_event_uses_runtime_inbox_as_authority() -> None:
     assert outcome.is_duplicate is False
     assert call_order == ["runtime"]
     assert writer_kwargs["canonical_event_type"] == "SCAN_COMPLETED"
-    legacy_inbox_service.create_device_event_inbox.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -528,13 +525,12 @@ async def test_process_external_uses_runtime_inbox_as_authority() -> None:
 
 @pytest.mark.asyncio
 async def test_process_event_duplicate_uses_runtime_inbox_ack_and_skips_legacy_sources() -> None:
-    """事件 duplicate ACK 只能来自 RuntimeInbox，不能再触发旧 Workline inbox/processor。"""
+    """事件 duplicate ACK 只能来自 RuntimeInbox，不能触发 processor。"""
 
     from src.app.callback.models import CallbackEventRequest
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
     writer = SimpleNamespace(write_event_callback=AsyncMock(return_value=_runtime_accept_result(created=False)))
-    legacy_inbox_service = SimpleNamespace(create_device_event_inbox=AsyncMock())
     service = CallbackOrchestrationService(runtime_inbox_writer=writer)
     service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
 
@@ -551,13 +547,11 @@ async def test_process_event_duplicate_uses_runtime_inbox_ack_and_skips_legacy_s
         request_id="req-event-dup",
         is_workline_event=True,
         canonical_event_type="SCAN_COMPLETED",
-        inbox_service=legacy_inbox_service,
         enqueue_processing=lambda: None,
     )
 
     assert outcome.is_duplicate is True
     writer.write_event_callback.assert_awaited_once()
-    legacy_inbox_service.create_device_event_inbox.assert_not_awaited()
     service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]
 
 

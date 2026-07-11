@@ -801,8 +801,7 @@ class RuntimeHoldReleaseService:
             "runtime_hold_release": True,
             "data": result_payload,
         }
-        # Task 7c-c-1: 移除 WorklineInbox 双写, RuntimeInbox 成为 command result 唯一事实源
-        # (返回 RuntimeInbox.id 而非 WorklineInbox, 后续 processor 经 RuntimeInbox 路径消费)。
+        # RuntimeInbox 是 command result 唯一事实源，后续 processor 经统一路径消费。
         from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
             runtime_inbox_service,
         )

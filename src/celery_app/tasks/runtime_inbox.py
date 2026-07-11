@@ -5,15 +5,8 @@
 
 claim-one / process-one 循环, 每条 timeout INBOX_PROCESS_TIMEOUT_SECONDS.
 
-本 task 是 RuntimeInbox 主链路收束后的入口 (Task 6), 全部走 RuntimeInboxService
-(`src.app.runtime.orchestration.consumers.runtime_inbox_service`),
-不再使用 legacy `inbox_service` (WorklineInboxService). 任何误用 legacy inbox_service
-(claim_pending_messages / mark_as_processed / park_for_retry 等) 都会导致:
-- 写入旧 WorklineInbox 表, 而当前 claim 的是 RuntimeInbox id
-- 跨表终态写回失败, RuntimeInbox 行永远卡在 PROCESSING
-
-Task 7b 验证: 此文件 0 处使用 legacy `inbox_service` (grep inbox_service 返回的 5 行
-全部是 `runtime_inbox_service`)。无需修复。
+本 task 是 RuntimeInbox 主链路收束后的入口，claim、处理和终态写回均使用
+RuntimeInboxService，确保 processor_token fencing 作用于同一事实源。
 """
 
 from __future__ import annotations

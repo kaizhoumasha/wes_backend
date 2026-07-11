@@ -1,14 +1,6 @@
 """Tests for RuntimeInboxService internal event acceptors (Task 7c-a).
 
-覆盖 accept_device_event / accept_internal_event / accept_command_result 三个适配方法。
-这些方法由 Task 7a 标注的 3 个遗留 WorklineInbox 调用点迁移而来 (Task 7c 启用):
-
-- accept_device_event  ->  WorklineInboxService.create_device_event_inbox
-                          (used by runtime_intent_effects._apply_device_event)
-- accept_internal_event ->  WorklineInboxService.create_internal_event_inbox
-                          (used by smt_inbound_handoff_service._publish_source_pick_request)
-- accept_command_result ->  inbox_repo.create with InboxKind.COMMAND_RESULT
-                          (used by runtime_hold_release_service)
+覆盖 accept_device_event / accept_internal_event / accept_command_result 三个统一持久化方法。
 
 约束:
 - 跳过 source_event_id 幂等检查 (内部事件, source_event_id 不保证唯一)。

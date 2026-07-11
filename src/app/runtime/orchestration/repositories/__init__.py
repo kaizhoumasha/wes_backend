@@ -29,10 +29,6 @@ from .dispatch_attempt_repository import (
     WorklineDispatchAttemptRepository,
     workline_dispatch_attempt_repository,
 )
-from .inbox_repository import (
-    WorklineInboxRepository,
-    inbox_repository,
-)
 from .material_unit_repository import (
     MaterialUnitRepository,
     material_unit_repository,
@@ -82,14 +78,12 @@ __all__ = [
     "WorklineBinCellReservationRepository",
     "WorklineDiagnosticRepository",
     "WorklineDispatchAttemptRepository",
-    "WorklineInboxRepository",
     "WorklineRackPositionRepository",
     "WorklineRuntimeStatusProjectionRepository",
     "WorklineSessionRepository",
     "conveyor_queue_membership_repository",
     "device_runtime_projection_repository",
     "idempotency_key_repository",
-    "inbox_repository",
     "material_unit_repository",
     "object_transition_event_repository",
     "runtime_hold_repository",

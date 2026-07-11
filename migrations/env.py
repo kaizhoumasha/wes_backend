@@ -62,7 +62,6 @@ from src.app.runtime.orchestration.idempotency_key import IdempotencyKey  # noqa
 # 导入所有 workline 配置域模型 + runtime/orchestration 运行态模型(阶段 6 物理迁移后)
 from src.app.runtime.orchestration.models import (  # noqa: F401
     WorklineBinCellReservation,
-    WorklineInbox,
     WorklineRackPosition,
     WorklineSession,
     WorklineTimeline,

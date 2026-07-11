@@ -46,7 +46,6 @@ from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
     RuntimeInboxPayloadTooLarge,
 )
 from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
-from src.app.runtime.orchestration.services.inbox import inbox_service
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusSnapshot,
     workline_runtime_status_projection_service,
@@ -1895,7 +1894,6 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             request_id=request_id,
             is_workline_event=is_workline_event,
             canonical_event_type=canonical_event_type,
-            inbox_service=inbox_service,
             trace_id=_resolve_callback_trace_id(event_data),
             event_id=_resolve_callback_event_id(event_data),
             causation_id=_resolve_callback_causation_id(event_data),
