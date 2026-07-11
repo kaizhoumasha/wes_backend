@@ -16,7 +16,6 @@ from src.app.device.services.device_command_service import DeviceCallbackResultO
 from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import (
     callback_runtime_inbox_writer,
 )
-from src.app.runtime.orchestration.models.inbox import SourceSystem
 from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
     TimelineActorType,
@@ -41,32 +40,12 @@ from src.core.logger import logger
 from src.utils.timezone import timezone
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
-_RACK_TASK_LIFECYCLE_ONLY_CALLBACK_TYPES = frozenset(
-    {
-        "WMS_RACK_TASK_RESULT",
-        "RCS_RACK_TASK_RESULT",
-        "WMS_RACK_TASK_PROGRESS",
-        "RCS_RACK_TASK_PROGRESS",
-    }
-)
-_HANDLING_LIFECYCLE_ONLY_CALLBACK_TYPES = frozenset(
-    {
-        "CTU_BIN_MOVE_PROGRESS",
-        "CTU_BIN_TASK_PROGRESS",
-        "WMS_BIN_MOVE_PROGRESS",
-        "RCS_BIN_MOVE_PROGRESS",
-    }
-)
 _HANDLING_CALLBACK_TYPES = frozenset(
     {
         "WMS_FULL_BOX_EXCHANGE_RESULT",
         "RCS_FULL_BOX_EXCHANGE_RESULT",
     }
 )
-
-
-def _skip_workline_processing_enqueue() -> None:
-    """lifecycle-only 回调由 lifecycle service 处理，这里只关闭即时 batch 触发。"""
 
 
 def _current_timestamp_ms() -> int:
@@ -502,7 +481,6 @@ class CallbackOrchestrationService:
         callback_type: str,
         payload: JsonDict,
         request_id: str | None,
-        inbox_service: WorklineInboxService,
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
@@ -519,71 +497,32 @@ class CallbackOrchestrationService:
         resolved_trace_id = trace.trace_id or trace.request_id or f"trace_{uuid.uuid4().hex}"
         trace = trace.with_trace_id(resolved_trace_id)
 
-        lifecycle_only = (
-            callback_type in _RACK_TASK_LIFECYCLE_ONLY_CALLBACK_TYPES
-            or callback_type in _HANDLING_LIFECYCLE_ONLY_CALLBACK_TYPES
-        )
         runtime_inbox_result = await self._runtime_inbox_writer.write_external_callback(
             db,
             payload=payload,
             request_id=request_id,
+            trace_id=resolved_trace_id,
+            event_id=trace.event_id,
+            causation_id=trace.causation_id,
         )
         if not runtime_inbox_result.created:
             return ExternalCallbackOutcome(trace_id=trace.trace_id or "", is_duplicate=True)
 
-        # Plan Task 4 partial: process_external 仍写 WorklineInbox (不只 lifecycle_only)
-        # 因为 rack_task_service / handling_operation_service 依赖 created_inbox.
-        # Task 7 完成后删除这段兼容双写, RuntimeInbox 才是唯一主事实源.
-        created_inbox: object | None = None
-        transition_duplicate = False
-        try:
-            created_inbox = await inbox_service.create_external_http_inbox(
-                db=db,
-                callback_type=callback_type,
-                payload=payload,
-                source_system=SourceSystem.SYSTEM,
-                source_message_id=trace.request_id,
-                trace_id=resolved_trace_id,
-                event_id=trace.event_id,
-                causation_id=trace.causation_id,
-                auto_commit=False,
-            )
-            logger.info(f"外部回调已写入过渡 Workline Inbox: {callback_type}")
-        except ValueError as exc:
-            duplicate_inbox = self._resolve_duplicate_inbox_error(
-                exc,
-                duplicate_message=f"外部回调过渡 Workline Inbox 幂等重复，RuntimeInbox ACK 保持 accepted: {callback_type}",
-            )
-            transition_duplicate = True
-            if duplicate_inbox is not None:
-                trace = trace.with_inbox(duplicate_inbox)
-
-        if not transition_duplicate:
-            await self._resolve_rack_task_service().record_callback_from_external_http(
+        # RuntimeInbox record 是 external callback 唯一 evidence/trace inbox。
+        trace = trace.with_inbox(runtime_inbox_result.record)
+        await self._resolve_rack_task_service().record_callback_from_external_http(
+            db=db,
+            payload_json=payload,
+            trace_id=trace.trace_id,
+        )
+        if _is_handling_callback(callback_type, payload):
+            await self._resolve_handling_operation_service().record_callback_from_external_http(
                 db=db,
                 payload_json=payload,
                 trace_id=trace.trace_id,
             )
-            if _is_handling_callback(callback_type, payload):
-                await self._resolve_handling_operation_service().record_callback_from_external_http(
-                    db=db,
-                    payload_json=payload,
-                    trace_id=trace.trace_id,
-                )
-            if lifecycle_only:
-                inbox_id = getattr(created_inbox, "id", None)
-                if not isinstance(inbox_id, int):
-                    raise RuntimeError("生命周期回调 Inbox 缺少 ID，无法标记已处理")
-                _ = await inbox_service.mark_as_processed(db, inbox_id, auto_commit=False)
 
-        if transition_duplicate:
-            await db.commit()
-            await publish_deferred_sse_events(db)
-        else:
-            await self._commit_and_enqueue_runtime_inbox_processing(
-                db,
-                enqueue_processing=_skip_workline_processing_enqueue if lifecycle_only else enqueue_processing,
-            )
+        await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
 
         return ExternalCallbackOutcome(
             trace_id=trace.trace_id or "",

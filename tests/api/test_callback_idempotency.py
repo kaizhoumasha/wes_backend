@@ -345,7 +345,7 @@ class TestCallbackExternalIdempotency:
         assert response1["code"] == "1000"
         assert response2["code"] == "1000"
         assert _response_data(response2)["status"] == "duplicate"
-        assert mock_create_inbox.await_count == 1
+        assert mock_create_inbox.await_count == 0
         assert mock_enqueue.call_count == 1
         assert mock_log_callback.await_count == 2
         log_kwargs = _await_kwargs(mock_log_callback)

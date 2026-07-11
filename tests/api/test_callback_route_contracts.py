@@ -180,7 +180,6 @@ class TestCallbackEnqueueFallback:
             callback_type="WMS_RACK_TASK_RESULT",
             payload=payload,
             request_id="req-wms-physical",
-            inbox_service=_transition_inbox_service_stub(),
             trace_id="trace-wms-001",
             enqueue_processing=lambda: None,
         )
@@ -223,7 +222,6 @@ class TestCallbackEnqueueFallback:
             callback_type="CTU_BIN_MOVE_COMPLETED",
             payload=payload,
             request_id="req-ctu-bin-completed",
-            inbox_service=_transition_inbox_service_stub(),
             trace_id="trace-bin-001",
             enqueue_processing=lambda: None,
         )
@@ -258,7 +256,6 @@ class TestCallbackEnqueueFallback:
             callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
             payload=payload,
             request_id="REQ-FULL-BOX-001",
-            inbox_service=_transition_inbox_service_stub(),
             trace_id="trace-full-box-001",
             enqueue_processing=lambda: None,
         )
@@ -294,7 +291,6 @@ class TestCallbackEnqueueFallback:
                 dispatch_key="handling:bin-operation:trace-001:move:1",
             ),
             request_id="req-duplicate-ctu",
-            inbox_service=_transition_inbox_service_stub(),
             trace_id="trace-bin-001",
             enqueue_processing=lambda: None,
         )
@@ -307,7 +303,7 @@ class TestCallbackEnqueueFallback:
         handling_operation_service.record_callback_from_external_http.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_process_external_lifecycle_only_rack_callback_does_not_enqueue_default_processor(self) -> None:
+    async def test_process_external_lifecycle_only_rack_callback_enqueues_runtime_processor_after_commit(self) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
         class RecordingRackTaskService:
@@ -335,12 +331,47 @@ class TestCallbackEnqueueFallback:
                 callback_type="WMS_RACK_TASK_RESULT",
                 payload=payload,
                 request_id="req-wms-lifecycle-only",
-                inbox_service=_transition_inbox_service_stub(),
                 trace_id="trace-wms-lifecycle-only",
             )
 
         db.commit.assert_awaited_once()
-        service._enqueue_runtime_inbox_processing.assert_not_called()
+        service._enqueue_runtime_inbox_processing.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_process_external_broker_failure_does_not_rollback_committed_runtime_inbox(self) -> None:
+        """RuntimeInbox 与 lifecycle 先提交；broker 失败只降级为 warning。"""
+        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+        rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
+        service = CallbackOrchestrationService(
+            rack_task_service=rack_task_service,
+            runtime_inbox_writer=_runtime_inbox_writer_stub(),
+        )
+        db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+        enqueue_processing = MagicMock(side_effect=RuntimeError("broker unavailable"))
+
+        with patch(
+            "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
+            new=AsyncMock(),
+        ):
+            outcome = await service.process_external(
+                db,  # type: ignore[arg-type]
+                callback_type="WMS_RACK_TASK_RESULT",
+                payload=create_wms_external_payload(
+                    callback_type="WMS_RACK_TASK_RESULT",
+                    dispatch_key="external:smt:release-001:RACK_OPERATION:broker-fail",
+                    status="SUCCEEDED",
+                ),
+                request_id="req-wms-broker-fail",
+                trace_id="trace-wms-broker-fail",
+                enqueue_processing=enqueue_processing,
+            )
+
+        assert outcome.is_duplicate is False
+        rack_task_service.record_callback_from_external_http.assert_awaited_once()
+        db.commit.assert_awaited_once()
+        enqueue_processing.assert_called_once()
+        db.rollback.assert_not_awaited()
 
 
 class TestCallbackContractBoundary:

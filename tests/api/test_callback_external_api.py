@@ -81,10 +81,7 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        inbox_kwargs = _await_kwargs(mock_create_inbox)
-        assert inbox_kwargs["callback_type"] == "AGV_TASK_RESULT"
-        assert inbox_kwargs["trace_id"] == "trace-agv-001"
-        assert inbox_kwargs["source_message_id"] == "req-ext-001"
+        mock_create_inbox.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["trace_id"] == "trace-agv-001"
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
@@ -161,10 +158,7 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        inbox_kwargs = _await_kwargs(mock_create_inbox)
-        assert inbox_kwargs["callback_type"] == "WMS_ROUGH_SORTER_INBOUND"
-        assert inbox_kwargs["payload"]["runtime_capability"] == "rough_sorter_inbound"
-        assert inbox_kwargs["payload"]["data"]["pkg_code"] == "PKG-ROUGH-DISPATCH-001"
+        mock_create_inbox.assert_not_awaited()
         mock_enqueue.assert_called_once()
 
     @pytest.mark.asyncio
@@ -380,10 +374,9 @@ class TestCallbackExternalAPI:
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
         assert _response_data(response)["trace_id"] == "req-wms-no-trace"
-        create_kwargs = _await_kwargs(mock_create_inbox)
-        assert create_kwargs["trace_id"] == "req-wms-no-trace"
+        mock_create_inbox.assert_not_awaited()
         rack_task_service.record_callback_from_external_http.assert_awaited_once()
-        mock_mark_processed.assert_awaited_once_with(db_session, 321, auto_commit=False)
+        mock_mark_processed.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["trace_id"] == "req-wms-no-trace"
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
@@ -473,7 +466,7 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_awaited_once()
+        mock_create_inbox.assert_not_awaited()
         rack_task_service.record_callback_from_external_http.assert_awaited_once()
         mock_mark_processed.assert_not_awaited()
         log_kwargs = _await_kwargs(mock_log_callback)
@@ -629,7 +622,7 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_awaited_once()
+        mock_create_inbox.assert_not_awaited()
         handling_service.record_callback_from_external_http.assert_awaited_once()
         callback_kwargs = handling_service.record_callback_from_external_http.await_args.kwargs
         assert callback_kwargs["payload_json"]["exchange_status"] == "BUSINESS_COMPLETED"
@@ -685,15 +678,15 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_awaited_once()
+        mock_create_inbox.assert_not_awaited()
         rack_task_service.record_callback_from_external_http.assert_awaited_once()
-        mock_mark_processed.assert_awaited_once_with(db_session, 321, auto_commit=False)
+        mock_mark_processed.assert_not_awaited()
         callback_kwargs = rack_task_service.record_callback_from_external_http.await_args.kwargs
         assert callback_kwargs["payload_json"]["dispatch_key"] == "external:smt:release-001:RACK_OPERATION:1"
         assert callback_kwargs["payload_json"]["status"] == "SUCCEEDED"
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
-        mock_enqueue.assert_not_called()
+        mock_enqueue.assert_called_once()
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -748,16 +741,16 @@ class TestCallbackExternalAPI:
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
         rack_task_service.record_callback_from_external_http.assert_awaited_once()
-        mock_mark_processed.assert_awaited_once_with(db_session, 322, auto_commit=False)
+        mock_mark_processed.assert_not_awaited()
         callback_kwargs = rack_task_service.record_callback_from_external_http.await_args.kwargs
         assert callback_kwargs["payload_json"]["task_status"] == "FAILED"
         assert callback_kwargs["payload_json"]["reason_code"] == "RCS_RACK_OPERATION_FAILED"
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
-        mock_enqueue.assert_not_called()
+        mock_enqueue.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_callback_external_transition_duplicate_submits_without_recording_rack_task_again(
+    async def test_callback_external_ignores_legacy_transition_duplicate_and_uses_runtime_authority(
         self,
         db_session: AsyncSession,
         build_request: RequestFactory,
@@ -801,11 +794,11 @@ class TestCallbackExternalAPI:
 
         assert response["code"] == "1000"
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_awaited_once()
-        rack_task_service.record_callback_from_external_http.assert_not_awaited()
+        mock_create_inbox.assert_not_awaited()
+        rack_task_service.record_callback_from_external_http.assert_awaited_once()
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs["ingress_outcome"] == "ACCEPTED"
-        mock_enqueue.assert_not_called()
+        mock_enqueue.assert_called_once()
         mock_audit.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -886,7 +879,7 @@ class TestCallbackExternalAPI:
             f"H4 边界应接受 WMS 协议字段, 实际 code={response.get('code')}: {response.get('message', '')}"
         )
         assert _response_data(response)["status"] == "submitted"
-        mock_create_inbox.assert_awaited_once()
+        mock_create_inbox.assert_not_awaited()
         # 验证 H4 失败原因码没出现在日志中 (即顶层字段未被拒绝)
         log_kwargs = _await_kwargs(mock_log_callback)
         assert log_kwargs.get("reason_code") != "CALLBACK_TOP_LEVEL_FIELD_NOT_ALLOWED"

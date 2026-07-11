@@ -182,6 +182,52 @@ async def test_callback_runtime_inbox_writer_external_fallback_source_event_id_i
 
 
 @pytest.mark.asyncio
+async def test_callback_runtime_inbox_writer_external_record_is_canonical_processing_evidence() -> None:
+    """新 external RuntimeInbox record 必须携带 processor 所需 payload 与 trace 证据。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    record = SimpleNamespace(
+        id=301,
+        kind=None,
+        payload_json=None,
+        payload_schema_version=None,
+        trace_id=None,
+        event_id=None,
+        causation_id=None,
+    )
+
+    class RuntimeInboxServiceStub:
+        async def accept_received(self, _db, **_kwargs):
+            return SimpleNamespace(created=True, record=record)
+
+    writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
+    payload = {
+        "callback_type": "WMS_RACK_TASK_RESULT",
+        "source_event_id": "wms-event-001",
+        "dispatch_key": "rack:001",
+    }
+
+    result = await writer.write_external_callback(
+        SimpleNamespace(),
+        payload=payload,
+        request_id="req-external-evidence",
+        trace_id="trace-external-evidence",
+        event_id="event-external-evidence",
+        causation_id="cause-external-evidence",
+    )
+
+    assert result.record is record
+    assert record.kind == "EXTERNAL_HTTP"
+    assert record.payload_json == payload
+    assert record.payload_json is not payload
+    assert record.payload_schema_version == 1
+    assert record.trace_id == "trace-external-evidence"
+    assert record.event_id == "event-external-evidence"
+    assert record.causation_id == "cause-external-evidence"
+
+
+@pytest.mark.asyncio
 async def test_callback_runtime_inbox_writer_result_fallback_source_event_id_is_payload_stable() -> None:
     """result 缺少 event_id/source_event_id 时，不能退回到每次 HTTP request_id。"""
 
@@ -430,7 +476,7 @@ async def test_process_event_uses_runtime_inbox_as_authority() -> None:
 
 @pytest.mark.asyncio
 async def test_process_external_uses_runtime_inbox_as_authority() -> None:
-    """external callback accepted 后写过渡 Workline inbox 并记录 lifecycle。"""
+    """external callback accepted 后仅以 RuntimeInbox record 作为证据并记录 lifecycle。"""
 
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
@@ -443,7 +489,6 @@ async def test_process_external_uses_runtime_inbox_as_authority() -> None:
             writer_kwargs.update(kwargs)
             return _runtime_accept_result(created=True, record_id=301)
 
-    legacy_inbox_service = SimpleNamespace(create_external_http_inbox=AsyncMock(), mark_as_processed=AsyncMock())
     rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
     service = CallbackOrchestrationService(
         rack_task_service=rack_task_service,
@@ -464,7 +509,6 @@ async def test_process_external_uses_runtime_inbox_as_authority() -> None:
             "data": {"to_location": "STATION-01"},
         },
         request_id="req-external-001",
-        inbox_service=legacy_inbox_service,
         trace_id="trace-ext-001",
         enqueue_processing=lambda: None,
     )
@@ -473,8 +517,7 @@ async def test_process_external_uses_runtime_inbox_as_authority() -> None:
     assert outcome.trace_id == "trace-ext-001"
     assert call_order == ["runtime"]
     assert writer_kwargs["payload"]["callback_type"] == "AGV_TASK_RESULT"
-    legacy_inbox_service.create_external_http_inbox.assert_awaited_once()
-    legacy_inbox_service.mark_as_processed.assert_not_awaited()
+    assert writer_kwargs["trace_id"] == "trace-ext-001"
     rack_task_service.record_callback_from_external_http.assert_awaited_once()
     service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()  # type: ignore[attr-defined]
 
@@ -521,7 +564,6 @@ async def test_process_external_duplicate_uses_runtime_inbox_ack_and_skips_legac
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
     writer = SimpleNamespace(write_external_callback=AsyncMock(return_value=_runtime_accept_result(created=False)))
-    legacy_inbox_service = SimpleNamespace(create_external_http_inbox=AsyncMock(), mark_as_processed=AsyncMock())
     rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
     handling_operation_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
     service = CallbackOrchestrationService(
@@ -543,15 +585,12 @@ async def test_process_external_duplicate_uses_runtime_inbox_ack_and_skips_legac
             "data": {"to_location": "STATION-01"},
         },
         request_id="req-external-dup",
-        inbox_service=legacy_inbox_service,
         trace_id="trace-ext-dup",
         enqueue_processing=lambda: None,
     )
 
     assert outcome.is_duplicate is True
     writer.write_external_callback.assert_awaited_once()
-    legacy_inbox_service.create_external_http_inbox.assert_not_awaited()
-    legacy_inbox_service.mark_as_processed.assert_not_awaited()
     rack_task_service.record_callback_from_external_http.assert_not_awaited()
     handling_operation_service.record_callback_from_external_http.assert_not_awaited()
     service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]

@@ -106,11 +106,14 @@ class CallbackRuntimeInboxWriter:
         *,
         payload: dict[str, Any],
         request_id: str | None,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
     ) -> RuntimeInboxAcceptResult:
         provider_code = _resolve_first_str(payload, ("source_system",))
         callback_type = _resolve_first_str(payload, ("callback_type",)) or "UNKNOWN"
         normalized_provider = provider_code or callback_type.split("_", 1)[0] or "UNKNOWN"
-        return await self._service.accept_received(
+        accepted = await self._service.accept_received(
             db,
             provider_code=normalized_provider,
             event_type=callback_type,
@@ -118,6 +121,16 @@ class CallbackRuntimeInboxWriter:
             payload_hash=_canonical_payload_hash(payload),
             correlation_id=None,
         )
+        if accepted.created:
+            # RuntimeInbox record 是 external callback 唯一事实源，同时也是异步
+            # processor 的 canonical evidence；identity ACK 完成后在同一事务补齐。
+            accepted.record.kind = "EXTERNAL_HTTP"
+            accepted.record.payload_json = dict(payload)
+            accepted.record.payload_schema_version = 1
+            accepted.record.trace_id = trace_id
+            accepted.record.event_id = event_id
+            accepted.record.causation_id = causation_id
+        return accepted
 
 
 callback_runtime_inbox_writer = CallbackRuntimeInboxWriter()

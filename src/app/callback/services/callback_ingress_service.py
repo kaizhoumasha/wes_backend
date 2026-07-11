@@ -2092,7 +2092,6 @@ async def handle_callback_external(
             callback_type=callback_type,
             payload=callback_data,
             request_id=request_id,
-            inbox_service=inbox_service,
             trace_id=external_trace_id,
             event_id=_resolve_callback_event_id(callback_data),
             causation_id=_resolve_callback_causation_id(callback_data),
