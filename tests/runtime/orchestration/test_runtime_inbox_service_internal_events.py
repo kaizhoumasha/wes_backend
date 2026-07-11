@@ -316,9 +316,15 @@ async def test_accept_internal_event_with_all_optional_args(db_session) -> None:
 
 @pytest.mark.asyncio
 async def test_accept_internal_event_uses_explicit_correlation_id(db_session) -> None:
-    """调用方显式传 correlation_id 时, 必须直接采纳, 不做 trace_id 反查。"""
+    """调用方显式传入已持久化 correlation_id 时，必须直接采用。"""
 
     service = RuntimeInboxService()
+    correlation = ExecutionCorrelation(
+        correlation_id="corr-explicit-001",
+        trace_id="trace-persisted-correlation",
+    )
+    db_session.add(correlation)
+    await db_session.flush()
 
     result = await service.accept_internal_event(
         db_session,
@@ -330,6 +336,21 @@ async def test_accept_internal_event_uses_explicit_correlation_id(db_session) ->
 
     assert result.created is True
     assert result.record.correlation_id == "corr-explicit-001"
+
+
+@pytest.mark.asyncio
+async def test_accept_internal_event_rejects_unknown_explicit_correlation_id(db_session) -> None:
+    """显式 correlation_id 不存在时必须在 service 边界拒绝，而非等待 FK flush 失败。"""
+
+    service = RuntimeInboxService()
+
+    with pytest.raises(ValueError, match="unknown correlation_id"):
+        await service.accept_internal_event(
+            db_session,
+            event_type="INTERNAL_HEARTBEAT",
+            payload_json={},
+            correlation_id="corr-not-persisted",
+        )
 
 
 @pytest.mark.asyncio
@@ -346,6 +367,29 @@ async def test_accept_internal_event_orphan_trace_does_not_synthesize_correlatio
     )
 
     assert result.record.trace_id == "evt-smt-source-pick-101"
+    assert result.record.correlation_id is None
+
+
+@pytest.mark.asyncio
+async def test_accept_internal_event_duplicate_trace_does_not_choose_arbitrary_correlation_id(db_session) -> None:
+    """trace_id 非唯一时不得任意选择一条 ExecutionCorrelation。"""
+
+    service = RuntimeInboxService()
+    db_session.add_all(
+        [
+            ExecutionCorrelation(correlation_id="corr-duplicate-trace-a", trace_id="trace-duplicate"),
+            ExecutionCorrelation(correlation_id="corr-duplicate-trace-b", trace_id="trace-duplicate"),
+        ]
+    )
+    await db_session.flush()
+
+    result = await service.accept_internal_event(
+        db_session,
+        event_type="INTERNAL_HEARTBEAT",
+        payload_json={},
+        trace_id="trace-duplicate",
+    )
+
     assert result.record.correlation_id is None
 
 
@@ -518,6 +562,13 @@ async def test_internal_producers_write_non_empty_priority_bucket_and_received_a
     service = RuntimeInboxService()
     session = ExecutionSession(workline_id=31, manifest_version="manifest-v1", state="RUNNING")
     db_session.add(session)
+    await db_session.flush()
+    correlation = ExecutionCorrelation(
+        correlation_id="corr-internal-lower-priority",
+        execution_session_id=session.id,
+        trace_id="trace-internal-lower-priority",
+    )
+    db_session.add(correlation)
     await db_session.flush()
 
     device = await service.accept_device_event(

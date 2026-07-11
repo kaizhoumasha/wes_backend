@@ -430,7 +430,7 @@ class RuntimeInboxService:
         *,
         trace_id: str | None,
     ) -> str | None:
-        """按 trace_id 查 ExecutionCorrelation, 命中返回 correlation_id; 未命中返回 None。"""
+        """按 trace_id 查唯一 ExecutionCorrelation；零条或多条命中均保持未关联。"""
 
         if not trace_id:
             return None
@@ -438,10 +438,36 @@ class RuntimeInboxService:
 
         from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 
-        correlation = (
-            await db.execute(select(ExecutionCorrelation).where(ExecutionCorrelation.trace_id == trace_id))
+        correlation_ids = (
+            (
+                await db.execute(
+                    select(ExecutionCorrelation.correlation_id)
+                    .where(ExecutionCorrelation.trace_id == trace_id)
+                    .order_by(ExecutionCorrelation.id)
+                    .limit(2)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return correlation_ids[0] if len(correlation_ids) == 1 else None
+
+    @staticmethod
+    async def _require_existing_correlation_id(db: AsyncSession, *, correlation_id: str) -> str:
+        """验证显式 correlation_id 已持久化，避免把 FK 错误推迟到 flush。"""
+
+        from sqlalchemy import select
+
+        from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+
+        existing = (
+            await db.execute(
+                select(ExecutionCorrelation.correlation_id).where(ExecutionCorrelation.correlation_id == correlation_id)
+            )
         ).scalar_one_or_none()
-        return correlation.correlation_id if correlation is not None else None
+        if existing is None:
+            raise ValueError(f"unknown correlation_id: {correlation_id}")
+        return existing
 
     async def accept_device_event(
         self,
@@ -465,7 +491,7 @@ class RuntimeInboxService:
         - provider_code 从 device_code 前缀派生 (ARM_01 -> ARM), 默认 "ECS"。
         - 本入口没有 ExecutionSession 映射参数，因此 execution_session_id 留空；
           processor 不得从 WorklineSession ID 推导该字段。
-        - correlation_id 通过 trace_id 反查 ExecutionCorrelation, 查不到则回退 trace_id。
+        - correlation_id 通过 trace_id 反查 ExecutionCorrelation；非唯一或查不到时保持为空。
         """
 
         if not isinstance(event_type, str) or not event_type:
@@ -539,7 +565,9 @@ class RuntimeInboxService:
         if not isinstance(payload_json, dict):
             raise TypeError("internal event payload_json must be a dict")
 
-        if correlation_id is None:
+        if correlation_id is not None:
+            correlation_id = await self._require_existing_correlation_id(db, correlation_id=correlation_id)
+        else:
             correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
 
         record_data: dict[str, Any] = {
