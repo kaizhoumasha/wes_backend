@@ -126,16 +126,13 @@ PARITY_CASES = (
     ),
     ParityCase(
         name="duplicate_material_conflict",
-        payload={
-            "event_type": "SCAN_COMPLETED",
-            "data": {"HHPN": "NEW", "data": {"HHPN": "NEW"}},
-        },
+        payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "NEW"}},
         session_status="WAITING_DEVICE_RESULT",
         plugin_key="rough_sorter",
         session_context={
             "initial_payload": {
                 "event_type": "SCAN_COMPLETED",
-                "data": {"HHPN": "OLD", "data": {"HHPN": "OLD"}},
+                "data": {"HHPN": "OLD"},
             },
         },
         expected=(1, 0, 1, 0, 0),
@@ -219,9 +216,10 @@ class _Repository:
 class _TerminalRecorder:
     """同时适配 legacy 与 RuntimeInboxService 的终态方法。"""
 
-    def __init__(self, inbox: object) -> None:
+    def __init__(self, inbox: object, *, accept_updates: bool = True) -> None:
         self.repo = _Repository(inbox)
         self.actions: list[dict[str, Any]] = []
+        self.accept_updates = accept_updates
 
     def _record(self, action: str, args: tuple[object, ...], kwargs: dict[str, Any]) -> None:
         self.actions.append(
@@ -252,15 +250,15 @@ class _TerminalRecorder:
 
     async def mark_processed(self, *args: object, **kwargs: object) -> bool:
         self._record("processed", args, kwargs)
-        return True
+        return self.accept_updates
 
     async def mark_failed(self, *args: object, **kwargs: object) -> bool:
         self._record("resource_wait" if kwargs.get("retryable") else "failed", args, kwargs)
-        return True
+        return self.accept_updates
 
     async def mark_dead_letter(self, *args: object, **kwargs: object) -> bool:
         self._record("dead_letter", args, kwargs)
-        return True
+        return self.accept_updates
 
 
 def _build_entities(
@@ -316,10 +314,18 @@ async def _run_case(
     *,
     processor_kind: ProcessorKind,
     case: ParityCase,
-) -> tuple[dict[str, int], list[str], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    accept_updates: bool = True,
+) -> tuple[
+    dict[str, int],
+    list[str],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    _FakeDb,
+]:
     inbox, session, workline, device, command = _build_entities(case)
     db = _FakeDb(stale_session_on_write=case.stale_session_on_write)
-    terminal = _TerminalRecorder(inbox)
+    terminal = _TerminalRecorder(inbox, accept_updates=accept_updates)
     archives: list[str] = []
     diagnostics: list[dict[str, Any]] = []
     interactions: list[dict[str, Any]] = []
@@ -453,7 +459,7 @@ async def _run_case(
                 trace_id=inbox.trace_id,
             ),
         )
-        return result, archives, terminal.actions, diagnostics, interactions
+        return result, archives, terminal.actions, diagnostics, interactions, db
 
     class _Delegate:
         async def process(self, *args: object, write_callback: object, **kwargs: object) -> OrchestratorResult:
@@ -475,7 +481,7 @@ async def _run_case(
         inbox_repository=_Repository(inbox),  # type: ignore[arg-type]
     )
     result = await processor.process_claimed(db, claim={"id": 1, "processor_token": "token-parity"})
-    return result, archives, terminal.actions, diagnostics, interactions
+    return result, archives, terminal.actions, diagnostics, interactions, db
 
 
 @pytest.mark.asyncio
@@ -487,7 +493,7 @@ async def test_processor_characterization_parity(
     case: ParityCase,
 ) -> None:
     """同一 characterization table 必须约束 legacy 与 three-stage 两个入口。"""
-    result, archives, terminal_actions, diagnostics, interactions = await _run_case(
+    result, archives, terminal_actions, diagnostics, interactions, _ = await _run_case(
         monkeypatch,
         processor_kind=processor_kind,
         case=case,
@@ -519,3 +525,37 @@ async def test_processor_characterization_parity(
     )
     if case.expected_writeback_calls is not None:
         assert len([call for call in interactions if call["kind"] == "writeback"]) == case.expected_writeback_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case_name", "first_action"),
+    (
+        ("duplicate_entry", "processed"),
+        ("scan_invalid", "failed"),
+        ("duplicate_material_conflict", "dead_letter"),
+        ("scan_valid", "processed"),
+        ("resource_wait", "resource_wait"),
+    ),
+)
+async def test_three_stage_lost_fencing_rolls_back_without_success(
+    monkeypatch: pytest.MonkeyPatch,
+    case_name: str,
+    first_action: str,
+) -> None:
+    """RuntimeInbox lease 丢失时不得提交 effects/timeline/diagnostic 或报告成功。"""
+    case = next(item for item in PARITY_CASES if item.name == case_name)
+
+    result, _, terminal_actions, _, _, db = await _run_case(
+        monkeypatch,
+        processor_kind="three_stage",
+        case=case,
+        accept_updates=False,
+    )
+
+    assert result["success"] == 0
+    assert result["resource_wait"] == 0
+    assert result["failed"] == 1
+    assert terminal_actions[0]["action"] == first_action
+    assert db.committed == 0
+    assert db.rolled_back >= 1

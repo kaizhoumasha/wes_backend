@@ -59,6 +59,16 @@ class WriteBackState:
     disposition: WriteBackDisposition | None = None
 
 
+class RuntimeInboxLeaseLostError(RuntimeError):
+    """RuntimeInbox 终态 fencing 更新未命中，当前 processor lease 已失效。"""
+
+
+def _require_fenced_update(updated: bool, *, action: str, inbox_id: int) -> None:
+    """拒绝继续提交已失去 RuntimeInbox lease 的事务。"""
+    if not updated:
+        raise RuntimeInboxLeaseLostError(f"RuntimeInbox {inbox_id} lease lost before {action}")
+
+
 def _session_write_snapshot(session: Any) -> tuple[Any, Any]:
     """提取写入前的最小 session 快照, 用于锁内防止 stale write."""
     return (
@@ -179,7 +189,7 @@ async def _record_late_command_result_archive_timeline(
         related_command_id=resolve_entity_id(command),
     )
     try:
-        _ = await add_timeline_with_sequence(db, timeline, seq_no=0)
+        _ = await add_timeline_with_sequence(db, timeline)
     except Exception as exc:
         logger.warning(f"迟到命令结果归档 timeline 记录失败: {exc}")
 
@@ -233,7 +243,7 @@ async def _record_duplicate_entry_archive_timeline(
         related_inbox_id=resolve_entity_id(inbox),
     )
     try:
-        _ = await add_timeline_with_sequence(db, timeline, seq_no=0)
+        _ = await add_timeline_with_sequence(db, timeline)
     except Exception as exc:
         logger.warning(f"重复入口归档 timeline 记录失败: {exc}")
 
@@ -334,7 +344,15 @@ class RuntimeInboxWriteBackService:
                         payload=payload,
                         reason="COMMAND_RESULT_BECAME_STALE_BEFORE_WRITE",
                     )
-                    _ = await self.inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
+                    _require_fenced_update(
+                        await self.inbox_service.mark_processed(
+                            db,
+                            inbox_id=inbox_pk,
+                            lease_token=processor_token,
+                        ),
+                        action="mark_processed",
+                        inbox_id=inbox_pk,
+                    )
                     await db.commit()
                     state.disposition = WriteBackDisposition.PROCESSED
                     state.write_effects_applied = True
@@ -358,15 +376,27 @@ class RuntimeInboxWriteBackService:
                 write_disposition = effect_result.disposition
                 state.disposition = write_disposition
                 if write_disposition == WriteBackDisposition.RESOURCE_RETRY:
-                    _ = await self.inbox_service.mark_failed(
-                        db,
+                    _require_fenced_update(
+                        await self.inbox_service.mark_failed(
+                            db,
+                            inbox_id=inbox_pk,
+                            lease_token=processor_token,
+                            error_message="RESOURCE_WAIT",
+                            retryable=True,
+                        ),
+                        action="mark_failed",
                         inbox_id=inbox_pk,
-                        lease_token=processor_token,
-                        error_message="RESOURCE_WAIT",
-                        retryable=True,
                     )
                 elif write_disposition == WriteBackDisposition.PROCESSED:
-                    _ = await self.inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
+                    _require_fenced_update(
+                        await self.inbox_service.mark_processed(
+                            db,
+                            inbox_id=inbox_pk,
+                            lease_token=processor_token,
+                        ),
+                        action="mark_processed",
+                        inbox_id=inbox_pk,
+                    )
                     session_context = dict(_payload_for_session(session))
                     resource_wait_context = payload_dict(session_context.get("resource_wait"))
                     if optional_int(resource_wait_context.get("inbox_id")) == inbox_pk and resource_wait_context.get(
@@ -418,6 +448,7 @@ class RuntimeInboxWriteBackService:
 
 
 __all__ = [
+    "RuntimeInboxLeaseLostError",
     "RuntimeInboxWriteBackService",
     "WriteBackState",
     "_is_late_or_duplicate_command_result_for_session",

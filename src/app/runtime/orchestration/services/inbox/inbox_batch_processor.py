@@ -334,7 +334,7 @@ def _session_context(session: Any) -> dict[str, Any]:
 def _normalized_entry_material_evidence(*, plugin_key: str | None, payload: dict[str, Any]) -> dict[str, str]:
     """提取插件拥有的入口物料证据，当前优先复用 SixInOne parser。"""
     try:
-        six_in_one = parse_workline_six_in_one(plugin_key, payload_dict(payload.get("data")))
+        six_in_one = parse_workline_six_in_one(plugin_key, payload)
     except (TypeError, ValueError):
         return {}
     if six_in_one is None:

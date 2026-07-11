@@ -22,8 +22,6 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
     RuntimeInboxWriteBackService,
     WriteBackState,
     _is_late_or_duplicate_command_result_for_session,
-    _record_duplicate_entry_archive_timeline,
-    _record_late_command_result_archive_timeline,
     _result_requires_outbox_dispatch,
     _session_write_snapshot,
 )
@@ -39,8 +37,6 @@ __all__ = [
     "WriteBackState",
     "_build_orchestrator_lock_provider",
     "_is_late_or_duplicate_command_result_for_session",
-    "_record_duplicate_entry_archive_timeline",
-    "_record_late_command_result_archive_timeline",
     "_result_requires_outbox_dispatch",
     "_session_write_snapshot",
 ]

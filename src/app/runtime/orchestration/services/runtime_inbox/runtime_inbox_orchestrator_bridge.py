@@ -57,6 +57,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
     _payload_for_inbox,
     _record_duplicate_entry_archive_timeline,
     _record_late_command_result_archive_timeline,
+    _require_fenced_update,
     _session_status_value,
     _session_write_snapshot,
 )
@@ -304,12 +305,16 @@ class RuntimeInboxProcessorBridge:
             )
             if not validation_outcome.proceed_to_orchestrator:
                 # SCAN gate 失败 -> 终态 FAILED.
-                _ = await self.inbox_service.mark_failed(
-                    db,
+                _require_fenced_update(
+                    await self.inbox_service.mark_failed(
+                        db,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                        error_message=validation_outcome.error_message or "validation failed",
+                        retryable=False,
+                    ),
+                    action="mark_failed",
                     inbox_id=inbox_pk,
-                    lease_token=processor_token,
-                    error_message=validation_outcome.error_message or "validation failed",
-                    retryable=False,
                 )
                 await db.commit()
                 result["failed"] += 1
@@ -370,12 +375,16 @@ class RuntimeInboxProcessorBridge:
                     device=device,
                     command=command,
                 )
-                _ = await self.inbox_service.mark_failed(
-                    db,
+                _require_fenced_update(
+                    await self.inbox_service.mark_failed(
+                        db,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                        error_message=error_msg,
+                        retryable=False,
+                    ),
+                    action="mark_failed",
                     inbox_id=inbox_pk,
-                    lease_token=processor_token,
-                    error_message=error_msg,
-                    retryable=False,
                 )
                 await db.commit()
                 result["failed"] += 1
@@ -407,11 +416,15 @@ class RuntimeInboxProcessorBridge:
                         command=command,
                         extra=conflict_details,
                     )
-                    _ = await self.inbox_service.mark_dead_letter(
-                        db,
+                    _require_fenced_update(
+                        await self.inbox_service.mark_dead_letter(
+                            db,
+                            inbox_id=inbox_pk,
+                            lease_token=processor_token,
+                            error_message=conflict_message,
+                        ),
+                        action="mark_dead_letter",
                         inbox_id=inbox_pk,
-                        lease_token=processor_token,
-                        error_message=conflict_message,
                     )
                     await db.commit()
                     result["failed"] += 1
@@ -430,7 +443,15 @@ class RuntimeInboxProcessorBridge:
                     payload=payload,
                     reason="SESSION_ALREADY_IN_PROGRESS_OR_TERMINAL",
                 )
-                _ = await self.inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
+                _require_fenced_update(
+                    await self.inbox_service.mark_processed(
+                        db,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                    ),
+                    action="mark_processed",
+                    inbox_id=inbox_pk,
+                )
                 await db.commit()
                 result["success"] += 1
                 result["processed"] += 1
@@ -451,7 +472,15 @@ class RuntimeInboxProcessorBridge:
                     payload=payload,
                     reason="COMMAND_RESULT_NO_LONGER_MATCHES_SESSION_WAIT",
                 )
-                _ = await self.inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
+                _require_fenced_update(
+                    await self.inbox_service.mark_processed(
+                        db,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                    ),
+                    action="mark_processed",
+                    inbox_id=inbox_pk,
+                )
                 await db.commit()
                 result["success"] += 1
                 result["processed"] += 1
@@ -521,12 +550,16 @@ class RuntimeInboxProcessorBridge:
                     device=device,
                     command=command,
                 )
-                _ = await self.inbox_service.mark_failed(
-                    db,
+                _require_fenced_update(
+                    await self.inbox_service.mark_failed(
+                        db,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                        error_message=error_msg,
+                        retryable=False,
+                    ),
+                    action="mark_failed",
                     inbox_id=inbox_pk,
-                    lease_token=processor_token,
-                    error_message=error_msg,
-                    retryable=False,
                 )
                 await db.commit()
                 result["failed"] += 1
@@ -546,15 +579,21 @@ class RuntimeInboxProcessorBridge:
             )
             try:
                 if inbox_pk is not None:
-                    _ = await self.inbox_service.mark_failed(
-                        db,
+                    _require_fenced_update(
+                        await self.inbox_service.mark_failed(
+                            db,
+                            inbox_id=inbox_pk,
+                            lease_token=processor_token,
+                            error_message=str(e),
+                            retryable=False,
+                        ),
+                        action="mark_failed",
                         inbox_id=inbox_pk,
-                        lease_token=processor_token,
-                        error_message=str(e),
-                        retryable=False,
                     )
                     await db.commit()
             except Exception as mark_error:
+                with suppress(Exception):
+                    await db.rollback()
                 logger.warning(f"Inbox {inbox_pk_text} session resolve 失败补记失败: {mark_error}")
             result["failed"] += 1
             result["processed"] += 1
@@ -574,15 +613,21 @@ class RuntimeInboxProcessorBridge:
                 if inbox_pk is not None:
                     # RuntimeInboxService.mark_failed(retryable=True) 内部按
                     # attempt_count 计算指数退避 next_retry_at, 等价 park_for_retry 语义。
-                    _ = await self.inbox_service.mark_failed(
-                        db,
+                    _require_fenced_update(
+                        await self.inbox_service.mark_failed(
+                            db,
+                            inbox_id=inbox_pk,
+                            lease_token=processor_token,
+                            error_message=str(e),
+                            retryable=True,
+                        ),
+                        action="mark_failed",
                         inbox_id=inbox_pk,
-                        lease_token=processor_token,
-                        error_message=str(e),
-                        retryable=True,
                     )
                     await db.commit()
             except Exception as mark_error:
+                with suppress(Exception):
+                    await db.rollback()
                 logger.warning(f"Inbox {inbox_pk_text} safety blocked 补记失败: {mark_error}")
             result["failed"] += 1
             result["processed"] += 1
@@ -600,15 +645,21 @@ class RuntimeInboxProcessorBridge:
             try:
                 pk_to_mark = inbox_pk or diagnostic_inbox.id
                 if pk_to_mark is not None:
-                    _ = await self.inbox_service.mark_failed(
-                        db,
+                    _require_fenced_update(
+                        await self.inbox_service.mark_failed(
+                            db,
+                            inbox_id=pk_to_mark,
+                            lease_token=processor_token,
+                            error_message=f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
+                            retryable=False,
+                        ),
+                        action="mark_failed",
                         inbox_id=pk_to_mark,
-                        lease_token=processor_token,
-                        error_message=f"处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)",
-                        retryable=False,
                     )
                     await db.commit()
             except Exception as mark_error:
+                with suppress(Exception):
+                    await db.rollback()
                 logger.warning(f"Inbox 超时标记失败: {mark_error}")
             result["failed"] += 1
             result["processed"] += 1
@@ -626,15 +677,21 @@ class RuntimeInboxProcessorBridge:
             try:
                 pk_to_mark = inbox_pk or diagnostic_inbox.id
                 if pk_to_mark is not None:
-                    _ = await self.inbox_service.mark_failed(
-                        db,
+                    _require_fenced_update(
+                        await self.inbox_service.mark_failed(
+                            db,
+                            inbox_id=pk_to_mark,
+                            lease_token=processor_token,
+                            error_message=str(e),
+                            retryable=False,
+                        ),
+                        action="mark_failed",
                         inbox_id=pk_to_mark,
-                        lease_token=processor_token,
-                        error_message=str(e),
-                        retryable=False,
                     )
                     await db.commit()
             except Exception as mark_error:
+                with suppress(Exception):
+                    await db.rollback()
                 logger.warning(f"Inbox {inbox_pk_text} 异常补记失败: {mark_error}")
             result["failed"] += 1
             result["processed"] += 1
@@ -705,7 +762,7 @@ def _session_context(session: Any) -> dict[str, Any]:
 def _normalized_entry_material_evidence(*, plugin_key: str | None, payload: dict[str, Any]) -> dict[str, str]:
     """提取 capability 拥有的入口物料证据。"""
     try:
-        six_in_one = parse_workline_six_in_one(plugin_key, payload_dict(payload.get("data")))
+        six_in_one = parse_workline_six_in_one(plugin_key, payload)
     except (TypeError, ValueError):
         return {}
     if six_in_one is None:
@@ -821,12 +878,16 @@ async def _handle_estop(
             device=device,
             command=command,
         )
-        _ = await inbox_service.mark_failed(
-            db,
+        _require_fenced_update(
+            await inbox_service.mark_failed(
+                db,
+                inbox_id=inbox_pk,
+                lease_token=processor_token,
+                error_message=error_msg,
+                retryable=False,
+            ),
+            action="mark_failed",
             inbox_id=inbox_pk,
-            lease_token=processor_token,
-            error_message=error_msg,
-            retryable=False,
         )
         return False
 
@@ -840,7 +901,15 @@ async def _handle_estop(
         source_command_id=resolve_entity_id(command) or getattr(inbox, "command_id", None),
         trigger_payload=payload,
     )
-    _ = await inbox_service.mark_processed(db, inbox_id=inbox_pk, lease_token=processor_token)
+    _require_fenced_update(
+        await inbox_service.mark_processed(
+            db,
+            inbox_id=inbox_pk,
+            lease_token=processor_token,
+        ),
+        action="mark_processed",
+        inbox_id=inbox_pk,
+    )
     return True
 
 

@@ -36,6 +36,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
     RuntimeInboxWriteBackService,
     WriteBackState,
     _is_late_or_duplicate_command_result_for_session,
+    _record_duplicate_entry_archive_timeline,
     _record_late_command_result_archive_timeline,
     _result_requires_outbox_dispatch,
     _session_write_snapshot,
@@ -406,6 +407,50 @@ class TestIsLateOrDuplicateCommandResult:
             _is_late_or_duplicate_command_result_for_session(inbox=inbox, payload={}, session=session, command=command)
             is False
         )
+
+
+class TestArchiveTimelineSequence:
+    @pytest.mark.asyncio
+    async def test_duplicate_and_late_archives_delegate_sequence_allocation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """同 session 多次归档必须由 timeline service 分配 seq_no。"""
+        requested_seq_nos: list[int | None] = []
+
+        async def add_with_sequence(db: object, timeline: object, *, seq_no: int | None = None) -> int:
+            _ = db, timeline
+            requested_seq_nos.append(seq_no)
+            return len(requested_seq_nos)
+
+        monkeypatch.setattr(
+            "src.app.runtime.orchestration.services.trace.timeline_sequence_service.add_timeline_with_sequence",
+            add_with_sequence,
+        )
+        session = _make_session()
+        workline = _make_workline()
+        command = SimpleNamespace(id=99, command_code="CMD-1", status="COMPLETED")
+        for inbox_id in (1, 2):
+            inbox = _make_inbox(inbox_id=inbox_id)
+            await _record_duplicate_entry_archive_timeline(
+                SimpleNamespace(),
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                payload=inbox.payload_json,
+                reason="DUPLICATE",
+            )
+            await _record_late_command_result_archive_timeline(
+                SimpleNamespace(),
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                command=command,
+                payload=inbox.payload_json,
+                reason="LATE",
+            )
+
+        assert requested_seq_nos == [None, None, None, None]
 
 
 class TestResultRequiresOutboxDispatch:
