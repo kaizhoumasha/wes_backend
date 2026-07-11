@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -248,6 +249,60 @@ class TestOrchestratorDelegate:
         assert result.success is True
         assert result.intents == []
 
+    @pytest.mark.asyncio
+    async def test_delegate_preserves_failure_result(self) -> None:
+        """Stage 2 失败结果必须原样返回，由 composition 决定终态。"""
+
+        class _FailingOrchestrator:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                _ = args, kwargs
+
+            async def process_inbox(self, **kwargs: object) -> OrchestratorResult:
+                _ = kwargs
+                return OrchestratorResult(success=False, error="business rejected", error_code="BIZ_REJECTED")
+
+        result = await RuntimeInboxOrchestratorDelegate(orchestrator_factory=_FailingOrchestrator).process(
+            db=SimpleNamespace(),
+            session=SimpleNamespace(),
+            workline=SimpleNamespace(),
+            inbox=SimpleNamespace(id=1),
+            devices_by_role={},
+            services=SimpleNamespace(),
+            trace_id="trace-failure",
+        )
+
+        assert result.success is False
+        assert result.error == "business rejected"
+        assert result.error_code == "BIZ_REJECTED"
+
+    @pytest.mark.asyncio
+    async def test_delegate_enforces_timeout_boundary(self) -> None:
+        """Stage 2 超时边界必须抛 TimeoutError 交给 composition 统一失败处理。"""
+
+        class _SlowOrchestrator:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                _ = args, kwargs
+
+            async def process_inbox(self, **kwargs: object) -> OrchestratorResult:
+                _ = kwargs
+                await asyncio.sleep(0.05)
+                return OrchestratorResult(success=True, intents=[])
+
+        delegate = RuntimeInboxOrchestratorDelegate(
+            orchestrator_factory=_SlowOrchestrator,
+            timeout_seconds=0.001,
+        )
+        with pytest.raises(TimeoutError):
+            await delegate.process(
+                db=SimpleNamespace(),
+                session=SimpleNamespace(),
+                workline=SimpleNamespace(),
+                inbox=SimpleNamespace(id=1),
+                devices_by_role={},
+                services=SimpleNamespace(),
+                trace_id="trace-timeout",
+            )
+
 
 # ============================================================
 # Stage 3: Write-back service
@@ -393,6 +448,168 @@ class TestBuildWriteCallback:
         # 验证: state.disposition == PROCESSED + write_effects_applied = True
         assert state.disposition == WriteBackDisposition.PROCESSED
         assert state.write_effects_applied is True
+
+    @pytest.mark.asyncio
+    async def test_write_callback_resource_retry_marks_retryable_failure(self) -> None:
+        """Stage 3 RESOURCE_RETRY 必须携带 lease token 写 retryable FAILED。"""
+        inbox = _make_inbox()
+        session = _make_session()
+        calls: list[dict[str, Any]] = []
+
+        class _Db:
+            async def refresh(self, value: object) -> None:
+                _ = value
+
+            async def commit(self) -> None:
+                pass
+
+            async def rollback(self) -> None:
+                pass
+
+        class _WriteBack:
+            async def write_back(self, *args: object, **kwargs: object) -> RuntimeIntentEffectResult:
+                _ = args, kwargs
+                return RuntimeIntentEffectResult.resource_retry()
+
+        class _InboxService:
+            async def mark_failed(self, db: object, **kwargs: object) -> bool:
+                _ = db
+                calls.append(dict(kwargs))
+                return True
+
+        state = WriteBackState()
+        callback = RuntimeInboxWriteBackService(
+            write_back_service=_WriteBack(),
+            inbox_service=_InboxService(),
+        ).build_write_callback(
+            _Db(),
+            session=session,
+            workline=_make_workline(),
+            inbox=inbox,
+            devices_by_role={},
+            device=None,
+            command=None,
+            inbox_pk=1,
+            session_snapshot=_session_write_snapshot(session),
+            sse_workline_id=20,
+            sse_session_id=10,
+            processor_token="lease-resource",
+            state=state,
+        )
+
+        await callback(OrchestratorResult(success=True, intents=[]))
+
+        assert calls == [
+            {
+                "inbox_id": 1,
+                "lease_token": "lease-resource",
+                "error_message": "RESOURCE_WAIT",
+                "retryable": True,
+            }
+        ]
+        assert state.disposition == WriteBackDisposition.RESOURCE_RETRY
+        assert state.write_effects_applied is True
+
+    @pytest.mark.asyncio
+    async def test_write_callback_rejects_stale_session_before_effects(self) -> None:
+        """Stage 3 stale snapshot 必须在业务 effect 和终态写入前拒绝。"""
+        inbox = _make_inbox()
+        session = _make_session(status="RUNNING")
+        writeback_called = False
+        rollbacks = 0
+
+        class _Db:
+            async def refresh(self, value: object) -> None:
+                value.status = "WAITING_DEVICE_RESULT"
+
+            async def commit(self) -> None:
+                pass
+
+            async def rollback(self) -> None:
+                nonlocal rollbacks
+                rollbacks += 1
+
+        class _WriteBack:
+            async def write_back(self, *args: object, **kwargs: object) -> RuntimeIntentEffectResult:
+                nonlocal writeback_called
+                _ = args, kwargs
+                writeback_called = True
+                return RuntimeIntentEffectResult.processed()
+
+        state = WriteBackState()
+        callback = RuntimeInboxWriteBackService(
+            write_back_service=_WriteBack(),
+            inbox_service=SimpleNamespace(),
+        ).build_write_callback(
+            _Db(),
+            session=session,
+            workline=_make_workline(),
+            inbox=inbox,
+            devices_by_role={},
+            device=None,
+            command=None,
+            inbox_pk=1,
+            session_snapshot=("RUNNING", None),
+            sse_workline_id=20,
+            sse_session_id=10,
+            processor_token="lease-stale",
+            state=state,
+        )
+
+        with pytest.raises(RuntimeError, match="refusing stale orchestrator effects"):
+            await callback(OrchestratorResult(success=True, intents=[]))
+
+        assert writeback_called is False
+        assert rollbacks == 1
+        assert state.write_effects_applied is False
+
+    @pytest.mark.asyncio
+    async def test_write_callback_rolls_back_effect_failure(self) -> None:
+        """Stage 3 业务 effect 失败必须回滚且不伪造终态。"""
+        session = _make_session()
+        rollbacks = 0
+
+        class _Db:
+            async def refresh(self, value: object) -> None:
+                _ = value
+
+            async def commit(self) -> None:
+                pass
+
+            async def rollback(self) -> None:
+                nonlocal rollbacks
+                rollbacks += 1
+
+        class _WriteBack:
+            async def write_back(self, *args: object, **kwargs: object) -> RuntimeIntentEffectResult:
+                _ = args, kwargs
+                raise RuntimeError("effect failed")
+
+        state = WriteBackState()
+        callback = RuntimeInboxWriteBackService(
+            write_back_service=_WriteBack(),
+            inbox_service=SimpleNamespace(),
+        ).build_write_callback(
+            _Db(),
+            session=session,
+            workline=_make_workline(),
+            inbox=_make_inbox(),
+            devices_by_role={},
+            device=None,
+            command=None,
+            inbox_pk=1,
+            session_snapshot=_session_write_snapshot(session),
+            sse_workline_id=20,
+            sse_session_id=10,
+            processor_token="lease-effect-failure",
+            state=state,
+        )
+
+        with pytest.raises(RuntimeError, match="effect failed"):
+            await callback(OrchestratorResult(success=True, intents=[]))
+
+        assert rollbacks == 1
+        assert state.write_effects_applied is False
 
 
 # ============================================================

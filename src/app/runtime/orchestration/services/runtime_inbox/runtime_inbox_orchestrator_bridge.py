@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 
 from loguru import logger
 
+from src.app.runtime.capability_catalog import parse_workline_six_in_one
 from src.app.runtime.orchestration.consumers.runtime_inbox_repository import (
     RuntimeInboxRepository,
     runtime_inbox_repository,
@@ -66,11 +67,13 @@ from src.app.workline.constants import (
 )
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import (
     canonical_event_type,
     optional_int,
     resolve_entity_id,
     resolve_required_pk,
+    string_value,
 )
 
 if TYPE_CHECKING:
@@ -380,7 +383,45 @@ class RuntimeInboxProcessorBridge:
                 return result
 
             # ========== Stage 1c: duplicate / late detection ==========
-            if _is_duplicate_entry_event(inbox=inbox, payload=payload, session=session, workline=workline):
+            if _is_duplicate_entry_event(
+                inbox=inbox,
+                payload=payload,
+                session=session,
+                workline=workline,
+            ) and not _is_resource_wait_retry_for_same_inbox(session, inbox_pk):
+                material_conflict = _duplicate_entry_material_conflict(
+                    session=session,
+                    workline=workline,
+                    payload=payload,
+                )
+                if material_conflict is not None:
+                    conflict_message, conflict_details = material_conflict
+                    await _record_diagnostic(
+                        db,
+                        inbox=inbox,
+                        error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
+                        message=conflict_message,
+                        session=session,
+                        workline=workline,
+                        device=device,
+                        command=command,
+                        extra=conflict_details,
+                    )
+                    _ = await self.inbox_service.mark_dead_letter(
+                        db,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                        error_message=conflict_message,
+                    )
+                    await db.commit()
+                    result["failed"] += 1
+                    result["processed"] += 1
+                    logger.warning(
+                        f"Inbox {inbox_pk} rejected conflicting duplicate entry event: "
+                        f"session_id={resolve_entity_id(session)}, conflicts={conflict_details['conflicts']}"
+                    )
+                    return result
+
                 await _record_duplicate_entry_archive_timeline(
                     db,
                     session=session,
@@ -621,6 +662,8 @@ def _is_duplicate_entry_event(
         return False
     if canonical_event_type(payload) not in _entry_event_types_for_workline(workline):
         return False
+    if _is_payload_invalid_entry_replay(payload=payload, session=session):
+        return False
     terminal_statuses = {"COMPLETED", "FAILED", "CANCELLED"}
     busy_statuses = {"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"}
     status = _session_status_value(session)
@@ -630,6 +673,89 @@ def _is_duplicate_entry_event(
         return True
     current_wait_type = getattr(session, "current_wait_type", None)
     return bool(current_wait_type)
+
+
+def _is_payload_invalid_entry_replay(*, payload: dict[str, Any], session: Any) -> bool:
+    """允许 payload 校验失败后的人工 replay 重新进入编排。"""
+    replay_of_event_id = payload.get("replay_of_event_id")
+    if not isinstance(replay_of_event_id, str) or not replay_of_event_id:
+        return False
+    if _session_status_value(session) != "MANUAL_HOLD":
+        return False
+    if string_value(getattr(session, "failure_code", None)) != "PAYLOAD_INVALID":
+        return False
+    if getattr(session, "awaiting_device_command_code", None) is not None:
+        return False
+    return not bool(string_value(getattr(session, "current_wait_type", None)))
+
+
+def _is_resource_wait_retry_for_same_inbox(session: Any, inbox_id: int) -> bool:
+    """识别同一 inbox 从 RESOURCE_WAIT 唤醒后的重试。"""
+    if getattr(session, "current_wait_type", None) != "RESOURCE_WAIT":
+        return False
+    resource_wait = payload_dict(payload_dict(getattr(session, "context_json", None)).get("resource_wait"))
+    return optional_int(resource_wait.get("inbox_id")) == inbox_id
+
+
+def _session_context(session: Any) -> dict[str, Any]:
+    raw_context = getattr(session, "context_json", None)
+    return dict(raw_context) if isinstance(raw_context, dict) else {}
+
+
+def _normalized_entry_material_evidence(*, plugin_key: str | None, payload: dict[str, Any]) -> dict[str, str]:
+    """提取 capability 拥有的入口物料证据。"""
+    try:
+        six_in_one = parse_workline_six_in_one(plugin_key, payload_dict(payload.get("data")))
+    except (TypeError, ValueError):
+        return {}
+    if six_in_one is None:
+        return {}
+    evidence: dict[str, str] = {}
+    for field_name, raw_value in six_in_one.iter_business_fields():
+        if not isinstance(field_name, str) or not field_name:
+            continue
+        if isinstance(raw_value, str):
+            value = raw_value.strip()
+            if value:
+                evidence[field_name] = value
+    return evidence
+
+
+def _duplicate_entry_material_conflict(
+    *,
+    session: Any,
+    workline: Any,
+    payload: dict[str, Any],
+) -> tuple[str, dict[str, Any]] | None:
+    """判断重复入口是否与 session 初始物料证据冲突。"""
+    plugin_key = string_value(getattr(session, "plugin_key", None)) or string_value(
+        getattr(workline, "plugin_key", None)
+    )
+    if not plugin_key:
+        return None
+    session_context = _session_context(session)
+    initial_payload = payload_dict(session_context.get("initial_payload") or session_context.get("source_payload"))
+    if not initial_payload:
+        return None
+    expected = _normalized_entry_material_evidence(plugin_key=plugin_key, payload=initial_payload)
+    actual = _normalized_entry_material_evidence(plugin_key=plugin_key, payload=payload)
+    if not expected or not actual:
+        return None
+    conflicts = {
+        field_name: {"expected": expected[field_name], "actual": actual[field_name]}
+        for field_name in sorted(expected.keys() & actual.keys())
+        if expected[field_name] != actual[field_name]
+    }
+    if not conflicts:
+        return None
+    details = {
+        "reason": "ENTRY_MATERIAL_IDENTITY_CONFLICT",
+        "conflicts": conflicts,
+        "expected": expected,
+        "actual": actual,
+    }
+    message = "ENTRY_MATERIAL_IDENTITY_CONFLICT: duplicate entry event conflicts with session initial material evidence"
+    return message, details
 
 
 async def _load_related_entities(

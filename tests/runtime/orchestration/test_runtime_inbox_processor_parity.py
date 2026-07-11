@@ -34,11 +34,18 @@ class ParityCase:
     session_status: str | None = "RUNNING"
     workline_present: bool = True
     awaiting_command: str | None = None
+    current_wait_type: str | None = None
+    failure_code: str | None = None
+    session_context: dict[str, Any] | None = None
+    plugin_key: str = "default"
     command_status: str | None = None
     orchestration: Literal["success", "exception", "failure"] = "success"
     writeback: Literal["processed", "resource_wait"] = "processed"
     expected: tuple[int, int, int, int, int] = (1, 1, 0, 0, 0)
     expected_archive: str | None = None
+    expected_terminal: str | None = "processed"
+    expected_error: str | None = None
+    expected_diagnostic: str | None = None
 
 
 PARITY_CASES = (
@@ -46,6 +53,8 @@ PARITY_CASES = (
         name="scan_invalid",
         payload={"event_type": "SCAN_COMPLETED", "data": {}},
         expected=(1, 0, 1, 0, 0),
+        expected_terminal="failed",
+        expected_error="barcode",
     ),
     ParityCase(
         name="scan_valid",
@@ -56,11 +65,14 @@ PARITY_CASES = (
         payload={"event_type": "ESTOP_PRESSED", "data": {}},
         workline_present=False,
         expected=(1, 0, 1, 0, 0),
+        expected_terminal="failed",
+        expected_error="ESTOP_PRESSED missing workline context",
     ),
     ParityCase(
         name="timer_timeout",
         kind="TIMER_TIMEOUT",
         payload={"event_type": "TIMER_TIMEOUT", "data": {}},
+        expected_terminal=None,
     ),
     ParityCase(
         name="missing_context",
@@ -69,6 +81,8 @@ PARITY_CASES = (
         session_status=None,
         workline_present=False,
         expected=(1, 0, 1, 0, 0),
+        expected_terminal="failed",
+        expected_error="missing session/workline context",
     ),
     ParityCase(
         name="duplicate_entry",
@@ -76,6 +90,42 @@ PARITY_CASES = (
         session_status="WAITING_DEVICE_RESULT",
         awaiting_command="CMD-001",
         expected_archive="DUPLICATE_ENTRY_ARCHIVED",
+    ),
+    ParityCase(
+        name="payload_invalid_manual_replay",
+        payload={
+            "event_type": "SCAN_COMPLETED",
+            "replay_of_event_id": "evt-invalid",
+            "data": {"HHPN": "REPLAY"},
+        },
+        session_status="MANUAL_HOLD",
+        failure_code="PAYLOAD_INVALID",
+    ),
+    ParityCase(
+        name="resource_wait_retry_same_inbox",
+        payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "RETRY"}},
+        session_status="WAITING_DEVICE_RESULT",
+        current_wait_type="RESOURCE_WAIT",
+        session_context={"resource_wait": {"inbox_id": 1}},
+    ),
+    ParityCase(
+        name="duplicate_material_conflict",
+        payload={
+            "event_type": "SCAN_COMPLETED",
+            "data": {"HHPN": "NEW", "data": {"HHPN": "NEW"}},
+        },
+        session_status="WAITING_DEVICE_RESULT",
+        plugin_key="rough_sorter",
+        session_context={
+            "initial_payload": {
+                "event_type": "SCAN_COMPLETED",
+                "data": {"HHPN": "OLD", "data": {"HHPN": "OLD"}},
+            },
+        },
+        expected=(1, 0, 1, 0, 0),
+        expected_terminal="dead_letter",
+        expected_error="ENTRY_MATERIAL_IDENTITY_CONFLICT",
+        expected_diagnostic="CALLBACK_SCHEMA_INVALID",
     ),
     ParityCase(
         name="late_command_result",
@@ -90,18 +140,24 @@ PARITY_CASES = (
         payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "ERR"}},
         orchestration="exception",
         expected=(1, 0, 1, 0, 0),
+        expected_terminal="failed",
+        expected_error="simulated orchestrator failure",
     ),
     ParityCase(
         name="resource_wait",
         payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "WAIT"}},
         writeback="resource_wait",
         expected=(1, 0, 0, 0, 1),
+        expected_terminal="resource_wait",
+        expected_error="RESOURCE_WAIT",
     ),
     ParityCase(
         name="orchestrator_failure",
         payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "FAIL"}},
         orchestration="failure",
         expected=(1, 0, 1, 0, 0),
+        expected_terminal="failed",
+        expected_error="simulated failure",
     ),
 )
 
@@ -136,34 +192,45 @@ class _TerminalRecorder:
 
     def __init__(self, inbox: object) -> None:
         self.repo = _Repository(inbox)
-        self.actions: list[str] = []
+        self.actions: list[dict[str, Any]] = []
+
+    def _record(self, action: str, args: tuple[object, ...], kwargs: dict[str, Any]) -> None:
+        self.actions.append(
+            {
+                "action": action,
+                "inbox_id": kwargs.get("inbox_id") or (args[1] if len(args) > 1 else None),
+                "token": kwargs.get("lease_token") or kwargs.get("processor_token"),
+                "error": kwargs.get("error_message") or (args[2] if len(args) > 2 else None),
+                "retryable": kwargs.get("retryable"),
+            }
+        )
 
     async def mark_as_processed(self, *args: object, **kwargs: object) -> object:
-        self.actions.append("processed")
+        self._record("processed", args, kwargs)
         return SimpleNamespace(id=1)
 
     async def mark_as_failed(self, *args: object, **kwargs: object) -> object:
-        self.actions.append("failed")
+        self._record("failed", args, kwargs)
         return SimpleNamespace(id=1)
 
     async def mark_as_dead_letter(self, *args: object, **kwargs: object) -> object:
-        self.actions.append("dead_letter")
+        self._record("dead_letter", args, kwargs)
         return SimpleNamespace(id=1)
 
     async def park_for_retry(self, *args: object, **kwargs: object) -> object:
-        self.actions.append("resource_wait")
+        self._record("resource_wait", args, kwargs)
         return SimpleNamespace(id=1)
 
     async def mark_processed(self, *args: object, **kwargs: object) -> bool:
-        self.actions.append("processed")
+        self._record("processed", args, kwargs)
         return True
 
     async def mark_failed(self, *args: object, **kwargs: object) -> bool:
-        self.actions.append("resource_wait" if kwargs.get("retryable") else "failed")
+        self._record("resource_wait" if kwargs.get("retryable") else "failed", args, kwargs)
         return True
 
     async def mark_dead_letter(self, *args: object, **kwargs: object) -> bool:
-        self.actions.append("dead_letter")
+        self._record("dead_letter", args, kwargs)
         return True
 
 
@@ -190,10 +257,12 @@ def _build_entities(case: ParityCase) -> tuple[SimpleNamespace, object | None, o
             workline_id=20,
             status=case.session_status,
             awaiting_device_command_code=case.awaiting_command,
-            current_wait_type=None,
-            context_json={},
+            current_wait_type=case.current_wait_type,
+            failure_code=case.failure_code,
+            plugin_key=case.plugin_key,
+            context_json=case.session_context or {},
         )
-    workline = SimpleNamespace(id=20, plugin_key="default") if case.workline_present else None
+    workline = SimpleNamespace(id=20, plugin_key=case.plugin_key) if case.workline_present else None
     command = None
     if case.command_status is not None:
         command = SimpleNamespace(id=99, command_code="CMD-001", status=case.command_status)
@@ -215,11 +284,12 @@ async def _run_case(
     *,
     processor_kind: ProcessorKind,
     case: ParityCase,
-) -> tuple[dict[str, int], list[str]]:
+) -> tuple[dict[str, int], list[str], list[dict[str, Any]], list[dict[str, Any]]]:
     inbox, session, workline, command = _build_entities(case)
     db = _FakeDb()
     terminal = _TerminalRecorder(inbox)
     archives: list[str] = []
+    diagnostics: list[dict[str, Any]] = []
 
     async def load_related(*args: object, **kwargs: object) -> dict[str, object]:
         _ = args, kwargs
@@ -246,7 +316,15 @@ async def _run_case(
         )
 
     async def record_diagnostic(*args: object, **kwargs: object) -> None:
-        _ = args, kwargs
+        _ = args
+        error_code = kwargs.get("error_code")
+        diagnostics.append(
+            {
+                "error_code": getattr(error_code, "value", error_code),
+                "message": kwargs.get("message"),
+                "extra": kwargs.get("extra"),
+            }
+        )
 
     async def record_duplicate(*args: object, **kwargs: object) -> None:
         _ = args, kwargs
@@ -313,7 +391,7 @@ async def _run_case(
                 trace_id=inbox.trace_id,
             ),
         )
-        return result, archives
+        return result, archives, terminal.actions, diagnostics
 
     class _Delegate:
         async def process(self, *args: object, write_callback: object, **kwargs: object) -> OrchestratorResult:
@@ -331,7 +409,7 @@ async def _run_case(
         inbox_repository=_Repository(inbox),  # type: ignore[arg-type]
     )
     result = await processor.process_claimed(db, claim={"id": 1, "processor_token": "token-parity"})
-    return result, archives
+    return result, archives, terminal.actions, diagnostics
 
 
 @pytest.mark.asyncio
@@ -343,8 +421,21 @@ async def test_processor_characterization_parity(
     case: ParityCase,
 ) -> None:
     """同一 characterization table 必须约束 legacy 与 three-stage 两个入口。"""
-    result, archives = await _run_case(monkeypatch, processor_kind=processor_kind, case=case)
+    result, archives, terminal_actions, diagnostics = await _run_case(
+        monkeypatch,
+        processor_kind=processor_kind,
+        case=case,
+    )
 
     assert _as_tuple(result) == case.expected
-    if case.expected_archive is not None:
-        assert archives == [case.expected_archive]
+    assert archives == ([case.expected_archive] if case.expected_archive is not None else [])
+    assert [call["action"] for call in terminal_actions] == (
+        [case.expected_terminal] if case.expected_terminal is not None else []
+    )
+    for call in terminal_actions:
+        assert call["inbox_id"] == 1
+        assert call["token"] == "token-parity"
+    if case.expected_error is not None:
+        assert case.expected_error.lower() in str(terminal_actions[0]["error"]).lower()
+    if case.expected_diagnostic is not None:
+        assert diagnostics[-1]["error_code"] == case.expected_diagnostic
