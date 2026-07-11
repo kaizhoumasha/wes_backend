@@ -8,8 +8,7 @@
 5. fast path 与 slow path 行为一致 (cache hit vs miss)
 6. get() 未注册 port → KeyError
 7. 100 并发线程同时首次 get() 同一 port → factory 只调用一次 (DCL 验证)
-8. RuntimeCapabilityContext 集成: InboundNormalizerRegistry 与 CapabilityPortRegistry
-   协作无竞态
+8. 不同 registry 实例互相隔离
 """
 
 from __future__ import annotations
@@ -83,8 +82,7 @@ def test_get_unregistered_port_raises_key_error() -> None:
 def test_concurrent_get_same_port_returns_same_instance() -> None:
     """Concurrent get() on same port must return the same singleton instance.
 
-    多 RuntimeInboxConsumer worker 并发 get()
-    同一 port 时,double-check locking 必须保证只调用 factory() 一次。
+    多调用方并发 get() 同一 port 时,double-check locking 必须保证只调用 factory() 一次。
     """
     registry = InboundNormalizerRegistry()
     factory = _CountingFactory()

@@ -2,14 +2,13 @@
 
 入站事件 normalizer 注册表 (WmsEventPort / DeviceEventPort 等),
 与 CapabilityPortRegistry 严格分离: 注册的 normalizer 不可注入业务
-capability 上下文 (主计划 §3.5.1 + H2 黑名单); 只允许
-RuntimeInboxConsumer 通过专用 InboundNormalizerContext 访问。
+capability 上下文 (主计划 §3.5.1 + H2 黑名单)。
 
 设计:
 - factory pattern (与 CapabilityPortRegistry 对齐), 避免直接暴露 implementation type
 - singleton per-port (多次 get 同一 port 只 factory() 一次)
 - thread-safe lazy initialization: instance 创建受 class-level lock 保护,
-  多个 RuntimeInboxConsumer worker 并发 get() 同一 port 不会重复构造实例
+  多个并发调用方 get() 同一 port 不会重复构造实例
 - 不重复 H2 type guard (本 registry 本身就是 inbound normalizer 合法归宿)
 
 并发安全修复:
@@ -31,12 +30,11 @@ class InboundNormalizerRegistry:
     """入站 normalizer 注册表（主计划 §3.5.1 + H2）。
 
     与 CapabilityPortRegistry 严格分离: 注册的 normalizer 不可注入业务
-    capability 上下文; 只允许 RuntimeInboxConsumer 通过
-    InboundNormalizerContext 获取。
+    capability 上下文。
     """
 
     # Class-level lock 保护所有 instance 的 _instances 缓存初始化,
-    # 避免多个 RuntimeInboxConsumer worker 同时首次 get() 同一 port 时
+    # 避免多个调用方同时首次 get() 同一 port 时
     # 重复调用 factory()。粒度 = class 级,牺牲一些并发性换取实现简洁性
     # (registry 操作频率远低于业务请求,单锁开销可忽略)。
     _lock = threading.Lock()

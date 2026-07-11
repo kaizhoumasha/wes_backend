@@ -258,7 +258,7 @@ rule_inbound_normalizer_ownership() {
         [[ -z "$file" ]] && continue
         emit_violation "$RULE_INBOUND_NORMALIZER_OWNERSHIP" "$file" "$line" \
             "$reason" \
-            "inbound normalizer 仅 RuntimeInboxConsumer 允许; capability 走 query/effect port contract"
+            "inbound normalizer 仅允许专用 normalization wiring 持有; capability 走 query/effect port contract"
     done < <(run_python - <<'PY'
 import ast
 import re
@@ -277,9 +277,6 @@ FORBIDDEN_NAMES = frozenset(
         "DeviceEventPort",
         "InboundEventPort",
         "RuntimeInbox",
-        "RuntimeInboxConsumer",
-        "InboundNormalizerContext",
-        "create_inbound_normalizer_context",
     }
 )
 FORBIDDEN_IMPORT_MODULES = frozenset(
@@ -299,7 +296,6 @@ EXCLUDED_FILES = frozenset(
         "src/app/wms_integration/ports/event.py",
         "src/app/wms_integration/ports/__init__.py",
         "src/app/wms_integration/services/wms_event_normalizer.py",
-        "src/app/runtime/capability_port_registry.py",
         "src/app/runtime/inbound_normalizer_registry.py",
         "src/app/runtime/orchestration/__init__.py",
         "src/app/runtime/orchestration/runtime_inbox.py",
@@ -309,6 +305,7 @@ EXCLUDED_FILES = frozenset(
         "src/app/runtime/orchestration/repositories/runtime_inbox_claim_repository.py",
         "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
         "src/app/runtime/orchestration/consumers/runtime_inbox_repository.py",
+        "src/app/runtime/orchestration/consumers/runtime_inbox_service.py",
         # Task 5 三阶段 Processor 拆分: validation / orchestrator-delegate /
         # writeback / composition 全部驻留在 runtime_inbox/ 目录, 是
         # RuntimeInbox 主链路收束的 processor 实现, 不是 inbound normalizer
@@ -324,7 +321,7 @@ EXCLUDED_FILES = frozenset(
         "src/app/runtime/orchestration/orchestrator_bridge.py",
     }
 )
-EXCLUDED_PREFIXES = ("src/app/runtime/orchestration/consumers/",)
+EXCLUDED_PREFIXES = ()
 
 NAME_PATTERN = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(sorted(FORBIDDEN_NAMES)) + r")(?![A-Za-z0-9_])")
 

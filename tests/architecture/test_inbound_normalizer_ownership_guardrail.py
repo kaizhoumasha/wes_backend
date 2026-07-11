@@ -1,8 +1,8 @@
 """INBOUND_NORMALIZER_OWNERSHIP inbound normalizer port 静态扫描器测试。
 
 主计划 §3.5.1 + H2: 业务 capability 不得持有 inbound normalizer Protocol
-(WmsEventPort / DeviceEventPort / InboundEventPort) 或 RuntimeInbox / RuntimeInboxConsumer;
-这些是 RuntimeInboxConsumer 专属依赖。
+(WmsEventPort / DeviceEventPort / InboundEventPort) 或 RuntimeInbox；这些依赖只属于
+专用 normalization wiring 与 RuntimeInbox processor 链路。
 
 当前 SCAN_ROOTS 覆盖 5 个域:
   - src/app/runtime
@@ -27,9 +27,7 @@ INBOUND_NORMALIZER_OWNERSHIP_TYPE_NAMES = (
     "DeviceEventPort",
     "InboundEventPort",
     "RuntimeInbox",
-    "RuntimeInboxConsumer",
 )
-INBOUND_NORMALIZER_OWNERSHIP_CONTEXT_NAMES = ("InboundNormalizerContext", "create_inbound_normalizer_context")
 INBOUND_NORMALIZER_OWNERSHIP_SCAN_SCOPE = (
     "src/app/runtime",
     "src/app/workline",
@@ -40,14 +38,13 @@ INBOUND_NORMALIZER_OWNERSHIP_SCAN_SCOPE = (
 INBOUND_NORMALIZER_OWNERSHIP_EXCLUDED_PATHS = (
     "src/app/wms_integration/ports/event.py",
     "src/app/wms_integration/ports/__init__.py",
-    "src/app/runtime/capability_port_registry.py",
     "src/app/runtime/inbound_normalizer_registry.py",
     "src/app/contracts/external_contract_profile.py",
     "src/app/runtime/orchestration/__init__.py",
     "src/app/runtime/orchestration/runtime_inbox.py",
-    "src/app/runtime/orchestration/consumers/",
     "src/app/runtime/orchestration/repositories/runtime_inbox_claim_repository.py",
     "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
+    "src/app/runtime/orchestration/consumers/runtime_inbox_service.py",
 )
 
 
@@ -80,7 +77,7 @@ def test_inbound_normalizer_ownership_rule_excludes_legitimate_holders():
 def test_inbound_normalizer_ownership_rule_pattern_covers_all_forbidden_inbound_names():
     """rule_inbound_normalizer_ownership 匹配 inbound normalizer 禁用名称。"""
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
-    for name in (*INBOUND_NORMALIZER_OWNERSHIP_TYPE_NAMES, *INBOUND_NORMALIZER_OWNERSHIP_CONTEXT_NAMES):
+    for name in INBOUND_NORMALIZER_OWNERSHIP_TYPE_NAMES:
         assert name in text, f"rule_inbound_normalizer_ownership pattern 缺禁止名称 {name}"
     assert "ast.ImportFrom" in text
     assert "ast.Import" in text

@@ -97,7 +97,7 @@ class WmsEventPort(Protocol):
     """WMS 回调 normalizer。
 
     4 个 normalizer 覆盖 WMS 主回调事件类型。normalizer 输出投递到
-    RuntimeInbox, 由 RuntimeInboxConsumer 消费, 不直接调用业务 capability
+    RuntimeInbox, 由 RuntimeInboxProcessorBridge 消费, 不直接调用业务 capability
     (主计划 §3.5.1 + H2 黑名单)。
     """
 

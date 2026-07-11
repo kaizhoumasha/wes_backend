@@ -50,10 +50,9 @@ if TYPE_CHECKING:
 
 
 def process_inbox_payload(payload: dict) -> dict:
-    """RuntimeInboxConsumer 委托入口。
+    """旧批处理 payload 委托入口。
 
-    当前兼容入口返回消费者结果 dict, 由 consumers/runtime_inbox_consumer.py
-    统一暴露给 inbound normalizer 上下文。
+    当前入口返回旧批处理结果 dict；RuntimeInbox 生产消费链路不调用此函数。
     """
     return {
         "status": "PROCESSED",

@@ -1,11 +1,5 @@
-"""RuntimeInbox 单点消费者入口。
+"""RuntimeInbox 写入服务导出。"""
 
-inbox 状态机业务逻辑由 runtime/orchestration/services/inbox 承载。
-"""
-
-from src.app.runtime.orchestration.consumers.runtime_inbox_consumer import (
-    RuntimeInboxConsumer,
-)
 from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
     RuntimeInboxAcceptResult,
     RuntimeInboxConflict,
@@ -17,7 +11,6 @@ from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
 __all__ = [
     "RuntimeInboxAcceptResult",
     "RuntimeInboxConflict",
-    "RuntimeInboxConsumer",
     "RuntimeInboxReplayResult",
     "RuntimeInboxService",
     "runtime_inbox_service",

@@ -1,8 +1,7 @@
 """RuntimeCapabilityContext 路由测试。
 
-主计划 §3.5.1 + H2: inbound normalizer 不可注入业务 capability, 只允许
-`src.app.runtime.orchestration.consumers` 通过内部 inbound context 访问
-InboundNormalizerRegistry。
+inbound normalizer 不可注入业务 capability；RuntimeInbox 消费由
+Celery task → RuntimeInboxProcessorBridge 独立承担。
 """
 
 from __future__ import annotations
@@ -10,7 +9,6 @@ from __future__ import annotations
 import pytest
 
 from src.app.contracts.external_contract_profile import ExternalContractProfile
-from src.app.runtime import capability_port_registry as capability_ports
 from src.app.runtime.capability_port_registry import (
     CapabilityPortRegistry,
     RuntimeCapabilityContext,
@@ -28,11 +26,6 @@ def _dummy_wms_event_port():
             return raw
 
     return WmsEventPort()
-
-
-def _create_inbound_normalizer_context(inbound_reg):
-    assert hasattr(capability_ports, "create_inbound_normalizer_context")
-    return capability_ports.create_inbound_normalizer_context(inbound_reg)
 
 
 def test_inbound_normalizer_registry_register_and_get():
@@ -76,17 +69,12 @@ def test_inbound_normalizer_registry_unregistered_raises_keyerror():
     assert "未注册" in str(exc_info.value)
 
 
-def test_inbound_context_returns_normalizer_for_consumer_wiring():
-    """consumer 构造路径拿到内部 inbound context 后可获取 normalizer。"""
-    cap_reg = CapabilityPortRegistry()
-    inbound_reg = InboundNormalizerRegistry()
-    WmsEventPort = type("WmsEventPort", (), {})
-    inbound_reg.register(WmsEventPort, _dummy_wms_event_port)
+def test_runtime_capability_module_has_no_inbound_consumer_context_factory():
+    """capability registry 不再提供旧消费 facade 的专用 wiring。"""
+    import src.app.runtime.capability_port_registry as capability_ports
 
-    RuntimeCapabilityContext(cap_reg)
-    inbound_ctx = _create_inbound_normalizer_context(inbound_reg)
-    inst = inbound_ctx.get_inbound_normalizer(WmsEventPort)
-    assert inst is not None
+    assert not hasattr(capability_ports, "create_inbound_normalizer_context")
+    assert not hasattr(capability_ports, "InboundNormalizerContext")
 
 
 def test_runtime_capability_context_does_not_expose_inbound_accessor():
@@ -113,40 +101,6 @@ def test_get_inbound_normalizer_rejects_business_capability_caller():
             WmsEventPort,
             caller_module="src.app.workline.runtime.workline_capability",
         )
-
-
-def test_get_inbound_normalizer_rejects_spoofed_allowed_caller_string():
-    """伪造合法 caller_module 字符串不能取得 inbound normalizer。"""
-    cap_reg = CapabilityPortRegistry()
-    inbound_reg = InboundNormalizerRegistry()
-    WmsEventPort = type("WmsEventPort", (), {})
-    inbound_reg.register(WmsEventPort, _dummy_wms_event_port)
-
-    ctx = RuntimeCapabilityContext(cap_reg)
-    with pytest.raises(AttributeError):
-        ctx.get_inbound_normalizer(  # type: ignore[attr-defined]
-            WmsEventPort,
-            caller_module="src.app.runtime.orchestration.consumers.runtime_inbox_consumer",
-        )
-
-
-def test_get_inbound_normalizer_rejects_unregistered_port():
-    """consumer inbound context 未注册该 port 时抛 KeyError。"""
-    inbound_reg = InboundNormalizerRegistry()
-    WmsEventPort = type("WmsEventPort", (), {})
-    inbound_ctx = _create_inbound_normalizer_context(inbound_reg)
-    with pytest.raises(KeyError):
-        inbound_ctx.get_inbound_normalizer(WmsEventPort)
-
-
-def test_get_inbound_normalizer_without_registry_raises():
-    """创建 inbound context 时必须显式提供 inbound_registry。"""
-    cap_reg = CapabilityPortRegistry()
-    ctx = RuntimeCapabilityContext(cap_reg)  # no inbound_registry
-    assert not hasattr(ctx, "get_inbound_normalizer")
-    with pytest.raises(RuntimeError) as exc_info:
-        _create_inbound_normalizer_context(None)
-    assert "inbound_registry" in str(exc_info.value)
 
 
 def test_provider_profile_blocks_undeclared_query_port():
