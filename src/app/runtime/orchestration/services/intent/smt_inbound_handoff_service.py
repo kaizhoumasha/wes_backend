@@ -1707,6 +1707,7 @@ class SmtInboundHandoffService:
         causation_id = f"handoff-source-item:{item_id}"
         event_type = _SOURCE_PICK_REQUESTED_EVENT
         data = {
+            "session_id": session_id,
             "handoff_demand_id": demand_id,
             "handoff_source_item_id": item_id,
             "claim_attempt_no": item.claim_attempt_no,
@@ -1730,12 +1731,12 @@ class SmtInboundHandoffService:
         runtime_inbox_result = await runtime_inbox_service.accept_internal_event(
             db,
             event_type=event_type,
-            payload_json=data,
+            payload_json={"event_type": event_type, "data": data},
             trace_id=resolved_trace_id,
             event_id=event_id,
             causation_id=causation_id,
             workline_id=workline_id,
-            execution_session_id=session_id,
+            execution_session_id=None,
             auto_commit=False,
         )
         return runtime_inbox_result.record

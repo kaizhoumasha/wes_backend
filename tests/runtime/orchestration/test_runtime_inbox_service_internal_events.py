@@ -617,3 +617,51 @@ async def test_accept_timer_timeout_keeps_legacy_and_execution_session_identitie
     assert result.record.claim_bucket_key == f"session:{legacy_session_id}"
     assert result.record.source_event_id.startswith(f"timeout:{legacy_session_id}:")
     assert result.record.payload_json["data"]["session_id"] == legacy_session_id
+
+
+@pytest.mark.asyncio
+async def test_smt_source_pick_producer_emits_canonical_workline_session_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SMT INTERNAL_EVENT 必须把 WorklineSession ID 写入 canonical payload。"""
+    service_module = importlib.import_module(
+        "src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service"
+    )
+    captured: dict[str, Any] = {}
+
+    class _RuntimeInboxService:
+        async def accept_internal_event(self, db: object, **kwargs: Any) -> SimpleNamespace:
+            _ = db
+            captured.update(kwargs)
+            return SimpleNamespace(record=SimpleNamespace(id=501))
+
+    monkeypatch.setattr(runtime_inbox_service_module, "runtime_inbox_service", _RuntimeInboxService())
+    producer = service_module.SmtInboundHandoffService()
+
+    record = await producer._create_source_pick_request_inbox(
+        SimpleNamespace(),
+        demand=SimpleNamespace(
+            id=11,
+            trace_id="trace-smt",
+            rack_release_id="release-1",
+            single_layer_rack_code="RACK-1",
+        ),
+        item=SimpleNamespace(
+            id=22,
+            claim_attempt_no=3,
+            bin_code="BIN-1",
+            bin_cell_index=1,
+            bin_cell_code="CELL-1",
+            material_identity_key="MAT-1",
+            pkg_code="PKG-1",
+            reel_thickness_mm=None,
+        ),
+        session=SimpleNamespace(id=33),
+        workline_id=44,
+        trace_id=None,
+        route_evidence={},
+    )
+
+    assert record.id == 501
+    assert captured["payload_json"]["data"]["session_id"] == 33
+    assert captured["execution_session_id"] is None

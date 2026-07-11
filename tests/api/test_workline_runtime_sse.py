@@ -58,13 +58,13 @@ async def test_device_status_changed_sse_uses_canonical_envelope() -> None:
 
 @pytest.mark.asyncio
 async def test_session_updated_sse_uses_canonical_envelope() -> None:
-    from src.app.runtime.orchestration.services.inbox.inbox_batch_processor import (
-        build_workline_runtime_session_updated_event_payload,
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+        _build_runtime_session_updated_event_payload,
     )
     from src.app.sys.services.event_stream_service import defer_sse_event
 
     db = SimpleNamespace(info={})
-    payload = build_workline_runtime_session_updated_event_payload(workline_id=45, session_id=99)
+    payload = _build_runtime_session_updated_event_payload(workline_id=45, session_id=99)
 
     defer_sse_event(
         db,

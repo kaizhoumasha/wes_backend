@@ -1,4 +1,4 @@
-"""Legacy InboxBatchProcessor 与三阶段 RuntimeInbox Processor 的同表 parity 测试。"""
+"""RuntimeInbox 三阶段 Processor 的 characterization 测试。"""
 
 from __future__ import annotations
 
@@ -10,9 +10,6 @@ import pytest
 
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
-from src.app.runtime.orchestration.repositories.inbox_repository import WorklineInboxClaim
-from src.app.runtime.orchestration.services.inbox import inbox_batch_processor as legacy_module
-from src.app.runtime.orchestration.services.inbox.inbox_batch_processor import InboxBatchProcessor
 from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as bridge_module
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
@@ -20,8 +17,6 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
 )
-
-ProcessorKind = Literal["legacy", "three_stage"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,7 +229,7 @@ class _Repository:
 
 
 class _TerminalRecorder:
-    """同时适配 legacy 与 RuntimeInboxService 的终态方法。"""
+    """记录 RuntimeInboxService fenced 终态写入。"""
 
     def __init__(self, inbox: object, *, accept_updates: bool = True) -> None:
         self.repo = _Repository(inbox)
@@ -332,7 +327,6 @@ def _as_tuple(result: dict[str, int]) -> tuple[int, int, int, int, int]:
 async def _run_case(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    processor_kind: ProcessorKind,
     case: ParityCase,
     accept_updates: bool = True,
     safety_state: _StatefulSafetyFake | None = None,
@@ -448,41 +442,6 @@ async def _run_case(
             await write_callback(result)  # type: ignore[operator]
             return result
 
-    if processor_kind == "legacy":
-        inbox_service_module = __import__(
-            "src.app.runtime.orchestration.services.inbox.inbox_service",
-            fromlist=["inbox_service"],
-        )
-        monkeypatch.setattr(inbox_service_module, "inbox_service", terminal)
-        monkeypatch.setattr(legacy_module, "_load_related_entities", load_related)
-        monkeypatch.setattr(legacy_module, "_record_diagnostic", record_diagnostic)
-        monkeypatch.setattr(legacy_module, "_record_duplicate_entry_archive_timeline", record_duplicate)
-        monkeypatch.setattr(legacy_module, "_record_late_command_result_archive_timeline", record_late)
-        monkeypatch.setattr(legacy_module, "OrchestratorService", _Orchestrator)
-        monkeypatch.setattr(
-            "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_runtime_reconciliation_service.handle_timer_timeout",
-            timer_handler,
-        )
-        monkeypatch.setattr(
-            "src.app.workline.services.safety_service.workline_safety_service.handle_estop",
-            estop_handler,
-        )
-        result = await InboxBatchProcessor(write_back_service=_WriteBack())._process_claimed_message(
-            db,
-            WorklineInboxClaim(
-                id=1,
-                processor_token="token-parity",
-                received_at=None,
-                session_id=inbox.session_id,
-                workline_id=inbox.workline_id,
-                device_id=case.device_id,
-                kind=case.kind,
-                payload_json=case.payload or {},
-                trace_id=inbox.trace_id,
-            ),
-        )
-        return result, archives, terminal.actions, diagnostics, interactions, db
-
     class _Delegate:
         async def process(self, *args: object, write_callback: object, **kwargs: object) -> OrchestratorResult:
             return await _Orchestrator().process_inbox(*args, write_callback=write_callback, **kwargs)
@@ -518,17 +477,14 @@ async def _run_case(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("processor_kind", ("legacy", "three_stage"))
 @pytest.mark.parametrize("case", PARITY_CASES, ids=lambda case: case.name)
-async def test_processor_characterization_parity(
+async def test_runtime_processor_characterization(
     monkeypatch: pytest.MonkeyPatch,
-    processor_kind: ProcessorKind,
     case: ParityCase,
 ) -> None:
-    """同一 characterization table 必须约束 legacy 与 three-stage 两个入口。"""
+    """已验证的生产行为由 RuntimeInbox 三阶段入口持续承载。"""
     result, archives, terminal_actions, diagnostics, interactions, _ = await _run_case(
         monkeypatch,
-        processor_kind=processor_kind,
         case=case,
     )
 
@@ -577,7 +533,6 @@ async def test_three_stage_lost_fencing_rolls_back_without_success(
 
     result, _, terminal_actions, _, _, db = await _run_case(
         monkeypatch,
-        processor_kind="three_stage",
         case=case,
         accept_updates=False,
     )
@@ -599,7 +554,6 @@ async def test_estop_lost_fencing_preserves_fail_safe_effects(
 
     result, _, terminal_actions, _, interactions, db = await _run_case(
         monkeypatch,
-        processor_kind="three_stage",
         case=case,
         accept_updates=False,
     )
@@ -623,13 +577,11 @@ async def test_repeated_estop_reuses_active_fail_safe_effect(
     safety_state = _StatefulSafetyFake()
     first = await _run_case(
         monkeypatch,
-        processor_kind="three_stage",
         case=case,
         safety_state=safety_state,
     )
     second = await _run_case(
         monkeypatch,
-        processor_kind="three_stage",
         case=case,
         safety_state=safety_state,
     )

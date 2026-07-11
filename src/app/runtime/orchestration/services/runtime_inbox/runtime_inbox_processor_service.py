@@ -44,7 +44,7 @@ def _build_orchestrator_lock_provider(db: Any) -> Callable[[str], AbstractAsyncC
     """为 OrchestratorService 构建生产锁提供者.
 
     优先使用 Redis 分布式锁; Redis 不可用时回退到 PostgreSQL advisory lock,
-    但绝不退化为无锁. (等价于 InboxBatchProcessor._build_orchestrator_lock_provider)
+    但绝不退化为无锁。
     """
     redis_client = get_redis()
     if redis_client is not None:

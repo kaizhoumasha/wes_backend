@@ -3,8 +3,7 @@
 WRITE 锁回调: stale session snapshot guard + 业务 effects + 重复/迟到检测
 + fence terminal update.
 
-与 InboxBatchProcessor._write_callback (line 1061+) 等价, 但只承担
-write-back 职责, 不再关心 SCAN/ESTOP/TIMER 前置 gate.
+本服务只承担 write-back 职责，不关心 SCAN/ESTOP/TIMER 前置 gate。
 
 关键约束:
 - 必须在锁内执行 (OrchestratorService 已经获取 session lock).
@@ -107,7 +106,7 @@ def _is_late_or_duplicate_command_result_for_session(
     session: Any | None,
     command: Any | None,
 ) -> bool:
-    """识别已消费过或迟到的 COMMAND_RESULT (与 InboxBatchProcessor 等价)."""
+    """识别已消费过或迟到的 COMMAND_RESULT。"""
     if session is None or command is None:
         return False
     if _kind_value(inbox) != "COMMAND_RESULT":
@@ -260,7 +259,7 @@ def _payload_for_session(session: Any) -> dict[str, Any]:
 
 
 def _build_runtime_session_updated_event_payload(*, workline_id: int | None, session_id: int | None) -> dict[str, Any]:
-    """保持与 InboxBatchProcessor 行为一致的事件 payload 形态."""
+    """构建工作线运行会话更新事件 payload。"""
     return {
         "domain": "workline_runtime",
         "entity": "session",

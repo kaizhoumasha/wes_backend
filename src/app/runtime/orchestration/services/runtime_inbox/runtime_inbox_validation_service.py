@@ -45,7 +45,7 @@ _SCAN_BARCODE_FIELDS = (
 
 
 def _scan_completed_has_any_barcode_payload(payload: dict[str, Any]) -> bool:
-    """SCAN_COMPLETED 最小通用 gate (与旧 InboxBatchProcessor 等价).
+    """SCAN_COMPLETED 最小通用 gate。
 
     白皮书已禁止拍平 payload, 只接受嵌套 data 结构.
     """

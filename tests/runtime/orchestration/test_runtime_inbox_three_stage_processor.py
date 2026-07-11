@@ -20,7 +20,10 @@ from src.app.runtime.orchestration.effect_result import (
     WriteBackDisposition,
 )
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_context_loader as context_loader
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
+    RuntimeInboxProcessorBridge,
     _load_related_entities,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
@@ -156,12 +159,45 @@ class _EmptyDb:
 
 
 class TestRelatedEntitiesContract:
+    @pytest.mark.parametrize("kind", ("INTERNAL_EVENT", "TIMER_TIMEOUT", "MANUAL_HOLD"))
+    def test_workline_session_id_comes_only_from_canonical_payload(self, kind: str) -> None:
+        inbox = RuntimeInbox(
+            provider_code="TEST",
+            event_type=kind,
+            kind=kind,
+            payload_json={"event_type": kind, "data": {"session_id": 41}},
+            execution_session_id=999,
+        )
+
+        assert context_loader._canonical_workline_session_id(inbox) == 41
+
+    def test_execution_session_id_is_not_a_workline_session_fallback(self) -> None:
+        inbox = RuntimeInbox(
+            provider_code="TEST",
+            event_type="INTERNAL_EVENT",
+            kind="INTERNAL_EVENT",
+            payload_json={"data": {}},
+            execution_session_id=999,
+        )
+
+        assert context_loader._canonical_workline_session_id(inbox) is None
+
+    def test_source_device_does_not_read_dynamic_normalized_input(self) -> None:
+        device = SimpleNamespace(device_code="DYNAMIC-ONLY")
+        inbox = SimpleNamespace(payload_json={}, normalized_input=SimpleNamespace(device_code="DYNAMIC-ONLY"))
+
+        resolved = context_loader._resolve_effect_source_device(
+            inbox, SimpleNamespace(context_json={}), {"R": [device]}
+        )
+
+        assert resolved is None
+
     @pytest.mark.asyncio
     async def test_wrapper_returns_device_before_command_with_distinct_sentinels(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """真实 legacy wrapper 合同固定为 session/workline/device/command。"""
+        """RuntimeInbox context loader 合同固定为 session/workline/device/command。"""
 
         class _DeviceSentinel:
             pass
@@ -172,7 +208,7 @@ class TestRelatedEntitiesContract:
         device = _DeviceSentinel()
         command = _CommandSentinel()
 
-        async def legacy_loader(*args: object, **kwargs: object) -> dict[str, object]:
+        async def runtime_loader(*args: object, **kwargs: object) -> dict[str, object]:
             _ = args, kwargs
             return {
                 "session": "session",
@@ -185,14 +221,23 @@ class TestRelatedEntitiesContract:
             }
 
         monkeypatch.setattr(
-            "src.app.runtime.orchestration.services.inbox.inbox_batch_processor._load_related_entities",
-            legacy_loader,
+            "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader.load_related_entities",
+            runtime_loader,
         )
 
         loaded = await _load_related_entities(SimpleNamespace(), SimpleNamespace(id=1))
 
         assert loaded[2] is device
         assert loaded[3] is command
+
+
+def test_processor_default_writeback_uses_injected_runtime_inbox_service() -> None:
+    """bridge 与默认 write-back 必须共享同一 fenced terminal service。"""
+    inbox_service = SimpleNamespace()
+
+    processor = RuntimeInboxProcessorBridge(inbox_service=inbox_service)
+
+    assert processor._writeback_service.inbox_service is inbox_service
 
 
 class TestEstopTimerRouting:

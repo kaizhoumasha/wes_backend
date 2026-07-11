@@ -227,11 +227,6 @@ def reapply_pending_session_ingress_metadata(session: WorklineSession) -> bool:
 
 def _bind_reused_session_to_inbox(inbox: "WorklineInbox", session: WorklineSession) -> None:
     """复用已有 session 时，把 inbox trace 锚点对齐到 session 主链。"""
-
-    session_id = getattr(session, "id", None)
-    if isinstance(session_id, int):
-        inbox.session_id = session_id
-
     session_trace_id = getattr(session, "trace_id", None)
     if isinstance(session_trace_id, str) and session_trace_id:
         inbox.trace_id = session_trace_id
@@ -305,6 +300,8 @@ class SessionResolver:
         inbox: "WorklineInbox",
         workline: "WorkLine | None",
         devices_by_role: dict[str, list[Any]],
+        *,
+        session_id: int | None,
     ) -> WorklineSession:
         """根据 Inbox 和归属规则解析或创建 Session
 
@@ -332,7 +329,7 @@ class SessionResolver:
         if kind == InboxKind.EXTERNAL_HTTP:
             return await self._resolve_external_http(db, inbox)
         if kind in _SESSION_ID_KINDS:
-            return await self._resolve_by_session_id(db, inbox)
+            return await self._resolve_by_session_id(db, inbox, session_id=session_id)
         raise ValueError(f"Unsupported InboxKind: {kind}")
 
     async def _resolve_device_event(
@@ -457,7 +454,6 @@ class SessionResolver:
 
         session = await self.session_repo.get_open_session_by_awaiting_device_command_code(db, command.command_code)
         if session:
-            inbox.session_id = session.id
             return session
 
         raise ValueError(f"Session not found for command_code: {command_code}")
@@ -621,6 +617,8 @@ class SessionResolver:
         self,
         db: AsyncSession,
         inbox: "WorklineInbox",
+        *,
+        session_id: int | None,
     ) -> WorklineSession:
         """按 session_id 恢复 Session
 
@@ -636,8 +634,6 @@ class SessionResolver:
         Raises:
             ValueError: 当 session_id 缺失或 Session 不存在时
         """
-        session_id = inbox.session_id
-
         if not session_id:
             raise ValueError(f"session_id is required for {inbox.kind}")
 

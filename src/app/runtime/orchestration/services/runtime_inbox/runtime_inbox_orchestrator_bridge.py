@@ -1,8 +1,7 @@
 """RuntimeInboxProcessorService composition (Task 5 三阶段 Processor 拆分).
 
 组合 Validation → Orchestration → Write-back 三阶段.
-提供与 InboxBatchProcessor._process_claimed_message 等价的单一入口
-`process_claimed(db, claim)`, 由 Task 6 Celery task 调用.
+提供 RuntimeInbox 唯一生产入口 `process_claimed(db, claim)`，由 Celery task 调用。
 
 行为对齐:
 - claim 阶段: 由 RuntimeInboxClaimRepository.claim_received_with_token 持有
@@ -11,7 +10,7 @@
 - orchestration 阶段: RuntimeInboxProcessorService 委托 OrchestratorService.
 - write-back 阶段: RuntimeInboxWriteBackService.
 - ESTOP / TIMER_TIMEOUT / duplicate entry / late command / missing context
-  沿用 InboxBatchProcessor 的判定, 行为等价.
+  均由 RuntimeInbox-owned 三阶段服务承载。
 - 写终态: mark_processed / mark_failed / mark_dead_letter 走
   RuntimeInboxService (processor_token 作为 lease_token fencing, 作用于
   RuntimeInbox 表, 不再 fallback 到 legacy WorklineInboxService).
@@ -84,7 +83,7 @@ if TYPE_CHECKING:
 
 
 class ProcessResult(TypedDict):
-    """处理结果统计 (与 InboxBatchProcessor 等价)."""
+    """RuntimeInbox 处理结果统计。"""
 
     processed: int
     success: int
@@ -155,9 +154,8 @@ def _problem_class_for_error_domain(error_domain: ErrorDomain | None) -> Problem
 class RuntimeInboxProcessorBridge:
     """RuntimeInbox 三阶段 processor composition.
 
-    与 InboxBatchProcessor._process_claimed_message 等价的单一入口,
-    但内部按 validation → orchestration → write-back 三阶段拆分.
-    Task 6 的 process_runtime_inbox_batch Celery task 将通过本类调用.
+    内部按 validation → orchestration → write-back 三阶段拆分，
+    process_runtime_inbox_batch Celery task 只通过本类调用。
     """
 
     def __init__(
@@ -171,8 +169,8 @@ class RuntimeInboxProcessorBridge:
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._processor_service = processor_service or RuntimeInboxOrchestratorDelegate()
-        self._writeback_service = writeback_service or RuntimeInboxWriteBackService()
         self._inbox_service = inbox_service or runtime_inbox_service
+        self._writeback_service = writeback_service or RuntimeInboxWriteBackService(inbox_service=self._inbox_service)
         self._inbox_repository = inbox_repository or runtime_inbox_repository
 
     @property
@@ -201,7 +199,7 @@ class RuntimeInboxProcessorBridge:
         limit: int,
         processor_token_prefix: str = "runtime-inbox-worker",  # noqa: S107
     ) -> ProcessResult:
-        """顺序 claim 并处理 RuntimeInbox (与 InboxBatchProcessor.process_batch 等价).
+        """顺序 claim 并处理 RuntimeInbox。
 
         单个 worker 每轮 claim 1 条; 跨 worker 并发由数据库 token claim 和
         claim_bucket_key 队首围栏承载.
@@ -259,8 +257,7 @@ class RuntimeInboxProcessorBridge:
     ) -> ProcessResult:
         """处理已被当前 worker claim 的单条 RuntimeInbox 消息.
 
-        与 InboxBatchProcessor._process_claimed_message 等价, 但内部委托
-        Validation / Processor / Write-back 三阶段.
+        内部委托 Validation / Processor / Write-back 三阶段。
         """
         result: ProcessResult = _empty_result()
         inbox = await self.inbox_repository.get_by_id(db, claim["id"] if isinstance(claim, dict) else claim.id)
@@ -717,7 +714,7 @@ def _is_duplicate_entry_event(
     session: Any,
     workline: Any,
 ) -> bool:
-    """简化版重复入口识别 (与 InboxBatchProcessor._is_duplicate_entry_event_for_session 等价)."""
+    """识别已进入忙碌或终态会话的重复入口事件。"""
     if _kind_value(inbox) != "DEVICE_EVENT":
         return False
     if canonical_event_type(payload) not in _entry_event_types_for_workline(workline):
@@ -832,12 +829,12 @@ async def _load_related_entities(
     Any,
     bool,
 ]:
-    """加载关联实体 (与 InboxBatchProcessor._load_related_entities 等价的 tuple 返回)."""
-    from src.app.runtime.orchestration.services.inbox.inbox_batch_processor import (
-        _load_related_entities as _legacy_load_related_entities,
+    """加载关联实体并固定 tuple 中 device/command 的位置。"""
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
+        load_related_entities,
     )
 
-    loaded = await _legacy_load_related_entities(db, inbox, resolved_event_type=resolved_event_type)
+    loaded = await load_related_entities(db, inbox, resolved_event_type=resolved_event_type)
     return (
         loaded.get("session"),
         loaded.get("workline"),
@@ -862,10 +859,7 @@ async def _handle_estop(
     processor_token: str,
     inbox_service: RuntimeInboxService,
 ) -> bool:
-    """ESTOP_PRESSED 急停处理 (与 InboxBatchProcessor 行为等价)."""
-    from src.app.runtime.orchestration.services.inbox.inbox_batch_processor import (  # noqa: F401
-        _assert_workline_accepting_runtime_event,
-    )
+    """处理 ESTOP_PRESSED 急停并在安全 effect 后执行 fenced 终态。"""
     from src.utils.value_normalization import resolve_entity_id
 
     workline_pk = resolve_entity_id(workline)
@@ -927,7 +921,7 @@ async def _handle_timer_timeout(
     processor_token: str,
     inbox_service: RuntimeInboxService,
 ) -> None:
-    """TIMER_TIMEOUT 路由到 reconciliation service (与 InboxBatchProcessor 等价)."""
+    """将 TIMER_TIMEOUT 路由到 reconciliation service。"""
     from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
         workline_runtime_reconciliation_service,
     )
