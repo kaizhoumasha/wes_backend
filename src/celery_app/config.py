@@ -20,7 +20,7 @@ beat_schedule: dict[str, dict[str, str | float]] = {
     },
     # Inbox 消息处理 - 扫描并处理新消息（兜底）
     # 正常流程由 API 写入 Inbox 后即时 send_task 触发，Beat 仅处理遗漏/重试
-    "process-inbox-batch": {
+    "process-runtime-inbox-batch": {
         "task": "src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch",
         "schedule": 10.0,  # 兜底轮询（原 1s，优化后 10s）
     },

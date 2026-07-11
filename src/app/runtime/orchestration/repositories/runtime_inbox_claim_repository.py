@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import BigInteger, exists, literal, select, tuple_, update
 
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.database.base_repository import BaseRepository
@@ -37,65 +37,90 @@ class RuntimeInboxClaimRepository(BaseRepository[RuntimeInbox]):
 
         返回轻量 dict (不跨 session 传递 ORM 对象).
         """
+        if limit <= 0:
+            return []
+
         import time as _time
 
         from src.utils.timezone import timezone
 
         _ = timezone.now_for_db()  # ensure tz helper is bound; keep the import for symmetry
         now_ms = int(_time.time() * 1000)
-        stale_cutoff = now_ms + (stale_after_seconds * 1000)
-        columns = cast("Any", RuntimeInbox).__table__.c
+        lease_until = now_ms + (max(stale_after_seconds, 1) * 1000)
+        now_value = literal(now_ms, type_=BigInteger())
+        lease_until_value = literal(lease_until, type_=BigInteger())
+        table = cast("Any", RuntimeInbox).__table__
+        columns = table.c
+        claim_candidate = table.alias("claim_candidate")
+        earlier_inbox = table.alias("earlier_inbox")
+        candidate_columns = claim_candidate.c
+        earlier_columns = earlier_inbox.c
+        candidate_claimable = (
+            (candidate_columns.status == "RECEIVED")
+            | ((candidate_columns.status == "FAILED") & (candidate_columns.next_retry_at <= now_value))
+            | ((candidate_columns.status == "PROCESSING") & (candidate_columns.lease_until <= now_value))
+        ) & (candidate_columns.attempt_count < candidate_columns.max_retries)
+        earlier_message_in_bucket = exists(
+            select(1)
+            .select_from(earlier_inbox)
+            .where(
+                earlier_columns.status.in_(["RECEIVED", "FAILED", "PROCESSING"]),
+                earlier_columns.claim_bucket_key == candidate_columns.claim_bucket_key,
+                tuple_(earlier_columns.received_at, earlier_columns.id)
+                < tuple_(candidate_columns.received_at, candidate_columns.id),
+            )
+        )
+        claimable_ids = (
+            select(candidate_columns.id)
+            .select_from(claim_candidate)
+            .where(candidate_claimable, ~earlier_message_in_bucket)
+            .order_by(candidate_columns.received_at, candidate_columns.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
 
-        # 原子 claim: 用 UPDATE ... RETURNING 把 RECEIVED/FAILED/stale PROCESSING
-        # 转为 PROCESSING + processor_token + lease_until
+        # 候选选择和状态变更保持在同一条 UPDATE ... RETURNING 中；DB 层 limit
+        # 避免 Python 切片留下已更新但未返回给 processor 的 lease。
         result = await db.execute(
-            update(RuntimeInbox)
-            .where(
-                columns.status.in_(["RECEIVED", "PROCESSING", "FAILED"]),
-            )
-            .where(
-                (columns.status == "RECEIVED")
-                | ((columns.status == "FAILED") & (columns.next_retry_at <= now_ms))
-                | ((columns.status == "PROCESSING") & (columns.lease_until <= now_ms))
-            )
-            .where(columns.attempt_count < columns.max_retries)
+            update(table)
+            .where(columns.id.in_(claimable_ids))
             .values(
                 status="PROCESSING",
                 processor_token=processor_token,
-                lease_until=stale_cutoff,
+                lease_until=lease_until_value,
                 attempt_count=columns.attempt_count + 1,
             )
-            .returning(columns.id)
+            .returning(
+                columns.id,
+                columns.processor_token,
+                columns.provider_code,
+                columns.event_type,
+                columns.source_event_id,
+                columns.payload_json,
+                columns.correlation_id,
+                columns.execution_session_id,
+                columns.workline_id,
+                columns.device_id,
+                columns.command_id,
+                columns.kind,
+                columns.trace_id,
+                columns.event_id,
+                columns.causation_id,
+                columns.claim_bucket_key,
+                columns.received_at,
+            )
             .execution_options(synchronize_session=False)
         )
-        ids = [row[0] for row in result.fetchall()][:limit]
-
-        if not ids:
-            return []
-
-        # 读出 claim 行 (轻量 dict)
-        rows = (await db.execute(select(RuntimeInbox).where(columns.id.in_(ids)))).scalars().all()
-
-        return [
+        claims = [
             {
-                "id": row.id,
-                "processor_token": processor_token,
-                "provider_code": row.provider_code,
-                "event_type": row.event_type,
-                "source_event_id": row.source_event_id,
-                "payload_json": dict(row.payload_json or {}),
-                "correlation_id": row.correlation_id,
-                "execution_session_id": row.execution_session_id,
-                "workline_id": row.workline_id,
-                "device_id": row.device_id,
-                "command_id": row.command_id,
-                "kind": row.kind,
-                "trace_id": row.trace_id,
-                "event_id": row.event_id,
-                "causation_id": row.causation_id,
+                **dict(row),
+                "processor_token": str(row["processor_token"]),
+                "payload_json": dict(row["payload_json"] or {}),
             }
-            for row in rows
+            for row in result.mappings().all()
         ]
+        claims.sort(key=lambda row: (row["received_at"] is None, row["received_at"] or 0, row["id"]))
+        return claims
 
     async def find_stale_processing(
         self,

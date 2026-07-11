@@ -33,6 +33,7 @@ def test_runtime_inbox_task_is_registered_and_routed() -> None:
 
     celery_app.loader.import_default_modules()
     assert RUNTIME_INBOX_TASK in celery_app.tasks
+    assert LEGACY_INBOX_TASK not in celery_app.tasks
     assert task_routes["src.celery_app.tasks.runtime_inbox.*"] == {"queue": "celery"}
 
 
@@ -42,6 +43,8 @@ def test_beat_uses_runtime_inbox_as_ten_second_fallback() -> None:
     inbox_entries = [entry for entry in beat_schedule.values() if entry["task"] == RUNTIME_INBOX_TASK]
 
     assert inbox_entries == [{"task": RUNTIME_INBOX_TASK, "schedule": 10.0}]
+    assert beat_schedule["process-runtime-inbox-batch"] == inbox_entries[0]
+    assert "process-inbox-batch" not in beat_schedule
     assert all(entry["task"] != LEGACY_INBOX_TASK for entry in beat_schedule.values())
 
 
