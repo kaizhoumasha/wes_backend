@@ -10,6 +10,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVICE_PACKAGE = "src.app.runtime.orchestration.services.runtime_inbox"
+CONCRETE_SERVICE_MODULE = f"{SERVICE_PACKAGE}.runtime_inbox_service"
 OLD_SERVICE_MODULE = "src.app.runtime.orchestration.consumers.runtime_inbox_service"
 PUBLIC_SERVICE_SYMBOLS = {
     "RuntimeInboxAcceptResult",
@@ -21,13 +22,38 @@ PUBLIC_SERVICE_SYMBOLS = {
     "RuntimeInboxSessionOwnershipConflict",
     "runtime_inbox_service",
 }
+PUBLIC_PACKAGE_SYMBOLS = PUBLIC_SERVICE_SYMBOLS | {
+    "ProcessResult",
+    "RuntimeInboxOrchestratorDelegate",
+    "RuntimeInboxProcessorBridge",
+    "RuntimeInboxProcessorService",
+    "RuntimeInboxValidationService",
+    "RuntimeInboxWriteBackService",
+    "ValidationOutcome",
+    "WriteBackState",
+}
+
+
+def _imports_concrete_runtime_inbox_service(source: Path) -> bool:
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == CONCRETE_SERVICE_MODULE:
+            return True
+        if isinstance(node, ast.Import) and any(alias.name == CONCRETE_SERVICE_MODULE for alias in node.names):
+            return True
+        if isinstance(node, ast.Constant) and node.value == CONCRETE_SERVICE_MODULE:
+            return True
+    return False
 
 
 def test_runtime_inbox_service_has_single_public_owner() -> None:
     package = importlib.import_module(SERVICE_PACKAGE)
+    concrete_module = importlib.import_module(CONCRETE_SERVICE_MODULE)
 
-    assert set(package.__all__) >= PUBLIC_SERVICE_SYMBOLS
-    assert set(vars(package)) >= PUBLIC_SERVICE_SYMBOLS
+    assert set(concrete_module.__all__) == PUBLIC_SERVICE_SYMBOLS
+    assert set(package.__all__) == PUBLIC_PACKAGE_SYMBOLS
+    for symbol in PUBLIC_SERVICE_SYMBOLS:
+        assert getattr(package, symbol) is getattr(concrete_module, symbol), f"{symbol} 必须复用具体模块同一对象"
     assert not (REPO_ROOT / "src/app/runtime/orchestration/consumers/runtime_inbox_service.py").exists()
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module(OLD_SERVICE_MODULE)
@@ -62,6 +88,36 @@ def test_runtime_inbox_package_modules_do_not_import_package_boundary() -> None:
                 offenders.append(source.name)
 
     assert not offenders, f"包内模块不得经 package __init__ 自引用: {sorted(set(offenders))}"
+
+
+def test_production_modules_outside_runtime_inbox_package_use_public_boundary() -> None:
+    package_dir = REPO_ROOT / "src/app/runtime/orchestration/services/runtime_inbox"
+    offenders = [
+        source.relative_to(REPO_ROOT).as_posix()
+        for source in (REPO_ROOT / "src").rglob("*.py")
+        if not source.is_relative_to(package_dir) and _imports_concrete_runtime_inbox_service(source)
+    ]
+
+    assert not offenders, f"包外生产模块不得直连 RuntimeInboxService 具体模块: {offenders}"
+
+
+@pytest.mark.parametrize(
+    "source_text",
+    (
+        f"from {CONCRETE_SERVICE_MODULE} import RuntimeInboxService\n",
+        f"import {CONCRETE_SERVICE_MODULE}\n",
+        f'import importlib\nimportlib.import_module("{CONCRETE_SERVICE_MODULE}")\n',
+        f'__import__("{CONCRETE_SERVICE_MODULE}")\n',
+    ),
+)
+def test_concrete_service_import_guardrail_covers_static_and_dynamic_imports(
+    tmp_path: Path,
+    source_text: str,
+) -> None:
+    source = tmp_path / "production_module.py"
+    source.write_text(source_text, encoding="utf-8")
+
+    assert _imports_concrete_runtime_inbox_service(source)
 
 
 def test_runtime_inbox_service_does_not_depend_on_processor() -> None:
