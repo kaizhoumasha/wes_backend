@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -231,6 +232,16 @@ def _signature_pattern(signature: LegacySignature) -> re.Pattern[str]:
 
 
 _SIGNATURE_PATTERNS = tuple((signature, _signature_pattern(signature)) for signature in LEGACY_SIGNATURES)
+_IMPORT_MODULE_SIGNATURES: dict[str, LegacySignature] = {}
+_IMPORT_MEMBER_SIGNATURES: dict[tuple[str, str], LegacySignature] = {}
+for _signature in LEGACY_SIGNATURES:
+    if not _signature.key.endswith("_import"):
+        continue
+    if " import " in _signature.value:
+        _module, _member = _signature.value.split(" import ", maxsplit=1)
+        _IMPORT_MEMBER_SIGNATURES[(_module, _member)] = _signature
+    else:
+        _IMPORT_MODULE_SIGNATURES[_signature.value] = _signature
 
 
 def _is_archived_or_plan(path: str) -> bool:
@@ -259,6 +270,64 @@ def _iter_policy_files(repo_root: Path, roots: tuple[str, ...] | None) -> list[P
     return sorted(files)
 
 
+def _resolve_import_from_module(node: ast.ImportFrom, relative: str) -> str | None:
+    """把绝对/相对 ImportFrom 解析为仓库内完整模块名。"""
+
+    if node.level == 0:
+        return node.module
+
+    package_parts = list(Path(relative).parent.parts)
+    parents_to_drop = node.level - 1
+    if parents_to_drop > len(package_parts):
+        return None
+    if parents_to_drop:
+        package_parts = package_parts[:-parents_to_drop]
+    if node.module:
+        package_parts.extend(node.module.split("."))
+    return ".".join(package_parts)
+
+
+def _find_python_import_references(*, relative: str, content: str, strict_policy: bool) -> list[LegacyReference]:
+    """使用 AST 识别真实 import；regex 仍负责字符串、路径和拼接引用。"""
+
+    try:
+        tree = ast.parse(content, filename=relative)
+    except SyntaxError as exc:
+        if not strict_policy:
+            return []
+        return [
+            LegacyReference(
+                relative,
+                exc.lineno or 1,
+                "policy_error",
+                f"Python 语法解析失败，拒绝跳过 legacy import 检查: {exc.msg}",
+            )
+        ]
+
+    findings: set[LegacyReference] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                signature = _IMPORT_MODULE_SIGNATURES.get(alias.name)
+                if signature is not None:
+                    findings.add(LegacyReference(relative, node.lineno, signature.key, signature.reason))
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            continue
+
+        module = _resolve_import_from_module(node, relative)
+        if module is None:
+            continue
+        module_signature = _IMPORT_MODULE_SIGNATURES.get(module)
+        if module_signature is not None:
+            findings.add(LegacyReference(relative, node.lineno, module_signature.key, module_signature.reason))
+        for alias in node.names:
+            signature = _IMPORT_MEMBER_SIGNATURES.get((module, alias.name))
+            if signature is not None:
+                findings.add(LegacyReference(relative, node.lineno, signature.key, signature.reason))
+    return sorted(findings)
+
+
 def find_legacy_references(
     *,
     repo_root: Path = REPO_ROOT,
@@ -266,13 +335,33 @@ def find_legacy_references(
 ) -> list[LegacyReference]:
     """按统一策略返回未被精确证据 allowlist 覆盖的引用。"""
 
+    strict_policy = roots is None
     findings: set[LegacyReference] = set()
+    if strict_policy:
+        for relative in CURRENT_DOC_FILES:
+            if not (repo_root / relative).is_file():
+                findings.add(
+                    LegacyReference(
+                        relative,
+                        1,
+                        "policy_error",
+                        "显式 current doc 不存在，拒绝缩小 legacy 扫描面",
+                    )
+                )
     for path in _iter_policy_files(repo_root, roots):
         relative = path.relative_to(repo_root).as_posix()
         if _is_archived_or_plan(relative):
             continue
         content = path.read_text(encoding="utf-8")
         allowed = ALLOWED_EVIDENCE.get(relative, frozenset())
+        if path.suffix == ".py":
+            for reference in _find_python_import_references(
+                relative=relative,
+                content=content,
+                strict_policy=strict_policy,
+            ):
+                if reference.signature not in allowed:
+                    findings.add(reference)
         for signature, pattern in _SIGNATURE_PATTERNS:
             content_match = pattern.search(content)
             path_match = None

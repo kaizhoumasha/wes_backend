@@ -163,6 +163,71 @@ def test_scanner_rejects_legacy_modules_without_workline_inbox_symbol(tmp_path: 
     assert {finding.path for finding in find_legacy_references(repo_root=tmp_path, roots=("src",))} == set(fixtures)
 
 
+def test_scanner_rejects_parenthesized_alias_and_relative_python_imports(tmp_path: Path) -> None:
+    fixtures = {
+        "src/app/runtime/orchestration/services/inbox/service_caller.py": (
+            "from . import (\n    inbox_service as legacy_service,\n)\n"
+        ),
+        "src/app/runtime/orchestration/repositories/repository_caller.py": (
+            "from src.app.runtime.orchestration.repositories import (\n    inbox_repository as legacy_repository,\n)\n"
+        ),
+        "src/app/runtime/orchestration/models/model_caller.py": (
+            "from src.app.runtime.orchestration.models import (\n    inbox as legacy_model,\n)\n"
+        ),
+        "src/app/runtime/orchestration/consumers/consumer_caller.py": (
+            "from . import (\n    runtime_inbox_consumer as legacy_consumer,\n)\n"
+        ),
+    }
+    for relative_path, content in fixtures.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    findings = find_legacy_references(repo_root=tmp_path, roots=("src",))
+
+    assert {
+        ("src/app/runtime/orchestration/services/inbox/service_caller.py", "legacy_service_member_import"),
+        ("src/app/runtime/orchestration/repositories/repository_caller.py", "legacy_repository_member_import"),
+        ("src/app/runtime/orchestration/models/model_caller.py", "legacy_model_member_import"),
+        ("src/app/runtime/orchestration/consumers/consumer_caller.py", "legacy_consumer_member_import"),
+    } <= {(finding.path, finding.signature) for finding in findings}
+
+
+def test_default_scan_fails_closed_when_all_current_docs_are_missing(tmp_path: Path) -> None:
+    findings = find_legacy_references(repo_root=tmp_path)
+
+    assert {finding.path for finding in findings} == set(CURRENT_DOC_FILES)
+    assert {finding.signature for finding in findings} == {"policy_error"}
+
+
+def test_default_scan_fails_closed_when_one_current_doc_is_missing(tmp_path: Path) -> None:
+    missing = CURRENT_DOC_FILES[-1]
+    for relative_path in CURRENT_DOC_FILES[:-1]:
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# current\n", encoding="utf-8")
+
+    findings = find_legacy_references(repo_root=tmp_path)
+
+    assert [(finding.path, finding.signature) for finding in findings] == [(missing, "policy_error")]
+
+
+def test_default_scan_reports_python_syntax_errors_but_explicit_fixture_scan_does_not(tmp_path: Path) -> None:
+    for relative_path in CURRENT_DOC_FILES:
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# current\n", encoding="utf-8")
+    broken = tmp_path / "src/broken.py"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("not valid python ???", encoding="utf-8")
+
+    default_findings = find_legacy_references(repo_root=tmp_path)
+    explicit_findings = find_legacy_references(repo_root=tmp_path, roots=("src",))
+
+    assert [(finding.path, finding.signature) for finding in default_findings] == [("src/broken.py", "policy_error")]
+    assert explicit_findings == []
+
+
 def test_e2e_current_code_list_assigns_loader_to_runtime_inbox_bridge() -> None:
     source = (REPO_ROOT / "docs/business/e2e_conveyor_plan.md").read_text(encoding="utf-8")
 
@@ -194,6 +259,8 @@ def test_architecture_script_executes_shared_workline_inbox_scanner() -> None:
 
     assert "rule_workline_inbox_retirement" in source
     assert "workline_inbox_retirement_guardrail.py" in source
+    assert "scanner_status -ne 0 && -z" in source
+    assert "拒绝 fail open" in source
 
 
 def test_runtime_inbox_and_dependent_models_point_to_current_authorities() -> None:
