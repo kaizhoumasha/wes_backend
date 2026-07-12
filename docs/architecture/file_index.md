@@ -506,7 +506,7 @@ Phase 3 RECONCILING 冲突登记与 owner-scoped 决议层，只产出 hold/free
 | `sandbox_catalog_bridge.py` | **stable migration mirror** legacy runtime `sandbox_catalog` 桥接门面:SANDBOX / MOCK 确定性样例 catalog | 🔧 架构核心 |
 | `topology_bridge.py` | **stable migration mirror** legacy runtime `topology` 桥接门面:WORKLINE 运行时拓扑视图（自引用 legacy runtime.device_ordering / legacy runtime.plugin_manifest 已重定向到本目录 + domain 镜像） | 🔧 架构核心 |
 | `consumers/` | RuntimeInbox 入口子包：legacy runtime 真引用已清空，旧 trust zone (`EXCLUDED_PREFIXES`) 已退出，当前承载 callback ACK-before-processing 幂等入口 | 🔧 架构核心 |
-| `consumers/__init__.py` | RuntimeInbox 写入/状态机 service 导出；无消费 facade | 🔧 架构核心 |
+| `consumers/__init__.py` | 仅导出 CallbackRuntimeInboxWriter adapter；RuntimeInboxService 正式导出边界为 `services/runtime_inbox/__init__.py` | 🔧 架构核心 |
 | `consumers/callback_runtime_inbox_writer.py` | callback ingress 的 RuntimeInbox 薄写入适配器，保持 API → Service → Repository 分层 | 🔧 架构核心 |
 | `services/runtime_inbox/runtime_inbox_service.py` | RuntimeInboxService：ACK-before-processing、source-event 幂等接收、五态 claim/retry/fencing、payload conflict 409、DEAD_LETTER 人工重放审计 | 🔧 架构核心 |
 | `diagnostics/` | **stable migration mirror** legacy runtime `diagnostics/` 子目录完整迁移:`builder` / `codes` / `failure_mapper` / `models` / `registry` 5 子模块 + 聚合层 `__init__.py`(原 `consumers/diagnostics_bridge.py` 已迁出) | 🔧 架构核心 |
