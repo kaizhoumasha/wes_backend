@@ -348,6 +348,26 @@ def test_scanner_accepts_dot_and_nested_parent_normalization_that_never_escape_r
     ]
 
 
+def test_equivalent_relative_dot_and_absolute_roots_keep_the_same_suffix_policy(tmp_path: Path) -> None:
+    fixtures = {
+        "scripts": ("offender.sh", "task=process_inbox_batch\n", "legacy_task_short"),
+        "docs": ("current.md", "WorklineInbox\n", "legacy_symbol"),
+        "src": ("offender.py", "WorklineInbox\n", "legacy_symbol"),
+        "tests": ("offender.py", "WorklineInbox\n", "legacy_symbol"),
+    }
+    for root_name, (filename, content, expected_signature) in fixtures.items():
+        scan_root = tmp_path / root_name
+        scan_root.mkdir()
+        (scan_root / filename).write_text(content, encoding="utf-8")
+
+        for equivalent_root in (root_name, f"./{root_name}", str(scan_root)):
+            findings = find_legacy_references(repo_root=tmp_path, roots=(equivalent_root,))
+
+            assert [(finding.path, finding.signature) for finding in findings] == [
+                (f"{root_name}/{filename}", expected_signature)
+            ], equivalent_root
+
+
 def test_scanner_rejects_external_file_and_directory_symlinks_without_traversal(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -387,6 +407,17 @@ def test_scanner_rejects_directory_symlink_used_as_explicit_root(tmp_path: Path)
     findings = find_legacy_references(repo_root=tmp_path, roots=("linked_root",))
 
     assert [(finding.path, finding.signature) for finding in findings] == [("linked_root", "policy_error")]
+
+
+def test_scanner_rejects_directory_symlink_in_an_explicit_root_component(tmp_path: Path) -> None:
+    nested = tmp_path / "real/nested"
+    nested.mkdir(parents=True)
+    (nested / "offender.py").write_text("WorklineInbox\n", encoding="utf-8")
+    (tmp_path / "alias").symlink_to(tmp_path / "real", target_is_directory=True)
+
+    findings = find_legacy_references(repo_root=tmp_path, roots=("alias/nested",))
+
+    assert [(finding.path, finding.signature) for finding in findings] == [("alias/nested", "policy_error")]
 
 
 def test_default_scan_rejects_directory_symlink_root_before_traversal(tmp_path: Path) -> None:

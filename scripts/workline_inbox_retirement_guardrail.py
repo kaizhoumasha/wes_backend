@@ -261,7 +261,9 @@ def _iter_policy_files(
         root = repo_root / root_name
         if not root.exists():
             continue
-        suffixes = (".py", ".sh") if root_name == "scripts" else ((".md",) if root_name == "docs" else (".py",))
+        relative_root = root.resolve().relative_to(repo_root.resolve())
+        top_level = relative_root.parts[0] if relative_root.parts else ""
+        suffixes = (".py", ".sh") if top_level == "scripts" else ((".md",) if top_level == "docs" else (".py",))
         files.update(
             path for path in root.rglob("*") if path.is_symlink() or (path.is_file() and path.suffix in suffixes)
         )
@@ -318,8 +320,28 @@ def _path_boundary_error(*, path: Path, display_path: str, repo_root: Path) -> L
     )
 
 
-def _directory_symlink_error(*, path: Path, display_path: str) -> LegacyReference | None:
-    if not path.is_symlink() or not path.is_dir():
+def _directory_symlink_error(*, path: Path, display_path: str, repo_root: Path) -> LegacyReference | None:
+    repo_lexical = repo_root if repo_root.is_absolute() else Path.cwd() / repo_root
+    path_lexical = path if path.is_absolute() else Path.cwd() / path
+    relative_parts = path_lexical.parts[len(repo_lexical.parts) :]
+    normalized_parts: list[str] = []
+    for part in relative_parts:
+        if part == "..":
+            normalized_parts.pop()
+        elif part not in {"", "."}:
+            normalized_parts.append(part)
+
+    current = repo_lexical
+    for index, part in enumerate(normalized_parts):
+        current /= part
+        if not current.is_symlink():
+            continue
+        is_final_component = index == len(normalized_parts) - 1
+        if is_final_component and not current.is_dir():
+            # 仓库内最终 file symlink 仍按其仓库路径扫描；目录 symlink 一律不展开。
+            continue
+        break
+    else:
         return None
     return LegacyReference(
         display_path,
@@ -504,19 +526,23 @@ def find_legacy_references(
     for root_name in requested_roots:
         root_path = repo_root / root_name
         display_path = Path(root_name).as_posix()
-        directory_symlink_error = _directory_symlink_error(path=root_path, display_path=display_path)
-        if directory_symlink_error is not None:
-            findings.add(directory_symlink_error)
-            continue
         boundary_error = _path_boundary_error(
             path=root_path,
             display_path=display_path,
             repo_root=repo_root,
         )
-        if boundary_error is None:
-            safe_roots.append(root_name)
-        else:
+        if boundary_error is not None:
             findings.add(boundary_error)
+            continue
+        directory_symlink_error = _directory_symlink_error(
+            path=root_path,
+            display_path=display_path,
+            repo_root=repo_root,
+        )
+        if directory_symlink_error is not None:
+            findings.add(directory_symlink_error)
+            continue
+        safe_roots.append(root_name)
     if strict_policy:
         for relative in CURRENT_DOC_FILES:
             if not (repo_root / relative).is_file():
@@ -538,7 +564,11 @@ def find_legacy_references(
         if boundary_error is not None:
             findings.add(boundary_error)
             continue
-        directory_symlink_error = _directory_symlink_error(path=path, display_path=relative)
+        directory_symlink_error = _directory_symlink_error(
+            path=path,
+            display_path=relative,
+            repo_root=repo_root,
+        )
         if directory_symlink_error is not None:
             findings.add(directory_symlink_error)
             continue
