@@ -214,7 +214,7 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
         *,
         session_id: int,
     ) -> RuntimeInboxManualHoldEvidence | None:
-        """先读取 Session 最新 Timeline，再返回其关联 Inbox 证据。"""
+        """先读取 Session 最新状态迁移 Timeline，再返回其关联 Inbox 证据。"""
 
         from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 
@@ -232,7 +232,10 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
                     source.c.status,
                 )
                 .select_from(timeline.outerjoin(source, source.c.id == timeline.c.related_inbox_id))
-                .where(timeline.c.session_id == session_id)
+                .where(
+                    timeline.c.session_id == session_id,
+                    timeline.c.to_status.is_not(None),
+                )
                 .order_by(timeline.c.seq_no.desc(), timeline.c.id.desc())
                 .limit(1)
             )

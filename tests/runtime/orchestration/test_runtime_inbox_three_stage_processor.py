@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 
 from src.app.runtime.orchestration.effect_result import (
     RuntimeIntentEffectResult,
@@ -511,37 +512,33 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
             related_inbox_id=source.id,
         )
     )
+    wrong_source = RuntimeInbox(
+        kind="DEVICE_EVENT",
+        provider_code="ECS",
+        event_type="SCAN_COMPLETED",
+        source_event_id="wrong-entry-source",
+        payload_hash="wrong-entry-hash",
+        payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "WRONG"}},
+        payload_schema_version=1,
+        workline_id=20,
+        workline_session_id=10,
+        status="DEAD_LETTER",
+        claim_bucket_key="source:wrong-entry-source",
+        received_at=1_700_000_000_002,
+        failed_at=1_700_000_000_003,
+    )
+    db_session.add(wrong_source)
     await db_session.flush()
     runtime_service = RuntimeInboxService(audit_service=_AuditService())
-    replay = await runtime_service.replay_from_dead_letter(
-        db_session,
-        source_inbox_id=source.id,
-        request_id="canonical-entry-replay",
-        actor="42",
-        reason="payload validation corrected externally",
-    )
-    await db_session.flush()
-    claims = await runtime_service.claim_for_processing(
-        db_session,
-        limit=1,
-        processor_token="canonical-replay-token",
-        stale_after_seconds=60,
-    )
-    assert [claim["id"] for claim in claims] == [replay.replay_record.id]
-    assert "replay_of_event_id" not in replay.replay_record.payload_json["original_payload"]
 
     session = _make_session(status="MANUAL_HOLD")
     session.failure_code = "PAYLOAD_INVALID"
     workline = _make_workline()
     orchestrated: list[dict[str, Any]] = []
     effects: list[dict[str, Any]] = []
-    duplicate_archives: list[str] = []
 
     async def load_related(*_args: Any, **_kwargs: Any) -> tuple[object, ...]:
         return session, workline, None, None, {}, SimpleNamespace(), True
-
-    async def record_duplicate(*_args: Any, **_kwargs: Any) -> None:
-        duplicate_archives.append("duplicate")
 
     class _Processor:
         async def process(self, *_args: Any, **kwargs: Any) -> OrchestratorResult:
@@ -570,39 +567,12 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
         "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
         load_related,
     )
-    monkeypatch.setattr(
-        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._record_duplicate_entry_archive_timeline",
-        record_duplicate,
-    )
-    result = await RuntimeInboxProcessorBridge(
+    processor = RuntimeInboxProcessorBridge(
         processor_service=_Processor(),  # type: ignore[arg-type]
         writeback_service=_WriteBack(),  # type: ignore[arg-type]
         inbox_service=runtime_service,
-    ).process_claimed(db_session, claim=claims[0])
-
-    expected_payload = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "MAT-REPLAY-1"}}
-    assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-    assert orchestrated == [expected_payload]
-    assert effects == [expected_payload]
-    assert duplicate_archives == []
-
-    wrong_source = RuntimeInbox(
-        kind="DEVICE_EVENT",
-        provider_code="ECS",
-        event_type="SCAN_COMPLETED",
-        source_event_id="wrong-entry-source",
-        payload_hash="wrong-entry-hash",
-        payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "WRONG"}},
-        payload_schema_version=1,
-        workline_id=20,
-        workline_session_id=10,
-        status="DEAD_LETTER",
-        claim_bucket_key="source:wrong-entry-source",
-        received_at=1_700_000_000_002,
-        failed_at=1_700_000_000_003,
     )
-    db_session.add(wrong_source)
-    await db_session.flush()
+
     wrong_replay = await runtime_service.replay_from_dead_letter(
         db_session,
         source_inbox_id=wrong_source.id,
@@ -618,17 +588,39 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
         stale_after_seconds=60,
     )
     assert [claim["id"] for claim in wrong_claims] == [wrong_replay.replay_record.id]
-
-    wrong_result = await RuntimeInboxProcessorBridge(
-        processor_service=_Processor(),  # type: ignore[arg-type]
-        writeback_service=_WriteBack(),  # type: ignore[arg-type]
-        inbox_service=runtime_service,
-    ).process_claimed(db_session, claim=wrong_claims[0])
+    wrong_result = await processor.process_claimed(db_session, claim=wrong_claims[0])
 
     assert wrong_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+    assert orchestrated == []
+    assert effects == []
+    archived = (
+        await db_session.execute(select(WorklineTimeline).where(WorklineTimeline.message == "DUPLICATE_ENTRY_ARCHIVED"))
+    ).scalar_one()
+    assert archived.action_type == TimelineActionType.EVENT_PROCESSED
+    assert archived.related_inbox_id == wrong_replay.replay_record.id
+
+    replay = await runtime_service.replay_from_dead_letter(
+        db_session,
+        source_inbox_id=source.id,
+        request_id="canonical-entry-replay",
+        actor="42",
+        reason="payload validation corrected externally",
+    )
+    await db_session.flush()
+    claims = await runtime_service.claim_for_processing(
+        db_session,
+        limit=1,
+        processor_token="canonical-replay-token",
+        stale_after_seconds=60,
+    )
+    assert [claim["id"] for claim in claims] == [replay.replay_record.id]
+    assert "replay_of_event_id" not in replay.replay_record.payload_json["original_payload"]
+    result = await processor.process_claimed(db_session, claim=claims[0])
+
+    expected_payload = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "MAT-REPLAY-1"}}
+    assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
     assert orchestrated == [expected_payload]
     assert effects == [expected_payload]
-    assert duplicate_archives == ["duplicate"]
 
 
 class TestEstopTimerRouting:
