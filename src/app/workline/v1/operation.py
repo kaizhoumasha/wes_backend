@@ -57,7 +57,7 @@ def _inbox_response(inbox: Any) -> dict[str, Any]:
         "kind": enum_value(inbox.kind),
         "source_message_id": getattr(inbox, "source_message_id", None) or getattr(inbox, "source_event_id", None),
         "trace_id": inbox.trace_id,
-        "session_id": getattr(inbox, "session_id", None),
+        "session_id": inbox.workline_session_id,
         "workline_id": inbox.workline_id,
         "status": enum_value(inbox.status),
     }

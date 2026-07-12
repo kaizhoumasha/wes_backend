@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 from fastapi import Response
 
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxAuditPersistenceFailed,
     RuntimeInboxConflict,
@@ -65,15 +66,22 @@ def test_replay_request_requires_stable_request_id_and_rejects_operator_id() -> 
 
 @pytest.mark.asyncio
 async def test_replay_uses_authenticated_actor(monkeypatch: pytest.MonkeyPatch) -> None:
-    replay = SimpleNamespace(
-        id=5,
+    replay = RuntimeInbox(
         kind="REPLAY_REQUEST",
+        provider_code="RUNTIME",
+        event_type="REPLAY_REQUEST",
         source_event_id="replay:4:req-1",
+        payload_hash="replay-hash",
+        payload_json={},
+        payload_schema_version=1,
         trace_id="trace-1",
-        session_id=3,
+        workline_session_id=3,
         workline_id=2,
         status="RECEIVED",
+        claim_bucket_key="session:3",
+        received_at=1_700_000_000_000,
     )
+    replay.id = 5
 
     class _CapturingService:
         kwargs: dict[str, Any] | None = None
@@ -95,6 +103,7 @@ async def test_replay_uses_authenticated_actor(monkeypatch: pytest.MonkeyPatch) 
     )
 
     assert response["code"] == "1000"
+    assert response["data"]["session_id"] == 3
     assert service.kwargs == {
         "inbox_id": 4,
         "request_id": "req-1",

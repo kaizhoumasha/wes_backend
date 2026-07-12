@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from src.app.device.models.command import DeviceCommand
 from src.app.runtime.orchestration.models.session import RuntimeReconciliationState, SessionStatus, WorklineSession
+from src.app.runtime.orchestration.models.timeline import (
+    TimelineActionType,
+    TimelineActorType,
+    TimelineStage,
+    TimelineStatus,
+    WorklineTimeline,
+)
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
@@ -17,8 +27,10 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxService,
 )
 from src.app.sys.models.audit_log import AuditLog, OperaStatus
+from src.app.sys.models.outbox import SystemOutbox
 from src.app.sys.services import AuditLogService
 from src.app.workline.models.workline import LineType, WorkLine
+from src.utils.timezone import timezone
 from tests.support.runtime_inbox_processing_postgresql import (
     RecordingTaskQueueGateway,
     assert_effects,
@@ -50,6 +62,137 @@ def test_device_event_persists_claims_and_applies_production_effects_once() -> N
             await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
             await assert_effects(db, seeded, expected_count=1)
             assert queue_gateway.outbox_enqueues == [(None, 50)]
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_manual_replay_hold_provenance_survives_archive_and_is_revoked_by_later_transition() -> None:
+    """真实 Repo/archive/fencing/writeback 必须承载 wrong→correct，并让后续迁移撤销旧授权。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        service = RuntimeInboxService()
+        repository = RuntimeInboxRepository()
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            source = await db.get(RuntimeInbox, seeded.inbox_id)
+            session = await db.get(WorklineSession, seeded.session_id)
+            assert source is not None and session is not None
+            source.status = "DEAD_LETTER"
+            source.failed_at = 1_700_000_000_001
+            source.workline_session_id = seeded.session_id
+            session.status = SessionStatus.MANUAL_HOLD
+            session.failure_code = "PAYLOAD_INVALID"
+            session.failure_domain = "PAYLOAD"
+            session.failure_message = "invalid payload"
+            hold = WorklineTimeline(
+                session_id=seeded.session_id,
+                workline_id=seeded.workline_id,
+                trace_id=seeded.trace_id,
+                seq_no=1,
+                occurred_at=timezone.now_for_db(),
+                stage=TimelineStage.MANUAL,
+                action_type=TimelineActionType.MANUAL_HOLD,
+                actor_type=TimelineActorType.ORCHESTRATOR,
+                to_status=SessionStatus.MANUAL_HOLD.value,
+                status=TimelineStatus.PENDING,
+                payload_json={"reason_code": "PAYLOAD_INVALID"},
+                related_inbox_id=seeded.inbox_id,
+            )
+            wrong_source = RuntimeInbox(
+                kind="DEVICE_EVENT",
+                provider_code="ECS",
+                event_type="SCAN_COMPLETED",
+                source_event_id="it-wrong-replay-source",
+                payload_hash="it-wrong-replay-hash",
+                payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "WRONG"}},
+                payload_schema_version=1,
+                workline_id=seeded.workline_id,
+                workline_session_id=seeded.session_id,
+                trace_id=seeded.trace_id,
+                status="DEAD_LETTER",
+                claim_bucket_key=f"session:{seeded.session_id}",
+                received_at=1_700_000_000_002,
+                failed_at=1_700_000_000_003,
+            )
+            db.add_all([hold, wrong_source])
+            await db.commit()
+
+            wrong = await service.replay_from_dead_letter(
+                db,
+                source_inbox_id=wrong_source.id,
+                request_id="it-wrong-replay",
+                actor="integration",
+                reason="wrong source",
+            )
+            await db.commit()
+            wrong_claim = await claim(db, service, token="it-wrong-replay-token")
+            wrong_result = await processor(service).process_claimed(db, claim=wrong_claim)
+            assert wrong_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+            await assert_processed_terminal(db, inbox_id=wrong.replay_record.id)
+            command_count = await db.scalar(
+                select(func.count()).select_from(DeviceCommand).where(DeviceCommand.workline_id == seeded.workline_id)
+            )
+            outbox_count = await db.scalar(
+                select(func.count()).select_from(SystemOutbox).where(SystemOutbox.session_id == seeded.session_id)
+            )
+            command_timeline_count = await db.scalar(
+                select(func.count())
+                .select_from(WorklineTimeline)
+                .where(
+                    WorklineTimeline.session_id == seeded.session_id,
+                    WorklineTimeline.action_type == TimelineActionType.COMMAND_SENT,
+                )
+            )
+            assert (command_count, outbox_count, command_timeline_count) == (0, 0, 0)
+
+            archive = await db.scalar(
+                select(WorklineTimeline).where(
+                    WorklineTimeline.session_id == seeded.session_id,
+                    WorklineTimeline.message == "DUPLICATE_ENTRY_ARCHIVED",
+                )
+            )
+            assert archive is not None
+            assert archive.action_type == TimelineActionType.EVENT_PROCESSED
+            assert archive.to_status is None
+            assert archive.related_inbox_id == wrong.replay_record.id
+            assert archive.seq_no > 1
+            evidence_after_archive = await repository.get_latest_manual_hold_evidence(
+                db,
+                session_id=seeded.session_id,
+            )
+            assert evidence_after_archive is not None
+            assert evidence_after_archive.action_type == TimelineActionType.MANUAL_HOLD.value
+            assert evidence_after_archive.related_inbox_id == seeded.inbox_id
+
+            correct = await service.replay_from_dead_letter(
+                db,
+                source_inbox_id=seeded.inbox_id,
+                request_id="it-correct-replay",
+                actor="integration",
+                reason="correct source",
+            )
+            await db.commit()
+            correct_claim = await claim(db, service, token="it-correct-replay-token")
+            correct_result = await processor(service).process_claimed(db, claim=correct_claim)
+            assert correct_result == {
+                "processed": 1,
+                "success": 1,
+                "failed": 0,
+                "skipped": 0,
+                "resource_wait": 0,
+            }
+            await assert_processed_terminal(db, inbox_id=correct.replay_record.id)
+            await assert_effects(db, replace(seeded, inbox_id=correct.replay_record.id), expected_count=1)
+
+            evidence_after_transition = await repository.get_latest_manual_hold_evidence(
+                db,
+                session_id=seeded.session_id,
+            )
+            assert evidence_after_transition is not None
+            assert evidence_after_transition.action_type == TimelineActionType.WAIT_STARTED.value
+            assert evidence_after_transition.related_inbox_id == correct.replay_record.id
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
