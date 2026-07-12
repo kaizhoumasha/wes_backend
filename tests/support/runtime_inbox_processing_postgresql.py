@@ -226,7 +226,13 @@ async def with_temporary_runtime_database(
 ) -> None:
     async with temporary_database() as (_database, database_url):
         run_alembic("upgrade", "head", database_url=database_url)
-        engine = create_async_engine(database_url, pool_pre_ping=True)
+        engine = create_async_engine(
+            database_url,
+            pool_pre_ping=True,
+            pool_size=2,
+            max_overflow=0,
+            pool_timeout=10,
+        )
         session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         queue_gateway = RecordingTaskQueueGateway()
         try:
