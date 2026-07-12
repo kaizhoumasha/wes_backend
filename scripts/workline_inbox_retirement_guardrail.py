@@ -33,6 +33,8 @@ LEGACY_SIGNATURES = (
         "引用已删除的 WorklineInboxRepository symbol",
     ),
     LegacySignature("legacy_service_symbol", "WorklineInboxService", "引用已删除的 WorklineInboxService symbol"),
+    LegacySignature("legacy_batch_processor_symbol", "InboxBatchProcessor", "引用已删除的 InboxBatchProcessor"),
+    LegacySignature("legacy_consumer_symbol", "RuntimeInboxConsumer", "引用已删除的 RuntimeInboxConsumer facade"),
     LegacySignature("legacy_table", "wes_biz.workline_inbox", "引用已删除的旧 Inbox 表"),
     LegacySignature(
         "legacy_callback_owner",
@@ -66,6 +68,81 @@ LEGACY_SIGNATURES = (
         "src.app.runtime.orchestration.services.inbox.inbox_service",
         "import 已删除的旧 Inbox service module",
     ),
+    LegacySignature(
+        "legacy_workline_model_import",
+        "src.app.workline.models.inbox",
+        "import 已删除的 Workline Inbox model module",
+    ),
+    LegacySignature(
+        "legacy_workline_repository_import",
+        "src.app.workline.repositories.inbox_repository",
+        "import 已删除的 Workline Inbox repository module",
+    ),
+    LegacySignature(
+        "legacy_workline_repository_member_import",
+        "src.app.workline.repositories import inbox_repository",
+        "import 已删除的 Workline Inbox repository member",
+    ),
+    LegacySignature(
+        "legacy_workline_service_import",
+        "src.app.workline.services.inbox_service",
+        "import 已删除的 Workline Inbox service module",
+    ),
+    LegacySignature(
+        "legacy_workline_service_member_import",
+        "src.app.workline.services import inbox_service",
+        "import 已删除的 Workline Inbox service member",
+    ),
+    LegacySignature(
+        "legacy_workline_batch_processor_import",
+        "src.app.workline.services.inbox_batch_processor",
+        "import 已删除的 Workline Inbox batch processor module",
+    ),
+    LegacySignature(
+        "legacy_workline_batch_processor_member_import",
+        "src.app.workline.services import inbox_batch_processor",
+        "import 已删除的 Workline Inbox batch processor member",
+    ),
+    LegacySignature(
+        "legacy_batch_processor_import",
+        "src.app.runtime.orchestration.services.inbox.inbox_batch_processor",
+        "import 已删除的 Runtime Inbox batch processor module",
+    ),
+    LegacySignature(
+        "legacy_batch_processor_member_import",
+        "src.app.runtime.orchestration.services.inbox import inbox_batch_processor",
+        "import 已删除的 Runtime Inbox batch processor member",
+    ),
+    LegacySignature(
+        "legacy_consumer_import",
+        "src.app.runtime.orchestration.consumers.runtime_inbox_consumer",
+        "import 已删除的 Runtime Inbox consumer facade module",
+    ),
+    LegacySignature(
+        "legacy_consumer_member_import",
+        "src.app.runtime.orchestration.consumers import runtime_inbox_consumer",
+        "import 已删除的 Runtime Inbox consumer facade member",
+    ),
+    LegacySignature(
+        "legacy_consumer_repository_import",
+        "src.app.runtime.orchestration.consumers.runtime_inbox_repository",
+        "import 已删除的 Runtime Inbox consumer repository module",
+    ),
+    LegacySignature(
+        "legacy_consumer_repository_member_import",
+        "src.app.runtime.orchestration.consumers import runtime_inbox_repository",
+        "import 已删除的 Runtime Inbox consumer repository member",
+    ),
+    LegacySignature(
+        "legacy_claim_repository_import",
+        "src.app.runtime.orchestration.repositories.runtime_inbox_claim_repository",
+        "import 已删除的 Runtime Inbox claim repository module",
+    ),
+    LegacySignature(
+        "legacy_claim_repository_member_import",
+        "src.app.runtime.orchestration.repositories import runtime_inbox_claim_repository",
+        "import 已删除的 Runtime Inbox claim repository member",
+    ),
 )
 
 # 当前事实源使用显式文件清单；archive/superpowers plan/spec 不属于 current docs。
@@ -73,6 +150,11 @@ CURRENT_DOC_FILES = (
     "docs/architecture/file_index.md",
     "docs/architecture/runtime-orchestration-spec.md",
     "docs/architecture/runtime-ownership-map.md",
+    "docs/business/e2e_conveyor_plan.md",
+    "docs/business/workline_business_data_event_flow_spec.md",
+    "docs/business/workline_runtime_workflow_guide.md",
+    "docs/contracts/observability-contract.md",
+    "docs/architecture/adr/2026-05-26-wms-integration-domain.md",
 )
 
 # 精确到“文件 + 签名”的历史/负向证据 allowlist；不跳过整文件。
@@ -90,23 +172,45 @@ ALLOWED_EVIDENCE: dict[str, frozenset[str]] = {
     "tests/api/test_runtime_inbox_enqueue_contract.py": frozenset({"legacy_enqueue"}),
     "tests/sys/test_outbox_delivery.py": frozenset({"legacy_enqueue"}),
     "tests/deployment/test_reset_runtime_data.py": frozenset({"legacy_symbol", "legacy_table"}),
-    "scripts/generate_legacy_matrix.py": frozenset({"legacy_repository_import", "legacy_service_import"}),
-    "docs/architecture/file_index.md": frozenset({"legacy_symbol"}),
+    "scripts/generate_legacy_matrix.py": frozenset(
+        {
+            "legacy_batch_processor_symbol",
+            "legacy_repository_import",
+            "legacy_service_import",
+            "legacy_workline_batch_processor_import",
+            "legacy_workline_repository_import",
+            "legacy_workline_service_import",
+        }
+    ),
+    "scripts/architecture-guardrails.sh": frozenset({"legacy_consumer_repository_import"}),
+    "tests/architecture/test_legacy_matrix_contract.py": frozenset(
+        {"legacy_batch_processor_symbol", "legacy_workline_batch_processor_import"}
+    ),
+    "tests/architecture/test_legacy_runtime_import_guardrail.py": frozenset({"legacy_consumer_symbol"}),
+    "tests/architecture/test_runtime_inbox_repository_consumer_guardrail.py": frozenset(
+        {"legacy_claim_repository_import", "legacy_consumer_repository_import"}
+    ),
+    "tests/architecture/test_runtime_inbox_processor_ownership.py": frozenset({"legacy_batch_processor_symbol"}),
+    "tests/architecture/test_workline_service_shim_contract.py": frozenset({"legacy_batch_processor_symbol"}),
+    "docs/architecture/file_index.md": frozenset(
+        {"legacy_batch_processor_symbol", "legacy_consumer_symbol", "legacy_symbol"}
+    ),
+    "docs/architecture/runtime-ownership-map.md": frozenset({"legacy_consumer_symbol"}),
     "docs/architecture/runtime-orchestration-spec.md": frozenset({"legacy_symbol", "legacy_table"}),
 }
 
 
-def _signature_pattern(value: str) -> re.Pattern[str]:
+def _signature_pattern(signature: LegacySignature) -> re.Pattern[str]:
     """生成只跨标点/引号/拼接符的模式，避免把远距离普通单词拼成命中。"""
 
-    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", signature.value)
     words = re.findall(r"[A-Za-z0-9]+", camel_split)
-    separator = r"[\s'\"`+._/\\-]*"
+    separator = r"(?:|[\s]*['\"`+._/\\-][\s'\"`+._/\\-]*)" if signature.key.endswith("_symbol") else r"[\s'\"`+._/\\-]*"
     expression = separator.join(re.escape(word) for word in words)
     return re.compile(rf"(?<![A-Za-z0-9_]){expression}(?![A-Za-z0-9_])", re.IGNORECASE)
 
 
-_SIGNATURE_PATTERNS = tuple((signature, _signature_pattern(signature.value)) for signature in LEGACY_SIGNATURES)
+_SIGNATURE_PATTERNS = tuple((signature, _signature_pattern(signature)) for signature in LEGACY_SIGNATURES)
 
 
 def _is_archived_or_plan(path: str) -> bool:

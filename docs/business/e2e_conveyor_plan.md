@@ -7,7 +7,7 @@
 ## 字段约定（必须统一）
 
 - 外部接口（HTTP 回调、Mock 设备、处理器决策输出）统一使用 `device_code`。
-- 内部数据库关联（`device_commands.device_id`、`workline_inbox.device_id`）统一使用 `device_id`（整数主键）。
+- 内部数据库关联（`device_commands.device_id`、`wes_runtime.runtime_inbox.device_id`）统一使用 `device_id`（整数主键）。
 - Celery 在 ACT 阶段负责将 `device_code` 解析为内部 `device_id` 后再创建设备指令。
 
 ---
@@ -21,13 +21,13 @@ Step 1 设备事件上报（同步 ACK，快速返回）
 POST /api/v1/callback/event
   -> callback_event:
      1) 记录回调日志和审计日志
-     2) 写入 WorklineInbox(kind=DEVICE_EVENT)
-     3) 提交 Celery 任务 process_inbox_batch
+     2) 写入 RuntimeInbox(kind=DEVICE_EVENT)
+     3) 提交 Celery 任务 process_runtime_inbox_batch
      4) 立即返回 Event received
 
-Step 2 统一编排异步处理（process_inbox_batch）
+Step 2 统一编排异步处理（process_runtime_inbox_batch）
   INGRESS:
-    1) 消费 WorklineInbox
+    1) 消费 RuntimeInbox
     2) 解析 device -> workline -> plugin
     3) 基于 workline / upstream_device_id 恢复或创建 WorklineSession
   DECIDE:
@@ -41,9 +41,9 @@ Step 3 设备结果回调
 POST /api/v1/callback/result
   -> callback_result:
      1) 先按 command_code 命中既有 DeviceCommand，继承 correlation_id
-     2) 写入 WorklineInbox(kind=COMMAND_RESULT)
+     2) 写入 RuntimeInbox(kind=COMMAND_RESULT)
      3) 同步更新 DeviceCommand 结果状态（控制流证据）
-     4) 再次提交 Celery 任务 process_inbox_batch
+     4) 再次提交 Celery 任务 process_runtime_inbox_batch
 ```
 
 ---
@@ -53,10 +53,10 @@ POST /api/v1/callback/result
 ### 2.1 核心任务链路
 
 - `src/app/callback/v1/callback.py`
-  - `/event`：写 `WorklineInbox(DEVICE_EVENT)` 并触发 `src.celery_app.tasks.workline.process_inbox_batch`
-  - `/result`：写 `WorklineInbox(COMMAND_RESULT)`、更新 `DeviceCommand` 并触发统一编排
-- `src/celery_app/tasks/workline.py`
-  - `process_inbox_batch`：统一编排主流程入口
+  - `/event`：写 `RuntimeInbox(DEVICE_EVENT)` 并触发 `src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch`
+  - `/result`：写 `RuntimeInbox(COMMAND_RESULT)`、更新 `DeviceCommand` 并触发统一编排
+- `src/celery_app/tasks/runtime_inbox.py`
+  - `process_runtime_inbox_batch`：统一编排主流程入口
   - `_load_related_entities`：解析 `device -> workline -> session` 归属
 - `src/app/device/services/device_command_service.py`
   - `send_command`：下发指令并更新 ACK 状态
@@ -149,7 +149,7 @@ curl -X POST http://localhost:8001/api/v1/callback/event \
 ### 3.4 预期结果
 
 1. 回调接口立即返回（`message=Event received`，`status=submitted`）。
-2. Celery Worker 日志显示 `process_inbox_batch` 被执行。
+2. Celery Worker 日志显示 `process_runtime_inbox_batch` 被执行。
 3. 机械臂 Mock 服务收到 `/api/v1/device/command` 请求。
 4. `device_commands` 有记录，状态到达 `ACK_RECEIVED`。
 5. 机械臂回调结果后，状态更新为 `COMPLETED`。
@@ -171,7 +171,7 @@ WHERE device_code IN ('CAMERA-CONVEYOR-01', 'ROBOT-ARM-01');
 ```sql
 SELECT wi.id, wi.device_id, d.device_code, wi.kind, wi.status, wi.received_at,
        wi.payload_json ->> 'event_type' AS event_type
-FROM wes_biz.workline_inbox wi
+FROM wes_runtime.runtime_inbox wi
 JOIN wes_biz.devices d ON d.id = wi.device_id
 WHERE wi.kind = 'DEVICE_EVENT'
 ORDER BY wi.id DESC;
@@ -191,7 +191,7 @@ ORDER BY dc.id DESC;
 ## 五、验证检查点
 
 - [ ] 设备注册成功（`devices` 表有两条记录，`device_code` 正确）
-- [ ] 摄像头上报事件成功（`callback_logs` 与 `workline_inbox` 表有记录）
+- [ ] 摄像头上报事件成功（`callback_logs` 与 `wes_runtime.runtime_inbox` 表有记录）
 - [ ] Celery 任务执行成功（Worker 日志显示任务完成）
 - [ ] 搬运指令创建成功（`device_commands` 有记录，状态到 `ACK_RECEIVED`）
 - [ ] 机械臂收到指令（Mock 服务日志显示收到请求）

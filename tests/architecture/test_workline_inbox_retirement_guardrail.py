@@ -109,11 +109,61 @@ def test_signature_allowlist_does_not_skip_other_legacy_reference_in_same_file(t
 
 
 def test_current_docs_are_explicit_files_and_never_archive_or_plan_prefixes() -> None:
-    assert CURRENT_DOC_FILES
+    required_current_docs = {
+        "docs/architecture/file_index.md",
+        "docs/architecture/runtime-ownership-map.md",
+        "docs/business/e2e_conveyor_plan.md",
+        "docs/business/workline_business_data_event_flow_spec.md",
+        "docs/business/workline_runtime_workflow_guide.md",
+        "docs/contracts/observability-contract.md",
+        "docs/architecture/adr/2026-05-26-wms-integration-domain.md",
+    }
+
+    assert required_current_docs <= set(CURRENT_DOC_FILES)
     assert all(path.endswith(".md") for path in CURRENT_DOC_FILES)
     assert all(
         "/archive/" not in path and "/plans/" not in path and "/specs/" not in path for path in CURRENT_DOC_FILES
     )
+
+
+def test_scanner_rejects_legacy_modules_without_workline_inbox_symbol(tmp_path: Path) -> None:
+    fixtures = {
+        "src/model_import.py": "import src.app.workline.models.inbox as legacy_model",
+        "src/repository_import.py": "from src.app.workline.repositories import inbox_repository as legacy_repo",
+        "src/service_import.py": "from src.app.workline.services import inbox_service as legacy_service",
+        "src/processor_import.py": ("from src.app.workline.services import inbox_batch_processor as legacy_processor"),
+        "src/runtime_processor_import.py": (
+            "from src.app.runtime.orchestration.services.inbox import inbox_batch_processor as legacy_processor"
+        ),
+        "src/runtime_consumer_import.py": (
+            "from src.app.runtime.orchestration.consumers import runtime_inbox_consumer as legacy_consumer"
+        ),
+        "src/runtime_consumer_repository_import.py": (
+            "from src.app.runtime.orchestration.consumers import runtime_inbox_repository as legacy_repository"
+        ),
+        "src/runtime_claim_repository_import.py": (
+            "from src.app.runtime.orchestration.repositories import runtime_inbox_claim_repository as legacy_claim"
+        ),
+    }
+    for relative_path, content in fixtures.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    assert {finding.path for finding in find_legacy_references(repo_root=tmp_path, roots=("src",))} == set(fixtures)
+
+
+def test_scanner_rejects_retired_processor_and_consumer_symbols(tmp_path: Path) -> None:
+    fixtures = {
+        "src/processor.py": "processor = InboxBatchProcessor()",
+        "src/consumer.py": "consumer: RuntimeInboxConsumer",
+    }
+    for relative_path, content in fixtures.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    assert {finding.path for finding in find_legacy_references(repo_root=tmp_path, roots=("src",))} == set(fixtures)
 
 
 def test_architecture_script_executes_shared_workline_inbox_scanner() -> None:

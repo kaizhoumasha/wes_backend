@@ -47,7 +47,7 @@
 
 所有运行时输入必须回到同一条编排主线：
 
-`Ingress -> WorklineInbox -> Orchestrator -> Session/Timeline/Decision/Outbox -> OutboxDispatchService -> callback 回流`
+`Ingress -> RuntimeInbox -> Orchestrator -> Session/Timeline/Decision/Outbox -> OutboxDispatchService -> callback 回流`
 
 禁止存在“部分输入走编排器，另一部分输入直接改业务状态”的双轨语义。
 
@@ -64,7 +64,7 @@
 | `WorklineSession` | 业务运行实例 | 一次完整业务处理过程的内部状态容器 |
 | `WorklineTimeline` | 业务时间线 | 记录编排推进、决策、等待、终态 |
 | `DeviceCommand` | 单条设备命令记录 | 记录控制流中的一条设备动作 |
-| `WorklineInbox` | 统一编排入口 | 接住所有待编排输入 |
+| `RuntimeInbox` | 统一编排入口 | 接住所有待编排输入 |
 | `SystemOutbox` | 统一副作用出口 | 接住所有待派发动作 |
 
 ### 3.2 三类 ID 语义
@@ -112,7 +112,7 @@
 1. 请求校验
 2. 原始日志落库
 3. ACK
-4. 写 `WorklineInbox`
+4. 写 `RuntimeInbox`
 
 规则：
 
@@ -131,12 +131,12 @@
 1. `result` 不新开业务流
 2. `result` 必须首先按 `command_code` 命中原命令
 3. `result` 必须延续该命令所属链路的 `correlation_id`
-4. `result` 写入 `WorklineInbox` 后，由编排器决定是否存在下一步动作
+4. `result` 写入 `RuntimeInbox` 后，由编排器决定是否存在下一步动作
 5. 某个 `result` 后可以没有下一步动作，此时应落明确终态
 
 ### 4.3 Inbox 类型
 
-`WorklineInbox` 必须把以下输入建模为一等入口类型：
+`RuntimeInbox` 必须把以下输入建模为一等入口类型：
 
 - `DEVICE_EVENT`
 - `COMMAND_RESULT`
@@ -171,7 +171,7 @@
 
 编排器负责：
 
-1. 消费 `WorklineInbox`
+1. 消费 `RuntimeInbox`
 2. 解析 `device -> workline -> plugin`
 3. 创建或恢复 `WorklineSession`
 4. 调用插件做业务决策
@@ -201,7 +201,7 @@
 
 1. 事务内写 `Outbox`
 2. 事务外派发
-3. 设备结果或外部回调重新回流到 `WorklineInbox`
+3. 设备结果或外部回调重新回流到 `RuntimeInbox`
 
 ---
 
@@ -238,7 +238,7 @@
 ### 7.1 业务流
 
 1. 某设备或外部系统发起 `event`
-2. WES ACK 并写 `WorklineInbox`
+2. WES ACK 并写 `RuntimeInbox`
 3. 编排器定位工作线与插件
 4. 插件根据当前上下文与拓扑做决策
 5. 编排器写 `Outbox`
@@ -249,7 +249,7 @@
 ### 7.2 数据流
 
 1. 静态主数据先完成配置：`WorkLine / Device / plugin_key / upstream_device_id`
-2. 运行时输入进入 `WorklineInbox`
+2. 运行时输入进入 `RuntimeInbox`
 3. 编排输出沉淀到 `WorklineSession / WorklineTimeline / SystemOutbox`
 4. 控制流证据沉淀到 `DeviceCommand`
 5. 整条业务链通过 `correlation_id` 串联
