@@ -324,19 +324,17 @@ def _directory_symlink_error(*, path: Path, display_path: str, repo_root: Path) 
     repo_lexical = repo_root if repo_root.is_absolute() else Path.cwd() / repo_root
     path_lexical = path if path.is_absolute() else Path.cwd() / path
     relative_parts = path_lexical.parts[len(repo_lexical.parts) :]
-    normalized_parts: list[str] = []
-    for part in relative_parts:
-        if part == "..":
-            normalized_parts.pop()
-        elif part not in {"", "."}:
-            normalized_parts.append(part)
-
     current = repo_lexical
-    for index, part in enumerate(normalized_parts):
+    for index, part in enumerate(relative_parts):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            current = current.parent
+            continue
         current /= part
         if not current.is_symlink():
             continue
-        is_final_component = index == len(normalized_parts) - 1
+        is_final_component = not any(remaining not in {"", "."} for remaining in relative_parts[index + 1 :])
         if is_final_component and not current.is_dir():
             # 仓库内最终 file symlink 仍按其仓库路径扫描；目录 symlink 一律不展开。
             continue

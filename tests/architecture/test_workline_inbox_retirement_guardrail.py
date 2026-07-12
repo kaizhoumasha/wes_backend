@@ -420,6 +420,18 @@ def test_scanner_rejects_directory_symlink_in_an_explicit_root_component(tmp_pat
     assert [(finding.path, finding.signature) for finding in findings] == [("alias/nested", "policy_error")]
 
 
+def test_scanner_checks_directory_symlink_before_a_following_parent_component(tmp_path: Path) -> None:
+    (tmp_path / "real/deep").mkdir(parents=True)
+    target = tmp_path / "real/target"
+    target.mkdir()
+    (target / "offender.py").write_text("WorklineInbox\n", encoding="utf-8")
+    (tmp_path / "alias").symlink_to(tmp_path / "real/deep", target_is_directory=True)
+
+    findings = find_legacy_references(repo_root=tmp_path, roots=("alias/../target",))
+
+    assert [(finding.path, finding.signature) for finding in findings] == [("alias/../target", "policy_error")]
+
+
 def test_default_scan_rejects_directory_symlink_root_before_traversal(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
