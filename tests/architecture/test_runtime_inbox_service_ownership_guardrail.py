@@ -46,6 +46,20 @@ def _imports_concrete_runtime_inbox_service(source: Path) -> bool:
     return False
 
 
+def _package_boundary_import_offenders(package_dir: Path) -> list[str]:
+    offenders: list[str] = []
+    for source in package_dir.rglob("*.py"):
+        if source.name == "__init__.py":
+            continue
+        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.ImportFrom) and node.module == SERVICE_PACKAGE) or (
+                isinstance(node, ast.Import) and any(alias.name == SERVICE_PACKAGE for alias in node.names)
+            ):
+                offenders.append(source.relative_to(package_dir).as_posix())
+    return offenders
+
+
 def test_runtime_inbox_service_has_single_public_owner() -> None:
     package = importlib.import_module(SERVICE_PACKAGE)
     concrete_module = importlib.import_module(CONCRETE_SERVICE_MODULE)
@@ -76,18 +90,21 @@ def test_active_python_sources_do_not_import_old_runtime_inbox_service() -> None
 
 def test_runtime_inbox_package_modules_do_not_import_package_boundary() -> None:
     package_dir = REPO_ROOT / "src/app/runtime/orchestration/services/runtime_inbox"
-    offenders: list[str] = []
-    for source in package_dir.glob("*.py"):
-        if source.name == "__init__.py":
-            continue
-        tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-        for node in ast.walk(tree):
-            if (isinstance(node, ast.ImportFrom) and node.module == SERVICE_PACKAGE) or (
-                isinstance(node, ast.Import) and any(alias.name == SERVICE_PACKAGE for alias in node.names)
-            ):
-                offenders.append(source.name)
+    offenders = _package_boundary_import_offenders(package_dir)
 
     assert not offenders, f"包内模块不得经 package __init__ 自引用: {sorted(set(offenders))}"
+
+
+def test_package_boundary_guardrail_scans_nested_modules_and_skips_nested_package_initializers(
+    tmp_path: Path,
+) -> None:
+    nested_package = tmp_path / "nested"
+    nested_package.mkdir()
+    forbidden_import = f"from {SERVICE_PACKAGE} import RuntimeInboxService\n"
+    (nested_package / "__init__.py").write_text(forbidden_import, encoding="utf-8")
+    (nested_package / "worker.py").write_text(forbidden_import, encoding="utf-8")
+
+    assert _package_boundary_import_offenders(tmp_path) == ["nested/worker.py"]
 
 
 def test_production_modules_outside_runtime_inbox_package_use_public_boundary() -> None:
