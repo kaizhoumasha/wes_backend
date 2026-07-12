@@ -41,6 +41,19 @@ _CONDITIONAL_ENVELOPE_CHECK_SQL = f"""
     AND last_error_message IS NOT NULL
     AND received_at IS NOT NULL
     AND failed_at IS NOT NULL
+    AND kind IS NULL
+    AND workline_id IS NULL
+    AND device_id IS NULL
+    AND command_id IS NULL
+    AND trace_id IS NULL
+    AND event_id IS NULL
+    AND causation_id IS NULL
+    AND payload_json IS NULL
+    AND payload_hash IS NULL
+    AND payload_schema_version IS NULL
+    AND claim_bucket_key IS NULL
+    AND processor_token IS NULL
+    AND processed_at IS NULL
 )
 OR
 (
@@ -165,7 +178,7 @@ class RuntimeInbox(BaseMixin, table=True):
     # 内容 (Revision A 扩展)
     payload_json: dict[str, Any] | None = Field(
         default=None,
-        sa_type=JSON,  # type: ignore[arg-type]
+        sa_type=JSON(none_as_null=True),  # type: ignore[arg-type]
         description="canonical 业务 payload, 默认最大 1 MiB (application 层校验)",
     )
     payload_schema_version: int | None = Field(default=None, description="payload JSON schema 版本")

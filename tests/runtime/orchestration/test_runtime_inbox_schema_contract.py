@@ -81,6 +81,43 @@ def test_revision_a_downgrade_rejects_canonical_rows_before_dropping_columns(
         migration.downgrade()
 
 
+def test_revision_a_downgrade_does_not_trust_audit_label_when_canonical_payload_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """audit 标签不能掩盖即将被删除的 canonical payload。"""
+
+    migration = importlib.import_module("migrations.versions.20260711_1815_b8a28e1bfec8_extend_runtime_inbox")
+
+    class _CountResult:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def scalar_one(self) -> int:
+            return self.value
+
+    class _Bind:
+        def execute(self, statement: object) -> _CountResult:
+            sql = str(statement)
+            guarded_fields = ("kind", "payload_json", "payload_schema_version", "claim_bucket_key")
+            return _CountResult(1 if all(field in sql for field in guarded_fields) else 0)
+
+    class _Inspector:
+        def get_indexes(self, *_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            return []
+
+        def get_check_constraints(self, *_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            return []
+
+        def get_columns(self, *_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            return []
+
+    monkeypatch.setattr(migration.op, "get_bind", lambda: _Bind())
+    monkeypatch.setattr(migration.sa, "inspect", lambda _bind: _Inspector())
+
+    with pytest.raises(RuntimeError, match="canonical"):
+        migration.downgrade()
+
+
 def test_runtime_inbox_preserves_existing_fields() -> None:
     """既有字段（status, attempt_count 等）必须保持。"""
     hints = get_type_hints(RuntimeInbox)
@@ -147,6 +184,22 @@ def test_runtime_inbox_has_named_kind_status_and_conditional_envelope_checks() -
     assert "COMMAND_RESULT" in checks["ck_runtime_inbox_kind_valid"]
     assert "DEAD_LETTER" in checks["ck_runtime_inbox_status_valid"]
     assert "PRE_CUTOVER_AUDIT_ONLY" in checks["ck_runtime_inbox_conditional_envelope"]
+    for field_name in (
+        "kind",
+        "workline_id",
+        "device_id",
+        "command_id",
+        "trace_id",
+        "event_id",
+        "causation_id",
+        "payload_json",
+        "payload_hash",
+        "payload_schema_version",
+        "claim_bucket_key",
+        "processor_token",
+        "processed_at",
+    ):
+        assert f"{field_name} IS NULL" in checks["ck_runtime_inbox_conditional_envelope"]
     for field_name in (
         "kind",
         "provider_code",

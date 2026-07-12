@@ -438,6 +438,17 @@ def test_runtime_inbox_revision_a_accepts_canonical_and_rejects_invalid_contract
                     ("DEVICE_EVENT", "UNKNOWN", "invalid-status", "{}", "hash", 1, "bucket", 1, None),
                     ("DEVICE_EVENT", "RECEIVED", "invalid-envelope", None, "hash", 1, "bucket", 1, None),
                     ("DEVICE_EVENT", "RECEIVED", "invalid-audit-code", "{}", "hash", 1, "bucket", 1, AUDIT_ONLY_CODE),
+                    (
+                        "DEVICE_EVENT",
+                        "DEAD_LETTER",
+                        "audit-label-with-canonical-payload",
+                        "{}",
+                        "hash",
+                        1,
+                        "bucket",
+                        1,
+                        AUDIT_ONLY_CODE,
+                    ),
                 )
                 for row in invalid_rows:
                     with pytest.raises(asyncpg.CheckViolationError):
@@ -447,8 +458,12 @@ def test_runtime_inbox_revision_a_accepts_canonical_and_rejects_invalid_contract
                                 kind, provider_code, event_type, source_event_id,
                                 payload_json, payload_hash, payload_schema_version,
                                 claim_bucket_key, received_at, status, attempt_count, max_retries,
-                                last_error_code
-                            ) VALUES ($1, 'provider', 'DEVICE_EVENT', $3, $4::json, $5, $6, $7, $8, $2, 0, 5, $9)
+                                last_error_code, last_error_message, failed_at
+                            ) VALUES (
+                                $1, 'provider', 'DEVICE_EVENT', $3, $4::json, $5, $6, $7, $8, $2, 0, 5, $9,
+                                CASE WHEN $9 = 'PRE_CUTOVER_AUDIT_ONLY' THEN 'audit evidence' ELSE NULL END,
+                                CASE WHEN $9 = 'PRE_CUTOVER_AUDIT_ONLY' THEN $8 ELSE NULL END
+                            )
                             """,
                             *row,
                         )

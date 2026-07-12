@@ -43,6 +43,19 @@ _CONSTRAINTS: tuple[tuple[str, str], ...] = (
             AND last_error_message IS NOT NULL
             AND received_at IS NOT NULL
             AND failed_at IS NOT NULL
+            AND kind IS NULL
+            AND workline_id IS NULL
+            AND device_id IS NULL
+            AND command_id IS NULL
+            AND trace_id IS NULL
+            AND event_id IS NULL
+            AND causation_id IS NULL
+            AND payload_json IS NULL
+            AND payload_hash IS NULL
+            AND payload_schema_version IS NULL
+            AND claim_bucket_key IS NULL
+            AND processor_token IS NULL
+            AND processed_at IS NULL
         )
         OR
         (
@@ -138,6 +151,7 @@ def upgrade() -> None:
                 last_error_message = :audit_message,
                 received_at = floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint,
                 failed_at = floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint,
+                payload_hash = NULL,
                 processor_token = NULL
             WHERE payload_json IS NULL
             """
@@ -178,6 +192,19 @@ def downgrade() -> None:
             FROM wes_runtime.runtime_inbox
             WHERE status IS DISTINCT FROM 'DEAD_LETTER'
                OR last_error_code IS DISTINCT FROM 'PRE_CUTOVER_AUDIT_ONLY'
+               OR kind IS NOT NULL
+               OR workline_id IS NOT NULL
+               OR device_id IS NOT NULL
+               OR command_id IS NOT NULL
+               OR trace_id IS NOT NULL
+               OR event_id IS NOT NULL
+               OR causation_id IS NOT NULL
+               OR payload_json IS NOT NULL
+               OR payload_hash IS NOT NULL
+               OR payload_schema_version IS NOT NULL
+               OR claim_bucket_key IS NOT NULL
+               OR processor_token IS NOT NULL
+               OR processed_at IS NOT NULL
             """
         )
     ).scalar_one()
