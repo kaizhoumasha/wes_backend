@@ -19,6 +19,7 @@ from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxAuditPersistenceFailed,
     RuntimeInboxConflict,
     RuntimeInboxNotFound,
     RuntimeInboxReplayNotAllowed,
@@ -1098,6 +1099,67 @@ async def test_runtime_inbox_replay_same_request_is_idempotent_and_content_chang
 
 
 @pytest.mark.asyncio
+async def test_runtime_inbox_replay_conflict_audit_failure_raises_stable_typed_error_and_rolls_back(db_session) -> None:
+    """冲突审计失败不能伪装为 409，外层回滚后不得留下部分写入。"""
+
+    class _FailingAuditService:
+        async def create_audit_log(self, *_args: Any, **_kwargs: Any) -> object:
+            raise RuntimeError("audit storage unavailable")
+
+    source = RuntimeInbox(
+        kind="INTERNAL_EVENT",
+        provider_code="RUNTIME",
+        event_type="INTERNAL_EVENT",
+        source_event_id="dead-audit-failure",
+        payload_hash="hash-root",
+        payload_json={"event_type": "INTERNAL_EVENT", "data": {"session_id": 10}},
+        payload_schema_version=1,
+        status="DEAD_LETTER",
+        claim_bucket_key="source:dead-audit-failure",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
+    )
+    db_session.add(source)
+    await db_session.commit()
+    source_id = source.id
+    assert source_id is not None
+
+    first = await RuntimeInboxService(audit_service=_AuditServiceStub()).replay_from_dead_letter(
+        db_session,
+        source_inbox_id=source_id,
+        request_id="req-audit-failure",
+        actor="7",
+        reason="first",
+    )
+    await db_session.commit()
+
+    with pytest.raises(Exception) as exc_info:
+        await RuntimeInboxService(audit_service=_FailingAuditService()).replay_from_dead_letter(
+            db_session,
+            source_inbox_id=source_id,
+            request_id="req-audit-failure",
+            actor="7",
+            reason="changed",
+        )
+
+    error = exc_info.value
+    assert type(error).__name__ == "RuntimeInboxAuditPersistenceFailed"
+    assert getattr(error, "reason_code", None) == "RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED"
+    assert isinstance(error.__cause__, RuntimeInboxConflict)
+    await db_session.rollback()
+    replay_rows = (
+        (
+            await db_session.execute(
+                select(RuntimeInbox).where(RuntimeInbox.source_event_id == f"replay:{source_id}:req-audit-failure")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert [row.id for row in replay_rows] == [first.replay_record.id]
+
+
+@pytest.mark.asyncio
 async def test_runtime_inbox_replay_of_replay_is_flat(db_session) -> None:
     root = RuntimeInbox(
         kind="DEVICE_EVENT",
@@ -1360,6 +1422,44 @@ async def test_workline_operation_replay_commits_conflict_audit_before_reraising
         await service.replay_inbox(db, inbox_id=12, request_id="req", actor="42", reason="changed")
 
     service._commit_mutation.assert_awaited_once_with(db)
+
+
+@pytest.mark.parametrize("auto_commit", [True, False])
+@pytest.mark.asyncio
+async def test_workline_operation_replay_audit_failure_respects_transaction_ownership(auto_commit: bool) -> None:
+    """自动事务必须回滚；外层事务模式只传播 typed error，由调用方负责回滚。"""
+
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+
+    source = SimpleNamespace(id=12, workline_id=5, workline_session_id=None)
+    service = WorklineOperationService(
+        inbox_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
+        workline_repo=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=5, is_active=True))),
+    )
+    failure = RuntimeInboxAuditPersistenceFailed(
+        audit_event_type="RUNTIME_INBOX_MANUAL_REPLAY_CONFLICT",
+        original_error=RuntimeError("audit storage unavailable"),
+    )
+    service.runtime_inbox_service = SimpleNamespace(replay_from_dead_letter=AsyncMock(side_effect=failure))
+    db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+
+    with pytest.raises(RuntimeInboxAuditPersistenceFailed):
+        await service.replay_inbox(
+            db,
+            inbox_id=12,
+            request_id="req",
+            actor="42",
+            reason="changed",
+            auto_commit=auto_commit,
+        )
+
+    db.commit.assert_not_awaited()
+    if auto_commit:
+        db.rollback.assert_awaited_once()
+    else:
+        db.rollback.assert_not_awaited()
+        await db.rollback()  # 外层 Unit of Work 明确承担 rollback。
+        db.rollback.assert_awaited_once()
 
 
 @pytest.mark.asyncio

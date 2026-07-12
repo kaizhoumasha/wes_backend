@@ -38,6 +38,7 @@ from src.app.runtime.orchestration.repositories.session_repository import Workli
 from src.app.runtime.orchestration.repository_wiring import runtime_inbox_query, workline_repository
 from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
 from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxAuditPersistenceFailed,
     RuntimeInboxConflict,
     RuntimeInboxReplayNotAllowed,
     RuntimeInboxService,
@@ -552,7 +553,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         reason: str,
         auto_commit: bool = True,
     ) -> Any:
-        """执行工作线安全前置，并将 replay 合同委托给 RuntimeInboxService。"""
+        """执行安全前置并委托 replay；auto_commit=False 时仅 stage，事务由外层负责。"""
 
         original = await self.inbox_repo.get_by_id(db, inbox_id)
         session = None
@@ -595,6 +596,13 @@ class WorklineOperationService(BaseService[Any, Any]):
                 actor=actor,
                 reason=reason,
             )
+        except RuntimeInboxAuditPersistenceFailed:
+            # 自动事务必须 fail closed；外层事务模式只传播 typed error，由 Unit of Work 回滚。
+            if auto_commit:
+                rollback = getattr(db, "rollback", None)
+                if rollback is not None:
+                    await rollback()
+            raise
         except RuntimeInboxConflict:
             # API 捕获冲突并返回正常响应，需在返回前提交同事务内的受限冲突审计。
             if auto_commit:

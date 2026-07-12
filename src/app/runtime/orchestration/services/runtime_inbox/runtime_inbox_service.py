@@ -105,6 +105,18 @@ class RuntimeInboxConflict(Exception):
         }
 
 
+class RuntimeInboxAuditPersistenceFailed(RuntimeError):
+    """人工重放审计持久化失败，调用方必须按服务不可用处理。"""
+
+    status_code = 503
+    reason_code = "RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED"
+
+    def __init__(self, *, audit_event_type: str, original_error: Exception) -> None:
+        super().__init__(self.reason_code)
+        self.audit_event_type = audit_event_type
+        self.original_error = original_error
+
+
 class RuntimeInboxNotFound(Exception):
     """RuntimeInbox 主键不存在。"""
 
@@ -989,21 +1001,26 @@ class RuntimeInboxService:
                 correlation_id=cast("str | None", evidence["original_correlation_id"]),
                 max_retries=source.max_retries,
             )
-        except RuntimeInboxConflict as exc:
-            await self._write_replay_conflict_audit(
-                db,
-                {
-                    "event_type": "RUNTIME_INBOX_MANUAL_REPLAY_CONFLICT",
-                    "source_inbox_id": str(source.id) if source.id is not None else None,
-                    "provider_code": "RUNTIME",
-                    "callback_type": "REPLAY_REQUEST",
-                    "source_event_id": replay_source_event_id,
-                    "existing_payload_hash": exc.existing_payload_hash,
-                    "incoming_payload_hash": incoming_payload_hash,
-                    "actor": normalized_actor,
-                    "request_id": normalized_request_id,
-                },
-            )
+        except RuntimeInboxConflict as conflict:
+            conflict_event = {
+                "event_type": "RUNTIME_INBOX_MANUAL_REPLAY_CONFLICT",
+                "source_inbox_id": str(source.id) if source.id is not None else None,
+                "provider_code": "RUNTIME",
+                "callback_type": "REPLAY_REQUEST",
+                "source_event_id": replay_source_event_id,
+                "existing_payload_hash": conflict.existing_payload_hash,
+                "incoming_payload_hash": incoming_payload_hash,
+                "actor": normalized_actor,
+                "request_id": normalized_request_id,
+            }
+            try:
+                await self._write_replay_conflict_audit(db, conflict_event)
+            except Exception as audit_error:
+                # 冲突审计是 409 合同的一部分；持久化失败时保留原冲突因果并 fail closed。
+                raise RuntimeInboxAuditPersistenceFailed(
+                    audit_event_type="RUNTIME_INBOX_MANUAL_REPLAY_CONFLICT",
+                    original_error=audit_error,
+                ) from conflict
             raise
         audit_event = {
             "event_type": "RUNTIME_INBOX_MANUAL_REPLAY",
@@ -1014,12 +1031,18 @@ class RuntimeInboxService:
             "source_event_id": source.source_event_id,
             "replay_source_event_id": replay.record.source_event_id,
             "payload_hash": source.payload_hash,
+            "replay_payload_hash": replay.record.payload_hash,
             "actor": normalized_actor,
-            "reason": normalized_reason,
             "request_id": normalized_request_id,
         }
         if replay.created:
-            await self._write_replay_audit(db, audit_event)
+            try:
+                await self._write_replay_audit(db, audit_event)
+            except Exception as audit_error:
+                raise RuntimeInboxAuditPersistenceFailed(
+                    audit_event_type="RUNTIME_INBOX_MANUAL_REPLAY",
+                    original_error=audit_error,
+                ) from audit_error
         return RuntimeInboxReplayResult(source_record=source, replay_record=replay.record, audit_event=audit_event)
 
     async def _claim_device_event_idempotency_if_needed(
@@ -1249,6 +1272,7 @@ runtime_inbox_service = RuntimeInboxService()
 
 __all__ = [
     "RuntimeInboxAcceptResult",
+    "RuntimeInboxAuditPersistenceFailed",
     "RuntimeInboxConflict",
     "RuntimeInboxCorrelationUnavailable",
     "RuntimeInboxNotFound",

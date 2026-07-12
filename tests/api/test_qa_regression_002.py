@@ -2,8 +2,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import Response
 
 from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxAuditPersistenceFailed,
     RuntimeInboxConflict,
     RuntimeInboxNotFound,
     RuntimeInboxReplayNotAllowed,
@@ -34,6 +36,7 @@ async def test_replay_missing_inbox_returns_not_found_response(monkeypatch: pyte
     response = await operation_api.replay_inbox(
         inbox_id=999999999,
         payload=operation_api.ReplayInboxRequest(request_id="qa-replay-1", reason="QA invalid id"),
+        response=Response(),
         db=object(),  # type: ignore[arg-type]
         current_user_id=42,
     )
@@ -86,6 +89,7 @@ async def test_replay_uses_authenticated_actor(monkeypatch: pytest.MonkeyPatch) 
     response = await operation_api.replay_inbox(
         inbox_id=4,
         payload=operation_api.ReplayInboxRequest(request_id="req-1", reason="manual replay"),
+        response=Response(),
         db=object(),  # type: ignore[arg-type]
         current_user_id=99,
     )
@@ -117,6 +121,13 @@ async def test_replay_uses_authenticated_actor(monkeypatch: pytest.MonkeyPatch) 
             ),
             "3012",
         ),
+        (
+            RuntimeInboxAuditPersistenceFailed(
+                audit_event_type="RUNTIME_INBOX_MANUAL_REPLAY_CONFLICT",
+                original_error=RuntimeError("audit storage unavailable"),
+            ),
+            "RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -130,14 +141,18 @@ async def test_replay_maps_typed_domain_errors(
             raise error
 
     monkeypatch.setattr(operation_api, "workline_operation_service", _FailingService())
+    http_response = Response()
     response = await operation_api.replay_inbox(
         inbox_id=1,
         payload=operation_api.ReplayInboxRequest(request_id="req", reason="reason"),
         db=object(),  # type: ignore[arg-type]
         current_user_id=7,
+        response=http_response,
     )
 
     assert response["code"] == expected_code
+    expected_http_status = 503 if isinstance(error, RuntimeInboxAuditPersistenceFailed) else 200
+    assert http_response.status_code == expected_http_status
 
 
 @pytest.mark.asyncio

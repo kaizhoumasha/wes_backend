@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from src.app.callback.models.ingress_response import (
     CallbackEventAcceptedResponse,
@@ -26,6 +26,7 @@ from src.app.runtime.orchestration.models.operation import (
 )
 from src.app.runtime.orchestration.services.intent import operation_service
 from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxAuditPersistenceFailed,
     RuntimeInboxConflict,
     RuntimeInboxNotFound,
     RuntimeInboxReplayNotAllowed,
@@ -39,7 +40,7 @@ from src.app.workline.services import WorkLineSafetyBlocked, workline_safety_ser
 from src.app.workline.unit_of_work import WorklineUnitOfWork
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
-from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
+from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode, ServerErrorCode
 from src.core.security import require_auth
 from src.core.task_queue_gateway import task_queue_gateway
 from src.database.dependencies import AsyncSessionDep  # noqa: TC001
@@ -202,6 +203,7 @@ async def get_sandbox_completed(
 async def replay_inbox(
     inbox_id: int,
     payload: ReplayInboxRequest,
+    response: Response,
     db: AsyncSessionDep,
     current_user_id: Annotated[int, Depends(require_auth)],
 ) -> ResponseSchemaModel[dict[str, Any]]:
@@ -227,6 +229,12 @@ async def replay_inbox(
         return cast(
             "ResponseSchemaModel[dict[str, Any]]",
             response_builder.fail(code=error_code, message=str(exc)),
+        )
+    except RuntimeInboxAuditPersistenceFailed as exc:
+        response.status_code = ServerErrorCode.RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED.http_status
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=ServerErrorCode.RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED, message=str(exc)),
         )
     except RuntimeInboxConflict as exc:
         return cast(

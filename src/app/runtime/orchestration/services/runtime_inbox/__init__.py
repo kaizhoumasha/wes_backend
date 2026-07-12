@@ -10,6 +10,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processo
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxAcceptResult,
+    RuntimeInboxAuditPersistenceFailed,
     RuntimeInboxConflict,
     RuntimeInboxCorrelationUnavailable,
     RuntimeInboxNotFound,
@@ -33,6 +34,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
 __all__ = [
     "ProcessResult",
     "RuntimeInboxAcceptResult",
+    "RuntimeInboxAuditPersistenceFailed",
     "RuntimeInboxConflict",
     "RuntimeInboxCorrelationUnavailable",
     "RuntimeInboxNotFound",

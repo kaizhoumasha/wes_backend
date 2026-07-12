@@ -14,6 +14,7 @@ CONCRETE_SERVICE_MODULE = f"{SERVICE_PACKAGE}.runtime_inbox_service"
 OLD_SERVICE_MODULE = "src.app.runtime.orchestration.consumers.runtime_inbox_service"
 PUBLIC_SERVICE_SYMBOLS = {
     "RuntimeInboxAcceptResult",
+    "RuntimeInboxAuditPersistenceFailed",
     "RuntimeInboxConflict",
     "RuntimeInboxCorrelationUnavailable",
     "RuntimeInboxNotFound",

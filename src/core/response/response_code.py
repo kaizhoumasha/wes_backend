@@ -192,6 +192,11 @@ class ServerErrorCode(ResponseCode):
     # 服务不可用
     SERVICE_UNAVAILABLE = ("5030", "服务暂不可用", 503)
     MAINTENANCE_MODE = ("5031", "系统维护中", 503)
+    RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED = (
+        "RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED",
+        "RuntimeInbox 重放审计持久化失败",
+        503,
+    )
 
 
 # ==================== 第三方服务错误 (8xxx) ====================
