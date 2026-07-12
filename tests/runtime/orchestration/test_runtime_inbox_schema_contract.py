@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import importlib
 from typing import Any, get_type_hints
 
 import pytest
@@ -46,6 +47,38 @@ def test_runtime_inbox_has_canonical_envelope_fields() -> None:
     }
     missing = expected_fields - set(hints.keys())
     assert missing == set(), f"missing RuntimeInbox fields: {missing}"
+
+
+def test_revision_a_downgrade_rejects_canonical_rows_before_dropping_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """canonical 行存在时 downgrade 必须 fail-closed，不能静默丢 payload/identity。"""
+
+    migration = importlib.import_module("migrations.versions.20260711_1815_b8a28e1bfec8_extend_runtime_inbox")
+
+    class _CountResult:
+        def scalar_one(self) -> int:
+            return 1
+
+    class _Bind:
+        def execute(self, _statement: object) -> _CountResult:
+            return _CountResult()
+
+    class _Inspector:
+        def get_indexes(self, *_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            return []
+
+        def get_check_constraints(self, *_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            return []
+
+        def get_columns(self, *_args: object, **_kwargs: object) -> list[dict[str, str]]:
+            return []
+
+    monkeypatch.setattr(migration.op, "get_bind", lambda: _Bind())
+    monkeypatch.setattr(migration.sa, "inspect", lambda _bind: _Inspector())
+
+    with pytest.raises(RuntimeError, match="canonical"):
+        migration.downgrade()
 
 
 def test_runtime_inbox_preserves_existing_fields() -> None:

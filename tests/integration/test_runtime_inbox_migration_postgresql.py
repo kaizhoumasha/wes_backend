@@ -52,8 +52,14 @@ async def _insert_legacy_references(connection: asyncpg.Connection) -> int:
         """
     )
 
-    # 三张依赖表的其他 FK 不属于本迁移验收范围。测试会话内禁用 FK trigger，
-    # 但保留 NOT NULL/CHECK 约束，以真实行验证三个 legacy Inbox 引用被清空。
+    # 三张依赖表的其他 FK 不属于本迁移验收范围。该临时库 fixture 仍需禁用 FK
+    # trigger；先显式检查权限，避免普通 CI 账号只得到晦涩的 PostgreSQL 错误。
+    is_superuser = await connection.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname = current_user")
+    if not is_superuser:
+        raise RuntimeError(
+            "RuntimeInbox migration FK fixture requires PostgreSQL superuser "
+            "for session_replication_role=replica; replace with legal parent fixtures in T6"
+        )
     await connection.execute("SET session_replication_role = replica")
     try:
         await connection.execute(
@@ -154,13 +160,13 @@ async def _insert_millisecond_row(connection: asyncpg.Connection) -> int:
     return await connection.fetchval(
         """
         INSERT INTO wes_runtime.runtime_inbox (
-            kind, provider_code, event_type, source_event_id,
-            payload_json, payload_hash, payload_schema_version, claim_bucket_key,
-            received_at, status, attempt_count, max_retries, next_retry_at, lease_until
+            provider_code, event_type, received_at, failed_at, status,
+            attempt_count, max_retries, next_retry_at, lease_until,
+            last_error_code, last_error_message
         ) VALUES (
-            'INTERNAL_EVENT', 'pg-roundtrip', 'MILLISECONDS', 'pg-roundtrip-milliseconds',
-            '{}'::json, 'sha256:milliseconds', 1, 'source:pg-roundtrip-milliseconds',
-            $1, 'FAILED', 1, 5, $1, $1
+            'pg-roundtrip', 'MILLISECONDS', $1, $1, 'DEAD_LETTER',
+            1, 5, $1, $1, 'PRE_CUTOVER_AUDIT_ONLY',
+            'Pre-cutover row retained for audit-only millisecond roundtrip'
         )
         RETURNING id
         """,
@@ -446,6 +452,51 @@ def test_runtime_inbox_revision_a_accepts_canonical_and_rejects_invalid_contract
                             """,
                             *row,
                         )
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_runtime_inbox_revision_a_downgrade_rejects_canonical_rows_without_data_loss() -> None:
+    """存在 canonical 行时 A → parent 必须失败，并保留版本与原始 payload。"""
+
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", REVISION_A, database_url=database_url)
+            connection = await connect(database)
+            try:
+                inbox_id = await connection.fetchval(
+                    """
+                    INSERT INTO wes_runtime.runtime_inbox (
+                        kind, provider_code, event_type, source_event_id,
+                        payload_json, payload_hash, payload_schema_version,
+                        claim_bucket_key, received_at, status, attempt_count, max_retries
+                    ) VALUES (
+                        'INTERNAL_EVENT', 'runtime', 'CANONICAL', 'canonical-downgrade',
+                        '{"value": 1}'::json, 'hash-canonical', 1,
+                        'source:canonical-downgrade', 1000, 'RECEIVED', 0, 5
+                    ) RETURNING id
+                    """
+                )
+            finally:
+                await connection.close()
+
+            with pytest.raises(subprocess.CalledProcessError) as captured:
+                run_alembic("downgrade", REVISION_A_PARENT, database_url=database_url)
+            assert "canonical" in captured.value.stderr
+
+            connection = await connect(database)
+            try:
+                assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_A
+                assert (
+                    await connection.fetchval(
+                        "SELECT payload_json ->> 'value' FROM wes_runtime.runtime_inbox WHERE id = $1",
+                        inbox_id,
+                    )
+                    == "1"
+                )
             finally:
                 await connection.close()
 

@@ -15,6 +15,7 @@ from src.app.runtime.orchestration.repositories.runtime_inbox_repository import 
     runtime_inbox_repository,
     validate_canonical_payload_size,
 )
+from src.app.runtime.orchestration.runtime_inbox import PRE_CUTOVER_AUDIT_ONLY
 from src.app.runtime.orchestration.services.idempotency_guard import (
     IdempotencyGuard,
     IdempotencyOperationSpec,
@@ -518,8 +519,7 @@ class RuntimeInboxService:
     ) -> RuntimeInboxAcceptResult:
         """接收 device event 写入 RuntimeInbox (kind=DEVICE_EVENT).
 
-        - event_id 存在时作为 source identity；缺失时按 provider/event/payload
-          生成内容寻址 identity。
+        - event_id 是持久上游 occurrence identity，缺失时 fail-closed。
         - provider_code 从 device_code 前缀派生 (ARM_01 -> ARM), 默认 "ECS"。
         - 本入口没有 ExecutionSession 映射参数，因此 execution_session_id 留空；
           processor 不得从 WorklineSession ID 推导该字段。
@@ -530,13 +530,12 @@ class RuntimeInboxService:
             raise ValueError("device event requires event_type")
         if not isinstance(payload_json, dict):
             raise TypeError("device event payload_json must be a dict")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError("device event requires persistent upstream event_id")
 
         provider_code = self._derive_provider_code_for_device(device_code)
         payload_hash = _canonical_payload_hash(payload_json)
-        source_event_id = event_id or _fit_runtime_identity(
-            f"device-event:{provider_code}:{device_code}:{event_type}:{payload_hash}",
-            max_length=160,
-        )
+        source_event_id = event_id
         correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
         result = await self.accept_received(
             db,
@@ -576,7 +575,7 @@ class RuntimeInboxService:
         """接收内部事件写入 RuntimeInbox (kind=INTERNAL_EVENT).
 
         - provider_code 固定 "RUNTIME"。
-        - event_id 存在时作为 source identity；缺失时按 event/payload 生成内容寻址 identity。
+        - event_id 是 producer 持久 occurrence identity，缺失时 fail-closed。
         - correlation_id 缺省时按 trace_id 反查；未命中时保持为空，避免伪造外键。
         """
 
@@ -584,15 +583,14 @@ class RuntimeInboxService:
             raise ValueError("internal event requires event_type")
         if not isinstance(payload_json, dict):
             raise TypeError("internal event payload_json must be a dict")
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise ValueError("internal event requires persistent producer event_id")
 
         if correlation_id is None:
             correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
 
         payload_hash = _canonical_payload_hash(payload_json)
-        source_event_id = event_id or _fit_runtime_identity(
-            f"internal-event:{event_type}:{payload_hash}",
-            max_length=160,
-        )
+        source_event_id = event_id
         result = await self.accept_received(
             db,
             provider_code="RUNTIME",
@@ -778,18 +776,25 @@ class RuntimeInboxService:
             raise ValueError("actor 不能为空")
         if not normalized_reason:
             raise ValueError("reason 不能为空")
+        if not isinstance(replay_source_event_id, str) or not replay_source_event_id.strip():
+            raise ValueError("replay_source_event_id 不能为空")
+        normalized_replay_source_event_id = replay_source_event_id.strip()
+        if len(normalized_replay_source_event_id) > 160:
+            raise ValueError("replay_source_event_id 长度不能超过 160")
 
         source = await self.repository.get_by_id_for_update(db, source_inbox_id)
         if source is None:
             raise ValueError(f"RuntimeInbox 不存在: {source_inbox_id}")
         if source.status != "DEAD_LETTER":
             raise ValueError(f"仅 DEAD_LETTER 可重放, 当前 status={source.status}")
+        if source.last_error_code == PRE_CUTOVER_AUDIT_ONLY:
+            raise ValueError(f"{PRE_CUTOVER_AUDIT_ONLY} 仅保留审计证据，不可重放")
 
         replay = await self.accept_received(
             db,
             provider_code=source.provider_code,
             event_type=source.event_type,
-            source_event_id=replay_source_event_id,
+            source_event_id=normalized_replay_source_event_id,
             payload_hash=source.payload_hash,
             kind=source.kind,
             payload_json=dict(source.payload_json or {}),

@@ -3,7 +3,8 @@
 覆盖 accept_device_event / accept_internal_event / accept_command_result 三个统一持久化方法。
 
 约束:
-- source_event_id 存在时同 hash ACK、异 hash 冲突；缺失时允许重复。
+- device/internal 必须提供持久 event_id；command result 可从 command_code 派生稳定 identity。
+- source_event_id 同 hash ACK、异 hash 冲突。
 - provider_code 按调用方语义派生 (device_code 前缀 / 固定 RUNTIME / 固定 DEVICE_RESULT)。
 - kind 字段为字符串 (Revision A), 与 accept_received 的 source_event_id-based 路径并存。
 """
@@ -16,7 +17,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 # 这些模型 import 用于注册隔离 SQLite create_all 所需的跨表 FK metadata。
@@ -59,40 +60,18 @@ def test_claim_bucket_separates_workline_and_execution_session_namespaces() -> N
 
 
 @pytest.mark.asyncio
-async def test_accept_device_event_minimal_args_writes_received(db_session) -> None:
-    """最小参数 (仅 device_code + event_type + payload_json) 必须成功写入 DEVICE_EVENT 行。"""
+async def test_accept_device_event_rejects_missing_upstream_event_id(db_session) -> None:
+    """缺少持久上游 event_id 时必须拒绝，不能把内容 hash 当 occurrence identity。"""
 
     service = RuntimeInboxService()
 
-    result = await service.accept_device_event(
-        db_session,
-        device_code="ARM_01",
-        event_type="SCAN_COMPLETED",
-        payload_json={"barcode": "B-001", "qty": 1},
-    )
-
-    assert result.created is True
-    record = result.record
-    assert record.id is not None
-    assert record.kind == "DEVICE_EVENT"
-    assert record.provider_code == "ARM"
-    assert record.event_type == "SCAN_COMPLETED"
-    assert record.source_event_id
-    assert record.status == "RECEIVED"
-    assert record.payload_json == {"barcode": "B-001", "qty": 1}
-    assert record.workline_id is None
-    assert record.device_id is None
-    assert record.command_id is None
-    assert record.trace_id is None
-    assert record.event_id is None
-    assert record.causation_id is None
-    assert record.correlation_id is None
-    assert record.max_retries == 5
-    assert record.attempt_count == 0
-
-    # 数据库行确实落库 (无 commit 也会被 session.flush 持久化到 transaction)。
-    rows = (await db_session.execute(select(RuntimeInbox).where(RuntimeInbox.kind == "DEVICE_EVENT"))).scalars()
-    assert {row.id for row in rows} == {record.id}
+    with pytest.raises(ValueError, match="event_id"):
+        await service.accept_device_event(
+            db_session,
+            device_code="ARM_01",
+            event_type="SCAN_COMPLETED",
+            payload_json={"barcode": "B-001", "qty": 1},
+        )
 
 
 @pytest.mark.asyncio
@@ -155,6 +134,7 @@ async def test_accept_device_event_orphan_trace_does_not_synthesize_correlation_
         event_type="BARRIER_OPENED",
         payload_json={},
         trace_id="trace-orphan-001",
+        event_id="evt-barrier-opened-001",
     )
 
     assert result.created is True
@@ -225,6 +205,7 @@ async def test_accept_device_event_auto_commit_true_calls_db_commit(db_session) 
         device_code="ARM_01",
         event_type="SCAN_COMPLETED",
         payload_json={"x": 1},
+        event_id="evt-auto-commit-001",
         auto_commit=True,
     )
     assert result.created is True
@@ -236,6 +217,7 @@ async def test_accept_device_event_auto_commit_true_calls_db_commit(db_session) 
         device_code="ARM_02",
         event_type="SCAN_COMPLETED",
         payload_json={"x": 2},
+        event_id="evt-no-auto-commit-001",
         auto_commit=False,
     )
     assert commit_spy.await_count == 0
@@ -247,53 +229,40 @@ async def test_accept_device_event_auto_commit_true_calls_db_commit(db_session) 
 
 
 @pytest.mark.asyncio
-async def test_accept_internal_event_minimal_args_writes_received(db_session) -> None:
-    """最小参数 (仅 event_type + payload_json) 必须成功写入 INTERNAL_EVENT 行。"""
+async def test_accept_internal_event_rejects_missing_upstream_event_id(db_session) -> None:
+    """内部事件也必须由 producer 提供持久 occurrence identity。"""
 
     service = RuntimeInboxService()
 
-    result = await service.accept_internal_event(
-        db_session,
-        event_type="SOURCE_PICK_REQUESTED",
-        payload_json={"handoff_demand_id": 1},
-    )
-
-    assert result.created is True
-    record = result.record
-    assert record.id is not None
-    assert record.kind == "INTERNAL_EVENT"
-    assert record.provider_code == "RUNTIME"
-    assert record.event_type == "SOURCE_PICK_REQUESTED"
-    assert record.source_event_id
-    assert record.event_id is None
-    assert record.status == "RECEIVED"
-    assert record.payload_json == {"handoff_demand_id": 1}
-    assert record.correlation_id is None
-    assert record.execution_session_id is None
+    with pytest.raises(ValueError, match="event_id"):
+        await service.accept_internal_event(
+            db_session,
+            event_type="SOURCE_PICK_REQUESTED",
+            payload_json={"handoff_demand_id": 1},
+        )
 
 
 @pytest.mark.asyncio
-async def test_synthesized_source_identity_does_not_overflow_optional_event_id(db_session) -> None:
-    """最长 source identity 可达 160；不得复制到 max_length=120 的 event_id。"""
+async def test_same_payload_without_occurrence_identity_is_rejected_instead_of_acked(db_session) -> None:
+    """两次同内容可能是两次发生；缺 identity 时两次都拒绝，不能第二次错误 ACK。"""
 
     service = RuntimeInboxService()
-    long_event_type = "E" * 80
-    device = await service.accept_device_event(
-        db_session,
-        device_code="DEVICE_" + ("D" * 80),
-        event_type=long_event_type,
-        payload_json={"value": "device"},
-    )
-    internal = await service.accept_internal_event(
-        db_session,
-        event_type=long_event_type,
-        payload_json={"value": "internal"},
-    )
+    for _occurrence in range(2):
+        with pytest.raises(ValueError, match="event_id"):
+            await service.accept_device_event(
+                db_session,
+                device_code="ARM_01",
+                event_type="SAME_CONTENT",
+                payload_json={"value": "same"},
+            )
+        with pytest.raises(ValueError, match="event_id"):
+            await service.accept_internal_event(
+                db_session,
+                event_type="SAME_CONTENT",
+                payload_json={"value": "same"},
+            )
 
-    for record in (device.record, internal.record):
-        assert record.source_event_id is not None
-        assert len(record.source_event_id) > 120
-        assert record.event_id is None
+    assert await db_session.scalar(select(func.count()).select_from(RuntimeInbox)) == 0
 
 
 @pytest.mark.asyncio
@@ -358,6 +327,7 @@ async def test_accept_internal_event_uses_explicit_correlation_id(db_session) ->
         event_type="INTERNAL_HEARTBEAT",
         payload_json={},
         trace_id="trace-not-in-table",
+        event_id="evt-explicit-correlation-001",
         correlation_id="corr-explicit-001",
     )
 
@@ -376,6 +346,7 @@ async def test_accept_internal_event_rejects_unknown_explicit_correlation_id(db_
             db_session,
             event_type="INTERNAL_HEARTBEAT",
             payload_json={},
+            event_id="evt-unknown-correlation-001",
             correlation_id="corr-not-persisted",
         )
 
@@ -393,6 +364,7 @@ async def test_accept_internal_event_orphan_trace_does_not_synthesize_correlatio
         event_type="SMT_SOURCE_PICK_REQUESTED",
         payload_json={"source_item_id": 101},
         trace_id="evt-smt-source-pick-101",
+        event_id="evt-smt-source-pick-101",
     )
 
     assert result.record.trace_id == "evt-smt-source-pick-101"
@@ -417,6 +389,7 @@ async def test_accept_internal_event_duplicate_trace_does_not_choose_arbitrary_c
         event_type="INTERNAL_HEARTBEAT",
         payload_json={},
         trace_id="trace-duplicate",
+        event_id="evt-duplicate-trace-001",
     )
 
     assert result.record.correlation_id is None
@@ -453,6 +426,7 @@ async def test_accept_internal_event_propagates_db_integrity_error(db_session) -
             db_session,
             event_type="EVT",
             payload_json={},
+            event_id="evt-integrity-error-001",
         )
 
     assert broken_repo.add_received.await_count == 1
@@ -607,6 +581,7 @@ async def test_internal_producers_write_non_empty_priority_bucket_and_received_a
         event_type="SCAN_COMPLETED",
         payload_json={"event_type": "SCAN_COMPLETED", "data": {}},
         trace_id="corr-device-lower-priority",
+        event_id="evt-device-bucket-001",
         workline_id=31,
         device_id=91,
         command_id=191,
@@ -615,6 +590,7 @@ async def test_internal_producers_write_non_empty_priority_bucket_and_received_a
         db_session,
         event_type="SOURCE_PICK_REQUESTED",
         payload_json={"event_type": "SOURCE_PICK_REQUESTED", "data": {}},
+        event_id="evt-internal-bucket-001",
         execution_session_id=session.id,
         correlation_id="corr-internal-lower-priority",
         workline_id=31,

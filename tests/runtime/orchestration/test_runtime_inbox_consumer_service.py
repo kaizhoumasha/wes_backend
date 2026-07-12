@@ -7,11 +7,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 # 这些模型 import 用于注册隔离 SQLite create_all 所需的跨表 FK metadata。
 from src.app.device.models.command import DeviceCommand
+from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
@@ -615,6 +616,7 @@ async def test_internal_producer_uses_same_canonical_payload_size_guard(
             device_code="ARM_01",
             event_type="SCAN_COMPLETED",
             payload_json={"event_type": "SCAN_COMPLETED", "data": {"barcode": "TOO-LARGE"}},
+            event_id="evt-too-large-001",
         )
 
     count = await db_session.scalar(select(func.count()).select_from(RuntimeInbox))
@@ -932,6 +934,48 @@ async def test_runtime_inbox_manual_replay_creates_new_record_and_audit(db_sessi
     assert audit_service.calls
     assert audit_service.calls[0]["title"] == "RuntimeInbox 人工重放"
     assert audit_service.calls[0]["args"]["actor"] == "ops-aaron"
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_replay_rejects_pre_cutover_audit_only_before_write(db_session) -> None:
+    audit_only = RuntimeInbox(
+        provider_code="LEGACY",
+        event_type="PRE_CUTOVER",
+        status="DEAD_LETTER",
+        last_error_code="PRE_CUTOVER_AUDIT_ONLY",
+        last_error_message="Pre-cutover row retained for audit only",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
+    )
+    db_session.add(audit_only)
+    await db_session.flush()
+
+    with pytest.raises(ValueError, match="PRE_CUTOVER_AUDIT_ONLY"):
+        await RuntimeInboxService().replay_from_dead_letter(
+            db_session,
+            source_inbox_id=audit_only.id,
+            actor="ops",
+            reason="must reject",
+            replay_source_event_id="legacy-replay-1",
+        )
+
+    assert await db_session.scalar(select(func.count()).select_from(RuntimeInbox)) == 1
+
+
+@pytest.mark.parametrize("replay_source_event_id", [None, "", "   ", "x" * 161])
+@pytest.mark.asyncio
+async def test_runtime_inbox_replay_rejects_invalid_source_identity_before_write(
+    db_session,
+    replay_source_event_id: str | None,
+) -> None:
+    with pytest.raises(ValueError, match="replay_source_event_id"):
+        await RuntimeInboxService().replay_from_dead_letter(
+            db_session,
+            source_inbox_id=999,
+            actor="ops",
+            reason="invalid identity",
+            replay_source_event_id=replay_source_event_id,
+        )
 
 
 @pytest.mark.asyncio

@@ -169,8 +169,24 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """删除 Revision A 新增索引与字段。"""
-    inspector = sa.inspect(op.get_bind())
+    """仅允许 audit-only 行安全回切；canonical payload 不可无损降级。"""
+    bind = op.get_bind()
+    canonical_row_count = bind.execute(
+        sa.text(
+            """
+            SELECT count(*)
+            FROM wes_runtime.runtime_inbox
+            WHERE status IS DISTINCT FROM 'DEAD_LETTER'
+               OR last_error_code IS DISTINCT FROM 'PRE_CUTOVER_AUDIT_ONLY'
+            """
+        )
+    ).scalar_one()
+    if canonical_row_count:
+        raise RuntimeError(
+            f"Revision A downgrade refused: {canonical_row_count} canonical RuntimeInbox row(s) would lose data"
+        )
+
+    inspector = sa.inspect(bind)
     existing_indexes = {index["name"] for index in inspector.get_indexes("runtime_inbox", schema=RUNTIME_SCHEMA)}
     for name, _columns, _predicate in reversed(_INDEXES):
         if name in existing_indexes:

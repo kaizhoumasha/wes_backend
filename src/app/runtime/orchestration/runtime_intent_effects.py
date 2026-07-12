@@ -1639,8 +1639,8 @@ class RuntimeIntentEffectApplier:
         causation_id = payload.get("causation_id")
         workline_id = optional_int(getattr(ctx_map["workline"], "id", None))
 
-        # RuntimeInbox 是 device event 唯一事实源。
-        # (accept_device_event 不做 source_event_id 幂等检查, 7c-a 已说明)。
+        # RuntimeInbox 是 device event 唯一事实源；缺少持久上游 event_id 时
+        # service fail-closed，不能把相同内容的两次 occurrence 错误合并。
         _ = await runtime_inbox_service.accept_device_event(
             ctx_map["db"],
             device_code=device_code,
