@@ -151,7 +151,12 @@ async def test_replay_maps_typed_domain_errors(
     )
 
     assert response["code"] == expected_code
-    expected_http_status = 503 if isinstance(error, RuntimeInboxAuditPersistenceFailed) else 200
+    if isinstance(error, RuntimeInboxAuditPersistenceFailed):
+        expected_http_status = 503
+    elif isinstance(error, RuntimeInboxConflict):
+        expected_http_status = 409
+    else:
+        expected_http_status = 200
     assert http_response.status_code == expected_http_status
 
 

@@ -7,10 +7,18 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
+from src.app.runtime.orchestration.models.session import RuntimeReconciliationState, SessionStatus, WorklineSession
+from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
-from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxConflict, RuntimeInboxService
+from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxConflict,
+    RuntimeInboxReplayNotAllowed,
+    RuntimeInboxService,
+)
 from src.app.sys.models.audit_log import AuditLog, OperaStatus
 from src.app.sys.services import AuditLogService
+from src.app.workline.models.workline import LineType, WorkLine
 from tests.support.runtime_inbox_processing_postgresql import (
     RecordingTaskQueueGateway,
     assert_effects,
@@ -194,5 +202,98 @@ def test_manual_replay_same_identity_different_hash_has_one_success_and_one_conf
             assert conflict.args["incoming_payload_hash"] != replay_rows[0].payload_hash
             assert conflict.args["actor"] == "integration"
             assert "original_payload" not in conflict.args and "reason" not in conflict.args
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_manual_replay_waits_for_session_lock_and_rejects_new_pending_reconciliation() -> None:
+    """双会话竞态必须服从 Session→WorkLine 锁序，锁后新 PENDING 不得放行 replay。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        async with session_factory() as db:
+            workline = WorkLine(
+                line_code="IT-REPLAY-LOCK-WORKLINE",
+                line_name="Replay Lock Workline",
+                line_type=LineType.AUTO,
+                is_active=True,
+            )
+            db.add(workline)
+            await db.flush()
+            session = WorklineSession(
+                session_code="IT-REPLAY-LOCK-SESSION",
+                workline_id=workline.id,
+                plugin_key="test",
+                status=SessionStatus.RUNNING,
+            )
+            db.add(session)
+            await db.flush()
+            source = RuntimeInbox(
+                kind="INTERNAL_EVENT",
+                provider_code="RUNTIME",
+                event_type="INTERNAL_EVENT",
+                source_event_id="it-replay-lock-source",
+                payload_hash="it-replay-lock-hash",
+                payload_json={"event_type": "SESSION_RESUME", "data": {"session_id": session.id}},
+                payload_schema_version=1,
+                workline_id=workline.id,
+                workline_session_id=session.id,
+                status="DEAD_LETTER",
+                claim_bucket_key=f"session:{session.id}",
+                received_at=1_700_000_000_000,
+                failed_at=1_700_000_000_001,
+            )
+            db.add(source)
+            await db.commit()
+            source_id = source.id
+            session_id = session.id
+        assert source_id is not None and session_id is not None
+
+        updater_holds_lock = asyncio.Event()
+        replay_attempted_lock = asyncio.Event()
+        allow_updater_commit = asyncio.Event()
+
+        class _SignalingSessionRepository(WorklineSessionRepository):
+            async def get_for_update(self, db: AsyncSession, locked_session_id: int) -> WorklineSession | None:
+                replay_attempted_lock.set()
+                return await super().get_for_update(db, locked_session_id)
+
+        async def mark_reconciliation_pending() -> None:
+            async with session_factory() as db:
+                locked = await WorklineSessionRepository().get_for_update(db, session_id)
+                assert locked is not None
+                locked.reconciliation_state = RuntimeReconciliationState.PENDING
+                await db.flush()
+                updater_holds_lock.set()
+                await allow_updater_commit.wait()
+                await db.commit()
+
+        updater = asyncio.create_task(mark_reconciliation_pending())
+        await updater_holds_lock.wait()
+        async with session_factory() as db:
+            service = WorklineOperationService(session_repo=_SignalingSessionRepository())
+            replay_task = asyncio.create_task(
+                service.replay_inbox(
+                    db,
+                    inbox_id=source_id,
+                    request_id="race-pending",
+                    actor="integration",
+                    reason="must observe pending",
+                    auto_commit=False,
+                )
+            )
+            await asyncio.wait_for(replay_attempted_lock.wait(), timeout=1)
+            await asyncio.sleep(0.05)
+            assert not replay_task.done()
+            allow_updater_commit.set()
+            try:
+                await replay_task
+            except RuntimeInboxReplayNotAllowed as exc:
+                assert exc.reason_code == "SOURCE_RECONCILIATION_PENDING"
+            else:
+                raise AssertionError("pending reconciliation must reject replay")
+            await db.rollback()
+        await updater
 
     asyncio.run(with_temporary_runtime_database(scenario))

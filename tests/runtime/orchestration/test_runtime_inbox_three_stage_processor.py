@@ -21,6 +21,7 @@ from src.app.runtime.orchestration.effect_result import (
 )
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_context_loader as context_loader
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
@@ -377,6 +378,22 @@ def test_replay_request_projection_deep_copies_nested_original_payload() -> None
     assert inbox.payload_json["original_payload"]["data"]["nested"]["value"] == "source"
 
 
+def test_replay_request_projection_exposes_read_only_identity_outside_original_payload() -> None:
+    original_payload = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "A"}}
+    inbox = _make_inbox(
+        kind="REPLAY_REQUEST",
+        payload_json=_replay_envelope(original_kind="DEVICE_EVENT", original_payload=original_payload),
+    )
+
+    projected = _project_replay_request(inbox)
+
+    assert projected.is_manual_replay is True
+    assert projected.replay_immediate_source_inbox_id == 8
+    assert projected.payload_json == original_payload
+    with pytest.raises(AttributeError):
+        projected.is_manual_replay = False
+
+
 def test_replay_request_projection_rejects_invalid_envelope() -> None:
     inbox = _make_inbox(kind="REPLAY_REQUEST", payload_json={"original_kind": "REPLAY_REQUEST"})
 
@@ -440,6 +457,107 @@ async def test_process_claimed_marks_invalid_replay_envelope_failed(monkeypatch:
     assert result["processed"] == 1
     assert service.error_message is not None
     assert "INVALID_REPLAY_ENVELOPE" in service.error_message
+
+
+@pytest.mark.asyncio
+async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_without_payload_marker(
+    db_session: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonical replay 身份必须由投影证据携带，original_payload 不得注入 replay 字段。"""
+
+    class _AuditService:
+        async def create_audit_log(self, *_args: Any, **_kwargs: Any) -> object:
+            return SimpleNamespace(id=1)
+
+    source = RuntimeInbox(
+        kind="DEVICE_EVENT",
+        provider_code="ECS",
+        event_type="SCAN_COMPLETED",
+        source_event_id="canonical-entry-source",
+        payload_hash="canonical-entry-hash",
+        payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "MAT-REPLAY-1"}},
+        payload_schema_version=1,
+        status="DEAD_LETTER",
+        claim_bucket_key="source:canonical-entry-source",
+        received_at=1_700_000_000_000,
+        failed_at=1_700_000_000_001,
+    )
+    db_session.add(source)
+    await db_session.flush()
+    runtime_service = RuntimeInboxService(audit_service=_AuditService())
+    replay = await runtime_service.replay_from_dead_letter(
+        db_session,
+        source_inbox_id=source.id,
+        request_id="canonical-entry-replay",
+        actor="42",
+        reason="payload validation corrected externally",
+    )
+    await db_session.flush()
+    claims = await runtime_service.claim_for_processing(
+        db_session,
+        limit=1,
+        processor_token="canonical-replay-token",
+        stale_after_seconds=60,
+    )
+    assert [claim["id"] for claim in claims] == [replay.replay_record.id]
+    assert "replay_of_event_id" not in replay.replay_record.payload_json["original_payload"]
+
+    session = _make_session(status="MANUAL_HOLD")
+    session.failure_code = "PAYLOAD_INVALID"
+    workline = _make_workline()
+    orchestrated: list[dict[str, Any]] = []
+    effects: list[dict[str, Any]] = []
+    duplicate_archives: list[str] = []
+
+    async def load_related(*_args: Any, **_kwargs: Any) -> tuple[object, ...]:
+        return session, workline, None, None, {}, SimpleNamespace(), True
+
+    async def record_duplicate(*_args: Any, **_kwargs: Any) -> None:
+        duplicate_archives.append("duplicate")
+
+    class _Processor:
+        async def process(self, *_args: Any, **kwargs: Any) -> OrchestratorResult:
+            inbox = kwargs["inbox"]
+            orchestrated.append(dict(inbox.payload_json))
+            result = OrchestratorResult(success=True, intents=[])
+            await kwargs["write_callback"](result)
+            return result
+
+    class _WriteBack:
+        def build_write_callback(self, db: Any, **kwargs: Any) -> Any:
+            async def write_effect(_result: OrchestratorResult) -> None:
+                effects.append(dict(kwargs["inbox"].payload_json))
+                kwargs["state"].write_effects_applied = True
+                kwargs["state"].disposition = WriteBackDisposition.PROCESSED
+                assert await runtime_service.mark_processed(
+                    db,
+                    inbox_id=kwargs["inbox_pk"],
+                    lease_token=kwargs["processor_token"],
+                )
+                await db.commit()
+
+            return write_effect
+
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
+        load_related,
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._record_duplicate_entry_archive_timeline",
+        record_duplicate,
+    )
+    result = await RuntimeInboxProcessorBridge(
+        processor_service=_Processor(),  # type: ignore[arg-type]
+        writeback_service=_WriteBack(),  # type: ignore[arg-type]
+        inbox_service=runtime_service,
+    ).process_claimed(db_session, claim=claims[0])
+
+    expected_payload = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "MAT-REPLAY-1"}}
+    assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+    assert orchestrated == [expected_payload]
+    assert effects == [expected_payload]
+    assert duplicate_archives == []
 
 
 class TestEstopTimerRouting:

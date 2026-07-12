@@ -49,6 +49,31 @@ class ParityCase:
     expected_writeback_calls: int | None = None
 
 
+def _canonical_replay_payload(original_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "request_id": "parity-replay",
+        "actor": "42",
+        "reason": "retry invalid payload",
+        "immediate_source_inbox_id": 8,
+        "root_source_inbox_id": 7,
+        "original_kind": "DEVICE_EVENT",
+        "original_payload": original_payload,
+        "original_provider_code": "ECS",
+        "original_event_type": "SCAN_COMPLETED",
+        "original_source_event_id": "evt-invalid",
+        "original_payload_hash": "hash-invalid",
+        "original_workline_id": 20,
+        "original_device_id": None,
+        "original_command_id": None,
+        "original_workline_session_id": 10,
+        "original_execution_session_id": None,
+        "original_correlation_id": None,
+        "original_trace_id": "trace-parity",
+        "original_event_id": "evt-invalid",
+        "original_causation_id": None,
+    }
+
+
 PARITY_CASES = (
     ParityCase(
         name="scan_invalid",
@@ -104,11 +129,13 @@ PARITY_CASES = (
     ),
     ParityCase(
         name="payload_invalid_manual_replay",
-        payload={
-            "event_type": "SCAN_COMPLETED",
-            "replay_of_event_id": "evt-invalid",
-            "data": {"HHPN": "REPLAY"},
-        },
+        kind="REPLAY_REQUEST",
+        payload=_canonical_replay_payload(
+            {
+                "event_type": "SCAN_COMPLETED",
+                "data": {"HHPN": "REPLAY"},
+            }
+        ),
         session_status="MANUAL_HOLD",
         failure_code="PAYLOAD_INVALID",
     ),

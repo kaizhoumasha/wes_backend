@@ -1296,7 +1296,7 @@ async def test_workline_operation_replay_converts_safety_preconditions_to_typed_
     source = SimpleNamespace(id=12, workline_id=5, workline_session_id=7 if session is not None else None)
     service = WorklineOperationService(
         inbox_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
-        session_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=session)),
+        session_repo=SimpleNamespace(get_for_update=AsyncMock(return_value=session)),
         workline_repo=SimpleNamespace(get_for_update=AsyncMock(return_value=workline)),
     )
 
@@ -1314,7 +1314,7 @@ async def test_workline_operation_replay_derives_and_locks_workline_from_trusted
     workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=5, is_active=True)))
     service = WorklineOperationService(
         inbox_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
-        session_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=session)),
+        session_repo=SimpleNamespace(get_for_update=AsyncMock(return_value=session)),
         workline_repo=workline_repo,
     )
     replay_record = SimpleNamespace(id=13)
@@ -1330,6 +1330,47 @@ async def test_workline_operation_replay_derives_and_locks_workline_from_trusted
 
     assert result is replay_record
     workline_repo.get_for_update.assert_awaited_once_with(db, 5)
+
+
+@pytest.mark.asyncio
+async def test_workline_operation_replay_reloads_locked_session_before_workline_and_reconciliation_check() -> None:
+    """Replay 必须按 Session→WorkLine 锁序读取最新 reconciliation 快照。"""
+
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+
+    source = SimpleNamespace(id=12, workline_id=5, workline_session_id=7)
+    stale_session = SimpleNamespace(id=7, workline_id=5, reconciliation_state="RESOLVED")
+    locked_session = SimpleNamespace(id=7, workline_id=5, reconciliation_state="PENDING")
+    lock_order: list[str] = []
+
+    async def lock_session(*_args: Any) -> object:
+        lock_order.append("session")
+        return locked_session
+
+    async def lock_workline(*_args: Any) -> object:
+        lock_order.append("workline")
+        return SimpleNamespace(id=5, is_active=True)
+
+    session_repo = SimpleNamespace(
+        get_by_id=AsyncMock(return_value=stale_session),
+        get_for_update=AsyncMock(side_effect=lock_session),
+    )
+    service = WorklineOperationService(
+        inbox_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
+        session_repo=session_repo,
+        workline_repo=SimpleNamespace(get_for_update=AsyncMock(side_effect=lock_workline)),
+    )
+    service.runtime_inbox_service = SimpleNamespace(
+        replay_from_dead_letter=AsyncMock(side_effect=AssertionError("pending reconciliation must block replay"))
+    )
+
+    with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+        await service.replay_inbox(object(), inbox_id=12, request_id="req-12", actor="42", reason="operator retry")
+
+    assert exc_info.value.reason_code == "SOURCE_RECONCILIATION_PENDING"
+    assert lock_order == ["session", "workline"]
+    session_repo.get_by_id.assert_not_awaited()
+    service.runtime_inbox_service.replay_from_dead_letter.assert_not_awaited()
 
 
 @pytest.mark.asyncio

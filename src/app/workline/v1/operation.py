@@ -237,6 +237,7 @@ async def replay_inbox(
             response_builder.fail(code=ServerErrorCode.RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED, message=str(exc)),
         )
     except RuntimeInboxConflict as exc:
+        response.status_code = ResourceErrorCode.CONFLICT.http_status
         return cast(
             "ResponseSchemaModel[dict[str, Any]]",
             response_builder.fail(code=ResourceErrorCode.CONFLICT, message=str(exc)),

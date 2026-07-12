@@ -119,6 +119,7 @@ class _ReplayProjectedInbox:
 
     def __init__(self, source: Any, envelope: dict[str, Any]) -> None:
         self._source = source
+        self._replay_immediate_source_inbox_id = envelope["immediate_source_inbox_id"]
         self.kind = envelope["original_kind"]
         self.payload_json = deepcopy(envelope["original_payload"])
         self.provider_code = envelope["original_provider_code"]
@@ -134,6 +135,18 @@ class _ReplayProjectedInbox:
         self.trace_id = envelope["original_trace_id"]
         self.event_id = envelope["original_event_id"]
         self.causation_id = envelope["original_causation_id"]
+
+    @property
+    def is_manual_replay(self) -> bool:
+        """标记该投影来自 canonical REPLAY_REQUEST，不写入原业务 payload。"""
+
+        return True
+
+    @property
+    def replay_immediate_source_inbox_id(self) -> int:
+        """返回已校验的直接 replay 来源 Inbox 主键。"""
+
+        return self._replay_immediate_source_inbox_id
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._source, name)
@@ -749,7 +762,7 @@ def _is_duplicate_entry_event(
         return False
     if canonical_event_type(payload) not in _entry_event_types_for_workline(workline):
         return False
-    if _is_payload_invalid_entry_replay(payload=payload, session=session):
+    if _is_payload_invalid_entry_replay(inbox=inbox, session=session):
         return False
     terminal_statuses = {"COMPLETED", "FAILED", "CANCELLED"}
     busy_statuses = {"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"}
@@ -762,10 +775,11 @@ def _is_duplicate_entry_event(
     return bool(current_wait_type)
 
 
-def _is_payload_invalid_entry_replay(*, payload: dict[str, Any], session: Any) -> bool:
-    """允许 payload 校验失败后的人工 replay 重新进入编排。"""
-    replay_of_event_id = payload.get("replay_of_event_id")
-    if not isinstance(replay_of_event_id, str) or not replay_of_event_id:
+def _is_payload_invalid_entry_replay(*, inbox: Any, session: Any) -> bool:
+    """允许 canonical 人工 replay 从 payload 校验失败状态重新进入编排。"""
+    if getattr(inbox, "is_manual_replay", False) is not True:
+        return False
+    if optional_int(getattr(inbox, "replay_immediate_source_inbox_id", None)) is None:
         return False
     if _session_status_value(session) != "MANUAL_HOLD":
         return False
