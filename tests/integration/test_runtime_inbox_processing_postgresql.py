@@ -30,6 +30,9 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxReplayNotAllowed,
     RuntimeInboxService,
 )
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
+    RuntimeInboxReplaySourceValidator,
+)
 from src.app.sys.models.audit_log import AuditLog, OperaStatus
 from src.app.sys.models.outbox import SystemOutbox
 from src.app.sys.services import AuditLogService
@@ -357,6 +360,108 @@ def test_claimed_replay_revalidates_persisted_chain_before_production_effects() 
             assert legal_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
             await assert_processed_terminal(db, inbox_id=legal_id)
             await assert_effects(db, replace(seeded, inbox_id=legal_id), expected_count=1)
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_consumer_replay_validation_does_not_deadlock_concurrent_api_replay() -> None:
+    """consumer 验真后不得持 root 行锁跨越 Session/WorkLine 编排与 write-back。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        service = RuntimeInboxService()
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            root = await db.get(RuntimeInbox, seeded.inbox_id)
+            assert root is not None
+            root.status = "DEAD_LETTER"
+            root.failed_at = 1_700_000_000_201
+            root.workline_session_id = seeded.session_id
+            immediate = await service.replay_from_dead_letter(
+                db,
+                source_inbox_id=seeded.inbox_id,
+                request_id="pg-deadlock-immediate",
+                actor="integration",
+                reason="build concurrent replay chain",
+            )
+            immediate.replay_record.status = "DEAD_LETTER"
+            immediate.replay_record.failed_at = 1_700_000_000_202
+            await db.commit()
+            current = await service.replay_from_dead_letter(
+                db,
+                source_inbox_id=int(immediate.replay_record.id),
+                request_id="pg-deadlock-current",
+                actor="integration",
+                reason="consumer replay",
+            )
+            await db.commit()
+            current_id = int(current.replay_record.id)
+            claimed = await claim(db, service, token="pg-deadlock-consumer-token")
+            assert claimed["id"] == current_id
+
+        consumer_validated = asyncio.Event()
+        allow_consumer_continue = asyncio.Event()
+        api_attempted_root = asyncio.Event()
+
+        class _BarrierValidator(RuntimeInboxReplaySourceValidator):
+            async def validate_for_consumption(self, db: AsyncSession, *, source: RuntimeInbox):
+                validated = await super().validate_for_consumption(db, source=source)
+                consumer_validated.set()
+                await allow_consumer_continue.wait()
+                return validated
+
+        class _SignalingRuntimeInboxRepository(RuntimeInboxRepository):
+            async def get_by_id_for_update(
+                self,
+                db: AsyncSession,
+                inbox_id: int,
+                *,
+                populate_existing: bool = False,
+            ) -> RuntimeInbox | None:
+                if inbox_id == seeded.inbox_id:
+                    api_attempted_root.set()
+                return await super().get_by_id_for_update(
+                    db,
+                    inbox_id,
+                    populate_existing=populate_existing,
+                )
+
+        async def consume_claimed() -> dict[str, int]:
+            async with session_factory() as db:
+                bridge = processor(service)
+                bridge._replay_source_validator = _BarrierValidator(RuntimeInboxRepository())
+                return await bridge.process_claimed(db, claim=claimed)
+
+        async def replay_root_from_api() -> RuntimeInbox:
+            await consumer_validated.wait()
+            async with session_factory() as db:
+                operation_service = WorklineOperationService(inbox_repo=_SignalingRuntimeInboxRepository())
+                return await operation_service.replay_inbox(
+                    db,
+                    inbox_id=seeded.inbox_id,
+                    request_id="pg-concurrent-api-replay",
+                    actor="integration",
+                    reason="prove stable lock order",
+                )
+
+        consumer_task = asyncio.create_task(consume_claimed())
+        await asyncio.wait_for(consumer_validated.wait(), timeout=2)
+        api_task = asyncio.create_task(replay_root_from_api())
+        await asyncio.wait_for(api_attempted_root.wait(), timeout=2)
+        allow_consumer_continue.set()
+        consumer_result, api_replay = await asyncio.wait_for(
+            asyncio.gather(consumer_task, api_task),
+            timeout=5,
+        )
+
+        assert consumer_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+        assert api_replay.kind == "REPLAY_REQUEST"
+        assert api_replay.status == "RECEIVED"
+        assert api_replay.payload_json["root_source_inbox_id"] == seeded.inbox_id
+        async with session_factory() as db:
+            await assert_processed_terminal(db, inbox_id=current_id)
+            await assert_effects(db, replace(seeded, inbox_id=current_id), expected_count=1)
 
     asyncio.run(with_temporary_runtime_database(scenario))
 

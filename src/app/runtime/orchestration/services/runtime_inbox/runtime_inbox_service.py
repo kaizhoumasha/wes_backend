@@ -274,11 +274,32 @@ class RuntimeInboxReplaySourceValidator:
     def __init__(self, repository: RuntimeInboxRepository = runtime_inbox_repository) -> None:
         self.repository = repository
 
-    async def validate(
+    async def validate_for_creation(
         self,
         db: AsyncSession,
         *,
         source: RuntimeInbox,
+    ) -> RuntimeInboxReplaySourceValidation:
+        """API 创建 replay 时锁定 root，保证生成 envelope 的事务快照稳定。"""
+
+        return await self._validate(db, source=source, lock_root=True)
+
+    async def validate_for_consumption(
+        self,
+        db: AsyncSession,
+        *,
+        source: RuntimeInbox,
+    ) -> RuntimeInboxReplaySourceValidation:
+        """消费时快照验真，不持 root 锁跨越后续 Session/WorkLine 写路径。"""
+
+        return await self._validate(db, source=source, lock_root=False)
+
+    async def _validate(
+        self,
+        db: AsyncSession,
+        *,
+        source: RuntimeInbox,
+        lock_root: bool,
     ) -> RuntimeInboxReplaySourceValidation:
         envelope = validate_replay_envelope(source.payload_json)
         if not isinstance(source.max_retries, int) or isinstance(source.max_retries, bool) or source.max_retries < 1:
@@ -287,7 +308,11 @@ class RuntimeInboxReplaySourceValidator:
             _raise_replay_source_integrity_violation("immediate source payload hash mismatch")
 
         root_source_id = cast("int", envelope["root_source_inbox_id"])
-        root = await self.repository.get_by_id_for_update(db, root_source_id, populate_existing=True)
+        if lock_root:
+            root = await self.repository.get_by_id_for_update(db, root_source_id, populate_existing=True)
+        else:
+            # root canonical identity/payload/evidence 写入后不可变；消费只需当前 DB 快照验真。
+            root = await self.repository.get_by_id_refreshed(db, root_source_id)
         if root is None or root.id == source.id:
             _raise_replay_source_integrity_violation("root source unavailable")
         if root.kind not in REPLAYABLE_ORIGINAL_KINDS or not isinstance(root.payload_json, dict):
@@ -1026,7 +1051,7 @@ class RuntimeInboxService:
             raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_SOURCE_RETRY_BUDGET")
 
         if source.kind == "REPLAY_REQUEST":
-            validated_source = await self.replay_source_validator.validate(db, source=source)
+            validated_source = await self.replay_source_validator.validate_for_creation(db, source=source)
             root_source = validated_source.root_source
             root_source_inbox_id = cast("int", root_source.id)
             original_kind = cast("str", root_source.kind)

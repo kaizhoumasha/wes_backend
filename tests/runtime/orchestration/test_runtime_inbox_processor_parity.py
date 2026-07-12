@@ -500,7 +500,7 @@ async def _run_case(
     )
 
     class _ReplaySourceValidator:
-        async def validate(self, _db: Any, *, source: Any) -> SimpleNamespace:
+        async def validate_for_consumption(self, _db: Any, *, source: Any) -> SimpleNamespace:
             # Parity 只锁定验真后的下游行为；真实性由专门的对抗测试覆盖。
             return SimpleNamespace(envelope=source.payload_json, root_source=SimpleNamespace())
 

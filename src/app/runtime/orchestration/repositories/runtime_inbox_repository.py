@@ -208,6 +208,14 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
         result = await db.execute(statement)
         return result.scalar_one_or_none()
 
+    async def get_by_id_refreshed(self, db: AsyncSession, inbox_id: int) -> RuntimeInbox | None:
+        """非锁定刷新读取单条 RuntimeInbox，避免消费事务持 root 锁跨越编排写回。"""
+
+        columns = cast("Any", RuntimeInbox).__table__.c
+        statement = select(RuntimeInbox).where(columns.id == inbox_id).execution_options(populate_existing=True)
+        result = await db.execute(statement)
+        return result.scalar_one_or_none()
+
     async def get_latest_manual_hold_evidence(
         self,
         db: AsyncSession,

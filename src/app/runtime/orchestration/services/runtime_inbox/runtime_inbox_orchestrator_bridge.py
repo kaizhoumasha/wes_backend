@@ -342,7 +342,7 @@ class RuntimeInboxProcessorBridge:
 
             validated_replay_source = None
             if _kind_value(inbox) == "REPLAY_REQUEST":
-                validated_replay_source = await self._replay_source_validator.validate(db, source=inbox)
+                validated_replay_source = await self._replay_source_validator.validate_for_consumption(db, source=inbox)
             inbox = _project_replay_request(inbox, validated_source=validated_replay_source)
             payload = _payload_for_inbox(inbox)
             resolved_event_type = canonical_event_type(payload)
