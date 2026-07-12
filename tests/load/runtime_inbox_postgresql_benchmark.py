@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -18,6 +19,7 @@ from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxSer
 from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Coroutine, Iterable
     from pathlib import Path
 
     import asyncpg
@@ -194,6 +196,61 @@ async def _claim_worker(
             await db.commit()
 
 
+@asynccontextmanager
+async def _managed_engine(engine: Any) -> AsyncIterator[None]:
+    try:
+        yield
+    finally:
+        await engine.dispose()
+
+
+async def _run_workers_with_monitor(
+    workers: Iterable[Coroutine[Any, Any, None]],
+    monitor: Coroutine[Any, Any, None],
+    *,
+    done: asyncio.Event,
+) -> None:
+    worker_tasks = [
+        asyncio.create_task(worker, name=f"runtime-inbox-benchmark-worker-{index}")
+        for index, worker in enumerate(workers)
+    ]
+    monitor_task = asyncio.create_task(monitor, name="runtime-inbox-benchmark-monitor")
+
+    async def wait_for_workers() -> None:
+        await asyncio.gather(*worker_tasks)
+
+    worker_supervisor = asyncio.create_task(wait_for_workers(), name="runtime-inbox-benchmark-workers")
+    primary_error: BaseException | None = None
+    try:
+        completed, _pending = await asyncio.wait(
+            {worker_supervisor, monitor_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if worker_supervisor in completed:
+            await worker_supervisor
+        else:
+            await monitor_task
+            if not worker_supervisor.done():
+                raise RuntimeError("runtime inbox benchmark monitor exited before workers")
+    except BaseException as exc:
+        primary_error = exc
+    finally:
+        done.set()
+        for task in worker_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*worker_tasks, return_exceptions=True)
+        if not worker_supervisor.done():
+            worker_supervisor.cancel()
+        await asyncio.gather(worker_supervisor, return_exceptions=True)
+        monitor_result = await asyncio.gather(monitor_task, return_exceptions=True)
+        if primary_error is None and isinstance(monitor_result[0], BaseException):
+            primary_error = monitor_result[0]
+
+    if primary_error is not None:
+        raise primary_error from None
+
+
 async def _run_benchmark() -> dict[str, object]:
     async with temporary_database(required_free_slots=WORKER_CONCURRENCY + LOCK_MONITOR_CONNECTION_COUNT) as (
         database,
@@ -208,64 +265,66 @@ async def _run_benchmark() -> dict[str, object]:
             await connection.close()
 
         engine = create_async_engine(database_url, pool_size=WORKER_CONCURRENCY + 1, max_overflow=0)
-        session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-        service = RuntimeInboxService()
-        repository = RuntimeInboxRepository()
-        async with session_factory() as db:
-            sli_before = asdict(await repository.get_sli_snapshot(db, now_ms=int(time.time() * 1_000)))
-        state = _BenchmarkState()
-        done = asyncio.Event()
-        monitor = asyncio.create_task(_monitor_waiting_locks(database, state, done))
-        started_at = time.perf_counter()
-        try:
-            await asyncio.gather(
-                *(_claim_worker(worker_id, session_factory, service, state) for worker_id in range(WORKER_CONCURRENCY))
-            )
-        finally:
-            elapsed_seconds = time.perf_counter() - started_at
-            done.set()
-            await monitor
-
-        async with session_factory() as db:
-            processed_count = int(
-                await db.scalar(
-                    select(func.count()).select_from(RuntimeInbox).where(RuntimeInbox.status == "PROCESSED")
+        async with _managed_engine(engine):
+            session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            service = RuntimeInboxService()
+            repository = RuntimeInboxRepository()
+            async with session_factory() as db:
+                sli_before = asdict(await repository.get_sli_snapshot(db, now_ms=int(time.time() * 1_000)))
+            state = _BenchmarkState()
+            done = asyncio.Event()
+            started_at = time.perf_counter()
+            try:
+                await _run_workers_with_monitor(
+                    (
+                        _claim_worker(worker_id, session_factory, service, state)
+                        for worker_id in range(WORKER_CONCURRENCY)
+                    ),
+                    _monitor_waiting_locks(database, state, done),
+                    done=done,
                 )
-                or 0
-            )
-            sli_after = asdict(await repository.get_sli_snapshot(db, now_ms=int(time.time() * 1_000)))
-        await engine.dispose()
+            finally:
+                elapsed_seconds = time.perf_counter() - started_at
 
-        evidence: dict[str, object] = {
-            "scenario": "runtime_inbox_claim",
-            "source": {"kind": "postgresql"},
-            "workload": {
-                "pending_inbox_count": PENDING_INBOX_COUNT,
-                "worker_concurrency": WORKER_CONCURRENCY,
-                "claim_batch_size": CLAIM_BATCH_SIZE,
-                "mix": {"received": 700, "failed_due": 200, "stale_processing": 100},
-            },
-            "metrics": {
-                "claim_p50_ms": round(_percentile(state.claim_samples_ms, 0.50), 3),
-                "claim_p95_ms": round(_percentile(state.claim_samples_ms, 0.95), 3),
-                "claim_sample_count": len(state.claim_samples_ms),
-                "throughput_per_second": round(PENDING_INBOX_COUNT / elapsed_seconds, 3),
-                "elapsed_seconds": round(elapsed_seconds, 3),
-                "duplicate_claim_count": state.duplicate_claim_count,
-                "waiting_lock_samples": state.waiting_lock_samples,
-                "max_waiting_locks": state.max_waiting_locks,
-                "processed_count": processed_count,
-            },
-            "query_plan": query_plan,
-            "thresholds": {
-                "claim_p95_ms": CLAIM_P95_THRESHOLD_MS,
-                "throughput_per_second": THROUGHPUT_THRESHOLD_PER_SECOND,
-                "duplicate_claim_count": 0,
-            },
-            "sli_before": sli_before,
-            "sli_after": sli_after,
-        }
-        return evidence
+            async with session_factory() as db:
+                processed_count = int(
+                    await db.scalar(
+                        select(func.count()).select_from(RuntimeInbox).where(RuntimeInbox.status == "PROCESSED")
+                    )
+                    or 0
+                )
+                sli_after = asdict(await repository.get_sli_snapshot(db, now_ms=int(time.time() * 1_000)))
+
+            evidence: dict[str, object] = {
+                "scenario": "runtime_inbox_claim",
+                "source": {"kind": "postgresql"},
+                "workload": {
+                    "pending_inbox_count": PENDING_INBOX_COUNT,
+                    "worker_concurrency": WORKER_CONCURRENCY,
+                    "claim_batch_size": CLAIM_BATCH_SIZE,
+                    "mix": {"received": 700, "failed_due": 200, "stale_processing": 100},
+                },
+                "metrics": {
+                    "claim_p50_ms": round(_percentile(state.claim_samples_ms, 0.50), 3),
+                    "claim_p95_ms": round(_percentile(state.claim_samples_ms, 0.95), 3),
+                    "claim_sample_count": len(state.claim_samples_ms),
+                    "throughput_per_second": round(PENDING_INBOX_COUNT / elapsed_seconds, 3),
+                    "elapsed_seconds": round(elapsed_seconds, 3),
+                    "duplicate_claim_count": state.duplicate_claim_count,
+                    "waiting_lock_samples": state.waiting_lock_samples,
+                    "max_waiting_locks": state.max_waiting_locks,
+                    "processed_count": processed_count,
+                },
+                "query_plan": query_plan,
+                "thresholds": {
+                    "claim_p95_ms": CLAIM_P95_THRESHOLD_MS,
+                    "throughput_per_second": THROUGHPUT_THRESHOLD_PER_SECOND,
+                    "duplicate_claim_count": 0,
+                },
+                "sli_before": sli_before,
+                "sli_after": sli_after,
+            }
+            return evidence
 
 
 def run_runtime_inbox_postgresql_benchmark(evidence_path: Path | None = None) -> dict[str, object]:
