@@ -41,6 +41,7 @@ from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_sc
 from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxAuditPersistenceFailed,
     RuntimeInboxConflict,
+    RuntimeInboxNotFound,
     RuntimeInboxReplayNotAllowed,
     RuntimeInboxService,
 )
@@ -557,6 +558,8 @@ class WorklineOperationService(BaseService[Any, Any]):
         """执行安全前置并委托 replay；auto_commit=False 时仅 stage，事务由外层负责。"""
 
         original = await self.inbox_repo.get_by_id(db, inbox_id)
+        if original is None:
+            raise RuntimeInboxNotFound(inbox_id=inbox_id)
         expected_ownership = (
             getattr(original, "workline_session_id", None),
             getattr(original, "workline_id", None),

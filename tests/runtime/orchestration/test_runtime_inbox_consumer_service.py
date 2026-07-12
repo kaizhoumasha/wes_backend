@@ -1070,6 +1070,7 @@ async def test_runtime_inbox_replay_same_request_is_idempotent_and_content_chang
         payload_hash=_canonical_payload_hash({"event_type": "INTERNAL_EVENT", "data": {"session_id": 10}}),
         payload_json={"event_type": "INTERNAL_EVENT", "data": {"session_id": 10}},
         payload_schema_version=1,
+        workline_session_id=10,
         status="DEAD_LETTER",
         claim_bucket_key="source:dead-idempotent",
         received_at=NOW_MS,
@@ -1120,6 +1121,7 @@ async def test_runtime_inbox_replay_conflict_audit_failure_raises_stable_typed_e
         payload_hash=_canonical_payload_hash({"event_type": "INTERNAL_EVENT", "data": {"session_id": 10}}),
         payload_json={"event_type": "INTERNAL_EVENT", "data": {"session_id": 10}},
         payload_schema_version=1,
+        workline_session_id=10,
         status="DEAD_LETTER",
         claim_bucket_key="source:dead-audit-failure",
         received_at=NOW_MS,
@@ -1197,6 +1199,33 @@ async def test_runtime_inbox_replay_rejects_tampered_original_payload_hash_befor
     assert exc_info.value.reason_code == "REPLAY_SOURCE_INTEGRITY_VIOLATION"
     assert await db_session.scalar(select(func.count()).select_from(RuntimeInbox)) == 1
     assert audit_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_replay_rejects_matching_hash_with_mismatched_payload_session_owner(db_session) -> None:
+    payload = {"event_type": "SESSION_RESUME", "data": {"session_id": 11}}
+    source = RuntimeInbox(
+        kind="INTERNAL_EVENT",
+        provider_code="RUNTIME",
+        event_type="INTERNAL_EVENT",
+        source_event_id="tampered-owner",
+        payload_hash=_canonical_payload_hash(payload),
+        payload_json=payload,
+        payload_schema_version=1,
+        workline_session_id=10,
+        status="DEAD_LETTER",
+        claim_bucket_key="session:10",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
+    )
+    db_session.add(source)
+    await db_session.flush()
+    with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+        await RuntimeInboxService().replay_from_dead_letter(
+            db_session, source_inbox_id=source.id, request_id="owner-tamper", actor="7", reason="reject"
+        )
+    assert exc_info.value.reason_code == "REPLAY_SOURCE_INTEGRITY_VIOLATION"
+    assert await db_session.scalar(select(func.count()).select_from(RuntimeInbox)) == 1
 
 
 @pytest.mark.asyncio
@@ -1445,6 +1474,18 @@ async def test_workline_operation_replay_only_applies_safety_then_delegates() ->
         "expected_ownership": (None, 5),
     }
     service._commit_mutation.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_workline_operation_replay_missing_initial_source_fails_before_delegate() -> None:
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxNotFound
+
+    service = WorklineOperationService(inbox_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=None)))
+    service.runtime_inbox_service = SimpleNamespace(replay_from_dead_letter=AsyncMock())
+    with pytest.raises(RuntimeInboxNotFound):
+        await service.replay_inbox(object(), inbox_id=404, request_id="missing", actor="42", reason="missing")
+    service.runtime_inbox_service.replay_from_dead_letter.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

@@ -268,6 +268,30 @@ def _raise_replay_source_integrity_violation(detail: str) -> None:
     raise RuntimeInboxReplayNotAllowed(reason_code="REPLAY_SOURCE_INTEGRITY_VIOLATION", detail=detail)
 
 
+def _resolve_workline_session_ownership(
+    payload_json: dict[str, Any], persisted_session_id: int | None, *, strict_persisted: bool = False
+) -> int | None:
+    """统一校验 payload.data.session_id 与持久化 owner 的类型、None 和一致性语义。"""
+
+    data = payload_json.get("data")
+    if not isinstance(data, dict) or "session_id" not in data:
+        return persisted_session_id
+    value = data["session_id"]
+    if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+        raise ValueError("RuntimeInbox canonical.data.session_id must be an integer or null")
+    if strict_persisted and persisted_session_id != value:
+        raise ValueError(
+            "RuntimeInbox workline_session_id mismatch: "
+            f"explicit={persisted_session_id}, canonical.data.session_id={value}"
+        )
+    if persisted_session_id is not None and value is not None and persisted_session_id != value:
+        raise ValueError(
+            "RuntimeInbox workline_session_id mismatch: "
+            f"explicit={persisted_session_id}, canonical.data.session_id={value}"
+        )
+    return persisted_session_id if persisted_session_id is not None else value
+
+
 def _validate_replayable_root_integrity(source: RuntimeInbox) -> None:
     """校验普通/root source 的 canonical payload 事实，供首次与链式重放共用。"""
 
@@ -277,6 +301,14 @@ def _validate_replayable_root_integrity(source: RuntimeInbox) -> None:
         raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_SOURCE_RETRY_BUDGET")
     if source.payload_hash != _canonical_payload_hash(source.payload_json):
         _raise_replay_source_integrity_violation("root source payload hash mismatch")
+    try:
+        _resolve_workline_session_ownership(
+            source.payload_json,
+            source.workline_session_id,
+            strict_persisted=True,
+        )
+    except ValueError as exc:
+        _raise_replay_source_integrity_violation(str(exc))
 
 
 class RuntimeInboxReplaySourceValidator:
@@ -533,16 +565,6 @@ def _format_runtime_temporal(value: object | None) -> str:
     return str(value)
 
 
-def _canonical_workline_session_id(payload_json: dict[str, Any]) -> int | None:
-    """从锁定的 canonical payload.data.session_id 合同提取 WorklineSession ID。"""
-
-    data = payload_json.get("data")
-    if not isinstance(data, dict):
-        return None
-    value = data.get("session_id")
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
 class RuntimeInboxService:
     """RuntimeInbox ACK-before-processing 与人工重放服务。"""
 
@@ -590,17 +612,7 @@ class RuntimeInboxService:
         if not isinstance(max_retries, int) or isinstance(max_retries, bool) or max_retries < 1:
             raise ValueError("RuntimeInbox max_retries must be a positive integer")
         validate_canonical_payload_size(payload_json)
-        canonical_session_id = _canonical_workline_session_id(payload_json)
-        if (
-            workline_session_id is not None
-            and canonical_session_id is not None
-            and workline_session_id != canonical_session_id
-        ):
-            raise ValueError(
-                "RuntimeInbox workline_session_id mismatch: "
-                f"explicit={workline_session_id}, canonical.data.session_id={canonical_session_id}"
-            )
-        workline_session_id = workline_session_id if workline_session_id is not None else canonical_session_id
+        workline_session_id = _resolve_workline_session_ownership(payload_json, workline_session_id)
         record_data = {
             "kind": kind,
             "payload_json": payload_json,

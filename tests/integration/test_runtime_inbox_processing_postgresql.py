@@ -180,7 +180,12 @@ def test_manual_replay_rejects_tampered_original_before_replay_or_audit() -> Non
             db.add(source)
             await db.commit()
             source_id = int(source.id)
-            await db.execute(update(RuntimeInbox).where(RuntimeInbox.id == source_id).values(payload_hash="tampered"))
+            tampered_payload = {"event_type": "SESSION_RESUME", "data": {"session_id": 999}}
+            await db.execute(
+                update(RuntimeInbox)
+                .where(RuntimeInbox.id == source_id)
+                .values(payload_json=tampered_payload, payload_hash=_canonical_payload_hash(tampered_payload))
+            )
             await db.commit()
 
             with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
@@ -257,10 +262,29 @@ def test_operation_replay_rejects_source_ownership_change_after_initial_read() -
         task = asyncio.create_task(replay_with_old_snapshot())
         await asyncio.wait_for(initial_read.wait(), timeout=2)
         async with session_factory() as db:
+            repaired_payload = {
+                "event_type": "SCAN_COMPLETED",
+                "canonical_event_type": "SCAN_COMPLETED",
+                "device_code": "IT-SCANNER-01",
+                "data": {
+                    "session_id": new_session_id,
+                    "HHPN": "MAT-IT-001",
+                    "MfrPN": "VENDOR-IT-001",
+                    "Qty": "10",
+                    "DateCode": "20260711",
+                    "LotCode": "LOT-IT-001",
+                    "PkgID": "PKG-IT-001",
+                },
+            }
             await db.execute(
                 update(RuntimeInbox)
                 .where(RuntimeInbox.id == source_id)
-                .values(workline_session_id=new_session_id, workline_id=new_workline_id)
+                .values(
+                    workline_session_id=new_session_id,
+                    workline_id=new_workline_id,
+                    payload_json=repaired_payload,
+                    payload_hash=_canonical_payload_hash(repaired_payload),
+                )
             )
             await db.commit()
         allow_initial_return.set()
@@ -280,6 +304,62 @@ def test_operation_replay_rejects_source_ownership_change_after_initial_read() -
             )
             assert control.workline_session_id == new_session_id
             assert control.workline_id == new_workline_id
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_operation_replay_missing_initial_source_does_not_replay_later_insert() -> None:
+    """初读 None 后即使同 id 被并发插入，本请求也必须 typed fail closed。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        initial_none = asyncio.Event()
+        inserted = asyncio.Event()
+        missing_id = 900_001
+
+        class _MissingBarrierRepository(RuntimeInboxRepository):
+            async def get_by_id(self, db: AsyncSession, inbox_id: int, *args, **kwargs):
+                result = await super().get_by_id(db, inbox_id, *args, **kwargs)
+                assert result is None
+                initial_none.set()
+                await inserted.wait()
+
+        async def replay_missing() -> None:
+            async with session_factory() as db:
+                await WorklineOperationService(inbox_repo=_MissingBarrierRepository()).replay_inbox(
+                    db, inbox_id=missing_id, request_id="late-insert", actor="integration", reason="must not replay"
+                )
+
+        task = asyncio.create_task(replay_missing())
+        await asyncio.wait_for(initial_none.wait(), timeout=2)
+        async with session_factory() as db:
+            payload = {"event_type": "SESSION_RESUME", "data": {}}
+            db.add(
+                RuntimeInbox(
+                    id=missing_id,
+                    kind="INTERNAL_EVENT",
+                    provider_code="RUNTIME",
+                    event_type="INTERNAL_EVENT",
+                    source_event_id="late-insert-source",
+                    payload_hash=_canonical_payload_hash(payload),
+                    payload_json=payload,
+                    payload_schema_version=1,
+                    status="DEAD_LETTER",
+                    claim_bucket_key="source:late-insert-source",
+                    received_at=1_700_000_000_000,
+                    failed_at=1_700_000_000_001,
+                )
+            )
+            await db.commit()
+        inserted.set()
+        from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxNotFound
+
+        with pytest.raises(RuntimeInboxNotFound):
+            await asyncio.wait_for(task, timeout=5)
+        async with session_factory() as db:
+            assert await db.scalar(select(func.count()).select_from(RuntimeInbox)) == 1
+            assert await db.scalar(select(func.count()).select_from(AuditLog)) == 0
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
