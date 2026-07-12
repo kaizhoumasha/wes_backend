@@ -14,9 +14,12 @@ from tests.load.runtime_inbox_postgresql_benchmark import _managed_engine, _run_
 @dataclass(slots=True)
 class _FakeEngine:
     dispose_count: int = 0
+    dispose_error: BaseException | None = None
 
     async def dispose(self) -> None:
         self.dispose_count += 1
+        if self.dispose_error is not None:
+            raise self.dispose_error
 
 
 def test_worker_failure_cancels_and_awaits_peers_stops_monitor_and_preserves_first_error() -> None:
@@ -131,5 +134,44 @@ def test_worker_finish_timestamp_is_captured_before_blocked_monitor_cleanup() ->
 
         benchmark_source = inspect.getsource(_run_benchmark)
         assert "elapsed_seconds = workers_finished_at - started_at" in benchmark_source
+
+    asyncio.run(scenario())
+
+
+def test_engine_dispose_failure_preserves_body_and_cancel_primary_errors() -> None:
+    async def scenario() -> None:
+        body_error = LookupError("body primary")
+        body_engine = _FakeEngine(dispose_error=RuntimeError("top-secret dispose detail"))
+        with pytest.raises(LookupError) as body_error_info:
+            async with _managed_engine(body_engine):
+                raise body_error
+        assert body_error_info.value is body_error
+        assert body_engine.dispose_count == 1
+        assert any(note == "cleanup=engine_dispose_failed" for note in getattr(body_error_info.value, "__notes__", ()))
+        assert "top-secret" not in str(body_error_info.value)
+
+        cancel_error = asyncio.CancelledError("cancel primary")
+        cancel_engine = _FakeEngine(dispose_error=RuntimeError("top-secret dispose detail"))
+        with pytest.raises(asyncio.CancelledError) as cancel_error_info:
+            async with _managed_engine(cancel_engine):
+                raise cancel_error
+        assert cancel_error_info.value is cancel_error
+        assert cancel_engine.dispose_count == 1
+        assert any(
+            note == "cleanup=engine_dispose_failed" for note in getattr(cancel_error_info.value, "__notes__", ())
+        )
+
+    asyncio.run(scenario())
+
+
+def test_engine_dispose_failure_without_body_error_is_explicit() -> None:
+    async def scenario() -> None:
+        dispose_error = RuntimeError("dispose failure")
+        engine = _FakeEngine(dispose_error=dispose_error)
+        with pytest.raises(RuntimeError) as dispose_error_info:
+            async with _managed_engine(engine):
+                pass
+        assert dispose_error_info.value is dispose_error
+        assert engine.dispose_count == 1
 
     asyncio.run(scenario())

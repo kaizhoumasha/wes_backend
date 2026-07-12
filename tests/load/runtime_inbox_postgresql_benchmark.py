@@ -198,10 +198,19 @@ async def _claim_worker(
 
 @asynccontextmanager
 async def _managed_engine(engine: Any) -> AsyncIterator[None]:
+    primary_error: BaseException | None = None
     try:
         yield
-    finally:
+    except BaseException as exc:
+        primary_error = exc
+    try:
         await engine.dispose()
+    except BaseException:
+        if primary_error is None:
+            raise
+        primary_error.add_note("cleanup=engine_dispose_failed")
+    if primary_error is not None:
+        raise primary_error from None
 
 
 async def _run_workers_with_monitor(
