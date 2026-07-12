@@ -312,7 +312,7 @@ async def test_callback_runtime_inbox_writer_event_fallback_source_event_id_is_p
 
 @pytest.mark.asyncio
 async def test_process_result_uses_runtime_inbox_as_authority() -> None:
-    """结果回调 accepted 后继续业务处理，但不再委托旧 Workline inbox。"""
+    """结果回调 accepted 后继续业务处理，并保持 RuntimeInbox 唯一权威。"""
 
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
     from src.app.device.models.command import CommandCallbackResult
@@ -384,7 +384,7 @@ async def test_process_result_uses_runtime_inbox_as_authority() -> None:
 
 @pytest.mark.asyncio
 async def test_process_result_duplicate_uses_runtime_inbox_ack_and_skips_legacy_sources() -> None:
-    """duplicate ACK 只能来自 RuntimeInbox，不能再触发旧 Workline inbox/processor。"""
+    """duplicate ACK 只能来自 RuntimeInbox，且不得触发第二套 processor。"""
 
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
     from src.app.device.models.command import CommandCallbackResult
@@ -553,7 +553,7 @@ async def test_process_event_duplicate_uses_runtime_inbox_ack_and_skips_legacy_s
 
 @pytest.mark.asyncio
 async def test_process_external_duplicate_uses_runtime_inbox_ack_and_skips_legacy_sources() -> None:
-    """external duplicate ACK 只能来自 RuntimeInbox，不能再触发旧 Workline inbox/processor。"""
+    """external duplicate ACK 只能来自 RuntimeInbox，且不得触发第二套 processor。"""
 
     from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 

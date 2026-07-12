@@ -29,6 +29,7 @@ RULE_CAPABILITY_FORBIDDEN_DEPENDENCY="CAPABILITY_FORBIDDEN_DEPENDENCY"
 RULE_CAPABILITY_IMPLEMENTATION_IMPORT="CAPABILITY_IMPLEMENTATION_IMPORT"
 RULE_INBOUND_NORMALIZER_OWNERSHIP="INBOUND_NORMALIZER_OWNERSHIP"
 RULE_LEGACY_RUNTIME_IMPORT="LEGACY_RUNTIME_IMPORT"
+RULE_WORKLINE_INBOX_RETIREMENT="WORKLINE_INBOX_RETIREMENT"
 
 usage() {
     cat <<'EOF'
@@ -37,7 +38,7 @@ Usage: scripts/architecture-guardrails.sh --mode warn|enforced|expiry-check [--a
   --mode       warn=warn-only, enforced=allowlist enforced, expiry-check=expired allowlist fails
   --allowlist  allowlist 文件路径 (默认 scripts/architecture-guardrails.allowlist)
 
-规则: WMS_INTEGRATION_BOUNDARY EXECUTION_CORRELATION_BOUNDARY AUTHORITY_METADATA_BOUNDARY DEVICE_COMMAND_BOUNDARY RUNTIME_INBOX_STATE_MACHINE CAPABILITY_FORBIDDEN_DEPENDENCY CAPABILITY_IMPLEMENTATION_IMPORT INBOUND_NORMALIZER_OWNERSHIP LEGACY_RUNTIME_IMPORT
+规则: WMS_INTEGRATION_BOUNDARY EXECUTION_CORRELATION_BOUNDARY AUTHORITY_METADATA_BOUNDARY DEVICE_COMMAND_BOUNDARY RUNTIME_INBOX_STATE_MACHINE CAPABILITY_FORBIDDEN_DEPENDENCY CAPABILITY_IMPLEMENTATION_IMPORT INBOUND_NORMALIZER_OWNERSHIP LEGACY_RUNTIME_IMPORT WORKLINE_INBOX_RETIREMENT
 EOF
 }
 
@@ -244,6 +245,27 @@ rule_legacy_runtime_import() {
             "production code import src.workline_runtime (legacy runtime import boundary 违规)" \
             "src/workline_runtime/ 整目录已删,不可直接 import; 改用 src.app.runtime.orchestration 或 src.app.workline 域内 mirror"
     done < <(grep -rnE "$pattern" src --include='*.py' 2>/dev/null || true)
+}
+
+# --- WORKLINE_INBOX_RETIREMENT: active Python/Shell/current Markdown 旧入口零引用 ---
+rule_workline_inbox_retirement() {
+    local scanner_output="" scanner_status=0
+    set +e
+    scanner_output="$(run_python scripts/workline_inbox_retirement_guardrail.py --format tsv)"
+    scanner_status=$?
+    set -e
+    if [[ $scanner_status -ne 0 && -z "$scanner_output" ]]; then
+        emit_violation "$RULE_WORKLINE_INBOX_RETIREMENT" "scripts/workline_inbox_retirement_guardrail.py" "1" \
+            "旧入口 scanner 执行失败，拒绝 fail open" \
+            "修复 scanner 后重新运行 architecture guardrail"
+        return
+    fi
+    while IFS=$'\t' read -r file line reason; do
+        [[ -z "$file" ]] && continue
+        emit_violation "$RULE_WORKLINE_INBOX_RETIREMENT" "$file" "$line" \
+            "$reason" \
+            "改用 RuntimeInbox 当前入口；历史证据只能加入精确文件/签名 allowlist"
+    done <<<"$scanner_output"
 }
 
 # --- CAPABILITY_IMPLEMENTATION_IMPORT: capability 不得 import wms_integration/device services/models ---
@@ -489,6 +511,7 @@ rule_authority_metadata_boundary
 rule_device_command_boundary
 rule_capability_forbidden_dependency
 rule_legacy_runtime_import
+rule_workline_inbox_retirement
 rule_capability_implementation_import
 rule_inbound_normalizer_ownership
 

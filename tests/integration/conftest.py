@@ -233,13 +233,13 @@ async def _count_ack_timed_out_commands(db: AsyncSession) -> int:
 
 
 @pytest_asyncio.fixture(scope="function")
-async def isolated_workline_inbox_queue(
+async def isolated_runtime_inbox_queue(
     integration_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     async with integration_session_factory() as db:
         hot_queue_rows = await _find_hot_queue_inboxes(db)
     if hot_queue_rows:
-        pytest.fail(f"WorkLine inbox 全局 task smoke 需要空队列；当前 Docker DB 仍有热队列 inbox: {hot_queue_rows}")
+        pytest.fail(f"RuntimeInbox 全局 task smoke 需要空队列；当前 Docker DB 仍有热队列 inbox: {hot_queue_rows}")
 
 
 @pytest_asyncio.fixture(scope="function")

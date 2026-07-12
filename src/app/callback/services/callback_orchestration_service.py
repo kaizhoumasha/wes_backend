@@ -118,7 +118,7 @@ class CallbackOrchestrationService:
     def _enqueue_runtime_inbox_processing(self) -> None:
         try:
             # Plan Task 6: 调 enqueue_runtime_inbox (新 gateway 协议).
-            # 兼容期仍可走 workline inbox (Task 6 完成后才完全切到 runtime task).
+            # RuntimeInbox 是唯一入口；broker 故障时由 Beat 兜底，不回退旧队列。
             self._queue_gateway.enqueue_runtime_inbox(limit=10)
         except Exception as exc:
             logger.warning(f"Callback 已入库，但即时触发 Runtime Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
@@ -222,7 +222,7 @@ class CallbackOrchestrationService:
                 return
             enqueue_processing()
         except Exception as exc:
-            logger.warning(f"Callback 已提交，但即时触发 Workline Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
+            logger.warning(f"Callback 已提交，但即时触发 RuntimeInbox 处理失败，将依赖 Beat/重试兜底: {exc}")
 
     async def _is_workline_command_callback(
         self,

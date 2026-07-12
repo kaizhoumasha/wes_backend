@@ -1,4 +1,4 @@
-"""Workline Inbox claim bucket key helper."""
+"""RuntimeInbox claim bucket key helper."""
 
 from __future__ import annotations
 
