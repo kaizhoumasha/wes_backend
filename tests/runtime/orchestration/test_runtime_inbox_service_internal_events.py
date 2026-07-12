@@ -265,6 +265,57 @@ async def test_same_payload_without_occurrence_identity_is_rejected_instead_of_a
     assert await db_session.scalar(select(func.count()).select_from(RuntimeInbox)) == 0
 
 
+@pytest.mark.parametrize("producer_kind", ["device", "internal"])
+@pytest.mark.asyncio
+async def test_persistent_event_id_strips_whitespace_and_accepts_120_char_boundary(
+    db_session,
+    producer_kind: str,
+) -> None:
+    """真实 occurrence identity 只做 strip；120 字符边界不得截断。"""
+
+    service = RuntimeInboxService()
+    expected_event_id = "e" * 120
+    common = {
+        "event_type": "IDENTITY_BOUNDARY",
+        "payload_json": {"producer": producer_kind},
+        "event_id": f"  {expected_event_id}  ",
+    }
+    if producer_kind == "device":
+        result = await service.accept_device_event(db_session, device_code="ARM_01", **common)
+    else:
+        result = await service.accept_internal_event(db_session, **common)
+
+    assert result.record.source_event_id == expected_event_id
+    assert result.record.event_id == expected_event_id
+    assert len(result.record.event_id) == 120
+
+
+@pytest.mark.parametrize("producer_kind", ["device", "internal"])
+@pytest.mark.asyncio
+async def test_persistent_event_id_rejects_121_chars_before_repository_write(
+    db_session,
+    producer_kind: str,
+) -> None:
+    """event_id 超过数据库 120 字符上限时必须在 repository 写入前拒绝。"""
+
+    service = RuntimeInboxService()
+    add_spy = AsyncMock(wraps=service.repository.add_received)
+    service.repository.add_received = add_spy  # type: ignore[method-assign]
+    common = {
+        "event_type": "IDENTITY_TOO_LONG",
+        "payload_json": {"producer": producer_kind},
+        "event_id": "e" * 121,
+    }
+
+    with pytest.raises(ValueError, match=r"event_id.*120"):
+        if producer_kind == "device":
+            await service.accept_device_event(db_session, device_code="ARM_01", **common)
+        else:
+            await service.accept_internal_event(db_session, **common)
+
+    assert add_spy.await_count == 0
+
+
 @pytest.mark.asyncio
 async def test_accept_internal_event_with_all_optional_args(db_session) -> None:
     """所有可选参数必须正确落库, correlation_id 走 trace_id 反查。"""

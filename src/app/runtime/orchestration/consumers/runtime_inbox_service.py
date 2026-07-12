@@ -223,6 +223,17 @@ def _canonical_payload_hash(payload_json: dict[str, Any]) -> str:
     return sha256(encoded).hexdigest()
 
 
+def _normalize_persistent_event_id(event_id: str | None, *, producer: str) -> str:
+    """校验并规范真实 occurrence identity，不截断也不生成替代值。"""
+
+    if not isinstance(event_id, str) or not event_id.strip():
+        raise ValueError(f"{producer} requires persistent event_id")
+    normalized = event_id.strip()
+    if len(normalized) > 120:
+        raise ValueError(f"{producer} event_id length must not exceed 120")
+    return normalized
+
+
 def _runtime_claim_bucket_key(
     *,
     session_id: int | None = None,
@@ -530,8 +541,7 @@ class RuntimeInboxService:
             raise ValueError("device event requires event_type")
         if not isinstance(payload_json, dict):
             raise TypeError("device event payload_json must be a dict")
-        if not isinstance(event_id, str) or not event_id.strip():
-            raise ValueError("device event requires persistent upstream event_id")
+        event_id = _normalize_persistent_event_id(event_id, producer="device event")
 
         provider_code = self._derive_provider_code_for_device(device_code)
         payload_hash = _canonical_payload_hash(payload_json)
@@ -583,8 +593,7 @@ class RuntimeInboxService:
             raise ValueError("internal event requires event_type")
         if not isinstance(payload_json, dict):
             raise TypeError("internal event payload_json must be a dict")
-        if not isinstance(event_id, str) or not event_id.strip():
-            raise ValueError("internal event requires persistent producer event_id")
+        event_id = _normalize_persistent_event_id(event_id, producer="internal event")
 
         if correlation_id is None:
             correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
