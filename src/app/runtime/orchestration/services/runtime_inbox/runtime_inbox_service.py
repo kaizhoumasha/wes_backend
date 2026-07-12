@@ -66,6 +66,14 @@ class RuntimeInboxReplayResult:
     audit_event: dict[str, str | None]
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeInboxReplaySourceValidation:
+    """已由持久化 root 事实验证的 replay source。"""
+
+    envelope: dict[str, Any]
+    root_source: RuntimeInbox
+
+
 class RuntimeInboxConflict(Exception):
     """同 source event 不同 payload_hash，必须 409 并审计。"""
 
@@ -258,6 +266,64 @@ def _original_replay_evidence(source: RuntimeInbox) -> dict[str, Any]:
 
 def _raise_replay_source_integrity_violation(detail: str) -> None:
     raise RuntimeInboxReplayNotAllowed(reason_code="REPLAY_SOURCE_INTEGRITY_VIOLATION", detail=detail)
+
+
+class RuntimeInboxReplaySourceValidator:
+    """创建与消费共用的 replay source 持久化真实性校验器。"""
+
+    def __init__(self, repository: RuntimeInboxRepository = runtime_inbox_repository) -> None:
+        self.repository = repository
+
+    async def validate(
+        self,
+        db: AsyncSession,
+        *,
+        source: RuntimeInbox,
+    ) -> RuntimeInboxReplaySourceValidation:
+        envelope = validate_replay_envelope(source.payload_json)
+        if not isinstance(source.max_retries, int) or isinstance(source.max_retries, bool) or source.max_retries < 1:
+            raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_SOURCE_RETRY_BUDGET")
+        if source.payload_hash != _canonical_payload_hash(envelope):
+            _raise_replay_source_integrity_violation("immediate source payload hash mismatch")
+
+        root_source_id = cast("int", envelope["root_source_inbox_id"])
+        root = await self.repository.get_by_id_for_update(db, root_source_id, populate_existing=True)
+        if root is None or root.id == source.id:
+            _raise_replay_source_integrity_violation("root source unavailable")
+        if root.kind not in REPLAYABLE_ORIGINAL_KINDS or not isinstance(root.payload_json, dict):
+            _raise_replay_source_integrity_violation("root source kind is not replayable")
+        if not isinstance(root.max_retries, int) or isinstance(root.max_retries, bool) or root.max_retries < 1:
+            raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_SOURCE_RETRY_BUDGET")
+        if root.payload_hash != _canonical_payload_hash(root.payload_json):
+            _raise_replay_source_integrity_violation("root source payload hash mismatch")
+
+        expected_evidence = _original_replay_evidence(root)
+        if envelope["original_kind"] != root.kind or envelope["original_payload"] != root.payload_json:
+            _raise_replay_source_integrity_violation("root source payload evidence mismatch")
+        if any(envelope[field] != expected_evidence[field] for field in _REPLAY_EVIDENCE_FIELDS):
+            _raise_replay_source_integrity_violation("root source routing evidence mismatch")
+
+        source_routing = {
+            "original_workline_id": source.workline_id,
+            "original_device_id": source.device_id,
+            "original_command_id": source.command_id,
+            "original_workline_session_id": source.workline_session_id,
+            "original_execution_session_id": source.execution_session_id,
+            "original_correlation_id": source.correlation_id,
+            "original_trace_id": source.trace_id,
+        }
+        if any(source_routing[field] != expected_evidence[field] for field in source_routing):
+            _raise_replay_source_integrity_violation("immediate source routing evidence mismatch")
+        expected_source_event_id = (
+            f"replay:{envelope['immediate_source_inbox_id']}:{cast('str', envelope['request_id']).strip()}"
+        )
+        if (
+            source.provider_code != "RUNTIME"
+            or source.event_type != "REPLAY_REQUEST"
+            or source.source_event_id != expected_source_event_id
+        ):
+            _raise_replay_source_integrity_violation("immediate source identity mismatch")
+        return RuntimeInboxReplaySourceValidation(envelope=envelope, root_source=root)
 
 
 class RuntimeInboxCorrelationUnavailable(RuntimeError):
@@ -454,10 +520,12 @@ class RuntimeInboxService:
         repository: RuntimeInboxRepository = runtime_inbox_repository,
         audit_service: _AuditService | None = None,
         idempotency_guard: IdempotencyGuard = default_idempotency_guard,
+        replay_source_validator: RuntimeInboxReplaySourceValidator | None = None,
     ) -> None:
         self.repository = repository
         self.audit_service = audit_service
         self.idempotency_guard = idempotency_guard
+        self.replay_source_validator = replay_source_validator or RuntimeInboxReplaySourceValidator(repository)
 
     async def accept_received(
         self,
@@ -958,8 +1026,8 @@ class RuntimeInboxService:
             raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_SOURCE_RETRY_BUDGET")
 
         if source.kind == "REPLAY_REQUEST":
-            previous = validate_replay_envelope(source.payload_json)
-            root_source = await self._verified_replay_root(db, source=source, envelope=previous)
+            validated_source = await self.replay_source_validator.validate(db, source=source)
+            root_source = validated_source.root_source
             root_source_inbox_id = cast("int", root_source.id)
             original_kind = cast("str", root_source.kind)
             original_payload = dict(cast("dict[str, Any]", root_source.payload_json))
@@ -1054,57 +1122,6 @@ class RuntimeInboxService:
                     original_error=audit_error,
                 ) from audit_error
         return RuntimeInboxReplayResult(source_record=source, replay_record=replay.record, audit_event=audit_event)
-
-    async def _verified_replay_root(
-        self,
-        db: AsyncSession,
-        *,
-        source: RuntimeInbox,
-        envelope: dict[str, Any],
-    ) -> RuntimeInbox:
-        """锁定 root 并以数据库事实核验上一层 replay envelope。"""
-
-        if source.payload_hash != _canonical_payload_hash(envelope):
-            _raise_replay_source_integrity_violation("immediate source payload hash mismatch")
-
-        root_source_id = cast("int", envelope["root_source_inbox_id"])
-        root = await self.repository.get_by_id_for_update(db, root_source_id, populate_existing=True)
-        if root is None or root.id == source.id:
-            _raise_replay_source_integrity_violation("root source unavailable")
-        if root.kind not in REPLAYABLE_ORIGINAL_KINDS or not isinstance(root.payload_json, dict):
-            _raise_replay_source_integrity_violation("root source kind is not replayable")
-        if not isinstance(root.max_retries, int) or isinstance(root.max_retries, bool) or root.max_retries < 1:
-            raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_SOURCE_RETRY_BUDGET")
-        if root.payload_hash != _canonical_payload_hash(root.payload_json):
-            _raise_replay_source_integrity_violation("root source payload hash mismatch")
-
-        expected_evidence = _original_replay_evidence(root)
-        if envelope["original_kind"] != root.kind or envelope["original_payload"] != root.payload_json:
-            _raise_replay_source_integrity_violation("root source payload evidence mismatch")
-        if any(envelope[field] != expected_evidence[field] for field in _REPLAY_EVIDENCE_FIELDS):
-            _raise_replay_source_integrity_violation("root source routing evidence mismatch")
-
-        source_routing = {
-            "original_workline_id": source.workline_id,
-            "original_device_id": source.device_id,
-            "original_command_id": source.command_id,
-            "original_workline_session_id": source.workline_session_id,
-            "original_execution_session_id": source.execution_session_id,
-            "original_correlation_id": source.correlation_id,
-            "original_trace_id": source.trace_id,
-        }
-        if any(source_routing[field] != expected_evidence[field] for field in source_routing):
-            _raise_replay_source_integrity_violation("immediate source routing evidence mismatch")
-        expected_source_event_id = (
-            f"replay:{envelope['immediate_source_inbox_id']}:{cast('str', envelope['request_id']).strip()}"
-        )
-        if (
-            source.provider_code != "RUNTIME"
-            or source.event_type != "REPLAY_REQUEST"
-            or source.source_event_id != expected_source_event_id
-        ):
-            _raise_replay_source_integrity_violation("immediate source identity mismatch")
-        return root
 
     async def _claim_device_event_idempotency_if_needed(
         self,

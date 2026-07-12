@@ -498,6 +498,12 @@ async def _run_case(
         "src.app.workline.services.safety_service.workline_safety_service.handle_estop",
         estop_handler,
     )
+
+    class _ReplaySourceValidator:
+        async def validate(self, _db: Any, *, source: Any) -> SimpleNamespace:
+            # Parity 只锁定验真后的下游行为；真实性由专门的对抗测试覆盖。
+            return SimpleNamespace(envelope=source.payload_json, root_source=SimpleNamespace())
+
     processor = RuntimeInboxProcessorBridge(
         validation_service=RuntimeInboxValidationService(
             inbox_repository=SimpleNamespace(
@@ -522,6 +528,7 @@ async def _run_case(
         writeback_service=RuntimeInboxWriteBackService(write_back_service=_WriteBack(), inbox_service=terminal),
         inbox_service=terminal,  # type: ignore[arg-type]
         inbox_repository=_Repository(inbox),  # type: ignore[arg-type]
+        replay_source_validator=_ReplaySourceValidator(),  # type: ignore[arg-type]
     )
     result = await processor.process_claimed(db, claim={"id": 1, "processor_token": "token-parity"})
     return result, archives, terminal.actions, diagnostics, interactions, db

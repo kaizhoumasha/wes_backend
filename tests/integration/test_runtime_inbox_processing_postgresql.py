@@ -220,6 +220,147 @@ def test_postgresql_retry_budget_constraint_and_replay_claim_contract() -> None:
     asyncio.run(with_temporary_runtime_database(scenario))
 
 
+def test_claimed_replay_revalidates_persisted_chain_before_production_effects() -> None:
+    """合法创建后的持久化篡改必须在消费最前端终止；合法控制组仍只产生一次 effect。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        service = RuntimeInboxService(audit_service=AuditLogService())
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            root = await db.get(RuntimeInbox, seeded.inbox_id)
+            session = await db.get(WorklineSession, seeded.session_id)
+            assert root is not None and session is not None
+            root.status = "DEAD_LETTER"
+            root.failed_at = 1_700_000_000_101
+            session.status = SessionStatus.MANUAL_HOLD
+            session.failure_code = "PAYLOAD_INVALID"
+            session.failure_domain = "PAYLOAD"
+            session.failure_message = "invalid payload"
+            db.add(
+                WorklineTimeline(
+                    session_id=seeded.session_id,
+                    workline_id=seeded.workline_id,
+                    trace_id=seeded.trace_id,
+                    seq_no=1,
+                    occurred_at=timezone.now_for_db(),
+                    stage=TimelineStage.MANUAL,
+                    action_type=TimelineActionType.MANUAL_HOLD,
+                    actor_type=TimelineActorType.ORCHESTRATOR,
+                    to_status=SessionStatus.MANUAL_HOLD.value,
+                    status=TimelineStatus.PENDING,
+                    payload_json={"reason_code": "PAYLOAD_INVALID"},
+                    related_inbox_id=seeded.inbox_id,
+                )
+            )
+            await db.commit()
+            root_snapshot = {
+                "status": root.status,
+                "payload_json": dict(root.payload_json or {}),
+                "payload_hash": root.payload_hash,
+            }
+
+            async def create_replay_chain(label: str) -> tuple[RuntimeInbox, RuntimeInbox]:
+                immediate = await service.replay_from_dead_letter(
+                    db,
+                    source_inbox_id=seeded.inbox_id,
+                    request_id=f"pg-consume-immediate-{label}",
+                    actor="integration",
+                    reason="build replay chain",
+                )
+                immediate.replay_record.status = "DEAD_LETTER"
+                immediate.replay_record.failed_at = 1_700_000_000_102
+                await db.commit()
+                current = await service.replay_from_dead_letter(
+                    db,
+                    source_inbox_id=immediate.replay_record.id,
+                    request_id=f"pg-consume-current-{label}",
+                    actor="integration",
+                    reason="consume replay chain",
+                )
+                await db.commit()
+                return immediate.replay_record, current.replay_record
+
+            for tamper in ("stale_hash", "payload", "evidence", "root"):
+                immediate, current = await create_replay_chain(tamper)
+                immediate_id = int(immediate.id)
+                current_id = int(current.id)
+                immediate_snapshot = {
+                    "status": immediate.status,
+                    "payload_json": dict(immediate.payload_json or {}),
+                    "payload_hash": immediate.payload_hash,
+                }
+                envelope = dict(current.payload_json or {})
+                if tamper == "stale_hash":
+                    tampered_hash = "stale-persisted-replay-hash"
+                elif tamper == "payload":
+                    envelope["original_payload"] = {
+                        "event_type": "SCAN_COMPLETED",
+                        "data": {"HHPN": "TAMPERED-CONSUME"},
+                    }
+                    tampered_hash = _canonical_payload_hash(envelope)
+                elif tamper == "evidence":
+                    envelope["original_workline_session_id"] = seeded.session_id + 1
+                    tampered_hash = _canonical_payload_hash(envelope)
+                else:
+                    envelope["root_source_inbox_id"] = 999_999
+                    tampered_hash = _canonical_payload_hash(envelope)
+                await db.execute(
+                    update(RuntimeInbox)
+                    .where(RuntimeInbox.id == current_id)
+                    .values(payload_json=envelope, payload_hash=tampered_hash)
+                )
+                await db.commit()
+
+                baseline_effects = (
+                    await db.scalar(select(func.count()).select_from(DeviceCommand)),
+                    await db.scalar(select(func.count()).select_from(SystemOutbox)),
+                    await db.scalar(select(func.count()).select_from(WorklineTimeline)),
+                )
+                claimed = await claim(db, service, token=f"pg-tampered-consume-{tamper}")
+                assert claimed["id"] == current_id
+                result = await processor(service).process_claimed(db, claim=claimed)
+                assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+
+                db.expire_all()
+                terminal = await db.get(RuntimeInbox, current_id)
+                persisted_immediate = await db.get(RuntimeInbox, immediate_id)
+                persisted_root = await db.get(RuntimeInbox, seeded.inbox_id)
+                assert terminal is not None and terminal.status == "DEAD_LETTER"
+                assert terminal.last_error_message is not None
+                assert "REPLAY_SOURCE_INTEGRITY_VIOLATION" in terminal.last_error_message
+                assert "TAMPERED-CONSUME" not in terminal.last_error_message
+                assert persisted_immediate is not None
+                assert {
+                    "status": persisted_immediate.status,
+                    "payload_json": dict(persisted_immediate.payload_json or {}),
+                    "payload_hash": persisted_immediate.payload_hash,
+                } == immediate_snapshot
+                assert persisted_root is not None
+                assert {
+                    "status": persisted_root.status,
+                    "payload_json": dict(persisted_root.payload_json or {}),
+                    "payload_hash": persisted_root.payload_hash,
+                } == root_snapshot
+                assert (
+                    await db.scalar(select(func.count()).select_from(DeviceCommand)),
+                    await db.scalar(select(func.count()).select_from(SystemOutbox)),
+                    await db.scalar(select(func.count()).select_from(WorklineTimeline)),
+                ) == baseline_effects
+
+            _, legal = await create_replay_chain("legal-control")
+            legal_id = int(legal.id)
+            legal_claim = await claim(db, service, token="pg-legal-consume-control")
+            assert legal_claim["id"] == legal_id
+            legal_result = await processor(service).process_claimed(db, claim=legal_claim)
+            assert legal_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+            await assert_processed_terminal(db, inbox_id=legal_id)
+            await assert_effects(db, replace(seeded, inbox_id=legal_id), expected_count=1)
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
 def test_manual_replay_hold_provenance_survives_archive_and_is_revoked_by_later_transition() -> None:
     """真实 Repo/archive/fencing/writeback 必须承载 wrong→correct，并让后续迁移撤销旧授权。"""
 
@@ -259,7 +400,7 @@ def test_manual_replay_hold_provenance_survives_archive_and_is_revoked_by_later_
                 provider_code="ECS",
                 event_type="SCAN_COMPLETED",
                 source_event_id="it-wrong-replay-source",
-                payload_hash="it-wrong-replay-hash",
+                payload_hash=_canonical_payload_hash({"event_type": "SCAN_COMPLETED", "data": {"HHPN": "WRONG"}}),
                 payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "WRONG"}},
                 payload_schema_version=1,
                 workline_id=seeded.workline_id,

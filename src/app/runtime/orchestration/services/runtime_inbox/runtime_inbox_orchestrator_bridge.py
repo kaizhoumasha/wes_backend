@@ -46,9 +46,11 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processo
     RuntimeInboxOrchestratorDelegate,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
+    RuntimeInboxReplayNotAllowed,
+    RuntimeInboxReplaySourceValidation,
+    RuntimeInboxReplaySourceValidator,
     RuntimeInboxService,
     runtime_inbox_service,
-    validate_replay_envelope,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
     RuntimeInboxValidationService,
@@ -159,13 +161,18 @@ class _ReplayProjectedInbox:
         return getattr(self._source, name)
 
 
-def _project_replay_request(inbox: Any) -> Any:
+def _project_replay_request(
+    inbox: Any,
+    *,
+    validated_source: RuntimeInboxReplaySourceValidation | None = None,
+) -> Any:
     """将 REPLAY_REQUEST 单层投影为原业务语义，不修改持久化行。"""
 
     if _kind_value(inbox) != "REPLAY_REQUEST":
         return inbox
-    envelope = validate_replay_envelope(getattr(inbox, "payload_json", None))
-    return _ReplayProjectedInbox(inbox, envelope)
+    if validated_source is None:
+        raise RuntimeError("UNVERIFIED_REPLAY_SOURCE")
+    return _ReplayProjectedInbox(inbox, validated_source.envelope)
 
 
 def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
@@ -225,12 +232,16 @@ class RuntimeInboxProcessorBridge:
         writeback_service: RuntimeInboxWriteBackService | None = None,
         inbox_service: RuntimeInboxService | None = None,
         inbox_repository: RuntimeInboxRepository | None = None,
+        replay_source_validator: RuntimeInboxReplaySourceValidator | None = None,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._processor_service = processor_service or RuntimeInboxOrchestratorDelegate()
         self._inbox_service = inbox_service or runtime_inbox_service
         self._writeback_service = writeback_service or RuntimeInboxWriteBackService(inbox_service=self._inbox_service)
         self._inbox_repository = inbox_repository or runtime_inbox_repository
+        self._replay_source_validator = replay_source_validator or RuntimeInboxReplaySourceValidator(
+            self._inbox_repository
+        )
 
     @property
     def inbox_service(self) -> RuntimeInboxService:
@@ -329,7 +340,10 @@ class RuntimeInboxProcessorBridge:
                 result["skipped"] += 1
                 return result
 
-            inbox = _project_replay_request(inbox)
+            validated_replay_source = None
+            if _kind_value(inbox) == "REPLAY_REQUEST":
+                validated_replay_source = await self._replay_source_validator.validate(db, source=inbox)
+            inbox = _project_replay_request(inbox, validated_source=validated_replay_source)
             payload = _payload_for_inbox(inbox)
             resolved_event_type = canonical_event_type(payload)
 
@@ -717,7 +731,11 @@ class RuntimeInboxProcessorBridge:
             result["processed"] += 1
 
         except Exception as e:
-            logger.exception(f"Inbox {inbox_pk_text} 处理异常")
+            if isinstance(e, RuntimeInboxReplayNotAllowed):
+                # replay integrity error 只记录稳定原因，避免 traceback locals 泄露持久化 payload。
+                logger.warning(f"Inbox {inbox_pk_text} replay 验真拒绝: reason={e.reason_code}")
+            else:
+                logger.exception(f"Inbox {inbox_pk_text} 处理异常")
             with suppress(Exception):
                 await db.rollback()
             await _record_diagnostic(

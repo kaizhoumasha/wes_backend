@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
 
@@ -30,7 +32,11 @@ from src.app.runtime.orchestration.models.timeline import (
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxManualHoldEvidence
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
-from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
+from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxReplaySourceValidation,
+    RuntimeInboxService,
+    validate_replay_envelope,
+)
 from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_context_loader as context_loader
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
@@ -63,6 +69,23 @@ from src.utils.timezone import timezone
 # ============================================================
 # Helpers
 # ============================================================
+
+
+def _canonical_payload_hash(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return sha256(encoded).hexdigest()
+
+
+def _project_shape_validated_replay(inbox: Any) -> Any:
+    """纯投影测试只提供已完成 shape gate 的 validator 产物。"""
+
+    return _project_replay_request(
+        inbox,
+        validated_source=RuntimeInboxReplaySourceValidation(
+            envelope=validate_replay_envelope(inbox.payload_json),
+            root_source=SimpleNamespace(),  # 投影本身不读取 root；DB 真实性由独立 validator 测试覆盖。
+        ),
+    )
 
 
 def _make_inbox(
@@ -362,7 +385,7 @@ def test_replay_request_projects_one_layer_to_original_semantics(
         payload_json=_replay_envelope(original_kind=original_kind, original_payload=original_payload),
     )
 
-    projected = _project_replay_request(inbox)
+    projected = _project_shape_validated_replay(inbox)
 
     assert projected.id == 9
     assert projected.kind == original_kind
@@ -382,7 +405,7 @@ def test_replay_request_projection_deep_copies_nested_original_payload() -> None
         payload_json=_replay_envelope(original_kind="INTERNAL_EVENT", original_payload=original_payload),
     )
 
-    projected = _project_replay_request(inbox)
+    projected = _project_shape_validated_replay(inbox)
     projected.payload_json["data"]["nested"]["value"] = "mutated"
 
     assert inbox.payload_json["original_payload"]["data"]["nested"]["value"] == "source"
@@ -395,7 +418,7 @@ def test_replay_request_projection_exposes_read_only_identity_outside_original_p
         payload_json=_replay_envelope(original_kind="DEVICE_EVENT", original_payload=original_payload),
     )
 
-    projected = _project_replay_request(inbox)
+    projected = _project_shape_validated_replay(inbox)
 
     assert projected.is_manual_replay is True
     assert projected.replay_immediate_source_inbox_id == 8
@@ -408,7 +431,7 @@ def test_replay_request_projection_rejects_invalid_envelope() -> None:
     inbox = _make_inbox(kind="REPLAY_REQUEST", payload_json={"original_kind": "REPLAY_REQUEST"})
 
     with pytest.raises(Exception, match="INVALID_REPLAY_ENVELOPE"):
-        _project_replay_request(inbox)
+        _project_shape_validated_replay(inbox)
 
 
 @pytest.mark.parametrize(
@@ -424,7 +447,7 @@ def test_replay_request_projection_rejects_invalid_routing_evidence(field: str, 
     envelope[field] = value
 
     with pytest.raises(Exception, match="INVALID_REPLAY_ENVELOPE"):
-        _project_replay_request(_make_inbox(kind="REPLAY_REQUEST", payload_json=envelope))
+        _project_shape_validated_replay(_make_inbox(kind="REPLAY_REQUEST", payload_json=envelope))
 
 
 @pytest.mark.asyncio
@@ -485,7 +508,7 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
         provider_code="ECS",
         event_type="SCAN_COMPLETED",
         source_event_id="canonical-entry-source",
-        payload_hash="canonical-entry-hash",
+        payload_hash=_canonical_payload_hash({"event_type": "SCAN_COMPLETED", "data": {"HHPN": "MAT-REPLAY-1"}}),
         payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "MAT-REPLAY-1"}},
         payload_schema_version=1,
         workline_id=20,
@@ -517,7 +540,7 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
         provider_code="ECS",
         event_type="SCAN_COMPLETED",
         source_event_id="wrong-entry-source",
-        payload_hash="wrong-entry-hash",
+        payload_hash=_canonical_payload_hash({"event_type": "SCAN_COMPLETED", "data": {"HHPN": "WRONG"}}),
         payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "WRONG"}},
         payload_schema_version=1,
         workline_id=20,
