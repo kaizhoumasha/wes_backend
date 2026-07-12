@@ -273,7 +273,30 @@ def _iter_policy_files(
 
 
 def _path_boundary_error(*, path: Path, display_path: str, repo_root: Path) -> LegacyReference | None:
-    """拒绝解析到仓库外的 root/symlink，避免越界读取。"""
+    """同时拒绝词法越界和解析后越界的 root/symlink，避免越界读取。"""
+
+    repo_lexical = repo_root if repo_root.is_absolute() else Path.cwd() / repo_root
+    path_lexical = path if path.is_absolute() else Path.cwd() / path
+    repo_parts = repo_lexical.parts
+    path_parts = path_lexical.parts
+    lexically_contained = path_parts[: len(repo_parts)] == repo_parts
+    depth = 0
+    if lexically_contained:
+        for part in path_parts[len(repo_parts) :]:
+            if part == "..":
+                if depth == 0:
+                    lexically_contained = False
+                    break
+                depth -= 1
+            elif part not in {"", "."}:
+                depth += 1
+    if not lexically_contained:
+        return LegacyReference(
+            display_path,
+            1,
+            "policy_error",
+            "扫描路径词法上越过仓库边界，拒绝读取",
+        )
 
     try:
         resolved = path.resolve()

@@ -304,6 +304,50 @@ def test_scanner_rejects_root_outside_repository_without_reading_it(tmp_path: Pa
     assert [(finding.path, finding.signature) for finding in findings] == [("../outside", "policy_error")]
 
 
+def test_scanner_rejects_lexical_escape_even_when_root_resolves_back_inside_repository(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    source = repo_root / "src"
+    source.mkdir(parents=True)
+
+    findings = find_legacy_references(repo_root=repo_root, roots=("../repo/src",))
+
+    assert [(finding.path, finding.signature) for finding in findings] == [("../repo/src", "policy_error")]
+
+
+def test_scanner_accepts_absolute_root_inside_repository_and_rejects_absolute_root_outside(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    source = repo_root / "src"
+    source.mkdir(parents=True)
+    (source / "offender.py").write_text("from somewhere import WorklineInbox", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    internal_findings = find_legacy_references(repo_root=repo_root, roots=(str(source),))
+    external_findings = find_legacy_references(repo_root=repo_root, roots=(str(outside),))
+
+    assert [(finding.path, finding.signature) for finding in internal_findings] == [
+        ("src/offender.py", "legacy_symbol")
+    ]
+    assert [(finding.path, finding.signature) for finding in external_findings] == [
+        (outside.as_posix(), "policy_error")
+    ]
+
+
+def test_scanner_accepts_dot_and_nested_parent_normalization_that_never_escape_repository(tmp_path: Path) -> None:
+    (tmp_path / "src/nested").mkdir(parents=True)
+    offender = tmp_path / "tests/offender.py"
+    offender.parent.mkdir(parents=True)
+    offender.write_text("from somewhere import WorklineInbox", encoding="utf-8")
+
+    dot_findings = find_legacy_references(repo_root=tmp_path, roots=("./tests",))
+    nested_findings = find_legacy_references(repo_root=tmp_path, roots=("src/nested/../../tests",))
+
+    assert [(finding.path, finding.signature) for finding in dot_findings] == [("tests/offender.py", "legacy_symbol")]
+    assert [(finding.path, finding.signature) for finding in nested_findings] == [
+        ("src/nested/../../tests/offender.py", "legacy_symbol")
+    ]
+
+
 def test_scanner_rejects_external_file_and_directory_symlinks_without_traversal(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
