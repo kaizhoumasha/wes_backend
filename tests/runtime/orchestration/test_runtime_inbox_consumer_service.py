@@ -914,7 +914,7 @@ async def test_runtime_inbox_manual_replay_creates_new_record_and_audit(db_sessi
         provider_code="WMS",
         event_type="WMS_EXCHANGE_COMPLETED",
         source_event_id="evt-dead-001",
-        payload_hash="hash-dead-001",
+        payload_hash=_canonical_payload_hash({"event_type": "WMS_EXCHANGE_COMPLETED"}),
         payload_json={"event_type": "WMS_EXCHANGE_COMPLETED"},
         payload_schema_version=1,
         status="DEAD_LETTER",
@@ -958,7 +958,7 @@ async def test_runtime_inbox_manual_replay_creates_new_record_and_audit(db_sessi
         "original_provider_code": "WMS",
         "original_event_type": "WMS_EXCHANGE_COMPLETED",
         "original_source_event_id": "evt-dead-001",
-        "original_payload_hash": "hash-dead-001",
+        "original_payload_hash": dead.payload_hash,
         "original_workline_id": None,
         "original_device_id": None,
         "original_command_id": None,
@@ -1067,7 +1067,7 @@ async def test_runtime_inbox_replay_same_request_is_idempotent_and_content_chang
         provider_code="RUNTIME",
         event_type="INTERNAL_EVENT",
         source_event_id="dead-idempotent",
-        payload_hash="hash-root",
+        payload_hash=_canonical_payload_hash({"event_type": "INTERNAL_EVENT", "data": {"session_id": 10}}),
         payload_json={"event_type": "INTERNAL_EVENT", "data": {"session_id": 10}},
         payload_schema_version=1,
         status="DEAD_LETTER",
@@ -1117,7 +1117,7 @@ async def test_runtime_inbox_replay_conflict_audit_failure_raises_stable_typed_e
         provider_code="RUNTIME",
         event_type="INTERNAL_EVENT",
         source_event_id="dead-audit-failure",
-        payload_hash="hash-root",
+        payload_hash=_canonical_payload_hash({"event_type": "INTERNAL_EVENT", "data": {"session_id": 10}}),
         payload_json={"event_type": "INTERNAL_EVENT", "data": {"session_id": 10}},
         payload_schema_version=1,
         status="DEAD_LETTER",
@@ -1163,6 +1163,40 @@ async def test_runtime_inbox_replay_conflict_audit_failure_raises_stable_typed_e
         .all()
     )
     assert [row.id for row in replay_rows] == [first.replay_record.id]
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_replay_rejects_tampered_original_payload_hash_before_write(db_session) -> None:
+    payload = {"event_type": "SESSION_RESUME", "data": {}}
+    source = RuntimeInbox(
+        kind="INTERNAL_EVENT",
+        provider_code="RUNTIME",
+        event_type="INTERNAL_EVENT",
+        source_event_id="tampered-original",
+        payload_hash="stale-hash",
+        payload_json=payload,
+        payload_schema_version=1,
+        status="DEAD_LETTER",
+        claim_bucket_key="source:tampered-original",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
+    )
+    db_session.add(source)
+    await db_session.flush()
+    audit_service = _AuditServiceStub()
+
+    with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+        await RuntimeInboxService(audit_service=audit_service).replay_from_dead_letter(
+            db_session,
+            source_inbox_id=source.id,
+            request_id="reject-tampered-original",
+            actor="7",
+            reason="integrity check",
+        )
+
+    assert exc_info.value.reason_code == "REPLAY_SOURCE_INTEGRITY_VIOLATION"
+    assert await db_session.scalar(select(func.count()).select_from(RuntimeInbox)) == 1
+    assert audit_service.calls == []
 
 
 @pytest.mark.asyncio
@@ -1408,6 +1442,7 @@ async def test_workline_operation_replay_only_applies_safety_then_delegates() ->
         "request_id": "req-12",
         "actor": "42",
         "reason": "operator retry",
+        "expected_ownership": (None, 5),
     }
     service._commit_mutation.assert_awaited_once()
 
@@ -1549,7 +1584,7 @@ async def test_workline_operation_replay_derives_workline_with_real_repositories
         provider_code="RUNTIME",
         event_type="INTERNAL_EVENT",
         source_event_id="replay-derived-source",
-        payload_hash="replay-derived-hash",
+        payload_hash=_canonical_payload_hash({"event_type": "SESSION_RESUME", "data": {"session_id": session.id}}),
         payload_json={"event_type": "SESSION_RESUME", "data": {"session_id": session.id}},
         payload_schema_version=1,
         workline_session_id=session.id,

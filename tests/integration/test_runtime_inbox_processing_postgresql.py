@@ -156,6 +156,134 @@ def test_manual_replay_rejects_tampered_chain_without_new_replay_effect_or_audit
     asyncio.run(with_temporary_runtime_database(scenario))
 
 
+def test_manual_replay_rejects_tampered_original_before_replay_or_audit() -> None:
+    """首次普通 source 也必须以 locked canonical payload hash fail closed。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        async with session_factory() as db:
+            payload = {"event_type": "SESSION_RESUME", "data": {}}
+            source = RuntimeInbox(
+                kind="INTERNAL_EVENT",
+                provider_code="RUNTIME",
+                event_type="INTERNAL_EVENT",
+                source_event_id="pg-tampered-original",
+                payload_hash=_canonical_payload_hash(payload),
+                payload_json=payload,
+                payload_schema_version=1,
+                status="DEAD_LETTER",
+                claim_bucket_key="source:pg-tampered-original",
+                received_at=1_700_000_000_000,
+                failed_at=1_700_000_000_001,
+            )
+            db.add(source)
+            await db.commit()
+            source_id = int(source.id)
+            await db.execute(update(RuntimeInbox).where(RuntimeInbox.id == source_id).values(payload_hash="tampered"))
+            await db.commit()
+
+            with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+                await RuntimeInboxService(audit_service=AuditLogService()).replay_from_dead_letter(
+                    db,
+                    source_inbox_id=source_id,
+                    request_id="pg-reject-tampered-original",
+                    actor="integration",
+                    reason="integrity",
+                )
+            assert exc_info.value.reason_code == "REPLAY_SOURCE_INTEGRITY_VIOLATION"
+            await db.rollback()
+            assert await db.scalar(select(func.count()).select_from(RuntimeInbox)) == 1
+            assert await db.scalar(select(func.count()).select_from(AuditLog)) == 0
+            assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
+            assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == 0
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_operation_replay_rejects_source_ownership_change_after_initial_read() -> None:
+    """锁前 owner 变化后，锁刷新 source 必须拒绝，绝不按新 owner 创建 replay。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        initial_read = asyncio.Event()
+        allow_initial_return = asyncio.Event()
+
+        class _BarrierRepository(RuntimeInboxRepository):
+            async def get_by_id(self, db: AsyncSession, inbox_id: int, *args, **kwargs):
+                source = await super().get_by_id(db, inbox_id, *args, **kwargs)
+                initial_read.set()
+                await allow_initial_return.wait()
+                return source
+
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            source = await db.get(RuntimeInbox, seeded.inbox_id)
+            assert source is not None
+            source.status = "DEAD_LETTER"
+            source.failed_at = 1_700_000_000_301
+            source.workline_session_id = seeded.session_id
+            new_workline = WorkLine(
+                line_code="PG-REPLAY-NEW-OWNER",
+                line_name="PG Replay New Owner",
+                line_type=LineType.AUTO,
+                is_active=True,
+            )
+            db.add(new_workline)
+            await db.flush()
+            new_session = WorklineSession(
+                session_code="PG-REPLAY-NEW-OWNER-SESSION",
+                workline_id=new_workline.id,
+                plugin_key="rough_sorter",
+                status=SessionStatus.RUNNING,
+            )
+            db.add(new_session)
+            await db.commit()
+            source_id = seeded.inbox_id
+            new_session_id = int(new_session.id)
+            new_workline_id = int(new_workline.id)
+
+        async def replay_with_old_snapshot() -> None:
+            async with session_factory() as db:
+                await WorklineOperationService(inbox_repo=_BarrierRepository()).replay_inbox(
+                    db,
+                    inbox_id=source_id,
+                    request_id="pg-owner-race",
+                    actor="integration",
+                    reason="must reject changed owner",
+                )
+
+        task = asyncio.create_task(replay_with_old_snapshot())
+        await asyncio.wait_for(initial_read.wait(), timeout=2)
+        async with session_factory() as db:
+            await db.execute(
+                update(RuntimeInbox)
+                .where(RuntimeInbox.id == source_id)
+                .values(workline_session_id=new_session_id, workline_id=new_workline_id)
+            )
+            await db.commit()
+        allow_initial_return.set()
+        with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+            await asyncio.wait_for(task, timeout=5)
+        assert exc_info.value.reason_code == "SOURCE_WORKLINE_OWNERSHIP_CHANGED"
+
+        async with session_factory() as db:
+            assert await db.scalar(select(func.count()).select_from(RuntimeInbox)) == 1
+            assert await db.scalar(select(func.count()).select_from(AuditLog)) == 0
+            control = await WorklineOperationService().replay_inbox(
+                db,
+                inbox_id=source_id,
+                request_id="pg-owner-control",
+                actor="integration",
+                reason="new owner control",
+            )
+            assert control.workline_session_id == new_session_id
+            assert control.workline_id == new_workline_id
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
 def test_postgresql_retry_budget_constraint_and_replay_claim_contract() -> None:
     """DB 拒绝非正预算；合法 replay 使用固定预算并可被正常 claim。"""
 
@@ -609,7 +737,7 @@ def test_manual_replay_same_request_concurrently_creates_one_runtime_inbox() -> 
                 provider_code="RUNTIME",
                 event_type="INTERNAL_EVENT",
                 source_event_id="it-replay-source",
-                payload_hash="it-replay-hash",
+                payload_hash=_canonical_payload_hash({"event_type": "SESSION_RESUME", "data": {}}),
                 payload_json={"event_type": "SESSION_RESUME", "data": {}},
                 payload_schema_version=1,
                 trace_id="it-replay-trace",
@@ -684,7 +812,7 @@ def test_manual_replay_same_identity_different_hash_has_one_success_and_one_conf
                 provider_code="RUNTIME",
                 event_type="INTERNAL_EVENT",
                 source_event_id="it-replay-conflict-source",
-                payload_hash="it-replay-conflict-hash",
+                payload_hash=_canonical_payload_hash({"event_type": "SESSION_RESUME", "data": {}}),
                 payload_json={"event_type": "SESSION_RESUME", "data": {}},
                 payload_schema_version=1,
                 trace_id="it-replay-conflict-trace",

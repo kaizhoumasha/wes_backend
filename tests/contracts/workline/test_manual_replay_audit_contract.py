@@ -8,6 +8,8 @@ mock 仅允许 `tests/support/runtime_inbox_contract.py` + RuntimeTimeline 替�
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 
 import pytest
@@ -219,13 +221,17 @@ def test_manual_replay_writes_audit_record_with_causation_chain():
 async def test_production_manual_replay_audit_binds_canonical_reason_and_persisted_causation(db_session) -> None:
     """生产 service + AuditLogService 写已接受 reason 与最终因果字段，same-hash ACK 不重复。"""
 
+    source_payload = {"event_type": "SESSION_RESUME", "data": {}}
+    source_hash = hashlib.sha256(
+        json.dumps(source_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     source = RuntimeInbox(
         kind="INTERNAL_EVENT",
         provider_code="RUNTIME",
         event_type="INTERNAL_EVENT",
         source_event_id="contract-replay-source",
-        payload_hash="contract-replay-source-hash",
-        payload_json={"event_type": "SESSION_RESUME", "data": {}},
+        payload_hash=source_hash,
+        payload_json=source_payload,
         payload_schema_version=1,
         trace_id="contract-replay-trace",
         event_id="contract-replay-event",

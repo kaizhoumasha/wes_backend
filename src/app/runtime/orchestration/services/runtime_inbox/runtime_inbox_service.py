@@ -268,6 +268,17 @@ def _raise_replay_source_integrity_violation(detail: str) -> None:
     raise RuntimeInboxReplayNotAllowed(reason_code="REPLAY_SOURCE_INTEGRITY_VIOLATION", detail=detail)
 
 
+def _validate_replayable_root_integrity(source: RuntimeInbox) -> None:
+    """校验普通/root source 的 canonical payload 事实，供首次与链式重放共用。"""
+
+    if source.kind not in REPLAYABLE_ORIGINAL_KINDS or not isinstance(source.payload_json, dict):
+        _raise_replay_source_integrity_violation("root source kind is not replayable")
+    if not isinstance(source.max_retries, int) or isinstance(source.max_retries, bool) or source.max_retries < 1:
+        raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_SOURCE_RETRY_BUDGET")
+    if source.payload_hash != _canonical_payload_hash(source.payload_json):
+        _raise_replay_source_integrity_violation("root source payload hash mismatch")
+
+
 class RuntimeInboxReplaySourceValidator:
     """创建与消费共用的 replay source 持久化真实性校验器。"""
 
@@ -315,12 +326,7 @@ class RuntimeInboxReplaySourceValidator:
             root = await self.repository.get_by_id_refreshed(db, root_source_id)
         if root is None or root.id == source.id:
             _raise_replay_source_integrity_violation("root source unavailable")
-        if root.kind not in REPLAYABLE_ORIGINAL_KINDS or not isinstance(root.payload_json, dict):
-            _raise_replay_source_integrity_violation("root source kind is not replayable")
-        if not isinstance(root.max_retries, int) or isinstance(root.max_retries, bool) or root.max_retries < 1:
-            raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_SOURCE_RETRY_BUDGET")
-        if root.payload_hash != _canonical_payload_hash(root.payload_json):
-            _raise_replay_source_integrity_violation("root source payload hash mismatch")
+        _validate_replayable_root_integrity(root)
 
         expected_evidence = _original_replay_evidence(root)
         if envelope["original_kind"] != root.kind or envelope["original_payload"] != root.payload_json:
@@ -1026,6 +1032,7 @@ class RuntimeInboxService:
         request_id: str,
         actor: str,
         reason: str,
+        expected_ownership: tuple[int | None, int | None] | None = None,
     ) -> RuntimeInboxReplayResult:
         """从 DEAD_LETTER 新建重放记录；原记录保持终态。"""
 
@@ -1040,6 +1047,15 @@ class RuntimeInboxService:
         source = await self.repository.get_by_id_for_update(db, source_inbox_id, populate_existing=True)
         if source is None:
             raise RuntimeInboxNotFound(inbox_id=source_inbox_id)
+        if (
+            expected_ownership is not None
+            and (
+                source.workline_session_id,
+                source.workline_id,
+            )
+            != expected_ownership
+        ):
+            raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_OWNERSHIP_CHANGED")
         if source.status != "DEAD_LETTER":
             raise RuntimeInboxReplayNotAllowed(
                 reason_code="SOURCE_NOT_DEAD_LETTER",
@@ -1058,8 +1074,7 @@ class RuntimeInboxService:
             original_payload = dict(cast("dict[str, Any]", root_source.payload_json))
             evidence = _original_replay_evidence(root_source)
         else:
-            if source.kind not in REPLAYABLE_ORIGINAL_KINDS or not isinstance(source.payload_json, dict):
-                raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_REPLAY_ENVELOPE")
+            _validate_replayable_root_integrity(source)
             root_source_inbox_id = source_inbox_id
             original_kind = source.kind
             original_payload = dict(source.payload_json)

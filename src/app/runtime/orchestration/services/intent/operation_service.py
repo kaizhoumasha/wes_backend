@@ -557,6 +557,10 @@ class WorklineOperationService(BaseService[Any, Any]):
         """执行安全前置并委托 replay；auto_commit=False 时仅 stage，事务由外层负责。"""
 
         original = await self.inbox_repo.get_by_id(db, inbox_id)
+        expected_ownership = (
+            getattr(original, "workline_session_id", None),
+            getattr(original, "workline_id", None),
+        )
         session = None
         if original is not None and original.workline_session_id is not None:
             # 与 reconciliation 写路径保持 Session→WorkLine 锁序，避免锁等待后继续使用旧快照。
@@ -601,6 +605,7 @@ class WorklineOperationService(BaseService[Any, Any]):
                 request_id=request_id,
                 actor=actor,
                 reason=reason,
+                expected_ownership=expected_ownership,
             )
         except RuntimeInboxAuditPersistenceFailed:
             # 自动事务必须 fail closed；外层事务模式只传播 typed error，由 Unit of Work 回滚。
