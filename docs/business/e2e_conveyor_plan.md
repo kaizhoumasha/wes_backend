@@ -57,6 +57,8 @@ POST /api/v1/callback/result
   - `/result`：写 `RuntimeInbox(COMMAND_RESULT)`、更新 `DeviceCommand` 并触发统一编排
 - `src/celery_app/tasks/runtime_inbox.py`
   - `process_runtime_inbox_batch`：统一编排主流程入口
+- `src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py`
+  - `RuntimeInboxProcessorBridge.process_claimed`：处理 task 已 claim 的单条 RuntimeInbox
   - `_load_related_entities`：解析 `device -> workline -> session` 归属
 - `src/app/device/services/device_command_service.py`
   - `send_command`：下发指令并更新 ACK 状态
@@ -65,9 +67,10 @@ POST /api/v1/callback/result
 ### 2.2 Celery 配置
 
 - `src/celery_app/app.py`
-  - include `src.celery_app.tasks.workline`
+  - include `src.celery_app.tasks.runtime_inbox`（Inbox 主链路）
+  - include `src.celery_app.tasks.workline`（超时扫描等保留任务）
 - `src/celery_app/config.py`
-  - 作业线任务路由到 `celery` 队列
+  - RuntimeInbox 与作业线保留任务均路由到 `celery` 队列
 
 ### 2.3 E2E 与 Mock
 

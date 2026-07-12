@@ -59,9 +59,19 @@ LEGACY_SIGNATURES = (
         "import 已删除的旧 Inbox model module",
     ),
     LegacySignature(
+        "legacy_model_member_import",
+        "src.app.runtime.orchestration.models import inbox",
+        "import 已删除的旧 Inbox model member",
+    ),
+    LegacySignature(
         "legacy_repository_import",
         "src.app.runtime.orchestration.repositories.inbox_repository",
         "import 已删除的旧 Inbox repository module",
+    ),
+    LegacySignature(
+        "legacy_repository_member_import",
+        "src.app.runtime.orchestration.repositories import inbox_repository",
+        "import 已删除的旧 Inbox repository member",
     ),
     LegacySignature(
         "legacy_service_import",
@@ -69,9 +79,19 @@ LEGACY_SIGNATURES = (
         "import 已删除的旧 Inbox service module",
     ),
     LegacySignature(
+        "legacy_service_member_import",
+        "src.app.runtime.orchestration.services.inbox import inbox_service",
+        "import 已删除的旧 Inbox service member",
+    ),
+    LegacySignature(
         "legacy_workline_model_import",
         "src.app.workline.models.inbox",
         "import 已删除的 Workline Inbox model module",
+    ),
+    LegacySignature(
+        "legacy_workline_model_member_import",
+        "src.app.workline.models import inbox",
+        "import 已删除的 Workline Inbox model member",
     ),
     LegacySignature(
         "legacy_workline_repository_import",

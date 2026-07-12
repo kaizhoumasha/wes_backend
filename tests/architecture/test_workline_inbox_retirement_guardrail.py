@@ -129,8 +129,18 @@ def test_current_docs_are_explicit_files_and_never_archive_or_plan_prefixes() ->
 def test_scanner_rejects_legacy_modules_without_workline_inbox_symbol(tmp_path: Path) -> None:
     fixtures = {
         "src/model_import.py": "import src.app.workline.models.inbox as legacy_model",
+        "src/model_member_import.py": "from src.app.workline.models import inbox as legacy_model",
+        "src/runtime_model_member_import.py": (
+            "from src.app.runtime.orchestration.models import inbox as legacy_model"
+        ),
         "src/repository_import.py": "from src.app.workline.repositories import inbox_repository as legacy_repo",
+        "src/runtime_repository_import.py": (
+            "from src.app.runtime.orchestration.repositories import inbox_repository as legacy_repo"
+        ),
         "src/service_import.py": "from src.app.workline.services import inbox_service as legacy_service",
+        "src/runtime_service_import.py": (
+            "from src.app.runtime.orchestration.services.inbox import inbox_service as legacy_service"
+        ),
         "src/processor_import.py": ("from src.app.workline.services import inbox_batch_processor as legacy_processor"),
         "src/runtime_processor_import.py": (
             "from src.app.runtime.orchestration.services.inbox import inbox_batch_processor as legacy_processor"
@@ -151,6 +161,19 @@ def test_scanner_rejects_legacy_modules_without_workline_inbox_symbol(tmp_path: 
         path.write_text(content, encoding="utf-8")
 
     assert {finding.path for finding in find_legacy_references(repo_root=tmp_path, roots=("src",))} == set(fixtures)
+
+
+def test_e2e_current_code_list_assigns_loader_to_runtime_inbox_bridge() -> None:
+    source = (REPO_ROOT / "docs/business/e2e_conveyor_plan.md").read_text(encoding="utf-8")
+
+    assert "RuntimeInboxProcessorBridge.process_claimed" in source
+    assert "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py" in source
+    task_entry, bridge_entry = source.split("src/celery_app/tasks/runtime_inbox.py", maxsplit=1)[1].split(
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py",
+        maxsplit=1,
+    )
+    assert "_load_related_entities" not in task_entry
+    assert "_load_related_entities" in bridge_entry
 
 
 def test_scanner_rejects_retired_processor_and_consumer_symbols(tmp_path: Path) -> None:
