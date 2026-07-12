@@ -18,7 +18,6 @@ from src.app.device.repositories import (
     device_repository,
 )
 from src.app.runtime.capability_catalog import get_workline_capability_definition
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.orchestration.models.operation import (
     ResolveRuntimeReconciliationRequest,
     SandboxEventTemplate,
@@ -38,6 +37,7 @@ from src.app.runtime.orchestration.repositories.runtime_inbox_repository import 
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository  # noqa: TC001
 from src.app.runtime.orchestration.repository_wiring import runtime_inbox_query, workline_repository
 from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
+from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.models.workline import WorkLineRunMode

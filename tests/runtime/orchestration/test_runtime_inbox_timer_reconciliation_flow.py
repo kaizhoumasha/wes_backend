@@ -22,10 +22,10 @@ from src.utils.timezone import timezone
 async def test_timer_timeout_producer_claim_bridge_uses_runtime_fenced_terminal(db_session, monkeypatch) -> None:
     """真实 producer/claim/bridge 必须解析 canonical timeout 并写 RuntimeInbox 终态。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
     from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
         workline_runtime_reconciliation_service,
     )
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
     from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
         RuntimeInboxProcessorBridge,
     )

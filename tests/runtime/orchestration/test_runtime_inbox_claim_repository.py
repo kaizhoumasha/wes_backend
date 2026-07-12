@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from sqlalchemy.dialects import postgresql
 
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import _runtime_claim_bucket_key
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import _runtime_claim_bucket_key
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession

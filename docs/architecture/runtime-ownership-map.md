@@ -53,7 +53,7 @@
 
 | 路径 | 角色 |
 | --- | --- |
-| `src/app/runtime/orchestration/consumers/runtime_inbox_service.py` | RuntimeInbox ACK-before-processing、幂等接收、五态状态机；INBOUND_NORMALIZER_OWNERSHIP 对 RuntimeInbox 持有的显式例外 |
+| `src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py` | RuntimeInbox ACK-before-processing、幂等接收、五态状态机；INBOUND_NORMALIZER_OWNERSHIP 对 RuntimeInbox 持有的显式例外 |
 | `src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py` | callback ingress 写入 RuntimeInbox 的薄适配器，不消费、不编排 |
 | 其他 capability | 通过 `RuntimeCapabilityContext` 获取 query/effect port contract，不直接 import inbound normalizer |
 

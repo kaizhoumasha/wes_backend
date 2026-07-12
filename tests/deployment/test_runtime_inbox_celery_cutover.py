@@ -77,7 +77,7 @@ def test_gateway_does_not_fallback_when_runtime_task_is_unregistered(monkeypatch
 
 
 def test_runtime_inbox_task_empty_batch_returns_minimum_sli(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_service
     from src.celery_app.tasks import runtime_inbox as task_module
 
     db = _SessionStub()
@@ -92,8 +92,10 @@ def test_runtime_inbox_task_empty_batch_returns_minimum_sli(monkeypatch: pytest.
 
 
 def test_runtime_inbox_task_claims_and_processes_one_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
-    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge
+    from src.app.runtime.orchestration.services.runtime_inbox import (
+        runtime_inbox_orchestrator_bridge,
+        runtime_inbox_service,
+    )
     from src.celery_app.tasks import runtime_inbox as task_module
 
     db = _SessionStub()
@@ -128,9 +130,11 @@ def test_runtime_inbox_task_claims_and_processes_one_at_a_time(monkeypatch: pyte
 
 
 def test_runtime_inbox_task_emits_processing_duration_sli(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
     from src.app.runtime.orchestration.observability import runtime_observability_registry
-    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge
+    from src.app.runtime.orchestration.services.runtime_inbox import (
+        runtime_inbox_orchestrator_bridge,
+        runtime_inbox_service,
+    )
     from src.celery_app.tasks import runtime_inbox as task_module
 
     db = _SessionStub()
@@ -167,8 +171,10 @@ def test_runtime_inbox_task_emits_processing_duration_sli(monkeypatch: pytest.Mo
 
 
 def test_runtime_inbox_task_times_out_only_the_claimed_message(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
-    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge
+    from src.app.runtime.orchestration.services.runtime_inbox import (
+        runtime_inbox_orchestrator_bridge,
+        runtime_inbox_service,
+    )
     from src.app.workline import constants
     from src.celery_app.tasks import runtime_inbox as task_module
 
@@ -236,8 +242,10 @@ def test_runtime_inbox_task_retries_batch_infrastructure_failure(monkeypatch: py
 def test_runtime_inbox_task_rolls_back_processor_exception_after_claim_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
-    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge
+    from src.app.runtime.orchestration.services.runtime_inbox import (
+        runtime_inbox_orchestrator_bridge,
+        runtime_inbox_service,
+    )
     from src.celery_app.tasks import runtime_inbox as task_module
 
     db = _SessionStub()

@@ -802,7 +802,7 @@ class RuntimeHoldReleaseService:
             "data": result_payload,
         }
         # RuntimeInbox 是 command result 唯一事实源，后续 processor 经统一路径消费。
-        from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+        from src.app.runtime.orchestration.services.runtime_inbox import (
             runtime_inbox_service,
         )
 

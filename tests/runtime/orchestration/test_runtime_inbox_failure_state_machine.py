@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession

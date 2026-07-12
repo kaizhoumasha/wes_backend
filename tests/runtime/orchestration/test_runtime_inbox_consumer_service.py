@@ -12,12 +12,12 @@ from sqlalchemy.exc import IntegrityError
 
 # 这些模型 import 用于注册隔离 SQLite create_all 所需的跨表 FK metadata。
 from src.app.device.models.command import DeviceCommand
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.workline.models import WorkLine
 
 NOW_MS = 1_700_000_000_000
@@ -139,7 +139,7 @@ class _IdempotencyGuardSpy:
 async def test_accept_received_rejects_workline_session_namespace_mismatch(db_session) -> None:
     """显式 WorklineSession FK 与 canonical ref 不一致时不得落库。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     with pytest.raises(ValueError, match="workline_session_id mismatch"):
         await RuntimeInboxService().accept_received(
@@ -162,7 +162,7 @@ async def test_accept_received_rejects_workline_session_namespace_mismatch(db_se
 async def test_accept_received_rejects_unknown_explicit_correlation_before_repository_write(db_session) -> None:
     """统一入口必须在 repository 写入前拒绝不存在的 ExecutionCorrelation。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    from src.app.runtime.orchestration.services.runtime_inbox import (
         RuntimeInboxCorrelationUnavailable,
         RuntimeInboxService,
     )
@@ -187,7 +187,7 @@ async def test_callback_result_writer_rejects_unknown_command_correlation(db_ses
     """result writer 不得把 DeviceCommand 上的孤立 correlation 传入 RuntimeInbox FK。"""
 
     from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxCorrelationUnavailable
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxCorrelationUnavailable
 
     with pytest.raises(RuntimeInboxCorrelationUnavailable, match="correlation is unavailable"):
         await CallbackRuntimeInboxWriter().write_result_callback(
@@ -210,7 +210,7 @@ async def test_callback_result_writer_rejects_unknown_command_correlation(db_ses
 async def test_runtime_inbox_accept_returns_existing_ack_for_same_hash(db_session) -> None:
     """同 source event 且 payload_hash 一致时返回既有 ACK, 不新建记录。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     service = RuntimeInboxService()
 
@@ -241,7 +241,7 @@ async def test_runtime_inbox_accept_returns_existing_ack_for_same_hash(db_sessio
 async def test_accept_received_existing_same_hash_acks_before_unknown_correlation_validation(db_session) -> None:
     """已落库的同 K/H 重试应直接 ACK，不受迟到或已清理 correlation 影响。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     service = RuntimeInboxService()
     first = await _accept_received(
@@ -273,7 +273,7 @@ async def test_accept_received_existing_different_hash_conflicts_before_unknown_
 ) -> None:
     """既有 identity 的 hash 冲突必须保持 409 优先级，不能被关联完整性错误遮蔽。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    from src.app.runtime.orchestration.services.runtime_inbox import (
         RuntimeInboxConflict,
         RuntimeInboxService,
     )
@@ -308,7 +308,7 @@ async def test_accept_received_correlation_validation_race_rechecks_existing_ide
 ) -> None:
     """关联校验失败时必须回读并发插入的 identity，再按 K/H 收敛为 ACK 或 409。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    from src.app.runtime.orchestration.services.runtime_inbox import (
         RuntimeInboxConflict,
         RuntimeInboxService,
     )
@@ -338,7 +338,7 @@ async def test_accept_received_correlation_validation_race_rechecks_existing_ide
 async def test_accept_received_retry_without_owner_keeps_processor_assigned_owner(db_session) -> None:
     """未声明 owner 的相同 K/H 重试应 ACK processor 已回填的 owner，且不重复 claim。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     correlation = await _seed_execution_correlation(
         db_session,
@@ -383,7 +383,7 @@ async def test_accept_received_retry_without_owner_keeps_processor_assigned_owne
 async def test_accept_received_explicit_owner_acks_existing_unspecified_owner_without_backfill(db_session) -> None:
     """既有记录未定 owner 时，incoming 明确 owner 可 ACK，但 ACK 路径不得回填归属。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     service = RuntimeInboxService()
     first = await _accept_received(
@@ -419,7 +419,7 @@ async def test_accept_received_unique_race_without_owner_acks_processor_assigned
 ) -> None:
     """唯一键竞态回读 owner=41 时，未声明 owner 的重试应直接 ACK 且不 claim。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     existing = SimpleNamespace(
         id=10,
@@ -456,7 +456,7 @@ async def test_accept_received_unique_race_without_owner_acks_processor_assigned
 async def test_accept_received_rejects_existing_identity_owned_by_another_workline_session(db_session) -> None:
     """K/H 相同也不能跨 WorklineSession 归属复用 ACK。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    from src.app.runtime.orchestration.services.runtime_inbox import (
         RuntimeInboxService,
         RuntimeInboxSessionOwnershipConflict,
     )
@@ -497,7 +497,7 @@ async def test_accept_received_rejects_existing_identity_owned_by_another_workli
 async def test_accept_received_unique_race_rejects_another_session_before_idempotency_claim(db_session) -> None:
     """唯一键竞态回读到其他会话归属时，不得留下 claim 副作用。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    from src.app.runtime.orchestration.services.runtime_inbox import (
         RuntimeInboxService,
         RuntimeInboxSessionOwnershipConflict,
     )
@@ -535,7 +535,7 @@ async def test_runtime_inbox_accepts_canonical_payload_at_exact_utf8_byte_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """UTF-8 canonical JSON bytes 等于上限时允许持久化。"""
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
     from src.core.conf import settings
 
     payload = {"message": "中文边界"}
@@ -565,7 +565,7 @@ async def test_runtime_inbox_rejects_oversized_canonical_payload_before_reposito
     """canonical payload 超限必须在 RuntimeInbox add/ACK 前失败并保持零落库。"""
     from sqlalchemy import func
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    from src.app.runtime.orchestration.services.runtime_inbox import (
         RuntimeInboxPayloadTooLarge,
         RuntimeInboxService,
     )
@@ -602,7 +602,7 @@ async def test_internal_producer_uses_same_canonical_payload_size_guard(
     """内部 producer 与 external 必须共用 repository add 前的 bytes guard。"""
     from sqlalchemy import func
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    from src.app.runtime.orchestration.services.runtime_inbox import (
         RuntimeInboxPayloadTooLarge,
         RuntimeInboxService,
     )
@@ -627,7 +627,7 @@ async def test_internal_producer_uses_same_canonical_payload_size_guard(
 async def test_runtime_inbox_accept_returns_existing_after_unique_conflict(db_session) -> None:
     """并发插入撞唯一索引时，必须重新读取既有记录并返回幂等 ACK。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     existing = SimpleNamespace(id=7, payload_hash="hash-001", status="RECEIVED")
     repository = _RuntimeInboxUniqueRaceRepository(existing)
@@ -651,7 +651,7 @@ async def test_runtime_inbox_accept_returns_existing_after_unique_conflict(db_se
 async def test_runtime_inbox_accept_keeps_session_usable_after_real_unique_conflict(db_session) -> None:
     """真实 flush 撞唯一索引后，savepoint rollback 必须允许重读和继续写入。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     existing = RuntimeInbox(
         kind="EXTERNAL_HTTP",
@@ -711,7 +711,7 @@ async def test_runtime_inbox_accept_keeps_session_usable_after_real_unique_confl
 async def test_runtime_inbox_accept_rejects_same_event_different_hash(db_session) -> None:
     """同 source event 不同 payload_hash 必须 409, 不静默覆盖 evidence。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    from src.app.runtime.orchestration.services.runtime_inbox import (
         RuntimeInboxConflict,
         RuntimeInboxService,
     )
@@ -747,7 +747,7 @@ async def test_runtime_inbox_accept_rejects_same_event_different_hash(db_session
 async def test_runtime_inbox_accept_keeps_distinct_canonical_event_types_separate(db_session) -> None:
     """同 source_event_id 但不同 canonical callback/event type 不得落入同一幂等空间。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     service = RuntimeInboxService()
 
@@ -777,7 +777,7 @@ async def test_runtime_inbox_accept_keeps_distinct_canonical_event_types_separat
 async def test_runtime_inbox_accept_conflict_after_unique_conflict(db_session) -> None:
     """并发插入后发现同 source event 不同 hash 时，仍必须返回 409 conflict。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+    from src.app.runtime.orchestration.services.runtime_inbox import (
         RuntimeInboxConflict,
         RuntimeInboxService,
     )
@@ -804,7 +804,7 @@ async def test_runtime_inbox_accept_conflict_after_unique_conflict(db_session) -
 async def test_runtime_inbox_device_event_accept_claims_idempotency_key(db_session) -> None:
     """device_event 入站生产入口必须同步 claim IdempotencyKey。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     correlation = await _seed_execution_correlation(db_session)
     service = RuntimeInboxService()
@@ -849,8 +849,8 @@ async def test_runtime_inbox_device_event_accept_claims_idempotency_key(db_sessi
 async def test_runtime_inbox_device_event_accept_rejects_existing_idempotency_hash_conflict(db_session) -> None:
     """device_event 已有 IdempotencyKey 不同 hash 时必须 409 并暴露 device 审计域。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
     from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     correlation = await _seed_execution_correlation(db_session, correlation_id="corr-device-event-conflict")
     db_session.add(
@@ -888,7 +888,7 @@ async def test_runtime_inbox_device_event_accept_rejects_existing_idempotency_ha
 async def test_runtime_inbox_manual_replay_creates_new_record_and_audit(db_session) -> None:
     """DEAD_LETTER 人工重放必须新建 inbox 记录并写审计。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     session = ExecutionSession(workline_id=11, manifest_version="manifest-v1", state="HOLD")
     db_session.add(session)
@@ -982,7 +982,7 @@ async def test_runtime_inbox_replay_rejects_invalid_source_identity_before_write
 async def test_runtime_inbox_accept_distinct_explicit_source_identities_without_cross_dedup(db_session) -> None:
     """直接调用 accept_received 的测试输入必须提供 canonical source identity。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     service = RuntimeInboxService()
 
@@ -1012,7 +1012,7 @@ async def test_runtime_inbox_accept_distinct_explicit_source_identities_without_
 async def test_runtime_inbox_accept_received_writes_stable_bucket_and_received_at(db_session) -> None:
     """普通入站必须写毫秒接收时间，并按 session 优先生成稳定桶键。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     session = ExecutionSession(workline_id=17, manifest_version="manifest-v1", state="RUNNING")
     db_session.add(session)
@@ -1060,7 +1060,7 @@ def test_runtime_inbox_conflict_audit_maps_operation_kind(
 ) -> None:
     """RuntimeInbox 冲突审计必须覆盖 callback/result/event 等 canonical operation_kind。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxConflict
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxConflict
 
     audit_event = RuntimeInboxConflict(
         provider_code="ECS",
@@ -1082,7 +1082,7 @@ def test_runtime_inbox_conflict_audit_maps_operation_kind(
 async def test_runtime_inbox_accept_device_event_aliases_claim_idempotency_key(db_session, event_type: str) -> None:
     """result/event canonical 与 legacy alias 都必须归一到 device_event 并 claim IdempotencyKey。"""
 
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 
     correlation = await _seed_execution_correlation(db_session, correlation_id=f"corr-{event_type}")
     source_event_id = f"evt-{event_type}"

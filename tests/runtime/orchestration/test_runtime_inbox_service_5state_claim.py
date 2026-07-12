@@ -24,7 +24,7 @@ import pytest
 
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 
-runtime_inbox_service_module = importlib.import_module("src.app.runtime.orchestration.consumers.runtime_inbox_service")
+runtime_inbox_service_module = importlib.import_module("src.app.runtime.orchestration.services.runtime_inbox")
 
 
 # ============================================================

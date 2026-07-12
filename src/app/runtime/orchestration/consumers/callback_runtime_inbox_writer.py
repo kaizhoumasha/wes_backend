@@ -6,7 +6,7 @@ import json
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxAcceptResult,
     RuntimeInboxService,
     runtime_inbox_service,

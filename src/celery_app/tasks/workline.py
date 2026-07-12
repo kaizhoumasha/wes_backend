@@ -210,13 +210,13 @@ class TimeoutScanner:
                 "errors": 错误数
             }
         """
-        from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
         from src.app.runtime.orchestration.repositories.session_repository import (
             WorklineSessionRepository,
         )
         from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
             workline_runtime_reconciliation_service,
         )
+        from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_service
 
         result: ScanResult = {
             "scanned": 0,

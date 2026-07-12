@@ -27,10 +27,6 @@ from typing import TYPE_CHECKING, Any, TypedDict
 from loguru import logger
 
 from src.app.runtime.capability_catalog import parse_workline_six_in_one
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
-    RuntimeInboxService,
-    runtime_inbox_service,
-)
 from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     ErrorDomain,
@@ -47,6 +43,10 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
     RuntimeInboxOrchestratorDelegate,
+)
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
+    RuntimeInboxService,
+    runtime_inbox_service,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
     RuntimeInboxValidationService,

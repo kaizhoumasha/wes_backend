@@ -1,19 +1,11 @@
-"""RuntimeInbox 写入服务导出。"""
+"""Runtime orchestration 协议适配器。"""
 
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
-    RuntimeInboxAcceptResult,
-    RuntimeInboxConflict,
-    RuntimeInboxReplayResult,
-    RuntimeInboxService,
-    RuntimeInboxSessionOwnershipConflict,
-    runtime_inbox_service,
+from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import (
+    CallbackRuntimeInboxWriter,
+    callback_runtime_inbox_writer,
 )
 
 __all__ = [
-    "RuntimeInboxAcceptResult",
-    "RuntimeInboxConflict",
-    "RuntimeInboxReplayResult",
-    "RuntimeInboxService",
-    "RuntimeInboxSessionOwnershipConflict",
-    "runtime_inbox_service",
+    "CallbackRuntimeInboxWriter",
+    "callback_runtime_inbox_writer",
 ]

@@ -1,9 +1,4 @@
-"""RuntimeInbox service exports (Task 5 三阶段 Processor 拆分).
-
-新拆出的 validation / orchestrator-delegate / write-back / composition 服务
-统一从本模块导出. consumers/runtime_inbox_service.py 中的 5 态
-RuntimeInboxService 由 consumers 包导出, 不在本目录重复.
-"""
+"""RuntimeInbox service 正式导出边界。"""
 
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     ProcessResult,
@@ -13,6 +8,16 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
     RuntimeInboxOrchestratorDelegate,
     _build_orchestrator_lock_provider,
+)
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
+    RuntimeInboxAcceptResult,
+    RuntimeInboxConflict,
+    RuntimeInboxCorrelationUnavailable,
+    RuntimeInboxPayloadTooLarge,
+    RuntimeInboxReplayResult,
+    RuntimeInboxService,
+    RuntimeInboxSessionOwnershipConflict,
+    runtime_inbox_service,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
     RuntimeInboxValidationService,
@@ -28,9 +33,16 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
 
 __all__ = [
     "ProcessResult",
+    "RuntimeInboxAcceptResult",
+    "RuntimeInboxConflict",
+    "RuntimeInboxCorrelationUnavailable",
     "RuntimeInboxOrchestratorDelegate",
+    "RuntimeInboxPayloadTooLarge",
     "RuntimeInboxProcessorBridge",
     "RuntimeInboxProcessorService",
+    "RuntimeInboxReplayResult",
+    "RuntimeInboxService",
+    "RuntimeInboxSessionOwnershipConflict",
     "RuntimeInboxValidationService",
     "RuntimeInboxWriteBackService",
     "ValidationOutcome",
@@ -39,4 +51,5 @@ __all__ = [
     "_is_late_or_duplicate_command_result_for_session",
     "_result_requires_outbox_dispatch",
     "_session_write_snapshot",
+    "runtime_inbox_service",
 ]

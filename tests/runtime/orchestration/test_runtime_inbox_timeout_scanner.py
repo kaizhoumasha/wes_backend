@@ -25,8 +25,8 @@ async def test_timeout_scanner_uses_runtime_inbox_acceptor_and_keeps_batch_stati
 
     from src.app.device.repositories.command_repository import DeviceCommandRepository
     from src.app.device.repositories.device_repository import device_repository
-    from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
     from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_service
     from src.app.sys.repositories import SystemOutboxRepository
     from src.celery_app.tasks.workline import TimeoutScanner
 

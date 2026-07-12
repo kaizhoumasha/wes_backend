@@ -9,9 +9,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxAcceptResult
 from src.app.runtime.orchestration.models.session import SessionStatus
 from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxAcceptResult
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.workline.models.workline import WorkLineRunMode
 

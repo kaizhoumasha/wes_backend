@@ -1711,7 +1711,7 @@ class SmtInboundHandoffService:
         }
 
         # RuntimeInbox 是 INTERNAL_EVENT 唯一事实源，item.source_pick_inbox_id 指向该记录。
-        from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+        from src.app.runtime.orchestration.services.runtime_inbox import (
             runtime_inbox_service,
         )
 

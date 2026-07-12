@@ -27,7 +27,9 @@ from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 
 NOW_MS = 1_700_000_000_000
 
-runtime_inbox_service_module = importlib.import_module("src.app.runtime.orchestration.consumers.runtime_inbox_service")
+runtime_inbox_service_module = importlib.import_module(
+    "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service"
+)
 RuntimeInboxService = runtime_inbox_service_module.RuntimeInboxService
 RuntimeInboxCorrelationUnavailable = runtime_inbox_service_module.RuntimeInboxCorrelationUnavailable
 RuntimeInboxConflict = runtime_inbox_service_module.RuntimeInboxConflict
@@ -823,6 +825,7 @@ async def test_smt_source_pick_producer_emits_canonical_workline_session_identit
     service_module = importlib.import_module(
         "src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service"
     )
+    service_package = importlib.import_module("src.app.runtime.orchestration.services.runtime_inbox")
     captured: dict[str, Any] = {}
 
     class _RuntimeInboxService:
@@ -831,7 +834,7 @@ async def test_smt_source_pick_producer_emits_canonical_workline_session_identit
             captured.update(kwargs)
             return SimpleNamespace(record=SimpleNamespace(id=501))
 
-    monkeypatch.setattr(runtime_inbox_service_module, "runtime_inbox_service", _RuntimeInboxService())
+    monkeypatch.setattr(service_package, "runtime_inbox_service", _RuntimeInboxService())
     producer = service_module.SmtInboundHandoffService()
 
     record = await producer._create_source_pick_request_inbox(

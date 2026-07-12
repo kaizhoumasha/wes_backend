@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
+from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from tests.support.runtime_inbox_processing_postgresql import (
     RecordingTaskQueueGateway,
     assert_effects,

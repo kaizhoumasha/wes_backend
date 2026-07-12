@@ -232,12 +232,12 @@ def test_no_consumers_in_legacy_runtime_allowed_paths():
     )
 
 
-def test_consumers_package_only_exports_runtime_inbox_service():
-    """consumers 包只保留 RuntimeInbox 写入服务，不再暴露消费 facade。"""
+def test_consumers_package_only_exports_runtime_inbox_adapters():
+    """consumers 包只保留 RuntimeInbox 协议适配器。"""
     consumers_dir = REPO_ROOT / "src" / "app" / "runtime" / "orchestration" / "consumers"
-    assert consumers_dir.is_dir(), "consumers/ 目录仍承载 RuntimeInboxService"
+    assert consumers_dir.is_dir(), "consumers/ 目录应保留协议适配器"
     init_file = consumers_dir / "__init__.py"
     assert init_file.is_file(), "consumers/__init__.py 应保留"
     exported = init_file.read_text(encoding="utf-8")
-    assert "RuntimeInboxService" in exported
-    assert "RuntimeInbox" + "Consumer" not in exported
+    assert "CallbackRuntimeInboxWriter" in exported
+    assert "RuntimeInboxService" not in exported

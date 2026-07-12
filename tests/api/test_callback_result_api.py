@@ -892,7 +892,7 @@ class TestCallbackResultAPI:
         db_session: AsyncSession,
         build_request: RequestFactory,
     ) -> None:
-        from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxConflict
+        from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxConflict
 
         existing_command = SimpleNamespace(
             id=1001,

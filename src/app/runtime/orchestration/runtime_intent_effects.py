@@ -1627,7 +1627,7 @@ class RuntimeIntentEffectApplier:
     async def _apply_device_event(self, ctx: Any, intent: RuntimeIntent) -> None:
         ctx_map = cast("Mapping[str, Any]", ctx)
         payload = dict(intent.payload_json)
-        from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+        from src.app.runtime.orchestration.services.runtime_inbox import (
             runtime_inbox_service,
         )
 

@@ -36,7 +36,7 @@ Revision A 负责识别切换前缺少 canonical payload 的旧行，将其转�
 
 `RuntimeInboxService`、领域异常、接受/重放结果类型和单例统一迁入 `src/app/runtime/orchestration/services/runtime_inbox/`。该目录的 `__init__.py` 是正式导出边界。
 
-`consumers/` 只保留协议 adapter，例如 callback writer。原 `consumers/runtime_inbox_service.py` 物理删除，不提供 import shim。所有生产代码和测试一次性切换到新入口。
+`consumers/` 只保留协议 adapter，例如 callback writer。原 consumers service 文件物理删除，不提供 import shim。所有生产代码和测试一次性切换到新入口。
 
 Service 继续遵守 Service → Repository → Database，不在迁移过程中引入直接 SQL 查询。
 

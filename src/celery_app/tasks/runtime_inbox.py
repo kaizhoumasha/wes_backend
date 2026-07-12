@@ -194,7 +194,7 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
 
     async def _process() -> ClaimBatchResult:
         async with self.db as db:
-            from src.app.runtime.orchestration.consumers.runtime_inbox_service import runtime_inbox_service
+            from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_service
             from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
                 RuntimeInboxProcessorBridge,
             )

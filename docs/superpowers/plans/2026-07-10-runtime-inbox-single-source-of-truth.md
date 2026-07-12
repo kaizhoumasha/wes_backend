@@ -270,7 +270,7 @@ wes_runtime.runtime_inbox
 - 生产 service/repository 状态机覆盖全部合法/非法路径。
 - 不再存在第二个 RuntimeInbox repository。
 
-**落地：** `src/app/runtime/orchestration/repositories/runtime_inbox_claim_repository.py` RuntimeInboxClaimRepository（claim_received_with_token / find_stale_processing / update_terminal_state）；`src/app/runtime/orchestration/consumers/runtime_inbox_service.py` 加 5 方法（claim_for_processing / recover_stale_leases / mark_processed / mark_failed / mark_dead_letter）；`tests/runtime/orchestration/test_runtime_inbox_service_5state_claim.py` 7/7 case 通过。⚠️ WorklineInboxRepository 仍保留（28 个 consumer 依赖，待 Task 7 删）。
+**落地：** `src/app/runtime/orchestration/repositories/runtime_inbox_claim_repository.py` RuntimeInboxClaimRepository（claim_received_with_token / find_stale_processing / update_terminal_state）；`src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py` 加 5 方法（claim_for_processing / recover_stale_leases / mark_processed / mark_failed / mark_dead_letter）；`tests/runtime/orchestration/test_runtime_inbox_service_5state_claim.py` 7/7 case 通过。⚠️ WorklineInboxRepository 仍保留（28 个 consumer 依赖，待 Task 7 删）。
 
 ### Task 4：迁移所有 Producer
 

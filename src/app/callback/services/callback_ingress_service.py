@@ -41,12 +41,12 @@ from src.app.device.models.command import (
 )
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.runtime.capabilities.material_flow.start_admission_service import start_admission_service
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
+from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxConflict,
     RuntimeInboxCorrelationUnavailable,
     RuntimeInboxPayloadTooLarge,
 )
-from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusSnapshot,
     workline_runtime_status_projection_service,

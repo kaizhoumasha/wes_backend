@@ -128,7 +128,7 @@ CREATED → RUNNING → CLOSED
 
 ### 2.5 RuntimeInbox — 入站消息
 
-**文件**: `src/app/runtime/orchestration/runtime_inbox.py`（模型）+ `repositories/runtime_inbox_repository.py`（唯一仓储）+ `consumers/runtime_inbox_service.py`（接收/状态机服务）
+**文件**: `src/app/runtime/orchestration/runtime_inbox.py`（模型）+ `repositories/runtime_inbox_repository.py`（唯一仓储）+ `services/runtime_inbox/runtime_inbox_service.py`（接收/状态机服务）
 **表**: `wes_runtime.runtime_inbox`
 
 | 字段 | 类型 | 说明 |
@@ -332,7 +332,7 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 
 | Service | 文件 | 职责 |
 |---------|------|------|
-| `RuntimeInboxService` | `consumers/runtime_inbox_service.py` | ACK-before-processing、重试、死信、人工重放 |
+| `RuntimeInboxService` | `services/runtime_inbox/runtime_inbox_service.py` | ACK-before-processing、重试、死信、人工重放 |
 | `RuntimeInboxProcessorBridge` | `services/runtime_inbox/runtime_inbox_orchestrator_bridge.py` | validation → orchestration → fenced write-back 三阶段处理 |
 | `DeviceCommandGateway` | `services/device_command_gateway.py` | 设备命令下发网关 |
 | `DeviceDispatchPolicy` | `services/device_dispatch_policy.py` | 设备调度策略（能力选择、优先级、deadline、限流） |
