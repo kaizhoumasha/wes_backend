@@ -432,6 +432,26 @@ def test_scanner_checks_directory_symlink_before_a_following_parent_component(tm
     assert [(finding.path, finding.signature) for finding in findings] == [("alias/../target", "policy_error")]
 
 
+def test_scanner_rejects_broken_symlink_used_as_explicit_root(tmp_path: Path) -> None:
+    (tmp_path / "broken_root").symlink_to(tmp_path / "missing", target_is_directory=True)
+
+    findings = find_legacy_references(repo_root=tmp_path, roots=("broken_root",))
+
+    assert [(finding.path, finding.signature) for finding in findings] == [("broken_root", "policy_error")]
+
+
+def test_default_scan_rejects_broken_symlink_root(tmp_path: Path) -> None:
+    (tmp_path / "src").symlink_to(tmp_path / "missing", target_is_directory=True)
+    for relative_path in CURRENT_DOC_FILES:
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# current\n", encoding="utf-8")
+
+    findings = find_legacy_references(repo_root=tmp_path)
+
+    assert [(finding.path, finding.signature) for finding in findings] == [("src", "policy_error")]
+
+
 def test_default_scan_rejects_directory_symlink_root_before_traversal(tmp_path: Path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()

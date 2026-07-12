@@ -335,7 +335,7 @@ def _directory_symlink_error(*, path: Path, display_path: str, repo_root: Path) 
         if not current.is_symlink():
             continue
         is_final_component = not any(remaining not in {"", "."} for remaining in relative_parts[index + 1 :])
-        if is_final_component and not current.is_dir():
+        if is_final_component and current.is_file():
             # 仓库内最终 file symlink 仍按其仓库路径扫描；目录 symlink 一律不展开。
             continue
         break
