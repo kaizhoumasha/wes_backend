@@ -277,6 +277,9 @@ def _resolve_workline_session_ownership(
     if not isinstance(data, dict) or "session_id" not in data:
         return persisted_session_id
     value = data["session_id"]
+    if value is None:
+        # null 与 key 缺失一致：表示 payload 未声明 owner，不覆盖持久化列。
+        return persisted_session_id
     if value is not None and (not isinstance(value, int) or isinstance(value, bool)):
         raise ValueError("RuntimeInbox canonical.data.session_id must be an integer or null")
     if strict_persisted and persisted_session_id != value:
@@ -1139,11 +1142,27 @@ class RuntimeInboxService:
                 "provider_code": "RUNTIME",
                 "callback_type": "REPLAY_REQUEST",
                 "source_event_id": replay_source_event_id,
-                "existing_payload_hash": conflict.existing_payload_hash,
-                "incoming_payload_hash": incoming_payload_hash,
                 "actor": normalized_actor,
                 "request_id": normalized_request_id,
             }
+            if isinstance(conflict, RuntimeInboxSessionOwnershipConflict):
+                conflict_event.update(
+                    existing_workline_session_id=(
+                        str(conflict.existing_workline_session_id)
+                        if conflict.existing_workline_session_id is not None
+                        else None
+                    ),
+                    incoming_workline_session_id=(
+                        str(conflict.incoming_workline_session_id)
+                        if conflict.incoming_workline_session_id is not None
+                        else None
+                    ),
+                )
+            else:
+                conflict_event.update(
+                    existing_payload_hash=conflict.existing_payload_hash,
+                    incoming_payload_hash=incoming_payload_hash,
+                )
             try:
                 await self._write_replay_conflict_audit(db, conflict_event)
             except Exception as audit_error:

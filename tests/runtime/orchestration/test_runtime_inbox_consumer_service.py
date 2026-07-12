@@ -1229,6 +1229,39 @@ async def test_runtime_inbox_replay_rejects_matching_hash_with_mismatched_payloa
 
 
 @pytest.mark.asyncio
+async def test_replay_accepts_payload_null_with_persisted_session_owner(db_session) -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxSessionOwnershipConflict
+
+    payload = {"event_type": "SESSION_RESUME", "data": {"session_id": None}}
+    source = RuntimeInbox(
+        kind="INTERNAL_EVENT",
+        provider_code="RUNTIME",
+        event_type="INTERNAL_EVENT",
+        source_event_id="null-owner",
+        payload_hash=_canonical_payload_hash(payload),
+        payload_json=payload,
+        payload_schema_version=1,
+        workline_session_id=10,
+        status="DEAD_LETTER",
+        claim_bucket_key="session:10",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
+    )
+    db_session.add(source)
+    await db_session.flush()
+    replay = await RuntimeInboxService(audit_service=_AuditServiceStub()).replay_from_dead_letter(
+        db_session, source_inbox_id=source.id, request_id="null-owner", actor="7", reason="legal"
+    )
+    assert replay.replay_record.workline_session_id == 10
+    replay.replay_record.workline_session_id = 11
+    await db_session.flush()
+    with pytest.raises(RuntimeInboxSessionOwnershipConflict):
+        await RuntimeInboxService(audit_service=_AuditServiceStub()).replay_from_dead_letter(
+            db_session, source_inbox_id=source.id, request_id="null-owner", actor="7", reason="legal"
+        )
+
+
+@pytest.mark.asyncio
 async def test_runtime_inbox_replay_of_replay_is_flat(db_session) -> None:
     root_payload = {"event_type": "SCAN_COMPLETED", "data": {"barcode": "A"}}
     root = RuntimeInbox(
