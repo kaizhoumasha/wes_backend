@@ -33,7 +33,6 @@ from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxManualHoldEvidence
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.runtime_inbox import (
-    RuntimeInboxReplaySourceValidation,
     RuntimeInboxService,
     validate_replay_envelope,
 )
@@ -46,6 +45,9 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
     RuntimeInboxOrchestratorDelegate,
+)
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
+    RuntimeInboxReplaySourceValidation,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
     RuntimeInboxValidationService,

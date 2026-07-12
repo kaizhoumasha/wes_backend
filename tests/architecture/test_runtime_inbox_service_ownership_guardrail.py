@@ -77,6 +77,13 @@ def test_runtime_inbox_service_has_single_public_owner() -> None:
         importlib.import_module(OLD_SERVICE_MODULE)
 
 
+def test_replay_source_validation_types_stay_internal_to_runtime_inbox_package() -> None:
+    package = importlib.import_module(SERVICE_PACKAGE)
+
+    assert not hasattr(package, "RuntimeInboxReplaySourceValidation")
+    assert not hasattr(package, "RuntimeInboxReplaySourceValidator")
+
+
 def test_active_python_sources_do_not_import_old_runtime_inbox_service() -> None:
     roots = (REPO_ROOT / "src", REPO_ROOT / "tests", REPO_ROOT / "scripts")
     offenders: list[str] = []
