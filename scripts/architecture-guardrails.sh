@@ -171,12 +171,13 @@ rule_wms_integration_boundary() {
 # --- EXECUTION_CORRELATION_BOUNDARY: 跨域 session FK (workline_session_id / material_session_id) ---
 rule_execution_correlation_boundary() {
     local pattern='workline_session_id|material_session_id'
+    local runtime_inbox_response_mapping='^[[:space:]]*"session_id"[[:space:]]*:[[:space:]]*inbox\.workline_session_id,[[:space:]]*$'
     while IFS=: read -r file line _content; do
         [[ -z "$file" ]] && continue
         # 允许 runtime/orchestration 内部
         [[ "$file" == src/app/runtime/orchestration/* ]] && continue
         # Workline API 仅把 RuntimeInbox canonical FK 映射到既有响应字段名；禁止旧 session_id 双读。
-        if [[ "$file" == "src/app/workline/v1/operation.py" && "$_content" == *'"session_id": inbox.workline_session_id,'* ]]; then
+        if [[ "$file" == "src/app/workline/v1/operation.py" && "$_content" =~ $runtime_inbox_response_mapping ]]; then
             continue
         fi
         emit_violation "$RULE_EXECUTION_CORRELATION_BOUNDARY" "$file" "$line" \

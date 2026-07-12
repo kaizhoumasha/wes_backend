@@ -5,11 +5,33 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARDRAIL = REPO_ROOT / "scripts" / "architecture-guardrails.sh"
 OPERATION_API = REPO_ROOT / "src/app/workline/v1/operation.py"
+
+
+def _run_guardrail_fixture(tmp_path: Path, operation_line: str) -> subprocess.CompletedProcess[str]:
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    fixture_guardrail = scripts_dir / "architecture-guardrails.sh"
+    fixture_guardrail.write_text(GUARDRAIL.read_text())
+    allowlist = scripts_dir / "architecture-guardrails.allowlist"
+    allowlist.write_text("")
+    operation = tmp_path / "src/app/workline/v1/operation.py"
+    operation.parent.mkdir(parents=True)
+    operation.write_text(f"def response(inbox):\n    return {{\n{operation_line}    }}\n")
+    return subprocess.run(
+        ["/bin/bash", str(fixture_guardrail), "--mode", "enforced", "--allowlist", str(allowlist)],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_execution_correlation_boundary_fixture_triggers_violation():
@@ -29,6 +51,30 @@ def test_runtime_inbox_response_mapping_has_only_a_narrow_canonical_exception():
 
     guardrail_content = GUARDRAIL.read_text()
     operation_content = OPERATION_API.read_text()
-    assert '"session_id": inbox.workline_session_id,' in guardrail_content
+    assert "runtime_inbox_response_mapping=" in guardrail_content
+    assert "inbox\\.workline_session_id" in guardrail_content
+    assert '"$_content" =~ $runtime_inbox_response_mapping' in guardrail_content
     assert '"session_id": inbox.workline_session_id,' in operation_content
     assert 'getattr(inbox, "session_id"' not in operation_content
+
+
+def test_canonical_runtime_inbox_response_mapping_passes_guardrail(tmp_path: Path):
+    result = _run_guardrail_fixture(tmp_path, '        "session_id"  :  inbox.workline_session_id,\n')
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "extra_reference",
+    [
+        '"material": material_session_id',
+        '"legacy": legacy.workline_session_id',
+    ],
+)
+def test_canonical_mapping_cannot_hide_another_forbidden_reference(
+    tmp_path: Path,
+    extra_reference: str,
+):
+    line = f'        "session_id": inbox.workline_session_id, {extra_reference},\n'
+    result = _run_guardrail_fixture(tmp_path, line)
+    assert result.returncode != 0
+    assert "EXECUTION_CORRELATION_BOUNDARY violation" in result.stderr
