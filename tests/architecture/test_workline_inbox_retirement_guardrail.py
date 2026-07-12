@@ -86,6 +86,47 @@ def test_scanner_rejects_case_path_and_concatenation_evasions(tmp_path: Path) ->
     assert _find_legacy_references(repo_root=tmp_path, roots=("src", "scripts", "docs")) == sorted(fixtures)
 
 
+def test_scanner_folds_parenthesized_nested_and_static_fstring_references(tmp_path: Path) -> None:
+    fixtures = {
+        "src/parenthesized.py": 'MODULE = "src.app.runtime.orchestration.models." + ("inbox")\n',
+        "src/nested.py": ('MODULE = (("src.app.workline.repositories.")) + (("inbox_repository"))\n'),
+        "src/importlib_path.py": (
+            "import importlib\n"
+            'importlib.import_module("src.app.runtime.orchestration.services.inbox." + ("inbox_service"))\n'
+        ),
+        "src/static_fstring.py": (
+            "MODULE = f\"{'src.app.runtime.orchestration.consumers.'}{'runtime_inbox_consumer'}\"\n"
+        ),
+    }
+    for relative_path, content in fixtures.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    findings = find_legacy_references(repo_root=tmp_path, roots=("src",))
+
+    assert [(finding.path, finding.signature) for finding in findings] == [
+        ("src/importlib_path.py", "legacy_service_import"),
+        ("src/nested.py", "legacy_workline_repository_import"),
+        ("src/parenthesized.py", "legacy_model_import"),
+        ("src/static_fstring.py", "legacy_consumer_import"),
+    ]
+
+
+def test_static_string_folding_does_not_evaluate_dynamic_values(tmp_path: Path) -> None:
+    fixtures = {
+        "src/dynamic_name.py": 'MODULE = "src.app.runtime.orchestration.models." + suffix\n',
+        "src/dynamic_call.py": ('MODULE = "src.app.runtime.orchestration.models." + build_module_name()\n'),
+        "src/dynamic_fstring.py": ('MODULE = f"src.app.runtime.orchestration.models.{module_name}"\n'),
+    }
+    for relative_path, content in fixtures.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    assert find_legacy_references(repo_root=tmp_path, roots=("src",)) == []
+
+
 def test_archive_and_exact_migration_evidence_do_not_hide_neighbor_offender(tmp_path: Path) -> None:
     archive = tmp_path / "docs/archive/history.md"
     archive.parent.mkdir(parents=True)
@@ -278,6 +319,51 @@ def test_scanner_rejects_external_file_and_directory_symlinks_without_traversal(
         ("src/linked.py", "policy_error"),
         ("src/linked_dir", "policy_error"),
     ]
+
+
+def test_scanner_rejects_internal_directory_symlink_without_traversal(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "legacy.py").write_text("from somewhere import WorklineInbox", encoding="utf-8")
+    linked = tmp_path / "src/linked_dir"
+    linked.parent.mkdir()
+    linked.symlink_to(shared, target_is_directory=True)
+
+    findings = find_legacy_references(repo_root=tmp_path, roots=("src",))
+
+    assert [(finding.path, finding.signature) for finding in findings] == [("src/linked_dir", "policy_error")]
+
+
+def test_scanner_rejects_directory_symlink_used_as_explicit_root(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "legacy.py").write_text("from somewhere import WorklineInbox", encoding="utf-8")
+    (tmp_path / "linked_root").symlink_to(shared, target_is_directory=True)
+
+    findings = find_legacy_references(repo_root=tmp_path, roots=("linked_root",))
+
+    assert [(finding.path, finding.signature) for finding in findings] == [("linked_root", "policy_error")]
+
+
+def test_default_scan_rejects_directory_symlink_root_before_traversal(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "legacy.py").write_text("from somewhere import WorklineInbox", encoding="utf-8")
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "src").symlink_to(outside, target_is_directory=True)
+    for relative_path in CURRENT_DOC_FILES:
+        path = repo_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# current\n", encoding="utf-8")
+
+    findings = find_legacy_references(repo_root=repo_root)
+
+    assert [(finding.path, finding.signature) for finding in findings] == [("src", "policy_error")]
+
+
+def test_missing_optional_explicit_scan_root_is_an_empty_surface(tmp_path: Path) -> None:
+    assert find_legacy_references(repo_root=tmp_path, roots=("missing",)) == []
 
 
 def test_scanner_reads_internal_file_symlink_but_reports_repository_path(tmp_path: Path) -> None:

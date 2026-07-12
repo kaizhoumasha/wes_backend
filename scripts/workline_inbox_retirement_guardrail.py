@@ -177,6 +177,7 @@ CURRENT_DOC_FILES = (
     "docs/contracts/observability-contract.md",
     "docs/architecture/adr/2026-05-26-wms-integration-domain.md",
 )
+DEFAULT_SCAN_ROOTS = ("src", "tests", "scripts")
 
 # 精确到“文件 + 签名”的历史/负向证据 allowlist；不跳过整文件。
 _ALL_SIGNATURE_KEYS = frozenset(signature.key for signature in LEGACY_SIGNATURES)
@@ -249,30 +250,25 @@ def _is_archived_or_plan(path: str) -> bool:
     return "archive" in parts or ("superpowers" in parts and ("plans" in parts or "specs" in parts))
 
 
-def _iter_policy_files(repo_root: Path, roots: tuple[str, ...] | None) -> list[Path]:
+def _iter_policy_files(
+    repo_root: Path,
+    roots: tuple[str, ...],
+    *,
+    include_default_files: bool,
+) -> list[Path]:
     files: set[Path] = set()
-    if roots is None:
-        policies = (("src", (".py",)), ("tests", (".py",)), ("scripts", (".py", ".sh")))
-        for root_name, suffixes in policies:
-            root = repo_root / root_name
-            if root.exists():
-                files.update(
-                    path
-                    for path in root.rglob("*")
-                    if path.is_symlink() or (path.is_file() and path.suffix in suffixes)
-                )
+    for root_name in roots:
+        root = repo_root / root_name
+        if not root.exists():
+            continue
+        suffixes = (".py", ".sh") if root_name == "scripts" else ((".md",) if root_name == "docs" else (".py",))
+        files.update(
+            path for path in root.rglob("*") if path.is_symlink() or (path.is_file() and path.suffix in suffixes)
+        )
+    if include_default_files:
         files.update(repo_root / relative for relative in CURRENT_DOC_FILES if (repo_root / relative).is_file())
         historical = ("migrations/versions/20260711_1819_ec426c628516_retire_workline_inbox.py",)
         files.update(repo_root / relative for relative in historical if (repo_root / relative).is_file())
-    else:
-        for root_name in roots:
-            root = repo_root / root_name
-            if not root.exists():
-                continue
-            suffixes = (".py", ".sh") if root_name == "scripts" else ((".md",) if root_name == "docs" else (".py",))
-            files.update(
-                path for path in root.rglob("*") if path.is_symlink() or (path.is_file() and path.suffix in suffixes)
-            )
     return sorted(files)
 
 
@@ -299,6 +295,17 @@ def _path_boundary_error(*, path: Path, display_path: str, repo_root: Path) -> L
     )
 
 
+def _directory_symlink_error(*, path: Path, display_path: str) -> LegacyReference | None:
+    if not path.is_symlink() or not path.is_dir():
+        return None
+    return LegacyReference(
+        display_path,
+        1,
+        "policy_error",
+        "扫描 root/目录项是 directory symlink，拒绝展开以免缩小或越过扫描边界",
+    )
+
+
 def _resolve_import_from_module(node: ast.ImportFrom, relative: str) -> str | None:
     """把绝对/相对 ImportFrom 解析为仓库内完整模块名。"""
 
@@ -319,13 +326,48 @@ def _resolve_import_from_module(node: ast.ImportFrom, relative: str) -> str | No
 ImportSpan = tuple[int, int, int, int]
 
 
+def _fold_static_string(node: ast.AST) -> str | None:
+    """只折叠纯静态字符串 AST，不解析名称、不调用函数。"""
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _fold_static_string(node.left)
+        right = _fold_static_string(node.right)
+        return None if left is None or right is None else left + right
+    if not isinstance(node, ast.JoinedStr):
+        return None
+
+    parts: list[str] = []
+    for value in node.values:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            parts.append(value.value)
+            continue
+        if not isinstance(value, ast.FormattedValue) or value.conversion != -1 or value.format_spec is not None:
+            return None
+        folded = _fold_static_string(value.value)
+        if folded is None:
+            return None
+        parts.append(folded)
+    return "".join(parts)
+
+
+def _node_span(node: ast.AST) -> ImportSpan:
+    return (
+        node.lineno,  # type: ignore[attr-defined]
+        node.col_offset,  # type: ignore[attr-defined]
+        node.end_lineno or node.lineno,  # type: ignore[attr-defined]
+        node.end_col_offset or node.col_offset,  # type: ignore[attr-defined]
+    )
+
+
 def _find_python_import_references(
     *,
     relative: str,
     content: str,
     strict_policy: bool,
 ) -> tuple[list[LegacyReference], tuple[ImportSpan, ...]]:
-    """使用 AST 识别真实 import；regex 仍负责字符串、路径和拼接引用。"""
+    """使用 AST 识别真实 import 与纯静态字符串；regex 补充路径和非静态文本引用。"""
 
     try:
         tree = ast.parse(content, filename=relative)
@@ -345,7 +387,7 @@ def _find_python_import_references(
         )
 
     findings: set[LegacyReference] = set()
-    import_spans: set[ImportSpan] = set()
+    ast_spans: set[ImportSpan] = set()
     for node in ast.walk(tree):
         node_findings: set[LegacyReference] = set()
         if isinstance(node, ast.Import):
@@ -368,15 +410,35 @@ def _find_python_import_references(
         if not node_findings:
             continue
         findings.update(node_findings)
-        import_spans.add(
-            (
-                node.lineno,
-                node.col_offset,
-                node.end_lineno or node.lineno,
-                node.end_col_offset or node.col_offset,
-            )
+        ast_spans.add(_node_span(node))
+
+    nodes = list(ast.walk(tree))
+    parents = {id(child): parent for parent in nodes for child in ast.iter_child_nodes(parent)}
+    static_values = {id(node): value for node in nodes if (value := _fold_static_string(node)) is not None}
+    for node in nodes:
+        value = static_values.get(id(node))
+        if value is None:
+            continue
+        ancestor = parents.get(id(node))
+        has_static_ancestor = False
+        while ancestor is not None:
+            if id(ancestor) in static_values:
+                has_static_ancestor = True
+                break
+            ancestor = parents.get(id(ancestor))
+        if has_static_ancestor:
+            continue
+        matched = [signature for signature, pattern in _SIGNATURE_PATTERNS if pattern.search(value)]
+        if any(signature.key.endswith("_import") for signature in matched):
+            matched = [signature for signature in matched if not signature.key.endswith("_symbol")]
+        if not matched:
+            continue
+        findings.update(
+            LegacyReference(relative, node.lineno, signature.key, signature.reason)  # type: ignore[attr-defined]
+            for signature in matched
         )
-    return sorted(findings), tuple(sorted(import_spans))
+        ast_spans.add(_node_span(node))
+    return sorted(findings), tuple(sorted(ast_spans))
 
 
 def _match_position(content: str, start: int) -> tuple[int, int]:
@@ -414,20 +476,24 @@ def find_legacy_references(
 
     strict_policy = roots is None
     findings: set[LegacyReference] = set()
-    scan_roots = roots
-    if roots is not None:
-        safe_roots: list[str] = []
-        for root_name in roots:
-            boundary_error = _path_boundary_error(
-                path=repo_root / root_name,
-                display_path=Path(root_name).as_posix(),
-                repo_root=repo_root,
-            )
-            if boundary_error is None:
-                safe_roots.append(root_name)
-            else:
-                findings.add(boundary_error)
-        scan_roots = tuple(safe_roots)
+    requested_roots = DEFAULT_SCAN_ROOTS if roots is None else roots
+    safe_roots: list[str] = []
+    for root_name in requested_roots:
+        root_path = repo_root / root_name
+        display_path = Path(root_name).as_posix()
+        directory_symlink_error = _directory_symlink_error(path=root_path, display_path=display_path)
+        if directory_symlink_error is not None:
+            findings.add(directory_symlink_error)
+            continue
+        boundary_error = _path_boundary_error(
+            path=root_path,
+            display_path=display_path,
+            repo_root=repo_root,
+        )
+        if boundary_error is None:
+            safe_roots.append(root_name)
+        else:
+            findings.add(boundary_error)
     if strict_policy:
         for relative in CURRENT_DOC_FILES:
             if not (repo_root / relative).is_file():
@@ -439,34 +505,42 @@ def find_legacy_references(
                         "显式 current doc 不存在，拒绝缩小 legacy 扫描面",
                     )
                 )
-    for path in _iter_policy_files(repo_root, scan_roots):
+    for path in _iter_policy_files(
+        repo_root,
+        tuple(safe_roots),
+        include_default_files=strict_policy,
+    ):
         relative = path.relative_to(repo_root).as_posix()
         boundary_error = _path_boundary_error(path=path, display_path=relative, repo_root=repo_root)
         if boundary_error is not None:
             findings.add(boundary_error)
             continue
-        # pathlib.rglob 默认不递归目录 symlink；内部目录 symlink 保持不展开。
+        directory_symlink_error = _directory_symlink_error(path=path, display_path=relative)
+        if directory_symlink_error is not None:
+            findings.add(directory_symlink_error)
+            continue
+        # pathlib.rglob 默认不递归 directory symlink；上方同时将其作为 policy error 报告。
         if not path.is_file():
             continue
         if _is_archived_or_plan(relative):
             continue
         content = path.read_text(encoding="utf-8")
         allowed = ALLOWED_EVIDENCE.get(relative, frozenset())
-        import_spans: tuple[ImportSpan, ...] = ()
+        ast_spans: tuple[ImportSpan, ...] = ()
         if path.suffix == ".py":
-            import_references, import_spans = _find_python_import_references(
+            ast_references, ast_spans = _find_python_import_references(
                 relative=relative,
                 content=content,
                 strict_policy=strict_policy,
             )
-            for reference in import_references:
+            for reference in ast_references:
                 if reference.signature not in allowed:
                     findings.add(reference)
         for signature, pattern in _SIGNATURE_PATTERNS:
             content_match = _first_regex_match(
                 pattern=pattern,
                 content=content,
-                suppress_import_spans=import_spans if signature.key.endswith("_symbol") else (),
+                suppress_import_spans=ast_spans,
             )
             path_match = None
             if signature.key in {"legacy_symbol", "legacy_repository_symbol", "legacy_service_symbol"}:
