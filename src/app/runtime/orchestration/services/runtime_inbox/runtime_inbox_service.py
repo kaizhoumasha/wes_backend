@@ -967,26 +967,44 @@ class RuntimeInboxService:
         replay_event_id = f"replay:{source_inbox_id}:{sha256(normalized_request_id.encode()).hexdigest()}"
         replay_causation_id = source.event_id or f"inbox:{source_inbox_id}"
 
-        replay = await self.accept_received(
-            db,
-            provider_code="RUNTIME",
-            event_type="REPLAY_REQUEST",
-            source_event_id=replay_source_event_id,
-            payload_hash=_canonical_payload_hash(canonical_payload),
-            kind="REPLAY_REQUEST",
-            payload_json=canonical_payload,
-            payload_schema_version=1,
-            trace_id=cast("str | None", evidence["original_trace_id"]),
-            event_id=replay_event_id,
-            causation_id=replay_causation_id,
-            workline_id=cast("int | None", evidence["original_workline_id"]),
-            device_id=cast("int | None", evidence["original_device_id"]),
-            command_id=cast("int | None", evidence["original_command_id"]),
-            workline_session_id=cast("int | None", evidence["original_workline_session_id"]),
-            execution_session_id=cast("int | None", evidence["original_execution_session_id"]),
-            correlation_id=cast("str | None", evidence["original_correlation_id"]),
-            max_retries=source.max_retries,
-        )
+        incoming_payload_hash = _canonical_payload_hash(canonical_payload)
+        try:
+            replay = await self.accept_received(
+                db,
+                provider_code="RUNTIME",
+                event_type="REPLAY_REQUEST",
+                source_event_id=replay_source_event_id,
+                payload_hash=incoming_payload_hash,
+                kind="REPLAY_REQUEST",
+                payload_json=canonical_payload,
+                payload_schema_version=1,
+                trace_id=cast("str | None", evidence["original_trace_id"]),
+                event_id=replay_event_id,
+                causation_id=replay_causation_id,
+                workline_id=cast("int | None", evidence["original_workline_id"]),
+                device_id=cast("int | None", evidence["original_device_id"]),
+                command_id=cast("int | None", evidence["original_command_id"]),
+                workline_session_id=cast("int | None", evidence["original_workline_session_id"]),
+                execution_session_id=cast("int | None", evidence["original_execution_session_id"]),
+                correlation_id=cast("str | None", evidence["original_correlation_id"]),
+                max_retries=source.max_retries,
+            )
+        except RuntimeInboxConflict as exc:
+            await self._write_replay_conflict_audit(
+                db,
+                {
+                    "event_type": "RUNTIME_INBOX_MANUAL_REPLAY_CONFLICT",
+                    "source_inbox_id": str(source.id) if source.id is not None else None,
+                    "provider_code": "RUNTIME",
+                    "callback_type": "REPLAY_REQUEST",
+                    "source_event_id": replay_source_event_id,
+                    "existing_payload_hash": exc.existing_payload_hash,
+                    "incoming_payload_hash": incoming_payload_hash,
+                    "actor": normalized_actor,
+                    "request_id": normalized_request_id,
+                },
+            )
+            raise
         audit_event = {
             "event_type": "RUNTIME_INBOX_MANUAL_REPLAY",
             "source_inbox_id": str(source.id) if source.id is not None else None,
@@ -1058,6 +1076,35 @@ class RuntimeInboxService:
             status=OperaStatus.SUCCESS,
             code="200",
             msg="RuntimeInbox dead-letter replay created",
+        )
+
+    async def _write_replay_conflict_audit(
+        self,
+        db: AsyncSession,
+        audit_event: dict[str, str | None],
+    ) -> None:
+        """写入受限冲突审计；只保留 identity/hash/actor，不记录原 payload。"""
+
+        service = self.audit_service
+        if service is None:
+            from src.app.sys.services import audit_log_service
+
+            service = audit_log_service
+
+        _ = await service.create_audit_log(
+            db,
+            method="POST",
+            title="RuntimeInbox 人工重放冲突",
+            path=f"/runtime/inbox/{audit_event['source_inbox_id']}/replay",
+            args={
+                "model": "RuntimeInbox",
+                "operation": "manual_replay_conflict",
+                "record_id": audit_event["source_inbox_id"],
+                **audit_event,
+            },
+            status=OperaStatus.FAIL,
+            code="409",
+            msg="RuntimeInbox replay identity payload conflict",
         )
 
     # ============================================================

@@ -104,6 +104,9 @@ async def test_replay_uses_authenticated_actor(monkeypatch: pytest.MonkeyPatch) 
     [
         (RuntimeInboxNotFound(inbox_id=1), "3000"),
         (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_NOT_DEAD_LETTER"), "4001"),
+        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_NOT_FOUND"), "3000"),
+        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_INACTIVE"), "4001"),
+        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_RECONCILIATION_PENDING"), "4001"),
         (
             RuntimeInboxConflict(
                 provider_code="RUNTIME",

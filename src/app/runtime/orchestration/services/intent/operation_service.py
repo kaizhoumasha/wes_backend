@@ -37,7 +37,11 @@ from src.app.runtime.orchestration.repositories.runtime_inbox_repository import 
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository  # noqa: TC001
 from src.app.runtime.orchestration.repository_wiring import runtime_inbox_query, workline_repository
 from src.app.runtime.orchestration.sandbox_catalog_bridge import rough_sorter_scan_completed_payload
-from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
+from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxConflict,
+    RuntimeInboxReplayNotAllowed,
+    RuntimeInboxService,
+)
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.models.workline import WorkLineRunMode
@@ -551,24 +555,51 @@ class WorklineOperationService(BaseService[Any, Any]):
         """执行工作线安全前置，并将 replay 合同委托给 RuntimeInboxService。"""
 
         original = await self.inbox_repo.get_by_id(db, inbox_id)
-        if original is not None and original.workline_id is not None:
-            _ = await self._lock_active_workline_for_runtime_write(db, original.workline_id)
+        session = None
         if original is not None and original.workline_session_id is not None:
             session = await self.session_repo.get_by_id(db, original.workline_session_id)
+            if session is None:
+                raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_OWNERSHIP_UNAVAILABLE")
+
+        if original is not None:
+            source_workline_id = original.workline_id
+            session_workline_id = getattr(session, "workline_id", None)
+            if source_workline_id is None:
+                if not isinstance(session_workline_id, int):
+                    raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_OWNERSHIP_UNAVAILABLE")
+                source_workline_id = session_workline_id
+            elif isinstance(session_workline_id, int) and session_workline_id != source_workline_id:
+                raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_OWNERSHIP_UNAVAILABLE")
+
+            workline = await self.workline_repo.get_for_update(db, source_workline_id)
+            if workline is None:
+                raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_NOT_FOUND")
+            if not bool(getattr(workline, "is_active", False)):
+                raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_INACTIVE")
+
             if session is not None:
                 from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
                     workline_runtime_reconciliation_service,
                 )
 
-                workline_runtime_reconciliation_service.assert_not_pending_reconciliation(session)
+                try:
+                    workline_runtime_reconciliation_service.assert_not_pending_reconciliation(session)
+                except ValueError as exc:
+                    raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_RECONCILIATION_PENDING") from exc
 
-        replay_result = await self.runtime_inbox_service.replay_from_dead_letter(
-            db,
-            source_inbox_id=inbox_id,
-            request_id=request_id,
-            actor=actor,
-            reason=reason,
-        )
+        try:
+            replay_result = await self.runtime_inbox_service.replay_from_dead_letter(
+                db,
+                source_inbox_id=inbox_id,
+                request_id=request_id,
+                actor=actor,
+                reason=reason,
+            )
+        except RuntimeInboxConflict:
+            # API 捕获冲突并返回正常响应，需在返回前提交同事务内的受限冲突审计。
+            if auto_commit:
+                await self._commit_mutation(db)
+            raise
         if auto_commit:
             await self._commit_mutation(db)
         return replay_result.replay_record

@@ -219,9 +219,14 @@ async def replay_inbox(
             response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=str(exc)),
         )
     except RuntimeInboxReplayNotAllowed as exc:
+        error_code = (
+            ResourceErrorCode.NOT_FOUND
+            if exc.reason_code == "SOURCE_WORKLINE_NOT_FOUND"
+            else BusinessErrorCode.INVALID_STATE
+        )
         return cast(
             "ResponseSchemaModel[dict[str, Any]]",
-            response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=str(exc)),
+            response_builder.fail(code=error_code, message=str(exc)),
         )
     except RuntimeInboxConflict as exc:
         return cast(

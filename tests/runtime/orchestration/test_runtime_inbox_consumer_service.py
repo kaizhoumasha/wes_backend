@@ -25,6 +25,7 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxService,
 )
 from src.app.workline.models import WorkLine
+from src.app.workline.models.workline import LineType
 
 NOW_MS = 1_700_000_000_000
 
@@ -1086,6 +1087,14 @@ async def test_runtime_inbox_replay_same_request_is_idempotent_and_content_chang
         await service.replay_from_dead_letter(
             db_session, source_inbox_id=source.id, request_id="req-1", actor="7", reason="changed"
         )
+    assert len(audit_service.calls) == 2
+    conflict_args = audit_service.calls[1]["args"]
+    assert conflict_args["event_type"] == "RUNTIME_INBOX_MANUAL_REPLAY_CONFLICT"
+    assert conflict_args["source_event_id"] == f"replay:{source.id}:req-1"
+    assert conflict_args["existing_payload_hash"] == first.replay_record.payload_hash
+    assert conflict_args["incoming_payload_hash"] != first.replay_record.payload_hash
+    assert conflict_args["actor"] == "7"
+    assert "original_payload" not in conflict_args
 
 
 @pytest.mark.asyncio
@@ -1171,14 +1180,14 @@ async def test_workline_operation_replay_only_applies_safety_then_delegates() ->
 
     source = SimpleNamespace(id=12, workline_id=5, workline_session_id=None)
     inbox_repo = SimpleNamespace(get_by_id=AsyncMock(return_value=source))
-    service = WorklineOperationService(inbox_repo=inbox_repo)
+    workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=5, is_active=True)))
+    service = WorklineOperationService(inbox_repo=inbox_repo, workline_repo=workline_repo)
     replay_record = SimpleNamespace(id=13)
     service.runtime_inbox_service = SimpleNamespace(
         replay_from_dead_letter=AsyncMock(
             return_value=SimpleNamespace(source_record=source, replay_record=replay_record, audit_event={})
         )
     )
-    service._lock_active_workline_for_runtime_write = AsyncMock(return_value=SimpleNamespace(id=5))  # type: ignore[method-assign]
     service._commit_mutation = AsyncMock()  # type: ignore[method-assign]
 
     db = object()
@@ -1191,7 +1200,7 @@ async def test_workline_operation_replay_only_applies_safety_then_delegates() ->
     )
 
     assert result is replay_record
-    service._lock_active_workline_for_runtime_write.assert_awaited_once_with(db, 5)
+    workline_repo.get_for_update.assert_awaited_once_with(db, 5)
     service.runtime_inbox_service.replay_from_dead_letter.assert_awaited_once()
     assert service.runtime_inbox_service.replay_from_dead_letter.await_args.kwargs == {
         "source_inbox_id": 12,
@@ -1200,6 +1209,157 @@ async def test_workline_operation_replay_only_applies_safety_then_delegates() ->
         "reason": "operator retry",
     }
     service._commit_mutation.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("workline", "session", "expected_reason_code"),
+    [
+        (None, None, "SOURCE_WORKLINE_NOT_FOUND"),
+        (SimpleNamespace(id=5, is_active=False), None, "SOURCE_WORKLINE_INACTIVE"),
+        (
+            SimpleNamespace(id=5, is_active=True),
+            SimpleNamespace(id=7, workline_id=5, reconciliation_state="PENDING"),
+            "SOURCE_RECONCILIATION_PENDING",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_workline_operation_replay_converts_safety_preconditions_to_typed_error(
+    workline: object | None,
+    session: object | None,
+    expected_reason_code: str,
+) -> None:
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+
+    source = SimpleNamespace(id=12, workline_id=5, workline_session_id=7 if session is not None else None)
+    service = WorklineOperationService(
+        inbox_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
+        session_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=session)),
+        workline_repo=SimpleNamespace(get_for_update=AsyncMock(return_value=workline)),
+    )
+
+    with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+        await service.replay_inbox(object(), inbox_id=12, request_id="req-12", actor="42", reason="operator retry")
+    assert exc_info.value.reason_code == expected_reason_code
+
+
+@pytest.mark.asyncio
+async def test_workline_operation_replay_derives_and_locks_workline_from_trusted_session() -> None:
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+
+    source = SimpleNamespace(id=12, workline_id=None, workline_session_id=7)
+    session = SimpleNamespace(id=7, workline_id=5, reconciliation_state="NONE")
+    workline_repo = SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=5, is_active=True)))
+    service = WorklineOperationService(
+        inbox_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
+        session_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=session)),
+        workline_repo=workline_repo,
+    )
+    replay_record = SimpleNamespace(id=13)
+    service.runtime_inbox_service = SimpleNamespace(
+        replay_from_dead_letter=AsyncMock(
+            return_value=SimpleNamespace(source_record=source, replay_record=replay_record, audit_event={})
+        )
+    )
+    service._commit_mutation = AsyncMock()  # type: ignore[method-assign]
+    db = object()
+
+    result = await service.replay_inbox(db, inbox_id=12, request_id="req-12", actor="42", reason="operator retry")
+
+    assert result is replay_record
+    workline_repo.get_for_update.assert_awaited_once_with(db, 5)
+
+
+@pytest.mark.asyncio
+async def test_workline_operation_replay_fails_closed_without_workline_ownership() -> None:
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+
+    source = SimpleNamespace(id=12, workline_id=None, workline_session_id=None)
+    service = WorklineOperationService(inbox_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=source)))
+
+    with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+        await service.replay_inbox(object(), inbox_id=12, request_id="req-12", actor="42", reason="operator retry")
+    assert exc_info.value.reason_code == "SOURCE_WORKLINE_OWNERSHIP_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_workline_operation_replay_derives_workline_with_real_repositories(db_session) -> None:
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+
+    workline = WorkLine(
+        line_code="REPLAY-DERIVED-WORKLINE",
+        line_name="Replay Derived Workline",
+        line_type=LineType.AUTO,
+        is_active=True,
+    )
+    db_session.add(workline)
+    await db_session.flush()
+    session = WorklineSession(
+        session_code="REPLAY-DERIVED-SESSION",
+        workline_id=workline.id,
+        plugin_key="test",
+        status="RUNNING",
+    )
+    db_session.add(session)
+    await db_session.flush()
+    source = RuntimeInbox(
+        kind="INTERNAL_EVENT",
+        provider_code="RUNTIME",
+        event_type="INTERNAL_EVENT",
+        source_event_id="replay-derived-source",
+        payload_hash="replay-derived-hash",
+        payload_json={"event_type": "SESSION_RESUME", "data": {"session_id": session.id}},
+        payload_schema_version=1,
+        workline_session_id=session.id,
+        status="DEAD_LETTER",
+        claim_bucket_key=f"session:{session.id}",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
+    )
+    db_session.add(source)
+    await db_session.flush()
+    audit_service = _AuditServiceStub()
+    service = WorklineOperationService()
+    service.runtime_inbox_service = RuntimeInboxService(audit_service=audit_service)
+
+    replay = await service.replay_inbox(
+        db_session,
+        inbox_id=source.id,
+        request_id="repository-backed",
+        actor="42",
+        reason="derive workline",
+        auto_commit=False,
+    )
+
+    assert replay.kind == "REPLAY_REQUEST"
+    assert replay.workline_session_id == session.id
+    assert audit_service.calls
+
+
+@pytest.mark.asyncio
+async def test_workline_operation_replay_commits_conflict_audit_before_reraising() -> None:
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+
+    source = SimpleNamespace(id=12, workline_id=5, workline_session_id=None)
+    service = WorklineOperationService(
+        inbox_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
+        workline_repo=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=5, is_active=True))),
+    )
+    conflict = RuntimeInboxConflict(
+        provider_code="RUNTIME",
+        event_type="REPLAY_REQUEST",
+        source_event_id="replay:12:req",
+        existing_payload_hash="old",
+        incoming_payload_hash="new",
+    )
+    service.runtime_inbox_service = SimpleNamespace(replay_from_dead_letter=AsyncMock(side_effect=conflict))
+    service._commit_mutation = AsyncMock()  # type: ignore[method-assign]
+    db = object()
+
+    with pytest.raises(RuntimeInboxConflict):
+        await service.replay_inbox(db, inbox_id=12, request_id="req", actor="42", reason="changed")
+
+    service._commit_mutation.assert_awaited_once_with(db)
 
 
 @pytest.mark.asyncio

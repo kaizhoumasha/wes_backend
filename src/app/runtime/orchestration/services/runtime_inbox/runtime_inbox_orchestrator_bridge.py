@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import uuid
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, TypedDict
 
@@ -119,7 +120,7 @@ class _ReplayProjectedInbox:
     def __init__(self, source: Any, envelope: dict[str, Any]) -> None:
         self._source = source
         self.kind = envelope["original_kind"]
-        self.payload_json = dict(envelope["original_payload"])
+        self.payload_json = deepcopy(envelope["original_payload"])
         self.provider_code = envelope["original_provider_code"]
         self.event_type = envelope["original_event_type"]
         self.source_event_id = envelope["original_source_event_id"]

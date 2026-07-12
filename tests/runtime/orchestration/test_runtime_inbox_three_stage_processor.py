@@ -364,6 +364,19 @@ def test_replay_request_projects_one_layer_to_original_semantics(
     assert inbox.kind == "REPLAY_REQUEST"
 
 
+def test_replay_request_projection_deep_copies_nested_original_payload() -> None:
+    original_payload = {"event_type": "INTERNAL_EVENT", "data": {"nested": {"value": "source"}}}
+    inbox = _make_inbox(
+        kind="REPLAY_REQUEST",
+        payload_json=_replay_envelope(original_kind="INTERNAL_EVENT", original_payload=original_payload),
+    )
+
+    projected = _project_replay_request(inbox)
+    projected.payload_json["data"]["nested"]["value"] = "mutated"
+
+    assert inbox.payload_json["original_payload"]["data"]["nested"]["value"] == "source"
+
+
 def test_replay_request_projection_rejects_invalid_envelope() -> None:
     inbox = _make_inbox(kind="REPLAY_REQUEST", payload_json={"original_kind": "REPLAY_REQUEST"})
 
