@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -25,15 +27,27 @@ class _Rows:
 
 
 class _FakeSession:
-    def __init__(self, *, catalog: list[tuple[str, str]] | None = None, row_count: int = 3) -> None:
+    def __init__(
+        self,
+        *,
+        catalog: list[tuple[str, str]] | None = None,
+        row_count: int = 3,
+        fail_on_sql: str | None = None,
+        fail_commit: bool = False,
+    ) -> None:
         self.catalog = catalog or [(target.schema, target.table) for target in reset_module.RUNTIME_TABLES]
         self.row_count = row_count
         self.statements: list[str] = []
         self.commits = 0
+        self.rollbacks = 0
+        self.fail_on_sql = fail_on_sql
+        self.fail_commit = fail_commit
 
     async def execute(self, statement):
         sql = str(statement)
         self.statements.append(sql)
+        if self.fail_on_sql is not None and self.fail_on_sql in sql:
+            raise RuntimeError(f"simulated failure: {self.fail_on_sql}")
         if "information_schema.tables" in sql:
             return _Rows(self.catalog)
         if sql.startswith("SELECT count(*)"):
@@ -42,6 +56,11 @@ class _FakeSession:
 
     async def commit(self) -> None:
         self.commits += 1
+        if self.fail_commit:
+            raise RuntimeError("simulated commit failure")
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 def _is_mutation(statement: str) -> bool:
@@ -62,6 +81,13 @@ def test_validate_table_sets_rejects_master_data_target() -> None:
 
     with pytest.raises(RuntimeError, match="主数据"):
         reset_module._validate_table_sets((*reset_module.RUNTIME_TABLES, master_target))
+
+
+def test_validate_table_sets_rejects_duplicate_target() -> None:
+    duplicate = reset_module.RUNTIME_TABLES[0]
+
+    with pytest.raises(RuntimeError, match="重复目标"):
+        reset_module._validate_table_sets((*reset_module.RUNTIME_TABLES, duplicate))
 
 
 @pytest.mark.asyncio
@@ -169,6 +195,36 @@ async def test_no_reset_mocks_is_the_only_apply_opt_out(monkeypatch: pytest.Monk
     assert session.commits == 1
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fail_on_sql", "fail_commit"),
+    (
+        ("TRUNCATE ", False),
+        ("UPDATE wes_biz.devices", False),
+        ("INSERT INTO wes_runtime.workline_runtime_status_projections", False),
+        ("UPDATE wes_biz.work_lines", False),
+        (None, True),
+    ),
+)
+async def test_apply_rolls_back_each_database_or_commit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    fail_on_sql: str | None,
+    fail_commit: bool,
+) -> None:
+    session = _FakeSession(fail_on_sql=fail_on_sql, fail_commit=fail_commit)
+    monkeypatch.setattr(reset_module, "reset_mock_wms", AsyncMock())
+
+    with pytest.raises(RuntimeError, match="simulated"):
+        await reset_module.reset_runtime_data(
+            session,
+            apply=True,
+            include_audit_logs=False,
+            reset_mocks=False,
+        )
+
+    assert session.rollbacks == 1
+
+
 def test_wrapper_preserves_current_flags_and_does_not_restore_retired_entrypoint() -> None:
     source = Path("scripts/data/reset_runtime_data.sh").read_text(encoding="utf-8")
 
@@ -176,3 +232,25 @@ def test_wrapper_preserves_current_flags_and_does_not_restore_retired_entrypoint
         assert flag in source
     assert "workline_inbox" not in source
     assert "reset_runtime_data.py" in source
+
+
+def test_wrapper_json_mode_keeps_stdout_machine_readable(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uv_stub = bin_dir / "uv"
+    uv_stub.write_text('#!/bin/sh\nprintf \'{"mode":"apply"}\\n\'\n', encoding="utf-8")
+    uv_stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+
+    result = subprocess.run(
+        ["/bin/bash", "scripts/data/reset_runtime_data.sh", "--yes", "--json"],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {"mode": "apply"}
+    assert "WES 运行时数据清理工具" in result.stderr

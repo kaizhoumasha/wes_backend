@@ -32,6 +32,7 @@ import asyncio
 import json
 import os
 import sys
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -253,50 +254,57 @@ async def reset_runtime_data(
             except Exception as exc:
                 raise RuntimeError(f"Mock WMS 重置失败,数据库未清理: {exc}") from exc
 
-        # RESTART IDENTITY 重置序列;CASCADE 处理 FK 依赖(运行时表互相引用)。
-        # PostgreSQL TRUNCATE 仍受当前事务保护,与后续投影 reset 一起提交。
-        joined = ", ".join(_qualified(target) for target in targets)
-        await db.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
+        try:
+            # RESTART IDENTITY 重置序列;CASCADE 处理 FK 依赖(运行时表互相引用)。
+            # PostgreSQL TRUNCATE 仍受当前事务保护,与后续投影 reset 一起提交。
+            joined = ", ".join(_qualified(target) for target in targets)
+            await db.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
 
-        # 清空命令后,devices.current_command_id 指向的命令已不存在,重置回空闲。
-        dev_result = await db.execute(
-            text(
-                "UPDATE wes_biz.devices "
-                "   SET current_command_id = NULL, "
-                "       device_status = 'IDLE', "
-                "       error_code = NULL, "
-                "       last_heartbeat_at = NULL "
-                " WHERE current_command_id IS NOT NULL "
-                "    OR device_status <> 'IDLE' "
-                "    OR error_code IS NOT NULL",
-            ),
-        )
-        summary.reset_devices = int(dev_result.rowcount or 0)
+            # 清空命令后,devices.current_command_id 指向的命令已不存在,重置回空闲。
+            dev_result = await db.execute(
+                text(
+                    "UPDATE wes_biz.devices "
+                    "   SET current_command_id = NULL, "
+                    "       device_status = 'IDLE', "
+                    "       error_code = NULL, "
+                    "       last_heartbeat_at = NULL "
+                    " WHERE current_command_id IS NOT NULL "
+                    "    OR device_status <> 'IDLE' "
+                    "    OR error_code IS NOT NULL",
+                ),
+            )
+            summary.reset_devices = int(dev_result.rowcount or 0)
 
-        # WorkLine runtime 投影回到 STOPPED,重新走 START 准入。
-        wl_result = await db.execute(
-            text(
-                "INSERT INTO wes_runtime.workline_runtime_status_projections ("
-                "workline_id, runtime_status, source, stopped_at, stopped_reason, "
-                "resumed_at, active_safety_incident_id, evidence_json"
-                ") "
-                "SELECT id, 'STOPPED', 'scripts/data/reset_runtime_data', "
-                "       now() AT TIME ZONE 'UTC', 'RUNTIME_RESET', NULL, NULL, '{}'::json "
-                "  FROM wes_biz.work_lines "
-                " WHERE is_deleted = false "
-                "ON CONFLICT (workline_id) DO UPDATE SET "
-                "    runtime_status = EXCLUDED.runtime_status, "
-                "    source = EXCLUDED.source, "
-                "    stopped_at = EXCLUDED.stopped_at, "
-                "    stopped_reason = EXCLUDED.stopped_reason, "
-                "    resumed_at = NULL, "
-                "    active_safety_incident_id = NULL, "
-                "    evidence_json = EXCLUDED.evidence_json",
-            ),
-        )
-        summary.reset_worklines = int(wl_result.rowcount or 0)
-        await db.execute(text("UPDATE wes_biz.work_lines SET start_admission_status = NULL"))
-        await db.commit()
+            # WorkLine runtime 投影回到 STOPPED,重新走 START 准入。
+            wl_result = await db.execute(
+                text(
+                    "INSERT INTO wes_runtime.workline_runtime_status_projections ("
+                    "workline_id, runtime_status, source, stopped_at, stopped_reason, "
+                    "resumed_at, active_safety_incident_id, evidence_json"
+                    ") "
+                    "SELECT id, 'STOPPED', 'scripts/data/reset_runtime_data', "
+                    "       now() AT TIME ZONE 'UTC', 'RUNTIME_RESET', NULL, NULL, '{}'::json "
+                    "  FROM wes_biz.work_lines "
+                    " WHERE is_deleted = false "
+                    "ON CONFLICT (workline_id) DO UPDATE SET "
+                    "    runtime_status = EXCLUDED.runtime_status, "
+                    "    source = EXCLUDED.source, "
+                    "    stopped_at = EXCLUDED.stopped_at, "
+                    "    stopped_reason = EXCLUDED.stopped_reason, "
+                    "    resumed_at = NULL, "
+                    "    active_safety_incident_id = NULL, "
+                    "    evidence_json = EXCLUDED.evidence_json",
+                ),
+            )
+            summary.reset_worklines = int(wl_result.rowcount or 0)
+            await db.execute(text("UPDATE wes_biz.work_lines SET start_admission_status = NULL"))
+            await db.commit()
+        except Exception:
+            # 本函数拥有 apply 的 commit，也必须在所有 mutation/commit 失败路径释放事务。
+            # rollback 自身故障不得覆盖最先发生的数据库错误。
+            with suppress(Exception):
+                await db.rollback()
+            raise
 
     for target in targets:
         qualified_name = _qualified(target)

@@ -32,44 +32,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 
 # 透传所有已知参数,未知参数交给 Python 端 argparse 报错。
-ALLOWED=(
-    --yes
-    --include-audit-logs
-    --reset-mocks
-    --no-reset-mocks
-    --force
-    --json
-    --help
-    -h
-)
 ARGS=()
+JSON_MODE=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        "${ALLOWED[@]}")
+        --yes|--include-audit-logs|--reset-mocks|--no-reset-mocks|--force|--json|--help|-h)
             ARGS+=("$1")
+            if [[ "$1" == "--json" ]]; then
+                JSON_MODE=true
+            fi
             shift
             ;;
         *)
-            echo -e "${RED}未知参数: $1${NC}"
-            echo "使用方式: $0 [--yes] [--include-audit-logs] [--no-reset-mocks] [--force] [--json]"
+            echo -e "${RED}未知参数: $1${NC}" >&2
+            echo "使用方式: $0 [--yes] [--include-audit-logs] [--no-reset-mocks] [--force] [--json]" >&2
             exit 1
             ;;
     esac
 done
 
-echo -e "${BLUE}🧹 WES 运行时数据清理工具${NC}"
-echo "=================================================================="
-echo -e "${BLUE}📦 后端目录:${NC} $BACKEND_DIR"
-if [[ " ${ARGS[*]} " != *" --yes "* ]]; then
-    echo -e "${YELLOW}⚠️  Dry-run 模式:仅预览,不写库。加 --yes 真正执行。${NC}"
+# JSON 模式保留 Python stdout 为单一机器可读文档；wrapper 装饰信息改走 stderr。
+if [[ "$JSON_MODE" == true ]]; then
+    exec 3>&2
 else
-    echo -e "${RED}⚠️  将真正清空运行时数据(保留主数据)。${NC}"
+    exec 3>&1
 fi
-echo ""
+
+echo -e "${BLUE}🧹 WES 运行时数据清理工具${NC}" >&3
+echo "==================================================================" >&3
+echo -e "${BLUE}📦 后端目录:${NC} $BACKEND_DIR" >&3
+if [[ " ${ARGS[*]} " != *" --yes "* ]]; then
+    echo -e "${YELLOW}⚠️  Dry-run 模式:仅预览,不写库。加 --yes 真正执行。${NC}" >&3
+else
+    echo -e "${RED}⚠️  将真正清空运行时数据(保留主数据)。${NC}" >&3
+fi
+echo "" >&3
 
 cd "$BACKEND_DIR"
 uv run python scripts/data/reset_runtime_data.py "${ARGS[@]}"
 
-echo ""
-echo "=================================================================="
-echo -e "${GREEN}✅ 完成${NC}"
+echo "" >&3
+echo "==================================================================" >&3
+echo -e "${GREEN}✅ 完成${NC}" >&3
