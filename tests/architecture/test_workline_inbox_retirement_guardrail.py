@@ -1,8 +1,16 @@
 """WorklineInbox 退役终态 guardrail。"""
 
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
-from scripts.workline_inbox_retirement_guardrail import CURRENT_DOC_FILES, find_legacy_references
+from scripts.workline_inbox_retirement_guardrail import (
+    ALLOWED_EVIDENCE,
+    CURRENT_DOC_FILES,
+    find_legacy_references,
+    main,
+)
 from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.smt_inbound_handoff import SmtInboundHandoffSourceItem
@@ -193,6 +201,98 @@ def test_scanner_rejects_parenthesized_alias_and_relative_python_imports(tmp_pat
     } <= {(finding.path, finding.signature) for finding in findings}
 
 
+def test_ast_import_findings_suppress_overlapping_symbol_regex(tmp_path: Path) -> None:
+    fixtures = {
+        "src/consumer.py": ("from src.app.runtime.orchestration.consumers import runtime_inbox_consumer as legacy\n"),
+        "src/processor.py": (
+            "from src.app.runtime.orchestration.services.inbox import inbox_batch_processor as legacy\n"
+        ),
+    }
+    for relative_path, content in fixtures.items():
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+    findings = find_legacy_references(repo_root=tmp_path, roots=("src",))
+
+    assert [(finding.path, finding.signature) for finding in findings] == [
+        ("src/consumer.py", "legacy_consumer_member_import"),
+        ("src/processor.py", "legacy_batch_processor_member_import"),
+    ]
+
+
+def test_ast_import_suppression_keeps_later_non_import_symbol_reference(tmp_path: Path) -> None:
+    path = tmp_path / "src/consumer.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "from src.app.runtime.orchestration.consumers import runtime_inbox_consumer as legacy\n"
+        "consumer_type = RuntimeInboxConsumer\n",
+        encoding="utf-8",
+    )
+
+    findings = find_legacy_references(repo_root=tmp_path, roots=("src",))
+
+    assert [(finding.line, finding.signature) for finding in findings] == [
+        (1, "legacy_consumer_member_import"),
+        (2, "legacy_consumer_symbol"),
+    ]
+
+
+def test_ast_import_evidence_needs_only_import_allowlist_key(tmp_path: Path, monkeypatch) -> None:
+    relative = "src/consumer.py"
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "from src.app.runtime.orchestration.consumers import runtime_inbox_consumer as legacy\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(ALLOWED_EVIDENCE, relative, frozenset({"legacy_consumer_member_import"}))
+
+    assert find_legacy_references(repo_root=tmp_path, roots=("src",)) == []
+
+
+def test_scanner_rejects_root_outside_repository_without_reading_it(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    repo_root.mkdir()
+    outside.mkdir()
+    (outside / "legacy.py").write_text("from somewhere import WorklineInbox", encoding="utf-8")
+
+    findings = find_legacy_references(repo_root=repo_root, roots=("../outside",))
+
+    assert [(finding.path, finding.signature) for finding in findings] == [("../outside", "policy_error")]
+
+
+def test_scanner_rejects_external_file_and_directory_symlinks_without_traversal(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "legacy.py").write_text("from somewhere import WorklineInbox", encoding="utf-8")
+    source = tmp_path / "repo/src"
+    source.mkdir(parents=True)
+    (source / "linked.py").symlink_to(outside / "legacy.py")
+    (source / "linked_dir").symlink_to(outside, target_is_directory=True)
+
+    findings = find_legacy_references(repo_root=tmp_path / "repo", roots=("src",))
+
+    assert [(finding.path, finding.signature) for finding in findings] == [
+        ("src/linked.py", "policy_error"),
+        ("src/linked_dir", "policy_error"),
+    ]
+
+
+def test_scanner_reads_internal_file_symlink_but_reports_repository_path(tmp_path: Path) -> None:
+    shared = tmp_path / "shared/legacy.py"
+    shared.parent.mkdir()
+    shared.write_text("from somewhere import WorklineInbox", encoding="utf-8")
+    linked = tmp_path / "src/linked.py"
+    linked.parent.mkdir()
+    linked.symlink_to(shared)
+
+    findings = find_legacy_references(repo_root=tmp_path, roots=("src",))
+
+    assert [(finding.path, finding.signature) for finding in findings] == [("src/linked.py", "legacy_symbol")]
+
+
 def test_default_scan_fails_closed_when_all_current_docs_are_missing(tmp_path: Path) -> None:
     findings = find_legacy_references(repo_root=tmp_path)
 
@@ -226,6 +326,32 @@ def test_default_scan_reports_python_syntax_errors_but_explicit_fixture_scan_doe
 
     assert [(finding.path, finding.signature) for finding in default_findings] == [("src/broken.py", "policy_error")]
     assert explicit_findings == []
+
+
+def test_main_emits_tsv_and_returns_one_for_policy_findings(tmp_path: Path, capsys) -> None:
+    status = main(["--format", "tsv"], repo_root=tmp_path)
+
+    output = capsys.readouterr().out.splitlines()
+    assert status == 1
+    assert len(output) == len(CURRENT_DOC_FILES)
+    assert all(len(line.split("\t")) == 3 for line in output)
+
+
+def test_cli_process_exits_one_for_policy_findings(tmp_path: Path) -> None:
+    script = tmp_path / "scripts/workline_inbox_retirement_guardrail.py"
+    script.parent.mkdir()
+    shutil.copy(REPO_ROOT / "scripts/workline_inbox_retirement_guardrail.py", script)
+
+    completed = subprocess.run(
+        [sys.executable, str(script), "--format", "tsv"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert len(completed.stdout.splitlines()) == len(CURRENT_DOC_FILES)
+    assert completed.stderr == ""
 
 
 def test_e2e_current_code_list_assigns_loader_to_runtime_inbox_bridge() -> None:

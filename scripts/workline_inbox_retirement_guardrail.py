@@ -256,7 +256,11 @@ def _iter_policy_files(repo_root: Path, roots: tuple[str, ...] | None) -> list[P
         for root_name, suffixes in policies:
             root = repo_root / root_name
             if root.exists():
-                files.update(path for path in root.rglob("*") if path.is_file() and path.suffix in suffixes)
+                files.update(
+                    path
+                    for path in root.rglob("*")
+                    if path.is_symlink() or (path.is_file() and path.suffix in suffixes)
+                )
         files.update(repo_root / relative for relative in CURRENT_DOC_FILES if (repo_root / relative).is_file())
         historical = ("migrations/versions/20260711_1819_ec426c628516_retire_workline_inbox.py",)
         files.update(repo_root / relative for relative in historical if (repo_root / relative).is_file())
@@ -266,8 +270,33 @@ def _iter_policy_files(repo_root: Path, roots: tuple[str, ...] | None) -> list[P
             if not root.exists():
                 continue
             suffixes = (".py", ".sh") if root_name == "scripts" else ((".md",) if root_name == "docs" else (".py",))
-            files.update(path for path in root.rglob("*") if path.is_file() and path.suffix in suffixes)
+            files.update(
+                path for path in root.rglob("*") if path.is_symlink() or (path.is_file() and path.suffix in suffixes)
+            )
     return sorted(files)
+
+
+def _path_boundary_error(*, path: Path, display_path: str, repo_root: Path) -> LegacyReference | None:
+    """拒绝解析到仓库外的 root/symlink，避免越界读取。"""
+
+    try:
+        resolved = path.resolve()
+        repo_resolved = repo_root.resolve()
+    except (OSError, RuntimeError) as exc:
+        return LegacyReference(
+            display_path,
+            1,
+            "policy_error",
+            f"扫描路径解析失败，拒绝读取: {exc}",
+        )
+    if resolved.is_relative_to(repo_resolved):
+        return None
+    return LegacyReference(
+        display_path,
+        1,
+        "policy_error",
+        "扫描路径解析到仓库外，拒绝越界读取",
+    )
 
 
 def _resolve_import_from_module(node: ast.ImportFrom, relative: str) -> str | None:
@@ -287,45 +316,93 @@ def _resolve_import_from_module(node: ast.ImportFrom, relative: str) -> str | No
     return ".".join(package_parts)
 
 
-def _find_python_import_references(*, relative: str, content: str, strict_policy: bool) -> list[LegacyReference]:
+ImportSpan = tuple[int, int, int, int]
+
+
+def _find_python_import_references(
+    *,
+    relative: str,
+    content: str,
+    strict_policy: bool,
+) -> tuple[list[LegacyReference], tuple[ImportSpan, ...]]:
     """使用 AST 识别真实 import；regex 仍负责字符串、路径和拼接引用。"""
 
     try:
         tree = ast.parse(content, filename=relative)
     except SyntaxError as exc:
         if not strict_policy:
-            return []
-        return [
-            LegacyReference(
-                relative,
-                exc.lineno or 1,
-                "policy_error",
-                f"Python 语法解析失败，拒绝跳过 legacy import 检查: {exc.msg}",
-            )
-        ]
+            return [], ()
+        return (
+            [
+                LegacyReference(
+                    relative,
+                    exc.lineno or 1,
+                    "policy_error",
+                    f"Python 语法解析失败，拒绝跳过 legacy import 检查: {exc.msg}",
+                )
+            ],
+            (),
+        )
 
     findings: set[LegacyReference] = set()
+    import_spans: set[ImportSpan] = set()
     for node in ast.walk(tree):
+        node_findings: set[LegacyReference] = set()
         if isinstance(node, ast.Import):
             for alias in node.names:
                 signature = _IMPORT_MODULE_SIGNATURES.get(alias.name)
                 if signature is not None:
-                    findings.add(LegacyReference(relative, node.lineno, signature.key, signature.reason))
+                    node_findings.add(LegacyReference(relative, node.lineno, signature.key, signature.reason))
+        elif isinstance(node, ast.ImportFrom):
+            module = _resolve_import_from_module(node, relative)
+            if module is not None:
+                module_signature = _IMPORT_MODULE_SIGNATURES.get(module)
+                if module_signature is not None:
+                    node_findings.add(
+                        LegacyReference(relative, node.lineno, module_signature.key, module_signature.reason)
+                    )
+                for alias in node.names:
+                    signature = _IMPORT_MEMBER_SIGNATURES.get((module, alias.name))
+                    if signature is not None:
+                        node_findings.add(LegacyReference(relative, node.lineno, signature.key, signature.reason))
+        if not node_findings:
             continue
-        if not isinstance(node, ast.ImportFrom):
-            continue
+        findings.update(node_findings)
+        import_spans.add(
+            (
+                node.lineno,
+                node.col_offset,
+                node.end_lineno or node.lineno,
+                node.end_col_offset or node.col_offset,
+            )
+        )
+    return sorted(findings), tuple(sorted(import_spans))
 
-        module = _resolve_import_from_module(node, relative)
-        if module is None:
-            continue
-        module_signature = _IMPORT_MODULE_SIGNATURES.get(module)
-        if module_signature is not None:
-            findings.add(LegacyReference(relative, node.lineno, module_signature.key, module_signature.reason))
-        for alias in node.names:
-            signature = _IMPORT_MEMBER_SIGNATURES.get((module, alias.name))
-            if signature is not None:
-                findings.add(LegacyReference(relative, node.lineno, signature.key, signature.reason))
-    return sorted(findings)
+
+def _match_position(content: str, start: int) -> tuple[int, int]:
+    line = content.count("\n", 0, start) + 1
+    line_start = content.rfind("\n", 0, start) + 1
+    return line, start - line_start
+
+
+def _position_in_import_span(line: int, column: int, spans: tuple[ImportSpan, ...]) -> bool:
+    for start_line, start_column, end_line, end_column in spans:
+        if (start_line, start_column) <= (line, column) < (end_line, end_column):
+            return True
+    return False
+
+
+def _first_regex_match(
+    *,
+    pattern: re.Pattern[str],
+    content: str,
+    suppress_import_spans: tuple[ImportSpan, ...],
+) -> re.Match[str] | None:
+    for match in pattern.finditer(content):
+        line, column = _match_position(content, match.start())
+        if not _position_in_import_span(line, column, suppress_import_spans):
+            return match
+    return None
 
 
 def find_legacy_references(
@@ -337,6 +414,20 @@ def find_legacy_references(
 
     strict_policy = roots is None
     findings: set[LegacyReference] = set()
+    scan_roots = roots
+    if roots is not None:
+        safe_roots: list[str] = []
+        for root_name in roots:
+            boundary_error = _path_boundary_error(
+                path=repo_root / root_name,
+                display_path=Path(root_name).as_posix(),
+                repo_root=repo_root,
+            )
+            if boundary_error is None:
+                safe_roots.append(root_name)
+            else:
+                findings.add(boundary_error)
+        scan_roots = tuple(safe_roots)
     if strict_policy:
         for relative in CURRENT_DOC_FILES:
             if not (repo_root / relative).is_file():
@@ -348,22 +439,35 @@ def find_legacy_references(
                         "显式 current doc 不存在，拒绝缩小 legacy 扫描面",
                     )
                 )
-    for path in _iter_policy_files(repo_root, roots):
+    for path in _iter_policy_files(repo_root, scan_roots):
         relative = path.relative_to(repo_root).as_posix()
+        boundary_error = _path_boundary_error(path=path, display_path=relative, repo_root=repo_root)
+        if boundary_error is not None:
+            findings.add(boundary_error)
+            continue
+        # pathlib.rglob 默认不递归目录 symlink；内部目录 symlink 保持不展开。
+        if not path.is_file():
+            continue
         if _is_archived_or_plan(relative):
             continue
         content = path.read_text(encoding="utf-8")
         allowed = ALLOWED_EVIDENCE.get(relative, frozenset())
+        import_spans: tuple[ImportSpan, ...] = ()
         if path.suffix == ".py":
-            for reference in _find_python_import_references(
+            import_references, import_spans = _find_python_import_references(
                 relative=relative,
                 content=content,
                 strict_policy=strict_policy,
-            ):
+            )
+            for reference in import_references:
                 if reference.signature not in allowed:
                     findings.add(reference)
         for signature, pattern in _SIGNATURE_PATTERNS:
-            content_match = pattern.search(content)
+            content_match = _first_regex_match(
+                pattern=pattern,
+                content=content,
+                suppress_import_spans=import_spans if signature.key.endswith("_symbol") else (),
+            )
             path_match = None
             if signature.key in {"legacy_symbol", "legacy_repository_symbol", "legacy_service_symbol"}:
                 path_match = pattern.search(path.name)
@@ -378,11 +482,11 @@ def find_legacy_references(
     return sorted(findings)
 
 
-def main() -> int:
+def main(argv: list[str] | None = None, *, repo_root: Path = REPO_ROOT) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--format", choices=("text", "tsv"), default="text")
-    args = parser.parse_args()
-    findings = find_legacy_references()
+    args = parser.parse_args(argv)
+    findings = find_legacy_references(repo_root=repo_root)
     for finding in findings:
         if args.format == "tsv":
             print(f"{finding.path}\t{finding.line}\t{finding.reason}")
