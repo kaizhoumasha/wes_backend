@@ -537,7 +537,6 @@ class RuntimeInboxService:
             f"device-event:{provider_code}:{device_code}:{event_type}:{payload_hash}",
             max_length=160,
         )
-        canonical_event_id = event_id or source_event_id
         correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
         result = await self.accept_received(
             db,
@@ -549,7 +548,7 @@ class RuntimeInboxService:
             payload_json=payload_json,
             payload_schema_version=1,
             trace_id=trace_id,
-            event_id=canonical_event_id,
+            event_id=event_id,
             causation_id=causation_id,
             workline_id=workline_id,
             device_id=device_id,
@@ -594,7 +593,6 @@ class RuntimeInboxService:
             f"internal-event:{event_type}:{payload_hash}",
             max_length=160,
         )
-        canonical_event_id = event_id or source_event_id
         result = await self.accept_received(
             db,
             provider_code="RUNTIME",
@@ -605,7 +603,7 @@ class RuntimeInboxService:
             payload_json=payload_json,
             payload_schema_version=1,
             trace_id=trace_id,
-            event_id=canonical_event_id,
+            event_id=event_id,
             causation_id=causation_id,
             workline_id=workline_id,
             execution_session_id=execution_session_id,

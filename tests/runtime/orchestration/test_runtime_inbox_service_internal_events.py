@@ -84,7 +84,7 @@ async def test_accept_device_event_minimal_args_writes_received(db_session) -> N
     assert record.device_id is None
     assert record.command_id is None
     assert record.trace_id is None
-    assert record.event_id == record.source_event_id
+    assert record.event_id is None
     assert record.causation_id is None
     assert record.correlation_id is None
     assert record.max_retries == 5
@@ -265,11 +265,35 @@ async def test_accept_internal_event_minimal_args_writes_received(db_session) ->
     assert record.provider_code == "RUNTIME"
     assert record.event_type == "SOURCE_PICK_REQUESTED"
     assert record.source_event_id
-    assert record.event_id == record.source_event_id
+    assert record.event_id is None
     assert record.status == "RECEIVED"
     assert record.payload_json == {"handoff_demand_id": 1}
     assert record.correlation_id is None
     assert record.execution_session_id is None
+
+
+@pytest.mark.asyncio
+async def test_synthesized_source_identity_does_not_overflow_optional_event_id(db_session) -> None:
+    """最长 source identity 可达 160；不得复制到 max_length=120 的 event_id。"""
+
+    service = RuntimeInboxService()
+    long_event_type = "E" * 80
+    device = await service.accept_device_event(
+        db_session,
+        device_code="DEVICE_" + ("D" * 80),
+        event_type=long_event_type,
+        payload_json={"value": "device"},
+    )
+    internal = await service.accept_internal_event(
+        db_session,
+        event_type=long_event_type,
+        payload_json={"value": "internal"},
+    )
+
+    for record in (device.record, internal.record):
+        assert record.source_event_id is not None
+        assert len(record.source_event_id) > 120
+        assert record.event_id is None
 
 
 @pytest.mark.asyncio
