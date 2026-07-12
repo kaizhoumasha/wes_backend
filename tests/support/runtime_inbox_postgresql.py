@@ -60,7 +60,16 @@ class PostgreSQLPreflight:
     is_superuser: bool
 
     async def close(self) -> None:
-        await self.admin.close()
+        diagnostics, interrupted_by = await _wait_for_connection_close(self.admin)
+        if interrupted_by is not None:
+            _attach_cleanup(interrupted_by, diagnostics)
+            raise interrupted_by from None
+        if diagnostics:
+            raise HeavyHarnessError(
+                "cleanup",
+                "PostgreSQL admin 连接清理失败",
+                cleanup_diagnostics=diagnostics,
+            )
 
 
 def _safe_source_database(database: str) -> bool:
@@ -145,11 +154,31 @@ async def connect(database: str) -> asyncpg.Connection:
     return await asyncpg.connect(database_url(database, sqlalchemy_driver=False))
 
 
-async def _close_without_override(connection: Any) -> None:
+async def _close_connection(connection: Any) -> tuple[str, ...]:
     try:
         await connection.close()
     except Exception:
-        return
+        return ("close_failed",)
+    return ()
+
+
+async def _wait_for_connection_close(connection: Any) -> tuple[tuple[str, ...], asyncio.CancelledError | None]:
+    close_task = asyncio.create_task(_close_connection(connection), name="close-postgresql-admin")
+    interrupted_by: asyncio.CancelledError | None = None
+    while True:
+        try:
+            return await asyncio.shield(close_task), interrupted_by
+        except asyncio.CancelledError as exc:
+            if close_task.cancelled():
+                raise
+            if interrupted_by is None:
+                interrupted_by = exc
+
+
+async def _raise_after_admin_close(admin: Any, primary_error: BaseException) -> None:
+    diagnostics, _secondary_cancellation = await _wait_for_connection_close(admin)
+    _attach_cleanup(primary_error, diagnostics)
+    raise primary_error from None
 
 
 async def preflight(
@@ -184,15 +213,15 @@ async def preflight(
         available_connection_slots = usable_connections - active_connections
         if available_connection_slots < required_free_slots:
             raise HeavyHarnessError("capacity", "PostgreSQL 当前剩余连接槽不足")
-    except asyncio.CancelledError:
-        await _close_without_override(admin)
-        raise
-    except HeavyHarnessError:
-        await _close_without_override(admin)
-        raise
+    except asyncio.CancelledError as exc:
+        await _raise_after_admin_close(admin, exc)
+    except HeavyHarnessError as exc:
+        await _raise_after_admin_close(admin, exc)
     except Exception:
-        await _close_without_override(admin)
-        raise HeavyHarnessError("permission", "无法验证 PostgreSQL 权限或容量") from None
+        await _raise_after_admin_close(
+            admin,
+            HeavyHarnessError("permission", "无法验证 PostgreSQL 权限或容量"),
+        )
 
     return PostgreSQLPreflight(
         admin=admin,
@@ -278,12 +307,18 @@ async def temporary_database(
     driver: Any = asyncpg,
     database_name_factory: Callable[[], str] = _random_database_name,
     safe_hosts: Collection[str] | None = None,
+    required_free_slots: int = REQUIRED_FREE_CONNECTION_SLOTS,
 ) -> AsyncIterator[tuple[str, str]]:
     """创建隔离临时数据库，并在成功、失败或取消后强制清理。"""
 
     database = database_name_factory()
     _validate_temporary_database_name(database)
-    checked = await preflight(environ=environ, driver=driver, safe_hosts=safe_hosts)
+    checked = await preflight(
+        environ=environ,
+        driver=driver,
+        required_free_slots=required_free_slots,
+        safe_hosts=safe_hosts,
+    )
     primary_error: BaseException | None = None
     primary_cause: BaseException | None = None
     create_attempted = False

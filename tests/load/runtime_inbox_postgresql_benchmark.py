@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 PENDING_INBOX_COUNT = 1_000
 WORKER_CONCURRENCY = 4
+LOCK_MONITOR_CONNECTION_COUNT = 1
 CLAIM_BATCH_SIZE = 25
 CLAIM_P95_THRESHOLD_MS = 150.0
 THROUGHPUT_THRESHOLD_PER_SECOND = 1_000.0
@@ -194,7 +195,10 @@ async def _claim_worker(
 
 
 async def _run_benchmark() -> dict[str, object]:
-    async with temporary_database() as (database, database_url):
+    async with temporary_database(required_free_slots=WORKER_CONCURRENCY + LOCK_MONITOR_CONNECTION_COUNT) as (
+        database,
+        database_url,
+    ):
         run_alembic("upgrade", "head", database_url=database_url)
         connection = await connect(database)
         try:

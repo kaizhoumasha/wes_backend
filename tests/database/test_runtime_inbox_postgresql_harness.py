@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import traceback
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -34,13 +35,22 @@ class _FakeConnection:
     )
     fail_create: BaseException | None = None
     fail_drop: BaseException | None = None
+    fail_close: BaseException | None = None
+    fetch_started: asyncio.Event | None = None
+    allow_fetch: asyncio.Event | None = None
     drop_started: asyncio.Event | None = None
     allow_drop: asyncio.Event | None = None
+    close_started: asyncio.Event | None = None
+    allow_close: asyncio.Event | None = None
     statements: list[str] = field(default_factory=list)
     drop_completed: bool = False
     closed: bool = False
 
     async def fetchrow(self, _query: str) -> dict[str, object]:
+        if self.fetch_started is not None:
+            self.fetch_started.set()
+        if self.allow_fetch is not None:
+            await self.allow_fetch.wait()
         return self.preflight_row
 
     async def execute(self, statement: str) -> str:
@@ -58,6 +68,12 @@ class _FakeConnection:
         return "OK"
 
     async def close(self) -> None:
+        if self.close_started is not None:
+            self.close_started.set()
+        if self.allow_close is not None:
+            await self.allow_close.wait()
+        if self.fail_close is not None:
+            raise self.fail_close
         self.closed = True
 
 
@@ -217,6 +233,108 @@ def test_preflight_reuses_one_admin_connection_and_does_not_require_superuser() 
         finally:
             await result.close()
         assert driver.connection.closed
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("active_connections", [1, 2])
+def test_temporary_database_forwards_required_capacity_before_create(active_connections: int) -> None:
+    async def scenario() -> None:
+        connection = _FakeConnection()
+        connection.preflight_row.update(
+            max_connections=8,
+            reserved_connections=3,
+            active_connections=active_connections,
+        )
+        driver = _FakeDriver(connection=connection)
+
+        with pytest.raises(HeavyHarnessError) as exc_info:
+            async with temporary_database(
+                environ={"INTEGRATION_DATABASE_URL": SAFE_URL},
+                driver=driver,
+                database_name_factory=lambda: TEMP_DATABASE,
+                required_free_slots=5,
+            ):
+                pytest.fail("capacity failure must not yield")
+
+        assert exc_info.value.code == "capacity"
+        assert not any(statement.startswith("CREATE DATABASE") for statement in connection.statements)
+        assert connection.closed
+
+    asyncio.run(scenario())
+
+
+def test_load_benchmark_declares_worker_and_monitor_capacity() -> None:
+    source = (Path(__file__).parents[1] / "load" / "runtime_inbox_postgresql_benchmark.py").read_text()
+    assert "LOCK_MONITOR_CONNECTION_COUNT = 1" in source
+    assert "required_free_slots=WORKER_CONCURRENCY + LOCK_MONITOR_CONNECTION_COUNT" in source
+
+
+def test_preflight_close_failure_preserves_primary_and_successful_preflight_reports_cleanup() -> None:
+    async def scenario() -> None:
+        permission_connection = _FakeConnection(fail_close=RuntimeError("top-secret close detail"))
+        permission_connection.preflight_row["can_create_database"] = False
+        with pytest.raises(HeavyHarnessError) as permission_error:
+            await preflight(
+                environ={"INTEGRATION_DATABASE_URL": SAFE_URL},
+                driver=_FakeDriver(connection=permission_connection),
+            )
+        assert permission_error.value.code == "permission"
+        assert permission_error.value.cleanup_diagnostics == ("close_failed",)
+        rendered_traceback = "".join(
+            traceback.format_exception(
+                type(permission_error.value),
+                permission_error.value,
+                permission_error.value.__traceback__,
+            )
+        )
+        assert "top-secret" not in rendered_traceback
+
+        cleanup_connection = _FakeConnection(fail_close=RuntimeError("top-secret close detail"))
+        checked = await preflight(
+            environ={"INTEGRATION_DATABASE_URL": SAFE_URL},
+            driver=_FakeDriver(connection=cleanup_connection),
+        )
+        with pytest.raises(HeavyHarnessError) as cleanup_error:
+            await checked.close()
+        assert cleanup_error.value.code == "cleanup"
+        assert cleanup_error.value.cleanup_diagnostics == ("close_failed",)
+        assert "top-secret" not in str(cleanup_error.value)
+
+    asyncio.run(scenario())
+
+
+def test_preflight_second_cancel_during_close_does_not_replace_first_cancel() -> None:
+    async def scenario() -> None:
+        fetch_started = asyncio.Event()
+        allow_fetch = asyncio.Event()
+        close_started = asyncio.Event()
+        allow_close = asyncio.Event()
+        connection = _FakeConnection(
+            fetch_started=fetch_started,
+            allow_fetch=allow_fetch,
+            close_started=close_started,
+            allow_close=allow_close,
+        )
+        task = asyncio.create_task(
+            preflight(
+                environ={"INTEGRATION_DATABASE_URL": SAFE_URL},
+                driver=_FakeDriver(connection=connection),
+            )
+        )
+
+        await fetch_started.wait()
+        task.cancel("first-cancel")
+        await close_started.wait()
+        task.cancel("second-cancel")
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        allow_close.set()
+        with pytest.raises(asyncio.CancelledError) as cancel_error:
+            await task
+        assert cancel_error.value.args == ("first-cancel",)
+        assert connection.closed
 
     asyncio.run(scenario())
 
