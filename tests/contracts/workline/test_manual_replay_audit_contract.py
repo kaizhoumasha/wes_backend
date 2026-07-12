@@ -11,8 +11,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import pytest
+from sqlalchemy import select
 
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
+from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
+from src.app.sys.models.audit_log import AuditLog
+from src.app.sys.services import AuditLogService
 from tests.support.runtime_inbox_contract import (
     LEGAL_TRANSITIONS,
     RuntimeInboxEntry,
@@ -208,6 +213,65 @@ def test_manual_replay_writes_audit_record_with_causation_chain():
     assert audit_row.event_type == "MANUAL_REPLAY_AUDIT"
     assert audit_row.trace_id == "trace-replay-001"
     assert audit_row.occurred_at == 2_000_000
+
+
+@pytest.mark.asyncio
+async def test_production_manual_replay_audit_binds_canonical_reason_and_persisted_causation(db_session) -> None:
+    """生产 service + AuditLogService 写已接受 reason 与最终因果字段，same-hash ACK 不重复。"""
+
+    source = RuntimeInbox(
+        kind="INTERNAL_EVENT",
+        provider_code="RUNTIME",
+        event_type="INTERNAL_EVENT",
+        source_event_id="contract-replay-source",
+        payload_hash="contract-replay-source-hash",
+        payload_json={"event_type": "SESSION_RESUME", "data": {}},
+        payload_schema_version=1,
+        trace_id="contract-replay-trace",
+        event_id="contract-replay-event",
+        status="DEAD_LETTER",
+        claim_bucket_key="source:contract-replay-source",
+        received_at=1_700_000_000_000,
+        failed_at=1_700_000_000_001,
+    )
+    db_session.add(source)
+    await db_session.flush()
+    service = RuntimeInboxService(audit_service=AuditLogService())
+
+    created = await service.replay_from_dead_letter(
+        db_session,
+        source_inbox_id=source.id,
+        request_id="contract-success",
+        actor="contract-operator",
+        reason="  accepted canonical reason  ",
+    )
+    acknowledged = await service.replay_from_dead_letter(
+        db_session,
+        source_inbox_id=source.id,
+        request_id="contract-success",
+        actor="contract-operator",
+        reason="accepted canonical reason",
+    )
+
+    assert acknowledged.replay_record.id == created.replay_record.id
+    audits = (
+        (
+            await db_session.execute(
+                select(AuditLog).where(
+                    AuditLog.object_id == str(source.id),
+                    AuditLog.action == "manual_replay",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(audits) == 1
+    assert audits[0].args is not None
+    assert audits[0].args["reason"] == "accepted canonical reason"
+    assert audits[0].args["replay_trace_id"] == created.replay_record.trace_id
+    assert audits[0].args["causation_id"] == created.replay_record.causation_id
+    assert "original_payload" not in audits[0].args
 
 
 def test_manual_replay_rejects_non_dead_letter_source():

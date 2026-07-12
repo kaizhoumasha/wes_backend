@@ -612,6 +612,8 @@ def test_manual_replay_same_request_concurrently_creates_one_runtime_inbox() -> 
                 payload_hash="it-replay-hash",
                 payload_json={"event_type": "SESSION_RESUME", "data": {}},
                 payload_schema_version=1,
+                trace_id="it-replay-trace",
+                event_id="it-replay-event",
                 status="DEAD_LETTER",
                 claim_bucket_key="source:it-replay-source",
                 received_at=1_700_000_000_000,
@@ -662,7 +664,10 @@ def test_manual_replay_same_request_concurrently_creates_one_runtime_inbox() -> 
             assert audit.args["replay_source_event_id"] == f"replay:{source_id}:concurrent-request"
             assert audit.args["replay_payload_hash"] == replay_rows[0].payload_hash
             assert audit.args["actor"] == "integration"
-            assert "original_payload" not in audit.args and "reason" not in audit.args
+            assert audit.args["reason"] == "concurrent replay"
+            assert audit.args["replay_trace_id"] == replay_rows[0].trace_id == "it-replay-trace"
+            assert audit.args["causation_id"] == replay_rows[0].causation_id == "it-replay-event"
+            assert "original_payload" not in audit.args
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
@@ -682,6 +687,8 @@ def test_manual_replay_same_identity_different_hash_has_one_success_and_one_conf
                 payload_hash="it-replay-conflict-hash",
                 payload_json={"event_type": "SESSION_RESUME", "data": {}},
                 payload_schema_version=1,
+                trace_id="it-replay-conflict-trace",
+                event_id="it-replay-conflict-event",
                 status="DEAD_LETTER",
                 claim_bucket_key="source:it-replay-conflict-source",
                 received_at=1_700_000_000_000,
@@ -735,7 +742,10 @@ def test_manual_replay_same_identity_different_hash_has_one_success_and_one_conf
             assert success.args["replay_source_event_id"] == f"replay:{source_id}:same-identity"
             assert success.args["replay_payload_hash"] == replay_rows[0].payload_hash
             assert success.args["actor"] == "integration"
-            assert "original_payload" not in success.args and "reason" not in success.args
+            assert success.args["reason"] == replay_rows[0].payload_json["reason"]
+            assert success.args["replay_trace_id"] == replay_rows[0].trace_id == "it-replay-conflict-trace"
+            assert success.args["causation_id"] == replay_rows[0].causation_id == "it-replay-conflict-event"
+            assert "original_payload" not in success.args
 
             conflict = by_action["manual_replay_conflict"]
             assert conflict.status == OperaStatus.FAIL and conflict.code == "409"
@@ -744,6 +754,8 @@ def test_manual_replay_same_identity_different_hash_has_one_success_and_one_conf
             assert conflict.args["existing_payload_hash"] == replay_rows[0].payload_hash
             assert conflict.args["incoming_payload_hash"] != replay_rows[0].payload_hash
             assert conflict.args["actor"] == "integration"
+            assert conflict.args["source_inbox_id"] == str(source_id)
+            assert conflict.args["request_id"] == "same-identity"
             assert "original_payload" not in conflict.args and "reason" not in conflict.args
 
     asyncio.run(with_temporary_runtime_database(scenario))

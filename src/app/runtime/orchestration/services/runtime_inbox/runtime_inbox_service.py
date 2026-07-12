@@ -1105,6 +1105,7 @@ class RuntimeInboxService:
                 max_retries=REPLAY_MAX_RETRIES,
             )
         except RuntimeInboxConflict as conflict:
+            # 冲突内容未被系统接受；审计只记录受限 identity/hash/actor，不写 reason 或 payload。
             conflict_event = {
                 "event_type": "RUNTIME_INBOX_MANUAL_REPLAY_CONFLICT",
                 "source_inbox_id": str(source.id) if source.id is not None else None,
@@ -1125,6 +1126,7 @@ class RuntimeInboxService:
                     original_error=audit_error,
                 ) from conflict
             raise
+        # 成功审计记录已接受的 canonical reason，并以最终持久化 replay 行为因果证据真源。
         audit_event = {
             "event_type": "RUNTIME_INBOX_MANUAL_REPLAY",
             "source_inbox_id": str(source.id) if source.id is not None else None,
@@ -1137,6 +1139,9 @@ class RuntimeInboxService:
             "replay_payload_hash": replay.record.payload_hash,
             "actor": normalized_actor,
             "request_id": normalized_request_id,
+            "reason": normalized_reason,
+            "replay_trace_id": replay.record.trace_id,
+            "causation_id": replay.record.causation_id,
         }
         if replay.created:
             try:
