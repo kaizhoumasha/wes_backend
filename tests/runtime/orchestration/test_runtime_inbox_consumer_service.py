@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import func, select
@@ -17,7 +18,12 @@ from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.idempotency_key import IdempotencyKey
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
-from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
+from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxConflict,
+    RuntimeInboxNotFound,
+    RuntimeInboxReplayNotAllowed,
+    RuntimeInboxService,
+)
 from src.app.workline.models import WorkLine
 
 NOW_MS = 1_700_000_000_000
@@ -919,16 +925,42 @@ async def test_runtime_inbox_manual_replay_creates_new_record_and_audit(db_sessi
     result = await service.replay_from_dead_letter(
         db_session,
         source_inbox_id=dead.id,
+        request_id="replay-001",
         actor="ops-aaron",
         reason="修复 provider 字段映射后重放",
-        replay_source_event_id="evt-dead-001:replay-001",
     )
 
     assert dead.status == "DEAD_LETTER"
     assert result.replay_record.id != dead.id
     assert result.replay_record.status == "RECEIVED"
-    assert result.replay_record.payload_hash == "hash-dead-001"
+    assert result.replay_record.kind == "REPLAY_REQUEST"
+    assert result.replay_record.provider_code == "RUNTIME"
+    assert result.replay_record.event_type == "REPLAY_REQUEST"
+    assert result.replay_record.source_event_id == f"replay:{dead.id}:replay-001"
+    assert result.replay_record.payload_hash != "hash-dead-001"
     assert result.replay_record.execution_session_id == session.id
+    assert result.replay_record.payload_json == {
+        "request_id": "replay-001",
+        "actor": "ops-aaron",
+        "reason": "修复 provider 字段映射后重放",
+        "immediate_source_inbox_id": dead.id,
+        "root_source_inbox_id": dead.id,
+        "original_kind": "EXTERNAL_HTTP",
+        "original_payload": {"event_type": "WMS_EXCHANGE_COMPLETED"},
+        "original_provider_code": "WMS",
+        "original_event_type": "WMS_EXCHANGE_COMPLETED",
+        "original_source_event_id": "evt-dead-001",
+        "original_payload_hash": "hash-dead-001",
+        "original_workline_id": None,
+        "original_device_id": None,
+        "original_command_id": None,
+        "original_workline_session_id": None,
+        "original_execution_session_id": session.id,
+        "original_correlation_id": None,
+        "original_trace_id": None,
+        "original_event_id": None,
+        "original_causation_id": None,
+    }
     assert result.audit_event["source_inbox_id"] == str(dead.id)
     assert result.audit_event["replay_inbox_id"] == str(result.replay_record.id)
     assert audit_service.calls
@@ -950,32 +982,224 @@ async def test_runtime_inbox_replay_rejects_pre_cutover_audit_only_before_write(
     db_session.add(audit_only)
     await db_session.flush()
 
-    with pytest.raises(ValueError, match="PRE_CUTOVER_AUDIT_ONLY"):
+    with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
         await RuntimeInboxService().replay_from_dead_letter(
             db_session,
             source_inbox_id=audit_only.id,
+            request_id="legacy-replay-1",
             actor="ops",
             reason="must reject",
-            replay_source_event_id="legacy-replay-1",
         )
+    assert exc_info.value.reason_code == "PRE_CUTOVER_AUDIT_ONLY"
 
     assert await db_session.scalar(select(func.count()).select_from(RuntimeInbox)) == 1
 
 
-@pytest.mark.parametrize("replay_source_event_id", [None, "", "   ", "x" * 161])
+@pytest.mark.parametrize("request_id", [None, "", "   ", "x" * 101])
 @pytest.mark.asyncio
 async def test_runtime_inbox_replay_rejects_invalid_source_identity_before_write(
     db_session,
-    replay_source_event_id: str | None,
+    request_id: str | None,
 ) -> None:
-    with pytest.raises(ValueError, match="replay_source_event_id"):
+    with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
         await RuntimeInboxService().replay_from_dead_letter(
             db_session,
             source_inbox_id=999,
+            request_id=request_id,  # type: ignore[arg-type]
             actor="ops",
             reason="invalid identity",
-            replay_source_event_id=replay_source_event_id,
         )
+    assert exc_info.value.reason_code == "INVALID_REQUEST_ID"
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_replay_missing_source_uses_typed_error(db_session) -> None:
+    with pytest.raises(RuntimeInboxNotFound):
+        await RuntimeInboxService().replay_from_dead_letter(
+            db_session,
+            source_inbox_id=999,
+            request_id="req-1",
+            actor="ops",
+            reason="missing",
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_replay_rejects_processed_source(db_session) -> None:
+    source = RuntimeInbox(
+        kind="INTERNAL_EVENT",
+        provider_code="RUNTIME",
+        event_type="INTERNAL_EVENT",
+        source_event_id="processed-1",
+        payload_hash="hash-1",
+        payload_json={"event_type": "INTERNAL_EVENT"},
+        payload_schema_version=1,
+        status="PROCESSED",
+        claim_bucket_key="source:processed-1",
+        received_at=NOW_MS,
+    )
+    db_session.add(source)
+    await db_session.flush()
+
+    with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+        await RuntimeInboxService().replay_from_dead_letter(
+            db_session,
+            source_inbox_id=source.id,
+            request_id="req-1",
+            actor="ops",
+            reason="must reject",
+        )
+    assert exc_info.value.reason_code == "SOURCE_NOT_DEAD_LETTER"
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_replay_same_request_is_idempotent_and_content_change_conflicts(db_session) -> None:
+    source = RuntimeInbox(
+        kind="INTERNAL_EVENT",
+        provider_code="RUNTIME",
+        event_type="INTERNAL_EVENT",
+        source_event_id="dead-idempotent",
+        payload_hash="hash-root",
+        payload_json={"event_type": "INTERNAL_EVENT", "data": {"session_id": 10}},
+        payload_schema_version=1,
+        status="DEAD_LETTER",
+        claim_bucket_key="source:dead-idempotent",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
+    )
+    db_session.add(source)
+    await db_session.flush()
+    audit_service = _AuditServiceStub()
+    service = RuntimeInboxService(audit_service=audit_service)
+
+    first = await service.replay_from_dead_letter(
+        db_session, source_inbox_id=source.id, request_id="req-1", actor="7", reason="same"
+    )
+    second = await service.replay_from_dead_letter(
+        db_session, source_inbox_id=source.id, request_id="req-1", actor="7", reason="same"
+    )
+    assert second.replay_record.id == first.replay_record.id
+    assert await db_session.scalar(select(func.count()).select_from(RuntimeInbox)) == 2
+    assert len(audit_service.calls) == 1
+
+    with pytest.raises(RuntimeInboxConflict):
+        await service.replay_from_dead_letter(
+            db_session, source_inbox_id=source.id, request_id="req-1", actor="7", reason="changed"
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_replay_of_replay_is_flat(db_session) -> None:
+    root = RuntimeInbox(
+        kind="DEVICE_EVENT",
+        provider_code="PLC",
+        event_type="SCAN_COMPLETED",
+        source_event_id="scan-root",
+        payload_hash="hash-root",
+        payload_json={"event_type": "SCAN_COMPLETED", "data": {"barcode": "A"}},
+        payload_schema_version=1,
+        status="DEAD_LETTER",
+        claim_bucket_key="source:scan-root",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
+    )
+    db_session.add(root)
+    await db_session.flush()
+    service = RuntimeInboxService(audit_service=_AuditServiceStub())
+    first = await service.replay_from_dead_letter(
+        db_session, source_inbox_id=root.id, request_id="req-1", actor="7", reason="first"
+    )
+    first.replay_record.status = "DEAD_LETTER"
+    await db_session.flush()
+
+    second = await service.replay_from_dead_letter(
+        db_session,
+        source_inbox_id=first.replay_record.id,
+        request_id="req-2",
+        actor="8",
+        reason="second",
+    )
+    envelope = second.replay_record.payload_json
+    assert envelope["immediate_source_inbox_id"] == first.replay_record.id
+    assert envelope["root_source_inbox_id"] == root.id
+    assert envelope["original_kind"] == "DEVICE_EVENT"
+    assert envelope["original_payload"] == root.payload_json
+    assert envelope["request_id"] == "req-2"
+    assert "original_payload" not in envelope["original_payload"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"original_kind": "REPLAY_REQUEST", "original_payload": {}},
+        {"original_kind": "UNKNOWN", "original_payload": {}},
+        {"original_kind": "DEVICE_EVENT", "original_payload": "not-object"},
+    ],
+)
+@pytest.mark.asyncio
+async def test_runtime_inbox_replay_rejects_invalid_replay_envelope(db_session, payload: dict[str, Any]) -> None:
+    replay_source = RuntimeInbox(
+        kind="REPLAY_REQUEST",
+        provider_code="RUNTIME",
+        event_type="REPLAY_REQUEST",
+        source_event_id=f"bad-replay-{len(str(payload))}",
+        payload_hash="hash-bad",
+        payload_json=payload,
+        payload_schema_version=1,
+        status="DEAD_LETTER",
+        claim_bucket_key=f"source:bad-replay-{len(str(payload))}",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
+    )
+    db_session.add(replay_source)
+    await db_session.flush()
+
+    with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+        await RuntimeInboxService().replay_from_dead_letter(
+            db_session,
+            source_inbox_id=replay_source.id,
+            request_id="req",
+            actor="ops",
+            reason="invalid envelope",
+        )
+    assert exc_info.value.reason_code == "INVALID_REPLAY_ENVELOPE"
+
+
+@pytest.mark.asyncio
+async def test_workline_operation_replay_only_applies_safety_then_delegates() -> None:
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+
+    source = SimpleNamespace(id=12, workline_id=5, workline_session_id=None)
+    inbox_repo = SimpleNamespace(get_by_id=AsyncMock(return_value=source))
+    service = WorklineOperationService(inbox_repo=inbox_repo)
+    replay_record = SimpleNamespace(id=13)
+    service.runtime_inbox_service = SimpleNamespace(
+        replay_from_dead_letter=AsyncMock(
+            return_value=SimpleNamespace(source_record=source, replay_record=replay_record, audit_event={})
+        )
+    )
+    service._lock_active_workline_for_runtime_write = AsyncMock(return_value=SimpleNamespace(id=5))  # type: ignore[method-assign]
+    service._commit_mutation = AsyncMock()  # type: ignore[method-assign]
+
+    db = object()
+    result = await service.replay_inbox(
+        db,
+        inbox_id=12,
+        request_id="req-12",
+        actor="42",
+        reason="operator retry",
+    )
+
+    assert result is replay_record
+    service._lock_active_workline_for_runtime_write.assert_awaited_once_with(db, 5)
+    service.runtime_inbox_service.replay_from_dead_letter.assert_awaited_once()
+    assert service.runtime_inbox_service.replay_from_dead_letter.await_args.kwargs == {
+        "source_inbox_id": 12,
+        "request_id": "req-12",
+        "actor": "42",
+        "reason": "operator retry",
+    }
+    service._commit_mutation.assert_awaited_once()
 
 
 @pytest.mark.asyncio

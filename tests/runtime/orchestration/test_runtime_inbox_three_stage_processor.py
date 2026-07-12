@@ -25,6 +25,7 @@ from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_c
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
     _load_related_entities,
+    _project_replay_request,
     _snapshot_inbox_for_diagnostic,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
@@ -303,6 +304,129 @@ def test_processor_default_writeback_uses_injected_runtime_inbox_service() -> No
     processor = RuntimeInboxProcessorBridge(inbox_service=inbox_service)
 
     assert processor._writeback_service.inbox_service is inbox_service
+
+
+def _replay_envelope(*, original_kind: str, original_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "request_id": "req-1",
+        "actor": "42",
+        "reason": "retry",
+        "immediate_source_inbox_id": 8,
+        "root_source_inbox_id": 7,
+        "original_kind": original_kind,
+        "original_payload": original_payload,
+        "original_provider_code": "WMS",
+        "original_event_type": original_payload.get("event_type", original_kind),
+        "original_source_event_id": "source-7",
+        "original_payload_hash": "hash-7",
+        "original_workline_id": 20,
+        "original_device_id": 21,
+        "original_command_id": 22,
+        "original_workline_session_id": 10,
+        "original_execution_session_id": 11,
+        "original_correlation_id": "corr-7",
+        "original_trace_id": "trace-7",
+        "original_event_id": "event-7",
+        "original_causation_id": "cause-7",
+    }
+
+
+@pytest.mark.parametrize(
+    ("original_kind", "original_payload"),
+    [
+        ("COMMAND_RESULT", {"event_type": "COMMAND_RESULT", "command_code": "CMD-1"}),
+        ("DEVICE_EVENT", {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "A"}}),
+        ("EXTERNAL_HTTP", {"event_type": "WMS_EXCHANGE_COMPLETED"}),
+        ("INTERNAL_EVENT", {"event_type": "SESSION_RESUME", "data": {"session_id": 10}}),
+        ("TIMER_TIMEOUT", {"event_type": "TIMER_TIMEOUT", "data": {"session_id": 10}}),
+    ],
+)
+def test_replay_request_projects_one_layer_to_original_semantics(
+    original_kind: str,
+    original_payload: dict[str, Any],
+) -> None:
+    inbox = _make_inbox(
+        inbox_id=9,
+        kind="REPLAY_REQUEST",
+        payload_json=_replay_envelope(original_kind=original_kind, original_payload=original_payload),
+    )
+
+    projected = _project_replay_request(inbox)
+
+    assert projected.id == 9
+    assert projected.kind == original_kind
+    assert projected.payload_json == original_payload
+    assert projected.workline_id == 20
+    assert projected.device_id == 21
+    assert projected.command_id == 22
+    assert projected.workline_session_id == 10
+    assert projected.trace_id == "trace-7"
+    assert inbox.kind == "REPLAY_REQUEST"
+
+
+def test_replay_request_projection_rejects_invalid_envelope() -> None:
+    inbox = _make_inbox(kind="REPLAY_REQUEST", payload_json={"original_kind": "REPLAY_REQUEST"})
+
+    with pytest.raises(Exception, match="INVALID_REPLAY_ENVELOPE"):
+        _project_replay_request(inbox)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("original_provider_code", ""),
+        ("original_workline_id", "20"),
+        ("original_trace_id", 123),
+    ],
+)
+def test_replay_request_projection_rejects_invalid_routing_evidence(field: str, value: object) -> None:
+    envelope = _replay_envelope(original_kind="INTERNAL_EVENT", original_payload={"event_type": "SESSION_RESUME"})
+    envelope[field] = value
+
+    with pytest.raises(Exception, match="INVALID_REPLAY_ENVELOPE"):
+        _project_replay_request(_make_inbox(kind="REPLAY_REQUEST", payload_json=envelope))
+
+
+@pytest.mark.asyncio
+async def test_process_claimed_marks_invalid_replay_envelope_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    inbox = _make_inbox(inbox_id=91, kind="REPLAY_REQUEST", payload_json={"original_kind": "UNKNOWN"})
+
+    class _Repository:
+        async def get_by_id(self, *_args: Any) -> Any:
+            return inbox
+
+    class _InboxService:
+        error_message: str | None = None
+
+        async def mark_failed(self, *_args: Any, **kwargs: Any) -> bool:
+            self.error_message = kwargs["error_message"]
+            return True
+
+    class _Db:
+        async def rollback(self) -> None:
+            pass
+
+        async def commit(self) -> None:
+            pass
+
+    service = _InboxService()
+
+    async def _noop_diagnostic(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._record_diagnostic",
+        _noop_diagnostic,
+    )
+    result = await RuntimeInboxProcessorBridge(
+        inbox_repository=_Repository(),  # type: ignore[arg-type]
+        inbox_service=service,  # type: ignore[arg-type]
+    ).process_claimed(_Db(), claim={"id": 91, "processor_token": "token-91"})
+
+    assert result["failed"] == 1
+    assert result["processed"] == 1
+    assert service.error_message is not None
+    assert "INVALID_REPLAY_ENVELOPE" in service.error_message
 
 
 class TestEstopTimerRouting:

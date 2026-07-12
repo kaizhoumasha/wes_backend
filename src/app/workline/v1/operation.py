@@ -25,6 +25,11 @@ from src.app.runtime.orchestration.models.operation import (
     SandboxWorklineStartRequest,
 )
 from src.app.runtime.orchestration.services.intent import operation_service
+from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxConflict,
+    RuntimeInboxNotFound,
+    RuntimeInboxReplayNotAllowed,
+)
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 from src.app.workline.models.safety import (  # noqa: TC001 - FastAPI needs runtime annotation
     ClearWorkLineEstopRequest,
@@ -49,9 +54,9 @@ def _inbox_response(inbox: Any) -> dict[str, Any]:
     return {
         "id": inbox.id,
         "kind": enum_value(inbox.kind),
-        "source_message_id": inbox.source_message_id,
+        "source_message_id": getattr(inbox, "source_message_id", None) or getattr(inbox, "source_event_id", None),
         "trace_id": inbox.trace_id,
-        "session_id": inbox.session_id,
+        "session_id": getattr(inbox, "session_id", None),
         "workline_id": inbox.workline_id,
         "status": enum_value(inbox.status),
     }
@@ -198,16 +203,36 @@ async def replay_inbox(
     inbox_id: int,
     payload: ReplayInboxRequest,
     db: AsyncSessionDep,
+    current_user_id: Annotated[int, Depends(require_auth)],
 ) -> ResponseSchemaModel[dict[str, Any]]:
     try:
         replay = await workline_operation_service.replay_inbox(
             db,
             inbox_id=inbox_id,
+            request_id=payload.request_id,
+            actor=str(current_user_id),
             reason=payload.reason,
-            operator_id=payload.operator_id,
         )
-    except (ValueError, WorkLineSafetyBlocked) as exc:
-        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
+    except RuntimeInboxNotFound as exc:
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=str(exc)),
+        )
+    except RuntimeInboxReplayNotAllowed as exc:
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=str(exc)),
+        )
+    except RuntimeInboxConflict as exc:
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=ResourceErrorCode.CONFLICT, message=str(exc)),
+        )
+    except WorkLineSafetyBlocked as exc:
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=str(exc)),
+        )
     _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(replay)))
 

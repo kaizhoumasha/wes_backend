@@ -47,6 +47,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processo
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxService,
     runtime_inbox_service,
+    validate_replay_envelope,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
     RuntimeInboxValidationService,
@@ -110,6 +111,40 @@ class _InboxDiagnosticSnapshot:
     command_id: int | None
     attempt_count: int
     payload_json: dict[str, Any]
+
+
+class _ReplayProjectedInbox:
+    """仅覆盖 replay 路由字段，其余 claim/终态证据委托原 RuntimeInbox。"""
+
+    def __init__(self, source: Any, envelope: dict[str, Any]) -> None:
+        self._source = source
+        self.kind = envelope["original_kind"]
+        self.payload_json = dict(envelope["original_payload"])
+        self.provider_code = envelope["original_provider_code"]
+        self.event_type = envelope["original_event_type"]
+        self.source_event_id = envelope["original_source_event_id"]
+        self.payload_hash = envelope["original_payload_hash"]
+        self.workline_id = envelope["original_workline_id"]
+        self.device_id = envelope["original_device_id"]
+        self.command_id = envelope["original_command_id"]
+        self.workline_session_id = envelope["original_workline_session_id"]
+        self.execution_session_id = envelope["original_execution_session_id"]
+        self.correlation_id = envelope["original_correlation_id"]
+        self.trace_id = envelope["original_trace_id"]
+        self.event_id = envelope["original_event_id"]
+        self.causation_id = envelope["original_causation_id"]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._source, name)
+
+
+def _project_replay_request(inbox: Any) -> Any:
+    """将 REPLAY_REQUEST 单层投影为原业务语义，不修改持久化行。"""
+
+    if _kind_value(inbox) != "REPLAY_REQUEST":
+        return inbox
+    envelope = validate_replay_envelope(getattr(inbox, "payload_json", None))
+    return _ReplayProjectedInbox(inbox, envelope)
 
 
 def _snapshot_inbox_for_diagnostic(inbox: Any) -> _InboxDiagnosticSnapshot:
@@ -273,6 +308,7 @@ class RuntimeInboxProcessorBridge:
                 result["skipped"] += 1
                 return result
 
+            inbox = _project_replay_request(inbox)
             payload = _payload_for_inbox(inbox)
             resolved_event_type = canonical_event_type(payload)
 

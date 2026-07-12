@@ -16,11 +16,14 @@ PUBLIC_SERVICE_SYMBOLS = {
     "RuntimeInboxAcceptResult",
     "RuntimeInboxConflict",
     "RuntimeInboxCorrelationUnavailable",
+    "RuntimeInboxNotFound",
     "RuntimeInboxPayloadTooLarge",
+    "RuntimeInboxReplayNotAllowed",
     "RuntimeInboxReplayResult",
     "RuntimeInboxService",
     "RuntimeInboxSessionOwnershipConflict",
     "runtime_inbox_service",
+    "validate_replay_envelope",
 }
 PUBLIC_PACKAGE_SYMBOLS = PUBLIC_SERVICE_SYMBOLS | {
     "ProcessResult",

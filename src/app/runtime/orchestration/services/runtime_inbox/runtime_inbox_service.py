@@ -105,6 +105,144 @@ class RuntimeInboxConflict(Exception):
         }
 
 
+class RuntimeInboxNotFound(Exception):
+    """RuntimeInbox 主键不存在。"""
+
+    reason_code = "RUNTIME_INBOX_NOT_FOUND"
+
+    def __init__(self, *, inbox_id: int) -> None:
+        super().__init__(f"RuntimeInbox 不存在: {inbox_id}")
+        self.inbox_id = inbox_id
+
+
+class RuntimeInboxReplayNotAllowed(Exception):
+    """RuntimeInbox 当前证据不满足人工重放合同。"""
+
+    def __init__(self, *, reason_code: str, detail: str | None = None) -> None:
+        message = reason_code if detail is None else f"{reason_code}: {detail}"
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.detail = detail
+
+
+REPLAYABLE_ORIGINAL_KINDS = frozenset(
+    {"COMMAND_RESULT", "DEVICE_EVENT", "EXTERNAL_HTTP", "INTERNAL_EVENT", "TIMER_TIMEOUT"}
+)
+_REPLAY_EVIDENCE_FIELDS = (
+    "original_provider_code",
+    "original_event_type",
+    "original_source_event_id",
+    "original_payload_hash",
+    "original_workline_id",
+    "original_device_id",
+    "original_command_id",
+    "original_workline_session_id",
+    "original_execution_session_id",
+    "original_correlation_id",
+    "original_trace_id",
+    "original_event_id",
+    "original_causation_id",
+)
+
+
+def validate_replay_envelope(payload: object) -> dict[str, Any]:
+    """校验单层 canonical replay envelope，并返回独立副本。"""
+
+    if not isinstance(payload, dict):
+        raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_REPLAY_ENVELOPE", detail="payload must be object")
+    required = {
+        "request_id",
+        "actor",
+        "reason",
+        "immediate_source_inbox_id",
+        "root_source_inbox_id",
+        "original_kind",
+        "original_payload",
+        *_REPLAY_EVIDENCE_FIELDS,
+    }
+    if missing := sorted(required - payload.keys()):
+        raise RuntimeInboxReplayNotAllowed(
+            reason_code="INVALID_REPLAY_ENVELOPE",
+            detail=f"missing fields: {','.join(missing)}",
+        )
+    original_kind = payload.get("original_kind")
+    if original_kind not in REPLAYABLE_ORIGINAL_KINDS:
+        raise RuntimeInboxReplayNotAllowed(
+            reason_code="INVALID_REPLAY_ENVELOPE",
+            detail="original_kind is not replayable",
+        )
+    if not isinstance(payload.get("original_payload"), dict):
+        raise RuntimeInboxReplayNotAllowed(
+            reason_code="INVALID_REPLAY_ENVELOPE",
+            detail="original_payload must be object",
+        )
+    for field in ("request_id", "actor", "reason"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeInboxReplayNotAllowed(
+                reason_code="INVALID_REPLAY_ENVELOPE",
+                detail=f"{field} must be non-empty string",
+            )
+    for field in ("immediate_source_inbox_id", "root_source_inbox_id"):
+        value = payload.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise RuntimeInboxReplayNotAllowed(
+                reason_code="INVALID_REPLAY_ENVELOPE",
+                detail=f"{field} must be positive integer",
+            )
+    for field in (
+        "original_workline_id",
+        "original_device_id",
+        "original_command_id",
+        "original_workline_session_id",
+        "original_execution_session_id",
+    ):
+        value = payload.get(field)
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
+            raise RuntimeInboxReplayNotAllowed(
+                reason_code="INVALID_REPLAY_ENVELOPE",
+                detail=f"{field} must be positive integer or null",
+            )
+    for field in (
+        "original_provider_code",
+        "original_event_type",
+        "original_source_event_id",
+        "original_payload_hash",
+    ):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeInboxReplayNotAllowed(
+                reason_code="INVALID_REPLAY_ENVELOPE",
+                detail=f"{field} must be non-empty string",
+            )
+    for field in ("original_correlation_id", "original_trace_id", "original_event_id", "original_causation_id"):
+        value = payload.get(field)
+        if value is not None and not isinstance(value, str):
+            raise RuntimeInboxReplayNotAllowed(
+                reason_code="INVALID_REPLAY_ENVELOPE",
+                detail=f"{field} must be string or null",
+            )
+    return dict(payload)
+
+
+def _original_replay_evidence(source: RuntimeInbox) -> dict[str, Any]:
+    return {
+        "original_provider_code": source.provider_code,
+        "original_event_type": source.event_type,
+        "original_source_event_id": source.source_event_id,
+        "original_payload_hash": source.payload_hash,
+        "original_workline_id": source.workline_id,
+        "original_device_id": source.device_id,
+        "original_command_id": source.command_id,
+        "original_workline_session_id": source.workline_session_id,
+        "original_execution_session_id": source.execution_session_id,
+        "original_correlation_id": source.correlation_id,
+        "original_trace_id": source.trace_id,
+        "original_event_id": source.event_id,
+        "original_causation_id": source.causation_id,
+    }
+
+
 class RuntimeInboxCorrelationUnavailable(RuntimeError):
     """显式关联未持久化，调用方应按服务端完整性故障重试。"""
 
@@ -773,50 +911,80 @@ class RuntimeInboxService:
         db: AsyncSession,
         *,
         source_inbox_id: int,
+        request_id: str,
         actor: str,
         reason: str,
-        replay_source_event_id: str | None = None,
     ) -> RuntimeInboxReplayResult:
         """从 DEAD_LETTER 新建重放记录；原记录保持终态。"""
 
-        normalized_actor = actor.strip()
-        normalized_reason = reason.strip()
-        if not normalized_actor:
-            raise ValueError("actor 不能为空")
-        if not normalized_reason:
-            raise ValueError("reason 不能为空")
-        if not isinstance(replay_source_event_id, str) or not replay_source_event_id.strip():
-            raise ValueError("replay_source_event_id 不能为空")
-        normalized_replay_source_event_id = replay_source_event_id.strip()
-        if len(normalized_replay_source_event_id) > 160:
-            raise ValueError("replay_source_event_id 长度不能超过 160")
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id.strip()) > 100:
+            raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_REQUEST_ID")
+        normalized_request_id = request_id.strip()
+        normalized_actor = actor.strip() if isinstance(actor, str) else ""
+        normalized_reason = reason.strip() if isinstance(reason, str) else ""
+        if not normalized_actor or not normalized_reason:
+            raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_REPLAY_ENVELOPE")
 
         source = await self.repository.get_by_id_for_update(db, source_inbox_id)
         if source is None:
-            raise ValueError(f"RuntimeInbox 不存在: {source_inbox_id}")
+            raise RuntimeInboxNotFound(inbox_id=source_inbox_id)
         if source.status != "DEAD_LETTER":
-            raise ValueError(f"仅 DEAD_LETTER 可重放, 当前 status={source.status}")
+            raise RuntimeInboxReplayNotAllowed(
+                reason_code="SOURCE_NOT_DEAD_LETTER",
+                detail=f"status={source.status}",
+            )
         if source.last_error_code == PRE_CUTOVER_AUDIT_ONLY:
-            raise ValueError(f"{PRE_CUTOVER_AUDIT_ONLY} 仅保留审计证据，不可重放")
+            raise RuntimeInboxReplayNotAllowed(reason_code="PRE_CUTOVER_AUDIT_ONLY")
+
+        if source.kind == "REPLAY_REQUEST":
+            previous = validate_replay_envelope(source.payload_json)
+            root_source_inbox_id = cast("int", previous["root_source_inbox_id"])
+            original_kind = cast("str", previous["original_kind"])
+            original_payload = dict(cast("dict[str, Any]", previous["original_payload"]))
+            evidence = {field: previous[field] for field in _REPLAY_EVIDENCE_FIELDS}
+        else:
+            if source.kind not in REPLAYABLE_ORIGINAL_KINDS or not isinstance(source.payload_json, dict):
+                raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_REPLAY_ENVELOPE")
+            root_source_inbox_id = source_inbox_id
+            original_kind = source.kind
+            original_payload = dict(source.payload_json)
+            evidence = _original_replay_evidence(source)
+
+        canonical_payload = {
+            "request_id": normalized_request_id,
+            "actor": normalized_actor,
+            "reason": normalized_reason,
+            "immediate_source_inbox_id": source_inbox_id,
+            "root_source_inbox_id": root_source_inbox_id,
+            "original_kind": original_kind,
+            "original_payload": original_payload,
+            **evidence,
+        }
+        validate_replay_envelope(canonical_payload)
+        replay_source_event_id = f"replay:{source_inbox_id}:{normalized_request_id}"
+        if len(replay_source_event_id) > 160:
+            raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_REQUEST_ID")
+        replay_event_id = f"replay:{source_inbox_id}:{sha256(normalized_request_id.encode()).hexdigest()}"
+        replay_causation_id = source.event_id or f"inbox:{source_inbox_id}"
 
         replay = await self.accept_received(
             db,
-            provider_code=source.provider_code,
-            event_type=source.event_type,
-            source_event_id=normalized_replay_source_event_id,
-            payload_hash=source.payload_hash,
-            kind=source.kind,
-            payload_json=dict(source.payload_json or {}),
-            payload_schema_version=source.payload_schema_version or 1,
-            trace_id=source.trace_id,
-            event_id=source.event_id,
-            causation_id=source.causation_id,
-            workline_id=source.workline_id,
-            device_id=source.device_id,
-            command_id=source.command_id,
-            workline_session_id=source.workline_session_id,
-            execution_session_id=source.execution_session_id,
-            correlation_id=source.correlation_id,
+            provider_code="RUNTIME",
+            event_type="REPLAY_REQUEST",
+            source_event_id=replay_source_event_id,
+            payload_hash=_canonical_payload_hash(canonical_payload),
+            kind="REPLAY_REQUEST",
+            payload_json=canonical_payload,
+            payload_schema_version=1,
+            trace_id=cast("str | None", evidence["original_trace_id"]),
+            event_id=replay_event_id,
+            causation_id=replay_causation_id,
+            workline_id=cast("int | None", evidence["original_workline_id"]),
+            device_id=cast("int | None", evidence["original_device_id"]),
+            command_id=cast("int | None", evidence["original_command_id"]),
+            workline_session_id=cast("int | None", evidence["original_workline_session_id"]),
+            execution_session_id=cast("int | None", evidence["original_execution_session_id"]),
+            correlation_id=cast("str | None", evidence["original_correlation_id"]),
             max_retries=source.max_retries,
         )
         audit_event = {
@@ -830,8 +998,10 @@ class RuntimeInboxService:
             "payload_hash": source.payload_hash,
             "actor": normalized_actor,
             "reason": normalized_reason,
+            "request_id": normalized_request_id,
         }
-        await self._write_replay_audit(db, audit_event)
+        if replay.created:
+            await self._write_replay_audit(db, audit_event)
         return RuntimeInboxReplayResult(source_record=source, replay_record=replay.record, audit_event=audit_event)
 
     async def _claim_device_event_idempotency_if_needed(
@@ -1034,9 +1204,12 @@ __all__ = [
     "RuntimeInboxAcceptResult",
     "RuntimeInboxConflict",
     "RuntimeInboxCorrelationUnavailable",
+    "RuntimeInboxNotFound",
     "RuntimeInboxPayloadTooLarge",
+    "RuntimeInboxReplayNotAllowed",
     "RuntimeInboxReplayResult",
     "RuntimeInboxService",
     "RuntimeInboxSessionOwnershipConflict",
     "runtime_inbox_service",
+    "validate_replay_envelope",
 ]

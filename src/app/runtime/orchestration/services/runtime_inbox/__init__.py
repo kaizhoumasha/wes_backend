@@ -12,11 +12,14 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service 
     RuntimeInboxAcceptResult,
     RuntimeInboxConflict,
     RuntimeInboxCorrelationUnavailable,
+    RuntimeInboxNotFound,
     RuntimeInboxPayloadTooLarge,
+    RuntimeInboxReplayNotAllowed,
     RuntimeInboxReplayResult,
     RuntimeInboxService,
     RuntimeInboxSessionOwnershipConflict,
     runtime_inbox_service,
+    validate_replay_envelope,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
     RuntimeInboxValidationService,
@@ -32,10 +35,12 @@ __all__ = [
     "RuntimeInboxAcceptResult",
     "RuntimeInboxConflict",
     "RuntimeInboxCorrelationUnavailable",
+    "RuntimeInboxNotFound",
     "RuntimeInboxOrchestratorDelegate",
     "RuntimeInboxPayloadTooLarge",
     "RuntimeInboxProcessorBridge",
     "RuntimeInboxProcessorService",
+    "RuntimeInboxReplayNotAllowed",
     "RuntimeInboxReplayResult",
     "RuntimeInboxService",
     "RuntimeInboxSessionOwnershipConflict",
@@ -44,4 +49,5 @@ __all__ = [
     "ValidationOutcome",
     "WriteBackState",
     "runtime_inbox_service",
+    "validate_replay_envelope",
 ]

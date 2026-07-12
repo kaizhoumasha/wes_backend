@@ -543,19 +543,17 @@ class WorklineOperationService(BaseService[Any, Any]):
         db: Any,
         *,
         inbox_id: int,
+        request_id: str,
+        actor: str,
         reason: str,
-        operator_id: str | None = None,
         auto_commit: bool = True,
     ) -> Any:
-        """从历史 inbox 创建一条新的 replay 请求，不修改原 inbox。"""
+        """执行工作线安全前置，并将 replay 合同委托给 RuntimeInboxService。"""
 
         original = await self.inbox_repo.get_by_id(db, inbox_id)
-        if original is None:
-            raise ValueError(f"Inbox 不存在: {inbox_id}")
-        if original.workline_id is None:
-            raise ValueError(f"Inbox 未关联工作线: {inbox_id}")
-        _ = await self._lock_active_workline_for_runtime_write(db, original.workline_id)
-        if original.workline_session_id is not None:
+        if original is not None and original.workline_id is not None:
+            _ = await self._lock_active_workline_for_runtime_write(db, original.workline_id)
+        if original is not None and original.workline_session_id is not None:
             session = await self.session_repo.get_by_id(db, original.workline_session_id)
             if session is not None:
                 from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
@@ -564,34 +562,16 @@ class WorklineOperationService(BaseService[Any, Any]):
 
                 workline_runtime_reconciliation_service.assert_not_pending_reconciliation(session)
 
-        original_payload = original.payload_json
-        payload = dict(original_payload) if isinstance(original_payload, dict) else {}
-        original_event_id = original.event_id or f"inbox:{inbox_id}"
-        replay_event_id = f"replay:{original_event_id}:{uuid.uuid4().hex}"
-        payload.update(
-            {
-                "replay_of_event_id": original_event_id,
-                "replay_reason": reason,
-                "replay_operator_id": operator_id,
-            }
-        )
-        replay_result = await self._accept_runtime_message(
+        replay_result = await self.runtime_inbox_service.replay_from_dead_letter(
             db,
-            kind=original.kind,
-            event_type=original.event_type,
-            source_event_id=f"replay:{inbox_id}:{uuid.uuid4().hex}",
-            workline_id=original.workline_id,
-            device_id=original.device_id,
-            command_id=original.command_id,
-            workline_session_id=original.workline_session_id,
-            trace_id=original.trace_id,
-            event_id=replay_event_id,
-            causation_id=original_event_id,
-            payload=payload,
+            source_inbox_id=inbox_id,
+            request_id=request_id,
+            actor=actor,
+            reason=reason,
         )
         if auto_commit:
             await self._commit_mutation(db)
-        return replay_result.record
+        return replay_result.replay_record
 
     async def create_manual_operation(
         self,

@@ -148,6 +148,15 @@ CREATED → RUNNING → CLOSED
 | `dead_letter_at` | datetime? | 进入死信时间 |
 | `processor_token` | str? | 处理者令牌（并发控制） |
 
+**人工重放合同**：`POST /replay/inboxes/{inbox_id}` 必须提交去空白后非空、最长 100 字符的稳定
+`request_id`；操作者只来自认证上下文，不接受客户端 `operator_id`。仅 `DEAD_LETTER` 且非
+`PRE_CUTOVER_AUDIT_ONLY` 的记录可重放。新记录固定为 `provider_code=RUNTIME`、
+`event_type/kind=REPLAY_REQUEST`，以 `replay:{source_inbox_id}:{request_id}` 作为幂等身份；相同身份和
+canonical hash 返回既有 ACK，不重复写行或审计，内容变化则返回冲突。payload 使用单层 envelope，显式保存
+`request_id`、`actor`、`reason`、直接/根 source inbox、五种原业务 kind、原 payload 与原 source/业务证据；
+replay-of-replay 复用根业务语义，不递归嵌套。Processor 在 validation/context/orchestrator 前只解包这一层，
+继续使用原 claim/FIFO/token fencing/effect 幂等通道。
+
 **状态机**:
 
 ```text
