@@ -23,10 +23,13 @@ async def _processing_inbox(
     token: str = "lease-1",  # noqa: S107  (测试 lease token，不是密码)
 ) -> RuntimeInbox:
     inbox = RuntimeInbox(
+        kind="DEVICE_EVENT",
         provider_code="TEST",
         event_type="DEVICE_EVENT",
         source_event_id=source_event_id,
+        payload_hash=f"sha256:{source_event_id}",
         payload_json={},
+        payload_schema_version=1,
         status="PROCESSING",
         processor_token=token,
         claim_bucket_key=f"bucket:{source_event_id}",
@@ -131,10 +134,13 @@ async def test_zero_retry_budget_is_already_exhausted(db_session: AsyncSession) 
 @pytest.mark.asyncio
 async def test_resource_wait_does_not_consume_attempt_across_repeated_claims(db_session: AsyncSession) -> None:
     inbox = RuntimeInbox(
+        kind="DEVICE_EVENT",
         provider_code="TEST",
         event_type="DEVICE_EVENT",
         source_event_id="resource-wait",
+        payload_hash="sha256:resource-wait",
         payload_json={},
+        payload_schema_version=1,
         status="RECEIVED",
         claim_bucket_key="bucket:resource-wait",
         received_at=1,
@@ -254,10 +260,13 @@ async def test_atomic_recovery_respects_limit_active_lease_and_retry_budget(db_s
 @pytest.mark.asyncio
 async def test_last_budget_crash_recovers_to_dead_letter_and_unblocks_bucket(db_session: AsyncSession) -> None:
     first = RuntimeInbox(
+        kind="DEVICE_EVENT",
         provider_code="TEST",
         event_type="DEVICE_EVENT",
         source_event_id="last-budget",
+        payload_hash="sha256:last-budget",
         payload_json={},
+        payload_schema_version=1,
         status="RECEIVED",
         claim_bucket_key="bucket:last-budget",
         received_at=1,
@@ -265,10 +274,13 @@ async def test_last_budget_crash_recovers_to_dead_letter_and_unblocks_bucket(db_
         max_retries=2,
     )
     following = RuntimeInbox(
+        kind="DEVICE_EVENT",
         provider_code="TEST",
         event_type="DEVICE_EVENT",
         source_event_id="after-last-budget",
+        payload_hash="sha256:after-last-budget",
         payload_json={},
+        payload_schema_version=1,
         status="RECEIVED",
         claim_bucket_key="bucket:last-budget",
         received_at=2,

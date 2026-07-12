@@ -36,12 +36,15 @@ async def _persist_projection(
         payload_hash=f"hash-{status}-{workline_session_ref}-{execution_session_id}",
         kind="DEVICE_EVENT",
         payload_json={"event_type": "DEVICE_RESULT", "device_code": "DEVICE-901"},
+        payload_schema_version=1,
         workline_session_id=workline_session_ref,
         execution_session_id=execution_session_id,
         workline_id=81,
         device_id=901,
         trace_id=f"trace-{status.lower()}-{workline_session_ref}-{execution_session_id}",
         status=status,
+        claim_bucket_key=f"workline-session:{workline_session_ref}",
+        received_at=1,
         last_error_code="INBOX_RETRY_EXHAUSTED" if status == "DEAD_LETTER" else "SESSION_RESOLVE_FAILED",
         last_error_message=f"{status} 原始错误证据",
     )
@@ -158,7 +161,10 @@ async def test_runtime_inbox_projection_payload_is_deep_copy_isolated_from_orm(d
         payload_hash="hash-projection-isolation",
         kind="DEVICE_EVENT",
         payload_json={"data": {"nested": "original"}},
+        payload_schema_version=1,
         status="RECEIVED",
+        claim_bucket_key="source:projection-isolation",
+        received_at=1,
     )
     db_session.add(inbox)
     await db_session.flush()

@@ -16,7 +16,7 @@ from src.app.contracts.runtime_inbox_query import (
     RuntimeInboxWorkloadSample,
 )
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
-from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_inbox import PRE_CUTOVER_AUDIT_ONLY, RuntimeInbox
 from src.core.conf import settings
 from src.core.logger import logger
 from src.database.base_repository import BaseRepository
@@ -275,12 +275,42 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
         earlier = table.alias("earlier_inbox")
         cc = candidate.c
         ec = earlier.c
+        candidate_has_canonical_envelope = (
+            cc.kind.is_not(None)
+            & cc.provider_code.is_not(None)
+            & cc.event_type.is_not(None)
+            & cc.source_event_id.is_not(None)
+            & cc.payload_json.is_not(None)
+            & cc.payload_hash.is_not(None)
+            & cc.payload_schema_version.is_not(None)
+            & cc.claim_bucket_key.is_not(None)
+            & cc.received_at.is_not(None)
+            & cc.last_error_code.is_distinct_from(PRE_CUTOVER_AUDIT_ONLY)
+        )
+        earlier_has_canonical_envelope = (
+            ec.kind.is_not(None)
+            & ec.provider_code.is_not(None)
+            & ec.event_type.is_not(None)
+            & ec.source_event_id.is_not(None)
+            & ec.payload_json.is_not(None)
+            & ec.payload_hash.is_not(None)
+            & ec.payload_schema_version.is_not(None)
+            & ec.claim_bucket_key.is_not(None)
+            & ec.received_at.is_not(None)
+            & ec.last_error_code.is_distinct_from(PRE_CUTOVER_AUDIT_ONLY)
+        )
+        # 候选 -> canonical envelope -> 状态/重试预算 -> FIFO anti-join -> 原子 UPDATE。
+        # audit-only 或 malformed 行既不能被 claim，也不能作为同桶队首阻塞行动型消息。
         claimable = (
-            (cc.status == "RECEIVED")
-            | ((cc.status == "FAILED") & (cc.next_retry_at <= now_value))
-            | ((cc.status == "PROCESSING") & (cc.lease_until <= now_value))
-        ) & (cc.attempt_count < cc.max_retries)
-        earlier_can_advance = (
+            (
+                (cc.status == "RECEIVED")
+                | ((cc.status == "FAILED") & (cc.next_retry_at <= now_value))
+                | ((cc.status == "PROCESSING") & (cc.lease_until <= now_value))
+            )
+            & (cc.attempt_count < cc.max_retries)
+            & candidate_has_canonical_envelope
+        )
+        earlier_can_advance = earlier_has_canonical_envelope & (
             (ec.status == "RECEIVED")
             | (ec.status == "PROCESSING")
             | ((ec.status == "FAILED") & ec.next_retry_at.is_not(None) & (ec.attempt_count < ec.max_retries))
@@ -439,19 +469,51 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
         table = cast("Any", RuntimeInbox).__table__
         columns = table.c
         now_value = literal(now_ms, type_=BigInteger())
-        status_rows = await db.execute(select(columns.status, func.count()).group_by(columns.status))
+        status_rows = await db.execute(
+            select(columns.status, func.count())
+            .where(columns.last_error_code.is_distinct_from(PRE_CUTOVER_AUDIT_ONLY))
+            .group_by(columns.status)
+        )
         status_counts = dict.fromkeys(("RECEIVED", "PROCESSING", "PROCESSED", "FAILED", "DEAD_LETTER"), 0)
         status_counts.update({str(status): int(count) for status, count in status_rows.all()})
         candidate = table.alias("sli_claim_candidate")
         earlier = table.alias("sli_earlier_inbox")
         cc = candidate.c
         ec = earlier.c
+        candidate_has_canonical_envelope = (
+            cc.kind.is_not(None)
+            & cc.provider_code.is_not(None)
+            & cc.event_type.is_not(None)
+            & cc.source_event_id.is_not(None)
+            & cc.payload_json.is_not(None)
+            & cc.payload_hash.is_not(None)
+            & cc.payload_schema_version.is_not(None)
+            & cc.claim_bucket_key.is_not(None)
+            & cc.received_at.is_not(None)
+            & cc.last_error_code.is_distinct_from(PRE_CUTOVER_AUDIT_ONLY)
+        )
+        earlier_has_canonical_envelope = (
+            ec.kind.is_not(None)
+            & ec.provider_code.is_not(None)
+            & ec.event_type.is_not(None)
+            & ec.source_event_id.is_not(None)
+            & ec.payload_json.is_not(None)
+            & ec.payload_hash.is_not(None)
+            & ec.payload_schema_version.is_not(None)
+            & ec.claim_bucket_key.is_not(None)
+            & ec.received_at.is_not(None)
+            & ec.last_error_code.is_distinct_from(PRE_CUTOVER_AUDIT_ONLY)
+        )
         claimable = (
-            (cc.status == "RECEIVED")
-            | ((cc.status == "FAILED") & (cc.next_retry_at <= now_value))
-            | ((cc.status == "PROCESSING") & (cc.lease_until <= now_value))
-        ) & (cc.attempt_count < cc.max_retries)
-        earlier_can_advance = (
+            (
+                (cc.status == "RECEIVED")
+                | ((cc.status == "FAILED") & (cc.next_retry_at <= now_value))
+                | ((cc.status == "PROCESSING") & (cc.lease_until <= now_value))
+            )
+            & (cc.attempt_count < cc.max_retries)
+            & candidate_has_canonical_envelope
+        )
+        earlier_can_advance = earlier_has_canonical_envelope & (
             (ec.status == "RECEIVED")
             | (ec.status == "PROCESSING")
             | ((ec.status == "FAILED") & ec.next_retry_at.is_not(None) & (ec.attempt_count < ec.max_retries))

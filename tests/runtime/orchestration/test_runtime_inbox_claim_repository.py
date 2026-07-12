@@ -15,6 +15,27 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
+def _runtime_inbox(**values: Any) -> RuntimeInbox:
+    """用完整 canonical envelope 构造真实可行动测试记录。"""
+
+    if values.pop("audit_only", False):
+        return RuntimeInbox(**values)
+    source_event_id = str(values.get("source_event_id", "test-source-event"))
+    defaults: dict[str, Any] = {
+        "provider_code": "TEST",
+        "event_type": "INTERNAL_EVENT",
+        "source_event_id": source_event_id,
+        "kind": "INTERNAL_EVENT",
+        "payload_json": {},
+        "payload_hash": f"sha256:{source_event_id}",
+        "payload_schema_version": 1,
+        "claim_bucket_key": f"source:{source_event_id}",
+        "received_at": 1,
+    }
+    defaults.update(values)
+    return RuntimeInbox(**defaults)
+
+
 class _StatementCaptured(Exception):
     def __init__(self, statement: Any) -> None:
         self.statement = statement
@@ -52,6 +73,14 @@ async def test_claim_compiles_postgresql_atomic_fifo_limit_with_skip_locked() ->
     assert "LIMIT 3" in sql
     assert "FOR UPDATE SKIP LOCKED" in sql
     assert "ATTEMPT_COUNT <" in sql and "MAX_RETRIES" in sql
+    assert "KIND IS NOT NULL" in sql
+    assert "SOURCE_EVENT_ID IS NOT NULL" in sql
+    assert "PAYLOAD_JSON IS NOT NULL" in sql
+    assert "PAYLOAD_HASH IS NOT NULL" in sql
+    assert "PAYLOAD_SCHEMA_VERSION IS NOT NULL" in sql
+    assert "CLAIM_BUCKET_KEY IS NOT NULL" in sql
+    assert "RECEIVED_AT IS NOT NULL" in sql
+    assert "PRE_CUTOVER_AUDIT_ONLY" in sql
     assert "RETURNING" in sql
 
     bound_types = {type(bind.type).__name__ for bind in captured.value.statement.compile().binds.values()}
@@ -151,7 +180,7 @@ async def test_legacy_terminal_failed_rows_do_not_block_bucket_head(db_session: 
     """无推进路径的 legacy FAILED 不能永久阻塞同 bucket 后续消息。"""
 
     rows = [
-        RuntimeInbox(
+        _runtime_inbox(
             provider_code="TEST",
             event_type="DEVICE_EVENT",
             source_event_id="legacy-exhausted",
@@ -163,7 +192,7 @@ async def test_legacy_terminal_failed_rows_do_not_block_bucket_head(db_session: 
             max_retries=3,
             next_retry_at=0,
         ),
-        RuntimeInbox(
+        _runtime_inbox(
             provider_code="TEST",
             event_type="DEVICE_EVENT",
             source_event_id="legacy-nonretry",
@@ -175,7 +204,7 @@ async def test_legacy_terminal_failed_rows_do_not_block_bucket_head(db_session: 
             max_retries=3,
             next_retry_at=None,
         ),
-        RuntimeInbox(
+        _runtime_inbox(
             provider_code="TEST",
             event_type="DEVICE_EVENT",
             source_event_id="current-received",
@@ -211,7 +240,7 @@ async def test_same_numeric_id_in_distinct_session_namespaces_does_not_cross_blo
         "source_event_id": "unused",
     }
     rows = [
-        RuntimeInbox(
+        _runtime_inbox(
             provider_code="TEST",
             event_type="INTERNAL_EVENT",
             source_event_id="workline-session-event",
@@ -220,7 +249,7 @@ async def test_same_numeric_id_in_distinct_session_namespaces_does_not_cross_blo
             claim_bucket_key=_runtime_claim_bucket_key(session_id=41, **common),
             received_at=1,
         ),
-        RuntimeInbox(
+        _runtime_inbox(
             provider_code="TEST",
             event_type="INTERNAL_EVENT",
             source_event_id="execution-session-event",
@@ -249,14 +278,14 @@ async def test_same_numeric_id_in_distinct_session_namespaces_does_not_cross_blo
 @pytest.mark.asyncio
 async def test_sli_snapshot_counts_states_and_oldest_claimable_age(db_session: AsyncSession) -> None:
     rows = [
-        RuntimeInbox(
+        _runtime_inbox(
             provider_code="TEST",
             event_type="SLI",
             source_event_id="received",
             status="RECEIVED",
             received_at=1_000,
         ),
-        RuntimeInbox(
+        _runtime_inbox(
             provider_code="TEST",
             event_type="SLI",
             source_event_id="failed-due",
@@ -265,7 +294,7 @@ async def test_sli_snapshot_counts_states_and_oldest_claimable_age(db_session: A
             next_retry_at=0,
             last_error_message="RESOURCE_WAIT",
         ),
-        RuntimeInbox(
+        _runtime_inbox(
             provider_code="TEST",
             event_type="SLI",
             source_event_id="failed-future",
@@ -273,7 +302,7 @@ async def test_sli_snapshot_counts_states_and_oldest_claimable_age(db_session: A
             received_at=500,
             next_retry_at=20_000,
         ),
-        RuntimeInbox(
+        _runtime_inbox(
             provider_code="TEST",
             event_type="SLI",
             source_event_id="processing-stale",
@@ -282,7 +311,7 @@ async def test_sli_snapshot_counts_states_and_oldest_claimable_age(db_session: A
             lease_until=0,
             processor_token="old-owner",
         ),
-        RuntimeInbox(
+        _runtime_inbox(
             provider_code="TEST",
             event_type="SLI",
             source_event_id="dead-letter",
@@ -308,10 +337,50 @@ async def test_sli_snapshot_counts_states_and_oldest_claimable_age(db_session: A
 
 
 @pytest.mark.asyncio
+async def test_sli_snapshot_excludes_pre_cutover_audit_only_from_actionable_dead_letters(
+    db_session: AsyncSession,
+) -> None:
+    """pre-cutover audit-only 是审计证据，不得触发操作型 dead-letter SLI。"""
+
+    db_session.add_all(
+        [
+            _runtime_inbox(
+                audit_only=True,
+                provider_code="LEGACY",
+                event_type="PRE_CUTOVER",
+                status="DEAD_LETTER",
+                last_error_code="PRE_CUTOVER_AUDIT_ONLY",
+                last_error_message="Pre-cutover row has no canonical envelope; retained for audit only",
+                received_at=1,
+                failed_at=1,
+            ),
+            _runtime_inbox(
+                provider_code="TEST",
+                event_type="DEVICE_EVENT",
+                source_event_id="actionable-dead-letter",
+                kind="DEVICE_EVENT",
+                payload_json={},
+                payload_hash="sha256:actionable",
+                payload_schema_version=1,
+                claim_bucket_key="source:actionable-dead-letter",
+                status="DEAD_LETTER",
+                received_at=2,
+                failed_at=3,
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    snapshot = await RuntimeInboxRepository().get_sli_snapshot(db_session, now_ms=10)
+
+    assert snapshot.status_counts["DEAD_LETTER"] == 1
+
+
+@pytest.mark.asyncio
 async def test_sli_oldest_claimable_age_respects_bucket_fifo_blocker(db_session: AsyncSession) -> None:
     db_session.add_all(
         [
-            RuntimeInbox(
+            _runtime_inbox(
                 provider_code="TEST",
                 event_type="SLI",
                 source_event_id="active-head",
@@ -321,7 +390,7 @@ async def test_sli_oldest_claimable_age_respects_bucket_fifo_blocker(db_session:
                 processor_token="active-owner",
                 claim_bucket_key="bucket-a",
             ),
-            RuntimeInbox(
+            _runtime_inbox(
                 provider_code="TEST",
                 event_type="SLI",
                 source_event_id="blocked-tail",
@@ -329,7 +398,7 @@ async def test_sli_oldest_claimable_age_respects_bucket_fifo_blocker(db_session:
                 received_at=200,
                 claim_bucket_key="bucket-a",
             ),
-            RuntimeInbox(
+            _runtime_inbox(
                 provider_code="TEST",
                 event_type="SLI",
                 source_event_id="claimable-other-bucket",
@@ -354,7 +423,7 @@ async def test_repository_emits_reclaim_fencing_resource_wait_and_dead_letter_sl
     from src.app.runtime.orchestration.observability import runtime_observability_registry
 
     rows = [
-        RuntimeInbox(
+        _runtime_inbox(
             provider_code="TEST",
             event_type="SLI",
             source_event_id=f"event-{index}",
@@ -405,7 +474,7 @@ async def test_latest_by_workline_session_uses_explicit_namespace_column(db_sess
 
     db_session.add_all(
         [
-            RuntimeInbox(
+            _runtime_inbox(
                 provider_code="TEST",
                 event_type="DEVICE_EVENT",
                 source_event_id="older",
@@ -416,7 +485,7 @@ async def test_latest_by_workline_session_uses_explicit_namespace_column(db_sess
                 status="PROCESSED",
                 received_at=1,
             ),
-            RuntimeInbox(
+            _runtime_inbox(
                 provider_code="TEST",
                 event_type="DEVICE_EVENT",
                 source_event_id="latest",
@@ -427,7 +496,7 @@ async def test_latest_by_workline_session_uses_explicit_namespace_column(db_sess
                 status="RECEIVED",
                 received_at=2,
             ),
-            RuntimeInbox(
+            _runtime_inbox(
                 provider_code="TEST",
                 event_type="DEVICE_EVENT",
                 source_event_id="same-execution-namespace",
@@ -459,7 +528,7 @@ async def test_trace_query_uses_explicit_trace_column(db_session: AsyncSession) 
 
     db_session.add_all(
         [
-            RuntimeInbox(
+            _runtime_inbox(
                 provider_code="TEST",
                 event_type="DEVICE_EVENT",
                 source_event_id="explicit-trace",
@@ -468,7 +537,7 @@ async def test_trace_query_uses_explicit_trace_column(db_session: AsyncSession) 
                 status="PROCESSED",
                 received_at=1,
             ),
-            RuntimeInbox(
+            _runtime_inbox(
                 provider_code="TEST",
                 event_type="DEVICE_EVENT",
                 source_event_id="payload-only-trace",

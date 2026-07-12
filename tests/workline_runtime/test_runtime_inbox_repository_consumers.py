@@ -24,7 +24,10 @@ async def test_smt_source_pick_evidence_reads_runtime_inbox(db_session) -> None:
         workline_id=44,
         event_id="evt-source-pick",
         payload_json={"event_type": "SORTING_SOURCE_PICK_REQUESTED", "data": {"source_item_id": 22}},
+        payload_schema_version=1,
         status="FAILED",
+        claim_bucket_key="source:source-pick:11:22:3",
+        received_at=1_783_733_000_000,
         attempt_count=2,
         max_retries=5,
         next_retry_at=1_783_733_400_000,
@@ -86,7 +89,10 @@ async def test_unfinished_workload_counts_runtime_inbox_five_state_contract(
             workline_id=710,
             event_id=f"evt-{status}",
             payload_json={"status": status},
+            payload_schema_version=1,
             status=status,
+            claim_bucket_key=f"source:state:{status}",
+            received_at=1,
             # FAILED 尚未到重试时间也仍是未完成负载。
             next_retry_at=1_999_999_999_999 if status == "FAILED" else None,
         )
@@ -101,7 +107,10 @@ async def test_unfinished_workload_counts_runtime_inbox_five_state_contract(
             kind="INTERNAL_EVENT",
             workline_id=711,
             payload_json={"workline_id": 710},
+            payload_schema_version=1,
             status="RECEIVED",
+            claim_bucket_key="source:state:unrelated",
+            received_at=2,
         )
     )
     await db_session.flush()
@@ -128,7 +137,11 @@ async def test_runtime_inbox_repository_can_read_source_pick_evidence_by_id(db_s
         event_type="SORTING_SOURCE_PICK_REQUESTED",
         source_event_id="source-pick:direct",
         payload_hash="hash-direct",
+        kind="INTERNAL_EVENT",
         payload_json={"event_type": "SORTING_SOURCE_PICK_REQUESTED"},
+        payload_schema_version=1,
+        claim_bucket_key="source:source-pick:direct",
+        received_at=1,
     )
     db_session.add(inbox)
     await db_session.flush()

@@ -518,7 +518,8 @@ class RuntimeInboxService:
     ) -> RuntimeInboxAcceptResult:
         """接收 device event 写入 RuntimeInbox (kind=DEVICE_EVENT).
 
-        - event_id 存在时作为 source identity，同 hash ACK、异 hash 冲突；缺失时允许重复。
+        - event_id 存在时作为 source identity；缺失时按 provider/event/payload
+          生成内容寻址 identity。
         - provider_code 从 device_code 前缀派生 (ARM_01 -> ARM), 默认 "ECS"。
         - 本入口没有 ExecutionSession 映射参数，因此 execution_session_id 留空；
           processor 不得从 WorklineSession ID 推导该字段。
@@ -531,19 +532,24 @@ class RuntimeInboxService:
             raise TypeError("device event payload_json must be a dict")
 
         provider_code = self._derive_provider_code_for_device(device_code)
-        source_event_id = event_id
+        payload_hash = _canonical_payload_hash(payload_json)
+        source_event_id = event_id or _fit_runtime_identity(
+            f"device-event:{provider_code}:{device_code}:{event_type}:{payload_hash}",
+            max_length=160,
+        )
+        canonical_event_id = event_id or source_event_id
         correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
         result = await self.accept_received(
             db,
             provider_code=provider_code,
             event_type=event_type,
             source_event_id=source_event_id,
-            payload_hash=_canonical_payload_hash(payload_json),
+            payload_hash=payload_hash,
             kind="DEVICE_EVENT",
             payload_json=payload_json,
             payload_schema_version=1,
             trace_id=trace_id,
-            event_id=event_id,
+            event_id=canonical_event_id,
             causation_id=causation_id,
             workline_id=workline_id,
             device_id=device_id,
@@ -571,7 +577,7 @@ class RuntimeInboxService:
         """接收内部事件写入 RuntimeInbox (kind=INTERNAL_EVENT).
 
         - provider_code 固定 "RUNTIME"。
-        - event_id 存在时作为 source identity，同 hash ACK、异 hash 冲突；缺失时允许重复。
+        - event_id 存在时作为 source identity；缺失时按 event/payload 生成内容寻址 identity。
         - correlation_id 缺省时按 trace_id 反查；未命中时保持为空，避免伪造外键。
         """
 
@@ -583,17 +589,23 @@ class RuntimeInboxService:
         if correlation_id is None:
             correlation_id = await self._resolve_correlation_id_by_trace(db, trace_id=trace_id)
 
+        payload_hash = _canonical_payload_hash(payload_json)
+        source_event_id = event_id or _fit_runtime_identity(
+            f"internal-event:{event_type}:{payload_hash}",
+            max_length=160,
+        )
+        canonical_event_id = event_id or source_event_id
         result = await self.accept_received(
             db,
             provider_code="RUNTIME",
             event_type=event_type,
-            source_event_id=event_id,
-            payload_hash=_canonical_payload_hash(payload_json),
+            source_event_id=source_event_id,
+            payload_hash=payload_hash,
             kind="INTERNAL_EVENT",
             payload_json=payload_json,
             payload_schema_version=1,
             trace_id=trace_id,
-            event_id=event_id,
+            event_id=canonical_event_id,
             causation_id=causation_id,
             workline_id=workline_id,
             execution_session_id=execution_session_id,
@@ -704,6 +716,7 @@ class RuntimeInboxService:
             "command_status": command_status,
             "ack_received_at": _format_runtime_temporal(ack_received_at),
         }
+        canonical_payload = {"event_type": "TIMER_TIMEOUT", "data": payload_data}
         record_data: dict[str, Any] = {
             "kind": "TIMER_TIMEOUT",
             "workline_session_id": session_id,
@@ -715,8 +728,9 @@ class RuntimeInboxService:
             "provider_code": "RUNTIME",
             "event_type": "TIMER_TIMEOUT",
             "source_event_id": source_event_id,
-            "payload_hash": None,
-            "payload_json": {"event_type": "TIMER_TIMEOUT", "data": payload_data},
+            "payload_hash": _canonical_payload_hash(canonical_payload),
+            "payload_json": canonical_payload,
+            "payload_schema_version": 1,
             "status": "RECEIVED",
             "attempt_count": 0,
             "max_retries": 5,

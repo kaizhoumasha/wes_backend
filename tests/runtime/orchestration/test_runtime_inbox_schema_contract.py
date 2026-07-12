@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any, get_type_hints
 
 import pytest
-from sqlalchemy import BigInteger, Integer
+from sqlalchemy import BigInteger, CheckConstraint, Integer
 
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 
@@ -95,6 +95,37 @@ def test_kind_field_is_optional_string() -> None:
     kind_col = sqlmodel_cols.kind
     assert kind_col.nullable is True
     assert kind_col.type.length == 40
+
+
+def test_runtime_inbox_has_named_kind_status_and_conditional_envelope_checks() -> None:
+    """模型 metadata 必须与 Revision A 的三条数据库 CHECK 合同同源。"""
+
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in RuntimeInbox.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+    assert set(checks) >= {
+        "ck_runtime_inbox_kind_valid",
+        "ck_runtime_inbox_status_valid",
+        "ck_runtime_inbox_conditional_envelope",
+    }
+    assert "COMMAND_RESULT" in checks["ck_runtime_inbox_kind_valid"]
+    assert "DEAD_LETTER" in checks["ck_runtime_inbox_status_valid"]
+    assert "PRE_CUTOVER_AUDIT_ONLY" in checks["ck_runtime_inbox_conditional_envelope"]
+    for field_name in (
+        "kind",
+        "provider_code",
+        "event_type",
+        "source_event_id",
+        "payload_json",
+        "payload_hash",
+        "payload_schema_version",
+        "claim_bucket_key",
+        "received_at",
+    ):
+        assert field_name in checks["ck_runtime_inbox_conditional_envelope"]
 
 
 def test_payload_json_field_is_nullable_jsonb() -> None:

@@ -652,11 +652,16 @@ async def test_runtime_inbox_accept_keeps_session_usable_after_real_unique_confl
     from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
 
     existing = RuntimeInbox(
+        kind="EXTERNAL_HTTP",
         provider_code="WMS",
         event_type="WMS_TASK_CHANGE",
         source_event_id="evt-real-race-001",
         payload_hash="hash-001",
+        payload_json={"event_type": "WMS_TASK_CHANGE"},
+        payload_schema_version=1,
         status="RECEIVED",
+        claim_bucket_key="source:evt-real-race-001",
+        received_at=NOW_MS,
     )
     db_session.add(existing)
     await db_session.flush()
@@ -678,11 +683,16 @@ async def test_runtime_inbox_accept_keeps_session_usable_after_real_unique_confl
     assert result.record.id == existing.id
 
     probe = RuntimeInbox(
+        kind="EXTERNAL_HTTP",
         provider_code="WMS",
         event_type="WMS_TASK_CHANGE",
         source_event_id="evt-real-race-probe",
         payload_hash="hash-probe",
+        payload_json={"event_type": "WMS_TASK_CHANGE"},
+        payload_schema_version=1,
         status="RECEIVED",
+        claim_bucket_key="source:evt-real-race-probe",
+        received_at=NOW_MS,
     )
     db_session.add(probe)
     await db_session.flush()
@@ -884,11 +894,17 @@ async def test_runtime_inbox_manual_replay_creates_new_record_and_audit(db_sessi
 
     dead = RuntimeInbox(
         execution_session_id=session.id,
+        kind="EXTERNAL_HTTP",
         provider_code="WMS",
         event_type="WMS_EXCHANGE_COMPLETED",
         source_event_id="evt-dead-001",
         payload_hash="hash-dead-001",
+        payload_json={"event_type": "WMS_EXCHANGE_COMPLETED"},
+        payload_schema_version=1,
         status="DEAD_LETTER",
+        claim_bucket_key="source:evt-dead-001",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
         attempt_count=5,
         max_retries=5,
     )
@@ -919,8 +935,8 @@ async def test_runtime_inbox_manual_replay_creates_new_record_and_audit(db_sessi
 
 
 @pytest.mark.asyncio
-async def test_runtime_inbox_accept_allows_missing_source_event_id_without_dedup(db_session) -> None:
-    """source_event_id 缺失时允许 ACK，但不做 source-event 级去重。"""
+async def test_runtime_inbox_accept_distinct_explicit_source_identities_without_cross_dedup(db_session) -> None:
+    """直接调用 accept_received 的测试输入必须提供 canonical source identity。"""
 
     from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxService
 
@@ -931,7 +947,7 @@ async def test_runtime_inbox_accept_allows_missing_source_event_id_without_dedup
         db_session,
         provider_code="AGV",
         event_type="external",
-        source_event_id=None,
+        source_event_id="explicit-source-001",
         payload_hash="hash-missing-001",
     )
     second = await _accept_received(
@@ -939,7 +955,7 @@ async def test_runtime_inbox_accept_allows_missing_source_event_id_without_dedup
         db_session,
         provider_code="AGV",
         event_type="external",
-        source_event_id=None,
+        source_event_id="explicit-source-002",
         payload_hash="hash-missing-001",
     )
 

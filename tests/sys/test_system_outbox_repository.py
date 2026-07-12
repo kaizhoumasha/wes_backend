@@ -102,7 +102,10 @@ async def test_sandbox_completed_messages_join_runtime_inbox_by_explicit_worklin
         source_event_id="sandbox-runtime-inbox-event-1",
         kind="DEVICE_EVENT",
         payload_json={"event_type": "SCAN_COMPLETED", "data": {"session_id": session.id}},
+        payload_hash="sha256:sandbox-runtime-inbox-event-1",
+        payload_schema_version=1,
         status="PROCESSED",
+        claim_bucket_key=f"workline-session:{session.id}",
         received_at=1,
     )
     db_session.add_all([outbox, inbox])

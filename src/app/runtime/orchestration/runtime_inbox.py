@@ -21,12 +21,41 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, Index, text
+from sqlalchemy import JSON, BigInteger, CheckConstraint, Index, text
 from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
 from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
 from src.core.mixins.base import BaseMixin
+
+PRE_CUTOVER_AUDIT_ONLY = "PRE_CUTOVER_AUDIT_ONLY"
+
+_KIND_CHECK_SQL = (
+    "kind IN ('COMMAND_RESULT', 'DEVICE_EVENT', 'EXTERNAL_HTTP', 'INTERNAL_EVENT', 'TIMER_TIMEOUT', 'REPLAY_REQUEST')"
+)
+_STATUS_CHECK_SQL = "status IN ('RECEIVED', 'PROCESSING', 'PROCESSED', 'FAILED', 'DEAD_LETTER')"
+_CONDITIONAL_ENVELOPE_CHECK_SQL = f"""
+(
+    status = 'DEAD_LETTER'
+    AND last_error_code = '{PRE_CUTOVER_AUDIT_ONLY}'
+    AND last_error_message IS NOT NULL
+    AND received_at IS NOT NULL
+    AND failed_at IS NOT NULL
+)
+OR
+(
+    last_error_code IS DISTINCT FROM '{PRE_CUTOVER_AUDIT_ONLY}'
+    AND kind IS NOT NULL
+    AND provider_code IS NOT NULL
+    AND event_type IS NOT NULL
+    AND source_event_id IS NOT NULL
+    AND payload_json IS NOT NULL
+    AND payload_hash IS NOT NULL
+    AND payload_schema_version IS NOT NULL
+    AND claim_bucket_key IS NOT NULL
+    AND received_at IS NOT NULL
+)
+"""
 
 
 class RuntimeInbox(BaseMixin, table=True):
@@ -45,6 +74,12 @@ class RuntimeInbox(BaseMixin, table=True):
     __tablename__ = "runtime_inbox"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
     __table_args__ = (
+        CheckConstraint(_KIND_CHECK_SQL, name="kind_valid"),
+        CheckConstraint(_STATUS_CHECK_SQL, name="status_valid"),
+        CheckConstraint(
+            _CONDITIONAL_ENVELOPE_CHECK_SQL,
+            name="conditional_envelope",
+        ),
         Index(
             "ux_wes_runtime_runtime_inbox_source_event",
             "provider_code",

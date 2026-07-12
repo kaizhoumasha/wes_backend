@@ -77,14 +77,14 @@ async def test_accept_device_event_minimal_args_writes_received(db_session) -> N
     assert record.kind == "DEVICE_EVENT"
     assert record.provider_code == "ARM"
     assert record.event_type == "SCAN_COMPLETED"
-    assert record.source_event_id is None
+    assert record.source_event_id
     assert record.status == "RECEIVED"
     assert record.payload_json == {"barcode": "B-001", "qty": 1}
     assert record.workline_id is None
     assert record.device_id is None
     assert record.command_id is None
     assert record.trace_id is None
-    assert record.event_id is None
+    assert record.event_id == record.source_event_id
     assert record.causation_id is None
     assert record.correlation_id is None
     assert record.max_retries == 5
@@ -264,7 +264,8 @@ async def test_accept_internal_event_minimal_args_writes_received(db_session) ->
     assert record.kind == "INTERNAL_EVENT"
     assert record.provider_code == "RUNTIME"
     assert record.event_type == "SOURCE_PICK_REQUESTED"
-    assert record.source_event_id is None
+    assert record.source_event_id
+    assert record.event_id == record.source_event_id
     assert record.status == "RECEIVED"
     assert record.payload_json == {"handoff_demand_id": 1}
     assert record.correlation_id is None
@@ -418,7 +419,8 @@ async def test_accept_internal_event_propagates_db_integrity_error(db_session) -
     service = RuntimeInboxService()
 
     broken_repo = SimpleNamespace(
-        add_received=AsyncMock(side_effect=IntegrityError("INSERT", {}, Exception("constraint")))
+        get_by_source_event_identity=AsyncMock(return_value=None),
+        add_received=AsyncMock(side_effect=IntegrityError("INSERT", {}, Exception("constraint"))),
     )
     service.repository = broken_repo  # type: ignore[assignment]
 
@@ -718,6 +720,8 @@ async def test_accept_timer_timeout_writes_canonical_idempotent_runtime_inbox(db
     assert record.trace_id == "trace-timeout-001"
     assert record.claim_bucket_key == f"workline-session:{legacy_session_id}"
     assert record.received_at == NOW_MS
+    assert record.payload_hash
+    assert record.payload_schema_version == 1
     assert record.payload_json == {
         "event_type": "TIMER_TIMEOUT",
         "data": {
