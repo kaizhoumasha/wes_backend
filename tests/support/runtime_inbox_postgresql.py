@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import os
 import re
 import subprocess
@@ -17,12 +18,14 @@ import asyncpg
 from sqlalchemy.engine import URL, make_url
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Collection, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SAFE_DATABASE_PREFIX = "wes_tmp_runtime_inbox_"
 REQUIRED_FREE_CONNECTION_SLOTS = 3
+DEFAULT_SAFE_DATABASE_HOSTS = frozenset({"localhost", "db"})
 _SAFE_DATABASE_PATTERN = re.compile(rf"{re.escape(SAFE_DATABASE_PREFIX)}[0-9a-f]{{32}}\Z")
+_SAFE_HOSTNAME_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
 _PREFLIGHT_SQL = """
 SELECT
     (role.rolcreatedb OR role.rolsuper) AS can_create_database,
@@ -69,7 +72,44 @@ def _safe_source_database(database: str) -> bool:
     )
 
 
-def _integration_url(environ: Mapping[str, str] | None = None) -> URL:
+def _normalize_host(host: str) -> str:
+    candidate = host.strip().removesuffix(".")
+    if not candidate:
+        raise HeavyHarnessError("unsafe_target", "integration URL host 不在安全 allowlist")
+    try:
+        return ipaddress.ip_address(candidate).compressed.lower()
+    except ValueError:
+        pass
+    try:
+        normalized = candidate.encode("idna").decode("ascii").lower()
+    except UnicodeError:
+        raise HeavyHarnessError("unsafe_target", "integration URL host 不在安全 allowlist") from None
+    if _SAFE_HOSTNAME_PATTERN.fullmatch(normalized) is None or ".." in normalized:
+        raise HeavyHarnessError("unsafe_target", "integration URL host 不在安全 allowlist")
+    return normalized
+
+
+def _safe_database_hosts(source: Mapping[str, str], safe_hosts: Collection[str] | None) -> frozenset[str]:
+    configured_hosts = list(safe_hosts or ())
+    configured_hosts.extend(source.get("INTEGRATION_DATABASE_SAFE_HOSTS", "").split(","))
+    return frozenset(_normalize_host(host) for host in configured_hosts if host.strip())
+
+
+def _is_safe_database_host(host: str, configured_hosts: frozenset[str]) -> bool:
+    normalized = _normalize_host(host)
+    if normalized in DEFAULT_SAFE_DATABASE_HOSTS or normalized in configured_hosts:
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _integration_url(
+    environ: Mapping[str, str] | None = None,
+    *,
+    safe_hosts: Collection[str] | None = None,
+) -> URL:
     source = os.environ if environ is None else environ
     raw_url = source.get("INTEGRATION_DATABASE_URL", "").strip()
     if not raw_url:
@@ -80,6 +120,9 @@ def _integration_url(environ: Mapping[str, str] | None = None) -> URL:
         raise HeavyHarnessError("invalid_url", "integration URL 无法解析") from None
     if url.get_backend_name() != "postgresql" or not url.database:
         raise HeavyHarnessError("invalid_url", "integration URL 必须指向 PostgreSQL 数据库")
+    configured_hosts = _safe_database_hosts(source, safe_hosts)
+    if not url.host or not _is_safe_database_host(url.host, configured_hosts):
+        raise HeavyHarnessError("unsafe_target", "integration URL host 不在安全 allowlist")
     if not _safe_source_database(url.database):
         raise HeavyHarnessError("unsafe_target", "integration URL 未指向隔离的 admin/test 数据库")
     return url
@@ -105,7 +148,7 @@ async def connect(database: str) -> asyncpg.Connection:
 async def _close_without_override(connection: Any) -> None:
     try:
         await connection.close()
-    except BaseException:
+    except Exception:
         return
 
 
@@ -114,16 +157,19 @@ async def preflight(
     environ: Mapping[str, str] | None = None,
     driver: Any = asyncpg,
     required_free_slots: int = REQUIRED_FREE_CONNECTION_SLOTS,
+    safe_hosts: Collection[str] | None = None,
 ) -> PostgreSQLPreflight:
     """验证显式 URL、认证、CREATEDB 权限与当前连接容量。"""
 
-    url = _integration_url(environ)
+    url = _integration_url(environ, safe_hosts=safe_hosts)
     admin_url = _render_url(url, database=url.database or "postgres", sqlalchemy_driver=False)
     try:
         admin = await driver.connect(admin_url)
     except asyncio.CancelledError:
         raise
-    except BaseException:
+    except Exception as exc:
+        if getattr(exc, "sqlstate", None) == "53300":
+            raise HeavyHarnessError("capacity", "PostgreSQL 当前连接容量已耗尽") from None
         raise HeavyHarnessError("auth", "无法连接或认证 PostgreSQL admin/test 数据库") from None
 
     try:
@@ -144,7 +190,7 @@ async def preflight(
     except HeavyHarnessError:
         await _close_without_override(admin)
         raise
-    except BaseException:
+    except Exception:
         await _close_without_override(admin)
         raise HeavyHarnessError("permission", "无法验证 PostgreSQL 权限或容量") from None
 
@@ -183,22 +229,66 @@ def _attach_cleanup(primary_error: BaseException, diagnostics: tuple[str, ...]) 
         primary_error.add_note(f"heavy_harness_cleanup={','.join(diagnostics)}")
 
 
+async def _cleanup_database(
+    checked: PostgreSQLPreflight,
+    database: str,
+    *,
+    create_attempted: bool,
+) -> tuple[str, ...]:
+    diagnostics: list[str] = []
+    try:
+        if create_attempted:
+            try:
+                await _drop_database(checked.admin, database)
+            except Exception:
+                diagnostics.append("drop_failed")
+    finally:
+        try:
+            await checked.close()
+        except Exception:
+            diagnostics.append("close_failed")
+    return tuple(diagnostics)
+
+
+async def _wait_for_cleanup(
+    checked: PostgreSQLPreflight,
+    database: str,
+    *,
+    create_attempted: bool,
+) -> tuple[tuple[str, ...], asyncio.CancelledError | None]:
+    cleanup_task = asyncio.create_task(
+        _cleanup_database(checked, database, create_attempted=create_attempted),
+        name=f"cleanup-{database}",
+    )
+    interrupted_by: asyncio.CancelledError | None = None
+    while True:
+        try:
+            return await asyncio.shield(cleanup_task), interrupted_by
+        except asyncio.CancelledError as exc:
+            if cleanup_task.cancelled():
+                raise
+            if interrupted_by is None:
+                interrupted_by = exc
+
+
 @asynccontextmanager
 async def temporary_database(
     *,
     environ: Mapping[str, str] | None = None,
     driver: Any = asyncpg,
     database_name_factory: Callable[[], str] = _random_database_name,
+    safe_hosts: Collection[str] | None = None,
 ) -> AsyncIterator[tuple[str, str]]:
     """创建隔离临时数据库，并在成功、失败或取消后强制清理。"""
 
     database = database_name_factory()
     _validate_temporary_database_name(database)
-    checked = await preflight(environ=environ, driver=driver)
+    checked = await preflight(environ=environ, driver=driver, safe_hosts=safe_hosts)
     primary_error: BaseException | None = None
     primary_cause: BaseException | None = None
     create_attempted = False
-    cleanup_diagnostics: list[str] = []
+    cleanup_diagnostics: tuple[str, ...] = ()
+    cleanup_cancellation: asyncio.CancelledError | None = None
 
     # preflight -> CREATE -> yield scenario -> DROP -> close admin
     #                \_____ every exit path reaches cleanup _____/
@@ -208,7 +298,7 @@ async def temporary_database(
             await checked.admin.execute(f"CREATE DATABASE {_quote_database(database)}")
         except asyncio.CancelledError as exc:
             primary_error = exc
-        except BaseException:
+        except Exception:
             primary_error = HeavyHarnessError("create", "创建 PostgreSQL 临时数据库失败")
 
         if primary_error is None:
@@ -216,21 +306,19 @@ async def temporary_database(
                 yield database, _render_url(checked.base_url, database=database, sqlalchemy_driver=True)
             except asyncio.CancelledError as exc:
                 primary_error = exc
-            except BaseException as exc:
+            except Exception as exc:
                 primary_error = HeavyHarnessError("scenario", "PostgreSQL heavy scenario 执行失败")
                 primary_cause = exc
     finally:
-        if create_attempted:
-            try:
-                await _drop_database(checked.admin, database)
-            except BaseException:
-                cleanup_diagnostics.append("drop_failed")
-        try:
-            await checked.close()
-        except BaseException:
-            cleanup_diagnostics.append("close_failed")
+        cleanup_diagnostics, cleanup_cancellation = await _wait_for_cleanup(
+            checked,
+            database,
+            create_attempted=create_attempted,
+        )
 
-    diagnostics = tuple(cleanup_diagnostics)
+    if cleanup_cancellation is not None and primary_error is None:
+        primary_error = cleanup_cancellation
+    diagnostics = cleanup_diagnostics
     if primary_error is not None:
         _attach_cleanup(primary_error, diagnostics)
         if primary_cause is not None:

@@ -34,7 +34,10 @@ class _FakeConnection:
     )
     fail_create: BaseException | None = None
     fail_drop: BaseException | None = None
+    drop_started: asyncio.Event | None = None
+    allow_drop: asyncio.Event | None = None
     statements: list[str] = field(default_factory=list)
+    drop_completed: bool = False
     closed: bool = False
 
     async def fetchrow(self, _query: str) -> dict[str, object]:
@@ -46,6 +49,12 @@ class _FakeConnection:
             raise self.fail_create
         if statement.startswith("DROP DATABASE") and self.fail_drop is not None:
             raise self.fail_drop
+        if statement.startswith("DROP DATABASE"):
+            if self.drop_started is not None:
+                self.drop_started.set()
+            if self.allow_drop is not None:
+                await self.allow_drop.wait()
+            self.drop_completed = True
         return "OK"
 
     async def close(self) -> None:
@@ -63,6 +72,12 @@ class _FakeDriver:
         if self.connect_error is not None:
             raise self.connect_error
         return self.connection
+
+
+class _FakePostgreSQLConnectError(RuntimeError):
+    def __init__(self, message: str, *, sqlstate: str) -> None:
+        self.sqlstate = sqlstate
+        super().__init__(message)
 
 
 @pytest.mark.parametrize(
@@ -88,6 +103,69 @@ def test_preflight_rejects_missing_invalid_and_unsafe_urls_without_leaking_value
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql://runner:top-secret@localhost/test_runtime",
+        "postgresql://runner:top-secret@127.42.0.1/test_runtime",
+        "postgresql://runner:top-secret@[::1]/test_runtime",
+        "postgresql://runner:top-secret@db/test_runtime",
+    ],
+)
+def test_preflight_accepts_only_default_local_loopback_and_project_docker_hosts(url: str) -> None:
+    async def scenario() -> None:
+        checked = await preflight(environ={"INTEGRATION_DATABASE_URL": url}, driver=_FakeDriver())
+        await checked.close()
+
+    asyncio.run(scenario())
+
+
+def test_preflight_rejects_remote_host_and_exact_allowlist_prevents_host_bypasses() -> None:
+    async def assert_unsafe(url: str, *, safe_hosts: set[str] | None = None, env_hosts: str | None = None) -> None:
+        environ = {"INTEGRATION_DATABASE_URL": url}
+        if env_hosts is not None:
+            environ["INTEGRATION_DATABASE_SAFE_HOSTS"] = env_hosts
+        with pytest.raises(HeavyHarnessError) as exc_info:
+            await preflight(environ=environ, driver=_FakeDriver(), safe_hosts=safe_hosts)
+        assert exc_info.value.code == "unsafe_target"
+        rendered_traceback = "".join(
+            traceback.format_exception(type(exc_info.value), exc_info.value, exc_info.value.__traceback__)
+        )
+        assert "prod.example" not in rendered_traceback
+        assert "top-secret" not in rendered_traceback
+
+    async def scenario() -> None:
+        await assert_unsafe("postgresql://runner:top-secret@prod.example/postgres")
+        await assert_unsafe(
+            "postgresql://runner:top-secret@ci-db.evil:6543/test_runtime",
+            safe_hosts={"ci-db"},
+        )
+        await assert_unsafe(
+            "postgresql://runner:top-secret@ci-db:6543/test_runtime",
+            env_hosts="ci-db:6543",
+        )
+
+        parameter_driver = _FakeDriver()
+        parameter_checked = await preflight(
+            environ={"INTEGRATION_DATABASE_URL": "postgresql://runner:top-secret@CI-DB:6543/test_runtime"},
+            driver=parameter_driver,
+            safe_hosts={"ci-db"},
+        )
+        await parameter_checked.close()
+
+        environment_driver = _FakeDriver()
+        environment_checked = await preflight(
+            environ={
+                "INTEGRATION_DATABASE_URL": "postgresql://runner:top-secret@[2001:db8::7]:6543/test_runtime",
+                "INTEGRATION_DATABASE_SAFE_HOSTS": "ci-db, 2001:0db8:0:0:0:0:0:7",
+            },
+            driver=environment_driver,
+        )
+        await environment_checked.close()
+
+    asyncio.run(scenario())
+
+
 def test_preflight_classifies_auth_permission_and_capacity_failures() -> None:
     async def assert_failure(driver: _FakeDriver, expected_code: str) -> None:
         with pytest.raises(HeavyHarnessError) as exc_info:
@@ -102,6 +180,15 @@ def test_preflight_classifies_auth_permission_and_capacity_failures() -> None:
         await assert_failure(
             _FakeDriver(connect_error=asyncpg.InvalidPasswordError("top-secret authentication detail")),
             "auth",
+        )
+        await assert_failure(
+            _FakeDriver(
+                connect_error=_FakePostgreSQLConnectError(
+                    "top-secret too many clients detail",
+                    sqlstate="53300",
+                )
+            ),
+            "capacity",
         )
 
         permission_connection = _FakeConnection()
@@ -219,6 +306,37 @@ def test_cleanup_failure_keeps_primary_scenario_and_cancellation_errors() -> Non
                 raise asyncio.CancelledError
         assert any("cleanup=drop_failed" in note for note in getattr(cancel_error.value, "__notes__", ()))
         assert cancel_driver.connection.closed
+
+    asyncio.run(scenario())
+
+
+def test_external_cancellation_during_drop_waits_for_cleanup_and_preserves_cancelled_error() -> None:
+    async def scenario() -> None:
+        drop_started = asyncio.Event()
+        allow_drop = asyncio.Event()
+        connection = _FakeConnection(drop_started=drop_started, allow_drop=allow_drop)
+        driver = _FakeDriver(connection=connection)
+
+        async def use_database() -> None:
+            async with temporary_database(
+                environ={"INTEGRATION_DATABASE_URL": SAFE_URL},
+                driver=driver,
+                database_name_factory=lambda: TEMP_DATABASE,
+            ):
+                pass
+
+        task = asyncio.create_task(use_database())
+        await drop_started.wait()
+        task.cancel("cancel-during-drop")
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        allow_drop.set()
+        with pytest.raises(asyncio.CancelledError) as cancel_error:
+            await task
+        assert cancel_error.value.args == ("cancel-during-drop",)
+        assert connection.drop_completed
+        assert connection.closed
 
     asyncio.run(scenario())
 
