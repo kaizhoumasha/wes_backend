@@ -19,7 +19,7 @@ from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxSer
 from tests.support.runtime_inbox_postgresql import connect, run_alembic, temporary_database
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Coroutine, Iterable
+    from collections.abc import AsyncIterator, Callable, Coroutine, Iterable
     from pathlib import Path
 
     import asyncpg
@@ -209,7 +209,8 @@ async def _run_workers_with_monitor(
     monitor: Coroutine[Any, Any, None],
     *,
     done: asyncio.Event,
-) -> None:
+    clock: Callable[[], float] = time.perf_counter,
+) -> float:
     worker_tasks = [
         asyncio.create_task(worker, name=f"runtime-inbox-benchmark-worker-{index}")
         for index, worker in enumerate(workers)
@@ -221,6 +222,7 @@ async def _run_workers_with_monitor(
 
     worker_supervisor = asyncio.create_task(wait_for_workers(), name="runtime-inbox-benchmark-workers")
     primary_error: BaseException | None = None
+    workers_finished_at: float | None = None
     try:
         completed, _pending = await asyncio.wait(
             {worker_supervisor, monitor_task},
@@ -228,6 +230,7 @@ async def _run_workers_with_monitor(
         )
         if worker_supervisor in completed:
             await worker_supervisor
+            workers_finished_at = clock()
         else:
             await monitor_task
             if not worker_supervisor.done():
@@ -249,6 +252,8 @@ async def _run_workers_with_monitor(
 
     if primary_error is not None:
         raise primary_error from None
+    assert workers_finished_at is not None
+    return workers_finished_at
 
 
 async def _run_benchmark() -> dict[str, object]:
@@ -274,17 +279,12 @@ async def _run_benchmark() -> dict[str, object]:
             state = _BenchmarkState()
             done = asyncio.Event()
             started_at = time.perf_counter()
-            try:
-                await _run_workers_with_monitor(
-                    (
-                        _claim_worker(worker_id, session_factory, service, state)
-                        for worker_id in range(WORKER_CONCURRENCY)
-                    ),
-                    _monitor_waiting_locks(database, state, done),
-                    done=done,
-                )
-            finally:
-                elapsed_seconds = time.perf_counter() - started_at
+            workers_finished_at = await _run_workers_with_monitor(
+                (_claim_worker(worker_id, session_factory, service, state) for worker_id in range(WORKER_CONCURRENCY)),
+                _monitor_waiting_locks(database, state, done),
+                done=done,
+            )
+            elapsed_seconds = workers_finished_at - started_at
 
             async with session_factory() as db:
                 processed_count = int(

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
 
 import pytest
 
-from tests.load.runtime_inbox_postgresql_benchmark import _managed_engine, _run_workers_with_monitor
+from tests.load.runtime_inbox_postgresql_benchmark import _managed_engine, _run_benchmark, _run_workers_with_monitor
 
 
 @dataclass(slots=True)
@@ -89,5 +90,46 @@ def test_worker_success_and_engine_context_preserve_result_and_dispose_once() ->
                 raise primary_error
         assert exc_info.value is primary_error
         assert failure_engine.dispose_count == 1
+
+    asyncio.run(scenario())
+
+
+def test_worker_finish_timestamp_is_captured_before_blocked_monitor_cleanup() -> None:
+    async def scenario() -> None:
+        done = asyncio.Event()
+        clock_called = asyncio.Event()
+        allow_monitor_cleanup = asyncio.Event()
+        monitor_settled = asyncio.Event()
+
+        async def worker() -> None:
+            return
+
+        async def monitor() -> None:
+            await done.wait()
+            await allow_monitor_cleanup.wait()
+            monitor_settled.set()
+
+        def clock() -> float:
+            assert not monitor_settled.is_set()
+            clock_called.set()
+            return 42.0
+
+        task = asyncio.create_task(
+            _run_workers_with_monitor(
+                (worker(),),
+                monitor(),
+                done=done,
+                clock=clock,
+            )
+        )
+        await clock_called.wait()
+        assert not task.done()
+
+        allow_monitor_cleanup.set()
+        assert await task == 42.0
+        assert monitor_settled.is_set()
+
+        benchmark_source = inspect.getsource(_run_benchmark)
+        assert "elapsed_seconds = workers_finished_at - started_at" in benchmark_source
 
     asyncio.run(scenario())
