@@ -22,6 +22,7 @@ AUDIT_ONLY_CODE = "PRE_CUTOVER_AUDIT_ONLY"
 RUNTIME_INBOX_CHECKS = {
     "ck_runtime_inbox_kind_valid",
     "ck_runtime_inbox_status_valid",
+    "ck_runtime_inbox_max_retries_positive",
     "ck_runtime_inbox_conditional_envelope",
 }
 RUNTIME_INBOX_HOT_INDEXES = {
@@ -460,9 +461,10 @@ def test_runtime_inbox_revision_a_accepts_canonical_and_rejects_invalid_contract
                                 claim_bucket_key, received_at, status, attempt_count, max_retries,
                                 last_error_code, last_error_message, failed_at
                             ) VALUES (
-                                $1, 'provider', 'DEVICE_EVENT', $3, $4::json, $5, $6, $7, $8, $2, 0, 5, $9,
-                                CASE WHEN $9 = 'PRE_CUTOVER_AUDIT_ONLY' THEN 'audit evidence' ELSE NULL END,
-                                CASE WHEN $9 = 'PRE_CUTOVER_AUDIT_ONLY' THEN $8 ELSE NULL END
+                                $1, 'provider', 'DEVICE_EVENT', $3, $4::json, $5, $6, $7, $8::bigint, $2, 0, 5,
+                                $9::varchar,
+                                CASE WHEN $9::varchar = 'PRE_CUTOVER_AUDIT_ONLY' THEN 'audit evidence' ELSE NULL END,
+                                CASE WHEN $9::varchar = 'PRE_CUTOVER_AUDIT_ONLY' THEN $8::bigint ELSE NULL END
                             )
                             """,
                             *row,

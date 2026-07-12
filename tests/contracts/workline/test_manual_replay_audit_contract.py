@@ -88,6 +88,8 @@ class _AuditLog:
 class _ManualReplayService:
     """人工重放最小替身 — 死信条目不可就地重置, 必须新建 inbox 记录 + 审计。"""
 
+    REPLAY_MAX_RETRIES = 5
+
     def __init__(self, audit: _AuditLog | None = None) -> None:
         self.audit = audit or _AuditLog()
         self._replays: list[tuple[ManualReplayRequest, RuntimeInboxEntry]] = []
@@ -118,7 +120,7 @@ class _ManualReplayService:
             attempt_count=0,
             next_retry_at=None,
             lease_until=None,
-            max_retries=dead_entry.max_retries,
+            max_retries=self.REPLAY_MAX_RETRIES,
             payload_hash=req.payload_hash,
             source_event_id=req.source_event_id,
             metadata={
@@ -270,8 +272,8 @@ def test_manual_replay_requires_reason_for_audit():
         )
 
 
-def test_manual_replay_preserves_max_retries_from_dead_letter():
-    """happy path: 重放条目继承 max_retries, 不重置重试预算。"""
+def test_manual_replay_uses_independent_fixed_retry_budget():
+    """happy path: 重放条目使用独立固定预算，不继承来源历史预算。"""
     service = _ManualReplayService()
     dead = RuntimeInboxEntry(status="FAILED", attempt_count=6, max_retries=10)
     transition(dead, "DEAD_LETTER", now=1000.0)
@@ -288,7 +290,7 @@ def test_manual_replay_preserves_max_retries_from_dead_letter():
         next_inbox_id=9005,
         replay_trace_id="trace-001",
     )
-    assert replayed.max_retries == 10
+    assert replayed.max_retries == 5
 
 
 def test_manual_replay_propagates_failure_chain_to_dead_letter_again():
@@ -310,21 +312,15 @@ def test_manual_replay_propagates_failure_chain_to_dead_letter_again():
         next_inbox_id=9006,
         replay_trace_id="trace-001",
     )
-    assert replayed.max_retries == 2
+    assert replayed.max_retries == 5
     assert replayed.attempt_count == 0
 
-    transition(replayed, "PROCESSING", now=2001.0)
-    transition(replayed, "FAILED", now=2002.0)
-    assert replayed.attempt_count == 1
-
-    transition(replayed, "RECEIVED", now=2100.0)
-    transition(replayed, "PROCESSING", now=2101.0)
-    transition(replayed, "FAILED", now=2102.0)
-    assert replayed.attempt_count == 2
-
-    transition(replayed, "RECEIVED", now=2200.0)
-    transition(replayed, "PROCESSING", now=2201.0)
-    transition(replayed, "FAILED", now=2202.0)
+    for attempt in range(1, 7):
+        transition(replayed, "PROCESSING", now=2000.0 + attempt * 100)
+        transition(replayed, "FAILED", now=2001.0 + attempt * 100)
+        assert replayed.attempt_count == attempt
+        if attempt <= replayed.max_retries:
+            transition(replayed, "RECEIVED", now=2002.0 + attempt * 100)
 
     assert replayed.status == "DEAD_LETTER"
     assert is_terminal(replayed)

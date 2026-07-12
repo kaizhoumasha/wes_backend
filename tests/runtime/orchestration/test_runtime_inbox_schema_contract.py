@@ -18,6 +18,7 @@ from typing import Any, get_type_hints
 
 import pytest
 from sqlalchemy import BigInteger, CheckConstraint, Integer
+from sqlalchemy.exc import IntegrityError
 
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 
@@ -237,6 +238,40 @@ def test_max_retries_default_is_five() -> None:
     """max_retries 默认 5（覆盖重试预算）。"""
     sqlmodel_cols = RuntimeInbox.__table__.c
     assert sqlmodel_cols.max_retries.default.arg == 5
+
+
+def test_max_retries_has_positive_database_check() -> None:
+    """任何 producer 都不能绕过 Service 写入永远无法 claim 的非正预算。"""
+
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in RuntimeInbox.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert "ck_runtime_inbox_max_retries_positive" in checks
+    assert "max_retries >= 1" in checks["ck_runtime_inbox_max_retries_positive"]
+
+
+@pytest.mark.parametrize("invalid_budget", [0, -1])
+@pytest.mark.asyncio
+async def test_sqlite_rejects_non_positive_max_retries(db_session, invalid_budget: int) -> None:
+    record = RuntimeInbox(
+        kind="INTERNAL_EVENT",
+        provider_code="RUNTIME",
+        event_type="INTERNAL_EVENT",
+        source_event_id=f"sqlite-invalid-budget-{invalid_budget}",
+        payload_hash="hash",
+        payload_json={"event_type": "INTERNAL_EVENT"},
+        payload_schema_version=1,
+        status="RECEIVED",
+        claim_bucket_key=f"source:sqlite-invalid-budget-{invalid_budget}",
+        received_at=1_700_000_000_000,
+        max_retries=invalid_budget,
+    )
+    db_session.add(record)
+    with pytest.raises(IntegrityError, match="max_retries_positive"):
+        await db_session.flush()
+    await db_session.rollback()
 
 
 # ============================================================

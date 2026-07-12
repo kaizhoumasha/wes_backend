@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
 from types import SimpleNamespace
@@ -611,11 +612,33 @@ class WorklineOperationService(BaseService[Any, Any]):
         except RuntimeInboxConflict:
             # API 捕获冲突并返回正常响应，需在返回前提交同事务内的受限冲突审计。
             if auto_commit:
-                await self._commit_mutation(db)
+                await self._commit_replay_audit_boundary(
+                    db,
+                    audit_event_type="RUNTIME_INBOX_MANUAL_REPLAY_CONFLICT",
+                )
             raise
         if auto_commit:
-            await self._commit_mutation(db)
+            await self._commit_replay_audit_boundary(
+                db,
+                audit_event_type="RUNTIME_INBOX_MANUAL_REPLAY",
+            )
         return replay_result.replay_record
+
+    async def _commit_replay_audit_boundary(self, db: Any, *, audit_event_type: str) -> None:
+        """提交 replay 与审计的共同事务；commit 失败时回滚并保留原始原因。"""
+
+        try:
+            await self._commit_mutation(db)
+        except Exception as commit_error:
+            rollback = getattr(db, "rollback", None)
+            if rollback is not None:
+                # commit error 是 API typed 503 的主因，rollback failure 不得覆盖它。
+                with suppress(Exception):
+                    await rollback()
+            raise RuntimeInboxAuditPersistenceFailed(
+                audit_event_type=audit_event_type,
+                original_error=commit_error,
+            ) from commit_error
 
     async def create_manual_operation(
         self,

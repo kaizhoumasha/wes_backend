@@ -89,6 +89,7 @@ class RuntimeInbox(BaseMixin, table=True):
     __table_args__ = (
         CheckConstraint(_KIND_CHECK_SQL, name="kind_valid"),
         CheckConstraint(_STATUS_CHECK_SQL, name="status_valid"),
+        CheckConstraint("max_retries >= 1", name="max_retries_positive"),
         CheckConstraint(
             _CONDITIONAL_ENVELOPE_CHECK_SQL,
             name="conditional_envelope",

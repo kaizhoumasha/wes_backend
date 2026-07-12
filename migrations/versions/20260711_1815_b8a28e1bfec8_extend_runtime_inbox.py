@@ -34,6 +34,7 @@ _CONSTRAINTS: tuple[tuple[str, str], ...] = (
         "ck_runtime_inbox_status_valid",
         "status IN ('RECEIVED', 'PROCESSING', 'PROCESSED', 'FAILED', 'DEAD_LETTER')",
     ),
+    ("ck_runtime_inbox_max_retries_positive", "max_retries >= 1"),
     (
         "ck_runtime_inbox_conditional_envelope",
         f"""

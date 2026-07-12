@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
+from hashlib import sha256
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, select
+import pytest
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from src.app.device.models.command import DeviceCommand
 from src.app.runtime.orchestration.models.session import RuntimeReconciliationState, SessionStatus, WorklineSession
@@ -45,6 +49,11 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
+def _canonical_payload_hash(payload: dict[str, object]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return sha256(encoded).hexdigest()
+
+
 def test_device_event_persists_claims_and_applies_production_effects_once() -> None:
     """producer→RuntimeInbox→claim→三阶段→effects→fenced terminal 必须真实闭环。"""
 
@@ -62,6 +71,151 @@ def test_device_event_persists_claims_and_applies_production_effects_once() -> N
             await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
             await assert_effects(db, seeded, expected_count=1)
             assert queue_gateway.outbox_enqueues == [(None, 50)]
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_manual_replay_rejects_tampered_chain_without_new_replay_effect_or_audit() -> None:
+    """真实 PostgreSQL 必须以锁定 root 事实拒绝 hash/root/归属篡改。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        service = RuntimeInboxService(audit_service=AuditLogService())
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            root = await db.get(RuntimeInbox, seeded.inbox_id)
+            assert root is not None
+            root.status = "DEAD_LETTER"
+            root.failed_at = 1_700_000_000_001
+            first = await service.replay_from_dead_letter(
+                db,
+                source_inbox_id=seeded.inbox_id,
+                request_id="pg-chain-first",
+                actor="integration",
+                reason="seed replay chain",
+            )
+            first.replay_record.status = "DEAD_LETTER"
+            first.replay_record.failed_at = 1_700_000_000_002
+            await db.commit()
+            replay_source_id = first.replay_record.id
+            assert replay_source_id is not None
+
+            baseline = {
+                "inbox": await db.scalar(select(func.count()).select_from(RuntimeInbox)),
+                "audit": await db.scalar(
+                    select(func.count()).select_from(AuditLog).where(AuditLog.title == "RuntimeInbox 人工重放")
+                ),
+                "command": await db.scalar(select(func.count()).select_from(DeviceCommand)),
+                "outbox": await db.scalar(select(func.count()).select_from(SystemOutbox)),
+                "timeline": await db.scalar(select(func.count()).select_from(WorklineTimeline)),
+            }
+
+            for tamper in ("hash", "root", "ownership"):
+                db.expire_all()
+                replay_source = await db.get(RuntimeInbox, replay_source_id)
+                assert replay_source is not None and isinstance(replay_source.payload_json, dict)
+                envelope = dict(replay_source.payload_json)
+                if tamper == "hash":
+                    envelope["original_payload_hash"] = "tampered-root-hash"
+                elif tamper == "root":
+                    envelope["root_source_inbox_id"] = 999_999
+                else:
+                    envelope["original_workline_session_id"] = seeded.session_id + 1
+                await db.execute(
+                    update(RuntimeInbox)
+                    .where(RuntimeInbox.id == replay_source_id)
+                    .values(payload_json=envelope, payload_hash=_canonical_payload_hash(envelope))
+                )
+
+                with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+                    await service.replay_from_dead_letter(
+                        db,
+                        source_inbox_id=replay_source_id,
+                        request_id=f"pg-chain-second-{tamper}",
+                        actor="integration",
+                        reason="reject tampered chain",
+                    )
+                assert exc_info.value.reason_code == "REPLAY_SOURCE_INTEGRITY_VIOLATION"
+                await db.rollback()
+
+                current = {
+                    "inbox": await db.scalar(select(func.count()).select_from(RuntimeInbox)),
+                    "audit": await db.scalar(
+                        select(func.count()).select_from(AuditLog).where(AuditLog.title == "RuntimeInbox 人工重放")
+                    ),
+                    "command": await db.scalar(select(func.count()).select_from(DeviceCommand)),
+                    "outbox": await db.scalar(select(func.count()).select_from(SystemOutbox)),
+                    "timeline": await db.scalar(select(func.count()).select_from(WorklineTimeline)),
+                }
+                assert current == baseline
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_postgresql_retry_budget_constraint_and_replay_claim_contract() -> None:
+    """DB 拒绝非正预算；合法 replay 使用固定预算并可被正常 claim。"""
+
+    async def scenario(
+        session_factory: async_sessionmaker[AsyncSession], _queue_gateway: RecordingTaskQueueGateway
+    ) -> None:
+        async with session_factory() as db:
+            invalid = RuntimeInbox(
+                kind="INTERNAL_EVENT",
+                provider_code="RUNTIME",
+                event_type="INTERNAL_EVENT",
+                source_event_id="pg-invalid-retry-budget",
+                payload_hash="hash",
+                payload_json={"event_type": "INTERNAL_EVENT"},
+                payload_schema_version=1,
+                status="RECEIVED",
+                claim_bucket_key="source:pg-invalid-retry-budget",
+                received_at=1_700_000_000_000,
+                max_retries=0,
+            )
+            db.add(invalid)
+            with pytest.raises(IntegrityError, match="max_retries_positive"):
+                await db.flush()
+            await db.rollback()
+
+            source_payload: dict[str, object] = {"event_type": "INTERNAL_EVENT", "data": {}}
+            source = RuntimeInbox(
+                kind="INTERNAL_EVENT",
+                provider_code="RUNTIME",
+                event_type="INTERNAL_EVENT",
+                source_event_id="pg-fixed-replay-budget",
+                payload_hash=_canonical_payload_hash(source_payload),
+                payload_json=source_payload,
+                payload_schema_version=1,
+                status="DEAD_LETTER",
+                claim_bucket_key="source:pg-fixed-replay-budget",
+                received_at=1_700_000_000_001,
+                failed_at=1_700_000_000_002,
+                max_retries=99,
+            )
+            db.add(source)
+            await db.commit()
+            replay = await RuntimeInboxService(audit_service=AuditLogService()).replay_from_dead_letter(
+                db,
+                source_inbox_id=source.id,
+                request_id="pg-fixed-budget",
+                actor="integration",
+                reason="fixed replay budget",
+            )
+            assert replay.replay_record.max_retries == 5
+            await db.commit()
+
+            claims = await RuntimeInboxService().claim_for_processing(
+                db,
+                limit=1,
+                processor_token="pg-fixed-budget-claimer",
+                stale_after_seconds=60,
+            )
+            assert [claim["id"] for claim in claims] == [replay.replay_record.id]
+            claimed = await db.get(RuntimeInbox, replay.replay_record.id, populate_existing=True)
+            assert claimed is not None
+            assert claimed.status == "PROCESSING"
+            assert claimed.max_retries == 5
 
     asyncio.run(with_temporary_runtime_database(scenario))
 

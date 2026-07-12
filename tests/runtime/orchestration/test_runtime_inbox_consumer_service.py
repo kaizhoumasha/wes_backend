@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -35,6 +36,11 @@ def _canonical_payload_size(payload: dict[str, Any]) -> int:
     return len(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     )
+
+
+def _canonical_payload_hash(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return sha256(encoded).hexdigest()
 
 
 async def _accept_received(service: Any, db: Any, **kwargs: Any) -> Any:
@@ -1161,13 +1167,14 @@ async def test_runtime_inbox_replay_conflict_audit_failure_raises_stable_typed_e
 
 @pytest.mark.asyncio
 async def test_runtime_inbox_replay_of_replay_is_flat(db_session) -> None:
+    root_payload = {"event_type": "SCAN_COMPLETED", "data": {"barcode": "A"}}
     root = RuntimeInbox(
         kind="DEVICE_EVENT",
         provider_code="PLC",
         event_type="SCAN_COMPLETED",
         source_event_id="scan-root",
-        payload_hash="hash-root",
-        payload_json={"event_type": "SCAN_COMPLETED", "data": {"barcode": "A"}},
+        payload_hash=_canonical_payload_hash(root_payload),
+        payload_json=root_payload,
         payload_schema_version=1,
         status="DEAD_LETTER",
         claim_bucket_key="source:scan-root",
@@ -1197,6 +1204,138 @@ async def test_runtime_inbox_replay_of_replay_is_flat(db_session) -> None:
     assert envelope["original_payload"] == root.payload_json
     assert envelope["request_id"] == "req-2"
     assert "original_payload" not in envelope["original_payload"]
+
+
+@pytest.mark.parametrize("tamper", ["payload_hash", "root_source", "routing_evidence", "source_identity"])
+@pytest.mark.asyncio
+async def test_runtime_inbox_replay_of_replay_rejects_tampered_source_evidence(
+    db_session,
+    tamper: str,
+) -> None:
+    """上一层 envelope 不能作为自证；root 内容、归属与路由证据必须回源核验。"""
+
+    root_payload = {"event_type": "SCAN_COMPLETED", "data": {"barcode": "ROOT"}}
+    root = RuntimeInbox(
+        kind="DEVICE_EVENT",
+        provider_code="PLC",
+        event_type="SCAN_COMPLETED",
+        source_event_id=f"tampered-root-{tamper}",
+        payload_hash=_canonical_payload_hash(root_payload),
+        payload_json=root_payload,
+        payload_schema_version=1,
+        workline_id=21,
+        device_id=22,
+        workline_session_id=None,
+        correlation_id=None,
+        status="DEAD_LETTER",
+        claim_bucket_key=f"source:tampered-root-{tamper}",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
+    )
+    db_session.add(root)
+    await db_session.flush()
+    audit_service = _AuditServiceStub()
+    service = RuntimeInboxService(audit_service=audit_service)
+    first = await service.replay_from_dead_letter(
+        db_session,
+        source_inbox_id=root.id,
+        request_id=f"first-{tamper}",
+        actor="7",
+        reason="first",
+    )
+    replay_source = first.replay_record
+    replay_source.status = "DEAD_LETTER"
+    envelope = dict(replay_source.payload_json or {})
+    if tamper == "payload_hash":
+        envelope["original_payload_hash"] = "tampered-hash"
+    elif tamper == "root_source":
+        envelope["root_source_inbox_id"] = 999_999
+    elif tamper == "routing_evidence":
+        envelope["original_workline_id"] = 999
+    else:
+        replay_source.source_event_id = "tampered-replay-source-identity"
+    replay_source.payload_json = envelope
+    replay_source.payload_hash = _canonical_payload_hash(envelope)
+    await db_session.flush()
+
+    with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+        await service.replay_from_dead_letter(
+            db_session,
+            source_inbox_id=replay_source.id,
+            request_id=f"second-{tamper}",
+            actor="8",
+            reason="must reject tampered replay source",
+        )
+
+    assert exc_info.value.reason_code == "REPLAY_SOURCE_INTEGRITY_VIOLATION"
+    assert await db_session.scalar(select(func.count()).select_from(RuntimeInbox)) == 2
+    assert len(audit_service.calls) == 1
+
+
+@pytest.mark.parametrize("invalid_budget", [0, -1])
+@pytest.mark.asyncio
+async def test_accept_received_rejects_non_positive_retry_budget_before_write(db_session, invalid_budget: int) -> None:
+    with pytest.raises(ValueError, match="max_retries"):
+        await RuntimeInboxService().accept_received(
+            db_session,
+            provider_code="RUNTIME",
+            event_type="INTERNAL_EVENT",
+            source_event_id=f"invalid-budget-{invalid_budget}",
+            payload_hash="hash",
+            kind="INTERNAL_EVENT",
+            payload_json={"event_type": "INTERNAL_EVENT"},
+            payload_schema_version=1,
+            max_retries=invalid_budget,
+        )
+    assert await db_session.scalar(select(func.count()).select_from(RuntimeInbox)) == 0
+
+
+@pytest.mark.asyncio
+async def test_replay_uses_fixed_budget_and_rejects_invalid_source_budget(db_session) -> None:
+    source_payload = {"event_type": "INTERNAL_EVENT", "data": {}}
+    source = RuntimeInbox(
+        kind="INTERNAL_EVENT",
+        provider_code="RUNTIME",
+        event_type="INTERNAL_EVENT",
+        source_event_id="fixed-replay-budget",
+        payload_hash=_canonical_payload_hash(source_payload),
+        payload_json=source_payload,
+        payload_schema_version=1,
+        status="DEAD_LETTER",
+        claim_bucket_key="source:fixed-replay-budget",
+        received_at=NOW_MS,
+        failed_at=NOW_MS,
+        max_retries=99,
+    )
+    db_session.add(source)
+    await db_session.flush()
+    service = RuntimeInboxService(audit_service=_AuditServiceStub())
+    replay = await service.replay_from_dead_letter(
+        db_session,
+        source_inbox_id=source.id,
+        request_id="fixed-budget",
+        actor="7",
+        reason="fixed budget",
+    )
+    assert replay.replay_record.max_retries == 5
+
+    invalid_source = SimpleNamespace(
+        status="DEAD_LETTER",
+        last_error_code=None,
+        max_retries=0,
+    )
+    invalid_service = RuntimeInboxService(
+        repository=SimpleNamespace(get_by_id_for_update=AsyncMock(return_value=invalid_source)),  # type: ignore[arg-type]
+    )
+    with pytest.raises(RuntimeInboxReplayNotAllowed) as exc_info:
+        await invalid_service.replay_from_dead_letter(
+            object(),  # type: ignore[arg-type]
+            source_inbox_id=999,
+            request_id="invalid-source-budget",
+            actor="7",
+            reason="must reject invalid source",
+        )
+    assert exc_info.value.reason_code == "INVALID_SOURCE_RETRY_BUDGET"
 
 
 @pytest.mark.parametrize(
@@ -1463,6 +1602,83 @@ async def test_workline_operation_replay_commits_conflict_audit_before_reraising
         await service.replay_inbox(db, inbox_id=12, request_id="req", actor="42", reason="changed")
 
     service._commit_mutation.assert_awaited_once_with(db)
+
+
+@pytest.mark.parametrize("outcome", ["success", "conflict"])
+@pytest.mark.asyncio
+async def test_workline_operation_replay_commit_failure_is_typed_and_rolls_back(outcome: str) -> None:
+    """成功审计与冲突审计的最终 commit 都属于审计持久化边界。"""
+
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+
+    source = SimpleNamespace(id=12, workline_id=5, workline_session_id=None)
+    service = WorklineOperationService(
+        inbox_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
+        workline_repo=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=5, is_active=True))),
+    )
+    conflict = RuntimeInboxConflict(
+        provider_code="RUNTIME",
+        event_type="REPLAY_REQUEST",
+        source_event_id="replay:12:req",
+        existing_payload_hash="old",
+        incoming_payload_hash="new",
+    )
+    if outcome == "success":
+        replay_record = SimpleNamespace(id=13)
+        replay_outcome: object = SimpleNamespace(source_record=source, replay_record=replay_record, audit_event={})
+    else:
+        replay_outcome = conflict
+    service.runtime_inbox_service = SimpleNamespace(
+        replay_from_dead_letter=AsyncMock(
+            return_value=replay_outcome if outcome == "success" else None,
+            side_effect=None if outcome == "success" else replay_outcome,
+        )
+    )
+    commit_error = RuntimeError(f"{outcome} audit commit failed")
+    service._commit_mutation = AsyncMock(side_effect=commit_error)  # type: ignore[method-assign]
+    db = SimpleNamespace(rollback=AsyncMock())
+
+    with pytest.raises(RuntimeInboxAuditPersistenceFailed) as exc_info:
+        await service.replay_inbox(db, inbox_id=12, request_id="req", actor="42", reason="retry")
+
+    assert exc_info.value.original_error is commit_error
+    assert exc_info.value.__cause__ is commit_error
+    assert exc_info.value.audit_event_type == (
+        "RUNTIME_INBOX_MANUAL_REPLAY" if outcome == "success" else "RUNTIME_INBOX_MANUAL_REPLAY_CONFLICT"
+    )
+    db.rollback.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_workline_operation_replay_auto_commit_false_does_not_own_commit_or_rollback() -> None:
+    from src.app.runtime.orchestration.services.intent.operation_service import WorklineOperationService
+
+    source = SimpleNamespace(id=12, workline_id=5, workline_session_id=None)
+    replay_record = SimpleNamespace(id=13)
+    service = WorklineOperationService(
+        inbox_repo=SimpleNamespace(get_by_id=AsyncMock(return_value=source)),
+        workline_repo=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=5, is_active=True))),
+    )
+    service.runtime_inbox_service = SimpleNamespace(
+        replay_from_dead_letter=AsyncMock(
+            return_value=SimpleNamespace(source_record=source, replay_record=replay_record, audit_event={})
+        )
+    )
+    service._commit_mutation = AsyncMock(side_effect=AssertionError("outer UoW owns commit"))  # type: ignore[method-assign]
+    db = SimpleNamespace(rollback=AsyncMock())
+
+    result = await service.replay_inbox(
+        db,
+        inbox_id=12,
+        request_id="req",
+        actor="42",
+        reason="retry",
+        auto_commit=False,
+    )
+
+    assert result is replay_record
+    service._commit_mutation.assert_not_awaited()
+    db.rollback.assert_not_awaited()
 
 
 @pytest.mark.parametrize("auto_commit", [True, False])

@@ -113,15 +113,15 @@ async def test_retryable_failure_becomes_dead_letter_when_exhausted(db_session: 
 
 
 @pytest.mark.asyncio
-async def test_zero_retry_budget_is_already_exhausted(db_session: AsyncSession) -> None:
-    inbox = await _processing_inbox(db_session, source_event_id="zero-budget", attempt_count=0, max_retries=0)
+async def test_minimum_retry_budget_is_exhausted_after_first_attempt(db_session: AsyncSession) -> None:
+    inbox = await _processing_inbox(db_session, source_event_id="minimum-budget", attempt_count=1, max_retries=1)
     service = RuntimeInboxService(repository=RuntimeInboxRepository())
 
     updated = await service.mark_failed(
         db_session,
         inbox_id=inbox.id,  # type: ignore[arg-type]
         lease_token="lease-1",
-        error_message="no retry budget",
+        error_message="minimum retry budget exhausted",
         retryable=True,
     )
     await db_session.commit()
