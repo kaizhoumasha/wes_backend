@@ -1262,7 +1262,7 @@ async def test_workline_operation_replay_only_applies_safety_then_delegates() ->
     )
 
     assert result is replay_record
-    workline_repo.get_for_update.assert_awaited_once_with(db, 5)
+    workline_repo.get_for_update.assert_awaited_once_with(db, 5, populate_existing=True)
     service.runtime_inbox_service.replay_from_dead_letter.assert_awaited_once()
     assert service.runtime_inbox_service.replay_from_dead_letter.await_args.kwargs == {
         "source_inbox_id": 12,
@@ -1329,7 +1329,7 @@ async def test_workline_operation_replay_derives_and_locks_workline_from_trusted
     result = await service.replay_inbox(db, inbox_id=12, request_id="req-12", actor="42", reason="operator retry")
 
     assert result is replay_record
-    workline_repo.get_for_update.assert_awaited_once_with(db, 5)
+    workline_repo.get_for_update.assert_awaited_once_with(db, 5, populate_existing=True)
 
 
 @pytest.mark.asyncio
@@ -1343,11 +1343,11 @@ async def test_workline_operation_replay_reloads_locked_session_before_workline_
     locked_session = SimpleNamespace(id=7, workline_id=5, reconciliation_state="PENDING")
     lock_order: list[str] = []
 
-    async def lock_session(*_args: Any) -> object:
+    async def lock_session(*_args: Any, **_kwargs: Any) -> object:
         lock_order.append("session")
         return locked_session
 
-    async def lock_workline(*_args: Any) -> object:
+    async def lock_workline(*_args: Any, **_kwargs: Any) -> object:
         lock_order.append("workline")
         return SimpleNamespace(id=5, is_active=True)
 

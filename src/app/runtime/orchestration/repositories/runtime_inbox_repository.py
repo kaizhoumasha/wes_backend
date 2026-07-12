@@ -54,6 +54,19 @@ class RuntimeInboxRetryMetadata:
     max_retries: int
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeInboxManualHoldEvidence:
+    """当前 Session 最新 Timeline 及其关联 Inbox 的最小重放证据。"""
+
+    session_id: int
+    action_type: str
+    timeline_status: str
+    reason_code: str | None
+    related_inbox_id: int | None
+    source_session_id: int | None
+    source_status: str | None
+
+
 def _emit_runtime_inbox_sli(name: str, attributes: dict[str, object]) -> None:
     """观测链路失败不得改变 Inbox 事务结果。"""
 
@@ -179,12 +192,64 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             max_retries=int(row[1] or 0),
         )
 
-    async def get_by_id_for_update(self, db: AsyncSession, inbox_id: int) -> RuntimeInbox | None:
+    async def get_by_id_for_update(
+        self,
+        db: AsyncSession,
+        inbox_id: int,
+        *,
+        populate_existing: bool = False,
+    ) -> RuntimeInbox | None:
         """锁定读取单条 RuntimeInbox，用于人工重放。"""
 
         columns = cast("Any", RuntimeInbox).__table__.c
-        result = await db.execute(select(RuntimeInbox).where(columns.id == inbox_id).with_for_update())
+        statement = select(RuntimeInbox).where(columns.id == inbox_id).with_for_update()
+        if populate_existing:
+            statement = statement.execution_options(populate_existing=True)
+        result = await db.execute(statement)
         return result.scalar_one_or_none()
+
+    async def get_latest_manual_hold_evidence(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: int,
+    ) -> RuntimeInboxManualHoldEvidence | None:
+        """先读取 Session 最新 Timeline，再返回其关联 Inbox 证据。"""
+
+        from src.app.runtime.orchestration.models.timeline import WorklineTimeline
+
+        timeline = cast("Any", WorklineTimeline).__table__.alias("latest_timeline")
+        source = cast("Any", RuntimeInbox).__table__.alias("hold_source_inbox")
+        row = (
+            await db.execute(
+                select(
+                    timeline.c.session_id,
+                    timeline.c.action_type,
+                    timeline.c.status,
+                    timeline.c.payload_json,
+                    timeline.c.related_inbox_id,
+                    source.c.workline_session_id,
+                    source.c.status,
+                )
+                .select_from(timeline.outerjoin(source, source.c.id == timeline.c.related_inbox_id))
+                .where(timeline.c.session_id == session_id)
+                .order_by(timeline.c.seq_no.desc(), timeline.c.id.desc())
+                .limit(1)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        payload = row[3] if isinstance(row[3], dict) else {}
+        reason_code = payload.get("reason_code")
+        return RuntimeInboxManualHoldEvidence(
+            session_id=int(row[0]),
+            action_type=str(getattr(row[1], "value", row[1])),
+            timeline_status=str(getattr(row[2], "value", row[2])),
+            reason_code=reason_code if isinstance(reason_code, str) else None,
+            related_inbox_id=int(row[4]) if row[4] is not None else None,
+            source_session_id=int(row[5]) if row[5] is not None else None,
+            source_status=str(getattr(row[6], "value", row[6])) if row[6] is not None else None,
+        )
 
     async def add_received(self, db: AsyncSession, data: dict[str, Any]) -> RuntimeInbox:
         """新建 RECEIVED RuntimeInbox 并 flush，调用方控制事务提交。"""

@@ -559,7 +559,11 @@ class WorklineOperationService(BaseService[Any, Any]):
         session = None
         if original is not None and original.workline_session_id is not None:
             # 与 reconciliation 写路径保持 Session→WorkLine 锁序，避免锁等待后继续使用旧快照。
-            session = await self.session_repo.get_for_update(db, original.workline_session_id)
+            session = await self.session_repo.get_for_update(
+                db,
+                original.workline_session_id,
+                populate_existing=True,
+            )
             if session is None:
                 raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_OWNERSHIP_UNAVAILABLE")
 
@@ -573,7 +577,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             elif isinstance(session_workline_id, int) and session_workline_id != source_workline_id:
                 raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_OWNERSHIP_UNAVAILABLE")
 
-            workline = await self.workline_repo.get_for_update(db, source_workline_id)
+            workline = await self.workline_repo.get_for_update(db, source_workline_id, populate_existing=True)
             if workline is None:
                 raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_NOT_FOUND")
             if not bool(getattr(workline, "is_active", False)):

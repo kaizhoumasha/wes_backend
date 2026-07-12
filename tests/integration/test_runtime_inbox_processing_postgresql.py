@@ -248,16 +248,27 @@ def test_manual_replay_waits_for_session_lock_and_rejects_new_pending_reconcilia
             await db.commit()
             source_id = source.id
             session_id = session.id
-        assert source_id is not None and session_id is not None
+            workline_id = workline.id
+        assert source_id is not None and session_id is not None and workline_id is not None
 
         updater_holds_lock = asyncio.Event()
         replay_attempted_lock = asyncio.Event()
         allow_updater_commit = asyncio.Event()
 
         class _SignalingSessionRepository(WorklineSessionRepository):
-            async def get_for_update(self, db: AsyncSession, locked_session_id: int) -> WorklineSession | None:
+            async def get_for_update(
+                self,
+                db: AsyncSession,
+                locked_session_id: int,
+                *,
+                populate_existing: bool = False,
+            ) -> WorklineSession | None:
                 replay_attempted_lock.set()
-                return await super().get_for_update(db, locked_session_id)
+                return await super().get_for_update(
+                    db,
+                    locked_session_id,
+                    populate_existing=populate_existing,
+                )
 
         async def mark_reconciliation_pending() -> None:
             async with session_factory() as db:
@@ -270,8 +281,12 @@ def test_manual_replay_waits_for_session_lock_and_rejects_new_pending_reconcilia
                 await db.commit()
 
         updater = asyncio.create_task(mark_reconciliation_pending())
-        await updater_holds_lock.wait()
         async with session_factory() as db:
+            # 先把三类 replay 所有权实体放入 identity map，证明锁读会主动刷新旧快照。
+            assert await db.get(WorklineSession, session_id) is not None
+            assert await db.get(RuntimeInbox, source_id) is not None
+            assert await db.get(WorkLine, workline_id) is not None
+            await updater_holds_lock.wait()
             service = WorklineOperationService(session_repo=_SignalingSessionRepository())
             replay_task = asyncio.create_task(
                 service.replay_inbox(

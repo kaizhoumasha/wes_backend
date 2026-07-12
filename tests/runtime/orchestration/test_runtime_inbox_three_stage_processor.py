@@ -19,7 +19,15 @@ from src.app.runtime.orchestration.effect_result import (
     RuntimeIntentEffectResult,
     WriteBackDisposition,
 )
+from src.app.runtime.orchestration.models.timeline import (
+    TimelineActionType,
+    TimelineActorType,
+    TimelineStage,
+    TimelineStatus,
+    WorklineTimeline,
+)
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxManualHoldEvidence
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_context_loader as context_loader
@@ -49,6 +57,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
 )
 from src.app.workline.constants import WORKLINE_INBOX_PROCESSING_STALE_SECONDS
 from src.app.workline.trace_context import TraceContext
+from src.utils.timezone import timezone
 
 # ============================================================
 # Helpers
@@ -478,12 +487,30 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
         payload_hash="canonical-entry-hash",
         payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "MAT-REPLAY-1"}},
         payload_schema_version=1,
+        workline_id=20,
+        workline_session_id=10,
         status="DEAD_LETTER",
         claim_bucket_key="source:canonical-entry-source",
         received_at=1_700_000_000_000,
         failed_at=1_700_000_000_001,
     )
     db_session.add(source)
+    await db_session.flush()
+    db_session.add(
+        WorklineTimeline(
+            session_id=10,
+            workline_id=20,
+            seq_no=1,
+            occurred_at=timezone.now_for_db(),
+            stage=TimelineStage.MANUAL,
+            action_type=TimelineActionType.MANUAL_HOLD,
+            actor_type=TimelineActorType.ORCHESTRATOR,
+            to_status="MANUAL_HOLD",
+            status=TimelineStatus.PENDING,
+            payload_json={"reason_code": "PAYLOAD_INVALID"},
+            related_inbox_id=source.id,
+        )
+    )
     await db_session.flush()
     runtime_service = RuntimeInboxService(audit_service=_AuditService())
     replay = await runtime_service.replay_from_dead_letter(
@@ -559,6 +586,50 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
     assert effects == [expected_payload]
     assert duplicate_archives == []
 
+    wrong_source = RuntimeInbox(
+        kind="DEVICE_EVENT",
+        provider_code="ECS",
+        event_type="SCAN_COMPLETED",
+        source_event_id="wrong-entry-source",
+        payload_hash="wrong-entry-hash",
+        payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "WRONG"}},
+        payload_schema_version=1,
+        workline_id=20,
+        workline_session_id=10,
+        status="DEAD_LETTER",
+        claim_bucket_key="source:wrong-entry-source",
+        received_at=1_700_000_000_002,
+        failed_at=1_700_000_000_003,
+    )
+    db_session.add(wrong_source)
+    await db_session.flush()
+    wrong_replay = await runtime_service.replay_from_dead_letter(
+        db_session,
+        source_inbox_id=wrong_source.id,
+        request_id="wrong-entry-replay",
+        actor="42",
+        reason="wrong dead-letter source in same session",
+    )
+    await db_session.flush()
+    wrong_claims = await runtime_service.claim_for_processing(
+        db_session,
+        limit=1,
+        processor_token="wrong-replay-token",
+        stale_after_seconds=60,
+    )
+    assert [claim["id"] for claim in wrong_claims] == [wrong_replay.replay_record.id]
+
+    wrong_result = await RuntimeInboxProcessorBridge(
+        processor_service=_Processor(),  # type: ignore[arg-type]
+        writeback_service=_WriteBack(),  # type: ignore[arg-type]
+        inbox_service=runtime_service,
+    ).process_claimed(db_session, claim=wrong_claims[0])
+
+    assert wrong_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+    assert orchestrated == [expected_payload]
+    assert effects == [expected_payload]
+    assert duplicate_archives == ["duplicate"]
+
 
 class TestEstopTimerRouting:
     def test_estop_routes_to_estop(self) -> None:
@@ -582,6 +653,44 @@ class TestEstopTimerRouting:
             inbox_kind="DEVICE_EVENT",
         )
         assert outcome.proceed_to_orchestrator is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        None,
+        RuntimeInboxManualHoldEvidence(10, "EVENT_PROCESSED", "SUCCESS", None, 8, 10, "DEAD_LETTER"),
+        RuntimeInboxManualHoldEvidence(10, "MANUAL_HOLD", "PENDING", "OTHER", 8, 10, "DEAD_LETTER"),
+        RuntimeInboxManualHoldEvidence(10, "MANUAL_HOLD", "PENDING", "PAYLOAD_INVALID", 8, 11, "DEAD_LETTER"),
+        RuntimeInboxManualHoldEvidence(10, "MANUAL_HOLD", "PENDING", "PAYLOAD_INVALID", 8, 10, "PROCESSED"),
+    ],
+)
+async def test_payload_invalid_replay_fails_closed_without_exact_latest_hold_evidence(evidence: object) -> None:
+    """无证据、latest 非目标 hold 或 source 所有权/状态不符均不得授权。"""
+
+    class _Repository:
+        async def get_latest_manual_hold_evidence(self, *_args: Any, **_kwargs: Any) -> object:
+            return evidence
+
+    service = RuntimeInboxValidationService(inbox_repository=_Repository())  # type: ignore[arg-type]
+    allowed = await service.is_payload_invalid_entry_replay(
+        object(),
+        inbox=SimpleNamespace(
+            is_manual_replay=True,
+            replay_immediate_source_inbox_id=8,
+            replay_root_source_inbox_id=7,
+        ),
+        session=SimpleNamespace(
+            id=10,
+            status="MANUAL_HOLD",
+            failure_code="PAYLOAD_INVALID",
+            awaiting_device_command_code=None,
+            current_wait_type=None,
+        ),
+    )
+
+    assert allowed is False
 
 
 class TestScanBarcodeHelper:

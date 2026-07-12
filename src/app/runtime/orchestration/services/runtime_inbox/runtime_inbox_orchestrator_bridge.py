@@ -120,6 +120,7 @@ class _ReplayProjectedInbox:
     def __init__(self, source: Any, envelope: dict[str, Any]) -> None:
         self._source = source
         self._replay_immediate_source_inbox_id = envelope["immediate_source_inbox_id"]
+        self._replay_root_source_inbox_id = envelope["root_source_inbox_id"]
         self.kind = envelope["original_kind"]
         self.payload_json = deepcopy(envelope["original_payload"])
         self.provider_code = envelope["original_provider_code"]
@@ -147,6 +148,12 @@ class _ReplayProjectedInbox:
         """返回已校验的直接 replay 来源 Inbox 主键。"""
 
         return self._replay_immediate_source_inbox_id
+
+    @property
+    def replay_root_source_inbox_id(self) -> int:
+        """返回已校验的 replay 根来源 Inbox 主键。"""
+
+        return self._replay_root_source_inbox_id
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._source, name)
@@ -435,11 +442,13 @@ class RuntimeInboxProcessorBridge:
                 return result
 
             # ========== Stage 1c: duplicate / late detection ==========
-            if _is_duplicate_entry_event(
+            if await _is_duplicate_entry_event(
+                db,
                 inbox=inbox,
                 payload=payload,
                 session=session,
                 workline=workline,
+                validation_service=self._validation_service,
             ) and not _is_resource_wait_retry_for_same_inbox(session, inbox_pk):
                 material_conflict = _duplicate_entry_material_conflict(
                     session=session,
@@ -750,19 +759,21 @@ def _kind_value(entity: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _is_duplicate_entry_event(
+async def _is_duplicate_entry_event(
+    db: Any,
     *,
     inbox: Any,
     payload: dict[str, Any],
     session: Any,
     workline: Any,
+    validation_service: RuntimeInboxValidationService,
 ) -> bool:
     """识别已进入忙碌或终态会话的重复入口事件。"""
     if _kind_value(inbox) != "DEVICE_EVENT":
         return False
     if canonical_event_type(payload) not in _entry_event_types_for_workline(workline):
         return False
-    if _is_payload_invalid_entry_replay(inbox=inbox, session=session):
+    if await validation_service.is_payload_invalid_entry_replay(db, inbox=inbox, session=session):
         return False
     terminal_statuses = {"COMPLETED", "FAILED", "CANCELLED"}
     busy_statuses = {"WAITING_DEVICE_RESULT", "WAITING_EXTERNAL", "MANUAL_HOLD"}
@@ -773,21 +784,6 @@ def _is_duplicate_entry_event(
         return True
     current_wait_type = getattr(session, "current_wait_type", None)
     return bool(current_wait_type)
-
-
-def _is_payload_invalid_entry_replay(*, inbox: Any, session: Any) -> bool:
-    """允许 canonical 人工 replay 从 payload 校验失败状态重新进入编排。"""
-    if getattr(inbox, "is_manual_replay", False) is not True:
-        return False
-    if optional_int(getattr(inbox, "replay_immediate_source_inbox_id", None)) is None:
-        return False
-    if _session_status_value(session) != "MANUAL_HOLD":
-        return False
-    if string_value(getattr(session, "failure_code", None)) != "PAYLOAD_INVALID":
-        return False
-    if getattr(session, "awaiting_device_command_code", None) is not None:
-        return False
-    return not bool(string_value(getattr(session, "current_wait_type", None)))
 
 
 def _is_resource_wait_retry_for_same_inbox(session: Any, inbox_id: int) -> bool:

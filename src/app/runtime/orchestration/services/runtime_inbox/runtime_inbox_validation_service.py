@@ -22,6 +22,10 @@ from src.app.runtime.capability_catalog import (
 )
 from src.app.runtime.orchestration.diagnostics import ErrorCode
 from src.app.runtime.orchestration.effect_result import WriteBackDisposition
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import (
+    RuntimeInboxRepository,
+    runtime_inbox_repository,
+)
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.domain.plugin_manifest import EventCategory
 from src.app.workline.utils import payload_dict
@@ -136,6 +140,41 @@ class RuntimeInboxValidationService:
     单一职责: 在调用 orchestrator 前做出 SCAN/ESTOP/TIMER 三类决策.
     不写终态, 不调 orchestrator, 不做 write-back.
     """
+
+    def __init__(self, *, inbox_repository: RuntimeInboxRepository | None = None) -> None:
+        self._inbox_repository = inbox_repository or runtime_inbox_repository
+
+    async def is_payload_invalid_entry_replay(self, db: Any, *, inbox: Any, session: Any) -> bool:
+        """仅凭当前 hold 的持久化因果证据授权入口事件重放。"""
+
+        if getattr(inbox, "is_manual_replay", False) is not True:
+            return False
+        immediate_source_id = getattr(inbox, "replay_immediate_source_inbox_id", None)
+        root_source_id = getattr(inbox, "replay_root_source_inbox_id", None)
+        source_ids = {value for value in (immediate_source_id, root_source_id) if isinstance(value, int)}
+        session_id = getattr(session, "id", None)
+        if not isinstance(session_id, int) or not source_ids:
+            return False
+        status = getattr(getattr(session, "status", None), "value", getattr(session, "status", None))
+        if status != "MANUAL_HOLD" or string_value(getattr(session, "failure_code", None)) != "PAYLOAD_INVALID":
+            return False
+        if getattr(session, "awaiting_device_command_code", None) is not None:
+            return False
+        if string_value(getattr(session, "current_wait_type", None)):
+            return False
+
+        evidence = await self._inbox_repository.get_latest_manual_hold_evidence(db, session_id=session_id)
+        if evidence is None:
+            return False
+        return (
+            evidence.session_id == session_id
+            and evidence.action_type == "MANUAL_HOLD"
+            and evidence.timeline_status == "PENDING"
+            and evidence.reason_code == "PAYLOAD_INVALID"
+            and evidence.related_inbox_id in source_ids
+            and evidence.source_session_id == session_id
+            and evidence.source_status == "DEAD_LETTER"
+        )
 
     async def pre_gate(
         self,

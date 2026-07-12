@@ -5,14 +5,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Literal
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxManualHoldEvidence
 from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as bridge_module
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
+)
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validation_service import (
+    RuntimeInboxValidationService,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
@@ -494,6 +499,25 @@ async def _run_case(
         estop_handler,
     )
     processor = RuntimeInboxProcessorBridge(
+        validation_service=RuntimeInboxValidationService(
+            inbox_repository=SimpleNamespace(
+                get_latest_manual_hold_evidence=AsyncMock(
+                    return_value=(
+                        RuntimeInboxManualHoldEvidence(
+                            session_id=10,
+                            action_type="MANUAL_HOLD",
+                            timeline_status="PENDING",
+                            reason_code="PAYLOAD_INVALID",
+                            related_inbox_id=8,
+                            source_session_id=10,
+                            source_status="DEAD_LETTER",
+                        )
+                        if case.name == "payload_invalid_manual_replay"
+                        else None
+                    )
+                )
+            )  # type: ignore[arg-type]
+        ),
         processor_service=_Delegate(),  # type: ignore[arg-type]
         writeback_service=RuntimeInboxWriteBackService(write_back_service=_WriteBack(), inbox_service=terminal),
         inbox_service=terminal,  # type: ignore[arg-type]

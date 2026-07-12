@@ -937,7 +937,7 @@ class RuntimeInboxService:
         if not normalized_actor or not normalized_reason:
             raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_REPLAY_ENVELOPE")
 
-        source = await self.repository.get_by_id_for_update(db, source_inbox_id)
+        source = await self.repository.get_by_id_for_update(db, source_inbox_id, populate_existing=True)
         if source is None:
             raise RuntimeInboxNotFound(inbox_id=source_inbox_id)
         if source.status != "DEAD_LETTER":
