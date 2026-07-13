@@ -1,4 +1,4 @@
-"""Celery prefork 子进程单异步运行时合同。"""
+"""Celery prefork 子进程单异步运行时行为合同。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+_REAL_ASYNCIO_RUNNER = asyncio.Runner
+
 
 def _runtime_module() -> ModuleType:
     try:
@@ -21,11 +23,6 @@ def _runtime_module() -> ModuleType:
         if exc.name == "src.celery_app.async_runtime":
             pytest.fail("缺少批准计划要求的 src.celery_app.async_runtime 单异步运行时")
         raise
-
-
-def _state_value(runtime: Any) -> str:
-    state = runtime.state
-    return str(getattr(state, "value", state))
 
 
 def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> SimpleNamespace:
@@ -52,63 +49,136 @@ def _patch_infrastructure(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -
     return infra
 
 
-def test_runtime_state_transitions_and_repeated_shutdown_are_stable(monkeypatch: pytest.MonkeyPatch) -> None:
+def _install_runtime(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> Any:
+    runtime = module.CeleryAsyncRuntime()
+    monkeypatch.setattr(module, "celery_async_runtime", runtime, raising=False)
+    return runtime
+
+
+def test_initializing_transition_rejects_reentrant_message(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
-    runtime = module.CeleryAsyncRuntime()
+    runtime = _install_runtime(monkeypatch, module)
+    observed: list[str] = []
 
-    assert _state_value(runtime) == "NEW"
+    async def init_db() -> None:
+        with pytest.raises(RuntimeError, match=r"(?i)INITIALIZING") as exc_info:
+            runtime.run_async(lambda: asyncio.sleep(0))
+        observed.append(str(exc_info.value))
+
+    infra.init_db.side_effect = init_db
     runtime.initialize()
-    assert _state_value(runtime) == "READY"
+
+    assert observed and "INITIALIZING" in observed[0]
+    assert runtime.run_async(lambda: asyncio.sleep(0, result="ready")) == "ready"
     runtime.shutdown()
-    assert _state_value(runtime) == "CLOSED"
+
+
+def test_closing_transition_rejects_new_message_and_repeated_shutdown_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    runtime.initialize()
+    observed: list[str] = []
+
+    async def close_redis() -> None:
+        with pytest.raises(RuntimeError, match=r"(?i)CLOSING") as exc_info:
+            runtime.run_async(lambda: asyncio.sleep(0))
+        observed.append(str(exc_info.value))
+
+    infra.close_redis.side_effect = close_redis
     runtime.shutdown()
-    assert _state_value(runtime) == "CLOSED"
-    infra.init_db.assert_awaited_once()
+    runtime.shutdown()
+
+    assert observed and "CLOSING" in observed[0]
     infra.close_db.assert_awaited_once()
 
 
-@pytest.mark.parametrize("entry", ["lazy", "eager", "direct"])
-def test_non_signal_entries_use_the_same_bounded_lazy_initialization(
+def test_lazy_entry_initializes_once_then_reuses_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    _install_runtime(monkeypatch, module)
+
+    assert module.run_async(lambda: asyncio.sleep(0, result="first")) == "first"
+    assert module.run_async(lambda: asyncio.sleep(0, result="second")) == "second"
+
+    infra.init_db.assert_awaited_once()
+
+
+def test_direct_task_run_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    _install_runtime(monkeypatch, module)
+    from src.celery_app.app import celery_app
+
+    @celery_app.task(name="tests.runtime.direct_probe")
+    def direct_probe() -> str:
+        return module.run_async(lambda: asyncio.sleep(0, result="direct"))
+
+    assert direct_probe.run() == "direct"
+    infra.init_db.assert_awaited_once()
+
+
+def test_eager_task_apply_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    _install_runtime(monkeypatch, module)
+    from src.celery_app.app import celery_app
+
+    @celery_app.task(name="tests.runtime.eager_probe")
+    def eager_probe() -> str:
+        return module.run_async(lambda: asyncio.sleep(0, result="eager"))
+
+    previous = celery_app.conf.task_always_eager
+    celery_app.conf.task_always_eager = True
+    try:
+        assert eager_probe.apply().get() == "eager"
+    finally:
+        celery_app.conf.task_always_eager = previous
+    infra.init_db.assert_awaited_once()
+
+
+def test_worker_init_is_logger_only_and_leaves_parent_async_resources_empty(
     monkeypatch: pytest.MonkeyPatch,
-    entry: str,
 ) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
-    runtime = module.CeleryAsyncRuntime()
-
-    result = runtime.run_async(lambda: asyncio.sleep(0, result=entry))
-
-    assert result == entry
-    assert _state_value(runtime) == "READY"
-    infra.init_db.assert_awaited_once()
-    runtime.shutdown()
-
-
-def test_worker_init_is_logger_only_and_worker_process_signal_initializes_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _runtime_module()
-    _patch_infrastructure(monkeypatch, module)
+    _install_runtime(monkeypatch, module)
     from src.celery_app import app as app_module
+    from src.database import db as db_module
 
-    runtime = module.CeleryAsyncRuntime()
-    monkeypatch.setattr(app_module, "celery_async_runtime", runtime, raising=False)
-    setup_logger = MagicMock()
-    monkeypatch.setattr(app_module, "setup_logger", setup_logger)
+    monkeypatch.setattr(db_module, "engine", None)
+    monkeypatch.setattr(db_module, "AsyncSessionLocal", None)
+    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
 
     app_module.on_worker_init()
-    assert _state_value(runtime) == "NEW"
+
+    assert db_module.engine is None
+    assert db_module.AsyncSessionLocal is None
+    infra.init_db.assert_not_awaited()
+
+
+def test_worker_process_signal_initializes_child_before_first_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    from src.celery_app import app as app_module
+
+    monkeypatch.setattr(app_module, "celery_async_runtime", runtime, raising=False)
+    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
     app_module.on_worker_process_init()
-    assert _state_value(runtime) == "READY"
-    setup_logger.assert_called()
+
+    assert runtime.run_async(lambda: asyncio.sleep(0, result="signal")) == "signal"
+    infra.init_db.assert_awaited_once()
     runtime.shutdown()
 
 
 def test_runtime_rejects_fork_inherited_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     _patch_infrastructure(monkeypatch, module)
-    runtime = module.CeleryAsyncRuntime()
+    runtime = _install_runtime(monkeypatch, module)
     runtime.initialize()
     owner_pid = os.getpid()
     monkeypatch.setattr(os, "getpid", lambda: owner_pid + 1)
@@ -120,7 +190,7 @@ def test_runtime_rejects_fork_inherited_owner(monkeypatch: pytest.MonkeyPatch) -
 def test_each_message_runs_with_a_fresh_context(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     _patch_infrastructure(monkeypatch, module)
-    runtime = module.CeleryAsyncRuntime()
+    runtime = _install_runtime(monkeypatch, module)
     trace_id: ContextVar[str] = ContextVar("celery_test_trace_id", default="unset")
 
     async def first_message() -> str:
@@ -138,7 +208,7 @@ def test_nested_running_loop_has_stable_error_and_does_not_create_coroutine(
 ) -> None:
     module = _runtime_module()
     _patch_infrastructure(monkeypatch, module)
-    runtime = module.CeleryAsyncRuntime()
+    runtime = _install_runtime(monkeypatch, module)
     created = False
 
     def factory() -> Any:
@@ -154,109 +224,256 @@ def test_nested_running_loop_has_stable_error_and_does_not_create_coroutine(
     assert created is False
 
 
-def test_initialization_exception_cleans_partial_resources_and_returns_to_new(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_failed_initialization_returns_to_retryable_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
-    infra.init_db.side_effect = ConnectionError("database unavailable")
-    runtime = module.CeleryAsyncRuntime()
+    runtime = _install_runtime(monkeypatch, module)
+    infra.init_db.side_effect = [ConnectionError("database unavailable"), None]
 
     with pytest.raises(ConnectionError, match="database unavailable"):
         runtime.initialize()
 
-    assert _state_value(runtime) == "NEW"
-    assert runtime.runner is None
-    infra.close_db.assert_awaited()
-
-
-@pytest.mark.parametrize("timed_out_stage", ["pending", "redis", "database"])
-def test_shutdown_timeout_continues_all_remaining_stages(
-    monkeypatch: pytest.MonkeyPatch,
-    timed_out_stage: str,
-) -> None:
-    module = _runtime_module()
-    infra = _patch_infrastructure(monkeypatch, module)
-    runtime = module.CeleryAsyncRuntime()
-    runtime.initialize()
-    pending_cleanup = AsyncMock()
-    monkeypatch.setattr(runtime, "_cancel_pending_tasks", pending_cleanup, raising=False)
-    stages = {
-        "pending": pending_cleanup,
-        "redis": infra.close_redis,
-        "database": infra.close_db,
-    }
-    stages[timed_out_stage].side_effect = TimeoutError(f"{timed_out_stage} timeout")
-
+    assert runtime.run_async(lambda: asyncio.sleep(0, result="recovered")) == "recovered"
+    assert infra.init_db.await_count == 2
     runtime.shutdown()
 
-    pending_cleanup.assert_awaited_once()
-    infra.close_redis.assert_awaited_once()
-    infra.close_db.assert_awaited_once()
-    assert _state_value(runtime) == "CLOSED"
 
-
-def test_normal_shutdown_has_no_default_executor_and_closes_runner(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_factory_and_task_errors_do_not_poison_next_message(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     _patch_infrastructure(monkeypatch, module)
-    runtime = module.CeleryAsyncRuntime()
-    runtime.initialize()
-    runner = runtime.runner
-    loop = runner.get_loop()
-    close_spy = MagicMock(wraps=runner.close)
-    monkeypatch.setattr(runner, "close", close_spy)
+    runtime = _install_runtime(monkeypatch, module)
 
-    runtime.run_async(lambda: asyncio.sleep(0))
-    assert getattr(loop, "_default_executor", None) is None
+    def failing_factory() -> Any:
+        raise ValueError("factory failed")
+
+    async def failing_task() -> None:
+        raise LookupError("task failed")
+
+    with pytest.raises(ValueError, match="factory failed"):
+        runtime.run_async(failing_factory)
+    assert runtime.run_async(lambda: asyncio.sleep(0, result="after factory")) == "after factory"
+    with pytest.raises(LookupError, match="task failed"):
+        runtime.run_async(failing_task)
+    assert runtime.run_async(lambda: asyncio.sleep(0, result="after task")) == "after task"
     runtime.shutdown()
 
-    close_spy.assert_called_once()
-    assert loop.is_closed()
 
-
-class _ObservedMonotonicClock:
-    def __init__(self) -> None:
-        self.started_at = time.monotonic()
-        self.observations: list[float] = []
-
-    def __call__(self) -> float:
-        current = time.monotonic()
-        self.observations.append(current)
-        return current
-
-
-@pytest.mark.parametrize("hanging_stage", ["redis_ping", "redis_cleanup"])
-def test_worker_process_init_hanging_redis_stage_shares_three_second_deadline(
+@pytest.mark.parametrize("hanging_stage", ["redis", "database"])
+def test_shutdown_really_bounds_a_hanging_stage_and_continues(
     monkeypatch: pytest.MonkeyPatch,
     hanging_stage: str,
 ) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
-    from src.celery_app import app as app_module
-
+    events: list[str] = []
+    monkeypatch.setattr(module.asyncio, "Runner", lambda: _RunnerProbe(events))
+    runtime = _install_runtime(monkeypatch, module)
+    runtime.initialize()
     never = asyncio.Event()
 
     async def hang() -> None:
         await never.wait()
 
-    if hanging_stage == "redis_ping":
-        infra.init_redis.side_effect = hang
-    else:
-        infra.init_redis.side_effect = ConnectionError("redis ping failed")
+    if hanging_stage == "redis":
         infra.close_redis.side_effect = hang
-    clock = _ObservedMonotonicClock()
-    runtime = module.CeleryAsyncRuntime(monotonic=clock)
-    monkeypatch.setattr(app_module, "celery_async_runtime", runtime, raising=False)
-
+    else:
+        infra.close_db.side_effect = hang
+    monkeypatch.setattr(module, "SHUTDOWN_STAGE_TIMEOUT_SECONDS", 0.01, raising=False)
     started_at = time.monotonic()
-    app_module.on_worker_process_init()
-    elapsed = time.monotonic() - started_at
-
-    assert elapsed <= 3.10, "Redis ping/cleanup 必须共享 worker_process_init 的 3 秒整体 deadline"
-    assert clock.observations
-    assert max(clock.observations) - clock.observations[0] <= 3.10
-    assert _state_value(runtime) == "READY"
-    assert runtime.degraded_redis is True
     runtime.shutdown()
+
+    assert time.monotonic() - started_at < 0.20
+    infra.close_redis.assert_awaited_once()
+    infra.close_db.assert_awaited_once()
+    assert events[-1] == "runner"
+
+
+class _RunnerProbe:
+    def __init__(self, events: list[str]) -> None:
+        self._runner = _REAL_ASYNCIO_RUNNER()
+        self._events = events
+
+    def get_loop(self) -> asyncio.AbstractEventLoop:
+        return self._runner.get_loop()
+
+    def run(self, coroutine: Any, *, context: Any = None) -> Any:
+        return self._runner.run(coroutine, context=context)
+
+    def close(self) -> None:
+        self._events.append("runner")
+        self._runner.close()
+
+
+def test_shutdown_bounds_stubborn_pending_task_then_continues_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    events: list[str] = []
+    monkeypatch.setattr(module.asyncio, "Runner", lambda: _RunnerProbe(events))
+    runtime = _install_runtime(monkeypatch, module)
+    runtime.initialize()
+    pending_tasks: list[asyncio.Task[None]] = []
+
+    async def stubborn_background() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()
+
+    async def spawn_background() -> None:
+        pending_tasks.append(asyncio.create_task(stubborn_background()))
+        await asyncio.sleep(0)
+
+    runtime.run_async(spawn_background)
+    monkeypatch.setattr(module, "SHUTDOWN_STAGE_TIMEOUT_SECONDS", 0.01, raising=False)
+    started_at = time.monotonic()
+    runtime.shutdown()
+
+    assert time.monotonic() - started_at < 0.20
+    infra.close_redis.assert_awaited_once()
+    infra.close_db.assert_awaited_once()
+    assert events[-1] == "runner"
+
+
+def test_shutdown_cancels_pending_tasks_and_preserves_stage_order_after_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    events: list[str] = []
+    monkeypatch.setattr(module.asyncio, "Runner", lambda: _RunnerProbe(events))
+    runtime = _install_runtime(monkeypatch, module)
+    runtime.initialize()
+
+    async def background() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            events.append("pending")
+
+    async def spawn_background() -> asyncio.Task[None]:
+        task = asyncio.create_task(background())
+        await asyncio.sleep(0)
+        return task
+
+    pending = runtime.run_async(spawn_background)
+
+    async def close_redis() -> None:
+        events.append("redis")
+        raise ValueError("redis close failed")
+
+    async def close_db() -> None:
+        events.append("database")
+
+    infra.close_redis.side_effect = close_redis
+    infra.close_db.side_effect = close_db
+    runtime.shutdown()
+
+    assert pending.cancelled()
+    assert events == ["pending", "redis", "database", "runner"]
+
+
+def test_normal_shutdown_uses_no_default_executor_and_closes_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    _patch_infrastructure(monkeypatch, module)
+    events: list[str] = []
+    probes: list[_RunnerProbe] = []
+
+    def runner_factory() -> _RunnerProbe:
+        probe = _RunnerProbe(events)
+        probes.append(probe)
+        return probe
+
+    monkeypatch.setattr(module.asyncio, "Runner", runner_factory)
+    runtime = _install_runtime(monkeypatch, module)
+    runtime.run_async(lambda: asyncio.sleep(0))
+    loop = probes[0].get_loop()
+    assert getattr(loop, "_default_executor", None) is None
+
+    runtime.shutdown()
+
+    assert events[-1] == "runner"
+    assert loop.is_closed()
+
+
+class _ManualMonotonicClock:
+    def __init__(self, start: float = 100.0) -> None:
+        self.value = start
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
+
+
+@pytest.mark.parametrize(
+    ("hanging_stage", "prior_cost", "expected_timeout"),
+    [("redis_ping", 2.25, 0.75), ("redis_cleanup", 1.25, 1.75)],
+)
+def test_worker_process_init_redis_stages_share_one_three_second_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    hanging_stage: str,
+    prior_cost: float,
+    expected_timeout: float,
+) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    from src.celery_app import app as app_module
+
+    clock = _ManualMonotonicClock()
+    timeouts: list[float] = []
+    real_monotonic = time.monotonic
+    real_wait_for = asyncio.wait_for
+
+    async def init_db() -> None:
+        clock.advance(prior_cost)
+
+    async def ping_or_fail() -> None:
+        if hanging_stage == "redis_cleanup":
+            raise ConnectionError("redis ping failed")
+        await asyncio.Event().wait()
+
+    async def cleanup_hang() -> None:
+        await asyncio.Event().wait()
+
+    async def fake_wait_for(awaitable: Any, timeout: float) -> Any:
+        timeouts.append(timeout)
+        if hanging_stage == "redis_cleanup" and len(timeouts) == 1:
+            return await awaitable
+        awaitable.close()
+        clock.advance(timeout)
+        raise TimeoutError
+
+    infra.init_db.side_effect = init_db
+    infra.init_redis.side_effect = ping_or_fail
+    infra.close_redis.side_effect = cleanup_hang
+    monkeypatch.setattr(module.time, "monotonic", clock)
+    monkeypatch.setattr(module.asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(app_module, "celery_async_runtime", runtime, raising=False)
+    monkeypatch.setattr(app_module, "setup_logger", MagicMock())
+
+    app_module.on_worker_process_init()
+
+    assert timeouts[-1] == pytest.approx(expected_timeout, abs=0.01)
+    assert clock.value == pytest.approx(103.0, abs=0.01)
+    monkeypatch.setattr(module.time, "monotonic", real_monotonic)
+    monkeypatch.setattr(module.asyncio, "wait_for", real_wait_for)
+    assert runtime.run_async(lambda: asyncio.sleep(0, result="degraded but ready")) == "degraded but ready"
+    runtime.shutdown()
+
+
+def test_worker_process_shutdown_signal_is_registered_and_invokes_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    _runtime_module()
+    from celery.signals import worker_process_shutdown
+
+    from src.celery_app import app as app_module
+
+    assert hasattr(app_module, "on_worker_process_shutdown"), "必须注册 worker_process_shutdown 生命周期处理器"
+    receivers = [receiver() for _key, receiver in worker_process_shutdown.receivers if receiver() is not None]
+    assert app_module.on_worker_process_shutdown in receivers
+
+    runtime = SimpleNamespace(shutdown=MagicMock())
+    monkeypatch.setattr(app_module, "celery_async_runtime", runtime, raising=False)
+    app_module.on_worker_process_shutdown()
+    runtime.shutdown.assert_called_once_with()

@@ -174,7 +174,10 @@ async def test_candidate_pool_and_client_are_published_only_after_ping_succeeds(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error", [RedisTimeoutError("timeout"), RedisConnectionError("ping failed")])
+@pytest.mark.parametrize(
+    "error",
+    [RedisTimeoutError("timeout"), RedisConnectionError("ping failed"), ValueError("generic ping error")],
+)
 async def test_ping_failure_closes_unpublished_candidate_resources(
     monkeypatch: pytest.MonkeyPatch,
     error: Exception,
@@ -265,3 +268,27 @@ def test_initialized_manager_rejects_foreign_event_loop(monkeypatch: pytest.Monk
 
     with pytest.raises(RuntimeError, match=r"(?i)(owner|foreign|event loop|loop)"):
         asyncio.run(manager.init_redis())
+
+
+def test_reconnect_rejects_foreign_event_loop_without_cleaning_owned_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.database.redis_client import RedisManager
+
+    async def ping() -> bool:
+        return True
+
+    _redis_module, pools, clients = _install_candidates(
+        monkeypatch,
+        client_factory=lambda _pool: _CandidateClient(ping=ping),
+    )
+    manager = RedisManager()
+    asyncio.run(manager.init_redis())
+
+    with pytest.raises(RuntimeError, match=r"(?i)(owner|foreign|event loop|loop)"):
+        asyncio.run(manager.reconnect(force=True))
+
+    assert manager.connection_pool is pools[0]
+    assert manager.redis_client is clients[0]
+    clients[0].close.assert_not_awaited()
+    pools[0].disconnect.assert_not_awaited()

@@ -10,11 +10,39 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TASK_MODULES = ("core", "handling", "runtime_inbox", "sys", "workline")
+ASYNC_TASKS = {
+    "core": ("health_check", "clear_cache", "send_notification"),
+    "runtime_inbox": ("process_runtime_inbox_batch",),
+    "sys": ("dispatch_system_outbox_batch",),
+    "workline": (
+        "scan_timeouts_batch",
+        "scan_device_heartbeats_batch",
+        "scan_smt_inbound_handoff_demands_batch",
+    ),
+}
+DB_TASKS = {
+    "core": ("health_check", "send_notification"),
+    "runtime_inbox": ("process_runtime_inbox_batch",),
+    "sys": ("dispatch_system_outbox_batch",),
+    "workline": ASYNC_TASKS["workline"],
+}
 
 
 def _task_tree(module_name: str) -> ast.Module:
     path = REPO_ROOT / "src" / "celery_app" / "tasks" / f"{module_name}.py"
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+
+def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
+    return next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
+
+
+def _call_name(call: ast.Call) -> str | None:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
 
 
 @pytest.mark.parametrize("module_name", TASK_MODULES)
@@ -52,6 +80,62 @@ def test_task_modules_do_not_cache_database_sessions_on_task_instances(module_na
             violations.append("AsyncSessionLocal")
 
     assert violations == [], f"{module_name} 每条消息必须通过 get_db_context() 创建 task-local Session"
+
+
+@pytest.mark.parametrize(
+    ("module_name", "task_name"),
+    [(module_name, task_name) for module_name, task_names in ASYNC_TASKS.items() for task_name in task_names],
+)
+def test_each_async_sync_task_calls_run_async_once_with_a_factory(module_name: str, task_name: str) -> None:
+    function = _function(_task_tree(module_name), task_name)
+    calls = [node for node in ast.walk(function) if isinstance(node, ast.Call) and _call_name(node) == "run_async"]
+
+    assert len(calls) == 1, f"{module_name}.{task_name} 必须恰好一次进入统一 runtime"
+    assert calls[0].args, "run_async 必须接收 coroutine factory"
+    assert not isinstance(calls[0].args[0], ast.Call), "不得在进入 runtime 前创建 coroutine"
+
+
+@pytest.mark.parametrize(
+    ("module_name", "task_name"),
+    [(module_name, task_name) for module_name, task_names in DB_TASKS.items() for task_name in task_names],
+)
+def test_database_task_async_body_uses_task_local_get_db_context(module_name: str, task_name: str) -> None:
+    function = _function(_task_tree(module_name), task_name)
+    context_calls = [
+        node for node in ast.walk(function) if isinstance(node, ast.Call) and _call_name(node) == "get_db_context"
+    ]
+
+    assert len(context_calls) == 1, f"{module_name}.{task_name} 必须只创建一个 task-local Session 上下文"
+
+
+@pytest.mark.parametrize(
+    ("module_name", "task_name", "expected_expression"),
+    [
+        ("runtime_inbox", "process_runtime_inbox_batch", "5 * 2 ** retries"),
+        ("sys", "dispatch_system_outbox_batch", "10 * 2 ** self.request.retries"),
+        ("workline", "scan_timeouts_batch", "60 * 2 ** self.request.retries"),
+        ("workline", "scan_device_heartbeats_batch", "60 * 2 ** self.request.retries"),
+        ("workline", "scan_smt_inbound_handoff_demands_batch", "60 * 2 ** self.request.retries"),
+    ],
+)
+def test_retry_countdown_keeps_exponential_backoff_contract(
+    module_name: str,
+    task_name: str,
+    expected_expression: str,
+) -> None:
+    function = _function(_task_tree(module_name), task_name)
+    countdown_assignments = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "countdown" for target in node.targets)
+    ]
+
+    assert len(countdown_assignments) == 1
+    assert ast.unparse(countdown_assignments[0].value) == expected_expression
+    retry_calls = [node for node in ast.walk(function) if isinstance(node, ast.Call) and _call_name(node) == "retry"]
+    assert len(retry_calls) == 1
+    assert any(keyword.arg == "countdown" for keyword in retry_calls[0].keywords)
 
 
 TASK_CONTRACTS: dict[str, tuple[str, int, int, str]] = {

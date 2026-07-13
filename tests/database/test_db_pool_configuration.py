@@ -13,8 +13,12 @@ from sqlalchemy.pool import StaticPool
 
 
 class _SessionContext:
+    def __init__(self) -> None:
+        self.close = AsyncMock()
+        self.rollback = AsyncMock()
+
     async def __aenter__(self) -> object:
-        return object()
+        return self
 
     async def __aexit__(self, *_args: object) -> None:
         return None
@@ -27,7 +31,8 @@ def db_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     engine = MagicMock(sync_engine=MagicMock())
     engine.dispose = AsyncMock()
     create_engine = MagicMock(return_value=engine)
-    sessionmaker = MagicMock(return_value=MagicMock(side_effect=_SessionContext))
+    session_factory = MagicMock(side_effect=_SessionContext)
+    sessionmaker = MagicMock(return_value=session_factory)
     monkeypatch.setattr(db, "create_async_engine", create_engine)
     monkeypatch.setattr(db, "async_sessionmaker", sessionmaker)
     monkeypatch.setattr(db, "configure_sqlite_schemas", MagicMock())
@@ -47,6 +52,10 @@ def _settings(database_url: str, *, role: str = "celery", pool_size: int = 1) ->
         DATABASE_MAX_OVERFLOW=0,
         DATABASE_POOL_TIMEOUT=30,
         DATABASE_APPLICATION_NAME=f"test:{role}:worker:123",
+        DATABASE_CONNECT_ARGS={
+            "command_timeout": 7,
+            "server_settings": {"statement_timeout": "5000", "jit": "off"},
+        },
     )
 
 
@@ -73,6 +82,19 @@ def test_init_db_rejects_same_pid_from_foreign_loop(db_module: Any, monkeypatch:
 
     with pytest.raises(RuntimeError, match=r"(?i)(owner|event loop|loop)"):
         asyncio.run(db_module.init_db())
+
+
+def test_init_db_rejects_role_change_in_same_pid_and_loop(db_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings("sqlite+aiosqlite:///:memory:", role="celery")
+    monkeypatch.setattr(db_module, "settings", settings)
+
+    async def initialize_then_change_role() -> None:
+        await db_module.init_db()
+        settings.DATABASE_RUNTIME_ROLE = "api"
+        with pytest.raises(RuntimeError, match=r"(?i)(owner|role)"):
+            await db_module.init_db()
+
+    asyncio.run(initialize_then_change_role())
 
 
 def test_forked_process_rejects_inherited_engine_without_disposing_it(
@@ -107,6 +129,25 @@ def test_non_owner_cannot_get_session_or_close_engine(db_module: Any, monkeypatc
         asyncio.run(db_module.close_db())
 
     owned_engine.dispose.assert_not_awaited()
+
+
+def test_non_owner_get_db_dependency_fails_before_yielding_session(
+    db_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(db_module, "settings", _settings("sqlite+aiosqlite:///:memory:"))
+    asyncio.run(db_module.init_db())
+    monkeypatch.setattr(os, "getpid", lambda: 999_004)
+
+    async def consume_dependency() -> None:
+        generator = db_module.get_db()
+        try:
+            await anext(generator)
+        finally:
+            await generator.aclose()
+
+    with pytest.raises(RuntimeError, match=r"(?i)(owner|pid|fork)"):
+        asyncio.run(consume_dependency())
 
 
 def test_owner_close_clears_engine_factory_and_owner_metadata(
@@ -161,7 +202,29 @@ def test_postgresql_pool_parameters_follow_runtime_role_contract(
     assert kwargs["connect_args"]["server_settings"] == {
         "search_path": "app,public",
         "application_name": f"test:{role}:worker:123",
+        "statement_timeout": "5000",
+        "jit": "off",
     }
+    assert kwargs["connect_args"]["command_timeout"] == 7
+
+
+def test_postgresql_connect_args_preserve_arbitrary_existing_server_settings(
+    db_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings("postgresql+asyncpg://user:pass@db/app", role="celery", pool_size=1)
+    monkeypatch.setattr(db_module, "settings", settings)
+
+    asyncio.run(db_module.init_db())
+
+    _, kwargs = db_module.create_async_engine.call_args
+    connect_args = kwargs["connect_args"]
+    server_settings = connect_args["server_settings"]
+    assert connect_args.get("command_timeout") == 7
+    assert server_settings.get("statement_timeout") == "5000"
+    assert server_settings.get("jit") == "off"
+    assert server_settings.get("search_path") == "app,public"
+    assert server_settings.get("application_name") == "test:celery:worker:123"
 
 
 def test_sqlite_uses_static_pool_without_postgresql_pool_arguments(
