@@ -172,6 +172,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8001/health || exit 1
 
 # 生产环境启动命令 (多 worker)
+# 数据库容量公式输入：1 x 4 x 5（API 容器数 x Uvicorn 进程数 x 单进程 pool_size）。
+# 修改 --workers 时必须同步更新容量门禁与部署计划。
 CMD ["uvicorn", "main:app", \
      "--host", "0.0.0.0", \
      "--port", "8001", \

@@ -98,7 +98,7 @@ cast("Any", celery_app.conf).update(
     # 任务重试配置
     # ================================
     task_acks_late=True,  # 任务执行后才确认 (防止任务丢失)
-    worker_prefetch_multiplier=4,  # 预取任务数
+    worker_prefetch_multiplier=1,  # 与 acks_late 对齐，避免单个 child 预占过多未确认任务
     task_max_retries=3,
     task_default_retry_delay=60,  # 重试延迟 (秒)
     # ================================
@@ -111,6 +111,8 @@ cast("Any", celery_app.conf).update(
     # ================================
     worker_concurrency=4,  # 并发任务数 (默认: CPU 核心数)
     worker_max_tasks_per_child=1000,  # 每个 Worker 处理的最大任务数
+    worker_soft_shutdown_timeout=10,
+    worker_enable_soft_shutdown_on_idle=True,
     worker_log_format="[%(asctime)s: %(levelname)s/%(processName)s] %(message)s",
     worker_task_log_format="[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s",
     worker_hijack_root_logger=False,  # 不劫持根 logger，避免与项目日志配置冲突

@@ -61,6 +61,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      DATABASE_RUNTIME_ROLE: api
+      DATABASE_POOL_SIZE: 5
+      DATABASE_MAX_OVERFLOW: 0
+      DATABASE_POOL_TIMEOUT: 30
+      DATABASE_APPLICATION_NAME: ${ENV:-prod}
 
       # Redis 配置 ${REDIS_HOST}
       REDIS_HOST: redis
@@ -146,6 +151,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      DATABASE_RUNTIME_ROLE: celery
+      DATABASE_POOL_SIZE: 1
+      DATABASE_MAX_OVERFLOW: 0
+      DATABASE_POOL_TIMEOUT: 30
+      DATABASE_APPLICATION_NAME: ${ENV:-prod}
 
       # Redis 配置（容器内使用 docker 服务名）
       REDIS_HOST: redis
@@ -181,6 +191,7 @@ services:
         condition: service_healthy
     networks:
       - wesp9-network
+    stop_grace_period: 30s
     deploy:
       replicas: ${CELERY_WORKER_REPLICAS:-2}
       resources:
@@ -226,6 +237,9 @@ services:
       - ${BACKEND_ENV_FILE:-.env}
     environment:
       <<: *no-localhost-proxy
+      DATABASE_RUNTIME_ROLE: cli
+      DATABASE_POOL_SIZE: 1
+      DATABASE_MAX_OVERFLOW: 0
       # Redis 配置（容器内使用 docker 服务名）
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT}
@@ -295,6 +309,9 @@ services:
       - ${BACKEND_ENV_FILE:-.env}
     environment:
       <<: *no-localhost-proxy
+      DATABASE_RUNTIME_ROLE: cli
+      DATABASE_POOL_SIZE: 1
+      DATABASE_MAX_OVERFLOW: 0
       # Redis 配置（容器内使用 docker 服务名）
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT}
@@ -392,6 +409,11 @@ services:
       "
     environment:
       <<: *no-localhost-proxy
+      DATABASE_RUNTIME_ROLE: integration
+      DATABASE_POOL_SIZE: 1
+      DATABASE_MAX_OVERFLOW: 0
+      DATABASE_APPLICATION_NAME: ${ENV:-test}
+      DATABASE_APPLICATION_RUN_ID: ${DATABASE_APPLICATION_RUN_ID:-compose-test}
       # 数据库配置
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}

@@ -52,8 +52,8 @@ Docker 部署管理脚本 (统一配置版本)
 
 示例:
   $0 dev up                       # 启动开发环境
-  $0 prod up --scale api=5        # 启动生产环境 (5 个 API 实例)
-  $0 celery up --scale celery_worker=8  # 启动 Celery (8 个 Worker)
+  $0 prod up                      # 按已核准的 1 API / 4 Celery 拓扑启动生产环境
+  $0 celery scale celery_worker=4 # 扩展前先用 live PostgreSQL 容量门禁校验
   $0 dev logs api                 # 查看 API 日志
   $0 prod down                    # 停止生产环境
   $0 dev build --no-cache         # 无缓存重新构建
@@ -64,6 +64,41 @@ Docker 部署管理脚本 (统一配置版本)
   $0 test up                      # 启动测试环境 (包含 pytest)
 
 EOF
+}
+
+# 使用目标应用拓扑在 live PostgreSQL 上校验容量。CLI 短连接由 reserve 覆盖。
+run_capacity_guard() {
+    local env=$1
+    shift
+    local compose_cmd=$(get_compose_cmd)
+    local env_file=""
+    local guard_args=()
+    local expect_scale_value=false
+
+    if [ -f ".env.$env" ]; then
+        env_file="--env-file .env.$env"
+    elif [ -f ".env" ]; then
+        env_file="--env-file .env"
+    fi
+
+    for argument in "$@"; do
+        if [ "$expect_scale_value" = true ]; then
+            guard_args+=(--scale "$argument")
+            expect_scale_value=false
+        elif [ "$argument" = "--scale" ]; then
+            expect_scale_value=true
+        elif [[ "$argument" == --scale=* ]]; then
+            guard_args+=(--scale "${argument#--scale=}")
+        elif [[ "$argument" == api=* || "$argument" == celery_worker=* ]]; then
+            guard_args+=(--scale "$argument")
+        fi
+    done
+
+    $compose_cmd -f docker-compose.yml $env_file --profile "$env" run --rm --no-deps \
+        -e DATABASE_RUNTIME_ROLE=cli \
+        -e DATABASE_POOL_SIZE=1 \
+        -e DATABASE_MAX_OVERFLOW=0 \
+        api python scripts/capacity_guard.py --services api,celery_worker "${guard_args[@]}"
 }
 
 # 检查环境配置文件
@@ -113,6 +148,12 @@ cmd_up() {
         env_file="--env-file .env.$env"
     elif [ -f ".env" ]; then
         env_file="--env-file .env"
+    fi
+
+    # 生产环境分两阶段启动：基础设施健康和 live 容量门禁均通过后才允许应用启动。
+    if [ "$env" = "prod" ]; then
+        $compose_cmd -f docker-compose.yml $env_file --profile "$env" up -d --wait db redis
+        run_capacity_guard "$env" "$@"
     fi
 
     # 执行命令
@@ -235,6 +276,7 @@ cmd_scale() {
         env_file="--env-file .env"
     fi
 
+    run_capacity_guard "$env" "$@"
     $compose_cmd -f docker-compose.yml $env_file --profile $env up -d --scale "$@"
 
     print_success "服务已扩展"
@@ -254,7 +296,11 @@ cmd_migrate() {
         return 1
     fi
 
-    docker exec -it "$container_name" alembic upgrade head
+    docker exec -it \
+        -e DATABASE_RUNTIME_ROLE=cli \
+        -e DATABASE_POOL_SIZE=1 \
+        -e DATABASE_MAX_OVERFLOW=0 \
+        "$container_name" alembic upgrade head
 
     print_success "数据库迁移完成"
 }

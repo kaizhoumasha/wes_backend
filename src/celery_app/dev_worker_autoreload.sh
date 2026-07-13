@@ -38,7 +38,8 @@ stop_worker() {
   if [ -n "$worker_pid" ] && kill -0 "$worker_pid" 2>/dev/null; then
     echo "[celery-dev-reload] stopping worker pid=${worker_pid}"
     stop_target="${worker_stop_target:-$worker_pid}"
-    kill -TERM "$stop_target" 2>/dev/null || kill -TERM "$worker_pid" 2>/dev/null || true
+    # 正常 TERM 只交给 Celery MainProcess，由 leader 协调 prefork children。
+    kill -TERM "$worker_pid" 2>/dev/null || true
     (
       sleep "$SHUTDOWN_GRACE_SECONDS"
       if kill -0 "$worker_pid" 2>/dev/null; then
