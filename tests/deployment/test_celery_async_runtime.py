@@ -749,3 +749,91 @@ def test_shutdown_continues_after_cleanup_ignores_first_cancellation(monkeypatch
 
     assert time.monotonic() - started_at < 0.20
     assert events == ["redis", "database"]
+
+
+def test_failed_init_after_database_publish_rolls_back_in_order_and_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    events: list[str] = []
+
+    class NonDegradableInitError(BaseException):
+        pass
+
+    infra.init_redis.side_effect = [NonDegradableInitError("fatal init"), None]
+
+    async def close_redis() -> None:
+        events.append("redis")
+
+    async def close_db() -> None:
+        events.append("database")
+
+    infra.close_redis.side_effect = close_redis
+    infra.close_db.side_effect = close_db
+
+    with pytest.raises(NonDegradableInitError, match="fatal init"):
+        runtime.initialize()
+
+    assert events == ["redis", "database"]
+    assert runtime.state is module.RuntimeState.NEW
+    assert runtime._owner_pid is None
+    assert runtime.run_async(lambda: asyncio.sleep(0, result="retried")) == "retried"
+    assert infra.init_db.await_count == 2
+    assert infra.init_redis.await_count == 2
+    runtime.shutdown()
+
+
+class _PendingInitRunnerProbe:
+    def __init__(self) -> None:
+        self._runner = _REAL_ASYNCIO_RUNNER()
+        self.close = MagicMock()
+
+    def get_loop(self) -> asyncio.AbstractEventLoop:
+        return self._runner.get_loop()
+
+    def run(self, coroutine: Any, *, context: Any = None) -> Any:
+        return self._runner.run(coroutine, context=context)
+
+    def force_close(self) -> None:
+        self._runner.close()
+
+
+def test_failed_init_skips_runner_close_when_cancel_resistant_task_remains(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    probe = _PendingInitRunnerProbe()
+    monkeypatch.setattr(module.asyncio, "Runner", lambda: probe)
+    runtime = _install_runtime(monkeypatch, module)
+    keep_resisting = True
+
+    async def cancellation_resistant_init() -> None:
+        while True:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if keep_resisting:
+                    continue
+                raise
+
+    infra.init_db.side_effect = cancellation_resistant_init
+    monkeypatch.setattr(module, "INITIALIZATION_TIMEOUT_SECONDS", 0.01)
+
+    started_at = time.monotonic()
+    try:
+        with _sync_watchdog(0.50, "cancel-resistant task during failed initialization"):
+            with pytest.raises(TimeoutError):
+                runtime.initialize()
+
+        assert time.monotonic() - started_at < 0.20
+        probe.close.assert_not_called()
+        assert runtime.state is module.RuntimeState.NEW
+    finally:
+        keep_resisting = False
+        for task in asyncio.all_tasks(probe.get_loop()):
+            task.cancel()
+        probe.run(asyncio.sleep(0))
+        probe.force_close()

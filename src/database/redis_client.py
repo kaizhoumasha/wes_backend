@@ -53,16 +53,25 @@ class RedisManager:
     @staticmethod
     async def _close_resources(client: Redis | None, pool: ConnectionPool | None) -> None:
         """尽力关闭一组已发布或尚未发布的 Redis 资源。"""
+        pending_base_exception: BaseException | None = None
         if client is not None:
             try:
                 await client.close()
-            except Exception as exc:
-                logger.debug(f"清理 Redis client 时出错（可忽略）: {exc}")
+            except BaseException as exc:
+                if isinstance(exc, Exception):
+                    logger.debug(f"清理 Redis client 时出错（可忽略）: {exc}")
+                else:
+                    pending_base_exception = exc
         if pool is not None:
             try:
                 await pool.disconnect()
-            except Exception as exc:
-                logger.debug(f"清理 Redis pool 时出错（可忽略）: {exc}")
+            except BaseException as exc:
+                if isinstance(exc, Exception):
+                    logger.debug(f"清理 Redis pool 时出错（可忽略）: {exc}")
+                elif pending_base_exception is None:
+                    pending_base_exception = exc
+        if pending_base_exception is not None:
+            raise pending_base_exception
 
     async def init_redis(self) -> None:
         """

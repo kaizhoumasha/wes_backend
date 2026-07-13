@@ -344,3 +344,32 @@ async def test_close_and_init_share_single_flight_lock(monkeypatch: pytest.Monke
     assert len(pools) == 2
     assert manager.redis_client is clients[1]
     assert manager.is_available is True
+
+
+@pytest.mark.asyncio
+async def test_resource_cleanup_reaches_pool_after_repeated_cancellation() -> None:
+    from src.database.redis_client import RedisManager
+
+    first_cancel_seen = asyncio.Event()
+    client = _CandidateClient(ping=AsyncMock())
+    pool = _CandidatePool()
+
+    async def cancellation_resistant_close() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            first_cancel_seen.set()
+            await asyncio.Event().wait()
+
+    client.close.side_effect = cancellation_resistant_close
+    cleanup = asyncio.create_task(RedisManager._close_resources(client, pool))
+    await asyncio.sleep(0)
+    cleanup.cancel()
+    await asyncio.wait_for(first_cancel_seen.wait(), timeout=1.0)
+    cleanup.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await cleanup
+
+    client.close.assert_awaited_once()
+    pool.disconnect.assert_awaited_once()

@@ -41,6 +41,7 @@ class CeleryAsyncRuntime:
         self._owner_pid: int | None = None
         self._state_lock = threading.RLock()
         self._run_lock = threading.Lock()
+        self._abandoned_runners: list[asyncio.Runner] = []
 
     @property
     def state(self) -> RuntimeState:
@@ -83,9 +84,10 @@ class CeleryAsyncRuntime:
         return task.result()
 
     @staticmethod
-    async def _initialize_infrastructure(deadline: float) -> None:
+    async def _initialize_infrastructure(deadline: float, progress: dict[str, bool]) -> None:
         database_budget = max(deadline - time.monotonic(), 0.0)
         await CeleryAsyncRuntime._wait_task_without_cancel_wait(init_db(), database_budget)
+        progress["database"] = True
 
         remaining = max(deadline - time.monotonic(), 0.0)
         if remaining <= 0:
@@ -114,6 +116,32 @@ class CeleryAsyncRuntime:
         except BaseException as exc:
             logger.warning(f"Celery asyncio Runner 关闭失败（已忽略）: {exc}")
 
+    def _close_runner_if_safe(self, runner: asyncio.Runner) -> None:
+        """初始化失败时仅关闭没有 pending task 的 Runner。"""
+        try:
+            pending = [task for task in asyncio.all_tasks(runner.get_loop()) if not task.done()]
+        except BaseException as exc:
+            logger.warning(f"无法确认 Celery asyncio Runner 是否可安全关闭，已放弃: {exc}")
+            self._abandoned_runners.append(runner)
+            return
+
+        if pending:
+            logger.warning(f"Celery asyncio Runner 仍有 {len(pending)} 个 pending task，跳过无界 close")
+            # 保留引用直到 child 退出，避免 loop/task 被 GC 时产生残留 warning。
+            self._abandoned_runners.append(runner)
+            return
+        self._close_runner_best_effort(runner)
+
+    @staticmethod
+    async def _rollback_failed_initialization(deadline: float) -> None:
+        """按 Redis → DB 顺序，在剩余初始化预算内回滚已发布资源。"""
+        for name, factory in (("Redis", redis_manager.close_redis), ("database", close_db)):
+            remaining = max(deadline - time.monotonic(), 0.0)
+            try:
+                await CeleryAsyncRuntime._wait_for_without_cancel_wait(factory(), remaining)
+            except BaseException as exc:
+                logger.warning(f"Celery runtime 初始化失败后的 {name} 回滚未完成: {exc}")
+
     def initialize(self) -> None:
         """在同步入口中有界初始化 child 的 DB 和可降级 Redis。"""
         self._assert_sync_entrypoint()
@@ -130,13 +158,19 @@ class CeleryAsyncRuntime:
             self._state = RuntimeState.INITIALIZING
 
         runner: asyncio.Runner | None = None
+        deadline = time.monotonic() + INITIALIZATION_TIMEOUT_SECONDS
+        progress = {"database": False}
         try:
             runner = asyncio.Runner()
-            deadline = time.monotonic() + INITIALIZATION_TIMEOUT_SECONDS
-            runner.run(self._initialize_infrastructure(deadline), context=contextvars.Context())
+            runner.run(self._initialize_infrastructure(deadline, progress), context=contextvars.Context())
         except BaseException:
             if runner is not None:
-                self._close_runner_best_effort(runner)
+                if progress["database"]:
+                    try:
+                        runner.run(self._rollback_failed_initialization(deadline), context=contextvars.Context())
+                    except BaseException as exc:
+                        logger.warning(f"Celery runtime 初始化失败回滚编排异常（已忽略）: {exc}")
+                self._close_runner_if_safe(runner)
             with self._state_lock:
                 self._runner = None
                 self._owner_pid = None
