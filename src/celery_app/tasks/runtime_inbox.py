@@ -14,110 +14,14 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from contextlib import suppress
 from typing import Any
-
-from celery import Task
 
 # 预加载外键目标模型, 确保独立 Celery worker 进程内 mapper/metadata 完整注册.
 from src.app.device.models.command import DeviceCommand as _DeviceCommand  # noqa: F401
 from src.celery_app.app import celery_app
+from src.celery_app.async_runtime import run_async
 from src.core.logger import logger
-from src.database import db as db_module
-
-_WORKLINE_TASK_LOOP: asyncio.AbstractEventLoop | None = None
-
-
-class RuntimeInboxTask(Task):
-    """RuntimeInbox 任务基类 - 提供数据库会话管理."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._db: Any | None = None
-
-    @property
-    def db(self) -> Any:
-        """懒加载数据库会话."""
-        if self._db is None:
-            _lazy_init_db()
-            session_local = db_module.AsyncSessionLocal
-            if session_local is None:
-                raise RuntimeError("数据库未初始化, 请先调用 init_db()")
-            self._db = session_local()
-        return self._db
-
-    def cleanup(self) -> None:
-        """清理资源."""
-        if self._db:
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(self._db.close())
-            except Exception as exc:
-                logger.warning(f"关闭任务数据库会话失败: {exc}")
-            finally:
-                loop.close()
-                self._db = None
-
-    def on_failure(
-        self,
-        exc: Exception,
-        task_id: str,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-        einfo: Any,
-    ) -> None:
-        _ = args, kwargs, einfo
-        self.cleanup()
-        logger.error(f"任务 {task_id} 失败: {exc}")
-
-    def on_success(
-        self,
-        retval: Any,
-        task_id: str,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-    ) -> None:
-        _ = retval, args, kwargs
-        self.cleanup()
-        logger.info(f"任务 {task_id} 成功完成")
-
-
-def _get_sync_event_loop() -> asyncio.AbstractEventLoop:
-    global _WORKLINE_TASK_LOOP
-    try:
-        _ = asyncio.get_running_loop()
-    except RuntimeError:
-        if _WORKLINE_TASK_LOOP is None or _WORKLINE_TASK_LOOP.is_closed():
-            _WORKLINE_TASK_LOOP = asyncio.new_event_loop()
-        asyncio.set_event_loop(_WORKLINE_TASK_LOOP)
-        return _WORKLINE_TASK_LOOP
-    raise RuntimeError("当前事件循环正在运行, 无法同步执行 RuntimeInbox Celery 任务")
-
-
-def _lazy_init_db(loop: asyncio.AbstractEventLoop | None = None) -> None:
-    """在直接调用或 Worker 子进程未完成 signal 初始化时懒初始化数据库."""
-    if db_module.AsyncSessionLocal is not None:
-        return
-    from src.database.db import init_db
-
-    init_loop = loop or _get_sync_event_loop()
-    init_loop.run_until_complete(init_db())
-    logger.info("✓ RuntimeInbox Celery 任务懒初始化数据库连接成功")
-
-
-def _run_async(coro: Any) -> Any:
-    """在 Celery 同步任务中运行异步函数."""
-    try:
-        loop = _get_sync_event_loop()
-        _lazy_init_db(loop)
-    except Exception:
-        with suppress(Exception):
-            cast("Any", coro).close()
-        raise
-    return loop.run_until_complete(coro)
-
-
-from typing import cast  # noqa: E402  (after _run_async to keep import grouped)
+from src.database.db import get_db_context
 
 # ============================================================
 # 任务结果 TypedDict
@@ -180,12 +84,12 @@ def _processing_outcome(result: ClaimBatchResult) -> str:
 
 @celery_app.task(
     name="src.celery_app.tasks.runtime_inbox.process_runtime_inbox_batch",
-    base=RuntimeInboxTask,
+    base=celery_app.Task,
     bind=True,
     max_retries=3,
     default_retry_delay=5,
 )
-def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> ClaimBatchResult:
+def process_runtime_inbox_batch(self: Any, limit: int = 10) -> ClaimBatchResult:
     """顺序 claim 并处理 RuntimeInbox 表 (Plan Task 6).
 
     claim-one / process-one 循环, 单条 INBOX_PROCESS_TIMEOUT_SECONDS 超时.
@@ -193,7 +97,7 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
     logger.debug(f"开始处理 RuntimeInbox, limit={limit}")
 
     async def _process() -> ClaimBatchResult:
-        async with self.db as db:
+        async with get_db_context() as db:
             from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_service
             from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
                 RuntimeInboxProcessorBridge,
@@ -292,7 +196,7 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
             return result
 
     try:
-        result = _run_async(_process())
+        result = run_async(_process)
         if result.get("processed", 0) > 0:
             logger.info(f"RuntimeInbox 处理完成: {result}")
         else:
@@ -312,18 +216,17 @@ def process_runtime_inbox_batch(self: RuntimeInboxTask, limit: int = 10) -> Clai
 
 @celery_app.task(
     name="src.celery_app.tasks.runtime_inbox.process_signal",
-    base=RuntimeInboxTask,
+    base=celery_app.Task,
     bind=True,
     max_retries=3,
     default_retry_delay=10,
 )
-def process_signal(self: RuntimeInboxTask, payload: dict[str, Any]) -> None:
+def process_signal(self: Any, payload: dict[str, Any]) -> None:
     logger.info(f"runtime_inbox process_signal 接收到 payload: {payload}")
 
 
 __all__ = [
     "ClaimBatchResult",
-    "RuntimeInboxTask",
     "process_runtime_inbox_batch",
     "process_signal",
 ]

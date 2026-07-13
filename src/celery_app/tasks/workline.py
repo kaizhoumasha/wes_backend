@@ -9,23 +9,17 @@
 
 from __future__ import annotations
 
-import asyncio
-from contextlib import suppress
-from typing import TYPE_CHECKING, Any, TypedDict, cast
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable
-
-from celery import Task
+from typing import Any, TypedDict, cast
 
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
 from src.app.device.models.command import DeviceCommand as _DeviceCommand  # noqa: F401
 from src.celery_app.app import celery_app
+from src.celery_app.async_runtime import run_async
 from src.celery_app.constants import (
     DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
 )
 from src.core.logger import logger
-from src.database import db as db_module
+from src.database.db import get_db_context
 from src.utils.value_normalization import (
     enum_value,
     resolve_entity_id,
@@ -71,9 +65,6 @@ class DispatchResult(TypedDict):
     skipped: int
 
 
-_WORKLINE_TASK_LOOP: asyncio.AbstractEventLoop | None = None
-
-
 def _ensure_non_empty_retry_result(task_name: str, result: dict[str, int], retries: int) -> None:
     """避免“重试后空跑”被 Celery 误记为成功。"""
     if retries <= 0:
@@ -94,89 +85,6 @@ def _empty_smt_inbound_handoff_recovery_result() -> SmtInboundHandoffRecoveryRes
         "manual_hold": 0,
         "recovery_errors": 0,
     }
-
-
-def _get_sync_event_loop() -> asyncio.AbstractEventLoop:
-    global _WORKLINE_TASK_LOOP
-    try:
-        _ = asyncio.get_running_loop()
-    except RuntimeError:
-        if _WORKLINE_TASK_LOOP is None or _WORKLINE_TASK_LOOP.is_closed():
-            _WORKLINE_TASK_LOOP = asyncio.new_event_loop()
-        asyncio.set_event_loop(_WORKLINE_TASK_LOOP)
-        return _WORKLINE_TASK_LOOP
-    raise RuntimeError("当前事件循环正在运行，无法同步执行 Workline Celery 任务")
-
-
-def _lazy_init_db(loop: asyncio.AbstractEventLoop | None = None) -> None:
-    """在直接调用或 Worker 子进程未完成 signal 初始化时懒初始化数据库。"""
-    if db_module.AsyncSessionLocal is not None:
-        return
-    from src.database.db import init_db
-
-    init_loop = loop or _get_sync_event_loop()
-    init_loop.run_until_complete(init_db())
-    logger.info("✓ Workline Celery 任务懒初始化数据库连接成功")
-
-
-def _run_async(coro: Awaitable[Any]) -> Any:
-    """在 Celery 同步任务中运行异步函数。"""
-    try:
-        loop = _get_sync_event_loop()
-        _lazy_init_db(loop)
-    except Exception:
-        with suppress(Exception):
-            cast("Any", coro).close()
-        raise
-    return loop.run_until_complete(coro)
-
-
-# ============================================
-# Celery 任务
-# ============================================
-class WorklineTask(Task):
-    """作业线任务基类 - 提供数据库会话管理"""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._db: Any | None = None
-
-    @property
-    def db(self) -> Any:
-        """懒加载数据库会话"""
-        if self._db is None:
-            _lazy_init_db()
-            session_local = db_module.AsyncSessionLocal
-            if session_local is None:
-                raise RuntimeError("数据库未初始化，请先调用 init_db()")
-            self._db = session_local()
-        return self._db
-
-    def cleanup(self) -> None:
-        """清理资源"""
-        if self._db:
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(self._db.close())
-            except Exception as exc:
-                logger.warning(f"关闭任务数据库会话失败: {exc}")
-            finally:
-                loop.close()
-            self._db = None
-
-    def on_failure(
-        self, exc: Exception, task_id: str, args: tuple[Any, ...], kwargs: dict[str, Any], einfo: Any
-    ) -> None:
-        """任务失败时清理资源"""
-        _ = args, kwargs, einfo
-        self.cleanup()
-        logger.error(f"任务 {task_id} 失败: {exc}")
-
-    def on_success(self, retval: Any, task_id: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-        """任务成功时清理资源"""
-        _ = retval, args, kwargs
-        self.cleanup()
-        logger.info(f"任务 {task_id} 成功完成")
 
 
 class TimeoutScanner:
@@ -338,12 +246,12 @@ class DeviceHeartbeatScanner:
 
 @celery_app.task(
     name="src.celery_app.tasks.workline.scan_timeouts_batch",
-    base=WorklineTask,
+    base=celery_app.Task,
     bind=True,
     max_retries=3,
     default_retry_delay=60,
 )
-def scan_timeouts_batch(self: WorklineTask, limit: int = 100) -> ScanResult:
+def scan_timeouts_batch(self: Any, limit: int = 100) -> ScanResult:
     """扫描超时 Session (Celery 任务入口)
     扫描 deadline_at < NOW() 的超时 Session，为每个超时 Session 创建 timeout 类型的 Inbox 消息，
     触发后续编排流程处理超时。
@@ -354,7 +262,7 @@ def scan_timeouts_batch(self: WorklineTask, limit: int = 100) -> ScanResult:
        b. 继承原 Session 的 trace_id
     3. 提交数据库事务
     执行模式：
-    - bind=True：任务方法接收 self（WorklineTask 实例）
+    - bind=True：任务方法接收 Celery Task 实例
     - max_retries=3：失败后自动重试最多 3 次
     - default_retry_delay=60：重试间隔 60 秒（超时场景不频繁）
     调用链：
@@ -379,11 +287,11 @@ def scan_timeouts_batch(self: WorklineTask, limit: int = 100) -> ScanResult:
     logger.info(f"开始扫描超时 Session, limit={limit}")
 
     async def _scan() -> ScanResult:
-        async with self.db as db:
+        async with get_db_context() as db:
             return await TimeoutScanner._scan(db, limit=limit)
 
     try:
-        result = _run_async(_scan())
+        result = run_async(_scan)
         _ensure_non_empty_retry_result(
             "scan_timeouts_batch",
             result,
@@ -399,13 +307,13 @@ def scan_timeouts_batch(self: WorklineTask, limit: int = 100) -> ScanResult:
 
 @celery_app.task(
     name="src.celery_app.tasks.workline.scan_device_heartbeats_batch",
-    base=WorklineTask,
+    base=celery_app.Task,
     bind=True,
     max_retries=3,
     default_retry_delay=60,
 )
 def scan_device_heartbeats_batch(
-    self: WorklineTask,
+    self: Any,
     threshold_seconds: int = DEVICE_HEARTBEAT_TIMEOUT_SECONDS,
     limit: int = 100,
 ) -> DeviceHeartbeatScanResult:
@@ -413,11 +321,11 @@ def scan_device_heartbeats_batch(
     logger.info(f"开始扫描设备心跳超时, threshold_seconds={threshold_seconds}, limit={limit}")
 
     async def _scan() -> DeviceHeartbeatScanResult:
-        async with self.db as db:
+        async with get_db_context() as db:
             return await DeviceHeartbeatScanner._scan(db, threshold_seconds=threshold_seconds, limit=limit)
 
     try:
-        result = _run_async(_scan())
+        result = run_async(_scan)
         _ensure_non_empty_retry_result(
             "scan_device_heartbeats_batch",
             result,
@@ -433,13 +341,13 @@ def scan_device_heartbeats_batch(
 
 @celery_app.task(
     name="src.celery_app.tasks.workline.scan_smt_inbound_handoff_demands_batch",
-    base=WorklineTask,
+    base=celery_app.Task,
     bind=True,
     max_retries=3,
     default_retry_delay=60,
 )
 def scan_smt_inbound_handoff_demands_batch(
-    self: WorklineTask,
+    self: Any,
     scan_limit: int = 100,
     recovery_limit: int = 100,
     claim_limit: int = 10,
@@ -460,7 +368,7 @@ def scan_smt_inbound_handoff_demands_batch(
     )
 
     async def _scan() -> SmtInboundHandoffRecoveryResult:
-        async with self.db as db:
+        async with get_db_context() as db:
             from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service import (
                 smt_inbound_handoff_service,
             )
@@ -482,7 +390,7 @@ def scan_smt_inbound_handoff_demands_batch(
             return cast("SmtInboundHandoffRecoveryResult", recovery_result)
 
     try:
-        result = _run_async(_scan())
+        result = run_async(_scan)
         _ensure_non_empty_retry_result(
             "scan_smt_inbound_handoff_demands_batch",
             result,
@@ -514,10 +422,10 @@ __all__ = [
 
 @celery_app.task(
     name="src.celery_app.tasks.workline.process_signal",
-    base=WorklineTask,
+    base=celery_app.Task,
     bind=True,
     max_retries=3,
     default_retry_delay=10,
 )
-def process_signal(self: WorklineTask, payload: dict[str, Any]) -> None:
+def process_signal(self: Any, payload: dict[str, Any]) -> None:
     logger.info(f"workline process_signal 接收到 payload: {payload}")
