@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import time
 from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -68,6 +69,7 @@ _EXPECTED_THRESHOLDS = {
     "claim_p95_ms": CLAIM_P95_THRESHOLD_MS,
     "throughput_per_second": THROUGHPUT_THRESHOLD_PER_SECOND,
     "duplicate_claim_count": 0,
+    "lock_observation_count": 1,
     "waiting_lock_samples": 0,
     "max_waiting_locks": 0,
 }
@@ -78,6 +80,7 @@ class _BenchmarkState:
     claimed_ids: set[int] = field(default_factory=set)
     claim_samples_ms: list[float] = field(default_factory=list)
     duplicate_claim_count: int = 0
+    lock_observation_count: int = 0
     waiting_lock_samples: int = 0
     max_waiting_locks: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -293,14 +296,19 @@ _REQUIRED_EVIDENCE_FIELDS = (
     "workload.mix",
     "sample_count",
     "metrics.claim_p95_ms",
+    "metrics.claim_p50_ms",
+    "metrics.claim_sample_count",
     "metrics.throughput_per_second",
+    "metrics.elapsed_seconds",
     "metrics.duplicate_claim_count",
+    "metrics.lock_observation_count",
     "metrics.waiting_lock_samples",
     "metrics.max_waiting_locks",
     "metrics.processed_count",
     "thresholds.claim_p95_ms",
     "thresholds.throughput_per_second",
     "thresholds.duplicate_claim_count",
+    "thresholds.lock_observation_count",
     "thresholds.waiting_lock_samples",
     "thresholds.max_waiting_locks",
     "query_plan.production_statement_sha256",
@@ -329,6 +337,8 @@ def validate_runtime_inbox_benchmark_evidence(
 
     if evidence["schema_version"] != BENCHMARK_EVIDENCE_SCHEMA_VERSION:
         return RuntimeInboxBenchmarkEvidenceValidation(False, "INVALID_SCHEMA_VERSION", "schema_version")
+    if not _is_aware_utc_timestamp(evidence["generated_at"]):
+        return RuntimeInboxBenchmarkEvidenceValidation(False, "INVALID_METADATA", "generated_at")
     commit_sha = _nested_value(evidence, "repository.commit_sha")
     if commit_sha != expected_commit:
         return RuntimeInboxBenchmarkEvidenceValidation(False, "COMMIT_MISMATCH", "repository.commit_sha")
@@ -341,11 +351,17 @@ def validate_runtime_inbox_benchmark_evidence(
     if _nested_value(evidence, "repository.dirty") is not False:
         return RuntimeInboxBenchmarkEvidenceValidation(False, "DIRTY_WORKTREE", "repository.dirty")
     for field_name, expected_value in _EXPECTED_CONFIG.items():
-        if _nested_value(evidence, f"config.{field_name}") != expected_value:
+        actual_value = _nested_value(evidence, f"config.{field_name}")
+        if type(actual_value) is not type(expected_value) or actual_value != expected_value:
             return RuntimeInboxBenchmarkEvidenceValidation(False, "INVALID_CONFIG", f"config.{field_name}")
     for field_name, expected_value in _EXPECTED_THRESHOLDS.items():
-        if _nested_value(evidence, f"thresholds.{field_name}") != expected_value:
+        actual_value = _nested_value(evidence, f"thresholds.{field_name}")
+        if type(actual_value) is not type(expected_value) or actual_value != expected_value:
             return RuntimeInboxBenchmarkEvidenceValidation(False, "INVALID_THRESHOLD", f"thresholds.{field_name}")
+    if not _valid_database_metadata(evidence):
+        return RuntimeInboxBenchmarkEvidenceValidation(False, "INVALID_DATABASE_METADATA", "database")
+    if not _valid_sample_metadata(evidence):
+        return RuntimeInboxBenchmarkEvidenceValidation(False, "INVALID_SAMPLE_COUNT", "sample_count")
     if (
         _nested_value(evidence, "source.kind") != "postgresql"
         or _nested_value(evidence, "source.statement.kind") != PRODUCTION_CLAIM_STATEMENT_KIND
@@ -391,6 +407,7 @@ def _evidence_gate_failures(evidence: Mapping[str, object]) -> list[str]:
         ("claim_p95_ms", "maximum"),
         ("throughput_per_second", "minimum"),
         ("duplicate_claim_count", "exact"),
+        ("lock_observation_count", "minimum"),
         ("waiting_lock_samples", "exact"),
         ("max_waiting_locks", "exact"),
     )
@@ -415,7 +432,68 @@ def _evidence_gate_failures(evidence: Mapping[str, object]) -> list[str]:
     return failures
 
 
-async def _monitor_waiting_locks(database: str, state: _BenchmarkState, done: asyncio.Event) -> None:
+def _is_aware_utc_timestamp(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() == timedelta(0)
+
+
+def _valid_database_metadata(evidence: Mapping[str, object]) -> bool:
+    server_version = _nested_value(evidence, "database.server_version")
+    max_connections = _nested_value(evidence, "database.settings.max_connections")
+    shared_buffers = _nested_value(evidence, "database.settings.shared_buffers")
+    if not isinstance(server_version, str) or not server_version.strip():
+        return False
+    try:
+        max_connections_value = int(max_connections) if isinstance(max_connections, str | int) else 0
+    except ValueError:
+        return False
+    return (
+        max_connections_value > 0
+        and isinstance(shared_buffers, str)
+        and re.fullmatch(r"[1-9]\d*(?:B|kB|MB|GB|TB)", shared_buffers.strip()) is not None
+    )
+
+
+def _valid_sample_metadata(evidence: Mapping[str, object]) -> bool:
+    sample_count = evidence.get("sample_count")
+    claim_sample_count = _nested_value(evidence, "metrics.claim_sample_count")
+    processed_count = _nested_value(evidence, "metrics.processed_count")
+    p50 = _nested_value(evidence, "metrics.claim_p50_ms")
+    p95 = _nested_value(evidence, "metrics.claim_p95_ms")
+    elapsed_seconds = _nested_value(evidence, "metrics.elapsed_seconds")
+    counts_match = (
+        isinstance(sample_count, int)
+        and not isinstance(sample_count, bool)
+        and sample_count > 0
+        and sample_count == claim_sample_count == processed_count
+    )
+    valid_latency = (
+        isinstance(p50, int | float)
+        and not isinstance(p50, bool)
+        and isinstance(p95, int | float)
+        and not isinstance(p95, bool)
+        and 0 <= p50 <= p95
+    )
+    return (
+        counts_match
+        and valid_latency
+        and isinstance(elapsed_seconds, int | float)
+        and not isinstance(elapsed_seconds, bool)
+        and elapsed_seconds > 0
+    )
+
+
+async def _monitor_waiting_locks(
+    database: str,
+    state: _BenchmarkState,
+    done: asyncio.Event,
+    ready: asyncio.Event,
+) -> None:
     connection = await connect(database)
     try:
         while not done.is_set():
@@ -430,8 +508,10 @@ async def _monitor_waiting_locks(database: str, state: _BenchmarkState, done: as
                 )
                 or 0
             )
+            state.lock_observation_count += 1
             state.waiting_lock_samples += waiting
             state.max_waiting_locks = max(state.max_waiting_locks, waiting)
+            ready.set()
             await asyncio.sleep(0.001)
     finally:
         await connection.close()
@@ -458,7 +538,7 @@ async def _claim_worker(
             if not claims:
                 break
             async with state.lock:
-                state.claim_samples_ms.append(elapsed_ms)
+                state.claim_samples_ms.extend(elapsed_ms for _claim in claims)
                 for claim in claims:
                     inbox_id = int(claim["id"])
                     if inbox_id in state.claimed_ids:
@@ -497,21 +577,36 @@ async def _run_workers_with_monitor(
     monitor: Coroutine[Any, Any, None],
     *,
     done: asyncio.Event,
+    ready: asyncio.Event,
     clock: Callable[[], float] = time.perf_counter,
-) -> float:
-    worker_tasks = [
-        asyncio.create_task(worker, name=f"runtime-inbox-benchmark-worker-{index}")
-        for index, worker in enumerate(workers)
-    ]
+) -> tuple[float, float]:
+    worker_coroutines = list(workers)
+    worker_tasks: list[asyncio.Task[None]] = []
     monitor_task = asyncio.create_task(monitor, name="runtime-inbox-benchmark-monitor")
+    ready_task = asyncio.create_task(ready.wait(), name="runtime-inbox-benchmark-monitor-ready")
 
     async def wait_for_workers() -> None:
         await asyncio.gather(*worker_tasks)
 
-    worker_supervisor = asyncio.create_task(wait_for_workers(), name="runtime-inbox-benchmark-workers")
+    worker_supervisor: asyncio.Task[None] | None = None
     primary_error: BaseException | None = None
+    workers_started_at: float | None = None
     workers_finished_at: float | None = None
     try:
+        ready_completed, _pending = await asyncio.wait(
+            {ready_task, monitor_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if monitor_task in ready_completed:
+            await monitor_task
+            raise RuntimeError("runtime inbox benchmark monitor exited before first observation")
+        await ready_task
+        workers_started_at = clock()
+        worker_tasks = [
+            asyncio.create_task(worker, name=f"runtime-inbox-benchmark-worker-{index}")
+            for index, worker in enumerate(worker_coroutines)
+        ]
+        worker_supervisor = asyncio.create_task(wait_for_workers(), name="runtime-inbox-benchmark-workers")
         completed, _pending = await asyncio.wait(
             {worker_supervisor, monitor_task},
             return_when=asyncio.FIRST_COMPLETED,
@@ -526,22 +621,30 @@ async def _run_workers_with_monitor(
     except BaseException as exc:
         primary_error = exc
     finally:
+        if not ready_task.done():
+            ready_task.cancel()
+        await asyncio.gather(ready_task, return_exceptions=True)
         done.set()
         for task in worker_tasks:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*worker_tasks, return_exceptions=True)
-        if not worker_supervisor.done():
+        if not worker_tasks:
+            for worker in worker_coroutines:
+                worker.close()
+        if worker_supervisor is not None and not worker_supervisor.done():
             worker_supervisor.cancel()
-        await asyncio.gather(worker_supervisor, return_exceptions=True)
+        if worker_supervisor is not None:
+            await asyncio.gather(worker_supervisor, return_exceptions=True)
         monitor_result = await asyncio.gather(monitor_task, return_exceptions=True)
         if primary_error is None and isinstance(monitor_result[0], BaseException):
             primary_error = monitor_result[0]
 
     if primary_error is not None:
         raise primary_error from None
+    assert workers_started_at is not None
     assert workers_finished_at is not None
-    return workers_finished_at
+    return workers_started_at, workers_finished_at
 
 
 async def _run_benchmark() -> dict[str, object]:
@@ -569,13 +672,14 @@ async def _run_benchmark() -> dict[str, object]:
                 sli_before = asdict(await repository.get_sli_snapshot(db, now_ms=int(time.time() * 1_000)))
             state = _BenchmarkState()
             done = asyncio.Event()
-            started_at = time.perf_counter()
-            workers_finished_at = await _run_workers_with_monitor(
+            monitor_ready = asyncio.Event()
+            workers_started_at, workers_finished_at = await _run_workers_with_monitor(
                 (_claim_worker(worker_id, session_factory, service, state) for worker_id in range(WORKER_CONCURRENCY)),
-                _monitor_waiting_locks(database, state, done),
+                _monitor_waiting_locks(database, state, done, monitor_ready),
                 done=done,
+                ready=monitor_ready,
             )
-            elapsed_seconds = workers_finished_at - started_at
+            elapsed_seconds = workers_finished_at - workers_started_at
 
             async with session_factory() as db:
                 processed_count = int(
@@ -593,6 +697,7 @@ async def _run_benchmark() -> dict[str, object]:
                 "throughput_per_second": round(PENDING_INBOX_COUNT / elapsed_seconds, 3),
                 "elapsed_seconds": round(elapsed_seconds, 3),
                 "duplicate_claim_count": state.duplicate_claim_count,
+                "lock_observation_count": state.lock_observation_count,
                 "waiting_lock_samples": state.waiting_lock_samples,
                 "max_waiting_locks": state.max_waiting_locks,
                 "processed_count": processed_count,
@@ -603,6 +708,8 @@ async def _run_benchmark() -> dict[str, object]:
                 failed_gates.append("claim_p95_ms")
             if metrics["throughput_per_second"] < thresholds["throughput_per_second"]:
                 failed_gates.append("throughput_per_second")
+            if metrics["lock_observation_count"] < thresholds["lock_observation_count"]:
+                failed_gates.append("lock_observation_count")
             for metric_name in ("duplicate_claim_count", "waiting_lock_samples", "max_waiting_locks"):
                 if metrics[metric_name] != thresholds[metric_name]:
                     failed_gates.append(metric_name)

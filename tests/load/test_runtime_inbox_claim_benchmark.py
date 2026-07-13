@@ -18,10 +18,11 @@ def test_runtime_inbox_claim_benchmark() -> None:
     assert isinstance(metrics, dict)
     assert metrics["processed_count"] == 1_000
     assert metrics["duplicate_claim_count"] == 0
-    assert 0 < metrics["claim_sample_count"] < 1_000
+    assert result["sample_count"] == metrics["claim_sample_count"] == metrics["processed_count"] == 1_000
     assert metrics["claim_p50_ms"] <= metrics["claim_p95_ms"]
     assert metrics["claim_p95_ms"] <= thresholds["claim_p95_ms"]
     assert metrics["throughput_per_second"] >= thresholds["throughput_per_second"]
+    assert metrics["lock_observation_count"] >= thresholds["lock_observation_count"] > 0
     assert metrics["waiting_lock_samples"] == thresholds["waiting_lock_samples"] == 0
     assert metrics["max_waiting_locks"] == thresholds["max_waiting_locks"] == 0
     assert result["query_plan"]["selective"]["gate_passed"] is True

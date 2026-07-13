@@ -74,11 +74,15 @@ def _valid_evidence() -> dict[str, object]:
             "selective_fixture_row_count": 10000,
         },
         "workload": {"mix": {"received": 700, "failed_due": 200, "stale_processing": 100}},
-        "sample_count": 40,
+        "sample_count": 1000,
         "metrics": {
+            "claim_p50_ms": 80.0,
             "claim_p95_ms": 149.0,
+            "claim_sample_count": 1000,
             "throughput_per_second": 1000.0,
+            "elapsed_seconds": 1.0,
             "duplicate_claim_count": 0,
+            "lock_observation_count": 12,
             "waiting_lock_samples": 0,
             "max_waiting_locks": 0,
             "processed_count": 1000,
@@ -87,6 +91,7 @@ def _valid_evidence() -> dict[str, object]:
             "claim_p95_ms": 150.0,
             "throughput_per_second": 1000.0,
             "duplicate_claim_count": 0,
+            "lock_observation_count": 1,
             "waiting_lock_samples": 0,
             "max_waiting_locks": 0,
         },
@@ -208,3 +213,39 @@ def test_evidence_validator_rejects_repository_builder_structure_drift(monkeypat
 
     assert validation.valid is False
     assert validation.reason == "NON_PRODUCTION_STATEMENT"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        (lambda evidence: evidence.update(generated_at=None), "INVALID_METADATA"),
+        (lambda evidence: evidence.update(generated_at="2026-07-13T01:02:03"), "INVALID_METADATA"),
+        (lambda evidence: evidence["database"].update(server_version=""), "INVALID_DATABASE_METADATA"),
+        (
+            lambda evidence: evidence["database"]["settings"].update(max_connections="0"),
+            "INVALID_DATABASE_METADATA",
+        ),
+        (
+            lambda evidence: evidence["database"]["settings"].update(shared_buffers=""),
+            "INVALID_DATABASE_METADATA",
+        ),
+        (lambda evidence: evidence.update(sample_count=0), "INVALID_SAMPLE_COUNT"),
+        (lambda evidence: evidence["metrics"].update(claim_sample_count=999), "INVALID_SAMPLE_COUNT"),
+        (lambda evidence: evidence["metrics"].update(processed_count=999), "INVALID_SAMPLE_COUNT"),
+        (lambda evidence: evidence["metrics"].update(lock_observation_count=0), "FAILED_VERDICT"),
+        (lambda evidence: evidence["config"].update(claim_batch_size=25.0), "INVALID_CONFIG"),
+        (lambda evidence: evidence["thresholds"].update(claim_p95_ms=150), "INVALID_THRESHOLD"),
+        (lambda evidence: evidence["thresholds"].update(waiting_lock_samples=False), "INVALID_THRESHOLD"),
+    ],
+)
+def test_evidence_validator_rejects_semantically_empty_or_inconsistent_evidence(
+    mutation: object,
+    reason: str,
+) -> None:
+    evidence = deepcopy(_valid_evidence())
+    mutation(evidence)  # type: ignore[operator]
+
+    validation = validate_runtime_inbox_benchmark_evidence(evidence, expected_commit="a" * 40)
+
+    assert validation.valid is False
+    assert validation.reason == reason

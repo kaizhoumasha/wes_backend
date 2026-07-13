@@ -29,6 +29,7 @@ def test_worker_failure_cancels_and_awaits_peers_stops_monitor_and_preserves_fir
         blocked_settled = asyncio.Event()
         monitor_settled = asyncio.Event()
         done = asyncio.Event()
+        ready = asyncio.Event()
 
         async def failing_worker() -> None:
             await blocked_started.wait()
@@ -43,6 +44,7 @@ def test_worker_failure_cancels_and_awaits_peers_stops_monitor_and_preserves_fir
 
         async def monitor() -> None:
             try:
+                ready.set()
                 await done.wait()
             finally:
                 monitor_settled.set()
@@ -52,6 +54,7 @@ def test_worker_failure_cancels_and_awaits_peers_stops_monitor_and_preserves_fir
                 (failing_worker(), blocked_worker()),
                 monitor(),
                 done=done,
+                ready=ready,
             )
 
         assert exc_info.value is primary_error
@@ -66,11 +69,13 @@ def test_worker_success_and_engine_context_preserve_result_and_dispose_once() ->
     async def scenario() -> None:
         completed: list[str] = []
         done = asyncio.Event()
+        ready = asyncio.Event()
 
         async def worker(name: str) -> None:
             completed.append(name)
 
         async def monitor() -> None:
+            ready.set()
             await done.wait()
             completed.append("monitor")
 
@@ -78,6 +83,7 @@ def test_worker_success_and_engine_context_preserve_result_and_dispose_once() ->
             (worker("worker-1"), worker("worker-2")),
             monitor(),
             done=done,
+            ready=ready,
         )
         assert completed == ["worker-1", "worker-2", "monitor"]
 
@@ -100,6 +106,7 @@ def test_worker_success_and_engine_context_preserve_result_and_dispose_once() ->
 def test_worker_finish_timestamp_is_captured_before_blocked_monitor_cleanup() -> None:
     async def scenario() -> None:
         done = asyncio.Event()
+        ready = asyncio.Event()
         clock_called = asyncio.Event()
         allow_monitor_cleanup = asyncio.Event()
         monitor_settled = asyncio.Event()
@@ -108,6 +115,7 @@ def test_worker_finish_timestamp_is_captured_before_blocked_monitor_cleanup() ->
             return
 
         async def monitor() -> None:
+            ready.set()
             await done.wait()
             await allow_monitor_cleanup.wait()
             monitor_settled.set()
@@ -122,6 +130,7 @@ def test_worker_finish_timestamp_is_captured_before_blocked_monitor_cleanup() ->
                 (worker(),),
                 monitor(),
                 done=done,
+                ready=ready,
                 clock=clock,
             )
         )
@@ -129,11 +138,78 @@ def test_worker_finish_timestamp_is_captured_before_blocked_monitor_cleanup() ->
         assert not task.done()
 
         allow_monitor_cleanup.set()
-        assert await task == 42.0
+        assert await task == (42.0, 42.0)
         assert monitor_settled.is_set()
 
         benchmark_source = inspect.getsource(_run_benchmark)
-        assert "elapsed_seconds = workers_finished_at - started_at" in benchmark_source
+        assert "elapsed_seconds = workers_finished_at - workers_started_at" in benchmark_source
+
+    asyncio.run(scenario())
+
+
+def test_workers_wait_for_first_monitor_observation_and_timing_starts_after_ready() -> None:
+    async def scenario() -> None:
+        allow_first_observation = asyncio.Event()
+        worker_started = asyncio.Event()
+        done = asyncio.Event()
+        ready = asyncio.Event()
+        observation_count = 0
+        clock_values = iter((10.0, 12.0))
+
+        async def worker() -> None:
+            assert observation_count == 1
+            worker_started.set()
+
+        async def monitor() -> None:
+            nonlocal observation_count
+            await allow_first_observation.wait()
+            observation_count += 1
+            ready.set()
+            await done.wait()
+
+        task = asyncio.create_task(
+            _run_workers_with_monitor(
+                (worker(),),
+                monitor(),
+                done=done,
+                ready=ready,
+                clock=lambda: next(clock_values),
+            )
+        )
+        await asyncio.sleep(0)
+        assert worker_started.is_set() is False
+
+        allow_first_observation.set()
+
+        assert await task == (10.0, 12.0)
+        assert observation_count == 1
+        assert worker_started.is_set()
+
+    asyncio.run(scenario())
+
+
+def test_monitor_failure_before_ready_does_not_start_workers() -> None:
+    async def scenario() -> None:
+        worker_started = False
+        done = asyncio.Event()
+        ready = asyncio.Event()
+
+        async def worker() -> None:
+            nonlocal worker_started
+            worker_started = True
+
+        async def monitor() -> None:
+            raise RuntimeError("monitor query failed")
+
+        with pytest.raises(RuntimeError, match="monitor query failed"):
+            await _run_workers_with_monitor(
+                (worker(),),
+                monitor(),
+                done=done,
+                ready=ready,
+            )
+
+        assert worker_started is False
 
     asyncio.run(scenario())
 
