@@ -113,9 +113,26 @@ docker compose --env-file .env.prod \
   up -d db redis
 ```
 
-等待数据库与 Redis 健康检查通过后，再继续应用服务发布。
+等待数据库与 Redis 健康检查通过后，保持基础设施在线，再继续容量门禁和应用服务发布。
 
 ### 4.6 启动应用服务
+
+先使用目标应用镜像内的统一脚本读取 live PostgreSQL 的 `max_connections`，并按 `.env.prod` 中完整的
+API/Celery 目标拓扑校验连接预算。该短连接固定使用 `cli` 角色、连接池 `1`、overflow `0`：
+
+```bash
+docker compose --env-file .env.prod \
+  -f docker-compose.yml \
+  -f docker-compose.deploy.yml \
+  run --rm --no-deps \
+  -e DATABASE_RUNTIME_ROLE=cli \
+  -e DATABASE_POOL_SIZE=1 \
+  -e DATABASE_MAX_OVERFLOW=0 \
+  api python scripts/capacity_guard.py --services api,celery_worker
+```
+
+容量门禁失败时必须停止发布，不得启动或重建任何应用服务；`db`、`redis` 基础设施保持在线，供排障和重试。
+门禁通过后才执行：
 
 ```bash
 docker compose --env-file .env.prod \
@@ -241,6 +258,16 @@ export BACKEND_IMAGE=192.168.0.220:5050/wes/wes_backend:123-abc1234
 ```bash
 export BACKEND_IMAGE=192.168.0.220:5050/wes/wes_backend:122-def5678
 
+# 回滚仅替换应用镜像，db/redis 基础设施保持在线；仍须先校验完整目标拓扑。
+docker compose --env-file .env.prod \
+  -f docker-compose.yml \
+  -f docker-compose.deploy.yml \
+  run --rm --no-deps \
+  -e DATABASE_RUNTIME_ROLE=cli \
+  -e DATABASE_POOL_SIZE=1 \
+  -e DATABASE_MAX_OVERFLOW=0 \
+  api python scripts/capacity_guard.py --services api,celery_worker
+
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
@@ -256,6 +283,7 @@ docker compose --env-file .env.prod \
 - 已备份数据库
 - 已确认 `.env.prod` 中雪花 ID 配置正确
 - 已确认 `/opt/wes_frontend` 与目标前端版本一致
+- 已保持 `db`、`redis` 在线并通过 live PostgreSQL 容量门禁
 - 已执行迁移
 - 已执行权限同步
 - 已执行菜单同步

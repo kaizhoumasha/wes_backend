@@ -128,6 +128,46 @@ def test_deployment_script_runs_live_guard_before_application_start_and_scale() 
     assert scale_body.index("validate_complete_scale_targets") < scale_body.index("run_capacity_guard")
 
 
+def test_jenkins_and_production_runbook_require_live_guard_before_application_start() -> None:
+    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
+    guard_command = (
+        "run --rm --no-deps "
+        "-e DATABASE_RUNTIME_ROLE=cli "
+        "-e DATABASE_POOL_SIZE=1 "
+        "-e DATABASE_MAX_OVERFLOW=0 "
+        "api python scripts/capacity_guard.py --services api,celery_worker"
+    )
+
+    assert (
+        'COMPOSE_CMD="docker compose -f docker-compose.yml -f ${DEPLOY_COMPOSE_FILE} '
+        '--env-file ${DEPLOY_ENV_FILE}"' in deploy_body
+    )
+    assert "$COMPOSE_CMD up -d --wait db redis" in deploy_body
+    assert guard_command in deploy_body
+    infra_index = deploy_body.index("$COMPOSE_CMD up -d --wait db redis")
+    application_command = "$COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES}"
+    first_guard_index = deploy_body.index("run_capacity_guard", infra_index)
+    first_application_index = deploy_body.index(application_command, first_guard_index)
+    assert infra_index < first_guard_index < first_application_index
+
+    automatic_rollback = deploy_body.split('if [ "$HEALTH_CHECK_PASSED" = false ]', maxsplit=1)[1]
+    assert automatic_rollback.index("run_capacity_guard") < automatic_rollback.index(application_command)
+
+    runbook_text = (REPO_ROOT / "docs/devops/prod-release-deploy.md").read_text(encoding="utf-8")
+    standard_release = runbook_text.split("### 4.5", maxsplit=1)[1].split("### 4.7", maxsplit=1)[0]
+    rollback = runbook_text.split("## 6. 回滚策略", maxsplit=1)[1].split("## 7.", maxsplit=1)[0]
+    for section in (standard_release, rollback):
+        assert "DATABASE_RUNTIME_ROLE=cli" in section
+        assert "DATABASE_POOL_SIZE=1" in section
+        assert "DATABASE_MAX_OVERFLOW=0" in section
+        assert "python scripts/capacity_guard.py --services api,celery_worker" in section
+        assert section.index("python scripts/capacity_guard.py") < section.index(
+            "up -d api celery_worker celery_beat flower nginx"
+        )
+    assert "基础设施保持在线" in rollback
+
+
 def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:
     dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
