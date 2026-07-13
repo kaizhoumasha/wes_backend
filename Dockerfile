@@ -114,11 +114,13 @@ FROM base AS testing
 
 # 复制虚拟环境
 COPY --from=builder /opt/venv /opt/venv
+# 保留不可变镜像依赖，并为只读 workspace 中的 uv 提供稳定项目环境路径。
+RUN ln -s /opt/venv /app/.venv
 # CI 验收入口统一使用 uv run --no-sync，复用镜像内已锁定的虚拟环境。
 COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 
 # 激活虚拟环境
-ENV PATH="/opt/venv/bin:$PATH"
+ENV PATH="/app/.venv/bin:$PATH"
 
 # 复制项目文件
 COPY . .

@@ -17,12 +17,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 JENKINSFILE = REPO_ROOT / "Jenkinsfile.backend-ci"
 LIFECYCLE_SCRIPT = REPO_ROOT / "scripts/run_runtime_inbox_postgresql_acceptance_ci.sh"
 RUNNER = REPO_ROOT / "scripts/run_runtime_inbox_postgresql_acceptance.py"
+DOCKERFILE = REPO_ROOT / "Dockerfile"
 
 
 def test_ci_uses_isolated_postgresql_and_archives_contract_artifacts():
     jenkins = JENKINSFILE.read_text(encoding="utf-8")
     lifecycle = LIFECYCLE_SCRIPT.read_text(encoding="utf-8")
     runner = RUNNER.read_text(encoding="utf-8")
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
 
     assert "stage('RuntimeInbox PostgreSQL Acceptance')" in jenkins
     assert "run_runtime_inbox_postgresql_acceptance_ci.sh run" in jenkins
@@ -53,6 +55,16 @@ def test_ci_uses_isolated_postgresql_and_archives_contract_artifacts():
     assert "tests/load/test_runtime_inbox_claim_benchmark.py" in runner
     assert "validate_runtime_inbox_benchmark_evidence" in runner
     assert 'source_environment.get("GIT_COMMIT") != expected_commit' in runner
+    assert '-v "${WORKSPACE}:/workspace:ro"' in lifecycle
+    assert '-v "${WORKSPACE}/reports:/artifacts/reports:rw"' in lifecycle
+    assert "--workdir /workspace" in lifecycle
+    assert "UV_PROJECT_ENVIRONMENT=/app/.venv" in lifecycle
+    assert "PYTHONPATH=/workspace" in lifecycle
+    assert "GIT_CONFIG_VALUE_0=/workspace" in lifecycle
+    assert "GIT_CONFIG_VALUE_0=/app" not in lifecycle
+    assert "git status --porcelain" in lifecycle
+    assert '-v "${WORKSPACE}/.git:/app/.git:ro"' not in lifecycle
+    assert "RUN ln -s /opt/venv /app/.venv" in dockerfile
 
 
 def test_acceptance_runner_runs_required_suites_in_order_and_validates_evidence(tmp_path: Path):

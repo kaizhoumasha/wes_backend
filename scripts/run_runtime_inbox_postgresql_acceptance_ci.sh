@@ -74,8 +74,9 @@ docker exec "${POSTGRES_CONTAINER}" \
     printf 'GIT_COMMIT=%s\n' "${CI_COMMIT_SHA}"
     printf 'GIT_CONFIG_COUNT=1\n'
     printf 'GIT_CONFIG_KEY_0=safe.directory\n'
-    printf 'GIT_CONFIG_VALUE_0=/app\n'
-    printf 'UV_PROJECT_ENVIRONMENT=/opt/venv\n'
+    printf 'GIT_CONFIG_VALUE_0=/workspace\n'
+    printf 'UV_PROJECT_ENVIRONMENT=/app/.venv\n'
+    printf 'PYTHONPATH=/workspace\n'
 } >>"${ENV_FILE}"
 
 set +e
@@ -83,12 +84,19 @@ docker run --rm --name "${ACCEPTANCE_CONTAINER}" \
     --network "${POSTGRES_NETWORK}" \
     --env-file "${WORKSPACE}/.env.test" \
     --env-file "${ENV_FILE}" \
-    -v "${WORKSPACE}/reports:/artifacts/reports" \
-    -v "${WORKSPACE}/.git:/app/.git:ro" \
+    -v "${WORKSPACE}:/workspace:ro" \
+    -v "${WORKSPACE}/reports:/artifacts/reports:rw" \
+    --workdir /workspace \
     "${CI_IMAGE}" \
-    uv run --no-sync python scripts/run_runtime_inbox_postgresql_acceptance.py \
-        --output-dir /artifacts/reports/runtime-inbox-acceptance \
-        --expected-commit "${CI_COMMIT_SHA}"
+    sh -ec '
+        if [ -n "$(git status --porcelain)" ]; then
+            echo "RuntimeInbox acceptance requires a clean full checkout" >&2
+            exit 1
+        fi
+        exec uv run --no-sync python scripts/run_runtime_inbox_postgresql_acceptance.py \
+            --output-dir /artifacts/reports/runtime-inbox-acceptance \
+            --expected-commit "${GIT_COMMIT}"
+    '
 acceptance_status=$?
 set -e
 
