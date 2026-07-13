@@ -6,8 +6,10 @@ import asyncio
 import importlib
 import inspect
 import os
+import signal
 import threading
 import time
+from contextlib import contextmanager
 from contextvars import ContextVar
 from types import ModuleType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -19,6 +21,26 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 _REAL_ASYNCIO_RUNNER = asyncio.Runner
+
+
+@contextmanager
+def _sync_watchdog(timeout: float, operation: str) -> Any:
+    """用进程内定时信号中断永久阻塞，并完整恢复调用方信号状态。"""
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL)
+
+    def fail_on_timeout(_signum: int, _frame: Any) -> None:
+        raise AssertionError(f"{operation} 超过 {timeout:.2f}s watchdog，疑似永久阻塞")
+
+    signal.signal(signal.SIGALRM, fail_on_timeout)
+    signal.setitimer(signal.ITIMER_REAL, timeout)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
 
 
 def _runtime_module() -> ModuleType:
@@ -129,16 +151,18 @@ def test_initializing_transition_is_observable_from_another_sync_caller(monkeypa
     infra.init_db.side_effect = init_db
     thread = threading.Thread(target=initialize)
     thread.start()
-    assert started.wait(timeout=1.0)
+    try:
+        assert started.wait(timeout=1.0)
+        with pytest.raises(RuntimeError, match=r"(?i)INITIALIZING"):
+            runtime.initialize()
+    finally:
+        release.set()
+        thread.join(timeout=1.0)
+        if not thread.is_alive():
+            runtime.shutdown()
 
-    with pytest.raises(RuntimeError, match=r"(?i)INITIALIZING"):
-        runtime.initialize()
-
-    release.set()
-    thread.join(timeout=1.0)
     assert not thread.is_alive()
     assert thread_errors == []
-    runtime.shutdown()
 
 
 def test_closing_transition_is_observable_from_another_sync_caller(
@@ -165,16 +189,18 @@ def test_closing_transition_is_observable_from_another_sync_caller(
     infra.close_redis.side_effect = close_redis
     thread = threading.Thread(target=shutdown)
     thread.start()
-    assert started.wait(timeout=1.0)
+    try:
+        assert started.wait(timeout=1.0)
+        with pytest.raises(RuntimeError, match=r"(?i)CLOSING"):
+            runtime.run_async(lambda: asyncio.sleep(0))
+    finally:
+        release.set()
+        thread.join(timeout=1.0)
+        if not thread.is_alive():
+            runtime.shutdown()
 
-    with pytest.raises(RuntimeError, match=r"(?i)CLOSING"):
-        runtime.run_async(lambda: asyncio.sleep(0))
-
-    release.set()
-    thread.join(timeout=1.0)
     assert not thread.is_alive()
     assert thread_errors == []
-    runtime.shutdown()
     infra.close_db.assert_awaited_once()
 
 
@@ -200,12 +226,14 @@ def test_direct_task_run_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPat
     def direct_probe() -> str:
         return module.run_async(lambda: asyncio.sleep(0, result="direct"))
 
-    assert direct_probe.run() == "direct"
-    assert timeouts and timeouts[-1] == pytest.approx(0.75, abs=0.01)
-    assert clock.value == pytest.approx(103.0, abs=0.01)
-    infra.init_db.assert_awaited_once()
-    restore()
-    runtime.shutdown()
+    try:
+        assert direct_probe.run() == "direct"
+        assert timeouts and timeouts[-1] == pytest.approx(0.75, abs=0.01)
+        assert clock.value == pytest.approx(103.0, abs=0.01)
+        infra.init_db.assert_awaited_once()
+    finally:
+        restore()
+        runtime.shutdown()
 
 
 def test_eager_task_apply_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,13 +251,13 @@ def test_eager_task_apply_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPa
     celery_app.conf.task_always_eager = True
     try:
         assert eager_probe.apply().get() == "eager"
+        assert timeouts and timeouts[-1] == pytest.approx(0.75, abs=0.01)
+        assert clock.value == pytest.approx(103.0, abs=0.01)
+        infra.init_db.assert_awaited_once()
     finally:
         celery_app.conf.task_always_eager = previous
-    assert timeouts and timeouts[-1] == pytest.approx(0.75, abs=0.01)
-    assert clock.value == pytest.approx(103.0, abs=0.01)
-    infra.init_db.assert_awaited_once()
-    restore()
-    runtime.shutdown()
+        restore()
+        runtime.shutdown()
 
 
 def test_worker_init_is_logger_only_and_leaves_parent_async_resources_empty(
@@ -384,7 +412,8 @@ def test_shutdown_really_bounds_a_hanging_stage_and_continues(
         infra.close_db.side_effect = hang
     monkeypatch.setattr(module, "SHUTDOWN_STAGE_TIMEOUT_SECONDS", 0.01, raising=False)
     started_at = time.monotonic()
-    runtime.shutdown()
+    with _sync_watchdog(0.50, f"{hanging_stage} shutdown"):
+        runtime.shutdown()
 
     assert time.monotonic() - started_at < 0.20
     infra.close_redis.assert_awaited_once()
@@ -430,7 +459,8 @@ def test_shutdown_bounds_stubborn_pending_task_then_continues_cleanup(monkeypatc
     runtime.run_async(spawn_background)
     monkeypatch.setattr(module, "SHUTDOWN_STAGE_TIMEOUT_SECONDS", 0.01, raising=False)
     started_at = time.monotonic()
-    runtime.shutdown()
+    with _sync_watchdog(0.50, "stubborn pending task shutdown"):
+        runtime.shutdown()
 
     assert time.monotonic() - started_at < 0.20
     infra.close_redis.assert_awaited_once()
@@ -470,7 +500,8 @@ def test_shutdown_cancels_pending_tasks_and_preserves_stage_order_after_error(
 
     infra.close_redis.side_effect = close_redis
     infra.close_db.side_effect = close_db
-    runtime.shutdown()
+    with _sync_watchdog(0.50, "pending task cancellation shutdown"):
+        runtime.shutdown()
 
     assert pending.cancelled()
     assert events == ["pending", "redis", "database", "runner"]
@@ -562,14 +593,17 @@ def test_worker_process_init_redis_stages_share_one_three_second_deadline(
     monkeypatch.setattr(app_module, "celery_async_runtime", runtime, raising=False)
     monkeypatch.setattr(app_module, "setup_logger", MagicMock())
 
-    app_module.on_worker_process_init()
-
-    assert timeouts[-1] == pytest.approx(expected_timeout, abs=0.01)
-    assert clock.value == pytest.approx(100.0 + expected_elapsed, abs=0.01)
-    monkeypatch.setattr(module.time, "monotonic", real_monotonic)
-    monkeypatch.setattr(module.asyncio, "wait_for", real_wait_for)
-    assert runtime.run_async(lambda: asyncio.sleep(0, result="degraded but ready")) == "degraded but ready"
-    runtime.shutdown()
+    try:
+        app_module.on_worker_process_init()
+        assert timeouts[-1] == pytest.approx(expected_timeout, abs=0.01)
+        assert clock.value == pytest.approx(100.0 + expected_elapsed, abs=0.01)
+        monkeypatch.setattr(module.time, "monotonic", real_monotonic)
+        monkeypatch.setattr(module.asyncio, "wait_for", real_wait_for)
+        assert runtime.run_async(lambda: asyncio.sleep(0, result="degraded but ready")) == "degraded but ready"
+    finally:
+        monkeypatch.setattr(module.time, "monotonic", real_monotonic)
+        monkeypatch.setattr(module.asyncio, "wait_for", real_wait_for)
+        runtime.shutdown()
 
 
 def test_worker_process_shutdown_signal_is_registered_and_invokes_runtime(monkeypatch: pytest.MonkeyPatch) -> None:

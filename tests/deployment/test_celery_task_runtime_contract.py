@@ -40,12 +40,33 @@ def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
     return next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == name)
 
 
-def _call_name(call: ast.Call) -> str | None:
-    if isinstance(call.func, ast.Name):
-        return call.func.id
-    if isinstance(call.func, ast.Attribute):
-        return call.func.attr
+def _expression_path(expression: ast.expr) -> tuple[str, ...] | None:
+    if isinstance(expression, ast.Name):
+        return (expression.id,)
+    if isinstance(expression, ast.Attribute):
+        prefix = _expression_path(expression.value)
+        return (*prefix, expression.attr) if prefix else None
     return None
+
+
+def _approved_call_paths(tree: ast.Module, module_name: str, symbol_name: str) -> set[tuple[str, ...]]:
+    """只接受从批准模块导入的 binding，避免把任意同名方法当成目标调用。"""
+    paths: set[tuple[str, ...]] = set()
+    parent_module, imported_module = module_name.rsplit(".", 1)
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == module_name:
+            paths.update(((alias.asname or alias.name),) for alias in node.names if alias.name == symbol_name)
+        elif isinstance(node, ast.ImportFrom) and node.module == parent_module:
+            paths.update(
+                ((alias.asname or alias.name), symbol_name) for alias in node.names if alias.name == imported_module
+            )
+        elif isinstance(node, ast.Import):
+            paths.update(
+                ((alias.asname, symbol_name) if alias.asname else (*module_name.split("."), symbol_name))
+                for alias in node.names
+                if alias.name == module_name
+            )
+    return paths
 
 
 @pytest.mark.parametrize("module_name", TASK_MODULES)
@@ -90,8 +111,14 @@ def test_task_modules_do_not_cache_database_sessions_on_task_instances(module_na
     [(module_name, task_name) for module_name, task_names in ASYNC_TASKS.items() for task_name in task_names],
 )
 def test_each_async_sync_task_calls_run_async_once_with_a_factory(module_name: str, task_name: str) -> None:
-    function = _function(_task_tree(module_name), task_name)
-    calls = [node for node in ast.walk(function) if isinstance(node, ast.Call) and _call_name(node) == "run_async"]
+    tree = _task_tree(module_name)
+    function = _function(tree, task_name)
+    approved_paths = _approved_call_paths(tree, "src.celery_app.async_runtime", "run_async")
+    calls = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and _expression_path(node.func) in approved_paths
+    ]
 
     assert len(calls) == 1, f"{module_name}.{task_name} 必须恰好一次进入统一 runtime"
     assert calls[0].args, "run_async 必须接收 coroutine factory"
@@ -103,7 +130,9 @@ def test_each_async_sync_task_calls_run_async_once_with_a_factory(module_name: s
     [(module_name, task_name) for module_name, task_names in DB_TASKS.items() for task_name in task_names],
 )
 def test_database_task_async_body_uses_task_local_get_db_context(module_name: str, task_name: str) -> None:
-    function = _function(_task_tree(module_name), task_name)
+    tree = _task_tree(module_name)
+    function = _function(tree, task_name)
+    approved_paths = _approved_call_paths(tree, "src.database.db", "get_db_context")
     context_calls: list[ast.Call] = []
     for node in ast.walk(function):
         if not isinstance(node, ast.AsyncWith):
@@ -112,7 +141,7 @@ def test_database_task_async_body_uses_task_local_get_db_context(module_name: st
             context_calls.extend(
                 call
                 for call in ast.walk(item.context_expr)
-                if isinstance(call, ast.Call) and _call_name(call) == "get_db_context"
+                if isinstance(call, ast.Call) and _expression_path(call.func) in approved_paths
             )
 
     assert len(context_calls) == 1, f"{module_name}.{task_name} 必须在 async with 中创建 task-local Session"

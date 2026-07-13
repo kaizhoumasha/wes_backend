@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -40,14 +42,22 @@ print(json.dumps({
 }))
 """
 
-    completed = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=REPO_ROOT,
-        env={**os.environ, **expected},
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=REPO_ROOT,
+            env={**os.environ, **expected},
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(f"Settings 隔离导入子进程在 10s 内未退出；stdout={exc.stdout!r}, stderr={exc.stderr!r}")
 
+    assert completed.returncode == 0, (
+        "Settings 隔离导入子进程执行失败；"
+        f"returncode={completed.returncode}, stdout={completed.stdout!r}, stderr={completed.stderr!r}"
+    )
     actual = json.loads(completed.stdout.splitlines()[-1])
     assert actual == expected, "conf.py 导入不得用仓库 .env 覆盖真实进程环境"

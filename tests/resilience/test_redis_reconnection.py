@@ -244,11 +244,20 @@ async def test_concurrent_init_and_reconnect_share_one_candidate(monkeypatch: py
     manager = RedisManager()
 
     initialize = asyncio.create_task(manager.init_redis())
-    await ping_started.wait()
-    reconnect = asyncio.create_task(manager.reconnect(force=True))
-    await asyncio.sleep(0)
-    release_ping.set()
-    await asyncio.gather(initialize, reconnect)
+    reconnect: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(ping_started.wait(), timeout=1.0)
+        reconnect = asyncio.create_task(manager.reconnect(force=True))
+        await asyncio.sleep(0)
+        release_ping.set()
+        await asyncio.wait_for(asyncio.gather(initialize, reconnect), timeout=1.0)
+    finally:
+        release_ping.set()
+        tasks = [task for task in (initialize, reconnect) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     assert len(pools) == 1
     assert len(clients) == 1
