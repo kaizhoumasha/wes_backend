@@ -50,6 +50,8 @@ class CapacityPlan:
             raise CapacityViolation(f"api_processes must equal {API_UVICORN_WORKERS}")
         if self.api_replicas and self.api_pool_size != API_DATABASE_POOL_SIZE:
             raise CapacityViolation(f"api_pool_size must equal {API_DATABASE_POOL_SIZE}")
+        if self.celery_replicas and self.celery_processes < 1:
+            raise CapacityViolation("celery_processes must be at least 1 when celery replicas are requested")
         if self.celery_pool_size != 1:
             raise CapacityViolation("celery_pool_size must equal 1")
         if self.max_overflow != 0:
@@ -89,6 +91,8 @@ def _parse_scale(values: list[str]) -> dict[str, int]:
         if not separator or service not in {"api", "celery_worker"}:
             raise CapacityViolation(f"unsupported scale target: {value}")
         scales[service] = int(count)
+    if scales and set(scales) != {"api", "celery_worker"}:
+        raise CapacityViolation("scale requires complete target topology: api=<n> and celery_worker=<n>")
     return scales
 
 

@@ -20,6 +20,7 @@ def _valid_settings(**overrides: object) -> dict[str, object]:
         "DATABASE_RUNTIME_ROLE": "api",
         "DATABASE_POOL_SIZE": 5,
         "DATABASE_MAX_OVERFLOW": 0,
+        "DATABASE_APPLICATION_RUN_ID": "unit-run-unique",
         **overrides,
     }
 
@@ -71,3 +72,15 @@ def test_database_runtime_role_is_required() -> None:
 def test_database_runtime_role_rejects_unknown_value() -> None:
     with pytest.raises(ValidationError, match="DATABASE_RUNTIME_ROLE"):
         Settings(**_valid_settings(DATABASE_RUNTIME_ROLE="beat"))
+
+
+@pytest.mark.parametrize("run_id", [None, "", "   "])
+def test_integration_role_requires_explicit_nonempty_run_id(run_id: str | None) -> None:
+    with pytest.raises(ValidationError, match="DATABASE_APPLICATION_RUN_ID"):
+        Settings(
+            **_valid_settings(
+                DATABASE_RUNTIME_ROLE="integration",
+                DATABASE_POOL_SIZE=1,
+                DATABASE_APPLICATION_RUN_ID=run_id,
+            )
+        )

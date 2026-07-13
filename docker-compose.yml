@@ -413,7 +413,8 @@ services:
       DATABASE_POOL_SIZE: 1
       DATABASE_MAX_OVERFLOW: 0
       DATABASE_APPLICATION_NAME: ${ENV:-test}
-      DATABASE_APPLICATION_RUN_ID: ${DATABASE_APPLICATION_RUN_ID:-compose-test}
+      # 每次 integration run 必须显式生成唯一值；空值由 Settings 在进程启动时 fail-fast。
+      DATABASE_APPLICATION_RUN_ID: ${INTEGRATION_RUN_ID:-}
       # 数据库配置
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}

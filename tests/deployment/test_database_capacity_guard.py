@@ -16,6 +16,7 @@ from scripts.capacity_guard import (
     CELERY_DATABASE_POOL_SIZE,
     CapacityPlan,
     CapacityViolation,
+    _parse_scale,
     build_capacity_plan,
     calculate_capacity,
 )
@@ -110,6 +111,7 @@ def test_environment_profiles_and_compose_declare_explicit_database_roles() -> N
     assert pytest_env["DATABASE_RUNTIME_ROLE"] == "integration"
     assert pytest_env["DATABASE_POOL_SIZE"] == 1
     assert pytest_env["DATABASE_MAX_OVERFLOW"] == 0
+    assert pytest_env["DATABASE_APPLICATION_RUN_ID"] == "${INTEGRATION_RUN_ID:-}"
 
 
 def test_deployment_script_runs_live_guard_before_application_start_and_scale() -> None:
@@ -121,6 +123,9 @@ def test_deployment_script_runs_live_guard_before_application_start_and_scale() 
     assert "--wait db redis" in cmd_up_body
     assert cmd_up_body.index("--wait db redis") < cmd_up_body.index("run_capacity_guard")
     assert "run_capacity_guard" in script_text
+    assert "validate_complete_scale_targets" in script_text
+    scale_body = script_text.split("cmd_scale()", maxsplit=1)[1].split("cmd_migrate()", maxsplit=1)[0]
+    assert scale_body.index("validate_complete_scale_targets") < scale_body.index("run_capacity_guard")
 
 
 def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:
@@ -200,3 +205,49 @@ def test_capacity_guard_cli_rejects_reserve_below_ten(
     assert completed.returncode != 0
     assert "reserve" in completed.stderr
     assert "10" in completed.stderr
+
+
+@pytest.mark.parametrize("scale", [["api=3"], ["celery_worker=10"]])
+def test_scale_requires_complete_api_and_celery_target_topology(scale: list[str]) -> None:
+    with pytest.raises(CapacityViolation, match=r"complete.*api.*celery_worker"):
+        _parse_scale(scale)
+
+
+def test_scale_calculates_complete_api_then_worker_target_without_prior_state() -> None:
+    scales = _parse_scale(["api=3", "celery_worker=10"])
+
+    plan = build_capacity_plan(services={"api", "celery_worker"}, scales=scales)
+    result = calculate_capacity(plan, max_connections=200)
+
+    assert scales == {"api": 3, "celery_worker": 10}
+    assert result.api_connections == 60
+    assert result.celery_connections == 40
+    assert result.application_connections == 100
+
+
+def test_capacity_plan_rejects_zero_celery_concurrency_when_workers_exist() -> None:
+    with pytest.raises(CapacityViolation, match=r"celery_processes.*at least 1"):
+        CapacityPlan(
+            api_replicas=1,
+            api_processes=4,
+            api_pool_size=5,
+            celery_replicas=1,
+            celery_processes=0,
+            celery_pool_size=1,
+            reserve=10,
+        )
+
+
+def test_capacity_guard_env_rejects_zero_celery_concurrency() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts/capacity_guard.py"), "--max-connections", "100"],
+        cwd=REPO_ROOT,
+        env={**os.environ, "CELERY_WORKER_REPLICAS": "1", "CELERY_CONCURRENCY": "0"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert completed.returncode != 0
+    assert "celery_processes" in completed.stderr

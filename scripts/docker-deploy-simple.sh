@@ -53,7 +53,7 @@ Docker 部署管理脚本 (统一配置版本)
 示例:
   $0 dev up                       # 启动开发环境
   $0 prod up                      # 按已核准的 1 API / 4 Celery 拓扑启动生产环境
-  $0 celery scale celery_worker=4 # 扩展前先用 live PostgreSQL 容量门禁校验
+  $0 prod scale api=1 celery_worker=4 # 每次扩缩容必须声明完整目标拓扑
   $0 dev logs api                 # 查看 API 日志
   $0 prod down                    # 停止生产环境
   $0 dev build --no-cache         # 无缓存重新构建
@@ -99,6 +99,34 @@ run_capacity_guard() {
         -e DATABASE_POOL_SIZE=1 \
         -e DATABASE_MAX_OVERFLOW=0 \
         api python scripts/capacity_guard.py --services api,celery_worker "${guard_args[@]}"
+}
+
+# 扩缩容不能依赖上一次命令的离线默认值；每次必须同时声明两个服务的完整目标。
+validate_complete_scale_targets() {
+    local has_api=false
+    local has_celery_worker=false
+    local expect_scale_value=false
+
+    for argument in "$@"; do
+        if [ "$expect_scale_value" = true ]; then
+            expect_scale_value=false
+        elif [ "$argument" = "--scale" ]; then
+            expect_scale_value=true
+            continue
+        elif [[ "$argument" == --scale=* ]]; then
+            argument="${argument#--scale=}"
+        fi
+
+        case "$argument" in
+            api=*) has_api=true ;;
+            celery_worker=*) has_celery_worker=true ;;
+        esac
+    done
+
+    if [ "$has_api" != true ] || [ "$has_celery_worker" != true ]; then
+        print_error "scale 必须同时提供完整目标: api=<n> celery_worker=<n>"
+        return 1
+    fi
 }
 
 # 检查环境配置文件
@@ -265,6 +293,7 @@ cmd_scale() {
     local env=$1
     shift
 
+    validate_complete_scale_targets "$@"
     print_info "扩展服务实例..."
 
     local compose_cmd=$(get_compose_cmd)
@@ -277,7 +306,22 @@ cmd_scale() {
     fi
 
     run_capacity_guard "$env" "$@"
-    $compose_cmd -f docker-compose.yml $env_file --profile $env up -d --scale "$@"
+
+    local compose_scale_args=()
+    local expect_scale_value=false
+    for argument in "$@"; do
+        if [ "$expect_scale_value" = true ]; then
+            compose_scale_args+=(--scale "$argument")
+            expect_scale_value=false
+        elif [ "$argument" = "--scale" ]; then
+            expect_scale_value=true
+        elif [[ "$argument" == --scale=* ]]; then
+            compose_scale_args+=(--scale "${argument#--scale=}")
+        elif [[ "$argument" == api=* || "$argument" == celery_worker=* ]]; then
+            compose_scale_args+=(--scale "$argument")
+        fi
+    done
+    $compose_cmd -f docker-compose.yml $env_file --profile $env up -d "${compose_scale_args[@]}"
 
     print_success "服务已扩展"
 }

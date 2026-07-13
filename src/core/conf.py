@@ -265,6 +265,10 @@ class Settings(BaseSettings):
                 raise ValueError("DATABASE_POOL_SIZE: api 单进程连接池不得超过 5")
         elif self.DATABASE_POOL_SIZE != 1:
             raise ValueError(f"DATABASE_POOL_SIZE: {self.DATABASE_RUNTIME_ROLE} 单进程连接池必须为 1")
+        if self.DATABASE_RUNTIME_ROLE == "integration" and not (
+            self.DATABASE_APPLICATION_RUN_ID and self.DATABASE_APPLICATION_RUN_ID.strip()
+        ):
+            raise ValueError("DATABASE_APPLICATION_RUN_ID: integration 运行必须显式提供唯一且非空的 run-id")
 
         # ==================== 安全验证 ====================
 
