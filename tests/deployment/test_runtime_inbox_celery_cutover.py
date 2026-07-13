@@ -27,6 +27,10 @@ class _SessionStub:
         return None
 
 
+def _run_factory(factory: object) -> object:
+    return asyncio.run(factory())  # type: ignore[operator]
+
+
 def test_runtime_inbox_task_is_registered_and_routed() -> None:
     from src.celery_app.app import celery_app
     from src.celery_app.config import task_routes
@@ -81,14 +85,16 @@ def test_runtime_inbox_task_empty_batch_returns_minimum_sli(monkeypatch: pytest.
     from src.celery_app.tasks import runtime_inbox as task_module
 
     db = _SessionStub()
-    monkeypatch.setattr(task_module.process_runtime_inbox_batch, "_db", db)
-    monkeypatch.setattr(task_module, "_run_async", asyncio.run)
+    get_db_context = MagicMock(return_value=db)
+    monkeypatch.setattr(task_module, "get_db_context", get_db_context, raising=False)
+    monkeypatch.setattr(task_module, "run_async", _run_factory, raising=False)
     monkeypatch.setattr(runtime_inbox_service, "claim_for_processing", AsyncMock(return_value=[]))
     monkeypatch.setattr(runtime_inbox_service, "recover_stale_leases", AsyncMock(return_value=0))
 
     result = task_module.process_runtime_inbox_batch.run(limit=10)
 
     assert result == _empty_result()
+    get_db_context.assert_called_once_with()
 
 
 def test_runtime_inbox_task_claims_and_processes_one_at_a_time(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,6 +105,7 @@ def test_runtime_inbox_task_claims_and_processes_one_at_a_time(monkeypatch: pyte
     from src.celery_app.tasks import runtime_inbox as task_module
 
     db = _SessionStub()
+    get_db_context = MagicMock(return_value=db)
     events: list[str] = []
     claims = [
         [{"id": 1, "processor_token": "token-1"}],
@@ -117,8 +124,8 @@ def test_runtime_inbox_task_claims_and_processes_one_at_a_time(monkeypatch: pyte
             await asyncio.sleep(0)
             return {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
 
-    monkeypatch.setattr(task_module.process_runtime_inbox_batch, "_db", db)
-    monkeypatch.setattr(task_module, "_run_async", asyncio.run)
+    monkeypatch.setattr(task_module, "get_db_context", get_db_context, raising=False)
+    monkeypatch.setattr(task_module, "run_async", _run_factory, raising=False)
     monkeypatch.setattr(runtime_inbox_service, "claim_for_processing", claim_one)
     monkeypatch.setattr(runtime_inbox_service, "recover_stale_leases", AsyncMock(return_value=0))
     monkeypatch.setattr(runtime_inbox_orchestrator_bridge, "RuntimeInboxProcessorBridge", ProcessorStub)
@@ -127,6 +134,7 @@ def test_runtime_inbox_task_claims_and_processes_one_at_a_time(monkeypatch: pyte
 
     assert events == ["claim-0", "process-1", "claim-2", "process-2"]
     assert result == {"processed": 2, "success": 2, "failed": 0, "skipped": 0, "resource_wait": 0}
+    get_db_context.assert_called_once_with()
 
 
 def test_runtime_inbox_task_emits_processing_duration_sli(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,6 +146,7 @@ def test_runtime_inbox_task_emits_processing_duration_sli(monkeypatch: pytest.Mo
     from src.celery_app.tasks import runtime_inbox as task_module
 
     db = _SessionStub()
+    get_db_context = MagicMock(return_value=db)
     claims = [[{"id": 1, "processor_token": "token-1"}], []]
 
     class ProcessorStub:
@@ -146,8 +155,8 @@ def test_runtime_inbox_task_emits_processing_duration_sli(monkeypatch: pytest.Mo
             return {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
 
     emit = MagicMock()
-    monkeypatch.setattr(task_module.process_runtime_inbox_batch, "_db", db)
-    monkeypatch.setattr(task_module, "_run_async", asyncio.run)
+    monkeypatch.setattr(task_module, "get_db_context", get_db_context, raising=False)
+    monkeypatch.setattr(task_module, "run_async", _run_factory, raising=False)
     monkeypatch.setattr(runtime_inbox_service, "claim_for_processing", AsyncMock(side_effect=claims))
     monkeypatch.setattr(runtime_inbox_service, "recover_stale_leases", AsyncMock(return_value=2))
     monkeypatch.setattr(runtime_inbox_orchestrator_bridge, "RuntimeInboxProcessorBridge", ProcessorStub)
@@ -168,6 +177,7 @@ def test_runtime_inbox_task_emits_processing_duration_sli(monkeypatch: pytest.Mo
     assert processing_events[0].args[1]["inbox_id"] == 1
     assert processing_events[0].args[1]["outcome"] == "failed"
     assert processing_events[0].args[1]["duration_ms"] >= 0
+    get_db_context.assert_called_once_with()
 
 
 def test_runtime_inbox_task_times_out_only_the_claimed_message(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -179,6 +189,7 @@ def test_runtime_inbox_task_times_out_only_the_claimed_message(monkeypatch: pyte
     from src.celery_app.tasks import runtime_inbox as task_module
 
     db = _SessionStub()
+    get_db_context = MagicMock(return_value=db)
     claim_committed = False
 
     async def commit() -> None:
@@ -201,8 +212,8 @@ def test_runtime_inbox_task_times_out_only_the_claimed_message(monkeypatch: pyte
             await asyncio.sleep(0.05)
             return _empty_result()
 
-    monkeypatch.setattr(task_module.process_runtime_inbox_batch, "_db", db)
-    monkeypatch.setattr(task_module, "_run_async", asyncio.run)
+    monkeypatch.setattr(task_module, "get_db_context", get_db_context, raising=False)
+    monkeypatch.setattr(task_module, "run_async", _run_factory, raising=False)
     monkeypatch.setattr(constants, "INBOX_PROCESS_TIMEOUT_SECONDS", 0.001)
     monkeypatch.setattr(runtime_inbox_service, "claim_for_processing", claim_mock)
     monkeypatch.setattr(runtime_inbox_service, "recover_stale_leases", AsyncMock(return_value=0))
@@ -214,6 +225,7 @@ def test_runtime_inbox_task_times_out_only_the_claimed_message(monkeypatch: pyte
     assert claim_mock.await_count == 2
     assert db.commit.await_count >= 2
     db.rollback.assert_awaited_once()
+    get_db_context.assert_called_once_with()
 
 
 def test_runtime_inbox_task_retries_batch_infrastructure_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -221,11 +233,11 @@ def test_runtime_inbox_task_retries_batch_infrastructure_failure(monkeypatch: py
 
     retry = MagicMock(side_effect=RuntimeError("retry requested"))
 
-    def fail_run(coro: object) -> None:
-        coro.close()  # type: ignore[attr-defined]
+    def fail_run(_factory: object) -> None:
         raise ConnectionError("db unavailable")
 
-    monkeypatch.setattr(task_module, "_run_async", fail_run)
+    run_async = MagicMock(side_effect=fail_run)
+    monkeypatch.setattr(task_module, "run_async", run_async, raising=False)
     monkeypatch.setattr(task_module.process_runtime_inbox_batch, "retry", retry)
 
     task_module.process_runtime_inbox_batch.push_request(retries=1)
@@ -237,6 +249,7 @@ def test_runtime_inbox_task_retries_batch_infrastructure_failure(monkeypatch: py
 
     assert isinstance(retry.call_args.kwargs["exc"], ConnectionError)
     assert retry.call_args.kwargs["countdown"] == 10
+    run_async.assert_called_once()
 
 
 def test_runtime_inbox_task_rolls_back_processor_exception_after_claim_commit(
@@ -249,6 +262,7 @@ def test_runtime_inbox_task_rolls_back_processor_exception_after_claim_commit(
     from src.celery_app.tasks import runtime_inbox as task_module
 
     db = _SessionStub()
+    get_db_context = MagicMock(return_value=db)
     claim_committed = False
 
     async def commit() -> None:
@@ -263,8 +277,8 @@ def test_runtime_inbox_task_rolls_back_processor_exception_after_claim_commit(
 
     retry = MagicMock(side_effect=RuntimeError("retry requested"))
     db.commit.side_effect = commit
-    monkeypatch.setattr(task_module.process_runtime_inbox_batch, "_db", db)
-    monkeypatch.setattr(task_module, "_run_async", asyncio.run)
+    monkeypatch.setattr(task_module, "get_db_context", get_db_context, raising=False)
+    monkeypatch.setattr(task_module, "run_async", _run_factory, raising=False)
     monkeypatch.setattr(
         runtime_inbox_service,
         "claim_for_processing",
@@ -279,3 +293,4 @@ def test_runtime_inbox_task_rolls_back_processor_exception_after_claim_commit(
     db.commit.assert_awaited_once()
     db.rollback.assert_awaited_once()
     assert isinstance(retry.call_args.kwargs["exc"], ConnectionError)
+    get_db_context.assert_called_once_with()
