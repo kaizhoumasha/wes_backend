@@ -3,6 +3,7 @@ import os
 import socket
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -33,6 +34,8 @@ _engine_owner_pid: int | None = None
 _engine_owner_loop_id: int | None = None
 _engine_owner_role: str | None = None
 _engine_owner_loop: asyncio.AbstractEventLoop | None = None
+_engine_generation: str | None = None
+_session_factory_generation: str | None = None
 
 
 def _runtime_role() -> str:
@@ -109,7 +112,8 @@ async def init_db() -> None:
 
     配置自定义 schema 搜索路径，避免使用默认的 public schema。
     """
-    global AsyncSessionLocal, _engine_owner_loop, _engine_owner_loop_id, _engine_owner_pid, _engine_owner_role, engine
+    global AsyncSessionLocal, _engine_generation, _engine_owner_loop, _engine_owner_loop_id
+    global _engine_owner_pid, _engine_owner_role, _session_factory_generation, engine
 
     if engine is not None or AsyncSessionLocal is not None:
         if engine is None or AsyncSessionLocal is None:
@@ -176,9 +180,14 @@ async def init_db() -> None:
             await candidate_engine.dispose()
         raise
 
-    # Engine、SessionFactory 和 owner metadata 必须一次性发布，避免失败后留下半初始化全局状态。
+    # Generation 在真实资源创建成功后生成，并与 Engine、SessionFactory、owner metadata 一次性发布；
+    # 这样外部诊断能区分 child 轮换后的新资源，而不会在失败路径暴露虚假 identity。
+    candidate_engine_generation = uuid4().hex
+    candidate_session_factory_generation = uuid4().hex
     engine = candidate_engine
     AsyncSessionLocal = candidate_session_factory
+    _engine_generation = candidate_engine_generation
+    _session_factory_generation = candidate_session_factory_generation
     _engine_owner_pid = current_pid
     _engine_owner_loop_id = current_loop_id
     _engine_owner_role = current_role
@@ -199,7 +208,8 @@ async def close_db() -> None:
     """
     关闭数据库连接
     """
-    global AsyncSessionLocal, _engine_owner_loop, _engine_owner_loop_id, _engine_owner_pid, _engine_owner_role, engine
+    global AsyncSessionLocal, _engine_generation, _engine_owner_loop, _engine_owner_loop_id
+    global _engine_owner_pid, _engine_owner_role, _session_factory_generation, engine
 
     if engine is not None or AsyncSessionLocal is not None:
         _assert_engine_owner()
@@ -209,6 +219,8 @@ async def close_db() -> None:
     # 避免 dispose 超时期间新消息继续取得旧 Engine/SessionFactory。
     engine = None
     AsyncSessionLocal = None
+    _engine_generation = None
+    _session_factory_generation = None
     _engine_owner_pid = None
     _engine_owner_loop_id = None
     _engine_owner_role = None

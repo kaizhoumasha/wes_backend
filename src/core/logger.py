@@ -73,6 +73,14 @@ LOG_DIR.mkdir(exist_ok=True)
 _initialized = False
 
 
+def _resolve_log_dir() -> Path:
+    """解析当前进程的文件日志目录，支持测试/Worker 使用绝对路径隔离 sink。"""
+    configured = Path(settings.LOG_DIR).expanduser()
+    resolved = configured if configured.is_absolute() else Path(BasePath) / configured
+    resolved.mkdir(parents=True, exist_ok=True)
+    return resolved
+
+
 class InterceptHandler(logging.Handler):
     """
     拦截标准 logging 消息并转发到 loguru
@@ -155,6 +163,7 @@ def setup_logger() -> None:
     rotation_size = settings.LOG_ROTATION_SIZE
     rotation_day = settings.LOG_RETENTION_DAYS
     log_compression = settings.LOG_COMPRESSION
+    log_dir = _resolve_log_dir()
 
     # 检测是否禁用文件日志（用于 Celery 多进程调试场景，避免 fork 后文件句柄失效）
     disable_file_log = os.environ.get("LOG_DISABLE_FILE", "false").lower() in ("true", "1", "yes")
@@ -181,7 +190,7 @@ def setup_logger() -> None:
     # 文件日志：仅在未禁用文件日志时添加
     if not disable_file_log:
         _ = _logger.add(
-            LOG_DIR / "app.log",
+            log_dir / "app.log",
             format=FILE_LOG_FORMAT,
             level=log_level,
             rotation=rotation_size,
@@ -195,7 +204,7 @@ def setup_logger() -> None:
         )
 
         _ = _logger.add(
-            LOG_DIR / "error.log",
+            log_dir / "error.log",
             format=FILE_LOG_FORMAT,
             level="ERROR",
             rotation=rotation_size,
@@ -210,7 +219,7 @@ def setup_logger() -> None:
 
         if not is_debug and settings.LOG_JSON_OUTPUT:
             _ = _logger.add(
-                LOG_DIR / "structured.json",
+                log_dir / "structured.json",
                 serialize=True,
                 level=log_level,
                 rotation=rotation_size,

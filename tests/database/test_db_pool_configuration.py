@@ -39,7 +39,13 @@ def db_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(db, "get_schema_search_path", MagicMock(return_value="app,public"))
     monkeypatch.setattr(db, "engine", None)
     monkeypatch.setattr(db, "AsyncSessionLocal", None)
-    for name in ("_engine_owner_pid", "_engine_owner_loop_id", "_engine_owner_role"):
+    for name in (
+        "_engine_generation",
+        "_session_factory_generation",
+        "_engine_owner_pid",
+        "_engine_owner_loop_id",
+        "_engine_owner_role",
+    ):
         monkeypatch.setattr(db, name, None, raising=False)
     return db
 
@@ -72,6 +78,30 @@ def test_init_db_is_idempotent_for_same_pid_loop_and_role(
     asyncio.run(initialize_twice())
 
     db_module.create_async_engine.assert_called_once()
+
+
+def test_database_generation_ids_publish_stably_rotate_and_clear(
+    db_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(db_module, "settings", _settings("sqlite+aiosqlite:///:memory:"))
+
+    async def lifecycle() -> None:
+        await db_module.init_db()
+        first = (db_module._engine_generation, db_module._session_factory_generation)
+        assert all(isinstance(generation, str) and generation for generation in first)
+        assert first[0] != first[1]
+        await db_module.init_db()
+        assert (db_module._engine_generation, db_module._session_factory_generation) == first
+        await db_module.close_db()
+        assert db_module._engine_generation is None
+        assert db_module._session_factory_generation is None
+        await db_module.init_db()
+        second = (db_module._engine_generation, db_module._session_factory_generation)
+        assert second[0] != first[0]
+        assert second[1] != first[1]
+
+    asyncio.run(lifecycle())
 
 
 def test_init_db_rejects_same_pid_from_foreign_loop(db_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:

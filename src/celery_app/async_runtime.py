@@ -10,6 +10,7 @@ import threading
 import time
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar
+from uuid import uuid4
 
 from src.core.logger import logger
 from src.database.db import close_db, init_db
@@ -43,6 +44,7 @@ class CeleryAsyncRuntime:
     def __init__(self) -> None:
         self._state = RuntimeState.NEW
         self._runner: asyncio.Runner | None = None
+        self._runner_generation: str | None = None
         self._owner_pid: int | None = None
         self._state_lock = threading.RLock()
         self._run_lock = threading.Lock()
@@ -52,6 +54,12 @@ class CeleryAsyncRuntime:
     def state(self) -> RuntimeState:
         with self._state_lock:
             return self._state
+
+    @property
+    def runner_generation(self) -> str | None:
+        """返回成功发布的 Runner generation；未就绪或已关闭时为空。"""
+        with self._state_lock:
+            return self._runner_generation
 
     @staticmethod
     def _assert_sync_entrypoint() -> None:
@@ -227,12 +235,14 @@ class CeleryAsyncRuntime:
                 reusable = self._close_runner_if_safe(runner)
             with self._state_lock:
                 self._runner = None
+                self._runner_generation = None
                 self._owner_pid = None
                 self._state = RuntimeState.NEW if reusable else RuntimeState.CLOSED
             raise
 
         with self._state_lock:
             self._runner = runner
+            self._runner_generation = uuid4().hex
             self._owner_pid = os.getpid()
             self._state = RuntimeState.READY
 
@@ -364,6 +374,7 @@ class CeleryAsyncRuntime:
         finally:
             with self._state_lock:
                 self._runner = None
+                self._runner_generation = None
                 self._owner_pid = None
                 self._state = RuntimeState.CLOSED
 

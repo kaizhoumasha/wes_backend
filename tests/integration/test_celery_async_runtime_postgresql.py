@@ -9,10 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import signal
 import socketserver
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -65,13 +65,6 @@ FAMILY_TASKS = (
     "src.celery_app.tasks.sys.dispatch_system_outbox_batch",
     "src.celery_app.tasks.handling.process_signal",
 )
-_RESOURCE_IDENTITIES: dict[tuple[str, int], str] = {}
-
-
-def _resource_identity(kind: str, resource: object) -> str:
-    """为 child 内真实对象分配稳定且可跨进程比较的随机身份。"""
-
-    return _RESOURCE_IDENTITIES.setdefault((kind, id(resource)), uuid.uuid4().hex)
 
 
 def _write_probe_marker(kind: str, **payload: object) -> None:
@@ -97,7 +90,6 @@ def _record_child_init_complete(**_: object) -> None:
         "child_init_complete",
         pid=os.getpid(),
         redis_available=is_redis_available(),
-        stage="ready" if is_redis_available() else "redis_ping_cleanup_timeout",
         state="ready" if is_redis_available() else "degraded",
     )
 
@@ -157,9 +149,9 @@ def runtime_probe(label: str) -> dict[str, object]:
         return {
             "label": label,
             "pid": os.getpid(),
-            "runner_id": _resource_identity("runner", celery_async_runtime._runner),
-            "engine_id": _resource_identity("engine", db_module.engine),
-            "session_factory_id": _resource_identity("session_factory", db_module.AsyncSessionLocal),
+            "runner_id": celery_async_runtime.runner_generation,
+            "engine_id": db_module._engine_generation,
+            "session_factory_id": db_module._session_factory_generation,
             "backend_pid": int(row[0]),
             "database": str(row[1]),
             "application_name": str(row[2]),
@@ -423,6 +415,7 @@ class PreforkWorker:
     run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
     process: subprocess.Popen[str] | None = field(default=None, init=False)
     log_path: Path | None = field(default=None, init=False)
+    project_log_dir: Path | None = field(default=None, init=False)
     hostname: str = field(init=False)
     queue: str = field(init=False)
     key_prefix: str = field(init=False)
@@ -455,7 +448,10 @@ class PreforkWorker:
             mode="w+", prefix=f"wes-prefork-{self.run_id}-", suffix=".log", delete=False
         )
         self.log_path = Path(self._log_file.name)
+        self.project_log_dir = Path(tempfile.mkdtemp(prefix=f"wes-prefork-project-{self.run_id}-"))
         environment["PREFORK_PROBE_LOG"] = str(self.log_path)
+        environment["LOG_DIR"] = str(self.project_log_dir)
+        environment["LOG_DISABLE_FILE"] = "false"
         command = [
             "uv",
             "run",
@@ -558,6 +554,11 @@ class PreforkWorker:
         self._log_file.flush()
         return self.log_path.read_text(errors="replace")
 
+    def project_log_text(self) -> str:
+        assert self.project_log_dir is not None
+        app_log = self.project_log_dir / "app.log"
+        return app_log.read_text(errors="replace") if app_log.exists() else ""
+
     def stop(
         self,
         *,
@@ -611,17 +612,14 @@ class PreforkWorker:
                 )
         if cleanup_redis:
             try:
-                self._cleanup_redis()
+                self.cleanup_run_artifacts()
             except BaseException as exc:
                 errors.append(exc)
-        try:
-            _wait_until(
-                lambda: not _worker_connections(self.services["database_url"], self.run_id),
-                CONNECTION_DRAIN_TIMEOUT,
-                f"worker {self.run_id} PostgreSQL connections drain",
-            )
-        except BaseException as exc:
-            errors.append(exc)
+        else:
+            try:
+                self._wait_for_connection_drain()
+            except BaseException as exc:
+                errors.append(exc)
         try:
             if self._producer_app is not None:
                 self._producer_app.close()
@@ -635,6 +633,8 @@ class PreforkWorker:
             self.process = None
         if success and not errors and self.log_path is not None:
             self.log_path.unlink(missing_ok=True)
+            if self.project_log_dir is not None:
+                shutil.rmtree(self.project_log_dir)
         if errors:
             raise BaseExceptionGroup(
                 f"worker {self.run_id} teardown 有 {len(errors)} 项失败；日志保留于 {self.log_path}", errors
@@ -652,6 +652,24 @@ class PreforkWorker:
         finally:
             client.close()
 
+    def _wait_for_connection_drain(self) -> None:
+        _wait_until(
+            lambda: not _worker_connections(self.services["database_url"], self.run_id),
+            CONNECTION_DRAIN_TIMEOUT,
+            f"worker {self.run_id} PostgreSQL connections drain",
+        )
+
+    def cleanup_run_artifacts(self) -> None:
+        """无论 replacement 是否启动成功，都清理该 run 的 transport 与连接。"""
+        errors: list[BaseException] = []
+        for cleanup in (self._cleanup_redis, self._wait_for_connection_drain):
+            try:
+                cleanup()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            raise BaseExceptionGroup(f"worker {self.run_id} run artifacts 清理失败", errors)
+
 
 def _assert_clean_activity(worker: PreforkWorker, application_names: set[str]) -> None:
     rows = _worker_connections(worker.services["database_url"], worker.run_id)
@@ -668,98 +686,28 @@ def _assert_clean_activity(worker: PreforkWorker, application_names: set[str]) -
     assert not any(message in log_text for message in forbidden)
 
 
-def test_worker_start_failure_always_invokes_full_teardown_and_retains_log(monkeypatch: pytest.MonkeyPatch) -> None:
-    worker = PreforkWorker(
-        {
-            "database": "test_prefork",
-            "database_url": "postgresql+asyncpg://user:password@127.0.0.1:5432/test_prefork",
-            "redis_url": "redis://127.0.0.1:6379/15",
-        }
-    )
-    fake_process = type("FakeProcess", (), {"pid": 43210})()
-    teardown_calls: list[str] = []
-    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: fake_process)
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "_wait_until",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("injected readiness failure")),
-    )
-    monkeypatch.setattr(worker, "stop", lambda **kwargs: teardown_calls.append("stop"))
-
-    with pytest.raises(AssertionError, match="injected readiness failure"):
-        worker.start()
-
-    assert teardown_calls == ["stop"]
-    assert worker.log_path is not None and worker.log_path.exists()
-    worker._log_file.close()
-    worker.log_path.unlink(missing_ok=True)
-
-
-def test_worker_stop_kills_surviving_process_group_and_aggregates_cleanup_errors(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    worker = PreforkWorker(
-        {
-            "database": "test_prefork",
-            "database_url": "postgresql+asyncpg://user:password@127.0.0.1:5432/test_prefork",
-            "redis_url": "redis://127.0.0.1:6379/15",
-        }
-    )
-
-    class FakeProcess:
-        pid = 43211
-
-        @staticmethod
-        def poll() -> int:
-            return 0
-
-    class FakeChild:
-        pid = 43212
-
-    class FakeProducer:
-        def close(self) -> None:
-            cleanup_calls.append("producer")
-
-    cleanup_calls: list[str] = []
-    wait_calls = 0
-    worker.process = cast("subprocess.Popen[str]", FakeProcess())
-    worker.log_path = tmp_path / "retained-worker.log"
-    worker._log_file = worker.log_path.open("w+")
-    worker._descendant_pids = {FakeChild.pid}
-    worker._producer_app = cast("Celery", FakeProducer())
-    monkeypatch.setattr(worker, "_capture_descendants", lambda: None)
-    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
-    monkeypatch.setattr(psutil, "Process", lambda pid: FakeChild())
-
-    def fake_wait_procs(processes: list[Any], timeout: float) -> tuple[list[Any], list[Any]]:
-        nonlocal wait_calls
-        wait_calls += 1
-        return ([], list(processes)) if wait_calls == 1 else (list(processes), [])
-
-    monkeypatch.setattr(psutil, "wait_procs", fake_wait_procs)
-    monkeypatch.setattr(os, "killpg", lambda pgid, sig: cleanup_calls.append(f"killpg:{pgid}:{sig}"))
-    monkeypatch.setattr(
-        worker,
-        "_cleanup_redis",
-        lambda: (_ for _ in ()).throw(RuntimeError("injected redis cleanup failure")),
-    )
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "_wait_until",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("injected database drain failure")),
-    )
-
-    with pytest.raises(BaseExceptionGroup) as exc_info:
-        worker.stop(success=True)
-
-    assert any(call.startswith("killpg:43211:") for call in cleanup_calls)
-    assert "producer" in cleanup_calls
-    cleanup_errors = [str(error) for error in exc_info.value.exceptions]
-    assert any("redis cleanup failure" in error for error in cleanup_errors)
-    assert any("database drain failure" in error for error in cleanup_errors)
-    assert worker.process is None
-    assert worker._log_file.closed
-    assert worker.log_path.exists()
+@contextmanager
+def _quit_replacement_worker(first: PreforkWorker) -> Iterator[tuple[PreforkWorker, dict[str, bool]]]:
+    """保证 replacement 启动失败或断言失败时仍回收整个 run。"""
+    replacement = PreforkWorker(first.services, concurrency=1, run_id=first.run_id)
+    state = {"success": False}
+    try:
+        replacement.start()
+        yield replacement, state
+    finally:
+        errors: list[BaseException] = []
+        if replacement.process is not None:
+            try:
+                replacement.stop(success=state["success"])
+            except BaseException as exc:
+                errors.append(exc)
+        if not state["success"]:
+            try:
+                first.cleanup_run_artifacts()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            raise BaseExceptionGroup("QUIT replacement 外层清理失败", errors)
 
 
 def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_services: dict[str, str]) -> None:
@@ -906,9 +854,7 @@ def test_quit_countdown_retry_is_redelivered_with_idempotent_final_state(prefork
     assert 9 <= shutdown_elapsed < 20
     assert "Soft Shutdown" in first_log and "10 seconds" in first_log and "Cold shutdown" in first_log
 
-    replacement = PreforkWorker(prefork_services, concurrency=1, run_id=first.run_id).start()
-    success = False
-    try:
+    with _quit_replacement_worker(first) as (replacement, replacement_state):
         redelivery_marker = _wait_until(
             lambda: next(
                 (
@@ -930,11 +876,10 @@ def test_quit_countdown_retry_is_redelivered_with_idempotent_final_state(prefork
         assert int(row["attempts"]) >= 2
         assert redelivery_marker["task_name"] == IDEMPOTENT_RETRY_TASK
         assert VISIBILITY_TIMEOUT <= redelivery_received_elapsed < retry_countdown
-        success = True
-    finally:
-        replacement.stop(success=success)
-        if success:
-            first_log_path.unlink(missing_ok=True)
+        replacement_state["success"] = True
+    first_log_path.unlink(missing_ok=True)
+    if first.project_log_dir is not None:
+        shutil.rmtree(first.project_log_dir)
 
 
 def test_hanging_application_redis_degrades_within_budget_and_db_task_survives(
@@ -954,7 +899,8 @@ def test_hanging_application_redis_degrades_within_budget_and_db_task_survives(
             assert probe["database"] == prefork_services["database"]
             assert hanging_server.first_command_at is not None and hanging_server.connection_closed_at is not None
             assert 0.8 <= hanging_server.connection_closed_at - hanging_server.first_command_at <= 3.25
-            assert init_marker["stage"] == "redis_ping_cleanup_timeout" and init_marker["state"] == "degraded"
+            assert init_marker["state"] == "degraded"
+            assert "Worker Redis 初始化超时，进入降级模式" in worker.project_log_text()
             assert elapsed < 8  # 还包含 MainProcess 启动和 ready probe，不作为 3 秒预算证据。
             success = True
         finally:

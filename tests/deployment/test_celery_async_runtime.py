@@ -135,6 +135,26 @@ def _install_runtime(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> Any
     return runtime
 
 
+def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    _patch_infrastructure(monkeypatch, module)
+    first_runtime = _install_runtime(monkeypatch, module)
+    assert first_runtime.runner_generation is None
+
+    first_runtime.initialize()
+    first_generation = first_runtime.runner_generation
+    assert isinstance(first_generation, str) and first_generation
+    first_runtime.initialize()
+    assert first_runtime.runner_generation == first_generation
+    first_runtime.shutdown()
+    assert first_runtime.runner_generation is None
+
+    second_runtime = module.CeleryAsyncRuntime()
+    second_runtime.initialize()
+    assert second_runtime.runner_generation != first_generation
+    second_runtime.shutdown()
+
+
 async def _discard_expired_awaitable(awaitable: Any) -> None:
     """让 deadline double 同时兼容 coroutine、Task 与 Future。"""
     if inspect.iscoroutine(awaitable):
