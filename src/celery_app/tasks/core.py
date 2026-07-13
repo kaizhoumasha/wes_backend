@@ -13,7 +13,7 @@ from src.celery_app.app import celery_app
 from src.celery_app.async_runtime import run_async
 from src.core.logger import logger
 from src.database.db import get_db_context
-from src.database.redis_client import get_redis, is_redis_available
+from src.database.redis_client import ensure_redis_connection, get_redis, is_redis_available
 from src.utils.timezone import timezone
 
 
@@ -86,6 +86,8 @@ def health_check() -> HealthCheckResult:
                 db_status = {"status": "error", "error": str(e)}
 
             try:
+                # Worker 启动时 Redis 可降级；健康检查通过标准入口按频率限制尝试恢复。
+                _ = await ensure_redis_connection()
                 if is_redis_available():
                     redis_client = cast("Any", get_redis())
                     if redis_client:
