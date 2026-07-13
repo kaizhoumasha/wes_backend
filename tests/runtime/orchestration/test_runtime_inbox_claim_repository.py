@@ -87,6 +87,30 @@ async def test_claim_compiles_postgresql_atomic_fifo_limit_with_skip_locked() ->
     assert "BigInteger" in bound_types
 
 
+@pytest.mark.asyncio
+async def test_claim_executes_the_public_production_statement_builder() -> None:
+    """Benchmark 与生产 claim 必须能共享同一个公开 statement builder。"""
+
+    repository = RuntimeInboxRepository()
+    expected = repository.build_claim_received_statement(
+        limit=3,
+        processor_token="worker-1",
+        stale_after_seconds=30,
+        now_ms=1_000,
+    )
+
+    with pytest.raises(_StatementCaptured) as captured:
+        await repository.claim_received_with_token(
+            _CapturingDb(),  # type: ignore[arg-type]
+            limit=3,
+            processor_token="worker-1",
+            stale_after_seconds=30,
+            now_ms=1_000,
+        )
+
+    assert str(captured.value.statement) == str(expected)
+
+
 class _MappingResult:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self._rows = rows

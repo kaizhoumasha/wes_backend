@@ -334,16 +334,45 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
         limit: int,
         processor_token: str,
         stale_after_seconds: int,
+        now_ms: int | None = None,
     ) -> list[dict[str, Any]]:
         """原子 claim RECEIVED、到期 FAILED 与过期 PROCESSING，并保持同桶 FIFO。"""
 
         if limit <= 0:
             return []
+        statement = self.build_claim_received_statement(
+            limit=limit,
+            processor_token=processor_token,
+            stale_after_seconds=stale_after_seconds,
+            now_ms=now_ms,
+        )
+        result = await db.execute(statement)
+        claims = [
+            {
+                **dict(row),
+                "processor_token": str(row["processor_token"]),
+                "payload_json": dict(row["payload_json"] or {}),
+            }
+            for row in result.mappings().all()
+        ]
+        claims.sort(key=lambda row: (row["received_at"] is None, row["received_at"] or 0, row["id"]))
+        return claims
+
+    def build_claim_received_statement(
+        self,
+        *,
+        limit: int,
+        processor_token: str,
+        stale_after_seconds: int,
+        now_ms: int | None = None,
+    ) -> Any:
+        """构建生产 claim statement，供执行路径与 PostgreSQL 计划门禁共用。"""
+
         import time as _time
 
-        now_ms = int(_time.time() * 1000)
-        lease_until = now_ms + (max(stale_after_seconds, 1) * 1000)
-        now_value = literal(now_ms, type_=BigInteger())
+        effective_now_ms = int(_time.time() * 1000) if now_ms is None else now_ms
+        lease_until = effective_now_ms + (max(stale_after_seconds, 1) * 1000)
+        now_value = literal(effective_now_ms, type_=BigInteger())
         lease_until_value = literal(lease_until, type_=BigInteger())
         table = cast("Any", RuntimeInbox).__table__
         columns = table.c
@@ -408,7 +437,7 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             .limit(limit)
             .with_for_update(skip_locked=True)
         )
-        result = await db.execute(
+        return (
             update(table)
             .where(columns.id.in_(candidate_ids))
             .values(
@@ -439,16 +468,6 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             )
             .execution_options(synchronize_session=False)
         )
-        claims = [
-            {
-                **dict(row),
-                "processor_token": str(row["processor_token"]),
-                "payload_json": dict(row["payload_json"] or {}),
-            }
-            for row in result.mappings().all()
-        ]
-        claims.sort(key=lambda row: (row["received_at"] is None, row["received_at"] or 0, row["id"]))
-        return claims
 
     async def recover_stale_leases(
         self,

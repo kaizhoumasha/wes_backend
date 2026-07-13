@@ -22,7 +22,12 @@ def test_runtime_inbox_claim_benchmark() -> None:
     assert metrics["claim_p50_ms"] <= metrics["claim_p95_ms"]
     assert metrics["claim_p95_ms"] <= thresholds["claim_p95_ms"]
     assert metrics["throughput_per_second"] >= thresholds["throughput_per_second"]
-    assert result["query_plan"]
+    assert metrics["waiting_lock_samples"] == thresholds["waiting_lock_samples"] == 0
+    assert metrics["max_waiting_locks"] == thresholds["max_waiting_locks"] == 0
+    assert result["query_plan"]["selective"]["gate_passed"] is True
+    assert result["query_plan"]["selective"]["runtime_inbox_seq_scan_relations"] == []
+    assert result["query_plan"]["production_statement_sha256"] == result["source"]["statement"]["sha256"]
+    assert result["verdict"] == {"passed": True, "failed_gates": []}
     assert result["sli_before"] == {
         "status_counts": {
             "RECEIVED": 700,
