@@ -19,7 +19,9 @@ SRS 和 WMS/RCS 接口规划明确：主数据信息、库存、预留、扣减�
 5. 所有 WMS 调用写入独立调用证据；请求和响应快照必须脱敏。
 6. 查询结果允许 Redis 短时缓存，TTL 不得超过 30 秒；缓存失效或 Redis 不可用时必须重新查询 WMS。
 7. WMS 连续超时或 5xx 触发熔断。`wms_integration` 抛出明确不可用异常，由调用方创建 RuntimeHold 或诊断并暂停当前业务。
-8. WMS/RCS 运行时回调统一通过 `/api/v1/callback/external`，最小包络校验和字段标准化由 `wms_integration` 提供。
+8. WMS/RCS 运行时回调统一通过 `/api/v1/callback/external`，最小包络校验和字段标准化由
+   `wms_integration` 提供；接收成功后写入 `RuntimeInbox(kind=EXTERNAL_HTTP)`，再由正式
+   `RuntimeInboxService` 与三阶段 processor 异步推进，callback API 不直接修改业务状态。
 
 ## 后果
 

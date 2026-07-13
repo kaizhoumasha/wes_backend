@@ -249,7 +249,7 @@ wes_runtime.runtime_inbox
 - fresh/upgrade schema 均符合合同。
 - `EXPLAIN` 可使用预期 hot indexes。
 
-**落地：** `src/app/runtime/orchestration/runtime_inbox.py` 加 14 字段（kind / payload_json / payload_schema_version / workline_id / device_id / command_id / trace_id / event_id / causation_id / claim_bucket_key / processor_token / received_at / processed_at / failed_at）+ 4 hot-claim partial index；`migrations/versions/20260711_1815_b8a28e1bfec8_extend_runtime_inbox.py` Revision A 迁移；`tests/runtime/orchestration/test_runtime_inbox_schema_contract.py` 38/38 case 通过。⚠️ 未跑 `alembic upgrade head` 真实数据库验证（需 DB）。
+**落地：** `src/app/runtime/orchestration/runtime_inbox.py` 加 14 字段（kind / payload_json / payload_schema_version / workline_id / device_id / command_id / trace_id / event_id / causation_id / claim_bucket_key / processor_token / received_at / processed_at / failed_at）+ 4 hot-claim partial index；`migrations/versions/20260711_1815_b8a28e1bfec8_extend_runtime_inbox.py` Revision A 迁移；`tests/runtime/orchestration/test_runtime_inbox_schema_contract.py` 覆盖模型合同。后续 `tests/integration/test_runtime_inbox_migration_postgresql.py` 已在隔离 PostgreSQL 验证 fresh、parent→A、audit-only、命名约束、毫秒时间和往返升级，不再保留“真实数据库未验证”的警告。
 
 ### Task 3：统一 Repository 与 RuntimeInboxService
 
@@ -270,7 +270,7 @@ wes_runtime.runtime_inbox
 - 生产 service/repository 状态机覆盖全部合法/非法路径。
 - 不再存在第二个 RuntimeInbox repository。
 
-**落地：** `src/app/runtime/orchestration/repositories/runtime_inbox_claim_repository.py` RuntimeInboxClaimRepository（claim_received_with_token / find_stale_processing / update_terminal_state）；`src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py` 加 5 方法（claim_for_processing / recover_stale_leases / mark_processed / mark_failed / mark_dead_letter）；`tests/runtime/orchestration/test_runtime_inbox_service_5state_claim.py` 7/7 case 通过。⚠️ WorklineInboxRepository 仍保留（28 个 consumer 依赖，待 Task 7 删）。
+**落地：** `src/app/runtime/orchestration/repositories/runtime_inbox_repository.py` 是唯一持久化 owner，`src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py` 是 producer、claim、fencing、retry、replay 与终态写入的正式服务路径；旧 repository 已在 Task 7 物理删除。五态状态机由 focused service 测试与真实 PostgreSQL claim/concurrency 测试共同覆盖。
 
 ### Task 4：迁移所有 Producer
 
@@ -295,7 +295,7 @@ wes_runtime.runtime_inbox
 
 ### Task 5：三阶段 Processor 拆分与 parity
 
-**状态：** ✅ 100% 完成（补充提交：1b24dad4 + a26d29c8 + 7b13a364 + 90c68678 + e3fa67b6 + 7af7c283 + 439a4d79）。validation、orchestration、write-back 三阶段 service 与 RuntimeInbox bridge 已覆盖 characterization parity、重复/迟到、stale snapshot、RESOURCE_WAIT、失败/死信和 ESTOP 特例；旧 processor 文件的物理删除归 Task 7。
+**状态：** ✅ 100% 完成（补充提交：1b24dad4 + a26d29c8 + 7b13a364 + 90c68678 + e3fa67b6 + 7af7c283 + 439a4d79）。validation、orchestration、write-back 三阶段 service 与 RuntimeInbox bridge 已覆盖 characterization parity、重复/迟到、stale snapshot、RESOURCE_WAIT、失败/死信和 ESTOP 特例；旧 processor 已在 Task 7 物理删除。
 
 **目标：** 在当前 PR 完成 validation、orchestration、write-back 边界拆分且保持行为等价。
 
@@ -311,7 +311,7 @@ wes_runtime.runtime_inbox
 - 每阶段有成功、失败、边界单元测试。
 - Celery/API 不直接访问 repository 或数据库查询。
 
-**落地：** RuntimeInbox Celery 链路已调用生产三阶段 processor；同一 parity case table 验证旧、新入口。ESTOP 安全副作用保持 fail-safe 独立提交，terminal write 仍受 token fencing；普通路径保持单条事务围栏。`orchestrator_bridge.py` 的旧类型与 `InboxBatchProcessor` 仅作为 Task 7 待删除表面保留，不再是 runtime task 入口。
+**落地：** RuntimeInbox Celery 链路调用生产三阶段 processor；迁移期 parity case table 验证旧、新入口后，旧类型、旧 bridge 与旧 processor 已在 Task 7 完成物理删除。ESTOP 安全副作用保持 fail-safe 独立提交，terminal write 仍受 token fencing；普通路径保持单条事务围栏。
 
 ### Task 6：Celery Task、Gateway 与调度
 
@@ -378,31 +378,29 @@ wes_runtime.runtime_inbox
 
 **落地：** 两个 crash window 均通过 lease reclaim、新 token fencing 和事务回滚幂等收敛，最终只生成一条目标 timeline、设备命令与 outbox；旧 owner 无法写终态。RuntimeInbox 毫秒时间字段从最初建表 revision 起即为 BIGINT，A→parent→A 使用真实毫秒值验证无窄化和数据损坏。所有 heavy test 强制要求显式 `INTEGRATION_DATABASE_URL`，只操作安全前缀临时库。最终 benchmark 使用 700 RECEIVED、200 到期 FAILED、100 stale PROCESSING，100 个 FIFO bucket；40 次真实 claim 调用的 p50 31.739ms、p95 76.214ms、吞吐 1593.023 条/秒，重复 claim 与等待锁均为 0，门禁锁定为 p95 ≤150ms、吞吐 ≥1000 条/秒。SLI 已覆盖五态数量、实际 FIFO 可推进的最老 claimable age、claim/processing duration、lease reclaim、fencing reject、RESOURCE_WAIT 与 dead-letter；批次 claim/reclaim 指标在 commit 后发射，不阻塞 repository 热路径。独立非 5432 TimescaleDB 验证完成后均已清理。
 
-### Task 9：文档、索引与最终门禁
+### Task 9：文档、索引与文档门禁
 
-**状态：** ✅ 100% 完成（3df84112 + 本轮文档收束提交）。架构索引、所有权地图、重构说明、可观测性合同与 legacy cleanup matrix 已同步到 RuntimeInbox 单一真源；全量测试 `2090 passed, 5 skipped`，quality gate、真实 PostgreSQL integration/resilience/migration/benchmark 均通过。
+**状态：** ✅ T9 文档同步完成；T10 最终验收待执行（3df84112 + 本轮文档收束提交）。当前业务、架构、运行手册、所有权地图、可观测性合同、文件索引和 TODO 已同步到 RuntimeInbox 单一真源；本任务只记录文档一致性、legacy scanner、链接/路径与质量门禁证据，不把历史全量数字或 T10 严格验收声明为本轮结果。
 
 **目标：** 让当前架构文档、文件索引和运行说明只描述 RuntimeInbox 权威链路。
 
 **范围：**
 
-- 更新 `docs/architecture/file_index.md` 与 workline restructuring 文档。
-- 删除旧模块索引和过渡期双写描述。
-- 保留完整运营 dashboard/runbook TODO，不在本 PR 建 UI。
+- 更新 current business/architecture/runtime 文档、`docs/architecture/file_index.md`、本计划和验收设计。
+- 删除 active legacy 模块索引、双写描述和已完成 TODO。
+- 保留尚未交付的运营 UI、告警与 runbook TODO，不在本任务实现运营界面。
 
 **验收命令：**
 
 ```bash
+uv run pytest tests/deployment/test_runtime_inbox_documentation_consistency.py tests/architecture/test_workline_inbox_retirement_guardrail.py -q
+uv run python scripts/workline_inbox_retirement_guardrail.py --format text
 uv run pytest tests/architecture/test_test_suite_topology_guardrail.py -q
-uv run pytest tests/workline_runtime/ tests/api/ tests/contracts/ tests/deployment/ -q
-uv run pytest tests/integration/runtime/ -q
-uv run pytest tests/resilience/ -q
-uv run pytest tests/load/test_runtime_inbox_claim_benchmark.py -q
 uv run pytest --collect-only -q -o addopts='' | tail -5
-uv run ruff format . && uv run ruff check .
-uv run bandit -r src/
 ./scripts/git-quality-gate.sh --profile quality
 ```
+
+真实 PostgreSQL integration/resilience/migration/benchmark、全量回归与 evidence artifact 的最终复跑归 Task 10，不在 Task 9 提前标记完成。
 
 Commit 前：
 
@@ -439,7 +437,7 @@ Legend: ★★★ behavior + edge + error | →E2E integration/resilience bounda
 - `tests/workline_runtime/`：RuntimeInbox service、三阶段 processor 纯逻辑。
 - `tests/contracts/`：kind、envelope、消费者迁移和零引用合同。
 - `tests/deployment/`：Alembic schema contract。
-- `tests/integration/runtime/`：真实 DB/Celery pipeline 和 claim concurrency。
+- `tests/integration/test_runtime_inbox_*.py`：真实 DB/Celery pipeline、claim concurrency 与迁移回环。
 - `tests/resilience/`：worker crash 与幂等恢复。
 - `tests/load/`：真实 PostgreSQL benchmark，默认不收集。
 

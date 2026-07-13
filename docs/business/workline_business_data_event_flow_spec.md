@@ -1,8 +1,8 @@
 # 作业线业务/数据/事件流规范草案
 
 > **版本**: 0.1
-> **日期**: 2026-03-25
-> **状态**: Draft / SSOT
+> **日期**: 2026-07-13
+> **状态**: Current / SSOT
 > **适用范围**: 作业线运行时编排、设备事件接入、指令结果回流、插件决策、拓扑推导
 
 ---
@@ -138,13 +138,22 @@
 
 `RuntimeInbox` 必须把以下输入建模为一等入口类型：
 
-- `DEVICE_EVENT`
 - `COMMAND_RESULT`
-- `EXTERNAL_CALLBACK`
-- `TIMEOUT`
-- `MANUAL_OPERATION`
+- `DEVICE_EVENT`
+- `EXTERNAL_HTTP`
+- `INTERNAL_EVENT`
+- `TIMER_TIMEOUT`
+- `REPLAY_REQUEST`
 
 禁止把 `COMMAND_RESULT` 伪装成 `DEVICE_EVENT` 再让编排器二次猜测。
+
+RuntimeInbox 数据库状态固定为 `RECEIVED`、`PROCESSING`、`PROCESSED`、`FAILED`、
+`DEAD_LETTER` 五态。`RESOURCE_WAIT` 是 `FAILED + next_retry_at` 的处理结果，不是第六种状态。
+切换前缺少 canonical payload 的记录以 `PRE_CUTOVER_AUDIT_ONLY` 保留为审计证据，
+不可 claim、retry 或 replay，也不计入可行动 dead-letter。
+
+人工重放只接受 `DEAD_LETTER` 行。API 必须接收稳定 `request_id` 和 `reason`，`actor` 只取认证上下文；
+`RuntimeInboxService` 新建 `REPLAY_REQUEST`，保留直接/根 source inbox 与原始业务 kind，原记录保持终态。
 
 ---
 
@@ -279,26 +288,14 @@
 
 ---
 
-## 9. 当前偏差与修订原则
+## 9. 当前实现与运维边界
 
-当前仓库存在以下偏差，后续实现与文档修订必须以本文为准：
+当前生产路径已经收敛为单轨：API/内部 producer → `RuntimeInboxService` → 唯一 Repository →
+三阶段 processor → fenced terminal。旧表、旧 task、旧 repository/service 和双写入口均已退役，
+由旧 Inbox retirement guardrail 同时扫描 active Python、Shell 和 current docs。
 
-1. 文档目标已是单轨编排，部分代码仍是双轨处理
-2. `correlation_id` 在部分入口代码中被错误退化成 `request_id`
-3. `COMMAND_RESULT` 在部分实现中仍不是一等 Inbox 类型
-4. 部分旧文档和旧插件代码仍残留“左右硬编码”和“位置前缀分线”思路
-
-后续修订原则：
-
-1. 先统一规范
-2. 再统一文档
-3. 最后统一实现
-
----
-
-## 10. 后续执行顺序
-
-1. 以本文为基准修订现有文档
-2. 基于本文做一次 `plan-eng-review`
-3. 通过评审后再进入代码整改
-4. 代码整改完成后回写最终版正式规范
+运行数据重置使用 `scripts/data/reset_runtime_data.py`，目标表采用 schema-qualified allowlist；默认 Mock
+reset 失败会在数据库 mutation 前 fail closed。真实 PostgreSQL migration、processing、两个 crash window 和
+claim benchmark 由 `scripts/run_runtime_inbox_postgresql_acceptance.py` 串行执行；
+`Jenkinsfile.backend-ci` 通过隔离 PG17 归档 commit-bound evidence。运营 UI、告警阈值和现场 Runbook
+仍由 `TODOS.md` 的统一运营条目承接。

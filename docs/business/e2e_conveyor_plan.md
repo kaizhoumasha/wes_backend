@@ -9,6 +9,9 @@
 - 外部接口（HTTP 回调、Mock 设备、处理器决策输出）统一使用 `device_code`。
 - 内部数据库关联（`device_commands.device_id`、`wes_runtime.runtime_inbox.device_id`）统一使用 `device_id`（整数主键）。
 - Celery 在 ACT 阶段负责将 `device_code` 解析为内部 `device_id` 后再创建设备指令。
+- RuntimeInbox 只允许六种 `kind`：`COMMAND_RESULT / DEVICE_EVENT / EXTERNAL_HTTP / INTERNAL_EVENT /
+  TIMER_TIMEOUT / REPLAY_REQUEST`；状态只允许 `RECEIVED / PROCESSING / PROCESSED / FAILED / DEAD_LETTER`。
+- `PRE_CUTOVER_AUDIT_ONLY` 是不可 claim、retry 或 replay 的历史审计终态，不参与当前 E2E。
 
 ---
 
@@ -208,3 +211,13 @@ ORDER BY dc.id DESC;
 celery -A src.celery_app.app flower
 # 访问 http://localhost:5555 查看任务状态
 ```
+
+## 七、运行数据重置与 PostgreSQL 验收
+
+- 需要清理本地运行数据时使用 `scripts/data/reset_runtime_data.py`，先 dry-run，再显式 `--yes`；默认
+  Mock reset 失败会在数据库 mutation 前中止。
+- 正式数据库回归不复用开发库。`Jenkinsfile.backend-ci` 通过
+  `scripts/run_runtime_inbox_postgresql_acceptance_ci.sh` 启动独立 PG17，并由
+  `scripts/run_runtime_inbox_postgresql_acceptance.py` 顺序运行 migration、processing、两个 crash window、
+  benchmark 与 evidence validator。
+- 成功 evidence 为 `runtime-inbox-claim-benchmark.json`，绑定完整 commit 且要求 `dirty=false`。

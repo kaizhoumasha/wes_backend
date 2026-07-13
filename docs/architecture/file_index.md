@@ -2,7 +2,7 @@
 
 > Legacy notes: 本文件索引存在历史条目，涉及旧插件 builder 的说明仅供定位旧文档；当前运行时以 `RuntimeIntent` 为准。
 
-**最后更新**: 2026年7月11日（feature/runtime-inbox-single-source-of-truth：RuntimeInbox 唯一事实源、五态 claim/fencing、三阶段 processor、旧 WorklineInbox 退役、PostgreSQL crash/benchmark 与 SLI）
+**最后更新**: 2026年7月13日（RuntimeInbox 六类 ingress、五态与 audit-only/replay/reset/heavy/CI 验收入口）
 **同步状态**: ✅ RuntimeInbox 当前架构与实际仓库结构已同步；历史版本日志保留当时路径，仅作迁移审计，不代表当前入口
 
 ---
@@ -11,6 +11,7 @@
 
 | 日期 | 版本 | 变更内容 |
 |------|------|----------|
+| 2026-07-13 | runtime-inbox-acceptance-closure T1–T9 | 固化 audit-only 数据库合同、正式 Service/replay 边界、reset 与 current-doc scanner；补齐隔离 PostgreSQL migration/processing/crash/benchmark runner、commit-bound evidence 和 `Jenkinsfile.backend-ci` artifact 归档。T10 最终全量验收仍待执行。 |
 | 2026-07-11 | runtime-inbox-single-source-of-truth | callback/device/internal/timer producer 统一写入 `wes_runtime.runtime_inbox`；唯一 repository、五态 claim/fencing 与三阶段 processor 落地；旧 WorklineInbox model/repository/table、InboxBatchProcessor、RuntimeInboxConsumer facade 与 enqueue shim 物理删除；补齐 Revision A/B 回环、两个 crash window、1000 backlog/4 worker benchmark、SLI snapshot 与稳定观测 signal。 |
 | 2026-07-01 | 0.10.4.0 / phase3-execution-safety-recovery | Phase 3 执行安全与恢复 PR（`feature/phase3-execution-safety-recovery`）：callback 外部入口升级为 body-bound HMAC（`X-Nonce` / `X-Body-SHA256` / 30s 窗口），nonce 使用 Redis `SET NX EX` 固定 TTL 原子消费并在 Redis 不可校验时 fail closed；RuntimeInbox 增加 provider_code + event_type + source_event_id 幂等接收、唯一冲突后重读比对 payload_hash、不同 hash 409 审计、DEAD_LETTER 人工重放新建记录；新增 ActiveObject 归属仲裁与 Reconciliation owner-scoped 决议；新增 DeviceCommand lease 过期策略与 RuntimeInbox backpressure 策略；WMS 增加 11 态 fulfillment 状态机、终态保护、typed evidence envelope 与 lifecycle service；WorkLine 配置域新增 plane scene/snapshot 读模型与 manifest 激活前 queue/device/capability 引用校验；新增 `docs/contracts/observability-contract.md` 与 `docs/contracts/runtime-toggle-governance.md`，并重新生成 legacy cleanup matrix（679 条）。版本 0.10.3.0 → 0.10.4.0 patch |
 | 2026-06-30 | 0.10.3.0 / phase2-f1-f2-burndown-docs | Phase 2 burn-down F-1/F-2 收尾 PR（`feature/phase2-burndown-f1-f2`）：workline 域 14 个运行态 model（`bin_cell_reservation` / `diagnostic` / `dispatch_attempt` / `inbox` / `material_unit` / `object_transition_event` / `operation` / `rack_position` / `runtime` / `runtime_hold` / `runtime_hold_api` / `session` / `smt_inbound_handoff` / `timeline`）+ 10 个运行态 repository 物理迁入 `src/app/runtime/orchestration/{models,repositories}/`（`git mv` 整体迁移,`__tablename__` 不变,数据库 schema 不变）；81 文件 262 条跨域 import 批量改写 `from src.app.workline.{models,repositories}.<待迁>` → `from src.app.runtime.orchestration.{models,repositories}.<待迁>`；`workline/models/__init__.py` + `workline/repositories/__init__.py` 收缩为纯配置域聚合（workline + safety + rack 透传）；`migrations/env.py` mapper 注册链拆分（5 个已迁 symbol 改指 runtime.orchestration.models,WorkLine 保留 workline.models）；2 个 xfail 契约测试转硬断言（`test_workline_models_shrunk_to_workline_only_after_stage6` + `test_workline_repositories_shrunk_to_workline_only_after_stage6`）；`scripts/architecture-guardrails.allowlist` R-I3b path 字段同步 + `scripts/generate_legacy_matrix.py` 扩展 MIGRATED_REPOSITORIES 映射保持 audit trace 稳定；`docs/architecture/legacy-cleanup-matrix.{md,csv}` 重新生成（668 条）。**Phase 2 唯一未完成门禁 `WorkLine 不再拥有运行状态` 全部关闭**。版本 0.10.2.1 → 0.10.3.0 patch (清理性变更,无功能新增/破坏性 API) |
@@ -91,6 +92,7 @@
 | `CLAUDE.md` | Claude Code 开发指南（架构、规范、最佳实践） | 📖 必读文档 |
 | `DOCKER.md` | Docker 使用说明 | 📚 参考资料 |
 | `Jenkinsfile` | Jenkins CI/CD 配置 | 📚参考资料 |
+| `Jenkinsfile.backend-ci` | 后端 CI 主入口；包含隔离 PG17 RuntimeInbox 严格验收、JUnit/evidence/log/diagnostic 归档与清理 | 🔧 架构核心 |
 | `docs/architecture/adr/2026-05-13-wes-wms-rcs-resource-boundary.md` | WES/WMS/RCS 运行时资源、库存权责和回调入口 ADR | 📖 必读文档 |
 | `docs/architecture/adr/2026-05-26-wms-integration-domain.md` | WMS 对接辅助域 ADR：反腐层边界、证据留痕、熔断和调用方合同 | 📖 必读文档 |
 | `docs/architecture/adr/0001-phase2-runtime-ownership.md` | Runtime ownership ADR：runtime 域所有权固化 + legacy runtime import boundary + inbound normalizer ownership guardrail | 📖 必读文档 |
@@ -274,7 +276,8 @@
 | `app.py` | Celery 应用实例 | 📚 参考资料 |
 | `config.py` | Celery 配置 | 📚 参考资料 |
 | `tasks/core.py` | 核心后台任务 | 📚 参考资料 |
-| `tasks/workline.py` | 作业线 Celery 任务入口（Inbox 消费、Outbox 派发、Phase 2 effect handlers；消费 supports_command_types / maintenance_mode / callback_path） | 🔧 架构核心 |
+| `tasks/runtime_inbox.py` | RuntimeInbox claim-one/process-one、lease recovery、三阶段 processor 与批次 SLI 的 Celery 主入口 | 🔧 架构核心 |
+| `tasks/workline.py` | 作业线保留任务入口（Outbox 派发、timeout scanner 等）；不消费 RuntimeInbox | 🔧 架构核心 |
 
 ---
 
@@ -432,7 +435,7 @@ Phase 3 RECONCILING 冲突登记与 owner-scoped 决议层，只产出 hold/free
 | `plugins/plugin_sdk/normalizers/input_normalizer.py` | 输入 normalizer | 🔧 架构核心 |
 
 **核心设计模式**：
-- **Inbox 模式**：统一编排入口（设备事件、指令结果、超时、人工操作）
+- **Inbox 模式**：统一六类编排入口（`COMMAND_RESULT / DEVICE_EVENT / EXTERNAL_HTTP / INTERNAL_EVENT / TIMER_TIMEOUT / REPLAY_REQUEST`）
 - **幂等性控制**：白皮书 6.3.1 节（厂商 ID 优先 + hash 备选），target-state 起统一为 `WES-{OPERATION_KIND}-{HASH}` 命名
 - **Outbox 模式**：统一调度出口（设备指令、外部回调、状态记录）
 
@@ -508,7 +511,7 @@ Phase 3 RECONCILING 冲突登记与 owner-scoped 决议层，只产出 hold/free
 | `consumers/` | RuntimeInbox 入口子包：legacy runtime 真引用已清空，旧 trust zone (`EXCLUDED_PREFIXES`) 已退出，当前承载 callback ACK-before-processing 幂等入口 | 🔧 架构核心 |
 | `consumers/__init__.py` | 仅导出 CallbackRuntimeInboxWriter adapter；RuntimeInboxService 正式导出边界为 `services/runtime_inbox/__init__.py` | 🔧 架构核心 |
 | `consumers/callback_runtime_inbox_writer.py` | callback ingress 的 RuntimeInbox 薄写入适配器，保持 API → Service → Repository 分层 | 🔧 架构核心 |
-| `services/runtime_inbox/runtime_inbox_service.py` | RuntimeInboxService：ACK-before-processing、source-event 幂等接收、五态 claim/retry/fencing、payload conflict 409、DEAD_LETTER 人工重放审计 | 🔧 架构核心 |
+| `services/runtime_inbox/runtime_inbox_service.py` | RuntimeInboxService 正式边界：六类 ingress、五态 claim/retry/fencing、audit-only 排除、`request_id`/认证 `actor`/`reason` 扁平 `REPLAY_REQUEST`、typed domain errors 与审计 | 🔧 架构核心 |
 | `diagnostics/` | **stable migration mirror** legacy runtime `diagnostics/` 子目录完整迁移:`builder` / `codes` / `failure_mapper` / `models` / `registry` 5 子模块 + 聚合层 `__init__.py`(原 `consumers/diagnostics_bridge.py` 已迁出) | 🔧 架构核心 |
 | `diagnostics.py` | **stable migration mirror** diagnostics 顶层门面（原 `consumers/diagnostics_bridge.py` 改名为 `diagnostics.py` 并迁出 `consumers/` 子目录） | 🔧 架构核心 |
 | `__init__.py` | 模块导出（9 entity） | 🔧 架构核心 |
@@ -668,7 +671,7 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `load/` | 显式运行的负载/基准测试（Locust + runtime benchmark gate 四场景） | 📚 参考资料 |
 | `resilience/` | 显式运行的弹性/恢复测试（Redis 重连、降级、runtime scenario replay fixture） | 📚参考资料 |
 | `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
-| ~~`workline_runtime/`~~ | **stable migration mirror 已删除**：作业线运行时测试已被 `tests/contracts/workline/` 行为契约覆盖；legacy runtime 整目录同步物理删除 | 🔧 架构核心 |
+| `workline_runtime/` | Runtime capability、投影、对账与 material-flow 纯逻辑回归；不同于已删除的 `src/workline_runtime/` legacy package | 🔧 架构核心 |
 | `wms_integration/` | WMS 对接辅助域测试（client、typed ports、evidence、breaker、cache、callback normalizer、caller contract） | 🔧 架构核心 |
 | `architecture/` | 架构守卫测试（import-linter 合同 + runtime public-surface / boundary guardrail；legacy runtime import 守卫继续作为永久安全网） | 🔧 架构核心 |
 | `runtime/orchestration/` | Runtime orchestration 单元/合同测试（RuntimeInbox persistence、五态 claim、三阶段 processor、SLI） | 🔧 架构核心 |
@@ -704,6 +707,18 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `runtime/orchestration/test_runtime_recovery_policies.py` | RuntimeInbox backpressure 与 DeviceCommand lease 恢复策略测试 | 🔧 架构核心 |
 | `integration/test_conveyor_queue_membership_concurrency.py` | ConveyorQueueMembershipWriter opt-in PostgreSQL partial unique index 并发冲突与 existing 重读测试 | 🔧 架构核心 |
 
+**RuntimeInbox 严格验收与文档门禁**：
+
+| 文件 | 用途 | 分类 |
+|------|------|------|
+| `tests/deployment/test_runtime_inbox_postgresql_acceptance_ci.py` | CI 隔离数据库、runner 顺序、失败非零、artifact/cleanup 与 commit 绑定合同 | 🔧 架构核心 |
+| `tests/deployment/test_runtime_inbox_documentation_consistency.py` | Current docs 六 kind/五态、路径、计划状态、TODO 与本地链接一致性 | 🔧 架构核心 |
+| `tests/architecture/test_workline_inbox_retirement_guardrail.py` | Python/Shell/current Markdown scanner 自测与窄 allowlist | 🔧 架构核心 |
+| `tests/integration/test_runtime_inbox_migration_postgresql.py` | Revision A/B fresh、parent、audit-only、约束与回环矩阵 | 🔧 架构核心 |
+| `tests/integration/test_runtime_inbox_processing_postgresql.py` | 真实 PostgreSQL producer → processor → effect → terminal 闭环 | 🔧 架构核心 |
+| `tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py` | claim 后与 write-back 后的两个 crash window | 🔧 架构核心 |
+| `tests/load/test_runtime_inbox_claim_benchmark.py` | 1000 backlog/4 worker 正式 benchmark 与 evidence artifact | 📚 参考资料 |
+
 **Runtime 执行安全与恢复测试文件**：
 
 | 文件 | 用途 | 分类 |
@@ -716,18 +731,14 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `workline/test_manifest_activation_validator.py` | WorkLine manifest 激活前 queue/device/capability 引用 blocker 测试 | 🔧 架构核心 |
 | `workline/test_plane_read_model.py` | WorkLine plane scene/snapshot 读模型 schema 和 queue 节点派生测试 | 🔧 架构核心 |
 
-**Workline Runtime 测试文件**：
+**Workline Runtime 测试文件**（当前纯逻辑集合）：
 
 | 文件 | 用途 | 分类 |
 |------|------|------|
-| `workline_runtime/test_enums.py` | 枚举类单元测试（InboxKind, Status 等） | 🔧 架构核心 |
-| `workline_runtime/test_inbox_service.py` | Inbox Service 幂等键计算测试 | 🔧 架构核心 |
-| `workline_runtime/test_smt_sorting_inbound_plugin.py` | SMT 分拣入库插件 manifest、source-pick、target/ng terminal intent 合同测试 | 🔧 架构核心 |
-| `workline_runtime/test_smt_sorting_inbound_context.py` | SMT 分拣入库 typed context 和 `source_pick_request` JSON-safe 测试 | 🔧 架构核心 |
-| `workline_runtime/test_smt_inbound_handoff_claim.py` | SMT handoff 两阶段 claim、target WorkLine 串行保护和 release fact claim 入口测试 | 🔧 架构核心 |
-| `workline_runtime/test_smt_inbound_handoff_recovery.py` | SMT handoff due scan、post-claim recovery、source-pick ledger 和 READY claim fallback 测试 | 🔧 架构核心 |
-| `workline_runtime/test_smt_inbound_handoff_celery.py` | SMT handoff Celery recovery task 注册、参数和 summary 合同测试 | 🔧 架构核心 |
-| `workline_runtime/test_runtime_intent_effects.py` | RuntimeIntent effects 回归测试，覆盖 SMT source-pick、target/ng terminal ledger 和 no-double-claim | 🔧 架构核心 |
+| `workline_runtime/test_runtime_inbox_projection_query_contract.py` | RuntimeInbox 投影查询、状态统计和 audit-only 边界 | 🔧 架构核心 |
+| `workline_runtime/test_runtime_inbox_repository_consumers.py` | query/trace/reconciliation 等 consumer 统一 repository 合同 | 🔧 架构核心 |
+| `workline_runtime/test_runtime_capability_dispatcher.py` | Runtime capability dispatch 与 intent 边界 | 🔧 架构核心 |
+| `workline_runtime/test_workline_runtime_status_projection_service.py` | Runtime-owned status projection 行为 | 🔧 架构核心 |
 
 **Phase 2 behavior contract 测试文件**（`tests/contracts/workline/`,launch PR commit `8602c33b` 落地 8 个 TDD 同步 contract，burn-down 安全网）：
 
@@ -763,9 +774,6 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 |------|------|------|
 | `e2e/__init__.py` | E2E 测试模块导出 | 🔧 架构核心 |
 | `e2e/test_conveyor_robot_arm.py` | 流水线料盘搬运 E2E 测试（使用 ECS Mock 事件 API） | 🔄 常用功能 |
-| `integration/workline_runtime/test_smt_inbound_handoff_e2e.py` | SMT handoff release-to-terminal、多 item 串行和 terminal replay E2E 回归 | 🔧 架构核心 |
-| `integration/workline_runtime/test_smt_inbound_handoff_claim_postgres.py` | PostgreSQL READY claim / SKIP LOCKED 并发保护集成测试 | 🔧 架构核心 |
-| `integration/workline_runtime/test_smt_inbound_handoff_recovery_postgres.py` | PostgreSQL post-claim recovery 和索引执行计划保护测试 | 🔧 架构核心 |
 
 #### 🎭 Mock 设备服务
 
@@ -808,6 +816,9 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md` | SMT 分拣入库 handoff/manifest 后端闭环合同 | 📖 必读文档 |
 | `superpowers/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md` | SMT 分拣入库 handoff/manifest 后端闭环实施计划与验证记录 | 📚 参考资料 |
 | `contracts/observability-contract.md` | Runtime / callback / device / WMS 稳定观测合同 | 📖 必读文档 |
+| `business/workline_business_data_event_flow_spec.md` | 当前业务 SSOT：RuntimeInbox 六类 ingress、五态、replay 与单轨编排 | 📖 必读文档 |
+| `business/workline_runtime_workflow_guide.md` | Runtime 工作流、排障、reset 与严格 PostgreSQL 验收指南 | 📖 必读文档 |
+| `architecture/runtime-orchestration-spec.md` | Runtime 实体、正式 Service/Repository、五态与 heavy/CI 验收索引 | 📖 必读文档 |
 | `contracts/runtime-toggle-governance.md` | Typed runtime toggle 治理和安全边界合同 | 📖 必读文档 |
 | `architecture/adr/2026-05-26-wms-integration-domain.md` | WMS 对接辅助域 ADR | 📖 必读文档 |
 | `api_authentication_design.md` | API 认证设计文档 | 📚 参考资料 |
@@ -835,6 +846,10 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `run_performance_test.sh` | 运行 Locust/AB 性能测试 | 📚 参考资料 |
 | `test_api_signature.sh` | API 签名验证测试 | 📚 参考资料 |
 | `check_runtime_toggle_release_gate.py` | Runtime toggle 发布门禁入口，供 `git-quality-gate.sh --check runtime-toggle-release` 调用 | 🔧 架构核心 |
+| `scripts/data/reset_runtime_data.py` | schema-qualified 运行数据 reset；dry-run、`--yes`、主数据保护与 Mock fail-closed | 🔧 架构核心 |
+| `scripts/workline_inbox_retirement_guardrail.py` | 扫描 active Python/Shell/current docs，阻止已退役 Inbox 入口回流 | 🔧 架构核心 |
+| `scripts/run_runtime_inbox_postgresql_acceptance.py` | 严格验收 runner：preflight 后顺序执行 migration、processing、两个 crash window、benchmark 和 evidence validator | 🔧 架构核心 |
+| `scripts/run_runtime_inbox_postgresql_acceptance_ci.sh` | CI 隔离 PG17 生命周期、clean checkout、secret env、artifact mount 与强制 cleanup | 🔧 架构核心 |
 | `docker-deploy-simple.sh` | 简化 Docker 部署 | 📚 参考资料 |
 | `init-deploy-servers.sh` | 部署服务器初始化 | 📚 参考资料 |
 
@@ -859,6 +874,8 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 |------|------|------|
 | `versions/20260626_1200_0e9de1e6c7e3_phase1_device_fk_ring_dissolve.py` | Phase 0→1 FK ring dissolve：动态发现 pg_constraint 名称后 drop device ↔ workline_sessions 循环外键，保留字段用于业务追溯 | 🔧 架构核心 |
 | `versions/20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py` | 新增 9 个 runtime/orchestration 实体表（execution_sessions / execution_correlations / execution_work_items / runtime_inboxes / runtime_timelines / runtime_holds / runtime_intent_logs / idempotency_keys / conveyor_queue_memberships），含 `CheckConstraint` 限定 `membership_status` 取值；ExecutionCorrelation 历史回填默认列 | 🔧 架构核心 |
+| `migrations/versions/20260711_1815_b8a28e1bfec8_extend_runtime_inbox.py` | Revision A：canonical envelope、六 kind/五态命名 CHECK、audit-only 分类与 hot indexes | 🔧 架构核心 |
+| `migrations/versions/20260711_1819_ec426c628516_retire_workline_inbox.py` | Revision B：重绑引用并退役旧 Inbox 表，支持 A/B 回环 | 🔧 架构核心 |
 
 ---
 
@@ -876,7 +893,8 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 ├───CLAUDE.md                 # Claude Code 开发指南
 ├───docker-compose.yml        # 服务编排
 ├───Dockerfile                # 容器构建文件
-├───Jenkinsfile               # CI/CD 配置
+├───Jenkinsfile               # 通用 CI/CD 配置
+├───Jenkinsfile.backend-ci    # 后端 CI 与 RuntimeInbox 隔离 PostgreSQL 验收
 ├───main.py                   # 应用主入口
 ├───pyproject.toml            # 项目依赖管理
 ├───README.md                 # 项目说明
@@ -1094,6 +1112,15 @@ Repository 层 (BaseRepository)
 | 5xxx | 服务器错误 | 500-503 |
 | 8xxx | 第三方服务 | 502-504 |
 | 9xxx | 其他 | 429-500 |
+
+**RuntimeInbox replay 响应合同**：
+
+| 领域原因 | 统一响应 | HTTP | 说明 |
+|----------|----------|------|------|
+| `RUNTIME_INBOX_NOT_FOUND` | `ResourceErrorCode.NOT_FOUND` (`3000`) | 404 | source inbox 不存在 |
+| `RUNTIME_INBOX_REPLAY_NOT_ALLOWED`（typed error 类别） | `BusinessErrorCode.INVALID_STATE` (`4001`) | 400 | 非死信、audit-only、非法 envelope 或归属不允许；`SOURCE_WORKLINE_NOT_FOUND` 特例映射 3000 |
+| `RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED` | 同名稳定错误码 | 503 | 重放审计无法持久化，拒绝返回成功 |
+| payload hash conflict | `ResourceErrorCode.CONFLICT` (`3012`) | 409 | 同 `request_id` 内容不一致 |
 
 ### 7.2 文档维护
 

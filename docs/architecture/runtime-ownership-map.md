@@ -44,6 +44,7 @@
 | --- | --- | --- |
 | `IdempotencyGuard` | `services/idempotency_guard.py` | outbound effect 幂等闸门；`ClaimResult.NEW/MATCH` + `IdempotencyConflict` |
 | `RuntimeSnapshotAssembler` | `services/runtime_snapshot_assembler.py` | RuntimeSnapshot 装配：session + timeline + inbox + hold + intent log |
+| `RuntimeInboxService` | `services/runtime_inbox/runtime_inbox_service.py` | 六类 ingress 幂等接收、五态 claim/fencing、audit-only 排除与 `REPLAY_REQUEST` 审计 |
 | `RuntimeInboxProcessorBridge` | `services/runtime_inbox/runtime_inbox_orchestrator_bridge.py` | validation → orchestration → fenced write-back 三阶段处理 |
 | `RuntimeReconciliationServiceImpl` | `services/reconciliation/runtime_reconciliation_service_impl.py` | runtime 域对账实现；调用方通过稳定 service contract 使用，不再经过 facade |
 
@@ -58,6 +59,12 @@
 | 其他 capability | 通过 `RuntimeCapabilityContext` 获取 query/effect port contract，不直接 import inbound normalizer |
 
 `INBOUND_NORMALIZER_OWNERSHIP` guardrail 扫描 runtime、workline、callback、wms_integration/services 和 device 域，拒绝 capability 持有 `WmsEventPort` / `DeviceEventPort` / `InboundEventPort` / `RuntimeInbox`；仅 registry、RuntimeInbox entity/repository/service 等逐文件例外可持有。旧 `RuntimeInboxConsumer` 与 `InboundNormalizerContext` facade 已物理删除，不保留兼容入口。
+
+RuntimeInbox 的六种 `kind` 为 `COMMAND_RESULT / DEVICE_EVENT / EXTERNAL_HTTP / INTERNAL_EVENT /
+TIMER_TIMEOUT / REPLAY_REQUEST`，数据库状态固定为 `RECEIVED / PROCESSING / PROCESSED / FAILED /
+DEAD_LETTER`。切换前 `PRE_CUTOVER_AUDIT_ONLY` 行只属于审计证据，不可 claim、retry 或 replay。
+Replay 的 `request_id`、认证 `actor`、`reason`、直接/根 source inbox 和原业务 kind 由
+`RuntimeInboxService` 统一构造与审计，API/operation service 不复制该领域规则。
 
 ## 7. Legacy Runtime Import Boundary
 

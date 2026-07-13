@@ -33,6 +33,8 @@
 - `dispatch_allowed` / `runtime_hold_required`：DeviceDispatchPolicy 决策是否允许本轮派发，以及是否要求 RuntimeHold。
 - `source_event_id`：外部 callback / event 的原始事件标识；`callback.normalize` 缺少原始事件 ID 时允许使用 ingress `request_id` 作为稳定 fallback；legacy 设备结果缺少事件 ID 时，`DeviceCommand RESULT` 可使用 `command_result:{command_code}:{finish_time}` 作为稳定 fallback。
 - `inbox_id`：RuntimeInbox 持久化消息主键，用于定位 processor、fencing、RESOURCE_WAIT 和 dead-letter 边界。
+- `PRE_CUTOVER_AUDIT_ONLY`：切换前缺少 canonical payload 的 audit-only 终态；不可 claim、retry 或 replay，
+  不得计入可行动 `runtime_inbox.dead_letter` 指标。
 - `claimed_count` / `duration_ms`：单次 Celery 批次实际 claim 数量与累计 claim SQL + commit 耗时；不把批量 SQL 延迟按行数摊薄。
 - `reclaimed_count`：本批次事务提交后实际回收的 stale lease 数量。
 - `outcome`：单条 processing 的稳定结果分类：`success` / `failed` / `skipped` / `resource_wait` / `timeout` / `error`。
@@ -54,6 +56,16 @@
 - WMS breaker OPEN/HALF_OPEN/CLOSED 状态变化使用 `wms_breaker.transition`；typed port 必须从请求 `trace_id` 透传，不能在缺失 trace 时伪造追踪标识。
 - WMS 成功响应后的本地 evidence/breaker 留痕失败使用 `wms_evidence.persistence_failure`；该事件必须保留原始 `trace_id` 和 `evidence_key`，供系统诊断而非业务 HOLD。
 - 具体 backend（Jaeger / Tempo / SkyWalking 等）必须通过 `RuntimeOpenTelemetryBridge` 后方的 HTTP adapter / collector endpoint 挂载，不能新增临时字段替代稳定 attributes。
+
+## Acceptance Evidence
+
+- 严格 PostgreSQL CI 入口为 `Jenkinsfile.backend-ci` 与
+  `scripts/run_runtime_inbox_postgresql_acceptance_ci.sh`，只连接当次构建的隔离 PG17。
+- Runner `scripts/run_runtime_inbox_postgresql_acceptance.py` 依次执行 migration、processing、两个 crash
+  window、benchmark 与 evidence validator；任一步失败返回非零。
+- 正式 benchmark evidence 文件名为 `runtime-inbox-claim-benchmark.json`，必须记录完整 commit、
+  `dirty=false`、PostgreSQL metadata、样本、指标、阈值、生产 statement fingerprint、query plan 与 verdict。
+- JUnit、suite log、脱敏 diagnostic 和 evidence 统一归档在 `reports/runtime-inbox-acceptance/`。
 
 ## Prohibitions
 

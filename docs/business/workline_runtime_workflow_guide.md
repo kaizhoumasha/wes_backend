@@ -1,6 +1,6 @@
 # 工作线运行时工作流指南
 
-**最后更新**: 2026-06-09
+**最后更新**: 2026-07-13
 
 本文档定义 WES 工作线运行时的标准数据链路，适用于真实设备、SANDBOX 调试和插件开发。本文只描述主干职责和状态边界，具体插件可在此基础上扩展业务决策。
 
@@ -74,12 +74,13 @@ Device Event -> Inbox -> Runtime Decision
 
 `RuntimeInbox` 是运行时输入队列。所有会推动 Runtime decision 的输入都必须进入 Inbox。
 
-常见 `kind`：
+固定 `kind`（数据库 CHECK 与服务合同共同约束）：
 
-- `DEVICE_EVENT`：设备主动上报事件。
 - `COMMAND_RESULT`：设备命令执行结果。
+- `DEVICE_EVENT`：设备主动上报事件。
+- `EXTERNAL_HTTP`：WMS/RCS 等外部 callback 或 HTTP 事实。
+- `INTERNAL_EVENT`：Runtime 内部推进、hold/reconciliation 等系统事实。
 - `TIMER_TIMEOUT`：等待超时事件。
-- `MANUAL_HOLD / MANUAL_RESUME / MANUAL_CANCEL`：人工操作。
 - `REPLAY_REQUEST`：重放请求。
 
 规则：
@@ -87,6 +88,11 @@ Device Event -> Inbox -> Runtime Decision
 - API 层接收成功不等于业务完成，只表示输入已被 WES 接收。
 - Worker 消费 Inbox 后，才会真正推动 `WorklineSession`。
 - 任何 Result 都必须能关联到 `command_code` 和当前等待的 `awaiting_command_id`。
+- 状态固定为 `RECEIVED / PROCESSING / PROCESSED / FAILED / DEAD_LETTER`；`RESOURCE_WAIT`
+  表达为可到期重试的 `FAILED`，不扩展状态机。
+- `PRE_CUTOVER_AUDIT_ONLY` 只保留切换前证据，不可 claim、retry 或 replay。
+- 人工重放要求稳定 `request_id` 与 `reason`，可信 `actor` 只来自认证上下文；服务新建
+  `REPLAY_REQUEST`，原 `DEAD_LETTER` 保持终态。
 
 ### 4.2 SystemOutbox
 
@@ -306,3 +312,13 @@ Runtime 必须只接受当前等待点的 Result。旧 Result 如果在 Session 
 8. 查 Result Inbox：设备执行结果是否回到 WES。
 
 任何局部修复都必须回到这条链路验证，不能只修 UI 显示或单个状态字段。
+
+## 10. 重置与严格验收
+
+- 运行数据重置：`scripts/data/reset_runtime_data.py`；只允许 schema-qualified runtime 表，默认 Mock
+  reset 失败时在数据库 mutation 前中止。
+- 本地 heavy 验收：显式配置隔离 PostgreSQL 后运行
+  `uv run python scripts/run_runtime_inbox_postgresql_acceptance.py --output-dir <dir> --expected-commit <sha>`。
+- CI：`Jenkinsfile.backend-ci` 调用 `scripts/run_runtime_inbox_postgresql_acceptance_ci.sh` 启动独立 PG17，
+  顺序运行 migration、processing、两个 crash window、benchmark 和 evidence validator。
+- 正式 evidence 固定为 `runtime-inbox-claim-benchmark.json`，必须绑定完整 commit、`dirty=false` 并通过 validator。

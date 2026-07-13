@@ -229,39 +229,39 @@ Guardrail: .py + .sh + current .md ─→ exact allowlist ─→ zero active ref
 
 ## Implementation Tasks
 
-- [ ] **T1 (P1, human: ~1 day / CC: ~1–2h)** — Database — 固化 audit-only 与 conditional envelope 数据库合同
+- [x] **T1 (P1, human: ~1 day / CC: ~1–2h)** — Database — 固化 audit-only 与 conditional envelope 数据库合同
   - Surfaced by: Architecture D2/D6、Test D12
   - Files: RuntimeInbox model、Revision A、Repository claim、migration/schema tests
   - Verify: PostgreSQL fresh/parent/A/B matrix 与 focused repository tests
-- [ ] **T2 (P1, human: ~0.5 day / CC: ~30–45min)** — Service ownership — 机械迁移 RuntimeInboxService 并锁定导入方向
+- [x] **T2 (P1, human: ~0.5 day / CC: ~30–45min)** — Service ownership — 机械迁移 RuntimeInboxService 并锁定导入方向
   - Surfaced by: Architecture D7
   - Files: runtime services/runtime_inbox、consumers、所有生产/测试 imports、architecture guardrail
   - Verify: import/collection、零旧路径引用与 focused service regression
-- [ ] **T3 (P1, human: ~1–2 days / CC: ~2h)** — Replay — 收敛 request identity、可信 actor、扁平 envelope 与 typed errors
+- [x] **T3 (P1, human: ~1–2 days / CC: ~2h)** — Replay — 收敛 request identity、可信 actor、扁平 envelope 与 typed errors
   - Surfaced by: Architecture D3–D5、Code Quality D8/D9、Test D13
   - Files: workline operation API/model、RuntimeInboxService、operation service、processor/context、API/runtime/integration tests
   - Verify: Replay 分层矩阵与 PostgreSQL effect-once/fencing 闭环
-- [ ] **T4 (P1, human: ~1 day / CC: ~1h)** — Operations — 修复 reset schema identity 与 Mock WMS fail-closed
+- [x] **T4 (P1, human: ~1 day / CC: ~1h)** — Operations — 修复 reset schema identity 与 Mock WMS fail-closed
   - Surfaced by: Code Quality D11、Test D14
   - Files: reset_runtime_data.py、unit/integration reset tests
   - Verify: dry-run/apply、Mock 失败零 mutation、临时 PostgreSQL 主数据保留
-- [ ] **T5 (P2, human: ~0.5 day / CC: ~30min)** — Guardrails — 统一多文件类型旧入口扫描策略
+- [x] **T5 (P2, human: ~0.5 day / CC: ~30min)** — Guardrails — 统一多文件类型旧入口扫描策略
   - Surfaced by: Code Quality D10、Test D15
   - Files: WorklineInbox retirement guardrail、architecture script、scanner self-tests
   - Verify: `.py/.sh/current .md` offender 与精确 allowlist matrix
-- [ ] **T6 (P1, human: ~1 day / CC: ~1h)** — Heavy harness — 增加安全、容量、失败分类与强制 cleanup
+- [x] **T6 (P1, human: ~1 day / CC: ~1h)** — Heavy harness — 增加安全、容量、失败分类与强制 cleanup
   - Surfaced by: Test D16
   - Files: PostgreSQL test support、integration/resilience runner tests
   - Verify: preflight unit matrix 与 scenario-error cleanup smoke
-- [ ] **T7 (P1, human: ~1–2 days / CC: ~2h)** — Performance — 让 benchmark 验证生产 statement、零锁等待和选择性计划
+- [x] **T7 (P1, human: ~1–2 days / CC: ~2h)** — Performance — 让 benchmark 验证生产 statement、零锁等待和选择性计划
   - Surfaced by: Performance D17–D20
   - Files: RuntimeInbox Repository、load benchmark、benchmark tests/evidence gate
   - Verify: p95≤150ms、吞吐≥1000/s、duplicate=0、lock wait=0、selective plan index gate
-- [ ] **T8 (P2, human: ~1–2 days / CC: ~2–3h)** — CI — 接入隔离 PostgreSQL 严格验收与 artifact 归档
+- [x] **T8 (P2, human: ~1–2 days / CC: ~2–3h)** — CI — 接入隔离 PostgreSQL 严格验收与 artifact 归档
   - Surfaced by: TODO decision D21-C
   - Files: Jenkins/CI configuration、CI architecture/deployment tests、acceptance runner
   - Verify: CI config guardrail、失败 preflight、成功 artifact retention
-- [ ] **T9 (P2, human: ~0.5–1 day / CC: ~45min)** — Documentation — 收束 current SSOT、file index、TODO 与旧入口口径
+- [x] **T9 (P2, human: ~0.5–1 day / CC: ~45min)** — Documentation — 收束 current SSOT、file index、TODO 与旧入口口径
   - Surfaced by: original acceptance Task 1/9 gaps
   - Files: current business/architecture/runtime docs、file index、TODOS.md、original plan
   - Verify: current docs legacy-reference guardrail
@@ -269,6 +269,23 @@ Guardrail: .py + .sh + current .md ─→ exact allowlist ─→ zero active ref
   - Surfaced by: original acceptance Task 8/9 gaps
   - Files: evidence artifact、原实施计划状态
   - Verify: default suite、topology、Ruff、Bandit、quality gate、heavy PostgreSQL、benchmark、CI evidence
+
+T10 最终全量验收尚未执行。T1–T9 的 focused/quality/heavy/CI 合同证据不能替代 T10 对当前文档提交
+重新生成的默认全量、正式 PostgreSQL evidence 与 CI artifact。
+
+## T1–T9 提交与证据摘要
+
+| Task | 主要提交 | 当前证据 |
+|---|---|---|
+| T1 | `08dff017` 及后续数据库边界修复 | Revision A named CHECK、audit-only、conditional envelope、migration matrix |
+| T2 | `0dc327fc`、`41dfe1b7`、`ca591cb0`、`2836e74e` | 正式 `services/runtime_inbox` 导出、旧 consumers service 零引用 |
+| T3 | `6aa18ce7` 至 `3a62b48d` | `REPLAY_REQUEST`、request/actor/reason、扁平 source chain、typed errors 与 effect-once |
+| T4 | `c7cf6ed3`、`e8106f91` | schema-qualified reset、Mock fail-closed、主数据保护 |
+| T5 | `4debb9d0` 至 `e8aa1c98` | `.py/.sh/current .md` scanner、路径/symlink fail-closed、自测矩阵 |
+| T6 | `2c74382f` 至 `1dc6e319` | 显式 URL/safe host/capacity preflight、临时库强制 cleanup |
+| T7 | `aa89b90f`、`3d98b37f`、`ac7a05b3` | 生产 statement fingerprint、零锁等待、selective plan、commit-bound evidence validator |
+| T8 | `06b955e4`、`004d135b` | 隔离 PG17 CI、严格 runner、clean checkout、JUnit/log/diagnostic/evidence 归档 |
+| T9 | 本次文档收束提交 | Current docs legacy scanner、文档一致性与本地链接测试、file index/TODO/计划同步 |
 
 ## GSTACK REVIEW REPORT
 

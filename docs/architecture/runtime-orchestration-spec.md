@@ -144,9 +144,7 @@ CREATED → RUNNING → CLOSED
 | `claim_bucket_key` / `processor_token` | str? | 同桶 FIFO 与终态 fencing owner |
 | `attempt_count` / `max_retries` | int | 重试预算 |
 | `next_retry_at` / `lease_until` | bigint? | Unix 毫秒时间；到期 FAILED 与 stale PROCESSING 可重新 claim |
-| `next_retry_at` | datetime? | 下次重试时间 |
-| `dead_letter_at` | datetime? | 进入死信时间 |
-| `processor_token` | str? | 处理者令牌（并发控制） |
+| `processed_at` / `failed_at` | bigint? | Unix 毫秒终态时间 |
 
 **人工重放合同**：`POST /replay/inboxes/{inbox_id}` 必须提交去空白后非空、最长 100 字符的稳定
 `request_id`；操作者只来自认证上下文，不接受客户端 `operator_id`。仅 `DEAD_LETTER` 且非
@@ -160,14 +158,17 @@ replay-of-replay 复用根业务语义，不递归嵌套。Processor 在 validat
 **状态机**:
 
 ```text
-NEW → (claim) → PROCESSING → PROCESSED
-                    ↓
-                  FAILED → RETRY → NEW (重试)
-                    ↓
-                  DEAD_LETTER (重试耗尽)
+RECEIVED ──claim(new token)──> PROCESSING ──fenced write──> PROCESSED
+                                  │
+                                  ├──retryable──> FAILED ──到期 claim──> PROCESSING
+                                  └──exhausted──> DEAD_LETTER
+
+PROCESSING + expired lease ──claim(new token)──> PROCESSING
 ```
 
 **ACK-before-processing**: 入站消息先持久化并返回 ACK，再异步处理。处理失败可重试、死信和人工重放。
+`PRE_CUTOVER_AUDIT_ONLY` 使用 `DEAD_LETTER` 终态加稳定错误码表达，但不可 claim、retry 或 replay，
+也不计入可行动 dead-letter。
 
 ### 2.6 RuntimeTimeline — 时间线
 
@@ -371,6 +372,14 @@ Runtime 只记录"曾尝试发出什么意图"。下游域（handling/device/res
 - `tests/load/test_conveyor_queue_writer_benchmark.py` — 队列写入 benchmark
 - `tests/load/test_plane_snapshot_benchmark.py` — plane snapshot benchmark
 - `tests/load/test_runtime_inbox_claim_benchmark.py` — inbox claim benchmark
+
+### 7.4 PostgreSQL 严格验收
+
+- `tests/integration/test_runtime_inbox_migration_postgresql.py` — Revision A/B 与 audit-only migration matrix
+- `tests/integration/test_runtime_inbox_processing_postgresql.py` — producer 到 fenced terminal 的生产处理链路
+- `tests/resilience/test_runtime_inbox_crash_recovery_postgresql.py` — 两个 crash window
+- `scripts/run_runtime_inbox_postgresql_acceptance.py` — 按固定顺序执行 heavy suites 与 evidence validator
+- `scripts/run_runtime_inbox_postgresql_acceptance_ci.sh` / `Jenkinsfile.backend-ci` — 隔离 PG17、清理与 artifact 归档
 
 ---
 
