@@ -145,17 +145,21 @@ async def close_db() -> None:
         _assert_engine_owner()
 
     owned_engine = engine
+    # child 退出有硬时间边界：先撤销全局发布，
+    # 避免 dispose 超时期间新消息继续取得旧 Engine/SessionFactory。
+    engine = None
+    AsyncSessionLocal = None
+    _engine_owner_pid = None
+    _engine_owner_loop_id = None
+    _engine_owner_role = None
+    _engine_owner_loop = None
     try:
         if owned_engine is not None:
             await owned_engine.dispose()
             logger.info("Database connection closed")
-    finally:
-        engine = None
-        AsyncSessionLocal = None
-        _engine_owner_pid = None
-        _engine_owner_loop_id = None
-        _engine_owner_role = None
-        _engine_owner_loop = None
+    except BaseException as exc:
+        logger.warning(f"Database connection dispose 未完成: type={type(exc).__name__}, error={exc!r}")
+        raise
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:

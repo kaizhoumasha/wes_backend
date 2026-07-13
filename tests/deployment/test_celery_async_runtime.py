@@ -679,24 +679,90 @@ def test_worker_process_shutdown_signal_is_registered_and_invokes_runtime(monkey
 def test_redis_init_timeout_does_not_wait_forever_for_cancel_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
+    probe = _PendingInitRunnerProbe()
+    monkeypatch.setattr(module.asyncio, "Runner", lambda: probe)
     runtime = _install_runtime(monkeypatch, module)
+    keep_resisting = True
 
     async def cancellation_resistant_init() -> None:
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            await asyncio.Event().wait()
+        while True:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                if keep_resisting:
+                    continue
+                raise
 
     infra.init_redis.side_effect = cancellation_resistant_init
     monkeypatch.setattr(module, "INITIALIZATION_TIMEOUT_SECONDS", 0.03)
     monkeypatch.setattr(module, "REDIS_PING_TIMEOUT_SECONDS", 0.01)
 
     started_at = time.monotonic()
-    with _sync_watchdog(0.50, "Redis cancellation cleanup during worker init"):
+    try:
+        with _sync_watchdog(0.50, "Redis cancellation cleanup during worker init"):
+            with pytest.raises(TimeoutError, match="ignored cancellation"):
+                runtime.initialize()
+
+        assert time.monotonic() - started_at < 0.20
+        assert runtime.state is module.RuntimeState.CLOSED
+        with pytest.raises(RuntimeError, match="CLOSED"):
+            runtime.run_async(lambda: asyncio.sleep(0, result="must restart"))
+        runtime.shutdown()
+    finally:
+        keep_resisting = False
+        for task in asyncio.all_tasks(probe.get_loop()):
+            task.cancel()
+        probe.run(asyncio.sleep(0))
+        probe.force_close()
+
+
+def test_redis_timeout_reaches_ready_only_after_top_level_init_task_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    from src.database import redis_client as redis_module
+
+    manager = redis_module.RedisManager()
+    init_tasks: list[asyncio.Task[None]] = []
+    candidate_pool = SimpleNamespace(disconnect=AsyncMock())
+
+    async def hanging_ping() -> None:
+        current = asyncio.current_task()
+        assert current is not None
+        init_tasks.append(current)
+        await asyncio.Event().wait()
+
+    async def hanging_candidate_close() -> None:
+        await asyncio.Event().wait()
+
+    candidate_client = SimpleNamespace(
+        ping=AsyncMock(side_effect=hanging_ping),
+        close=AsyncMock(side_effect=hanging_candidate_close),
+    )
+    pool_factory = SimpleNamespace(from_url=MagicMock(return_value=candidate_pool))
+    monkeypatch.setattr(redis_module, "ConnectionPool", pool_factory)
+    monkeypatch.setattr(redis_module, "Redis", MagicMock(return_value=candidate_client))
+    monkeypatch.setattr(module, "redis_manager", manager)
+    runtime = _install_runtime(monkeypatch, module)
+    monkeypatch.setattr(module, "INITIALIZATION_TIMEOUT_SECONDS", 0.03)
+    monkeypatch.setattr(module, "REDIS_PING_TIMEOUT_SECONDS", 0.01)
+
+    with _sync_watchdog(0.50, "Redis top-level init cancellation"):
         runtime.initialize()
 
-    assert time.monotonic() - started_at < 0.20
-    assert runtime.run_async(lambda: asyncio.sleep(0, result="degraded")) == "degraded"
+    assert runtime.state is module.RuntimeState.READY
+    assert len(init_tasks) == 1
+    assert init_tasks[0].done()
+    assert manager.redis_client is None
+    assert manager.connection_pool is None
+    assert manager.is_available is False
+
+    assert runtime.run_async(lambda: asyncio.sleep(0, result="next message")) == "next message"
+    assert init_tasks[0].done()
+    assert manager.redis_client is None
+    assert manager.connection_pool is None
+    infra.close_db.assert_not_awaited()
     runtime.shutdown()
 
 
@@ -806,7 +872,8 @@ def test_failed_init_skips_runner_close_when_cancel_resistant_task_remains(
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
     probe = _PendingInitRunnerProbe()
-    monkeypatch.setattr(module.asyncio, "Runner", lambda: probe)
+    runner_factory = MagicMock(return_value=probe)
+    monkeypatch.setattr(module.asyncio, "Runner", runner_factory)
     runtime = _install_runtime(monkeypatch, module)
     keep_resisting = True
 
@@ -830,10 +897,72 @@ def test_failed_init_skips_runner_close_when_cancel_resistant_task_remains(
 
         assert time.monotonic() - started_at < 0.20
         probe.close.assert_not_called()
-        assert runtime.state is module.RuntimeState.NEW
+        assert runtime.state is module.RuntimeState.CLOSED
+        assert runtime._runner is None
+        assert runtime._owner_pid is None
+        assert runtime._abandoned_runners == [probe]
+
+        for _ in range(3):
+            with pytest.raises(RuntimeError, match="CLOSED"):
+                runtime.initialize()
+            with pytest.raises(RuntimeError, match="CLOSED"):
+                runtime.run_async(lambda: asyncio.sleep(0))
+        runner_factory.assert_called_once_with()
+        assert runtime._abandoned_runners == [probe]
     finally:
         keep_resisting = False
         for task in asyncio.all_tasks(probe.get_loop()):
             task.cancel()
         probe.run(asyncio.sleep(0))
         probe.force_close()
+
+
+class _ShutdownRunError(BaseException):
+    pass
+
+
+class _ShutdownFaultRunnerProbe(_RunnerProbe):
+    def __init__(self, events: list[str], failure_call: int) -> None:
+        super().__init__(events)
+        self.failure_call = failure_call
+        self.shutdown_run_calls = 0
+        self.armed = False
+
+    def run(self, coroutine: Any, *, context: Any = None) -> Any:
+        if self.armed:
+            self.shutdown_run_calls += 1
+            if self.shutdown_run_calls == self.failure_call:
+                if inspect.iscoroutine(coroutine):
+                    coroutine.close()
+                raise _ShutdownRunError(f"shutdown stage {self.failure_call}")
+        return super().run(coroutine, context=context)
+
+
+@pytest.mark.parametrize("failure_call", [1, 2, 3, 4])
+def test_shutdown_contains_each_runner_run_failure_and_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_call: int,
+) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    events: list[str] = []
+    probe = _ShutdownFaultRunnerProbe(events, failure_call)
+    monkeypatch.setattr(module.asyncio, "Runner", lambda: probe)
+    runtime = _install_runtime(monkeypatch, module)
+    runtime.initialize()
+    probe.armed = True
+
+    with _sync_watchdog(0.50, f"shutdown runner.run failure {failure_call}"):
+        runtime.shutdown()
+
+    assert probe.shutdown_run_calls == 4
+    if failure_call != 2:
+        infra.close_redis.assert_awaited_once()
+    if failure_call != 3:
+        infra.close_db.assert_awaited_once()
+    assert runtime.state is module.RuntimeState.CLOSED
+    assert runtime._runner is None
+    assert runtime._owner_pid is None
+
+    runtime.shutdown()
+    assert probe.shutdown_run_calls == 4

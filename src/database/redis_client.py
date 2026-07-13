@@ -59,7 +59,7 @@ class RedisManager:
                 await client.close()
             except BaseException as exc:
                 if isinstance(exc, Exception):
-                    logger.debug(f"清理 Redis client 时出错（可忽略）: {exc}")
+                    logger.debug(f"清理 Redis client 时出错（可忽略）: type={type(exc).__name__}, error={exc!r}")
                 else:
                     pending_base_exception = exc
         if pool is not None:
@@ -67,13 +67,44 @@ class RedisManager:
                 await pool.disconnect()
             except BaseException as exc:
                 if isinstance(exc, Exception):
-                    logger.debug(f"清理 Redis pool 时出错（可忽略）: {exc}")
+                    logger.debug(f"清理 Redis pool 时出错（可忽略）: type={type(exc).__name__}, error={exc!r}")
                 elif pending_base_exception is None:
                     pending_base_exception = exc
         if pending_base_exception is not None:
             raise pending_base_exception
 
-    async def init_redis(self) -> None:
+    @staticmethod
+    def _observe_candidate_cleanup(task: asyncio.Task[None]) -> None:
+        try:
+            task.result()
+        except BaseException as exc:
+            logger.warning(f"Redis 未发布候选资源异步清理未完成: type={type(exc).__name__}, error={exc!r}")
+
+    async def _close_cancelled_candidates(
+        self,
+        client: Redis | None,
+        pool: ConnectionPool | None,
+        cleanup_timeout: float | None,
+    ) -> None:
+        if cleanup_timeout is None:
+            await self._close_resources(client, pool)
+            return
+
+        cleanup_task = asyncio.create_task(self._close_resources(client, pool))
+        done, _ = await asyncio.wait({cleanup_task}, timeout=max(cleanup_timeout, 0.0))
+        if cleanup_task in done:
+            try:
+                cleanup_task.result()
+            except BaseException as exc:
+                logger.warning(f"Redis 未发布候选资源清理异常: type={type(exc).__name__}, error={exc!r}")
+            return
+
+        logger.warning(
+            f"Redis 未发布候选资源清理预算耗尽，转为 child 内 best-effort 清理: cleanup_timeout={cleanup_timeout:.3f}s"
+        )
+        cleanup_task.add_done_callback(self._observe_candidate_cleanup)
+
+    async def init_redis(self, *, cancel_cleanup_timeout: float | None = None) -> None:
         """
         初始化 Redis 连接
 
@@ -127,20 +158,27 @@ class RedisManager:
         except (AuthenticationError, TimeoutError, ConnectionError) as e:
             await self._close_resources(candidate_client, candidate_pool)
             logger.warning(
-                f"⚠️  Redis 连接失败: {e}\n   应用将以降级模式运行（无缓存）\n   系统将自动检测 Redis 恢复并重连"
+                f"⚠️  Redis 连接失败: type={type(e).__name__}, error={e!r}\n"
+                "   应用将以降级模式运行（无缓存）\n   系统将自动检测 Redis 恢复并重连"
             )
 
         except asyncio.CancelledError:
-            await self._close_resources(candidate_client, candidate_pool)
+            # 普通调用在返回前完成候选清理；仅 worker 显式预算耗尽时 detach，
+            # 且独立清理任务只持有局部候选，不再触碰 manager 发布状态。
+            await self._close_cancelled_candidates(candidate_client, candidate_pool, cancel_cleanup_timeout)
             raise
 
         except Exception as e:
             await self._close_resources(candidate_client, candidate_pool)
             logger.warning(
-                f"⚠️  Redis 初始化发生未知错误: {e}\n"
-                f"   应用将以降级模式运行（无缓存）\n"
-                f"   系统将自动检测 Redis 恢复并重连"
+                f"⚠️  Redis 初始化发生未知错误: type={type(e).__name__}, error={e!r}\n"
+                "   应用将以降级模式运行（无缓存）\n"
+                "   系统将自动检测 Redis 恢复并重连"
             )
+
+    async def init_redis_with_cleanup_budget(self, cleanup_timeout: float) -> None:
+        """供 worker 初始化使用：在明确剩余预算内清理取消的未发布候选资源。"""
+        await self.init_redis(cancel_cleanup_timeout=cleanup_timeout)
 
     async def reconnect(self, *, force: bool = False) -> bool:
         """
@@ -209,6 +247,7 @@ class RedisManager:
         """清理当前 owner loop 发布的连接，并先撤销可用状态。"""
         client = self.redis_client
         pool = self.connection_pool
+        # child 退出有硬时间边界：先撤销全局发布，避免超时清理期间新消息继续取得旧连接。
         self.is_available = False
         self.redis_client = None
         self.connection_pool = None

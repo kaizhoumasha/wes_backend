@@ -171,6 +171,35 @@ def test_owner_close_clears_engine_factory_and_owner_metadata(
     assert db_module._engine_owner_role is None
 
 
+def test_owner_close_unpublishes_database_before_bounded_dispose(
+    db_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(db_module, "settings", _settings("sqlite+aiosqlite:///:memory:"))
+    observed_during_dispose: list[tuple[Any, ...]] = []
+
+    async def observe_unpublished_state() -> None:
+        observed_during_dispose.append(
+            (
+                db_module.engine,
+                db_module.AsyncSessionLocal,
+                db_module._engine_owner_pid,
+                db_module._engine_owner_loop_id,
+                db_module._engine_owner_role,
+                db_module._engine_owner_loop,
+            )
+        )
+
+    async def initialize_and_close() -> None:
+        await db_module.init_db()
+        db_module.engine.dispose.side_effect = observe_unpublished_state
+        await db_module.close_db()
+
+    asyncio.run(initialize_and_close())
+
+    assert observed_during_dispose == [(None, None, None, None, None, None)]
+
+
 def test_init_db_failure_does_not_publish_partial_engine_and_can_retry(
     db_module: Any,
     monkeypatch: pytest.MonkeyPatch,
