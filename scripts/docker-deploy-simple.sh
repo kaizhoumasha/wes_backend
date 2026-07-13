@@ -53,7 +53,7 @@ Docker 部署管理脚本 (统一配置版本)
 示例:
   $0 dev up                       # 启动开发环境
   $0 prod up                      # 按已核准的 1 API / 4 Celery 拓扑启动生产环境
-  $0 prod scale api=1 celery_worker=4 # 每次扩缩容必须声明完整目标拓扑
+  $0 prod scale --scale api=1 --scale celery_worker=4 # 每次必须声明完整目标拓扑
   $0 dev logs api                 # 查看 API 日志
   $0 prod down                    # 停止生产环境
   $0 dev build --no-cache         # 无缓存重新构建
@@ -106,18 +106,23 @@ validate_complete_scale_targets() {
     local has_api=false
     local has_celery_worker=false
     local expect_scale_value=false
+    local scale_target=""
 
     for argument in "$@"; do
+        scale_target=""
         if [ "$expect_scale_value" = true ]; then
             expect_scale_value=false
+            scale_target="$argument"
         elif [ "$argument" = "--scale" ]; then
             expect_scale_value=true
             continue
         elif [[ "$argument" == --scale=* ]]; then
-            argument="${argument#--scale=}"
+            scale_target="${argument#--scale=}"
+        else
+            scale_target="$argument"
         fi
 
-        case "$argument" in
+        case "$scale_target" in
             api=*) has_api=true ;;
             celery_worker=*) has_celery_worker=true ;;
         esac
@@ -429,5 +434,7 @@ main() {
     esac
 }
 
-# 运行主函数
-main "$@"
+# 直接执行时进入 CLI；被合同测试 source 时仅暴露可复用解析函数。
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

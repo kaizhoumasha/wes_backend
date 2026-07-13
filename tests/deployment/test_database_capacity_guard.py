@@ -251,3 +251,43 @@ def test_capacity_guard_env_rejects_zero_celery_concurrency() -> None:
 
     assert completed.returncode != 0
     assert "celery_processes" in completed.stderr
+
+
+def _run_shell_scale_validation(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; shift; validate_complete_scale_targets "$@"',
+            "scale-contract",
+            str(REPO_ROOT / "scripts/docker-deploy-simple.sh"),
+            *arguments,
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["api=1", "celery_worker=4"],
+        ["--scale=api=1", "--scale=celery_worker=4"],
+        ["--scale", "api=1", "--scale", "celery_worker=4"],
+    ],
+)
+def test_shell_scale_validation_accepts_all_documented_complete_forms(arguments: list[str]) -> None:
+    completed = _run_shell_scale_validation(arguments)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize("arguments", [["--scale", "api=1"], ["--scale", "celery_worker=4"]])
+def test_shell_scale_validation_rejects_each_incomplete_target(arguments: list[str]) -> None:
+    completed = _run_shell_scale_validation(arguments)
+
+    assert completed.returncode != 0
+    assert "api=<n> celery_worker=<n>" in completed.stdout
