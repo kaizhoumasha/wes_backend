@@ -415,16 +415,17 @@ runner 演练完整验收链路；Stage C 在最终文档提交 HEAD 上重新�
 
 **验收结果：**
 
-- 默认全量：`2328 passed, 5 skipped, 3 warnings`；topology `5 passed`；collect-only `2333 tests`。
+- 默认全量、topology 与 collect-only 均通过。
 - Ruff format/check、Bandit（0 issue）、quality profile、architecture enforced scanner 与 WorklineInbox retirement
   scanner 均为 exit 0。
-- PostgreSQL migration matrix `8 passed`、processing integration `12 passed`、两个 crash window 各 `1 passed`、
-  benchmark `1 passed`；runner diagnostic 为 `status=passed`，退出后容器、网络与卷均已清理。
-- benchmark：1000 条混合 backlog、4 worker，p50 30.346ms、p95 78.492ms、吞吐 1961.954 条/秒，
-  duplicate claim、waiting lock 与 RuntimeInbox sequential scan 均为 0，正式 validator verdict passed。
+- PostgreSQL migration matrix、processing integration、两个 crash window 与 benchmark 均通过；runner diagnostic
+  为 `status=passed`，退出后容器、网络与卷均已清理。
+- benchmark：1000 条混合 backlog、4 worker，满足 p95 ≤150ms、吞吐 ≥1000 条/秒；duplicate claim、waiting
+  lock 与 RuntimeInbox sequential scan 均为 0，正式 validator verdict passed。
 - artifact：
   `/Users/kaizhou/codeDev/wes_backend/reports/runtime-inbox-acceptance/runtime-inbox-claim-benchmark.json`；
-  artifact 不提交，最终验收以文件内完整 commit SHA、`dirty=false` 和 `verdict.passed=true` 为准。
+  artifact 不提交，最终验收以文件内 `repository.commit_sha`、`repository.dirty=false` 和
+  `verdict.passed=true` 为准。
 
 ## 测试覆盖图
 

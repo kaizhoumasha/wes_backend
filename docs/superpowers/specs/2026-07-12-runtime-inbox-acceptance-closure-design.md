@@ -270,10 +270,10 @@ Guardrail: .py + .sh + current .md ─→ exact allowlist ─→ zero active ref
   - Files: evidence artifact、原实施计划状态
   - Verify: default suite、topology、Ruff、Bandit、quality gate、heavy PostgreSQL、benchmark、CI evidence
 
-T10 最终全量验收已完成。默认全量为 2328 passed、5 skipped；topology、2333 项 collect-only、Ruff、
-Bandit、quality gate、architecture guardrail 与 legacy scanner 全部通过。隔离 PostgreSQL 17 runner 完成
-migration matrix、processing integration、两个 crash window、1000 条 backlog / 4 worker benchmark 和正式
-evidence validator；p95 78.492ms、吞吐 1961.954 条/秒、duplicate claim 与 waiting lock 均为 0。
+T10 最终全量验收已完成。默认全量、topology、collect-only、Ruff、Bandit、quality gate、architecture
+guardrail 与 legacy scanner 全部通过。隔离 PostgreSQL 17 runner 完成 migration matrix、processing
+integration、两个 crash window、1000 条 backlog / 4 worker benchmark 和正式 evidence validator；benchmark
+满足 p95 ≤150ms、吞吐 ≥1000 条/秒、duplicate claim 与 waiting lock 均为 0，选择性 query plan 门禁通过。
 
 正式 artifact 位于
 `/Users/kaizhou/codeDev/wes_backend/reports/runtime-inbox-acceptance/runtime-inbox-claim-benchmark.json`，
