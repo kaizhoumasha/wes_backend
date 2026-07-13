@@ -69,6 +69,7 @@ _CAUSATION_ID_ALIASES = ("causation_id",)
 _DEVICE_CODE_ALIASES = ("device_code",)
 _COMMAND_CODE_ALIASES = ("command_code",)
 _TRACE_TOP_LEVEL_FIELDS = frozenset({"trace_id", "event_id", "causation_id"})
+_RUNTIME_INBOX_TRACE_IDENTIFIER_MAX_LENGTH = 120
 _EVENT_CALLBACK_TOP_LEVEL_FIELDS = (
     frozenset({"device_code", "event_type", "timestamp", "data"}) | _TRACE_TOP_LEVEL_FIELDS
 )
@@ -439,6 +440,11 @@ def _validate_top_level_fields(payload: JsonDict, allowed_fields: frozenset[str]
             f"{callback_type} 顶层字段不符合协议: 不允许 {unexpected_text}; "
             f"允许字段: {allowed_text}; 业务字段必须放在 data 中"
         )
+
+    for field_name in _TRACE_TOP_LEVEL_FIELDS:
+        value = payload.get(field_name)
+        if isinstance(value, str) and len(value) > _RUNTIME_INBOX_TRACE_IDENTIFIER_MAX_LENGTH:
+            raise ValueError(f"{callback_type}.{field_name} 超过最大长度 {_RUNTIME_INBOX_TRACE_IDENTIFIER_MAX_LENGTH}")
 
 
 def _collect_forbidden_param_keys(

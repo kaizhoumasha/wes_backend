@@ -71,6 +71,9 @@ class CallbackRuntimeInboxWriter:
         request_id: str | None,
         canonical_result_type: str,
         correlation_id: str | None = None,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
     ) -> RuntimeInboxAcceptResult:
         _ = request_id
         return await self._service.accept_received(
@@ -82,6 +85,9 @@ class CallbackRuntimeInboxWriter:
             kind="COMMAND_RESULT",
             payload_json=dict(payload),
             payload_schema_version=1,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
             correlation_id=correlation_id,
         )
 
@@ -92,6 +98,9 @@ class CallbackRuntimeInboxWriter:
         payload: dict[str, Any],
         request_id: str | None,
         canonical_event_type: str,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
     ) -> RuntimeInboxAcceptResult:
         _ = request_id
         return await self._service.accept_received(
@@ -103,6 +112,9 @@ class CallbackRuntimeInboxWriter:
             kind="DEVICE_EVENT",
             payload_json=dict(payload),
             payload_schema_version=1,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
             correlation_id=None,
         )
 

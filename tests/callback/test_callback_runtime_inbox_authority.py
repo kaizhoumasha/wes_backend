@@ -8,6 +8,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+@pytest.mark.parametrize("field_name", ("trace_id", "event_id", "causation_id"))
+def test_callback_ingress_rejects_trace_identifiers_exceeding_runtime_inbox_limit(field_name: str) -> None:
+    """入口必须在落库前拒绝超过 RuntimeInbox VARCHAR(120) 的追踪标识。"""
+
+    from src.app.callback.services.callback_ingress_service import (
+        _RESULT_CALLBACK_TOP_LEVEL_FIELDS,
+        _validate_top_level_fields,
+    )
+
+    with pytest.raises(ValueError, match="最大长度 120"):
+        _validate_top_level_fields(
+            {field_name: "x" * 121},
+            _RESULT_CALLBACK_TOP_LEVEL_FIELDS,
+            "result",
+        )
+
+
 def _runtime_accept_result(*, created: bool, record_id: int = 1) -> SimpleNamespace:
     return SimpleNamespace(
         created=created,
@@ -378,6 +395,9 @@ async def test_process_result_uses_runtime_inbox_as_authority() -> None:
     assert outcome.trace_id == "trace-001"
     assert call_order == ["runtime"]
     assert writer_kwargs["canonical_result_type"] == "DEVICE_RESULT"
+    assert writer_kwargs["trace_id"] == "trace-001"
+    assert writer_kwargs["event_id"] is None
+    assert writer_kwargs["causation_id"] is None
     command_service.handle_callback_result.assert_awaited_once()
     service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()  # type: ignore[attr-defined]
 
@@ -469,6 +489,9 @@ async def test_process_event_uses_runtime_inbox_as_authority() -> None:
     assert outcome.is_duplicate is False
     assert call_order == ["runtime"]
     assert writer_kwargs["canonical_event_type"] == "SCAN_COMPLETED"
+    assert writer_kwargs["trace_id"] == outcome.trace_id
+    assert writer_kwargs["event_id"] is None
+    assert writer_kwargs["causation_id"] is None
 
 
 @pytest.mark.asyncio

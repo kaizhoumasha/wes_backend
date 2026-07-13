@@ -318,6 +318,9 @@ class CallbackOrchestrationService:
             request_id=request_id,
             canonical_result_type="DEVICE_RESULT",
             correlation_id=getattr(existing_command, "correlation_id", None),
+            trace_id=inherited_trace_id,
+            event_id=trace.event_id,
+            causation_id=trace.causation_id,
         )
         if not runtime_inbox_result.created:
             return ResultCallbackOutcome(trace_id=inherited_trace_id, is_duplicate=True)
@@ -455,6 +458,9 @@ class CallbackOrchestrationService:
             payload=event_request.model_dump(mode="json"),
             request_id=request_id,
             canonical_event_type=canonical_event_type,
+            trace_id=event_trace_id,
+            event_id=trace.event_id,
+            causation_id=trace.causation_id,
         )
         if not runtime_inbox_result.created:
             return EventCallbackOutcome(trace_id=event_trace_id, is_duplicate=True)
