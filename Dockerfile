@@ -114,6 +114,8 @@ FROM base AS testing
 
 # 复制虚拟环境
 COPY --from=builder /opt/venv /opt/venv
+# CI 验收入口统一使用 uv run --no-sync，复用镜像内已锁定的虚拟环境。
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 
 # 激活虚拟环境
 ENV PATH="/opt/venv/bin:$PATH"
