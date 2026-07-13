@@ -22,11 +22,10 @@
 - 明确 `id` 唯一性取舍：数据库不再单独强制 `id` 唯一，依赖现有自增或雪花 ID 生成；如需数据库强唯一，必须重构为包含 `opera_time` 的复合主键
 - 在生产保留周期明确后添加 retention policy，例如 `add_retention_policy('wes_sys.audit_logs', drop_after => INTERVAL '365 days')`
 - 增加验证脚本或迁移测试，确认 `audit_logs` 出现在 `timescaledb_information.hypertables`，并确认原有审计查询仍可用
-- 修复本地 dev DB `alembic_version = fb02178f9772` 但仓库缺少该 revision 的阻碍，否则无法完整执行 `alembic current/upgrade head`
 
-**Dependencies**: TimescaleDB worker 配置已落地；本地/测试库 Alembic revision 需先对齐；生产审计日志 retention 周期需确认。
+**Dependencies**: TimescaleDB worker 配置已落地；实施前需确认目标环境 Alembic 当前版本可正常升级，并确认生产审计日志 retention 周期。
 
-**Effort**: S-M (human: 0.5-1 day / CC: ~30-60 min after Alembic version is aligned)
+**Effort**: S-M (human: 0.5-1 day / CC: ~30-60 min)
 
 **Priority**: P1
 

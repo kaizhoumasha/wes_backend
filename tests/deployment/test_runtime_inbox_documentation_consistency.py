@@ -25,22 +25,55 @@ RUNTIME_INBOX_KINDS = {
     "REPLAY_REQUEST",
 }
 RUNTIME_INBOX_STATES = {"RECEIVED", "PROCESSING", "PROCESSED", "FAILED", "DEAD_LETTER"}
+LEGACY_RUNTIME_INBOX_KINDS = {"EXTERNAL_CALLBACK", "MANUAL_OPERATION"}
+LEGACY_RUNTIME_INBOX_STATES = {"NEW", "RETRY"}
+CANONICAL_RUNTIME_INBOX_DOCS = (BUSINESS_SSOT, RUNTIME_SPEC, WORKFLOW_GUIDE)
+REPO_PATH_PREFIXES = ("docs/", "migrations/", "scripts/", "src/", "tests/")
 
 
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_current_runtime_docs_lock_six_kinds_five_states_and_audit_only_boundary():
-    documents = "\n".join(_text(path) for path in (BUSINESS_SSOT, RUNTIME_SPEC, WORKFLOW_GUIDE))
+def _runtime_inbox_legacy_state_references(document: str) -> list[str]:
+    legacy_states = "|".join(sorted(LEGACY_RUNTIME_INBOX_STATES))
+    patterns = (
+        rf"(?:RuntimeInbox|Inbox)[^\n]{{0,100}}(?:状态|status)[^\n]{{0,100}}\b(?:{legacy_states})\b",
+        rf"\b(?:{legacy_states})\b[^\n]{{0,100}}(?:RuntimeInbox|Inbox)[^\n]{{0,100}}(?:状态|status)",
+        rf"\b(?:{legacy_states})\b\s*→\s*(?:PROCESSING|FAILED|DEAD_LETTER)",
+    )
+    return [match.group(0) for pattern in patterns for match in re.finditer(pattern, document, flags=re.IGNORECASE)]
 
-    assert all(kind in documents for kind in RUNTIME_INBOX_KINDS)
-    assert all(state in documents for state in RUNTIME_INBOX_STATES)
-    assert "EXTERNAL_CALLBACK" not in _text(BUSINESS_SSOT)
-    assert "MANUAL_OPERATION" not in _text(BUSINESS_SSOT)
+
+def _repo_paths_in_backticks(document: str) -> set[str]:
+    paths: set[str] = set()
+    for token in re.findall(r"`([^`]+)`", document):
+        candidate = re.sub(r":\d+(?:-\d+)?$", "", token.strip())
+        if not candidate.startswith(REPO_PATH_PREFIXES):
+            continue
+        if any(marker in candidate for marker in ("*", "<", ">", "{", "}", "[", "]", "...")):
+            continue
+        if "://" in candidate or any(char.isspace() for char in candidate):
+            continue
+        paths.add(candidate.rstrip("/"))
+    return paths
+
+
+def test_current_runtime_docs_lock_six_kinds_five_states_and_audit_only_boundary():
+    current_documents = {REPO_ROOT / path: _text(REPO_ROOT / path) for path in CURRENT_DOC_FILES}
+
+    for path in CANONICAL_RUNTIME_INBOX_DOCS:
+        document = current_documents[path]
+        assert all(kind in document for kind in RUNTIME_INBOX_KINDS), path
+        assert all(state in document for state in RUNTIME_INBOX_STATES), path
+        assert "PRE_CUTOVER_AUDIT_ONLY" in document, path
+        assert "不可 claim、retry 或 replay" in document, path
+
+    for path, document in current_documents.items():
+        assert not (LEGACY_RUNTIME_INBOX_KINDS & set(re.findall(r"\b[A-Z][A-Z_]+\b", document))), path
+        assert not _runtime_inbox_legacy_state_references(document), path
+
     assert "NEW → (claim)" not in _text(RUNTIME_SPEC)
-    assert "PRE_CUTOVER_AUDIT_ONLY" in documents
-    assert "不可 claim、retry 或 replay" in documents
 
 
 def test_current_runtime_docs_describe_service_replay_reset_heavy_and_ci_paths():
@@ -77,6 +110,9 @@ def test_original_plan_removes_stale_warnings_without_claiming_t10_complete():
 
     assert "⚠️ 未跑 `alembic upgrade head`" not in plan
     assert "仍保留（28 个 consumer 依赖" not in plan
+    assert "tests/runtime/orchestration/test_inbox_batch_processor_characterization.py" not in plan
+    assert "旧 task/Beat/gateway 表面的物理删除归 Task 7" not in plan
+    assert "tests/runtime/orchestration/test_runtime_inbox_processor_parity.py" in plan
     assert "T9 文档同步完成；T10 最终验收待执行" in task_9
     assert "全量测试 `2090 passed, 5 skipped`" not in task_9
 
@@ -98,6 +134,11 @@ def test_file_index_lists_runtime_inbox_migrations_operations_ci_tests_and_respo
     )
 
     assert all(path in index for path in required_paths)
+    navigable_index = index.split("## 2. 核心目录与文件索引", maxsplit=1)[1]
+    missing_paths = sorted(
+        path for path in _repo_paths_in_backticks(navigable_index) if not (REPO_ROOT / path).exists()
+    )
+    assert not missing_paths, "文件索引存在失效仓库路径:\n  " + "\n  ".join(missing_paths)
     assert "RUNTIME_INBOX_NOT_FOUND" in index
     assert "RUNTIME_INBOX_REPLAY_NOT_ALLOWED" in index
 
@@ -108,6 +149,7 @@ def test_todos_active_section_contains_no_completed_runtime_inbox_work():
     assert "**Completed:**" not in active
     assert "WorkLine 域模型 / 仓库物理迁移" not in active
     assert "28 处 workline 域 import 跨域改写" not in active
+    assert "仓库缺少该 revision" not in active
     assert "统一运营看板、告警与 Runbook" in active
 
 

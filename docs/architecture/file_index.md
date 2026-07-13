@@ -103,8 +103,8 @@
 | `docs/contracts/runtime-toggle-governance.md` | Runtime toggle 治理合同：owner、expiry、scope、default、rollback、test_matrix 与安全边界 | 📖 必读文档 |
 | `docs/integration/wms_caller_checklist.md` | WMS 同步调用方接入 checklist：RuntimeHold/诊断、错误处理和证据传播要求 | 📖 必读文档 |
 | `docs/business/smt_sorter_inbound_workflow_guide.md` | SMT 分拣入库工作流指南，含 v0.7.0.0 后端 handoff/manifest P0 闭环状态 | 📖 必读文档 |
-| `docs/superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md` | SMT 分拣入库 handoff/manifest 后端闭环合同：两阶段 claim、ledger、READY recovery | 📖 必读文档 |
-| `docs/superpowers/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md` | SMT 分拣入库 handoff/manifest 后端闭环 T0-T8 实施和验证记录 | 📚 参考资料 |
+| `docs/superpowers/archive/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md` | SMT 分拣入库 handoff/manifest 后端闭环合同：两阶段 claim、ledger、READY recovery | 📚 历史对照 |
+| `docs/superpowers/archive/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md` | SMT 分拣入库 handoff/manifest 后端闭环 T0-T8 实施和验证记录 | 📚 历史对照 |
 | `docs/devops/prod-release-deploy.md` | 生产环境手动发布与回滚 Runbook | 📖 必读文档 |
 
 #### 🚀 应用入口
@@ -533,8 +533,8 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 - 运行时语义 SSOT：`docs/business/workline_business_data_event_flow_spec.md` v0.1
 - 架构设计：`docs/business/workline_plugin_architecture_design.md` v3.2
 - SMT 分拣入库工作流：`docs/business/smt_sorter_inbound_workflow_guide.md`
-- SMT handoff/manifest 闭环合同：`docs/superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md`
-- SMT handoff/manifest 实施记录：`docs/superpowers/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md`
+- SMT handoff/manifest 闭环合同：`docs/superpowers/archive/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md`
+- SMT handoff/manifest 实施记录：`docs/superpowers/archive/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md`
 - 历史 SMT 粗分机资料：`docs/archive/legacy-smt-classifier/`
 
 #### 🧩 作业线插件实现 (src/workline_plugins/)
@@ -551,7 +551,7 @@ Runtime 顶层 capability / normalizer registry：业务能力注入（query/eff
 
 **插件开发文档**：
 - **插件开发指南**：`docs/plugin_development_guide.md` 📖 必读文档
-- **插件模板说明**：`docs/templates/workline_plugin/README.md` 📖 必读文档
+- **旧插件模板说明**：`docs/archive/legacy-workline-plugins/workline_plugin_template/README.md` 📚 历史对照
 - **RuntimeIntent 架构设计**：`docs/business/workline_plugin_architecture_design.md` 📖 必读文档
 - **Runtime 工作流指南**：`docs/business/workline_runtime_workflow_guide.md` 📖 必读文档
 - **旧 PluginResult 资料归档**：`docs/archive/legacy-plugin-result/README.md` 📚 历史对照
@@ -671,7 +671,7 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 | `load/` | 显式运行的负载/基准测试（Locust + runtime benchmark gate 四场景） | 📚 参考资料 |
 | `resilience/` | 显式运行的弹性/恢复测试（Redis 重连、降级、runtime scenario replay fixture） | 📚参考资料 |
 | `e2e/` | E2E 测试（流水线料盘搬运流程） | 🔄 常用功能 |
-| `workline_runtime/` | Runtime capability、投影、对账与 material-flow 纯逻辑回归；不同于已删除的 `src/workline_runtime/` legacy package | 🔧 架构核心 |
+| `workline_runtime/` | Runtime capability、投影、对账与 material-flow 纯逻辑回归；不同于已删除的 legacy src/workline_runtime package | 🔧 架构核心 |
 | `wms_integration/` | WMS 对接辅助域测试（client、typed ports、evidence、breaker、cache、callback normalizer、caller contract） | 🔧 架构核心 |
 | `architecture/` | 架构守卫测试（import-linter 合同 + runtime public-surface / boundary guardrail；legacy runtime import 守卫继续作为永久安全网） | 🔧 架构核心 |
 | `runtime/orchestration/` | Runtime orchestration 单元/合同测试（RuntimeInbox persistence、五态 claim、三阶段 processor、SLI） | 🔧 架构核心 |

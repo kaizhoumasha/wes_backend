@@ -229,7 +229,7 @@ wes_runtime.runtime_inbox
 - 每个直接消费者都有明确替代合同和测试归属。
 - GitNexus impact 结果保存到 PR 说明。
 
-**落地：** `tests/runtime/orchestration/test_inbox_batch_processor_characterization.py` 10/10 case 通过；`docs/superpowers/plans/2026-07-10-runtime-inbox-single-source-of-truth.md` line 195-209 含 28 行消费者迁移矩阵（GitNexus impact 32 个上游依赖 MEDIUM 风险）。
+**落地：** 迁移期 characterization case 已收敛到现存的 `tests/runtime/orchestration/test_runtime_inbox_processor_parity.py` 与 `tests/characterization/workline_legacy/test_business_semantics_characterization.py`；旧 processor 专用测试随 Task 7 一并删除。消费者迁移矩阵保留在本计划，GitNexus 基线影响为 32 个上游依赖、MEDIUM 风险。
 
 ### Task 2：RuntimeInbox 模型与 Revision A
 
@@ -315,7 +315,7 @@ wes_runtime.runtime_inbox
 
 ### Task 6：Celery Task、Gateway 与调度
 
-**状态：** ✅ 100% 完成（补充提交：ecf38b00 + 7c1f95e5 + c128bd50 + 1d6bf0e3）。RuntimeInbox task、gateway、Beat 与即时 enqueue caller 已切换到新任务名；claim-one/process-one、timeout、retry、空批次、过期 lease 恢复和终态状态机均已验收。旧 task/Beat/gateway 表面的物理删除归 Task 7。
+**状态：** ✅ 100% 完成（补充提交：ecf38b00 + 7c1f95e5 + c128bd50 + 1d6bf0e3；Task 7 删除提交 e56ad2eb 至 906790b1）。RuntimeInbox task、gateway、Beat 与即时 enqueue caller 已切换到新任务名；claim-one/process-one、timeout、retry、空批次、过期 lease 恢复和终态状态机均已验收。旧 task、Beat 与 gateway 表面已物理删除，`tests/architecture/test_workline_inbox_retirement_guardrail.py` 锁定 active code/test 零引用。
 
 **目标：** 用 RuntimeInbox task 替换旧 workline inbox task，不保留兼容名。
 
