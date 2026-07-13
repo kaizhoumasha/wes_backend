@@ -256,10 +256,11 @@ export BACKEND_IMAGE=192.168.0.220:5050/wes/wes_backend:123-abc1234
 示例：
 
 ```bash
-export BACKEND_IMAGE=192.168.0.220:5050/wes/wes_backend:122-def5678
+export CAPACITY_GUARD_IMAGE=192.168.0.220:5050/wes/wes_backend:123-abc1234
+export ROLLBACK_IMAGE=192.168.0.220:5050/wes/wes_backend:122-def5678
 
-# 回滚仅替换应用镜像，db/redis 基础设施保持在线；仍须先校验完整目标拓扑。
-docker compose --env-file .env.prod \
+# 回滚仅替换应用镜像，db/redis 基础设施保持在线；先用已知包含 guard 脚本的当前镜像校验完整目标拓扑。
+BACKEND_IMAGE="$CAPACITY_GUARD_IMAGE" docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
   run --rm --no-deps \
@@ -268,11 +269,15 @@ docker compose --env-file .env.prod \
   -e DATABASE_MAX_OVERFLOW=0 \
   api python scripts/capacity_guard.py --services api,celery_worker
 
+export BACKEND_IMAGE="$ROLLBACK_IMAGE"
 docker compose --env-file .env.prod \
   -f docker-compose.yml \
   -f docker-compose.deploy.yml \
   up -d api celery_worker celery_beat flower nginx
 ```
+
+`CAPACITY_GUARD_IMAGE` 必须是当前已验证包含 `scripts/capacity_guard.py` 的 immutable 镜像。首次发布失败时，
+应使用本次已经拉取的目标镜像执行门禁，再切换到 `ROLLBACK_IMAGE`；不得依赖旧镜像包含新门禁脚本。
 
 如果本次发布已执行破坏性迁移，不应直接回滚数据库，而应单独制定数据修复方案。
 

@@ -465,10 +465,12 @@ pipeline {
 
                                 if [ -n "$PREVIOUS_IMAGE" ]; then
                                     echo -e "${YELLOW}🔄 回滚镜像: $PREVIOUS_IMAGE${NC}"
+                                    echo -e "${YELLOW}🧮 回滚前重新校验 live PostgreSQL 连接容量...${NC}"
+                                    # 首次上线失败时旧镜像可能没有 capacity_guard.py；先固定使用本次已拉取的目标镜像执行门禁。
+                                    export BACKEND_IMAGE=${RUNTIME_IMAGE}
+                                    run_capacity_guard
                                     export BACKEND_IMAGE="$PREVIOUS_IMAGE"
                                     docker pull ${BACKEND_IMAGE} || true
-                                    echo -e "${YELLOW}🧮 回滚前重新校验 live PostgreSQL 连接容量...${NC}"
-                                    run_capacity_guard
                                     $COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES}
                                 else
                                     echo -e "${YELLOW}⚠️  未找到可回滚镜像，跳过回滚${NC}"

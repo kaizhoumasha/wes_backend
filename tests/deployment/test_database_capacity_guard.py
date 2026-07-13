@@ -152,7 +152,9 @@ def test_jenkins_and_production_runbook_require_live_guard_before_application_st
     assert infra_index < first_guard_index < first_application_index
 
     automatic_rollback = deploy_body.split('if [ "$HEALTH_CHECK_PASSED" = false ]', maxsplit=1)[1]
-    assert automatic_rollback.index("run_capacity_guard") < automatic_rollback.index(application_command)
+    rollback_guard_index = automatic_rollback.index("run_capacity_guard")
+    previous_image_index = automatic_rollback.index('export BACKEND_IMAGE="$PREVIOUS_IMAGE"')
+    assert rollback_guard_index < previous_image_index < automatic_rollback.index(application_command)
 
     runbook_text = (REPO_ROOT / "docs/devops/prod-release-deploy.md").read_text(encoding="utf-8")
     standard_release = runbook_text.split("### 4.5", maxsplit=1)[1].split("### 4.7", maxsplit=1)[0]
@@ -165,7 +167,12 @@ def test_jenkins_and_production_runbook_require_live_guard_before_application_st
         assert section.index("python scripts/capacity_guard.py") < section.index(
             "up -d api celery_worker celery_beat flower nginx"
         )
+    guard_image_index = rollback.index("CAPACITY_GUARD_IMAGE")
+    rollback_guard_index = rollback.index("python scripts/capacity_guard.py")
+    rollback_image_index = rollback.index('export BACKEND_IMAGE="$ROLLBACK_IMAGE"')
+    assert guard_image_index < rollback_guard_index < rollback_image_index
     assert "基础设施保持在线" in rollback
+    assert "首次发布失败" in rollback
 
 
 def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:
