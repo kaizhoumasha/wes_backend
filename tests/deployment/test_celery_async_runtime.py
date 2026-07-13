@@ -85,7 +85,7 @@ def _configure_lazy_deadline(
     real_wait_for = asyncio.wait_for
 
     async def init_db() -> None:
-        clock.advance(0.5)
+        clock.advance(2.25)
 
     async def redis_hang() -> None:
         await asyncio.Event().wait()
@@ -201,8 +201,8 @@ def test_direct_task_run_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPat
         return module.run_async(lambda: asyncio.sleep(0, result="direct"))
 
     assert direct_probe.run() == "direct"
-    assert timeouts and timeouts[-1] == pytest.approx(1.0, abs=0.01)
-    assert clock.value == pytest.approx(101.5, abs=0.01)
+    assert timeouts and timeouts[-1] == pytest.approx(0.75, abs=0.01)
+    assert clock.value == pytest.approx(103.0, abs=0.01)
     infra.init_db.assert_awaited_once()
     restore()
     runtime.shutdown()
@@ -225,8 +225,8 @@ def test_eager_task_apply_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPa
         assert eager_probe.apply().get() == "eager"
     finally:
         celery_app.conf.task_always_eager = previous
-    assert timeouts and timeouts[-1] == pytest.approx(1.0, abs=0.01)
-    assert clock.value == pytest.approx(101.5, abs=0.01)
+    assert timeouts and timeouts[-1] == pytest.approx(0.75, abs=0.01)
+    assert clock.value == pytest.approx(103.0, abs=0.01)
     infra.init_db.assert_awaited_once()
     restore()
     runtime.shutdown()

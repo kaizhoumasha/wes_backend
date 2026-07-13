@@ -201,34 +201,23 @@ def test_postgresql_pool_parameters_follow_runtime_role_contract(
     }
 
 
-def test_postgresql_connect_args_preserve_arbitrary_existing_server_settings(
+def test_postgresql_init_db_preserves_search_path_when_adding_application_name(
     db_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    merge = getattr(db_module, "_merge_postgresql_connect_args", None)
-    assert callable(merge), "db.py 必须提供纯 connect_args 合并 helper，避免覆盖调用方 server_settings"
-    existing = {
-        "command_timeout": 7,
-        "server_settings": {"statement_timeout": "5000", "jit": "off"},
-    }
-
-    connect_args = merge(
-        existing,
-        search_path="app,public",
-        application_name="test:celery:worker:123",
+    monkeypatch.setattr(
+        db_module,
+        "settings",
+        _settings("postgresql+asyncpg://user:pass@db/app", role="celery"),
     )
-    server_settings = connect_args["server_settings"]
+    monkeypatch.setattr(db_module, "get_schema_search_path", MagicMock(return_value="tenant,app,public"))
 
-    assert connect_args["command_timeout"] == 7
-    assert server_settings == {
-        "statement_timeout": "5000",
-        "jit": "off",
-        "search_path": "app,public",
-        "application_name": "test:celery:worker:123",
-    }
-    assert existing == {
-        "command_timeout": 7,
-        "server_settings": {"statement_timeout": "5000", "jit": "off"},
-    }
+    asyncio.run(db_module.init_db())
+
+    _, kwargs = db_module.create_async_engine.call_args
+    server_settings = kwargs["connect_args"]["server_settings"]
+    assert server_settings["search_path"] == "tenant,app,public"
+    assert server_settings["application_name"] == "test:celery:worker:123"
 
 
 def test_sqlite_uses_static_pool_without_postgresql_pool_arguments(
