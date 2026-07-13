@@ -27,6 +27,7 @@ from sqlmodel import Field
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
 from src.app.runtime.orchestration.execution_session import RUNTIME_SCHEMA
 from src.core.mixins.base import BaseMixin
+from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 
 PRE_CUTOVER_AUDIT_ONLY = "PRE_CUTOVER_AUDIT_ONLY"
 
@@ -142,6 +143,7 @@ class RuntimeInbox(BaseMixin, table=True):
         default=None,
         foreign_key="wes_biz.workline_sessions.id",
         index=True,
+        sa_type=SQL_COMPAT_BIGINT,
         description="关联 WorklineSession；与 execution_session_id 分属不同命名空间",
     )
     correlation_id: str | None = Field(

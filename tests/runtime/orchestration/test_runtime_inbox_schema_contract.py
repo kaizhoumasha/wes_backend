@@ -309,6 +309,21 @@ def test_runtime_inbox_preserves_source_event_unique_index() -> None:
     assert "ux_wes_runtime_runtime_inbox_source_event" in indexes
 
 
+def test_revision_a_creates_every_model_declared_single_column_index() -> None:
+    """Revision A 必须创建模型以 index=True 声明的路由字段索引。"""
+    migration = importlib.import_module("migrations.versions.20260711_1815_b8a28e1bfec8_extend_runtime_inbox")
+    indexes = {index_name for index_name, _, _ in migration._INDEXES}
+
+    assert {
+        "ix_wes_runtime_runtime_inbox_kind",
+        "ix_wes_runtime_runtime_inbox_workline_id",
+        "ix_wes_runtime_runtime_inbox_device_id",
+        "ix_wes_runtime_runtime_inbox_command_id",
+        "ix_wes_runtime_runtime_inbox_trace_id",
+        "ix_wes_runtime_runtime_inbox_claim_bucket_key",
+    } <= indexes
+
+
 # ============================================================
 # Time semantics contract
 # ============================================================
@@ -330,6 +345,11 @@ def test_millisecond_timestamps_use_bigint_without_widening_retry_counters() -> 
     for field_name in ("attempt_count", "max_retries"):
         assert isinstance(columns[field_name].type, Integer)
         assert not isinstance(columns[field_name].type, BigInteger)
+
+
+def test_workline_session_foreign_key_uses_the_referenced_bigint_type() -> None:
+    """跨 schema 会话外键必须与 WorklineSession 主键保持 BIGINT 一致。"""
+    assert isinstance(RuntimeInbox.__table__.c.workline_session_id.type, BigInteger)
 
 
 # ============================================================

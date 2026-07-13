@@ -26,6 +26,12 @@ RUNTIME_INBOX_CHECKS = {
     "ck_runtime_inbox_conditional_envelope",
 }
 RUNTIME_INBOX_HOT_INDEXES = {
+    "ix_wes_runtime_runtime_inbox_kind",
+    "ix_wes_runtime_runtime_inbox_workline_id",
+    "ix_wes_runtime_runtime_inbox_device_id",
+    "ix_wes_runtime_runtime_inbox_command_id",
+    "ix_wes_runtime_runtime_inbox_trace_id",
+    "ix_wes_runtime_runtime_inbox_claim_bucket_key",
     "ix_wes_runtime_runtime_inbox_status_received",
     "ix_wes_runtime_runtime_inbox_failed_retry_at",
     "ix_wes_runtime_runtime_inbox_processing_lease",
