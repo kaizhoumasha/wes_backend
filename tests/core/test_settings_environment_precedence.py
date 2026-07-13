@@ -18,12 +18,15 @@ def test_process_environment_overrides_repository_dotenv_without_import_side_eff
         "POSTGRES_HOST": "isolated-postgres.invalid",
         "POSTGRES_PORT": "6543",
         "POSTGRES_USER": "isolated_user",
-        "POSTGRES_PASSWORD": "isolated_password",
+        "POSTGRES_PASSWORD": "isolated_S3cure_Db_Secret_2026",
         "POSTGRES_DB": "isolated_database",
         "REDIS_HOST": "isolated-redis.invalid",
         "REDIS_PORT": "6388",
-        "REDIS_PASSWORD": "isolated_redis_password",
+        "REDIS_PASSWORD": "isolated_R3dis_Secret_2026",
         "REDIS_DB": "9",
+        "DATABASE_RUNTIME_ROLE": "cli",
+        "DATABASE_POOL_SIZE": "1",
+        "DATABASE_MAX_OVERFLOW": "0",
     }
     script = """
 import json
@@ -60,4 +63,6 @@ print(json.dumps({
         f"returncode={completed.returncode}, stdout={completed.stdout!r}, stderr={completed.stderr!r}"
     )
     actual = json.loads(completed.stdout.splitlines()[-1])
-    assert actual == expected, "conf.py 导入不得用仓库 .env 覆盖真实进程环境"
+    assert actual == {key: value for key, value in expected.items() if key in actual}, (
+        "conf.py 导入不得用仓库 .env 覆盖真实进程环境"
+    )

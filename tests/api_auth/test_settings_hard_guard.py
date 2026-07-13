@@ -31,6 +31,8 @@ def _base_kwargs() -> dict:
         "_env_file": None,  # 跳过 .env 文件加载
         "JWT_SECRET_KEY": secrets.token_urlsafe(32),  # 避开弱密钥检查
         "API_SECRET_ENCRYPTION_KEY": _fernet_key(),
+        "DATABASE_RUNTIME_ROLE": "cli",
+        "DATABASE_POOL_SIZE": 1,
         "APP_DEBUG": False,
         "SKIP_API_AUTH": False,
     }

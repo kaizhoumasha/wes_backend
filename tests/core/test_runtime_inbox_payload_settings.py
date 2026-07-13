@@ -14,6 +14,8 @@ def _settings_kwargs() -> dict[str, object]:
         "_env_file": None,
         "JWT_SECRET_KEY": secrets.token_urlsafe(32),
         "API_SECRET_ENCRYPTION_KEY": Fernet.generate_key().decode(),
+        "DATABASE_RUNTIME_ROLE": "cli",
+        "DATABASE_POOL_SIZE": 1,
     }
 
 

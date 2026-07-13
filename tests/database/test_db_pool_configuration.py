@@ -51,7 +51,9 @@ def _settings(database_url: str, *, role: str = "celery", pool_size: int = 1) ->
         DATABASE_POOL_SIZE=pool_size,
         DATABASE_MAX_OVERFLOW=0,
         DATABASE_POOL_TIMEOUT=30,
-        DATABASE_APPLICATION_NAME=f"test:{role}:worker:123",
+        DATABASE_APPLICATION_NAME="test",
+        DATABASE_APPLICATION_RUN_ID=None,
+        APP_ENV="test",
     )
 
 
@@ -254,10 +256,9 @@ def test_postgresql_pool_parameters_follow_runtime_role_contract(
     assert kwargs["pool_size"] == pool_size
     assert kwargs["max_overflow"] == 0
     assert kwargs["pool_timeout"] == 30
-    assert kwargs["connect_args"]["server_settings"] == {
-        "search_path": "app,public",
-        "application_name": f"test:{role}:worker:123",
-    }
+    server_settings = kwargs["connect_args"]["server_settings"]
+    assert server_settings["search_path"] == "app,public"
+    assert server_settings["application_name"].startswith(f"test:{role}:")
 
 
 def test_postgresql_init_db_preserves_search_path_when_adding_application_name(
@@ -276,7 +277,7 @@ def test_postgresql_init_db_preserves_search_path_when_adding_application_name(
     _, kwargs = db_module.create_async_engine.call_args
     server_settings = kwargs["connect_args"]["server_settings"]
     assert server_settings["search_path"] == "tenant,app,public"
-    assert server_settings["application_name"] == "test:celery:worker:123"
+    assert server_settings["application_name"].startswith("test:celery:")
 
 
 def test_sqlite_uses_static_pool_without_postgresql_pool_arguments(

@@ -3,13 +3,10 @@ import json
 from functools import lru_cache
 from typing import Literal
 
-from dotenv import load_dotenv
 from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.core.path_conf import BasePath
-
-_ = load_dotenv(BasePath / ".env", override=True)  # 添加 override=True 强制覆盖已存在的环境变量
 
 
 class Settings(BaseSettings):
@@ -143,6 +140,14 @@ class Settings(BaseSettings):
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = "app_db"
+    DATABASE_RUNTIME_ROLE: Literal["api", "celery", "integration", "cli"]
+    DATABASE_POOL_SIZE: int = Field(ge=1)
+    DATABASE_MAX_OVERFLOW: int = Field(default=0, ge=0)
+    DATABASE_POOL_TIMEOUT: float = Field(default=30.0, gt=0)
+    # application_name 的环境前缀；hostname/PID/run-id 在 Engine 初始化时生成，
+    # 确保 fork 后身份更新。
+    DATABASE_APPLICATION_NAME: str = ""
+    DATABASE_APPLICATION_RUN_ID: str | None = None
 
     @computed_field
     @property
@@ -252,6 +257,14 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_security_settings(self):
         """验证安全相关配置"""
+
+        if self.DATABASE_MAX_OVERFLOW != 0:
+            raise ValueError("DATABASE_MAX_OVERFLOW 必须为 0，禁止绕过连接容量预算")
+        if self.DATABASE_RUNTIME_ROLE == "api":
+            if self.DATABASE_POOL_SIZE > 5:
+                raise ValueError("DATABASE_POOL_SIZE: api 单进程连接池不得超过 5")
+        elif self.DATABASE_POOL_SIZE != 1:
+            raise ValueError(f"DATABASE_POOL_SIZE: {self.DATABASE_RUNTIME_ROLE} 单进程连接池必须为 1")
 
         # ==================== 安全验证 ====================
 

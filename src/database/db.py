@@ -1,5 +1,6 @@
 import asyncio
 import os
+import socket
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -35,8 +36,37 @@ _engine_owner_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _runtime_role() -> str:
-    """读取当前数据库运行角色；完整 pool 配额由后续任务配置。"""
-    return str(getattr(settings, "DATABASE_RUNTIME_ROLE", "api"))
+    """读取当前数据库运行角色。"""
+    return str(settings.DATABASE_RUNTIME_ROLE)
+
+
+def _printable_ascii_segment(value: object) -> str:
+    """将 application_name 分段清洗为不含分隔符的可打印 ASCII。"""
+    return "".join(character if 32 <= ord(character) <= 126 and character != ":" else "_" for character in str(value))
+
+
+def build_database_application_name(
+    *, prefix: str, role: str, hostname: str, pid: int, run_id: str | None = None
+) -> str:
+    """生成不超过 PostgreSQL 63 字符限制且保留运行身份的 application_name。"""
+    clean_prefix = _printable_ascii_segment(prefix) or "app"
+    clean_role = _printable_ascii_segment(role)
+    clean_hostname = _printable_ascii_segment(hostname) or "host"
+    clean_run_id = _printable_ascii_segment(run_id) if run_id else None
+    identity_suffix = f":{pid}" + (f":{clean_run_id}" if clean_run_id else "")
+    fixed_length = len(clean_role) + len(identity_suffix) + 3
+    if fixed_length + 2 > 63:
+        raise ValueError("database application_name 的 role/PID/run-id 无法放入 PostgreSQL 63 字符限制")
+
+    variable_budget = 63 - fixed_length
+    prefix_length = min(len(clean_prefix), max(1, variable_budget // 2))
+    hostname_length = min(len(clean_hostname), max(1, variable_budget - prefix_length))
+    remaining = variable_budget - prefix_length - hostname_length
+    if remaining > 0:
+        prefix_length += min(remaining, len(clean_prefix) - prefix_length)
+        remaining = variable_budget - prefix_length - hostname_length
+        hostname_length += min(remaining, len(clean_hostname) - hostname_length)
+    return f"{clean_prefix[:prefix_length]}:{clean_role}:{clean_hostname[:hostname_length]}{identity_suffix}"
 
 
 def _assert_engine_owner() -> None:
@@ -85,12 +115,24 @@ async def init_db() -> None:
     if is_sqlite:
         engine_kwargs["poolclass"] = StaticPool
     else:
+        application_name = build_database_application_name(
+            prefix=settings.DATABASE_APPLICATION_NAME or settings.APP_ENV,
+            role=current_role,
+            hostname=socket.gethostname(),
+            pid=current_pid,
+            run_id=settings.DATABASE_APPLICATION_RUN_ID,
+        )
         engine_kwargs.update(
             {
-                "pool_size": 50,
-                "max_overflow": 50,
-                "pool_timeout": 30,
-                "connect_args": {"server_settings": {"search_path": get_schema_search_path()}},
+                "pool_size": settings.DATABASE_POOL_SIZE,
+                "max_overflow": settings.DATABASE_MAX_OVERFLOW,
+                "pool_timeout": settings.DATABASE_POOL_TIMEOUT,
+                "connect_args": {
+                    "server_settings": {
+                        "search_path": get_schema_search_path(),
+                        "application_name": application_name,
+                    }
+                },
             }
         )
 
