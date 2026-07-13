@@ -1335,8 +1335,7 @@ class RuntimeInboxService:
         """写终态 PROCESSED + processed_at, 匹配 processor_token (fencing)."""
         from src.utils.timezone import timezone
 
-        now = timezone.now_for_db()
-        now_ms = int(now.timestamp() * 1000) if hasattr(now, "timestamp") else None
+        now_ms = int(timezone.now_utc().timestamp() * 1000)
         extra_values: dict[str, Any] = {"processed_at": now_ms}
         return await self.repository.update_terminal_state(
             db,
@@ -1359,11 +1358,9 @@ class RuntimeInboxService:
         """按 retry/attempt 状态机 fenced 写入 FAILED 或 DEAD_LETTER。"""
         from src.utils.timezone import timezone
 
-        now = timezone.now_for_db()
-        now_ms = int(now.timestamp() * 1000) if hasattr(now, "timestamp") else None
+        now_ms = int(timezone.now_utc().timestamp() * 1000)
         extra: dict[str, Any] = {"last_error_message": error_message}
-        if now_ms is not None:
-            extra["failed_at"] = now_ms
+        extra["failed_at"] = now_ms
 
         attempt_count = 0
         max_retries = 0
@@ -1383,9 +1380,8 @@ class RuntimeInboxService:
 
         if target_state == "FAILED":
             # 指数退避 (10s, 20s, 40s, ... 600s cap)
-            delay_seconds = min(600, 10 * (2**effective_attempt_count))
-            if now_ms is not None:
-                extra["next_retry_at"] = now_ms + delay_seconds * 1000
+            delay_seconds = min(600, 10 * (2 ** max(effective_attempt_count - 1, 0)))
+            extra["next_retry_at"] = now_ms + delay_seconds * 1000
         else:
             extra["next_retry_at"] = None
         return await self.repository.update_terminal_state(
@@ -1407,11 +1403,9 @@ class RuntimeInboxService:
         """写终态 DEAD_LETTER + failed_at。"""
         from src.utils.timezone import timezone
 
-        now = timezone.now_for_db()
-        now_ms = int(now.timestamp() * 1000) if hasattr(now, "timestamp") else None
+        now_ms = int(timezone.now_utc().timestamp() * 1000)
         extra: dict[str, Any] = {"last_error_message": error_message}
-        if now_ms is not None:
-            extra["failed_at"] = now_ms
+        extra["failed_at"] = now_ms
         return await self.repository.update_terminal_state(
             db,
             inbox_id=inbox_id,

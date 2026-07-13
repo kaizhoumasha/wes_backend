@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import pytest
@@ -9,9 +10,14 @@ import pytest
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
+from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+FIXED_NOW_UTC = datetime(2026, 7, 13, 3, 30, 45, 123000, tzinfo=UTC)
+FIXED_NOW_MS = int(FIXED_NOW_UTC.timestamp() * 1000)
 
 
 async def _processing_inbox(
@@ -41,6 +47,94 @@ async def _processing_inbox(
     await db.commit()
     await db.refresh(inbox)
     return inbox
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "timestamp_field", "expected_status"),
+    [
+        ("processed", "processed_at", "PROCESSED"),
+        ("failed", "failed_at", "DEAD_LETTER"),
+        ("dead_letter", "failed_at", "DEAD_LETTER"),
+    ],
+)
+async def test_terminal_timestamps_use_aware_utc_epoch_without_local_timezone_shift(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    timestamp_field: str,
+    expected_status: str,
+) -> None:
+    monkeypatch.setattr(timezone, "now_utc", lambda: FIXED_NOW_UTC)
+    inbox = await _processing_inbox(
+        db_session,
+        source_event_id=f"terminal-time-{operation}",
+        attempt_count=1,
+        max_retries=3,
+    )
+    service = RuntimeInboxService(repository=RuntimeInboxRepository())
+
+    if operation == "processed":
+        updated = await service.mark_processed(db_session, inbox_id=inbox.id, lease_token="lease-1")  # type: ignore[arg-type]
+    elif operation == "failed":
+        updated = await service.mark_failed(
+            db_session,
+            inbox_id=inbox.id,  # type: ignore[arg-type]
+            lease_token="lease-1",
+            error_message="nonretryable",
+            retryable=False,
+        )
+    else:
+        updated = await service.mark_dead_letter(
+            db_session,
+            inbox_id=inbox.id,  # type: ignore[arg-type]
+            lease_token="lease-1",
+            error_message="terminal",
+        )
+    await db_session.commit()
+    await db_session.refresh(inbox)
+
+    assert updated is True
+    assert inbox.status == expected_status
+    assert getattr(inbox, timestamp_field) == FIXED_NOW_MS
+    assert inbox.processor_token is None
+    assert inbox.lease_until is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attempt_count", "expected_delay_seconds"),
+    [(1, 10), (2, 20), (3, 40), (7, 600)],
+)
+async def test_retry_backoff_starts_at_ten_seconds_and_caps_at_six_hundred(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    attempt_count: int,
+    expected_delay_seconds: int,
+) -> None:
+    monkeypatch.setattr(timezone, "now_utc", lambda: FIXED_NOW_UTC)
+    inbox = await _processing_inbox(
+        db_session,
+        source_event_id=f"retry-backoff-{attempt_count}",
+        attempt_count=attempt_count,
+        max_retries=20,
+    )
+    service = RuntimeInboxService(repository=RuntimeInboxRepository())
+
+    updated = await service.mark_failed(
+        db_session,
+        inbox_id=inbox.id,  # type: ignore[arg-type]
+        lease_token="lease-1",
+        error_message="retryable",
+        retryable=True,
+    )
+    await db_session.commit()
+    await db_session.refresh(inbox)
+
+    assert updated is True
+    assert inbox.status == "FAILED"
+    assert inbox.failed_at == FIXED_NOW_MS
+    assert inbox.next_retry_at == FIXED_NOW_MS + expected_delay_seconds * 1000
 
 
 @pytest.mark.asyncio
