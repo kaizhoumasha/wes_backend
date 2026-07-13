@@ -11,6 +11,11 @@ from dataclasses import dataclass
 
 import asyncpg
 
+API_UVICORN_WORKERS = 4
+API_DATABASE_POOL_SIZE = 5
+CELERY_DATABASE_POOL_SIZE = 1
+MINIMUM_CONNECTION_RESERVE = 10
+
 
 class CapacityViolation(ValueError):
     """目标拓扑超过数据库连接预算或包含非法池配置。"""
@@ -39,8 +44,12 @@ class CapacityPlan:
         )
         if any(value < 0 for value in numeric_values):
             raise CapacityViolation("capacity inputs must be non-negative")
-        if self.api_pool_size > 5:
-            raise CapacityViolation("api_pool_size must not exceed 5")
+        if self.reserve < MINIMUM_CONNECTION_RESERVE:
+            raise CapacityViolation(f"reserve must be at least {MINIMUM_CONNECTION_RESERVE}")
+        if self.api_replicas and self.api_processes != API_UVICORN_WORKERS:
+            raise CapacityViolation(f"api_processes must equal {API_UVICORN_WORKERS}")
+        if self.api_replicas and self.api_pool_size != API_DATABASE_POOL_SIZE:
+            raise CapacityViolation(f"api_pool_size must equal {API_DATABASE_POOL_SIZE}")
         if self.celery_pool_size != 1:
             raise CapacityViolation("celery_pool_size must equal 1")
         if self.max_overflow != 0:
@@ -83,6 +92,41 @@ def _parse_scale(values: list[str]) -> dict[str, int]:
     return scales
 
 
+def _runtime_constant(name: str, expected: int) -> int:
+    """拒绝与 Dockerfile/Compose 唯一运行拓扑不一致的伪预算覆盖。"""
+    try:
+        configured = _env_int(name, expected)
+    except ValueError as exc:
+        raise CapacityViolation(f"{name} must be the deployed integer value {expected}") from exc
+    if configured != expected:
+        raise CapacityViolation(f"{name}={configured} disagrees with deployed runtime value {expected}")
+    return expected
+
+
+def build_capacity_plan(
+    *,
+    services: set[str],
+    scales: dict[str, int],
+    reserve: int | None = None,
+) -> CapacityPlan:
+    """从可扩缩容维度和固定镜像/Compose 维度构造唯一容量计划。"""
+    api_processes = _runtime_constant("API_UVICORN_WORKERS", API_UVICORN_WORKERS)
+    api_pool_size = _runtime_constant("API_DATABASE_POOL_SIZE", API_DATABASE_POOL_SIZE)
+    celery_pool_size = _runtime_constant("CELERY_DATABASE_POOL_SIZE", CELERY_DATABASE_POOL_SIZE)
+    return CapacityPlan(
+        api_replicas=scales.get("api", _env_int("API_REPLICAS", 1)) if "api" in services else 0,
+        api_processes=api_processes,
+        api_pool_size=api_pool_size,
+        celery_replicas=(
+            scales.get("celery_worker", _env_int("CELERY_WORKER_REPLICAS", 4)) if "celery_worker" in services else 0
+        ),
+        celery_processes=_env_int("CELERY_CONCURRENCY", 4),
+        celery_pool_size=celery_pool_size,
+        reserve=_env_int("DATABASE_CONNECTION_RESERVE", MINIMUM_CONNECTION_RESERVE) if reserve is None else reserve,
+        max_overflow=_env_int("DATABASE_MAX_OVERFLOW", 0),
+    )
+
+
 async def _read_max_connections() -> int:
     application_name = f"{os.getenv('ENV', 'unknown')}:cli:{socket.gethostname()}:{os.getpid()}:capacity"
     connection = await asyncpg.connect(
@@ -110,18 +154,7 @@ def main() -> int:
     if not services <= {"api", "celery_worker"}:
         raise CapacityViolation(f"unsupported services: {sorted(services)}")
     scales = _parse_scale(args.scale)
-    plan = CapacityPlan(
-        api_replicas=scales.get("api", _env_int("API_REPLICAS", 1)) if "api" in services else 0,
-        api_processes=_env_int("API_UVICORN_WORKERS", 4),
-        api_pool_size=_env_int("API_DATABASE_POOL_SIZE", 5),
-        celery_replicas=(
-            scales.get("celery_worker", _env_int("CELERY_WORKER_REPLICAS", 4)) if "celery_worker" in services else 0
-        ),
-        celery_processes=_env_int("CELERY_CONCURRENCY", 4),
-        celery_pool_size=_env_int("CELERY_DATABASE_POOL_SIZE", 1),
-        reserve=args.reserve,
-        max_overflow=_env_int("DATABASE_MAX_OVERFLOW", 0),
-    )
+    plan = build_capacity_plan(services=services, scales=scales, reserve=args.reserve)
     max_connections = args.max_connections if args.max_connections is not None else asyncio.run(_read_max_connections())
     result = calculate_capacity(plan, max_connections=max_connections)
     print(

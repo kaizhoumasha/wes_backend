@@ -1,7 +1,7 @@
 import asyncio
 import os
 import socket
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import (
@@ -69,6 +69,24 @@ def build_database_application_name(
     return f"{clean_prefix[:prefix_length]}:{clean_role}:{clean_hostname[:hostname_length]}{identity_suffix}"
 
 
+def build_postgresql_connect_args(
+    existing: Mapping[str, object] | None,
+    *,
+    search_path: str,
+    application_name: str,
+) -> dict[str, object]:
+    """复制并合并 asyncpg 参数，仅覆盖 application_name。"""
+    connect_args = dict(existing or {})
+    raw_server_settings = connect_args.get("server_settings", {})
+    if not isinstance(raw_server_settings, Mapping):
+        raise TypeError("connect_args.server_settings must be a mapping")
+    server_settings = dict(raw_server_settings)
+    server_settings.setdefault("search_path", search_path)
+    server_settings["application_name"] = application_name
+    connect_args["server_settings"] = server_settings
+    return connect_args
+
+
 def _assert_engine_owner() -> None:
     """确保数据库资源只被创建它的进程、事件循环和运行角色使用。"""
     current_pid = os.getpid()
@@ -115,6 +133,7 @@ async def init_db() -> None:
     if is_sqlite:
         engine_kwargs["poolclass"] = StaticPool
     else:
+        search_path = get_schema_search_path()
         application_name = build_database_application_name(
             prefix=settings.DATABASE_APPLICATION_NAME or settings.APP_ENV,
             role=current_role,
@@ -127,12 +146,11 @@ async def init_db() -> None:
                 "pool_size": settings.DATABASE_POOL_SIZE,
                 "max_overflow": settings.DATABASE_MAX_OVERFLOW,
                 "pool_timeout": settings.DATABASE_POOL_TIMEOUT,
-                "connect_args": {
-                    "server_settings": {
-                        "search_path": get_schema_search_path(),
-                        "application_name": application_name,
-                    }
-                },
+                "connect_args": build_postgresql_connect_args(
+                    {"server_settings": {"search_path": search_path}},
+                    search_path=search_path,
+                    application_name=application_name,
+                ),
             }
         )
 

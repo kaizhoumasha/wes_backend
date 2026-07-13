@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-from scripts.capacity_guard import CapacityPlan, CapacityViolation, calculate_capacity
+from scripts.capacity_guard import (
+    API_DATABASE_POOL_SIZE,
+    API_UVICORN_WORKERS,
+    CELERY_DATABASE_POOL_SIZE,
+    CapacityPlan,
+    CapacityViolation,
+    build_capacity_plan,
+    calculate_capacity,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -86,10 +97,10 @@ def test_environment_profiles_and_compose_declare_explicit_database_roles() -> N
         api_env = compose["services"]["api"]["environment"]
         worker_env = compose["services"]["celery_worker"]["environment"]
         assert api_env["DATABASE_RUNTIME_ROLE"] == "api"
-        assert api_env["DATABASE_POOL_SIZE"] == 5
+        assert api_env["DATABASE_POOL_SIZE"] == API_DATABASE_POOL_SIZE
         assert api_env["DATABASE_MAX_OVERFLOW"] == 0
         assert worker_env["DATABASE_RUNTIME_ROLE"] == "celery"
-        assert worker_env["DATABASE_POOL_SIZE"] == 1
+        assert worker_env["DATABASE_POOL_SIZE"] == CELERY_DATABASE_POOL_SIZE
         assert worker_env["DATABASE_MAX_OVERFLOW"] == 0
         assert compose["services"]["celery_beat"]["environment"]["DATABASE_RUNTIME_ROLE"] == "cli"
         assert compose["services"]["flower"]["environment"]["DATABASE_RUNTIME_ROLE"] == "cli"
@@ -115,5 +126,77 @@ def test_deployment_script_runs_live_guard_before_application_start_and_scale() 
 def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:
     dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
 
-    assert '"--workers", "4"' in dockerfile_text
+    assert f'"--workers", "{API_UVICORN_WORKERS}"' in dockerfile_text
     assert "1 x 4 x 5" in dockerfile_text
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("API_UVICORN_WORKERS", "3"),
+        ("API_DATABASE_POOL_SIZE", "4"),
+        ("CELERY_DATABASE_POOL_SIZE", "2"),
+    ],
+)
+def test_capacity_plan_rejects_topology_overrides_that_disagree_with_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(CapacityViolation, match=name):
+        build_capacity_plan(services={"api", "celery_worker"}, scales={})
+
+
+def test_capacity_plan_uses_only_actual_docker_process_and_pool_constants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("API_UVICORN_WORKERS", "API_DATABASE_POOL_SIZE", "CELERY_DATABASE_POOL_SIZE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("API_REPLICAS", "1")
+    monkeypatch.setenv("CELERY_WORKER_REPLICAS", "4")
+    monkeypatch.setenv("CELERY_CONCURRENCY", "4")
+
+    plan = build_capacity_plan(services={"api", "celery_worker"}, scales={})
+
+    assert plan.api_processes == 4
+    assert plan.api_pool_size == 5
+    assert plan.celery_pool_size == 1
+    assert calculate_capacity(plan, max_connections=100).application_connections == 36
+
+
+def test_capacity_plan_rejects_reserve_below_ten() -> None:
+    with pytest.raises(CapacityViolation, match=r"reserve.*10"):
+        CapacityPlan(
+            api_replicas=1,
+            api_processes=4,
+            api_pool_size=5,
+            celery_replicas=4,
+            celery_processes=4,
+            celery_pool_size=1,
+            reserve=9,
+        )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "environment"),
+    [(["--reserve", "9"], {}), ([], {"DATABASE_CONNECTION_RESERVE": "9"})],
+)
+def test_capacity_guard_cli_rejects_reserve_below_ten(
+    arguments: list[str],
+    environment: dict[str, str],
+) -> None:
+    completed = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts/capacity_guard.py"), "--max-connections", "100", *arguments],
+        cwd=REPO_ROOT,
+        env={**os.environ, **environment},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert completed.returncode != 0
+    assert "reserve" in completed.stderr
+    assert "10" in completed.stderr

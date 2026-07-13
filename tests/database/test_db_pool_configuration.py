@@ -280,6 +280,35 @@ def test_postgresql_init_db_preserves_search_path_when_adding_application_name(
     assert server_settings["application_name"].startswith("test:celery:")
 
 
+def test_postgresql_connect_args_merge_preserves_existing_server_settings() -> None:
+    from src.database.db import build_postgresql_connect_args
+
+    existing = {
+        "command_timeout": 15,
+        "server_settings": {
+            "search_path": "tenant,app,public",
+            "statement_timeout": "5000",
+            "application_name": "stale-owner",
+        },
+    }
+
+    merged = build_postgresql_connect_args(
+        existing,
+        search_path="default,public",
+        application_name="prod:celery:worker:123",
+    )
+
+    assert merged == {
+        "command_timeout": 15,
+        "server_settings": {
+            "search_path": "tenant,app,public",
+            "statement_timeout": "5000",
+            "application_name": "prod:celery:worker:123",
+        },
+    }
+    assert existing["server_settings"]["application_name"] == "stale-owner"
+
+
 def test_sqlite_uses_static_pool_without_postgresql_pool_arguments(
     db_module: Any,
     monkeypatch: pytest.MonkeyPatch,
