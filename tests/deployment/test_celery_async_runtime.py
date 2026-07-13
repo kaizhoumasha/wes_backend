@@ -769,6 +769,8 @@ def test_redis_timeout_reaches_ready_only_after_top_level_init_task_stops(
 def test_database_init_timeout_does_not_wait_forever_for_cancel_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
+    probe = _PendingInitRunnerProbe()
+    monkeypatch.setattr(module.asyncio, "Runner", lambda: probe)
     runtime = _install_runtime(monkeypatch, module)
 
     async def cancellation_resistant_init() -> None:
@@ -781,11 +783,53 @@ def test_database_init_timeout_does_not_wait_forever_for_cancel_cleanup(monkeypa
     monkeypatch.setattr(module, "INITIALIZATION_TIMEOUT_SECONDS", 0.01)
 
     started_at = time.monotonic()
-    with _sync_watchdog(0.50, "database cancellation cleanup during worker init"):
-        with pytest.raises(TimeoutError):
-            runtime.initialize()
+    try:
+        with _sync_watchdog(0.50, "database cancellation cleanup during worker init"):
+            with pytest.raises(TimeoutError):
+                runtime.initialize()
 
-    assert time.monotonic() - started_at < 0.20
+        assert time.monotonic() - started_at < 0.20
+        assert runtime.state is module.RuntimeState.CLOSED
+    finally:
+        for task in asyncio.all_tasks(probe.get_loop()):
+            task.cancel()
+        probe.run(asyncio.sleep(0))
+        probe.force_close()
+
+
+def test_database_timeout_observes_one_tick_cancellation_before_allowing_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    attempts = 0
+    cleanup_events: list[str] = []
+
+    async def init_db() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts > 1:
+            return
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0)
+            cleanup_events.append("database")
+            raise
+
+    infra.init_db.side_effect = init_db
+    monkeypatch.setattr(module, "INITIALIZATION_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(TimeoutError):
+        runtime.initialize()
+
+    assert cleanup_events == ["database"]
+    assert runtime.state is module.RuntimeState.NEW
+    assert runtime._abandoned_runners == []
+    assert runtime.run_async(lambda: asyncio.sleep(0, result="retried")) == "retried"
+    assert infra.init_db.await_count == 2
+    runtime.shutdown()
 
 
 def test_shutdown_continues_after_cleanup_ignores_first_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -101,6 +101,12 @@ class CeleryAsyncRuntime:
         done, _ = await asyncio.wait({task}, timeout=timeout)
         if task not in done:
             task.cancel()
+            # 只让出有限的零时长调度轮次，使常规 CancelledError 清理有机会终态；
+            # 不等待计时器，因此不扩大 worker 初始化的 3 秒 wall-clock 边界。
+            for _ in range(2):
+                await asyncio.sleep(0)
+                if task.done():
+                    break
             raise TimeoutError
         return task.result()
 
