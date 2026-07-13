@@ -477,10 +477,11 @@ def test_shutdown_really_bounds_a_hanging_stage_and_continues(
 class _RunnerProbe:
     def __init__(self, events: list[str]) -> None:
         self._runner = _REAL_ASYNCIO_RUNNER()
+        self._loop = self._runner.get_loop()
         self._events = events
 
     def get_loop(self) -> asyncio.AbstractEventLoop:
-        return self._runner.get_loop()
+        return self._loop
 
     def run(self, coroutine: Any, *, context: Any = None) -> Any:
         return self._runner.run(coroutine, context=context)
