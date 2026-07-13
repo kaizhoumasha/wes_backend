@@ -380,7 +380,7 @@ wes_runtime.runtime_inbox
 
 ### Task 9：文档、索引与文档门禁
 
-**状态：** ✅ T9 文档同步完成；T10 最终验收待执行（3df84112 + 本轮文档收束提交）。当前业务、架构、运行手册、所有权地图、可观测性合同、文件索引和 TODO 已同步到 RuntimeInbox 单一真源；本任务只记录文档一致性、legacy scanner、链接/路径与质量门禁证据，不把历史全量数字或 T10 严格验收声明为本轮结果。
+**状态：** ✅ T9 文档同步完成；T10 最终验收已完成（3df84112 + 本轮文档与验收收束提交）。当前业务、架构、运行手册、所有权地图、可观测性合同、文件索引和 TODO 已同步到 RuntimeInbox 单一真源；文档一致性、legacy scanner、链接/路径与质量门禁证据已由 T10 当前结果复核。
 
 **目标：** 让当前架构文档、文件索引和运行说明只描述 RuntimeInbox 权威链路。
 
@@ -400,13 +400,31 @@ uv run pytest --collect-only -q -o addopts='' | tail -5
 ./scripts/git-quality-gate.sh --profile quality
 ```
 
-真实 PostgreSQL integration/resilience/migration/benchmark、全量回归与 evidence artifact 的最终复跑归 Task 10，不在 Task 9 提前标记完成。
+真实 PostgreSQL integration/resilience/migration/benchmark、全量回归与 evidence artifact 已在 Task 10 重新生成并校验。
 
 Commit 前：
 
 - 显式 stage 当前任务文件。
 - 检查 `git status --short` 与 `git diff --cached --stat`。
 - 运行 GitNexus detect changes。
+
+### Task 10：最终全量验收与当前证据
+
+**状态：** ✅ 100% 完成。Stage A 在 clean checkout 上完成默认全量与静态/质量门禁，并使用隔离 PostgreSQL 17
+runner 演练完整验收链路；Stage C 在最终文档提交 HEAD 上重新构建 testing 镜像并重生成 commit-bound artifact。
+
+**验收结果：**
+
+- 默认全量：`2328 passed, 5 skipped, 3 warnings`；topology `5 passed`；collect-only `2333 tests`。
+- Ruff format/check、Bandit（0 issue）、quality profile、architecture enforced scanner 与 WorklineInbox retirement
+  scanner 均为 exit 0。
+- PostgreSQL migration matrix `8 passed`、processing integration `12 passed`、两个 crash window 各 `1 passed`、
+  benchmark `1 passed`；runner diagnostic 为 `status=passed`，退出后容器、网络与卷均已清理。
+- benchmark：1000 条混合 backlog、4 worker，p50 30.346ms、p95 78.492ms、吞吐 1961.954 条/秒，
+  duplicate claim、waiting lock 与 RuntimeInbox sequential scan 均为 0，正式 validator verdict passed。
+- artifact：
+  `/Users/kaizhou/codeDev/wes_backend/reports/runtime-inbox-acceptance/runtime-inbox-claim-benchmark.json`；
+  artifact 不提交，最终验收以文件内完整 commit SHA、`dirty=false` 和 `verdict.passed=true` 为准。
 
 ## 测试覆盖图
 

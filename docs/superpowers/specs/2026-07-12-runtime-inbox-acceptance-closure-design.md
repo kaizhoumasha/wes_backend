@@ -265,15 +265,22 @@ Guardrail: .py + .sh + current .md ─→ exact allowlist ─→ zero active ref
   - Surfaced by: original acceptance Task 1/9 gaps
   - Files: current business/architecture/runtime docs、file index、TODOS.md、original plan
   - Verify: current docs legacy-reference guardrail
-- [ ] **T10 (P1, human: ~1 day / CC: ~1–2h + test runtime)** — Acceptance — 运行全量门禁并生成当前 commit 新证据
+- [x] **T10 (P1, human: ~1 day / CC: ~1–2h + test runtime)** — Acceptance — 运行全量门禁并生成当前 commit 新证据
   - Surfaced by: original acceptance Task 8/9 gaps
   - Files: evidence artifact、原实施计划状态
   - Verify: default suite、topology、Ruff、Bandit、quality gate、heavy PostgreSQL、benchmark、CI evidence
 
-T10 最终全量验收尚未执行。T1–T9 的 focused/quality/heavy/CI 合同证据不能替代 T10 对当前文档提交
-重新生成的默认全量、正式 PostgreSQL evidence 与 CI artifact。
+T10 最终全量验收已完成。默认全量为 2328 passed、5 skipped；topology、2333 项 collect-only、Ruff、
+Bandit、quality gate、architecture guardrail 与 legacy scanner 全部通过。隔离 PostgreSQL 17 runner 完成
+migration matrix、processing integration、两个 crash window、1000 条 backlog / 4 worker benchmark 和正式
+evidence validator；p95 78.492ms、吞吐 1961.954 条/秒、duplicate claim 与 waiting lock 均为 0。
 
-## T1–T9 提交与证据摘要
+正式 artifact 位于
+`/Users/kaizhou/codeDev/wes_backend/reports/runtime-inbox-acceptance/runtime-inbox-claim-benchmark.json`，
+同目录保留 diagnostic、JUnit 与日志。artifact 不提交；最终 HEAD 验收会覆盖生成该文件，并以其中
+`repository.commit_sha`、`repository.dirty=false` 和 `verdict.passed=true` 作为 commit-bound 证据。
+
+## T1–T10 提交与证据摘要
 
 | Task | 主要提交 | 当前证据 |
 |---|---|---|
@@ -286,6 +293,7 @@ T10 最终全量验收尚未执行。T1–T9 的 focused/quality/heavy/CI 合同
 | T7 | `aa89b90f`、`3d98b37f`、`ac7a05b3` | 生产 statement fingerprint、零锁等待、selective plan、commit-bound evidence validator |
 | T8 | `06b955e4`、`004d135b` | 隔离 PG17 CI、严格 runner、clean checkout、JUnit/log/diagnostic/evidence 归档 |
 | T9 | 本次文档收束提交 | Current docs legacy scanner、文档一致性与本地链接测试、file index/TODO/计划同步 |
+| T10 | 本次最终验收收束提交 | 默认全量、静态与 quality 门禁、隔离 PG17 migration/processing/crash/benchmark、commit-bound artifact |
 
 ## GSTACK REVIEW REPORT
 

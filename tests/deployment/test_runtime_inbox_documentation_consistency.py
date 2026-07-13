@@ -94,17 +94,18 @@ def test_current_runtime_docs_describe_service_replay_reset_heavy_and_ci_paths()
     assert all(contract in documents for contract in required_contracts)
 
 
-def test_acceptance_design_marks_t1_to_t9_complete_and_keeps_t10_pending():
+def test_acceptance_design_marks_t1_to_t10_complete_with_current_evidence():
     design = _text(DESIGN)
 
-    for task in range(1, 10):
+    for task in range(1, 11):
         assert re.search(rf"- \[x\] \*\*T{task} ", design)
-    assert re.search(r"- \[ \] \*\*T10 ", design)
-    assert "T10 最终全量验收尚未执行" in design
-    assert "## T1–T9 提交与证据摘要" in design
+    assert "T10 最终全量验收已完成" in design
+    assert "## T1–T10 提交与证据摘要" in design
+    assert "/Users/kaizhou/codeDev/wes_backend/reports/runtime-inbox-acceptance" in design
+    assert "artifact 不提交" in design
 
 
-def test_original_plan_removes_stale_warnings_without_claiming_t10_complete():
+def test_original_plan_removes_stale_warnings_and_records_t10_completion():
     plan = _text(PLAN)
     task_9 = plan.split("### Task 9：", maxsplit=1)[1].split("## 测试覆盖图", maxsplit=1)[0]
 
@@ -113,7 +114,10 @@ def test_original_plan_removes_stale_warnings_without_claiming_t10_complete():
     assert "tests/runtime/orchestration/test_inbox_batch_processor_characterization.py" not in plan
     assert "旧 task/Beat/gateway 表面的物理删除归 Task 7" not in plan
     assert "tests/runtime/orchestration/test_runtime_inbox_processor_parity.py" in plan
-    assert "T9 文档同步完成；T10 最终验收待执行" in task_9
+    assert "T9 文档同步完成；T10 最终验收已完成" in task_9
+    assert "### Task 10：最终全量验收与当前证据" in task_9
+    assert "2328 passed, 5 skipped" in task_9
+    assert "artifact 不提交" in task_9
     assert "全量测试 `2090 passed, 5 skipped`" not in task_9
 
 
