@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import RuntimeInboxRepository
 from tests.load.runtime_inbox_postgresql_benchmark import (
     BENCHMARK_EVIDENCE_SCHEMA_VERSION,
     PRODUCTION_CLAIM_BUILDER,
@@ -14,6 +17,14 @@ from tests.load.runtime_inbox_postgresql_benchmark import (
     _validate_selective_query_plan,
     validate_runtime_inbox_benchmark_evidence,
 )
+
+_CANONICAL_FINGERPRINT_VERSION = "runtime-inbox-claim-statement/v1"
+_CANONICAL_FINGERPRINT_INPUTS = {
+    "limit": 25,
+    "now_ms": 2_000_000_000_000,
+    "processor_token": "runtime-inbox-benchmark-fingerprint",
+    "stale_after_seconds": 60,
+}
 
 
 class _RecordingConnection:
@@ -24,9 +35,20 @@ class _RecordingConnection:
         self.statements.append(statement)
 
 
+def _production_statement_sha256() -> str:
+    statement = RuntimeInboxRepository().build_claim_received_statement(**_CANONICAL_FINGERPRINT_INPUTS)
+    sql = str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    return hashlib.sha256(sql.encode("utf-8")).hexdigest()
+
+
 def _valid_evidence() -> dict[str, object]:
     commit_sha = "a" * 40
-    statement_sha = "b" * 64
+    statement_sha = _production_statement_sha256()
     return {
         "schema_version": BENCHMARK_EVIDENCE_SCHEMA_VERSION,
         "generated_at": "2026-07-13T01:02:03Z",
@@ -36,6 +58,8 @@ def _valid_evidence() -> dict[str, object]:
             "statement": {
                 "kind": PRODUCTION_CLAIM_STATEMENT_KIND,
                 "builder": PRODUCTION_CLAIM_BUILDER,
+                "fingerprint_version": _CANONICAL_FINGERPRINT_VERSION,
+                "canonical_inputs": dict(_CANONICAL_FINGERPRINT_INPUTS),
                 "sha256": statement_sha,
             },
         },
@@ -72,6 +96,7 @@ def _valid_evidence() -> dict[str, object]:
                 "node_types": ["LockRows", "Index Scan"],
                 "index_names": ["ix_wes_runtime_runtime_inbox_status_received"],
                 "runtime_inbox_seq_scan_relations": [],
+                "statement_sha256": statement_sha,
                 "gate_passed": True,
             },
         },
@@ -146,3 +171,40 @@ def test_evidence_validator_accepts_commit_bound_passing_production_evidence() -
 
     assert validation.valid is True
     assert validation.reason == "OK"
+
+
+def test_evidence_validator_rejects_forged_matching_statement_and_plan_sha() -> None:
+    evidence = _valid_evidence()
+    evidence["source"]["statement"]["sha256"] = "b" * 64
+    evidence["query_plan"]["production_statement_sha256"] = "b" * 64
+
+    validation = validate_runtime_inbox_benchmark_evidence(evidence, expected_commit="a" * 40)
+
+    assert validation.valid is False
+    assert validation.reason == "NON_PRODUCTION_STATEMENT"
+
+
+def test_evidence_validator_rejects_tampered_canonical_fingerprint_inputs() -> None:
+    evidence = _valid_evidence()
+    evidence["source"]["statement"]["canonical_inputs"]["limit"] = 50
+
+    validation = validate_runtime_inbox_benchmark_evidence(evidence, expected_commit="a" * 40)
+
+    assert validation.valid is False
+    assert validation.reason == "NON_PRODUCTION_STATEMENT"
+
+
+def test_evidence_validator_rejects_repository_builder_structure_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    evidence = _valid_evidence()
+    original_builder = RuntimeInboxRepository.build_claim_received_statement
+
+    def altered_builder(self: RuntimeInboxRepository, **kwargs: object) -> object:
+        kwargs["processor_token"] = f"{kwargs['processor_token']}-changed"
+        return original_builder(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(RuntimeInboxRepository, "build_claim_received_statement", altered_builder)
+
+    validation = validate_runtime_inbox_benchmark_evidence(evidence, expected_commit="a" * 40)
+
+    assert validation.valid is False
+    assert validation.reason == "NON_PRODUCTION_STATEMENT"

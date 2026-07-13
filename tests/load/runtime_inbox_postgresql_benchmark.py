@@ -39,10 +39,17 @@ THROUGHPUT_THRESHOLD_PER_SECOND = 1_000.0
 SELECTIVE_FIXTURE_ROW_COUNT = 10_000
 BENCHMARK_EVIDENCE_SCHEMA_VERSION = "runtime-inbox-claim-benchmark/v1"
 PRODUCTION_CLAIM_STATEMENT_KIND = "runtime-inbox-repository-claim"
+CLAIM_STATEMENT_FINGERPRINT_VERSION = "runtime-inbox-claim-statement/v1"
 PRODUCTION_CLAIM_BUILDER = (
     "src.app.runtime.orchestration.repositories.runtime_inbox_repository."
     "RuntimeInboxRepository.build_claim_received_statement"
 )
+_CANONICAL_CLAIM_STATEMENT_INPUTS = {
+    "limit": CLAIM_BATCH_SIZE,
+    "now_ms": 2_000_000_000_000,
+    "processor_token": "runtime-inbox-benchmark-fingerprint",
+    "stale_after_seconds": 60,
+}
 _CLAIM_INDEX_NAMES = frozenset(
     {
         "ix_wes_runtime_runtime_inbox_status_received",
@@ -159,13 +166,10 @@ async def _clear_selective_plan_fixture(connection: asyncpg.Connection) -> None:
     await connection.execute("DELETE FROM wes_runtime.runtime_inbox WHERE provider_code = 'benchmark-plan'")
 
 
-def _compile_production_claim_statement(*, now_ms: int) -> tuple[str, str]:
-    statement = RuntimeInboxRepository().build_claim_received_statement(
-        limit=CLAIM_BATCH_SIZE,
-        processor_token="benchmark-query-plan",
-        stale_after_seconds=60,
-        now_ms=now_ms,
-    )
+def _compile_production_claim_statement() -> tuple[str, str]:
+    """使用固定输入编译生产 statement，运行时随机 token/时间不进入 fingerprint。"""
+
+    statement = RuntimeInboxRepository().build_claim_received_statement(**_CANONICAL_CLAIM_STATEMENT_INPUTS)
     sql = str(
         statement.compile(
             dialect=postgresql.dialect(),
@@ -176,7 +180,7 @@ def _compile_production_claim_statement(*, now_ms: int) -> tuple[str, str]:
 
 
 async def _claim_query_plan(connection: asyncpg.Connection) -> dict[str, object]:
-    sql, statement_sha256 = _compile_production_claim_statement(now_ms=int(time.time() * 1000))
+    sql, statement_sha256 = _compile_production_claim_statement()
     raw_plan = await connection.fetchval(f"EXPLAIN (FORMAT JSON) {sql}")
     document = json.loads(raw_plan) if isinstance(raw_plan, str) else raw_plan
     plan = document[0]["Plan"]
@@ -273,6 +277,11 @@ _REQUIRED_EVIDENCE_FIELDS = (
     "source.kind",
     "source.statement.kind",
     "source.statement.builder",
+    "source.statement.fingerprint_version",
+    "source.statement.canonical_inputs.limit",
+    "source.statement.canonical_inputs.now_ms",
+    "source.statement.canonical_inputs.processor_token",
+    "source.statement.canonical_inputs.stale_after_seconds",
     "source.statement.sha256",
     "database.server_version",
     "database.settings.max_connections",
@@ -295,6 +304,7 @@ _REQUIRED_EVIDENCE_FIELDS = (
     "thresholds.waiting_lock_samples",
     "thresholds.max_waiting_locks",
     "query_plan.production_statement_sha256",
+    "query_plan.selective.statement_sha256",
     "query_plan.selective.node_types",
     "query_plan.selective.index_names",
     "query_plan.selective.runtime_inbox_seq_scan_relations",
@@ -340,6 +350,8 @@ def validate_runtime_inbox_benchmark_evidence(
         _nested_value(evidence, "source.kind") != "postgresql"
         or _nested_value(evidence, "source.statement.kind") != PRODUCTION_CLAIM_STATEMENT_KIND
         or _nested_value(evidence, "source.statement.builder") != PRODUCTION_CLAIM_BUILDER
+        or _nested_value(evidence, "source.statement.fingerprint_version") != CLAIM_STATEMENT_FINGERPRINT_VERSION
+        or _nested_value(evidence, "source.statement.canonical_inputs") != _CANONICAL_CLAIM_STATEMENT_INPUTS
     ):
         return RuntimeInboxBenchmarkEvidenceValidation(False, "NON_PRODUCTION_STATEMENT", "source.statement")
     statement_sha = _nested_value(evidence, "source.statement.sha256")
@@ -349,7 +361,15 @@ def validate_runtime_inbox_benchmark_evidence(
         or any(char not in "0123456789abcdef" for char in statement_sha)
     ):
         return RuntimeInboxBenchmarkEvidenceValidation(False, "NON_PRODUCTION_STATEMENT", "source.statement.sha256")
-    if statement_sha != _nested_value(evidence, "query_plan.production_statement_sha256"):
+    try:
+        _canonical_sql, expected_statement_sha = _compile_production_claim_statement()
+    except Exception:
+        return RuntimeInboxBenchmarkEvidenceValidation(False, "NON_PRODUCTION_STATEMENT", "source.statement.sha256")
+    if (
+        statement_sha != expected_statement_sha
+        or statement_sha != _nested_value(evidence, "query_plan.production_statement_sha256")
+        or statement_sha != _nested_value(evidence, "query_plan.selective.statement_sha256")
+    ):
         return RuntimeInboxBenchmarkEvidenceValidation(False, "NON_PRODUCTION_STATEMENT", "source.statement.sha256")
     if _evidence_gate_failures(evidence):
         return RuntimeInboxBenchmarkEvidenceValidation(False, "FAILED_VERDICT", "metrics")
@@ -602,6 +622,8 @@ async def _run_benchmark() -> dict[str, object]:
                     "statement": {
                         "kind": PRODUCTION_CLAIM_STATEMENT_KIND,
                         "builder": PRODUCTION_CLAIM_BUILDER,
+                        "fingerprint_version": CLAIM_STATEMENT_FINGERPRINT_VERSION,
+                        "canonical_inputs": dict(_CANONICAL_CLAIM_STATEMENT_INPUTS),
                         "sha256": statement_sha256,
                     },
                 },
@@ -641,6 +663,7 @@ def run_runtime_inbox_postgresql_benchmark(evidence_path: Path | None = None) ->
 
 __all__ = [
     "BENCHMARK_EVIDENCE_SCHEMA_VERSION",
+    "CLAIM_STATEMENT_FINGERPRINT_VERSION",
     "PRODUCTION_CLAIM_BUILDER",
     "PRODUCTION_CLAIM_STATEMENT_KIND",
     "RuntimeInboxBenchmarkEvidenceValidation",
