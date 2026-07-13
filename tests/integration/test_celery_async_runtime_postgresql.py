@@ -687,27 +687,51 @@ def _assert_clean_activity(worker: PreforkWorker, application_names: set[str]) -
 
 
 @contextmanager
-def _quit_replacement_worker(first: PreforkWorker) -> Iterator[tuple[PreforkWorker, dict[str, bool]]]:
-    """保证 replacement 启动失败或断言失败时仍回收整个 run。"""
-    replacement = PreforkWorker(first.services, concurrency=1, run_id=first.run_id)
-    state = {"success": False}
+def _quit_scenario(first: PreforkWorker) -> Iterator[dict[str, object]]:
+    """统一管理 QUIT 全场景，任何失败都由 first 显式回收整个 run。"""
+    state: dict[str, object] = {"replacement": None, "success": False}
+    body_error: BaseException | None = None
+    body_traceback = None
     try:
-        replacement.start()
-        yield replacement, state
+        yield state
+    except BaseException as exc:
+        body_error = exc
+        body_traceback = exc.__traceback__
     finally:
         errors: list[BaseException] = []
-        if replacement.process is not None:
+        replacement = cast("PreforkWorker | None", state["replacement"])
+        success = bool(state["success"])
+        fallback_to_first = not success
+        if success:
+            if replacement is None:
+                errors.append(AssertionError("QUIT replacement 未接管却标记成功"))
+                fallback_to_first = True
+            else:
+                try:
+                    replacement.stop(success=True)
+                except BaseException as exc:
+                    errors.append(exc)
+                    fallback_to_first = True
+        if fallback_to_first:
+            if replacement is not None:
+                try:
+                    replacement.stop(cleanup_redis=False)
+                except BaseException as exc:
+                    errors.append(exc)
             try:
-                replacement.stop(success=state["success"])
+                first.stop(cleanup_redis=False)
             except BaseException as exc:
                 errors.append(exc)
-        if not state["success"]:
             try:
                 first.cleanup_run_artifacts()
             except BaseException as exc:
                 errors.append(exc)
         if errors:
-            raise BaseExceptionGroup("QUIT replacement 外层清理失败", errors)
+            if body_error is not None:
+                errors.insert(0, body_error)
+            raise BaseExceptionGroup("QUIT 场景外层清理失败", errors)
+    if body_error is not None:
+        raise body_error.with_traceback(body_traceback)
 
 
 def test_prefork_concurrency_two_owns_one_runtime_and_engine_per_child(prefork_services: dict[str, str]) -> None:
@@ -831,7 +855,7 @@ def test_quit_countdown_retry_is_redelivered_with_idempotent_final_state(prefork
     first_log_path = first.log_path
     retry_countdown = 30
     result = first.submit(IDEMPOTENT_RETRY_TASK, operation_key, retry_countdown)
-    try:
+    with _quit_scenario(first) as quit_state:
         _wait_until(
             lambda: (
                 (row := _acceptance_row(prefork_services["database_url"], operation_key))
@@ -845,16 +869,14 @@ def test_quit_countdown_retry_is_redelivered_with_idempotent_final_state(prefork
         shutdown_started = time.monotonic()
         first.stop(shutdown_signal=signal.SIGQUIT, cleanup_redis=False)
         shutdown_elapsed = time.monotonic() - shutdown_started
-    except BaseException:
-        first.stop(cleanup_redis=False)
-        raise
+        assert first_log_path is not None
+        first_log = first_log_path.read_text(errors="replace")
+        assert 9 <= shutdown_elapsed < 20
+        assert "Soft Shutdown" in first_log and "10 seconds" in first_log and "Cold shutdown" in first_log
 
-    assert first_log_path is not None
-    first_log = first_log_path.read_text(errors="replace")
-    assert 9 <= shutdown_elapsed < 20
-    assert "Soft Shutdown" in first_log and "10 seconds" in first_log and "Cold shutdown" in first_log
-
-    with _quit_replacement_worker(first) as (replacement, replacement_state):
+        replacement = PreforkWorker(first.services, concurrency=1, run_id=first.run_id)
+        quit_state["replacement"] = replacement
+        replacement.start()
         redelivery_marker = _wait_until(
             lambda: next(
                 (
@@ -876,7 +898,7 @@ def test_quit_countdown_retry_is_redelivered_with_idempotent_final_state(prefork
         assert int(row["attempts"]) >= 2
         assert redelivery_marker["task_name"] == IDEMPOTENT_RETRY_TASK
         assert VISIBILITY_TIMEOUT <= redelivery_received_elapsed < retry_countdown
-        replacement_state["success"] = True
+        quit_state["success"] = True
     first_log_path.unlink(missing_ok=True)
     if first.project_log_dir is not None:
         shutil.rmtree(first.project_log_dir)

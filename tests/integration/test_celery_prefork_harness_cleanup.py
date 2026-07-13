@@ -113,7 +113,7 @@ def test_worker_stop_kills_surviving_process_group_and_aggregates_cleanup_errors
     assert worker.log_path.exists()
 
 
-def test_quit_replacement_outer_finally_cleans_run_on_start_or_assertion_failure(
+def test_quit_scenario_outer_finally_cleans_run_on_replacement_start_or_assertion_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     cleanup_calls: list[str] = []
@@ -123,6 +123,11 @@ def test_quit_replacement_outer_finally_cleans_run_on_start_or_assertion_failure
     class FakeFirst:
         services = SERVICES
         run_id = "failure-injection"
+        process = None
+
+        @staticmethod
+        def stop(**kwargs: object) -> None:
+            cleanup_calls.append("first-stop")
 
         @staticmethod
         def cleanup_run_artifacts() -> None:
@@ -142,12 +147,53 @@ def test_quit_replacement_outer_finally_cleans_run_on_start_or_assertion_failure
                 raise AssertionError("injected replacement start failure")
             return self
 
+        @staticmethod
+        def stop(**kwargs: object) -> None:
+            return None
+
     for fail_on_start in (True, False):
         FakeReplacement.fail_on_start = fail_on_start
         monkeypatch.setattr(harness, "PreforkWorker", FakeReplacement)
         with pytest.raises(AssertionError, match="injected"):
-            with harness._quit_replacement_worker(cast("harness.PreforkWorker", FakeFirst())):
+            first = cast("harness.PreforkWorker", FakeFirst())
+            with harness._quit_scenario(first) as quit_state:
+                replacement = harness.PreforkWorker(first.services, concurrency=1, run_id=first.run_id)
+                quit_state["replacement"] = replacement
+                replacement.start()
                 raise AssertionError("injected post-start assertion failure")
 
-    assert cleanup_calls == ["cleanup", "cleanup"]
+    assert cleanup_calls == ["first-stop", "cleanup", "first-stop", "cleanup"]
     assert retained_log.read_text(encoding="utf-8") == "diagnostic"
+
+
+def test_quit_scenario_outer_finally_cleans_before_replacement_failures(tmp_path: Path) -> None:
+    retained_log = tmp_path / "first-worker-pre-replacement.log"
+    retained_log.write_text("pre-replacement diagnostic", encoding="utf-8")
+
+    class FakeFirst:
+        services = SERVICES
+
+        def __init__(self, calls: list[str], failure_phase: str) -> None:
+            self.calls = calls
+            self.run_id = f"pre-replacement-{failure_phase}"
+            self.process: object | None = object()
+
+        def stop(self, **kwargs: object) -> None:
+            self.calls.append("stop")
+            self.process = None
+
+        def cleanup_run_artifacts(self) -> None:
+            self.calls.append("cleanup")
+
+    for failure_phase in ("wait", "after_stop"):
+        calls: list[str] = []
+        first = cast("harness.PreforkWorker", FakeFirst(calls, failure_phase))
+        with pytest.raises(AssertionError, match="injected pre-replacement failure"):
+            with harness._quit_scenario(first):
+                if failure_phase == "after_stop":
+                    first.stop(cleanup_redis=False)
+                raise AssertionError("injected pre-replacement failure")
+
+        assert calls[-1] == "cleanup"
+        assert calls.count("cleanup") == 1
+        assert retained_log.read_text(encoding="utf-8") == "pre-replacement diagnostic"
