@@ -26,21 +26,74 @@ _REAL_ASYNCIO_RUNNER = asyncio.Runner
 @contextmanager
 def _sync_watchdog(timeout: float, operation: str) -> Any:
     """用进程内定时信号中断永久阻塞，并完整恢复调用方信号状态。"""
+    entered_at = time.monotonic()
     previous_handler = signal.getsignal(signal.SIGALRM)
     previous_timer = signal.getitimer(signal.ITIMER_REAL)
+    previous_deadline = entered_at + previous_timer[0] if previous_timer[0] > 0 else None
+    watchdog_deadline = entered_at + timeout
+    previous_has_priority = previous_deadline is not None and previous_deadline <= watchdog_deadline
+    effective_deadline = previous_deadline if previous_has_priority else watchdog_deadline
+    previous_triggered = False
 
-    def fail_on_timeout(_signum: int, _frame: Any) -> None:
+    def fail_on_timeout(signum: int, frame: Any) -> None:
+        nonlocal previous_triggered
+        if previous_has_priority:
+            previous_triggered = True
+            if callable(previous_handler):
+                previous_handler(signum, frame)
+                return
+            if previous_handler == signal.SIG_IGN:
+                return
+            signal.signal(signal.SIGALRM, previous_handler)
+            signal.raise_signal(signal.SIGALRM)
+            return
         raise AssertionError(f"{operation} 超过 {timeout:.2f}s watchdog，疑似永久阻塞")
 
     signal.signal(signal.SIGALRM, fail_on_timeout)
-    signal.setitimer(signal.ITIMER_REAL, timeout)
+    signal.setitimer(signal.ITIMER_REAL, max(effective_deadline - time.monotonic(), 1e-6))
     try:
         yield
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous_handler)
-        if previous_timer[0] > 0:
-            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
+        if previous_deadline is not None and not previous_triggered:
+            remaining = max(previous_deadline - time.monotonic(), 1e-6)
+            signal.setitimer(signal.ITIMER_REAL, remaining, previous_timer[1])
+        elif previous_triggered and previous_timer[1] > 0:
+            signal.setitimer(signal.ITIMER_REAL, previous_timer[1], previous_timer[1])
+
+
+def test_sync_watchdog_restores_outer_timer_with_elapsed_time_deducted() -> None:
+    with _sync_watchdog(0.40, "outer watchdog"):
+        with _sync_watchdog(1.0, "inner watchdog"):
+            time.sleep(0.10)
+        remaining, interval = signal.getitimer(signal.ITIMER_REAL)
+
+        assert remaining == pytest.approx(0.30, abs=0.06)
+        assert interval == 0.0
+
+
+def test_sync_watchdog_forwards_an_earlier_outer_timer_without_rearming_it() -> None:
+    original_handler = signal.getsignal(signal.SIGALRM)
+    original_timer = signal.getitimer(signal.ITIMER_REAL)
+    outer_calls: list[int] = []
+
+    def outer_handler(signum: int, _frame: Any) -> None:
+        outer_calls.append(signum)
+
+    signal.signal(signal.SIGALRM, outer_handler)
+    signal.setitimer(signal.ITIMER_REAL, 0.05)
+    try:
+        with _sync_watchdog(0.40, "inner watchdog"):
+            time.sleep(0.10)
+
+        assert outer_calls == [signal.SIGALRM]
+        assert signal.getitimer(signal.ITIMER_REAL)[0] == 0.0
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, original_handler)
+        if original_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *original_timer)
 
 
 def _runtime_module() -> ModuleType:
