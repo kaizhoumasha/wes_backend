@@ -674,3 +674,78 @@ def test_worker_process_shutdown_signal_is_registered_and_invokes_runtime(monkey
     monkeypatch.setattr(app_module, "celery_async_runtime", runtime, raising=False)
     app_module.on_worker_process_shutdown()
     runtime.shutdown.assert_called_once_with()
+
+
+def test_redis_init_timeout_does_not_wait_forever_for_cancel_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+
+    async def cancellation_resistant_init() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()
+
+    infra.init_redis.side_effect = cancellation_resistant_init
+    monkeypatch.setattr(module, "INITIALIZATION_TIMEOUT_SECONDS", 0.03)
+    monkeypatch.setattr(module, "REDIS_PING_TIMEOUT_SECONDS", 0.01)
+
+    started_at = time.monotonic()
+    with _sync_watchdog(0.50, "Redis cancellation cleanup during worker init"):
+        runtime.initialize()
+
+    assert time.monotonic() - started_at < 0.20
+    assert runtime.run_async(lambda: asyncio.sleep(0, result="degraded")) == "degraded"
+    runtime.shutdown()
+
+
+def test_database_init_timeout_does_not_wait_forever_for_cancel_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+
+    async def cancellation_resistant_init() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()
+
+    infra.init_db.side_effect = cancellation_resistant_init
+    monkeypatch.setattr(module, "INITIALIZATION_TIMEOUT_SECONDS", 0.01)
+
+    started_at = time.monotonic()
+    with _sync_watchdog(0.50, "database cancellation cleanup during worker init"):
+        with pytest.raises(TimeoutError):
+            runtime.initialize()
+
+    assert time.monotonic() - started_at < 0.20
+
+
+def test_shutdown_continues_after_cleanup_ignores_first_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    runtime.initialize()
+    events: list[str] = []
+
+    async def stubborn_redis_close() -> None:
+        events.append("redis")
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()
+
+    async def close_db() -> None:
+        events.append("database")
+
+    infra.close_redis.side_effect = stubborn_redis_close
+    infra.close_db.side_effect = close_db
+    monkeypatch.setattr(module, "SHUTDOWN_STAGE_TIMEOUT_SECONDS", 0.01)
+
+    started_at = time.monotonic()
+    with _sync_watchdog(0.50, "cancellation-resistant Redis shutdown"):
+        runtime.shutdown()
+
+    assert time.monotonic() - started_at < 0.20
+    assert events == ["redis", "database"]

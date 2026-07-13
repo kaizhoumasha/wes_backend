@@ -171,6 +171,36 @@ def test_owner_close_clears_engine_factory_and_owner_metadata(
     assert db_module._engine_owner_role is None
 
 
+def test_init_db_failure_does_not_publish_partial_engine_and_can_retry(
+    db_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(db_module, "settings", _settings("sqlite+aiosqlite:///:memory:"))
+    failed_engine = MagicMock(sync_engine=MagicMock(), dispose=AsyncMock())
+    retry_engine = MagicMock(sync_engine=MagicMock(), dispose=AsyncMock())
+    db_module.create_async_engine.side_effect = [failed_engine, retry_engine]
+    session_factory = MagicMock(side_effect=_SessionContext)
+    db_module.async_sessionmaker.side_effect = [RuntimeError("session factory failed"), session_factory]
+
+    async def fail_then_retry() -> None:
+        with pytest.raises(RuntimeError, match="session factory failed"):
+            await db_module.init_db()
+
+        failed_engine.dispose.assert_awaited_once()
+        assert db_module.engine is None
+        assert db_module.AsyncSessionLocal is None
+        assert db_module._engine_owner_pid is None
+        assert db_module._engine_owner_loop_id is None
+        assert db_module._engine_owner_role is None
+
+        await db_module.init_db()
+
+    asyncio.run(fail_then_retry())
+
+    assert db_module.create_async_engine.call_count == 2
+    assert db_module.engine is retry_engine
+
+
 @pytest.mark.parametrize(
     ("database_url", "role", "pool_size"),
     [

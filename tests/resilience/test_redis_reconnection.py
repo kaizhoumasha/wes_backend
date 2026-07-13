@@ -301,3 +301,46 @@ def test_reconnect_rejects_foreign_event_loop_without_cleaning_owned_resources(
     assert manager.redis_client is clients[0]
     clients[0].close.assert_not_awaited()
     pools[0].disconnect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_close_and_init_share_single_flight_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.database.redis_client import RedisManager
+
+    async def ping() -> bool:
+        return True
+
+    _redis_module, pools, clients = _install_candidates(
+        monkeypatch,
+        client_factory=lambda _pool: _CandidateClient(ping=ping),
+    )
+    manager = RedisManager()
+    await manager.init_redis()
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    async def blocking_close() -> None:
+        close_started.set()
+        await release_close.wait()
+
+    clients[0].close.side_effect = blocking_close
+    closing = asyncio.create_task(manager.close_redis())
+    initializing: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(close_started.wait(), timeout=1.0)
+        initializing = asyncio.create_task(manager.init_redis())
+        await asyncio.sleep(0)
+        assert len(pools) == 1
+        release_close.set()
+        await asyncio.wait_for(asyncio.gather(closing, initializing), timeout=1.0)
+    finally:
+        release_close.set()
+        tasks = [task for task in (closing, initializing) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert len(pools) == 2
+    assert manager.redis_client is clients[1]
+    assert manager.is_available is True

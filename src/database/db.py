@@ -1,3 +1,5 @@
+import asyncio
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -26,6 +28,31 @@ class Base(DeclarativeBase):
 # 全局数据库引擎
 engine: AsyncEngine | None = None
 AsyncSessionLocal: async_sessionmaker[AsyncSession] | None = None
+_engine_owner_pid: int | None = None
+_engine_owner_loop_id: int | None = None
+_engine_owner_role: str | None = None
+_engine_owner_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _runtime_role() -> str:
+    """读取当前数据库运行角色；完整 pool 配额由后续任务配置。"""
+    return str(getattr(settings, "DATABASE_RUNTIME_ROLE", "api"))
+
+
+def _assert_engine_owner() -> None:
+    """确保数据库资源只被创建它的进程、事件循环和运行角色使用。"""
+    current_pid = os.getpid()
+    current_role = _runtime_role()
+
+    if _engine_owner_pid != current_pid:
+        raise RuntimeError(
+            f"Database engine owner PID mismatch (owner={_engine_owner_pid}, current={current_pid}); "
+            "refusing fork-inherited resource access"
+        )
+    if _engine_owner_loop is not asyncio.get_running_loop():
+        raise RuntimeError("Database engine owner event loop mismatch")
+    if _engine_owner_role != current_role:
+        raise RuntimeError(f"Database engine owner role mismatch (owner={_engine_owner_role}, current={current_role})")
 
 
 async def init_db() -> None:
@@ -34,7 +61,17 @@ async def init_db() -> None:
 
     配置自定义 schema 搜索路径，避免使用默认的 public schema。
     """
-    global engine, AsyncSessionLocal
+    global AsyncSessionLocal, _engine_owner_loop, _engine_owner_loop_id, _engine_owner_pid, _engine_owner_role, engine
+
+    if engine is not None or AsyncSessionLocal is not None:
+        if engine is None or AsyncSessionLocal is None:
+            raise RuntimeError("Database engine is partially initialized")
+        _assert_engine_owner()
+        return
+
+    current_pid = os.getpid()
+    current_loop_id = id(asyncio.get_running_loop())
+    current_role = _runtime_role()
 
     database_url = str(settings.DATABASE_URL)
     is_sqlite = database_url.startswith("sqlite")
@@ -57,21 +94,35 @@ async def init_db() -> None:
             }
         )
 
-    engine = create_async_engine(
-        settings.DATABASE_URL,
-        **engine_kwargs,
-    )
+    candidate_engine: AsyncEngine | None = None
+    try:
+        candidate_engine = create_async_engine(
+            settings.DATABASE_URL,
+            **engine_kwargs,
+        )
 
-    if is_sqlite:
-        configure_sqlite_schemas(engine.sync_engine)
+        if is_sqlite:
+            configure_sqlite_schemas(candidate_engine.sync_engine)
 
-    AsyncSessionLocal = async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-        autocommit=False,
-        autoflush=False,
-    )
+        candidate_session_factory = async_sessionmaker(
+            candidate_engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autocommit=False,
+            autoflush=False,
+        )
+    except BaseException:
+        if candidate_engine is not None:
+            await candidate_engine.dispose()
+        raise
+
+    # Engine、SessionFactory 和 owner metadata 必须一次性发布，避免失败后留下半初始化全局状态。
+    engine = candidate_engine
+    AsyncSessionLocal = candidate_session_factory
+    _engine_owner_pid = current_pid
+    _engine_owner_loop_id = current_loop_id
+    _engine_owner_role = current_role
+    _engine_owner_loop = asyncio.get_running_loop()
 
     # # 尝试连接数据库，验证连接是否成功
     # async with engine.begin() as conn:
@@ -88,14 +139,23 @@ async def close_db() -> None:
     """
     关闭数据库连接
     """
-    global engine, AsyncSessionLocal
+    global AsyncSessionLocal, _engine_owner_loop, _engine_owner_loop_id, _engine_owner_pid, _engine_owner_role, engine
 
-    if engine:
-        await engine.dispose()
-        logger.info("Database connection closed")
+    if engine is not None or AsyncSessionLocal is not None:
+        _assert_engine_owner()
 
-    engine = None
-    AsyncSessionLocal = None
+    owned_engine = engine
+    try:
+        if owned_engine is not None:
+            await owned_engine.dispose()
+            logger.info("Database connection closed")
+    finally:
+        engine = None
+        AsyncSessionLocal = None
+        _engine_owner_pid = None
+        _engine_owner_loop_id = None
+        _engine_owner_role = None
+        _engine_owner_loop = None
 
 
 async def get_db() -> AsyncGenerator[AsyncSession]:
@@ -110,6 +170,7 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
     """
     if AsyncSessionLocal is None:
         raise RuntimeError("Database is not initialized")
+    _assert_engine_owner()
 
     async with AsyncSessionLocal() as session:
         try:
@@ -145,6 +206,7 @@ async def get_db_context() -> AsyncGenerator[AsyncSession]:
     """
     if AsyncSessionLocal is None:
         raise RuntimeError("Database is not initialized")
+    _assert_engine_owner()
 
     async with AsyncSessionLocal() as session:
         try:
