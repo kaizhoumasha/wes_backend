@@ -57,15 +57,19 @@
 
 **Why**: 旧 TODO 中的 SMT Handoff 看板、RuntimeHold 看板、急停看板、WMS breaker 告警和粗分机监控本质上是同一套运营观测能力。按目标态应合并设计，避免每条业务线重复建看板和告警口径。
 
+**Context**: Celery Worker 单异步运行时改造会新增按 role/PID/run-id 结构化的 PostgreSQL `application_name`、连接预算门禁和 pool timeout 配置；这些信号应并入同一运营面，而不是再建一套数据库专用看板。
+
 **Scope**:
 - RuntimeInbox backlog、dead-letter、RESOURCE_WAIT、Outbox BLOCKED_RESOURCE
 - DeviceCommand ACK age、dispatch deadline、ECS status probe 失败、设备 ERROR/OFFLINE/MAINTENANCE
 - Reconciliation active 数、MTTR、reason、late callback、manual resolve
 - WMS breaker OPEN/HALF_OPEN/CLOSED、timeout/5xx/business reject、evidence 写入失败
 - Safety incident / ESTOP evidence / shared-device 影响范围
+- Database pool checkout wait/timeout、按 `application_name` 的连接预算占用、`idle in transaction` 数量
+- 数据库告警与 Runbook：例如 `idle in transaction > 0` 持续 2 分钟、pool timeout 或预算占用接近上限
 - 现场 Runbook：WMS/RCS 拒绝、Inbox dead-letter、command evidence 缺失、对账 evidence 缺失、设备状态不一致
 
-**Dependencies**: 目标态 observability 指标落地，并产生真实或接近真实的试运行数据。
+**Dependencies**: 目标态 observability 指标、Celery 单异步运行时、连接预算与结构化 `application_name` 落地，并产生真实或接近真实的试运行数据。
 
 **Effort**: M-L
 
@@ -90,6 +94,49 @@
 **Effort**: M
 
 **Priority**: P2
+
+---
+
+## P3 - 全仓 Redis fail-open/fail-closed/fallback 审计
+
+**What**: 审计整个仓库所有 Redis 调用点，明确每个调用是 fail-open、fail-closed 还是带 fallback，并补齐缺失的降级或错误处理。
+
+**Why**: Celery Worker 单运行时改造只锁定了 Worker 与 RuntimeInbox 的 Redis 降级边界；其余模块（缓存、锁、SSE、IP 定位等）可能仍存在无明确语义的 Redis 失败路径，需要在独立后续项中统一。
+
+**Context**: `src/database/redis_client.py` 已提供原子初始化和降级模式，但尚未覆盖全仓调用点。本 TODO 应输出一份调用点清单与每点的失败语义。
+
+**Scope**:
+- 列出所有 `RedisManager` / `redis_client` 调用点
+- 标注 fail-open（继续服务）/ fail-closed（报错拒绝）/ fallback（PostgreSQL advisory lock 等）
+- 对未标注或语义不一致的调用点补齐处理与测试
+
+**Dependencies**: Worker 单运行时改造完成，Redis 原子初始化稳定。
+
+**Effort**: M (human: ~1 day / CC: ~30 min)
+
+**Priority**: P3
+
+---
+
+## P3 - API 容器横向扩容拓扑
+
+**What**: 移除当前 `docker-compose.yml` 中 API 服务的固定 `container_name` 与 host port 绑定，通过 Nginx / service discovery 支持多 API 容器副本。
+
+**Why**: 本轮计划将 `API_REPLICAS` 修正为 1 并锁定单容器 4 Uvicorn worker 拓扑，这是当前真实状态；未来流量增长需要横向扩容，但当前网络命名与端口映射阻碍了多副本。
+
+**Context**: 生产当前为单 API 容器，4 Uvicorn worker；连接预算公式 `1×4×5 + 4×4×1 = 36` 中的 `1` 就是 API 容器副本数。扩容需要同步更新预算、Nginx 上游与 compose service 定义。
+
+**Scope**:
+- 移除 API service 的 `container_name` 和 host `ports` 映射
+- 增加 Nginx / Traefik / 内部负载均衡 service
+- 更新连接预算公式，使 `API_REPLICAS` 成为可配置变量
+- 验证多副本启动后 Celery Worker、Beat 和前端仍能正确访问 API
+
+**Dependencies**: 当前单容器拓扑稳定，连接预算护栏生效。
+
+**Effort**: M (human: ~1 day / CC: ~30 min)
+
+**Priority**: P3
 
 ---
 
