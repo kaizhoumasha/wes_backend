@@ -45,6 +45,7 @@ def db_module(monkeypatch: pytest.MonkeyPatch) -> Any:
         "_engine_owner_pid",
         "_engine_owner_loop_id",
         "_engine_owner_role",
+        "_engine_owner_loop",
     ):
         monkeypatch.setattr(db, name, None, raising=False)
     return db
@@ -102,6 +103,41 @@ def test_database_generation_ids_publish_stably_rotate_and_clear(
         assert second[1] != first[1]
 
     asyncio.run(lifecycle())
+
+
+@pytest.mark.parametrize("failure_call", [1, 2])
+def test_database_generation_failure_disposes_candidate_without_publishing(
+    db_module: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_call: int,
+) -> None:
+    monkeypatch.setattr(db_module, "settings", _settings("sqlite+aiosqlite:///:memory:"))
+    calls = 0
+
+    def failing_uuid4() -> SimpleNamespace:
+        nonlocal calls
+        calls += 1
+        if calls == failure_call:
+            raise RuntimeError(f"generation {failure_call} failed")
+        return SimpleNamespace(hex=f"generation-{calls}")
+
+    monkeypatch.setattr(db_module, "uuid4", failing_uuid4)
+
+    async def fail_generation() -> None:
+        with pytest.raises(RuntimeError, match=f"generation {failure_call} failed"):
+            await db_module.init_db()
+
+    asyncio.run(fail_generation())
+
+    db_module.create_async_engine.return_value.dispose.assert_awaited_once()
+    assert db_module.engine is None
+    assert db_module.AsyncSessionLocal is None
+    assert db_module._engine_generation is None
+    assert db_module._session_factory_generation is None
+    assert db_module._engine_owner_pid is None
+    assert db_module._engine_owner_loop_id is None
+    assert db_module._engine_owner_role is None
+    assert db_module._engine_owner_loop is None
 
 
 def test_init_db_rejects_same_pid_from_foreign_loop(db_module: Any, monkeypatch: pytest.MonkeyPatch) -> None:

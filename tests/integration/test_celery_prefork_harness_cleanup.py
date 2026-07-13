@@ -52,6 +52,21 @@ def test_worker_start_failure_always_invokes_full_teardown_and_retains_log(monke
     worker.log_path.unlink(missing_ok=True)
 
 
+def test_worker_popen_failure_closes_and_removes_unowned_temporary_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = harness.PreforkWorker(SERVICES)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("popen failed")))
+
+    with pytest.raises(OSError, match="popen failed"):
+        worker.start()
+
+    assert worker.process is None
+    assert worker._log_file is not None and worker._log_file.closed
+    assert worker.log_path is not None and not worker.log_path.exists()
+    assert worker.project_log_dir is not None and not worker.project_log_dir.exists()
+
+
 def test_worker_stop_kills_surviving_process_group_and_aggregates_cleanup_errors(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

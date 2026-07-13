@@ -155,6 +155,23 @@ def test_runner_generation_publishes_stably_rotates_and_clears(monkeypatch: pyte
     second_runtime.shutdown()
 
 
+def test_runner_generation_failure_rolls_back_all_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    monkeypatch.setattr(module, "uuid4", MagicMock(side_effect=RuntimeError("generation failed")))
+
+    with pytest.raises(RuntimeError, match="generation failed"):
+        runtime.initialize()
+
+    assert runtime.state is module.RuntimeState.NEW
+    assert runtime._runner is None
+    assert runtime.runner_generation is None
+    assert runtime._owner_pid is None
+    infra.close_redis.assert_awaited_once()
+    infra.close_db.assert_awaited_once()
+
+
 async def _discard_expired_awaitable(awaitable: Any) -> None:
     """让 deadline double 同时兼容 coroutine、Task 与 Future。"""
     if inspect.iscoroutine(awaitable):

@@ -175,15 +175,16 @@ async def init_db() -> None:
             autocommit=False,
             autoflush=False,
         )
+        # Generation 也是 candidate 构造的一部分；任一生成失败都必须 dispose Engine，禁止半发布。
+        candidate_engine_generation = uuid4().hex
+        candidate_session_factory_generation = uuid4().hex
     except BaseException:
         if candidate_engine is not None:
             await candidate_engine.dispose()
         raise
 
-    # Generation 在真实资源创建成功后生成，并与 Engine、SessionFactory、owner metadata 一次性发布；
+    # Generation 与 Engine、SessionFactory、owner metadata 一次性发布；
     # 这样外部诊断能区分 child 轮换后的新资源，而不会在失败路径暴露虚假 identity。
-    candidate_engine_generation = uuid4().hex
-    candidate_session_factory_generation = uuid4().hex
     engine = candidate_engine
     AsyncSessionLocal = candidate_session_factory
     _engine_generation = candidate_engine_generation

@@ -222,6 +222,7 @@ class CeleryAsyncRuntime:
         try:
             runner = asyncio.Runner()
             runner.run(self._initialize_infrastructure(deadline, progress), context=contextvars.Context())
+            candidate_runner_generation = uuid4().hex
         except BaseException:
             reusable = runner is None
             if runner is not None:
@@ -242,7 +243,7 @@ class CeleryAsyncRuntime:
 
         with self._state_lock:
             self._runner = runner
-            self._runner_generation = uuid4().hex
+            self._runner_generation = candidate_runner_generation
             self._owner_pid = os.getpid()
             self._state = RuntimeState.READY
 

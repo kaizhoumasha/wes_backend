@@ -444,14 +444,6 @@ class PreforkWorker:
         environment["PREFORK_REDIS_KEY_PREFIX"] = self.key_prefix
         environment["PYTHONPATH"] = f"{REPO_ROOT}:{environment.get('PYTHONPATH', '')}".rstrip(":")
         environment["WORKLINE_ALLOW_NULL_PLUGIN"] = "1"
-        self._log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115 - worker 生命周期跨越 start/stop
-            mode="w+", prefix=f"wes-prefork-{self.run_id}-", suffix=".log", delete=False
-        )
-        self.log_path = Path(self._log_file.name)
-        self.project_log_dir = Path(tempfile.mkdtemp(prefix=f"wes-prefork-project-{self.run_id}-"))
-        environment["PREFORK_PROBE_LOG"] = str(self.log_path)
-        environment["LOG_DIR"] = str(self.project_log_dir)
-        environment["LOG_DISABLE_FILE"] = "false"
         command = [
             "uv",
             "run",
@@ -472,16 +464,24 @@ class PreforkWorker:
             "--without-gossip",
             "--without-mingle",
         ]
-        self.process = subprocess.Popen(
-            command,
-            cwd=REPO_ROOT,
-            env=environment,
-            stdout=self._log_file,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-        )
         try:
+            self._log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115 - worker 生命周期跨越 start/stop
+                mode="w+", prefix=f"wes-prefork-{self.run_id}-", suffix=".log", delete=False
+            )
+            self.log_path = Path(self._log_file.name)
+            self.project_log_dir = Path(tempfile.mkdtemp(prefix=f"wes-prefork-project-{self.run_id}-"))
+            environment["PREFORK_PROBE_LOG"] = str(self.log_path)
+            environment["LOG_DIR"] = str(self.project_log_dir)
+            environment["LOG_DISABLE_FILE"] = "false"
+            self.process = subprocess.Popen(
+                command,
+                cwd=REPO_ROOT,
+                env=environment,
+                stdout=self._log_file,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
             _wait_until(self._is_ready, WORKER_READY_TIMEOUT, f"worker {self.hostname} readiness")
             ready_probe = cast("dict[str, object]", self.result(self.submit(PROBE_TASK, "worker-ready")))
             expected_database = make_url(self.services["database_url"])
@@ -501,6 +501,29 @@ class PreforkWorker:
             self._capture_descendants()
             return self
         except BaseException as start_error:
+            if self.process is None:
+                cleanup_errors: list[BaseException] = []
+                try:
+                    if self._log_file is not None:
+                        self._log_file.close()
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+                try:
+                    if self.log_path is not None:
+                        self.log_path.unlink(missing_ok=True)
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+                try:
+                    if self.project_log_dir is not None:
+                        shutil.rmtree(self.project_log_dir)
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+                if cleanup_errors:
+                    raise BaseExceptionGroup(
+                        f"worker {self.run_id} Popen 前失败且临时资源清理失败",
+                        [start_error, *cleanup_errors],
+                    ) from start_error
+                raise
             try:
                 self.stop()
             except BaseException as cleanup_error:
