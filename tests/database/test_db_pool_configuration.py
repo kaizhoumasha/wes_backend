@@ -52,10 +52,6 @@ def _settings(database_url: str, *, role: str = "celery", pool_size: int = 1) ->
         DATABASE_MAX_OVERFLOW=0,
         DATABASE_POOL_TIMEOUT=30,
         DATABASE_APPLICATION_NAME=f"test:{role}:worker:123",
-        DATABASE_CONNECT_ARGS={
-            "command_timeout": 7,
-            "server_settings": {"statement_timeout": "5000", "jit": "off"},
-        },
     )
 
 
@@ -202,29 +198,37 @@ def test_postgresql_pool_parameters_follow_runtime_role_contract(
     assert kwargs["connect_args"]["server_settings"] == {
         "search_path": "app,public",
         "application_name": f"test:{role}:worker:123",
-        "statement_timeout": "5000",
-        "jit": "off",
     }
-    assert kwargs["connect_args"]["command_timeout"] == 7
 
 
 def test_postgresql_connect_args_preserve_arbitrary_existing_server_settings(
     db_module: Any,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = _settings("postgresql+asyncpg://user:pass@db/app", role="celery", pool_size=1)
-    monkeypatch.setattr(db_module, "settings", settings)
+    merge = getattr(db_module, "_merge_postgresql_connect_args", None)
+    assert callable(merge), "db.py 必须提供纯 connect_args 合并 helper，避免覆盖调用方 server_settings"
+    existing = {
+        "command_timeout": 7,
+        "server_settings": {"statement_timeout": "5000", "jit": "off"},
+    }
 
-    asyncio.run(db_module.init_db())
-
-    _, kwargs = db_module.create_async_engine.call_args
-    connect_args = kwargs["connect_args"]
+    connect_args = merge(
+        existing,
+        search_path="app,public",
+        application_name="test:celery:worker:123",
+    )
     server_settings = connect_args["server_settings"]
-    assert connect_args.get("command_timeout") == 7
-    assert server_settings.get("statement_timeout") == "5000"
-    assert server_settings.get("jit") == "off"
-    assert server_settings.get("search_path") == "app,public"
-    assert server_settings.get("application_name") == "test:celery:worker:123"
+
+    assert connect_args["command_timeout"] == 7
+    assert server_settings == {
+        "statement_timeout": "5000",
+        "jit": "off",
+        "search_path": "app,public",
+        "application_name": "test:celery:worker:123",
+    }
+    assert existing == {
+        "command_timeout": 7,
+        "server_settings": {"statement_timeout": "5000", "jit": "off"},
+    }
 
 
 def test_sqlite_uses_static_pool_without_postgresql_pool_arguments(

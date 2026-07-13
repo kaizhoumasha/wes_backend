@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import os
+import threading
 import time
 from contextvars import ContextVar
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _REAL_ASYNCIO_RUNNER = asyncio.Runner
 
@@ -55,44 +60,121 @@ def _install_runtime(monkeypatch: pytest.MonkeyPatch, module: ModuleType) -> Any
     return runtime
 
 
-def test_initializing_transition_rejects_reentrant_message(monkeypatch: pytest.MonkeyPatch) -> None:
+async def _discard_expired_awaitable(awaitable: Any) -> None:
+    """让 deadline double 同时兼容 coroutine、Task 与 Future。"""
+    if inspect.iscoroutine(awaitable):
+        awaitable.close()
+        return
+    if isinstance(awaitable, asyncio.Future):
+        awaitable.cancel()
+        await asyncio.gather(awaitable, return_exceptions=True)
+        return
+    cancel = getattr(awaitable, "cancel", None)
+    if callable(cancel):
+        cancel()
+
+
+def _configure_lazy_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    module: ModuleType,
+    infra: SimpleNamespace,
+) -> tuple[_ManualMonotonicClock, list[float], Callable[[], None]]:
+    clock = _ManualMonotonicClock()
+    timeouts: list[float] = []
+    real_monotonic = time.monotonic
+    real_wait_for = asyncio.wait_for
+
+    async def init_db() -> None:
+        clock.advance(0.5)
+
+    async def redis_hang() -> None:
+        await asyncio.Event().wait()
+
+    async def fake_wait_for(awaitable: Any, timeout: float) -> Any:
+        timeouts.append(timeout)
+        await _discard_expired_awaitable(awaitable)
+        clock.advance(timeout)
+        raise TimeoutError
+
+    infra.init_db.side_effect = init_db
+    infra.init_redis.side_effect = redis_hang
+    monkeypatch.setattr(module.time, "monotonic", clock)
+    monkeypatch.setattr(module.asyncio, "wait_for", fake_wait_for)
+
+    def restore() -> None:
+        monkeypatch.setattr(module.time, "monotonic", real_monotonic)
+        monkeypatch.setattr(module.asyncio, "wait_for", real_wait_for)
+
+    return clock, timeouts, restore
+
+
+def test_initializing_transition_is_observable_from_another_sync_caller(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
     runtime = _install_runtime(monkeypatch, module)
-    observed: list[str] = []
+    started = threading.Event()
+    release = threading.Event()
+    thread_errors: list[BaseException] = []
 
     async def init_db() -> None:
-        with pytest.raises(RuntimeError, match=r"(?i)INITIALIZING") as exc_info:
-            runtime.run_async(lambda: asyncio.sleep(0))
-        observed.append(str(exc_info.value))
+        started.set()
+        assert release.wait(timeout=1.0)
+
+    def initialize() -> None:
+        try:
+            runtime.initialize()
+        except BaseException as exc:  # pragma: no cover - assertion below reports the original error
+            thread_errors.append(exc)
 
     infra.init_db.side_effect = init_db
-    runtime.initialize()
+    thread = threading.Thread(target=initialize)
+    thread.start()
+    assert started.wait(timeout=1.0)
 
-    assert observed and "INITIALIZING" in observed[0]
-    assert runtime.run_async(lambda: asyncio.sleep(0, result="ready")) == "ready"
+    with pytest.raises(RuntimeError, match=r"(?i)INITIALIZING"):
+        runtime.initialize()
+
+    release.set()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    assert thread_errors == []
     runtime.shutdown()
 
 
-def test_closing_transition_rejects_new_message_and_repeated_shutdown_is_idempotent(
+def test_closing_transition_is_observable_from_another_sync_caller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
     runtime = _install_runtime(monkeypatch, module)
     runtime.initialize()
-    observed: list[str] = []
+    started = threading.Event()
+    release = threading.Event()
+    thread_errors: list[BaseException] = []
 
     async def close_redis() -> None:
-        with pytest.raises(RuntimeError, match=r"(?i)CLOSING") as exc_info:
-            runtime.run_async(lambda: asyncio.sleep(0))
-        observed.append(str(exc_info.value))
+        started.set()
+        assert release.wait(timeout=1.0)
+
+    def shutdown() -> None:
+        try:
+            runtime.shutdown()
+        except BaseException as exc:  # pragma: no cover - assertion below reports the original error
+            thread_errors.append(exc)
 
     infra.close_redis.side_effect = close_redis
-    runtime.shutdown()
-    runtime.shutdown()
+    thread = threading.Thread(target=shutdown)
+    thread.start()
+    assert started.wait(timeout=1.0)
 
-    assert observed and "CLOSING" in observed[0]
+    with pytest.raises(RuntimeError, match=r"(?i)CLOSING"):
+        runtime.run_async(lambda: asyncio.sleep(0))
+
+    release.set()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    assert thread_errors == []
+    runtime.shutdown()
     infra.close_db.assert_awaited_once()
 
 
@@ -110,7 +192,8 @@ def test_lazy_entry_initializes_once_then_reuses_runtime(monkeypatch: pytest.Mon
 def test_direct_task_run_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
-    _install_runtime(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    clock, timeouts, restore = _configure_lazy_deadline(monkeypatch, module, infra)
     from src.celery_app.app import celery_app
 
     @celery_app.task(name="tests.runtime.direct_probe")
@@ -118,13 +201,18 @@ def test_direct_task_run_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPat
         return module.run_async(lambda: asyncio.sleep(0, result="direct"))
 
     assert direct_probe.run() == "direct"
+    assert timeouts and timeouts[-1] == pytest.approx(1.0, abs=0.01)
+    assert clock.value == pytest.approx(101.5, abs=0.01)
     infra.init_db.assert_awaited_once()
+    restore()
+    runtime.shutdown()
 
 
 def test_eager_task_apply_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
-    _install_runtime(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    clock, timeouts, restore = _configure_lazy_deadline(monkeypatch, module, infra)
     from src.celery_app.app import celery_app
 
     @celery_app.task(name="tests.runtime.eager_probe")
@@ -137,7 +225,11 @@ def test_eager_task_apply_uses_bounded_lazy_runtime(monkeypatch: pytest.MonkeyPa
         assert eager_probe.apply().get() == "eager"
     finally:
         celery_app.conf.task_always_eager = previous
+    assert timeouts and timeouts[-1] == pytest.approx(1.0, abs=0.01)
+    assert clock.value == pytest.approx(101.5, abs=0.01)
     infra.init_db.assert_awaited_once()
+    restore()
+    runtime.shutdown()
 
 
 def test_worker_init_is_logger_only_and_leaves_parent_async_resources_empty(
@@ -227,13 +319,25 @@ def test_nested_running_loop_has_stable_error_and_does_not_create_coroutine(
 def test_failed_initialization_returns_to_retryable_behavior(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
+    events: list[str] = []
+    probes: list[_RunnerProbe] = []
+
+    def runner_factory() -> _RunnerProbe:
+        probe = _RunnerProbe(events)
+        probes.append(probe)
+        return probe
+
+    monkeypatch.setattr(module.asyncio, "Runner", runner_factory)
     runtime = _install_runtime(monkeypatch, module)
     infra.init_db.side_effect = [ConnectionError("database unavailable"), None]
 
     with pytest.raises(ConnectionError, match="database unavailable"):
         runtime.initialize()
 
+    assert events == ["runner"]
+    assert probes[0].get_loop().is_closed()
     assert runtime.run_async(lambda: asyncio.sleep(0, result="recovered")) == "recovered"
+    assert len(probes) == 2
     assert infra.init_db.await_count == 2
     runtime.shutdown()
 
@@ -407,14 +511,19 @@ class _ManualMonotonicClock:
 
 
 @pytest.mark.parametrize(
-    ("hanging_stage", "prior_cost", "expected_timeout"),
-    [("redis_ping", 2.25, 0.75), ("redis_cleanup", 1.25, 1.75)],
+    ("hanging_stage", "prior_cost", "expected_timeout", "expected_elapsed"),
+    [
+        ("redis_ping", 2.25, 0.75, 3.0),
+        ("redis_cleanup", 1.25, 1.75, 3.0),
+        ("redis_ping_cap", 0.5, 1.0, 1.5),
+    ],
 )
 def test_worker_process_init_redis_stages_share_one_three_second_deadline(
     monkeypatch: pytest.MonkeyPatch,
     hanging_stage: str,
     prior_cost: float,
     expected_timeout: float,
+    expected_elapsed: float,
 ) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
@@ -441,7 +550,7 @@ def test_worker_process_init_redis_stages_share_one_three_second_deadline(
         timeouts.append(timeout)
         if hanging_stage == "redis_cleanup" and len(timeouts) == 1:
             return await awaitable
-        awaitable.close()
+        await _discard_expired_awaitable(awaitable)
         clock.advance(timeout)
         raise TimeoutError
 
@@ -456,7 +565,7 @@ def test_worker_process_init_redis_stages_share_one_three_second_deadline(
     app_module.on_worker_process_init()
 
     assert timeouts[-1] == pytest.approx(expected_timeout, abs=0.01)
-    assert clock.value == pytest.approx(103.0, abs=0.01)
+    assert clock.value == pytest.approx(100.0 + expected_elapsed, abs=0.01)
     monkeypatch.setattr(module.time, "monotonic", real_monotonic)
     monkeypatch.setattr(module.asyncio, "wait_for", real_wait_for)
     assert runtime.run_async(lambda: asyncio.sleep(0, result="degraded but ready")) == "degraded but ready"

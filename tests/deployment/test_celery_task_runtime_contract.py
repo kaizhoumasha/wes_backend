@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import ast
+import asyncio
+import importlib
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -101,41 +104,58 @@ def test_each_async_sync_task_calls_run_async_once_with_a_factory(module_name: s
 )
 def test_database_task_async_body_uses_task_local_get_db_context(module_name: str, task_name: str) -> None:
     function = _function(_task_tree(module_name), task_name)
-    context_calls = [
-        node for node in ast.walk(function) if isinstance(node, ast.Call) and _call_name(node) == "get_db_context"
-    ]
+    context_calls: list[ast.Call] = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.AsyncWith):
+            continue
+        for item in node.items:
+            context_calls.extend(
+                call
+                for call in ast.walk(item.context_expr)
+                if isinstance(call, ast.Call) and _call_name(call) == "get_db_context"
+            )
 
-    assert len(context_calls) == 1, f"{module_name}.{task_name} 必须只创建一个 task-local Session 上下文"
+    assert len(context_calls) == 1, f"{module_name}.{task_name} 必须在 async with 中创建 task-local Session"
 
 
 @pytest.mark.parametrize(
-    ("module_name", "task_name", "expected_expression"),
+    ("module_name", "task_name", "base_countdown"),
     [
-        ("runtime_inbox", "process_runtime_inbox_batch", "5 * 2 ** retries"),
-        ("sys", "dispatch_system_outbox_batch", "10 * 2 ** self.request.retries"),
-        ("workline", "scan_timeouts_batch", "60 * 2 ** self.request.retries"),
-        ("workline", "scan_device_heartbeats_batch", "60 * 2 ** self.request.retries"),
-        ("workline", "scan_smt_inbound_handoff_demands_batch", "60 * 2 ** self.request.retries"),
+        ("runtime_inbox", "process_runtime_inbox_batch", 5),
+        ("sys", "dispatch_system_outbox_batch", 10),
+        ("workline", "scan_timeouts_batch", 60),
+        ("workline", "scan_device_heartbeats_batch", 60),
+        ("workline", "scan_smt_inbound_handoff_demands_batch", 60),
     ],
 )
 def test_retry_countdown_keeps_exponential_backoff_contract(
+    monkeypatch: pytest.MonkeyPatch,
     module_name: str,
     task_name: str,
-    expected_expression: str,
+    base_countdown: int,
 ) -> None:
-    function = _function(_task_tree(module_name), task_name)
-    countdown_assignments = [
-        node
-        for node in ast.walk(function)
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == "countdown" for target in node.targets)
-    ]
+    module = importlib.import_module(f"src.celery_app.tasks.{module_name}")
+    task = getattr(module, task_name)
+    retry = MagicMock(side_effect=RuntimeError("retry requested"))
 
-    assert len(countdown_assignments) == 1
-    assert ast.unparse(countdown_assignments[0].value) == expected_expression
-    retry_calls = [node for node in ast.walk(function) if isinstance(node, ast.Call) and _call_name(node) == "retry"]
-    assert len(retry_calls) == 1
-    assert any(keyword.arg == "countdown" for keyword in retry_calls[0].keywords)
+    def fail_runtime(factory_or_coroutine: Any) -> None:
+        if asyncio.iscoroutine(factory_or_coroutine):
+            factory_or_coroutine.close()
+        raise ConnectionError("database unavailable")
+
+    monkeypatch.setattr(module, "run_async", fail_runtime, raising=False)
+    monkeypatch.setattr(module, "_run_async", fail_runtime, raising=False)
+    monkeypatch.setattr(task, "retry", retry)
+
+    task.push_request(retries=2)
+    try:
+        with pytest.raises(RuntimeError, match="retry requested"):
+            task.run()
+    finally:
+        task.pop_request()
+
+    assert isinstance(retry.call_args.kwargs["exc"], ConnectionError)
+    assert retry.call_args.kwargs["countdown"] == base_countdown * 4
 
 
 TASK_CONTRACTS: dict[str, tuple[str, int, int, str]] = {
