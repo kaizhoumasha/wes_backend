@@ -405,8 +405,69 @@ async def test_process_result_uses_runtime_inbox_as_authority() -> None:
     assert writer_kwargs["trace_id"] == "trace-001"
     assert writer_kwargs["event_id"] is None
     assert writer_kwargs["causation_id"] is None
+    assert writer_kwargs["processing_required"] is True
     command_service.handle_callback_result.assert_awaited_once()
     service._commit_and_enqueue_runtime_inbox_processing.assert_awaited_once()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_process_result_terminalizes_non_workline_command_without_runtime_processor() -> None:
+    """非工作线指令结果同步完成后应直接终态化，不再进入 RuntimeInbox processor。"""
+
+    from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+    from src.app.device.models.command import CommandCallbackResult
+
+    writer = SimpleNamespace(write_result_callback=AsyncMock(return_value=_runtime_accept_result(created=True)))
+    callback = CommandCallbackResult.model_validate(
+        {
+            "command_code": "CMD-NON-WORKLINE-001",
+            "device_code": "STANDALONE-DEVICE-01",
+            "result": "SUCCESS",
+            "finish_time": 1_702_627_250_000,
+            "source_event_id": "result-event-non-workline-001",
+        }
+    )
+    existing_command = SimpleNamespace(
+        id=13,
+        trace_id="trace-non-workline-001",
+        task_type="DEVICE_SELF_TEST",
+        params={},
+        workline_id=None,
+        device_id=9,
+    )
+    handled_command = MagicMock()
+    handled_command.id = 13
+    handled_command.device_id = 9
+    handled_command.status = SimpleNamespace(value="SUCCESS")
+    handled_command.get_duration_ms.return_value = 50
+    handled_command.trace_id = "trace-non-workline-001"
+    command_service = SimpleNamespace(handle_callback_result=AsyncMock(return_value=handled_command))
+    service = CallbackOrchestrationService(runtime_inbox_writer=writer)
+    service._is_workline_command_callback = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    service._mark_callback_device_finished = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
+    db = SimpleNamespace(commit=AsyncMock())
+
+    with patch(
+        "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
+        new=AsyncMock(),
+    ):
+        outcome = await service.process_result(
+            db,  # type: ignore[arg-type]
+            callback=callback,
+            existing_command=existing_command,
+            request_id="req-result-non-workline",
+            resolved_contract_version="1.0",
+            command_service=command_service,  # type: ignore[arg-type]
+            device_service=SimpleNamespace(),
+            enqueue_processing=lambda: None,
+        )
+
+    assert outcome.is_duplicate is False
+    assert writer.write_result_callback.await_args.kwargs["processing_required"] is False
+    command_service.handle_callback_result.assert_awaited_once()
+    db.commit.assert_awaited_once()
+    service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

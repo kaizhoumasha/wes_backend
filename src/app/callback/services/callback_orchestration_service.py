@@ -311,6 +311,12 @@ class CallbackOrchestrationService:
             existing_command=existing_command,
         )
         inherited_trace_id = trace.trace_id or getattr(existing_command, "trace_id", None)
+        is_workline_callback = await self._is_workline_command_callback(
+            db,
+            existing_command=existing_command,
+            device_code=callback.device_code,
+            device_service=device_service,
+        )
 
         runtime_inbox_result = await self._runtime_inbox_writer.write_result_callback(
             db,
@@ -321,16 +327,10 @@ class CallbackOrchestrationService:
             trace_id=inherited_trace_id,
             event_id=trace.event_id,
             causation_id=trace.causation_id,
+            processing_required=is_workline_callback,
         )
         if not runtime_inbox_result.created:
             return ResultCallbackOutcome(trace_id=inherited_trace_id, is_duplicate=True)
-
-        is_workline_callback = await self._is_workline_command_callback(
-            db,
-            existing_command=existing_command,
-            device_code=callback.device_code,
-            device_service=device_service,
-        )
 
         if is_workline_callback:
             # RuntimeReconciliationFacade 已物理删除。
