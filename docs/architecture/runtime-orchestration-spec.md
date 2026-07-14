@@ -139,7 +139,7 @@ CREATED → RUNNING → CLOSED
 | `status` | str | `RECEIVED` → `PROCESSING` → `PROCESSED` / `FAILED` / `DEAD_LETTER` 五态 |
 | `source_event_id` | str? | 来源事件 ID |
 | `provider_code` / `event_type` | str | source-event 幂等身份；二者与 `source_event_id` 组成唯一键 |
-| `payload_json` | JSON | canonical 消息体，应用层默认限制 1 MiB |
+| `payload_json` | JSON | canonical 消息体，由 `RUNTIME_INBOX_PAYLOAD_MAX_BYTES` 控制，默认限制 1 MiB |
 | `payload_hash` | str? | payload 哈希（幂等校验） |
 | `claim_bucket_key` / `processor_token` | str? | 同桶 FIFO 与终态 fencing owner |
 | `attempt_count` / `max_retries` | int | 重试预算 |

@@ -29,6 +29,8 @@
   - `USE_SNOWFLAKE_ID=true`
   - `SNOWFLAKE_DATACENTER_ID`
   - `SNOWFLAKE_WORKER_ID`
+- `.env.prod` 已确认 RuntimeInbox canonical payload 上限：
+  - `RUNTIME_INBOX_PAYLOAD_MAX_BYTES=1048576`（默认 1 MiB；超过上限的 payload 会在入站边界被拒绝）
 - 首次生产部署前，已准备 `BOOTSTRAP_ADMIN_USERNAME` 与 `BOOTSTRAP_ADMIN_PASSWORD`
 
 前后端分开维护 `.env` 文件是正常做法，不会影响部署。后端发布只依赖：
