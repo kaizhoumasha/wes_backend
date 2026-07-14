@@ -234,7 +234,10 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
     assert 'if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]' in cleanup_body
     assert "$COMPOSE_CMD stop api celery_worker celery_beat || true" in cleanup_body
     assert deploy_body.index("DEPLOYMENT_HEALTHY=true") > deploy_body.index('if [ "$HEALTH_CHECK_PASSED" = false ]')
-    assert "$COMPOSE_CMD ps -q celery_worker celery_beat" in deploy_body
+    assert "for service_name in ${DEPLOY_SERVICES}; do" in deploy_body
+    assert 'case "$service_name" in' in deploy_body
+    assert "celery_worker|celery_beat)" in deploy_body
+    assert "$COMPOSE_CMD ps -q celery_worker celery_beat" not in deploy_body
     assert "${service_name} 容器未就绪" in deploy_body
     assert "CELERY_HEALTH_TIMEOUT_SECONDS" in deploy_body
     assert 'while [ "$container_health" != "healthy" ] && [ "$container_health" != "none" ]' in deploy_body
