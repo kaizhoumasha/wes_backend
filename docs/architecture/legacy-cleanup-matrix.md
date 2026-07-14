@@ -182,11 +182,11 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 | Services（inbox_batch_processor/outbox_dispatch/device_command_gateway 等） | rebuild | `class` / `def` / `async def` 全量登记；执行状态服务迁 runtime 域，按 EffectPort/RuntimeInbox 重建 |
 | `single_layer_rack_orchestration_service` | rebuild | material-flow 单层机架编排，按目标态 capability 重建（WMS_INTEGRATION_BOUNDARY seed 关联） |
 
-### 7.2 workline_runtime（110 entries）
+### 7.2 workline_runtime（111 entries）
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
-| `tests/workline_runtime/` | keep-contract / rebuild | 111 条 runtime / material-flow characterization 与合同测试，作为目标态能力闭合和 legacy 删除前的 blocking evidence；RuntimeInbox projection/repository 合同已入矩阵 |
+| `tests/workline_runtime/` | keep-contract / rebuild | 110 条 runtime / material-flow characterization 与合同测试，作为目标态能力闭合和 legacy 删除前的 blocking evidence；RuntimeInbox projection/repository 合同已入矩阵 |
 | `src/workline_runtime/services.py:build_workline_runtime_services` | rebuild | guardrail seed tombstone，用于当前 allowlist 精确反查 |
 
 ### 7.3 workline_plugins（11 entries，均为测试证据）
