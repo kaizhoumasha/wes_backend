@@ -24,6 +24,10 @@ if [[ "${1:-run}" == "cleanup" ]]; then
     exit 0
 fi
 
+: "${CI_COMMIT_SHA:?CI_COMMIT_SHA is required}"
+: "${CI_IMAGE:?CI_IMAGE is required}"
+: "${WORKSPACE:?WORKSPACE is required}"
+
 mkdir -p "${REPORT_DIR}/logs" "${REPORT_DIR}/junit"
 trap cleanup EXIT
 
