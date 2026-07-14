@@ -11,6 +11,9 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel
 
 from src.app.runtime.capability_catalog import WORKLINE_CAPABILITY_CATALOG, WorklineCapabilityDefinition
+
+# 注册 WorklineSession 元数据：runtime_inbox 在 SQLite 中通过外键引用它。
+from src.app.runtime.orchestration.models.session import WorklineSession
 from src.database.sqlite_schema import configure_sqlite_schemas
 from tests.helpers.workline_test_plugin import CONTRACT_VERSION, PLUGIN_KEY, TestWorklinePlugin
 
