@@ -41,8 +41,11 @@
 推荐使用镜像化手动部署：
 
 - 基础拓扑由 `docker-compose.yml` 提供
-- 运行时镜像覆盖由 `docker-compose.deploy.yml` 提供
+- 运行时镜像覆盖由 `docker-compose.deploy.yml` 提供，并通过 Compose `!override` 显式移除开发源码挂载
 - 实际执行时同时加载这两个 Compose 文件
+
+部署机必须使用支持 `!override` 的 Docker Compose 2.24.4 或更高版本。生产 API 与 Celery Worker
+只运行目标镜像内的 `/app/src`，不得用宿主机源码或 `/dev/null` 覆盖该目录。
 
 本地已验证以下命令可以正确生成合并后的 Compose 配置：
 

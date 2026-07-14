@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,17 @@ from scripts.capacity_guard import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class _ComposeSafeLoader(yaml.SafeLoader):
+    """解析 Compose 的 YAML 标签，同时保留普通 SafeLoader 语义。"""
+
+
+def _construct_compose_sequence(loader: _ComposeSafeLoader, node: yaml.nodes.SequenceNode) -> list[object]:
+    return loader.construct_sequence(node)
+
+
+_ComposeSafeLoader.add_constructor("!override", _construct_compose_sequence)
 
 
 def test_production_capacity_formula_matches_single_api_and_four_celery_containers() -> None:
@@ -95,7 +107,10 @@ def test_environment_profiles_and_compose_declare_explicit_database_roles() -> N
     assert "API_REPLICAS=1" in prod_text
 
     for compose_name in ("docker-compose.yml", "docker-compose.deploy.yml"):
-        compose = yaml.safe_load((REPO_ROOT / compose_name).read_text(encoding="utf-8"))
+        compose = yaml.load(
+            (REPO_ROOT / compose_name).read_text(encoding="utf-8"),
+            Loader=_ComposeSafeLoader,  # noqa: S506 -- 仅扩展 SafeLoader 解析 Compose 的 !override 标签。
+        )
         api_env = compose["services"]["api"]["environment"]
         worker_env = compose["services"]["celery_worker"]["environment"]
         assert api_env["DATABASE_RUNTIME_ROLE"] == "api"
@@ -113,6 +128,46 @@ def test_environment_profiles_and_compose_declare_explicit_database_roles() -> N
     assert pytest_env["DATABASE_POOL_SIZE"] == 1
     assert pytest_env["DATABASE_MAX_OVERFLOW"] == 0
     assert pytest_env["DATABASE_APPLICATION_RUN_ID"] == "${INTEGRATION_RUN_ID:-}"
+
+
+def test_production_compose_uses_image_source_without_host_override() -> None:
+    prod_text = (REPO_ROOT / ".env.prod").read_text(encoding="utf-8")
+    deploy_text = (REPO_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8")
+
+    assert "SOURCE_MOUNT=" not in prod_text
+    assert deploy_text.count("volumes: !override") == 2
+
+    env = os.environ.copy()
+    env["BACKEND_IMAGE"] = "example.invalid/wes/wes_backend:test"
+    docker_path = shutil.which("docker")
+    if docker_path is None:
+        pytest.skip("Docker CLI is required to render the merged production Compose contract")
+    completed = subprocess.run(
+        [
+            docker_path,
+            "compose",
+            "--env-file",
+            ".env.prod",
+            "-f",
+            "docker-compose.yml",
+            "-f",
+            "docker-compose.deploy.yml",
+            "--profile",
+            "*",
+            "config",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    merged = yaml.safe_load(completed.stdout)
+    for service_name in ("api", "celery_worker"):
+        targets = {volume["target"] for volume in merged["services"][service_name].get("volumes", [])}
+        assert "/app/src" not in targets
 
 
 def test_deployment_script_runs_live_guard_before_application_start_and_scale() -> None:

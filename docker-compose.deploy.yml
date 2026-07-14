@@ -27,7 +27,8 @@ services:
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON_OUTPUT: ${LOG_JSON_OUTPUT:-true}
-    volumes:
+    # 生产运行只使用镜像内代码；显式替换基础 Compose 的开发源码挂载。
+    volumes: !override
       - ./logs:/app/logs
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
@@ -74,7 +75,8 @@ services:
       CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/2
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON_OUTPUT: ${LOG_JSON_OUTPUT:-true}
-    volumes:
+    # 生产运行只使用镜像内代码；显式替换基础 Compose 的开发源码挂载。
+    volumes: !override
       - ./logs:/app/logs
     healthcheck:
       test: ["CMD-SHELL", "celery -A src.celery_app.app inspect ping || exit 1"]
