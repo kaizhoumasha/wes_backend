@@ -166,8 +166,8 @@ curl -sS -X POST "$WES_API/workline/operations/replay/inboxes/<inbox_id>" \
   -H "Authorization: Bearer $WES_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "reason": "修复设备配置后重放",
-    "operator_id": "ops-user"
+    "request_id": "replay-<inbox_id>-after-device-fix",
+    "reason": "修复设备配置后重放"
   }'
 ```
 

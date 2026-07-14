@@ -113,13 +113,13 @@ async def test_replay_uses_authenticated_actor(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.parametrize(
-    ("error", "expected_code"),
+    ("error", "expected_code", "expected_http_status"),
     [
-        (RuntimeInboxNotFound(inbox_id=1), "3000"),
-        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_NOT_DEAD_LETTER"), "4001"),
-        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_NOT_FOUND"), "3000"),
-        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_INACTIVE"), "4001"),
-        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_RECONCILIATION_PENDING"), "4001"),
+        (RuntimeInboxNotFound(inbox_id=1), "3000", 404),
+        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_NOT_DEAD_LETTER"), "4001", 400),
+        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_NOT_FOUND"), "3000", 404),
+        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_INACTIVE"), "4001", 400),
+        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_RECONCILIATION_PENDING"), "4001", 400),
         (
             RuntimeInboxConflict(
                 provider_code="RUNTIME",
@@ -129,6 +129,7 @@ async def test_replay_uses_authenticated_actor(monkeypatch: pytest.MonkeyPatch) 
                 incoming_payload_hash="new",
             ),
             "3012",
+            409,
         ),
         (
             RuntimeInboxAuditPersistenceFailed(
@@ -136,6 +137,7 @@ async def test_replay_uses_authenticated_actor(monkeypatch: pytest.MonkeyPatch) 
                 original_error=RuntimeError("audit storage unavailable"),
             ),
             "RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED",
+            503,
         ),
     ],
 )
@@ -144,6 +146,7 @@ async def test_replay_maps_typed_domain_errors(
     monkeypatch: pytest.MonkeyPatch,
     error: Exception,
     expected_code: str,
+    expected_http_status: int,
 ) -> None:
     class _FailingService:
         async def replay_inbox(self, *_args: Any, **_kwargs: Any) -> object:
@@ -160,13 +163,15 @@ async def test_replay_maps_typed_domain_errors(
     )
 
     assert response["code"] == expected_code
-    if isinstance(error, RuntimeInboxAuditPersistenceFailed):
-        expected_http_status = 503
-    elif isinstance(error, RuntimeInboxConflict):
-        expected_http_status = 409
-    else:
-        expected_http_status = 200
     assert http_response.status_code == expected_http_status
+
+
+def test_replay_openapi_declares_failure_statuses() -> None:
+    from main import app
+
+    responses = app.openapi()["paths"]["/api/v1/workline/operations/replay/inboxes/{inbox_id}"]["post"]["responses"]
+
+    assert {"200", "400", "404", "409", "503"} <= responses.keys()
 
 
 @pytest.mark.asyncio

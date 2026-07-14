@@ -198,6 +198,12 @@ async def get_sandbox_completed(
     summary="[biz:workline:update] Replay 历史 Inbox",
     response_model=ResponseSchemaModel[dict[str, Any]],
     status_code=status.HTTP_200_OK,
+    responses={
+        400: {"model": ResponseSchemaModel[dict[str, Any]], "description": "源 Inbox 当前状态不允许 Replay"},
+        404: {"model": ResponseSchemaModel[dict[str, Any]], "description": "源 Inbox 或所属工作线不存在"},
+        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Replay 幂等身份冲突"},
+        503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Replay 审计证据暂时无法持久化"},
+    },
     dependencies=[Depends(RequirePermission("biz:workline:update"))],
 )
 async def replay_inbox(
@@ -216,6 +222,7 @@ async def replay_inbox(
             reason=payload.reason,
         )
     except RuntimeInboxNotFound as exc:
+        response.status_code = ResourceErrorCode.NOT_FOUND.http_status
         return cast(
             "ResponseSchemaModel[dict[str, Any]]",
             response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=str(exc)),
@@ -226,6 +233,7 @@ async def replay_inbox(
             if exc.reason_code == "SOURCE_WORKLINE_NOT_FOUND"
             else BusinessErrorCode.INVALID_STATE
         )
+        response.status_code = error_code.http_status
         return cast(
             "ResponseSchemaModel[dict[str, Any]]",
             response_builder.fail(code=error_code, message=str(exc)),
@@ -243,6 +251,7 @@ async def replay_inbox(
             response_builder.fail(code=ResourceErrorCode.CONFLICT, message=str(exc)),
         )
     except WorkLineSafetyBlocked as exc:
+        response.status_code = BusinessErrorCode.INVALID_STATE.http_status
         return cast(
             "ResponseSchemaModel[dict[str, Any]]",
             response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=str(exc)),
