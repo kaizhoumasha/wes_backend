@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -162,3 +162,41 @@ async def test_external_callback_forwards_explicit_received_at_to_accept_helper(
     )
 
     assert service._accept_runtime_message.await_args.kwargs["received_at"] is received_at
+
+
+@pytest.mark.parametrize("operation", ["HOLD", "RESUME", "CANCEL"])
+@pytest.mark.asyncio
+async def test_manual_operation_uses_internal_event_kind(operation: str) -> None:
+    """人工操作使用目标态 INTERNAL_EVENT，具体动作只由 event_type/payload 表达。"""
+
+    session = SimpleNamespace(id=53, workline_id=45, status=SessionStatus.RUNNING, trace_id="trace-manual")
+    record = SimpleNamespace(id=82)
+    service = WorklineOperationService(
+        session_repo=cast("Any", SimpleNamespace(get_by_id=AsyncMock(return_value=session))),
+        workline_repo=cast(
+            "Any",
+            SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=45, is_active=True))),
+        ),
+    )
+    service._accept_runtime_message = AsyncMock(  # type: ignore[method-assign]
+        return_value=RuntimeInboxAcceptResult(record=record, created=True)
+    )
+
+    with patch(
+        "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl."
+        "workline_runtime_reconciliation_service.assert_not_pending_reconciliation"
+    ):
+        result = await service.create_manual_operation(
+            _Db(),
+            session_id=53,
+            operation=operation,
+            operator_id="operator-a",
+            reason="现场操作",
+            auto_commit=False,
+        )
+
+    assert result is record
+    kwargs = service._accept_runtime_message.await_args.kwargs
+    assert kwargs["kind"] == "INTERNAL_EVENT"
+    assert kwargs["event_type"] == f"MANUAL_{operation}"
+    assert kwargs["payload"]["operation"] == operation

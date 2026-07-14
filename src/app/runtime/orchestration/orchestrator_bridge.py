@@ -81,11 +81,7 @@ _INBOX_KIND_TO_PLUGIN_TYPE = {
     "EXTERNAL_HTTP": "EXTERNAL_HTTP",
     "INTERNAL_EVENT": "DEVICE_EVENT",
     "TIMER_TIMEOUT": "TIMEOUT",
-    "MANUAL_HOLD": "MANUAL_OPERATION",
-    "MANUAL_RESUME": "MANUAL_OPERATION",
-    "MANUAL_CANCEL": "MANUAL_OPERATION",
 }
-_MANUAL_OPERATION_KINDS = {"MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL"}
 _MANUAL_OPERATION_TO_KIND = {
     "HOLD": "MANUAL_HOLD",
     "RESUME": "MANUAL_RESUME",
@@ -449,10 +445,7 @@ def _command_result_intents(result: NormalizedCommandResult) -> list[RuntimeInte
     return [_command_result_failure_intent(result)]
 
 
-def _manual_operation_kind(normalized_input: Any, *, inbox: Any) -> str | None:
-    kind = _inbox_kind_value(inbox)
-    if kind in _MANUAL_OPERATION_KINDS:
-        return kind
+def _manual_operation_kind(normalized_input: Any) -> str | None:
     if not isinstance(normalized_input, NormalizedDeviceEvent):
         return None
     if _ensure_non_empty_str(normalized_input.payload.get("message_type")) != "MANUAL_OPERATION":
@@ -527,7 +520,7 @@ def _standard_inbox_intents(
     workline: Any,
     trace_id: str,
 ) -> list[RuntimeIntent]:
-    manual_kind = _manual_operation_kind(normalized_input, inbox=inbox)
+    manual_kind = _manual_operation_kind(normalized_input)
     if manual_kind is not None:
         return _manual_operation_intents(normalized_input, inbox=inbox, manual_kind=manual_kind)
     if isinstance(normalized_input, NormalizedCommandResult):

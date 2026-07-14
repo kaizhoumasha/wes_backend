@@ -56,7 +56,7 @@ def _should_resolve_session(inbox: Any, *, session_id: int | None) -> bool:
         return bool(getattr(inbox, "trace_id", None))
     if kind == "INTERNAL_EVENT":
         return session_id is not None and isinstance(getattr(inbox, "workline_id", None), int)
-    if kind in {"TIMER_TIMEOUT", "MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL", "REPLAY_REQUEST"}:
+    if kind in {"TIMER_TIMEOUT", "REPLAY_REQUEST"}:
         return session_id is not None
     return False
 

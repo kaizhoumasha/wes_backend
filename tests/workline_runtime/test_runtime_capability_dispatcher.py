@@ -511,7 +511,7 @@ async def test_orchestrator_routes_manual_resume_without_runtime_capability_prof
     )
     inbox = SimpleNamespace(
         id=902,
-        kind="MANUAL_RESUME",
+        kind="INTERNAL_EVENT",
         event_type="MANUAL_RESUME",
         payload_json={
             "message_type": "MANUAL_OPERATION",
@@ -568,7 +568,7 @@ async def test_orchestrator_routes_manual_cancel_to_cancel_intent() -> None:
         workline=SimpleNamespace(contract_version="rough_sorter.v2", plugin_key="rough_sorter"),
         inbox=SimpleNamespace(
             id=903,
-            kind="MANUAL_CANCEL",
+            kind="INTERNAL_EVENT",
             event_type="MANUAL_CANCEL",
             payload_json={
                 "message_type": "MANUAL_OPERATION",

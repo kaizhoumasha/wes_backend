@@ -110,7 +110,8 @@ def _resolve_device_event_business_key(
 
 
 def _is_internal_event(kind: Any, payload: dict[str, Any]) -> bool:
-    return kind == "INTERNAL_EVENT" or payload.get("message_type") == "INTERNAL_EVENT"
+    message_type = payload.get("message_type")
+    return message_type == "INTERNAL_EVENT" or (kind == "INTERNAL_EVENT" and message_type != "MANUAL_OPERATION")
 
 
 def _require_canonical_event_type(inbox: Any) -> str:

@@ -179,3 +179,40 @@ async def test_reconciliation_evidence_fact_records_runtime_location_evidence(mo
     assert call["external_reference_value"] == "DOC-001"
     assert call["idempotency_key"] == "material-flow:wms-reconciliation-001:reconciliation-evidence"
     assert call["auto_commit"] is False
+
+
+@pytest.mark.asyncio
+async def test_device_event_intent_preserves_canonical_routing_payload(monkeypatch) -> None:
+    """生成型设备事件必须保留 processor 解析会话所需的顶层路由字段。"""
+
+    accepted: list[dict[str, Any]] = []
+
+    async def accept_device_event(*_args: Any, **kwargs: Any) -> SimpleNamespace:
+        accepted.append(kwargs)
+        return SimpleNamespace(record=SimpleNamespace(id=91), created=True)
+
+    from src.app.runtime.orchestration.services import runtime_inbox as runtime_inbox_module
+
+    monkeypatch.setattr(
+        runtime_inbox_module,
+        "runtime_inbox_service",
+        SimpleNamespace(accept_device_event=accept_device_event),
+    )
+    intent = RuntimeIntent.device_event(
+        device_code="ARM_01",
+        event_type="SCAN_COMPLETED",
+        data={"barcode": "PKG-001"},
+        timestamp=1_702_627_300_000,
+        event_id="device-event-001",
+    )
+
+    await RuntimeIntentEffectApplier().apply(_effect_ctx(), [intent])
+
+    [call] = accepted
+    assert call["payload_json"] == {
+        "device_code": "ARM_01",
+        "event_type": "SCAN_COMPLETED",
+        "timestamp": 1_702_627_300_000,
+        "data": {"barcode": "PKG-001"},
+        "event_id": "device-event-001",
+    }

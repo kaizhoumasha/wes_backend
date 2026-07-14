@@ -82,11 +82,7 @@ _TERMINAL_COMMAND_STATUSES = {
     CommandStatus.CANCELLED.value,
 }
 
-_MANUAL_OPERATION_KIND = {
-    "HOLD": "MANUAL_HOLD",
-    "RESUME": "MANUAL_RESUME",
-    "CANCEL": "MANUAL_CANCEL",
-}
+_MANUAL_OPERATIONS = frozenset({"HOLD", "RESUME", "CANCEL"})
 
 _SANDBOX_OPERATOR_VISIBLE_EVENT_CATEGORIES = frozenset({"ENTRY_DEVICE", "OPERATOR", "SAFETY"})
 
@@ -676,9 +672,9 @@ class WorklineOperationService(BaseService[Any, Any]):
         _ = await self._lock_active_workline_for_runtime_write(db, session.workline_id)
 
         normalized_operation = operation.upper()
-        kind = _MANUAL_OPERATION_KIND.get(normalized_operation)
-        if kind is None:
+        if normalized_operation not in _MANUAL_OPERATIONS:
             raise ValueError(f"不支持的人工操作: {operation}")
+        event_type = f"MANUAL_{normalized_operation}"
 
         trace = TraceContext.from_runtime(session=session)
         payload: dict[str, Any] = {
@@ -690,8 +686,8 @@ class WorklineOperationService(BaseService[Any, Any]):
         }
         inbox_result = await self._accept_runtime_message(
             db,
-            kind=kind,
-            event_type=kind,
+            kind="INTERNAL_EVENT",
+            event_type=event_type,
             source_event_id=f"manual:{session_id}:{normalized_operation}:{uuid.uuid4().hex}",
             workline_session_id=session_id,
             workline_id=session.workline_id,

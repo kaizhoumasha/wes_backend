@@ -1633,7 +1633,6 @@ class RuntimeIntentEffectApplier:
 
         device_code = str(payload["device_code"])
         event_type = str(payload["event_type"])
-        data = dict(payload["data"])
         trace_id = _ctx_trace_id(ctx_map)
         event_id = payload.get("event_id")
         causation_id = payload.get("causation_id")
@@ -1645,7 +1644,7 @@ class RuntimeIntentEffectApplier:
             ctx_map["db"],
             device_code=device_code,
             event_type=event_type,
-            payload_json={"data": data},
+            payload_json=payload,
             workline_id=workline_id,
             trace_id=trace_id,
             event_id=event_id,

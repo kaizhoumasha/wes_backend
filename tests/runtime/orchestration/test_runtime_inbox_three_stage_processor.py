@@ -248,7 +248,7 @@ class TestRelatedEntitiesContract:
         assert snapshot.session_id == expected
         assert trace.session_id == expected
 
-    @pytest.mark.parametrize("kind", ("INTERNAL_EVENT", "TIMER_TIMEOUT", "MANUAL_HOLD"))
+    @pytest.mark.parametrize("kind", ("INTERNAL_EVENT", "TIMER_TIMEOUT"))
     def test_workline_session_id_uses_explicit_column_with_canonical_consistency(self, kind: str) -> None:
         inbox = RuntimeInbox(
             provider_code="TEST",
