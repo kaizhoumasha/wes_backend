@@ -554,7 +554,7 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             )
         elif target_state == "DEAD_LETTER":
             _emit_runtime_inbox_sli("runtime_inbox.dead_letter", {"inbox_id": inbox_id})
-        elif target_state == "FAILED" and values.get("last_error_message") == "RESOURCE_WAIT":
+        elif target_state == "FAILED" and values.get("last_error_code") == "RESOURCE_WAIT":
             _emit_runtime_inbox_sli("runtime_inbox.resource_wait", {"inbox_id": inbox_id})
         return updated
 
@@ -629,7 +629,7 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             await db.execute(
                 select(
                     func.count().filter((columns.status == "PROCESSING") & (columns.lease_until <= now_value)),
-                    func.count().filter((columns.status == "FAILED") & (columns.last_error_message == "RESOURCE_WAIT")),
+                    func.count().filter((columns.status == "FAILED") & (columns.last_error_code == "RESOURCE_WAIT")),
                 )
             )
         ).one()

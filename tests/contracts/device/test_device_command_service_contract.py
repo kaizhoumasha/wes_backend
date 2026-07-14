@@ -199,6 +199,7 @@ async def test_error_detail_dict_is_kept_as_json_object(monkeypatch: pytest.Monk
     callback = CommandCallbackResult(
         command_code=command.command_code,
         device_code="ROBOT-ARM-01",
+        source_event_id="evt-result-timeout",
         result=CommandResult.FAILED,
         finish_time=1700000000000,
         error_detail={"code": "E-TIMEOUT", "msg": "timeout"},

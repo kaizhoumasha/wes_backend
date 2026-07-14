@@ -499,6 +499,7 @@ async def test_accept_command_result_with_device_code_uses_device_result_provide
     result = await service.accept_command_result(
         db_session,
         command_code="CMD-CONT-001",
+        source_event_id="evt-result-source-001",
         device_code="ARM_05",
         workline_id=11,
         device_id=42,
@@ -514,7 +515,7 @@ async def test_accept_command_result_with_device_code_uses_device_result_provide
     assert record.kind == "COMMAND_RESULT"
     assert record.provider_code == "DEVICE_RESULT"
     assert record.event_type == "COMMAND_RESULT"
-    assert record.source_event_id == "evt-cmd-001"
+    assert record.source_event_id == "evt-result-source-001"
     assert record.workline_id == 11
     assert record.device_id == 42
     assert record.command_id == 99
@@ -526,15 +527,16 @@ async def test_accept_command_result_with_device_code_uses_device_result_provide
 
 @pytest.mark.asyncio
 async def test_accept_command_result_without_device_uses_runtime_provider(db_session) -> None:
-    """无 device_code 时 (synthesize 场景), provider_code 必须回退 "RUNTIME"。"""
+    """无 device_code 的内部结果仍须携带显式身份，provider_code 使用 "RUNTIME"。"""
 
     service = RuntimeInboxService()
 
     result = await service.accept_command_result(
         db_session,
         command_code="CMD-CONT-002",
-        trace_id="trace-synth-001",
-        event_id="evt-synth-001",
+        source_event_id="evt-runtime-result-001",
+        trace_id="trace-runtime-result-001",
+        event_id="evt-runtime-result-001",
         payload_json={"runtime_hold_release": True},
     )
 
@@ -542,30 +544,31 @@ async def test_accept_command_result_without_device_uses_runtime_provider(db_ses
     record = result.record
     assert record.kind == "COMMAND_RESULT"
     assert record.provider_code == "RUNTIME"
-    assert record.source_event_id == "evt-synth-001"
+    assert record.source_event_id == "evt-runtime-result-001"
     assert record.workline_id is None
 
 
 @pytest.mark.asyncio
-async def test_accept_command_result_synthesizes_source_event_id_when_missing(db_session) -> None:
-    """无 event_id 时, source_event_id 必须派生为稳定可读字符串 (含 command_code)。"""
+async def test_accept_command_result_rejects_missing_source_event_id(db_session) -> None:
+    """command result 缺少唯一 source_event_id 时必须 fail-closed。"""
 
     service = RuntimeInboxService()
 
-    result = await service.accept_command_result(
-        db_session,
-        command_code="CMD-CONT-003",
-        device_code="ARM_01",
-        payload_json={"result": "SUCCESS"},
-    )
-
-    assert result.created is True
-    record = result.record
-    assert record.source_event_id is not None
-    assert "CMD-CONT-003" in record.source_event_id
-    assert record.event_id is None
-    # provider_code 走 DEVICE_RESULT 路径 (有 device_code)
-    assert record.provider_code == "DEVICE_RESULT"
+    with pytest.raises(TypeError, match="source_event_id"):
+        await service.accept_command_result(
+            db_session,
+            command_code="CMD-CONT-003",
+            device_code="ARM_01",
+            payload_json={"result": "SUCCESS"},
+        )
+    with pytest.raises(ValueError, match="source_event_id"):
+        await service.accept_command_result(
+            db_session,
+            command_code="CMD-CONT-003",
+            source_event_id="   ",
+            device_code="ARM_01",
+            payload_json={"result": "SUCCESS"},
+        )
 
 
 @pytest.mark.asyncio
@@ -578,6 +581,7 @@ async def test_accept_command_result_rejects_missing_command_code(db_session) ->
         await service.accept_command_result(
             db_session,
             command_code="",
+            source_event_id="evt-result-missing-command-code",
             device_code="ARM_01",
         )
 
@@ -594,6 +598,7 @@ async def test_accept_command_result_auto_commit_true_calls_db_commit(db_session
     result = await service.accept_command_result(
         db_session,
         command_code="CMD-COMMIT-001",
+        source_event_id="evt-result-commit-001",
         device_code="ARM_01",
         payload_json={"result": "SUCCESS"},
         auto_commit=True,
@@ -605,6 +610,7 @@ async def test_accept_command_result_auto_commit_true_calls_db_commit(db_session
     _ = await service.accept_command_result(
         db_session,
         command_code="CMD-COMMIT-002",
+        source_event_id="evt-result-commit-002",
         device_code="ARM_01",
         payload_json={"result": "SUCCESS"},
         auto_commit=False,
@@ -651,6 +657,7 @@ async def test_internal_producers_write_non_empty_priority_bucket_and_received_a
     command = await service.accept_command_result(
         db_session,
         command_code="CMD-BUCKET-001",
+        source_event_id="evt-result-bucket-001",
         workline_id=31,
         command_id=191,
         payload_json={"event_type": "COMMAND_RESULT", "data": {}},
@@ -702,6 +709,7 @@ async def test_internal_producers_ack_duplicate_source_identity_with_same_payloa
         accept = service.accept_command_result
         kwargs = {
             "command_code": "CMD-INTERNAL-DUPLICATE-001",
+            "source_event_id": "evt-command-result-duplicate-001",
             "payload_json": payload,
         }
 

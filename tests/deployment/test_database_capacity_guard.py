@@ -17,6 +17,7 @@ from scripts.capacity_guard import (
     CapacityPlan,
     CapacityViolation,
     _parse_scale,
+    _read_api_uvicorn_workers,
     build_capacity_plan,
     calculate_capacity,
 )
@@ -207,6 +208,13 @@ def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:
     assert "1 x 4 x 5" in dockerfile_text
 
 
+def test_capacity_guard_reads_worker_count_from_dockerfile(tmp_path: Path) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text('CMD ["uvicorn", "main:app", "--workers", "7"]', encoding="utf-8")
+
+    assert _read_api_uvicorn_workers(dockerfile) == 7
+
+
 @pytest.mark.parametrize(
     ("name", "value"),
     [
@@ -215,15 +223,16 @@ def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:
         ("CELERY_DATABASE_POOL_SIZE", "2"),
     ],
 )
-def test_capacity_plan_rejects_topology_overrides_that_disagree_with_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-    name: str,
-    value: str,
+def test_capacity_plan_does_not_accept_removed_topology_override_contract(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
 ) -> None:
     monkeypatch.setenv(name, value)
 
-    with pytest.raises(CapacityViolation, match=name):
-        build_capacity_plan(services={"api", "celery_worker"}, scales={})
+    plan = build_capacity_plan(services={"api", "celery_worker"}, scales={})
+
+    assert plan.api_processes == API_UVICORN_WORKERS
+    assert plan.api_pool_size == API_DATABASE_POOL_SIZE
+    assert plan.celery_pool_size == CELERY_DATABASE_POOL_SIZE
 
 
 def test_capacity_plan_uses_only_actual_docker_process_and_pool_constants(

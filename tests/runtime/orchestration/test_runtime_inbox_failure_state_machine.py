@@ -81,6 +81,7 @@ async def test_terminal_timestamps_use_aware_utc_epoch_without_local_timezone_sh
             db_session,
             inbox_id=inbox.id,  # type: ignore[arg-type]
             lease_token="lease-1",
+            error_code="TEST_FAILURE",
             error_message="nonretryable",
             retryable=False,
         )
@@ -89,6 +90,7 @@ async def test_terminal_timestamps_use_aware_utc_epoch_without_local_timezone_sh
             db_session,
             inbox_id=inbox.id,  # type: ignore[arg-type]
             lease_token="lease-1",
+            error_code="TEST_DEAD_LETTER",
             error_message="terminal",
         )
     await db_session.commit()
@@ -125,6 +127,7 @@ async def test_retry_backoff_starts_at_ten_seconds_and_caps_at_six_hundred(
         db_session,
         inbox_id=inbox.id,  # type: ignore[arg-type]
         lease_token="lease-1",
+        error_code="TEST_RETRYABLE",
         error_message="retryable",
         retryable=True,
     )
@@ -146,6 +149,7 @@ async def test_nonretryable_failure_becomes_dead_letter(db_session: AsyncSession
         db_session,
         inbox_id=inbox.id,  # type: ignore[arg-type]
         lease_token="lease-1",
+        error_code="TEST_NONRETRYABLE",
         error_message="invalid payload",
         retryable=False,
     )
@@ -156,6 +160,7 @@ async def test_nonretryable_failure_becomes_dead_letter(db_session: AsyncSession
     assert inbox.status == "DEAD_LETTER"
     assert inbox.next_retry_at is None
     assert inbox.last_error_message == "invalid payload"
+    assert inbox.last_error_code == "TEST_NONRETRYABLE"
     assert inbox.failed_at is not None
     assert inbox.processor_token is None
     assert inbox.lease_until is None
@@ -170,6 +175,7 @@ async def test_retryable_failure_schedules_retry_before_exhaustion(db_session: A
         db_session,
         inbox_id=inbox.id,  # type: ignore[arg-type]
         lease_token="lease-1",
+        error_code="TEST_TEMPORARY",
         error_message="temporary failure",
         retryable=True,
     )
@@ -193,6 +199,7 @@ async def test_retryable_failure_becomes_dead_letter_when_exhausted(db_session: 
         db_session,
         inbox_id=inbox.id,  # type: ignore[arg-type]
         lease_token="lease-1",
+        error_code="TEST_EXHAUSTED",
         error_message="still failing",
         retryable=True,
     )
@@ -215,6 +222,7 @@ async def test_minimum_retry_budget_is_exhausted_after_first_attempt(db_session:
         db_session,
         inbox_id=inbox.id,  # type: ignore[arg-type]
         lease_token="lease-1",
+        error_code="TEST_MINIMUM_BUDGET",
         error_message="minimum retry budget exhausted",
         retryable=True,
     )
@@ -261,6 +269,7 @@ async def test_resource_wait_does_not_consume_attempt_across_repeated_claims(db_
             db_session,
             inbox_id=inbox.id,  # type: ignore[arg-type]
             lease_token=token,
+            error_code="RESOURCE_WAIT",
             error_message="RESOURCE_WAIT",
             retryable=True,
             consume_attempt=False,
@@ -287,6 +296,7 @@ async def test_stale_owner_cannot_overwrite_failure_state(db_session: AsyncSessi
         db_session,
         inbox_id=inbox.id,  # type: ignore[arg-type]
         lease_token="stale-owner",
+        error_code="TEST_STALE_OWNER",
         error_message="must not win",
         retryable=False,
     )

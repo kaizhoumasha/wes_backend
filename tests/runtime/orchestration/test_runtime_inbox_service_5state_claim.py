@@ -284,6 +284,7 @@ async def test_mark_failed_writes_terminal_state(monkeypatch: pytest.MonkeyPatch
         db=AsyncMock(),  # type: ignore[arg-type]
         inbox_id=42,
         lease_token="tok-42",
+        error_code="PROCESSING_FAILED",
         error_message="processing failed",
         retryable=False,
     )
@@ -294,6 +295,7 @@ async def test_mark_failed_writes_terminal_state(monkeypatch: pytest.MonkeyPatch
     assert call["inbox_id"] == 42
     assert call["lease_token"] == "tok-42"
     assert call["target_state"] == "DEAD_LETTER"
+    assert call["extra_values"]["last_error_code"] == "PROCESSING_FAILED"
     assert call["extra_values"]["last_error_message"] == "processing failed"
 
 
@@ -335,6 +337,7 @@ async def test_mark_dead_letter_writes_terminal_state(monkeypatch: pytest.Monkey
         db=AsyncMock(),  # type: ignore[arg-type]
         inbox_id=42,
         lease_token="tok-42",
+        error_code="RETRY_EXHAUSTED",
         error_message="max retries exhausted",
     )
 
@@ -344,6 +347,7 @@ async def test_mark_dead_letter_writes_terminal_state(monkeypatch: pytest.Monkey
     assert call["inbox_id"] == 42
     assert call["lease_token"] == "tok-42"
     assert call["target_state"] == "DEAD_LETTER"
+    assert call["extra_values"]["last_error_code"] == "RETRY_EXHAUSTED"
     assert call["extra_values"]["last_error_message"] == "max retries exhausted"
 
 

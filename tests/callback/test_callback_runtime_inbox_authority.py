@@ -55,7 +55,7 @@ async def test_callback_runtime_inbox_writer_uses_canonical_types_without_channe
 
     _ = await writer.write_result_callback(
         SimpleNamespace(),
-        payload={"event_id": "evt-shared-001", "command_code": "CMD-001", "result": "SUCCESS"},
+        payload={"source_event_id": "evt-shared-001", "command_code": "CMD-001", "result": "SUCCESS"},
         request_id="req-shared-001",
         canonical_result_type="DEVICE_RESULT",
     )
@@ -95,7 +95,7 @@ async def test_callback_runtime_inbox_writer_does_not_synthesize_unverified_corr
 
     _ = await writer.write_result_callback(
         SimpleNamespace(),
-        payload={"event_id": "evt-result-001", "command_code": "CMD-001", "result": "SUCCESS"},
+        payload={"source_event_id": "evt-result-001", "command_code": "CMD-001", "result": "SUCCESS"},
         request_id="req-result-001",
         canonical_result_type="DEVICE_RESULT",
         correlation_id=None,
@@ -249,17 +249,14 @@ async def test_callback_runtime_inbox_writer_external_record_is_canonical_proces
 
 
 @pytest.mark.asyncio
-async def test_callback_runtime_inbox_writer_result_fallback_source_event_id_is_payload_stable() -> None:
-    """result 缺少 event_id/source_event_id 时，不能退回到每次 HTTP request_id。"""
+async def test_callback_runtime_inbox_writer_result_requires_explicit_source_event_id() -> None:
+    """result 缺少 source_event_id 时必须拒绝，禁止合成不可验证的事实身份。"""
 
     from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
 
-    accepted_calls: list[dict[str, object]] = []
-
     class RuntimeInboxServiceStub:
         async def accept_received(self, _db, **kwargs):
-            accepted_calls.append(kwargs)
-            return _runtime_accept_result(created=True, record_id=len(accepted_calls))
+            raise AssertionError(f"缺少 source_event_id 时不得写 RuntimeInbox: {kwargs}")
 
     writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
     payload = {
@@ -270,22 +267,31 @@ async def test_callback_runtime_inbox_writer_result_fallback_source_event_id_is_
         "data": {"pkg_id": "PKG-001"},
     }
 
-    _ = await writer.write_result_callback(
-        SimpleNamespace(),
-        payload=payload,
-        request_id="http-req-001",
-        canonical_result_type="DEVICE_RESULT",
-    )
-    _ = await writer.write_result_callback(
-        SimpleNamespace(),
-        payload=payload,
-        request_id="http-req-002",
-        canonical_result_type="DEVICE_RESULT",
-    )
+    with pytest.raises(ValueError, match="source_event_id"):
+        await writer.write_result_callback(
+            SimpleNamespace(),
+            payload=payload,
+            request_id="http-req-001",
+            canonical_result_type="DEVICE_RESULT",
+        )
 
-    source_event_ids = [call["source_event_id"] for call in accepted_calls]
-    assert source_event_ids[0] == source_event_ids[1]
-    assert source_event_ids[0] not in {"http-req-001", "http-req-002"}
+
+def test_command_callback_result_requires_source_event_id() -> None:
+    """未发布的新 result 契约必须直接要求 provider 事件身份，不保留 legacy fallback。"""
+
+    from pydantic import ValidationError
+
+    from src.app.device.models.command import CommandCallbackResult
+
+    with pytest.raises(ValidationError, match="source_event_id"):
+        CommandCallbackResult.model_validate(
+            {
+                "command_code": "CMD-SOURCE-REQUIRED-001",
+                "device_code": "ARM_01",
+                "result": "SUCCESS",
+                "finish_time": 1_702_627_250_000,
+            }
+        )
 
 
 @pytest.mark.asyncio
@@ -349,6 +355,7 @@ async def test_process_result_uses_runtime_inbox_as_authority() -> None:
             "device_code": "ARM_01",
             "result": "SUCCESS",
             "finish_time": 1_702_627_250_000,
+            "source_event_id": "result-event-ack-001",
             "data": {"task_type": "PICK_AND_PUT"},
         }
     )
@@ -418,6 +425,7 @@ async def test_process_result_duplicate_uses_runtime_inbox_ack_and_skips_legacy_
             "device_code": "ARM_01",
             "result": "SUCCESS",
             "finish_time": 1_702_627_250_000,
+            "source_event_id": "result-event-dup-001",
             "data": {"task_type": "PICK_AND_PUT"},
         }
     )

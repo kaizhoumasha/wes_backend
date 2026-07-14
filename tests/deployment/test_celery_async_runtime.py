@@ -220,7 +220,7 @@ def _configure_lazy_deadline(
     return clock, timeouts, restore
 
 
-def test_initializing_transition_is_observable_from_another_sync_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_concurrent_initialize_waits_for_lifecycle_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _runtime_module()
     infra = _patch_infrastructure(monkeypatch, module)
     runtime = _install_runtime(monkeypatch, module)
@@ -239,23 +239,65 @@ def test_initializing_transition_is_observable_from_another_sync_caller(monkeypa
             thread_errors.append(exc)
 
     infra.init_db.side_effect = init_db
-    thread = threading.Thread(target=initialize)
-    thread.start()
+    first_thread = threading.Thread(target=initialize)
+    second_thread = threading.Thread(target=initialize)
+    first_thread.start()
     try:
         assert started.wait(timeout=1.0)
-        with pytest.raises(RuntimeError, match=r"(?i)INITIALIZING"):
-            runtime.initialize()
+        second_thread.start()
+        assert second_thread.is_alive()
     finally:
         release.set()
-        thread.join(timeout=1.0)
-        if not thread.is_alive():
+        first_thread.join(timeout=1.0)
+        second_thread.join(timeout=1.0)
+        if not first_thread.is_alive() and not second_thread.is_alive():
             runtime.shutdown()
 
-    assert not thread.is_alive()
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
     assert thread_errors == []
 
 
-def test_closing_transition_is_observable_from_another_sync_caller(
+def test_shutdown_waits_for_inflight_initialize_and_finishes_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """initialize/shutdown 必须使用同一锁顺序，不能把 CLOSED 再覆盖成 READY。"""
+
+    module = _runtime_module()
+    infra = _patch_infrastructure(monkeypatch, module)
+    runtime = _install_runtime(monkeypatch, module)
+    started = threading.Event()
+    release = threading.Event()
+    thread_errors: list[BaseException] = []
+
+    async def init_db() -> None:
+        started.set()
+        assert release.wait(timeout=1.0)
+
+    def invoke(operation: Callable[[], None]) -> None:
+        try:
+            operation()
+        except BaseException as exc:  # pragma: no cover - assertion below reports the original error
+            thread_errors.append(exc)
+
+    infra.init_db.side_effect = init_db
+    initialize_thread = threading.Thread(target=invoke, args=(runtime.initialize,))
+    shutdown_thread = threading.Thread(target=invoke, args=(runtime.shutdown,))
+    initialize_thread.start()
+    assert started.wait(timeout=1.0)
+    shutdown_thread.start()
+    try:
+        assert shutdown_thread.is_alive(), "shutdown must wait for the lifecycle owner instead of racing initialize"
+    finally:
+        release.set()
+        initialize_thread.join(timeout=1.0)
+        shutdown_thread.join(timeout=1.0)
+
+    assert not initialize_thread.is_alive()
+    assert not shutdown_thread.is_alive()
+    assert thread_errors == []
+    assert runtime.state is module.RuntimeState.CLOSED
+
+
+def test_run_async_waits_for_shutdown_owner_then_observes_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = _runtime_module()
@@ -281,7 +323,7 @@ def test_closing_transition_is_observable_from_another_sync_caller(
     thread.start()
     try:
         assert started.wait(timeout=1.0)
-        with pytest.raises(RuntimeError, match=r"(?i)CLOSING"):
+        with pytest.raises(RuntimeError, match=r"(?i)CLOSED"):
             runtime.run_async(lambda: asyncio.sleep(0))
     finally:
         release.set()

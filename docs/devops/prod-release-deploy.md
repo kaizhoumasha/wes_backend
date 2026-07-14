@@ -136,6 +136,7 @@ docker compose --env-file .env.prod \
 ### 4.7 静默应用并执行数据库迁移
 
 当前 RuntimeInbox 切换包含破坏性迁移：新代码依赖新增列，旧代码依赖即将删除的 `wes_biz.workline_inbox`。
+降级是显式 fail-closed 的：Revision A 不会丢弃 canonical payload，Revision B 不会清空已映射的 RuntimeInbox 身份引用。Revision C 的并发索引可单独降级，但不代表数据迁移可逆。
 因此迁移前必须停止所有会访问运行时表的 API、Worker 和 Beat，并使用目标镜像的一次性 CLI 容器执行迁移：
 
 ```bash
@@ -267,6 +268,7 @@ export BACKEND_IMAGE=192.168.0.220:5050/wes/wes_backend:123-abc1234
 - 迁移尚未执行：可以保持旧应用或重新启动旧应用，数据库结构仍与旧镜像兼容。
 - 迁移已经成功：停止新应用，确保基础设施保持在线；优先发布兼容当前 schema 的前向修复镜像。
 - 必须恢复旧版本：先停止全部应用，使用发布前备份和已核准的数据修复方案恢复数据库，再启动旧镜像。
+- 禁止为强行 downgrade 手工清空 RuntimeHold、SMT handoff 或 Session 引用；这些引用是必须保留的审计身份。
 
 Jenkins 在迁移成功后的任意步骤失败（包括容器部分启动、testing 数据同步或健康检查失败）都会停止 API、
 Worker 和 Beat，不会自动替换镜像或回滚数据库。恢复动作必须记录当前 Alembic revision、目标镜像和备份点，

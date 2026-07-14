@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 from typing import Any, get_type_hints
 
 import pytest
@@ -309,11 +310,20 @@ def test_runtime_inbox_preserves_source_event_unique_index() -> None:
     assert "ux_wes_runtime_runtime_inbox_source_event" in indexes
 
 
-def test_revision_a_creates_every_model_declared_single_column_index() -> None:
-    """Revision A 必须创建模型以 index=True 声明的路由字段索引。"""
-    migration = importlib.import_module("migrations.versions.20260711_1815_b8a28e1bfec8_extend_runtime_inbox")
-    indexes = {index_name for index_name, _, _ in migration._INDEXES}
+def test_runtime_inbox_indexes_are_created_concurrently_in_post_migration() -> None:
+    """热表索引必须与 A/B 数据迁移拆分，并在 autocommit block 中并发创建。"""
 
+    revision_a = importlib.import_module("migrations.versions.20260711_1815_b8a28e1bfec8_extend_runtime_inbox")
+    revision_b = importlib.import_module("migrations.versions.20260711_1819_ec426c628516_retire_workline_inbox")
+    post_migration = importlib.import_module(
+        "migrations.versions.20260714_1103_e0d58415afc9_create_runtime_inbox_indexes_"
+    )
+
+    assert revision_a._INDEXES == ()
+    assert "create_index" not in inspect.getsource(revision_b.upgrade)
+    source = inspect.getsource(post_migration.upgrade)
+    assert "autocommit_block" in source
+    assert "postgresql_concurrently=True" in source
     assert {
         "ix_wes_runtime_runtime_inbox_kind",
         "ix_wes_runtime_runtime_inbox_workline_id",
@@ -321,7 +331,84 @@ def test_revision_a_creates_every_model_declared_single_column_index() -> None:
         "ix_wes_runtime_runtime_inbox_command_id",
         "ix_wes_runtime_runtime_inbox_trace_id",
         "ix_wes_runtime_runtime_inbox_claim_bucket_key",
-    } <= indexes
+        "ix_wes_runtime_runtime_inbox_status_received",
+        "ix_wes_runtime_runtime_inbox_failed_retry_at",
+        "ix_wes_runtime_runtime_inbox_processing_lease",
+        "ix_wes_runtime_runtime_inbox_bucket_fifo",
+        "ix_wes_runtime_runtime_inbox_workline_session_id",
+    } <= {index_name for index_name, *_rest in post_migration._INDEXES}
+
+
+def test_revision_c_preserves_valid_index_and_rebuilds_unready_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Revision C 只保留 valid+ready 索引，未 ready 的同名索引必须并发重建。"""
+
+    migration = importlib.import_module("migrations.versions.20260714_1103_e0d58415afc9_create_runtime_inbox_indexes_")
+
+    class _AutocommitBlock:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class _MigrationContext:
+        def autocommit_block(self) -> _AutocommitBlock:
+            return _AutocommitBlock()
+
+    dropped: list[tuple[str, dict[str, object]]] = []
+    created: list[tuple[str, str, list[str], dict[str, object]]] = []
+    monkeypatch.setattr(
+        migration,
+        "_INDEXES",
+        (
+            ("ix_runtime_inbox_valid", ("kind",), None),
+            ("ix_runtime_inbox_unready", ("status",), None),
+        ),
+    )
+    monkeypatch.setattr(
+        migration,
+        "_runtime_inbox_index_states",
+        lambda: {
+            "ix_runtime_inbox_valid": (True, True),
+            "ix_runtime_inbox_unready": (False, False),
+        },
+    )
+    monkeypatch.setattr(migration.op, "get_context", lambda: _MigrationContext())
+    monkeypatch.setattr(
+        migration.op,
+        "drop_index",
+        lambda name, **kwargs: dropped.append((name, kwargs)),
+    )
+    monkeypatch.setattr(
+        migration.op,
+        "create_index",
+        lambda name, table_name, columns, **kwargs: created.append((name, table_name, columns, kwargs)),
+    )
+
+    migration.upgrade()
+
+    assert dropped == [
+        (
+            "ix_runtime_inbox_unready",
+            {
+                "table_name": "runtime_inbox",
+                "schema": "wes_runtime",
+                "postgresql_concurrently": True,
+            },
+        )
+    ]
+    assert created == [
+        (
+            "ix_runtime_inbox_unready",
+            "runtime_inbox",
+            ["status"],
+            {
+                "schema": "wes_runtime",
+                "postgresql_where": None,
+                "postgresql_concurrently": True,
+            },
+        )
+    ]
 
 
 # ============================================================

@@ -93,22 +93,8 @@ _COLUMNS: tuple[sa.Column, ...] = (
     sa.Column("failed_at", sa.BigInteger(), nullable=True),
 )
 
-_INDEXES: tuple[tuple[str, tuple[str, ...], str | None], ...] = (
-    ("ix_wes_runtime_runtime_inbox_kind", ("kind",), None),
-    ("ix_wes_runtime_runtime_inbox_workline_id", ("workline_id",), None),
-    ("ix_wes_runtime_runtime_inbox_device_id", ("device_id",), None),
-    ("ix_wes_runtime_runtime_inbox_command_id", ("command_id",), None),
-    ("ix_wes_runtime_runtime_inbox_trace_id", ("trace_id",), None),
-    ("ix_wes_runtime_runtime_inbox_claim_bucket_key", ("claim_bucket_key",), None),
-    ("ix_wes_runtime_runtime_inbox_status_received", ("status", "received_at"), "status = 'RECEIVED'"),
-    ("ix_wes_runtime_runtime_inbox_failed_retry_at", ("status", "next_retry_at"), "status = 'FAILED'"),
-    ("ix_wes_runtime_runtime_inbox_processing_lease", ("status", "lease_until"), "status = 'PROCESSING'"),
-    (
-        "ix_wes_runtime_runtime_inbox_bucket_fifo",
-        ("claim_bucket_key", "received_at", "id"),
-        "status IN ('RECEIVED', 'FAILED')",
-    ),
-)
+# 热表索引由 Revision C 在 autocommit block 中 CONCURRENTLY 创建。
+_INDEXES: tuple[tuple[str, tuple[str, ...], str | None], ...] = ()
 
 
 def upgrade() -> None:

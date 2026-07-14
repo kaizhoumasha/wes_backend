@@ -209,6 +209,7 @@ async def test_callback_result_writer_rejects_unknown_command_correlation(db_ses
             payload={
                 "command_code": "CMD-UNKNOWN-CORR",
                 "device_code": "ARM_01",
+                "source_event_id": "evt-result-unknown-correlation",
                 "result": "SUCCESS",
             },
             request_id="req-unknown-corr",

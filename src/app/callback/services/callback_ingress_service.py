@@ -70,11 +70,13 @@ _DEVICE_CODE_ALIASES = ("device_code",)
 _COMMAND_CODE_ALIASES = ("command_code",)
 _TRACE_TOP_LEVEL_FIELDS = frozenset({"trace_id", "event_id", "causation_id"})
 _RUNTIME_INBOX_TRACE_IDENTIFIER_MAX_LENGTH = 120
+_REDACTED_SECRET = "***REDACTED***"  # noqa: S105  # nosec B105 -- 固定脱敏占位符，不是凭据。
 _EVENT_CALLBACK_TOP_LEVEL_FIELDS = (
     frozenset({"device_code", "event_type", "timestamp", "data"}) | _TRACE_TOP_LEVEL_FIELDS
 )
 _RESULT_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
-    {"command_code", "device_code", "result", "finish_time", "data", "error_detail"} | _TRACE_TOP_LEVEL_FIELDS
+    {"command_code", "device_code", "result", "finish_time", "source_event_id", "data", "error_detail"}
+    | _TRACE_TOP_LEVEL_FIELDS
 )
 # 外部回调顶层白名单 (H4 边界一致): 不允许 provider_code/source_event_id
 # 等业务追溯字段直接放顶层, 必须放入 data 内。WMS 协议 source_event_id
@@ -563,6 +565,21 @@ def _build_callback_log_payload(
     }
 
 
+def _redact_callback_signatures(value: Any) -> Any:
+    """复制 callback 证据并递归移除任何层级、任何大小写的 signature。"""
+
+    if isinstance(value, dict):
+        return {
+            key: _REDACTED_SECRET
+            if isinstance(key, str) and key.casefold() == "signature"
+            else _redact_callback_signatures(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_callback_signatures(item) for item in value]
+    return value
+
+
 async def _record_callback_audit_log(
     db: AsyncSessionDep,
     request: Request,
@@ -843,11 +860,12 @@ async def _record_callback_diagnostic(db: AsyncSessionDep, **kwargs: Any) -> Non
     """记录 callback 诊断日志并尽力持久化诊断卡片。"""
 
     event = _log_callback_diagnostic(**kwargs)
+    sanitized_payload = _redact_callback_signatures(kwargs.get("payload"))
     try:
         _ = await workline_diagnostic_service.record_event(
             db,
             event=event,
-            evidence={"payload": kwargs.get("payload")},
+            evidence={"payload": sanitized_payload},
             auto_commit=False,
         )
     except Exception as exc:
@@ -874,6 +892,7 @@ async def _log_callback_outcome(
     ingress_outcome: str | None = None,
     failure_stage: str | None = None,
 ) -> None:
+    sanitized_request_body = cast("JsonDict", _redact_callback_signatures(request_body))
     trace = TraceContext.from_request(
         request_id=request_id,
         trace_id=trace_id,
@@ -888,7 +907,7 @@ async def _log_callback_outcome(
             trace=trace,
             callback_type=callback_type,
             subject_code=subject_code,
-            request_body=request_body,
+            request_body=sanitized_request_body,
             response_status=response_status,
             response_time_ms=response_time_ms,
             error_message=error_message,
@@ -903,7 +922,7 @@ async def _log_callback_outcome(
             db,
             request,
             title=audit_title,
-            args=request_body,
+            args=sanitized_request_body,
             cost_time=response_time_ms / 1000,
             success=True,
         )
@@ -912,7 +931,7 @@ async def _log_callback_outcome(
         db,
         request,
         title=audit_title,
-        args=request_body,
+        args=sanitized_request_body,
         cost_time=response_time_ms / 1000,
         success=False,
         message=error_message,

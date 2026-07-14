@@ -899,6 +899,7 @@ class RuntimeInboxService:
         db: AsyncSession,
         *,
         command_code: str,
+        source_event_id: str,
         device_code: str | None = None,
         workline_id: int | None = None,
         device_id: int | None = None,
@@ -912,22 +913,23 @@ class RuntimeInboxService:
         """接收 command result 写入 RuntimeInbox (kind=COMMAND_RESULT).
 
         - provider_code: 有 device_code 走 "DEVICE_RESULT", 缺省走 "RUNTIME"。
-        - source_event_id: 优先 event_id, 否则按 command_code 派生稳定 key。
+        - source_event_id: 调用方必须提供唯一结果事件身份，不接受别名或合成回退。
         - 稳定 source identity 同 hash ACK、异 hash 冲突。
         """
 
         if not isinstance(command_code, str) or not command_code:
             raise ValueError("command result requires command_code")
+        if not isinstance(source_event_id, str) or not source_event_id.strip():
+            raise ValueError("command result requires source_event_id")
 
         provider_code = "DEVICE_RESULT" if device_code else "RUNTIME"
-        source_event_id = event_id or f"command-result:{command_code}:{event_id or 'synth'}"
 
         canonical_payload = payload_json or {"command_code": command_code, "device_code": device_code}
         result = await self.accept_received(
             db,
             provider_code=provider_code,
             event_type="COMMAND_RESULT",
-            source_event_id=source_event_id,
+            source_event_id=source_event_id.strip(),
             payload_hash=_canonical_payload_hash(canonical_payload),
             kind="COMMAND_RESULT",
             payload_json=canonical_payload,
@@ -1354,6 +1356,7 @@ class RuntimeInboxService:
         *,
         inbox_id: int,
         lease_token: str,
+        error_code: str,
         error_message: str,
         retryable: bool,
         consume_attempt: bool = True,
@@ -1362,7 +1365,10 @@ class RuntimeInboxService:
         from src.utils.timezone import timezone
 
         now_ms = int(timezone.now_utc().timestamp() * 1000)
-        extra: dict[str, Any] = {"last_error_message": error_message}
+        extra: dict[str, Any] = {
+            "last_error_code": error_code,
+            "last_error_message": error_message,
+        }
         extra["failed_at"] = now_ms
 
         attempt_count = 0
@@ -1401,13 +1407,17 @@ class RuntimeInboxService:
         *,
         inbox_id: int,
         lease_token: str,
+        error_code: str,
         error_message: str,
     ) -> bool:
         """写终态 DEAD_LETTER + failed_at。"""
         from src.utils.timezone import timezone
 
         now_ms = int(timezone.now_utc().timestamp() * 1000)
-        extra: dict[str, Any] = {"last_error_message": error_message}
+        extra: dict[str, Any] = {
+            "last_error_code": error_code,
+            "last_error_message": error_message,
+        }
         extra["failed_at"] = now_ms
         return await self.repository.update_terminal_state(
             db,

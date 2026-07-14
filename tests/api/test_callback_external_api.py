@@ -36,6 +36,84 @@ def build_request() -> RequestFactory:
 
 
 class TestCallbackExternalAPI:
+    @pytest.mark.asyncio
+    async def test_callback_diagnostic_redacts_signature_evidence_without_mutating_payload(
+        self,
+        db_session: AsyncSession,
+    ) -> None:
+        payload = {
+            "signature": "top-secret",
+            "data": {"Signature": "nested-secret", "items": [{"SIGNATURE": "list-secret"}]},
+        }
+        with patch.object(
+            callback_test_support.callback_ingress_module.workline_diagnostic_service,
+            "record_event",
+            new=AsyncMock(),
+        ) as record_event:
+            await callback_test_support.callback_ingress_module._record_callback_diagnostic(
+                db_session,
+                error_code=callback_test_support.callback_ingress_module.ErrorCode.CALLBACK_SCHEMA_INVALID,
+                message="callback schema invalid",
+                request_id="request-diagnostic-1",
+                callback_type="external",
+                payload=payload,
+            )
+
+        assert record_event.await_args.kwargs["evidence"] == {
+            "payload": {
+                "signature": "***REDACTED***",
+                "data": {"Signature": "***REDACTED***", "items": [{"SIGNATURE": "***REDACTED***"}]},
+            }
+        }
+        assert payload["signature"] == "top-secret"
+        assert payload["data"]["Signature"] == "nested-secret"
+
+    @pytest.mark.asyncio
+    async def test_callback_outcome_redacts_signature_from_log_and_audit_without_mutating_request(
+        self,
+        db_session: AsyncSession,
+        build_request: RequestFactory,
+    ) -> None:
+        request_body = {
+            "signature": "top-secret",
+            "data": {"Signature": "nested-secret", "items": [{"SIGNATURE": "list-secret"}]},
+        }
+        request = build_request(body=request_body, path="/api/v1/callback/external")
+        with (
+            patch.object(
+                callback_test_support.callback_ingress_module.callback_log_service,
+                "log_callback",
+                new=AsyncMock(),
+            ) as callback_log,
+            patch.object(
+                callback_test_support.callback_ingress_module.audit_log_service,
+                "create_audit_log",
+                new=AsyncMock(),
+            ) as audit_log,
+        ):
+            await callback_test_support.callback_ingress_module._log_callback_outcome(
+                db_session,
+                request,
+                callback_type="WMS_TEST",
+                subject_code="subject-1",
+                request_body=request_body,
+                request_id="request-1",
+                response_status=200,
+                response_time_ms=1,
+                success=True,
+                record_audit=True,
+                audit_title="callback test",
+            )
+
+        expected = {
+            "signature": "***REDACTED***",
+            "data": {"Signature": "***REDACTED***", "items": [{"SIGNATURE": "***REDACTED***"}]},
+        }
+        assert callback_log.await_args.kwargs["request_body"] == expected
+        assert audit_log.await_args.kwargs["args"] == expected
+        assert request_body["signature"] == "top-secret"
+        assert request_body["data"]["Signature"] == "nested-secret"
+
     def test_external_callback_allow_list_includes_runtime_ecs_device_matrix(self) -> None:
         expected_types = {
             "DEVICE_RESULT",

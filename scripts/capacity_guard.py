@@ -6,14 +6,35 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import socket
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import asyncpg
 
-API_UVICORN_WORKERS = 4
-API_DATABASE_POOL_SIZE = 5
-CELERY_DATABASE_POOL_SIZE = 1
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.core.conf import DATABASE_POOL_SIZE_BY_ROLE  # noqa: E402
+
+_UVICORN_WORKERS_PATTERN = re.compile(r'"--workers"\s*,\s*"(?P<count>\d+)"')
+
+
+def _read_api_uvicorn_workers(dockerfile: Path = REPO_ROOT / "Dockerfile") -> int:
+    """从生产镜像启动命令读取实际 Uvicorn 进程数。"""
+
+    match = _UVICORN_WORKERS_PATTERN.search(dockerfile.read_text(encoding="utf-8"))
+    if match is None:
+        raise CapacityViolation("Dockerfile production CMD must declare --workers as an integer")
+    return int(match.group("count"))
+
+
+API_UVICORN_WORKERS = _read_api_uvicorn_workers()
+API_DATABASE_POOL_SIZE = DATABASE_POOL_SIZE_BY_ROLE["api"]
+CELERY_DATABASE_POOL_SIZE = DATABASE_POOL_SIZE_BY_ROLE["celery"]
 MINIMUM_CONNECTION_RESERVE = 10
 
 
@@ -96,17 +117,6 @@ def _parse_scale(values: list[str]) -> dict[str, int]:
     return scales
 
 
-def _runtime_constant(name: str, expected: int) -> int:
-    """拒绝与 Dockerfile/Compose 唯一运行拓扑不一致的伪预算覆盖。"""
-    try:
-        configured = _env_int(name, expected)
-    except ValueError as exc:
-        raise CapacityViolation(f"{name} must be the deployed integer value {expected}") from exc
-    if configured != expected:
-        raise CapacityViolation(f"{name}={configured} disagrees with deployed runtime value {expected}")
-    return expected
-
-
 def build_capacity_plan(
     *,
     services: set[str],
@@ -114,18 +124,15 @@ def build_capacity_plan(
     reserve: int | None = None,
 ) -> CapacityPlan:
     """从可扩缩容维度和固定镜像/Compose 维度构造唯一容量计划。"""
-    api_processes = _runtime_constant("API_UVICORN_WORKERS", API_UVICORN_WORKERS)
-    api_pool_size = _runtime_constant("API_DATABASE_POOL_SIZE", API_DATABASE_POOL_SIZE)
-    celery_pool_size = _runtime_constant("CELERY_DATABASE_POOL_SIZE", CELERY_DATABASE_POOL_SIZE)
     return CapacityPlan(
         api_replicas=scales.get("api", _env_int("API_REPLICAS", 1)) if "api" in services else 0,
-        api_processes=api_processes,
-        api_pool_size=api_pool_size,
+        api_processes=API_UVICORN_WORKERS,
+        api_pool_size=API_DATABASE_POOL_SIZE,
         celery_replicas=(
             scales.get("celery_worker", _env_int("CELERY_WORKER_REPLICAS", 4)) if "celery_worker" in services else 0
         ),
         celery_processes=_env_int("CELERY_CONCURRENCY", 4),
-        celery_pool_size=celery_pool_size,
+        celery_pool_size=CELERY_DATABASE_POOL_SIZE,
         reserve=_env_int("DATABASE_CONNECTION_RESERVE", MINIMUM_CONNECTION_RESERVE) if reserve is None else reserve,
         max_overflow=_env_int("DATABASE_MAX_OVERFLOW", 0),
     )

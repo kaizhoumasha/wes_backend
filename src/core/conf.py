@@ -8,6 +8,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.core.path_conf import BasePath
 
+DATABASE_POOL_SIZE_BY_ROLE: dict[str, int] = {
+    "api": 5,
+    "celery": 1,
+    "integration": 1,
+    "cli": 1,
+}
+
 
 class Settings(BaseSettings):
     """
@@ -260,11 +267,11 @@ class Settings(BaseSettings):
 
         if self.DATABASE_MAX_OVERFLOW != 0:
             raise ValueError("DATABASE_MAX_OVERFLOW 必须为 0，禁止绕过连接容量预算")
-        if self.DATABASE_RUNTIME_ROLE == "api":
-            if self.DATABASE_POOL_SIZE > 5:
-                raise ValueError("DATABASE_POOL_SIZE: api 单进程连接池不得超过 5")
-        elif self.DATABASE_POOL_SIZE != 1:
-            raise ValueError(f"DATABASE_POOL_SIZE: {self.DATABASE_RUNTIME_ROLE} 单进程连接池必须为 1")
+        expected_pool_size = DATABASE_POOL_SIZE_BY_ROLE[self.DATABASE_RUNTIME_ROLE]
+        if expected_pool_size != self.DATABASE_POOL_SIZE:
+            raise ValueError(
+                f"DATABASE_POOL_SIZE: {self.DATABASE_RUNTIME_ROLE} 单进程连接池必须为 {expected_pool_size}"
+            )
         if self.DATABASE_RUNTIME_ROLE == "integration" and not (
             self.DATABASE_APPLICATION_RUN_ID and self.DATABASE_APPLICATION_RUN_ID.strip()
         ):

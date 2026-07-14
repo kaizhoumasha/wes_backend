@@ -1082,6 +1082,7 @@ class TestBuildWriteCallback:
             {
                 "inbox_id": 1,
                 "lease_token": "lease-resource",
+                "error_code": "RESOURCE_WAIT",
                 "error_message": "RESOURCE_WAIT",
                 "retryable": True,
                 "consume_attempt": False,

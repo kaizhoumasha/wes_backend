@@ -316,6 +316,7 @@ async def test_sli_snapshot_counts_states_and_oldest_claimable_age(db_session: A
             status="FAILED",
             received_at=2_000,
             next_retry_at=0,
+            last_error_code="RESOURCE_WAIT",
             last_error_message="RESOURCE_WAIT",
         ),
         _runtime_inbox(
@@ -470,7 +471,7 @@ async def test_repository_emits_reclaim_fencing_resource_wait_and_dead_letter_sl
         inbox_id=rows[1].id,
         lease_token="token-2",
         target_state="FAILED",
-        extra_values={"last_error_message": "RESOURCE_WAIT"},
+        extra_values={"last_error_code": "RESOURCE_WAIT", "last_error_message": "RESOURCE_WAIT"},
     )
     assert await repository.update_terminal_state(
         db_session,

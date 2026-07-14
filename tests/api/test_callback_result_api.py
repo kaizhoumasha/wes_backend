@@ -207,7 +207,7 @@ class TestCallbackResultAPI:
                 "trace_id": "trace-001",
                 "correlation_id": "CMD-20250317-001",
                 "provider_code": "ECS",
-                "source_event_id": "req-001",
+                "source_event_id": "result-event-001",
             },
         )
         mock_handle.assert_awaited_once()

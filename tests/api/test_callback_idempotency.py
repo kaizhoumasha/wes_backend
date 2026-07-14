@@ -85,6 +85,7 @@ def create_result_payload() -> JsonDict:
         "device_code": "ARM_01",
         "result": "SUCCESS",
         "finish_time": 1702627250000,
+        "source_event_id": "result-event-001",
         "data": {"task_type": "PICK_AND_PUT"},
     }
 

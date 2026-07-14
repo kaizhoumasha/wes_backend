@@ -46,6 +46,13 @@ def _resolve_payload_source_event_id(payload: dict[str, Any], *, fallback_prefix
     )
 
 
+def _require_result_source_event_id(payload: dict[str, Any]) -> str:
+    source_event_id = _resolve_first_str(payload, ("source_event_id",))
+    if source_event_id is None:
+        raise ValueError("command result source_event_id is required")
+    return source_event_id
+
+
 def _resolve_external_source_event_id(payload: dict[str, Any], request_id: str | None) -> str | None:
     _ = request_id
     callback_type = _resolve_first_str(payload, ("callback_type",)) or "UNKNOWN"
@@ -80,7 +87,7 @@ class CallbackRuntimeInboxWriter:
             db,
             provider_code="ECS",
             event_type=canonical_result_type,
-            source_event_id=_resolve_payload_source_event_id(payload, fallback_prefix="callback-result"),
+            source_event_id=_require_result_source_event_id(payload),
             payload_hash=_canonical_payload_hash(payload),
             kind="COMMAND_RESULT",
             payload_json=dict(payload),

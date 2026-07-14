@@ -35,10 +35,14 @@ def _source(path: Path) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
-def _latest_migration_text() -> str:
+def _migration_text_containing(*tokens: str) -> str:
     migrations = sorted((REPO_ROOT / MIGRATIONS_DIR).glob("*.py"))
     assert migrations, "migrations/versions 下必须存在 Alembic revision"
-    return migrations[-1].read_text(encoding="utf-8")
+    for migration in reversed(migrations):
+        migration_text = migration.read_text(encoding="utf-8")
+        if all(token in migration_text for token in tokens):
+            return migration_text
+    raise AssertionError(f"未找到同时包含目标标识的迁移: {tokens}")
 
 
 def _parse_source(source: str) -> ast.Module:
@@ -187,8 +191,11 @@ def test_runtime_status_projection_service_no_longer_writes_workline_field() -> 
     assert 'getattr(workline, "runtime_status"' not in source
 
 
-def test_latest_migration_mentions_runtime_status_targets() -> None:
-    migration_text = _latest_migration_text()
+def test_runtime_status_migration_mentions_runtime_status_targets() -> None:
+    migration_text = _migration_text_containing(
+        "workline_runtime_status_projections",
+        _HANDLING_QUEUE_MEMBERSHIP_TABLE,
+    )
 
     assert "workline_runtime_status_projections" in migration_text
     assert _HANDLING_QUEUE_MEMBERSHIP_TABLE in migration_text

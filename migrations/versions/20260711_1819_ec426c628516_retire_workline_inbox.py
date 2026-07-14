@@ -22,6 +22,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 BIZ_SCHEMA = "wes_biz"
 RUNTIME_SCHEMA = "wes_runtime"
+PRE_CUTOVER_AUDIT_ONLY = "PRE_CUTOVER_AUDIT_ONLY"
+LEGACY_PROVIDER_CODE = "LEGACY_WORKLINE_INBOX"
+LEGACY_EVENT_TYPE = "PRE_CUTOVER_AUDIT_ONLY"
 
 _DEPENDENT_FOREIGN_KEYS = (
     (
@@ -29,18 +32,45 @@ _DEPENDENT_FOREIGN_KEYS = (
         "inbox_id",
         "workline_diagnostics_inbox_id_fkey",
         "fk_workline_diagnostics_inbox_id_runtime_inbox",
+        """
+        UPDATE wes_biz.workline_diagnostics AS dependent
+        SET inbox_id = runtime.id
+        FROM wes_runtime.runtime_inbox AS runtime
+        WHERE dependent.inbox_id IS NOT NULL
+          AND runtime.provider_code = :provider_code
+          AND runtime.event_type = :event_type
+          AND runtime.source_event_id = 'legacy-workline-inbox:' || dependent.inbox_id::text
+        """,
     ),
     (
         "runtime_holds",
         "source_inbox_id",
         "fk_runtime_holds_source_inbox_id_workline_inbox",
         "fk_runtime_holds_source_inbox_id_runtime_inbox",
+        """
+        UPDATE wes_biz.runtime_holds AS dependent
+        SET source_inbox_id = runtime.id
+        FROM wes_runtime.runtime_inbox AS runtime
+        WHERE dependent.source_inbox_id IS NOT NULL
+          AND runtime.provider_code = :provider_code
+          AND runtime.event_type = :event_type
+          AND runtime.source_event_id = 'legacy-workline-inbox:' || dependent.source_inbox_id::text
+        """,
     ),
     (
         "smt_inbound_handoff_source_items",
         "source_pick_inbox_id",
         "fk_smt_inbound_handoff_source_items_source_pick_inbox_i_cf89",
         "fk_smt_inbound_handoff_source_items_source_pick_inbox_runtime",
+        """
+        UPDATE wes_biz.smt_inbound_handoff_source_items AS dependent
+        SET source_pick_inbox_id = runtime.id
+        FROM wes_runtime.runtime_inbox AS runtime
+        WHERE dependent.source_pick_inbox_id IS NOT NULL
+          AND runtime.provider_code = :provider_code
+          AND runtime.event_type = :event_type
+          AND runtime.source_event_id = 'legacy-workline-inbox:' || dependent.source_pick_inbox_id::text
+        """,
     ),
 )
 
@@ -50,12 +80,6 @@ def upgrade() -> None:
     op.add_column(
         "runtime_inbox",
         sa.Column("workline_session_id", sa.BigInteger(), nullable=True),
-        schema=RUNTIME_SCHEMA,
-    )
-    op.create_index(
-        "ix_wes_runtime_runtime_inbox_workline_session_id",
-        "runtime_inbox",
-        ["workline_session_id"],
         schema=RUNTIME_SCHEMA,
     )
     op.create_foreign_key(
@@ -68,15 +92,55 @@ def upgrade() -> None:
         referent_schema=BIZ_SCHEMA,
     )
 
-    # 旧 ID 与 RuntimeInbox ID 不共享命名空间；项目未发布，安全清空而非错误映射。
-    op.execute("UPDATE wes_biz.workline_diagnostics SET inbox_id = NULL WHERE inbox_id IS NOT NULL")
-    op.execute("UPDATE wes_biz.runtime_holds SET source_inbox_id = NULL WHERE source_inbox_id IS NOT NULL")
-    op.execute(
-        "UPDATE wes_biz.smt_inbound_handoff_source_items "
-        "SET source_pick_inbox_id = NULL WHERE source_pick_inbox_id IS NOT NULL"
-    )
-    for table_name, column_name, old_constraint, new_constraint in _DEPENDENT_FOREIGN_KEYS:
+    # 先解除旧 FK，再把每个被引用的 legacy 行映射为不可执行的 audit-only RuntimeInbox 证据。
+    for table_name, _column_name, old_constraint, _new_constraint, _update_statement in _DEPENDENT_FOREIGN_KEYS:
         op.drop_constraint(old_constraint, table_name, schema=BIZ_SCHEMA, type_="foreignkey")
+
+    op.execute(
+        sa.text(
+            """
+            WITH referenced_legacy_ids AS (
+                SELECT inbox_id AS legacy_id FROM wes_biz.workline_diagnostics WHERE inbox_id IS NOT NULL
+                UNION
+                SELECT source_inbox_id FROM wes_biz.runtime_holds WHERE source_inbox_id IS NOT NULL
+                UNION
+                SELECT source_pick_inbox_id
+                FROM wes_biz.smt_inbound_handoff_source_items
+                WHERE source_pick_inbox_id IS NOT NULL
+            )
+            INSERT INTO wes_runtime.runtime_inbox (
+                workline_session_id, provider_code, event_type, source_event_id,
+                status, attempt_count, max_retries, last_error_code,
+                last_error_message, received_at, failed_at
+            )
+            SELECT legacy.session_id,
+                   :provider_code,
+                   :event_type,
+                   'legacy-workline-inbox:' || legacy.id::text,
+                   'DEAD_LETTER',
+                   legacy.attempt_count,
+                   greatest(legacy.max_attempts, 1),
+                   :audit_code,
+                   'Legacy WorklineInbox ' || legacy.id::text || ' retained as audit-only reference evidence',
+                   floor(extract(epoch FROM legacy.received_at) * 1000)::bigint,
+                   floor(extract(epoch FROM legacy.received_at) * 1000)::bigint
+            FROM wes_biz.workline_inbox AS legacy
+            JOIN referenced_legacy_ids AS referenced ON referenced.legacy_id = legacy.id
+            """
+        ).bindparams(
+            provider_code=LEGACY_PROVIDER_CODE,
+            event_type=LEGACY_EVENT_TYPE,
+            audit_code=PRE_CUTOVER_AUDIT_ONLY,
+        )
+    )
+
+    for table_name, column_name, _old_constraint, new_constraint, update_statement in _DEPENDENT_FOREIGN_KEYS:
+        op.execute(
+            sa.text(update_statement).bindparams(
+                provider_code=LEGACY_PROVIDER_CODE,
+                event_type=LEGACY_EVENT_TYPE,
+            )
+        )
         op.create_foreign_key(
             new_constraint,
             table_name,
@@ -91,7 +155,24 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """重建空旧表并恢复引用；不尝试伪造已清空的旧 ID。"""
+    """仅在无 RuntimeInbox 引用数据时恢复旧空表；任何有损降级都 fail-closed。"""
+    bind = op.get_bind()
+    referenced_count = bind.execute(
+        sa.text(
+            """
+            SELECT
+                (SELECT count(*) FROM wes_biz.workline_diagnostics WHERE inbox_id IS NOT NULL)
+              + (SELECT count(*) FROM wes_biz.runtime_holds WHERE source_inbox_id IS NOT NULL)
+              + (SELECT count(*) FROM wes_biz.smt_inbound_handoff_source_items WHERE source_pick_inbox_id IS NOT NULL)
+              + (SELECT count(*) FROM wes_runtime.runtime_inbox WHERE workline_session_id IS NOT NULL)
+            """
+        )
+    ).scalar_one()
+    if referenced_count:
+        raise RuntimeError(
+            f"Revision B downgrade refused: {referenced_count} RuntimeInbox reference(s) would lose identity"
+        )
+
     op.create_table(
         "workline_inbox",
         sa.Column("created_at", sa.DateTime(), nullable=False),
@@ -191,14 +272,7 @@ def downgrade() -> None:
             postgresql_where=sa.text(predicate) if predicate else None,
         )
 
-    # Runtime ID 不能解释为旧表 ID；回切 FK 前保持引用为空。
-    op.execute("UPDATE wes_biz.workline_diagnostics SET inbox_id = NULL WHERE inbox_id IS NOT NULL")
-    op.execute("UPDATE wes_biz.runtime_holds SET source_inbox_id = NULL WHERE source_inbox_id IS NOT NULL")
-    op.execute(
-        "UPDATE wes_biz.smt_inbound_handoff_source_items "
-        "SET source_pick_inbox_id = NULL WHERE source_pick_inbox_id IS NOT NULL"
-    )
-    for table_name, column_name, old_constraint, new_constraint in _DEPENDENT_FOREIGN_KEYS:
+    for table_name, column_name, old_constraint, new_constraint, _update_statement in _DEPENDENT_FOREIGN_KEYS:
         op.drop_constraint(new_constraint, table_name, schema=BIZ_SCHEMA, type_="foreignkey")
         op.create_foreign_key(
             old_constraint,
@@ -215,10 +289,5 @@ def downgrade() -> None:
         "runtime_inbox",
         schema=RUNTIME_SCHEMA,
         type_="foreignkey",
-    )
-    op.drop_index(
-        "ix_wes_runtime_runtime_inbox_workline_session_id",
-        table_name="runtime_inbox",
-        schema=RUNTIME_SCHEMA,
     )
     op.drop_column("runtime_inbox", "workline_session_id", schema=RUNTIME_SCHEMA)

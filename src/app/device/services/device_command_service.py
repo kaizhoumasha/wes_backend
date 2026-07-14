@@ -61,17 +61,10 @@ def _device_command_result_correlation_id(command: object, callback: CommandCall
     )
 
 
-def _device_command_result_source_event_id(command: object, callback: CommandCallbackResult) -> str | None:
-    command_code = coerce_optional_str(getattr(command, "command_code", None)) or coerce_optional_str(
-        getattr(callback, "command_code", None)
-    )
-    finish_time = coerce_optional_str(getattr(callback, "finish_time", None))
-    return (
-        coerce_optional_str(getattr(callback, "event_id", None))
-        or coerce_optional_str(getattr(command, "event_id", None))
-        or coerce_optional_str(getattr(callback, "causation_id", None))
-        or (f"command_result:{command_code}:{finish_time}" if command_code and finish_time else None)
-    )
+def _device_command_result_source_event_id(_command: object, callback: CommandCallbackResult) -> str:
+    """结果观测与 RuntimeInbox 共用供应商提供的唯一事件身份。"""
+
+    return callback.source_event_id
 
 
 def _emit_device_command_result_observability(command: object, callback: CommandCallbackResult) -> None:

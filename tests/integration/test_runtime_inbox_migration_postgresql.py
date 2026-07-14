@@ -16,6 +16,7 @@ from tests.support.runtime_inbox_postgresql import connect, run_alembic, tempora
 
 REVISION_A = "b8a28e1bfec8"
 REVISION_B = "ec426c628516"
+REVISION_C = "e0d58415afc9"
 REVISION_A_PARENT = "f0851c5bcfdb"
 MILLISECOND_VALUE = 1_783_699_200_123
 AUDIT_ONLY_CODE = "PRE_CUTOVER_AUDIT_ONLY"
@@ -36,6 +37,9 @@ RUNTIME_INBOX_HOT_INDEXES = {
     "ix_wes_runtime_runtime_inbox_failed_retry_at",
     "ix_wes_runtime_runtime_inbox_processing_lease",
     "ix_wes_runtime_runtime_inbox_bucket_fifo",
+}
+RUNTIME_INBOX_REVISION_C_INDEXES = RUNTIME_INBOX_HOT_INDEXES | {
+    "ix_wes_runtime_runtime_inbox_workline_session_id",
 }
 
 DEPENDENT_COLUMNS = {
@@ -193,10 +197,41 @@ async def _assert_millisecond_row(connection: asyncpg.Connection, inbox_id: int)
     assert tuple(values.values()) == (MILLISECOND_VALUE, MILLISECOND_VALUE)
 
 
-async def _assert_revision_b_schema(connection: asyncpg.Connection) -> None:
+async def _assert_revision_b_schema(
+    connection: asyncpg.Connection,
+    *,
+    expect_indexes: bool = True,
+    legacy_inbox_id: int | None = None,
+) -> None:
+    mapped_ids: set[int] = set()
     for table_name, column_name in DEPENDENT_COLUMNS.items():
         value = await connection.fetchval(f'SELECT {column_name} FROM wes_biz."{table_name}"')
-        assert value is None
+        if legacy_inbox_id is None:
+            assert value is None
+        else:
+            assert isinstance(value, int)
+            mapped_ids.add(value)
+
+    if legacy_inbox_id is not None:
+        assert len(mapped_ids) == 1
+        audit_row = await connection.fetchrow(
+            """
+            SELECT provider_code, event_type, source_event_id, status, last_error_code,
+                   kind, payload_json
+            FROM wes_runtime.runtime_inbox
+            WHERE id = $1
+            """,
+            mapped_ids.pop(),
+        )
+        assert dict(audit_row) == {
+            "provider_code": "LEGACY_WORKLINE_INBOX",
+            "event_type": "PRE_CUTOVER_AUDIT_ONLY",
+            "source_event_id": f"legacy-workline-inbox:{legacy_inbox_id}",
+            "status": "DEAD_LETTER",
+            "last_error_code": AUDIT_ONLY_CODE,
+            "kind": None,
+            "payload_json": None,
+        }
 
     assert await connection.fetchval("SELECT to_regclass('wes_biz.workline_inbox')") is None
     assert await _foreign_key_targets(connection) == dict.fromkeys(
@@ -213,10 +248,10 @@ async def _assert_revision_b_schema(connection: asyncpg.Connection) -> None:
         """
     )
     assert dict(column) == {"is_nullable": "YES", "data_type": "bigint"}
-    assert (
-        await connection.fetchval("SELECT to_regclass('wes_runtime.ix_wes_runtime_runtime_inbox_workline_session_id')")
-        is not None
+    workline_session_index = await connection.fetchval(
+        "SELECT to_regclass('wes_runtime.ix_wes_runtime_runtime_inbox_workline_session_id')"
     )
+    assert (workline_session_index is not None) is expect_indexes
     session_fk_target = await connection.fetchrow(
         """
         SELECT target_namespace.nspname AS target_schema, target_table.relname AS target_table
@@ -248,12 +283,23 @@ async def _assert_revision_b_schema(connection: asyncpg.Connection) -> None:
     assert {row["conname"] for row in checks} >= RUNTIME_INBOX_CHECKS
     indexes = await connection.fetch(
         """
-        SELECT indexname
-        FROM pg_indexes
-        WHERE schemaname = 'wes_runtime' AND tablename = 'runtime_inbox'
+        SELECT index_row.relname AS indexname,
+               index_metadata.indisvalid,
+               index_metadata.indisready
+        FROM pg_index AS index_metadata
+        JOIN pg_class AS index_row ON index_row.oid = index_metadata.indexrelid
+        JOIN pg_class AS table_row ON table_row.oid = index_metadata.indrelid
+        JOIN pg_namespace AS namespace_row ON namespace_row.oid = table_row.relnamespace
+        WHERE namespace_row.nspname = 'wes_runtime'
+          AND table_row.relname = 'runtime_inbox'
         """
     )
-    assert {row["indexname"] for row in indexes} >= RUNTIME_INBOX_HOT_INDEXES
+    index_states = {row["indexname"]: (bool(row["indisvalid"]), bool(row["indisready"])) for row in indexes}
+    if expect_indexes:
+        assert index_states.keys() >= RUNTIME_INBOX_REVISION_C_INDEXES
+        assert all(index_states[name] == (True, True) for name in RUNTIME_INBOX_REVISION_C_INDEXES)
+    else:
+        assert not (index_states.keys() & RUNTIME_INBOX_REVISION_C_INDEXES)
 
 
 async def _assert_revision_a_downgrade_schema(connection: asyncpg.Connection) -> None:
@@ -321,6 +367,97 @@ def test_runtime_inbox_fresh_database_upgrades_to_head_with_named_contracts() ->
             connection = await connect(database)
             try:
                 await _assert_revision_b_schema(connection)
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_runtime_inbox_revision_c_rebuilds_invalid_concurrent_index() -> None:
+    """Revision C 必须替换并发创建失败遗留的同名 invalid index。"""
+
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", REVISION_B, database_url=database_url)
+            connection = await connect(database)
+            try:
+                await connection.execute(
+                    """
+                    INSERT INTO wes_runtime.runtime_inbox (
+                        kind, provider_code, event_type, source_event_id,
+                        payload_json, payload_hash, payload_schema_version,
+                        claim_bucket_key, received_at, status, attempt_count, max_retries
+                    ) VALUES
+                        ('DEVICE_EVENT', 'TEST', 'DEVICE_EVENT', 'invalid-index-1',
+                         '{}'::json, 'hash-invalid-index-1', 1,
+                         'source:invalid-index-1', 1, 'RECEIVED', 0, 5),
+                        ('DEVICE_EVENT', 'TEST', 'DEVICE_EVENT', 'invalid-index-2',
+                         '{}'::json, 'hash-invalid-index-2', 1,
+                         'source:invalid-index-2', 2, 'RECEIVED', 0, 5)
+                    """
+                )
+                with pytest.raises(asyncpg.UniqueViolationError):
+                    await connection.execute(
+                        """
+                        CREATE UNIQUE INDEX CONCURRENTLY ix_wes_runtime_runtime_inbox_kind
+                        ON wes_runtime.runtime_inbox (kind)
+                        """
+                    )
+                assert not await connection.fetchval(
+                    """
+                    SELECT index_metadata.indisvalid
+                    FROM pg_index AS index_metadata
+                    JOIN pg_class AS index_row ON index_row.oid = index_metadata.indexrelid
+                    JOIN pg_namespace AS namespace_row ON namespace_row.oid = index_row.relnamespace
+                    WHERE namespace_row.nspname = 'wes_runtime'
+                      AND index_row.relname = 'ix_wes_runtime_runtime_inbox_kind'
+                    """
+                )
+            finally:
+                await connection.close()
+
+            run_alembic("upgrade", REVISION_C, database_url=database_url)
+            connection = await connect(database)
+            try:
+                await _assert_revision_b_schema(connection)
+                index_state = await connection.fetchrow(
+                    """
+                    SELECT index_metadata.indisvalid,
+                           index_metadata.indisready,
+                           index_metadata.indisunique
+                    FROM pg_index AS index_metadata
+                    JOIN pg_class AS index_row ON index_row.oid = index_metadata.indexrelid
+                    JOIN pg_namespace AS namespace_row ON namespace_row.oid = index_row.relnamespace
+                    WHERE namespace_row.nspname = 'wes_runtime'
+                      AND index_row.relname = 'ix_wes_runtime_runtime_inbox_kind'
+                    """
+                )
+                assert tuple(index_state.values()) == (True, True, False)
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_runtime_inbox_revision_c_downgrade_removes_all_managed_indexes() -> None:
+    """Revision C → B 必须并发删除 C 管理的全部索引，不影响 Revision B schema。"""
+
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", REVISION_C, database_url=database_url)
+            connection = await connect(database)
+            try:
+                await _assert_revision_b_schema(connection)
+            finally:
+                await connection.close()
+
+            run_alembic("downgrade", REVISION_B, database_url=database_url)
+            connection = await connect(database)
+            try:
+                assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_B
+                await _assert_revision_b_schema(connection, expect_indexes=False)
             finally:
                 await connection.close()
 
@@ -527,8 +664,8 @@ def test_runtime_inbox_revision_a_downgrade_rejects_canonical_rows_without_data_
 
 
 @pytest.mark.integration
-def test_runtime_inbox_revision_a_b_postgresql_roundtrip() -> None:
-    """A → B → A → B 在真实 PostgreSQL 上保持完整 DDL 契约。"""
+def test_runtime_inbox_revision_b_preserves_legacy_references_and_refuses_lossy_downgrade() -> None:
+    """B 必须映射 legacy 引用；存在引用时禁止通过 downgrade 静默清空。"""
 
     async def scenario() -> None:
         async with temporary_database() as (database, database_url):
@@ -556,7 +693,7 @@ def test_runtime_inbox_revision_a_b_postgresql_roundtrip() -> None:
                 await _assert_runtime_inbox_numeric_types(connection)
                 await _assert_millisecond_row(connection, millisecond_inbox_id)
                 await connection.execute("DELETE FROM wes_runtime.runtime_inbox WHERE id = $1", millisecond_inbox_id)
-                await _insert_legacy_references(connection)
+                legacy_inbox_id = await _insert_legacy_references(connection)
             finally:
                 await connection.close()
 
@@ -564,22 +701,57 @@ def test_runtime_inbox_revision_a_b_postgresql_roundtrip() -> None:
             connection = await connect(database)
             try:
                 assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_B
-                await _assert_revision_b_schema(connection)
+                await _assert_revision_b_schema(
+                    connection,
+                    expect_indexes=False,
+                    legacy_inbox_id=legacy_inbox_id,
+                )
             finally:
                 await connection.close()
 
+            with pytest.raises(subprocess.CalledProcessError) as captured:
+                run_alembic("downgrade", REVISION_A, database_url=database_url)
+            assert "would lose identity" in captured.value.stderr
+
+            connection = await connect(database)
+            try:
+                assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_B
+                await _assert_revision_b_schema(
+                    connection,
+                    expect_indexes=False,
+                    legacy_inbox_id=legacy_inbox_id,
+                )
+            finally:
+                await connection.close()
+
+            run_alembic("upgrade", REVISION_C, database_url=database_url)
+            connection = await connect(database)
+            try:
+                assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_C
+                await _assert_revision_b_schema(connection, legacy_inbox_id=legacy_inbox_id)
+            finally:
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_runtime_inbox_revision_b_empty_database_roundtrip_remains_reversible() -> None:
+    """无引用、无 workline session 数据时，B → A → B 仍可安全回环。"""
+
+    async def scenario() -> None:
+        async with temporary_database() as (database, database_url):
+            run_alembic("upgrade", REVISION_B, database_url=database_url)
             run_alembic("downgrade", REVISION_A, database_url=database_url)
             connection = await connect(database)
             try:
-                assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_A
                 await _assert_revision_a_downgrade_schema(connection)
             finally:
                 await connection.close()
 
-            run_alembic("upgrade", REVISION_B, database_url=database_url)
+            run_alembic("upgrade", "head", database_url=database_url)
             connection = await connect(database)
             try:
-                assert await connection.fetchval("SELECT version_num FROM wes_sys.alembic_version") == REVISION_B
                 await _assert_revision_b_schema(connection)
             finally:
                 await connection.close()

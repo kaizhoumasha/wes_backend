@@ -149,7 +149,7 @@ wes_runtime.runtime_inbox
 
 ## 数据库与迁移策略
 
-使用 Alembic generator 产生两个顺序 forward revisions，禁止修改任何历史 revision。
+使用 Alembic generator 产生三个顺序 forward revisions：A/B 处理 schema 与数据，C 在事务外构建索引。
 
 ### Revision A：扩展 RuntimeInbox
 
@@ -157,20 +157,22 @@ wes_runtime.runtime_inbox
 - 统一字段词汇为 `status + processor_token + lease_until`。
 - 增加 `status` 与 `kind` 的命名 CHECK constraints。
 - 处理 pre-cutover audit-only 行，使其不进入 claim/replay。
-- 增加 hot-claim indexes：
-  - RECEIVED FIFO
-  - FAILED + `next_retry_at`
-  - PROCESSING + `lease_until`
-  - `claim_bucket_key + received_at + id` 队首查找
 - 保留现有 source identity 唯一约束。
+- downgrade 只允许 audit-only/旧合同行；一旦存在 canonical payload 就 fail-closed，禁止丢失内容证据。
 
 ### Revision B：迁移引用并退役旧表
 
-- 以消费者迁移矩阵为依据，迁移或解除所有指向 `wes_biz.workline_inbox.id` 的外键。
+- 以消费者迁移矩阵为依据，将所有指向 `wes_biz.workline_inbox.id` 的引用映射到 audit-only RuntimeInbox 行。
 - 覆盖 RuntimeHold、SMT handoff 及 migration history 中识别出的其他引用。
 - active code、测试 fixture 和数据库 FK 均为零引用后，drop `wes_biz.workline_inbox`。
-- downgrade 至少能重建空旧表结构；再次 upgrade 必须成功。
+- 无依赖引用的空库可 downgrade 并重建旧表；存在任何 RuntimeInbox/WorklineSession 身份引用时 fail-closed，不清空 FK。
 - fresh database 和从当前 head 升级必须得到同一最终 schema。
+
+### Revision C：并发构建热索引
+
+- 通过 Alembic `autocommit_block` 与 PostgreSQL `CREATE INDEX CONCURRENTLY` 构建路由、FIFO、retry 和 lease 索引。
+- 每个 revision 使用独立事务，避免 concurrent DDL 提交前序 revision 的半成品。
+- downgrade 仅使用 `DROP INDEX CONCURRENTLY`，不改写业务数据。
 
 ## What already exists
 
@@ -249,7 +251,7 @@ wes_runtime.runtime_inbox
 - fresh/upgrade schema 均符合合同。
 - `EXPLAIN` 可使用预期 hot indexes。
 
-**落地：** `src/app/runtime/orchestration/runtime_inbox.py` 加 14 字段（kind / payload_json / payload_schema_version / workline_id / device_id / command_id / trace_id / event_id / causation_id / claim_bucket_key / processor_token / received_at / processed_at / failed_at）+ 4 hot-claim partial index；`migrations/versions/20260711_1815_b8a28e1bfec8_extend_runtime_inbox.py` Revision A 迁移；`tests/runtime/orchestration/test_runtime_inbox_schema_contract.py` 覆盖模型合同。后续 `tests/integration/test_runtime_inbox_migration_postgresql.py` 已在隔离 PostgreSQL 验证 fresh、parent→A、audit-only、命名约束、毫秒时间和往返升级，不再保留“真实数据库未验证”的警告。
+**落地：** `src/app/runtime/orchestration/runtime_inbox.py` 增加 canonical 字段与模型索引合同；Revision A 执行 schema/audit-only 数据分类，Revision C 负责在 PostgreSQL 事务外并发创建全部热索引。`tests/integration/test_runtime_inbox_migration_postgresql.py` 已在隔离 PostgreSQL 验证 fresh、parent→A、audit-only、命名约束、毫秒时间与 A/B/C 路径。
 
 ### Task 3：统一 Repository 与 RuntimeInboxService
 
@@ -354,7 +356,7 @@ wes_runtime.runtime_inbox
 - GitNexus detect changes 与零引用 guardrail 证明旧运行入口消失。
 - migration round-trip 与相关 heavy tests 通过。
 
-**落地：** RuntimeInbox 显式区分 `workline_session_id` 与 `execution_session_id`，FIFO bucket、diagnostic 和 trace 均不跨命名空间回退；三个旧 FK 的不可映射值在迁移中安全清空后改指 RuntimeInbox。Revision B 在隔离 PostgreSQL 临时库完成 A→B→A→B 回环，downgrade 恢复旧表 24 列、8 constraints、19 indexes；可重复 heavy integration 已纳入测试，临时库全部清理，共享 dev 保持 `f0851c5bcfdb`。
+**落地：** RuntimeInbox 显式区分 `workline_session_id` 与 `execution_session_id`，FIFO bucket、diagnostic 和 trace 均不跨命名空间回退；Revision B 为三个旧 FK 引用创建稳定 audit-only RuntimeInbox 身份并重绑引用，不清空关联。空库 B→A 可逆；存在身份引用时 downgrade 显式拒绝，防止静默数据丢失。
 
 ### Task 8：系统级测试、性能与韧性
 

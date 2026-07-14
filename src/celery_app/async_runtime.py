@@ -47,7 +47,8 @@ class CeleryAsyncRuntime:
         self._runner_generation: str | None = None
         self._owner_pid: int | None = None
         self._state_lock = threading.RLock()
-        self._run_lock = threading.Lock()
+        # 生命周期与消息执行统一按 run_lock -> state_lock 取锁，禁止交叉顺序。
+        self._run_lock = threading.RLock()
         self._abandoned_runners: list[asyncio.Runner] = []
 
     @property
@@ -204,6 +205,11 @@ class CeleryAsyncRuntime:
     def initialize(self) -> None:
         """在同步入口中有界初始化 child 的 DB 和可降级 Redis。"""
         self._assert_sync_entrypoint()
+        with self._run_lock:
+            self._initialize_locked()
+
+    def _initialize_locked(self) -> None:
+        """在持有 run lock 时初始化，避免 shutdown 与候选 Runner 发布竞态。"""
         with self._state_lock:
             self._assert_owner_pid()
             if self._state is RuntimeState.READY:
@@ -250,15 +256,15 @@ class CeleryAsyncRuntime:
     def run_async(self, factory: Callable[[], Coroutine[Any, Any, T]]) -> T:
         """在唯一 Runner 上运行 factory 新建的协程，每条消息使用全新 Context。"""
         self._assert_sync_entrypoint()
-        with self._state_lock:
-            self._assert_owner_pid()
-            state = self._state
-        if state is RuntimeState.NEW:
-            self.initialize()
-        elif state is not RuntimeState.READY:
-            raise RuntimeError(f"CeleryAsyncRuntime is {state.value}")
-
         with self._run_lock:
+            with self._state_lock:
+                self._assert_owner_pid()
+                state = self._state
+            if state is RuntimeState.NEW:
+                self._initialize_locked()
+            elif state is not RuntimeState.READY:
+                raise RuntimeError(f"CeleryAsyncRuntime is {state.value}")
+
             with self._state_lock:
                 self._assert_owner_pid()
                 if self._state is not RuntimeState.READY or self._runner is None:
@@ -315,9 +321,14 @@ class CeleryAsyncRuntime:
 
     def shutdown(self) -> None:
         """按 pending → Redis → DB → Runner 顺序执行分阶段有界清理。"""
+        self._assert_sync_entrypoint()
+        with self._run_lock:
+            self._shutdown_locked()
+
+    def _shutdown_locked(self) -> None:
+        """在持有 run lock 时关闭，锁顺序始终保持 run_lock -> state_lock。"""
         runner: asyncio.Runner | None = None
         try:
-            self._assert_sync_entrypoint()
             with self._state_lock:
                 self._assert_owner_pid()
                 if self._state is RuntimeState.CLOSED:
@@ -331,45 +342,44 @@ class CeleryAsyncRuntime:
                 self._state = RuntimeState.CLOSING
                 runner = self._runner
 
-            with self._run_lock:
-                if runner is None:
-                    return
+            if runner is None:
+                return
 
-                self._run_runner_stage(
-                    runner,
-                    self._cancel_pending_tasks(SHUTDOWN_STAGE_TIMEOUT_SECONDS),
-                    "pending task",
-                    failure_result=True,
-                )
-                self._run_runner_stage(
-                    runner,
-                    self._run_shutdown_stage(redis_manager.close_redis, "Redis"),
-                    "Redis cleanup",
-                    failure_result=None,
-                )
-                self._run_runner_stage(
-                    runner,
-                    self._run_shutdown_stage(close_db, "database"),
-                    "database cleanup",
-                    failure_result=None,
-                )
-                stubborn_tasks = self._run_runner_stage(
-                    runner,
-                    self._cancel_pending_tasks(SHUTDOWN_STAGE_TIMEOUT_SECONDS),
-                    "final pending task",
-                    failure_result=True,
-                )
-                if stubborn_tasks:
-                    # Runner.close 会无界等待拒绝取消的任务；此时直接关闭 loop，
-                    # 保住 child shutdown 的硬边界，Runner.close 仍是正常路径的 best-effort。
-                    try:
-                        runner.get_loop().close()
-                    except BaseException as exc:
-                        logger.warning(
-                            f"Celery asyncio loop 强制关闭失败（已忽略）: type={type(exc).__name__}, error={exc!r}"
-                        )
-                else:
-                    self._close_runner_best_effort(runner)
+            self._run_runner_stage(
+                runner,
+                self._cancel_pending_tasks(SHUTDOWN_STAGE_TIMEOUT_SECONDS),
+                "pending task",
+                failure_result=True,
+            )
+            self._run_runner_stage(
+                runner,
+                self._run_shutdown_stage(redis_manager.close_redis, "Redis"),
+                "Redis cleanup",
+                failure_result=None,
+            )
+            self._run_runner_stage(
+                runner,
+                self._run_shutdown_stage(close_db, "database"),
+                "database cleanup",
+                failure_result=None,
+            )
+            stubborn_tasks = self._run_runner_stage(
+                runner,
+                self._cancel_pending_tasks(SHUTDOWN_STAGE_TIMEOUT_SECONDS),
+                "final pending task",
+                failure_result=True,
+            )
+            if stubborn_tasks:
+                # Runner.close 会无界等待拒绝取消的任务；此时直接关闭 loop，
+                # 保住 child shutdown 的硬边界，Runner.close 仍是正常路径的 best-effort。
+                try:
+                    runner.get_loop().close()
+                except BaseException as exc:
+                    logger.warning(
+                        f"Celery asyncio loop 强制关闭失败（已忽略）: type={type(exc).__name__}, error={exc!r}"
+                    )
+            else:
+                self._close_runner_best_effort(runner)
         except BaseException as exc:
             logger.warning(f"Celery runtime shutdown 异常已隔离: type={type(exc).__name__}, error={exc!r}")
         finally:

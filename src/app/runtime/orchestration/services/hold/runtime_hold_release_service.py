@@ -806,15 +806,17 @@ class RuntimeHoldReleaseService:
             runtime_inbox_service,
         )
 
+        source_event_id = f"runtime-hold:result:{hold.id}:{command.command_code}"
         runtime_inbox_result = await runtime_inbox_service.accept_command_result(
             db,
             command_code=command.command_code,
+            source_event_id=source_event_id,
             device_code=device.device_code,
             workline_id=command.workline_id,
             device_id=command.device_id,
             command_id=command.id,
             trace_id=command.trace_id or hold.trace_id,
-            event_id=f"runtime-hold:result:{hold.id}:{command.command_code}",
+            event_id=source_event_id,
             causation_id=hold.trace_id,
             payload_json=payload,
             auto_commit=False,

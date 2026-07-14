@@ -147,6 +147,7 @@ def test_command_callback_result_requires_command_code_and_device_code():
     cb = CommandCallbackResult(
         command_code="cmd-001",
         device_code="device-A",
+        source_event_id="evt-result-001",
         result=CommandResult.SUCCESS,
         finish_time=1700000000000,
     )
@@ -160,6 +161,7 @@ def test_command_callback_result_correlation_chain_required():
     cb = CommandCallbackResult(
         command_code="cmd-001",
         device_code="device-A",
+        source_event_id="evt-result-001",
         result=CommandResult.SUCCESS,
         finish_time=1700000000000,
         trace_id="trace-001",

@@ -379,6 +379,7 @@ class RuntimeInboxWriteBackService:
                             db,
                             inbox_id=inbox_pk,
                             lease_token=processor_token,
+                            error_code="RESOURCE_WAIT",
                             error_message="RESOURCE_WAIT",
                             retryable=True,
                             consume_attempt=False,

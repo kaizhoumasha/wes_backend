@@ -30,7 +30,7 @@ Revision A 负责识别切换前缺少 canonical payload 的旧行，将其转�
 
 除上述 audit-only 例外外，命名的 conditional envelope CHECK 强制行动型记录具备 canonical identity、content、claim 和 time 必填字段。Repository 的 claim 条件仍加入同等的防御性 envelope 条件，避免异常或手工数据绕过迁移约束后进入执行链路。
 
-迁移必须兼容 fresh database、从 Revision A 父版本升级、Revision A/B 回环，以及包含真实毫秒值和 pre-cutover 行的数据集。
+迁移必须支持 fresh database、从 Revision A 父版本升级、空库 B→A→head，以及包含真实毫秒值和 pre-cutover 行的数据集。A 在 canonical 行存在时拒绝降级；B 将旧 FK 映射为 audit-only RuntimeInbox 身份，存在依赖引用时拒绝降级。Revision C 使用 `CREATE/DROP INDEX CONCURRENTLY` 且不改写业务数据。
 
 ### 2. Service 模块归属
 

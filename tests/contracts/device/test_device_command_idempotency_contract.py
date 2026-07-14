@@ -149,6 +149,7 @@ def test_command_callback_result_baseline_extra_forbid():
     result = CommandCallbackResult(
         command_code="CMD-001",
         device_code="DEVICE-01",
+        source_event_id="evt-result-001",
         result=CommandResult.SUCCESS,
         finish_time=1700000000000,
     )
@@ -159,6 +160,7 @@ def test_command_callback_result_baseline_extra_forbid():
         CommandCallbackResult(
             command_code="CMD-001",
             device_code="DEVICE-01",
+            source_event_id="evt-result-001",
             result=CommandResult.SUCCESS,
             finish_time=1700000000000,
             unknown_field="x",  # type: ignore[call-arg]

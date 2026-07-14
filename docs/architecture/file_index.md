@@ -874,8 +874,9 @@ WMS Anti-Corruption Layer，统一同步 WMS 调用、异步 WMS/RCS 派发合�
 |------|------|------|
 | `versions/20260626_1200_0e9de1e6c7e3_phase1_device_fk_ring_dissolve.py` | Phase 0→1 FK ring dissolve：动态发现 pg_constraint 名称后 drop device ↔ workline_sessions 循环外键，保留字段用于业务追溯 | 🔧 架构核心 |
 | `versions/20260626_1719_f04718a3f04f_add_remaining_runtime_orchestration_.py` | 新增 9 个 runtime/orchestration 实体表（execution_sessions / execution_correlations / execution_work_items / runtime_inboxes / runtime_timelines / runtime_holds / runtime_intent_logs / idempotency_keys / conveyor_queue_memberships），含 `CheckConstraint` 限定 `membership_status` 取值；ExecutionCorrelation 历史回填默认列 | 🔧 架构核心 |
-| `migrations/versions/20260711_1815_b8a28e1bfec8_extend_runtime_inbox.py` | Revision A：canonical envelope、六 kind/五态命名 CHECK、audit-only 分类与 hot indexes | 🔧 架构核心 |
-| `migrations/versions/20260711_1819_ec426c628516_retire_workline_inbox.py` | Revision B：重绑引用并退役旧 Inbox 表，支持 A/B 回环 | 🔧 架构核心 |
+| `migrations/versions/20260711_1815_b8a28e1bfec8_extend_runtime_inbox.py` | Revision A：canonical envelope、六 kind/五态命名 CHECK 与 audit-only 分类；canonical 行降级 fail-closed | 🔧 架构核心 |
+| `migrations/versions/20260711_1819_ec426c628516_retire_workline_inbox.py` | Revision B：将旧 FK 映射到 audit-only RuntimeInbox 后退役旧表；有引用降级 fail-closed | 🔧 架构核心 |
+| `migrations/versions/20260714_1103_e0d58415afc9_create_runtime_inbox_indexes_.py` | Revision C：在 Alembic autocommit block 内并发创建/删除 RuntimeInbox 热索引 | 🔧 架构核心 |
 
 ---
 
