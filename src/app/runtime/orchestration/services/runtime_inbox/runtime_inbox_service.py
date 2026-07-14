@@ -604,6 +604,7 @@ class RuntimeInboxService:
         execution_session_id: int | None = None,
         correlation_id: str | None = None,
         max_retries: int = 5,
+        processing_required: bool = True,
         now_ms: int | None = None,
     ) -> RuntimeInboxAcceptResult:
         """持久化入站消息并返回 ACK 语义结果。
@@ -616,6 +617,7 @@ class RuntimeInboxService:
             raise ValueError("RuntimeInbox max_retries must be a positive integer")
         validate_canonical_payload_size(payload_json)
         workline_session_id = _resolve_workline_session_ownership(payload_json, workline_session_id)
+        received_at = _received_at_ms(now_ms)
         record_data = {
             "kind": kind,
             "payload_json": payload_json,
@@ -633,7 +635,7 @@ class RuntimeInboxService:
             "event_type": event_type,
             "source_event_id": source_event_id,
             "payload_hash": payload_hash,
-            "status": "RECEIVED",
+            "status": "RECEIVED" if processing_required else "PROCESSED",
             "attempt_count": 0,
             "max_retries": max_retries,
             "claim_bucket_key": _runtime_claim_bucket_key(
@@ -647,7 +649,8 @@ class RuntimeInboxService:
                 event_type=event_type,
                 source_event_id=source_event_id,
             ),
-            "received_at": _received_at_ms(now_ms),
+            "received_at": received_at,
+            "processed_at": None if processing_required else received_at,
         }
 
         if source_event_id:

@@ -375,9 +375,7 @@ pipeline {
 
                             echo -e "${GREEN}📥 更新部署清单...${NC}"
                             PREVIOUS_COMMIT=$(git rev-parse HEAD)
-                            PREVIOUS_IMAGE=$(docker inspect -f '{{.Config.Image}}' ${DEPLOY_CONTAINER_NAME} 2>/dev/null || true)
                             echo "📌 当前提交: $PREVIOUS_COMMIT"
-                            echo "📦 当前镜像: ${PREVIOUS_IMAGE:-<none>}"
 
                             git fetch origin
                             git checkout --detach ${CI_COMMIT_SHA}
@@ -387,13 +385,26 @@ pipeline {
                             export BACKEND_IMAGE=${RUNTIME_IMAGE}
                             COMPOSE_CMD="docker compose -f docker-compose.yml -f ${DEPLOY_COMPOSE_FILE} --env-file ${DEPLOY_ENV_FILE}"
                             HEALTH_ENDPOINT='http://127.0.0.1:8001/health'
+                            MIGRATION_APPLIED=false
+                            DEPLOYMENT_HEALTHY=false
+
+                            # 迁移成功后的任意失败都必须停止新应用，覆盖容器部分启动、testing 数据同步和健康检查失败。
+                            cleanup_failed_deploy() {
+                                exit_code=$?
+                                if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]; then
+                                    echo -e "${YELLOW}⚠️  迁移后部署未完成，停止 API/Worker/Beat；禁止自动切回旧镜像${NC}"
+                                    $COMPOSE_CMD stop api celery_worker celery_beat || true
+                                fi
+                                docker logout ${REGISTRY_HOST} >/dev/null 2>&1 || true
+                                return $exit_code
+                            }
+                            trap cleanup_failed_deploy EXIT
 
                             # 始终由目标镜像中的唯一容量脚本读取 live PostgreSQL；失败由 set -e 阻断应用启动或回滚。
                             run_capacity_guard() {
                                 $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api python scripts/capacity_guard.py --services api,celery_worker
                             }
 
-                            trap 'docker logout ${REGISTRY_HOST} >/dev/null 2>&1 || true' EXIT
                             echo "$REGISTRY_PASSWORD" | docker login ${REGISTRY_HOST} -u "$REGISTRY_USERNAME" --password-stdin
 
                             echo -e "${GREEN}🧱 启动基础设施并等待健康...${NC}"
@@ -425,6 +436,15 @@ pipeline {
                             echo -e "${GREEN}🧮 校验 live PostgreSQL 连接容量...${NC}"
                             run_capacity_guard
 
+                            # 本版本包含 RuntimeInbox 破坏性切换。迁移前必须停止所有可能访问旧表的
+                            # API/Worker/Beat；迁移使用目标镜像的一次性 CLI 容器，不能依赖尚未启动的 API。
+                            echo -e "${GREEN}⏸️  静默应用进程，准备数据库迁移...${NC}"
+                            $COMPOSE_CMD stop api celery_worker celery_beat
+
+                            echo -e "${GREEN}🗄️  使用目标镜像运行数据库迁移...${NC}"
+                            $COMPOSE_CMD run --rm --no-deps -e DATABASE_RUNTIME_ROLE=cli -e DATABASE_POOL_SIZE=1 -e DATABASE_MAX_OVERFLOW=0 api alembic upgrade head
+                            MIGRATION_APPLIED=true
+
                             echo -e "${GREEN}⚙️  启动新容器...${NC}"
                             $COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES} || {
                                 echo -e "${RED}❌ 容器启动失败${NC}"
@@ -433,9 +453,6 @@ pipeline {
 
                             echo -e "${GREEN}⏳ 等待容器启动...${NC}"
                             sleep 15
-
-                            echo -e "${GREEN}🗄️  运行数据库迁移...${NC}"
-                            $COMPOSE_CMD exec -T api alembic upgrade head
 
                             if [ "${DEPLOY_NAME}" = "testing" ]; then
                                 echo -e "${GREEN}🌱 同步 testing WorkLine 与 Device 基础数据...${NC}"
@@ -460,26 +477,13 @@ pipeline {
                             done
 
                             if [ "$HEALTH_CHECK_PASSED" = false ]; then
-                                echo -e "${RED}❌ 健康检查失败，开始回滚...${NC}"
+                                echo -e "${RED}❌ 健康检查失败，停止新应用进程...${NC}"
                                 $COMPOSE_CMD logs --tail=100 api
-
-                                if [ -n "$PREVIOUS_IMAGE" ]; then
-                                    echo -e "${YELLOW}🔄 回滚镜像: $PREVIOUS_IMAGE${NC}"
-                                    echo -e "${YELLOW}🧮 回滚前重新校验 live PostgreSQL 连接容量...${NC}"
-                                    # 首次上线失败时旧镜像可能没有 capacity_guard.py；先固定使用本次已拉取的目标镜像执行门禁。
-                                    export BACKEND_IMAGE=${RUNTIME_IMAGE}
-                                    run_capacity_guard
-                                    export BACKEND_IMAGE="$PREVIOUS_IMAGE"
-                                    docker pull ${BACKEND_IMAGE} || true
-                                    $COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES}
-                                else
-                                    echo -e "${YELLOW}⚠️  未找到可回滚镜像，跳过回滚${NC}"
-                                fi
-
-                                git checkout ${PREVIOUS_COMMIT} || true
+                                echo -e "${YELLOW}⚠️  数据库迁移已执行，禁止自动切回旧镜像；请按 Runbook 执行前向修复或已核准的数据恢复${NC}"
                                 exit 1
                             fi
 
+                            DEPLOYMENT_HEALTHY=true
                             echo -e "${GREEN}✅ ${DEPLOY_NAME} 部署完成${NC}"
                             $COMPOSE_CMD ps
                         '''
@@ -535,6 +539,6 @@ pipeline {
 //   4. develop 分支推送 immutable + develop 镜像并自动部署 testing
 //   5. main 分支推送 immutable + prod 镜像并自动部署 production
 //   6. 部署机确保基础设施健康，并对完整 API/Celery 目标拓扑执行 live PostgreSQL 容量门禁
-//   7. 门禁通过后拉起应用，并以 --no-build/--no-deps 方式滚动后端应用服务
-//   8. 运行数据库迁移
-//   9. 健康检查失败时重新执行容量门禁，再回滚到上一个镜像版本
+//   7. 门禁通过后停止旧 API/Worker/Beat，并用目标镜像的一次性 CLI 容器执行迁移
+//   8. 迁移成功后拉起应用，并以 --no-build/--no-deps 方式启动后端应用服务
+//   9. 健康检查失败时停止新应用；破坏性迁移后禁止自动切回旧镜像

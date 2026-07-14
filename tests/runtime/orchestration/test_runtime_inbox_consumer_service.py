@@ -252,6 +252,58 @@ async def test_runtime_inbox_accept_returns_existing_ack_for_same_hash(db_sessio
 
 
 @pytest.mark.asyncio
+async def test_runtime_inbox_accept_non_actionable_event_as_processed(db_session) -> None:
+    """非行动型事件保留 canonical 事实，但创建后即为不可 claim 的终态。"""
+    service = RuntimeInboxService()
+    payload = {"event_type": "DEVICE_STATUS_CHANGED", "device_code": "STANDALONE_SENSOR_01"}
+
+    accepted = await service.accept_received(
+        db_session,
+        provider_code="ECS",
+        event_type="DEVICE_STATUS_CHANGED",
+        source_event_id="evt-non-actionable-001",
+        payload_hash=_canonical_payload_hash(payload),
+        kind="DEVICE_EVENT",
+        payload_json=payload,
+        payload_schema_version=1,
+        processing_required=False,
+        now_ms=NOW_MS,
+    )
+
+    assert accepted.created is True
+    assert accepted.record.status == "PROCESSED"
+    assert accepted.record.processed_at == NOW_MS
+
+
+@pytest.mark.asyncio
+async def test_runtime_inbox_non_actionable_event_keeps_duplicate_and_conflict_contract(db_session) -> None:
+    """非行动型事件仍按 source identity/hash 返回 duplicate 或 payload 冲突。"""
+    service = RuntimeInboxService()
+    payload = {"event_type": "DEVICE_STATUS_CHANGED", "device_code": "STANDALONE_SENSOR_01"}
+    common = {
+        "provider_code": "ECS",
+        "event_type": "DEVICE_STATUS_CHANGED",
+        "source_event_id": "evt-non-actionable-idempotency",
+        "kind": "DEVICE_EVENT",
+        "payload_json": payload,
+        "payload_schema_version": 1,
+        "processing_required": False,
+        "now_ms": NOW_MS,
+    }
+
+    first = await service.accept_received(db_session, payload_hash=_canonical_payload_hash(payload), **common)
+    duplicate = await service.accept_received(db_session, payload_hash=_canonical_payload_hash(payload), **common)
+
+    assert first.created is True
+    assert duplicate.created is False
+    assert duplicate.record.id == first.record.id
+    assert duplicate.record.status == "PROCESSED"
+
+    with pytest.raises(RuntimeInboxConflict):
+        await service.accept_received(db_session, payload_hash="different-payload-hash", **common)
+
+
+@pytest.mark.asyncio
 async def test_accept_received_existing_same_hash_acks_before_unknown_correlation_validation(db_session) -> None:
     """已落库的同 K/H 重试应直接 ACK，不受迟到或已清理 correlation 影响。"""
 

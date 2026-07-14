@@ -115,7 +115,7 @@ docker compose --env-file .env.prod \
 
 等待数据库与 Redis 健康检查通过后，保持基础设施在线，再继续容量门禁和应用服务发布。
 
-### 4.6 启动应用服务
+### 4.6 执行容量门禁
 
 先使用目标应用镜像内的统一脚本读取 live PostgreSQL 的 `max_connections`，并按 `.env.prod` 中完整的
 API/Celery 目标拓扑校验连接预算。该短连接固定使用 `cli` 角色、连接池 `1`、overflow `0`：
@@ -131,8 +131,34 @@ docker compose --env-file .env.prod \
   api python scripts/capacity_guard.py --services api,celery_worker
 ```
 
-容量门禁失败时必须停止发布，不得启动或重建任何应用服务；`db`、`redis` 基础设施保持在线，供排障和重试。
-门禁通过后才执行：
+容量门禁失败时必须停止发布，不得停止、启动或重建任何应用服务；`db`、`redis` 基础设施保持在线，供排障和重试。
+
+### 4.7 静默应用并执行数据库迁移
+
+当前 RuntimeInbox 切换包含破坏性迁移：新代码依赖新增列，旧代码依赖即将删除的 `wes_biz.workline_inbox`。
+因此迁移前必须停止所有会访问运行时表的 API、Worker 和 Beat，并使用目标镜像的一次性 CLI 容器执行迁移：
+
+```bash
+docker compose --env-file .env.prod \
+  -f docker-compose.yml \
+  -f docker-compose.deploy.yml \
+  stop api celery_worker celery_beat
+
+docker compose --env-file .env.prod \
+  -f docker-compose.yml \
+  -f docker-compose.deploy.yml \
+  run --rm --no-deps \
+  -e DATABASE_RUNTIME_ROLE=cli \
+  -e DATABASE_POOL_SIZE=1 \
+  -e DATABASE_MAX_OVERFLOW=0 \
+  api alembic upgrade head
+```
+
+迁移失败时保持应用停止和基础设施在线，先排查迁移；不得启动新旧任一版本的应用进程。
+
+### 4.8 启动应用服务
+
+迁移成功后才执行：
 
 ```bash
 docker compose --env-file .env.prod \
@@ -141,16 +167,7 @@ docker compose --env-file .env.prod \
   up -d api celery_worker celery_beat flower nginx
 ```
 
-### 4.7 执行数据库迁移
-
-```bash
-docker compose --env-file .env.prod \
-  -f docker-compose.yml \
-  -f docker-compose.deploy.yml \
-  exec -T api alembic upgrade head
-```
-
-### 4.8 同步权限与菜单
+### 4.9 同步权限与菜单
 
 ```bash
 docker compose --env-file .env.prod \
@@ -170,7 +187,7 @@ docker compose --env-file .env.prod \
 - 菜单同步依赖 `/opt/wes_frontend/src/router/index.ts`
 - 生产环境不要执行 `scripts/data/seed_initial_data.py`
 
-### 4.9 首次生产部署时创建首个管理员
+### 4.10 首次生产部署时创建首个管理员
 
 仅在系统中还没有超级管理员时执行：
 
@@ -188,7 +205,7 @@ docker compose --env-file .env.prod \
 
 `bootstrap_admin.sh` 是幂等的：如果库里已经存在超级管理员，会安全跳过。
 
-### 4.10 发布后验收
+### 4.11 发布后验收
 
 健康检查：
 
@@ -244,42 +261,16 @@ export BACKEND_IMAGE=192.168.0.220:5050/wes/wes_backend:123-abc1234
 
 ## 6. 回滚策略
 
-回滚只针对应用镜像，不自动回滚数据库结构。
+本次 RuntimeInbox 发布包含破坏性迁移，迁移后禁止自动切回旧镜像。旧镜像仍读取已经删除的
+`wes_biz.workline_inbox`，仅替换镜像不能恢复服务，反而会造成持续故障。
 
-推荐步骤：
+- 迁移尚未执行：可以保持旧应用或重新启动旧应用，数据库结构仍与旧镜像兼容。
+- 迁移已经成功：停止新应用，确保基础设施保持在线；优先发布兼容当前 schema 的前向修复镜像。
+- 必须恢复旧版本：先停止全部应用，使用发布前备份和已核准的数据修复方案恢复数据库，再启动旧镜像。
 
-1. 记录当前异常版本镜像 tag
-2. 选择上一个可用 immutable tag
-3. 重新执行应用服务发布
-4. 验证健康检查和关键业务链路
-
-示例：
-
-```bash
-export CAPACITY_GUARD_IMAGE=192.168.0.220:5050/wes/wes_backend:123-abc1234
-export ROLLBACK_IMAGE=192.168.0.220:5050/wes/wes_backend:122-def5678
-
-# 回滚仅替换应用镜像，db/redis 基础设施保持在线；先用已知包含 guard 脚本的当前镜像校验完整目标拓扑。
-BACKEND_IMAGE="$CAPACITY_GUARD_IMAGE" docker compose --env-file .env.prod \
-  -f docker-compose.yml \
-  -f docker-compose.deploy.yml \
-  run --rm --no-deps \
-  -e DATABASE_RUNTIME_ROLE=cli \
-  -e DATABASE_POOL_SIZE=1 \
-  -e DATABASE_MAX_OVERFLOW=0 \
-  api python scripts/capacity_guard.py --services api,celery_worker
-
-export BACKEND_IMAGE="$ROLLBACK_IMAGE"
-docker compose --env-file .env.prod \
-  -f docker-compose.yml \
-  -f docker-compose.deploy.yml \
-  up -d api celery_worker celery_beat flower nginx
-```
-
-`CAPACITY_GUARD_IMAGE` 必须是当前已验证包含 `scripts/capacity_guard.py` 的 immutable 镜像。首次发布失败时，
-应使用本次已经拉取的目标镜像执行门禁，再切换到 `ROLLBACK_IMAGE`；不得依赖旧镜像包含新门禁脚本。
-
-如果本次发布已执行破坏性迁移，不应直接回滚数据库，而应单独制定数据修复方案。
+Jenkins 在迁移成功后的任意步骤失败（包括容器部分启动、testing 数据同步或健康检查失败）都会停止 API、
+Worker 和 Beat，不会自动替换镜像或回滚数据库。恢复动作必须记录当前 Alembic revision、目标镜像和备份点，
+并经过人工核准。
 
 ## 7. 发布检查清单
 

@@ -461,11 +461,18 @@ class CallbackOrchestrationService:
             trace_id=event_trace_id,
             event_id=trace.event_id,
             causation_id=trace.causation_id,
+            # 非工作线事件仍保留 RuntimeInbox 幂等/冲突证据，但接收即终态，
+            # 避免只支持工作线上下文的 processor 将其转为 DEAD_LETTER。
+            processing_required=is_workline_event,
         )
         if not runtime_inbox_result.created:
             return EventCallbackOutcome(trace_id=event_trace_id, is_duplicate=True)
 
-        await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
+        if is_workline_event:
+            await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
+        else:
+            await db.commit()
+            await publish_deferred_sse_events(db)
 
         return EventCallbackOutcome(
             trace_id=event_trace_id,

@@ -128,7 +128,7 @@ def test_deployment_script_runs_live_guard_before_application_start_and_scale() 
     assert scale_body.index("validate_complete_scale_targets") < scale_body.index("run_capacity_guard")
 
 
-def test_jenkins_and_production_runbook_require_live_guard_before_application_start() -> None:
+def test_jenkins_and_production_runbook_require_guard_and_migration_before_application_start() -> None:
     jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
     deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
     guard_command = (
@@ -148,31 +148,56 @@ def test_jenkins_and_production_runbook_require_live_guard_before_application_st
     infra_index = deploy_body.index("$COMPOSE_CMD up -d --wait db redis")
     application_command = "$COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES}"
     first_guard_index = deploy_body.index("run_capacity_guard", infra_index)
-    first_application_index = deploy_body.index(application_command, first_guard_index)
-    assert infra_index < first_guard_index < first_application_index
+    quiesce_command = "$COMPOSE_CMD stop api celery_worker celery_beat"
+    migration_command = (
+        "$COMPOSE_CMD run --rm --no-deps "
+        "-e DATABASE_RUNTIME_ROLE=cli "
+        "-e DATABASE_POOL_SIZE=1 "
+        "-e DATABASE_MAX_OVERFLOW=0 "
+        "api alembic upgrade head"
+    )
+    quiesce_index = deploy_body.index(quiesce_command, first_guard_index)
+    migration_index = deploy_body.index(migration_command, quiesce_index)
+    migration_applied_index = deploy_body.index("MIGRATION_APPLIED=true", migration_index)
+    first_application_index = deploy_body.index(application_command, migration_applied_index)
+    assert (
+        infra_index
+        < first_guard_index
+        < quiesce_index
+        < migration_index
+        < migration_applied_index
+        < first_application_index
+    )
+    assert "cleanup_failed_deploy()" in deploy_body
+    assert "trap cleanup_failed_deploy EXIT" in deploy_body
+    cleanup_body = deploy_body.split("cleanup_failed_deploy()", maxsplit=1)[1].split(
+        "trap cleanup_failed_deploy EXIT", maxsplit=1
+    )[0]
+    assert 'if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]' in cleanup_body
+    assert "$COMPOSE_CMD stop api celery_worker celery_beat || true" in cleanup_body
+    assert deploy_body.index("DEPLOYMENT_HEALTHY=true") > deploy_body.index('if [ "$HEALTH_CHECK_PASSED" = false ]')
 
     automatic_rollback = deploy_body.split('if [ "$HEALTH_CHECK_PASSED" = false ]', maxsplit=1)[1]
-    rollback_guard_index = automatic_rollback.index("run_capacity_guard")
-    previous_image_index = automatic_rollback.index('export BACKEND_IMAGE="$PREVIOUS_IMAGE"')
-    assert rollback_guard_index < previous_image_index < automatic_rollback.index(application_command)
+    assert "数据库迁移已执行，禁止自动切回旧镜像" in automatic_rollback
+    assert 'export BACKEND_IMAGE="$PREVIOUS_IMAGE"' not in automatic_rollback
+    assert application_command not in automatic_rollback
 
     runbook_text = (REPO_ROOT / "docs/devops/prod-release-deploy.md").read_text(encoding="utf-8")
-    standard_release = runbook_text.split("### 4.5", maxsplit=1)[1].split("### 4.7", maxsplit=1)[0]
+    standard_release = runbook_text.split("### 4.5", maxsplit=1)[1].split("### 4.9", maxsplit=1)[0]
     rollback = runbook_text.split("## 6. 回滚策略", maxsplit=1)[1].split("## 7.", maxsplit=1)[0]
-    for section in (standard_release, rollback):
-        assert "DATABASE_RUNTIME_ROLE=cli" in section
-        assert "DATABASE_POOL_SIZE=1" in section
-        assert "DATABASE_MAX_OVERFLOW=0" in section
-        assert "python scripts/capacity_guard.py --services api,celery_worker" in section
-        assert section.index("python scripts/capacity_guard.py") < section.index(
-            "up -d api celery_worker celery_beat flower nginx"
-        )
-    guard_image_index = rollback.index("CAPACITY_GUARD_IMAGE")
-    rollback_guard_index = rollback.index("python scripts/capacity_guard.py")
-    rollback_image_index = rollback.index('export BACKEND_IMAGE="$ROLLBACK_IMAGE"')
-    assert guard_image_index < rollback_guard_index < rollback_image_index
+    assert "DATABASE_RUNTIME_ROLE=cli" in standard_release
+    assert "DATABASE_POOL_SIZE=1" in standard_release
+    assert "DATABASE_MAX_OVERFLOW=0" in standard_release
+    guard_index = standard_release.index("python scripts/capacity_guard.py --services api,celery_worker")
+    quiesce_index = standard_release.index("stop api celery_worker celery_beat")
+    migration_index = standard_release.index("api alembic upgrade head")
+    application_index = standard_release.index("up -d api celery_worker celery_beat flower nginx")
+    assert guard_index < quiesce_index < migration_index < application_index
+    assert "迁移后禁止自动切回旧镜像" in rollback
+    assert "PREVIOUS_IMAGE" not in rollback
+    assert "ROLLBACK_IMAGE" not in rollback
     assert "基础设施保持在线" in rollback
-    assert "首次发布失败" in rollback
+    assert "数据修复方案" in rollback
 
 
 def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:

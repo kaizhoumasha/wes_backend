@@ -101,6 +101,7 @@ class CallbackRuntimeInboxWriter:
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
+        processing_required: bool = True,
     ) -> RuntimeInboxAcceptResult:
         _ = request_id
         return await self._service.accept_received(
@@ -116,6 +117,7 @@ class CallbackRuntimeInboxWriter:
             event_id=event_id,
             causation_id=causation_id,
             correlation_id=None,
+            processing_required=processing_required,
         )
 
     async def write_external_callback(
