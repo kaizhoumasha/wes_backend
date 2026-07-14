@@ -193,7 +193,7 @@ async def get_latest_inbox_event(db: AsyncSession):
                 d.device_code,
                 wi.payload_json ->> 'event_type' AS event_type,
                 wi.payload_json AS payload_json
-            FROM wes_biz.workline_inbox wi
+            FROM wes_runtime.runtime_inbox wi
             JOIN wes_biz.devices d ON d.id = wi.device_id
             WHERE wi.kind = 'DEVICE_EVENT'
             ORDER BY wi.id DESC

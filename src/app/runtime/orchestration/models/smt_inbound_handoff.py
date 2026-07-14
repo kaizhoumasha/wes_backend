@@ -192,8 +192,8 @@ class SmtInboundHandoffSourceItemBase(BaseMixin):
     claim_attempt_no: int = Field(default=1, ge=1, description="source pick request 代次")
     source_pick_inbox_id: int | None = Field(
         default=None,
-        foreign_key="wes_biz.workline_inbox.id",
-        description="SORTING_SOURCE_PICK_REQUESTED 内部 Inbox ID",
+        foreign_key="wes_runtime.runtime_inbox.id",
+        description="SORTING_SOURCE_PICK_REQUESTED RuntimeInbox ID",
     )
     source_pick_command_id: int | None = Field(
         default=None,

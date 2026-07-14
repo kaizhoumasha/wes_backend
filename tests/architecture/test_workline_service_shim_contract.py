@@ -251,15 +251,14 @@ def test_workline_service_config_only_after_runtime_split():
 
 
 # WorkLine service facade 收口:workline.services.__init__ 清理 — __all__ / _LAZY_SHIM_MAP 收敛到
-# 当前 13 个真实 module export + 3 个死引用 tombstone,其余 dead entries
+# 当前 13 个真实 module export + 1 个死引用 tombstone,其余 dead entries
 # 必须删除。`runtime_intent_effects.py:1545/1627` 与
-# `callback_orchestration_service.py:35` 3 处死引用保留(未触发,不爆),
+# 1 处死引用保留(未触发,不爆),
 # 作为 lazy shim 兜底的最后一道闸,验证 `__all__` / `_LAZY_SHIM_MAP` 语义一致。
 #
 # 来源:runtime inbox shim cleanup audit (2026-06-30),配置域 plane/manifest 导出同步
 #   LIVE (3):WorkLineSafetyBlocked, workline_safety_service, workline_service
-#   DEAD 但 caller 仍存在 (3):WorklineInboxService, inbox_service,
-#                              workline_bin_cell_reservation_service
+#   DEAD 但 caller 仍存在 (1):workline_bin_cell_reservation_service
 #   实际 module export (13):WorklineDiagnosticService, workline_diagnostic_service,
 #                           WorkLineSafetyBlocked, WorkLineSafetyService,
 #                           workline_safety_service, WorkLineService,
@@ -268,9 +267,7 @@ def test_workline_service_config_only_after_runtime_split():
 #                           WorkLineManifestActivationValidator,
 #                           workline_manifest_activation_validator,
 #                           WorkLinePlaneService, workline_plane_service
-#   shim 兜底死引用 (3):WorklineInboxService → inbox_service,
-#                        inbox_service → inbox_service,
-#                        workline_bin_cell_reservation_service
+#   shim 兜底死引用 (1):workline_bin_cell_reservation_service
 #                        → bin_cell_reservation_service
 _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS = frozenset(
     {
@@ -298,12 +295,8 @@ _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS = frozenset(
 
 _RUNTIME_INBOX_STATE_MACHINE_SHIM_TOMBSTONES = frozenset(
     {
-        # runtime_intent_effects.py:1545 死引用 — shim fake 触发 ModuleNotFoundError
-        "inbox_service",
         # runtime_intent_effects.py:1627 死引用 — shim fake 触发 ModuleNotFoundError
         "workline_bin_cell_reservation_service",
-        # callback_orchestration_service.py:35 死引用 (type hint,非 import 触发)
-        "WorklineInboxService",
     }
 )
 
@@ -347,9 +340,10 @@ def test_workline_services_init_shim_map_contains_only_dead_caller_tombstones():
 
 
 def test_workline_services_init_getattr_returns_real_exports():
-    """WorkLine service facade 收口:`__getattr__` 必须仍能解析真实 module export,且死引用触发
-    ModuleNotFoundError(与 Python 默认 attribute lookup 抛 AttributeError 不同但
-    语义一致 — 都是不可用)。"""
+    """WorkLine service facade 收口:`__getattr__` 必须仍能解析真实 module export。
+
+    已退役的 Inbox export 与未知属性都按 PEP 562 默认行为抛 AttributeError。
+    """
     import importlib
 
     workline_services = importlib.import_module("src.app.workline.services")
@@ -358,8 +352,8 @@ def test_workline_services_init_getattr_returns_real_exports():
     diagnostic_class = workline_services.WorklineDiagnosticService
     assert diagnostic_class is not None
 
-    # 死引用:__getattr__ 触发 ModuleNotFoundError
-    with pytest.raises(ModuleNotFoundError):
+    # 已退役 Inbox export 不再保留 tombstone。
+    with pytest.raises(AttributeError):
         workline_services.inbox_service  # noqa: B018
 
     # 未知属性:按 PEP 562 默认行为抛 AttributeError

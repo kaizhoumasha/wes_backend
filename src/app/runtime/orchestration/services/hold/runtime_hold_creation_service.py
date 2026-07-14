@@ -10,11 +10,11 @@ from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
     RuntimeHoldRepository,
     runtime_hold_repository,
 )
+from src.app.runtime.orchestration.repository_wiring import workline_repository as default_workline_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusProjectionService,
     workline_runtime_status_projection_service,
 )
-from src.app.workline.repositories.workline_repository import workline_repository as default_workline_repository
 from src.utils.value_normalization import dict_attr, optional_int_attr, optional_str_attr, required_int_attr
 
 if TYPE_CHECKING:
@@ -47,6 +47,7 @@ class RuntimeHoldCreationService:
         *,
         session: Any,
         inbox: Any,
+        source_inbox_id: int | None,
         command: Any | None = None,
     ) -> RuntimeHold:
         """Callback deadline expired 时幂等创建 RuntimeHold。"""
@@ -64,6 +65,7 @@ class RuntimeHoldCreationService:
             else optional_int_attr(session, "reconciliation_device_id")
         )
         source_reason = "CALLBACK_DEADLINE_EXPIRED"
+        source_idempotency_key = f"callback-timeout:runtime-inbox:{session_id}:{inbox_id}"
         return await self.repository.create_open_hold(
             db,
             hold_type=RuntimeHoldType.RUNTIME_RECONCILIATION,
@@ -74,13 +76,14 @@ class RuntimeHoldCreationService:
             contract_version=optional_str_attr(session, "contract_version"),
             source_kind="TIMER_TIMEOUT",
             source_reason=source_reason,
-            source_idempotency_key=f"callback-timeout:{session_id}:{inbox_id}",
-            source_inbox_id=inbox_id,
+            source_idempotency_key=source_idempotency_key,
+            source_inbox_id=source_inbox_id,
             source_command_id=command_id,
             source_device_id=device_id,
             evidence_snapshot_json={
                 "session_id": session_id,
                 "inbox_id": inbox_id,
+                "inbox_store": "runtime_inbox",
                 "command_id": command_id,
                 "command_code": optional_str_attr(command, "command_code") if command is not None else None,
                 "device_id": device_id,

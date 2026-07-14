@@ -114,9 +114,13 @@ FROM base AS testing
 
 # 复制虚拟环境
 COPY --from=builder /opt/venv /opt/venv
+# 保留不可变镜像依赖，并为只读 workspace 中的 uv 提供稳定项目环境路径。
+RUN ln -s /opt/venv /app/.venv
+# CI 验收入口统一使用 uv run --no-sync，复用镜像内已锁定的虚拟环境。
+COPY --from=builder /usr/local/bin/uv /usr/local/bin/uv
 
 # 激活虚拟环境
-ENV PATH="/opt/venv/bin:$PATH"
+ENV PATH="/app/.venv/bin:$PATH"
 
 # 复制项目文件
 COPY . .
@@ -168,6 +172,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8001/health || exit 1
 
 # 生产环境启动命令 (多 worker)
+# 数据库容量公式输入：1 x 4 x 5（API 容器数 x Uvicorn 进程数 x 单进程 pool_size）。
+# 修改 --workers 时必须同步更新容量门禁与部署计划。
 CMD ["uvicorn", "main:app", \
      "--host", "0.0.0.0", \
      "--port", "8001", \

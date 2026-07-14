@@ -794,13 +794,11 @@ class RuntimeIntentEffectApplier:
         *,
         rack_operation_service: Any | None = None,
         handling_operation_service: Any | None = None,
-        inbox_service: Any | None = None,
         resource_projection_service: Any | None = None,
         bin_cell_reservation_service: Any | None = None,
     ) -> None:
         self._rack_operation_service = rack_operation_service
         self._handling_operation_service = handling_operation_service
-        self._inbox_service = inbox_service
         self._resource_projection_service = resource_projection_service
         self._bin_cell_reservation_service = bin_cell_reservation_service
 
@@ -1627,31 +1625,32 @@ class RuntimeIntentEffectApplier:
         )
 
     async def _apply_device_event(self, ctx: Any, intent: RuntimeIntent) -> None:
-        service = self._inbox_service
-        if service is None:
-            from src.app.workline.services import inbox_service
-
-            service = inbox_service
-
         ctx_map = cast("Mapping[str, Any]", ctx)
         payload = dict(intent.payload_json)
-        from src.app.runtime.orchestration.services.inbox.inbox_service import DuplicateInboxError
+        from src.app.runtime.orchestration.services.runtime_inbox import (
+            runtime_inbox_service,
+        )
 
-        try:
-            _ = await service.create_device_event_inbox(
-                db=ctx_map["db"],
-                device_code=str(payload["device_code"]),
-                event_type=str(payload["event_type"]),
-                timestamp=int(payload["timestamp"]),
-                data=dict(payload["data"]),
-                trace_id=_ctx_trace_id(ctx_map),
-                event_id=payload.get("event_id"),
-                causation_id=payload.get("causation_id"),
-                canonical_event_type=payload.get("canonical_event_type"),
-                auto_commit=False,
-            )
-        except DuplicateInboxError:
-            return
+        device_code = str(payload["device_code"])
+        event_type = str(payload["event_type"])
+        trace_id = _ctx_trace_id(ctx_map)
+        event_id = payload.get("event_id")
+        causation_id = payload.get("causation_id")
+        workline_id = optional_int(getattr(ctx_map["workline"], "id", None))
+
+        # RuntimeInbox 是 device event 唯一事实源；缺少持久上游 event_id 时
+        # service fail-closed，不能把相同内容的两次 occurrence 错误合并。
+        _ = await runtime_inbox_service.accept_device_event(
+            ctx_map["db"],
+            device_code=device_code,
+            event_type=event_type,
+            payload_json=payload,
+            workline_id=workline_id,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
+            auto_commit=False,
+        )
 
     async def _apply_resource_fact(self, ctx: Any, intent: RuntimeIntent) -> Any:
         fact_type = str(intent.action)

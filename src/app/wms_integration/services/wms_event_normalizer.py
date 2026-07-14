@@ -8,7 +8,7 @@
 - 纯函数转换: 不调用任何业务 capability / DB / 外部 HTTP
 - Protocol 名字符串不在本模块出现, inbound normalizer ownership boundary 5 域扫描不会触发误报
   (调用方负责传入 port_protocol 参数,本模块仅按 type 接口契约注册)
-- 单例由 InboundNormalizerRegistry 管理, 本类无 persistent state
+- 注册场景的单例由 InboundNormalizerRegistry 管理, 本类无 persistent state
 - correlation_id 解析策略留给 InboundNormalizerProfile.correlation_resolution
 """
 

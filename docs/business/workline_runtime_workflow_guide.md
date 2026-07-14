@@ -1,6 +1,6 @@
 # 工作线运行时工作流指南
 
-**最后更新**: 2026-06-09
+**最后更新**: 2026-07-13
 
 本文档定义 WES 工作线运行时的标准数据链路，适用于真实设备、SANDBOX 调试和插件开发。本文只描述主干职责和状态边界，具体插件可在此基础上扩展业务决策。
 
@@ -10,7 +10,7 @@
 
 核心原则：
 
-- `WorklineInbox` 是编排唯一入口。
+- `RuntimeInbox` 是编排唯一入口。
 - `SystemOutbox` 是副作用统一出口，Workline 只负责写入可派发事实。
 - `DeviceCommand` 是设备命令的业务主键载体。
 - `WorklineSession` 是一条业务链路的 Runtime-owned lifecycle 实例。
@@ -59,27 +59,28 @@ Device Event -> Inbox -> Runtime Decision
 
 | 阶段 | 责任方 | 主要写入 | 说明 |
 | --- | --- | --- | --- |
-| Submit Event | 设备 | `callback_logs`, `workline_inbox` | 设备上报物理事件，如扫码完成。 |
+| Submit Event | 设备 | `callback_logs`, `wes_runtime.runtime_inbox` | 设备上报物理事件，如扫码完成。 |
 | Inbox Processing | Worker | `workline_sessions`, `workline_timelines` | 恢复上下文，调用插件取得 `RuntimeIntent`。 |
 | Command Decision | Worker | `device_commands`, `system_outbox`, `workline_timelines` | WES 决定要对哪个目标设备下发什么命令。 |
 | Dispatch Command | `SystemOutboxEngine` / `OutboxDispatchService` | `system_outbox`, `workline_dispatch_attempts` | Outbox 是待派发记录，派发服务才是真正发命令的组件。 |
 | Device ACK | 设备 | `system_outbox`, `device_commands` | ACK 表示设备收到命令，不表示执行完成。 |
 | Execute Command | 设备 | 设备侧状态 | WES 不直接认为命令已完成。 |
-| Submit Result | 设备 | `callback_logs`, `workline_inbox` | Result Callback 写入 `COMMAND_RESULT` Inbox。 |
+| Submit Result | 设备 | `callback_logs`, `wes_runtime.runtime_inbox` | Result Callback 写入 `COMMAND_RESULT` Inbox。 |
 | Result Processing | Worker | `workline_sessions`, `workline_timelines`, `device_commands` | Runtime 根据插件返回的 `RuntimeIntent` 决定继续、完成或失败。 |
 
 ## 4. 关键对象语义
 
-### 4.1 WorklineInbox
+### 4.1 RuntimeInbox
 
-`WorklineInbox` 是运行时输入队列。所有会推动 Runtime decision 的输入都必须进入 Inbox。
+`RuntimeInbox` 是运行时输入队列。所有会推动 Runtime decision 的输入都必须进入 Inbox。
 
-常见 `kind`：
+固定 `kind`（数据库 CHECK 与服务合同共同约束）：
 
-- `DEVICE_EVENT`：设备主动上报事件。
 - `COMMAND_RESULT`：设备命令执行结果。
+- `DEVICE_EVENT`：设备主动上报事件。
+- `EXTERNAL_HTTP`：WMS/RCS 等外部 callback 或 HTTP 事实。
+- `INTERNAL_EVENT`：Runtime 内部推进、hold/reconciliation 等系统事实。
 - `TIMER_TIMEOUT`：等待超时事件。
-- `MANUAL_HOLD / MANUAL_RESUME / MANUAL_CANCEL`：人工操作。
 - `REPLAY_REQUEST`：重放请求。
 
 规则：
@@ -87,6 +88,11 @@ Device Event -> Inbox -> Runtime Decision
 - API 层接收成功不等于业务完成，只表示输入已被 WES 接收。
 - Worker 消费 Inbox 后，才会真正推动 `WorklineSession`。
 - 任何 Result 都必须能关联到 `command_code` 和当前等待的 `awaiting_command_id`。
+- 状态固定为 `RECEIVED / PROCESSING / PROCESSED / FAILED / DEAD_LETTER`；`RESOURCE_WAIT`
+  表达为可到期重试的 `FAILED`，不扩展状态机。
+- `PRE_CUTOVER_AUDIT_ONLY` 只保留切换前证据，不可 claim、retry 或 replay。
+- 人工重放要求稳定 `request_id` 与 `reason`，可信 `actor` 只来自认证上下文；服务新建
+  `REPLAY_REQUEST`，原 `DEAD_LETTER` 保持终态。
 
 ### 4.2 SystemOutbox
 
@@ -282,7 +288,7 @@ Runtime 必须只接受当前等待点的 Result。旧 Result 如果在 Session 
 健康链路必须满足：
 
 - 每个 accepted Event 都有 `trace_id`。
-- 每个 Runtime decision 输入都进入 `WorklineInbox`。
+- 每个 Runtime decision 输入都进入 `RuntimeInbox`。
 - 同一 WorkLine 可有多个 open Session，后续推进由真实资源状态约束。
 - 每个设备副作用都先写 `DeviceCommand` 和 `SystemOutbox`。
 - Outbox 派发有明确目标 `target_code`。
@@ -297,7 +303,7 @@ Runtime 必须只接受当前等待点的 Result。旧 Result 如果在 Session 
 排查工作线链路时按以下顺序，不要跳层：
 
 1. 查 `callback_logs`：设备请求是否到达 WES。
-2. 查 `workline_inbox`：请求是否被接受为编排输入。
+2. 查 `wes_runtime.runtime_inbox`：请求是否被接受为编排输入。
 3. 查 `workline_sessions`：Session 当前状态、等待字段、失败字段。
 4. 查 `workline_timelines`：Runtime 做了什么决策。
 5. 查 `device_commands`：是否创建了目标命令。
@@ -306,3 +312,13 @@ Runtime 必须只接受当前等待点的 Result。旧 Result 如果在 Session 
 8. 查 Result Inbox：设备执行结果是否回到 WES。
 
 任何局部修复都必须回到这条链路验证，不能只修 UI 显示或单个状态字段。
+
+## 10. 重置与严格验收
+
+- 运行数据重置：`scripts/data/reset_runtime_data.py`；只允许 schema-qualified runtime 表，默认 Mock
+  reset 失败时在数据库 mutation 前中止。
+- 本地 heavy 验收：显式配置隔离 PostgreSQL 后运行
+  `uv run python scripts/run_runtime_inbox_postgresql_acceptance.py --output-dir <dir> --expected-commit <sha>`。
+- CI：`Jenkinsfile.backend-ci` 调用 `scripts/run_runtime_inbox_postgresql_acceptance_ci.sh` 启动独立 PG17，
+  顺序运行 migration、processing、两个 crash window、benchmark 和 evidence validator。
+- 正式 evidence 固定为 `runtime-inbox-claim-benchmark.json`，必须绑定完整 commit、`dirty=false` 并通过 validator。

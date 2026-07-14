@@ -59,17 +59,6 @@ def test_registry_rejects_device_event_port():
         registry.register(DeviceEventPort, lambda: DeviceEventPort())
 
 
-def test_registry_rejects_runtime_inbox_consumer():
-    """H2: RuntimeInboxConsumer 是 inbound normalizer, 注册表拒绝。"""
-    registry = CapabilityPortRegistry()
-
-    class RuntimeInboxConsumer:
-        pass
-
-    with pytest.raises(ValueError, match="inbound normalizer"):
-        registry.register(RuntimeInboxConsumer, lambda: RuntimeInboxConsumer())
-
-
 def test_registry_rejects_inbound_event_port():
     """H2: InboundEventPort 是 inbound normalizer, 注册表拒绝。"""
     registry = CapabilityPortRegistry()

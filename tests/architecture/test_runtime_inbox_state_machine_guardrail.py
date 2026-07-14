@@ -1,7 +1,7 @@
 """RUNTIME_INBOX_STATE_MACHINE RuntimeInbox 状态机契约测试。
 
 覆盖主计划 §9.2 + SPEC P0-007 RUNTIME_INBOX_STATE_MACHINE 的 6 种状态转移。
-使用 tests/support/runtime_inbox_contract.py 目标态模型, 不 import legacy WorklineInbox。
+使用 tests/support/runtime_inbox_contract.py 目标态模型。
 """
 
 from __future__ import annotations

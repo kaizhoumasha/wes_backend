@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
@@ -43,6 +44,7 @@ from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
     runtime_hold_repository as default_runtime_hold_repository,
 )
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
+from src.app.runtime.orchestration.repository_wiring import workline_repository as default_workline_repository
 from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
     runtime_hold_creation_service as default_runtime_hold_creation_service,
 )
@@ -52,7 +54,6 @@ from src.app.runtime.orchestration.services.hold.runtime_hold_release_service im
 from src.app.runtime.orchestration.services.hold.runtime_hold_release_service import (
     runtime_hold_release_service as default_runtime_hold_release_service,
 )
-from src.app.runtime.orchestration.services.inbox.inbox_service import inbox_service
 from src.app.runtime.orchestration.services.trace.timeline_sequence_service import add_timeline_with_sequence
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
@@ -60,15 +61,15 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
 from src.app.sys.models import SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository
 from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
-from src.app.workline.repositories.workline_repository import WorkLineRepository
 from src.app.workline.services.diagnostic_service import workline_diagnostic_service
 from src.core.logger import logger
 from src.utils.timezone import timezone
 from src.utils.value_normalization import as_dict, enum_str
 
 if TYPE_CHECKING:
-    from src.app.runtime.orchestration.models.inbox import WorklineInbox
+    from src.app.contracts.runtime_inbox_query import RuntimeInboxProjection
     from src.app.sys.models import SystemOutbox
+    from src.app.workline.repositories.workline_repository import WorkLineRepository
 
 
 from src.app.runtime.orchestration.services.hold.runtime_hold_query_service import (
@@ -124,6 +125,33 @@ def _late_callback_evidence_key(command: DeviceCommand, callback_payload: dict[s
     return f"command_result:{command_code}:{result}:{finish_time}:{payload_hash}"
 
 
+@dataclass(frozen=True, slots=True)
+class TimerTimeoutReconciliationResult:
+    """TIMER_TIMEOUT 业务判断结果；Inbox 终态由调用方负责。"""
+
+    disposition: str
+    session: WorklineSession | None
+
+
+@dataclass(frozen=True, slots=True)
+class _TimerTimeoutEvidence:
+    """显式 timeout 参数转换出的稳定审计证据，不承担 Inbox 持久化职责。"""
+
+    id: int
+    session_id: int | None
+    workline_id: int | None
+    trace_id: str | None
+    correlation_id: str | None
+    payload_json: dict[str, Any]
+
+
+def _timer_timeout_payload_data(payload: dict[str, Any]) -> dict[str, Any]:
+    """兼容 canonical envelope 与 Task 7 前 legacy flat timeout payload。"""
+
+    data = payload.get("data")
+    return dict(data) if isinstance(data, dict) else dict(payload)
+
+
 class WorklineRuntimeReconciliationService:
     """系统级 runtime reconciliation 唯一领域协调者。"""
 
@@ -142,7 +170,7 @@ class WorklineRuntimeReconciliationService:
         workline_status_projection_service: Any | None = None,
     ) -> None:
         self.session_repository = session_repository or WorklineSessionRepository()
-        self.workline_repository = workline_repository or WorkLineRepository()
+        self.workline_repository = workline_repository or default_workline_repository
         self.system_outbox_repository = system_outbox_repository or SystemOutboxRepository()
         self.device_service = device_service or DeviceService()
         self.runtime_hold_creation_service = runtime_hold_creation_service or default_runtime_hold_creation_service
@@ -186,39 +214,46 @@ class WorklineRuntimeReconciliationService:
         self,
         db: Any,
         *,
-        inbox: WorklineInbox,
-        processor_token: str | None = None,
-    ) -> WorklineSession | None:
-        """处理系统 TIMER_TIMEOUT：进入 Callback deadline runtime reconciliation。"""
+        session_id: int | None,
+        inbox_id: int,
+        payload: dict[str, Any],
+        source_inbox_id: int,
+        correlation_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> TimerTimeoutReconciliationResult:
+        """处理系统 TIMER_TIMEOUT 业务；不选择或写入任何 Inbox 终态。"""
 
-        payload = as_dict(inbox.payload_json)
-        inbox_id = _resolve_id(inbox)
-        if inbox_id is None:
-            logger.warning("TIMER_TIMEOUT inbox 缺少持久化 id，跳过 runtime reconciliation")
-            return None
-
-        session_id = inbox.session_id if isinstance(inbox.session_id, int) else payload.get("session_id")
+        payload_data = _timer_timeout_payload_data(payload)
         if not isinstance(session_id, int):
-            _ = await inbox_service.mark_as_processed(db, inbox_id, processor_token=processor_token, auto_commit=False)
-            return None
+            return TimerTimeoutReconciliationResult(disposition="SESSION_MISSING", session=None)
+
+        evidence = _TimerTimeoutEvidence(
+            id=inbox_id,
+            session_id=session_id,
+            workline_id=_payload_int(payload_data, "workline_id"),
+            trace_id=trace_id,
+            correlation_id=correlation_id,
+            payload_json=dict(payload),
+        )
+        inbox_evidence = cast("RuntimeInboxProjection", evidence)
 
         session = await self.session_repository.get_for_update(db, session_id)
-        if session is None or session.status not in {
+        if session is None:
+            return TimerTimeoutReconciliationResult(disposition="SESSION_MISSING", session=None)
+        if session.status not in {
             SessionStatus.WAITING_DEVICE_RESULT,
             SessionStatus.WAITING_EXTERNAL,
         }:
-            _ = await inbox_service.mark_as_processed(db, inbox_id, processor_token=processor_token, auto_commit=False)
-            return session
+            return TimerTimeoutReconciliationResult(disposition="SESSION_NOT_WAITING", session=session)
 
-        command = await self._load_timeout_command(db, session=session, payload=payload)
-        if not self._timer_timeout_claim_matches(session=session, command=command, payload=payload):
-            _ = await inbox_service.mark_as_processed(db, inbox_id, processor_token=processor_token, auto_commit=False)
-            return session
+        command = await self._load_timeout_command(db, session=session, payload=payload_data)
+        if not self._timer_timeout_claim_matches(session=session, command=command, payload=payload_data):
+            return TimerTimeoutReconciliationResult(disposition="EVIDENCE_STALE", session=session)
 
         now = timezone.now_for_db()
-        claim_deadline_at = self._timer_timeout_deadline(session=session, payload=payload)
+        claim_deadline_at = self._timer_timeout_deadline(session=session, payload=payload_data)
         claim_ack_received_at = getattr(command, "ack_received_at", None) or timezone.to_db_datetime(
-            payload.get("ack_received_at")
+            payload_data.get("ack_received_at")
         )
         from_status = enum_str(session.status)
         workline_session_lifecycle_service.manual_hold(session, occurred_at=now)
@@ -228,7 +263,7 @@ class WorklineRuntimeReconciliationService:
         session.reconciliation_source_inbox_id = inbox_id
         session.reconciliation_command_id = _resolve_id(command)
         session.reconciliation_device_id = getattr(command, "device_id", None)
-        session.reconciliation_wait_token = _payload_str(payload, "command_code")
+        session.reconciliation_wait_token = _payload_str(payload_data, "command_code")
         session.reconciliation_ack_received_at = claim_ack_received_at
         session.reconciliation_deadline_at = claim_deadline_at
         session.reconciliation_occurred_at = now
@@ -239,7 +274,7 @@ class WorklineRuntimeReconciliationService:
             conflict_kind=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
             reason="callback deadline expired",
             detected_at=now,
-            inbox=inbox,
+            inbox=inbox_evidence,
             command=command,
         )
 
@@ -271,7 +306,8 @@ class WorklineRuntimeReconciliationService:
         runtime_hold = await self.runtime_hold_creation_service.create_for_callback_deadline_expired(
             db,
             session=session,
-            inbox=inbox,
+            inbox=inbox_evidence,
+            source_inbox_id=source_inbox_id,
             command=command,
         )
         runtime_hold_id = _resolve_id(runtime_hold)
@@ -293,7 +329,7 @@ class WorklineRuntimeReconciliationService:
                 "runtime_hold_id": runtime_hold_id,
                 "reconciliation_registration": reconciliation_registration,
             },
-            inbox=inbox,
+            inbox=inbox_evidence,
             command=command,
             occurred_at=now,
         )
@@ -302,7 +338,7 @@ class WorklineRuntimeReconciliationService:
             session=session,
             error_code=ErrorCode.CALLBACK_DEADLINE_EXPIRED,
             message="Callback deadline expired; physical result is unknown.",
-            inbox=inbox,
+            inbox=inbox_evidence,
             command=command,
             evidence={
                 "deadline_at": _dt_key(session.reconciliation_deadline_at),
@@ -313,9 +349,8 @@ class WorklineRuntimeReconciliationService:
             },
         )
 
-        _ = await inbox_service.mark_as_processed(db, inbox_id, processor_token=processor_token, auto_commit=False)
         await db.flush()
-        return session
+        return TimerTimeoutReconciliationResult(disposition="RECONCILED", session=session)
 
     async def handle_dispatch_ack_exhausted(
         self,
@@ -758,7 +793,7 @@ class WorklineRuntimeReconciliationService:
         actor_code: str | None = "runtime_reconciliation",
         from_status: str | None = None,
         to_status: str | None = None,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
         occurred_at: datetime | None = None,
@@ -796,7 +831,7 @@ class WorklineRuntimeReconciliationService:
         session: WorklineSession,
         error_code: ErrorCode,
         message: str,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
         evidence: dict[str, Any] | None = None,
@@ -828,7 +863,7 @@ class WorklineRuntimeReconciliationService:
         conflict_kind: str,
         reason: str,
         detected_at: datetime,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
         extra_evidence_refs: list[str] | None = None,
@@ -918,7 +953,7 @@ class WorklineRuntimeReconciliationService:
     def _runtime_reconciliation_correlation_id(
         self,
         *,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
     ) -> str | None:
@@ -948,7 +983,7 @@ class WorklineRuntimeReconciliationService:
     def _runtime_reconciliation_evidence_refs(
         self,
         *,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
         extra_refs: list[str] | None = None,
@@ -975,7 +1010,7 @@ class WorklineRuntimeReconciliationService:
         self,
         *,
         session_id: int,
-        inbox: WorklineInbox | None = None,
+        inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         source_ref_override: str | None = None,
     ) -> str:
@@ -1090,6 +1125,7 @@ workline_runtime_reconciliation_service = WorklineRuntimeReconciliationService()
 
 
 __all__ = [
+    "TimerTimeoutReconciliationResult",
     "WorklineRuntimeReconciliationService",
     "workline_runtime_reconciliation_service",
 ]

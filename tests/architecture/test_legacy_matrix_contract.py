@@ -21,14 +21,12 @@ def _entry_by_id(entry_id: str):
     return next((entry for entry in entries if entry.entry_id == entry_id), None)
 
 
-def test_service_inventory_includes_module_level_functions():
-    """service inventory 必须覆盖 services 下的 class/def/async def。"""
-    entry = _entry_by_id(
-        "legacy:src/app/workline/services/inbox_batch_processor.py:build_workline_runtime_session_updated_event_payload"
-    )
+def test_removed_inbox_processor_has_no_inventory_mapping_or_entries():
+    """已物理删除的 processor 不得继续作为 legacy cleanup 目标。"""
+    legacy_path = "src/app/workline/services/inbox_batch_processor.py"
 
-    assert entry is not None
-    assert entry.entry_type == "service"
+    assert legacy_path not in generate_legacy_matrix.MIGRATED_SERVICE_IMPLS
+    assert not any(entry.relative_path == legacy_path for entry in parse_entries())
 
 
 def test_rebuild_or_move_entries_have_target_and_blocking_tests():

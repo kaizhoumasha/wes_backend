@@ -247,6 +247,23 @@ pipeline {
             }
         }
 
+        stage('RuntimeInbox PostgreSQL Acceptance') {
+            steps {
+                sh '''
+                    set -e
+                    chmod +x scripts/run_runtime_inbox_postgresql_acceptance_ci.sh
+                    scripts/run_runtime_inbox_postgresql_acceptance_ci.sh run
+                '''
+            }
+            post {
+                always {
+                    sh 'scripts/run_runtime_inbox_postgresql_acceptance_ci.sh cleanup'
+                    junit testResults: 'reports/runtime-inbox-acceptance/junit/*.xml', allowEmptyResults: true
+                    archiveArtifacts artifacts: 'reports/runtime-inbox-acceptance/**/*', allowEmptyArchive: true, fingerprint: true
+                }
+            }
+        }
+
         stage('Build Runtime Image') {
             steps {
                 sh '''

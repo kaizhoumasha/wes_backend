@@ -16,7 +16,6 @@ from src.app.device.services.device_command_service import DeviceCallbackResultO
 from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import (
     callback_runtime_inbox_writer,
 )
-from src.app.runtime.orchestration.models.inbox import SourceSystem
 from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
     TimelineActorType,
@@ -35,38 +34,17 @@ if TYPE_CHECKING:
     from src.app.callback.models import CallbackEventRequest
     from src.app.device.models.command import CommandCallbackResult
     from src.app.device.services import DeviceCommandService, DeviceService
-    from src.app.workline.services import WorklineInboxService
 
 from src.core.logger import logger
 from src.utils.timezone import timezone
 
 _DUPLICATE_ERROR_MARKER = "已存在（幂等键重复）"
-_RACK_TASK_LIFECYCLE_ONLY_CALLBACK_TYPES = frozenset(
-    {
-        "WMS_RACK_TASK_RESULT",
-        "RCS_RACK_TASK_RESULT",
-        "WMS_RACK_TASK_PROGRESS",
-        "RCS_RACK_TASK_PROGRESS",
-    }
-)
-_HANDLING_LIFECYCLE_ONLY_CALLBACK_TYPES = frozenset(
-    {
-        "CTU_BIN_MOVE_PROGRESS",
-        "CTU_BIN_TASK_PROGRESS",
-        "WMS_BIN_MOVE_PROGRESS",
-        "RCS_BIN_MOVE_PROGRESS",
-    }
-)
 _HANDLING_CALLBACK_TYPES = frozenset(
     {
         "WMS_FULL_BOX_EXCHANGE_RESULT",
         "RCS_FULL_BOX_EXCHANGE_RESULT",
     }
 )
-
-
-def _skip_workline_processing_enqueue() -> None:
-    """lifecycle-only 回调由 lifecycle service 处理，这里只关闭即时 batch 触发。"""
 
 
 def _current_timestamp_ms() -> int:
@@ -137,11 +115,13 @@ class CallbackOrchestrationService:
             return candidate
         return None
 
-    def _enqueue_workline_processing(self) -> None:
+    def _enqueue_runtime_inbox_processing(self) -> None:
         try:
-            self._queue_gateway.enqueue_workline_inbox(limit=10)
+            # Plan Task 6: 调 enqueue_runtime_inbox (新 gateway 协议).
+            # RuntimeInbox 是唯一入口；broker 故障时由 Beat 兜底，不回退旧队列。
+            self._queue_gateway.enqueue_runtime_inbox(limit=10)
         except Exception as exc:
-            logger.warning(f"Callback 已入库，但即时触发 Workline Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
+            logger.warning(f"Callback 已入库，但即时触发 Runtime Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
 
     def _enqueue_outbox_dispatch(self) -> None:
         try:
@@ -228,7 +208,7 @@ class CallbackOrchestrationService:
         )
         _ = await add_timeline_with_sequence(db, timeline)
 
-    async def _commit_and_enqueue_workline_processing(
+    async def _commit_and_enqueue_runtime_inbox_processing(
         self,
         db: AsyncSession,
         *,
@@ -238,11 +218,11 @@ class CallbackOrchestrationService:
         await publish_deferred_sse_events(db)
         try:
             if enqueue_processing is None:
-                self._enqueue_workline_processing()
+                self._enqueue_runtime_inbox_processing()
                 return
             enqueue_processing()
         except Exception as exc:
-            logger.warning(f"Callback 已提交，但即时触发 Workline Inbox 处理失败，将依赖 Beat/重试兜底: {exc}")
+            logger.warning(f"Callback 已提交，但即时触发 RuntimeInbox 处理失败，将依赖 Beat/重试兜底: {exc}")
 
     async def _is_workline_command_callback(
         self,
@@ -331,6 +311,12 @@ class CallbackOrchestrationService:
             existing_command=existing_command,
         )
         inherited_trace_id = trace.trace_id or getattr(existing_command, "trace_id", None)
+        is_workline_callback = await self._is_workline_command_callback(
+            db,
+            existing_command=existing_command,
+            device_code=callback.device_code,
+            device_service=device_service,
+        )
 
         runtime_inbox_result = await self._runtime_inbox_writer.write_result_callback(
             db,
@@ -338,16 +324,13 @@ class CallbackOrchestrationService:
             request_id=request_id,
             canonical_result_type="DEVICE_RESULT",
             correlation_id=getattr(existing_command, "correlation_id", None),
+            trace_id=inherited_trace_id,
+            event_id=trace.event_id,
+            causation_id=trace.causation_id,
+            processing_required=is_workline_callback,
         )
         if not runtime_inbox_result.created:
             return ResultCallbackOutcome(trace_id=inherited_trace_id, is_duplicate=True)
-
-        is_workline_callback = await self._is_workline_command_callback(
-            db,
-            existing_command=existing_command,
-            device_code=callback.device_code,
-            device_service=device_service,
-        )
 
         if is_workline_callback:
             # RuntimeReconciliationFacade 已物理删除。
@@ -396,7 +379,7 @@ class CallbackOrchestrationService:
                 )
             trace = trace.with_command(command)
             inherited_trace_id = trace.trace_id or inherited_trace_id
-            await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
+            await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
             if released_outboxes:
                 self._enqueue_outbox_dispatch()
             logger.info(
@@ -448,7 +431,7 @@ class CallbackOrchestrationService:
         request_id: str | None,
         is_workline_event: bool,
         canonical_event_type: str,
-        inbox_service: WorklineInboxService,
+        device_id: int | None = None,
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
@@ -476,47 +459,19 @@ class CallbackOrchestrationService:
             payload=event_request.model_dump(mode="json"),
             request_id=request_id,
             canonical_event_type=canonical_event_type,
+            device_id=device_id,
+            trace_id=event_trace_id,
+            event_id=trace.event_id,
+            causation_id=trace.causation_id,
+            # 非工作线事件仍保留 RuntimeInbox 幂等/冲突证据，但接收即终态，
+            # 避免只支持工作线上下文的 processor 将其转为 DEAD_LETTER。
+            processing_required=is_workline_event,
         )
         if not runtime_inbox_result.created:
             return EventCallbackOutcome(trace_id=event_trace_id, is_duplicate=True)
 
         if is_workline_event:
-            transition_duplicate = False
-            try:
-                _ = await inbox_service.create_device_event_inbox(
-                    db=db,
-                    device_code=event_request.device_code,
-                    event_type=event_request.event_type,
-                    timestamp=event_timestamp,
-                    data=cast("dict[str, Any]", event_request.data or {}),
-                    source_message_id=trace.request_id,
-                    trace_id=trace.trace_id,
-                    event_id=trace.event_id,
-                    causation_id=trace.causation_id,
-                    canonical_event_type=canonical_event_type,
-                    auto_commit=False,
-                )
-                logger.info(
-                    f"设备事件已写入过渡 Workline Inbox: {event_request.device_code} -> {event_request.event_type}"
-                )
-            except ValueError as exc:
-                duplicate_inbox = self._resolve_duplicate_inbox_error(
-                    exc,
-                    duplicate_message=(
-                        "设备事件过渡 Workline Inbox 幂等重复，RuntimeInbox ACK 保持 accepted: "
-                        f"{event_request.device_code} -> {event_request.event_type}"
-                    ),
-                )
-                transition_duplicate = True
-                if duplicate_inbox is not None:
-                    trace = trace.with_inbox(duplicate_inbox)
-                    event_trace_id = trace.trace_id or event_trace_id
-
-            if transition_duplicate:
-                await db.commit()
-                await publish_deferred_sse_events(db)
-            else:
-                await self._commit_and_enqueue_workline_processing(db, enqueue_processing=enqueue_processing)
+            await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
         else:
             await db.commit()
             await publish_deferred_sse_events(db)
@@ -533,7 +488,6 @@ class CallbackOrchestrationService:
         callback_type: str,
         payload: JsonDict,
         request_id: str | None,
-        inbox_service: WorklineInboxService,
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
@@ -550,68 +504,32 @@ class CallbackOrchestrationService:
         resolved_trace_id = trace.trace_id or trace.request_id or f"trace_{uuid.uuid4().hex}"
         trace = trace.with_trace_id(resolved_trace_id)
 
-        lifecycle_only = (
-            callback_type in _RACK_TASK_LIFECYCLE_ONLY_CALLBACK_TYPES
-            or callback_type in _HANDLING_LIFECYCLE_ONLY_CALLBACK_TYPES
-        )
         runtime_inbox_result = await self._runtime_inbox_writer.write_external_callback(
             db,
             payload=payload,
             request_id=request_id,
+            trace_id=resolved_trace_id,
+            event_id=trace.event_id,
+            causation_id=trace.causation_id,
         )
         if not runtime_inbox_result.created:
             return ExternalCallbackOutcome(trace_id=trace.trace_id or "", is_duplicate=True)
 
-        created_inbox: object | None = None
-        transition_duplicate = False
-        try:
-            created_inbox = await inbox_service.create_external_http_inbox(
-                db=db,
-                callback_type=callback_type,
-                payload=payload,
-                source_system=SourceSystem.SYSTEM,
-                source_message_id=trace.request_id,
-                trace_id=resolved_trace_id,
-                event_id=trace.event_id,
-                causation_id=trace.causation_id,
-                auto_commit=False,
-            )
-            logger.info(f"外部回调已写入过渡 Workline Inbox: {callback_type}")
-        except ValueError as exc:
-            duplicate_inbox = self._resolve_duplicate_inbox_error(
-                exc,
-                duplicate_message=f"外部回调过渡 Workline Inbox 幂等重复，RuntimeInbox ACK 保持 accepted: {callback_type}",
-            )
-            transition_duplicate = True
-            if duplicate_inbox is not None:
-                trace = trace.with_inbox(duplicate_inbox)
-
-        if not transition_duplicate:
-            await self._resolve_rack_task_service().record_callback_from_external_http(
+        # RuntimeInbox record 是 external callback 唯一 evidence/trace inbox。
+        trace = trace.with_inbox(runtime_inbox_result.record)
+        await self._resolve_rack_task_service().record_callback_from_external_http(
+            db=db,
+            payload_json=payload,
+            trace_id=trace.trace_id,
+        )
+        if _is_handling_callback(callback_type, payload):
+            await self._resolve_handling_operation_service().record_callback_from_external_http(
                 db=db,
                 payload_json=payload,
                 trace_id=trace.trace_id,
             )
-            if _is_handling_callback(callback_type, payload):
-                await self._resolve_handling_operation_service().record_callback_from_external_http(
-                    db=db,
-                    payload_json=payload,
-                    trace_id=trace.trace_id,
-                )
-            if lifecycle_only:
-                inbox_id = getattr(created_inbox, "id", None)
-                if not isinstance(inbox_id, int):
-                    raise RuntimeError("生命周期回调 Inbox 缺少 ID，无法标记已处理")
-                _ = await inbox_service.mark_as_processed(db, inbox_id, auto_commit=False)
 
-        if transition_duplicate:
-            await db.commit()
-            await publish_deferred_sse_events(db)
-        else:
-            await self._commit_and_enqueue_workline_processing(
-                db,
-                enqueue_processing=_skip_workline_processing_enqueue if lifecycle_only else enqueue_processing,
-            )
+        await self._commit_and_enqueue_runtime_inbox_processing(db, enqueue_processing=enqueue_processing)
 
         return ExternalCallbackOutcome(
             trace_id=trace.trace_id or "",

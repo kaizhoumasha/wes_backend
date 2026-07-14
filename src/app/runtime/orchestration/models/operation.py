@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003 - Pydantic requires runtime type access
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class SandboxEventRequest(BaseModel):
@@ -55,8 +55,17 @@ class SandboxExternalCallbackRequest(BaseModel):
 class ReplayInboxRequest(BaseModel):
     """Replay 请求。"""
 
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=100)
     reason: str = Field(min_length=1, max_length=500)
-    operator_id: str | None = Field(default=None, max_length=100)
+
+    @field_validator("request_id", mode="before")
+    @classmethod
+    def normalize_request_id(cls, value: object) -> object:
+        """规范化调用方稳定 request identity。"""
+
+        return value.strip() if isinstance(value, str) else value
 
 
 class ManualOperationRequest(BaseModel):

@@ -198,21 +198,24 @@ def test_legacy_runtime_import_production_imports_all_have_allowlist_coverage():
     )
 
 
-def test_runtime_inbox_consumer_compiles() -> None:
-    """RuntimeInboxConsumer 模块可被 import (consumers/ 入口仍存在)。"""
-    from src.app.runtime.orchestration.consumers import RuntimeInboxConsumer
+def test_runtime_inbox_consumer_facade_has_no_active_production_reference() -> None:
+    """RuntimeInbox 消费仅允许由 Celery task → ProcessorBridge 进入。"""
+    facade_name = "RuntimeInbox" + "Consumer"
+    consumers_dir = REPO_ROOT / "src" / "app" / "runtime" / "orchestration" / "consumers"
+    assert not (consumers_dir / "runtime_inbox_consumer.py").exists()
 
-    assert RuntimeInboxConsumer is not None
+    offenders = []
+    for source in (REPO_ROOT / "src").rglob("*.py"):
+        if facade_name in source.read_text(encoding="utf-8"):
+            offenders.append(source.relative_to(REPO_ROOT).as_posix())
+    assert not offenders, f"旧 RuntimeInbox consumer facade 仍被生产代码引用: {offenders}"
 
 
 # --- src.workline_runtime 删除后测试 ---
 
 
 def test_excluded_prefixes_does_not_contain_consumers():
-    """src.workline_runtime 删除后:EXCLUDED_PREFIXES 不再含 consumers/ (trust zone 退出)。
-
-    consumers/ 内 RuntimeInboxConsumer 已 legacy runtime-free,无需 EXCLUDED_PREFIXES 保护。
-    """
+    """src.workline_runtime 删除后:EXCLUDED_PREFIXES 不再含 consumers/ (trust zone 退出)。"""
     text = GUARDRAILS_SCRIPT.read_text(encoding="utf-8")
     body = text.split("# --- LEGACY_RUNTIME_IMPORT:", maxsplit=1)[1].split(
         "# --- CAPABILITY_IMPLEMENTATION_IMPORT:", maxsplit=1
@@ -229,11 +232,12 @@ def test_no_consumers_in_legacy_runtime_allowed_paths():
     )
 
 
-def test_consumers_directory_still_exists():
-    """consumers/ 目录在旧 runtime 入口删除后仍存在 (RuntimeInboxConsumer 单点入口保留)。"""
+def test_consumers_package_only_exports_runtime_inbox_adapters():
+    """consumers 包只保留 RuntimeInbox 协议适配器。"""
     consumers_dir = REPO_ROOT / "src" / "app" / "runtime" / "orchestration" / "consumers"
-    assert consumers_dir.is_dir(), "consumers/ 目录应保留 (RuntimeInboxConsumer)"
+    assert consumers_dir.is_dir(), "consumers/ 目录应保留协议适配器"
     init_file = consumers_dir / "__init__.py"
     assert init_file.is_file(), "consumers/__init__.py 应保留"
-    consumer_module = consumers_dir / "runtime_inbox_consumer.py"
-    assert consumer_module.is_file(), "consumers/runtime_inbox_consumer.py 应保留"
+    exported = init_file.read_text(encoding="utf-8")
+    assert "CallbackRuntimeInboxWriter" in exported
+    assert "RuntimeInboxService" not in exported

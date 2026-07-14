@@ -9,9 +9,8 @@
 - 业务语义的清晰表达
 - 与架构设计文档的严格对应
 
-注意：SessionStatus / InboxStatus 是实体层枚举，定义在：
+注意：SessionStatus 是实体层枚举，定义在：
 - src/app/workline/models/session.py（SessionStatus）
-- src/app/workline/models/inbox.py（InboxStatus）
 
 本模块只保留运行时契约层枚举（插件面向的编排契约）：
 FailureDomain, TimelineStage, OutboxStatus, OutboxDispatchType,

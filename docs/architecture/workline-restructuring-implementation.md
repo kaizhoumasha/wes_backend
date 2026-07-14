@@ -105,7 +105,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 - `uv run pytest tests/architecture/test_git_quality_gate_architecture_profile.py -q`：2 passed
 - `uv run pytest tests/load/ -q`：4 passed
 - `uv run pytest tests/runtime/orchestration/test_phase3_p0_closure_contract.py -q`：7 passed
-- `uv run pytest tests/runtime/orchestration/test_workline_inbox_observability.py -q`：1 passed
+- `uv run pytest tests/runtime/orchestration/test_runtime_operational_contracts.py tests/deployment/test_runtime_inbox_celery_cutover.py -q`：RuntimeInbox SLI signal 与 Celery 批次发射合同
 - `uv run pytest tests/runtime/orchestration/test_outbox_dispatch_observability.py -q`：1 passed
 - `uv run pytest tests/runtime/orchestration/test_device_command_result_observability.py -q`：2 passed
 - `uv run python scripts/run_runtime_benchmarks.py --output reports/benchmarks/runtime-benchmark.json --environment local-lightweight --generated-at 2026-07-02T12:00:00Z`：通过
@@ -223,7 +223,7 @@ Phase 0-5 六个阶段按 critical path 严格串行；Phase 内任务可并行�
 
 - [x] `wms_integration` 7/7 目标 port 全部实现（MasterData / Document / InventoryQuery / InventoryTransaction / Fulfillment / Event / ReconciliationQuery）
 - [x] `wms_rcs_interface_requirements.md` P0 基础数据、业务指令、回调事件全部映射到目标 port
-- [x] Runtime capability 注入仅暴露 query/effect port contract；inbound normalizer（WmsEventPort / DeviceEventPort / RuntimeInbox / RuntimeInboxConsumer）不进入业务 capability
+- [x] Runtime capability 注入仅暴露 query/effect port contract；inbound normalizer（WmsEventPort / DeviceEventPort / RuntimeInbox）不进入业务 capability，RuntimeInbox entity/repository/service 仅按 guardrail 逐文件例外持有
 - [x] provider 未声明的 query/effect 能力无法进入 `RuntimeCapabilityContext`（`CAPABILITY_IMPLEMENTATION_IMPORT` 静态扫描 + `RuntimeCapabilityContext` provider profile admission 落地）
 - [x] provider 未声明的 callback/event/result normalizer 能力无法进入 callback API；`InboundNormalizerProfile` 3 Pydantic model_validator 拒绝裸字符串 event_type / source_provider 不一致 / 非枚举 correlation_resolution，callback API result/event/external 热路径调用 `ExternalContractProfile.ensure_inbound_normalizer_declared()` 并在未声明时拒绝写入 inbox。
 - [x] `INBOUND_NORMALIZER_OWNERSHIP` 静态扫描器覆盖 `src/app/runtime` + `src/app/workline`，inbound normalizer 类型持有者 0 违规
@@ -376,7 +376,7 @@ Phase 2 启动前必须执行 go/no-go 评审。以下任一条件成立时，�
 - [x] RECONCILING 不再是黑洞状态；owner-scoped resolution decision 有测试覆盖，且 ReconciliationManager 不直接写 owner 状态。
 - [x] WorkLine 启动时已知 queue_code typo 不会污染 active projection。
 - [x] 11 态机覆盖所有可观察转移。PR #73 已覆盖 11 态枚举、终态保护和核心 CB / late callback 语义；本分支补齐 4 类 timeout 与 current-state-aware 可观察转移矩阵。
-- [ ] CB `open/half-open` 只阻断出站 effect；late callback 不得被标记为 `BLOCKED_BY_CB`，必须经 RuntimeInbox 幂等合并 evidence，冲突时进入 RECONCILING。PR #73 已覆盖 late callback evidence 合并合同与出站 effect open/half-open 集成矩阵；剩余缺口同 RuntimeInbox 热路径迁移，当前生产 external callback 仍先落旧 `WorklineInbox`。
+- [x] CB `open/half-open` 只阻断出站 effect；late callback 不得被标记为 `BLOCKED_BY_CB`，必须经 RuntimeInbox 幂等合并 evidence，冲突时进入 RECONCILING。RuntimeInbox 已成为唯一事实源：callback/device/internal/timer producer 统一持久化后即时 enqueue，Celery 顺序 claim 并走三阶段 processor；旧 WorklineInbox 表、InboxBatchProcessor、RuntimeInboxConsumer facade、`enqueue_workline_inbox` 与 lifecycle-only 兼容路径均已物理删除，不保留双写或兼容 shim。
 - [x] External callback 鉴权从"字段级"升级为"body 完整性级"，覆盖 WMS/RCS/ECS/device 的统一校验路径。
 - [x] idempotency 跨域语义统一，覆盖 callback / fulfillment / device_command / device_event / reconciliation。PR #73 已覆盖 callback / RuntimeInbox source event 幂等与 payload hash conflict；本分支补齐 canonical/alias 审计矩阵、409 audit payload、ReconciliationManager 幂等登记入口、runtime reconciliation `TIMER_TIMEOUT` / dispatch ACK exhausted 热路径 claim、WMS fulfillment 幂等 opening 入口、RuntimeIntent `EXTERNAL_REQUEST` fulfillment 实际发起热路径 claim 与 RuntimeInbox device_event claim。
 - [x] RECONCILING 具备软件禁发、投影冻结和人工恢复审计。

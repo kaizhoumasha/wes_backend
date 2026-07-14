@@ -61,6 +61,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      DATABASE_RUNTIME_ROLE: api
+      DATABASE_POOL_SIZE: 5
+      DATABASE_MAX_OVERFLOW: 0
+      DATABASE_POOL_TIMEOUT: 30
+      DATABASE_APPLICATION_NAME: ${ENV:-prod}
 
       # Redis 配置 ${REDIS_HOST}
       REDIS_HOST: redis
@@ -146,6 +151,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      DATABASE_RUNTIME_ROLE: celery
+      DATABASE_POOL_SIZE: 1
+      DATABASE_MAX_OVERFLOW: 0
+      DATABASE_POOL_TIMEOUT: 30
+      DATABASE_APPLICATION_NAME: ${ENV:-prod}
 
       # Redis 配置（容器内使用 docker 服务名）
       REDIS_HOST: redis
@@ -181,6 +191,7 @@ services:
         condition: service_healthy
     networks:
       - wesp9-network
+    stop_grace_period: 30s
     deploy:
       replicas: ${CELERY_WORKER_REPLICAS:-2}
       resources:
@@ -226,6 +237,9 @@ services:
       - ${BACKEND_ENV_FILE:-.env}
     environment:
       <<: *no-localhost-proxy
+      DATABASE_RUNTIME_ROLE: cli
+      DATABASE_POOL_SIZE: 1
+      DATABASE_MAX_OVERFLOW: 0
       # Redis 配置（容器内使用 docker 服务名）
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT}
@@ -295,6 +309,9 @@ services:
       - ${BACKEND_ENV_FILE:-.env}
     environment:
       <<: *no-localhost-proxy
+      DATABASE_RUNTIME_ROLE: cli
+      DATABASE_POOL_SIZE: 1
+      DATABASE_MAX_OVERFLOW: 0
       # Redis 配置（容器内使用 docker 服务名）
       REDIS_HOST: redis
       REDIS_PORT: ${REDIS_PORT}
@@ -382,6 +399,9 @@ services:
     restart: "no"
     command: >
       sh -c "
+        if [ -z \"$${DATABASE_APPLICATION_RUN_ID}\" ]; then
+          export DATABASE_APPLICATION_RUN_ID=\"integration-$$(date +%s)-$$$$\";
+        fi &&
         echo '等待数据库就绪...' &&
         sleep ${DB_WAIT_TIME:-5} &&
         echo '运行数据库迁移...' &&
@@ -392,6 +412,12 @@ services:
       "
     environment:
       <<: *no-localhost-proxy
+      DATABASE_RUNTIME_ROLE: integration
+      DATABASE_POOL_SIZE: 1
+      DATABASE_MAX_OVERFLOW: 0
+      DATABASE_APPLICATION_NAME: ${ENV:-test}
+      # 外部可显式指定 run-id；直接启动 test profile 时由 command 为本次容器生成唯一值。
+      DATABASE_APPLICATION_RUN_ID: ${INTEGRATION_RUN_ID:-}
       # 数据库配置
       POSTGRES_HOST: ${POSTGRES_HOST}
       POSTGRES_PORT: ${POSTGRES_PORT}

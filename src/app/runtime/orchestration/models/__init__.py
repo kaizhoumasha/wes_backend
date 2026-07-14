@@ -24,14 +24,6 @@ from .dispatch_attempt import (
     WorklineDispatchAttemptBase,
     WorklineDispatchAttemptCreate,
 )
-from .inbox import (
-    InboxKind,
-    InboxStatus,
-    SourceSystem,
-    WorklineInbox,
-    WorklineInboxBase,
-    WorklineInboxCreate,
-)
 from .material_unit import (
     MaterialUnit,
     MaterialUnitBase,
@@ -145,8 +137,6 @@ __all__ = [
     "DiagnosticCardResponse",
     "DiagnosticStatus",
     "DispatchAttemptStatus",
-    "InboxKind",
-    "InboxStatus",
     "MaterialDisposition",
     "MaterialUnit",
     "MaterialUnitBase",
@@ -197,7 +187,6 @@ __all__ = [
     "SmtInboundHandoffSourceItemDetailResponse",
     "SmtInboundHandoffSourceItemStatus",
     "SmtInboundHandoffSourceItemUpdate",
-    "SourceSystem",
     "TimelineActionType",
     "TimelineActorType",
     "TimelineStage",
@@ -228,9 +217,6 @@ __all__ = [
     "WorklineDispatchAttempt",
     "WorklineDispatchAttemptBase",
     "WorklineDispatchAttemptCreate",
-    "WorklineInbox",
-    "WorklineInboxBase",
-    "WorklineInboxCreate",
     "WorklineRackPosition",
     "WorklineRackPositionBase",
     "WorklineRackPositionCreate",

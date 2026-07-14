@@ -43,11 +43,7 @@ from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffSourceItem,
     SmtInboundHandoffSourceItemStatus,
 )
-from src.app.runtime.orchestration.repositories.smt_inbound_handoff_repository import (
-    SmtInboundHandoffRepository,
-    smt_inbound_handoff_repository,
-)
-from src.app.runtime.orchestration.services.inbox.inbox_service import WorklineInboxService, inbox_service
+from src.app.runtime.orchestration.repository_wiring import smt_inbound_handoff_repository
 from src.utils.timezone import timezone
 from src.utils.value_normalization import enum_value
 
@@ -61,6 +57,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.handling.services import HandlingOperationService
+    from src.app.runtime.orchestration.repositories.smt_inbound_handoff_repository import SmtInboundHandoffRepository
 
 
 _FULL_BOX_EXCHANGE_OPERATION_TYPE = "SINGLE_LAYER_FULL_BOX_EXCHANGE"
@@ -119,14 +116,12 @@ class SmtInboundHandoffService:
         reason_catalog: SmtInboundHandoffReasonCatalog = SMT_INBOUND_HANDOFF_REASON_CATALOG,
         handling_operation_service: HandlingOperationService | None = None,
         route_service: SmtInboundHandoffRouteService = smt_inbound_handoff_route_service,
-        inbox_service: WorklineInboxService = inbox_service,
     ) -> None:
         self.repository = repository
         self.usage_policy = usage_policy
         self.reason_catalog = reason_catalog
         self.handling_operation_service = handling_operation_service
         self.route_service = route_service
-        self.inbox_service = inbox_service
 
     async def create_or_get_from_release(
         self,
@@ -1418,12 +1413,25 @@ class SmtInboundHandoffService:
         now: Any,
     ) -> str | None:
         from src.app.device.models.command import CommandResult, CommandStatus, DeviceCommand
-        from src.app.runtime.orchestration.models.inbox import InboxStatus, WorklineInbox
+        from src.app.runtime.orchestration.repositories.runtime_inbox_repository import (
+            runtime_inbox_repository,
+        )
 
         demand = await db.get(SmtInboundHandoffDemand, item.handoff_demand_id)
         if demand is None:
             raise ValueError(f"未找到 handoff demand: {item.handoff_demand_id}")
-        inbox = await db.get(WorklineInbox, item.source_pick_inbox_id)
+        # source_pick_inbox_id 指向 RuntimeInbox；状态映射如下：
+        # - "in progress" = {RECEIVED, PROCESSING};
+        # - 可重试 = FAILED + next_retry_at 已设置；
+        #   终态失败 = DEAD_LETTER; 成功 = PROCESSED.
+        # - next_retry_at 单位: RuntimeInbox 使用 Unix 毫秒, item.next_attempt_at 是
+        #   naive datetime, 通过 timezone.to_utc() 转换。
+        source_pick_inbox_id = item.source_pick_inbox_id
+        inbox = (
+            await runtime_inbox_repository.get_by_id_for_update(db, source_pick_inbox_id)
+            if isinstance(source_pick_inbox_id, int)
+            else None
+        )
         inbox_status = self._enum_text(getattr(inbox, "status", None))
         outcome: str | None = None
         if inbox is None:
@@ -1435,26 +1443,32 @@ class SmtInboundHandoffService:
                 message="source pick inbox 不存在，无法确认内部事件处理结果",
             )
             outcome = "manual_hold"
-        elif inbox_status in {InboxStatus.NEW.value, InboxStatus.PROCESSING.value, InboxStatus.RETRY.value}:
+        elif inbox_status in {"RECEIVED", "PROCESSING"}:
             outcome = None
-        elif inbox_status == InboxStatus.FAILED.value:
-            self._release_item_for_source_pick_retry(item, next_attempt_at=getattr(inbox, "next_retry_at", None) or now)
+        elif inbox_status == "FAILED":
+            raw_next_retry_at = getattr(inbox, "next_retry_at", None)
+            retry_at: Any = None
+            if isinstance(raw_next_retry_at, (int, float)):
+                retry_at = timezone.to_utc(raw_next_retry_at / 1000)
+            else:
+                retry_at = None
+            self._release_item_for_source_pick_retry(item, next_attempt_at=retry_at or now)
             db.add(item)
             demand.failure_code = None
             demand.failure_message = None
             db.add(demand)
             _ = await self.recalculate_demand_status(db, demand, reason="source_pick_inbox_retryable_failed")
             outcome = "retry_scheduled"
-        elif inbox_status == InboxStatus.DEAD_LETTER.value:
+        elif inbox_status == "DEAD_LETTER":
             await self._manual_hold_source_pick_recovery(
                 db,
                 demand=demand,
                 item=item,
                 failure_code=SmtInboundHandoffReasonCode.SOURCE_PICK_INBOX_DEAD_LETTER.value,
-                message=getattr(inbox, "error_message", None),
+                message=getattr(inbox, "last_error_message", None),
             )
             outcome = "manual_hold"
-        elif inbox_status == InboxStatus.PROCESSED.value and item.source_pick_command_id is None:
+        elif inbox_status == "PROCESSED" and item.source_pick_command_id is None:
             await self._manual_hold_source_pick_recovery(
                 db,
                 demand=demand,
@@ -1683,31 +1697,41 @@ class SmtInboundHandoffService:
             raise TypeError("source pick request requires persisted demand, source item and session")
         event_id = self._source_pick_event_id(item)
         resolved_trace_id = self._text_or_none(trace_id) or self._text_or_none(demand.trace_id) or event_id
-        return await self.inbox_service.create_internal_event_inbox(
+        causation_id = f"handoff-source-item:{item_id}"
+        event_type = _SOURCE_PICK_REQUESTED_EVENT
+        data = {
+            "session_id": session_id,
+            "handoff_demand_id": demand_id,
+            "handoff_source_item_id": item_id,
+            "claim_attempt_no": item.claim_attempt_no,
+            "rack_release_id": demand.rack_release_id,
+            "single_layer_rack_code": demand.single_layer_rack_code,
+            "bin_code": item.bin_code,
+            "bin_cell_index": item.bin_cell_index,
+            "bin_cell_code": item.bin_cell_code,
+            "material_identity_key": item.material_identity_key,
+            "pkg_code": item.pkg_code,
+            "reel_thickness_mm": str(item.reel_thickness_mm) if item.reel_thickness_mm is not None else None,
+            "route_evidence": self._dict_or_empty(route_evidence),
+        }
+
+        # RuntimeInbox 是 INTERNAL_EVENT 唯一事实源，item.source_pick_inbox_id 指向该记录。
+        from src.app.runtime.orchestration.services.runtime_inbox import (
+            runtime_inbox_service,
+        )
+
+        runtime_inbox_result = await runtime_inbox_service.accept_internal_event(
             db,
-            event_type=_SOURCE_PICK_REQUESTED_EVENT,
-            canonical_event_type=_SOURCE_PICK_REQUESTED_EVENT,
-            data={
-                "handoff_demand_id": demand_id,
-                "handoff_source_item_id": item_id,
-                "claim_attempt_no": item.claim_attempt_no,
-                "rack_release_id": demand.rack_release_id,
-                "single_layer_rack_code": demand.single_layer_rack_code,
-                "bin_code": item.bin_code,
-                "bin_cell_index": item.bin_cell_index,
-                "bin_cell_code": item.bin_cell_code,
-                "material_identity_key": item.material_identity_key,
-                "pkg_code": item.pkg_code,
-                "reel_thickness_mm": str(item.reel_thickness_mm) if item.reel_thickness_mm is not None else None,
-                "route_evidence": self._dict_or_empty(route_evidence),
-            },
-            session_id=session_id,
-            workline_id=workline_id,
+            event_type=event_type,
+            payload_json={"event_type": event_type, "data": data},
             trace_id=resolved_trace_id,
             event_id=event_id,
-            causation_id=f"handoff-source-item:{item_id}",
+            causation_id=causation_id,
+            workline_id=workline_id,
+            execution_session_id=None,
             auto_commit=False,
         )
+        return runtime_inbox_result.record
 
     @staticmethod
     def _source_pick_event_id(item: SmtInboundHandoffSourceItem) -> str:
@@ -1967,7 +1991,7 @@ class SmtInboundHandoffService:
     ) -> dict[str, Any] | None:
         if inbox_id is None:
             return None
-        inbox = await self.repository.get_workline_inbox_by_id(db, inbox_id)
+        inbox = await self.repository.get_runtime_inbox_by_id(db, inbox_id)
         if inbox is None:
             return None
         return {
@@ -1975,10 +1999,12 @@ class SmtInboundHandoffService:
             "status": enum_value(inbox.status),
             "event_id": inbox.event_id,
             "attempt_count": inbox.attempt_count,
-            "max_attempts": inbox.max_attempts,
+            "max_retries": inbox.max_retries,
             "next_retry_at": inbox.next_retry_at,
             "processed_at": inbox.processed_at,
-            "error_message": inbox.error_message,
+            "failed_at": inbox.failed_at,
+            "last_error_code": inbox.last_error_code,
+            "last_error_message": inbox.last_error_message,
         }
 
     async def _source_pick_command_evidence(

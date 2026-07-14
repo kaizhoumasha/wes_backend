@@ -13,7 +13,12 @@ def test_observability_contract_declares_stable_runtime_signals() -> None:
 
     for signal in (
         "callback.normalize",
-        "runtime_inbox.claim",
+        "runtime_inbox.claim_batch",
+        "runtime_inbox.processing",
+        "runtime_inbox.lease_reclaim",
+        "runtime_inbox.fencing_reject",
+        "runtime_inbox.resource_wait",
+        "runtime_inbox.dead_letter",
         "runtime_intent.dispatch",
         "device_command.ack",
         "device_command.dispatch_policy",
@@ -35,6 +40,10 @@ def test_observability_contract_declares_stable_runtime_signals() -> None:
         "dispatch_allowed",
         "runtime_hold_required",
         "reason_code",
+        "claimed_count",
+        "duration_ms",
+        "reclaimed_count",
+        "target_state",
     ):
         assert attribute in text
     assert "RuntimeOpenTelemetryBridge" in text

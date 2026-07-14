@@ -8,13 +8,12 @@ workline_repository + safety_incident_repository + rack.repository 透传。
 from src.app.rack.repositories import RackTaskRepository, rack_task_repository
 
 from .safety_incident_repository import WorklineSafetyIncidentRepository, workline_safety_incident_repository
-from .workline_repository import WorkLineRepository, workline_repository
+from .workline_repository import WorkLineRepository
 
 __all__ = [
     "RackTaskRepository",
     "WorkLineRepository",
     "WorklineSafetyIncidentRepository",
     "rack_task_repository",
-    "workline_repository",
     "workline_safety_incident_repository",
 ]

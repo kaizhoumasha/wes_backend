@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -62,7 +63,6 @@ from src.app.runtime.orchestration.idempotency_key import IdempotencyKey  # noqa
 # 导入所有 workline 配置域模型 + runtime/orchestration 运行态模型(阶段 6 物理迁移后)
 from src.app.runtime.orchestration.models import (  # noqa: F401
     WorklineBinCellReservation,
-    WorklineInbox,
     WorklineRackPosition,
     WorklineSession,
     WorklineTimeline,
@@ -88,9 +88,9 @@ from src.database.schema_conf import get_all_schemas
 # access to the values within the .ini file in use.
 config = context.config
 
-# 从项目配置中设置数据库 URL
-# 这样就不需要在 alembic.ini 中硬编码数据库连接
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# 显式 override 仅供迁移工具/隔离测试使用，不修改共享 .env 或应用 settings。
+# 未提供时仍使用项目配置，避免在 alembic.ini 中硬编码数据库连接。
+config.set_main_option("sqlalchemy.url", os.environ.get("ALEMBIC_DATABASE_URL", settings.DATABASE_URL))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
@@ -231,16 +231,12 @@ def do_run_migrations(connection: Connection) -> None:
 
     在执行迁移前，确保所有自定义 schema 都已创建。
     """
-    # 在执行迁移前创建所有自定义 schema
-    # 注意：public schema 默认存在，不需要创建
-    for schema in get_all_schemas():
-        if schema != "public":
-            # 使用 exec_driver_sql 执行原生 SQL
-            connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {schema}")
-
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
+        # Revision C 含有 autocommit block；每个 revision 独立事务，
+        # 避免并发索引提交前序 revision 的半成品状态。
+        transaction_per_migration=True,
         # 支持 PostgreSQL 特性
         compare_type=True,
         compare_server_default=True,
@@ -264,6 +260,11 @@ def do_run_migrations(connection: Connection) -> None:
     )
 
     with context.begin_transaction():
+        # schema DDL 必须由 Alembic 事务持有；在 configure() 前执行会触发
+        # SQLAlchemy autobegin，使 Alembic 无法管理 autocommit block。
+        for schema in get_all_schemas():
+            if schema != "public":
+                connection.exec_driver_sql(f"CREATE SCHEMA IF NOT EXISTS {schema}")
         context.run_migrations()
 
 
@@ -279,7 +280,9 @@ async def run_async_migrations() -> None:
         poolclass=pool.NullPool,
     )
 
-    async with connectable.begin() as connection:
+    # 事务由 Alembic context.begin_transaction() 持有，Revision 可使用
+    # autocommit_block 执行 PostgreSQL CREATE INDEX CONCURRENTLY。
+    async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
 
     await connectable.dispose()

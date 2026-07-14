@@ -33,7 +33,7 @@ class WorklineDiagnosticBase(BaseMixin):
     causation_id: str | None = Field(default=None, max_length=200, description="因果事件 ID")
 
     session_id: int | None = Field(default=None, index=True, foreign_key="wes_biz.workline_sessions.id")
-    inbox_id: int | None = Field(default=None, index=True, foreign_key="wes_biz.workline_inbox.id")
+    inbox_id: int | None = Field(default=None, index=True, foreign_key="wes_runtime.runtime_inbox.id")
     outbox_id: int | None = Field(default=None, index=True, foreign_key="wes_biz.system_outbox.id")
     command_code: str | None = Field(default=None, max_length=200, index=True)
     device_code: str | None = Field(default=None, max_length=100, index=True)

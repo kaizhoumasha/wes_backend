@@ -11,7 +11,6 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.app.device.models.command import DeviceCommand
 from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import SMT_SORTING_INBOUND_PLUGIN_KEY
-from src.app.runtime.orchestration.models.inbox import WorklineInbox
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.smt_inbound_handoff import (
     SmtInboundHandoffDemand,
@@ -26,12 +25,15 @@ from src.database.base_repository import BaseRepository
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from src.app.contracts.runtime_inbox_query import RuntimeInboxEvidence, RuntimeInboxQueryPort
+
 
 class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
     """SMT 入库 handoff demand/source item 数据访问层。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, runtime_inbox_query: RuntimeInboxQueryPort) -> None:
         super().__init__(SmtInboundHandoffDemand)
+        self.runtime_inbox_query = runtime_inbox_query
 
     async def get_demand_by_release_id(
         self,
@@ -153,14 +155,14 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         result = await db.execute(statement)
         return int(result.scalar_one() or 0)
 
-    async def get_workline_inbox_by_id(
+    async def get_runtime_inbox_by_id(
         self,
         db: AsyncSession,
         inbox_id: int,
-    ) -> WorklineInbox | None:
-        """按 ID 读取 WorklineInbox evidence。"""
+    ) -> RuntimeInboxEvidence | None:
+        """按 ID 读取 source-pick RuntimeInbox evidence。"""
 
-        return await db.get(WorklineInbox, inbox_id)
+        return await self.runtime_inbox_query.get_evidence_by_id(db, inbox_id)
 
     async def get_device_command_by_id(
         self,
@@ -500,10 +502,4 @@ class SmtInboundHandoffRepository(BaseRepository[SmtInboundHandoffDemand]):
         return values
 
 
-smt_inbound_handoff_repository = SmtInboundHandoffRepository()
-
-
-__all__ = [
-    "SmtInboundHandoffRepository",
-    "smt_inbound_handoff_repository",
-]
+__all__ = ["SmtInboundHandoffRepository"]

@@ -8,11 +8,18 @@ mock 仅允许 `tests/support/runtime_inbox_contract.py` + RuntimeTimeline 替�
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 
 import pytest
+from sqlalchemy import select
 
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline
+from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
+from src.app.sys.models.audit_log import AuditLog
+from src.app.sys.services import AuditLogService
 from tests.support.runtime_inbox_contract import (
     LEGAL_TRANSITIONS,
     RuntimeInboxEntry,
@@ -88,6 +95,8 @@ class _AuditLog:
 class _ManualReplayService:
     """人工重放最小替身 — 死信条目不可就地重置, 必须新建 inbox 记录 + 审计。"""
 
+    REPLAY_MAX_RETRIES = 5
+
     def __init__(self, audit: _AuditLog | None = None) -> None:
         self.audit = audit or _AuditLog()
         self._replays: list[tuple[ManualReplayRequest, RuntimeInboxEntry]] = []
@@ -118,7 +127,7 @@ class _ManualReplayService:
             attempt_count=0,
             next_retry_at=None,
             lease_until=None,
-            max_retries=dead_entry.max_retries,
+            max_retries=self.REPLAY_MAX_RETRIES,
             payload_hash=req.payload_hash,
             source_event_id=req.source_event_id,
             metadata={
@@ -208,6 +217,69 @@ def test_manual_replay_writes_audit_record_with_causation_chain():
     assert audit_row.occurred_at == 2_000_000
 
 
+@pytest.mark.asyncio
+async def test_production_manual_replay_audit_binds_canonical_reason_and_persisted_causation(db_session) -> None:
+    """生产 service + AuditLogService 写已接受 reason 与最终因果字段，same-hash ACK 不重复。"""
+
+    source_payload = {"event_type": "SESSION_RESUME", "data": {}}
+    source_hash = hashlib.sha256(
+        json.dumps(source_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    source = RuntimeInbox(
+        kind="INTERNAL_EVENT",
+        provider_code="RUNTIME",
+        event_type="INTERNAL_EVENT",
+        source_event_id="contract-replay-source",
+        payload_hash=source_hash,
+        payload_json=source_payload,
+        payload_schema_version=1,
+        trace_id="contract-replay-trace",
+        event_id="contract-replay-event",
+        status="DEAD_LETTER",
+        claim_bucket_key="source:contract-replay-source",
+        received_at=1_700_000_000_000,
+        failed_at=1_700_000_000_001,
+    )
+    db_session.add(source)
+    await db_session.flush()
+    service = RuntimeInboxService(audit_service=AuditLogService())
+
+    created = await service.replay_from_dead_letter(
+        db_session,
+        source_inbox_id=source.id,
+        request_id="contract-success",
+        actor="contract-operator",
+        reason="  accepted canonical reason  ",
+    )
+    acknowledged = await service.replay_from_dead_letter(
+        db_session,
+        source_inbox_id=source.id,
+        request_id="contract-success",
+        actor="contract-operator",
+        reason="accepted canonical reason",
+    )
+
+    assert acknowledged.replay_record.id == created.replay_record.id
+    audits = (
+        (
+            await db_session.execute(
+                select(AuditLog).where(
+                    AuditLog.object_id == str(source.id),
+                    AuditLog.action == "manual_replay",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(audits) == 1
+    assert audits[0].args is not None
+    assert audits[0].args["reason"] == "accepted canonical reason"
+    assert audits[0].args["replay_trace_id"] == created.replay_record.trace_id
+    assert audits[0].args["causation_id"] == created.replay_record.causation_id
+    assert "original_payload" not in audits[0].args
+
+
 def test_manual_replay_rejects_non_dead_letter_source():
     """error path: 仅 DEAD_LETTER 状态可重放, PROCESSED/FAILED 拒绝。"""
     service = _ManualReplayService()
@@ -270,8 +342,8 @@ def test_manual_replay_requires_reason_for_audit():
         )
 
 
-def test_manual_replay_preserves_max_retries_from_dead_letter():
-    """happy path: 重放条目继承 max_retries, 不重置重试预算。"""
+def test_manual_replay_uses_independent_fixed_retry_budget():
+    """happy path: 重放条目使用独立固定预算，不继承来源历史预算。"""
     service = _ManualReplayService()
     dead = RuntimeInboxEntry(status="FAILED", attempt_count=6, max_retries=10)
     transition(dead, "DEAD_LETTER", now=1000.0)
@@ -288,7 +360,7 @@ def test_manual_replay_preserves_max_retries_from_dead_letter():
         next_inbox_id=9005,
         replay_trace_id="trace-001",
     )
-    assert replayed.max_retries == 10
+    assert replayed.max_retries == 5
 
 
 def test_manual_replay_propagates_failure_chain_to_dead_letter_again():
@@ -310,21 +382,15 @@ def test_manual_replay_propagates_failure_chain_to_dead_letter_again():
         next_inbox_id=9006,
         replay_trace_id="trace-001",
     )
-    assert replayed.max_retries == 2
+    assert replayed.max_retries == 5
     assert replayed.attempt_count == 0
 
-    transition(replayed, "PROCESSING", now=2001.0)
-    transition(replayed, "FAILED", now=2002.0)
-    assert replayed.attempt_count == 1
-
-    transition(replayed, "RECEIVED", now=2100.0)
-    transition(replayed, "PROCESSING", now=2101.0)
-    transition(replayed, "FAILED", now=2102.0)
-    assert replayed.attempt_count == 2
-
-    transition(replayed, "RECEIVED", now=2200.0)
-    transition(replayed, "PROCESSING", now=2201.0)
-    transition(replayed, "FAILED", now=2202.0)
+    for attempt in range(1, 7):
+        transition(replayed, "PROCESSING", now=2000.0 + attempt * 100)
+        transition(replayed, "FAILED", now=2001.0 + attempt * 100)
+        assert replayed.attempt_count == attempt
+        if attempt <= replayed.max_retries:
+            transition(replayed, "RECEIVED", now=2002.0 + attempt * 100)
 
     assert replayed.status == "DEAD_LETTER"
     assert is_terminal(replayed)

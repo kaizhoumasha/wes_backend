@@ -6,7 +6,7 @@ import json
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
+from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxAcceptResult,
     RuntimeInboxService,
     runtime_inbox_service,
@@ -14,6 +14,10 @@ from src.app.runtime.orchestration.consumers.runtime_inbox_service import (
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class CallbackPayloadValidationError(ValueError):
+    """Callback payload 缺少 RuntimeInbox 所需的稳定业务身份。"""
 
 
 def _resolve_first_str(payload: dict[str, Any], aliases: tuple[str, ...]) -> str | None:
@@ -46,6 +50,13 @@ def _resolve_payload_source_event_id(payload: dict[str, Any], *, fallback_prefix
     )
 
 
+def _require_result_source_event_id(payload: dict[str, Any]) -> str:
+    source_event_id = _resolve_first_str(payload, ("source_event_id",))
+    if source_event_id is None:
+        raise CallbackPayloadValidationError("command result source_event_id is required")
+    return source_event_id
+
+
 def _resolve_external_source_event_id(payload: dict[str, Any], request_id: str | None) -> str | None:
     _ = request_id
     callback_type = _resolve_first_str(payload, ("callback_type",)) or "UNKNOWN"
@@ -71,15 +82,26 @@ class CallbackRuntimeInboxWriter:
         request_id: str | None,
         canonical_result_type: str,
         correlation_id: str | None = None,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
+        processing_required: bool = True,
     ) -> RuntimeInboxAcceptResult:
         _ = request_id
         return await self._service.accept_received(
             db,
             provider_code="ECS",
             event_type=canonical_result_type,
-            source_event_id=_resolve_payload_source_event_id(payload, fallback_prefix="callback-result"),
+            source_event_id=_require_result_source_event_id(payload),
             payload_hash=_canonical_payload_hash(payload),
+            kind="COMMAND_RESULT",
+            payload_json=dict(payload),
+            payload_schema_version=1,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
             correlation_id=correlation_id,
+            processing_required=processing_required,
         )
 
     async def write_event_callback(
@@ -89,6 +111,11 @@ class CallbackRuntimeInboxWriter:
         payload: dict[str, Any],
         request_id: str | None,
         canonical_event_type: str,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
+        device_id: int | None = None,
+        processing_required: bool = True,
     ) -> RuntimeInboxAcceptResult:
         _ = request_id
         return await self._service.accept_received(
@@ -97,7 +124,15 @@ class CallbackRuntimeInboxWriter:
             event_type=canonical_event_type,
             source_event_id=_resolve_payload_source_event_id(payload, fallback_prefix="callback-event"),
             payload_hash=_canonical_payload_hash(payload),
+            kind="DEVICE_EVENT",
+            payload_json=dict(payload),
+            payload_schema_version=1,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
+            device_id=device_id,
             correlation_id=None,
+            processing_required=processing_required,
         )
 
     async def write_external_callback(
@@ -106,6 +141,9 @@ class CallbackRuntimeInboxWriter:
         *,
         payload: dict[str, Any],
         request_id: str | None,
+        trace_id: str | None = None,
+        event_id: str | None = None,
+        causation_id: str | None = None,
     ) -> RuntimeInboxAcceptResult:
         provider_code = _resolve_first_str(payload, ("source_system",))
         callback_type = _resolve_first_str(payload, ("callback_type",)) or "UNKNOWN"
@@ -116,6 +154,12 @@ class CallbackRuntimeInboxWriter:
             event_type=callback_type,
             source_event_id=_resolve_external_source_event_id(payload, request_id),
             payload_hash=_canonical_payload_hash(payload),
+            kind="EXTERNAL_HTTP",
+            payload_json=dict(payload),
+            payload_schema_version=1,
+            trace_id=trace_id,
+            event_id=event_id,
+            causation_id=causation_id,
             correlation_id=None,
         )
 
@@ -123,4 +167,4 @@ class CallbackRuntimeInboxWriter:
 callback_runtime_inbox_writer = CallbackRuntimeInboxWriter()
 
 
-__all__ = ["CallbackRuntimeInboxWriter", "callback_runtime_inbox_writer"]
+__all__ = ["CallbackPayloadValidationError", "CallbackRuntimeInboxWriter", "callback_runtime_inbox_writer"]

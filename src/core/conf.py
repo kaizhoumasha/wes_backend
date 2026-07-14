@@ -3,13 +3,17 @@ import json
 from functools import lru_cache
 from typing import Literal
 
-from dotenv import load_dotenv
-from pydantic import computed_field, field_validator, model_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.core.path_conf import BasePath
 
-_ = load_dotenv(BasePath / ".env", override=True)  # 添加 override=True 强制覆盖已存在的环境变量
+DATABASE_POOL_SIZE_BY_ROLE: dict[str, int] = {
+    "api": 5,
+    "celery": 1,
+    "integration": 1,
+    "cli": 1,
+}
 
 
 class Settings(BaseSettings):
@@ -83,6 +87,7 @@ class Settings(BaseSettings):
     APP_DEBUG: bool = False
     APP_HOST: str = "0.0.0.0"  # nosec B104 - service must bind all interfaces in container/server deployments
     APP_PORT: int = 8000
+    runtime_inbox_payload_max_bytes: int = Field(default=1024 * 1024, ge=1)
 
     # ==================== 日志配置 ====================
 
@@ -142,6 +147,14 @@ class Settings(BaseSettings):
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = "app_db"
+    DATABASE_RUNTIME_ROLE: Literal["api", "celery", "integration", "cli"]
+    DATABASE_POOL_SIZE: int = Field(ge=1)
+    DATABASE_MAX_OVERFLOW: int = Field(default=0, ge=0)
+    DATABASE_POOL_TIMEOUT: float = Field(default=30.0, gt=0)
+    # application_name 的环境前缀；hostname/PID/run-id 在 Engine 初始化时生成，
+    # 确保 fork 后身份更新。
+    DATABASE_APPLICATION_NAME: str = ""
+    DATABASE_APPLICATION_RUN_ID: str | None = None
 
     @computed_field
     @property
@@ -252,6 +265,18 @@ class Settings(BaseSettings):
     def validate_security_settings(self):
         """验证安全相关配置"""
 
+        if self.DATABASE_MAX_OVERFLOW != 0:
+            raise ValueError("DATABASE_MAX_OVERFLOW 必须为 0，禁止绕过连接容量预算")
+        expected_pool_size = DATABASE_POOL_SIZE_BY_ROLE[self.DATABASE_RUNTIME_ROLE]
+        if expected_pool_size != self.DATABASE_POOL_SIZE:
+            raise ValueError(
+                f"DATABASE_POOL_SIZE: {self.DATABASE_RUNTIME_ROLE} 单进程连接池必须为 {expected_pool_size}"
+            )
+        if self.DATABASE_RUNTIME_ROLE == "integration" and not (
+            self.DATABASE_APPLICATION_RUN_ID and self.DATABASE_APPLICATION_RUN_ID.strip()
+        ):
+            raise ValueError("DATABASE_APPLICATION_RUN_ID: integration 运行必须显式提供唯一且非空的 run-id")
+
         # ==================== 安全验证 ====================
 
         # 验证 JWT 密钥
@@ -343,7 +368,7 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """获取全局配置（单例模式）"""
-    return Settings()
+    return Settings()  # pyright: ignore[reportCallIssue] -- 必填配置由 BaseSettings 从环境变量注入。
 
 
 # 创建配置实例

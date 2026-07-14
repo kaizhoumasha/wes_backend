@@ -86,7 +86,7 @@ Prior learning applied:
   - 保持 HMAC、nonce、allow-list、schema admission 在前；通过后调用 runtime inbox writer。
 - Modify: `src/app/runtime/orchestration/consumers/runtime_inbox_consumer.py`
   - 承担 RuntimeInbox 单点消费入口；过渡期可委托旧 processor，但委托必须从 RuntimeInbox record 开始。
-- Modify: `src/app/runtime/orchestration/consumers/runtime_inbox_service.py`
+- Modify: `src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py`
   - 修正 `accept_received()` 内重复 `now_ms` 传参问题，并补齐 callback/fulfillment/device_event/reconciliation 的 operation_kind 映射覆盖。
 - Test: `tests/runtime/orchestration/test_runtime_inbox_phase3_service.py`
   - 补 result/event/external 的幂等、payload_hash 冲突、source_event_id 缺失路径。
@@ -346,7 +346,7 @@ Expected:
 **Files:**
 
 - Create: `src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py`
-- Modify: `src/app/runtime/orchestration/consumers/runtime_inbox_service.py`
+- Modify: `src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py`
 - Modify: `src/app/callback/services/callback_orchestration_service.py`
 - Modify: `src/app/callback/services/callback_ingress_service.py`
 - Modify: `src/app/runtime/orchestration/consumers/runtime_inbox_consumer.py`
@@ -468,7 +468,7 @@ Expected:
 Run:
 
 ```bash
-rtk git add src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py src/app/runtime/orchestration/consumers/runtime_inbox_service.py src/app/callback/services/callback_orchestration_service.py src/app/callback/services/callback_ingress_service.py src/app/runtime/orchestration/consumers/runtime_inbox_consumer.py tests/callback/test_callback_runtime_inbox_cutover.py tests/runtime/orchestration/test_runtime_inbox_phase3_service.py tests/api/test_callback_external_api.py tests/api/test_callback_event_api.py tests/api/test_callback_result_api.py docs/contracts/observability-contract.md tests/contracts/test_phase3_ops_contract_docs.py tests/runtime/orchestration/test_workline_inbox_observability.py
+rtk git add src/app/runtime/orchestration/consumers/callback_runtime_inbox_writer.py src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py src/app/callback/services/callback_orchestration_service.py src/app/callback/services/callback_ingress_service.py src/app/runtime/orchestration/consumers/runtime_inbox_consumer.py tests/callback/test_callback_runtime_inbox_cutover.py tests/runtime/orchestration/test_runtime_inbox_phase3_service.py tests/api/test_callback_external_api.py tests/api/test_callback_event_api.py tests/api/test_callback_result_api.py docs/contracts/observability-contract.md tests/contracts/test_phase3_ops_contract_docs.py tests/runtime/orchestration/test_workline_inbox_observability.py
 rtk git commit -m "refactor(callback): route inbound callbacks through RuntimeInbox"
 ```
 

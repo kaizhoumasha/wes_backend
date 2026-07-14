@@ -5,7 +5,16 @@ from typing import Any
 
 import pytest
 
+from src.app.device.models.command import DeviceCommand
+from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import runtime_inbox_repository
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.sys.models import SystemOutboxStatus
+from src.app.sys.models.outbox import (
+    SystemOutbox,
+    SystemOutboxDispatchType,
+    SystemOutboxTargetType,
+)
 from src.app.sys.repositories.outbox_repository import SystemOutboxRepository
 
 
@@ -59,3 +68,55 @@ async def test_cancel_active_by_session_treats_blocked_resource_as_active() -> N
     assert blocked_outbox.status == SystemOutboxStatus.CANCELLED
     assert blocked_outbox.last_error == "MANUAL_CANCEL_REQUESTED"
     assert blocked_outbox.finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_sandbox_completed_messages_join_runtime_inbox_by_explicit_workline_session(
+    db_session: Any,
+) -> None:
+    """沙箱历史用独立 WorklineSession FK 关联 RuntimeInbox，不读取旧 inbox。"""
+
+    session = WorklineSession(
+        session_code="sandbox-runtime-inbox-1",
+        workline_id=901,
+        plugin_key="test",
+        run_mode=RunMode.SIMULATION,
+        status=SessionStatus.COMPLETED,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    outbox = SystemOutbox(
+        session_id=session.id,
+        workline_id=901,
+        dispatch_type=SystemOutboxDispatchType.EXTERNAL_HTTP,
+        dispatch_key="sandbox-runtime-inbox-dispatch-1",
+        target_type=SystemOutboxTargetType.HTTP_ENDPOINT,
+        target_code="TEST",
+        payload_json={},
+        status=SystemOutboxStatus.SENT,
+    )
+    inbox = RuntimeInbox(
+        workline_session_id=session.id,
+        provider_code="TEST",
+        event_type="DEVICE_EVENT",
+        source_event_id="sandbox-runtime-inbox-event-1",
+        kind="DEVICE_EVENT",
+        payload_json={"event_type": "SCAN_COMPLETED", "data": {"session_id": session.id}},
+        payload_hash="sha256:sandbox-runtime-inbox-event-1",
+        payload_schema_version=1,
+        status="PROCESSED",
+        claim_bucket_key=f"workline-session:{session.id}",
+        received_at=1,
+    )
+    db_session.add_all([outbox, inbox])
+    await db_session.commit()
+
+    rows = await SystemOutboxRepository().get_sandbox_completed_messages(
+        db_session,
+        inbox_query=runtime_inbox_repository,
+        limit=10,
+    )
+
+    assert rows[0]["session"]["id"] == session.id
+    assert rows[0]["session"]["event_type"] == "SCAN_COMPLETED"
+    assert rows[0]["session"]["event_payload"]["data"]["session_id"] == session.id

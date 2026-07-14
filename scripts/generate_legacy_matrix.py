@@ -47,9 +47,6 @@ MIGRATED_SERVICE_IMPLS = {
     "src/app/workline/services/device_command_gateway.py": (
         "src/app/runtime/orchestration/services/device_command_gateway.py"
     ),
-    "src/app/workline/services/inbox_batch_processor.py": (
-        "src/app/runtime/orchestration/services/inbox/inbox_batch_processor.py"
-    ),
     "src/app/workline/services/inbox_service.py": "src/app/runtime/orchestration/services/inbox/inbox_service.py",
     "src/app/workline/services/ng_return_item_service.py": (
         "src/app/runtime/capabilities/material_flow/ng_return_item_service.py"

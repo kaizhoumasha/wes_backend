@@ -424,6 +424,50 @@ async def test_safety_estop_uses_compat_projection_service():
 
 
 @pytest.mark.asyncio
+async def test_repeated_safety_estop_reuses_active_incident():
+    """重复 ESTOP 必须复用 active incident，不重复创建安全事件。"""
+    from src.app.workline.services.safety_service import WorkLineSafetyService
+
+    class _Db:
+        def __init__(self):
+            self.add_count = 0
+
+        def add(self, item):
+            _ = item
+            self.add_count += 1
+
+        async def flush(self):
+            pass
+
+        async def commit(self):
+            pass
+
+    incident = SimpleNamespace(id=9901, drain_status="PENDING", drain_error_json={}, evidence_json={})
+    incident_repository = SimpleNamespace(get_active_for_workline=AsyncMock(return_value=incident))
+    service = WorkLineSafetyService(
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=45))),
+        incident_repository=incident_repository,
+        session_repository=SimpleNamespace(fail_open_by_workline=AsyncMock(return_value=0)),
+        system_outbox_repository=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
+        command_repository=SimpleNamespace(cancel_active_by_workline=AsyncMock(return_value=0)),
+        device_service=SimpleNamespace(mark_workline_safety_error=AsyncMock(return_value=0)),
+        runtime_hold_creation_service=SimpleNamespace(
+            create_for_safety_estop=AsyncMock(return_value=SimpleNamespace())
+        ),
+        workline_status_projection_service=_RuntimeStatusProjectionSpy(),
+    )
+    db = _Db()
+
+    first = await service.handle_estop(db, workline_id=45)
+    second = await service.handle_estop(db, workline_id=45)
+
+    assert first is incident
+    assert second is incident
+    assert db.add_count == 0
+    assert incident_repository.get_active_for_workline.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_safety_assert_accepting_work_delegates_runtime_projection_service():
     from src.app.workline.services.safety_service import WorkLineSafetyService
 

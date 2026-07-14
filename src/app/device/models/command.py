@@ -225,6 +225,7 @@ class CommandCallbackResult(BaseMixin):
     device_code: str = Field(description="设备编码（device_code，设备标识）")
     result: CommandResult = Field(description="执行结果")
     finish_time: int = Field(description="完成时间（Unix 时间戳，毫秒）")
+    source_event_id: str = Field(max_length=160, description="供应商生成的唯一结果事件 ID")
     data: dict[str, Any] | None = Field(default=None, description="业务回传数据")
     error_detail: dict[str, Any] | None = Field(
         default=None,

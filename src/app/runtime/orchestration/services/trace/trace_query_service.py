@@ -2,7 +2,7 @@
 
 只负责把已有事实表/投影表按统一 trace 键拼成可读视图：
 - callback_logs
-- workline_inbox
+- runtime_inbox
 - workline_sessions
 - device_commands
 - system_outbox
@@ -47,7 +47,6 @@ from src.app.runtime.orchestration.diagnostics import (
     get_diagnostic_code_definition,
 )
 from src.app.runtime.orchestration.models.dispatch_attempt import WorklineDispatchAttempt
-from src.app.runtime.orchestration.models.inbox import WorklineInbox
 from src.app.runtime.orchestration.models.runtime import (
     DiagnosisVerdictResponse,
     DiagnosticCardResponse,
@@ -55,17 +54,16 @@ from src.app.runtime.orchestration.models.runtime import (
 )
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
-from src.app.runtime.orchestration.repositories import inbox_repository
 from src.app.runtime.orchestration.repositories.diagnostic_repository import workline_diagnostic_repository
 from src.app.runtime.orchestration.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
 )
+from src.app.runtime.orchestration.repository_wiring import runtime_inbox_query, workline_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
 from src.app.sys.models import SystemOutbox
-from src.app.workline.repositories.workline_repository import WorkLineRepository, workline_repository
 from src.app.workline.trace_context import TraceContext
 
 # 导入公共工具函数
@@ -78,9 +76,11 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from src.app.contracts.runtime_inbox_query import RuntimeInboxProjection, RuntimeInboxQueryPort
     from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
     from src.app.runtime.orchestration.models.session import WorklineSession
     from src.app.runtime.orchestration.repositories.diagnostic_repository import WorklineDiagnosticRepository
+    from src.app.workline.repositories.workline_repository import WorkLineRepository
     from src.app.workline.services.diagnosis_verdict_builder_service import DiagnosisVerdictBuilder
 
 _SESSION_FAILURE_CODE_MAP: dict[str, ErrorCode] = {
@@ -109,7 +109,7 @@ class TraceQueryResult:
 
     trace: TraceContext
     callback_logs: list[Any] = field(default_factory=list)
-    inboxes: list[WorklineInbox] = field(default_factory=list)
+    inboxes: list[RuntimeInboxProjection] = field(default_factory=list)
     session: WorklineSession | None = None
     sessions: list[WorklineSession] = field(default_factory=list)
     commands: list[DeviceCommand] = field(default_factory=list)
@@ -182,18 +182,18 @@ class TraceQueryService(BaseService[Any, Any]):
         callback_log_repo: CallbackLogRepository | None = None,
         session_repo: WorklineSessionRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
-        inbox_repo: Any | None = None,
+        inbox_repo: RuntimeInboxQueryPort = runtime_inbox_query,
         diagnostic_repo: WorklineDiagnosticRepository | None = None,
         workline_repo: WorkLineRepository | None = None,
         verdict_builder: DiagnosisVerdictBuilder | None = None,
     ) -> None:
         from src.app.workline.services.diagnosis_verdict_builder_service import diagnosis_verdict_builder
 
-        super().__init__(inbox_repository, enable_cache=False)
+        super().__init__(inbox_repo, enable_cache=False)
         self.callback_log_repo = callback_log_repo or callback_log_repository
         self.session_repo = session_repo or workline_session_repository
         self.command_repo = command_repo or device_command_repository
-        self.inbox_repo = inbox_repo or inbox_repository
+        self.inbox_repo = inbox_repo
         self.diagnostic_repo = diagnostic_repo or workline_diagnostic_repository
         self.workline_repo = workline_repo or workline_repository
         self.verdict_builder = verdict_builder or diagnosis_verdict_builder
@@ -265,7 +265,7 @@ class TraceQueryService(BaseService[Any, Any]):
         commands: list[DeviceCommand] = []
         outboxes: list[SystemOutbox] = []
         dispatch_attempts: list[WorklineDispatchAttempt] = []
-        inboxes: list[WorklineInbox] = []
+        inboxes: list[RuntimeInboxProjection] = []
         timelines: list[WorklineTimeline] = []
         diagnostics: list[DiagnosticContext] = []
 
@@ -406,7 +406,7 @@ class TraceQueryService(BaseService[Any, Any]):
         sessions: list[WorklineSession] = []
         commands: list[DeviceCommand] = []
         outboxes: list[SystemOutbox] = []
-        inboxes: list[WorklineInbox] = []
+        inboxes: list[RuntimeInboxProjection] = []
         timelines: list[WorklineTimeline] = []
         diagnostics: list[DiagnosticContext] = []
 
@@ -628,21 +628,16 @@ class TraceQueryService(BaseService[Any, Any]):
         result = await db.execute(select(RuntimeHold).where(or_(*predicates)).order_by(columns.created_at.asc()))
         return list(result.scalars().all())
 
-    async def _load_inboxes_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[WorklineInbox]:
-        columns = cast("Any", WorklineInbox).__table__.c
-        result = await db.execute(
-            select(WorklineInbox).where(columns.trace_id == trace_id).order_by(columns.received_at.asc())
-        )
-        return list(result.scalars().all())
+    async def _load_inboxes_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[RuntimeInboxProjection]:
+        return await self.inbox_repo.list_by_trace_id(db, trace_id)
 
     async def _load_inboxes_for_session(
-        self, db: AsyncSession, session: WorklineSession, existing: list[WorklineInbox]
-    ) -> list[WorklineInbox]:
-        columns = cast("Any", WorklineInbox).__table__.c
-        result = await db.execute(
-            select(WorklineInbox).where(columns.session_id == session.id).order_by(columns.received_at.asc())
-        )
-        return _merge_unique_by_id(existing, list(result.scalars().all()))
+        self, db: AsyncSession, session: WorklineSession, existing: list[RuntimeInboxProjection]
+    ) -> list[RuntimeInboxProjection]:
+        if not isinstance(session.id, int):
+            return existing
+        rows = await self.inbox_repo.list_by_workline_session_ref(db, session.id)
+        return _merge_unique_by_id(existing, rows)
 
     async def _load_commands_for_session(
         self,
@@ -800,7 +795,9 @@ class TraceQueryService(BaseService[Any, Any]):
             )
         ]
 
-    def _diagnostic_for_inboxes(self, trace: TraceContext, inboxes: list[WorklineInbox]) -> list[DiagnosticContext]:
+    def _diagnostic_for_inboxes(
+        self, trace: TraceContext, inboxes: list[RuntimeInboxProjection]
+    ) -> list[DiagnosticContext]:
         return [
             build_diagnostic_context(
                 trace=trace.with_inbox(inbox),
@@ -810,6 +807,8 @@ class TraceQueryService(BaseService[Any, Any]):
                     "kind": getattr(inbox, "kind", None),
                     "status": getattr(inbox, "status", None),
                     "attempt_count": getattr(inbox, "attempt_count", None),
+                    "last_error_code": getattr(inbox, "last_error_code", None),
+                    "last_error_message": getattr(inbox, "last_error_message", None),
                 },
             )
             for inbox in inboxes
@@ -910,21 +909,26 @@ class TraceQueryService(BaseService[Any, Any]):
             context = build_diagnostic_context(
                 trace=trace.with_inbox(dead_letter_inbox),
                 inbox=dead_letter_inbox,
-                extra={"source": "inbox", "error_message": getattr(dead_letter_inbox, "error_message", None)},
+                extra={
+                    "source": "inbox",
+                    "last_error_code": getattr(dead_letter_inbox, "last_error_code", None),
+                    "last_error_message": getattr(dead_letter_inbox, "last_error_message", None),
+                },
             )
             return self._blocking_response(
                 trace=trace,
                 trace_id=trace_id,
                 blocking_point="inbox",
                 error_code=ErrorCode.INBOX_RETRY_EXHAUSTED,
-                message=getattr(dead_letter_inbox, "error_message", None) or "Inbox 重试耗尽",
+                message=getattr(dead_letter_inbox, "last_error_message", None) or "Inbox 重试耗尽",
                 context=context,
                 verdict=verdict,
                 evidence={
                     "inbox": {
                         "id": getattr(dead_letter_inbox, "id", None),
                         "status": optional_enum_str(getattr(dead_letter_inbox, "status", None)),
-                        "error_message": getattr(dead_letter_inbox, "error_message", None),
+                        "last_error_code": getattr(dead_letter_inbox, "last_error_code", None),
+                        "last_error_message": getattr(dead_letter_inbox, "last_error_message", None),
                     }
                 },
             )
@@ -940,7 +944,7 @@ class TraceQueryService(BaseService[Any, Any]):
             error_code = self._diagnostic_error_code(matched_diagnostic) or ErrorCode.SESSION_RESOLVE_FAILED
             message = (
                 (matched_diagnostic.extra.get("message") if matched_diagnostic is not None else None)
-                or getattr(failed_inbox, "error_message", None)
+                or getattr(failed_inbox, "last_error_message", None)
                 or "Inbox 处理失败"
             )
             context = build_diagnostic_context(
@@ -948,7 +952,8 @@ class TraceQueryService(BaseService[Any, Any]):
                 inbox=failed_inbox,
                 extra={
                     "source": "inbox",
-                    "error_message": getattr(failed_inbox, "error_message", None),
+                    "last_error_code": getattr(failed_inbox, "last_error_code", None),
+                    "last_error_message": getattr(failed_inbox, "last_error_message", None),
                     "diagnostic": matched_diagnostic.extra if matched_diagnostic is not None else None,
                 },
             )
@@ -964,7 +969,8 @@ class TraceQueryService(BaseService[Any, Any]):
                     "inbox": {
                         "id": getattr(failed_inbox, "id", None),
                         "status": optional_enum_str(getattr(failed_inbox, "status", None)),
-                        "error_message": getattr(failed_inbox, "error_message", None),
+                        "last_error_code": getattr(failed_inbox, "last_error_code", None),
+                        "last_error_message": getattr(failed_inbox, "last_error_message", None),
                     },
                     "diagnostic": matched_diagnostic.extra if matched_diagnostic is not None else None,
                 },

@@ -29,6 +29,7 @@ RULE_CAPABILITY_FORBIDDEN_DEPENDENCY="CAPABILITY_FORBIDDEN_DEPENDENCY"
 RULE_CAPABILITY_IMPLEMENTATION_IMPORT="CAPABILITY_IMPLEMENTATION_IMPORT"
 RULE_INBOUND_NORMALIZER_OWNERSHIP="INBOUND_NORMALIZER_OWNERSHIP"
 RULE_LEGACY_RUNTIME_IMPORT="LEGACY_RUNTIME_IMPORT"
+RULE_WORKLINE_INBOX_RETIREMENT="WORKLINE_INBOX_RETIREMENT"
 
 usage() {
     cat <<'EOF'
@@ -37,7 +38,7 @@ Usage: scripts/architecture-guardrails.sh --mode warn|enforced|expiry-check [--a
   --mode       warn=warn-only, enforced=allowlist enforced, expiry-check=expired allowlist fails
   --allowlist  allowlist 文件路径 (默认 scripts/architecture-guardrails.allowlist)
 
-规则: WMS_INTEGRATION_BOUNDARY EXECUTION_CORRELATION_BOUNDARY AUTHORITY_METADATA_BOUNDARY DEVICE_COMMAND_BOUNDARY RUNTIME_INBOX_STATE_MACHINE CAPABILITY_FORBIDDEN_DEPENDENCY CAPABILITY_IMPLEMENTATION_IMPORT INBOUND_NORMALIZER_OWNERSHIP LEGACY_RUNTIME_IMPORT
+规则: WMS_INTEGRATION_BOUNDARY EXECUTION_CORRELATION_BOUNDARY AUTHORITY_METADATA_BOUNDARY DEVICE_COMMAND_BOUNDARY RUNTIME_INBOX_STATE_MACHINE CAPABILITY_FORBIDDEN_DEPENDENCY CAPABILITY_IMPLEMENTATION_IMPORT INBOUND_NORMALIZER_OWNERSHIP LEGACY_RUNTIME_IMPORT WORKLINE_INBOX_RETIREMENT
 EOF
 }
 
@@ -171,10 +172,15 @@ rule_wms_integration_boundary() {
 # --- EXECUTION_CORRELATION_BOUNDARY: 跨域 session FK (workline_session_id / material_session_id) ---
 rule_execution_correlation_boundary() {
     local pattern='workline_session_id|material_session_id'
+    local runtime_inbox_response_mapping='^[[:space:]]*"session_id"[[:space:]]*:[[:space:]]*inbox\.workline_session_id,[[:space:]]*$'
     while IFS=: read -r file line _content; do
         [[ -z "$file" ]] && continue
         # 允许 runtime/orchestration 内部
         [[ "$file" == src/app/runtime/orchestration/* ]] && continue
+        # Workline API 仅把 RuntimeInbox canonical FK 映射到既有响应字段名；禁止旧 session_id 双读。
+        if [[ "$file" == "src/app/workline/v1/operation.py" && "$_content" =~ $runtime_inbox_response_mapping ]]; then
+            continue
+        fi
         emit_violation "$RULE_EXECUTION_CORRELATION_BOUNDARY" "$file" "$line" \
             "跨域 session FK 未收敛为 ExecutionCorrelation.correlation_id" \
             "改为 correlation_id 引用, 详见 session-correlation-matrix.md"
@@ -241,6 +247,27 @@ rule_legacy_runtime_import() {
     done < <(grep -rnE "$pattern" src --include='*.py' 2>/dev/null || true)
 }
 
+# --- WORKLINE_INBOX_RETIREMENT: active Python/Shell/current Markdown 旧入口零引用 ---
+rule_workline_inbox_retirement() {
+    local scanner_output="" scanner_status=0
+    set +e
+    scanner_output="$(run_python scripts/workline_inbox_retirement_guardrail.py --format tsv)"
+    scanner_status=$?
+    set -e
+    if [[ $scanner_status -ne 0 && -z "$scanner_output" ]]; then
+        emit_violation "$RULE_WORKLINE_INBOX_RETIREMENT" "scripts/workline_inbox_retirement_guardrail.py" "1" \
+            "旧入口 scanner 执行失败，拒绝 fail open" \
+            "修复 scanner 后重新运行 architecture guardrail"
+        return
+    fi
+    while IFS=$'\t' read -r file line reason; do
+        [[ -z "$file" ]] && continue
+        emit_violation "$RULE_WORKLINE_INBOX_RETIREMENT" "$file" "$line" \
+            "$reason" \
+            "改用 RuntimeInbox 当前入口；历史证据只能加入精确文件/签名 allowlist"
+    done <<<"$scanner_output"
+}
+
 # --- CAPABILITY_IMPLEMENTATION_IMPORT: capability 不得 import wms_integration/device services/models ---
 rule_capability_implementation_import() {
     local pattern='from src\.app\.(wms_integration|device)\.(services|models)\..* import'
@@ -258,7 +285,7 @@ rule_inbound_normalizer_ownership() {
         [[ -z "$file" ]] && continue
         emit_violation "$RULE_INBOUND_NORMALIZER_OWNERSHIP" "$file" "$line" \
             "$reason" \
-            "inbound normalizer 仅 RuntimeInboxConsumer 允许; capability 走 query/effect port contract"
+            "inbound normalizer 仅允许专用 normalization wiring 持有; capability 走 query/effect port contract"
     done < <(run_python - <<'PY'
 import ast
 import re
@@ -277,9 +304,6 @@ FORBIDDEN_NAMES = frozenset(
         "DeviceEventPort",
         "InboundEventPort",
         "RuntimeInbox",
-        "RuntimeInboxConsumer",
-        "InboundNormalizerContext",
-        "create_inbound_normalizer_context",
     }
 )
 FORBIDDEN_IMPORT_MODULES = frozenset(
@@ -299,14 +323,30 @@ EXCLUDED_FILES = frozenset(
         "src/app/wms_integration/ports/event.py",
         "src/app/wms_integration/ports/__init__.py",
         "src/app/wms_integration/services/wms_event_normalizer.py",
-        "src/app/runtime/capability_port_registry.py",
         "src/app/runtime/inbound_normalizer_registry.py",
         "src/app/runtime/orchestration/__init__.py",
         "src/app/runtime/orchestration/runtime_inbox.py",
         "src/app/contracts/external_contract_profile.py",
+        # RuntimeInbox claim/write-back 是 runtime 域内表 repository,
+        # 不是 inbound normalizer interface. Plan Task 3 主计划 §3 锁定.
+        "src/app/runtime/orchestration/repositories/runtime_inbox_repository.py",
+        "src/app/runtime/orchestration/consumers/runtime_inbox_repository.py",
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py",
+        # Task 5 三阶段 Processor 拆分: validation / orchestrator-delegate /
+        # writeback / composition 全部驻留在 runtime_inbox/ 目录, 是
+        # RuntimeInbox 主链路收束的 processor 实现, 不是 inbound normalizer
+        # capability. 锁定 plan Task 5.
+        "src/app/runtime/orchestration/services/runtime_inbox/__init__.py",
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_validation_service.py",
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_processor_service.py",
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_writeback_service.py",
+        "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_orchestrator_bridge.py",
+        # OrchestratorService 是 RuntimeInbox 主链路收束的 orchestration 入口，
+        # process_inbox 显式接收 RuntimeInbox，不属于 inbound normalizer capability。
+        "src/app/runtime/orchestration/orchestrator_bridge.py",
     }
 )
-EXCLUDED_PREFIXES = ("src/app/runtime/orchestration/consumers/",)
+EXCLUDED_PREFIXES = ()
 
 NAME_PATTERN = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(sorted(FORBIDDEN_NAMES)) + r")(?![A-Za-z0-9_])")
 
@@ -471,6 +511,7 @@ rule_authority_metadata_boundary
 rule_device_command_boundary
 rule_capability_forbidden_dependency
 rule_legacy_runtime_import
+rule_workline_inbox_retirement
 rule_capability_implementation_import
 rule_inbound_normalizer_ownership
 

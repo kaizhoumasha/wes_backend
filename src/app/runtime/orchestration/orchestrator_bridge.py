@@ -37,7 +37,11 @@ from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound im
     ROLE_SORTING_SOURCE_ARM,
     SMT_SORTING_INBOUND_PLUGIN_KEY,
 )
-from src.app.runtime.normalization.contracts import NormalizedCommandResult, NormalizedDeviceEvent
+from src.app.runtime.normalization.contracts import (
+    NormalizedCommandResult,
+    NormalizedDeviceEvent,
+    NormalizedExternalCallback,
+)
 from src.app.runtime.normalization.normalizers import normalize_inbox_input
 from src.app.runtime.orchestration.diagnostics import ErrorCode, error_domain_for
 from src.app.runtime.orchestration.lock_bridge import LockAcquireError
@@ -56,8 +60,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from contextlib import AbstractAsyncContextManager
 
-    from src.app.runtime.orchestration.models.inbox import WorklineInbox
     from src.app.runtime.orchestration.models.session import WorklineSession
+    from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
     from src.app.workline.models import WorkLine
     from src.app.workline.runtime_services import WorklineRuntimeServices
 
@@ -77,11 +81,7 @@ _INBOX_KIND_TO_PLUGIN_TYPE = {
     "EXTERNAL_HTTP": "EXTERNAL_HTTP",
     "INTERNAL_EVENT": "DEVICE_EVENT",
     "TIMER_TIMEOUT": "TIMEOUT",
-    "MANUAL_HOLD": "MANUAL_OPERATION",
-    "MANUAL_RESUME": "MANUAL_OPERATION",
-    "MANUAL_CANCEL": "MANUAL_OPERATION",
 }
-_MANUAL_OPERATION_KINDS = {"MANUAL_HOLD", "MANUAL_RESUME", "MANUAL_CANCEL"}
 _MANUAL_OPERATION_TO_KIND = {
     "HOLD": "MANUAL_HOLD",
     "RESUME": "MANUAL_RESUME",
@@ -445,10 +445,7 @@ def _command_result_intents(result: NormalizedCommandResult) -> list[RuntimeInte
     return [_command_result_failure_intent(result)]
 
 
-def _manual_operation_kind(normalized_input: Any, *, inbox: Any) -> str | None:
-    kind = _inbox_kind_value(inbox)
-    if kind in _MANUAL_OPERATION_KINDS:
-        return kind
+def _manual_operation_kind(normalized_input: Any) -> str | None:
     if not isinstance(normalized_input, NormalizedDeviceEvent):
         return None
     if _ensure_non_empty_str(normalized_input.payload.get("message_type")) != "MANUAL_OPERATION":
@@ -523,13 +520,17 @@ def _standard_inbox_intents(
     workline: Any,
     trace_id: str,
 ) -> list[RuntimeIntent]:
-    manual_kind = _manual_operation_kind(normalized_input, inbox=inbox)
+    manual_kind = _manual_operation_kind(normalized_input)
     if manual_kind is not None:
         return _manual_operation_intents(normalized_input, inbox=inbox, manual_kind=manual_kind)
     if isinstance(normalized_input, NormalizedCommandResult):
         return _command_result_intents(normalized_input)
     if isinstance(normalized_input, NormalizedDeviceEvent):
         return _device_event_intents(normalized_input, inbox=inbox, workline=workline, trace_id=trace_id)
+    if isinstance(normalized_input, NormalizedExternalCallback):
+        # 无 runtime_capability 的 external callback 属于 lifecycle-only evidence。
+        # lifecycle 已在 ingress 同事务完成，processor 只通过空 intents 触发 fenced PROCESSED 写回。
+        return []
     raise ValueError(f"target-state runtime inbox handler is not registered for {type(normalized_input).__name__}")
 
 
@@ -627,7 +628,7 @@ class OrchestratorService:
         self,
         session: WorklineSession | None,
         workline: WorkLine | None,
-        inbox: WorklineInbox | None,
+        inbox: RuntimeInbox | None,
         devices_by_role: dict[str, list[Any]],
         services: WorklineRuntimeServices,
         trace_id: str,
@@ -644,7 +645,7 @@ class OrchestratorService:
         Args:
             session: WorklineSession 实体
             workline: WorkLine 实体
-            inbox: WorklineInbox 实体
+            inbox: RuntimeInbox 实体
             devices_by_role: 按角色分组的设备映射
             services: 运行时领域服务容器
             trace_id: Trace ID
@@ -710,7 +711,7 @@ class OrchestratorService:
         Args:
             session: WorklineSession 实体
             workline: WorkLine 实体
-            inbox: WorklineInbox 实体
+            inbox: RuntimeInbox 实体
             devices_by_role: 按角色分组的设备映射
             services: 运行时领域服务容器
             trace_id: Trace ID
@@ -769,7 +770,7 @@ class OrchestratorService:
         Args:
             session: WorklineSession 实体
             workline: WorkLine 实体
-            inbox: WorklineInbox 实体
+            inbox: RuntimeInbox 实体
             devices_by_role: 按角色分组的设备映射
             services: 运行时领域服务容器
             trace_id: Trace ID

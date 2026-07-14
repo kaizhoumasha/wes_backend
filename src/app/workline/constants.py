@@ -3,7 +3,7 @@
 import os
 
 # 外部 HTTP 回调进入 Inbox 时使用的消息类型常量。
-# 用途：避免 callback / runtime 层散落字符串，保持和 InboxKind.EXTERNAL_HTTP 的业务语义一致。
+# 用途：避免 callback / runtime 层散落字符串，保持 EXTERNAL_HTTP 业务语义一致。
 EXTERNAL_HTTP_INBOX_KIND = "EXTERNAL_HTTP"
 
 # RuntimeIntent 中用于表示“需要发起外部 HTTP 请求”的决策类型。

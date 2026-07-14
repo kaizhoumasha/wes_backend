@@ -276,10 +276,35 @@ def default_runtime_observability_signals() -> dict[str, RuntimeObservabilitySig
             "span+metric+log",
             common | {"provider_code", "source_event_id"},
         ),
-        "runtime_inbox.claim": RuntimeObservabilitySignal(
-            "runtime_inbox.claim",
+        "runtime_inbox.claim_batch": RuntimeObservabilitySignal(
+            "runtime_inbox.claim_batch",
+            "metric",
+            frozenset({"claimed_count", "duration_ms"}),
+        ),
+        "runtime_inbox.processing": RuntimeObservabilitySignal(
+            "runtime_inbox.processing",
             "span+metric",
-            common | {"operation_kind", "inbox_id"},
+            frozenset({"inbox_id", "duration_ms", "outcome"}),
+        ),
+        "runtime_inbox.lease_reclaim": RuntimeObservabilitySignal(
+            "runtime_inbox.lease_reclaim",
+            "metric",
+            frozenset({"reclaimed_count"}),
+        ),
+        "runtime_inbox.fencing_reject": RuntimeObservabilitySignal(
+            "runtime_inbox.fencing_reject",
+            "metric+log",
+            frozenset({"inbox_id", "target_state"}),
+        ),
+        "runtime_inbox.resource_wait": RuntimeObservabilitySignal(
+            "runtime_inbox.resource_wait",
+            "metric",
+            frozenset({"inbox_id"}),
+        ),
+        "runtime_inbox.dead_letter": RuntimeObservabilitySignal(
+            "runtime_inbox.dead_letter",
+            "metric+log",
+            frozenset({"inbox_id"}),
         ),
         "runtime_intent.dispatch": RuntimeObservabilitySignal(
             "runtime_intent.dispatch",

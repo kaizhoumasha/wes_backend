@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING, Any
 from src.app.device.models import Device, DeviceStatus, parse_device_capabilities
 from src.app.device.repositories import DeviceCommandRepository, DeviceRepository, device_repository
 from src.app.device.services.runtime_state_policy import DeviceRuntimeStatePolicy
+from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.sys.services.event_stream_service import (
     DEVICE_STATUS_CHANGED_EVENT,
     defer_sse_event,
     publish_deferred_sse_events,
 )
-from src.app.workline.repositories import WorkLineRepository, workline_repository
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.exceptions import BusinessException
@@ -19,6 +19,8 @@ from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.app.workline.repositories import WorkLineRepository
 
 
 class DeviceService(BaseService[Device, DeviceRepository]):

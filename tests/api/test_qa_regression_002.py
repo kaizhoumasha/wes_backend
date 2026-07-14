@@ -2,13 +2,24 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from fastapi import Response
 
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxAuditPersistenceFailed,
+    RuntimeInboxConflict,
+    RuntimeInboxNotFound,
+    RuntimeInboxReplayNotAllowed,
+)
 from src.app.workline.v1 import operation as operation_api
 
 
 class _OperationServiceStub:
+    replay_kwargs: dict[str, Any] | None = None
+
     async def replay_inbox(self, *_args: Any, **_kwargs: Any) -> object:
-        raise ValueError("Inbox 不存在: 999999999")
+        self.replay_kwargs = _kwargs
+        raise RuntimeInboxNotFound(inbox_id=999999999)
 
     async def create_manual_operation(self, *_args: Any, **_kwargs: Any) -> object:
         raise ValueError("会话不存在: 999999999")
@@ -25,12 +36,142 @@ async def test_replay_missing_inbox_returns_not_found_response(monkeypatch: pyte
 
     response = await operation_api.replay_inbox(
         inbox_id=999999999,
-        payload=operation_api.ReplayInboxRequest(reason="QA invalid id", operator_id="qa"),
+        payload=operation_api.ReplayInboxRequest(request_id="qa-replay-1", reason="QA invalid id"),
+        response=Response(),
         db=object(),  # type: ignore[arg-type]
+        current_user_id=42,
     )
 
     assert response["code"] == "3000"
-    assert response["message"] == "Inbox 不存在: 999999999"
+    assert response["message"] == "RuntimeInbox 不存在: 999999999"
+
+
+def test_replay_request_requires_stable_request_id_and_rejects_operator_id() -> None:
+    with pytest.raises(ValueError):
+        operation_api.ReplayInboxRequest(reason="missing request id")
+
+    payload = operation_api.ReplayInboxRequest(request_id="  replay-001  ", reason=" replay reason ")
+    assert payload.request_id == "replay-001"
+    assert not hasattr(payload, "operator_id")
+
+    with pytest.raises(ValueError):
+        operation_api.ReplayInboxRequest(request_id="replay-002", reason="reason", operator_id="forged")
+
+    with pytest.raises(ValueError):
+        operation_api.ReplayInboxRequest(request_id="x" * 101, reason="too long")
+
+    max_length = operation_api.ReplayInboxRequest(request_id=f"  {'x' * 100}  ", reason="max")
+    assert max_length.request_id == "x" * 100
+
+
+@pytest.mark.asyncio
+async def test_replay_uses_authenticated_actor(monkeypatch: pytest.MonkeyPatch) -> None:
+    replay = RuntimeInbox(
+        kind="REPLAY_REQUEST",
+        provider_code="RUNTIME",
+        event_type="REPLAY_REQUEST",
+        source_event_id="replay:4:req-1",
+        payload_hash="replay-hash",
+        payload_json={},
+        payload_schema_version=1,
+        trace_id="trace-1",
+        workline_session_id=3,
+        workline_id=2,
+        status="RECEIVED",
+        claim_bucket_key="session:3",
+        received_at=1_700_000_000_000,
+    )
+    replay.id = 5
+
+    class _CapturingService:
+        kwargs: dict[str, Any] | None = None
+
+        async def replay_inbox(self, *_args: Any, **kwargs: Any) -> object:
+            self.kwargs = kwargs
+            return replay
+
+    service = _CapturingService()
+    monkeypatch.setattr(operation_api, "workline_operation_service", service)
+    monkeypatch.setattr(operation_api, "_enqueue_runtime_inbox_processing", lambda: None)
+
+    response = await operation_api.replay_inbox(
+        inbox_id=4,
+        payload=operation_api.ReplayInboxRequest(request_id="req-1", reason="manual replay"),
+        response=Response(),
+        db=object(),  # type: ignore[arg-type]
+        current_user_id=99,
+    )
+
+    assert response["code"] == "1000"
+    assert response["data"]["session_id"] == 3
+    assert service.kwargs == {
+        "inbox_id": 4,
+        "request_id": "req-1",
+        "actor": "99",
+        "reason": "manual replay",
+    }
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code", "expected_http_status"),
+    [
+        (RuntimeInboxNotFound(inbox_id=1), "3000", 404),
+        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_NOT_DEAD_LETTER"), "4001", 400),
+        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_NOT_FOUND"), "3000", 404),
+        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_INACTIVE"), "4001", 400),
+        (RuntimeInboxReplayNotAllowed(reason_code="SOURCE_RECONCILIATION_PENDING"), "4001", 400),
+        (
+            RuntimeInboxConflict(
+                provider_code="RUNTIME",
+                event_type="REPLAY_REQUEST",
+                source_event_id="replay:1:req",
+                existing_payload_hash="old",
+                incoming_payload_hash="new",
+            ),
+            "3012",
+            409,
+        ),
+        (
+            RuntimeInboxAuditPersistenceFailed(
+                audit_event_type="RUNTIME_INBOX_MANUAL_REPLAY_CONFLICT",
+                original_error=RuntimeError("audit storage unavailable"),
+            ),
+            "RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED",
+            503,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_replay_maps_typed_domain_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_code: str,
+    expected_http_status: int,
+) -> None:
+    class _FailingService:
+        async def replay_inbox(self, *_args: Any, **_kwargs: Any) -> object:
+            raise error
+
+    monkeypatch.setattr(operation_api, "workline_operation_service", _FailingService())
+    http_response = Response()
+    response = await operation_api.replay_inbox(
+        inbox_id=1,
+        payload=operation_api.ReplayInboxRequest(request_id="req", reason="reason"),
+        db=object(),  # type: ignore[arg-type]
+        current_user_id=7,
+        response=http_response,
+    )
+
+    assert response["code"] == expected_code
+    assert http_response.status_code == expected_http_status
+
+
+def test_replay_openapi_declares_failure_statuses() -> None:
+    from main import app
+
+    responses = app.openapi()["paths"]["/api/v1/workline/operations/replay/inboxes/{inbox_id}"]["post"]["responses"]
+
+    assert {"200", "400", "404", "409", "503"} <= responses.keys()
 
 
 @pytest.mark.asyncio

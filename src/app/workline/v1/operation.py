@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from src.app.callback.models.ingress_response import (
     CallbackEventAcceptedResponse,
@@ -25,6 +25,12 @@ from src.app.runtime.orchestration.models.operation import (
     SandboxWorklineStartRequest,
 )
 from src.app.runtime.orchestration.services.intent import operation_service
+from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxAuditPersistenceFailed,
+    RuntimeInboxConflict,
+    RuntimeInboxNotFound,
+    RuntimeInboxReplayNotAllowed,
+)
 from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 from src.app.workline.models.safety import (  # noqa: TC001 - FastAPI needs runtime annotation
     ClearWorkLineEstopRequest,
@@ -34,7 +40,7 @@ from src.app.workline.services import WorkLineSafetyBlocked, workline_safety_ser
 from src.app.workline.unit_of_work import WorklineUnitOfWork
 from src.core.rbac import RequirePermission
 from src.core.response import ResponseSchemaModel, response_builder
-from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode
+from src.core.response.response_code import BusinessErrorCode, ResourceErrorCode, ServerErrorCode
 from src.core.security import require_auth
 from src.core.task_queue_gateway import task_queue_gateway
 from src.database.dependencies import AsyncSessionDep  # noqa: TC001
@@ -49,9 +55,9 @@ def _inbox_response(inbox: Any) -> dict[str, Any]:
     return {
         "id": inbox.id,
         "kind": enum_value(inbox.kind),
-        "source_message_id": inbox.source_message_id,
+        "source_message_id": getattr(inbox, "source_message_id", None) or getattr(inbox, "source_event_id", None),
         "trace_id": inbox.trace_id,
-        "session_id": inbox.session_id,
+        "session_id": inbox.workline_session_id,
         "workline_id": inbox.workline_id,
         "status": enum_value(inbox.status),
     }
@@ -141,10 +147,10 @@ def _operation_error_response(exc: Exception) -> dict[str, Any]:
     return response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=message)
 
 
-def _enqueue_workline_processing() -> None:
-    """触发 Workline Inbox 异步处理。"""
+def _enqueue_runtime_inbox_processing() -> None:
+    """触发 Runtime Inbox 异步处理。"""
 
-    task_queue_gateway.enqueue_workline_inbox(limit=10)
+    task_queue_gateway.enqueue_runtime_inbox(limit=10)
 
 
 @router.get(
@@ -192,23 +198,65 @@ async def get_sandbox_completed(
     summary="[biz:workline:update] Replay 历史 Inbox",
     response_model=ResponseSchemaModel[dict[str, Any]],
     status_code=status.HTTP_200_OK,
+    responses={
+        400: {"model": ResponseSchemaModel[dict[str, Any]], "description": "源 Inbox 当前状态不允许 Replay"},
+        404: {"model": ResponseSchemaModel[dict[str, Any]], "description": "源 Inbox 或所属工作线不存在"},
+        409: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Replay 幂等身份冲突"},
+        503: {"model": ResponseSchemaModel[dict[str, Any]], "description": "Replay 审计证据暂时无法持久化"},
+    },
     dependencies=[Depends(RequirePermission("biz:workline:update"))],
 )
 async def replay_inbox(
     inbox_id: int,
     payload: ReplayInboxRequest,
+    response: Response,
     db: AsyncSessionDep,
+    current_user_id: Annotated[int, Depends(require_auth)],
 ) -> ResponseSchemaModel[dict[str, Any]]:
     try:
         replay = await workline_operation_service.replay_inbox(
             db,
             inbox_id=inbox_id,
+            request_id=payload.request_id,
+            actor=str(current_user_id),
             reason=payload.reason,
-            operator_id=payload.operator_id,
         )
-    except (ValueError, WorkLineSafetyBlocked) as exc:
-        return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    _enqueue_workline_processing()
+    except RuntimeInboxNotFound as exc:
+        response.status_code = ResourceErrorCode.NOT_FOUND.http_status
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=ResourceErrorCode.NOT_FOUND, message=str(exc)),
+        )
+    except RuntimeInboxReplayNotAllowed as exc:
+        error_code = (
+            ResourceErrorCode.NOT_FOUND
+            if exc.reason_code == "SOURCE_WORKLINE_NOT_FOUND"
+            else BusinessErrorCode.INVALID_STATE
+        )
+        response.status_code = error_code.http_status
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=error_code, message=str(exc)),
+        )
+    except RuntimeInboxAuditPersistenceFailed as exc:
+        response.status_code = ServerErrorCode.RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED.http_status
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=ServerErrorCode.RUNTIME_INBOX_AUDIT_PERSISTENCE_FAILED, message=str(exc)),
+        )
+    except RuntimeInboxConflict as exc:
+        response.status_code = ResourceErrorCode.CONFLICT.http_status
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=ResourceErrorCode.CONFLICT, message=str(exc)),
+        )
+    except WorkLineSafetyBlocked as exc:
+        response.status_code = BusinessErrorCode.INVALID_STATE.http_status
+        return cast(
+            "ResponseSchemaModel[dict[str, Any]]",
+            response_builder.fail(code=BusinessErrorCode.INVALID_STATE, message=str(exc)),
+        )
+    _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(replay)))
 
 
@@ -260,7 +308,7 @@ async def create_manual_operation(
         )
     except (ValueError, WorkLineSafetyBlocked) as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    _enqueue_workline_processing()
+    _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
 
@@ -389,7 +437,7 @@ async def submit_sandbox_event(
         )
     except ValueError as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    _enqueue_workline_processing()
+    _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
 
@@ -442,7 +490,7 @@ async def submit_sandbox_external_callback(
         )
     except ValueError as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
-    _enqueue_workline_processing()
+    _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
 
@@ -470,7 +518,7 @@ async def submit_sandbox_result(
     except ValueError as exc:
         return cast("ResponseSchemaModel[dict[str, Any]]", _operation_error_response(exc))
     await publish_deferred_sse_events(db)
-    _enqueue_workline_processing()
+    _enqueue_runtime_inbox_processing()
     return cast("ResponseSchemaModel[dict[str, Any]]", response_builder.success(data=_inbox_response(inbox)))
 
 

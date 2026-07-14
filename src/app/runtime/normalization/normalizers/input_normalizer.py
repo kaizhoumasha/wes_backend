@@ -110,14 +110,21 @@ def _resolve_device_event_business_key(
 
 
 def _is_internal_event(kind: Any, payload: dict[str, Any]) -> bool:
-    return kind == "INTERNAL_EVENT" or payload.get("message_type") == "INTERNAL_EVENT"
+    message_type = payload.get("message_type")
+    return message_type == "INTERNAL_EVENT" or (kind == "INTERNAL_EVENT" and message_type != "MANUAL_OPERATION")
+
+
+def _require_canonical_event_type(inbox: Any) -> str:
+    """读取 RuntimeInbox 持久化的 canonical 事件类型。"""
+    event_type = non_empty_str(getattr(inbox, "event_type", None))
+    if event_type is None:
+        raise ValueError("RuntimeInbox event_type is required")
+    return event_type
 
 
 def _normalize_internal_event(inbox: Any, payload: dict[str, Any], *, trace_id: str, plugin_key: str | None) -> Any:
     source_event_type = non_empty_str(payload.get("event_type"))
-    canonical_event_type = non_empty_str(payload.get("canonical_event_type")) or source_event_type
-    if not canonical_event_type:
-        raise ValueError("INTERNAL_EVENT payload missing routable event type")
+    canonical_event_type = _require_canonical_event_type(inbox)
     if source_event_type is None:
         source_event_type = canonical_event_type
 
@@ -196,7 +203,7 @@ def normalize_inbox_input(inbox: Any, *, trace_id: str = "", plugin_key: str | N
 
     source_event_type = str(payload.get("event_type") or payload.get("message_type") or "UNKNOWN")
     data = payload_dict(payload.get("data"))
-    canonical_event_type = str(payload.get("canonical_event_type") or source_event_type)
+    canonical_event_type = _require_canonical_event_type(inbox)
     return NormalizedDeviceEvent(
         source_event_type=source_event_type,
         canonical_event_type=canonical_event_type,

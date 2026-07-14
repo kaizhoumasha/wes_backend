@@ -4,20 +4,17 @@
 # 用途: 系统级异步任务 (健康检查、缓存刷新等)
 # ============================================
 
-import asyncio
-from collections.abc import Awaitable
-from typing import Any, TypedDict, TypeVar, cast
+from typing import Any, TypedDict, cast
 
 from celery import current_task  # pyright: ignore[reportMissingTypeStubs]
 from sqlalchemy import text
 
 from src.celery_app.app import celery_app
+from src.celery_app.async_runtime import run_async
 from src.core.logger import logger
-from src.database import db as db_module
-from src.database.redis_client import get_redis, is_redis_available
+from src.database.db import get_db_context
+from src.database.redis_client import ensure_redis_connection, get_redis, is_redis_available
 from src.utils.timezone import timezone
-
-T = TypeVar("T")
 
 
 class CheckResult(TypedDict, total=False):
@@ -32,43 +29,6 @@ class HealthCheckResult(TypedDict, total=False):
     worker: str
     checks: dict[str, CheckResult]
     error: str
-
-
-def _lazy_init_db() -> None:
-    """在 Celery Worker 子进程中懒初始化数据库连接"""
-    from src.database.db import init_db
-
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError("Event loop is closed")
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    try:
-        loop.run_until_complete(init_db())
-        logger.info("✓ ForkPoolWorker 懒初始化数据库连接成功")
-    except Exception as e:
-        logger.warning(f"ForkPoolWorker 数据库懒初始化失败: {e}")
-
-
-def _run_async[T](coro: Awaitable[T]) -> T:
-    """
-    在 Celery 同步任务中运行异步函数
-
-    自动处理数据库初始化：在 ForkPoolWorker 子进程中首次调用时懒初始化。
-    """
-    # 懒初始化：确保 DB 在 Celery Worker 子进程中可用
-    if db_module.AsyncSessionLocal is None:
-        _lazy_init_db()
-
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
 
 
 # ============================================
@@ -116,62 +76,39 @@ def health_check() -> HealthCheckResult:
             "checks": {},
         }
 
-        # 数据库健康检查
-        # 在子进程中 db_module.AsyncSessionLocal 可能为 None（fork 后全局状态丢失）
-        # 先尝试同步初始化
-        if db_module.AsyncSessionLocal is None:
+        async def check_dependencies() -> tuple[CheckResult, CheckResult]:
+            # 数据库和 Redis 共享统一 runtime，但数据库会话仅在本条消息内存活。
             try:
-                _lazy_init_db()
+                async with get_db_context() as db:
+                    _ = await db.execute(text("SELECT 1"))
+                    db_status: CheckResult = {"status": "connected"}
             except Exception as e:
-                logger.warning(f"健康检查: 数据库懒初始化失败: {e}")
+                db_status = {"status": "error", "error": str(e)}
 
-        async def check_db() -> CheckResult:
-            if db_module.AsyncSessionLocal is None:
-                return {"status": "uninitialized", "error": "数据库未初始化"}
-
-            async with db_module.AsyncSessionLocal() as db:
-                _ = await db.execute(text("SELECT 1"))
-                return {"status": "connected"}
-
-        try:
-            db_status = _run_async(check_db())
-            result["checks"]["database"] = db_status
-
-            # 如果数据库未初始化，标记为降级
-            if db_status.get("status") == "uninitialized":
-                result["status"] = "degraded"
-        except Exception as e:
-            result["checks"]["database"] = {"status": "error", "error": str(e)}
-            result["status"] = "degraded"
-
-        # Redis 健康检查
-        try:
-            if not is_redis_available():
-                # 尝试重连
-                try:
-                    from src.database.redis_client import redis_manager
-
-                    _run_async(redis_manager.init_redis())
-                except Exception as e:
-                    logger.warning(f"Redis 重连失败: {e}")
-
-            if is_redis_available():
-                redis_client = cast("Any", get_redis())
-                if redis_client:
-                    _run_async(redis_client.ping())
-                    db_size = cast("int", _run_async(redis_client.dbsize()))
-                    result["checks"]["redis"] = {
-                        "status": "connected",
-                        "db_size": db_size,
-                    }
+            try:
+                # Worker 启动时 Redis 可降级；健康检查通过标准入口按频率限制尝试恢复。
+                _ = await ensure_redis_connection()
+                if is_redis_available():
+                    redis_client = cast("Any", get_redis())
+                    if redis_client:
+                        await redis_client.ping()
+                        db_size = cast("int", await redis_client.dbsize())
+                        redis_status: CheckResult = {
+                            "status": "connected",
+                            "db_size": db_size,
+                        }
+                    else:
+                        redis_status = {"status": "unavailable"}
                 else:
-                    result["checks"]["redis"] = {"status": "unavailable"}
-                    result["status"] = "degraded"
-            else:
-                result["checks"]["redis"] = {"status": "unavailable"}
-                result["status"] = "degraded"
-        except Exception as e:
-            result["checks"]["redis"] = {"status": "error", "error": str(e)}
+                    redis_status = {"status": "unavailable"}
+            except Exception as e:
+                redis_status = {"status": "error", "error": str(e)}
+            return db_status, redis_status
+
+        db_status, redis_status = run_async(check_dependencies)
+        result["checks"]["database"] = db_status
+        result["checks"]["redis"] = redis_status
+        if db_status.get("status") != "connected" or redis_status.get("status") != "connected":
             result["status"] = "degraded"
 
         # 更新 API 层健康缓存
@@ -208,14 +145,14 @@ def clear_cache(pattern: str = "app:*") -> dict[str, str | int]:
     try:
         logger.info(f"清除缓存: pattern={pattern}")
 
-        if not is_redis_available():
-            logger.warning("Redis 不可用，无法清除缓存")
-            return {"status": "skipped", "reason": "Redis unavailable"}
+        async def _clear() -> dict[str, str | int]:
+            if not is_redis_available():
+                logger.warning("Redis 不可用，无法清除缓存")
+                return {"status": "skipped", "reason": "Redis unavailable"}
 
-        async def _clear() -> int:
             redis_client = cast("Any", get_redis())
             if redis_client is None:
-                return 0
+                return {"status": "skipped", "reason": "Redis unavailable"}
 
             # 扫描匹配的键
             keys: list[str] = [cast("str", key) async for key in redis_client.scan_iter(match=pattern)]
@@ -224,16 +161,16 @@ def clear_cache(pattern: str = "app:*") -> dict[str, str | int]:
             if keys:
                 await redis_client.delete(*keys)
 
-            return len(keys)
+            return {
+                "status": "success",
+                "pattern": pattern,
+                "cleared_count": len(keys),
+            }
 
-        cleared_count = _run_async(_clear())
-
-        logger.info(f"缓存清除完成: 清除了 {cleared_count} 个键")
-        return {
-            "status": "success",
-            "pattern": pattern,
-            "cleared_count": cleared_count,
-        }
+        result = run_async(_clear)
+        if result.get("status") == "success":
+            logger.info(f"缓存清除完成: 清除了 {result['cleared_count']} 个键")
+        return result
 
     except Exception as e:
         logger.error(f"清除缓存失败: {e}")
@@ -269,11 +206,7 @@ def send_notification(user_id: int, message: str, notification_type: str = "info
             from src.app.sys.models.audit_log import OperaStatus
             from src.app.sys.services.audit_service import audit_log_service
 
-            if db_module.AsyncSessionLocal is None:
-                logger.error("数据库未初始化，无法记录通知")
-                return
-
-            async with db_module.AsyncSessionLocal() as db:
+            async with get_db_context() as db:
                 # 映射通知类型到操作状态 (OperaStatus 只有 SUCCESS/FAIL)
                 status = (
                     OperaStatus.SUCCESS if notification_type in ("info", "warning", "success") else OperaStatus.FAIL
@@ -292,7 +225,7 @@ def send_notification(user_id: int, message: str, notification_type: str = "info
                 )
                 await db.commit()
 
-        _run_async(_save_notification())
+        run_async(_save_notification)
 
         logger.info(f"通知发送成功: user_id={user_id}")
 

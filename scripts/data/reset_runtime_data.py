@@ -5,7 +5,7 @@ timeline/diagnostic/resource 运行时投影等)清空,回到一个干净的"只
 方便重新触发 START → SCAN_COMPLETED 观察落库。
 
 设计约定:
-- 固定运行时表清单(RUNTIME_TABLES),保留主数据表(MASTER_DATA_TABLES 白名单)。
+- 固定 schema-qualified 运行时表清单(RUNTIME_TABLES),保留主数据表(MASTER_DATA_TABLES 白名单)。
 - 默认 ``--dry-run``:只打印将清空的表 + 当前行数,不写库。
 - 必须显式 ``--yes`` 才真正 TRUNCATE。
 - 清空后重置设备投影字段(``current_command_id``、``device_status=IDLE``)与
@@ -32,6 +32,7 @@ import asyncio
 import json
 import os
 import sys
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -50,58 +51,80 @@ from src.database.db import close_db, get_db_context, init_db
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-# 运行时/调试数据表(wes_biz schema)。这些表记录的是"跑流程产生的事实",
-# 清空后只要主数据在,就能重新跑。按字母序排列,便于核对。
-RUNTIME_TABLES: tuple[str, ...] = (
-    "callback_logs",
-    "device_commands",
-    "handling_operation_moves",
-    "handling_operation_steps",
-    "handling_operations",
-    "ng_return_items",
-    "rack_operations",
-    "rack_tasks",
-    "resource_bin_cell_occupancies",
-    "resource_bin_content_snapshot_items",
-    "resource_bin_content_snapshots",
-    "resource_bin_material_mounts",
-    "resource_bin_placements",
-    "resource_rack_bin_mounts",
-    "resource_rack_placements",
-    "resource_state_events",
-    "runtime_holds",
-    "smt_inbound_handoff_demands",
-    "smt_inbound_handoff_source_items",
-    "system_outbox",
-    "wms_call_evidence",
-    "wms_circuit_breaker_state",
-    "workline_bin_cell_reservations",
-    "workline_diagnostics",
-    "workline_dispatch_attempts",
-    "workline_inbox",
-    "workline_safety_incidents",
-    "workline_sessions",
-    "workline_timelines",
+
+@dataclass(frozen=True, order=True)
+class TableTarget:
+    """清理目标的显式 schema identity。"""
+
+    schema: str
+    table: str
+
+    @property
+    def identity(self) -> str:
+        return f"{self.schema}.{self.table}"
+
+
+def _biz(table: str) -> TableTarget:
+    return TableTarget("wes_biz", table)
+
+
+# 运行时/调试数据表。这些表记录的是"跑流程产生的事实",清空后只要主数据在,
+# 就能重新跑。wes_runtime.runtime_inbox 显式列出,避免再依赖默认 wes_biz schema。
+RUNTIME_TABLES: tuple[TableTarget, ...] = (
+    *(
+        _biz(table)
+        for table in (
+            "callback_logs",
+            "device_commands",
+            "handling_operation_moves",
+            "handling_operation_steps",
+            "handling_operations",
+            "ng_return_items",
+            "rack_operations",
+            "rack_tasks",
+            "resource_bin_cell_occupancies",
+            "resource_bin_content_snapshot_items",
+            "resource_bin_content_snapshots",
+            "resource_bin_material_mounts",
+            "resource_bin_placements",
+            "resource_rack_bin_mounts",
+            "resource_rack_placements",
+            "resource_state_events",
+            "runtime_holds",
+            "smt_inbound_handoff_demands",
+            "smt_inbound_handoff_source_items",
+            "system_outbox",
+            "wms_call_evidence",
+            "wms_circuit_breaker_state",
+            "workline_bin_cell_reservations",
+            "workline_diagnostics",
+            "workline_dispatch_attempts",
+            "workline_safety_incidents",
+            "workline_sessions",
+            "workline_timelines",
+        )
+    ),
+    TableTarget("wes_runtime", "runtime_inbox"),
 )
 
 # 主数据/字典表白名单:绝对不能清。列出来既是文档,也用于自检——
 # 如果 RUNTIME_TABLES 里误加进这些表,启动校验会直接报错退出。
-MASTER_DATA_TABLES: frozenset[str] = frozenset(
+MASTER_DATA_TABLES: frozenset[TableTarget] = frozenset(
     {
-        "work_lines",
-        "devices",
-        "workline_rack_positions",
-        "resource_racks",
-        "resource_rack_types",
-        "resource_rack_slot_templates",
-        "resource_bins",
-        "resource_bin_types",
-        "resource_bin_slot_templates",
+        _biz("work_lines"),
+        _biz("devices"),
+        _biz("workline_rack_positions"),
+        _biz("resource_racks"),
+        _biz("resource_rack_types"),
+        _biz("resource_rack_slot_templates"),
+        _biz("resource_bins"),
+        _biz("resource_bin_types"),
+        _biz("resource_bin_slot_templates"),
     }
 )
 
 # 审计域表,默认保留,需要 --include-audit-logs 才清。
-AUDIT_LOG_TABLE = "wes_sys.audit_logs"
+AUDIT_LOG_TABLE = TableTarget("wes_sys", "audit_logs")
 
 
 @dataclass
@@ -119,9 +142,9 @@ class ResetSummary:
         return asdict(self)
 
 
-def _qualified(name: str) -> str:
-    """运行时表都在 wes_biz schema 下。"""
-    return f"wes_biz.{name}"
+def _qualified(target: TableTarget) -> str:
+    """返回只由代码内常量构造的 schema-qualified identity。"""
+    return target.identity
 
 
 def _mock_wms_reset_url() -> str:
@@ -153,13 +176,45 @@ async def reset_mock_wms() -> dict[str, Any]:
         return {"url": url, "ok": True, "body": resp.json()}
 
 
-def _validate_table_sets() -> None:
+def _validate_table_sets(targets: tuple[TableTarget, ...] = RUNTIME_TABLES) -> None:
     """启动自检:运行时清单与主数据白名单不能有交集。"""
-    overlap = set(RUNTIME_TABLES) & MASTER_DATA_TABLES
+    if len(targets) != len(set(targets)):
+        raise RuntimeError("运行时清单包含重复目标,拒绝执行")
+    overlap = set(targets) & MASTER_DATA_TABLES
     if overlap:
         raise RuntimeError(
-            f"运行时清单与主数据白名单存在交集,拒绝执行: {sorted(overlap)}",
+            f"运行时清单包含主数据目标,拒绝执行: {[target.identity for target in sorted(overlap)]}",
         )
+
+
+async def _validate_targets_exist(db: AsyncSession, targets: tuple[TableTarget, ...]) -> None:
+    """在任何外部或数据库 mutation 前验证目标表及其 schema。"""
+    result = await db.execute(
+        text(
+            "SELECT table_schema, table_name "
+            "FROM information_schema.tables "
+            "WHERE table_type = 'BASE TABLE' "
+            "  AND table_schema NOT IN ('pg_catalog', 'information_schema')"
+        )
+    )
+    catalog = {(str(row[0]), str(row[1])) for row in result.all()}
+    expected = {(target.schema, target.table) for target in targets}
+    missing = sorted(expected - catalog)
+    if not missing:
+        return
+
+    mismatches: list[str] = []
+    absent: list[str] = []
+    for schema, table in missing:
+        alternate = sorted(f"{found_schema}.{table}" for found_schema, found_table in catalog if found_table == table)
+        expected_identity = f"{schema}.{table}"
+        if alternate:
+            mismatches.append(f"{expected_identity} -> {', '.join(alternate)}")
+        else:
+            absent.append(expected_identity)
+    if mismatches:
+        raise RuntimeError(f"reset 目标 schema 不匹配,拒绝执行: {'; '.join(mismatches)}")
+    raise RuntimeError(f"reset 目标表不存在,拒绝执行: {', '.join(absent)}")
 
 
 async def _row_count(db: AsyncSession, qualified_name: str) -> int:
@@ -175,73 +230,84 @@ async def reset_runtime_data(
     reset_mocks: bool,
 ) -> ResetSummary:
     """清空运行时数据并重置投影字段。``apply=False`` 时只统计不写。"""
+    _validate_table_sets()
     summary = ResetSummary(mode="apply" if apply else "dry-run")
-
-    # Mock WMS 必须先于 WES DB 重置:它记录的"货架已到工位"事实是 WES 出料分配
-    # 的外部输入。先清 WES 会留下不一致窗口;且只有 apply 时才需要真正重置。
-    if apply and reset_mocks:
-        try:
-            summary.mock_wms_reset = await reset_mock_wms()
-        except Exception as exc:
-            summary.mock_wms_reset = {"ok": False, "error": str(exc)}
-
-    targets: list[str] = [_qualified(t) for t in RUNTIME_TABLES]
+    targets = list(RUNTIME_TABLES)
     if include_audit_logs:
         targets.append(AUDIT_LOG_TABLE)
         summary.included_audit_logs = True
+    target_tuple = tuple(targets)
+    await _validate_targets_exist(db, target_tuple)
 
     # 先统计每张表当前行数(dry-run 和 apply 都打印,作为前后对照)
     counts_before: dict[str, int] = {}
-    for qualified_name in targets:
+    for target in targets:
+        qualified_name = _qualified(target)
         counts_before[qualified_name] = await _row_count(db, qualified_name)
 
     if apply:
-        # RESTART IDENTITY 重置序列;CASCADE 处理 FK 依赖(运行时表互相引用)。
-        # TRUNCATE 是 DDL,Postgres 隐式提交,所以这里不依赖事务回滚保护。
-        joined = ", ".join(targets)
-        await db.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
+        # Mock WMS 必须先于任何 WES DB mutation:它记录的"货架已到工位"事实是
+        # WES 出料分配的外部输入。失败时 fail closed；仅 --no-reset-mocks 可跳过。
+        if reset_mocks:
+            try:
+                summary.mock_wms_reset = await reset_mock_wms()
+            except Exception as exc:
+                raise RuntimeError(f"Mock WMS 重置失败,数据库未清理: {exc}") from exc
 
-        # 清空命令后,devices.current_command_id 指向的命令已不存在,重置回空闲。
-        dev_result = await db.execute(
-            text(
-                "UPDATE wes_biz.devices "
-                "   SET current_command_id = NULL, "
-                "       device_status = 'IDLE', "
-                "       error_code = NULL, "
-                "       last_heartbeat_at = NULL "
-                " WHERE current_command_id IS NOT NULL "
-                "    OR device_status <> 'IDLE' "
-                "    OR error_code IS NOT NULL",
-            ),
-        )
-        summary.reset_devices = int(dev_result.rowcount or 0)
+        try:
+            # RESTART IDENTITY 重置序列;CASCADE 处理 FK 依赖(运行时表互相引用)。
+            # PostgreSQL TRUNCATE 仍受当前事务保护,与后续投影 reset 一起提交。
+            joined = ", ".join(_qualified(target) for target in targets)
+            await db.execute(text(f"TRUNCATE {joined} RESTART IDENTITY CASCADE"))
 
-        # WorkLine runtime 投影回到 STOPPED,重新走 START 准入。
-        wl_result = await db.execute(
-            text(
-                "INSERT INTO wes_runtime.workline_runtime_status_projections ("
-                "workline_id, runtime_status, source, stopped_at, stopped_reason, "
-                "resumed_at, active_safety_incident_id, evidence_json"
-                ") "
-                "SELECT id, 'STOPPED', 'scripts/data/reset_runtime_data', "
-                "       now() AT TIME ZONE 'UTC', 'RUNTIME_RESET', NULL, NULL, '{}'::json "
-                "  FROM wes_biz.work_lines "
-                " WHERE is_deleted = false "
-                "ON CONFLICT (workline_id) DO UPDATE SET "
-                "    runtime_status = EXCLUDED.runtime_status, "
-                "    source = EXCLUDED.source, "
-                "    stopped_at = EXCLUDED.stopped_at, "
-                "    stopped_reason = EXCLUDED.stopped_reason, "
-                "    resumed_at = NULL, "
-                "    active_safety_incident_id = NULL, "
-                "    evidence_json = EXCLUDED.evidence_json",
-            ),
-        )
-        summary.reset_worklines = int(wl_result.rowcount or 0)
-        await db.execute(text("UPDATE wes_biz.work_lines SET start_admission_status = NULL"))
-        await db.commit()
+            # 清空命令后,devices.current_command_id 指向的命令已不存在,重置回空闲。
+            dev_result = await db.execute(
+                text(
+                    "UPDATE wes_biz.devices "
+                    "   SET current_command_id = NULL, "
+                    "       device_status = 'IDLE', "
+                    "       error_code = NULL, "
+                    "       last_heartbeat_at = NULL "
+                    " WHERE current_command_id IS NOT NULL "
+                    "    OR device_status <> 'IDLE' "
+                    "    OR error_code IS NOT NULL",
+                ),
+            )
+            summary.reset_devices = int(dev_result.rowcount or 0)
 
-    for qualified_name in targets:
+            # WorkLine runtime 投影回到 STOPPED,重新走 START 准入。
+            wl_result = await db.execute(
+                text(
+                    "INSERT INTO wes_runtime.workline_runtime_status_projections ("
+                    "workline_id, runtime_status, source, stopped_at, stopped_reason, "
+                    "resumed_at, active_safety_incident_id, evidence_json"
+                    ") "
+                    "SELECT id, 'STOPPED', 'scripts/data/reset_runtime_data', "
+                    "       now() AT TIME ZONE 'UTC', 'RUNTIME_RESET', NULL, NULL, '{}'::json "
+                    "  FROM wes_biz.work_lines "
+                    " WHERE is_deleted = false "
+                    "ON CONFLICT (workline_id) DO UPDATE SET "
+                    "    runtime_status = EXCLUDED.runtime_status, "
+                    "    source = EXCLUDED.source, "
+                    "    stopped_at = EXCLUDED.stopped_at, "
+                    "    stopped_reason = EXCLUDED.stopped_reason, "
+                    "    resumed_at = NULL, "
+                    "    active_safety_incident_id = NULL, "
+                    "    evidence_json = EXCLUDED.evidence_json",
+                ),
+            )
+            summary.reset_worklines = int(wl_result.rowcount or 0)
+            await db.execute(text("UPDATE wes_biz.work_lines SET start_admission_status = NULL"))
+            await db.commit()
+        except Exception:
+            # 本函数拥有 apply 的 commit，也必须在所有 mutation/commit 失败路径释放事务。
+            # rollback 自身故障不得覆盖最先发生的数据库错误。
+            with suppress(Exception):
+                await db.rollback()
+            raise
+
+    for target in targets:
+        qualified_name = _qualified(target)
         summary.truncated.append(
             {"table": qualified_name, "rows_before": counts_before[qualified_name]},
         )

@@ -27,6 +27,8 @@ from datetime import timedelta
 from typing import Any
 
 from redis.asyncio import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import text
 
 
@@ -142,62 +144,47 @@ class RedisDistributedLock:
         used_pg_fallback = False
 
         # 尝试获取 Redis 锁
-        try:
-            for _ in range(self.max_retries):
-                try:
-                    acquired = await self.redis_client.set(key, token, nx=True, ex=ttl_seconds)
-                    if acquired:
-                        break
-                except (ConnectionError, OSError) as e:
-                    if self.fallback_to_pg and db is not None:
-                        # 降级到 PostgreSQL 事务级 advisory lock
-                        await self._pg_lock_acquire(db, resource)
-                        used_pg_fallback = True
-                        acquired = True
-                        break
-                    else:
-                        raise LockAcquireError(f"Redis unavailable: {e}") from e
-
-                await asyncio.sleep(self.retry_interval)
-
-            if not acquired:
-                raise LockAcquireError(f"Failed to acquire lock: {resource}")
-
-            # 启动自动续期任务
-            if self.auto_renewal and not used_pg_fallback:
-                self._renewal_active = True
-                self._renewal_task = asyncio.create_task(self._auto_renew(key, token, ttl_seconds))
-
+        for _ in range(self.max_retries):
             try:
-                yield
-            finally:
-                # 停止自动续期
-                if self._renewal_task:
-                    self._renewal_active = False
-                    _ = self._renewal_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await self._renewal_task
-                    self._renewal_task = None
-
-                # 释放锁
-                if used_pg_fallback:
-                    await self._pg_lock_release(db, resource)
+                acquired = await self.redis_client.set(key, token, nx=True, ex=ttl_seconds)
+                if acquired:
+                    break
+            except (RedisConnectionError, RedisTimeoutError, OSError) as e:
+                if self.fallback_to_pg and db is not None:
+                    # 降级到 PostgreSQL 事务级 advisory lock
+                    await self._pg_lock_acquire(db, resource)
+                    used_pg_fallback = True
+                    acquired = True
+                    break
                 else:
-                    _ = await self._release(key, token)
+                    raise LockAcquireError(f"Redis unavailable: {e}") from e
 
-        except LockAcquireError:
-            raise
-        except Exception as e:
-            if isinstance(e, (ConnectionError, OSError)) and self.fallback_to_pg and db is not None:
-                # Redis 故障时降级
-                await self._pg_lock_acquire(db, resource)
-                try:
-                    yield
-                finally:
-                    await self._pg_lock_release(db, resource)
+            await asyncio.sleep(self.retry_interval)
+
+        if not acquired:
+            raise LockAcquireError(f"Failed to acquire lock: {resource}")
+
+        # 启动自动续期任务
+        if self.auto_renewal and not used_pg_fallback:
+            self._renewal_active = True
+            self._renewal_task = asyncio.create_task(self._auto_renew(key, token, ttl_seconds))
+
+        try:
+            yield
+        finally:
+            # 停止自动续期
+            if self._renewal_task:
+                self._renewal_active = False
+                _ = self._renewal_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._renewal_task
+                self._renewal_task = None
+
+            # 释放锁
+            if used_pg_fallback:
+                await self._pg_lock_release(db, resource)
             else:
-                # 其他异常（包括用户代码异常）直接抛出，不转换
-                raise
+                _ = await self._release(key, token)
 
     async def _release(self, key: str, token: str) -> bool:
         """

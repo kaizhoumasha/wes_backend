@@ -15,13 +15,13 @@ from src.app.device.services.device_context_service import device_context_servic
 from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
 from src.app.runtime.orchestration.repositories.session_repository import workline_session_repository
+from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
 from src.app.runtime.orchestration.workline_runtime_status_projection import WorkLineRuntimeStatus
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.repositories.safety_incident_repository import workline_safety_incident_repository
-from src.app.workline.repositories.workline_repository import workline_repository
 from src.app.workline.services.workline_service import WorkLineService, workline_service
 from src.core.logger import logger
 from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway

@@ -15,6 +15,12 @@ class CallbackRejectedResponse(BaseModel):
     diagnostic: dict[str, Any] | None = Field(default=None, description="拒收诊断信息")
 
 
+class CallbackHTTPExceptionResponse(BaseModel):
+    """Callback 入口由 HTTPException 返回的传输层错误。"""
+
+    detail: str = Field(description="可重试或请求体限制错误说明")
+
+
 class CallbackResultAcceptedResponse(BaseModel):
     """设备结果回调接收响应数据。"""
 
@@ -121,6 +127,7 @@ __all__ = [
     "CallbackEventIngressResponse",
     "CallbackExternalAcceptedResponse",
     "CallbackExternalIngressResponse",
+    "CallbackHTTPExceptionResponse",
     "CallbackRejectedIngressResponse",
     "CallbackRejectedResponse",
     "CallbackResultAcceptedResponse",

@@ -18,7 +18,6 @@ from src.app.runtime.capability_catalog import (
     list_workline_ng_reasons,
     resolve_workline_material_identity,
 )
-from src.app.runtime.orchestration.models.inbox import InboxKind, SourceSystem
 from src.app.runtime.orchestration.models.runtime_hold import (
     MaterialDisposition,
     NgReasonSource,
@@ -33,16 +32,13 @@ from src.app.runtime.orchestration.models.session import (
     RuntimeReconciliationState,
     SessionStatus,
 )
-from src.app.runtime.orchestration.repositories import (
-    inbox_repository,
-    workline_session_repository,
-)
+from src.app.runtime.orchestration.repositories import workline_session_repository
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
 from src.app.sys.repositories import system_outbox_repository
-from src.app.workline.repositories import workline_repository
 from src.utils.timezone import timezone
 from src.utils.value_normalization import as_dict, enum_str, optional_int
 
@@ -51,9 +47,7 @@ if TYPE_CHECKING:
 
     from src.app.device.repositories import DeviceCommandRepository
     from src.app.runtime.capabilities.material_flow.contracts.ng_reason import NgReasonDefinition
-    from src.app.runtime.orchestration.models.inbox import WorklineInbox
     from src.app.runtime.orchestration.models.runtime_hold_api import ResolveRuntimeHoldRequest
-    from src.app.runtime.orchestration.repositories.inbox_repository import WorklineInboxRepository
     from src.app.runtime.orchestration.repositories.runtime_hold_repository import RuntimeHoldRepository
     from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
     from src.app.sys.repositories import SystemOutboxRepository
@@ -153,7 +147,6 @@ class RuntimeHoldReleaseService:
         workline_repo: WorkLineRepository | None = None,
         session_repo: WorklineSessionRepository | None = None,
         outbox_repo: SystemOutboxRepository | None = None,
-        inbox_repo: WorklineInboxRepository | None = None,
         command_repo: DeviceCommandRepository | None = None,
         device_service: DeviceService | None = None,
     ) -> None:
@@ -161,7 +154,6 @@ class RuntimeHoldReleaseService:
         self.workline_repo = workline_repo or workline_repository
         self.session_repo = session_repo or workline_session_repository
         self.outbox_repo = outbox_repo or system_outbox_repository
-        self.inbox_repo = inbox_repo or inbox_repository
         self.command_repo = command_repo or device_command_repository
         self.device_service = device_service or DeviceService()
 
@@ -193,14 +185,8 @@ class RuntimeHoldReleaseService:
         operator_id: int,
         *,
         allow_safety_estop: bool = False,
-        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        """解除 RuntimeHold，并在最后一个 active blocking hold 解除后恢复 WorkLine。
-
-        ``idempotency_key`` 由调用方 (API Idempotency-Key Header) 传入，用于
-        跨重试写入同一 outbox/inbox 行 (H5 幂等键命名: WES-RESOLVE_HOLD-{key})。
-        缺省时回退到 ``runtime-hold:resolve:{hold_id}`` 派生键, 满足单调用粒度。
-        """
+        """解除 RuntimeHold，并在最后一个 active blocking hold 解除后恢复 WorkLine。"""
 
         hold = await self.runtime_hold_repo.get_for_update(db, hold_id)
         if hold is None:
@@ -279,7 +265,7 @@ class RuntimeHoldReleaseService:
         hold.status = RuntimeHoldStatus.RESOLVED
         hold.resolved_by = operator_id
         hold.resolved_at = now
-        created_inbox = None
+        created_inbox_id: int | None = None
         if session is not None:
             if source_command is not None and self._should_replay_command_result(
                 hold=hold,
@@ -292,15 +278,12 @@ class RuntimeHoldReleaseService:
                     resolved_at=now,
                     command=source_command,
                 )
-                created_inbox = await self._create_continue_command_result_inbox(
+                created_inbox_id = await self._create_continue_command_result_inbox(
                     db,
                     hold=hold,
                     request=request,
                     command=source_command,
-                    resolved_at=now,
-                    session_id=cast("int", session.id),
                     session=session,
-                    idempotency_key=idempotency_key,
                 )
             else:
                 self._resolve_session(session, request=request, operator_id=operator_id, resolved_at=now)
@@ -345,7 +328,7 @@ class RuntimeHoldReleaseService:
             "remaining_active_blocking_holds": remaining_active_blocking_holds,
             "released_outbox_count": released_outbox_count,
             "ng_return_item_id": getattr(ng_item, "id", None),
-            "created_inbox_id": getattr(created_inbox, "id", None),
+            "created_inbox_id": created_inbox_id,
         }
 
     def _validate_release_request(self, request: ResolveRuntimeHoldRequest) -> None:
@@ -798,11 +781,8 @@ class RuntimeHoldReleaseService:
         hold: RuntimeHold,
         request: ResolveRuntimeHoldRequest,
         command: DeviceCommand,
-        resolved_at: Any,
-        session_id: int,
         session: Any | None,
-        idempotency_key: str | None = None,
-    ) -> WorklineInbox:
+    ) -> int:
         if command.id is None:
             raise ValueError(f"DeviceCommand 缺少主键: {command.command_code}")
         if command.workline_id is None:
@@ -821,30 +801,27 @@ class RuntimeHoldReleaseService:
             "runtime_hold_release": True,
             "data": result_payload,
         }
-        # 当调用方提供 Idempotency-Key 时, 用其派生 inbox 行 idempotency_key,
-        # 保证同一 client 重试不会重复落库 (H5 幂等: WES-RESOLVE_HOLD-{key})。
-        client_idem = f"WES-RESOLVE_HOLD-{idempotency_key}" if idempotency_key else f"runtime-hold:resolve:{hold.id}"
-        inbox = await self.inbox_repo.create(
-            db,
-            {
-                "kind": InboxKind.COMMAND_RESULT,
-                "idempotency_key": client_idem,
-                "source_system": SourceSystem.MANUAL,
-                "source_message_id": f"runtime-hold:continue-result:{hold.id}",
-                "workline_id": command.workline_id,
-                "device_id": command.device_id,
-                "command_id": command.id,
-                "session_id": session_id,
-                "trace_id": command.trace_id or hold.trace_id,
-                "event_id": f"runtime-hold:result:{hold.id}:{command.command_code}",
-                "causation_id": hold.trace_id,
-                "payload_json": payload,
-                "received_at": resolved_at,
-            },
+        # RuntimeInbox 是 command result 唯一事实源，后续 processor 经统一路径消费。
+        from src.app.runtime.orchestration.services.runtime_inbox import (
+            runtime_inbox_service,
         )
-        if inbox is None:
-            raise RuntimeError(f"创建 Runtime Hold Continue Result Inbox 失败: command_code={command.command_code}")
-        return inbox
+
+        source_event_id = f"runtime-hold:result:{hold.id}:{command.command_code}"
+        runtime_inbox_result = await runtime_inbox_service.accept_command_result(
+            db,
+            command_code=command.command_code,
+            source_event_id=source_event_id,
+            device_code=device.device_code,
+            workline_id=command.workline_id,
+            device_id=command.device_id,
+            command_id=command.id,
+            trace_id=command.trace_id or hold.trace_id,
+            event_id=source_event_id,
+            causation_id=hold.trace_id,
+            payload_json=payload,
+            auto_commit=False,
+        )
+        return cast("int", runtime_inbox_result.record.id)
 
     async def _clear_runtime_device_error(self, db: AsyncSession, *, hold: RuntimeHold) -> None:
         device_error = self._device_error_for_hold(hold)

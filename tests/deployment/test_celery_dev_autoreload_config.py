@@ -33,8 +33,24 @@ def test_dev_worker_autoreload_replaces_worker_process_on_restart() -> None:
 
     assert 'setsid sh -c "exec $CELERY_CMD" &' in script_text
     assert '\n    sh -c "exec $CELERY_CMD" &' in script_text
-    assert 'kill -TERM "$stop_target"' in script_text
+    assert 'kill -TERM "$worker_pid"' in script_text
+    assert 'kill -TERM "$stop_target"' not in script_text
     assert 'kill -KILL "$stop_target"' in script_text
+
+
+def test_celery_shutdown_deadlines_are_strictly_layered() -> None:
+    from src.celery_app.app import celery_app
+
+    script_text = (BACKEND_ROOT / "src/celery_app/dev_worker_autoreload.sh").read_text(encoding="utf-8")
+    compose_text = (BACKEND_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    deploy_compose_text = (BACKEND_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8")
+
+    assert celery_app.conf.worker_prefetch_multiplier == 1
+    assert celery_app.conf.worker_soft_shutdown_timeout == 10
+    assert celery_app.conf.worker_enable_soft_shutdown_on_idle is True
+    assert 'SHUTDOWN_GRACE_SECONDS="${CELERY_RELOAD_SHUTDOWN_GRACE_SECONDS:-20}"' in script_text
+    assert compose_text.count("stop_grace_period: 30s") >= 1
+    assert deploy_compose_text.count("stop_grace_period: 30s") >= 1
 
 
 def test_celery_worker_healthcheck_uses_process_probe() -> None:
@@ -42,6 +58,14 @@ def test_celery_worker_healthcheck_uses_process_probe() -> None:
 
     assert '["CMD", "python", "/app/src/celery_app/worker_healthcheck.py"]' in compose_text
     assert "celery -A src.celery_app.app inspect ping" not in compose_text
+
+
+def test_deploy_overlay_inherits_local_worker_healthcheck() -> None:
+    deploy_compose_text = (BACKEND_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8")
+    worker_section = deploy_compose_text.split("  celery_worker:", maxsplit=1)[1].split("  celery_beat:", maxsplit=1)[0]
+
+    assert "healthcheck:" not in worker_section
+    assert "inspect ping" not in worker_section
 
 
 def test_worker_healthcheck_detects_celery_worker_process(tmp_path: Path) -> None:

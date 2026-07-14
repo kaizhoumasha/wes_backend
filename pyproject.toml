@@ -362,8 +362,6 @@ addopts = [
     "--durations=10",
     # 简短的错误信息
     "--tb=short",
-    # 显示打印输出
-    "-s",
     # 自动生成覆盖率报告（如果使用了 --cov 参数）
     "--cov-report=term-missing",
 ]

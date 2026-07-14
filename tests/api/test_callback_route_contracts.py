@@ -50,14 +50,6 @@ def _runtime_inbox_writer_stub(*, created: bool = True) -> SimpleNamespace:
     )
 
 
-def _transition_inbox_service_stub() -> SimpleNamespace:
-    return SimpleNamespace(
-        create_device_event_inbox=AsyncMock(return_value=SimpleNamespace(id=801)),
-        create_external_http_inbox=AsyncMock(return_value=SimpleNamespace(id=802)),
-        mark_as_processed=AsyncMock(),
-    )
-
-
 def test_callback_log_payload_uses_trusted_proxy_client_ip(
     build_request: RequestFactory,
     monkeypatch: pytest.MonkeyPatch,
@@ -110,6 +102,23 @@ class TestCallbackIngressRouteContracts:
 
             assert "fast_fail_check" not in route_dependency_names
 
+    def test_ingress_routes_publish_runtime_inbox_http_error_contracts(self) -> None:
+        """OpenAPI 必须公开真实 409/413/503，供生成式客户端按 HTTP 语义处理。"""
+        from main import app
+
+        paths = app.openapi()["paths"]
+        expected_statuses = {
+            "/api/v1/callback/result": {"200", "409", "413", "503"},
+            "/api/v1/callback/event": {"200", "409", "413"},
+            "/api/v1/callback/external": {"200", "409", "413"},
+        }
+
+        for path, expected in expected_statuses.items():
+            responses = paths[path]["post"]["responses"]
+            assert expected <= responses.keys()
+            for status_code in expected - {"200"}:
+                assert "application/json" in responses[status_code]["content"]
+
 
 class TestCallbackEnqueueFallback:
     @pytest.mark.asyncio
@@ -146,7 +155,7 @@ class TestCallbackEnqueueFallback:
             "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
             new=AsyncMock(),
         ):
-            await service._commit_and_enqueue_workline_processing(
+            await service._commit_and_enqueue_runtime_inbox_processing(
                 db_session,
                 enqueue_processing=MagicMock(side_effect=RuntimeError("celery down")),
             )
@@ -167,7 +176,7 @@ class TestCallbackEnqueueFallback:
             rack_task_service=RecordingRackTaskService(),
             runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
-        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
         payload = create_wms_external_payload(
             callback_type="WMS_RACK_TASK_RESULT",
@@ -180,7 +189,6 @@ class TestCallbackEnqueueFallback:
             callback_type="WMS_RACK_TASK_RESULT",
             payload=payload,
             request_id="req-wms-physical",
-            inbox_service=_transition_inbox_service_stub(),
             trace_id="trace-wms-001",
             enqueue_processing=lambda: None,
         )
@@ -210,7 +218,7 @@ class TestCallbackEnqueueFallback:
             handling_operation_service=RecordingHandlingOperationService(),
             runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
-        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
         payload = create_wms_external_payload(
             callback_type="CTU_BIN_MOVE_COMPLETED",
@@ -223,7 +231,6 @@ class TestCallbackEnqueueFallback:
             callback_type="CTU_BIN_MOVE_COMPLETED",
             payload=payload,
             request_id="req-ctu-bin-completed",
-            inbox_service=_transition_inbox_service_stub(),
             trace_id="trace-bin-001",
             enqueue_processing=lambda: None,
         )
@@ -249,7 +256,7 @@ class TestCallbackEnqueueFallback:
             handling_operation_service=RecordingHandlingOperationService(),
             runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
-        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace()
         payload = create_full_box_exchange_external_payload(dispatch_key="external:smt_full_box_exchange:release-001")
 
@@ -258,7 +265,6 @@ class TestCallbackEnqueueFallback:
             callback_type="WMS_FULL_BOX_EXCHANGE_RESULT",
             payload=payload,
             request_id="REQ-FULL-BOX-001",
-            inbox_service=_transition_inbox_service_stub(),
             trace_id="trace-full-box-001",
             enqueue_processing=lambda: None,
         )
@@ -283,7 +289,7 @@ class TestCallbackEnqueueFallback:
             handling_operation_service=handling_operation_service,
             runtime_inbox_writer=runtime_writer,
         )
-        service._commit_and_enqueue_workline_processing = AsyncMock()  # type: ignore[method-assign]
+        service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
         db = SimpleNamespace(commit=AsyncMock())
 
         outcome = await service.process_external(
@@ -294,7 +300,6 @@ class TestCallbackEnqueueFallback:
                 dispatch_key="handling:bin-operation:trace-001:move:1",
             ),
             request_id="req-duplicate-ctu",
-            inbox_service=_transition_inbox_service_stub(),
             trace_id="trace-bin-001",
             enqueue_processing=lambda: None,
         )
@@ -302,12 +307,12 @@ class TestCallbackEnqueueFallback:
         assert outcome.is_duplicate is True
         runtime_writer.write_external_callback.assert_awaited_once()
         db.commit.assert_not_awaited()
-        service._commit_and_enqueue_workline_processing.assert_not_awaited()  # type: ignore[attr-defined]
+        service._commit_and_enqueue_runtime_inbox_processing.assert_not_awaited()  # type: ignore[attr-defined]
         rack_task_service.record_callback_from_external_http.assert_not_awaited()
         handling_operation_service.record_callback_from_external_http.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_process_external_lifecycle_only_rack_callback_does_not_enqueue_default_processor(self) -> None:
+    async def test_process_external_lifecycle_only_rack_callback_enqueues_runtime_processor_after_commit(self) -> None:
         from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
 
         class RecordingRackTaskService:
@@ -318,7 +323,7 @@ class TestCallbackEnqueueFallback:
             rack_task_service=RecordingRackTaskService(),
             runtime_inbox_writer=_runtime_inbox_writer_stub(),
         )
-        service._enqueue_workline_processing = MagicMock()  # type: ignore[method-assign]
+        service._enqueue_runtime_inbox_processing = MagicMock()  # type: ignore[method-assign]
         db = SimpleNamespace(commit=AsyncMock())
         payload = create_wms_external_payload(
             callback_type="WMS_RACK_TASK_RESULT",
@@ -335,12 +340,47 @@ class TestCallbackEnqueueFallback:
                 callback_type="WMS_RACK_TASK_RESULT",
                 payload=payload,
                 request_id="req-wms-lifecycle-only",
-                inbox_service=_transition_inbox_service_stub(),
                 trace_id="trace-wms-lifecycle-only",
             )
 
         db.commit.assert_awaited_once()
-        service._enqueue_workline_processing.assert_not_called()
+        service._enqueue_runtime_inbox_processing.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_process_external_broker_failure_does_not_rollback_committed_runtime_inbox(self) -> None:
+        """RuntimeInbox 与 lifecycle 先提交；broker 失败只降级为 warning。"""
+        from src.app.callback.services.callback_orchestration_service import CallbackOrchestrationService
+
+        rack_task_service = SimpleNamespace(record_callback_from_external_http=AsyncMock())
+        service = CallbackOrchestrationService(
+            rack_task_service=rack_task_service,
+            runtime_inbox_writer=_runtime_inbox_writer_stub(),
+        )
+        db = SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+        enqueue_processing = MagicMock(side_effect=RuntimeError("broker unavailable"))
+
+        with patch(
+            "src.app.callback.services.callback_orchestration_service.publish_deferred_sse_events",
+            new=AsyncMock(),
+        ):
+            outcome = await service.process_external(
+                db,  # type: ignore[arg-type]
+                callback_type="WMS_RACK_TASK_RESULT",
+                payload=create_wms_external_payload(
+                    callback_type="WMS_RACK_TASK_RESULT",
+                    dispatch_key="external:smt:release-001:RACK_OPERATION:broker-fail",
+                    status="SUCCEEDED",
+                ),
+                request_id="req-wms-broker-fail",
+                trace_id="trace-wms-broker-fail",
+                enqueue_processing=enqueue_processing,
+            )
+
+        assert outcome.is_duplicate is False
+        rack_task_service.record_callback_from_external_http.assert_awaited_once()
+        db.commit.assert_awaited_once()
+        enqueue_processing.assert_called_once()
+        db.rollback.assert_not_awaited()
 
 
 class TestCallbackContractBoundary:

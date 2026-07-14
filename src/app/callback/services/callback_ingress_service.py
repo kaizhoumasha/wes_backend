@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Literal, cast
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from pydantic import ValidationError
 
 from src.app.callback.contracts import (
@@ -41,9 +41,13 @@ from src.app.device.models.command import (
 )
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.runtime.capabilities.material_flow.start_admission_service import start_admission_service
-from src.app.runtime.orchestration.consumers.runtime_inbox_service import RuntimeInboxConflict
+from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackPayloadValidationError
 from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
-from src.app.runtime.orchestration.services.inbox import inbox_service
+from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxConflict,
+    RuntimeInboxCorrelationUnavailable,
+    RuntimeInboxPayloadTooLarge,
+)
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusSnapshot,
     workline_runtime_status_projection_service,
@@ -66,11 +70,14 @@ _CAUSATION_ID_ALIASES = ("causation_id",)
 _DEVICE_CODE_ALIASES = ("device_code",)
 _COMMAND_CODE_ALIASES = ("command_code",)
 _TRACE_TOP_LEVEL_FIELDS = frozenset({"trace_id", "event_id", "causation_id"})
+_RUNTIME_INBOX_TRACE_IDENTIFIER_MAX_LENGTH = 120
+_REDACTED_SECRET = "***REDACTED***"  # noqa: S105  # nosec B105 -- 固定脱敏占位符，不是凭据。
 _EVENT_CALLBACK_TOP_LEVEL_FIELDS = (
     frozenset({"device_code", "event_type", "timestamp", "data"}) | _TRACE_TOP_LEVEL_FIELDS
 )
 _RESULT_CALLBACK_TOP_LEVEL_FIELDS = frozenset(
-    {"command_code", "device_code", "result", "finish_time", "data", "error_detail"} | _TRACE_TOP_LEVEL_FIELDS
+    {"command_code", "device_code", "result", "finish_time", "source_event_id", "data", "error_detail"}
+    | _TRACE_TOP_LEVEL_FIELDS
 )
 # 外部回调顶层白名单 (H4 边界一致): 不允许 provider_code/source_event_id
 # 等业务追溯字段直接放顶层, 必须放入 data 内。WMS 协议 source_event_id
@@ -437,6 +444,11 @@ def _validate_top_level_fields(payload: JsonDict, allowed_fields: frozenset[str]
             f"允许字段: {allowed_text}; 业务字段必须放在 data 中"
         )
 
+    for field_name in _TRACE_TOP_LEVEL_FIELDS:
+        value = payload.get(field_name)
+        if isinstance(value, str) and len(value) > _RUNTIME_INBOX_TRACE_IDENTIFIER_MAX_LENGTH:
+            raise ValueError(f"{callback_type}.{field_name} 超过最大长度 {_RUNTIME_INBOX_TRACE_IDENTIFIER_MAX_LENGTH}")
+
 
 def _collect_forbidden_param_keys(
     data: Any,
@@ -552,6 +564,21 @@ def _build_callback_log_payload(
         "ingress_outcome": ingress_outcome,
         "failure_stage": failure_stage,
     }
+
+
+def _redact_callback_signatures(value: Any) -> Any:
+    """复制 callback 证据并递归移除任何层级、任何大小写的 signature。"""
+
+    if isinstance(value, dict):
+        return {
+            key: _REDACTED_SECRET
+            if isinstance(key, str) and key.casefold() == "signature"
+            else _redact_callback_signatures(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_callback_signatures(item) for item in value]
+    return value
 
 
 async def _record_callback_audit_log(
@@ -743,25 +770,32 @@ async def _handle_runtime_inbox_conflict(
     event_id: str | None = None,
     causation_id: str | None = None,
 ) -> CallbackRejectedIngressResponse:
-    await _log_callback_outcome(
-        db,
-        request,
-        callback_type=callback_type,
-        subject_code=_resolve_callback_subject(callback_type, request_body),
-        request_body=request_body,
-        request_id=request_id,
-        trace_id=trace_id or _resolve_callback_trace_id(request_body),
-        event_id=event_id or _resolve_callback_event_id(request_body),
-        causation_id=causation_id or _resolve_callback_causation_id(request_body),
-        response_status=409,
-        response_time_ms=response_time_ms,
-        success=False,
-        record_audit=True,
-        audit_title=_resolve_callback_audit_title(callback_type),
-        error_message=message,
-        ingress_outcome=_INGRESS_OUTCOME_REJECTED,
-        failure_stage=_FAILURE_STAGE_ORCHESTRATION,
-    )
+    try:
+        await _log_callback_outcome(
+            db,
+            request,
+            callback_type=callback_type,
+            subject_code=_resolve_callback_subject(callback_type, request_body),
+            request_body=request_body,
+            request_id=request_id,
+            trace_id=trace_id or _resolve_callback_trace_id(request_body),
+            event_id=event_id or _resolve_callback_event_id(request_body),
+            causation_id=causation_id or _resolve_callback_causation_id(request_body),
+            response_status=409,
+            response_time_ms=response_time_ms,
+            success=False,
+            record_audit=True,
+            audit_title=_resolve_callback_audit_title(callback_type),
+            error_message=message,
+            ingress_outcome=_INGRESS_OUTCOME_REJECTED,
+            failure_stage=_FAILURE_STAGE_ORCHESTRATION,
+        )
+    except Exception as log_error:
+        logger.warning(f"RuntimeInbox 冲突日志写入失败，继续返回 409: {log_error}")
+        try:
+            await db.rollback()
+        except Exception as rollback_error:
+            logger.error(f"RuntimeInbox 冲突日志失败后的 rollback 失败: {rollback_error}")
     return _build_conflict_fail(message, reason_code="RUNTIME_INBOX_CONFLICT")
 
 
@@ -827,11 +861,12 @@ async def _record_callback_diagnostic(db: AsyncSessionDep, **kwargs: Any) -> Non
     """记录 callback 诊断日志并尽力持久化诊断卡片。"""
 
     event = _log_callback_diagnostic(**kwargs)
+    sanitized_payload = _redact_callback_signatures(kwargs.get("payload"))
     try:
         _ = await workline_diagnostic_service.record_event(
             db,
             event=event,
-            evidence={"payload": kwargs.get("payload")},
+            evidence={"payload": sanitized_payload},
             auto_commit=False,
         )
     except Exception as exc:
@@ -858,6 +893,7 @@ async def _log_callback_outcome(
     ingress_outcome: str | None = None,
     failure_stage: str | None = None,
 ) -> None:
+    sanitized_request_body = cast("JsonDict", _redact_callback_signatures(request_body))
     trace = TraceContext.from_request(
         request_id=request_id,
         trace_id=trace_id,
@@ -872,7 +908,7 @@ async def _log_callback_outcome(
             trace=trace,
             callback_type=callback_type,
             subject_code=subject_code,
-            request_body=request_body,
+            request_body=sanitized_request_body,
             response_status=response_status,
             response_time_ms=response_time_ms,
             error_message=error_message,
@@ -887,7 +923,7 @@ async def _log_callback_outcome(
             db,
             request,
             title=audit_title,
-            args=request_body,
+            args=sanitized_request_body,
             cost_time=response_time_ms / 1000,
             success=True,
         )
@@ -896,11 +932,100 @@ async def _log_callback_outcome(
         db,
         request,
         title=audit_title,
-        args=request_body,
+        args=sanitized_request_body,
         cost_time=response_time_ms / 1000,
         success=False,
         message=error_message,
     )
+
+
+async def _log_payload_too_large_best_effort(
+    db: AsyncSessionDep,
+    request: Request,
+    *,
+    callback_type: str,
+    subject_code: str,
+    evidence: JsonDict,
+    request_id: str | None,
+    trace_id: str | None,
+    event_id: str | None,
+    causation_id: str | None,
+    response_time_ms: int,
+    audit_title: str,
+    error_message: str,
+) -> None:
+    """尽力记录 payload 超限证据；日志故障不得覆盖确定的 HTTP 413。"""
+
+    bounded_evidence = {key: value[:200] if isinstance(value, str) else value for key, value in evidence.items()}
+    try:
+        await _log_callback_outcome(
+            db,
+            request,
+            callback_type=callback_type,
+            subject_code=subject_code[:50],
+            request_body=bounded_evidence,
+            request_id=request_id[:100] if request_id else None,
+            trace_id=trace_id[:100] if trace_id else None,
+            event_id=event_id[:200] if event_id else None,
+            causation_id=causation_id[:200] if causation_id else None,
+            response_status=413,
+            response_time_ms=response_time_ms,
+            success=False,
+            record_audit=True,
+            audit_title=audit_title,
+            error_message=error_message,
+            ingress_outcome=_INGRESS_OUTCOME_REJECTED,
+            failure_stage=_FAILURE_STAGE_ORCHESTRATION,
+        )
+    except Exception as log_error:
+        logger.warning(f"RuntimeInbox payload 超限日志写入失败，继续返回 413: {log_error}")
+        try:
+            await db.rollback()
+        except Exception as rollback_error:
+            logger.error(f"RuntimeInbox payload 超限日志失败后的 rollback 失败: {rollback_error}")
+
+
+async def _log_correlation_unavailable_best_effort(
+    db: AsyncSessionDep,
+    request: Request,
+    *,
+    subject_code: str,
+    evidence: JsonDict,
+    request_id: str | None,
+    trace_id: str | None,
+    event_id: str | None,
+    causation_id: str | None,
+    response_time_ms: int,
+) -> None:
+    """尽力记录孤立关联的有限证据；日志故障不得覆盖确定的 HTTP 503。"""
+
+    bounded_evidence = {key: value[:200] if isinstance(value, str) else value for key, value in evidence.items()}
+    try:
+        await _log_callback_outcome(
+            db,
+            request,
+            callback_type="result",
+            subject_code=subject_code[:50],
+            request_body=bounded_evidence,
+            request_id=request_id[:100] if request_id else None,
+            trace_id=trace_id[:100] if trace_id else None,
+            event_id=event_id[:200] if event_id else None,
+            causation_id=causation_id[:200] if causation_id else None,
+            response_status=503,
+            response_time_ms=response_time_ms,
+            success=False,
+            record_audit=True,
+            audit_title="设备回调结果",
+            error_message="RuntimeInbox correlation unavailable",
+            ingress_outcome=_INGRESS_OUTCOME_FAILED,
+            failure_stage=_FAILURE_STAGE_ORCHESTRATION,
+        )
+    except Exception as log_error:
+        logger.warning(f"RuntimeInbox 孤立关联日志写入失败，继续返回 503: {log_error}")
+        try:
+            await db.rollback()
+        except Exception as rollback_error:
+            logger.error(f"RuntimeInbox 孤立关联日志失败后的 rollback 失败: {rollback_error}")
 
 
 async def _handle_validation_failure(
@@ -1505,6 +1630,53 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             ),
         )
 
+    except RuntimeInboxPayloadTooLarge as exc:
+        logger.error(f"指令结果回调 RuntimeInbox payload 超限: {exc}")
+        oversized_evidence: JsonDict = {
+            "callback_type": "DEVICE_RESULT",
+            "command_code": command_code,
+            "device_code": device_code,
+            "trace_id": resolved_trace_id,
+            "event_id": _resolve_callback_event_id(callback_data),
+            "actual_bytes": exc.actual_bytes,
+            "max_bytes": exc.max_bytes,
+        }
+        await _log_payload_too_large_best_effort(
+            db,
+            request,
+            callback_type="result",
+            subject_code=device_code,
+            evidence=oversized_evidence,
+            request_id=request_id,
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
+            response_time_ms=_response_time_ms(start_time),
+            audit_title="设备回调结果",
+            error_message=str(exc),
+        )
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except RuntimeInboxCorrelationUnavailable as exc:
+        logger.error("指令结果回调 RuntimeInbox correlation 不可用")
+        await _log_correlation_unavailable_best_effort(
+            db,
+            request,
+            subject_code=device_code,
+            evidence={
+                "callback_type": "DEVICE_RESULT",
+                "command_code": command_code,
+                "device_code": device_code,
+                "trace_id": resolved_trace_id,
+                "event_id": _resolve_callback_event_id(callback_data),
+                "reason_code": "RUNTIME_INBOX_CORRELATION_UNAVAILABLE",
+            },
+            request_id=request_id,
+            trace_id=resolved_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
+            response_time_ms=_response_time_ms(start_time),
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValidationError as exc:
         logger.error(f"指令结果回调模型校验失败: {exc}")
         await _record_callback_diagnostic(
@@ -1531,11 +1703,11 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             event_id=_resolve_callback_event_id(callback_data),
             causation_id=_resolve_callback_causation_id(callback_data),
         )
-    except ValueError as exc:
+    except CallbackPayloadValidationError as exc:
         logger.error(f"指令结果回调契约校验失败: {exc}")
         await _record_callback_diagnostic(
             db,
-            error_code=ErrorCode.CONFIG_INVALID,
+            error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
             message=f"结果回调契约校验失败: {exc}",
             request_id=request_id,
             callback_type="result",
@@ -1892,7 +2064,7 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             request_id=request_id,
             is_workline_event=is_workline_event,
             canonical_event_type=canonical_event_type,
-            inbox_service=inbox_service,
+            device_id=resolve_entity_id(device),
             trace_id=_resolve_callback_trace_id(event_data),
             event_id=_resolve_callback_event_id(event_data),
             causation_id=_resolve_callback_causation_id(event_data),
@@ -1942,6 +2114,32 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             ),
         )
 
+    except RuntimeInboxPayloadTooLarge as exc:
+        logger.error(f"设备事件上报 RuntimeInbox payload 超限: {exc}")
+        oversized_evidence: JsonDict = {
+            "callback_type": "DEVICE_EVENT",
+            "device_code": device_code,
+            "event_type": canonical_event_type,
+            "trace_id": _resolve_callback_trace_id(event_data),
+            "event_id": _resolve_callback_event_id(event_data),
+            "actual_bytes": exc.actual_bytes,
+            "max_bytes": exc.max_bytes,
+        }
+        await _log_payload_too_large_best_effort(
+            db,
+            request,
+            callback_type="event",
+            subject_code=device_code,
+            evidence=oversized_evidence,
+            request_id=request_id,
+            trace_id=_resolve_callback_trace_id(event_data),
+            event_id=_resolve_callback_event_id(event_data),
+            causation_id=_resolve_callback_causation_id(event_data),
+            response_time_ms=_response_time_ms(start_time),
+            audit_title="设备事件上报",
+            error_message=str(exc),
+        )
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except Exception as exc:
         if isinstance(exc, (RuntimeInboxConflict, IdempotencyConflict)):
             logger.error(f"设备事件上报 RuntimeInbox 冲突: {exc}")
@@ -2092,7 +2290,6 @@ async def handle_callback_external(
             callback_type=callback_type,
             payload=callback_data,
             request_id=request_id,
-            inbox_service=inbox_service,
             trace_id=external_trace_id,
             event_id=_resolve_callback_event_id(callback_data),
             causation_id=_resolve_callback_causation_id(callback_data),
@@ -2134,6 +2331,31 @@ async def handle_callback_external(
             ),
         )
 
+    except RuntimeInboxPayloadTooLarge as exc:
+        logger.error(f"外部回调 RuntimeInbox payload 超限: {exc}")
+        oversized_evidence: JsonDict = {
+            "callback_type": callback_type,
+            "source_system": callback_data.get("source_system"),
+            "source_event_id": callback_data.get("source_event_id"),
+            "trace_id": external_trace_id,
+            "actual_bytes": exc.actual_bytes,
+            "max_bytes": exc.max_bytes,
+        }
+        await _log_payload_too_large_best_effort(
+            db,
+            request,
+            callback_type="external",
+            subject_code=callback_type,
+            evidence=oversized_evidence,
+            request_id=request_id,
+            trace_id=external_trace_id,
+            event_id=_resolve_callback_event_id(callback_data),
+            causation_id=_resolve_callback_causation_id(callback_data),
+            response_time_ms=_response_time_ms(start_time),
+            audit_title="外部系统回调",
+            error_message=str(exc),
+        )
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     except ValueError as exc:
         logger.error(f"外部回调契约校验失败: {exc}")
         return await _handle_external_validation_failure(

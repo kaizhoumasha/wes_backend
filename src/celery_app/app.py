@@ -4,16 +4,21 @@
 # 用途: Celery 应用配置和初始化
 # ============================================
 
-import asyncio
 from typing import Any, cast
 
 from celery import Celery  # pyright: ignore[reportMissingTypeStubs]
-from celery.signals import beat_init, worker_init, worker_process_init  # pyright: ignore[reportMissingTypeStubs]
+from celery.signals import (  # pyright: ignore[reportMissingTypeStubs]
+    beat_init,
+    worker_init,
+    worker_process_init,
+    worker_process_shutdown,
+)
 
 from src.core.conf import settings
-from src.core.logger import logger, setup_logger
+from src.core.logger import setup_logger
 
 from . import config
+from .async_runtime import celery_async_runtime
 
 # ============================================
 # Celery 应用实例
@@ -25,9 +30,10 @@ celery_app = Celery(
     backend=settings.CELERY_BACKEND,
     include=[
         "src.celery_app.tasks.core",  # 核心任务
-        "src.celery_app.tasks.workline",  # 作业线编排任务
         "src.celery_app.tasks.handling",  # 系统级 Handling 任务
+        "src.celery_app.tasks.runtime_inbox",  # RuntimeInbox 主链路任务 (Plan Task 6)
         "src.celery_app.tasks.sys",  # 系统级统一任务
+        "src.celery_app.tasks.workline",  # 作业线编排任务
     ],
 )
 
@@ -36,36 +42,10 @@ celery_app = Celery(
 # ============================================
 
 
-async def _init_worker_infra() -> None:
-    """统一初始化 Worker 基础设施（DB + Redis）"""
-    from src.database.db import init_db
-    from src.database.redis_client import redis_manager
-
-    await init_db()
-    logger.info("✓ Worker 数据库连接已初始化")
-
-    try:
-        await redis_manager.init_redis()
-    except Exception as e:
-        logger.warning(f"Worker Redis 初始化失败（降级模式）: {e}")
-
-
-def _run_sync_init() -> None:
-    """同步包装器，在信号处理器中运行异步初始化"""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(_init_worker_infra())
-    except Exception as e:
-        logger.error(f"Worker 基础设施初始化失败: {e}")
-        raise
-
-
 @worker_init.connect
 def on_worker_init(*args: Any, **kwargs: Any) -> None:
-    """Worker 主进程启动时初始化日志和基础设施"""
+    """Worker 主进程只初始化日志，禁止创建可被 fork 继承的异步资源。"""
     setup_logger()  # 初始化 loguru + 抑制 pidbox/kombu/amqp 噪音
-    _run_sync_init()
 
 
 @worker_process_init.connect
@@ -76,7 +56,13 @@ def on_worker_process_init(*args: Any, **kwargs: Any) -> None:
 
     _logger_module._initialized = False
     setup_logger()
-    _run_sync_init()
+    celery_async_runtime.initialize()
+
+
+@worker_process_shutdown.connect
+def on_worker_process_shutdown(*args: Any, **kwargs: Any) -> None:
+    """Worker 子进程退出时按阶段关闭其唯一异步运行时。"""
+    celery_async_runtime.shutdown()
 
 
 @beat_init.connect
@@ -112,7 +98,7 @@ cast("Any", celery_app.conf).update(
     # 任务重试配置
     # ================================
     task_acks_late=True,  # 任务执行后才确认 (防止任务丢失)
-    worker_prefetch_multiplier=4,  # 预取任务数
+    worker_prefetch_multiplier=1,  # 与 acks_late 对齐，避免单个 child 预占过多未确认任务
     task_max_retries=3,
     task_default_retry_delay=60,  # 重试延迟 (秒)
     # ================================
@@ -125,6 +111,8 @@ cast("Any", celery_app.conf).update(
     # ================================
     worker_concurrency=4,  # 并发任务数 (默认: CPU 核心数)
     worker_max_tasks_per_child=1000,  # 每个 Worker 处理的最大任务数
+    worker_soft_shutdown_timeout=10,
+    worker_enable_soft_shutdown_on_idle=True,
     worker_log_format="[%(asctime)s: %(levelname)s/%(processName)s] %(message)s",
     worker_task_log_format="[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s",
     worker_hijack_root_logger=False,  # 不劫持根 logger，避免与项目日志配置冲突

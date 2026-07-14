@@ -271,10 +271,15 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         self,
         db: AsyncSession,
         session_id: int,
+        *,
+        populate_existing: bool = False,
     ) -> WorklineSession | None:
         """根据 ID 查询并锁定 Session。"""
         columns = cast("Any", WorklineSession).__table__.c
-        result = await db.execute(select(WorklineSession).where(columns.id == session_id).with_for_update())
+        statement = select(WorklineSession).where(columns.id == session_id).with_for_update()
+        if populate_existing:
+            statement = statement.execution_options(populate_existing=True)
+        result = await db.execute(statement)
         return result.scalar_one_or_none()
 
     async def persist_command_result_wait(

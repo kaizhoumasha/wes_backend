@@ -20,9 +20,9 @@ from sqlalchemy.pool import NullPool
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device
 from src.app.runtime.orchestration.models.diagnostic import WorklineDiagnostic
-from src.app.runtime.orchestration.models.inbox import InboxStatus, WorklineInbox
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.sys.models import SystemOutbox
 from src.app.workline.models.workline import WorkLine
 from src.core.conf import settings
@@ -185,13 +185,13 @@ async def integration_db_session(
 async def _find_hot_queue_inboxes(db: AsyncSession) -> list[tuple[object, ...]]:
     result = await db.execute(
         select(
-            WorklineInbox.id,
-            WorklineInbox.status,
-            WorklineInbox.next_retry_at,
-            WorklineInbox.updated_at,
+            RuntimeInbox.id,
+            RuntimeInbox.status,
+            RuntimeInbox.next_retry_at,
+            RuntimeInbox.updated_at,
         )
-        .where(WorklineInbox.status.in_([InboxStatus.NEW, InboxStatus.RETRY, InboxStatus.PROCESSING]))  # type: ignore[arg-type]
-        .order_by(WorklineInbox.received_at.asc(), WorklineInbox.id.asc())  # type: ignore[arg-type]
+        .where(RuntimeInbox.status.in_(["RECEIVED", "FAILED", "PROCESSING"]))  # type: ignore[arg-type]
+        .order_by(RuntimeInbox.received_at.asc(), RuntimeInbox.id.asc())  # type: ignore[arg-type]
         .limit(5)
     )
     return list(result.all())
@@ -233,13 +233,13 @@ async def _count_ack_timed_out_commands(db: AsyncSession) -> int:
 
 
 @pytest_asyncio.fixture(scope="function")
-async def isolated_workline_inbox_queue(
+async def isolated_runtime_inbox_queue(
     integration_session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     async with integration_session_factory() as db:
         hot_queue_rows = await _find_hot_queue_inboxes(db)
     if hot_queue_rows:
-        pytest.fail(f"WorkLine inbox 全局 task smoke 需要空队列；当前 Docker DB 仍有热队列 inbox: {hot_queue_rows}")
+        pytest.fail(f"RuntimeInbox 全局 task smoke 需要空队列；当前 Docker DB 仍有热队列 inbox: {hot_queue_rows}")
 
 
 @pytest_asyncio.fixture(scope="function")
@@ -382,10 +382,10 @@ async def test_prefix(
                 WorklineSession.workline_id.in_(prefixed_worklines),
             )
         )
-        prefixed_inboxes = select(WorklineInbox.id).where(
+        prefixed_inboxes = select(RuntimeInbox.id).where(
             or_(
-                WorklineInbox.trace_id.like(f"{prefix}%"),  # type: ignore[arg-type]
-                WorklineInbox.workline_id.in_(prefixed_worklines),
+                RuntimeInbox.trace_id.like(f"{prefix}%"),  # type: ignore[arg-type]
+                RuntimeInbox.workline_id.in_(prefixed_worklines),
             )
         )
         prefixed_outboxes = select(SystemOutbox.id).where(
@@ -419,10 +419,10 @@ async def test_prefix(
             )
         )
         await cleanup_session.execute(
-            delete(WorklineInbox).where(  # type: ignore[arg-type]
+            delete(RuntimeInbox).where(  # type: ignore[arg-type]
                 or_(
-                    WorklineInbox.trace_id.like(f"{prefix}%"),
-                    WorklineInbox.workline_id.in_(prefixed_worklines),
+                    RuntimeInbox.trace_id.like(f"{prefix}%"),
+                    RuntimeInbox.workline_id.in_(prefixed_worklines),
                 )
             )
         )

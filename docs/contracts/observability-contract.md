@@ -7,7 +7,12 @@
 | Signal | Type | Required attributes |
 | --- | --- | --- |
 | `callback.normalize` | span + metric + log event | `trace_id`, `correlation_id`, `provider_code`, `source_event_id` |
-| `runtime_inbox.claim` | span + metric | `trace_id`, `correlation_id`, `operation_kind`, `inbox_id` |
+| `runtime_inbox.claim_batch` | metric | `claimed_count`, `duration_ms` |
+| `runtime_inbox.processing` | span + metric | `inbox_id`, `duration_ms`, `outcome` |
+| `runtime_inbox.lease_reclaim` | metric | `reclaimed_count` |
+| `runtime_inbox.fencing_reject` | metric + log event | `inbox_id`, `target_state` |
+| `runtime_inbox.resource_wait` | metric | `inbox_id` |
+| `runtime_inbox.dead_letter` | metric + log event | `inbox_id` |
 | `runtime_intent.dispatch` | span + metric + log event | `trace_id`, `correlation_id`, `provider_code`, `operation_kind` |
 | `device_command.ack` | span + metric | `trace_id`, `correlation_id`, `command_code`, `provider_code`, `ack_age_ms` |
 | `device_command.dispatch_policy` | span + metric | `trace_id`, `correlation_id`, `command_code`, `device_code`, `provider_code`, `policy_decision`, `reason`, `dispatch_allowed`, `runtime_hold_required` |
@@ -27,7 +32,13 @@
 - `policy_decision` / `reason`：DeviceDispatchPolicy 的稳定决策和原因，例如 `ALLOW_DISPATCH`、`WAIT_FOR_IDLE`、`RETRY_STATUS_PROBE`、`CREATE_RUNTIME_HOLD` 与 `DEVICE_BUSY`。
 - `dispatch_allowed` / `runtime_hold_required`：DeviceDispatchPolicy 决策是否允许本轮派发，以及是否要求 RuntimeHold。
 - `source_event_id`：外部 callback / event 的原始事件标识；`callback.normalize` 缺少原始事件 ID 时允许使用 ingress `request_id` 作为稳定 fallback；legacy 设备结果缺少事件 ID 时，`DeviceCommand RESULT` 可使用 `command_result:{command_code}:{finish_time}` 作为稳定 fallback。
-- `inbox_id`：RuntimeInbox / WorklineInbox 的持久化消息主键，用于定位 claim worker 处理边界。
+- `inbox_id`：RuntimeInbox 持久化消息主键，用于定位 processor、fencing、RESOURCE_WAIT 和 dead-letter 边界。
+- `PRE_CUTOVER_AUDIT_ONLY`：切换前缺少 canonical payload 的 audit-only 终态；不可 claim、retry 或 replay，
+  不得计入可行动 `runtime_inbox.dead_letter` 指标。
+- `claimed_count` / `duration_ms`：单次 Celery 批次实际 claim 数量与累计 claim SQL + commit 耗时；不把批量 SQL 延迟按行数摊薄。
+- `reclaimed_count`：本批次事务提交后实际回收的 stale lease 数量。
+- `outcome`：单条 processing 的稳定结果分类：`success` / `failed` / `skipped` / `resource_wait` / `timeout` / `error`。
+- `target_state`：旧 processor token 被 fencing 拒绝时尝试写入的目标状态。
 - `evidence_key`：WMS evidence 幂等键，用于定位失败留痕尝试。
 - `reason_code`：稳定失败原因码，例如 `WMS_EVIDENCE_PERSISTENCE_FAILED`。
 
@@ -37,13 +48,24 @@
 - `RuntimeOpenTelemetryBridge` 是 registry observer 到 OpenTelemetry-style exporter 的无依赖桥接层；按 `signal_type` 将同一已验证事件 fan-out 为 span、metric 和 log event，不允许 exporter 绕过 registry 直接消费临时字段。
 - `RuntimeOpenTelemetryHttpExporter` 是生产 backend adapter 接线；FastAPI lifespan 通过 `configure_runtime_open_telemetry_backend()` 按 `WES_RUNTIME_OTEL_ENABLED=true` + `WES_RUNTIME_OTEL_ENDPOINT` 注册命名 observer，重复初始化必须幂等，默认关闭。
 - Callback ingress 在 external normalize allow-list 校验、device result 命令锚点解析、device event 入库 trace 解析完成后发出 `callback.normalize`；观测发射失败不得影响 callback ACK、落库或业务编排。
-- WorklineInbox worker 在 `claim_pending_messages()` 成功提交释放行锁后发出 `runtime_inbox.claim`；观测发射失败不得回滚或阻塞 claim。
+- RuntimeInbox Celery worker 聚合本批次 claim 调用，在 claim/reclaim 事务提交后发出 `runtime_inbox.claim_batch` 与 `runtime_inbox.lease_reclaim`；不得从 repository 热路径逐条同步发射。
+- RuntimeInbox processor 为每条已 claim 消息发出 `runtime_inbox.processing`；fenced terminal 未命中、RESOURCE_WAIT 与 DEAD_LETTER 分别发出对应稳定 signal。观测发射失败不得回滚 Inbox 事务或改变 worker 结果。
 - Workline `OutboxDispatchService._dispatch_single()` 进入设备、HTTP 或内部信号派发出口时发出 `runtime_intent.dispatch`；观测发射失败不得阻塞 outbox 派发或改变终态更新。
 - `DeviceCommandGateway.dispatch()` 在本地 `DeviceDispatchPolicy` 准入决策后发出 `device_command.dispatch_policy`；观测发射失败不得改变派发、重试、等待或 HOLD 决策。
 - `DeviceCommandService.handle_callback_result()` 在设备结果被接受并更新命令终态后发出 `device_command.result`；观测发射失败不得回滚或阻塞 callback result 处理。
 - WMS breaker OPEN/HALF_OPEN/CLOSED 状态变化使用 `wms_breaker.transition`；typed port 必须从请求 `trace_id` 透传，不能在缺失 trace 时伪造追踪标识。
 - WMS 成功响应后的本地 evidence/breaker 留痕失败使用 `wms_evidence.persistence_failure`；该事件必须保留原始 `trace_id` 和 `evidence_key`，供系统诊断而非业务 HOLD。
 - 具体 backend（Jaeger / Tempo / SkyWalking 等）必须通过 `RuntimeOpenTelemetryBridge` 后方的 HTTP adapter / collector endpoint 挂载，不能新增临时字段替代稳定 attributes。
+
+## Acceptance Evidence
+
+- 严格 PostgreSQL CI 入口为 `Jenkinsfile.backend-ci` 与
+  `scripts/run_runtime_inbox_postgresql_acceptance_ci.sh`，只连接当次构建的隔离 PG17。
+- Runner `scripts/run_runtime_inbox_postgresql_acceptance.py` 依次执行 migration、processing、两个 crash
+  window、benchmark 与 evidence validator；任一步失败返回非零。
+- 正式 benchmark evidence 文件名为 `runtime-inbox-claim-benchmark.json`，必须记录完整 commit、
+  `dirty=false`、PostgreSQL metadata、样本、指标、阈值、生产 statement fingerprint、query plan 与 verdict。
+- JUnit、suite log、脱敏 diagnostic 和 evidence 统一归档在 `reports/runtime-inbox-acceptance/`。
 
 ## Prohibitions
 

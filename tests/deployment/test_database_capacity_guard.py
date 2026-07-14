@@ -1,0 +1,440 @@
+"""数据库连接容量与部署拓扑合同。"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+from scripts.capacity_guard import (
+    API_DATABASE_POOL_SIZE,
+    API_UVICORN_WORKERS,
+    CELERY_DATABASE_POOL_SIZE,
+    CapacityPlan,
+    CapacityViolation,
+    _parse_scale,
+    _read_api_uvicorn_workers,
+    build_capacity_plan,
+    calculate_capacity,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+class _ComposeSafeLoader(yaml.SafeLoader):
+    """解析 Compose 的 YAML 标签，同时保留普通 SafeLoader 语义。"""
+
+
+def _construct_compose_sequence(loader: _ComposeSafeLoader, node: yaml.nodes.SequenceNode) -> list[object]:
+    return loader.construct_sequence(node)
+
+
+_ComposeSafeLoader.add_constructor("!override", _construct_compose_sequence)
+
+
+def test_production_capacity_formula_matches_single_api_and_four_celery_containers() -> None:
+    plan = CapacityPlan(
+        api_replicas=1,
+        api_processes=4,
+        api_pool_size=5,
+        celery_replicas=4,
+        celery_processes=4,
+        celery_pool_size=1,
+        reserve=10,
+    )
+
+    result = calculate_capacity(plan, max_connections=100)
+
+    assert result.api_connections == 20
+    assert result.celery_connections == 16
+    assert result.application_connections == 36
+    assert result.available_connections == 90
+
+
+def test_capacity_guard_rejects_budget_above_live_postgresql_limit() -> None:
+    plan = CapacityPlan(
+        api_replicas=2,
+        api_processes=4,
+        api_pool_size=5,
+        celery_replicas=4,
+        celery_processes=4,
+        celery_pool_size=1,
+        reserve=10,
+    )
+
+    with pytest.raises(CapacityViolation, match="exceeds"):
+        calculate_capacity(plan, max_connections=60)
+
+
+def test_capacity_guard_rejects_nonzero_overflow_and_illegal_role_pool() -> None:
+    with pytest.raises(CapacityViolation, match="max_overflow"):
+        CapacityPlan(
+            api_replicas=1,
+            api_processes=4,
+            api_pool_size=5,
+            celery_replicas=4,
+            celery_processes=4,
+            celery_pool_size=1,
+            reserve=10,
+            max_overflow=1,
+        )
+
+    with pytest.raises(CapacityViolation, match="celery_pool_size"):
+        CapacityPlan(
+            api_replicas=1,
+            api_processes=4,
+            api_pool_size=5,
+            celery_replicas=4,
+            celery_processes=4,
+            celery_pool_size=2,
+            reserve=10,
+        )
+
+
+def test_environment_profiles_and_compose_declare_explicit_database_roles() -> None:
+    for env_name in (".env.dev", ".env.test", ".env.prod"):
+        env_text = (REPO_ROOT / env_name).read_text(encoding="utf-8")
+        assert "DATABASE_RUNTIME_ROLE=cli" in env_text
+        assert "DATABASE_POOL_SIZE=1" in env_text
+        assert "DATABASE_MAX_OVERFLOW=0" in env_text
+
+    prod_text = (REPO_ROOT / ".env.prod").read_text(encoding="utf-8")
+    assert "API_REPLICAS=1" in prod_text
+
+    for compose_name in ("docker-compose.yml", "docker-compose.deploy.yml"):
+        compose = yaml.load(
+            (REPO_ROOT / compose_name).read_text(encoding="utf-8"),
+            Loader=_ComposeSafeLoader,  # noqa: S506 -- 仅扩展 SafeLoader 解析 Compose 的 !override 标签。
+        )
+        api_env = compose["services"]["api"]["environment"]
+        worker_env = compose["services"]["celery_worker"]["environment"]
+        assert api_env["DATABASE_RUNTIME_ROLE"] == "api"
+        assert api_env["DATABASE_POOL_SIZE"] == API_DATABASE_POOL_SIZE
+        assert api_env["DATABASE_MAX_OVERFLOW"] == 0
+        assert worker_env["DATABASE_RUNTIME_ROLE"] == "celery"
+        assert worker_env["DATABASE_POOL_SIZE"] == CELERY_DATABASE_POOL_SIZE
+        assert worker_env["DATABASE_MAX_OVERFLOW"] == 0
+        assert compose["services"]["celery_beat"]["environment"]["DATABASE_RUNTIME_ROLE"] == "cli"
+        assert compose["services"]["flower"]["environment"]["DATABASE_RUNTIME_ROLE"] == "cli"
+
+    test_compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    pytest_env = test_compose["services"]["pytest"]["environment"]
+    assert pytest_env["DATABASE_RUNTIME_ROLE"] == "integration"
+    assert pytest_env["DATABASE_POOL_SIZE"] == 1
+    assert pytest_env["DATABASE_MAX_OVERFLOW"] == 0
+    assert pytest_env["DATABASE_APPLICATION_RUN_ID"] == "${INTEGRATION_RUN_ID:-}"
+    pytest_command = test_compose["services"]["pytest"]["command"]
+    assert "integration-$$(date +%s)-$$$$" in pytest_command
+
+
+def test_production_compose_uses_image_source_without_host_override() -> None:
+    prod_text = (REPO_ROOT / ".env.prod").read_text(encoding="utf-8")
+    deploy_text = (REPO_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8")
+
+    assert "SOURCE_MOUNT=" not in prod_text
+    assert deploy_text.count("volumes: !override") == 4
+
+    env = os.environ.copy()
+    env["BACKEND_IMAGE"] = "example.invalid/wes/wes_backend:test"
+    docker_path = shutil.which("docker")
+    if docker_path is None:
+        pytest.skip("Docker CLI is required to render the merged production Compose contract")
+    completed = subprocess.run(
+        [
+            docker_path,
+            "compose",
+            "--env-file",
+            ".env.prod",
+            "-f",
+            "docker-compose.yml",
+            "-f",
+            "docker-compose.deploy.yml",
+            "--profile",
+            "*",
+            "config",
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    merged = yaml.safe_load(completed.stdout)
+    for service_name in ("api", "celery_worker", "celery_beat", "flower"):
+        targets = {volume["target"] for volume in merged["services"][service_name].get("volumes", [])}
+        assert "/app/src" not in targets
+
+
+def test_deployment_script_runs_live_guard_before_application_start_and_scale() -> None:
+    script_text = (REPO_ROOT / "scripts/docker-deploy-simple.sh").read_text(encoding="utf-8")
+
+    assert "celery_worker=8" not in script_text
+    assert "capacity_guard.py" in script_text
+    cmd_up_body = script_text.split("cmd_up()", maxsplit=1)[1].split("cmd_down()", maxsplit=1)[0]
+    assert "--wait db redis" in cmd_up_body
+    assert cmd_up_body.index("--wait db redis") < cmd_up_body.index("run_capacity_guard")
+    assert "run_capacity_guard" in script_text
+    assert "validate_complete_scale_targets" in script_text
+    scale_body = script_text.split("cmd_scale()", maxsplit=1)[1].split("cmd_migrate()", maxsplit=1)[0]
+    assert scale_body.index("validate_complete_scale_targets") < scale_body.index("run_capacity_guard")
+
+
+def test_jenkins_and_production_runbook_require_guard_and_migration_before_application_start() -> None:
+    jenkins_text = (REPO_ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    deploy_body = jenkins_text.split("stage('Deploy Runtime')", maxsplit=1)[1].split("post {", maxsplit=1)[0]
+    guard_command = (
+        "run --rm --no-deps "
+        "-e DATABASE_RUNTIME_ROLE=cli "
+        "-e DATABASE_POOL_SIZE=1 "
+        "-e DATABASE_MAX_OVERFLOW=0 "
+        "api python scripts/capacity_guard.py --services api,celery_worker"
+    )
+
+    assert (
+        'COMPOSE_CMD="docker compose -f docker-compose.yml -f ${DEPLOY_COMPOSE_FILE} '
+        '--env-file ${DEPLOY_ENV_FILE}"' in deploy_body
+    )
+    assert "$COMPOSE_CMD up -d --wait db redis" in deploy_body
+    assert guard_command in deploy_body
+    infra_index = deploy_body.index("$COMPOSE_CMD up -d --wait db redis")
+    application_command = "$COMPOSE_CMD up -d --no-build --no-deps ${DEPLOY_SERVICES}"
+    first_guard_index = deploy_body.index("run_capacity_guard", infra_index)
+    quiesce_command = "$COMPOSE_CMD stop api celery_worker celery_beat"
+    migration_command = (
+        "$COMPOSE_CMD run --rm --no-deps "
+        "-e DATABASE_RUNTIME_ROLE=cli "
+        "-e DATABASE_POOL_SIZE=1 "
+        "-e DATABASE_MAX_OVERFLOW=0 "
+        "api alembic upgrade head"
+    )
+    quiesce_index = deploy_body.index(quiesce_command, first_guard_index)
+    migration_index = deploy_body.index(migration_command, quiesce_index)
+    migration_applied_index = deploy_body.index("MIGRATION_APPLIED=true", migration_index)
+    first_application_index = deploy_body.index(application_command, migration_applied_index)
+    assert (
+        infra_index
+        < first_guard_index
+        < quiesce_index
+        < migration_index
+        < migration_applied_index
+        < first_application_index
+    )
+    assert "cleanup_failed_deploy()" in deploy_body
+    assert "trap cleanup_failed_deploy EXIT" in deploy_body
+    cleanup_body = deploy_body.split("cleanup_failed_deploy()", maxsplit=1)[1].split(
+        "trap cleanup_failed_deploy EXIT", maxsplit=1
+    )[0]
+    assert 'if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]' in cleanup_body
+    assert "$COMPOSE_CMD stop api celery_worker celery_beat || true" in cleanup_body
+    assert deploy_body.index("DEPLOYMENT_HEALTHY=true") > deploy_body.index('if [ "$HEALTH_CHECK_PASSED" = false ]')
+    assert "for service_name in ${DEPLOY_SERVICES}; do" in deploy_body
+    assert 'case "$service_name" in' in deploy_body
+    assert "celery_worker|celery_beat)" in deploy_body
+    assert "$COMPOSE_CMD ps -q celery_worker celery_beat" not in deploy_body
+    assert "${service_name} 容器未就绪" in deploy_body
+    assert "CELERY_HEALTH_TIMEOUT_SECONDS" in deploy_body
+    assert 'while [ "$container_health" != "healthy" ] && [ "$container_health" != "none" ]' in deploy_body
+    assert 'inspect ping -d "celery@$(hostname)"' in deploy_body
+    assert deploy_body.index("DEPLOYMENT_HEALTHY=true") > deploy_body.index('inspect ping -d "celery@$(hostname)"')
+
+    automatic_rollback = deploy_body.split('if [ "$HEALTH_CHECK_PASSED" = false ]', maxsplit=1)[1]
+    assert "数据库迁移已执行，禁止自动切回旧镜像" in automatic_rollback
+    assert 'export BACKEND_IMAGE="$PREVIOUS_IMAGE"' not in automatic_rollback
+    assert application_command not in automatic_rollback
+
+    runbook_text = (REPO_ROOT / "docs/devops/prod-release-deploy.md").read_text(encoding="utf-8")
+    standard_release = runbook_text.split("### 4.5", maxsplit=1)[1].split("### 4.9", maxsplit=1)[0]
+    rollback = runbook_text.split("## 6. 回滚策略", maxsplit=1)[1].split("## 7.", maxsplit=1)[0]
+    assert "DATABASE_RUNTIME_ROLE=cli" in standard_release
+    assert "DATABASE_POOL_SIZE=1" in standard_release
+    assert "DATABASE_MAX_OVERFLOW=0" in standard_release
+    guard_index = standard_release.index("python scripts/capacity_guard.py --services api,celery_worker")
+    quiesce_index = standard_release.index("stop api celery_worker celery_beat")
+    migration_index = standard_release.index("api alembic upgrade head")
+    application_index = standard_release.index("up -d api celery_worker celery_beat flower nginx")
+    assert guard_index < quiesce_index < migration_index < application_index
+    assert "迁移后禁止自动切回旧镜像" in rollback
+    assert "PREVIOUS_IMAGE" not in rollback
+    assert "ROLLBACK_IMAGE" not in rollback
+    assert "基础设施保持在线" in rollback
+    assert "数据修复方案" in rollback
+
+
+def test_dockerfile_keeps_four_uvicorn_processes_as_capacity_input() -> None:
+    dockerfile_text = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert f'"--workers", "{API_UVICORN_WORKERS}"' in dockerfile_text
+    assert "1 x 4 x 5" in dockerfile_text
+
+
+def test_capacity_guard_reads_worker_count_from_dockerfile(tmp_path: Path) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text('CMD ["uvicorn", "main:app", "--workers", "7"]', encoding="utf-8")
+
+    assert _read_api_uvicorn_workers(dockerfile) == 7
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("API_UVICORN_WORKERS", "3"),
+        ("API_DATABASE_POOL_SIZE", "4"),
+        ("CELERY_DATABASE_POOL_SIZE", "2"),
+    ],
+)
+def test_capacity_plan_does_not_accept_removed_topology_override_contract(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str
+) -> None:
+    monkeypatch.setenv(name, value)
+
+    plan = build_capacity_plan(services={"api", "celery_worker"}, scales={})
+
+    assert plan.api_processes == API_UVICORN_WORKERS
+    assert plan.api_pool_size == API_DATABASE_POOL_SIZE
+    assert plan.celery_pool_size == CELERY_DATABASE_POOL_SIZE
+
+
+def test_capacity_plan_uses_only_actual_docker_process_and_pool_constants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("API_UVICORN_WORKERS", "API_DATABASE_POOL_SIZE", "CELERY_DATABASE_POOL_SIZE"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("API_REPLICAS", "1")
+    monkeypatch.setenv("CELERY_WORKER_REPLICAS", "4")
+    monkeypatch.setenv("CELERY_CONCURRENCY", "4")
+
+    plan = build_capacity_plan(services={"api", "celery_worker"}, scales={})
+
+    assert plan.api_processes == 4
+    assert plan.api_pool_size == 5
+    assert plan.celery_pool_size == 1
+    assert calculate_capacity(plan, max_connections=100).application_connections == 36
+
+
+def test_capacity_plan_rejects_reserve_below_ten() -> None:
+    with pytest.raises(CapacityViolation, match=r"reserve.*10"):
+        CapacityPlan(
+            api_replicas=1,
+            api_processes=4,
+            api_pool_size=5,
+            celery_replicas=4,
+            celery_processes=4,
+            celery_pool_size=1,
+            reserve=9,
+        )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "environment"),
+    [(["--reserve", "9"], {}), ([], {"DATABASE_CONNECTION_RESERVE": "9"})],
+)
+def test_capacity_guard_cli_rejects_reserve_below_ten(
+    arguments: list[str],
+    environment: dict[str, str],
+) -> None:
+    completed = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts/capacity_guard.py"), "--max-connections", "100", *arguments],
+        cwd=REPO_ROOT,
+        env={**os.environ, **environment},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert completed.returncode != 0
+    assert "reserve" in completed.stderr
+    assert "10" in completed.stderr
+
+
+@pytest.mark.parametrize("scale", [["api=3"], ["celery_worker=10"]])
+def test_scale_requires_complete_api_and_celery_target_topology(scale: list[str]) -> None:
+    with pytest.raises(CapacityViolation, match=r"complete.*api.*celery_worker"):
+        _parse_scale(scale)
+
+
+def test_scale_calculates_complete_api_then_worker_target_without_prior_state() -> None:
+    scales = _parse_scale(["api=3", "celery_worker=10"])
+
+    plan = build_capacity_plan(services={"api", "celery_worker"}, scales=scales)
+    result = calculate_capacity(plan, max_connections=200)
+
+    assert scales == {"api": 3, "celery_worker": 10}
+    assert result.api_connections == 60
+    assert result.celery_connections == 40
+    assert result.application_connections == 100
+
+
+def test_capacity_plan_rejects_zero_celery_concurrency_when_workers_exist() -> None:
+    with pytest.raises(CapacityViolation, match=r"celery_processes.*at least 1"):
+        CapacityPlan(
+            api_replicas=1,
+            api_processes=4,
+            api_pool_size=5,
+            celery_replicas=1,
+            celery_processes=0,
+            celery_pool_size=1,
+            reserve=10,
+        )
+
+
+def test_capacity_guard_env_rejects_zero_celery_concurrency() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts/capacity_guard.py"), "--max-connections", "100"],
+        cwd=REPO_ROOT,
+        env={**os.environ, "CELERY_WORKER_REPLICAS": "1", "CELERY_CONCURRENCY": "0"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert completed.returncode != 0
+    assert "celery_processes" in completed.stderr
+
+
+def _run_shell_scale_validation(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1"; shift; validate_complete_scale_targets "$@"',
+            "scale-contract",
+            str(REPO_ROOT / "scripts/docker-deploy-simple.sh"),
+            *arguments,
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["api=1", "celery_worker=4"],
+        ["--scale=api=1", "--scale=celery_worker=4"],
+        ["--scale", "api=1", "--scale", "celery_worker=4"],
+    ],
+)
+def test_shell_scale_validation_accepts_all_documented_complete_forms(arguments: list[str]) -> None:
+    completed = _run_shell_scale_validation(arguments)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize("arguments", [["--scale", "api=1"], ["--scale", "celery_worker=4"]])
+def test_shell_scale_validation_rejects_each_incomplete_target(arguments: list[str]) -> None:
+    completed = _run_shell_scale_validation(arguments)
+
+    assert completed.returncode != 0
+    assert "api=<n> celery_worker=<n>" in completed.stdout
