@@ -159,7 +159,8 @@ def setup_logger() -> None:
     _logger.remove()
 
     is_debug = settings.APP_DEBUG
-    log_level = "DEBUG" if is_debug else settings.LOG_LEVEL
+    # APP_DEBUG 仅控制调试格式和诊断能力，输出级别始终遵循显式日志配置。
+    log_level = settings.LOG_LEVEL
     rotation_size = settings.LOG_ROTATION_SIZE
     rotation_day = settings.LOG_RETENTION_DAYS
     log_compression = settings.LOG_COMPRESSION

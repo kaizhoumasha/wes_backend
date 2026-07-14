@@ -3,13 +3,26 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
+import scripts.run_runtime_inbox_postgresql_acceptance as acceptance_runner
 from scripts.run_runtime_inbox_postgresql_acceptance import (
+    EXECUTOR_CLEANUP_TIMEOUT_SECONDS,
+    EXECUTOR_ERROR_MAX_CHARS,
+    EXECUTOR_STREAM_CHUNK_SIZE,
+    EXECUTOR_TAIL_LINE_MAX_CHARS,
+    EXECUTOR_TAIL_MAX_CHARS,
+    EXECUTOR_TAIL_MAX_LINES,
     REQUIRED_FREE_CONNECTION_SLOTS,
+    AcceptanceCommand,
     AcceptanceFailure,
+    _default_executor,
     run_acceptance,
 )
 
@@ -126,6 +139,291 @@ def test_acceptance_runner_rejects_commit_mismatch_before_postgresql_preflight(t
         )
 
     assert preflight_called is False
+
+
+def test_default_executor_streams_redacted_full_log_and_raises_with_bounded_tail(tmp_path: Path):
+    (tmp_path / "logs").mkdir()
+    secret_url = "postgresql://runtime_user:super-secret@runtime-inbox-postgres/postgres"
+    early_marker = "EARLY-OUTPUT-MUST-STAY-IN-ARTIFACT"
+    tail_boundary_marker = "TAIL-CANDIDATE-OUTSIDE-8000-BOUNDARY"
+    oversized_line_start = "OVERSIZED-LATE-LINE-START-MUST-NOT-ENTER-ERROR"
+    late_marker = "LATE-OUTPUT-MUST-APPEAR-IN-TAIL"
+    oversized_fill = "z" * (EXECUTOR_TAIL_LINE_MAX_CHARS + 500)
+    script = "\n".join(
+        (
+            "import sys",
+            f"secret_url = {secret_url!r}",
+            f"print({early_marker!r}, secret_url)",
+            "for index in range(200):",
+            "    print(f'stdout-line-{index:03d}-' + ('x' * 120))",
+            "    print(f'stderr-line-{index:03d}-' + ('y' * 120), file=sys.stderr)",
+            f"for index in range({EXECUTOR_TAIL_MAX_LINES + 5}):",
+            f"    marker = {tail_boundary_marker!r} if index == 0 else f'tail-candidate-{{index:03d}}'",
+            f"    print(('q' * {EXECUTOR_TAIL_LINE_MAX_CHARS + 200}) + '-' + marker, file=sys.stderr)",
+            f"print({oversized_line_start!r} + {oversized_fill!r} + {late_marker!r} + ' ' + secret_url, file=sys.stderr)",
+            "raise SystemExit(23)",
+        )
+    )
+    command = AcceptanceCommand("streaming_contract", (sys.executable, "-u", "-c", script))
+    environment = {
+        "RUNTIME_INBOX_ACCEPTANCE_OUTPUT_DIR": str(tmp_path),
+        "INTEGRATION_DATABASE_URL": secret_url,
+    }
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _default_executor(command, environment)
+
+    log_path = tmp_path / "logs" / "streaming_contract.log"
+    log = log_path.read_text(encoding="utf-8")
+    error = str(exc_info.value)
+    assert early_marker in log
+    assert late_marker in log
+    assert tail_boundary_marker in log
+    assert oversized_line_start + oversized_fill + late_marker in log
+    assert "stdout-line-000" in log
+    assert "stderr-line-199" in log
+    assert secret_url not in log
+    assert "super-secret" not in log
+    assert "postgresql://***@runtime-inbox-postgres/postgres" in log
+    assert "streaming_contract" in error
+    assert "exited with 23" in error
+    assert str(log_path) in error
+    assert late_marker in error
+    assert early_marker not in error
+    assert tail_boundary_marker not in error
+    assert oversized_line_start not in error
+    assert secret_url not in error
+    assert "super-secret" not in error
+    assert "postgresql://***@runtime-inbox-postgres/postgres" in error
+    tail = error.split("redacted tail:\n", maxsplit=1)[1]
+    assert len(tail) <= EXECUTOR_TAIL_MAX_CHARS
+    assert len(error) <= EXECUTOR_ERROR_MAX_CHARS
+    assert "capture_output=True" not in RUNNER.read_text(encoding="utf-8")
+
+
+def test_default_executor_reads_fixed_chunks_and_bounds_unterminated_output(tmp_path: Path, monkeypatch):
+    (tmp_path / "logs").mkdir()
+    early_marker = "UNTERMINATED-EARLY-MARKER"
+    late_marker = "UNTERMINATED-LATE-MARKER"
+    boundary_fill = "u" * (EXECUTOR_STREAM_CHUNK_SIZE - len(early_marker) - 1)
+    output = early_marker + boundary_fill + "中" + ("u" * (EXECUTOR_STREAM_CHUNK_SIZE * 5)) + late_marker
+    encoded_output = output.encode()
+
+    class FixedChunkPipe:
+        def __init__(self):
+            self.offset = 0
+            self.read_sizes: list[int] = []
+
+        def __iter__(self):
+            raise AssertionError("executor must not iterate an unbounded logical line")
+
+        def read1(self, size=-1):
+            self.read_sizes.append(size)
+            assert size == EXECUTOR_STREAM_CHUNK_SIZE
+            chunk = encoded_output[self.offset : self.offset + size]
+            self.offset += len(chunk)
+            return chunk
+
+        def close(self):
+            pass
+
+    class CompletedProcess:
+        def __init__(self):
+            self.stdout = FixedChunkPipe()
+
+        def wait(self, timeout=None):
+            assert timeout is None
+            return 29
+
+    process = CompletedProcess()
+    monkeypatch.setattr(acceptance_runner.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    command = AcceptanceCommand("unterminated", ("fixed-command",))
+    environment = {"RUNTIME_INBOX_ACCEPTANCE_OUTPUT_DIR": str(tmp_path)}
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _default_executor(command, environment)
+
+    log = (tmp_path / "logs" / "unterminated.log").read_text(encoding="utf-8")
+    error = str(exc_info.value)
+    assert log == output
+    assert "�" not in log
+    assert early_marker not in error
+    assert late_marker in error
+    assert process.stdout.read_sizes[-1] == EXECUTOR_STREAM_CHUNK_SIZE
+    assert len(error.split("redacted tail:\n", maxsplit=1)[1]) <= EXECUTOR_TAIL_LINE_MAX_CHARS
+
+
+def test_default_executor_flushes_short_output_before_process_exit(tmp_path: Path):
+    (tmp_path / "logs").mkdir()
+    release_path = tmp_path / "release-child"
+    marker = "SHORT-OUTPUT-MUST-BE-VISIBLE-BEFORE-EXIT"
+    script = "\n".join(
+        (
+            "import time",
+            "from pathlib import Path",
+            f"release_path = Path({str(release_path)!r})",
+            f"print({marker!r}, flush=True)",
+            "while not release_path.exists():",
+            "    time.sleep(0.01)",
+        )
+    )
+    command = AcceptanceCommand("short_live_output", (sys.executable, "-u", "-c", script))
+    environment = {"RUNTIME_INBOX_ACCEPTANCE_OUTPUT_DIR": str(tmp_path)}
+    executor_errors: list[BaseException] = []
+
+    def execute() -> None:
+        try:
+            _default_executor(command, environment)
+        except BaseException as exc:  # pragma: no cover - 断言会报告线程中的异常
+            executor_errors.append(exc)
+
+    executor_thread = threading.Thread(target=execute, daemon=True)
+    executor_thread.start()
+    log_path = tmp_path / "logs" / "short_live_output.log"
+    deadline = time.monotonic() + 2.0
+    try:
+        while time.monotonic() < deadline:
+            if log_path.exists() and marker in log_path.read_text(encoding="utf-8"):
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("short child output was not flushed before process exit")
+        assert executor_thread.is_alive(), "child must still be waiting when the artifact becomes visible"
+    finally:
+        release_path.touch()
+        executor_thread.join(timeout=2.0)
+
+    assert not executor_thread.is_alive()
+    assert not executor_errors
+
+
+def test_default_executor_redacts_database_url_split_across_chunks(tmp_path: Path):
+    (tmp_path / "logs").mkdir()
+    secret = "split-user:split-secret"
+    safe_url = "postgresql://***@runtime-inbox-postgres/postgres"
+    prefix = "p" * (EXECUTOR_STREAM_CHUNK_SIZE * 6 - len("postgre"))
+    output = prefix + f"postgresql://{secret}@runtime-inbox-postgres/postgres SPLIT-SECRET-TAIL"
+    script = f"import sys; sys.stdout.write({output!r}); raise SystemExit(31)"
+    command = AcceptanceCommand("split_secret", (sys.executable, "-c", script))
+    environment = {"RUNTIME_INBOX_ACCEPTANCE_OUTPUT_DIR": str(tmp_path)}
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _default_executor(command, environment)
+
+    log = (tmp_path / "logs" / "split_secret.log").read_text(encoding="utf-8")
+    error = str(exc_info.value)
+    assert secret not in log
+    assert "split-secret" not in error
+    assert safe_url in log
+    assert safe_url in error
+    assert log == prefix + safe_url + " SPLIT-SECRET-TAIL"
+
+
+def test_default_executor_preserves_credentialless_database_url_split_across_chunks(tmp_path: Path):
+    (tmp_path / "logs").mkdir()
+    credentialless_url = "postgresql://localhost/db"
+    prefix = "c" * (EXECUTOR_STREAM_CHUNK_SIZE * 2 - len("postgre"))
+    output = prefix + credentialless_url + " CREDENTIALLESS-TAIL"
+    script = f"import sys; sys.stdout.write({output!r}); raise SystemExit(37)"
+    command = AcceptanceCommand("credentialless", (sys.executable, "-c", script))
+    environment = {"RUNTIME_INBOX_ACCEPTANCE_OUTPUT_DIR": str(tmp_path)}
+
+    with pytest.raises(RuntimeError) as exc_info:
+        _default_executor(command, environment)
+
+    log = (tmp_path / "logs" / "credentialless.log").read_text(encoding="utf-8")
+    error = str(exc_info.value)
+    assert log == output
+    assert credentialless_url in error
+    assert "postgresql://***" not in log
+    assert "postgresql://***" not in error
+
+
+def test_default_executor_terminates_then_kills_on_stream_failure_without_masking_error(tmp_path: Path, monkeypatch):
+    (tmp_path / "logs").mkdir()
+
+    class FailingPipe:
+        def read1(self, _size=-1):
+            raise RuntimeError("original stream failure")
+
+        def close(self):
+            pass
+
+    class StuckProcess:
+        def __init__(self):
+            self.stdout = FailingPipe()
+            self.events: list[object] = []
+            self.killed = False
+
+        def poll(self):
+            self.events.append("poll")
+
+        def terminate(self):
+            self.events.append("terminate")
+
+        def kill(self):
+            self.events.append("kill")
+            self.killed = True
+
+        def wait(self, timeout=None):
+            self.events.append(("wait", timeout))
+            if not self.killed:
+                raise subprocess.TimeoutExpired(cmd="stuck-command", timeout=timeout)
+            return -9
+
+    process = StuckProcess()
+    monkeypatch.setattr(acceptance_runner.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    command = AcceptanceCommand("stream_failure", ("stuck-command",))
+    environment = {"RUNTIME_INBOX_ACCEPTANCE_OUTPUT_DIR": str(tmp_path)}
+
+    with pytest.raises(RuntimeError, match="original stream failure"):
+        _default_executor(command, environment)
+
+    assert "terminate" in process.events
+    assert "kill" in process.events
+    waits = [event for event in process.events if isinstance(event, tuple) and event[0] == "wait"]
+    assert len(waits) == 2
+    assert all(timeout == EXECUTOR_CLEANUP_TIMEOUT_SECONDS for _, timeout in waits)
+
+
+def test_default_executor_cleans_up_when_normal_wait_raises_without_masking_error(tmp_path: Path, monkeypatch):
+    (tmp_path / "logs").mkdir()
+
+    class EofPipe:
+        def read1(self, _size=-1):
+            return b""
+
+        def close(self):
+            pass
+
+    class WaitFailureProcess:
+        def __init__(self):
+            self.stdout = EofPipe()
+            self.events: list[object] = []
+
+        def poll(self):
+            self.events.append("poll")
+
+        def terminate(self):
+            self.events.append("terminate")
+
+        def wait(self, timeout=None):
+            self.events.append(("wait", timeout))
+            if timeout is None:
+                raise OSError("original normal wait failure")
+            return -15
+
+    process = WaitFailureProcess()
+    monkeypatch.setattr(acceptance_runner.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    command = AcceptanceCommand("wait_failure", ("wait-failure-command",))
+    environment = {"RUNTIME_INBOX_ACCEPTANCE_OUTPUT_DIR": str(tmp_path)}
+
+    with pytest.raises(OSError, match="original normal wait failure"):
+        _default_executor(command, environment)
+
+    assert "terminate" in process.events
+    assert process.events.count(("wait", None)) == 1
+    assert ("wait", EXECUTOR_CLEANUP_TIMEOUT_SECONDS) in process.events
 
 
 @pytest.mark.parametrize("failure_at", ["preflight", "processing_integration", "validator"])

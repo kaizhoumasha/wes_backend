@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import codecs
 import json
 import os
 import re
 import subprocess
+from collections import deque
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,8 +24,21 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
 
 REQUIRED_FREE_CONNECTION_SLOTS = 5
+EXECUTOR_TAIL_MAX_LINES = 50
+EXECUTOR_TAIL_MAX_CHARS = 8_000
+EXECUTOR_TAIL_LINE_MAX_CHARS = 1_000
+EXECUTOR_ERROR_MAX_CHARS = 9_000
+EXECUTOR_STREAM_CHUNK_SIZE = 4_096
+EXECUTOR_CLEANUP_TIMEOUT_SECONDS = 5.0
+EXECUTOR_REDACTION_AUTHORITY_MAX_CHARS = 4_096
 _COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 _DATABASE_URL_PATTERN = re.compile(r"(postgres(?:ql)?(?:\+asyncpg)?://)[^\s/@]+(?::[^\s/@]*)?@")
+_DATABASE_URL_SCHEMES = (
+    "postgres://",
+    "postgresql://",
+    "postgres+asyncpg://",
+    "postgresql+asyncpg://",
+)
 
 
 class AcceptanceFailure(RuntimeError):
@@ -108,6 +124,116 @@ def _redact(value: object) -> str:
     return _DATABASE_URL_PATTERN.sub(r"\1***@", str(value))
 
 
+class _StreamingDatabaseUrlRedactor:
+    """跨读取块脱敏 PostgreSQL URL，并以硬上限缓存待判定的 authority。"""
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._authority_candidate: str | None = None
+        self._conservative_redaction = False
+
+    def feed(self, value: str) -> str:
+        output: list[str] = []
+        for character in value:
+            if self._authority_candidate is not None:
+                if character == "@":
+                    output.append("***@")
+                    self._authority_candidate = None
+                elif character.isspace() or character == "/":
+                    output.extend((self._authority_candidate, character))
+                    self._authority_candidate = None
+                else:
+                    self._authority_candidate += character
+                    if len(self._authority_candidate) > EXECUTOR_REDACTION_AUTHORITY_MAX_CHARS:
+                        self._authority_candidate = None
+                        self._conservative_redaction = True
+                continue
+
+            if self._conservative_redaction:
+                if character == "@":
+                    output.append("***@")
+                    self._conservative_redaction = False
+                elif character.isspace() or character == "/":
+                    output.extend(("***", character))
+                    self._conservative_redaction = False
+                continue
+
+            self._pending += character
+            while self._pending:
+                if self._pending in _DATABASE_URL_SCHEMES:
+                    output.append(self._pending)
+                    self._pending = ""
+                    self._authority_candidate = ""
+                    break
+                if any(scheme.startswith(self._pending) for scheme in _DATABASE_URL_SCHEMES):
+                    break
+                output.append(self._pending[0])
+                self._pending = self._pending[1:]
+        return "".join(output)
+
+    def finish(self) -> str:
+        if self._conservative_redaction:
+            self._conservative_redaction = False
+            return "***"
+        if self._authority_candidate is not None:
+            authority, self._authority_candidate = self._authority_candidate, None
+            return authority
+        pending, self._pending = self._pending, ""
+        return pending
+
+
+class _BoundedLogTail:
+    """按逻辑行保存有界日志末尾，读取块大小不会改变 tail 合同。"""
+
+    def __init__(self) -> None:
+        self._lines: deque[str] = deque()
+        self._current_line = ""
+        self._chars = 0
+
+    def feed(self, value: str) -> None:
+        parts = value.split("\n")
+        for index, part in enumerate(parts):
+            self._append_current(part)
+            if index < len(parts) - 1:
+                self._append_current("\n")
+                self._lines.append(self._current_line)
+                self._current_line = ""
+                self._rebalance()
+
+    def summary(self) -> str:
+        return "".join((*self._lines, self._current_line))
+
+    def _append_current(self, value: str) -> None:
+        previous_length = len(self._current_line)
+        self._current_line = (self._current_line + value)[-EXECUTOR_TAIL_LINE_MAX_CHARS:]
+        self._chars += len(self._current_line) - previous_length
+        self._rebalance()
+
+    def _rebalance(self) -> None:
+        current_line_count = 1 if self._current_line else 0
+        while len(self._lines) + current_line_count > EXECUTOR_TAIL_MAX_LINES:
+            self._chars -= len(self._lines.popleft())
+        while self._chars > EXECUTOR_TAIL_MAX_CHARS and self._lines:
+            self._chars -= len(self._lines.popleft())
+
+
+def _cleanup_failed_process(process: subprocess.Popen[bytes]) -> None:
+    """限时回收失败子进程；任何清理错误都不得覆盖原始异常。"""
+
+    try:
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=EXECUTOR_CLEANUP_TIMEOUT_SECONDS)
+            return
+        except subprocess.TimeoutExpired:
+            process.kill()
+        process.wait(timeout=EXECUTOR_CLEANUP_TIMEOUT_SECONDS)
+    except BaseException:
+        return
+
+
 def _default_preflight(environment: Mapping[str, str], required_free_slots: int) -> None:
     async def check() -> None:
         result = await preflight(environ=environment, required_free_slots=required_free_slots)
@@ -117,18 +243,48 @@ def _default_preflight(environment: Mapping[str, str], required_free_slots: int)
 
 
 def _default_executor(command: AcceptanceCommand, environment: Mapping[str, str]) -> None:
-    # argv 仅来自本模块固定合同，不接收用户输入或 shell 字符串。
-    completed = subprocess.run(  # noqa: S603
+    log_path = Path(environment["RUNTIME_INBOX_ACCEPTANCE_OUTPUT_DIR"]) / "logs" / f"{command.name}.log"
+    tail = _BoundedLogTail()
+    redactor = _StreamingDatabaseUrlRedactor()
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    # argv 仅来自本模块固定合同，不接收用户输入或 shell 字符串；输出先脱敏，再落盘和进入有界 tail。
+    process = subprocess.Popen(  # noqa: S603
         command.argv,
         env=dict(environment),
-        check=False,
-        capture_output=True,
-        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
-    log_path = Path(environment["RUNTIME_INBOX_ACCEPTANCE_OUTPUT_DIR"]) / "logs" / f"{command.name}.log"
-    log_path.write_text(_redact(completed.stdout + completed.stderr), encoding="utf-8")
-    if completed.returncode != 0:
-        raise RuntimeError(f"{command.name} exited with {completed.returncode}")
+    assert process.stdout is not None
+    try:
+        with log_path.open("w", encoding="utf-8") as log_file:
+            while raw_chunk := process.stdout.read1(EXECUTOR_STREAM_CHUNK_SIZE):
+                decoded_chunk = decoder.decode(raw_chunk, final=False)
+                redacted_chunk = redactor.feed(decoded_chunk)
+                log_file.write(redacted_chunk)
+                log_file.flush()
+                tail.feed(redacted_chunk)
+            final_chunk = redactor.feed(decoder.decode(b"", final=True)) + redactor.finish()
+            log_file.write(final_chunk)
+            log_file.flush()
+            tail.feed(final_chunk)
+        process.stdout.close()
+    except BaseException:
+        with suppress(BaseException):
+            process.stdout.close()
+        _cleanup_failed_process(process)
+        raise
+    try:
+        returncode = process.wait()
+    except BaseException:
+        _cleanup_failed_process(process)
+        raise
+    if returncode != 0:
+        tail_summary = tail.summary() or "<no output>"
+        prefix = f"{command.name} exited with {returncode}; log_path={log_path}; redacted tail:\n"
+        available_tail_chars = max(0, EXECUTOR_ERROR_MAX_CHARS - len(prefix))
+        bounded_tail = tail_summary[-available_tail_chars:] if available_tail_chars else ""
+        raise RuntimeError((prefix + bounded_tail)[:EXECUTOR_ERROR_MAX_CHARS])
 
 
 def _default_evidence_validator(path: Path, expected_commit: str) -> None:
