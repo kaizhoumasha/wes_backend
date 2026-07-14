@@ -105,6 +105,7 @@ async def test_external_callback_persists_claims_and_processes_without_repeating
         stale_after_seconds=60,
     )
     assert len(claims) == 1
+    assert claims[0]["kind"] == "EXTERNAL_HTTP"
     assert claims[0]["payload_json"] == payload
 
     result = await RuntimeInboxProcessorBridge(

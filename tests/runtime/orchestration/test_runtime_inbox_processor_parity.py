@@ -121,9 +121,17 @@ PARITY_CASES = (
         payload={"event_type": "EXTERNAL_CALLBACK", "data": {}},
         session_status=None,
         workline_present=False,
-        expected=(1, 0, 1, 0, 0),
-        expected_terminal="failed",
-        expected_error="missing session/workline context",
+        expected_writeback_calls=0,
+    ),
+    ParityCase(
+        name="external_runtime_capability",
+        kind="EXTERNAL_HTTP",
+        payload={
+            "event_type": "EXTERNAL_CALLBACK",
+            "runtime_capability": "rough_sorter_inbound",
+            "data": {},
+        },
+        expected_writeback_calls=1,
     ),
     ParityCase(
         name="duplicate_entry",
@@ -300,7 +308,8 @@ class _TerminalRecorder:
         return self.accept_updates
 
     async def mark_failed(self, *args: object, **kwargs: object) -> bool:
-        self._record("resource_wait" if kwargs.get("retryable") else "failed", args, kwargs)
+        action = "resource_wait" if kwargs.get("error_code") == "RESOURCE_WAIT" else "failed"
+        self._record(action, args, kwargs)
         return self.accept_updates
 
     async def mark_dead_letter(self, *args: object, **kwargs: object) -> bool:
@@ -311,9 +320,12 @@ class _TerminalRecorder:
 def _build_entities(
     case: ParityCase,
 ) -> tuple[SimpleNamespace, object | None, object | None, object | None, object | None]:
+    payload = case.payload or {}
+    event_type = "REPLAY_REQUEST" if case.kind == "REPLAY_REQUEST" else str(payload.get("event_type") or case.kind)
     inbox = SimpleNamespace(
         id=1,
         kind=case.kind,
+        event_type=event_type,
         payload_json=case.payload,
         source_message_id="msg-parity",
         trace_id="trace-parity",
@@ -556,6 +568,8 @@ async def test_runtime_processor_characterization(
         assert call["token"] == "token-parity"
     if case.expected_error is not None:
         assert case.expected_error.lower() in str(terminal_actions[0]["error"]).lower()
+    if case.name == "orchestrator_exception":
+        assert terminal_actions[0]["retryable"] is True
     if case.expected_diagnostic is not None:
         assert diagnostics[-1]["error_code"] == case.expected_diagnostic
     if case.expected_source_device_id is not None:
@@ -579,6 +593,7 @@ async def test_runtime_processor_characterization(
         ("duplicate_material_conflict", "dead_letter"),
         ("scan_valid", "processed"),
         ("resource_wait", "resource_wait"),
+        ("missing_context", "processed"),
     ),
 )
 async def test_three_stage_lost_fencing_rolls_back_without_success(

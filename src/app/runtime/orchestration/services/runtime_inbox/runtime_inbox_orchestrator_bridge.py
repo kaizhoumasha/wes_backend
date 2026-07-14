@@ -76,8 +76,8 @@ from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import (
-    canonical_event_type,
     optional_int,
+    optional_str,
     resolve_entity_id,
     resolve_required_pk,
     string_value,
@@ -200,6 +200,17 @@ def _empty_result() -> ProcessResult:
         "skipped": 0,
         "resource_wait": 0,
     }
+
+
+def _is_lifecycle_only_external_callback(inbox: Any, payload: dict[str, Any]) -> bool:
+    """识别已在 ingress 完成副作用、无需运行时能力编排的外部回调。"""
+    if _kind_value(inbox) != "EXTERNAL_HTTP":
+        return False
+    attributes = payload_dict(payload.get("attributes"))
+    return (
+        optional_str(payload.get("runtime_capability")) is None
+        and optional_str(attributes.get("runtime_capability")) is None
+    )
 
 
 def _merge_result(target: ProcessResult, source: ProcessResult) -> None:
@@ -345,9 +356,26 @@ class RuntimeInboxProcessorBridge:
                 validated_replay_source = await self._replay_source_validator.validate_for_consumption(db, source=inbox)
             inbox = _project_replay_request(inbox, validated_source=validated_replay_source)
             payload = _payload_for_inbox(inbox)
-            resolved_event_type = canonical_event_type(payload)
+            resolved_event_type = optional_str(getattr(inbox, "event_type", None))
             if resolved_event_type is None:
-                raise ValueError("RuntimeInbox canonical event_type is required")
+                raise ValueError("RuntimeInbox event_type is required")
+
+            if _is_lifecycle_only_external_callback(inbox, payload):
+                # ingress 已在同一事务完成 lifecycle 副作用；processor 只负责
+                # 以 lease fencing 收束 RuntimeInbox 终态，不重复加载会话或执行安全门禁。
+                _require_fenced_update(
+                    await self.inbox_service.mark_processed(
+                        db,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                    ),
+                    action="mark_processed",
+                    inbox_id=inbox_pk,
+                )
+                await db.commit()
+                result["success"] += 1
+                result["processed"] += 1
+                return result
 
             # ========== Stage 1: Validation (SCAN gate) ==========
             (
@@ -467,6 +495,7 @@ class RuntimeInboxProcessorBridge:
                 db,
                 inbox=inbox,
                 payload=payload,
+                resolved_event_type=resolved_event_type,
                 session=session,
                 workline=workline,
                 validation_service=self._validation_service,
@@ -766,7 +795,7 @@ class RuntimeInboxProcessorBridge:
                             lease_token=processor_token,
                             error_code=ErrorCode.UNKNOWN.value,
                             error_message=str(e),
-                            retryable=False,
+                            retryable=True,
                         ),
                         action="mark_failed",
                         inbox_id=pk_to_mark,
@@ -795,6 +824,7 @@ async def _is_duplicate_entry_event(
     *,
     inbox: Any,
     payload: dict[str, Any],
+    resolved_event_type: str,
     session: Any,
     workline: Any,
     validation_service: RuntimeInboxValidationService,
@@ -802,7 +832,7 @@ async def _is_duplicate_entry_event(
     """识别已进入忙碌或终态会话的重复入口事件。"""
     if _kind_value(inbox) != "DEVICE_EVENT":
         return False
-    if canonical_event_type(payload) not in _entry_event_types_for_workline(workline):
+    if resolved_event_type not in _entry_event_types_for_workline(workline):
         return False
     if await validation_service.is_payload_invalid_entry_replay(db, inbox=inbox, session=session):
         return False

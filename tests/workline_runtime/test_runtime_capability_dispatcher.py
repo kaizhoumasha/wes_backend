@@ -190,6 +190,37 @@ def test_runtime_inbox_normalizer_dispatches_to_material_flow_runtime_service() 
     assert plan.effect_contracts["WmsInventoryTransactionPort.confirm_inbound"]["payload"]["warehouse_code"] == "WH-A"
 
 
+def test_runtime_inbox_normalizer_uses_persisted_event_type_as_canonical_fact() -> None:
+    """RuntimeInbox.event_type 是 canonical 事实源，payload 只保留上游原始事件类型。"""
+
+    normalized = normalize_inbox_input(
+        SimpleNamespace(
+            kind="DEVICE_EVENT",
+            event_type="SCAN_COMPLETED",
+            payload_json={
+                "event_type": "PROVIDER_SCAN_DONE",
+                "device_code": "SCAN-01",
+                "data": {},
+            },
+        )
+    )
+
+    assert normalized.source_event_type == "PROVIDER_SCAN_DONE"
+    assert normalized.canonical_event_type == "SCAN_COMPLETED"
+
+
+def test_runtime_inbox_normalizer_rejects_missing_persisted_event_type() -> None:
+    """Device event 缺少持久化 canonical 事实时必须 fail-closed。"""
+
+    with pytest.raises(ValueError, match="RuntimeInbox event_type is required"):
+        normalize_inbox_input(
+            SimpleNamespace(
+                kind="DEVICE_EVENT",
+                payload_json={"event_type": "PROVIDER_SCAN_DONE", "data": {}},
+            )
+        )
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_process_inbox_uses_runtime_capability_dispatcher_for_external_payload() -> None:
     """生产 OrchestratorService 必须从普通 external payload 触发 runtime capability。"""
@@ -374,6 +405,7 @@ async def test_orchestrator_routes_rough_sorter_scan_completed_device_event_to_t
         ),
         inbox=SimpleNamespace(
             kind="DEVICE_EVENT",
+            event_type="SCAN_COMPLETED",
             payload_json={
                 "event_type": "SCAN_COMPLETED",
                 "canonical_event_type": "SCAN_COMPLETED",
@@ -418,6 +450,7 @@ async def test_orchestrator_routes_internal_source_pick_requested_to_target_stat
         inbox=SimpleNamespace(
             id=901,
             kind="INTERNAL_EVENT",
+            event_type="SORTING_SOURCE_PICK_REQUESTED",
             payload_json={
                 "event_type": "SORTING_SOURCE_PICK_REQUESTED",
                 "canonical_event_type": "SORTING_SOURCE_PICK_REQUESTED",
@@ -479,6 +512,7 @@ async def test_orchestrator_routes_manual_resume_without_runtime_capability_prof
     inbox = SimpleNamespace(
         id=902,
         kind="MANUAL_RESUME",
+        event_type="MANUAL_RESUME",
         payload_json={
             "message_type": "MANUAL_OPERATION",
             "operation": "RESUME",
@@ -535,6 +569,7 @@ async def test_orchestrator_routes_manual_cancel_to_cancel_intent() -> None:
         inbox=SimpleNamespace(
             id=903,
             kind="MANUAL_CANCEL",
+            event_type="MANUAL_CANCEL",
             payload_json={
                 "message_type": "MANUAL_OPERATION",
                 "operation": "CANCEL",
@@ -637,6 +672,7 @@ async def test_orchestrator_blocks_unregistered_device_event_with_stable_diagnos
         inbox=SimpleNamespace(
             id=905,
             kind="DEVICE_EVENT",
+            event_type="UNREGISTERED_EVENT",
             payload_json={
                 "event_type": "UNREGISTERED_EVENT",
                 "canonical_event_type": "UNREGISTERED_EVENT",
@@ -669,6 +705,7 @@ async def test_device_event_operation_cancel_does_not_impersonate_manual_cancel(
         inbox=SimpleNamespace(
             id=906,
             kind="DEVICE_EVENT",
+            event_type="UNREGISTERED_EVENT",
             payload_json={
                 "event_type": "UNREGISTERED_EVENT",
                 "canonical_event_type": "UNREGISTERED_EVENT",
