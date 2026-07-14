@@ -48,9 +48,15 @@ def _build_orchestrator_lock_provider(db: Any) -> Callable[[str], AbstractAsyncC
     """
     redis_client = get_redis()
     if redis_client is not None:
-        lock = RedisDistributedLock(redis_client=cast("Any", redis_client), key_prefix="workline:orchestrator:")
 
         def _redis_lock(lock_key: str) -> AbstractAsyncContextManager[None]:
+            # 每个临界区独占续期状态；初始 TTL 也覆盖 timeout，避免 Redis 短暂中断形成锁空窗。
+            lock = RedisDistributedLock(
+                redis_client=cast("Any", redis_client),
+                key_prefix="workline:orchestrator:",
+                default_ttl=int(INBOX_PROCESS_TIMEOUT_SECONDS) + 30,
+                auto_renewal=True,
+            )
             return lock.acquire(lock_key, db=db)
 
         return _redis_lock

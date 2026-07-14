@@ -73,6 +73,30 @@ from src.utils.timezone import timezone
 # ============================================================
 
 
+def test_orchestrator_lock_renews_beyond_processing_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """单条处理超过初始 TTL 时，session 锁必须持续续期。"""
+
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_processor_service as module
+
+    captured: dict[str, Any] = {}
+
+    class _LockStub:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def acquire(self, lock_key: str, *, db: Any) -> Any:
+            return SimpleNamespace(lock_key=lock_key, db=db)
+
+    monkeypatch.setattr(module, "get_redis", lambda: object())
+    monkeypatch.setattr(module, "RedisDistributedLock", _LockStub)
+
+    provider = module._build_orchestrator_lock_provider(object())
+    _ = provider("session:42")
+
+    assert captured["auto_renewal"] is True
+    assert captured["default_ttl"] > module.INBOX_PROCESS_TIMEOUT_SECONDS
+
+
 def _canonical_payload_hash(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode()
     return sha256(encoded).hexdigest()
