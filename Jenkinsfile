@@ -483,6 +483,49 @@ pipeline {
                                 exit 1
                             fi
 
+                            echo -e "${GREEN}🧭 校验 Celery 运行时...${NC}"
+                            CELERY_CONTAINER_IDS=$($COMPOSE_CMD ps -q celery_worker celery_beat)
+                            if [ -z "$CELERY_CONTAINER_IDS" ]; then
+                                echo -e "${RED}❌ Celery 容器未启动${NC}"
+                                exit 1
+                            fi
+
+                            CELERY_HEALTH_TIMEOUT_SECONDS="${CELERY_HEALTH_TIMEOUT_SECONDS:-120}"
+                            for service_name in celery_worker celery_beat; do
+                                service_container_ids=$($COMPOSE_CMD ps -q "$service_name")
+                                if [ -z "$service_container_ids" ]; then
+                                    echo -e "${RED}❌ ${service_name} 容器未就绪${NC}"
+                                    exit 1
+                                fi
+                                for container_id in $service_container_ids; do
+                                    if [ "$(docker inspect -f '{{.State.Running}}' "$container_id")" != "true" ]; then
+                                        echo -e "${RED}❌ ${service_name} 容器未就绪: $container_id${NC}"
+                                        exit 1
+                                    fi
+                                    container_health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")
+                                    health_deadline=$(( $(date +%s) + CELERY_HEALTH_TIMEOUT_SECONDS ))
+                                    while [ "$container_health" != "healthy" ] && [ "$container_health" != "none" ]; do
+                                        if [ "$(date +%s)" -ge "$health_deadline" ]; then
+                                            echo -e "${RED}❌ ${service_name} 健康检查超时: $container_id ($container_health)${NC}"
+                                            exit 1
+                                        fi
+                                        if [ "$(docker inspect -f '{{.State.Running}}' "$container_id")" != "true" ]; then
+                                            echo -e "${RED}❌ ${service_name} 容器等待健康期间退出: $container_id${NC}"
+                                            exit 1
+                                        fi
+                                        sleep 2
+                                        container_health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container_id")
+                                    done
+                                done
+                            done
+
+                            for container_id in $($COMPOSE_CMD ps -q celery_worker); do
+                                if ! docker exec "$container_id" sh -c 'celery -A src.celery_app.app inspect ping -d "celery@$(hostname)" --timeout=5 | grep -q pong'; then
+                                    echo -e "${RED}❌ celery_worker 子进程运行时未就绪: $container_id${NC}"
+                                    exit 1
+                                fi
+                            done
+
                             DEPLOYMENT_HEALTHY=true
                             echo -e "${GREEN}✅ ${DEPLOY_NAME} 部署完成${NC}"
                             $COMPOSE_CMD ps

@@ -399,6 +399,9 @@ services:
     restart: "no"
     command: >
       sh -c "
+        if [ -z \"$${DATABASE_APPLICATION_RUN_ID}\" ]; then
+          export DATABASE_APPLICATION_RUN_ID=\"integration-$$(date +%s)-$$$$\";
+        fi &&
         echo '等待数据库就绪...' &&
         sleep ${DB_WAIT_TIME:-5} &&
         echo '运行数据库迁移...' &&
@@ -413,7 +416,7 @@ services:
       DATABASE_POOL_SIZE: 1
       DATABASE_MAX_OVERFLOW: 0
       DATABASE_APPLICATION_NAME: ${ENV:-test}
-      # 每次 integration run 必须显式生成唯一值；空值由 Settings 在进程启动时 fail-fast。
+      # 外部可显式指定 run-id；直接启动 test profile 时由 command 为本次容器生成唯一值。
       DATABASE_APPLICATION_RUN_ID: ${INTEGRATION_RUN_ID:-}
       # 数据库配置
       POSTGRES_HOST: ${POSTGRES_HOST}

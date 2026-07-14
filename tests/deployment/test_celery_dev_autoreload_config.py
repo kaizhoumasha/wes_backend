@@ -60,6 +60,14 @@ def test_celery_worker_healthcheck_uses_process_probe() -> None:
     assert "celery -A src.celery_app.app inspect ping" not in compose_text
 
 
+def test_deploy_overlay_inherits_local_worker_healthcheck() -> None:
+    deploy_compose_text = (BACKEND_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8")
+    worker_section = deploy_compose_text.split("  celery_worker:", maxsplit=1)[1].split("  celery_beat:", maxsplit=1)[0]
+
+    assert "healthcheck:" not in worker_section
+    assert "inspect ping" not in worker_section
+
+
 def test_worker_healthcheck_detects_celery_worker_process(tmp_path: Path) -> None:
     proc_dir = tmp_path / "123"
     proc_dir.mkdir()

@@ -128,6 +128,8 @@ def test_environment_profiles_and_compose_declare_explicit_database_roles() -> N
     assert pytest_env["DATABASE_POOL_SIZE"] == 1
     assert pytest_env["DATABASE_MAX_OVERFLOW"] == 0
     assert pytest_env["DATABASE_APPLICATION_RUN_ID"] == "${INTEGRATION_RUN_ID:-}"
+    pytest_command = test_compose["services"]["pytest"]["command"]
+    assert "integration-$$(date +%s)-$$$$" in pytest_command
 
 
 def test_production_compose_uses_image_source_without_host_override() -> None:
@@ -232,6 +234,12 @@ def test_jenkins_and_production_runbook_require_guard_and_migration_before_appli
     assert 'if [ "$MIGRATION_APPLIED" = true ] && [ "$DEPLOYMENT_HEALTHY" != true ]' in cleanup_body
     assert "$COMPOSE_CMD stop api celery_worker celery_beat || true" in cleanup_body
     assert deploy_body.index("DEPLOYMENT_HEALTHY=true") > deploy_body.index('if [ "$HEALTH_CHECK_PASSED" = false ]')
+    assert "$COMPOSE_CMD ps -q celery_worker celery_beat" in deploy_body
+    assert "${service_name} 容器未就绪" in deploy_body
+    assert "CELERY_HEALTH_TIMEOUT_SECONDS" in deploy_body
+    assert 'while [ "$container_health" != "healthy" ] && [ "$container_health" != "none" ]' in deploy_body
+    assert 'inspect ping -d "celery@$(hostname)"' in deploy_body
+    assert deploy_body.index("DEPLOYMENT_HEALTHY=true") > deploy_body.index('inspect ping -d "celery@$(hostname)"')
 
     automatic_rollback = deploy_body.split('if [ "$HEALTH_CHECK_PASSED" = false ]', maxsplit=1)[1]
     assert "数据库迁移已执行，禁止自动切回旧镜像" in automatic_rollback
