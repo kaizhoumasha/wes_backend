@@ -182,11 +182,11 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 | Services（inbox_batch_processor/outbox_dispatch/device_command_gateway 等） | rebuild | `class` / `def` / `async def` 全量登记；执行状态服务迁 runtime 域，按 EffectPort/RuntimeInbox 重建 |
 | `single_layer_rack_orchestration_service` | rebuild | material-flow 单层机架编排，按目标态 capability 重建（WMS_INTEGRATION_BOUNDARY seed 关联） |
 
-### 7.2 workline_runtime（111 entries）
+### 7.2 workline_runtime（113 entries）
 
 | 类别 | 处理 | 说明 |
 | --- | --- | --- |
-| `tests/workline_runtime/` | keep-contract / rebuild | 110 条 runtime / material-flow characterization 与合同测试，作为目标态能力闭合和 legacy 删除前的 blocking evidence；RuntimeInbox projection/repository 合同已入矩阵 |
+| `tests/workline_runtime/` | keep-contract / rebuild | 112 条 runtime / material-flow characterization 与合同测试，作为目标态能力闭合和 legacy 删除前的 blocking evidence；RuntimeInbox projection/repository 合同已入矩阵 |
 | `src/workline_runtime/services.py:build_workline_runtime_services` | rebuild | guardrail seed tombstone，用于当前 allowlist 精确反查 |
 
 ### 7.3 workline_plugins（11 entries，均为测试证据）
@@ -219,14 +219,14 @@ WorkLine 运行态物理字段已完成 restructuring cleanup；API / monitor / 
 
 | 风险项 | phase | 说明 |
 | --- | --- | --- |
-| 执行状态迁移（196 条执行状态语义；phase2 rebuild 总计 189 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
+| 执行状态迁移（197 条执行状态语义；phase2 rebuild 总计 190 条） | phase2 | RuntimeInbox 已收敛到唯一事实源并通过崩溃重放验证；旧 `WorklineInbox` 仅保留历史审计说明，不再作为 characterization owner |
 | phase4 业务流程（101 entries） | phase4 | 粗分机/满箱交换/分拣机/SMT/NG 语义重建，须 characterization + contract test 先行 |
 | `single_layer_rack_orchestration_service`（WMS_INTEGRATION_BOUNDARY seed） | phase2 | 跨域 WMS import，Phase 2 迁移时消除 |
 | device `session_id_int` ↔ session `awaiting_command_id` 外键环 | phase1 | 见 P0-004 §4.4，Phase 1 CEO-010 同步处理 |
 
 ## 9. 验收（SPEC P0-002）
 
-1. ✅ 每个旧入口都有且只有一个主策略（CSV 611 条，strategy 字段非空）
+1. ✅ 每个旧入口都有且只有一个主策略（CSV 613 条，strategy 字段非空）
 2. ✅ 标记是否承载 Phase 4 业务语义（phase4_carrier 字段，101 条）
 3. ✅ 标记删除、迁移或重建前置条件（`blocking_tests` 字段非空）
 4. ✅ pending-review 归零（全部 final）
