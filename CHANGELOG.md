@@ -16,11 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Callback result/event/external、人工操作、设备事件和超时消息统一写入 RuntimeInbox；非工作线回调接收即终态化，工作线消息由新 Celery 消费链路推进。
+- RuntimeInbox 设备事件按真实设备身份维持 FIFO，分布式锁按处理超时自动续期，并在 Redis 连接故障时仅对锁获取阶段降级到 PostgreSQL advisory lock。
 - 生产 API、Celery Worker、Beat 与 Flower 全部改为仅运行镜像内源码，部署覆盖文件不再挂载宿主机 `src`。
+- 部署完成前逐个验证 Celery Worker 与 Beat 容器状态，并对每个 Worker 执行定向 ping，避免 API 健康但异步消费不可用时误报成功。
 - 日志、测试输出、运行数据重置、迁移事务与发布回滚路径统一到新的运行时和部署合同。
 
 ### Fixed
 - 修复 RuntimeInbox 终态时间、指数退避、关联外键、payload 上限、重放来源验真、异常重试及 processor token 围栏问题。
+- 修复 RuntimeInbox Replay 失败仍返回 HTTP 200、OpenAPI 未声明错误响应，以及回调空白事件标识被误归类为配置错误的问题。
 - 修复人工 HOLD/RESUME/CANCEL 使用旧 Inbox kind 导致的六类数据库约束冲突，并让生成的 DEVICE_EVENT 保留完整路由包络。
 - 修复非工作线 command result 被异步 worker 再次领取、生产源码挂载覆盖镜像以及数据库容量计算偏离真实拓扑的问题。
 
