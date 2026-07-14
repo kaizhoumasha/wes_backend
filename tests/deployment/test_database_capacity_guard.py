@@ -135,7 +135,7 @@ def test_production_compose_uses_image_source_without_host_override() -> None:
     deploy_text = (REPO_ROOT / "docker-compose.deploy.yml").read_text(encoding="utf-8")
 
     assert "SOURCE_MOUNT=" not in prod_text
-    assert deploy_text.count("volumes: !override") == 2
+    assert deploy_text.count("volumes: !override") == 4
 
     env = os.environ.copy()
     env["BACKEND_IMAGE"] = "example.invalid/wes/wes_backend:test"
@@ -165,7 +165,7 @@ def test_production_compose_uses_image_source_without_host_override() -> None:
 
     assert completed.returncode == 0, completed.stderr
     merged = yaml.safe_load(completed.stdout)
-    for service_name in ("api", "celery_worker"):
+    for service_name in ("api", "celery_worker", "celery_beat", "flower"):
         targets = {volume["target"] for volume in merged["services"][service_name].get("volumes", [])}
         assert "/app/src" not in targets
 
