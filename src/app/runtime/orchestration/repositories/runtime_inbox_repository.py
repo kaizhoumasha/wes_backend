@@ -569,7 +569,9 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
             .where(columns.last_error_code.is_distinct_from(PRE_CUTOVER_AUDIT_ONLY))
             .group_by(columns.status)
         )
-        status_counts = dict.fromkeys(("RECEIVED", "PROCESSING", "PROCESSED", "FAILED", "DEAD_LETTER"), 0)
+        status_counts: dict[str, int] = dict.fromkeys(
+            ("RECEIVED", "PROCESSING", "PROCESSED", "FAILED", "DEAD_LETTER"), 0
+        )
         status_counts.update({str(status): int(count) for status, count in status_rows.all()})
         candidate = table.alias("sli_claim_candidate")
         earlier = table.alias("sli_earlier_inbox")

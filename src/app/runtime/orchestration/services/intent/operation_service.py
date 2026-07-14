@@ -565,7 +565,7 @@ class WorklineOperationService(BaseService[Any, Any]):
             getattr(original, "workline_id", None),
         )
         session = None
-        if original is not None and original.workline_session_id is not None:
+        if original.workline_session_id is not None:
             # 与 reconciliation 写路径保持 Session→WorkLine 锁序，避免锁等待后继续使用旧快照。
             session = await self.session_repo.get_for_update(
                 db,
@@ -575,31 +575,30 @@ class WorklineOperationService(BaseService[Any, Any]):
             if session is None:
                 raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_OWNERSHIP_UNAVAILABLE")
 
-        if original is not None:
-            source_workline_id = original.workline_id
-            session_workline_id = getattr(session, "workline_id", None)
-            if source_workline_id is None:
-                if not isinstance(session_workline_id, int):
-                    raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_OWNERSHIP_UNAVAILABLE")
-                source_workline_id = session_workline_id
-            elif isinstance(session_workline_id, int) and session_workline_id != source_workline_id:
+        source_workline_id = original.workline_id
+        session_workline_id = getattr(session, "workline_id", None)
+        if source_workline_id is None:
+            if not isinstance(session_workline_id, int):
                 raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_OWNERSHIP_UNAVAILABLE")
+            source_workline_id = session_workline_id
+        elif isinstance(session_workline_id, int) and session_workline_id != source_workline_id:
+            raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_OWNERSHIP_UNAVAILABLE")
 
-            workline = await self.workline_repo.get_for_update(db, source_workline_id, populate_existing=True)
-            if workline is None:
-                raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_NOT_FOUND")
-            if not bool(getattr(workline, "is_active", False)):
-                raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_INACTIVE")
+        workline = await self.workline_repo.get_for_update(db, source_workline_id, populate_existing=True)
+        if workline is None:
+            raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_NOT_FOUND")
+        if not bool(getattr(workline, "is_active", False)):
+            raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_WORKLINE_INACTIVE")
 
-            if session is not None:
-                from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
-                    workline_runtime_reconciliation_service,
-                )
+        if session is not None:
+            from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+                workline_runtime_reconciliation_service,
+            )
 
-                try:
-                    workline_runtime_reconciliation_service.assert_not_pending_reconciliation(session)
-                except ValueError as exc:
-                    raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_RECONCILIATION_PENDING") from exc
+            try:
+                workline_runtime_reconciliation_service.assert_not_pending_reconciliation(session)
+            except ValueError as exc:
+                raise RuntimeInboxReplayNotAllowed(reason_code="SOURCE_RECONCILIATION_PENDING") from exc
 
         try:
             replay_result = await self.runtime_inbox_service.replay_from_dead_letter(

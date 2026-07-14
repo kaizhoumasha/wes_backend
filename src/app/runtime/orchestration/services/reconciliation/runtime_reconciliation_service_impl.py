@@ -235,6 +235,7 @@ class WorklineRuntimeReconciliationService:
             correlation_id=correlation_id,
             payload_json=dict(payload),
         )
+        inbox_evidence = cast("RuntimeInboxProjection", evidence)
 
         session = await self.session_repository.get_for_update(db, session_id)
         if session is None:
@@ -273,7 +274,7 @@ class WorklineRuntimeReconciliationService:
             conflict_kind=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
             reason="callback deadline expired",
             detected_at=now,
-            inbox=evidence,
+            inbox=inbox_evidence,
             command=command,
         )
 
@@ -305,7 +306,7 @@ class WorklineRuntimeReconciliationService:
         runtime_hold = await self.runtime_hold_creation_service.create_for_callback_deadline_expired(
             db,
             session=session,
-            inbox=evidence,
+            inbox=inbox_evidence,
             source_inbox_id=source_inbox_id,
             command=command,
         )
@@ -328,7 +329,7 @@ class WorklineRuntimeReconciliationService:
                 "runtime_hold_id": runtime_hold_id,
                 "reconciliation_registration": reconciliation_registration,
             },
-            inbox=evidence,
+            inbox=inbox_evidence,
             command=command,
             occurred_at=now,
         )
@@ -337,7 +338,7 @@ class WorklineRuntimeReconciliationService:
             session=session,
             error_code=ErrorCode.CALLBACK_DEADLINE_EXPIRED,
             message="Callback deadline expired; physical result is unknown.",
-            inbox=evidence,
+            inbox=inbox_evidence,
             command=command,
             evidence={
                 "deadline_at": _dt_key(session.reconciliation_deadline_at),

@@ -368,7 +368,7 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """获取全局配置（单例模式）"""
-    return Settings()
+    return Settings()  # pyright: ignore[reportCallIssue] -- 必填配置由 BaseSettings 从环境变量注入。
 
 
 # 创建配置实例

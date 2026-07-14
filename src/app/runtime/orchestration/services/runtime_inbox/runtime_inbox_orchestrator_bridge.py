@@ -346,6 +346,8 @@ class RuntimeInboxProcessorBridge:
             inbox = _project_replay_request(inbox, validated_source=validated_replay_source)
             payload = _payload_for_inbox(inbox)
             resolved_event_type = canonical_event_type(payload)
+            if resolved_event_type is None:
+                raise ValueError("RuntimeInbox canonical event_type is required")
 
             # ========== Stage 1: Validation (SCAN gate) ==========
             (
@@ -423,11 +425,6 @@ class RuntimeInboxProcessorBridge:
                 result["processed"] += 1
                 return result
 
-            if not safety_checked:
-                from src.app.workline.services.safety_service import workline_safety_service
-
-                _ = await workline_safety_service.assert_accepting_work(db, workline_id=resolve_entity_id(workline))
-
             if session is None or workline is None:
                 error_msg = "Inbox processing missing session/workline context"
                 await _record_diagnostic(
@@ -456,6 +453,14 @@ class RuntimeInboxProcessorBridge:
                 result["failed"] += 1
                 result["processed"] += 1
                 return result
+
+            if not safety_checked:
+                from src.app.workline.services.safety_service import workline_safety_service
+
+                _ = await workline_safety_service.assert_accepting_work(
+                    db,
+                    workline_id=resolve_required_pk(workline, "workline", "id", "workline_id"),
+                )
 
             # ========== Stage 1c: duplicate / late detection ==========
             if await _is_duplicate_entry_event(
@@ -993,7 +998,8 @@ async def _handle_timer_timeout(
         workline_runtime_reconciliation_service,
     )
 
-    payload_data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    raw_data = payload.get("data")
+    payload_data = raw_data if isinstance(raw_data, dict) else payload
     # WorklineSession 与 ExecutionSession 分属不同 ID 空间；
     # 业务路由只认 canonical legacy session_id。
     session_id = optional_int(payload_data.get("session_id"))

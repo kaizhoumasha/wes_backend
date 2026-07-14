@@ -1426,7 +1426,12 @@ class SmtInboundHandoffService:
         #   终态失败 = DEAD_LETTER; 成功 = PROCESSED.
         # - next_retry_at 单位: RuntimeInbox 使用 Unix 毫秒, item.next_attempt_at 是
         #   naive datetime, 通过 timezone.to_utc() 转换。
-        inbox = await runtime_inbox_repository.get_by_id_for_update(db, item.source_pick_inbox_id)
+        source_pick_inbox_id = item.source_pick_inbox_id
+        inbox = (
+            await runtime_inbox_repository.get_by_id_for_update(db, source_pick_inbox_id)
+            if isinstance(source_pick_inbox_id, int)
+            else None
+        )
         inbox_status = self._enum_text(getattr(inbox, "status", None))
         outcome: str | None = None
         if inbox is None:

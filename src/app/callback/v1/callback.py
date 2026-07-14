@@ -12,6 +12,7 @@
 """
 
 import time
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.encoders import jsonable_encoder
@@ -69,7 +70,7 @@ async def callback_result(
         start_time=time.time(),
         enqueue_processing=_enqueue_runtime_inbox_processing,
     )
-    if result["code"] == ResourceErrorCode.CONFLICT.code:
+    if cast("dict[str, Any]", result)["code"] == ResourceErrorCode.CONFLICT.code:
         return JSONResponse(status_code=409, content=jsonable_encoder(result))
     return result
 
@@ -127,7 +128,7 @@ async def callback_external(
         start_time=time.time(),
         enqueue_processing=_enqueue_runtime_inbox_processing,
     )
-    if result["code"] == ResourceErrorCode.CONFLICT.code:
+    if cast("dict[str, Any]", result)["code"] == ResourceErrorCode.CONFLICT.code:
         return JSONResponse(status_code=409, content=jsonable_encoder(result))
     return result
 

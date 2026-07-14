@@ -14,7 +14,10 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # 预加载外键目标模型, 确保独立 Celery worker 进程内 mapper/metadata 完整注册.
 from src.app.device.models.command import DeviceCommand as _DeviceCommand  # noqa: F401
@@ -40,7 +43,7 @@ def _emit_processing_sli(*, inbox_id: object, started_at: float, outcome: str) -
         _ = runtime_observability_registry.emit(
             "runtime_inbox.processing",
             {
-                "inbox_id": int(inbox_id),
+                "inbox_id": int(str(inbox_id)),
                 "duration_ms": (time.perf_counter() - started_at) * 1_000,
                 "outcome": outcome,
             },
@@ -67,7 +70,7 @@ def _emit_batch_sli(*, claimed_count: int, claim_duration_ms: float, reclaimed_c
         logger.warning(f"RuntimeInbox batch SLI 发射失败: error={exc}")
 
 
-def _processing_outcome(result: ClaimBatchResult) -> str:
+def _processing_outcome(result: Mapping[str, object]) -> str:
     if result.get("resource_wait", 0):
         return "resource_wait"
     if result.get("failed", 0):

@@ -65,7 +65,7 @@ class CeleryAsyncRuntime:
     @staticmethod
     def _assert_sync_entrypoint() -> None:
         try:
-            asyncio.get_running_loop()
+            _ = asyncio.get_running_loop()
         except RuntimeError:
             return
         raise RuntimeError("CeleryAsyncRuntime cannot be called from a running event loop")
@@ -89,11 +89,11 @@ class CeleryAsyncRuntime:
         try:
             return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
         except BaseException as exc:
-            task.cancel()
+            _ = task.cancel()
             if cancellation_deadline is not None:
                 cancellation_budget = max(cancellation_deadline - time.monotonic(), 0.0)
                 if cancellation_budget > 0:
-                    await asyncio.wait({task}, timeout=cancellation_budget)
+                    _ = await asyncio.wait({task}, timeout=cancellation_budget)
             if not task.done():
                 for _ in range(2):
                     await asyncio.sleep(0)
@@ -109,7 +109,7 @@ class CeleryAsyncRuntime:
         task = asyncio.create_task(awaitable)
         done, _ = await asyncio.wait({task}, timeout=timeout)
         if task not in done:
-            task.cancel()
+            _ = task.cancel()
             # 只让出有限的零时长调度轮次，使常规 CancelledError 清理有机会终态；
             # 不等待计时器，因此不扩大 worker 初始化的 3 秒 wall-clock 边界。
             for _ in range(2):
@@ -281,15 +281,15 @@ class CeleryAsyncRuntime:
             return False
 
         for task in pending:
-            task.cancel()
+            _ = task.cancel()
         _, stubborn = await asyncio.wait(pending, timeout=timeout)
 
         # 第二次 cancel 用于终止吞掉首次 CancelledError 后继续等待的后台任务，
         # 避免 Runner.close 再次无界等待这些任务。
         for task in stubborn:
-            task.cancel()
+            _ = task.cancel()
         if stubborn:
-            await asyncio.wait(stubborn, timeout=0)
+            _ = await asyncio.wait(stubborn, timeout=0)
             await asyncio.sleep(0)
         return any(not task.done() for task in stubborn)
 
@@ -345,7 +345,7 @@ class CeleryAsyncRuntime:
             if runner is None:
                 return
 
-            self._run_runner_stage(
+            _ = self._run_runner_stage(
                 runner,
                 self._cancel_pending_tasks(SHUTDOWN_STAGE_TIMEOUT_SECONDS),
                 "pending task",

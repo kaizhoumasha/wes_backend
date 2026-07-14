@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Never, Protocol, cast
 
 from sqlalchemy.exc import IntegrityError
 
@@ -264,7 +264,7 @@ def _original_replay_evidence(source: RuntimeInbox) -> dict[str, Any]:
     }
 
 
-def _raise_replay_source_integrity_violation(detail: str) -> None:
+def _raise_replay_source_integrity_violation(detail: str) -> Never:
     raise RuntimeInboxReplayNotAllowed(reason_code="REPLAY_SOURCE_INTEGRITY_VIOLATION", detail=detail)
 
 
@@ -300,13 +300,14 @@ def _validate_replayable_root_integrity(source: RuntimeInbox) -> None:
 
     if source.kind not in REPLAYABLE_ORIGINAL_KINDS or not isinstance(source.payload_json, dict):
         _raise_replay_source_integrity_violation("root source kind is not replayable")
+    payload_json = source.payload_json
     if not isinstance(source.max_retries, int) or isinstance(source.max_retries, bool) or source.max_retries < 1:
         raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_SOURCE_RETRY_BUDGET")
-    if source.payload_hash != _canonical_payload_hash(source.payload_json):
+    if source.payload_hash != _canonical_payload_hash(payload_json):
         _raise_replay_source_integrity_violation("root source payload hash mismatch")
     try:
-        _resolve_workline_session_ownership(
-            source.payload_json,
+        _ = _resolve_workline_session_ownership(
+            payload_json,
             source.workline_session_id,
             strict_persisted=True,
         )
@@ -1097,7 +1098,7 @@ class RuntimeInboxService:
             _validate_replayable_root_integrity(source)
             root_source_inbox_id = source_inbox_id
             original_kind = source.kind
-            original_payload = dict(source.payload_json)
+            original_payload = dict(cast("dict[str, Any]", source.payload_json))
             evidence = _original_replay_evidence(source)
 
         canonical_payload = {
@@ -1110,7 +1111,7 @@ class RuntimeInboxService:
             "original_payload": original_payload,
             **evidence,
         }
-        validate_replay_envelope(canonical_payload)
+        _ = validate_replay_envelope(canonical_payload)
         replay_source_event_id = f"replay:{source_inbox_id}:{normalized_request_id}"
         if len(replay_source_event_id) > 160:
             raise RuntimeInboxReplayNotAllowed(reason_code="INVALID_REQUEST_ID")

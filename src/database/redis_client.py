@@ -118,7 +118,7 @@ class RedisManager:
         candidate_client: Redis | None = None
         try:
             async with init_lock:
-                self._assert_owner_loop()
+                _ = self._assert_owner_loop()
 
                 # 锁外等待者复用先完成的初始化结果，不再创建第二个候选连接。
                 if self.is_available and self.redis_client is not None:
@@ -187,7 +187,7 @@ class RedisManager:
         :param force: 是否忽略重连频率限制，连接池耗尽等确定性故障需要立即清理
         :return: 重连是否成功
         """
-        self._assert_owner_loop()
+        _ = self._assert_owner_loop()
 
         # 限制重连频率（避免过于频繁）
         current_time = time.time()
@@ -215,7 +215,7 @@ class RedisManager:
 
         :return: Redis 是否可用
         """
-        self._assert_owner_loop()
+        _ = self._assert_owner_loop()
 
         if self.is_available and self.redis_client:
             try:
@@ -259,7 +259,7 @@ class RedisManager:
         """清理旧连接。"""
         current_loop = self._assert_owner_loop()
         async with self._get_init_lock(current_loop):
-            self._assert_owner_loop()
+            _ = self._assert_owner_loop()
             await self._cleanup_owned_resources()
 
     async def close_redis(self) -> None:

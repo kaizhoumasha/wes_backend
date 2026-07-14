@@ -9,7 +9,10 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # 预加载外键目标模型，确保独立 Celery worker 进程内 mapper/metadata 完整注册。
 from src.app.device.models.command import DeviceCommand as _DeviceCommand  # noqa: F401
@@ -65,11 +68,11 @@ class DispatchResult(TypedDict):
     skipped: int
 
 
-def _ensure_non_empty_retry_result(task_name: str, result: dict[str, int], retries: int) -> None:
+def _ensure_non_empty_retry_result(task_name: str, result: Mapping[str, object], retries: int) -> None:
     """避免“重试后空跑”被 Celery 误记为成功。"""
     if retries <= 0:
         return
-    if any(value > 0 for value in result.values()):
+    if any(isinstance(value, int) and value > 0 for value in result.values()):
         return
     raise RuntimeError(
         f"{task_name} returned an empty result after {retries} retries; refusing to mark it as succeeded"
