@@ -16,6 +16,10 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
+class CallbackPayloadValidationError(ValueError):
+    """Callback payload 缺少 RuntimeInbox 所需的稳定业务身份。"""
+
+
 def _resolve_first_str(payload: dict[str, Any], aliases: tuple[str, ...]) -> str | None:
     for alias in aliases:
         value = payload.get(alias)
@@ -49,7 +53,7 @@ def _resolve_payload_source_event_id(payload: dict[str, Any], *, fallback_prefix
 def _require_result_source_event_id(payload: dict[str, Any]) -> str:
     source_event_id = _resolve_first_str(payload, ("source_event_id",))
     if source_event_id is None:
-        raise ValueError("command result source_event_id is required")
+        raise CallbackPayloadValidationError("command result source_event_id is required")
     return source_event_id
 
 
@@ -110,6 +114,7 @@ class CallbackRuntimeInboxWriter:
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
+        device_id: int | None = None,
         processing_required: bool = True,
     ) -> RuntimeInboxAcceptResult:
         _ = request_id
@@ -125,6 +130,7 @@ class CallbackRuntimeInboxWriter:
             trace_id=trace_id,
             event_id=event_id,
             causation_id=causation_id,
+            device_id=device_id,
             correlation_id=None,
             processing_required=processing_required,
         )
@@ -161,4 +167,4 @@ class CallbackRuntimeInboxWriter:
 callback_runtime_inbox_writer = CallbackRuntimeInboxWriter()
 
 
-__all__ = ["CallbackRuntimeInboxWriter", "callback_runtime_inbox_writer"]
+__all__ = ["CallbackPayloadValidationError", "CallbackRuntimeInboxWriter", "callback_runtime_inbox_writer"]

@@ -41,6 +41,7 @@ from src.app.device.models.command import (
 )
 from src.app.device.services import device_command_service, device_context_service, device_service
 from src.app.runtime.capabilities.material_flow.start_admission_service import start_admission_service
+from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackPayloadValidationError
 from src.app.runtime.orchestration.services.idempotency_guard import IdempotencyConflict
 from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxConflict,
@@ -1702,11 +1703,11 @@ async def handle_callback_result(  # noqa: PLR0911 - ingress 分支显式早返�
             event_id=_resolve_callback_event_id(callback_data),
             causation_id=_resolve_callback_causation_id(callback_data),
         )
-    except ValueError as exc:
+    except CallbackPayloadValidationError as exc:
         logger.error(f"指令结果回调契约校验失败: {exc}")
         await _record_callback_diagnostic(
             db,
-            error_code=ErrorCode.CONFIG_INVALID,
+            error_code=ErrorCode.CALLBACK_SCHEMA_INVALID,
             message=f"结果回调契约校验失败: {exc}",
             request_id=request_id,
             callback_type="result",
@@ -2063,6 +2064,7 @@ async def handle_callback_event(  # noqa: PLR0911 - ingress 分支显式早返�
             request_id=request_id,
             is_workline_event=is_workline_event,
             canonical_event_type=canonical_event_type,
+            device_id=resolve_entity_id(device),
             trace_id=_resolve_callback_trace_id(event_data),
             event_id=_resolve_callback_event_id(event_data),
             causation_id=_resolve_callback_causation_id(event_data),

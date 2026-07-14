@@ -334,6 +334,52 @@ async def test_callback_runtime_inbox_writer_event_fallback_source_event_id_is_p
 
 
 @pytest.mark.asyncio
+async def test_callback_runtime_inbox_writer_passes_stable_device_owner() -> None:
+    """同设备不同事件必须落入同一 device FIFO bucket。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    accepted_calls: list[dict[str, object]] = []
+
+    class RuntimeInboxServiceStub:
+        async def accept_received(self, _db, **kwargs):
+            accepted_calls.append(kwargs)
+            return _runtime_accept_result(created=True, record_id=1)
+
+    writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
+    await writer.write_event_callback(
+        SimpleNamespace(),
+        payload={"event_id": "evt-001", "device_code": "ARM_01", "event_type": "SCAN_COMPLETED"},
+        request_id="req-001",
+        canonical_event_type="SCAN_COMPLETED",
+        device_id=42,
+    )
+
+    assert accepted_calls[0]["device_id"] == 42
+
+
+@pytest.mark.asyncio
+async def test_callback_runtime_inbox_writer_rejects_blank_result_source_event_id() -> None:
+    """空白 provider identity 属于回调契约错误，不能进入 RuntimeInbox。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    class RuntimeInboxServiceStub:
+        async def accept_received(self, _db, **_kwargs):
+            raise AssertionError("空白 source_event_id 不应进入 RuntimeInbox")
+
+    writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="source_event_id"):
+        await writer.write_result_callback(
+            SimpleNamespace(),
+            payload={"source_event_id": "   ", "command_code": "CMD-001", "result": "SUCCESS"},
+            request_id="req-001",
+            canonical_result_type="DEVICE_RESULT",
+        )
+
+
+@pytest.mark.asyncio
 async def test_process_result_uses_runtime_inbox_as_authority() -> None:
     """结果回调 accepted 后继续业务处理，并保持 RuntimeInbox 唯一权威。"""
 
