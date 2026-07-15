@@ -1,0 +1,427 @@
+"""作业线迁移清单分类、边界校验与确定性摘要测试。"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import UTC, datetime, timedelta, timezone
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from src.app.contracts.external_contract_profile import ExternalContractProfile
+from src.app.runtime.orchestration import repository_wiring
+from src.app.workline.models import WorkLine
+from src.app.workline.services import (
+    WorklineMigrationInventoryInvariantError,
+    WorklineMigrationInventoryLimitExceeded,
+    WorklineMigrationInventoryService,
+    workline_migration_inventory_service,
+)
+
+NOW = datetime(2026, 7, 15, 8, 30, tzinfo=UTC)
+ZERO_BY_TYPE = {"sessions": 0, "commands": 0, "outboxes": 0, "inboxes": 0, "runtime_holds": 0}
+
+
+class FakeRepository:
+    def __init__(
+        self,
+        worklines: list[Any] | None = None,
+        summaries: dict[int, dict[str, Any]] | None = None,
+        *,
+        total: int | None = None,
+    ) -> None:
+        self.worklines = worklines or []
+        self.summaries = summaries or {}
+        self.total = len(self.worklines) if total is None else total
+        self.get_list_calls: list[dict[str, Any]] = []
+        self.summary_calls: list[int] = []
+
+    async def get_list(self, db: Any, **kwargs: Any) -> tuple[int, list[Any]]:
+        self.get_list_calls.append(kwargs)
+        return self.total, list(self.worklines)
+
+    async def get_unfinished_workload_summary(self, db: Any, workline_id: int) -> dict[str, Any]:
+        self.summary_calls.append(workline_id)
+        return self.summaries.get(workline_id, _summary())
+
+
+def _workline(
+    workline_id: int,
+    line_code: str,
+    *,
+    active: bool = False,
+    plugin: str | None = None,
+    version: str | None = None,
+    run_mode: Any = "AUTO",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=workline_id,
+        line_code=line_code,
+        is_active=active,
+        plugin_key=plugin,
+        contract_version=version,
+        run_mode=run_mode,
+    )
+
+
+def _summary(
+    *,
+    count: int = 0,
+    sample: dict[str, Any] | None = None,
+    by_type: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {"count": count, "sample": sample, "by_type": dict(ZERO_BY_TYPE if by_type is None else by_type)}
+
+
+def _definition(key: str = "known", version: str = "current") -> SimpleNamespace:
+    return SimpleNamespace(capability_key=key, contract_version=version)
+
+
+def _profile(provider_code: str = "WMS", *, query: list[str] | None = None) -> ExternalContractProfile:
+    return ExternalContractProfile(
+        provider_code=provider_code,
+        contract_version="v1",
+        environment="sandbox",
+        runtime_capabilities_query=query or ["WmsMasterDataPort.get_material"],
+        runtime_capabilities_effect=["WmsFulfillmentPort.confirm_inbound"],
+        inbound_normalizers_event=["SECRET_EVENT"],
+        timeout_retry_query_timeout_seconds=10,
+        timeout_retry_effect_timeout_seconds=30,
+        timeout_retry_retry_backoff_seconds=[1, 2],
+        fixture_set_path="tests/fixtures/secret",
+        fixture_set_required_cases=["success"],
+    )
+
+
+def _service(
+    repo: FakeRepository,
+    *,
+    definitions: list[Any] | None = None,
+    profiles: list[Any] | None = None,
+    clock: Any = lambda: NOW,
+    max_worklines: int = 100,
+) -> WorklineMigrationInventoryService:
+    return WorklineMigrationInventoryService(
+        repository=repo,
+        capability_definitions_loader=lambda: definitions if definitions is not None else [_definition()],
+        provider_profile_loader=lambda: profiles if profiles is not None else [],
+        clock=clock,
+        max_worklines=max_worklines,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("active", "plugin", "version", "references", "expected_codes", "foundation_ready"),
+    [
+        (True, "known", "current", 0, (), True),
+        (
+            True,
+            None,
+            None,
+            0,
+            ("ACTIVE_WITHOUT_CONTRACT_VERSION", "ACTIVE_WITHOUT_PLUGIN"),
+            False,
+        ),
+        (False, "unknown", "v1", 0, ("UNKNOWN_PLUGIN",), False),
+        (True, "known", "old", 0, ("CONTRACT_VERSION_MISMATCH",), False),
+        (False, "known", "current", 1, ("RUNTIME_REFERENCES_PRESENT",), False),
+        (False, None, None, 0, (), True),
+    ],
+)
+async def test_inventory_classification_case_table(
+    active: bool,
+    plugin: str | None,
+    version: str | None,
+    references: int,
+    expected_codes: tuple[str, ...],
+    foundation_ready: bool,
+) -> None:
+    workline = _workline(1, "LINE-01", active=active, plugin=plugin, version=version)
+    by_type = {**ZERO_BY_TYPE, "sessions": references}
+    repo = FakeRepository([workline], {1: _summary(count=references, by_type=by_type)})
+
+    report = await _service(repo).build_report(object(), environment="production")
+
+    item = report.worklines[0]
+    assert tuple(issue.code.value for issue in item.issues) == expected_codes
+    assert item.foundation_ready is foundation_ready
+    assert report.foundation_ready is foundation_ready
+    assert all(issue.severity.value == "BLOCKER" for issue in item.issues)
+    assert repo.get_list_calls == [{"limit": 101, "offset": 0, "order_by_raw": [WorkLine.line_code, WorkLine.id]}]
+
+
+@pytest.mark.asyncio
+async def test_empty_inventory_produces_ready_deterministic_report() -> None:
+    report = await _service(FakeRepository()).build_report(object(), environment="production")
+
+    assert report.worklines == ()
+    assert report.issues == ()
+    assert report.foundation_ready is True
+    assert report.generated_at == NOW
+    expected_payload = {
+        "schema_version": "workline-migration-inventory-foundation.v1",
+        "environment": "production",
+        "worklines": [],
+        "provider_profile_catalog": [],
+        "issues": [],
+        "foundation_ready": True,
+    }
+    expected_json = json.dumps(expected_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    assert report.inventory_digest == hashlib.sha256(expected_json.encode()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_known_plugin_without_version_is_contract_mismatch_even_when_inactive() -> None:
+    repo = FakeRepository([_workline(1, "LINE", plugin="known")])
+
+    report = await _service(repo).build_report(object(), environment="production")
+
+    assert [issue.code.value for issue in report.issues] == ["CONTRACT_VERSION_MISMATCH"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("total", "returned"), [(101, 100), (100, 101)])
+async def test_inventory_limit_fails_before_summary_query(total: int, returned: int) -> None:
+    repo = FakeRepository([_workline(index, f"L-{index:03}") for index in range(returned)], total=total)
+
+    with pytest.raises(WorklineMigrationInventoryLimitExceeded, match="bulk summary port"):
+        await _service(repo).build_report(object(), environment="production")
+
+    assert repo.summary_calls == []
+
+
+@pytest.mark.asyncio
+async def test_exactly_one_hundred_worklines_are_allowed() -> None:
+    worklines = [_workline(index, f"L-{index:03}") for index in range(100)]
+    repo = FakeRepository(worklines)
+
+    report = await _service(repo).build_report(object(), environment="production")
+
+    assert len(report.worklines) == 100
+    assert len(repo.summary_calls) == 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "by_type",
+    [
+        {"sessions": 0, "commands": 0, "outboxes": 0, "inboxes": 0},
+        {**ZERO_BY_TYPE, "other": 0},
+        {**ZERO_BY_TYPE, "sessions": -1},
+        {**ZERO_BY_TYPE, "sessions": True},
+        {**ZERO_BY_TYPE, "sessions": "1"},
+    ],
+)
+async def test_summary_rejects_malformed_by_type(by_type: dict[str, Any]) -> None:
+    repo = FakeRepository([_workline(1, "LINE")], {1: _summary(by_type=by_type)})
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(repo).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "summary",
+    [
+        {"count": True, "sample": None, "by_type": ZERO_BY_TYPE},
+        {"count": "0", "sample": None, "by_type": ZERO_BY_TYPE},
+        {"count": -1, "sample": None, "by_type": ZERO_BY_TYPE},
+        {"count": 1, "sample": None, "by_type": ZERO_BY_TYPE},
+        {"count": 0, "sample": None, "by_type": ZERO_BY_TYPE, "extra": 1},
+        {"count": 0, "by_type": ZERO_BY_TYPE},
+    ],
+)
+async def test_summary_rejects_malformed_top_level(summary: dict[str, Any]) -> None:
+    repo = FakeRepository([_workline(1, "LINE")], {1: summary})
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(repo).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_sample", "expected_type", "expected_reference"),
+    [
+        ({"type": "session", "session_code": "S-1", "status": "RUNNING"}, "SESSION", "S-1"),
+        ({"type": "command", "command_code": "C-1", "status": "SENT"}, "COMMAND", "C-1"),
+        ({"type": "outbox", "dispatch_key": "D-1", "status": "NEW"}, "OUTBOX", "D-1"),
+        ({"type": "inbox", "inbox_id": 42, "status": "FAILED"}, "INBOX", "42"),
+        ({"type": "runtime_hold", "count": 3, "status": "ACTIVE_BLOCKING"}, "RUNTIME_HOLD", "count:3"),
+    ],
+)
+async def test_all_repository_samples_are_normalized(
+    raw_sample: dict[str, Any], expected_type: str, expected_reference: str
+) -> None:
+    by_type = {**ZERO_BY_TYPE, "runtime_holds": 1}
+    repo = FakeRepository([_workline(1, "LINE")], {1: _summary(count=1, sample=raw_sample, by_type=by_type)})
+
+    report = await _service(repo).build_report(object(), environment="production")
+
+    sample = report.worklines[0].runtime_references.sample
+    assert sample is not None
+    assert sample.type.value == expected_type
+    assert sample.reference == expected_reference
+    assert not isinstance(sample, dict)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sample",
+    [
+        {"type": "unknown", "status": "OPEN", "reference": "x"},
+        {"type": "session", "status": "OPEN"},
+        {"type": "session", "session_code": None, "status": "OPEN"},
+        {"type": "session", "session_code": " ", "status": "OPEN"},
+        {"type": "session", "session_code": "S", "status": " "},
+        {"type": "runtime_hold", "count": True, "status": "OPEN"},
+        {"type": "runtime_hold", "count": -1, "status": "OPEN"},
+        {"type": "runtime_hold", "count": "1", "status": "OPEN"},
+    ],
+)
+async def test_malformed_sample_fails_closed(sample: dict[str, Any]) -> None:
+    by_type = {**ZERO_BY_TYPE, "sessions": 1}
+    repo = FakeRepository([_workline(1, "LINE")], {1: _summary(count=1, sample=sample, by_type=by_type)})
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(repo).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
+async def test_zero_total_rejects_sample_but_positive_total_allows_none() -> None:
+    zero_repo = FakeRepository(
+        [_workline(1, "LINE")],
+        {1: _summary(sample={"type": "session", "session_code": "S", "status": "OPEN"})},
+    )
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(zero_repo).build_report(object(), environment="production")
+
+    positive_repo = FakeRepository(
+        [_workline(1, "LINE")],
+        {1: _summary(count=1, by_type={**ZERO_BY_TYPE, "sessions": 1})},
+    )
+    report = await _service(positive_repo).build_report(object(), environment="production")
+    assert report.worklines[0].runtime_references.sample is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("definitions", "profiles"),
+    [
+        ([_definition(), _definition()], []),
+        ([], [_profile("WMS"), _profile("WMS")]),
+    ],
+)
+async def test_duplicate_catalog_keys_fail_closed(definitions: list[Any], profiles: list[Any]) -> None:
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(FakeRepository(), definitions=definitions, profiles=profiles).build_report(
+            object(), environment="production"
+        )
+
+
+@pytest.mark.asyncio
+async def test_provider_profile_is_filtered_and_capabilities_are_sorted() -> None:
+    profile = _profile(
+        "Z-WMS",
+        query=["WmsMasterDataPort.z_query", "WmsMasterDataPort.a_query"],
+    )
+    report = await _service(FakeRepository(), profiles=[profile, _profile("A-WMS")]).build_report(
+        object(), environment="production"
+    )
+
+    assert [item.provider_code for item in report.provider_profile_catalog] == ["A-WMS", "Z-WMS"]
+    assert report.provider_profile_catalog[1].runtime_capabilities_query == (
+        "WmsMasterDataPort.a_query",
+        "WmsMasterDataPort.z_query",
+    )
+    assert set(report.provider_profile_catalog[1].model_dump()) == {
+        "provider_code",
+        "contract_version",
+        "environment",
+        "runtime_capabilities_query",
+        "runtime_capabilities_effect",
+    }
+
+
+@pytest.mark.asyncio
+async def test_invalid_dynamic_profile_and_workline_fields_become_invariant_errors() -> None:
+    invalid_profile = SimpleNamespace(
+        provider_code="WMS",
+        contract_version="v1",
+        environment=" ",
+        runtime_capabilities_query=["WmsMasterDataPort.get_material"],
+        runtime_capabilities_effect=[],
+    )
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(FakeRepository(), profiles=[invalid_profile]).build_report(object(), environment="production")
+
+    minimal_profile = SimpleNamespace(
+        provider_code="MINIMAL",
+        contract_version="v1",
+        environment="sandbox",
+        runtime_capabilities_query=["AnyPort.query"],
+        runtime_capabilities_effect=[],
+    )
+    minimal_report = await _service(FakeRepository(), profiles=[minimal_profile]).build_report(
+        object(), environment="production"
+    )
+    assert minimal_report.provider_profile_catalog[0].provider_code == "MINIMAL"
+
+    invalid_workline = _workline(1, " ")
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(FakeRepository([invalid_workline])).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
+async def test_report_sorting_and_digest_ignore_input_order_and_clock() -> None:
+    first = _workline(2, "B", active=True, plugin=None, version=None)
+    second = _workline(1, "A", plugin="unknown", version="v1")
+    summaries = {1: _summary(), 2: _summary()}
+    report_a = await _service(
+        FakeRepository([first, second], summaries),
+        profiles=[_profile("Z-WMS"), _profile("A-WMS")],
+        clock=lambda: NOW,
+    ).build_report(object(), environment="production")
+    report_b = await _service(
+        FakeRepository([second, first], summaries),
+        profiles=[_profile("A-WMS"), _profile("Z-WMS")],
+        clock=lambda: NOW + timedelta(days=1),
+    ).build_report(object(), environment="production")
+
+    assert [(item.line_code, item.workline_id) for item in report_a.worklines] == [("A", 1), ("B", 2)]
+    assert [issue.code.value for issue in report_a.issues] == [
+        "ACTIVE_WITHOUT_CONTRACT_VERSION",
+        "ACTIVE_WITHOUT_PLUGIN",
+        "UNKNOWN_PLUGIN",
+    ]
+    assert report_a.inventory_digest == report_b.inventory_digest
+    assert report_a.generated_at != report_b.generated_at
+
+
+@pytest.mark.asyncio
+async def test_generated_at_requires_aware_utc_clock() -> None:
+    for clock in (
+        lambda: datetime(2026, 7, 15, 8, 30),
+        lambda: datetime(2026, 7, 15, 16, 30, tzinfo=timezone(timedelta(hours=8))),
+    ):
+        with pytest.raises(WorklineMigrationInventoryInvariantError):
+            await _service(FakeRepository(), clock=clock).build_report(object(), environment="production")
+
+
+def test_production_singleton_uses_wired_repository_identity() -> None:
+    assert workline_migration_inventory_service.repository is repository_wiring.workline_repository
+
+
+@pytest.mark.asyncio
+async def test_service_builds_tuple_compatible_contracts() -> None:
+    report = await _service(FakeRepository([_workline(1, "LINE")]), profiles=[_profile()]).build_report(
+        object(), environment="production"
+    )
+
+    assert isinstance(report.worklines, tuple)
+    assert isinstance(report.issues, tuple)
+    assert isinstance(report.provider_profile_catalog, tuple)
+    assert isinstance(report.worklines[0].issues, tuple)
+    assert isinstance(report.provider_profile_catalog[0].runtime_capabilities_query, tuple)
