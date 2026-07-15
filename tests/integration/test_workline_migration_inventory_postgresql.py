@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import suppress
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -284,6 +285,31 @@ async def _build_via_cli(database_url: str, repository: _ObservingRepository | N
         return await inventory_cli.build_report()
 
 
+async def _complete_concurrent_inventory(
+    *,
+    inventory_task: asyncio.Task[Any],
+    listed: asyncio.Event,
+    resume: asyncio.Event,
+    writer: Callable[[], Awaitable[None]],
+    timeout: float,
+) -> Any:
+    """完成并发写入并保证 inventory task 在任何退出路径都被回收。"""
+
+    try:
+        await asyncio.wait_for(listed.wait(), timeout=timeout)
+        await writer()
+        resume.set()
+        return await asyncio.wait_for(inventory_task, timeout=timeout)
+    finally:
+        resume.set()
+        if not inventory_task.done():
+            inventory_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await inventory_task
+        elif not inventory_task.cancelled():
+            inventory_task.exception()
+
+
 def test_postgresql_status_matrix_samples_transaction_and_no_write_contract() -> None:
     async def scenario(database_url: str, session_factory: async_sessionmaker[AsyncSession]) -> None:
         async with session_factory() as db:
@@ -436,7 +462,7 @@ def test_postgresql_each_repository_status_is_counted_only_when_active() -> None
             "it-inv-outbox-NEW-0",
             "NEW",
         ),
-        (WorklineRuntimeReferenceType.INBOX, lambda seed: _inbox(seed, "RECEIVED", 0), "1", "RECEIVED"),
+        (WorklineRuntimeReferenceType.INBOX, lambda seed: _inbox(seed, "RECEIVED", 0), None, "RECEIVED"),
         (
             WorklineRuntimeReferenceType.RUNTIME_HOLD,
             lambda seed: _hold(seed, RuntimeHoldStatus.OPEN, 0),
@@ -448,20 +474,26 @@ def test_postgresql_each_repository_status_is_counted_only_when_active() -> None
 def test_postgresql_normalizes_each_reference_sample(
     reference_type: WorklineRuntimeReferenceType,
     factory: Callable[[SeededInventory], Any],
-    expected_reference: str,
+    expected_reference: str | None,
     expected_status: str,
 ) -> None:
     async def scenario(database_url: str, session_factory: async_sessionmaker[AsyncSession]) -> None:
         async with session_factory() as db:
             seed = await _seed_worklines(db)
-            db.add(factory(seed))
+            record = factory(seed)
+            db.add(record)
+            await db.flush()
+            normalized_reference = (
+                str(record.id) if reference_type is WorklineRuntimeReferenceType.INBOX else expected_reference
+            )
+            assert normalized_reference is not None
             await db.commit()
         report = await asyncio.wait_for(_build_via_cli(database_url), timeout=20)
         sample = _item(report, seed.linked_workline_id).runtime_references.sample
         assert sample is not None
         assert (sample.type, sample.reference, sample.status) == (
             reference_type,
-            expected_reference,
+            normalized_reference,
             expected_status,
         )
 
@@ -478,18 +510,53 @@ def test_postgresql_repeatable_read_snapshot_excludes_concurrent_inbox_until_nex
         resume = asyncio.Event()
         observer = _ObservingRepository(listed=listed, resume=resume)
         inventory_task = asyncio.create_task(_build_via_cli(database_url, observer))
-        await asyncio.wait_for(listed.wait(), timeout=10)
-        async with session_factory() as writer:
-            writer.add(_inbox(seed, "RECEIVED", 0))
-            await writer.commit()
-        resume.set()
 
-        current_report = await asyncio.wait_for(inventory_task, timeout=10)
+        async def insert_inbox() -> None:
+            async with session_factory() as writer:
+                writer.add(_inbox(seed, "RECEIVED", 0))
+                await writer.commit()
+
+        current_report = await _complete_concurrent_inventory(
+            inventory_task=inventory_task,
+            listed=listed,
+            resume=resume,
+            writer=insert_inbox,
+            timeout=10,
+        )
         assert _item(current_report, seed.linked_workline_id).runtime_references.inboxes == 0
         next_report = await asyncio.wait_for(_build_via_cli(database_url), timeout=20)
         assert _item(next_report, seed.linked_workline_id).runtime_references.inboxes == 1
 
     asyncio.run(_with_database(scenario))
+
+
+def test_concurrent_inventory_cleanup_cancels_task_when_writer_fails() -> None:
+    async def scenario() -> None:
+        listed = asyncio.Event()
+        resume = asyncio.Event()
+
+        async def inventory() -> None:
+            listed.set()
+            await resume.wait()
+            await asyncio.Future()
+
+        async def failing_writer() -> None:
+            raise RuntimeError("受控 writer 故障")
+
+        inventory_task = asyncio.create_task(inventory())
+        with pytest.raises(RuntimeError, match="受控 writer 故障"):
+            await _complete_concurrent_inventory(
+                inventory_task=inventory_task,
+                listed=listed,
+                resume=resume,
+                writer=failing_writer,
+                timeout=1,
+            )
+        assert resume.is_set()
+        assert inventory_task.done()
+        assert inventory_task.cancelled()
+
+    asyncio.run(scenario())
 
 
 def test_postgresql_read_only_transaction_rejects_noop_update_by_sqlstate() -> None:
@@ -510,7 +577,9 @@ def test_postgresql_read_only_transaction_rejects_noop_update_by_sqlstate() -> N
                             .where(WorkLine.id == seed.linked_workline_id)
                             .values(line_name=WorkLine.line_name)
                         )
-                assert getattr(exc_info.value.orig, "sqlstate", None) == "25006"
+                driver_error = exc_info.value.orig
+                sqlstate = getattr(driver_error, "sqlstate", None) or getattr(driver_error, "pgcode", None)
+                assert sqlstate == "25006"
         finally:
             await engine.dispose()
 
