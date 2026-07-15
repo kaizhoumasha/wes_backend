@@ -145,9 +145,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     try:
         return run(argv)
+    except WorklineMigrationInventoryLimitExceeded:
+        # 规模阻断需要给出稳定操作指引，同时禁止回显可能包含源数据的异常文本。
+        print("活动 WorkLine 超过安全盘点上限（100 条）；请先实现 bulk summary port", file=sys.stderr)
+        return EXIT_RUNTIME_ERROR
     except (
         TimeoutError,
-        WorklineMigrationInventoryLimitExceeded,
         WorklineMigrationInventoryInvariantError,
         OSError,
         SQLAlchemyError,

@@ -156,7 +156,6 @@ def test_subprocess_preserves_argparse_exit_code_two() -> None:
     "error",
     [
         TimeoutError("timeout with super-secret"),
-        WorklineMigrationInventoryLimitExceeded("limit with super-secret"),
         WorklineMigrationInventoryInvariantError("invariant with super-secret"),
         OSError("disk with super-secret"),
         SQLAlchemyError("sql with super-secret params={'password': 'super-secret'}"),
@@ -175,6 +174,28 @@ def test_main_maps_known_runtime_errors_to_sanitized_exit_one(
     captured = capsys.readouterr()
     assert exit_code == cli.EXIT_RUNTIME_ERROR
     assert "迁移清单生成失败" in captured.err
+    assert "super-secret" not in captured.err
+    assert SECRET_DATABASE_URL not in captured.err
+    assert captured.out == ""
+
+
+def test_main_maps_inventory_limit_to_stable_actionable_sanitized_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli, "settings", _settings())
+    monkeypatch.setattr(
+        cli,
+        "build_report",
+        AsyncMock(side_effect=WorklineMigrationInventoryLimitExceeded("活动清单包含秘密 super-secret")),
+    )
+
+    exit_code = cli.main(["--expected-environment", "test"])
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.EXIT_RUNTIME_ERROR
+    assert captured.err == "活动 WorkLine 超过安全盘点上限（100 条）；请先实现 bulk summary port\n"
+    assert "秘密" not in captured.err
     assert "super-secret" not in captured.err
     assert SECRET_DATABASE_URL not in captured.err
     assert captured.out == ""
