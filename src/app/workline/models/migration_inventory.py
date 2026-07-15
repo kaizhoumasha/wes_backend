@@ -86,7 +86,7 @@ class WorklineMigrationInventoryItem(_FrozenInventoryModel):
     run_mode: _NonBlankString
     runtime_references: WorklineRuntimeReferenceSummary
     foundation_ready: bool
-    issues: list[WorklineMigrationInventoryIssue] = Field(default_factory=list)
+    issues: tuple[WorklineMigrationInventoryIssue, ...] = ()
 
 
 class WorklineProviderProfileInventoryItem(_FrozenInventoryModel):
@@ -95,8 +95,8 @@ class WorklineProviderProfileInventoryItem(_FrozenInventoryModel):
     provider_code: _NonBlankString
     contract_version: _NonBlankString
     environment: _NonBlankString
-    runtime_capabilities_query: list[_NonBlankString]
-    runtime_capabilities_effect: list[_NonBlankString]
+    runtime_capabilities_query: tuple[_NonBlankString, ...]
+    runtime_capabilities_effect: tuple[_NonBlankString, ...]
 
 
 class WorklineMigrationInventoryReport(_FrozenInventoryModel):
@@ -107,6 +107,6 @@ class WorklineMigrationInventoryReport(_FrozenInventoryModel):
     generated_at: AwareDatetime
     inventory_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     foundation_ready: bool
-    worklines: list[WorklineMigrationInventoryItem] = Field(default_factory=list)
-    provider_profile_catalog: list[WorklineProviderProfileInventoryItem] = Field(default_factory=list)
-    issues: list[WorklineMigrationInventoryIssue] = Field(default_factory=list)
+    worklines: tuple[WorklineMigrationInventoryItem, ...] = ()
+    provider_profile_catalog: tuple[WorklineProviderProfileInventoryItem, ...] = ()
+    issues: tuple[WorklineMigrationInventoryIssue, ...] = ()
