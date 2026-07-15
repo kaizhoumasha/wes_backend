@@ -773,9 +773,15 @@ class RuntimeInboxProcessorBridge:
 
         except Exception as e:
             if isinstance(e, RuntimeInboxReplayNotAllowed):
-                # replay integrity error 只记录稳定原因，避免 traceback locals 泄露持久化 payload。
+                # replay 合同拒绝不可重试，只持久化稳定原因码，避免 traceback locals 泄露 payload。
+                failure_error_code = e.reason_code
+                failure_message = e.reason_code
+                retryable = False
                 logger.warning(f"Inbox {inbox_pk_text} replay 验真拒绝: reason={e.reason_code}")
             else:
+                failure_error_code = ErrorCode.UNKNOWN.value
+                failure_message = str(e)
+                retryable = True
                 logger.exception(f"Inbox {inbox_pk_text} 处理异常")
             with suppress(Exception):
                 await db.rollback()
@@ -783,7 +789,7 @@ class RuntimeInboxProcessorBridge:
                 db,
                 inbox=diagnostic_inbox,
                 error_code=ErrorCode.UNKNOWN,
-                message=str(e),
+                message=failure_message,
             )
             try:
                 pk_to_mark = inbox_pk or diagnostic_inbox.id
@@ -793,9 +799,9 @@ class RuntimeInboxProcessorBridge:
                             db,
                             inbox_id=pk_to_mark,
                             lease_token=processor_token,
-                            error_code=ErrorCode.UNKNOWN.value,
-                            error_message=str(e),
-                            retryable=True,
+                            error_code=failure_error_code,
+                            error_message=failure_message,
+                            retryable=retryable,
                         ),
                         action="mark_failed",
                         inbox_id=pk_to_mark,

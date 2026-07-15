@@ -147,10 +147,10 @@ async def test_process_claimed_rejects_tampered_replay_before_context_or_effect(
             return root if inbox_id == root.id else None
 
     class _InboxService:
-        error_message: str | None = None
+        mark_failed_kwargs: dict[str, Any] | None = None
 
         async def mark_failed(self, *_args: Any, **kwargs: Any) -> bool:
-            self.error_message = kwargs["error_message"]
+            self.mark_failed_kwargs = kwargs
             return True
 
     class _Db:
@@ -195,8 +195,10 @@ async def test_process_claimed_rejects_tampered_replay_before_context_or_effect(
 
     assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
     assert context_calls == []
-    assert inbox_service.error_message is not None
-    assert "REPLAY_SOURCE_INTEGRITY_VIOLATION" in inbox_service.error_message
+    assert inbox_service.mark_failed_kwargs is not None
+    assert inbox_service.mark_failed_kwargs["error_code"] == "REPLAY_SOURCE_INTEGRITY_VIOLATION"
+    assert inbox_service.mark_failed_kwargs["error_message"] == "REPLAY_SOURCE_INTEGRITY_VIOLATION"
+    assert inbox_service.mark_failed_kwargs["retryable"] is False
     assert logged_exceptions == []
     assert logged_warnings
     assert all("TAMPERED" not in message for message in logged_warnings)
