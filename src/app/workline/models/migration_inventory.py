@@ -1,0 +1,112 @@
+"""作业线迁移清单的稳定值对象合同。"""
+
+from __future__ import annotations
+
+from enum import Enum
+from typing import Annotated, Literal
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictInt, StringConstraints
+
+_NonBlankString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+_NonNegativeStrictInt = Annotated[StrictInt, Field(ge=0)]
+
+
+class _FrozenInventoryModel(BaseModel):
+    """迁移清单值对象的不可变、严格输入边界。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class WorklineMigrationInventorySeverity(str, Enum):
+    """迁移问题严重程度。"""
+
+    BLOCKER = "BLOCKER"
+    WARNING = "WARNING"
+
+
+class WorklineMigrationInventoryIssueCode(str, Enum):
+    """迁移清单已知问题代码；未知值必须拒绝。"""
+
+    ACTIVE_WITHOUT_PLUGIN = "ACTIVE_WITHOUT_PLUGIN"
+    ACTIVE_WITHOUT_CONTRACT_VERSION = "ACTIVE_WITHOUT_CONTRACT_VERSION"
+    UNKNOWN_PLUGIN = "UNKNOWN_PLUGIN"
+    CONTRACT_VERSION_MISMATCH = "CONTRACT_VERSION_MISMATCH"
+    RUNTIME_REFERENCES_PRESENT = "RUNTIME_REFERENCES_PRESENT"
+
+
+class WorklineRuntimeReferenceType(str, Enum):
+    """阻塞迁移的运行态引用类型。"""
+
+    SESSION = "SESSION"
+    COMMAND = "COMMAND"
+    OUTBOX = "OUTBOX"
+    INBOX = "INBOX"
+    RUNTIME_HOLD = "RUNTIME_HOLD"
+
+
+class WorklineRuntimeReferenceSample(_FrozenInventoryModel):
+    """运行态引用样本。"""
+
+    type: WorklineRuntimeReferenceType
+    reference: _NonBlankString
+    status: _NonBlankString
+
+
+class WorklineRuntimeReferenceSummary(_FrozenInventoryModel):
+    """作业线关联运行态记录的计数摘要。"""
+
+    sessions: _NonNegativeStrictInt
+    commands: _NonNegativeStrictInt
+    outboxes: _NonNegativeStrictInt
+    inboxes: _NonNegativeStrictInt
+    runtime_holds: _NonNegativeStrictInt
+    total: _NonNegativeStrictInt
+    sample: WorklineRuntimeReferenceSample | None = None
+
+
+class WorklineMigrationInventoryIssue(_FrozenInventoryModel):
+    """迁移清单问题。"""
+
+    code: WorklineMigrationInventoryIssueCode
+    severity: WorklineMigrationInventorySeverity
+    message: _NonBlankString
+    workline_id: int | None = None
+    line_code: _NonBlankString | None = None
+
+
+class WorklineMigrationInventoryItem(_FrozenInventoryModel):
+    """单条作业线迁移盘点结果。"""
+
+    workline_id: int
+    line_code: _NonBlankString
+    is_active: bool
+    plugin_key: _NonBlankString | None
+    configured_contract_version: _NonBlankString | None
+    catalog_contract_version: _NonBlankString | None
+    run_mode: _NonBlankString
+    runtime_references: WorklineRuntimeReferenceSummary
+    foundation_ready: bool
+    issues: list[WorklineMigrationInventoryIssue] = Field(default_factory=list)
+
+
+class WorklineProviderProfileInventoryItem(_FrozenInventoryModel):
+    """Provider profile 目录中的稳定迁移视图。"""
+
+    provider_code: _NonBlankString
+    contract_version: _NonBlankString
+    environment: _NonBlankString
+    runtime_capabilities_query: list[_NonBlankString]
+    runtime_capabilities_effect: list[_NonBlankString]
+
+
+class WorklineMigrationInventoryReport(_FrozenInventoryModel):
+    """作业线迁移清单报告。"""
+
+    schema_version: Literal["workline-migration-inventory-foundation.v1"] = "workline-migration-inventory-foundation.v1"
+    environment: _NonBlankString
+    generated_at: AwareDatetime
+    inventory_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    foundation_ready: bool
+    worklines: list[WorklineMigrationInventoryItem] = Field(default_factory=list)
+    provider_profile_catalog: list[WorklineProviderProfileInventoryItem] = Field(default_factory=list)
+    issues: list[WorklineMigrationInventoryIssue] = Field(default_factory=list)

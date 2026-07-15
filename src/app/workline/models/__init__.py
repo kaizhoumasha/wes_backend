@@ -14,6 +14,17 @@ from src.app.rack.models import (
     RackTaskUpdate,
 )
 
+from .migration_inventory import (
+    WorklineMigrationInventoryIssue,
+    WorklineMigrationInventoryIssueCode,
+    WorklineMigrationInventoryItem,
+    WorklineMigrationInventoryReport,
+    WorklineMigrationInventorySeverity,
+    WorklineProviderProfileInventoryItem,
+    WorklineRuntimeReferenceSample,
+    WorklineRuntimeReferenceSummary,
+    WorklineRuntimeReferenceType,
+)
 from .plane import (
     PlaneEdge,
     PlaneExtremeState,
@@ -69,6 +80,15 @@ __all__ = [
     "WorkLineRunMode",
     "WorkLineStateTransitionRequest",
     "WorkLineUpdate",
+    "WorklineMigrationInventoryIssue",
+    "WorklineMigrationInventoryIssueCode",
+    "WorklineMigrationInventoryItem",
+    "WorklineMigrationInventoryReport",
+    "WorklineMigrationInventorySeverity",
+    "WorklineProviderProfileInventoryItem",
+    "WorklineRuntimeReferenceSample",
+    "WorklineRuntimeReferenceSummary",
+    "WorklineRuntimeReferenceType",
     "WorklineSafetyIncident",
     "WorklineSafetyIncidentStatus",
 ]
