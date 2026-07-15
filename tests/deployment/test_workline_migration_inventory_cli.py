@@ -95,6 +95,19 @@ def test_main_writes_report_atomically_before_returning_blocked_exit(
     assert list(tmp_path.glob(".inventory.json.*.tmp")) == []
 
 
+def test_run_creates_new_output_file_atomically(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "inventory.json"
+    report = _report()
+    monkeypatch.setattr(cli, "settings", _settings())
+    monkeypatch.setattr(cli, "build_report", AsyncMock(return_value=report))
+
+    exit_code = cli.run(["--expected-environment", "test", "--output", str(target)])
+
+    assert exit_code == cli.EXIT_OK
+    assert json.loads(target.read_text(encoding="utf-8")) == report.model_dump(mode="json")
+    assert list(tmp_path.glob(".inventory.json.*.tmp")) == []
+
+
 @pytest.mark.parametrize("arguments", [[], ["--expected-environment", "staging"]])
 def test_argparse_usage_errors_raise_system_exit_two_without_building_report(
     monkeypatch: pytest.MonkeyPatch,
@@ -174,6 +187,17 @@ def test_main_reraises_unknown_runtime_error(monkeypatch: pytest.MonkeyPatch) ->
 
     with pytest.raises(RuntimeError) as exc_info:
         cli.main(["--expected-environment", "test"])
+
+    assert exc_info.value is expected
+
+
+def test_run_keeps_runtime_error_mapping_outside_command_orchestration(monkeypatch: pytest.MonkeyPatch) -> None:
+    expected = WorklineMigrationInventoryInvariantError("invalid")
+    monkeypatch.setattr(cli, "settings", _settings())
+    monkeypatch.setattr(cli, "build_report", AsyncMock(side_effect=expected))
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError) as exc_info:
+        cli.run(["--expected-environment", "test"])
 
     assert exc_info.value is expected
 
@@ -320,7 +344,9 @@ async def test_build_report_uses_read_only_repeatable_read_snapshot_in_fixed_ord
 
     assert result == _report()
     create_engine.assert_called_once_with(SECRET_DATABASE_URL, isolation_level="REPEATABLE READ")
-    assert timeout_values == [cli.TOTAL_TIMEOUT_SECONDS] == [60]
+    assert timeout_values == [cli.INVENTORY_TOTAL_TIMEOUT_SECONDS] == [60]
+    assert cli.INVENTORY_STATEMENT_TIMEOUT_SECONDS == 5
+    assert cli.INVENTORY_IDLE_TRANSACTION_TIMEOUT_SECONDS == 15
     assert events == [
         "factory:True:{}",
         "session_enter",
@@ -356,4 +382,37 @@ async def test_build_report_disposes_engine_after_cancellation_or_failure(
 
     assert events[-1] == "dispose"
     assert events.count("dispose") == 1
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_report_timeout_actively_cancels_report_and_releases_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    engine = _Engine(events)
+    session = _Session(events)
+    entered = asyncio.Event()
+
+    async def blocked_report(_db, *, environment: str):
+        assert environment == "test"
+        events.append("service_enter")
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            events.append("service_cancelled")
+
+    service = SimpleNamespace(build_report=blocked_report)
+    monkeypatch.setattr(cli, "settings", _settings())
+    monkeypatch.setattr(cli, "workline_migration_inventory_service", service)
+    monkeypatch.setattr(cli, "create_async_engine", MagicMock(return_value=engine))
+    monkeypatch.setattr(cli, "async_sessionmaker", lambda *_args, **_kwargs: lambda: session)
+    monkeypatch.setattr(cli, "INVENTORY_TOTAL_TIMEOUT_SECONDS", 0.001)
+
+    with pytest.raises(TimeoutError):
+        await cli.build_report()
+
+    assert entered.is_set()
+    assert events[-4:] == ["service_cancelled", "end", "session_exit", "dispose"]
     session.commit.assert_not_awaited()

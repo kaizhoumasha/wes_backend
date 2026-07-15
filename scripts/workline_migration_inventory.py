@@ -37,14 +37,14 @@ EXIT_RUNTIME_ERROR = 1
 EXIT_USAGE_ERROR = 2
 EXIT_FOUNDATION_BLOCKED = 3
 
-STATEMENT_TIMEOUT_SECONDS = 5
-IDLE_IN_TRANSACTION_TIMEOUT_SECONDS = 15
-TOTAL_TIMEOUT_SECONDS = 60
+INVENTORY_STATEMENT_TIMEOUT_SECONDS = 5
+INVENTORY_IDLE_TRANSACTION_TIMEOUT_SECONDS = 15
+INVENTORY_TOTAL_TIMEOUT_SECONDS = 60
 
 _READ_ONLY_STATEMENTS = (
     "SET TRANSACTION READ ONLY",
-    f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT_SECONDS}s'",
-    f"SET LOCAL idle_in_transaction_session_timeout = '{IDLE_IN_TRANSACTION_TIMEOUT_SECONDS}s'",
+    f"SET LOCAL statement_timeout = '{INVENTORY_STATEMENT_TIMEOUT_SECONDS}s'",
+    f"SET LOCAL idle_in_transaction_session_timeout = '{INVENTORY_IDLE_TRANSACTION_TIMEOUT_SECONDS}s'",
 )
 
 
@@ -71,7 +71,7 @@ async def build_report() -> WorklineMigrationInventoryReport:
     engine = create_async_engine(str(settings.DATABASE_URL), isolation_level="REPEATABLE READ")
     try:
         session_factory = async_sessionmaker(engine)
-        async with asyncio.timeout(TOTAL_TIMEOUT_SECONDS):
+        async with asyncio.timeout(INVENTORY_TOTAL_TIMEOUT_SECONDS):
             async with session_factory() as db:
                 async with db.begin():
                     for statement in _READ_ONLY_STATEMENTS:
@@ -125,15 +125,26 @@ def _emit_report(report: WorklineMigrationInventoryReport, output: Path | None) 
     _write_report_atomically(output, payload)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def run(argv: Sequence[str] | None = None) -> int:
+    """校验调用环境，生成并输出 canonical 报告，再应用 foundation gate。"""
+
     parser = _build_parser()
     arguments = parser.parse_args(argv)
     if arguments.expected_environment != settings.APP_ENV:
         parser.error("--expected-environment 与当前应用环境不一致")
 
+    report = asyncio.run(build_report())
+    _emit_report(report, arguments.output)
+    if arguments.check_foundation and not report.foundation_ready:
+        return EXIT_FOUNDATION_BLOCKED
+    return EXIT_OK
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """将已知运行故障映射为脱敏退出码；usage 与未知异常保持原语义。"""
+
     try:
-        report = asyncio.run(build_report())
-        _emit_report(report, arguments.output)
+        return run(argv)
     except (
         TimeoutError,
         WorklineMigrationInventoryLimitExceeded,
@@ -144,10 +155,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         # 不拼接异常文本，避免数据库连接串或 SQL 参数进入部署日志。
         print("迁移清单生成失败；请检查数据库连接、只读快照和源数据合同", file=sys.stderr)
         return EXIT_RUNTIME_ERROR
-
-    if arguments.check_foundation and not report.foundation_ready:
-        return EXIT_FOUNDATION_BLOCKED
-    return EXIT_OK
 
 
 if __name__ == "__main__":
