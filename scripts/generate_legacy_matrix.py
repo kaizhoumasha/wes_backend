@@ -176,6 +176,17 @@ SHIM_INTERNAL_SYMBOLS = {
     ("src/app/workline/services/inbox_batch_processor.py", "_load_target_module"),
 }
 
+# Legacy audit 只追踪待迁移或待删除入口。当前迁移清单基础能力是目标态能力，
+# 不得进入 cleanup ledger；使用精确路径避免未来静默扩大排除范围。
+ACTIVE_FOUNDATION_PATHS = frozenset(
+    {
+        "src/app/workline/models/migration_inventory.py",
+        "src/app/workline/services/migration_inventory_service.py",
+        "tests/workline_runtime/test_workline_migration_inventory_models.py",
+        "tests/workline_runtime/test_workline_migration_inventory_service.py",
+    }
+)
+
 GUARDRAIL_SEED_SYMBOLS = {
     "src/workline_runtime/services.py": "build_workline_runtime_services",
 }
@@ -605,7 +616,7 @@ def parse_entries() -> list[Entry]:
         rel = str(Path(path).relative_to(REPO_ROOT)) if Path(path).is_absolute() else path
         sym = symbol or "<file>"
         eid = f"legacy:{rel}:{sym}"
-        if eid in seen or (rel, sym) in SHIM_INTERNAL_SYMBOLS:
+        if rel in ACTIVE_FOUNDATION_PATHS or eid in seen or (rel, sym) in SHIM_INTERNAL_SYMBOLS:
             return
         seen.add(eid)
         bs, p4 = classify_business_semantics(sym, rel)

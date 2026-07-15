@@ -15,6 +15,15 @@ from scripts.generate_legacy_matrix import parse_entries
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+EXPECTED_ACTIVE_FOUNDATION_PATHS = frozenset(
+    {
+        "src/app/workline/models/migration_inventory.py",
+        "src/app/workline/services/migration_inventory_service.py",
+        "tests/workline_runtime/test_workline_migration_inventory_models.py",
+        "tests/workline_runtime/test_workline_migration_inventory_service.py",
+    }
+)
+
 
 def _entry_by_id(entry_id: str):
     entries = parse_entries()
@@ -27,6 +36,14 @@ def test_removed_inbox_processor_has_no_inventory_mapping_or_entries():
 
     assert legacy_path not in generate_legacy_matrix.MIGRATED_SERVICE_IMPLS
     assert not any(entry.relative_path == legacy_path for entry in parse_entries())
+
+
+def test_active_inventory_foundation_is_not_legacy_cleanup_scope():
+    """当前迁移清单基础能力不得被误登记为待迁移或待删除入口。"""
+    assert generate_legacy_matrix.ACTIVE_FOUNDATION_PATHS == EXPECTED_ACTIVE_FOUNDATION_PATHS
+
+    parsed_paths = {entry.relative_path for entry in parse_entries()}
+    assert parsed_paths.isdisjoint(EXPECTED_ACTIVE_FOUNDATION_PATHS)
 
 
 def test_rebuild_or_move_entries_have_target_and_blocking_tests():

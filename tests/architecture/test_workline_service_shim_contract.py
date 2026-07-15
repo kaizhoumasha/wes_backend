@@ -259,14 +259,18 @@ def test_workline_service_config_only_after_runtime_split():
 # 来源:runtime inbox shim cleanup audit (2026-06-30),配置域 plane/manifest 导出同步
 #   LIVE (3):WorkLineSafetyBlocked, workline_safety_service, workline_service
 #   DEAD 但 caller 仍存在 (1):workline_bin_cell_reservation_service
-#   实际 module export (13):WorklineDiagnosticService, workline_diagnostic_service,
+#   实际 module export (17):WorklineDiagnosticService, workline_diagnostic_service,
 #                           WorkLineSafetyBlocked, WorkLineSafetyService,
 #                           workline_safety_service, WorkLineService,
 #                           workline_service, OrchestratorWriteBackService,
 #                           orchestrator_write_back_service,
 #                           WorkLineManifestActivationValidator,
 #                           workline_manifest_activation_validator,
-#                           WorkLinePlaneService, workline_plane_service
+#                           WorkLinePlaneService, workline_plane_service,
+#                           WorklineMigrationInventoryService,
+#                           WorklineMigrationInventoryInvariantError,
+#                           WorklineMigrationInventoryLimitExceeded,
+#                           workline_migration_inventory_service
 #   shim 兜底死引用 (1):workline_bin_cell_reservation_service
 #                        → bin_cell_reservation_service
 _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS = frozenset(
@@ -287,6 +291,11 @@ _RUNTIME_INBOX_STATE_MACHINE_REAL_MODULE_EXPORTS = frozenset(
         # workline_service
         "WorkLineService",
         "workline_service",
+        # migration_inventory_service
+        "WorklineMigrationInventoryService",
+        "WorklineMigrationInventoryInvariantError",
+        "WorklineMigrationInventoryLimitExceeded",
+        "workline_migration_inventory_service",
         # write_back_service
         "OrchestratorWriteBackService",
         "orchestrator_write_back_service",
