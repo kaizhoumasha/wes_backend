@@ -89,7 +89,7 @@ class WorklineMigrationInventoryService:
         )
         if total > self._max_worklines or len(source_worklines) > self._max_worklines:
             raise WorklineMigrationInventoryLimitExceeded(
-                "作业线迁移清单超过 100 条；必须先实现 bulk summary port，禁止截断或临时放宽上限"
+                f"作业线迁移清单超过 {self._max_worklines} 条；必须先实现 bulk summary port，禁止截断或临时放宽上限"
             )
 
         capability_catalog = self._build_capability_catalog(self._capability_definitions_loader())
@@ -127,7 +127,12 @@ class WorklineMigrationInventoryService:
             mode="json",
             exclude={"generated_at", "inventory_digest"},
         )
-        return normalized_report.model_copy(update={"inventory_digest": self._digest(digest_payload)})
+        final_payload = normalized_report.model_dump(mode="python")
+        final_payload["inventory_digest"] = self._digest(digest_payload)
+        try:
+            return WorklineMigrationInventoryReport.model_validate(final_payload)
+        except ValidationError as exc:
+            raise WorklineMigrationInventoryInvariantError(f"最终报告不满足迁移清单合同: {exc}") from exc
 
     @staticmethod
     def _build_capability_catalog(definitions: Iterable[Any]) -> dict[str, Any]:
@@ -181,7 +186,10 @@ class WorklineMigrationInventoryService:
             raise WorklineMigrationInventoryInvariantError(f"provider profile {field} 必须为 list/tuple")
         if any(type(capability) is not str or not capability.strip() for capability in capabilities):
             raise WorklineMigrationInventoryInvariantError(f"provider profile {field} 元素必须为非空字符串")
-        return tuple(sorted(capability.strip() for capability in capabilities))
+        normalized = tuple(capability.strip() for capability in capabilities)
+        if len(set(normalized)) != len(normalized):
+            raise WorklineMigrationInventoryInvariantError(f"provider profile {field} 不得包含重复 capability")
+        return tuple(sorted(normalized))
 
     @staticmethod
     def _build_item(
@@ -190,14 +198,13 @@ class WorklineMigrationInventoryService:
         capability_catalog: Mapping[str, Any],
     ) -> WorklineMigrationInventoryItem:
         workline_id = WorklineMigrationInventoryService._strict_source_int(source, "id")
-        line_code = getattr(source, "line_code", _MISSING)
+        line_code = WorklineMigrationInventoryService._required_source_string(source, "line_code", workline_id)
         is_active = getattr(source, "is_active", _MISSING)
-        plugin_key = getattr(source, "plugin_key", _MISSING)
-        configured_version = getattr(source, "contract_version", _MISSING)
-        run_mode_source = getattr(source, "run_mode", _MISSING)
-        run_mode = getattr(run_mode_source, "value", run_mode_source)
-        if plugin_key is _MISSING or configured_version is _MISSING:
-            raise WorklineMigrationInventoryInvariantError(f"WorkLine {workline_id} 缺少插件配置字段")
+        plugin_key = WorklineMigrationInventoryService._optional_source_string(source, "plugin_key", workline_id)
+        configured_version = WorklineMigrationInventoryService._optional_source_string(
+            source, "contract_version", workline_id
+        )
+        run_mode = WorklineMigrationInventoryService._required_source_string(source, "run_mode", workline_id)
 
         runtime_references = WorklineMigrationInventoryService._normalize_summary(raw_summary, workline_id)
         catalog_definition = capability_catalog.get(plugin_key) if isinstance(plugin_key, str) else None
@@ -255,7 +262,9 @@ class WorklineMigrationInventoryService:
         if total == 0 and raw_sample is not None:
             raise WorklineMigrationInventoryInvariantError(f"WorkLine {workline_id} 零引用 summary 不得包含 sample")
         sample = (
-            None if raw_sample is None else WorklineMigrationInventoryService._normalize_sample(raw_sample, workline_id)
+            None
+            if raw_sample is None
+            else WorklineMigrationInventoryService._normalize_sample(raw_sample, workline_id, by_type)
         )
         try:
             return WorklineRuntimeReferenceSummary(
@@ -269,21 +278,33 @@ class WorklineMigrationInventoryService:
             ) from exc
 
     @staticmethod
-    def _normalize_sample(raw_sample: Any, workline_id: int) -> WorklineRuntimeReferenceSample:
+    def _normalize_sample(
+        raw_sample: Any,
+        workline_id: int,
+        by_type: Mapping[str, int],
+    ) -> WorklineRuntimeReferenceSample:
         if not isinstance(raw_sample, Mapping):
             raise WorklineMigrationInventoryInvariantError(f"WorkLine {workline_id} summary.sample 必须为 mapping")
         sample_type = raw_sample.get("type")
         definitions = {
-            "session": (WorklineRuntimeReferenceType.SESSION, "session_code"),
-            "command": (WorklineRuntimeReferenceType.COMMAND, "command_code"),
-            "outbox": (WorklineRuntimeReferenceType.OUTBOX, "dispatch_key"),
-            "inbox": (WorklineRuntimeReferenceType.INBOX, "inbox_id"),
-            "runtime_hold": (WorklineRuntimeReferenceType.RUNTIME_HOLD, "count"),
+            "session": (WorklineRuntimeReferenceType.SESSION, "session_code", "sessions"),
+            "command": (WorklineRuntimeReferenceType.COMMAND, "command_code", "commands"),
+            "outbox": (WorklineRuntimeReferenceType.OUTBOX, "dispatch_key", "outboxes"),
+            "inbox": (WorklineRuntimeReferenceType.INBOX, "inbox_id", "inboxes"),
+            "runtime_hold": (WorklineRuntimeReferenceType.RUNTIME_HOLD, "count", "runtime_holds"),
         }
         definition = definitions.get(sample_type)
         if definition is None:
             raise WorklineMigrationInventoryInvariantError(f"WorkLine {workline_id} summary.sample.type 未知")
-        reference_type, reference_field = definition
+        reference_type, reference_field, count_field = definition
+        if set(raw_sample) != {"type", "status", reference_field}:
+            raise WorklineMigrationInventoryInvariantError(
+                f"WorkLine {workline_id} summary.sample 键必须精确匹配 {sample_type} 合同"
+            )
+        if by_type[count_field] <= 0:
+            raise WorklineMigrationInventoryInvariantError(
+                f"WorkLine {workline_id} summary.sample.type 与 summary.by_type 不一致"
+            )
         raw_status = raw_sample.get("status", _MISSING)
         status = raw_status.value if isinstance(raw_status, Enum) else raw_status
         reference_source = raw_sample.get(reference_field, _MISSING)
@@ -390,6 +411,25 @@ class WorklineMigrationInventoryService:
         if type(value) is not int:
             raise WorklineMigrationInventoryInvariantError(f"WorkLine.{field} 必须为严格整数")
         return value
+
+    @staticmethod
+    def _required_source_string(source: Any, field: str, workline_id: int) -> str:
+        value = getattr(source, field, _MISSING)
+        value = value.value if isinstance(value, Enum) else value
+        if type(value) is not str or not value.strip():
+            raise WorklineMigrationInventoryInvariantError(f"WorkLine {workline_id} 源字段 {field} 必须为非空字符串")
+        return value.strip()
+
+    @staticmethod
+    def _optional_source_string(source: Any, field: str, workline_id: int) -> str | None:
+        value = getattr(source, field, _MISSING)
+        if value is None:
+            return None
+        if type(value) is not str or not value.strip():
+            raise WorklineMigrationInventoryInvariantError(
+                f"WorkLine {workline_id} 源字段 {field} 必须为 None 或非空字符串"
+            )
+        return value.strip()
 
     @staticmethod
     def _non_blank_string(value: Any) -> bool:

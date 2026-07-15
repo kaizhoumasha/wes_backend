@@ -168,6 +168,46 @@ async def test_inventory_classification_case_table(
 
 
 @pytest.mark.asyncio
+async def test_workline_fields_are_normalized_before_catalog_lookup_and_classification() -> None:
+    source = _workline(
+        1,
+        " LINE-01 ",
+        active=True,
+        plugin=" known ",
+        version=" current ",
+        run_mode=" AUTO ",
+    )
+
+    report = await _service(FakeRepository([source])).build_report(object(), environment="production")
+
+    item = report.worklines[0]
+    assert item.line_code == "LINE-01"
+    assert item.plugin_key == "known"
+    assert item.configured_contract_version == "current"
+    assert item.catalog_contract_version == "current"
+    assert item.run_mode == "AUTO"
+    assert item.issues == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("line_code", " "),
+        ("run_mode", " "),
+        ("plugin_key", " "),
+        ("contract_version", " "),
+    ],
+)
+async def test_workline_blank_source_fields_fail_closed(field: str, value: str) -> None:
+    source = _workline(1, "LINE", plugin="known", version="current")
+    setattr(source, field, value)
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(FakeRepository([source])).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
 async def test_empty_inventory_produces_ready_deterministic_report() -> None:
     report = await _service(FakeRepository()).build_report(object(), environment="production")
 
@@ -218,6 +258,16 @@ async def test_inventory_limit_fails_before_summary_query(total: int, returned: 
 
     with pytest.raises(WorklineMigrationInventoryLimitExceeded, match="bulk summary port"):
         await _service(repo).build_report(object(), environment="production")
+
+    assert repo.summary_calls == []
+
+
+@pytest.mark.asyncio
+async def test_inventory_limit_message_uses_injected_limit() -> None:
+    repo = FakeRepository([_workline(index, f"L-{index:03}") for index in range(51)], total=51)
+
+    with pytest.raises(WorklineMigrationInventoryLimitExceeded, match="超过 50 条"):
+        await _service(repo, max_worklines=50).build_report(object(), environment="production")
 
     assert repo.summary_calls == []
 
@@ -284,7 +334,14 @@ async def test_summary_rejects_malformed_top_level(summary: dict[str, Any]) -> N
 async def test_all_repository_samples_are_normalized(
     raw_sample: dict[str, Any], expected_type: str, expected_reference: str
 ) -> None:
-    by_type = {**ZERO_BY_TYPE, "runtime_holds": 1}
+    count_field = {
+        "SESSION": "sessions",
+        "COMMAND": "commands",
+        "OUTBOX": "outboxes",
+        "INBOX": "inboxes",
+        "RUNTIME_HOLD": "runtime_holds",
+    }[expected_type]
+    by_type = {**ZERO_BY_TYPE, count_field: 1}
     repo = FakeRepository([_workline(1, "LINE")], {1: _summary(count=1, sample=raw_sample, by_type=by_type)})
 
     report = await _service(repo).build_report(object(), environment="production")
@@ -294,6 +351,43 @@ async def test_all_repository_samples_are_normalized(
     assert sample.type.value == expected_type
     assert sample.reference == expected_reference
     assert not isinstance(sample, dict)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sample",
+    [
+        {"type": "session", "session_code": "S", "status": "OPEN", "extra": "x"},
+        {"type": "session", "command_code": "C", "status": "OPEN"},
+        {"type": "session", "session_code": "S", "command_code": "C", "status": "OPEN"},
+        {"type": "command", "command_code": "C", "session_code": "S", "status": "OPEN"},
+    ],
+)
+async def test_sample_requires_exact_shape_keys(sample: dict[str, Any]) -> None:
+    by_type = {**ZERO_BY_TYPE, "sessions": 1}
+    repo = FakeRepository([_workline(1, "LINE")], {1: _summary(count=1, sample=sample, by_type=by_type)})
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(repo).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sample", "nonzero_field"),
+    [
+        ({"type": "session", "session_code": "S", "status": "OPEN"}, "commands"),
+        ({"type": "command", "command_code": "C", "status": "OPEN"}, "outboxes"),
+        ({"type": "outbox", "dispatch_key": "D", "status": "OPEN"}, "inboxes"),
+        ({"type": "inbox", "inbox_id": 1, "status": "OPEN"}, "runtime_holds"),
+        ({"type": "runtime_hold", "count": 1, "status": "OPEN"}, "sessions"),
+    ],
+)
+async def test_sample_type_must_have_positive_corresponding_count(sample: dict[str, Any], nonzero_field: str) -> None:
+    by_type = {**ZERO_BY_TYPE, nonzero_field: 1}
+    repo = FakeRepository([_workline(1, "LINE")], {1: _summary(count=1, sample=sample, by_type=by_type)})
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(repo).build_report(object(), environment="production")
 
 
 @pytest.mark.asyncio
@@ -426,6 +520,23 @@ async def test_provider_capabilities_reject_invalid_container_and_elements(field
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["runtime_capabilities_query", "runtime_capabilities_effect"])
+async def test_provider_capabilities_reject_duplicates(field: str) -> None:
+    profile = SimpleNamespace(
+        provider_code="WMS",
+        contract_version="v1",
+        environment="sandbox",
+        runtime_capabilities_query=["AnyPort.query"],
+        runtime_capabilities_effect=["AnyPort.effect"],
+    )
+    capability = getattr(profile, field)[0]
+    setattr(profile, field, [capability, capability])
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(FakeRepository(), profiles=[profile]).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
 async def test_provider_loader_programming_type_error_propagates_unchanged() -> None:
     expected = TypeError("provider loader bug")
 
@@ -528,6 +639,21 @@ async def test_generated_at_requires_aware_utc_clock() -> None:
     ):
         with pytest.raises(WorklineMigrationInventoryInvariantError):
             await _service(FakeRepository(), clock=clock).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
+async def test_final_report_does_not_bypass_validation_with_model_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    def forbidden_model_copy(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("最终报告不得通过 model_copy(update=...) 绕过验证")
+
+    monkeypatch.setattr(
+        "src.app.workline.services.migration_inventory_service.WorklineMigrationInventoryReport.model_copy",
+        forbidden_model_copy,
+    )
+
+    report = await _service(FakeRepository()).build_report(object(), environment="production")
+
+    assert len(report.inventory_digest) == 64
 
 
 def test_production_singleton_uses_wired_repository_identity() -> None:
