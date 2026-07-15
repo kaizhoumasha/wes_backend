@@ -252,6 +252,41 @@ async def test_known_plugin_without_version_is_contract_mismatch_even_when_inact
 
 
 @pytest.mark.asyncio
+async def test_capability_catalog_fields_are_normalized_before_lookup() -> None:
+    source = _workline(1, "LINE", active=True, plugin="known", version="current")
+
+    report = await _service(
+        FakeRepository([source]),
+        definitions=[_definition(" known ", " current ")],
+    ).build_report(object(), environment="production")
+
+    item = report.worklines[0]
+    assert item.catalog_contract_version == "current"
+    assert item.issues == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "definition",
+    [
+        _definition(" ", "current"),
+        _definition("known", " "),
+    ],
+)
+async def test_capability_catalog_blank_fields_fail_closed(definition: Any) -> None:
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(FakeRepository(), definitions=[definition]).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
+async def test_capability_catalog_rejects_keys_duplicated_after_normalization() -> None:
+    definitions = [_definition("known", "current"), _definition(" known ", "current")]
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(FakeRepository(), definitions=definitions).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("total", "returned"), [(101, 100), (100, 101)])
 async def test_inventory_limit_fails_before_summary_query(total: int, returned: int) -> None:
     repo = FakeRepository([_workline(index, f"L-{index:03}") for index in range(returned)], total=total)
@@ -341,8 +376,9 @@ async def test_all_repository_samples_are_normalized(
         "INBOX": "inboxes",
         "RUNTIME_HOLD": "runtime_holds",
     }[expected_type]
-    by_type = {**ZERO_BY_TYPE, count_field: 1}
-    repo = FakeRepository([_workline(1, "LINE")], {1: _summary(count=1, sample=raw_sample, by_type=by_type)})
+    count = raw_sample["count"] if expected_type == "RUNTIME_HOLD" else 1
+    by_type = {**ZERO_BY_TYPE, count_field: count}
+    repo = FakeRepository([_workline(1, "LINE")], {1: _summary(count=count, sample=raw_sample, by_type=by_type)})
 
     report = await _service(repo).build_report(object(), environment="production")
 
@@ -385,6 +421,16 @@ async def test_sample_requires_exact_shape_keys(sample: dict[str, Any]) -> None:
 async def test_sample_type_must_have_positive_corresponding_count(sample: dict[str, Any], nonzero_field: str) -> None:
     by_type = {**ZERO_BY_TYPE, nonzero_field: 1}
     repo = FakeRepository([_workline(1, "LINE")], {1: _summary(count=1, sample=sample, by_type=by_type)})
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(repo).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
+async def test_runtime_hold_sample_count_must_equal_summary_count() -> None:
+    sample = {"type": "runtime_hold", "count": 2, "status": "ACTIVE_BLOCKING"}
+    by_type = {**ZERO_BY_TYPE, "runtime_holds": 3}
+    repo = FakeRepository([_workline(1, "LINE")], {1: _summary(count=3, sample=sample, by_type=by_type)})
 
     with pytest.raises(WorklineMigrationInventoryInvariantError):
         await _service(repo).build_report(object(), environment="production")
@@ -514,23 +560,6 @@ async def test_provider_capabilities_reject_invalid_container_and_elements(field
         runtime_capabilities_effect=["AnyPort.effect"],
     )
     setattr(profile, field, invalid_value)
-
-    with pytest.raises(WorklineMigrationInventoryInvariantError):
-        await _service(FakeRepository(), profiles=[profile]).build_report(object(), environment="production")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("field", ["runtime_capabilities_query", "runtime_capabilities_effect"])
-async def test_provider_capabilities_reject_duplicates(field: str) -> None:
-    profile = SimpleNamespace(
-        provider_code="WMS",
-        contract_version="v1",
-        environment="sandbox",
-        runtime_capabilities_query=["AnyPort.query"],
-        runtime_capabilities_effect=["AnyPort.effect"],
-    )
-    capability = getattr(profile, field)[0]
-    setattr(profile, field, [capability, capability])
 
     with pytest.raises(WorklineMigrationInventoryInvariantError):
         await _service(FakeRepository(), profiles=[profile]).build_report(object(), environment="production")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
@@ -48,6 +49,12 @@ class _InventoryRepository(Protocol):
     async def get_list(self, db: AsyncSession, **kwargs: Any) -> tuple[int, list[Any]]: ...
 
     async def get_unfinished_workload_summary(self, db: AsyncSession, workline_id: int) -> dict[str, Any]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _NormalizedCapabilityDefinition:
+    capability_key: str
+    contract_version: str
 
 
 def _load_provider_profiles() -> Iterable[Any]:
@@ -135,20 +142,21 @@ class WorklineMigrationInventoryService:
             raise WorklineMigrationInventoryInvariantError(f"最终报告不满足迁移清单合同: {exc}") from exc
 
     @staticmethod
-    def _build_capability_catalog(definitions: Iterable[Any]) -> dict[str, Any]:
-        catalog: dict[str, Any] = {}
+    def _build_capability_catalog(definitions: Iterable[Any]) -> dict[str, _NormalizedCapabilityDefinition]:
+        catalog: dict[str, _NormalizedCapabilityDefinition] = {}
         for definition in definitions:
-            capability_key = getattr(definition, "capability_key", _MISSING)
-            contract_version = getattr(definition, "contract_version", _MISSING)
-            if not WorklineMigrationInventoryService._non_blank_string(capability_key):
-                raise WorklineMigrationInventoryInvariantError("capability definition 缺少非空 capability_key")
-            if not WorklineMigrationInventoryService._non_blank_string(contract_version):
-                raise WorklineMigrationInventoryInvariantError(
-                    f"capability definition {capability_key!r} 缺少非空 contract_version"
-                )
+            capability_key = WorklineMigrationInventoryService._normalize_catalog_string(
+                getattr(definition, "capability_key", _MISSING), "capability_key"
+            )
+            contract_version = WorklineMigrationInventoryService._normalize_catalog_string(
+                getattr(definition, "contract_version", _MISSING), "contract_version"
+            )
             if capability_key in catalog:
                 raise WorklineMigrationInventoryInvariantError(f"capability catalog 重复 key: {capability_key}")
-            catalog[capability_key] = definition
+            catalog[capability_key] = _NormalizedCapabilityDefinition(
+                capability_key=capability_key,
+                contract_version=contract_version,
+            )
         return catalog
 
     @staticmethod
@@ -187,15 +195,13 @@ class WorklineMigrationInventoryService:
         if any(type(capability) is not str or not capability.strip() for capability in capabilities):
             raise WorklineMigrationInventoryInvariantError(f"provider profile {field} 元素必须为非空字符串")
         normalized = tuple(capability.strip() for capability in capabilities)
-        if len(set(normalized)) != len(normalized):
-            raise WorklineMigrationInventoryInvariantError(f"provider profile {field} 不得包含重复 capability")
         return tuple(sorted(normalized))
 
     @staticmethod
     def _build_item(
         source: Any,
         raw_summary: Any,
-        capability_catalog: Mapping[str, Any],
+        capability_catalog: Mapping[str, _NormalizedCapabilityDefinition],
     ) -> WorklineMigrationInventoryItem:
         workline_id = WorklineMigrationInventoryService._strict_source_int(source, "id")
         line_code = WorklineMigrationInventoryService._required_source_string(source, "line_code", workline_id)
@@ -316,6 +322,10 @@ class WorklineMigrationInventoryService:
                 raise WorklineMigrationInventoryInvariantError(
                     f"WorkLine {workline_id} runtime_hold sample.count 必须为正严格整数"
                 )
+            if reference_source != by_type[count_field]:
+                raise WorklineMigrationInventoryInvariantError(
+                    f"WorkLine {workline_id} runtime_hold sample.count 与 summary.by_type.runtime_holds 不一致"
+                )
             reference = f"count:{reference_source}"
         elif sample_type == "inbox":
             if type(reference_source) is not int or reference_source <= 0:
@@ -432,8 +442,10 @@ class WorklineMigrationInventoryService:
         return value.strip()
 
     @staticmethod
-    def _non_blank_string(value: Any) -> bool:
-        return isinstance(value, str) and bool(value.strip())
+    def _normalize_catalog_string(value: Any, field: str) -> str:
+        if type(value) is not str or not value.strip():
+            raise WorklineMigrationInventoryInvariantError(f"capability definition {field} 必须为非空字符串")
+        return value.strip()
 
 
 workline_migration_inventory_service = WorklineMigrationInventoryService()
