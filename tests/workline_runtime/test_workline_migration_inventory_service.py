@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta, timezone
+from enum import Enum
 from types import SimpleNamespace
 from typing import Any
 
@@ -22,6 +23,10 @@ from src.app.workline.services import (
 
 NOW = datetime(2026, 7, 15, 8, 30, tzinfo=UTC)
 ZERO_BY_TYPE = {"sessions": 0, "commands": 0, "outboxes": 0, "inboxes": 0, "runtime_holds": 0}
+
+
+class FakeStatus(str, Enum):
+    OPEN = "OPEN"
 
 
 class FakeRepository:
@@ -126,7 +131,16 @@ def _service(
             False,
         ),
         (False, "unknown", "v1", 0, ("UNKNOWN_PLUGIN",), False),
+        (True, "unknown", "current", 0, ("UNKNOWN_PLUGIN",), False),
         (True, "known", "old", 0, ("CONTRACT_VERSION_MISMATCH",), False),
+        (
+            True,
+            "known",
+            None,
+            0,
+            ("ACTIVE_WITHOUT_CONTRACT_VERSION", "CONTRACT_VERSION_MISMATCH"),
+            False,
+        ),
         (False, "known", "current", 1, ("RUNTIME_REFERENCES_PRESENT",), False),
         (False, None, None, 0, (), True),
     ],
@@ -171,6 +185,21 @@ async def test_empty_inventory_produces_ready_deterministic_report() -> None:
     }
     expected_json = json.dumps(expected_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     assert report.inventory_digest == hashlib.sha256(expected_json.encode()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_digest_uses_normalized_report_environment() -> None:
+    report_with_spaces = await _service(FakeRepository()).build_report(object(), environment=" prod ")
+    report_without_spaces = await _service(FakeRepository()).build_report(object(), environment="prod")
+
+    assert report_with_spaces.environment == report_without_spaces.environment == "prod"
+    assert report_with_spaces.inventory_digest == report_without_spaces.inventory_digest
+    normalized_payload = report_with_spaces.model_dump(
+        mode="json",
+        exclude={"generated_at", "inventory_digest"},
+    )
+    canonical = json.dumps(normalized_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    assert report_with_spaces.inventory_digest == hashlib.sha256(canonical.encode()).hexdigest()
 
 
 @pytest.mark.asyncio
@@ -274,8 +303,19 @@ async def test_all_repository_samples_are_normalized(
         {"type": "unknown", "status": "OPEN", "reference": "x"},
         {"type": "session", "status": "OPEN"},
         {"type": "session", "session_code": None, "status": "OPEN"},
+        {"type": "session", "session_code": 1, "status": "OPEN"},
+        {"type": "session", "session_code": ["S"], "status": "OPEN"},
+        {"type": "command", "command_code": {"code": "C"}, "status": "OPEN"},
+        {"type": "outbox", "dispatch_key": object(), "status": "OPEN"},
         {"type": "session", "session_code": " ", "status": "OPEN"},
         {"type": "session", "session_code": "S", "status": " "},
+        {"type": "session", "session_code": "S", "status": ["OPEN"]},
+        {"type": "session", "session_code": "S", "status": {"value": "OPEN"}},
+        {"type": "session", "session_code": "S", "status": object()},
+        {"type": "inbox", "inbox_id": 0, "status": "OPEN"},
+        {"type": "inbox", "inbox_id": -1, "status": "OPEN"},
+        {"type": "inbox", "inbox_id": True, "status": "OPEN"},
+        {"type": "inbox", "inbox_id": "1", "status": "OPEN"},
         {"type": "runtime_hold", "count": True, "status": "OPEN"},
         {"type": "runtime_hold", "count": -1, "status": "OPEN"},
         {"type": "runtime_hold", "count": "1", "status": "OPEN"},
@@ -287,6 +327,18 @@ async def test_malformed_sample_fails_closed(sample: dict[str, Any]) -> None:
 
     with pytest.raises(WorklineMigrationInventoryInvariantError):
         await _service(repo).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
+async def test_sample_status_accepts_string_enum_value() -> None:
+    by_type = {**ZERO_BY_TYPE, "sessions": 1}
+    sample = {"type": "session", "session_code": "S-1", "status": FakeStatus.OPEN}
+    repo = FakeRepository([_workline(1, "LINE")], {1: _summary(count=1, sample=sample, by_type=by_type)})
+
+    report = await _service(repo).build_report(object(), environment="production")
+
+    assert report.worklines[0].runtime_references.sample is not None
+    assert report.worklines[0].runtime_references.sample.status == "OPEN"
 
 
 @pytest.mark.asyncio
@@ -343,6 +395,74 @@ async def test_provider_profile_is_filtered_and_capabilities_are_sorted() -> Non
         "runtime_capabilities_query",
         "runtime_capabilities_effect",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("runtime_capabilities_query", None),
+        ("runtime_capabilities_query", "AnyPort.query"),
+        ("runtime_capabilities_query", {"AnyPort.query": True}),
+        ("runtime_capabilities_query", [1]),
+        ("runtime_capabilities_effect", None),
+        ("runtime_capabilities_effect", "AnyPort.effect"),
+        ("runtime_capabilities_effect", {"AnyPort.effect": True}),
+        ("runtime_capabilities_effect", [object()]),
+    ],
+)
+async def test_provider_capabilities_reject_invalid_container_and_elements(field: str, invalid_value: Any) -> None:
+    profile = SimpleNamespace(
+        provider_code="WMS",
+        contract_version="v1",
+        environment="sandbox",
+        runtime_capabilities_query=["AnyPort.query"],
+        runtime_capabilities_effect=["AnyPort.effect"],
+    )
+    setattr(profile, field, invalid_value)
+
+    with pytest.raises(WorklineMigrationInventoryInvariantError):
+        await _service(FakeRepository(), profiles=[profile]).build_report(object(), environment="production")
+
+
+@pytest.mark.asyncio
+async def test_provider_loader_programming_type_error_propagates_unchanged() -> None:
+    expected = TypeError("provider loader bug")
+
+    def broken_loader() -> list[Any]:
+        raise expected
+
+    service = WorklineMigrationInventoryService(
+        repository=FakeRepository(),
+        capability_definitions_loader=lambda: [_definition()],
+        provider_profile_loader=broken_loader,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(TypeError) as exc_info:
+        await service.build_report(object(), environment="production")
+
+    assert exc_info.value is expected
+
+
+@pytest.mark.asyncio
+async def test_provider_attribute_programming_type_error_propagates_unchanged() -> None:
+    expected = TypeError("provider attribute bug")
+
+    class BrokenProfile:
+        provider_code = "WMS"
+        contract_version = "v1"
+        environment = "sandbox"
+        runtime_capabilities_effect: tuple[str, ...] = ()
+
+        @property
+        def runtime_capabilities_query(self) -> list[str]:
+            raise expected
+
+    with pytest.raises(TypeError) as exc_info:
+        await _service(FakeRepository(), profiles=[BrokenProfile()]).build_report(object(), environment="production")
+
+    assert exc_info.value is expected
 
 
 @pytest.mark.asyncio

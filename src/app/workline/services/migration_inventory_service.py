@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timedelta
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
@@ -30,7 +31,6 @@ from src.utils.timezone import timezone
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-_SCHEMA_VERSION = "workline-migration-inventory-foundation.v1"
 _SUMMARY_KEYS = frozenset({"count", "sample", "by_type"})
 _BY_TYPE_KEYS = frozenset({"sessions", "commands", "outboxes", "inboxes", "runtime_holds"})
 _MISSING = object()
@@ -110,21 +110,12 @@ class WorklineMigrationInventoryService:
         foundation_ready = not any(
             issue.severity is WorklineMigrationInventorySeverity.BLOCKER for issue in ordered_issues
         )
-        digest_payload = {
-            "schema_version": _SCHEMA_VERSION,
-            "environment": environment,
-            "worklines": [item.model_dump(mode="json") for item in ordered_items],
-            "provider_profile_catalog": [item.model_dump(mode="json") for item in provider_catalog],
-            "issues": [issue.model_dump(mode="json") for issue in ordered_issues],
-            "foundation_ready": foundation_ready,
-        }
-        inventory_digest = self._digest(digest_payload)
         generated_at = self._utc_now()
         try:
-            return WorklineMigrationInventoryReport(
+            normalized_report = WorklineMigrationInventoryReport(
                 environment=environment,
                 generated_at=generated_at,
-                inventory_digest=inventory_digest,
+                inventory_digest="0" * 64,
                 foundation_ready=foundation_ready,
                 worklines=ordered_items,
                 provider_profile_catalog=provider_catalog,
@@ -132,6 +123,11 @@ class WorklineMigrationInventoryService:
             )
         except ValidationError as exc:
             raise WorklineMigrationInventoryInvariantError(f"报告字段不满足迁移清单合同: {exc}") from exc
+        digest_payload = normalized_report.model_dump(
+            mode="json",
+            exclude={"generated_at", "inventory_digest"},
+        )
+        return normalized_report.model_copy(update={"inventory_digest": self._digest(digest_payload)})
 
     @staticmethod
     def _build_capability_catalog(definitions: Iterable[Any]) -> dict[str, Any]:
@@ -159,16 +155,16 @@ class WorklineMigrationInventoryService:
                 "provider_code": getattr(profile, "provider_code", _MISSING),
                 "contract_version": getattr(profile, "contract_version", _MISSING),
                 "environment": getattr(profile, "environment", _MISSING),
-                "runtime_capabilities_query": tuple(sorted(getattr(profile, "runtime_capabilities_query", _MISSING)))
-                if getattr(profile, "runtime_capabilities_query", _MISSING) is not _MISSING
-                else _MISSING,
-                "runtime_capabilities_effect": tuple(sorted(getattr(profile, "runtime_capabilities_effect", _MISSING)))
-                if getattr(profile, "runtime_capabilities_effect", _MISSING) is not _MISSING
-                else _MISSING,
+                "runtime_capabilities_query": WorklineMigrationInventoryService._normalize_provider_capabilities(
+                    profile, "runtime_capabilities_query"
+                ),
+                "runtime_capabilities_effect": WorklineMigrationInventoryService._normalize_provider_capabilities(
+                    profile, "runtime_capabilities_effect"
+                ),
             }
             try:
                 item = WorklineProviderProfileInventoryItem(**source)
-            except (TypeError, ValidationError) as exc:
+            except ValidationError as exc:
                 raise WorklineMigrationInventoryInvariantError(f"provider profile 不满足迁移清单合同: {exc}") from exc
             if item.provider_code in provider_codes:
                 raise WorklineMigrationInventoryInvariantError(
@@ -177,6 +173,15 @@ class WorklineMigrationInventoryService:
             provider_codes.add(item.provider_code)
             items.append(item)
         return tuple(sorted(items, key=lambda item: item.provider_code))
+
+    @staticmethod
+    def _normalize_provider_capabilities(profile: Any, field: str) -> tuple[str, ...]:
+        capabilities = getattr(profile, field, _MISSING)
+        if not isinstance(capabilities, (list, tuple)):
+            raise WorklineMigrationInventoryInvariantError(f"provider profile {field} 必须为 list/tuple")
+        if any(type(capability) is not str or not capability.strip() for capability in capabilities):
+            raise WorklineMigrationInventoryInvariantError(f"provider profile {field} 元素必须为非空字符串")
+        return tuple(sorted(capability.strip() for capability in capabilities))
 
     @staticmethod
     def _build_item(
@@ -279,26 +284,30 @@ class WorklineMigrationInventoryService:
         if definition is None:
             raise WorklineMigrationInventoryInvariantError(f"WorkLine {workline_id} summary.sample.type 未知")
         reference_type, reference_field = definition
-        status = raw_sample.get("status", _MISSING)
+        raw_status = raw_sample.get("status", _MISSING)
+        status = raw_status.value if isinstance(raw_status, Enum) else raw_status
         reference_source = raw_sample.get(reference_field, _MISSING)
-        if not WorklineMigrationInventoryService._non_blank_string(status):
+        if type(status) is not str or not status.strip():
             raise WorklineMigrationInventoryInvariantError(f"WorkLine {workline_id} summary.sample.status 必须非空")
+        status = status.strip()
         if sample_type == "runtime_hold":
             if type(reference_source) is not int or reference_source <= 0:
                 raise WorklineMigrationInventoryInvariantError(
                     f"WorkLine {workline_id} runtime_hold sample.count 必须为正严格整数"
                 )
             reference = f"count:{reference_source}"
-        else:
-            if reference_source is _MISSING or reference_source is None or isinstance(reference_source, bool):
+        elif sample_type == "inbox":
+            if type(reference_source) is not int or reference_source <= 0:
                 raise WorklineMigrationInventoryInvariantError(
-                    f"WorkLine {workline_id} summary.sample.{reference_field} 缺失或非法"
+                    f"WorkLine {workline_id} inbox sample.inbox_id 必须为正严格整数"
                 )
             reference = str(reference_source)
-            if not reference.strip():
+        else:
+            if type(reference_source) is not str or not reference_source.strip():
                 raise WorklineMigrationInventoryInvariantError(
-                    f"WorkLine {workline_id} summary.sample.{reference_field} 必须非空"
+                    f"WorkLine {workline_id} summary.sample.{reference_field} 必须为非空字符串"
                 )
+            reference = reference_source.strip()
         try:
             return WorklineRuntimeReferenceSample(type=reference_type, reference=reference, status=status)
         except ValidationError as exc:
