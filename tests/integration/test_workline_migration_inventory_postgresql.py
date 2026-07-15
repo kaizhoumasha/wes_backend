@@ -28,7 +28,12 @@ from src.app.sys.models.outbox import (
     SystemOutboxStatus,
     SystemOutboxTargetType,
 )
-from src.app.workline.models import WorkLine, WorklineMigrationInventoryIssueCode, WorklineRuntimeReferenceType
+from src.app.workline.models import (
+    WorkLine,
+    WorklineMigrationInventoryIssueCode,
+    WorklineMigrationInventorySeverity,
+    WorklineRuntimeReferenceType,
+)
 from src.app.workline.models.workline import LineType
 from src.app.workline.services import WorklineMigrationInventoryService
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
@@ -200,11 +205,21 @@ def _item(report: Any, workline_id: int) -> Any:
 async def _database_snapshot(db: AsyncSession, seed: SeededInventory) -> dict[str, Any]:
     models = (WorkLine, WorklineSession, DeviceCommand, SystemOutbox, RuntimeInbox, RuntimeHold)
     counts = {model.__name__: int(await db.scalar(select(func.count()).select_from(model)) or 0) for model in models}
-    line = await db.get(WorkLine, seed.linked_workline_id)
-    assert line is not None
     return {
         "counts": counts,
-        "line": (line.line_name, line.plugin_key, line.contract_version, line.is_active, line.version),
+        "worklines": tuple(
+            (
+                row.id,
+                row.line_code,
+                row.line_name,
+                row.plugin_key,
+                row.contract_version,
+                row.run_mode,
+                row.is_active,
+                row.version,
+            )
+            for row in (await db.execute(select(WorkLine).order_by(WorkLine.id))).scalars()
+        ),
         "sessions": tuple(
             (row.session_code, row.status, row.workline_id)
             for row in (await db.execute(select(WorklineSession).order_by(WorklineSession.id))).scalars()
@@ -295,7 +310,16 @@ def test_postgresql_status_matrix_samples_transaction_and_no_write_contract() ->
         assert linked.runtime_references.sample.type is WorklineRuntimeReferenceType.SESSION
         assert linked.runtime_references.sample.reference == f"IT-INV-SESSION-{SESSION_ACTIVE[0].value}-0"
         assert linked.runtime_references.sample.status == SESSION_ACTIVE[0].value
-        assert WorklineMigrationInventoryIssueCode.RUNTIME_REFERENCES_PRESENT in {issue.code for issue in linked.issues}
+        reference_issues = [
+            issue
+            for issue in linked.issues
+            if issue.code is WorklineMigrationInventoryIssueCode.RUNTIME_REFERENCES_PRESENT
+        ]
+        assert len(reference_issues) == 1
+        assert reference_issues[0].severity is WorklineMigrationInventorySeverity.BLOCKER
+        assert reference_issues[0].workline_id == seed.linked_workline_id
+        assert linked.foundation_ready is False
+        assert report.foundation_ready is False
         assert observer.transaction_settings == {
             "isolation": "repeatable read",
             "read_only": "on",
@@ -305,7 +329,48 @@ def test_postgresql_status_matrix_samples_transaction_and_no_write_contract() ->
 
         async with session_factory() as db:
             after = await _database_snapshot(db, seed)
+        assert len(before["worklines"]) == 2
         assert after == before
+
+    asyncio.run(_with_database(scenario))
+
+
+def test_postgresql_sample_priority_falls_through_all_reference_types() -> None:
+    async def scenario(database_url: str, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        async with session_factory() as db:
+            seed = await _seed_worklines(db)
+            session = _session(seed, SessionStatus.RUNNING, 0)
+            command = _command(seed, CommandStatus.PENDING, 0)
+            outbox = _outbox(seed, SystemOutboxStatus.NEW, 0)
+            inbox = _inbox(seed, "RECEIVED", 0)
+            hold = _hold(seed, RuntimeHoldStatus.OPEN, 0)
+            db.add_all([session, command, outbox, inbox, hold])
+            await db.commit()
+
+            transitions = (
+                (WorklineRuntimeReferenceType.SESSION, session, SessionStatus.COMPLETED),
+                (WorklineRuntimeReferenceType.COMMAND, command, CommandStatus.COMPLETED),
+                (WorklineRuntimeReferenceType.OUTBOX, outbox, SystemOutboxStatus.SENT),
+                (WorklineRuntimeReferenceType.INBOX, inbox, "PROCESSED"),
+                (WorklineRuntimeReferenceType.RUNTIME_HOLD, hold, RuntimeHoldStatus.RESOLVED),
+            )
+            observed: list[WorklineRuntimeReferenceType] = []
+            for expected_type, record, terminal_status in transitions:
+                report = await asyncio.wait_for(_build_via_cli(database_url), timeout=20)
+                sample = _item(report, seed.linked_workline_id).runtime_references.sample
+                assert sample is not None
+                observed.append(sample.type)
+                assert sample.type is expected_type
+                record.status = terminal_status
+                await db.commit()
+
+            assert tuple(observed) == (
+                WorklineRuntimeReferenceType.SESSION,
+                WorklineRuntimeReferenceType.COMMAND,
+                WorklineRuntimeReferenceType.OUTBOX,
+                WorklineRuntimeReferenceType.INBOX,
+                WorklineRuntimeReferenceType.RUNTIME_HOLD,
+            )
 
     asyncio.run(_with_database(scenario))
 
