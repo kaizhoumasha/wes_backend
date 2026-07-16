@@ -154,7 +154,7 @@
       "expected_state": {"material": "UNCHANGED", "command": "CORRELATION_HOLD", "session": "UNCHANGED"},
       "expected_intents": [{"kind": "BLOCK", "scope": "COMMAND"}],
       "expected_outcome": {"result": "HOLD_WITHOUT_SESSION_ADVANCE", "reason_code": "COMMAND_RESULT_CORRELATION_MISMATCH"},
-      "replay_expectation": "复用 correlation mismatch evidence；不得推进当前 Session 或生成后续命令。",
+      "replay_expectation": "复用 correlation mismatch evidence；不得推进当前 Session，也不得生成后续命令。",
       "source_refs": ["src/app/runtime/orchestration/execution_correlation.py", "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
       "implementation_status": "partial"
     }

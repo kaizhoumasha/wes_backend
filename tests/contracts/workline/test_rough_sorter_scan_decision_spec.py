@@ -286,6 +286,154 @@ EXPECTED_CASE_CONTRACTS = {
         "implementation_status": "partial",
     },
 }
+EXPECTED_EVIDENCE_CONTRACTS = {
+    "RS-SD-001": {
+        "preconditions": ("RuntimeInbox 已接受并归一化事件", "本地条码规则判定 OK"),
+        "first_attempt": ("normalized_input_snapshot", "payload_digest", "barcode_decision", "intent_identity"),
+        "replay": ("original_decision", "original_intent_identity", "payload_digest"),
+        "replay_expectation": "同键同 digest 返回原始决策，不重复 CREATE_MATERIAL_UNIT 或 COMMAND EFFECT。",
+    },
+    "RS-SD-002": {
+        "preconditions": ("RuntimeInbox 已接受并归一化事件", "本地条码规则判定业务 NG"),
+        "first_attempt": (
+            "normalized_input_snapshot",
+            "payload_digest",
+            "barcode_ng_reason",
+            "intent_identity",
+        ),
+        "replay": ("original_decision", "original_intent_identity", "payload_digest"),
+        "replay_expectation": "复用首次条码 NG 判定，不重复 MOVE_TO_NG EFFECT。",
+    },
+    "RS-SD-003": {
+        "preconditions": ("RuntimeInbox 已接受并归一化事件", "输入缺少 PkgID"),
+        "first_attempt": ("normalized_input_snapshot", "payload_digest", "missing_fields", "hold_reason"),
+        "replay": ("original_hold", "payload_digest"),
+        "replay_expectation": "保持原 Hold，不补建物料或命令。",
+    },
+    "RS-SD-004": {
+        "preconditions": ("PICK_AND_PUT 等待锚点匹配", "测量合同有效", "WMS 准入 ACCEPTED"),
+        "first_attempt": (
+            "command_result_snapshot",
+            "measurement_snapshot",
+            "wms_response_summary",
+            "decision",
+            "intent_identity",
+            "payload_digest",
+        ),
+        "replay": (
+            "original_measurement",
+            "original_wms_response_summary",
+            "original_decision",
+            "original_intent_identity",
+            "payload_digest",
+        ),
+        "replay_expectation": "不重新查询 WMS，不重复 MOVE_FORWARD EFFECT。",
+    },
+    "RS-SD-005": {
+        "preconditions": ("PICK_AND_PUT 等待锚点匹配", "测量合同有效且业务判定 NG"),
+        "first_attempt": (
+            "command_result_snapshot",
+            "measurement_snapshot",
+            "decision",
+            "intent_identity",
+            "payload_digest",
+        ),
+        "replay": (
+            "original_measurement",
+            "original_decision",
+            "original_intent_identity",
+            "payload_digest",
+        ),
+        "replay_expectation": "复用首次测量 NG 决策，不查询 WMS、不重复 MOVE_TO_NG EFFECT。",
+    },
+    "RS-SD-006": {
+        "preconditions": ("PICK_AND_PUT 等待锚点匹配", "测量合同有效", "WMS 返回 REJECTED 或无匹配"),
+        "first_attempt": (
+            "command_result_snapshot",
+            "measurement_snapshot",
+            "wms_response_summary",
+            "decision",
+            "intent_identity",
+            "payload_digest",
+        ),
+        "replay": (
+            "original_wms_response_summary",
+            "original_decision",
+            "original_intent_identity",
+            "payload_digest",
+        ),
+        "replay_expectation": "复用首次 WMS 拒绝摘要，不重新查询 WMS、不重复 MOVE_TO_NG EFFECT。",
+    },
+    "RS-SD-007": {
+        "preconditions": ("PICK_AND_PUT 等待锚点匹配", "测量字段缺失、类型错误或越界"),
+        "first_attempt": ("command_result_snapshot", "measurement_validation_errors", "decision", "payload_digest"),
+        "replay": ("original_validation_errors", "original_hold", "payload_digest"),
+        "replay_expectation": "保持原 Hold，不查询 WMS、不生成运输命令。",
+    },
+    "RS-SD-008": {
+        "preconditions": ("PICK_AND_PUT 等待锚点匹配", "设备返回终态失败"),
+        "first_attempt": ("command_result_snapshot", "device_error_summary", "hold_reason", "payload_digest"),
+        "replay": ("original_device_error", "original_hold", "payload_digest"),
+        "replay_expectation": "保持原命令 Hold，不生成后续命令。",
+    },
+    "RS-SD-009": {
+        "preconditions": (
+            "PICK_AND_PUT 已持久化",
+            "等待结果超过命令结果 deadline",
+            "没有匹配终态结果 evidence",
+        ),
+        "first_attempt": ("command_identity", "deadline_snapshot", "timeout_event", "hold_reason", "payload_digest"),
+        "replay": ("original_timeout_decision", "original_hold", "payload_digest"),
+        "replay_expectation": "保持首次超时 Hold；迟到结果单独记录，不自动推进。",
+    },
+    "RS-SD-010": {
+        "preconditions": ("PICK_AND_PUT 等待锚点匹配", "测量合同有效", "首次 WMS QUERY timeout 或 unavailable"),
+        "first_attempt": (
+            "command_result_snapshot",
+            "measurement_snapshot",
+            "wms_timeout_summary",
+            "decision",
+            "payload_digest",
+        ),
+        "replay": (
+            "original_timeout_summary",
+            "original_hold",
+            "payload_digest",
+            "no_successful_wms_evidence",
+        ),
+        "replay_expectation": "保留首次 timeout evidence，不把失败伪装成成功 evidence，也不在 replay 实时重查 WMS。",
+    },
+    "RS-SD-011": {
+        "preconditions": ("同 idempotency key 的首次 attempt 已完成", "replay payload digest 与首次一致"),
+        "first_attempt": (
+            "normalized_input_snapshot",
+            "query_response_summary",
+            "decision",
+            "intent_identity",
+            "payload_digest",
+        ),
+        "replay": ("replay_request", "matched_payload_digest", "reused_decision", "reused_intent_identity"),
+        "replay_expectation": "返回首次 evidence；不重复 WMS QUERY 或任何 EFFECT。",
+    },
+    "RS-SD-012": {
+        "preconditions": ("同 idempotency key 的首次 attempt 已存在", "incoming digest 与首次不同"),
+        "first_attempt": ("original_payload_digest", "original_decision", "original_intent_identity"),
+        "replay": ("incoming_payload_digest", "digest_mismatch", "conflict_audit"),
+        "replay_expectation": "记录冲突并 Hold；不执行 QUERY 或 EFFECT。",
+    },
+    "RS-SD-013": {
+        "preconditions": ("callback 未匹配当前 Session 的等待命令", "callback 属于迟到命令或未知命令"),
+        "first_attempt": (
+            "callback_snapshot",
+            "correlation_lookup",
+            "current_wait_anchor",
+            "mismatch_reason",
+            "payload_digest",
+        ),
+        "replay": ("original_mismatch_evidence", "payload_digest"),
+        "replay_expectation": "复用 correlation mismatch evidence；不得推进当前 Session，也不得生成后续命令。",
+    },
+}
 
 
 def _load_fixture() -> dict:
@@ -341,6 +489,20 @@ def test_every_case_matches_the_stable_decision_contract() -> None:
         ):
             assert case[field_name] == expected[field_name], f"{case_id}.{field_name}"
         assert all(keyword in case["replay_expectation"] for keyword in expected["replay_keywords"]), case_id
+
+
+def test_every_case_preserves_first_attempt_and_replay_evidence_ownership() -> None:
+    cases_by_id = {case["case_id"]: case for case in _load_fixture()["cases"]}
+
+    assert cases_by_id.keys() == EXPECTED_EVIDENCE_CONTRACTS.keys()
+    for case_id, expected in EXPECTED_EVIDENCE_CONTRACTS.items():
+        case = cases_by_id[case_id]
+        assert tuple(case["preconditions"]) == expected["preconditions"], f"{case_id}.preconditions"
+        assert tuple(case["recorded_evidence"]["first_attempt"]) == expected["first_attempt"], (
+            f"{case_id}.recorded_evidence.first_attempt"
+        )
+        assert tuple(case["recorded_evidence"]["replay"]) == expected["replay"], f"{case_id}.recorded_evidence.replay"
+        assert case["replay_expectation"] == expected["replay_expectation"], f"{case_id}.replay_expectation"
 
 
 def test_current_barcode_rules_explain_scan_case_coverage_status() -> None:
