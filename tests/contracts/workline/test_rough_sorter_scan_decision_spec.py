@@ -859,6 +859,7 @@ def test_business_spec_has_strict_metadata_and_stable_sections() -> None:
         approved_at = datetime.fromisoformat(metadata["approved_at"])
         assert approved_at.tzinfo is not None
         assert approved_at.utcoffset() is not None
+        assert "当前未获得业务 Owner 明确批准" not in content
 
     assert metadata["status"] == "Approved"
     for heading in (
