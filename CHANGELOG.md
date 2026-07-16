@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1.0] - 2026-07-16
+
+### Added
+- 新增粗分机扫码到 WMS 准入决策的权威窄闭环合同、13 场景 trace fixture 与机器化合同测试，覆盖扫码、测量、WMS 查询、设备失败、超时、幂等冲突和迟到 callback。
+- 新增 WorkLine 活动盘点基础能力实施计划，并记录超过 100 条 WorkLine 时引入批量运行引用摘要的后续优化项。
+
+### Changed
+- 收束粗分机运行流、入库验收、能力规格与跨系统事件流的文档所有权，上层文档仅保留协议和验收交接，分支判定统一引用权威合同。
+- 更新 WorkLine 插件与系统能力平台设计，批准粗分机窄闭环 T2 合同，并明确后续 typed outcome、QUERY evidence、Intent identity 与 replay 输入。
+
+### Fixed
+- 对齐粗分机合同与真实领域枚举及状态所有权：Session 使用 `WAITING_DEVICE_RESULT`，普通 Hold 不再写入 MaterialUnit 或 DeviceCommand 状态。
+- 将 `TIMER_TIMEOUT` 明确归属平台 reconciliation + RuntimeHold 路径，补齐 BLOCK Intent/EFFECT 身份、三阶段冲突 replay、零新写入和各能力 evidence 的闭合约束。
+- 统一 WMS 超时稳定原因码为 `WMS_TIMEOUT`，删除旧业务概念别名和双原因码表达。
+
 ## [0.17.0.0] - 2026-07-16
 
 ### Added

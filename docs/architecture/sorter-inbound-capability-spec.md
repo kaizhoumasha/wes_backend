@@ -5,6 +5,11 @@
 
 ---
 
+<!-- ownership: material-flow-architecture -->
+
+本文只拥有完整 material-flow 架构。粗分机扫码到入料决策切片的分支判定、reason code 与 replay
+以[粗分机扫码到准入决策窄闭环合同](../business/rough_sorter_scan_decision_contract.md)为唯一真源，本文不重复定义。
+
 ## 1. 边界声明
 
 本 SPEC 定义粗分机、满箱交换和分拣机入库的目标态能力边界。实现时必须按 runtime/orchestration、wms_integration port、device command、MaterialLocationQuery 和 ReconciliationManager 重建，不复用旧 plugin 入口，不保留旧 plugin 兼容入口。
@@ -23,14 +28,16 @@
 
 目标态流程：
 
-1. 入料机械臂扫码/测量并写入对象级 evidence。
-2. WMS GRN 绑定与测量校验通过 WMS port 完成。
-3. 入料机械臂投流水线，粗分机流水线推进到出料口。
-4. 出料格位分配并创建 CellReservation。
-5. 必要时请求 WMS 补空箱货架。
-6. 出料机械臂投格后，先落本地物理位置事实和格位占用。
-7. 再通知 WMS PKG 绑定或库存事务。
-8. WMS 失败进入 WMS_SYNC_PENDING 或 RECONCILING，不抹掉本地物理事实。
+1. 入口扫码完成条码决策并写入对象级 evidence。
+2. 条码决策允许入料时，持久化并执行入料机械臂 `PICK_AND_PUT`。
+3. `PICK_AND_PUT` 成功结果携带有效测量并写入 evidence。
+4. 通过 WMS port 执行准入 QUERY。
+5. 根据准入结果持久化并执行 `MOVE_FORWARD` 或 `MOVE_TO_NG`；前进分支由粗分机流水线推进到出料口。
+6. 出料格位分配并创建 CellReservation。
+7. 必要时请求 WMS 补空箱货架。
+8. 出料机械臂投格后，先落本地物理位置事实和格位占用。
+9. 再通知 WMS PKG 绑定或库存事务。
+10. WMS 失败进入 WMS_SYNC_PENDING 或 RECONCILING，不抹掉本地物理事实。
 
 当前对象进入流水线后，入料机械臂可处理下一个对象；并发边界由 work item、queue membership 和 DeviceDispatchPolicy 控制。
 
@@ -153,10 +160,12 @@ Sorter inbound 入库能力本轮限定为本机开发环境 MOCK 验收，不�
 
 | 步骤 | Runtime 实体 | 状态 |
 |------|-------------|------|
-| 入料机械臂扫码/测量 → 对象级 evidence | `ExecutionWorkItem` (object_type=material, step_status=PENDING→IN_PROGRESS) | ✅ |
-| WMS GRN 绑定与测量校验 | `WmsDocumentPort.get_grn()` (query-only, 不写 IntentLog) → 校验通过后 `RuntimeIntentLog` (target_domain=wms_integration, 后续 mutation) | ✅ |
-| 入料机械臂投流水线 | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |
-| 粗分机流水线推进到出料口 | `ConveyorQueueMembership` (queue_code 按 manifest) | ✅ |
+| 入口扫码 → 条码决策 evidence | `ExecutionWorkItem` (object_type=material, step_status=PENDING→IN_PROGRESS) | ✅ |
+| `PICK_AND_PUT` 持久化与执行 | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |
+| `PICK_AND_PUT` 成功结果 → 测量 evidence | `RuntimeInbox` → 当前 `ExecutionWorkItem` / Session | ✅ |
+| 有效测量 → WMS 准入 QUERY | `WmsDocumentPort.get_grn()` (query-only, 不写 IntentLog) | ✅ |
+| 准入结果 → `MOVE_FORWARD` / `MOVE_TO_NG` | `RuntimeIntentLog` → `DeviceCommandPort` | ✅ |
+| `MOVE_FORWARD` 推进到出料口 | `ConveyorQueueMembership` (queue_code 按 manifest) | ✅ |
 | 出料格位分配 → CellReservation | `CellReservation` (♻️ 复用 `WorklineBinCellReservation`，目标语义映射见 `cell-reservation-spec.md` §3) | ♻️ |
 | WMS 补空箱货架 | `WmsFulfillmentPort.request_rack_supply()` → `RuntimeIntentLog` | ✅ |
 | 出料机械臂投格 → 本地位置事实 | `RuntimeLocationEvent` (🆕 目标态位置事实表；实现前需新增，或明确由 `ObjectTransitionEvent` 演进承载并补迁移合同) → `BinCellOccupancy` / `MaterialUnit.location_summary` | 🆕 |

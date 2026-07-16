@@ -79,6 +79,26 @@
 
 ---
 
+### WorkLine inventory 批量运行引用摘要
+
+**What:** 当任一环境需要盘点超过 100 条 WorkLine 时，实现按 `workline_id` 批量汇总未完成 Session、Command、Outbox、Inbox 和 RuntimeHold 的查询 port。
+
+**Why:** Foundation inventory 复用的单条摘要最坏约 9 SQL/WorkLine；直接调大安全上限会放大 N+1、延长 `REPEATABLE READ` 快照事务，并增加生产数据库连接和 MVCC 清理压力。
+
+**Pros:** 支持大规模环境，同时让停用门禁、inventory 和后续 cutover preflight 继续共享同一套 active/terminal 状态语义。
+
+**Cons:** 需要扩展 `RuntimeInboxQueryPort`、RuntimeHold repository 和 WorkLineRepository，触及 HIGH 风险 RuntimeInbox 查询路径，必须先完成 GitNexus impact analysis。
+
+**Context:** `docs/superpowers/plans/2026-07-15-workline-active-inventory-foundation.md` 将逐条查询策略的安全上限固定为 100，并设置 60 秒总超时。触发后应设计按 WorkLine 分组的 bulk count/sample 查询，让单条与批量 API 共享状态常量和测试矩阵；禁止 inventory repository 直接复制 RuntimeInbox/Outbox 等状态集合，也禁止仅通过配置调大上限。
+
+**Effort:** L (human: ~3-5 days / CC: ~6-10 hours)
+
+**Priority:** P3
+
+**Depends on:** 任一真实环境出现超过 100 条未删除 WorkLine，或性能数据证明逐条策略无法满足 60 秒总超时。
+
+---
+
 ## Operations
 
 ### 统一运营看板、告警与 Runbook

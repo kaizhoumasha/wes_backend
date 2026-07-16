@@ -26,11 +26,14 @@ def test_rough_sorter_inbound_characterization_inputs_extracted():
 
     验证输入来源存在; 接入目标态 capability 后转为 contract test。
     """
-    # 旧业务输入来源已归档；目标态由 domain contract + material-flow dispatcher/runtime 测试承接。
+    # legacy archive 只用于发现旧输入，不是目标合同真源；新规格、fixture 与合同测试承接目标态语义。
     sources = [
         "docs/archive/legacy-workline-plugins/src-workline_plugins/rough_sorter/plugin.py",
+        "docs/business/rough_sorter_scan_decision_contract.md",
         "src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py",
+        "tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json",
         "tests/contracts/workline/test_rough_sorter_inbound_contract.py",
+        "tests/contracts/workline/test_rough_sorter_scan_decision_spec.py",
         "tests/workline_runtime/test_runtime_capability_dispatcher.py",
         "tests/workline_runtime/test_sorter_inbound_runtime_service.py",
     ]

@@ -4,6 +4,11 @@
 > 状态：Draft
 > 适用范围：粗分机入库、满箱交换前置分流、分拣机入库。
 
+<!-- ownership: end-to-end-line-acceptance-steps -->
+
+本文只拥有整线验收步骤，不拥有粗分机扫码到入料决策切片的分支判定、状态所有权、reason code 或 replay 规则。
+这些语义以[粗分机扫码到准入决策窄闭环合同](./rough_sorter_scan_decision_contract.md)为唯一真源。下文拓扑分支只用于选择端到端验收路径；若与权威合同冲突，以权威合同为准，禁止据此实现业务判定。
+
 本文用于验收粗分机到分拣机之间的目标态业务闭环。它只描述验收步骤、观测点和通过标准，不替代
 `docs/architecture/workline-and-plugin-restructuring.md` 的架构设计，也不定义 WMS、AGV、CTU 或 ECS 的内部调度策略。
 
@@ -11,7 +16,7 @@
 
 本次验收覆盖三个连续场景：
 
-1. 粗分机正常入库：料盘从入口扫码/测量，通过 WMS 校验后进入粗分机流水线，最终投入单层货架料箱料格。
+1. 粗分机正常入库：料盘从入口扫码决策后执行入料，成功结果携带有效测量，再经 WMS 准入后进入粗分机流水线，最终投入单层货架料箱料格。
 2. 满箱交换前置分流：单层货架从粗分机移出后，先进入独立满箱交换区；如有满箱交换需求，先完成箱级入库交换，再进入分拣机 STATION 或排队区。
 3. 分拣机入库：未通过满箱交换直接入库的剩余物料，由分拣机从单层货架逐件聚合到五层货架料箱料格。
 
@@ -27,8 +32,11 @@
 
 ```text
 操作员入口
-  -> 粗分机入口扫码/测量
-  -> 入料机械臂
+  -> 粗分机入口扫码决策
+       -> 按权威合同 RS-SD-001 至 RS-SD-013 记录 evidence 与 outcome
+       -> 进入该 case 指定的后续设备、NG、Session Hold、no-op 或 evidence archive 路径
+
+ADMIT / MOVE_FORWARD 正常主流程
   -> 粗分机流水线
   -> 出料机械臂
   -> 粗分机出料单层货架位
@@ -100,13 +108,14 @@
 | 步骤 | 触发/操作 | 预期 WES 行为 | 通过标准 |
 | --- | --- | --- | --- |
 | R-01 | 操作员将料盘放入粗分机入口 | ECS 上报入口有料事件，WES 写入 `RuntimeInbox` | callback 只 ACK，不在响应体返回下一步动作 |
-| R-02 | 入口扫码和测量完成 | WES 解析六合一码和测量结果，创建或关联料盘 `ExecutionWorkItem` | work item 具备独立 `correlation_id` |
-| R-03 | WES 查询 WMS GRN 和物料事实 | 通过 WMS query 校验 GRN 绑定和测量结果 | WMS 查询 evidence 写入 timeline 或 envelope |
-| R-04 | 校验通过 | WES 创建入料机械臂 `DeviceCommand`，指示移入粗分机流水线 | 命令先写 `RuntimeIntentLog`，再 dispatch |
-| R-05 | 入料机械臂 ACK | WES 记录 ACK，不认为物理完成 | `DeviceCommand` 处于 accepted/running 等待结果态 |
-| R-06 | 入料机械臂 SUCCESS callback | WES 写入料盘进入流水线的 `RuntimeLocationEvent` | 本地位置投影更新，入料机械臂可处理下一料盘 |
-| R-07 | WES 指示粗分机流水线前进 | 创建流水线 `DeviceCommand`，目标为出料口 | 设备 dispatch 前已校验流水线状态为可运行 |
-| R-08 | 流水线 SUCCESS callback | WES 写入料盘到达出料口事实 | work item 进入出料分配 step |
+| R-02 | 入口扫码完成 | WES 按权威合同选择 `RS-SD-001` 至 `RS-SD-003` 并记录 evidence | 实际状态、Intent 与 outcome 和所选 case 一致 |
+| R-03 | 所选 case 产生设备命令 | WES 按该 case 持久化 `DeviceCommand` | 命令先写 `RuntimeIntentLog`，再 dispatch |
+| R-04 | 入料机械臂 ACK | WES 记录 ACK，不认为物理完成 | `DeviceCommand` 处于 accepted/running 等待结果态 |
+| R-05a | 入料机械臂 Result callback | WES 按权威合同选择 `RS-SD-004` 至 `RS-SD-008` 或 `RS-SD-010`，并记录命令结果与 measurement evidence | 实际状态、Intent 与 outcome 和所选 case 一致 |
+| R-05b | 等待入料命令结果超过 deadline | WES 通过 `TIMER_TIMEOUT` 触发 `RS-SD-009` | 超时 evidence、状态、Intent 与 outcome 和该 case 一致 |
+| R-06 | 所选 case 要求 WMS QUERY | WES 执行并记录该 case 要求的 QUERY evidence | QUERY 身份、请求及响应或失败摘要可追踪 |
+| R-07 | 窄闭环 outcome 已持久化 | WES 按所选 case 记录命令、Session Hold 或 evidence-only 结果 | 不由本验收文档重新判定分支 |
+| R-08 | 所选 case 的后续流水线命令 SUCCESS callback | WES 写入料盘到达出料口事实 | work item 随后进入出料分配 step |
 | R-09 | 出料 step admission | WES 查询单层货架、料箱和可用格位投影 | 缺少关键事实时进入 scoped `RuntimeHold` |
 | R-10 | 出料位无可用格位 | WES 请求 WMS 补充空箱货架或换架 | 只 hold 当前出料 work item，入口侧按缓冲容量自然反压 |
 | R-11 | WMS/AGV 补架 callback | WES 更新 `RackPlacement`、`RackBinMount` 和可用料格投影 | callback 入站经 `RuntimeInbox`，不直接改 owner 状态 |
@@ -118,7 +127,7 @@
 
 ### 4.3 异常验收点
 
-- 扫码失败、测量失败、GRN 不匹配时，该料盘进入 NG 或 scoped hold，不影响其他已在流水线中的料盘。
+- 粗分机扫码到准入决策异常从权威合同选择对应 case；本验收只核对该 case 的 evidence、状态和 outcome，不重复定义判定条件。
 - 入料机械臂、流水线、出料机械臂 `ERROR/OFFLINE/UNKNOWN` 时，不下发新命令，短退避耗尽后创建对应 device 或 work item scope 的 hold。
 - 出料机械臂投放成功但 WMS PKG 绑定失败时，本地物理事实保持有效，状态进入 WMS 同步 hold 或 reconciliation。
 - 重复 callback 使用 `source_event_id + provider_code + event_type` 幂等处理，同 key 不同 payload 返回 409 并写安全审计。

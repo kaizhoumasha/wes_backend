@@ -3,6 +3,11 @@
 > 日期：2026-05-31
 > 适用范围：`rough_sorter` WorkLine 插件、设备事件上报、设备命令下发、Result Callback、WMS/RCS 外部回调。
 
+<!-- ownership: end-to-end-device-protocol-examples -->
+
+本文只拥有端到端设备协议示例，不拥有粗分机扫码到入料决策切片的分支判定、状态所有权、reason code 或 replay 规则。
+这些语义以[粗分机扫码到准入决策窄闭环合同](./rough_sorter_scan_decision_contract.md)为唯一真源。下文相关内容均为非规范性目标协议示例；若与权威合同冲突，以权威合同为准，禁止据此实现分支规则。
+
 本文只描述当前未发布合同。设备协议不保留旧兼容字段：WES 下发命令只使用 `task_type`，不再下发 `command_type`；`command_code` 由 WES 统一生成，插件不得传入或覆盖。
 
 ## 1. 链路标识约定
@@ -55,8 +60,7 @@ WES 行为：
 
 - 解析 `data` 中的六合一码，生成或恢复 `WorklineSession`。
 - 新 Session 示例：`session_id=417`，`trace_id=trace_...`。
-- 条码有效时生成第一条设备命令 `PICK_AND_PUT`，进入等待设备 Result。
-- 条码无效时生成 `MOVE_TO_NG`，NG 搬运成功后完成当前 Session。
+- 扫码决策、状态与 Intent 只按权威合同 `RS-SD-001` 至 `RS-SD-003` 判定；本节只展示 callback 和后续设备命令的协议形状。
 
 ## 3. 入料机械臂：入料搬运与测量回传
 
@@ -117,9 +121,8 @@ Content-Type: application/json
 WES 行为：
 
 - 通过 `command_code` 找到 `DeviceCommand` 和等待中的 Session。
-- 校验 `reel_diameter` / `reel_thickness`；缺失、不可解析、非正数或业务 NG 判定时下发 `MOVE_TO_NG`。
-- 测量有效后按六合一码查询 WMS 库存准入。
-- WMS 准入成功后生成 `MOVE_FORWARD`；WMS 无匹配或业务拒绝时下发 `MOVE_TO_NG`。
+- 测量、WMS QUERY、状态与下一 Intent 只按权威合同 `RS-SD-004` 至 `RS-SD-010` 判定；本节不定义有效性、准入或分支条件。
+- 当权威决策产生后续设备命令时，使用下文协议字段持久化和下发。
 
 ## 4. 输送线：前进到出料位
 
