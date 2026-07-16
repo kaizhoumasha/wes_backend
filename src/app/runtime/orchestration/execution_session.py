@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime  # noqa: TC003 - SQLModel table fields need the runtime class at import time.
 from typing import ClassVar
 
+from sqlalchemy import JSON, Column
 from sqlmodel import Field
 from sqlmodel._compat import SQLModelConfig
 
@@ -47,6 +48,16 @@ class ExecutionSession(BaseMixin, table=True):
         max_length=60,
         description="RUNNING session 固定 manifest_version, 新 manifest 只影响新 session",
     )
+    plugin_binding_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.workline_plugin_bindings.id",
+        index=True,
+    )
+    plugin_binding_version: int | None = Field(default=None, ge=1)
+    plugin_config_hash: str | None = Field(default=None, max_length=64)
+    plugin_index_digest: str | None = Field(default=None, max_length=64)
+    plugin_state_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON))
+    plugin_state_version: int = Field(default=0, ge=0)
 
     # Lifecycle state
     state: str = Field(

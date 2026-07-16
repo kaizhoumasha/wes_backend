@@ -164,6 +164,21 @@ class WorklineSessionBase(BaseMixin):
         max_length=50,
         description="执行时绑定的协议版本",
     )
+    plugin_binding_id: int | None = Field(
+        default=None,
+        foreign_key="wes_biz.workline_plugin_bindings.id",
+        index=True,
+        description="执行时固定的插件 binding ID",
+    )
+    plugin_binding_version: int | None = Field(default=None, ge=1, description="执行时固定的 binding 版本")
+    plugin_config_hash: str | None = Field(default=None, max_length=64, description="执行时固定的 typed config 摘要")
+    plugin_index_digest: str | None = Field(default=None, max_length=64, description="执行时固定的生成索引摘要")
+    plugin_state_json: dict[str, object] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON),
+        description="插件 typed state JSON 快照；禁止恢复历史字符串状态",
+    )
+    plugin_state_version: int = Field(default=0, ge=0, description="插件 state 乐观版本")
     started_at: datetime | None = Field(
         default=None,
         index=True,

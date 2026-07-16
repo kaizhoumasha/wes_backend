@@ -55,6 +55,10 @@ from src.app.workline.models.workline import (
     TopologySpec,
 )
 from src.app.workline.repositories import WorkLineRepository
+from src.app.workline.services.plugin_binding_service import (
+    WorklinePluginBindingService,
+    workline_plugin_binding_service,
+)
 from src.common.cache_config import cache_settings
 from src.core.base_service import BaseService
 from src.core.conf import settings
@@ -102,6 +106,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         runtime_status_projection_service: WorkLineRuntimeStatusProjectionService = (
             workline_runtime_status_projection_service
         ),
+        plugin_binding_service: WorklinePluginBindingService = workline_plugin_binding_service,
     ) -> None:
         super().__init__(
             repository,
@@ -112,6 +117,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             list_cache_expire=cache_settings.WORKLINE_LIST.expire,
         )
         self.runtime_status_projection_service = runtime_status_projection_service
+        self.plugin_binding_service = plugin_binding_service
 
     @staticmethod
     def _resolve_plugin_key(data: dict[str, Any], current: WorkLine | None = None) -> str | None:
@@ -449,6 +455,9 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         *,
         version: int,
         cache: object | None = None,
+        actor: str = "system",
+        reason: str = "workline-activation",
+        environment: str | None = None,
     ) -> WorkLine | None:
         """通过配置预检后启用 WorkLine。"""
 
@@ -471,6 +480,21 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             if projection_created:
                 await self._commit_mutation(db)
             return current
+        if current.plugin_key is not None:
+            binding_environment = environment or {
+                "production": "production",
+                "prod": "production",
+                "staging": "staging",
+            }.get(str(settings.APP_ENV).lower(), "sandbox")
+            await self.plugin_binding_service.activate(
+                db,
+                workline=current,
+                expected_workline_version=version,
+                actor=actor,
+                reason=reason,
+                environment=binding_environment,
+                devices=devices,
+            )
         return await self._set_active_state(db, workline_id, is_active=True, version=version, cache=cache)
 
     async def deactivate(

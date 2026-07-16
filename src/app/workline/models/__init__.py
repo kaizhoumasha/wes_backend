@@ -21,6 +21,7 @@ from .migration_inventory import (
     WorklineMigrationInventoryReport,
     WorklineMigrationInventorySeverity,
     WorklineProviderProfileInventoryItem,
+    WorklineRuntimeExtensionReference,
     WorklineRuntimeReferenceSample,
     WorklineRuntimeReferenceSummary,
     WorklineRuntimeReferenceType,
@@ -33,6 +34,7 @@ from .plane import (
     PlaneSceneView,
     PlaneSnapshot,
 )
+from .plugin_binding import WorklinePluginBinding
 from .safety import (
     ClearWorkLineEstopRequest,
     WorklineSafetyIncident,
@@ -85,7 +87,9 @@ __all__ = [
     "WorklineMigrationInventoryItem",
     "WorklineMigrationInventoryReport",
     "WorklineMigrationInventorySeverity",
+    "WorklinePluginBinding",
     "WorklineProviderProfileInventoryItem",
+    "WorklineRuntimeExtensionReference",
     "WorklineRuntimeReferenceSample",
     "WorklineRuntimeReferenceSummary",
     "WorklineRuntimeReferenceType",

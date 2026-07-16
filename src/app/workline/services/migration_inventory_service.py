@@ -23,10 +23,12 @@ from src.app.workline.models import (
     WorklineMigrationInventoryReport,
     WorklineMigrationInventorySeverity,
     WorklineProviderProfileInventoryItem,
+    WorklineRuntimeExtensionReference,
     WorklineRuntimeReferenceSample,
     WorklineRuntimeReferenceSummary,
     WorklineRuntimeReferenceType,
 )
+from src.app.workline.repositories.plugin_binding_repository import workline_plugin_binding_repository
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -49,6 +51,10 @@ class _InventoryRepository(Protocol):
     async def get_list(self, db: AsyncSession, **kwargs: Any) -> tuple[int, list[Any]]: ...
 
     async def get_unfinished_workload_summary(self, db: AsyncSession, workline_id: int) -> dict[str, Any]: ...
+
+
+class _ExtensionReferenceRepository(Protocol):
+    async def list_runtime_extension_references(self, db: AsyncSession, workline_id: int) -> list[dict[str, Any]]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +82,7 @@ class WorklineMigrationInventoryService:
         repository: _InventoryRepository = workline_repository,
         capability_definitions_loader: Callable[[], Iterable[Any]] = list_workline_capability_definitions,
         provider_profile_loader: Callable[[], Iterable[Any]] = _load_provider_profiles,
+        extension_reference_repository: _ExtensionReferenceRepository | None = None,
         clock: Callable[[], datetime] = timezone.now_utc,
         max_worklines: int = 100,
     ) -> None:
@@ -84,6 +91,7 @@ class WorklineMigrationInventoryService:
         self.repository = repository
         self._capability_definitions_loader = capability_definitions_loader
         self._provider_profile_loader = provider_profile_loader
+        self._extension_reference_repository = extension_reference_repository
         self._clock = clock
         self._max_worklines = max_worklines
 
@@ -105,7 +113,12 @@ class WorklineMigrationInventoryService:
         for source in source_worklines:
             workline_id = self._strict_source_int(source, "id")
             summary = await self.repository.get_unfinished_workload_summary(db, workline_id)
-            items.append(self._build_item(source, summary, capability_catalog))
+            extension_references = (
+                []
+                if self._extension_reference_repository is None
+                else await self._extension_reference_repository.list_runtime_extension_references(db, workline_id)
+            )
+            items.append(self._build_item(source, summary, capability_catalog, extension_references))
 
         ordered_items = tuple(sorted(items, key=lambda item: (item.line_code, item.workline_id)))
         ordered_issues = tuple(
@@ -202,6 +215,7 @@ class WorklineMigrationInventoryService:
         source: Any,
         raw_summary: Any,
         capability_catalog: Mapping[str, _NormalizedCapabilityDefinition],
+        raw_extension_references: Iterable[Mapping[str, Any]] = (),
     ) -> WorklineMigrationInventoryItem:
         workline_id = WorklineMigrationInventoryService._strict_source_int(source, "id")
         line_code = WorklineMigrationInventoryService._required_source_string(source, "line_code", workline_id)
@@ -211,6 +225,61 @@ class WorklineMigrationInventoryService:
             source, "contract_version", workline_id
         )
         run_mode = WorklineMigrationInventoryService._required_source_string(source, "run_mode", workline_id)
+        active_binding_id = getattr(source, "active_plugin_binding_id", None)
+        active_binding_version = getattr(source, "active_plugin_binding_version", None)
+        active_config_hash = getattr(source, "active_plugin_config_hash", None)
+        active_index_digest = getattr(source, "active_plugin_index_digest", None)
+        provider_requirements_source = getattr(source, "active_plugin_provider_requirements_json", ())
+        port_requirements_source = getattr(source, "active_plugin_port_requirements_json", ())
+        if active_binding_id is not None and (type(active_binding_id) is not int or active_binding_id <= 0):
+            raise WorklineMigrationInventoryInvariantError(
+                f"WorkLine {workline_id} active_plugin_binding_id 必须为正严格整数或 None"
+            )
+        if active_binding_version is not None and (
+            type(active_binding_version) is not int or active_binding_version <= 0
+        ):
+            raise WorklineMigrationInventoryInvariantError(
+                f"WorkLine {workline_id} active_plugin_binding_version 必须为正严格整数或 None"
+            )
+        for field_name, digest in (
+            ("active_plugin_config_hash", active_config_hash),
+            ("active_plugin_index_digest", active_index_digest),
+        ):
+            if digest is not None and (
+                type(digest) is not str
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise WorklineMigrationInventoryInvariantError(
+                    f"WorkLine {workline_id} {field_name} 必须为 lowercase SHA-256 或 None"
+                )
+        requirements: list[tuple[str, tuple[str, ...]]] = []
+        for field_name, raw_requirements in (
+            ("provider_requirements", provider_requirements_source),
+            ("port_requirements", port_requirements_source),
+        ):
+            if not isinstance(raw_requirements, (list, tuple)) or any(
+                type(value) is not str or not value.strip() for value in raw_requirements
+            ):
+                raise WorklineMigrationInventoryInvariantError(
+                    f"WorkLine {workline_id} {field_name} 必须为非空字符串集合"
+                )
+            requirements.append((field_name, tuple(sorted({value.strip() for value in raw_requirements}))))
+        normalized_requirements = dict(requirements)
+        try:
+            extension_references = tuple(
+                sorted(
+                    (
+                        WorklineRuntimeExtensionReference.model_validate(reference)
+                        for reference in raw_extension_references
+                    ),
+                    key=lambda reference: (reference.type.value, reference.reference),
+                )
+            )
+        except ValidationError as exc:
+            raise WorklineMigrationInventoryInvariantError(
+                f"WorkLine {workline_id} WorkItem/Intent extension reference 不满足合同: {exc}"
+            ) from exc
 
         runtime_references = WorklineMigrationInventoryService._normalize_summary(raw_summary, workline_id)
         catalog_definition = capability_catalog.get(plugin_key) if isinstance(plugin_key, str) else None
@@ -233,6 +302,13 @@ class WorklineMigrationInventoryService:
                 configured_contract_version=configured_version,
                 catalog_contract_version=catalog_version,
                 run_mode=run_mode,
+                active_plugin_binding_id=active_binding_id,
+                active_plugin_binding_version=active_binding_version,
+                active_plugin_config_hash=active_config_hash,
+                active_plugin_index_digest=active_index_digest,
+                provider_requirements=normalized_requirements["provider_requirements"],
+                port_requirements=normalized_requirements["port_requirements"],
+                runtime_extension_references=extension_references,
                 runtime_references=runtime_references,
                 foundation_ready=not any(
                     issue.severity is WorklineMigrationInventorySeverity.BLOCKER for issue in issues
@@ -448,7 +524,9 @@ class WorklineMigrationInventoryService:
         return value.strip()
 
 
-workline_migration_inventory_service = WorklineMigrationInventoryService()
+workline_migration_inventory_service = WorklineMigrationInventoryService(
+    extension_reference_repository=workline_plugin_binding_repository
+)
 
 
 __all__ = [

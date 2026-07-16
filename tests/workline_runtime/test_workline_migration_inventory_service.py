@@ -68,6 +68,12 @@ def _workline(
         plugin_key=plugin,
         contract_version=version,
         run_mode=run_mode,
+        active_plugin_binding_id=None,
+        active_plugin_binding_version=None,
+        active_plugin_config_hash=None,
+        active_plugin_index_digest=None,
+        active_plugin_provider_requirements_json=[],
+        active_plugin_port_requirements_json=[],
     )
 
 
@@ -187,6 +193,66 @@ async def test_workline_fields_are_normalized_before_catalog_lookup_and_classifi
     assert item.catalog_contract_version == "current"
     assert item.run_mode == "AUTO"
     assert item.issues == ()
+
+
+@pytest.mark.asyncio
+async def test_inventory_digest_includes_binding_index_and_per_workline_requirements() -> None:
+    source = _workline(1, "LINE-01", active=True, plugin="known", version="current")
+    source.active_plugin_binding_id = 11
+    source.active_plugin_binding_version = 2
+    source.active_plugin_config_hash = "a" * 64
+    source.active_plugin_index_digest = "b" * 64
+    source.active_plugin_provider_requirements_json = ["WMS@v1"]
+    source.active_plugin_port_requirements_json = ["InventoryPort.query"]
+
+    first = await _service(FakeRepository([source])).build_report(object(), environment="production")
+    source.active_plugin_port_requirements_json = ["InventoryPort.query", "EcsPort.dispatch"]
+    second = await _service(FakeRepository([source])).build_report(object(), environment="production")
+
+    assert first.worklines[0].active_plugin_binding_id == 11
+    assert first.worklines[0].provider_requirements == ("WMS@v1",)
+    assert first.inventory_digest != second.inventory_digest
+
+
+@pytest.mark.asyncio
+async def test_inventory_includes_sorted_workitem_and_intent_binding_index_references() -> None:
+    class ExtensionRepository:
+        async def list_runtime_extension_references(self, _db: object, _workline_id: int) -> list[dict[str, object]]:
+            return [
+                {
+                    "type": "WORK_ITEM",
+                    "reference": "work-item:2",
+                    "plugin_key": "known",
+                    "plugin_binding_id": 7,
+                    "plugin_binding_version": 1,
+                    "plugin_config_hash": "a" * 64,
+                    "plugin_index_digest": "b" * 64,
+                },
+                {
+                    "type": "INTENT",
+                    "reference": "intent:1",
+                    "plugin_key": None,
+                    "plugin_binding_id": 7,
+                    "plugin_binding_version": 1,
+                    "plugin_config_hash": "a" * 64,
+                    "plugin_index_digest": "b" * 64,
+                },
+            ]
+
+    service = WorklineMigrationInventoryService(
+        repository=FakeRepository([_workline(1, "LINE-01", plugin="known", version="current")]),
+        capability_definitions_loader=lambda: [_definition()],
+        provider_profile_loader=list,
+        extension_reference_repository=ExtensionRepository(),
+        clock=lambda: NOW,
+    )
+
+    report = await service.build_report(object(), environment="production")
+
+    assert tuple(reference.type.value for reference in report.worklines[0].runtime_extension_references) == (
+        "INTENT",
+        "WORK_ITEM",
+    )
 
 
 @pytest.mark.asyncio

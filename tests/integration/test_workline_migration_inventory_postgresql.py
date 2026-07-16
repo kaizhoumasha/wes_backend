@@ -6,6 +6,7 @@ import asyncio
 import os
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
@@ -33,6 +34,7 @@ from src.app.workline.models import (
     WorkLine,
     WorklineMigrationInventoryIssueCode,
     WorklineMigrationInventorySeverity,
+    WorklinePluginBinding,
     WorklineRuntimeReferenceType,
 )
 from src.app.workline.models.workline import LineType
@@ -115,6 +117,30 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
     )
     db.add_all([foundation, linked])
     await db.flush()
+    binding = WorklinePluginBinding(
+        workline_id=foundation.id,
+        plugin_key=definition.capability_key,
+        contract_version=definition.contract_version,
+        binding_version=1,
+        typed_config_json={},
+        typed_config_hash="a" * 64,
+        provider_profile_snapshot_json=[],
+        port_requirements_json=["InventoryPort.query"],
+        device_snapshot_json=[],
+        generated_index_digest="b" * 64,
+        environment="production",
+        activated_at=datetime(2026, 7, 17, 8),
+        activated_by="integration-test",
+        activated_reason="inventory-contract",
+    )
+    db.add(binding)
+    await db.flush()
+    foundation.active_plugin_binding_id = binding.id
+    foundation.active_plugin_binding_version = binding.binding_version
+    foundation.active_plugin_config_hash = binding.typed_config_hash
+    foundation.active_plugin_index_digest = binding.generated_index_digest
+    foundation.active_plugin_provider_requirements_json = ["WMS@v1"]
+    foundation.active_plugin_port_requirements_json = list(binding.port_requirements_json)
     device = Device(
         device_code="IT-INVENTORY-DEVICE",
         device_name="Inventory Device",
@@ -324,6 +350,11 @@ def test_postgresql_status_matrix_samples_transaction_and_no_write_contract() ->
 
         assert foundation.foundation_ready is True
         assert foundation.runtime_references.total == 0
+        assert foundation.active_plugin_binding_version == 1
+        assert foundation.active_plugin_config_hash == "a" * 64
+        assert foundation.active_plugin_index_digest == "b" * 64
+        assert foundation.provider_requirements == ("WMS@v1",)
+        assert foundation.port_requirements == ("InventoryPort.query",)
         assert linked.runtime_references.model_dump(exclude={"sample"}) == {
             "sessions": len(SESSION_ACTIVE),
             "commands": len(COMMAND_ACTIVE),

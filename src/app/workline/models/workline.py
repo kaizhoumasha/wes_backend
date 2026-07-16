@@ -9,7 +9,7 @@ from enum import Enum
 from typing import Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel, field_validator
-from sqlalchemy import JSON, Column, Text, text
+from sqlalchemy import JSON, Column, ForeignKey, Integer, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
@@ -159,6 +159,32 @@ class WorkLine(
         description="最近一次 START Trace ID",
     )
     is_active: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")}, description="是否启用")
+    active_plugin_binding_id: int | None = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey(
+                "wes_biz.workline_plugin_bindings.id",
+                name="fk_work_lines_active_plugin_binding",
+                use_alter=True,
+            ),
+            index=True,
+        ),
+        description="当前 immutable 插件 binding ID",
+    )
+    active_plugin_binding_version: int | None = Field(default=None, ge=1, description="当前插件 binding 版本")
+    active_plugin_config_hash: str | None = Field(default=None, max_length=64, description="当前 typed config 摘要")
+    active_plugin_index_digest: str | None = Field(default=None, max_length=64, description="当前插件生成索引摘要")
+    active_plugin_provider_requirements_json: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+        description="当前 binding 的 provider profile 要求快照",
+    )
+    active_plugin_port_requirements_json: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON),
+        description="当前 binding 的 Port.method 要求快照",
+    )
 
     @property
     def plugin_definition(self) -> WorklineCapabilityDefinition | None:

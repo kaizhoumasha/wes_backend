@@ -34,12 +34,18 @@ from .migration_inventory_service import (
     workline_migration_inventory_service,
 )
 from .plane_service import WorkLinePlaneService, workline_plane_service
+from .plugin_binding_service import (
+    PluginBindingAdmissionError,
+    WorklinePluginBindingService,
+    workline_plugin_binding_service,
+)
 from .safety_service import WorkLineSafetyBlocked, WorkLineSafetyService, workline_safety_service
 from .workline_service import WorkLineService, workline_service
 from .write_back_service import OrchestratorWriteBackService, orchestrator_write_back_service
 
 __all__ = [
     "OrchestratorWriteBackService",
+    "PluginBindingAdmissionError",
     "WorkLineManifestActivationValidator",
     "WorkLinePlaneService",
     "WorkLineSafetyBlocked",
@@ -49,12 +55,14 @@ __all__ = [
     "WorklineMigrationInventoryInvariantError",
     "WorklineMigrationInventoryLimitExceeded",
     "WorklineMigrationInventoryService",
+    "WorklinePluginBindingService",
     "orchestrator_write_back_service",
     "workline_bin_cell_reservation_service",
     "workline_diagnostic_service",
     "workline_manifest_activation_validator",
     "workline_migration_inventory_service",
     "workline_plane_service",
+    "workline_plugin_binding_service",
     "workline_safety_service",
     "workline_service",
 ]
