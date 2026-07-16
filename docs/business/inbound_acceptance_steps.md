@@ -32,8 +32,18 @@
 
 ```text
 操作员入口
-  -> 粗分机入口扫码/测量
-  -> 入料机械臂
+  -> 粗分机入口扫码决策
+       ├─ 合同上下文缺失 -> Material Hold
+       ├─ 明确业务 NG -> NG 分支
+       └─ 允许入料 -> 入料机械臂 PICK_AND_PUT
+            -> Result 测量
+                 ├─ 测量合同无效 -> Material Hold
+                 ├─ 明确业务测量 NG -> NG 分支
+                 └─ 有效测量 -> WMS 准入
+                      ├─ ADMIT -> MOVE_FORWARD
+                      └─ REJECT -> MOVE_TO_NG -> NG 分支
+
+ADMIT / MOVE_FORWARD 正常主流程
   -> 粗分机流水线
   -> 出料机械臂
   -> 粗分机出料单层货架位
@@ -110,8 +120,8 @@
 | R-04 | 入料机械臂 ACK | WES 记录 ACK，不认为物理完成 | `DeviceCommand` 处于 accepted/running 等待结果态 |
 | R-05 | 入料机械臂 SUCCESS callback 携带有效测量 | WES 记录命令结果、测量 evidence 和料盘进入流水线入口的物理事实 | 本地位置投影更新，测量 evidence 可供准入查询使用 |
 | R-06 | 有效测量已记录 | WES 通过 WMS query 执行准入校验 | WMS 查询 evidence 写入 timeline 或 envelope |
-| R-07 | WMS 返回准入结果 | WES 创建 `MOVE_FORWARD` 或 `MOVE_TO_NG` `DeviceCommand` | 命令写入 `RuntimeIntentLog` 后 dispatch；前进命令下发前已校验流水线可运行 |
-| R-08 | 流水线 SUCCESS callback | WES 写入料盘到达出料口事实 | work item 进入出料分配 step |
+| R-07 | WMS 返回准入结果 | ADMIT 分支创建 `MOVE_FORWARD`；reject 分支创建 `MOVE_TO_NG` | 命令写入 `RuntimeIntentLog` 后 dispatch；reject 分支按窄合同终止正常主流程，不进入 R-08 |
+| R-08 | `MOVE_FORWARD` 流水线 SUCCESS callback | WES 写入料盘到达出料口事实 | 只有 WMS ADMIT 分支进入本步骤，work item 随后进入出料分配 step |
 | R-09 | 出料 step admission | WES 查询单层货架、料箱和可用格位投影 | 缺少关键事实时进入 scoped `RuntimeHold` |
 | R-10 | 出料位无可用格位 | WES 请求 WMS 补充空箱货架或换架 | 只 hold 当前出料 work item，入口侧按缓冲容量自然反压 |
 | R-11 | WMS/AGV 补架 callback | WES 更新 `RackPlacement`、`RackBinMount` 和可用料格投影 | callback 入站经 `RuntimeInbox`，不直接改 owner 状态 |
@@ -123,7 +133,7 @@
 
 ### 4.3 异常验收点
 
-- 扫码失败、测量失败、GRN 不匹配时，该料盘进入 NG 或 scoped hold，不影响其他已在流水线中的料盘。
+- 扫码或测量明确业务 NG、WMS 拒绝时进入 NG 分支；合同上下文缺失或测量合同无效时进入 scoped hold，均不影响其他已在流水线中的料盘。
 - 入料机械臂、流水线、出料机械臂 `ERROR/OFFLINE/UNKNOWN` 时，不下发新命令，短退避耗尽后创建对应 device 或 work item scope 的 hold。
 - 出料机械臂投放成功但 WMS PKG 绑定失败时，本地物理事实保持有效，状态进入 WMS 同步 hold 或 reconciliation。
 - 重复 callback 使用 `source_event_id + provider_code + event_type` 幂等处理，同 key 不同 payload 返回 409 并写安全审计。

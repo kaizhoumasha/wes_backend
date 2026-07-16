@@ -60,8 +60,8 @@ WES 行为：
 
 - 解析 `data` 中的六合一码，生成或恢复 `WorklineSession`。
 - 新 Session 示例：`session_id=417`，`trace_id=trace_...`。
-- 条码有效时生成第一条设备命令 `PICK_AND_PUT`，进入等待设备 Result。
-- 条码无效时生成 `MOVE_TO_NG`，NG 搬运成功后完成当前 Session。
+- 条码决策允许入料时生成第一条设备命令 `PICK_AND_PUT`，进入等待设备 Result。
+- 条码明确判定为业务 NG 时生成 `MOVE_TO_NG`；缺少 `PkgID` 或合同上下文时进入 Material Hold，不生成设备命令。
 
 ## 3. 入料机械臂：入料搬运与测量回传
 
@@ -122,7 +122,8 @@ Content-Type: application/json
 WES 行为：
 
 - 通过 `command_code` 找到 `DeviceCommand` 和等待中的 Session。
-- 校验 `reel_diameter` / `reel_thickness`；缺失、不可解析、非正数或业务 NG 判定时下发 `MOVE_TO_NG`。
+- `reel_diameter` / `reel_thickness` 缺失、不可解析或非正数属于测量合同无效，进入 `BLOCK:MATERIAL`，不生成搬运命令。
+- 只有设备明确返回业务测量 NG 时才生成 `MOVE_TO_NG`。
 - 测量有效后按六合一码查询 WMS 库存准入。
 - WMS 准入成功后生成 `MOVE_FORWARD`；WMS 无匹配或业务拒绝时下发 `MOVE_TO_NG`。
 
