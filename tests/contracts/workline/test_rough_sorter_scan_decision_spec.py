@@ -8,19 +8,120 @@ FIXTURE_PATH = REPOSITORY_ROOT / "tests/fixtures/workline_contract/rough_sorter/
 SPEC_PATH = REPOSITORY_ROOT / "docs/business/rough_sorter_scan_decision_contract.md"
 
 EXPECTED_CASE_OVERVIEW = {
-    "RS-SD-001": ("covered", None),
-    "RS-SD-002": ("covered", "SCAN_NG_BY_RULE"),
-    "RS-SD-003": ("gap", "ROUGH_SORTER_CONTEXT_MISSING"),
-    "RS-SD-004": ("gap", None),
-    "RS-SD-005": ("gap", "MEASUREMENT_NG"),
-    "RS-SD-006": ("gap", "WMS_REJECTED"),
-    "RS-SD-007": ("gap", "ROUGH_SORTER_MEASUREMENT_INVALID"),
-    "RS-SD-008": ("covered", "DEVICE_BUSY"),
-    "RS-SD-009": ("partial", "ROUGH_SORTER_PICK_RESULT_TIMEOUT"),
-    "RS-SD-010": ("gap", "WMS_TIMEOUT"),
-    "RS-SD-011": ("gap", None),
-    "RS-SD-012": ("gap", "IDEMPOTENCY_CONFLICT"),
-    "RS-SD-013": ("partial", "COMMAND_RESULT_CORRELATION_MISMATCH"),
+    # trigger, outcome, (material, command, session), intent(kind, action, scope), status, reason
+    "RS-SD-001": (
+        "SCAN_COMPLETED",
+        "PICK_AND_PUT_PERSISTED",
+        ("IN_TRANSIT", None, "WAITING_COMMAND_RESULT"),
+        (
+            ("CREATE_MATERIAL_UNIT", None, None),
+            ("UPDATE_CONTEXT", None, None),
+            ("COMMAND", "PICK_AND_PUT", None),
+        ),
+        "covered",
+        None,
+    ),
+    "RS-SD-002": (
+        "SCAN_COMPLETED",
+        "MOVE_TO_NG_PERSISTED",
+        ("NG", None, "WAITING_COMMAND_RESULT"),
+        (
+            ("CREATE_MATERIAL_UNIT", None, None),
+            ("UPDATE_CONTEXT", None, None),
+            ("MARK_NG", None, None),
+            ("COMMAND", "MOVE_TO_NG", None),
+        ),
+        "covered",
+        "SCAN_NG_BY_RULE",
+    ),
+    "RS-SD-003": (
+        "SCAN_COMPLETED",
+        "HOLD",
+        ("NOT_CREATED", "NOT_CREATED", "MANUAL_HOLD"),
+        (("BLOCK", None, "MATERIAL"),),
+        "gap",
+        "ROUGH_SORTER_CONTEXT_MISSING",
+    ),
+    "RS-SD-004": (
+        "COMMAND_RESULT",
+        "MOVE_FORWARD_PERSISTED",
+        ("IN_TRANSIT", None, "WAITING_COMMAND_RESULT"),
+        (("UPDATE_CONTEXT", None, None), ("COMMAND", "MOVE_FORWARD", None)),
+        "gap",
+        None,
+    ),
+    "RS-SD-005": (
+        "COMMAND_RESULT",
+        "MOVE_TO_NG_PERSISTED",
+        ("NG", None, "WAITING_COMMAND_RESULT"),
+        (("UPDATE_CONTEXT", None, None), ("MARK_NG", None, None), ("COMMAND", "MOVE_TO_NG", None)),
+        "gap",
+        "MEASUREMENT_NG",
+    ),
+    "RS-SD-006": (
+        "COMMAND_RESULT",
+        "MOVE_TO_NG_PERSISTED",
+        ("NG", None, "WAITING_COMMAND_RESULT"),
+        (("UPDATE_CONTEXT", None, None), ("MARK_NG", None, None), ("COMMAND", "MOVE_TO_NG", None)),
+        "gap",
+        "WMS_REJECTED",
+    ),
+    "RS-SD-007": (
+        "COMMAND_RESULT",
+        "HOLD",
+        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD"),
+        (("BLOCK", None, "MATERIAL"),),
+        "gap",
+        "ROUGH_SORTER_MEASUREMENT_INVALID",
+    ),
+    "RS-SD-008": (
+        "COMMAND_RESULT",
+        "HOLD",
+        ("IN_TRANSIT", "MANUAL_HOLD", "MANUAL_HOLD"),
+        (("BLOCK", None, "COMMAND"),),
+        "covered",
+        "DEVICE_BUSY",
+    ),
+    "RS-SD-009": (
+        "TIMER_TIMEOUT",
+        "HOLD",
+        ("IN_TRANSIT", "MANUAL_HOLD", "MANUAL_HOLD"),
+        (("BLOCK", None, "COMMAND"),),
+        "partial",
+        "ROUGH_SORTER_PICK_RESULT_TIMEOUT",
+    ),
+    "RS-SD-010": (
+        "COMMAND_RESULT",
+        "HOLD",
+        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD"),
+        (("BLOCK", None, "MATERIAL"),),
+        "gap",
+        "WMS_TIMEOUT",
+    ),
+    "RS-SD-011": (
+        "REPLAY_REQUEST",
+        "REPLAY_ACCEPTED_NOOP",
+        ("UNCHANGED", "UNCHANGED", "UNCHANGED"),
+        (),
+        "gap",
+        None,
+    ),
+    "RS-SD-012": (
+        "REPLAY_REQUEST",
+        "HOLD",
+        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD"),
+        (("BLOCK", None, "MATERIAL"),),
+        "gap",
+        "IDEMPOTENCY_CONFLICT",
+    ),
+    "RS-SD-013": (
+        "COMMAND_RESULT",
+        "ARCHIVED_EVIDENCE",
+        ("UNCHANGED", "UNCHANGED", "UNCHANGED"),
+        (),
+        "partial",
+        "COMMAND_RESULT_CORRELATION_MISMATCH",
+    ),
 }
 REQUIRED_CASE_FIELDS = {
     "case_id",
@@ -60,7 +161,7 @@ def _load_fixture() -> dict:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
-def test_fixture_has_fixed_identity_status_and_reason_codes() -> None:
+def test_fixture_has_fixed_case_semantic_signatures() -> None:
     fixture = _load_fixture()
     cases = fixture["cases"]
     cases_by_id = {case["case_id"]: case for case in cases}
@@ -69,9 +170,18 @@ def test_fixture_has_fixed_identity_status_and_reason_codes() -> None:
     assert fixture["slice_id"] == "rough_sorter.scan_to_admission_decision"
     assert list(cases_by_id) == list(EXPECTED_CASE_OVERVIEW)
     assert len(cases_by_id) == len(cases)
-    for case_id, (status, reason_code) in EXPECTED_CASE_OVERVIEW.items():
-        assert cases_by_id[case_id]["implementation_status"] == status, case_id
-        assert cases_by_id[case_id]["expected_outcome"]["reason_code"] == reason_code, case_id
+    for case_id, expected_signature in EXPECTED_CASE_OVERVIEW.items():
+        case = cases_by_id[case_id]
+        state = case["expected_state"]
+        actual_signature = (
+            case["trigger"]["event_type"],
+            case["expected_outcome"]["result"],
+            (state["material"], state.get("command"), state["session"]),
+            tuple((intent["kind"], intent.get("action"), intent.get("scope")) for intent in case["expected_intents"]),
+            case["implementation_status"],
+            case["expected_outcome"]["reason_code"],
+        )
+        assert actual_signature == expected_signature, case_id
 
 
 def test_case_fields_use_closed_non_empty_structures() -> None:
@@ -228,3 +338,7 @@ def test_business_spec_has_strict_metadata_and_stable_sections() -> None:
         "## 验收标准",
     ):
         assert heading in content
+    assert (
+        "本切片有四类合法终点：下一设备命令已持久化、稳定原因码 Hold、late/unknown callback 的 "
+        "evidence-only 归档、replay no-op；后两类均不得推进当前 Session。"
+    ) in content

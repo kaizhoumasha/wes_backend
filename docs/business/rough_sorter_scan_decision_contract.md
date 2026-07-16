@@ -10,7 +10,7 @@ approved_at:
 
 ## 切片边界
 
-起点是已经完成输入归一化、并被 RuntimeInbox 接受的 `SCAN_COMPLETED`。终点是下一条设备命令持久化，或者以稳定原因码进入 Hold。`MOVE_FORWARD`、`MOVE_TO_NG` 的执行结果不属于本切片。
+起点是已经完成输入归一化、并被 RuntimeInbox 接受的 `SCAN_COMPLETED`。本切片有四类合法终点：下一设备命令已持久化、稳定原因码 Hold、late/unknown callback 的 evidence-only 归档、replay no-op；后两类均不得推进当前 Session。`MOVE_FORWARD`、`MOVE_TO_NG` 的执行结果不属于本切片。
 
 明确排除：输送线命令的实际执行、格位预约、货架补给、出料、入库记账、满箱交换和 SMT 流程。本合同不设计 provider wiring、数据库表、API、Celery 任务或通用能力接口。
 
