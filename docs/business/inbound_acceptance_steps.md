@@ -16,7 +16,7 @@
 
 本次验收覆盖三个连续场景：
 
-1. 粗分机正常入库：料盘从入口扫码/测量，通过 WMS 校验后进入粗分机流水线，最终投入单层货架料箱料格。
+1. 粗分机正常入库：料盘从入口扫码决策后执行入料，成功结果携带有效测量，再经 WMS 准入后进入粗分机流水线，最终投入单层货架料箱料格。
 2. 满箱交换前置分流：单层货架从粗分机移出后，先进入独立满箱交换区；如有满箱交换需求，先完成箱级入库交换，再进入分拣机 STATION 或排队区。
 3. 分拣机入库：未通过满箱交换直接入库的剩余物料，由分拣机从单层货架逐件聚合到五层货架料箱料格。
 
@@ -105,12 +105,12 @@
 | 步骤 | 触发/操作 | 预期 WES 行为 | 通过标准 |
 | --- | --- | --- | --- |
 | R-01 | 操作员将料盘放入粗分机入口 | ECS 上报入口有料事件，WES 写入 `RuntimeInbox` | callback 只 ACK，不在响应体返回下一步动作 |
-| R-02 | 入口扫码和测量完成 | WES 解析六合一码和测量结果，创建或关联料盘 `ExecutionWorkItem` | work item 具备独立 `correlation_id` |
-| R-03 | WES 查询 WMS GRN 和物料事实 | 通过 WMS query 校验 GRN 绑定和测量结果 | WMS 查询 evidence 写入 timeline 或 envelope |
-| R-04 | 校验通过 | WES 创建入料机械臂 `DeviceCommand`，指示移入粗分机流水线 | 命令先写 `RuntimeIntentLog`，再 dispatch |
-| R-05 | 入料机械臂 ACK | WES 记录 ACK，不认为物理完成 | `DeviceCommand` 处于 accepted/running 等待结果态 |
-| R-06 | 入料机械臂 SUCCESS callback | WES 写入料盘进入流水线的 `RuntimeLocationEvent` | 本地位置投影更新，入料机械臂可处理下一料盘 |
-| R-07 | WES 指示粗分机流水线前进 | 创建流水线 `DeviceCommand`，目标为出料口 | 设备 dispatch 前已校验流水线状态为可运行 |
+| R-02 | 入口扫码完成 | WES 解析六合一码、完成条码决策并创建或关联料盘 `ExecutionWorkItem` | work item 具备独立 `correlation_id` 和扫码 evidence |
+| R-03 | 条码决策允许入料 | WES 创建入料机械臂 `PICK_AND_PUT` `DeviceCommand` | 命令先写 `RuntimeIntentLog`，再 dispatch |
+| R-04 | 入料机械臂 ACK | WES 记录 ACK，不认为物理完成 | `DeviceCommand` 处于 accepted/running 等待结果态 |
+| R-05 | 入料机械臂 SUCCESS callback 携带有效测量 | WES 记录命令结果、测量 evidence 和料盘进入流水线入口的物理事实 | 本地位置投影更新，测量 evidence 可供准入查询使用 |
+| R-06 | 有效测量已记录 | WES 通过 WMS query 执行准入校验 | WMS 查询 evidence 写入 timeline 或 envelope |
+| R-07 | WMS 返回准入结果 | WES 创建 `MOVE_FORWARD` 或 `MOVE_TO_NG` `DeviceCommand` | 命令写入 `RuntimeIntentLog` 后 dispatch；前进命令下发前已校验流水线可运行 |
 | R-08 | 流水线 SUCCESS callback | WES 写入料盘到达出料口事实 | work item 进入出料分配 step |
 | R-09 | 出料 step admission | WES 查询单层货架、料箱和可用格位投影 | 缺少关键事实时进入 scoped `RuntimeHold` |
 | R-10 | 出料位无可用格位 | WES 请求 WMS 补充空箱货架或换架 | 只 hold 当前出料 work item，入口侧按缓冲容量自然反压 |
