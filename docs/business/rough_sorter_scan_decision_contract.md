@@ -1,10 +1,10 @@
 # 粗分机扫码到准入决策窄闭环合同
 
 contract_version: rough-sorter-scan-decision.v1
-status: Review
+status: Approved
 owner: 业务 Owner（待明确）
-approved_by:
-approved_at:
+approved_by: kaizhou
+approved_at: 2026-07-16T19:39:04+08:00
 
 > 本文是该切片的单一权威业务规格。当前未获得业务 Owner 明确批准，因此状态保持 `Review`，批准人和批准时间留空。配套 fixture 仅用于测试与评审取证，不是 Runtime 配置，也不是通用 DSL。
 

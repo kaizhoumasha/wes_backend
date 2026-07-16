@@ -3,7 +3,7 @@
 import json
 from contextlib import asynccontextmanager
 from copy import deepcopy
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -847,13 +847,20 @@ def test_business_spec_has_strict_metadata_and_stable_sections() -> None:
         metadata[key.strip()] = value.strip()
 
     assert lines[0] == "# 粗分机扫码到准入决策窄闭环合同"
-    assert metadata == {
-        "contract_version": "rough-sorter-scan-decision.v1",
-        "status": "Review",
-        "owner": "业务 Owner（待明确）",
-        "approved_by": "",
-        "approved_at": "",
-    }
+    assert set(metadata) == {"contract_version", "status", "owner", "approved_by", "approved_at"}
+    assert metadata["contract_version"] == "rough-sorter-scan-decision.v1"
+    assert metadata["owner"] == "业务 Owner（待明确）"
+    assert metadata["status"] in {"Review", "Approved"}
+    if metadata["status"] == "Review":
+        assert metadata["approved_by"] == ""
+        assert metadata["approved_at"] == ""
+    else:
+        assert metadata["approved_by"]
+        approved_at = datetime.fromisoformat(metadata["approved_at"])
+        assert approved_at.tzinfo is not None
+        assert approved_at.utcoffset() is not None
+
+    assert metadata["status"] == "Approved"
     for heading in (
         "## 切片边界",
         "## 输入身份与归一化",
