@@ -227,6 +227,32 @@ def test_builders_sort_identities_and_render_stable_digest(monkeypatch: pytest.M
         generated_mapping[("new", "v1")] = first.definition  # type: ignore[index]
 
 
+def test_plugin_renderer_executes_with_definition_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = plugin_source(module_name="pluginpkg.rough_sorter.definition")
+    generated = WorklinePluginIndexBuilder(
+        capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}
+    ).build((source,))
+
+    for module_name in ("pluginpkg", "pluginpkg.rough_sorter"):
+        module = ModuleType(module_name)
+        module.__path__ = []  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, module_name, module)
+    definition_module = ModuleType(source.module_name)
+    definition_module.DEFINITION = source.definition  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, source.module_name, definition_module)
+
+    namespace: dict[str, object] = {}
+    exec(compile(generated.source, "generated_plugin_index.py", "exec"), namespace)
+
+    generated_mapping = namespace["WORKLINE_PLUGIN_INDEX"]
+    assert isinstance(generated_mapping, MappingProxyType)
+    assert namespace["WORKLINE_PLUGIN_IDENTITIES"] == generated.identities
+    assert namespace["WORKLINE_PLUGIN_INDEX_DIGEST"] == generated.digest
+    assert generated_mapping[("rough_sorter", "v1")] is source.definition
+    with pytest.raises(TypeError):
+        generated_mapping[("new", "v1")] = source.definition  # type: ignore[index]
+
+
 @pytest.mark.parametrize("kind", ["identity", "route"])
 def test_plugin_builder_rejects_duplicate_identity_or_route(kind: str) -> None:
     first = plugin_source()
@@ -482,6 +508,34 @@ def test_cli_rejects_same_destination_alias_without_modifying_file(
 
     assert destination.read_text(encoding="utf-8") == "preserve me\n"
     assert alias.read_text(encoding="utf-8") == "preserve me\n"
+
+
+@pytest.mark.parametrize("check", [False, True])
+def test_cli_honors_filesystem_case_semantics_for_initially_missing_destinations(
+    tmp_path: Path,
+    check: bool,
+) -> None:
+    from scripts import generate_runtime_extensions as generator
+
+    case_probe = tmp_path / "CaseProbe"
+    case_probe.write_text("probe", encoding="utf-8")
+    case_insensitive = (tmp_path / "caseprobe").exists()
+    case_probe.unlink()
+    plugin_output = tmp_path / "Plugin.py"
+    system_output = tmp_path / "plugin.py"
+    assert not plugin_output.exists()
+    assert not system_output.exists()
+
+    if case_insensitive:
+        with pytest.raises(ValueError, match="distinct"):
+            generator.generate(plugin_output=plugin_output, system_output=system_output, check=check)
+        assert not plugin_output.exists()
+        assert not system_output.exists()
+    else:
+        result = generator.generate(plugin_output=plugin_output, system_output=system_output, check=check)
+        assert result == int(check)
+        assert plugin_output.exists() is not check
+        assert system_output.exists() is not check
 
 
 def test_cli_preserves_existing_output_mode_and_uses_umask_for_new_output(tmp_path: Path) -> None:

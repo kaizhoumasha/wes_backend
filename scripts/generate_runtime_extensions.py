@@ -7,6 +7,7 @@ import os
 import stat
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -24,11 +25,34 @@ DEFAULT_SYSTEM_OUTPUT = SYSTEM_ROOT / "generated_index.py"
 SYSTEM_CAPABILITY_PORT_CATALOG: tuple[type[object], ...] = ()
 
 
+def _filesystem_names_collide(first: Path, second: Path) -> bool:
+    first_key = unicodedata.normalize("NFC", str(first)).casefold()
+    second_key = unicodedata.normalize("NFC", str(second)).casefold()
+    if first_key != second_key:
+        return False
+
+    common_path = Path(os.path.commonpath((first, second)))
+    while not common_path.is_dir():
+        common_path = common_path.parent
+    with tempfile.TemporaryDirectory(prefix=".runtime-index-path-probe-", dir=common_path) as probe_name:
+        probe_root = Path(probe_name)
+        first_probe = probe_root / first.relative_to(common_path)
+        second_probe = probe_root / second.relative_to(common_path)
+        first_probe.parent.mkdir(parents=True, exist_ok=True)
+        first_probe.touch(exist_ok=False)
+        try:
+            second_probe.parent.mkdir(parents=True, exist_ok=True)
+            second_probe.touch(exist_ok=False)
+        except FileExistsError:
+            return True
+    return False
+
+
 def _ensure_distinct_destinations(plugin_output: Path, system_output: Path) -> None:
     plugin_resolved = plugin_output.resolve(strict=False)
     system_resolved = system_output.resolve(strict=False)
     same_inode = plugin_output.exists() and system_output.exists() and plugin_output.samefile(system_output)
-    if plugin_resolved == system_resolved or same_inode:
+    if plugin_resolved == system_resolved or same_inode or _filesystem_names_collide(plugin_resolved, system_resolved):
         raise ValueError("plugin_output and system_output must be distinct destinations")
 
 
