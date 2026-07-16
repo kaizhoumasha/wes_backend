@@ -1,6 +1,6 @@
 # P9 WES Backend
 
-**Version**: 0.17.0.0
+**Version**: 0.17.1.0
 
 P9 WES Backend 是基于 FastAPI + SQLModel + SQLAlchemy 2.0 的快速开发框架，专为 WMS/WES 系统设计。采用分层架构和零代码开发模式。
 
@@ -63,6 +63,7 @@ WORKLINE 记录与诊断链路的 no-SQL 调试入口见 [WORKLINE 诊断快速�
 - [SMT 分拣入库 handoff 后端闭环 SPEC](docs/superpowers/specs/2026-06-16-smt-sorting-inbound-manifest-flow-spec.md)：记录 v0.7.0.0 的 manifest source boundary、两阶段 claim、source-pick/terminal ledger 和 READY claim recovery 合同。
 - [SMT 分拣入库 handoff 后端闭环实施计划](docs/superpowers/plans/2026-06-16-smt-sorting-inbound-manifest-flow.md)：记录 T0-T8 分阶段验证、测试门禁和 release-to-terminal 回归结果。
 - [WORKLINE 诊断快速开始](docs/workline_diagnostics_quickstart.md)：用 API 定位 Trace、blocking-point、诊断卡、Replay 和人工操作。
+- [粗分机扫码到准入决策窄闭环合同](docs/business/rough_sorter_scan_decision_contract.md)：定义 13 个权威场景的状态所有权、reason code、evidence 与 replay 规则。
 - [粗分机硬件供应商联调操作手册](docs/hardware/粗分机硬件供应商联调操作手册.md)：面向真实设备侧的事件、命令、状态和 Result 联调。
 - [粗分机内部 Mock 与 Sandbox 调试手册](docs/hardware/粗分机内部Mock与Sandbox调试手册.md)：面向 WES 内部的 Mock ECS、Mock WMS、Sandbox 和多物料并发观察。
 - [WorkLine runtime hold quickstart](docs/workline_runtime_hold_quickstart.md)：说明 RuntimeHold 与人工恢复的基础操作。
