@@ -1,0 +1,162 @@
+{
+  "schema_version": "rough-sorter-scan-decision.v1",
+  "slice_id": "rough_sorter.scan_to_admission_decision",
+  "cases": [
+    {
+      "case_id": "RS-SD-001",
+      "trigger": {"event_type": "SCAN_COMPLETED", "source_event_id": "evt-scan-001", "payload": {"data": {"HHPN": "HH-001", "MfrPN": "MF-001", "Qty": "100", "DateCode": "260701", "LotCode": "LOT-01", "PkgID": "PKG-001"}}},
+      "preconditions": ["RuntimeInbox 已接受并归一化事件", "本地条码规则判定 OK"],
+      "recorded_evidence": {"first_attempt": ["normalized_input_snapshot", "payload_digest", "barcode_decision", "intent_identity"], "replay": ["original_decision", "original_intent_identity", "payload_digest"]},
+      "expected_state": {"material": "IN_TRANSIT", "context_phase": "PICK_TO_PIPELINE", "session": "WAITING_COMMAND_RESULT"},
+      "expected_intents": [{"kind": "CREATE_MATERIAL_UNIT"}, {"kind": "UPDATE_CONTEXT"}, {"kind": "COMMAND", "action": "PICK_AND_PUT"}],
+      "expected_outcome": {"result": "PICK_AND_PUT_PERSISTED", "reason_code": null},
+      "replay_expectation": "同键同 digest 返回原始决策，不重复 CREATE_MATERIAL_UNIT 或 COMMAND EFFECT。",
+      "source_refs": ["src/app/runtime/orchestration/orchestrator_bridge.py", "src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
+      "implementation_status": "covered"
+    },
+    {
+      "case_id": "RS-SD-002",
+      "trigger": {"event_type": "SCAN_COMPLETED", "source_event_id": "evt-scan-002", "payload": {"data": {"HHPN": "HH-NG", "MfrPN": "MF-002", "Qty": "0", "DateCode": "260701", "LotCode": "LOT-02", "PkgID": "PKG-002"}}},
+      "preconditions": ["RuntimeInbox 已接受并归一化事件", "本地条码规则判定业务 NG"],
+      "recorded_evidence": {"first_attempt": ["normalized_input_snapshot", "payload_digest", "barcode_ng_reason", "intent_identity"], "replay": ["original_decision", "original_intent_identity", "payload_digest"]},
+      "expected_state": {"material": "NG", "context_phase": "NG_MOVING", "session": "WAITING_COMMAND_RESULT"},
+      "expected_intents": [{"kind": "CREATE_MATERIAL_UNIT"}, {"kind": "UPDATE_CONTEXT"}, {"kind": "MARK_NG"}, {"kind": "COMMAND", "action": "MOVE_TO_NG"}],
+      "expected_outcome": {"result": "MOVE_TO_NG_PERSISTED", "reason_code": "BARCODE_RULE_NG"},
+      "replay_expectation": "复用首次条码 NG 判定，不重复 MOVE_TO_NG EFFECT。",
+      "source_refs": ["src/app/workline/domain/services/barcode_decision_service.py", "src/app/runtime/orchestration/orchestrator_bridge.py", "src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py"],
+      "implementation_status": "covered"
+    },
+    {
+      "case_id": "RS-SD-003",
+      "trigger": {"event_type": "SCAN_COMPLETED", "source_event_id": "evt-scan-003", "payload": {"data": {"HHPN": "HH-003", "MfrPN": "MF-003", "Qty": "100", "DateCode": "260701", "LotCode": "LOT-03"}}},
+      "preconditions": ["RuntimeInbox 已接受并归一化事件", "输入缺少 PkgID"],
+      "recorded_evidence": {"first_attempt": ["normalized_input_snapshot", "payload_digest", "missing_fields", "hold_reason"], "replay": ["original_hold", "payload_digest"]},
+      "expected_state": {"material": "NOT_CREATED", "command": "NOT_CREATED", "session": "MANUAL_HOLD"},
+      "expected_intents": [{"kind": "BLOCK", "scope": "MATERIAL"}],
+      "expected_outcome": {"result": "HOLD", "reason_code": "ROUGH_SORTER_CONTEXT_MISSING"},
+      "replay_expectation": "保持原 Hold，不补建物料或命令。",
+      "source_refs": ["src/app/runtime/orchestration/orchestrator_bridge.py", "src/app/runtime/capabilities/material_flow/contracts/six_in_one.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
+      "implementation_status": "covered"
+    },
+    {
+      "case_id": "RS-SD-004",
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-004", "payload": {"command_code": "CMD-PICK-004", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK", "length_mm": "120", "width_mm": "80", "height_mm": "15"}}},
+      "preconditions": ["PICK_AND_PUT 等待锚点匹配", "测量合同有效", "WMS 准入 ACCEPTED"],
+      "recorded_evidence": {"first_attempt": ["command_result_snapshot", "measurement_snapshot", "wms_response_summary", "decision", "intent_identity", "payload_digest"], "replay": ["original_measurement", "original_wms_response_summary", "original_decision", "original_intent_identity", "payload_digest"]},
+      "expected_state": {"material": "IN_TRANSIT", "context_phase": "MOVING_FORWARD", "session": "WAITING_COMMAND_RESULT"},
+      "expected_intents": [{"kind": "UPDATE_CONTEXT"}, {"kind": "COMMAND", "action": "MOVE_FORWARD"}],
+      "expected_outcome": {"result": "MOVE_FORWARD_PERSISTED", "reason_code": null},
+      "replay_expectation": "不重新查询 WMS，不重复 MOVE_FORWARD EFFECT。",
+      "source_refs": ["src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py", "src/app/runtime/orchestration/orchestrator_bridge.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
+      "implementation_status": "gap"
+    },
+    {
+      "case_id": "RS-SD-005",
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-005", "payload": {"command_code": "CMD-PICK-005", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "NG", "reason": "HEIGHT_OUT_OF_RANGE"}}},
+      "preconditions": ["PICK_AND_PUT 等待锚点匹配", "测量合同有效且业务判定 NG"],
+      "recorded_evidence": {"first_attempt": ["command_result_snapshot", "measurement_snapshot", "decision", "intent_identity", "payload_digest"], "replay": ["original_measurement", "original_decision", "original_intent_identity", "payload_digest"]},
+      "expected_state": {"material": "NG", "context_phase": "NG_MOVING", "session": "WAITING_COMMAND_RESULT"},
+      "expected_intents": [{"kind": "UPDATE_CONTEXT"}, {"kind": "MARK_NG"}, {"kind": "COMMAND", "action": "MOVE_TO_NG"}],
+      "expected_outcome": {"result": "MOVE_TO_NG_PERSISTED", "reason_code": "MEASUREMENT_NG"},
+      "replay_expectation": "复用首次测量 NG 决策，不查询 WMS、不重复 MOVE_TO_NG EFFECT。",
+      "source_refs": ["src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py", "src/app/runtime/capability_catalog.py", "tests/contracts/workline/test_rough_sorter_inbound_contract.py"],
+      "implementation_status": "gap"
+    },
+    {
+      "case_id": "RS-SD-006",
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-006", "payload": {"command_code": "CMD-PICK-006", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK"}}},
+      "preconditions": ["PICK_AND_PUT 等待锚点匹配", "测量合同有效", "WMS 返回 REJECTED 或无匹配"],
+      "recorded_evidence": {"first_attempt": ["command_result_snapshot", "measurement_snapshot", "wms_response_summary", "decision", "intent_identity", "payload_digest"], "replay": ["original_wms_response_summary", "original_decision", "original_intent_identity", "payload_digest"]},
+      "expected_state": {"material": "NG", "context_phase": "NG_MOVING", "session": "WAITING_COMMAND_RESULT"},
+      "expected_intents": [{"kind": "UPDATE_CONTEXT"}, {"kind": "MARK_NG"}, {"kind": "COMMAND", "action": "MOVE_TO_NG"}],
+      "expected_outcome": {"result": "MOVE_TO_NG_PERSISTED", "reason_code": "WMS_REJECTED"},
+      "replay_expectation": "复用首次 WMS 拒绝摘要，不重新查询 WMS、不重复 MOVE_TO_NG EFFECT。",
+      "source_refs": ["src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py", "src/app/runtime/capability_catalog.py", "src/app/runtime/orchestration/services/query/material_location_query_service.py"],
+      "implementation_status": "gap"
+    },
+    {
+      "case_id": "RS-SD-007",
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-007", "payload": {"command_code": "CMD-PICK-007", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK", "length_mm": "invalid"}}},
+      "preconditions": ["PICK_AND_PUT 等待锚点匹配", "测量字段缺失、类型错误或越界"],
+      "recorded_evidence": {"first_attempt": ["command_result_snapshot", "measurement_validation_errors", "decision", "payload_digest"], "replay": ["original_validation_errors", "original_hold", "payload_digest"]},
+      "expected_state": {"material": "MANUAL_HOLD", "command": "UNCHANGED", "session": "MANUAL_HOLD"},
+      "expected_intents": [{"kind": "BLOCK", "scope": "MATERIAL"}],
+      "expected_outcome": {"result": "HOLD", "reason_code": "ROUGH_SORTER_MEASUREMENT_INVALID"},
+      "replay_expectation": "保持原 Hold，不查询 WMS、不生成运输命令。",
+      "source_refs": ["src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py", "src/app/runtime/orchestration/runtime_intent.py", "tests/contracts/workline/test_rough_sorter_inbound_contract.py"],
+      "implementation_status": "gap"
+    },
+    {
+      "case_id": "RS-SD-008",
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-008", "payload": {"command_code": "CMD-PICK-008", "command_type": "PICK_AND_PUT", "result": "FAILED", "error_detail": {"error_code": "DEVICE_BUSY"}}},
+      "preconditions": ["PICK_AND_PUT 等待锚点匹配", "设备返回终态失败"],
+      "recorded_evidence": {"first_attempt": ["command_result_snapshot", "device_error_summary", "hold_reason", "payload_digest"], "replay": ["original_device_error", "original_hold", "payload_digest"]},
+      "expected_state": {"material": "IN_TRANSIT", "command": "MANUAL_HOLD", "session": "MANUAL_HOLD"},
+      "expected_intents": [{"kind": "BLOCK", "scope": "COMMAND"}],
+      "expected_outcome": {"result": "HOLD", "reason_code": "DEVICE_BUSY"},
+      "replay_expectation": "保持原命令 Hold，不生成后续命令。",
+      "source_refs": ["src/app/runtime/orchestration/orchestrator_bridge.py", "src/app/runtime/orchestration/runtime_intent.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
+      "implementation_status": "covered"
+    },
+    {
+      "case_id": "RS-SD-009",
+      "trigger": {"event_type": "TIMER_TIMEOUT", "source_event_id": "evt-timeout-009", "payload": {"command_code": "CMD-PICK-009", "wait_type": "COMMAND_RESULT"}},
+      "preconditions": ["PICK_AND_PUT 已持久化", "等待结果超过命令结果 deadline", "没有匹配终态结果 evidence"],
+      "recorded_evidence": {"first_attempt": ["command_identity", "deadline_snapshot", "timeout_event", "hold_reason", "payload_digest"], "replay": ["original_timeout_decision", "original_hold", "payload_digest"]},
+      "expected_state": {"material": "IN_TRANSIT", "command": "MANUAL_HOLD", "session": "MANUAL_HOLD"},
+      "expected_intents": [{"kind": "BLOCK", "scope": "COMMAND"}],
+      "expected_outcome": {"result": "HOLD", "reason_code": "ROUGH_SORTER_PICK_RESULT_TIMEOUT"},
+      "replay_expectation": "保持首次超时 Hold；迟到结果单独记录，不自动推进。",
+      "source_refs": ["src/app/runtime/orchestration/runtime_intent_effects.py", "src/app/runtime/orchestration/runtime_inbox.py", "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py"],
+      "implementation_status": "partial"
+    },
+    {
+      "case_id": "RS-SD-010",
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-010", "payload": {"command_code": "CMD-PICK-010", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK"}}},
+      "preconditions": ["PICK_AND_PUT 等待锚点匹配", "测量合同有效", "首次 WMS QUERY timeout 或 unavailable"],
+      "recorded_evidence": {"first_attempt": ["command_result_snapshot", "measurement_snapshot", "wms_timeout_summary", "decision", "payload_digest"], "replay": ["original_timeout_summary", "original_hold", "payload_digest", "no_successful_wms_evidence"]},
+      "expected_state": {"material": "MANUAL_HOLD", "command": "UNCHANGED", "session": "MANUAL_HOLD"},
+      "expected_intents": [{"kind": "BLOCK", "scope": "MATERIAL"}],
+      "expected_outcome": {"result": "HOLD", "reason_code": "WMS_TIMEOUT", "business_reason": "ROUGH_SORTER_WMS_ADMISSION_UNAVAILABLE"},
+      "replay_expectation": "保留首次 timeout evidence，不把失败伪装成成功 evidence，也不在 replay 实时重查 WMS。",
+      "source_refs": ["src/app/runtime/orchestration/services/query/material_location_query_service.py", "src/app/runtime/orchestration/diagnostics/codes.py", "tests/workline_runtime/test_material_location_query_service.py"],
+      "implementation_status": "gap"
+    },
+    {
+      "case_id": "RS-SD-011",
+      "trigger": {"event_type": "REPLAY_REQUEST", "source_event_id": "evt-replay-011", "payload": {"idempotency_key": "rough-sorter:PKG-011:scan-decision", "payload_digest": "sha256:same-digest"}},
+      "preconditions": ["同 idempotency key 的首次 attempt 已完成", "replay payload digest 与首次一致"],
+      "recorded_evidence": {"first_attempt": ["normalized_input_snapshot", "query_response_summary", "decision", "intent_identity", "payload_digest"], "replay": ["replay_request", "matched_payload_digest", "reused_decision", "reused_intent_identity"]},
+      "expected_state": {"material": "UNCHANGED", "command": "UNCHANGED", "session": "UNCHANGED"},
+      "expected_intents": [],
+      "expected_outcome": {"result": "REPLAY_ACCEPTED_NOOP", "reason_code": null},
+      "replay_expectation": "返回首次 evidence；不重复 WMS QUERY 或任何 EFFECT。",
+      "source_refs": ["src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py", "src/app/runtime/orchestration/services/idempotency_guard.py", "src/app/runtime/orchestration/scenario_replay.py"],
+      "implementation_status": "gap"
+    },
+    {
+      "case_id": "RS-SD-012",
+      "trigger": {"event_type": "REPLAY_REQUEST", "source_event_id": "evt-replay-012", "payload": {"idempotency_key": "rough-sorter:PKG-012:scan-decision", "payload_digest": "sha256:different-digest"}},
+      "preconditions": ["同 idempotency key 的首次 attempt 已存在", "incoming digest 与首次不同"],
+      "recorded_evidence": {"first_attempt": ["original_payload_digest", "original_decision", "original_intent_identity"], "replay": ["incoming_payload_digest", "digest_mismatch", "conflict_audit"]},
+      "expected_state": {"material": "MANUAL_HOLD", "command": "UNCHANGED", "session": "MANUAL_HOLD"},
+      "expected_intents": [{"kind": "BLOCK", "scope": "MATERIAL"}],
+      "expected_outcome": {"result": "HOLD", "reason_code": "IDEMPOTENCY_CONFLICT"},
+      "replay_expectation": "记录冲突并 Hold；不执行 QUERY 或 EFFECT。",
+      "source_refs": ["src/app/runtime/orchestration/services/idempotency_guard.py", "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py", "tests/contracts/workline/test_runtime_intent_log_dispatch_contract.py"],
+      "implementation_status": "gap"
+    },
+    {
+      "case_id": "RS-SD-013",
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-013", "payload": {"command_code": "CMD-OLD-013", "command_type": "PICK_AND_PUT", "result": "SUCCESS"}},
+      "preconditions": ["callback 未匹配当前 Session 的等待命令", "callback 属于迟到命令或未知命令"],
+      "recorded_evidence": {"first_attempt": ["callback_snapshot", "correlation_lookup", "current_wait_anchor", "mismatch_reason", "payload_digest"], "replay": ["original_mismatch_evidence", "payload_digest"]},
+      "expected_state": {"material": "UNCHANGED", "command": "CORRELATION_HOLD", "session": "UNCHANGED"},
+      "expected_intents": [{"kind": "BLOCK", "scope": "COMMAND"}],
+      "expected_outcome": {"result": "HOLD_WITHOUT_SESSION_ADVANCE", "reason_code": "COMMAND_RESULT_CORRELATION_MISMATCH"},
+      "replay_expectation": "复用 correlation mismatch evidence；不得推进当前 Session 或生成后续命令。",
+      "source_refs": ["src/app/runtime/orchestration/execution_correlation.py", "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
+      "implementation_status": "partial"
+    }
+  ]
+}
