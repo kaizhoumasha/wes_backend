@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+from math import inf, nan
 
 import pytest
 from pydantic import BaseModel
@@ -97,6 +98,36 @@ def test_required_ports_are_types_and_unique() -> None:
     assert definition.required_ports == (InventoryPort,)
     with pytest.raises(TypeError):
         build_definition(required_ports=("InventoryPort",))
+
+
+@pytest.mark.parametrize("field", ["admission", "audit_policy"])
+@pytest.mark.parametrize("value", [{}, [], object(), "", " "])
+def test_definition_requires_stable_non_empty_policy_identifiers(field: str, value: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        build_definition(**{field: value})
+
+
+@pytest.mark.parametrize("value", [True, False, nan, inf, -inf, 0, -1, "3"])
+def test_definition_requires_finite_positive_real_timeout(value: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        build_definition(timeout_seconds=value)
+
+
+def test_definition_identity_cannot_drift_after_construction() -> None:
+    definition = build_definition(admission="runtime", audit_policy="metadata", timeout_seconds=3)
+
+    assert definition.identity == definition.identity
+
+
+def test_handler_factory_requires_stable_import_identity() -> None:
+    def local_factory() -> QueryHandler:
+        return QueryHandler()
+
+    local_handler_class = type("LocalHandler", (), {"__module__": __name__, "__qualname__": "scope.<locals>.Local"})
+
+    for factory in (lambda: QueryHandler(), local_factory, local_handler_class):
+        with pytest.raises(TypeError, match="stable import identity"):
+            build_definition(handler_factory=factory)
 
 
 def test_no_public_generic_extension_definition_exists() -> None:

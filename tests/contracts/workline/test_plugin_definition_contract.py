@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+from functools import partial
 
 import pytest
 from pydantic import BaseModel
@@ -74,6 +75,15 @@ def test_allowed_capabilities_require_valid_key_and_version() -> None:
         build_definition(allowed_capabilities=(("", "1.0.0"),))
     with pytest.raises(ValueError):
         build_definition(allowed_capabilities=(("inventory.lookup", ""),))
+
+
+def test_parser_requires_stable_import_identity() -> None:
+    def local_parser(payload: dict[str, object]) -> str:
+        return str(payload)
+
+    for parser in (partial(parse_scan), lambda payload: str(payload), local_parser):
+        with pytest.raises(TypeError, match="stable import identity"):
+            build_definition(parsers={"scan.received": parser})
 
 
 def test_no_public_generic_extension_definition_exists() -> None:

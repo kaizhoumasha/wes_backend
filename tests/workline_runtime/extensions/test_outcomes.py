@@ -2,7 +2,7 @@ import json
 from typing import Annotated
 
 import pytest
-from pydantic import BaseModel, Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator
 
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
 from src.app.runtime.system_capabilities import (
@@ -21,6 +21,15 @@ class Payload(BaseModel):
 
 class PluginState(BaseModel):
     scans: int
+
+
+class RejectingPayload(BaseModel):
+    item_id: int
+
+    @field_validator("item_id")
+    @classmethod
+    def reject_item(cls, value: int) -> int:
+        raise ValueError(f"item {value} is invalid")
 
 
 Outcome = Annotated[
@@ -101,6 +110,19 @@ def test_invalid_utf8_outcome_maps_to_contract_violation_without_exception() -> 
     assert isinstance(outcome, ContractViolation)
     assert outcome.error_code == "INVALID_OUTCOME_JSON"
     assert outcome.retryable is False
+
+
+def test_validation_error_contract_violation_remains_json_serializable() -> None:
+    outcome = parse_outcome({"kind": "success", "payload": {"item_id": 7}}, payload_type=RejectingPayload)
+
+    assert isinstance(outcome, ContractViolation)
+    assert outcome.error_code == "INVALID_OUTCOME_CONTRACT"
+    assert json.loads(outcome.model_dump_json())["details"]["validation_errors"]
+
+
+def test_outcome_details_reject_non_json_values() -> None:
+    with pytest.raises(ValidationError):
+        ContractViolation(error_code="INVALID_DETAILS", message="invalid", details={"value": object()})
 
 
 def test_plugin_context_and_decision_validate_state_without_executing_intents() -> None:

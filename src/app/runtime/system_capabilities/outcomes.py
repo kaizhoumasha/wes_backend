@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, TypeAdapter, ValidationError
 
 StableCode = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
@@ -28,7 +28,7 @@ class BusinessReject(BaseModel):
     reason_code: StableCode
     message: StableCode
     retryable: Literal[False] = False
-    details: dict[str, Any] = Field(default_factory=dict)
+    details: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class RetryableFailure(BaseModel):
@@ -41,7 +41,7 @@ class RetryableFailure(BaseModel):
     message: StableCode
     retryable: Literal[True] = True
     retry_after_seconds: float | None = Field(default=None, gt=0)
-    details: dict[str, Any] = Field(default_factory=dict)
+    details: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class ContractViolation(BaseModel):
@@ -53,7 +53,7 @@ class ContractViolation(BaseModel):
     error_code: StableCode
     message: StableCode
     retryable: Literal[False] = False
-    details: dict[str, Any] = Field(default_factory=dict)
+    details: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 def parse_outcome[T](
@@ -84,10 +84,18 @@ def parse_outcome[T](
     try:
         return TypeAdapter(outcome_type).validate_python(data)
     except ValidationError as exc:
+        validation_errors = [
+            {
+                "type": str(error["type"]),
+                "loc": list(error["loc"]),
+                "message": str(error["msg"]),
+            }
+            for error in exc.errors(include_url=False, include_context=False, include_input=False)
+        ]
         return ContractViolation(
             error_code="INVALID_OUTCOME_CONTRACT",
             message="outcome does not satisfy its declared contract",
-            details={"validation_errors": exc.errors(include_url=False)},
+            details={"validation_errors": validation_errors},
         )
 
 

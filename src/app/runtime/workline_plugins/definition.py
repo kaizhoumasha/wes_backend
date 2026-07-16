@@ -13,7 +13,18 @@ from src.app.runtime.extension_identity import sha256_digest, stable_sort, valid
 
 
 def _callable_identity(value: Any) -> str:
-    return f"{value.__module__}.{value.__qualname__}"
+    module = getattr(value, "__module__", None)
+    qualname = getattr(value, "__qualname__", None)
+    if (
+        not isinstance(module, str)
+        or not module
+        or not isinstance(qualname, str)
+        or not qualname
+        or qualname == "<lambda>"
+        or "<locals>" in qualname
+    ):
+        raise TypeError("callable must have a stable import identity")
+    return f"{module}.{qualname}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +69,7 @@ class WorklinePluginDefinition:
                 raise ValueError(f"parser route is not declared: {route}")
             if not callable(parser):
                 raise TypeError(f"parser must be callable: {route}")
+            _callable_identity(parser)
         object.__setattr__(self, "routes", routes)
         object.__setattr__(self, "allowed_capabilities", stable_sort(capabilities))
         object.__setattr__(self, "parsers", MappingProxyType(dict(sorted(self.parsers.items()))))
