@@ -11,6 +11,7 @@
       "expected_intents": [{"kind": "CREATE_MATERIAL_UNIT"}, {"kind": "UPDATE_CONTEXT"}, {"kind": "COMMAND", "action": "PICK_AND_PUT"}],
       "expected_outcome": {"result": "PICK_AND_PUT_PERSISTED", "reason_code": null},
       "replay_expectation": "同键同 digest 返回原始决策，不重复 CREATE_MATERIAL_UNIT 或 COMMAND EFFECT。",
+      "replay_policy": {"query": "NOT_APPLICABLE", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/orchestration/orchestrator_bridge.py", "src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
       "implementation_status": "covered"
     },
@@ -23,6 +24,7 @@
       "expected_intents": [{"kind": "CREATE_MATERIAL_UNIT"}, {"kind": "UPDATE_CONTEXT"}, {"kind": "MARK_NG"}, {"kind": "COMMAND", "action": "MOVE_TO_NG"}],
       "expected_outcome": {"result": "MOVE_TO_NG_PERSISTED", "reason_code": "SCAN_NG_BY_RULE"},
       "replay_expectation": "复用首次条码 NG 判定，不重复 MOVE_TO_NG EFFECT。",
+      "replay_policy": {"query": "NOT_APPLICABLE", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/workline/domain/services/barcode_decision_service.py", "src/app/runtime/orchestration/orchestrator_bridge.py", "src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py"],
       "implementation_status": "covered"
     },
@@ -35,6 +37,7 @@
       "expected_intents": [{"kind": "BLOCK", "scope": "MATERIAL"}],
       "expected_outcome": {"result": "HOLD", "reason_code": "ROUGH_SORTER_CONTEXT_MISSING"},
       "replay_expectation": "保持原 Hold，不补建物料或命令。",
+      "replay_policy": {"query": "NOT_APPLICABLE", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/orchestration/orchestrator_bridge.py", "src/app/runtime/capabilities/material_flow/contracts/six_in_one.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
       "implementation_status": "gap"
     },
@@ -47,6 +50,7 @@
       "expected_intents": [{"kind": "UPDATE_CONTEXT"}, {"kind": "COMMAND", "action": "MOVE_FORWARD"}],
       "expected_outcome": {"result": "MOVE_FORWARD_PERSISTED", "reason_code": null},
       "replay_expectation": "不重新查询 WMS，不重复 MOVE_FORWARD EFFECT。",
+      "replay_policy": {"query": "REUSE_RECORDED", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py", "src/app/runtime/orchestration/orchestrator_bridge.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
       "implementation_status": "gap"
     },
@@ -59,6 +63,7 @@
       "expected_intents": [{"kind": "UPDATE_CONTEXT"}, {"kind": "MARK_NG"}, {"kind": "COMMAND", "action": "MOVE_TO_NG"}],
       "expected_outcome": {"result": "MOVE_TO_NG_PERSISTED", "reason_code": "MEASUREMENT_NG"},
       "replay_expectation": "复用首次测量 NG 决策，不查询 WMS、不重复 MOVE_TO_NG EFFECT。",
+      "replay_policy": {"query": "NOT_APPLICABLE", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py", "src/app/runtime/capability_catalog.py", "tests/contracts/workline/test_rough_sorter_inbound_contract.py"],
       "implementation_status": "gap"
     },
@@ -71,6 +76,7 @@
       "expected_intents": [{"kind": "UPDATE_CONTEXT"}, {"kind": "MARK_NG"}, {"kind": "COMMAND", "action": "MOVE_TO_NG"}],
       "expected_outcome": {"result": "MOVE_TO_NG_PERSISTED", "reason_code": "WMS_REJECTED"},
       "replay_expectation": "复用首次 WMS 拒绝摘要，不重新查询 WMS、不重复 MOVE_TO_NG EFFECT。",
+      "replay_policy": {"query": "REUSE_RECORDED", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py", "src/app/runtime/capability_catalog.py", "src/app/runtime/orchestration/services/query/material_location_query_service.py"],
       "implementation_status": "gap"
     },
@@ -83,6 +89,7 @@
       "expected_intents": [{"kind": "BLOCK", "scope": "MATERIAL"}],
       "expected_outcome": {"result": "HOLD", "reason_code": "ROUGH_SORTER_MEASUREMENT_INVALID"},
       "replay_expectation": "保持原 Hold，不查询 WMS、不生成运输命令。",
+      "replay_policy": {"query": "NOT_APPLICABLE", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py", "src/app/runtime/orchestration/runtime_intent.py", "tests/contracts/workline/test_rough_sorter_inbound_contract.py"],
       "implementation_status": "gap"
     },
@@ -95,6 +102,7 @@
       "expected_intents": [{"kind": "BLOCK", "scope": "COMMAND"}],
       "expected_outcome": {"result": "HOLD", "reason_code": "DEVICE_BUSY"},
       "replay_expectation": "保持原命令 Hold，不生成后续命令。",
+      "replay_policy": {"query": "NOT_APPLICABLE", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/orchestration/orchestrator_bridge.py", "src/app/runtime/orchestration/runtime_intent.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
       "implementation_status": "covered"
     },
@@ -107,6 +115,7 @@
       "expected_intents": [{"kind": "BLOCK", "scope": "COMMAND"}],
       "expected_outcome": {"result": "HOLD", "reason_code": "ROUGH_SORTER_PICK_RESULT_TIMEOUT"},
       "replay_expectation": "保持首次超时 Hold；迟到结果单独记录，不自动推进。",
+      "replay_policy": {"query": "NOT_APPLICABLE", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/orchestration/runtime_intent_effects.py", "src/app/runtime/orchestration/runtime_inbox.py", "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py"],
       "implementation_status": "partial"
     },
@@ -119,6 +128,7 @@
       "expected_intents": [{"kind": "BLOCK", "scope": "MATERIAL"}],
       "expected_outcome": {"result": "HOLD", "reason_code": "WMS_TIMEOUT", "business_reason": "ROUGH_SORTER_WMS_ADMISSION_UNAVAILABLE"},
       "replay_expectation": "保留首次 timeout evidence，不把失败伪装成成功 evidence，也不在 replay 实时重查 WMS。",
+      "replay_policy": {"query": "REUSE_RECORDED", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/orchestration/services/query/material_location_query_service.py", "src/app/runtime/orchestration/diagnostics/codes.py", "tests/workline_runtime/test_material_location_query_service.py"],
       "implementation_status": "gap"
     },
@@ -131,6 +141,7 @@
       "expected_intents": [],
       "expected_outcome": {"result": "REPLAY_ACCEPTED_NOOP", "reason_code": null},
       "replay_expectation": "返回首次 evidence；不重复 WMS QUERY 或任何 EFFECT。",
+      "replay_policy": {"query": "REUSE_RECORDED", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py", "src/app/runtime/orchestration/services/idempotency_guard.py", "src/app/runtime/orchestration/scenario_replay.py"],
       "implementation_status": "gap"
     },
@@ -143,6 +154,7 @@
       "expected_intents": [{"kind": "BLOCK", "scope": "MATERIAL"}],
       "expected_outcome": {"result": "HOLD", "reason_code": "IDEMPOTENCY_CONFLICT"},
       "replay_expectation": "记录冲突并 Hold；不执行 QUERY 或 EFFECT。",
+      "replay_policy": {"query": "NOT_APPLICABLE", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/orchestration/services/idempotency_guard.py", "src/app/runtime/orchestration/services/runtime_inbox/runtime_inbox_service.py", "tests/contracts/workline/test_runtime_intent_log_dispatch_contract.py"],
       "implementation_status": "gap"
     },
@@ -151,10 +163,11 @@
       "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-013", "payload": {"command_code": "CMD-OLD-013", "command_type": "PICK_AND_PUT", "result": "SUCCESS"}},
       "preconditions": ["callback 未匹配当前 Session 的等待命令", "callback 属于迟到命令或未知命令"],
       "recorded_evidence": {"first_attempt": ["callback_snapshot", "correlation_lookup", "current_wait_anchor", "mismatch_reason", "payload_digest"], "replay": ["original_mismatch_evidence", "payload_digest"]},
-      "expected_state": {"material": "UNCHANGED", "command": "CORRELATION_HOLD", "session": "UNCHANGED"},
-      "expected_intents": [{"kind": "BLOCK", "scope": "COMMAND"}],
-      "expected_outcome": {"result": "HOLD_WITHOUT_SESSION_ADVANCE", "reason_code": "COMMAND_RESULT_CORRELATION_MISMATCH"},
+      "expected_state": {"material": "UNCHANGED", "command": "UNCHANGED", "session": "UNCHANGED"},
+      "expected_intents": [],
+      "expected_outcome": {"result": "ARCHIVED_EVIDENCE", "reason_code": "COMMAND_RESULT_CORRELATION_MISMATCH"},
       "replay_expectation": "复用 correlation mismatch evidence；不得推进当前 Session，也不得生成后续命令。",
+      "replay_policy": {"query": "NOT_APPLICABLE", "effect": "NO_NEW_EFFECT", "session_progress": "NO_PROGRESS"},
       "source_refs": ["src/app/runtime/orchestration/execution_correlation.py", "src/app/runtime/orchestration/services/reconciliation/runtime_reconciliation_service_impl.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
       "implementation_status": "partial"
     }

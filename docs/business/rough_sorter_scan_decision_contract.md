@@ -38,7 +38,7 @@ approved_at:
 | WMS timeout/unavailable | 保留物料与 QUERY evidence，Material Hold | `BLOCK:MATERIAL` | `WMS_TIMEOUT` |
 | 同键同 digest replay | 状态不变 | 无新 Intent | `REPLAY_ACCEPTED_NOOP` |
 | 同键不同 digest | Material Hold | `BLOCK:MATERIAL` | `IDEMPOTENCY_CONFLICT` |
-| late/unknown callback | 当前 Session 不变；callback 单独留证 | `BLOCK:COMMAND` | `COMMAND_RESULT_CORRELATION_MISMATCH` |
+| late/unknown callback | Material、Command、当前 Session 均不变；只归档 mismatch evidence | 无 RuntimeIntent | `ARCHIVED_EVIDENCE / COMMAND_RESULT_CORRELATION_MISMATCH` |
 
 Outcome 是本切片终点的业务结果，不表示后续设备动作已成功。Intent 使用现有稳定 kind/action 名；规格不复制完整设备协议 JSON。
 
@@ -69,7 +69,7 @@ Outcome 是本切片终点的业务结果，不表示后续设备动作已成功
 | WMS 超时/不可用 | Material Hold | 首次一次且无成功响应 | 否 | `WMS_TIMEOUT` |
 | 同键同 digest | 原决策 replay | 否 | 否 | no-op |
 | 同键不同 digest | 冲突 Hold | 否 | 否 | `IDEMPOTENCY_CONFLICT` |
-| late/unknown callback | 留证但不推进当前 Session | 否 | 否 | `COMMAND_RESULT_CORRELATION_MISMATCH` |
+| late/unknown callback | 只归档 mismatch evidence，不推进或改变当前 Session | 否 | 否 | `ARCHIVED_EVIDENCE / COMMAND_RESULT_CORRELATION_MISMATCH` |
 
 ## Replay 契约
 
@@ -84,7 +84,7 @@ Replay 只读取首次 attempt 已持久化的输入、测量、WMS 响应摘要
 - `ROUGH_SORTER_PICK_RESULT_TIMEOUT`：表示已下发入料命令后等待终态结果超时；现有 `COMMAND_ACK_TIMEOUT` 仅表示 ACK 阶段，不是同义码，禁止互换。
 - `ROUGH_SORTER_WMS_ADMISSION_UNAVAILABLE` 是业务概念名。仓库已有全局稳定 `WMS_TIMEOUT`，因此实际 outcome 统一使用 `WMS_TIMEOUT`，不再发出前者，避免双码。
 - `IDEMPOTENCY_CONFLICT`：复用现有全局稳定码，不新增别名。
-- `COMMAND_RESULT_CORRELATION_MISMATCH`：命令结果未命中当前等待锚点，当前没有发现全局稳定同义码，保留为目标码。
+- `COMMAND_RESULT_CORRELATION_MISMATCH`：命令结果未命中当前等待锚点，作为 `ARCHIVED_EVIDENCE` 的稳定归档分类；不生成 `BLOCK` 或其他 RuntimeIntent，也不改变当前 Session。
 
 ## 当前实现对照
 
@@ -95,7 +95,7 @@ Replay 只读取首次 attempt 已持久化的输入、测量、WMS 响应摘要
 | 缺 PkgID Hold | gap | 目标是 `BLOCK:MATERIAL / ROUGH_SORTER_CONTEXT_MISSING`，但当前条码服务先判定 `BARCODE_INCOMPLETE`，随后生成 `UPDATE_CONTEXT`、`MARK_NG` 与 `MOVE_TO_NG`，并未 Hold |
 | 入料设备失败 Command Hold | covered | 失败 command result 已转 `BLOCK:COMMAND` |
 | 入料结果超时 | partial | Runtime 已有 command result deadline/对账骨架，尚未形成本切片目标码与完整决策 |
-| late/unknown callback | partial | 已有 correlation/reconciliation evidence 能力，尚未锁定本切片“不推进当前 Session”的完整 outcome |
+| late/unknown callback | partial | 已有 correlation/reconciliation evidence 能力，目标为 `ARCHIVED_EVIDENCE` 且不生成 RuntimeIntent、不推进或改变当前 Session |
 | 测量合同校验、WMS 准入、成功/NG 分支 | gap | 成功 `PICK_AND_PUT` callback 当前仅产生 `CONTINUE_NEXT`，未消费测量并执行 WMS QUERY，也未生成 `MOVE_FORWARD` / `MOVE_TO_NG` 决策 |
 | scan-decision replay/冲突闭环 | gap | 平台存在通用幂等构件，但未形成该切片首次 evidence 与 QUERY/EFFECT no-op 合同 |
 
