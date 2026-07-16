@@ -1,11 +1,26 @@
 """粗分机扫码到准入决策窄闭环规格包测试。"""
 
 import json
+from contextlib import asynccontextmanager
+from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from src.app.reconciliation.manager import ReconciliationConflictInput, ReconciliationManager, ResolutionAction
+from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import normalize_six_in_one_payload
+from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorService
+from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_PATH = REPOSITORY_ROOT / "tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json"
 SPEC_PATH = REPOSITORY_ROOT / "docs/business/rough_sorter_scan_decision_contract.md"
+CHARACTERIZATION_PATH = (
+    REPOSITORY_ROOT / "tests/characterization/workline_legacy/test_business_semantics_characterization.py"
+)
 
 EXPECTED_CASE_OVERVIEW = {
     # trigger(event, discriminator), outcome, state(material, command, session, context_phase),
@@ -175,15 +190,206 @@ ALLOWED_OUTCOMES = {
     "ARCHIVED_EVIDENCE",
 }
 QUERY_REPLAY_CASES = {"RS-SD-004", "RS-SD-006", "RS-SD-010", "RS-SD-011"}
+CURRENT_IMPLEMENTATION_STATUS = {
+    "RS-SD-001": "covered",
+    "RS-SD-002": "covered",
+    "RS-SD-003": "gap",
+    "RS-SD-004": "gap",
+    "RS-SD-008": "covered",
+    "RS-SD-009": "partial",
+    "RS-SD-013": "partial",
+}
+RECOVERY_POLICY_CONTRACT_PATH = REPOSITORY_ROOT / "tests/runtime/orchestration/test_runtime_recovery_policies.py"
+DISPATCHER_CONTRACT_PATH = REPOSITORY_ROOT / "tests/workline_runtime/test_runtime_capability_dispatcher.py"
 
 
 def _load_fixture() -> dict:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
+def _case(case_id: str) -> dict[str, Any]:
+    return next(case for case in _load_fixture()["cases"] if case["case_id"] == case_id)
+
+
 def _normalize_trigger_signature(case: dict) -> tuple[str, tuple[tuple[str, str], ...]]:
     trigger = case["trigger"]
     return trigger["event_type"], tuple(sorted(trigger["decision_discriminator"].items()))
+
+
+def _intent_signature(intents: list[RuntimeIntent]) -> tuple[tuple[str, str | None, str | None], ...]:
+    return tuple(
+        (
+            intent.kind.value,
+            intent.action,
+            intent.block_scope.value if intent.block_scope is not None else None,
+        )
+        for intent in intents
+    )
+
+
+def _expected_intent_signature(case: dict[str, Any]) -> tuple[tuple[str, str | None, str | None], ...]:
+    return tuple((intent["kind"], intent.get("action"), intent.get("scope")) for intent in case["expected_intents"])
+
+
+@asynccontextmanager
+async def _noop_lock():
+    yield
+
+
+async def _process_case(case_id: str, *, payload: dict[str, Any] | None = None) -> list[RuntimeIntent]:
+    case = _case(case_id)
+    event_type = case["trigger"]["event_type"]
+    inbox_kind = "DEVICE_EVENT" if event_type == "SCAN_COMPLETED" else event_type
+    result = await OrchestratorService(lock_provider=lambda _lock_key: _noop_lock()).process_inbox(
+        session=SimpleNamespace(id=1, contract_version="rough_sorter.v2"),
+        workline=SimpleNamespace(
+            contract_version="rough_sorter.v2",
+            plugin_key="rough_sorter",
+            config={"pipeline_input_location": "PIPELINE-IN-01", "ng_location": "NG-01"},
+            runtime_config_json={},
+        ),
+        inbox=SimpleNamespace(
+            kind=inbox_kind,
+            event_type=event_type,
+            payload_json=deepcopy(payload if payload is not None else case["trigger"]["payload"]),
+            trace_id=f"trace-{case_id.lower()}",
+        ),
+        devices_by_role={},
+        services=SimpleNamespace(),
+        trace_id=f"trace-{case_id.lower()}",
+    )
+
+    assert result.success is True, result.error
+    return result.intents or []
+
+
+def test_bc05_characterization_hands_off_scan_decision_target_semantics() -> None:
+    content = CHARACTERIZATION_PATH.read_text(encoding="utf-8")
+
+    for source in (SPEC_PATH, FIXTURE_PATH, Path(__file__)):
+        assert source.relative_to(REPOSITORY_ROOT).as_posix() in content
+
+
+def test_six_in_one_normalizer_reads_only_data_and_normalizes_data_aliases() -> None:
+    payload = deepcopy(_case("RS-SD-001")["trigger"]["payload"])
+    data = payload["data"]
+    data["ProductNo"] = data.pop("HHPN")
+    data["PONumber"] = data.pop("PkgID")
+    payload.update({"HHPN": "TOP-LEVEL-MUST-NOT-WIN", "PkgID": "TOP-LEVEL-MUST-NOT-WIN"})
+
+    normalized = normalize_six_in_one_payload(payload)
+
+    assert data["ProductNo"] == normalized.HHPN
+    assert normalized.PkgID == data["PONumber"]
+    assert "TOP-LEVEL-MUST-NOT-WIN" not in normalized.barcode_values
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case_id", ["RS-SD-001", "RS-SD-002"])
+async def test_covered_scan_cases_match_fixture_core_intent_signature(case_id: str) -> None:
+    case = _case(case_id)
+    intents = await _process_case(case_id)
+
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS[case_id] == "covered"
+    assert _intent_signature(intents) == _expected_intent_signature(case)
+    if case_id == "RS-SD-002":
+        mark_ng = next(intent for intent in intents if intent.kind == RuntimeIntentKind.MARK_NG)
+        assert mark_ng.reason_code == case["expected_outcome"]["reason_code"] == "SCAN_NG_BY_RULE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ng_keyword", ["SIZENG", "THICKNESSNG"])
+async def test_rule_ng_pkg_id_variants_use_stable_scan_ng_reason(ng_keyword: str) -> None:
+    case = _case("RS-SD-002")
+    payload = deepcopy(case["trigger"]["payload"])
+    payload["data"]["PkgID"] = payload["data"]["PkgID"].replace("SIZENG", ng_keyword)
+
+    intents = await _process_case("RS-SD-002", payload=payload)
+
+    assert _intent_signature(intents) == _expected_intent_signature(case)
+    mark_ng = next(intent for intent in intents if intent.kind == RuntimeIntentKind.MARK_NG)
+    assert mark_ng.reason_code == case["expected_outcome"]["reason_code"] == "SCAN_NG_BY_RULE"
+
+
+@pytest.mark.asyncio
+async def test_missing_pkg_id_current_behavior_remains_ng_flow_and_target_hold_is_gap() -> None:
+    case = _case("RS-SD-003")
+    intents = await _process_case("RS-SD-003")
+
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-003"] == "gap"
+    assert _intent_signature(intents) == (
+        ("UPDATE_CONTEXT", None, None),
+        ("MARK_NG", None, None),
+        ("COMMAND", "MOVE_TO_NG", None),
+    )
+    assert all(intent.kind != RuntimeIntentKind.CREATE_MATERIAL_UNIT for intent in intents)
+    mark_ng = next(intent for intent in intents if intent.kind == RuntimeIntentKind.MARK_NG)
+    assert mark_ng.reason_code == "BARCODE_INCOMPLETE"
+    assert _intent_signature(intents) != _expected_intent_signature(case)
+    assert case["expected_outcome"] == {"result": "HOLD", "reason_code": "ROUGH_SORTER_CONTEXT_MISSING"}
+
+
+@pytest.mark.asyncio
+async def test_failed_command_result_matches_covered_command_hold_contract() -> None:
+    case = _case("RS-SD-008")
+    intents = await _process_case("RS-SD-008")
+
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-008"] == "covered"
+    assert _intent_signature(intents) == _expected_intent_signature(case)
+    [block] = intents
+    assert block.reason_code == case["expected_outcome"]["reason_code"] == "DEVICE_BUSY"
+    assert block.payload_json["error_detail"]["error_code"] == "DEVICE_BUSY"
+
+
+@pytest.mark.asyncio
+async def test_success_command_result_only_continues_and_does_not_cover_measurement_wms_target() -> None:
+    case = _case("RS-SD-004")
+    intents = await _process_case("RS-SD-004")
+
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-004"] == "gap"
+    assert _intent_signature(intents) == (("CONTINUE_NEXT", None, None),)
+    assert _intent_signature(intents) != _expected_intent_signature(case)
+    assert _expected_intent_signature(case) == (
+        ("UPDATE_CONTEXT", None, None),
+        ("COMMAND", "MOVE_FORWARD", None),
+    )
+
+
+def test_timeout_current_contract_requires_owner_hold_but_remains_partial() -> None:
+    case = _case("RS-SD-009")
+    decision = ReconciliationManager().register_conflict(
+        ReconciliationConflictInput(
+            owner_domain="runtime",
+            owner_kind="ExecutionSession",
+            owner_id="1",
+            conflict_kind="CALLBACK_DEADLINE_EXPIRED",
+            reason="callback deadline expired",
+            evidence_refs=[case["trigger"]["payload"]["command_code"]],
+            detected_at=datetime.now(UTC),
+        )
+    )
+
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-009"] == "partial"
+    assert decision.runtime_hold_required is True
+    assert decision.action == ResolutionAction.HOLD_OWNER
+    assert decision.status == "PENDING"
+    assert decision.conflict_kind == "CALLBACK_DEADLINE_EXPIRED"
+    assert decision.conflict_kind != case["expected_outcome"]["reason_code"]
+
+
+def test_late_duplicate_unknown_result_public_contracts_do_not_advance_session() -> None:
+    case = _case("RS-SD-013")
+    recovery_content = RECOVERY_POLICY_CONTRACT_PATH.read_text(encoding="utf-8")
+    dispatcher_content = DISPATCHER_CONTRACT_PATH.read_text(encoding="utf-8")
+
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-013"] == "partial"
+    assert "test_late_callback_replay_is_idempotent_and_new_evidence_appends_without_overwrite" in recovery_content
+    assert "record_late_callback_if_pending" in recovery_content
+    assert "assert session.status == SessionStatus.MANUAL_HOLD" in recovery_content
+    assert "assert session.reconciliation_state == RuntimeReconciliationState.PENDING" in recovery_content
+    assert "test_orchestrator_blocks_unknown_command_result_with_stable_reason_code" in dispatcher_content
+    assert "assert intent.kind == RuntimeIntentKind.BLOCK" in dispatcher_content
+    assert case["replay_policy"]["session_progress"] == "NO_PROGRESS"
 
 
 def test_fixture_has_fixed_case_semantic_signatures() -> None:
