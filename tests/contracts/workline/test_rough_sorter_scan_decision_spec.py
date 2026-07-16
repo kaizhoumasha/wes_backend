@@ -7,13 +7,29 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.app.reconciliation.manager import ReconciliationConflictInput, ReconciliationManager, ResolutionAction
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import normalize_six_in_one_payload
-from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorService
+from src.app.runtime.orchestration.effect_result import WriteBackDisposition
+from src.app.runtime.orchestration.models.session import (
+    RuntimeReconciliationReason,
+    RuntimeReconciliationState,
+    SessionStatus,
+)
+from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult, OrchestratorService
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
+from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+    WorklineRuntimeReconciliationService,
+)
+from src.app.runtime.orchestration.services.runtime_inbox import (
+    RuntimeInboxCorrelationUnavailable,
+    RuntimeInboxService,
+    RuntimeInboxWriteBackService,
+    WriteBackState,
+)
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_PATH = REPOSITORY_ROOT / "tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json"
@@ -199,8 +215,6 @@ CURRENT_IMPLEMENTATION_STATUS = {
     "RS-SD-009": "partial",
     "RS-SD-013": "partial",
 }
-RECOVERY_POLICY_CONTRACT_PATH = REPOSITORY_ROOT / "tests/runtime/orchestration/test_runtime_recovery_policies.py"
-DISPATCHER_CONTRACT_PATH = REPOSITORY_ROOT / "tests/workline_runtime/test_runtime_capability_dispatcher.py"
 
 
 def _load_fixture() -> dict:
@@ -234,6 +248,35 @@ def _expected_intent_signature(case: dict[str, Any]) -> tuple[tuple[str, str | N
 @asynccontextmanager
 async def _noop_lock():
     yield
+
+
+class _ScalarResult:
+    def scalar_one_or_none(self) -> None:
+        return None
+
+
+class _RecordingDb:
+    def __init__(self) -> None:
+        self.added: list[Any] = []
+        self.commits = 0
+
+    async def execute(self, *_args: Any, **_kwargs: Any) -> _ScalarResult:
+        return _ScalarResult()
+
+    def add(self, entity: Any) -> None:
+        self.added.append(entity)
+
+    async def flush(self) -> None:
+        return None
+
+    async def refresh(self, _entity: Any) -> None:
+        return None
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        return None
 
 
 async def _process_case(case_id: str, *, payload: dict[str, Any] | None = None) -> list[RuntimeIntent]:
@@ -377,18 +420,158 @@ def test_timeout_current_contract_requires_owner_hold_but_remains_partial() -> N
     assert decision.conflict_kind != case["expected_outcome"]["reason_code"]
 
 
-def test_late_duplicate_unknown_result_public_contracts_do_not_advance_session() -> None:
+@pytest.mark.asyncio
+async def test_late_duplicate_callback_records_idempotent_evidence_without_advancing_session() -> None:
     case = _case("RS-SD-013")
-    recovery_content = RECOVERY_POLICY_CONTRACT_PATH.read_text(encoding="utf-8")
-    dispatcher_content = DISPATCHER_CONTRACT_PATH.read_text(encoding="utf-8")
+    command_code = case["trigger"]["payload"]["command_code"]
+    session = SimpleNamespace(
+        id=13,
+        workline_id=7,
+        trace_id="trace-rs-sd-013",
+        status=SessionStatus.MANUAL_HOLD,
+        current_wait_type="COMMAND_RESULT",
+        awaiting_device_command_code="CMD-CURRENT-013",
+        reconciliation_state=RuntimeReconciliationState.PENDING,
+        reconciliation_reason=RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED,
+        reconciliation_command_id=991,
+        context_json={},
+        reconciliation_late_evidence_received=False,
+    )
+    command = SimpleNamespace(
+        id=991,
+        command_code=command_code,
+        device_id=3,
+        correlation_id=None,
+        status="COMPLETED",
+    )
+    session_repository = SimpleNamespace(
+        get_pending_reconciliation_by_command_id=AsyncMock(return_value=session),
+        get_for_update=AsyncMock(return_value=session),
+    )
+    service = WorklineRuntimeReconciliationService(
+        session_repository=session_repository,
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=7))),
+        workline_status_projection_service=SimpleNamespace(project_reconciling=AsyncMock(return_value=True)),
+    )
+    db = _RecordingDb()
+    session_anchor = (session.status, session.current_wait_type, session.awaiting_device_command_code)
+
+    first = await service.record_late_callback_if_pending(
+        db,
+        command=command,
+        callback_payload=deepcopy(case["trigger"]["payload"]),
+    )
+    duplicate = await service.record_late_callback_if_pending(
+        db,
+        command=command,
+        callback_payload=deepcopy(case["trigger"]["payload"]),
+    )
+
+    assert first is duplicate is True
+    assert (session.status, session.current_wait_type, session.awaiting_device_command_code) == session_anchor
+    assert session.reconciliation_state == RuntimeReconciliationState.PENDING
+    evidence = session.context_json["runtime_reconciliation_late_callback_evidence"]
+    assert len(evidence) == 1
+    assert evidence[0]["command_code"] == command_code
+    assert len(db.added) == 1
+    assert db.added[0].message == "Late callback recorded as runtime reconciliation evidence."
+
+
+@pytest.mark.asyncio
+async def test_late_command_writeback_archives_without_applying_followup_command() -> None:
+    case = _case("RS-SD-013")
+    command_code = case["trigger"]["payload"]["command_code"]
+    session = SimpleNamespace(
+        id=13,
+        workline_id=7,
+        trace_id="trace-rs-sd-013",
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+        current_wait_type="COMMAND_RESULT",
+        awaiting_device_command_code="CMD-CURRENT-013",
+        context_json={},
+    )
+    command = SimpleNamespace(id=991, command_code=command_code, status="COMPLETED")
+    inbox = SimpleNamespace(
+        id=1301,
+        kind="COMMAND_RESULT",
+        trace_id="trace-rs-sd-013",
+        payload_json=deepcopy(case["trigger"]["payload"]),
+    )
+    business_writeback = AsyncMock()
+    inbox_service = SimpleNamespace(mark_processed=AsyncMock(return_value=True))
+    state = WriteBackState()
+    db = _RecordingDb()
+    session_anchor = (session.status, session.current_wait_type, session.awaiting_device_command_code)
+    callback = RuntimeInboxWriteBackService(
+        write_back_service=SimpleNamespace(write_back=business_writeback),
+        inbox_service=inbox_service,
+    ).build_write_callback(
+        db,
+        session=session,
+        workline=SimpleNamespace(id=7),
+        inbox=inbox,
+        devices_by_role={},
+        device=None,
+        command=command,
+        inbox_pk=inbox.id,
+        session_snapshot=(session.status, session.awaiting_device_command_code),
+        sse_workline_id=7,
+        sse_session_id=session.id,
+        processor_token="lease-rs-sd-013",
+        state=state,
+    )
+    followup = RuntimeIntent.command(device_role="ROUGH_SORTER_CONVEYOR", action="MOVE_FORWARD")
+
+    await callback(OrchestratorResult(success=True, intents=[followup]))
+
+    assert (session.status, session.current_wait_type, session.awaiting_device_command_code) == session_anchor
+    business_writeback.assert_not_awaited()
+    inbox_service.mark_processed.assert_awaited_once_with(
+        db,
+        inbox_id=inbox.id,
+        lease_token="lease-rs-sd-013",
+    )
+    assert state.disposition == WriteBackDisposition.PROCESSED
+    assert state.enqueue_outbox_dispatch is False
+    assert len(db.added) == 1
+    assert db.added[0].message == "LATE_COMMAND_RESULT_ARCHIVED"
+
+
+@pytest.mark.asyncio
+async def test_unknown_command_correlation_is_rejected_before_target_archive_and_remains_partial() -> None:
+    case = _case("RS-SD-013")
+    repository = SimpleNamespace(
+        get_by_source_event_identity=AsyncMock(return_value=None),
+        correlation_id_exists=AsyncMock(return_value=False),
+        add_received=AsyncMock(),
+    )
+    session = SimpleNamespace(
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+        current_wait_type="COMMAND_RESULT",
+        awaiting_device_command_code="CMD-CURRENT-013",
+    )
+    session_anchor = (session.status, session.current_wait_type, session.awaiting_device_command_code)
+
+    with pytest.raises(RuntimeInboxCorrelationUnavailable):
+        await RuntimeInboxService(repository=repository).accept_received(
+            SimpleNamespace(),
+            provider_code="DEVICE",
+            event_type="COMMAND_RESULT",
+            source_event_id=case["trigger"]["source_event_id"],
+            payload_hash="hash-rs-sd-013",
+            kind="COMMAND_RESULT",
+            payload_json=deepcopy(case["trigger"]["payload"]),
+            payload_schema_version=1,
+            correlation_id="corr-unknown-rs-sd-013",
+        )
 
     assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-013"] == "partial"
-    assert "test_late_callback_replay_is_idempotent_and_new_evidence_appends_without_overwrite" in recovery_content
-    assert "record_late_callback_if_pending" in recovery_content
-    assert "assert session.status == SessionStatus.MANUAL_HOLD" in recovery_content
-    assert "assert session.reconciliation_state == RuntimeReconciliationState.PENDING" in recovery_content
-    assert "test_orchestrator_blocks_unknown_command_result_with_stable_reason_code" in dispatcher_content
-    assert "assert intent.kind == RuntimeIntentKind.BLOCK" in dispatcher_content
+    assert (session.status, session.current_wait_type, session.awaiting_device_command_code) == session_anchor
+    repository.add_received.assert_not_awaited()
+    current_outcome = "REJECTED_BEFORE_ARCHIVE"
+    assert case["expected_outcome"]["result"] != current_outcome
+    assert case["expected_outcome"]["result"] == "ARCHIVED_EVIDENCE"
+    assert case["expected_intents"] == []
     assert case["replay_policy"]["session_progress"] == "NO_PROGRESS"
 
 
