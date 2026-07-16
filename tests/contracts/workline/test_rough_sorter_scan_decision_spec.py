@@ -3,7 +3,7 @@
 import json
 from contextlib import asynccontextmanager
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.reconciliation.manager import ReconciliationConflictInput, ReconciliationManager, ResolutionAction
+from src.app.device.models.command import CommandStatus
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import normalize_six_in_one_payload
 from src.app.runtime.orchestration.effect_result import WriteBackDisposition
 from src.app.runtime.orchestration.models.session import (
@@ -30,6 +30,7 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxWriteBackService,
     WriteBackState,
 )
+from src.utils.timezone import timezone
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_PATH = REPOSITORY_ROOT / "tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json"
@@ -398,26 +399,103 @@ async def test_success_command_result_only_continues_and_does_not_cover_measurem
     )
 
 
-def test_timeout_current_contract_requires_owner_hold_but_remains_partial() -> None:
+@pytest.mark.asyncio
+async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.device.repositories import command_repository as command_repository_module
+    from src.app.workline.services.diagnostic_service import workline_diagnostic_service
+
     case = _case("RS-SD-009")
-    decision = ReconciliationManager().register_conflict(
-        ReconciliationConflictInput(
-            owner_domain="runtime",
-            owner_kind="ExecutionSession",
-            owner_id="1",
-            conflict_kind="CALLBACK_DEADLINE_EXPIRED",
-            reason="callback deadline expired",
-            evidence_refs=[case["trigger"]["payload"]["command_code"]],
-            detected_at=datetime.now(UTC),
-        )
+    command_code = case["trigger"]["payload"]["command_code"]
+    now = timezone.now_for_db()
+    deadline_at = now - timedelta(seconds=1)
+    command = SimpleNamespace(
+        id=909,
+        command_code=command_code,
+        device_id=3,
+        correlation_id=None,
+        status=CommandStatus.ACK_RECEIVED,
+        ack_received_at=now - timedelta(seconds=30),
+    )
+    session = SimpleNamespace(
+        id=9,
+        workline_id=7,
+        trace_id="trace-rs-sd-009",
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+        current_wait_type="COMMAND_RESULT",
+        current_wait_timeout_seconds=300,
+        waiting_since=now - timedelta(seconds=301),
+        deadline_at=deadline_at,
+        awaiting_device_command_code=command_code,
+        reconciliation_state=None,
+        context_json={},
+        ended_at=None,
+    )
+    runtime_hold_creation = AsyncMock(return_value=SimpleNamespace(id=9009))
+    service = WorklineRuntimeReconciliationService(
+        session_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=session)),
+        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=7))),
+        system_outbox_repository=SimpleNamespace(cancel_active_by_session=AsyncMock(return_value=0)),
+        device_service=SimpleNamespace(mark_callback_deadline_expired=AsyncMock(return_value=None)),
+        runtime_hold_creation_service=SimpleNamespace(create_for_callback_deadline_expired=runtime_hold_creation),
+        rack_task_repository=SimpleNamespace(cancel_active_by_material_session=AsyncMock(return_value=0)),
+        workline_status_projection_service=SimpleNamespace(project_reconciling=AsyncMock(return_value=True)),
+    )
+    timeout_payload = {
+        "event_type": "TIMER_TIMEOUT",
+        "data": {
+            **case["trigger"]["payload"],
+            "workline_id": session.workline_id,
+            "deadline_at": deadline_at.isoformat(),
+            "awaiting_device_command_code": command_code,
+            "ack_received_at": command.ack_received_at.isoformat(),
+        },
+    }
+
+    class _CommandRepository:
+        async def get_by_command_code(self, _db: Any, requested_command_code: str) -> Any:
+            assert requested_command_code == command_code
+            return command
+
+    diagnostic_record = AsyncMock(return_value=None)
+    monkeypatch.setattr(command_repository_module, "DeviceCommandRepository", _CommandRepository)
+    monkeypatch.setattr(workline_diagnostic_service, "record_event", diagnostic_record)
+    db = _RecordingDb()
+
+    result = await service.handle_timer_timeout(
+        db,
+        session_id=session.id,
+        inbox_id=9009,
+        payload=timeout_payload,
+        source_inbox_id=9008,
+        trace_id=session.trace_id,
     )
 
     assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-009"] == "partial"
-    assert decision.runtime_hold_required is True
-    assert decision.action == ResolutionAction.HOLD_OWNER
-    assert decision.status == "PENDING"
-    assert decision.conflict_kind == "CALLBACK_DEADLINE_EXPIRED"
-    assert decision.conflict_kind != case["expected_outcome"]["reason_code"]
+    assert result.disposition == "RECONCILED"
+    assert result.session is session
+    assert session.status == SessionStatus.MANUAL_HOLD
+    assert session.reconciliation_state == RuntimeReconciliationState.PENDING
+    assert session.reconciliation_reason == RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED
+    assert session.reconciliation_wait_token == command_code
+    assert session.reconciliation_deadline_at == deadline_at
+    assert session.reconciliation_ack_received_at == command.ack_received_at
+    assert session.context_json["runtime_reconciliation_registration"]["decision"]["evidence_refs"] == [
+        "inbox:9009",
+        "command:909",
+    ]
+    runtime_hold_creation.assert_awaited_once()
+    diagnostic_record.assert_awaited_once()
+    assert len(db.added) == 1
+    timeout_timeline = db.added[0]
+    assert timeout_timeline.message == "Callback deadline expired; runtime reconciliation started."
+    assert timeout_timeline.payload_json["reason"] == "CALLBACK_DEADLINE_EXPIRED"
+    assert timeout_timeline.payload_json["wait_token"] == command_code
+    assert timeout_timeline.payload_json["deadline_at"] == deadline_at.isoformat()
+    assert timeout_timeline.payload_json["ack_received_at"] == command.ack_received_at.isoformat()
+    assert session.reconciliation_reason.value != case["expected_outcome"]["reason_code"]
+    assert case["expected_outcome"]["reason_code"] == "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
 
 
 @pytest.mark.asyncio
@@ -478,7 +556,7 @@ async def test_late_duplicate_callback_records_idempotent_evidence_without_advan
 
 
 @pytest.mark.asyncio
-async def test_late_command_writeback_archives_without_applying_followup_command() -> None:
+async def test_current_wait_anchor_mismatch_archives_without_applying_followup_command() -> None:
     case = _case("RS-SD-013")
     command_code = case["trigger"]["payload"]["command_code"]
     session = SimpleNamespace(
@@ -535,6 +613,7 @@ async def test_late_command_writeback_archives_without_applying_followup_command
     assert state.enqueue_outbox_dispatch is False
     assert len(db.added) == 1
     assert db.added[0].message == "LATE_COMMAND_RESULT_ARCHIVED"
+    assert db.added[0].payload_json["reason"] == "COMMAND_RESULT_BECAME_STALE_BEFORE_WRITE"
 
 
 @pytest.mark.asyncio
@@ -545,12 +624,6 @@ async def test_unknown_command_correlation_is_rejected_before_target_archive_and
         correlation_id_exists=AsyncMock(return_value=False),
         add_received=AsyncMock(),
     )
-    session = SimpleNamespace(
-        status=SessionStatus.WAITING_DEVICE_RESULT,
-        current_wait_type="COMMAND_RESULT",
-        awaiting_device_command_code="CMD-CURRENT-013",
-    )
-    session_anchor = (session.status, session.current_wait_type, session.awaiting_device_command_code)
 
     with pytest.raises(RuntimeInboxCorrelationUnavailable):
         await RuntimeInboxService(repository=repository).accept_received(
@@ -566,7 +639,6 @@ async def test_unknown_command_correlation_is_rejected_before_target_archive_and
         )
 
     assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-013"] == "partial"
-    assert (session.status, session.current_wait_type, session.awaiting_device_command_code) == session_anchor
     repository.add_received.assert_not_awaited()
     current_outcome = "REJECTED_BEFORE_ARCHIVE"
     assert case["expected_outcome"]["result"] != current_outcome
