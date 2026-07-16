@@ -67,7 +67,7 @@ fallback 或 import shim。最终代码只保留目标合同，严格遵循 DRY�
 ### 3.3 实施进度（截至 2026-07-16）
 
 总体状态为 **Implementation In Progress**。`v0.17.0.0` / PR #86 已交付 T1 的单环境 active inventory
-foundation；其余平台合同、真实 rough sorter vertical slice 与 cutover 尚未实施。
+foundation；rough sorter 窄闭环业务合同已批准，但最小 Runtime contract、真实 vertical slice 与 cutover 尚未实施。
 
 | 工作项 | 状态 | 已完成证据 / 剩余边界 |
 | --- | --- | --- |
@@ -76,11 +76,12 @@ foundation；其余平台合同、真实 rough sorter vertical slice 与 cutover
 | 治理与发布门禁 | 已完成 | 默认回归 `2666 passed, 5 skipped`，PostgreSQL integration `11 passed`，Ruff、Bandit、测试拓扑与架构门禁通过 |
 | 跨环境 migration matrix 与批准 | 未完成 | 当前命令每次只生成一个环境的 foundation report；仍需聚合、签名与批准证据 |
 | WorkItem/Intent version pin、binding requirement | 未完成 | 待 Runtime contract 与 binding 模型落地后纳入同一 inventory/preflight |
-| Rough sorter 真实窄闭环及 T3-T9 | 未开始 | 下一阶段先批准 rough sorter 业务规格，再按依赖顺序实现最小平台合同 |
+| Rough sorter 窄闭环业务合同（T2） | 已完成 | [业务合同](../../business/rough_sorter_scan_decision_contract.md)与 [13-case fixture](../../../tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json) 已由 kaizhou 于 `2026-07-16T19:39:04+08:00` 批准；这是业务合同批准，不是生产 Runtime 交付 |
+| 最小 Runtime contract 与 T3-T9 | 未开始 | 当前生产 Runtime 仍存在 fixture 中所有标记为 `partial` / `gap` 的实现缺口；必须按依赖顺序实施和验证，不得把 T2 批准解释为 vertical slice 已交付 |
 
-当前完成度允许进入 rough sorter 窄闭环规格和最小 Runtime contract 计划，但**不代表**完整 T1、Integration Gate
-或 cutover readiness。inventory CLI 的 `foundation_ready=true` 只证明当前阶段事实合同通过，不能替代跨环境批准、
-版本引用清零和最终切换门禁。
+T2 业务合同门禁已通过，当前完成度允许进入最小 Runtime contract 的后续实施，但 T3-T9 均未开始，且**不代表**
+完整 T1、Integration Gate 或 cutover readiness。inventory CLI 的 `foundation_ready=true` 只证明当前阶段事实合同通过，
+不能替代跨环境批准、版本引用清零和最终切换门禁。
 
 ## 4. What already exists
 
@@ -493,12 +494,14 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Verify: fixture 环境覆盖 DB/config/non-terminal runtime refs，输出稳定清单。
   - [x] Foundation（`v0.17.0.0` / PR #86）— 单环境只读报告、五类运行引用、provider profile catalog、确定性 digest、CLI、PostgreSQL 合同和治理门禁。
   - [ ] Remaining — WorkItem/Intent 版本引用、逐 Workline binding/provider/Port requirement、跨环境聚合、批准证据与 cutover preflight 复用。
-- [ ] **T2 (P1, human: ~2d / CC: ~4h)** — Rough sorter — 批准首个真实窄闭环业务规格
+- [x] **T2 (P1, human: ~2d / CC: ~4h)** — Rough sorter — 批准首个真实窄闭环业务规格
   - Surfaced by: Scope challenge — 平台合同不得由中性示例猜测。
-  - Files: Workline 业务规格、trace fixtures。
+  - Evidence: [业务合同](../../business/rough_sorter_scan_decision_contract.md)、[13-case fixture](../../../tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json) 与 [合同测试](../../../tests/contracts/workline/test_rough_sorter_scan_decision_spec.py)。
+  - Approval: kaizhou 于 `2026-07-16T19:39:04+08:00` 批准；此项只完成业务合同批准，不表示生产 Runtime 或 vertical slice 已交付。
   - Verify: 输入、状态、能力、成功/NG/timeout/replay 验收完整。
 - [ ] **T3 (P1, human: ~4d / CC: ~1d)** — Runtime contracts — 收敛两类 Definition、typed outcome 与静态索引
   - Surfaced by: Architecture/Code quality — 删除重复 catalog、身份与 generator 抽象。
+  - Input: 首先只支持本切片真实需要的 typed outcome、QUERY evidence、Intent identity 与 recorded replay；不得加入第二条 WorkLine、通用 DSL、Plugin marketplace 或其他预建抽象。本项只定义需求边界，不表示 T3 已开始。
   - Files: runtime capability/contracts/index generator、architecture tests。
   - Verify: 生成确定、`--check`、cold-start、旧 catalog 清零。
 - [ ] **T4 (P1, human: ~5d / CC: ~1d)** — Plugin runtime — 实现 binding、Context、PluginState、PluginDecision 与业务 timeout route
