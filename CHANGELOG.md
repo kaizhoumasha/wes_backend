@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0.0] - 2026-07-16
+
+### Added
+- 新增 WorkLine 活动迁移清单模型、盘点服务与只读 CLI，可在可重复读快照中汇总插件合同、provider profile、未完成运行态引用及 foundation blocker，并生成稳定 SHA-256 摘要。
+- 新增真实 PostgreSQL 合同测试，覆盖五类运行态引用、状态矩阵、样本优先级、MVCC 快照一致性、数据库拒写和 100 条安全上限。
+- 新增 WorkLine 插件与系统能力平台设计，明确目标架构、能力目录、provider 合同和后续迁移边界。
+
+### Changed
+- 迁移清单 CLI 强制校验运行环境，使用 `REPEATABLE READ + READ ONLY` 事务、分层超时和原子文件替换，并以稳定退出码支持部署门禁。
+- legacy matrix 与架构守卫显式登记迁移清单基础能力，确保目标态文件不会被误归入清理账本。
+
+### Fixed
+- RuntimeInbox 重放验真拒绝现在持久化稳定原因码并标记为不可重试，同时保留未知运行异常的默认重试语义。
+- 迁移清单严格拒绝畸形 catalog、provider、WorkLine 和 repository summary 数据，并为规模阻断提供脱敏且可操作的错误提示。
+
 ## [0.16.0.0] - 2026-07-15
 
 ### Added
