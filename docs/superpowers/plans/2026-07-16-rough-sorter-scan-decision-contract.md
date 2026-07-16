@@ -81,7 +81,7 @@ SCAN_COMPLETED
 |---|---|---|
 | `RS-SD-001` | 有效扫码生成 MaterialUnit、Context 与 `PICK_AND_PUT` | covered |
 | `RS-SD-002` | 条码明确业务 NG，生成 `MOVE_TO_NG` | covered |
-| `RS-SD-003` | 缺少 `PkgID`，不创建物料/命令并 Hold | covered |
+| `RS-SD-003` | 缺少 `PkgID`，不创建物料/命令并 Hold | gap |
 | `RS-SD-004` | 入料成功 + 有效测量 + WMS 准入，生成 `MOVE_FORWARD` | gap |
 | `RS-SD-005` | 入料成功但测量业务 NG，生成 `MOVE_TO_NG` | gap |
 | `RS-SD-006` | WMS 明确拒绝/无匹配，生成 `MOVE_TO_NG` | gap |
@@ -170,7 +170,7 @@ git commit -m "docs(workline): 定义粗分机扫码决策窄闭环"
 
 - [ ] **Step 1: 先写当前能力对照失败测试**
 
-参数化读取 fixture 中 `covered` / `partial` case，至少验证：六合一码只从 `data` 归一化、有效扫码生成 `PICK_AND_PUT` 合同、条码 NG 生成 `MOVE_TO_NG` 合同、缺 `PkgID` fail closed、成功 command result 当前只产生 `CONTINUE_NEXT`、失败 result 产生 command-scoped Block、late/duplicate result 不推进当前 Session 的现有边界。测试可以调用现有公开 normalizer/builder 和 Orchestrator facade；禁止 import 私有 helper 或复制业务分支。
+参数化读取 fixture 中 `covered` / `partial` case，至少验证：六合一码只从 `data` 归一化、有效扫码生成 `PICK_AND_PUT` 合同、条码 NG 生成 `MOVE_TO_NG` 合同、缺 `PkgID` 的目标合同要求 fail closed，但实施核实发现现有 `BARCODE_INCOMPLETE` 会进入 NG 命令而非 Hold，因此 `RS-SD-003` 保持 gap；成功 command result 当前只产生 `CONTINUE_NEXT`、失败 result 产生 command-scoped Block、late/duplicate result 不推进当前 Session 的现有边界。测试可以调用现有公开 normalizer/builder 和 Orchestrator facade；禁止 import 私有 helper 或复制业务分支。
 
 - [ ] **Step 2: 运行并确认 fixture/current mapping 尚未接入导致失败**
 

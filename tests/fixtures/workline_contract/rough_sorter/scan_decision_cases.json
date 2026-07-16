@@ -43,7 +43,7 @@
     },
     {
       "case_id": "RS-SD-004",
-      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-004", "payload": {"command_code": "CMD-PICK-004", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK", "length_mm": "120", "width_mm": "80", "height_mm": "15"}}, "decision_discriminator": {"command_result": "SUCCESS", "measurement": "OK", "wms_admission": "ADMIT"}},
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-004", "payload": {"command_code": "CMD-PICK-004", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK", "reel_diameter": 180, "reel_thickness": 16}}, "decision_discriminator": {"command_result": "SUCCESS", "measurement": "OK", "wms_admission": "ADMIT"}},
       "preconditions": ["PICK_AND_PUT 等待锚点匹配", "测量合同有效", "WMS 准入 ACCEPTED"],
       "recorded_evidence": {"first_attempt": ["command_result_snapshot", "measurement_snapshot", "wms_response_summary", "decision", "intent_identity", "payload_digest"], "replay": ["original_measurement", "original_wms_response_summary", "original_decision", "original_intent_identity", "payload_digest"]},
       "expected_state": {"material": "IN_TRANSIT", "context_phase": "MOVING_FORWARD", "session": "WAITING_COMMAND_RESULT"},
@@ -56,7 +56,7 @@
     },
     {
       "case_id": "RS-SD-005",
-      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-005", "payload": {"command_code": "CMD-PICK-005", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "NG", "reason": "HEIGHT_OUT_OF_RANGE"}}, "decision_discriminator": {"command_result": "SUCCESS", "measurement": "NG", "wms_admission": "NOT_QUERIED"}},
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-005", "payload": {"command_code": "CMD-PICK-005", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "NG", "reason": "DIAMETER_OUT_OF_RANGE", "reel_diameter": 260, "reel_thickness": 16}}, "decision_discriminator": {"command_result": "SUCCESS", "measurement": "NG", "wms_admission": "NOT_QUERIED"}},
       "preconditions": ["PICK_AND_PUT 等待锚点匹配", "测量合同有效且业务判定 NG"],
       "recorded_evidence": {"first_attempt": ["command_result_snapshot", "measurement_snapshot", "decision", "intent_identity", "payload_digest"], "replay": ["original_measurement", "original_decision", "original_intent_identity", "payload_digest"]},
       "expected_state": {"material": "NG", "context_phase": "NG_MOVING", "session": "WAITING_COMMAND_RESULT"},
@@ -69,7 +69,7 @@
     },
     {
       "case_id": "RS-SD-006",
-      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-006", "payload": {"command_code": "CMD-PICK-006", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK"}}, "decision_discriminator": {"command_result": "SUCCESS", "measurement": "OK", "wms_admission": "REJECT"}},
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-006", "payload": {"command_code": "CMD-PICK-006", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK", "reel_diameter": 180, "reel_thickness": 16}}, "decision_discriminator": {"command_result": "SUCCESS", "measurement": "OK", "wms_admission": "REJECT"}},
       "preconditions": ["PICK_AND_PUT 等待锚点匹配", "测量合同有效", "WMS 返回 REJECTED 或无匹配"],
       "recorded_evidence": {"first_attempt": ["command_result_snapshot", "measurement_snapshot", "wms_response_summary", "decision", "intent_identity", "payload_digest"], "replay": ["original_wms_response_summary", "original_decision", "original_intent_identity", "payload_digest"]},
       "expected_state": {"material": "NG", "context_phase": "NG_MOVING", "session": "WAITING_COMMAND_RESULT"},
@@ -82,7 +82,7 @@
     },
     {
       "case_id": "RS-SD-007",
-      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-007", "payload": {"command_code": "CMD-PICK-007", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK", "length_mm": "invalid"}}, "decision_discriminator": {"command_result": "SUCCESS", "measurement_contract": "INVALID", "wms_admission": "NOT_QUERIED"}},
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-007", "payload": {"command_code": "CMD-PICK-007", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK", "reel_diameter": "invalid", "reel_thickness": 16}}, "decision_discriminator": {"command_result": "SUCCESS", "measurement_contract": "INVALID", "wms_admission": "NOT_QUERIED"}},
       "preconditions": ["PICK_AND_PUT 等待锚点匹配", "测量字段缺失、类型错误或越界"],
       "recorded_evidence": {"first_attempt": ["command_result_snapshot", "measurement_validation_errors", "decision", "payload_digest"], "replay": ["original_validation_errors", "original_hold", "payload_digest"]},
       "expected_state": {"material": "MANUAL_HOLD", "command": "UNCHANGED", "session": "MANUAL_HOLD", "context_phase": "PICK_TO_PIPELINE"},
@@ -121,7 +121,7 @@
     },
     {
       "case_id": "RS-SD-010",
-      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-010", "payload": {"command_code": "CMD-PICK-010", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK"}}, "decision_discriminator": {"command_result": "SUCCESS", "measurement": "OK", "wms_admission": "TIMEOUT"}},
+      "trigger": {"event_type": "COMMAND_RESULT", "source_event_id": "evt-result-010", "payload": {"command_code": "CMD-PICK-010", "command_type": "PICK_AND_PUT", "result": "SUCCESS", "data": {"measurement_result": "OK", "reel_diameter": 180, "reel_thickness": 16}}, "decision_discriminator": {"command_result": "SUCCESS", "measurement": "OK", "wms_admission": "TIMEOUT"}},
       "preconditions": ["PICK_AND_PUT 等待锚点匹配", "测量合同有效", "首次 WMS QUERY timeout 或 unavailable"],
       "recorded_evidence": {"first_attempt": ["command_result_snapshot", "measurement_snapshot", "wms_timeout_summary", "decision", "payload_digest"], "replay": ["original_timeout_summary", "original_hold", "payload_digest", "no_successful_wms_evidence"]},
       "expected_state": {"material": "MANUAL_HOLD", "command": "UNCHANGED", "session": "MANUAL_HOLD", "context_phase": "PICK_TO_PIPELINE"},

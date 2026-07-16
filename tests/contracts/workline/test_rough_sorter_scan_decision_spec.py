@@ -732,6 +732,24 @@ def test_case_fields_use_closed_non_empty_structures() -> None:
     assert "PkgID" not in cases["RS-SD-003"]["trigger"]["payload"]["data"]
 
 
+def test_measurement_cases_follow_authoritative_payload_contract() -> None:
+    def is_positive_number(value: Any) -> bool:
+        try:
+            return float(value) > 0
+        except (TypeError, ValueError):
+            return False
+
+    cases = {case["case_id"]: case for case in _load_fixture()["cases"]}
+    measurement_fields = ("reel_diameter", "reel_thickness")
+
+    for case_id in ("RS-SD-004", "RS-SD-005", "RS-SD-006", "RS-SD-010"):
+        data = cases[case_id]["trigger"]["payload"]["data"]
+        assert all(is_positive_number(data.get(field)) for field in measurement_fields), case_id
+
+    invalid_data = cases["RS-SD-007"]["trigger"]["payload"]["data"]
+    assert not all(is_positive_number(invalid_data.get(field)) for field in measurement_fields)
+
+
 def test_intents_outcomes_and_replay_policies_are_consistent() -> None:
     for case in _load_fixture()["cases"]:
         case_id = case["case_id"]
