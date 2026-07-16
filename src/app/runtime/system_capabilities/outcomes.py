@@ -3,11 +3,43 @@
 from __future__ import annotations
 
 import json
+from math import isfinite
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, TypeAdapter, ValidationError
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    StringConstraints,
+    TypeAdapter,
+    ValidationError,
+)
 
 StableCode = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+def _finite_json_details(details: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    def ensure_finite(value: JsonValue) -> None:
+        if isinstance(value, float) and not isfinite(value):
+            raise ValueError("details must not contain non-finite numbers")
+        if isinstance(value, dict):
+            for nested_value in value.values():
+                ensure_finite(nested_value)
+        elif isinstance(value, list):
+            for nested_value in value:
+                ensure_finite(nested_value)
+
+    ensure_finite(details)
+    return details
+
+
+def _reject_non_standard_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON numeric constant: {value}")
+
+
+_FiniteJsonDetails = Annotated[dict[str, JsonValue], AfterValidator(_finite_json_details)]
 
 
 class Success[T](BaseModel):
@@ -28,7 +60,7 @@ class BusinessReject(BaseModel):
     reason_code: StableCode
     message: StableCode
     retryable: Literal[False] = False
-    details: dict[str, JsonValue] = Field(default_factory=dict)
+    details: _FiniteJsonDetails = Field(default_factory=dict)
 
 
 class RetryableFailure(BaseModel):
@@ -40,8 +72,8 @@ class RetryableFailure(BaseModel):
     error_code: StableCode
     message: StableCode
     retryable: Literal[True] = True
-    retry_after_seconds: float | None = Field(default=None, gt=0)
-    details: dict[str, JsonValue] = Field(default_factory=dict)
+    retry_after_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    details: _FiniteJsonDetails = Field(default_factory=dict)
 
 
 class ContractViolation(BaseModel):
@@ -53,7 +85,7 @@ class ContractViolation(BaseModel):
     error_code: StableCode
     message: StableCode
     retryable: Literal[False] = False
-    details: dict[str, JsonValue] = Field(default_factory=dict)
+    details: _FiniteJsonDetails = Field(default_factory=dict)
 
 
 def parse_outcome[T](
@@ -62,8 +94,10 @@ def parse_outcome[T](
     """解析封闭 outcome；未知第五种类型和非法合同统一映射为 ContractViolation。"""
 
     try:
-        data = json.loads(raw) if isinstance(raw, str | bytes) else raw
-    except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        data = (
+            json.loads(raw, parse_constant=_reject_non_standard_json_constant) if isinstance(raw, str | bytes) else raw
+        )
+    except (TypeError, UnicodeDecodeError, ValueError) as exc:
         return ContractViolation(error_code="INVALID_OUTCOME_JSON", message=str(exc))
     if not isinstance(data, dict):
         return ContractViolation(error_code="INVALID_OUTCOME_CONTRACT", message="outcome must be an object")

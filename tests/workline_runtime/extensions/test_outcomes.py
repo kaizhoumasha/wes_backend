@@ -71,6 +71,37 @@ def test_retryable_failure_has_stable_error_code_and_retry_semantics() -> None:
     assert restored.retryable is True
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_retryable_failure_rejects_non_finite_retry_delay(value: float) -> None:
+    with pytest.raises(ValidationError):
+        RetryableFailure(error_code="PORT_TIMEOUT", message="端口调用超时", retry_after_seconds=value)
+
+
+def test_retryable_failure_finite_retry_delay_round_trip_preserves_semantics() -> None:
+    original = RetryableFailure(error_code="PORT_TIMEOUT", message="端口调用超时", retry_after_seconds=1.5)
+
+    restored = RetryableFailure.model_validate_json(original.model_dump_json())
+
+    assert restored == original
+    assert restored.retry_after_seconds == 1.5
+
+
+@pytest.mark.parametrize(
+    ("model", "required"),
+    [
+        (BusinessReject, {"reason_code": "NOT_ALLOWED", "message": "业务拒绝"}),
+        (RetryableFailure, {"error_code": "PORT_TIMEOUT", "message": "端口超时"}),
+        (ContractViolation, {"error_code": "INVALID_CONTRACT", "message": "合同不合法"}),
+    ],
+)
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_outcome_details_recursively_reject_non_finite_numbers(
+    model: type[BaseModel], required: dict[str, str], value: float
+) -> None:
+    with pytest.raises(ValidationError):
+        model(**required, details={"nested": {"values": [value]}})
+
+
 @pytest.mark.parametrize(
     ("model", "field"),
     [
@@ -110,6 +141,17 @@ def test_invalid_utf8_outcome_maps_to_contract_violation_without_exception() -> 
     assert isinstance(outcome, ContractViolation)
     assert outcome.error_code == "INVALID_OUTCOME_JSON"
     assert outcome.retryable is False
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_non_standard_json_numeric_constants_fail_closed(constant: str) -> None:
+    raw = f'{{"kind":"business_reject","reason_code":"NOT_ALLOWED","message":"拒绝","details":{{"value":{constant}}}}}'
+
+    outcome = parse_outcome(raw, payload_type=Payload)
+
+    assert isinstance(outcome, ContractViolation)
+    assert outcome.error_code == "INVALID_OUTCOME_JSON"
+    assert json.loads(outcome.model_dump_json())["kind"] == "contract_violation"
 
 
 def test_validation_error_contract_violation_remains_json_serializable() -> None:
