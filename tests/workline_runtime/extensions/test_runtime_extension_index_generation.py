@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import inspect
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
-from types import MappingProxyType, SimpleNamespace
+from types import MappingProxyType, ModuleType, SimpleNamespace
 
 import pytest
 from pydantic import BaseModel
@@ -179,7 +181,7 @@ def system_builder() -> SystemCapabilityIndexBuilder:
     )
 
 
-def test_builders_sort_identities_and_render_stable_digest() -> None:
+def test_builders_sort_identities_and_render_stable_digest(monkeypatch: pytest.MonkeyPatch) -> None:
     first = system_source(module_name="pkg.z.definition")
     second = system_source(
         capability_definition(
@@ -199,7 +201,30 @@ def test_builders_sort_identities_and_render_stable_digest() -> None:
     assert forward.source == reverse.source
     assert forward.source.index("pkg.a.definition") < forward.source.index("pkg.z.definition")
     assert "MappingProxyType" in forward.source
-    compile(forward.source, "generated_system_index.py", "exec")
+
+    for module_name in ("pkg", "pkg.a", "pkg.z"):
+        module = ModuleType(module_name)
+        module.__path__ = []  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, module_name, module)
+    for module_name, definition in (
+        ("pkg.a.definition", second.definition),
+        ("pkg.z.definition", first.definition),
+    ):
+        module = ModuleType(module_name)
+        module.DEFINITION = definition  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, module_name, module)
+
+    namespace: dict[str, object] = {}
+    exec(compile(forward.source, "generated_system_index.py", "exec"), namespace)
+
+    generated_mapping = namespace["SYSTEM_CAPABILITY_INDEX"]
+    assert isinstance(generated_mapping, MappingProxyType)
+    assert namespace["SYSTEM_CAPABILITY_IDENTITIES"] == forward.identities
+    assert namespace["SYSTEM_CAPABILITY_INDEX_DIGEST"] == forward.digest
+    assert generated_mapping[("device.command", "v1")] is second.definition
+    assert generated_mapping[("inventory.lookup", "v1")] is first.definition
+    with pytest.raises(TypeError):
+        generated_mapping[("new", "v1")] = first.definition  # type: ignore[index]
 
 
 @pytest.mark.parametrize("kind", ["identity", "route"])
@@ -427,6 +452,52 @@ def test_cli_check_detects_drift_without_overwriting_file(tmp_path: Path) -> Non
     assert result.returncode != 0
     assert "drift" in result.stderr.lower()
     assert plugin_output.read_text(encoding="utf-8") == "# deliberate drift\n"
+
+
+@pytest.mark.parametrize("check", [False, True])
+@pytest.mark.parametrize("alias_kind", ["literal", "normalized", "symlink", "hardlink"])
+def test_cli_rejects_same_destination_alias_without_modifying_file(
+    tmp_path: Path,
+    alias_kind: str,
+    check: bool,
+) -> None:
+    from scripts import generate_runtime_extensions as generator
+
+    destination = tmp_path / "shared_index.py"
+    destination.write_text("preserve me\n", encoding="utf-8")
+    if alias_kind == "literal":
+        alias = destination
+    elif alias_kind == "normalized":
+        (tmp_path / "nested").mkdir()
+        alias = tmp_path / "nested" / ".." / destination.name
+    elif alias_kind == "symlink":
+        alias = tmp_path / "symlink_index.py"
+        alias.symlink_to(destination)
+    else:
+        alias = tmp_path / "hardlink_index.py"
+        os.link(destination, alias)
+
+    with pytest.raises(ValueError, match="distinct"):
+        generator.generate(plugin_output=destination, system_output=alias, check=check)
+
+    assert destination.read_text(encoding="utf-8") == "preserve me\n"
+    assert alias.read_text(encoding="utf-8") == "preserve me\n"
+
+
+def test_cli_preserves_existing_output_mode_and_uses_umask_for_new_output(tmp_path: Path) -> None:
+    from scripts import generate_runtime_extensions as generator
+
+    plugin_output = tmp_path / "plugin_index.py"
+    system_output = tmp_path / "system_index.py"
+    plugin_output.write_text("old plugin\n", encoding="utf-8")
+    plugin_output.chmod(0o640)
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+
+    generator.generate(plugin_output=plugin_output, system_output=system_output, check=False)
+
+    assert stat.S_IMODE(plugin_output.stat().st_mode) == 0o640
+    assert stat.S_IMODE(system_output.stat().st_mode) == 0o666 & ~current_umask
 
 
 def test_cli_atomic_write_failure_preserves_previous_generated_files(

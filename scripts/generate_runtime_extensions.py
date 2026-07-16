@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -23,8 +24,23 @@ DEFAULT_SYSTEM_OUTPUT = SYSTEM_ROOT / "generated_index.py"
 SYSTEM_CAPABILITY_PORT_CATALOG: tuple[type[object], ...] = ()
 
 
+def _ensure_distinct_destinations(plugin_output: Path, system_output: Path) -> None:
+    plugin_resolved = plugin_output.resolve(strict=False)
+    system_resolved = system_output.resolve(strict=False)
+    same_inode = plugin_output.exists() and system_output.exists() and plugin_output.samefile(system_output)
+    if plugin_resolved == system_resolved or same_inode:
+        raise ValueError("plugin_output and system_output must be distinct destinations")
+
+
+def _default_output_mode() -> int:
+    current_umask = os.umask(0)
+    os.umask(current_umask)
+    return 0o666 & ~current_umask
+
+
 def _stage_generated_file(path: Path, source: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
+    output_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else _default_output_mode()
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
         suffix=".tmp",
@@ -34,6 +50,7 @@ def _stage_generated_file(path: Path, source: str) -> Path:
     temporary_path = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            os.fchmod(handle.fileno(), output_mode)
             handle.write(source)
             handle.flush()
             os.fsync(handle.fileno())
@@ -81,6 +98,7 @@ def _is_current(path: Path, expected: str) -> bool:
 
 
 def generate(*, plugin_output: Path, system_output: Path, check: bool) -> int:
+    _ensure_distinct_destinations(plugin_output, system_output)
     system_builder = SystemCapabilityIndexBuilder(known_ports=SYSTEM_CAPABILITY_PORT_CATALOG)
     system_sources = system_builder.discover(
         root=SYSTEM_ROOT,
