@@ -8,11 +8,12 @@ FIXTURE_PATH = REPOSITORY_ROOT / "tests/fixtures/workline_contract/rough_sorter/
 SPEC_PATH = REPOSITORY_ROOT / "docs/business/rough_sorter_scan_decision_contract.md"
 
 EXPECTED_CASE_OVERVIEW = {
-    # trigger, outcome, (material, command, session), intent(kind, action, scope), status, reason
+    # trigger(event, discriminator), outcome, state(material, command, session, context_phase),
+    # intents(kind, action, scope), implementation status, reason code
     "RS-SD-001": (
-        "SCAN_COMPLETED",
+        ("SCAN_COMPLETED", (("barcode_decision", "OK"), ("pkg_id_condition", "PRESENT"))),
         "PICK_AND_PUT_PERSISTED",
-        ("IN_TRANSIT", None, "WAITING_COMMAND_RESULT"),
+        ("IN_TRANSIT", None, "WAITING_COMMAND_RESULT", "PICK_TO_PIPELINE"),
         (
             ("CREATE_MATERIAL_UNIT", None, None),
             ("UPDATE_CONTEXT", None, None),
@@ -22,9 +23,9 @@ EXPECTED_CASE_OVERVIEW = {
         None,
     ),
     "RS-SD-002": (
-        "SCAN_COMPLETED",
+        ("SCAN_COMPLETED", (("barcode_decision", "RULE_NG"), ("pkg_ng_rule", "SIZENG"))),
         "MOVE_TO_NG_PERSISTED",
-        ("NG", None, "WAITING_COMMAND_RESULT"),
+        ("NG", None, "WAITING_COMMAND_RESULT", "NG_MOVING"),
         (
             ("CREATE_MATERIAL_UNIT", None, None),
             ("UPDATE_CONTEXT", None, None),
@@ -35,89 +36,108 @@ EXPECTED_CASE_OVERVIEW = {
         "SCAN_NG_BY_RULE",
     ),
     "RS-SD-003": (
-        "SCAN_COMPLETED",
+        ("SCAN_COMPLETED", (("barcode_decision", "INCOMPLETE"), ("pkg_id_condition", "MISSING"))),
         "HOLD",
-        ("NOT_CREATED", "NOT_CREATED", "MANUAL_HOLD"),
+        ("NOT_CREATED", "NOT_CREATED", "MANUAL_HOLD", "UNCHANGED"),
         (("BLOCK", None, "MATERIAL"),),
         "gap",
         "ROUGH_SORTER_CONTEXT_MISSING",
     ),
     "RS-SD-004": (
-        "COMMAND_RESULT",
+        (
+            "COMMAND_RESULT",
+            (("command_result", "SUCCESS"), ("measurement", "OK"), ("wms_admission", "ADMIT")),
+        ),
         "MOVE_FORWARD_PERSISTED",
-        ("IN_TRANSIT", None, "WAITING_COMMAND_RESULT"),
+        ("IN_TRANSIT", None, "WAITING_COMMAND_RESULT", "MOVING_FORWARD"),
         (("UPDATE_CONTEXT", None, None), ("COMMAND", "MOVE_FORWARD", None)),
         "gap",
         None,
     ),
     "RS-SD-005": (
-        "COMMAND_RESULT",
+        (
+            "COMMAND_RESULT",
+            (("command_result", "SUCCESS"), ("measurement", "NG"), ("wms_admission", "NOT_QUERIED")),
+        ),
         "MOVE_TO_NG_PERSISTED",
-        ("NG", None, "WAITING_COMMAND_RESULT"),
+        ("NG", None, "WAITING_COMMAND_RESULT", "NG_MOVING"),
         (("UPDATE_CONTEXT", None, None), ("MARK_NG", None, None), ("COMMAND", "MOVE_TO_NG", None)),
         "gap",
         "MEASUREMENT_NG",
     ),
     "RS-SD-006": (
-        "COMMAND_RESULT",
+        (
+            "COMMAND_RESULT",
+            (("command_result", "SUCCESS"), ("measurement", "OK"), ("wms_admission", "REJECT")),
+        ),
         "MOVE_TO_NG_PERSISTED",
-        ("NG", None, "WAITING_COMMAND_RESULT"),
+        ("NG", None, "WAITING_COMMAND_RESULT", "NG_MOVING"),
         (("UPDATE_CONTEXT", None, None), ("MARK_NG", None, None), ("COMMAND", "MOVE_TO_NG", None)),
         "gap",
         "WMS_REJECTED",
     ),
     "RS-SD-007": (
-        "COMMAND_RESULT",
+        (
+            "COMMAND_RESULT",
+            (
+                ("command_result", "SUCCESS"),
+                ("measurement_contract", "INVALID"),
+                ("wms_admission", "NOT_QUERIED"),
+            ),
+        ),
         "HOLD",
-        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD"),
+        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (("BLOCK", None, "MATERIAL"),),
         "gap",
         "ROUGH_SORTER_MEASUREMENT_INVALID",
     ),
     "RS-SD-008": (
-        "COMMAND_RESULT",
+        ("COMMAND_RESULT", (("command_result", "FAILURE"),)),
         "HOLD",
-        ("IN_TRANSIT", "MANUAL_HOLD", "MANUAL_HOLD"),
+        ("IN_TRANSIT", "MANUAL_HOLD", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (("BLOCK", None, "COMMAND"),),
         "covered",
         "DEVICE_BUSY",
     ),
     "RS-SD-009": (
-        "TIMER_TIMEOUT",
+        ("TIMER_TIMEOUT", (("command_result", "TIMEOUT"),)),
         "HOLD",
-        ("IN_TRANSIT", "MANUAL_HOLD", "MANUAL_HOLD"),
+        ("IN_TRANSIT", "MANUAL_HOLD", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (("BLOCK", None, "COMMAND"),),
         "partial",
         "ROUGH_SORTER_PICK_RESULT_TIMEOUT",
     ),
     "RS-SD-010": (
-        "COMMAND_RESULT",
+        (
+            "COMMAND_RESULT",
+            (("command_result", "SUCCESS"), ("measurement", "OK"), ("wms_admission", "TIMEOUT")),
+        ),
         "HOLD",
-        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD"),
+        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (("BLOCK", None, "MATERIAL"),),
         "gap",
         "WMS_TIMEOUT",
     ),
     "RS-SD-011": (
-        "REPLAY_REQUEST",
+        ("REPLAY_REQUEST", (("duplicate_digest", "SAME"),)),
         "REPLAY_ACCEPTED_NOOP",
-        ("UNCHANGED", "UNCHANGED", "UNCHANGED"),
+        ("UNCHANGED", "UNCHANGED", "UNCHANGED", "UNCHANGED"),
         (),
         "gap",
         None,
     ),
     "RS-SD-012": (
-        "REPLAY_REQUEST",
+        ("REPLAY_REQUEST", (("duplicate_digest", "DIFFERENT"),)),
         "HOLD",
-        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD"),
+        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD", "UNCHANGED"),
         (("BLOCK", None, "MATERIAL"),),
         "gap",
         "IDEMPOTENCY_CONFLICT",
     ),
     "RS-SD-013": (
-        "COMMAND_RESULT",
+        ("COMMAND_RESULT", (("correlation", "LATE_OR_UNKNOWN_MISMATCH"),)),
         "ARCHIVED_EVIDENCE",
-        ("UNCHANGED", "UNCHANGED", "UNCHANGED"),
+        ("UNCHANGED", "UNCHANGED", "UNCHANGED", "UNCHANGED"),
         (),
         "partial",
         "COMMAND_RESULT_CORRELATION_MISMATCH",
@@ -139,7 +159,7 @@ REQUIRED_CASE_FIELDS = {
 ALLOWED_TRIGGER_TYPES = {"SCAN_COMPLETED", "COMMAND_RESULT", "TIMER_TIMEOUT", "REPLAY_REQUEST"}
 ALLOWED_STATE_VALUES = {
     "material": {"IN_TRANSIT", "NG", "NOT_CREATED", "MANUAL_HOLD", "UNCHANGED"},
-    "context_phase": {"PICK_TO_PIPELINE", "NG_MOVING", "MOVING_FORWARD"},
+    "context_phase": {"PICK_TO_PIPELINE", "NG_MOVING", "MOVING_FORWARD", "UNCHANGED"},
     "command": {"NOT_CREATED", "UNCHANGED", "MANUAL_HOLD"},
     "session": {"WAITING_COMMAND_RESULT", "MANUAL_HOLD", "UNCHANGED"},
 }
@@ -161,6 +181,11 @@ def _load_fixture() -> dict:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
+def _normalize_trigger_signature(case: dict) -> tuple[str, tuple[tuple[str, str], ...]]:
+    trigger = case["trigger"]
+    return trigger["event_type"], tuple(sorted(trigger["decision_discriminator"].items()))
+
+
 def test_fixture_has_fixed_case_semantic_signatures() -> None:
     fixture = _load_fixture()
     cases = fixture["cases"]
@@ -174,9 +199,9 @@ def test_fixture_has_fixed_case_semantic_signatures() -> None:
         case = cases_by_id[case_id]
         state = case["expected_state"]
         actual_signature = (
-            case["trigger"]["event_type"],
+            _normalize_trigger_signature(case),
             case["expected_outcome"]["result"],
-            (state["material"], state.get("command"), state["session"]),
+            (state["material"], state.get("command"), state["session"], state["context_phase"]),
             tuple((intent["kind"], intent.get("action"), intent.get("scope")) for intent in case["expected_intents"]),
             case["implementation_status"],
             case["expected_outcome"]["reason_code"],
@@ -188,10 +213,20 @@ def test_case_fields_use_closed_non_empty_structures() -> None:
     for case in _load_fixture()["cases"]:
         case_id = case["case_id"]
         assert case.keys() >= REQUIRED_CASE_FIELDS, case_id
-        assert case["trigger"].keys() >= {"event_type", "source_event_id", "payload"}, case_id
+        assert case["trigger"].keys() >= {
+            "event_type",
+            "source_event_id",
+            "payload",
+            "decision_discriminator",
+        }, case_id
         assert case["trigger"]["event_type"] in ALLOWED_TRIGGER_TYPES, case_id
         assert case["trigger"]["source_event_id"].strip(), case_id
         assert isinstance(case["trigger"]["payload"], dict) and case["trigger"]["payload"], case_id
+        assert isinstance(case["trigger"]["decision_discriminator"], dict), case_id
+        assert case["trigger"]["decision_discriminator"] and all(
+            isinstance(key, str) and key and isinstance(value, str) and value
+            for key, value in case["trigger"]["decision_discriminator"].items()
+        ), case_id
         assert isinstance(case["preconditions"], list) and all(case["preconditions"]), case_id
         assert set(case["recorded_evidence"]) == {"first_attempt", "replay"}, case_id
         assert all(
@@ -211,6 +246,11 @@ def test_case_fields_use_closed_non_empty_structures() -> None:
         assert case["replay_policy"]["query"] in {"NOT_APPLICABLE", "REUSE_RECORDED"}, case_id
         assert case["replay_policy"]["effect"] == "NO_NEW_EFFECT", case_id
         assert case["replay_policy"]["session_progress"] == "NO_PROGRESS", case_id
+
+    cases = {case["case_id"]: case for case in _load_fixture()["cases"]}
+    ng_pkg_id = cases["RS-SD-002"]["trigger"]["payload"]["data"]["PkgID"].upper()
+    assert cases["RS-SD-002"]["trigger"]["decision_discriminator"]["pkg_ng_rule"] in ng_pkg_id
+    assert "PkgID" not in cases["RS-SD-003"]["trigger"]["payload"]["data"]
 
 
 def test_intents_outcomes_and_replay_policies_are_consistent() -> None:
@@ -243,6 +283,7 @@ def test_intents_outcomes_and_replay_policies_are_consistent() -> None:
         "material": "UNCHANGED",
         "command": "UNCHANGED",
         "session": "UNCHANGED",
+        "context_phase": "UNCHANGED",
     }
     assert late_callback["expected_intents"] == []
     assert late_callback["expected_outcome"] == {
