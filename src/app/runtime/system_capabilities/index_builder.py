@@ -137,7 +137,7 @@ class SystemCapabilityIndexBuilder:
         for parameter, expected_port in zip(parameters, definition.required_ports, strict=True):
             annotation = resolved_annotations.get(parameter.name, parameter.annotation)
             if (
-                parameter.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+                parameter.kind not in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
                 or parameter.default is not inspect.Parameter.empty
                 or annotation is inspect.Parameter.empty
                 or annotation is not expected_port

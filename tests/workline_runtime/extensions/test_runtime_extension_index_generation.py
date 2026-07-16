@@ -92,12 +92,21 @@ class ExtraOptionalHandlerFactory:
         self.debug = debug
 
 
+class KeywordOnlyHandlerFactory:
+    def __init__(self, *, inventory_port: InventoryPort) -> None:
+        self.inventory_port = inventory_port
+
+
 class NoPortHandler:
     def __call__(self, capability_input: QueryInput) -> QueryOutput:
         return QueryOutput(accepted=bool(capability_input.barcode))
 
 
 def query_handler_factory(inventory_port: InventoryPort) -> QueryHandler:
+    return QueryHandler(inventory_port)
+
+
+def keyword_only_query_handler_factory(*, inventory_port: InventoryPort) -> QueryHandler:
     return QueryHandler(inventory_port)
 
 
@@ -289,6 +298,8 @@ def test_system_builder_rejects_handler_factory_signature_mismatch() -> None:
         MissingAnnotationHandlerFactory,
         VariadicHandlerFactory,
         ExtraOptionalHandlerFactory,
+        KeywordOnlyHandlerFactory,
+        keyword_only_query_handler_factory,
     ],
 )
 def test_system_builder_rejects_non_exact_handler_factory_signatures(handler_factory: object) -> None:
