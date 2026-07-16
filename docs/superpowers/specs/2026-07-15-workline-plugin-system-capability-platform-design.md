@@ -67,16 +67,17 @@ fallback 或 import shim。最终代码只保留目标合同，严格遵循 DRY�
 ### 3.3 实施进度（截至 2026-07-16）
 
 总体状态为 **Implementation In Progress**。`v0.17.0.0` / PR #86 已交付 T1 的单环境 active inventory
-foundation；rough sorter 窄闭环业务合同已批准，但最小 Runtime contract、真实 vertical slice 与 cutover 尚未实施。
+foundation；`v0.17.1.0` / PR #87 已将 rough sorter 窄闭环业务合同、权威 fixture 与机器化合同测试合并到
+`develop`。最小 Runtime contract、真实 vertical slice 与 cutover 尚未实施。
 
 | 工作项 | 状态 | 已完成证据 / 剩余边界 |
 | --- | --- | --- |
 | Active inventory foundation | 已完成 | 严格冻结报告模型、权威 repository 装配、确定性 digest、100 条安全上限、只读 CLI 与稳定退出码已合并到 `develop` |
 | PostgreSQL inventory contract | 已完成 | 五类运行引用状态矩阵、`REPEATABLE READ + READ ONLY`、MVCC 快照与数据库拒写测试通过 |
-| 治理与发布门禁 | 已完成 | 默认回归 `2666 passed, 5 skipped`，PostgreSQL integration `11 passed`，Ruff、Bandit、测试拓扑与架构门禁通过 |
+| 治理与发布门禁 | 已完成 | `v0.17.1.0` 合并前完整回归 `2691 passed, 5 skipped`；PostgreSQL integration `11 passed`，Ruff、Bandit、测试拓扑与架构门禁通过 |
 | 跨环境 migration matrix 与批准 | 未完成 | 当前命令每次只生成一个环境的 foundation report；仍需聚合、签名与批准证据 |
 | WorkItem/Intent version pin、binding requirement | 未完成 | 待 Runtime contract 与 binding 模型落地后纳入同一 inventory/preflight |
-| Rough sorter 窄闭环业务合同（T2） | 已完成 | [业务合同](../../business/rough_sorter_scan_decision_contract.md)与 [13-case fixture](../../../tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json) 已由 kaizhou 于 `2026-07-16T19:39:04+08:00` 批准；这是业务合同批准，不是生产 Runtime 交付 |
+| Rough sorter 窄闭环业务合同（T2） | 已完成 | `v0.17.1.0` / PR #87 已合并到 `develop`（merge `c89674f6`）；[业务合同](../../business/rough_sorter_scan_decision_contract.md)、[13-case fixture](../../../tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json)与机器化合同测试已固化 `WAITING_DEVICE_RESULT`、Session/RuntimeHold 所有权、replay evidence 和迟到结果语义，并由 kaizhou 于 `2026-07-16T19:39:04+08:00` 批准；这仍不是生产 Runtime 交付 |
 | 最小 Runtime contract 与 T3-T9 | 未开始 | 当前生产 Runtime 仍存在 fixture 中所有标记为 `partial` / `gap` 的实现缺口；必须按依赖顺序实施和验证，不得把 T2 批准解释为 vertical slice 已交付 |
 
 T2 业务合同门禁已通过，当前完成度允许进入最小 Runtime contract 的后续实施，但 T3-T9 均未开始，且**不代表**
@@ -497,6 +498,7 @@ Synthesized from this review's findings. Each task derives from a specific findi
 - [x] **T2 (P1, human: ~2d / CC: ~4h)** — Rough sorter — 批准首个真实窄闭环业务规格
   - Surfaced by: Scope challenge — 平台合同不得由中性示例猜测。
   - Evidence: [业务合同](../../business/rough_sorter_scan_decision_contract.md)、[13-case fixture](../../../tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json) 与 [合同测试](../../../tests/contracts/workline/test_rough_sorter_scan_decision_spec.py)。
+  - Landed: `v0.17.1.0` / PR #87，merge `c89674f6`；权威合同只使用真实领域状态，并将人工 Hold 归属固定为 Session/RuntimeHold。
   - Approval: kaizhou 于 `2026-07-16T19:39:04+08:00` 批准；此项只完成业务合同批准，不表示生产 Runtime 或 vertical slice 已交付。
   - Verify: 输入、状态、能力、成功/NG/timeout/replay 验收完整。
 - [ ] **T3 (P1, human: ~4d / CC: ~1d)** — Runtime contracts — 收敛两类 Definition、typed outcome 与静态索引
@@ -568,6 +570,7 @@ Synthesized from this review's findings. Each task derives from a specific findi
 ### 当前结论（截至 2026-07-16）
 
 - T2 rough sorter 业务合同已由 kaizhou 批准，业务合同门禁已通过。
+- T2 合同与机器化证据已随 `v0.17.1.0` / PR #87 合并到 `develop`；完整回归为 `2691 passed, 5 skipped`。
 - T1 Remaining 仍未完成，不得把 inventory foundation 解释为完整 T1。
 - T3 尚未开始；最小 Runtime contract 与生产 vertical slice 均未交付。
 
