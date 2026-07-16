@@ -16,12 +16,12 @@
     },
     {
       "case_id": "RS-SD-002",
-      "trigger": {"event_type": "SCAN_COMPLETED", "source_event_id": "evt-scan-002", "payload": {"data": {"HHPN": "HH-NG", "MfrPN": "MF-002", "Qty": "0", "DateCode": "260701", "LotCode": "LOT-02", "PkgID": "PKG-002"}}},
+      "trigger": {"event_type": "SCAN_COMPLETED", "source_event_id": "evt-scan-002", "payload": {"data": {"HHPN": "HH-NG", "MfrPN": "MF-002", "Qty": "100", "DateCode": "260701", "LotCode": "LOT-02", "PkgID": "PKG-SIZENG-002"}}},
       "preconditions": ["RuntimeInbox 已接受并归一化事件", "本地条码规则判定业务 NG"],
       "recorded_evidence": {"first_attempt": ["normalized_input_snapshot", "payload_digest", "barcode_ng_reason", "intent_identity"], "replay": ["original_decision", "original_intent_identity", "payload_digest"]},
       "expected_state": {"material": "NG", "context_phase": "NG_MOVING", "session": "WAITING_COMMAND_RESULT"},
       "expected_intents": [{"kind": "CREATE_MATERIAL_UNIT"}, {"kind": "UPDATE_CONTEXT"}, {"kind": "MARK_NG"}, {"kind": "COMMAND", "action": "MOVE_TO_NG"}],
-      "expected_outcome": {"result": "MOVE_TO_NG_PERSISTED", "reason_code": "BARCODE_RULE_NG"},
+      "expected_outcome": {"result": "MOVE_TO_NG_PERSISTED", "reason_code": "SCAN_NG_BY_RULE"},
       "replay_expectation": "复用首次条码 NG 判定，不重复 MOVE_TO_NG EFFECT。",
       "source_refs": ["src/app/workline/domain/services/barcode_decision_service.py", "src/app/runtime/orchestration/orchestrator_bridge.py", "src/app/runtime/capabilities/material_flow/contracts/rough_sorter.py"],
       "implementation_status": "covered"
@@ -36,7 +36,7 @@
       "expected_outcome": {"result": "HOLD", "reason_code": "ROUGH_SORTER_CONTEXT_MISSING"},
       "replay_expectation": "保持原 Hold，不补建物料或命令。",
       "source_refs": ["src/app/runtime/orchestration/orchestrator_bridge.py", "src/app/runtime/capabilities/material_flow/contracts/six_in_one.py", "tests/workline_runtime/test_runtime_capability_dispatcher.py"],
-      "implementation_status": "covered"
+      "implementation_status": "gap"
     },
     {
       "case_id": "RS-SD-004",

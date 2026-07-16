@@ -27,7 +27,7 @@ approved_at:
 | 输入/判定 | Material/Context 目标状态 | Intent | Outcome / reason code |
 | --- | --- | --- | --- |
 | 条码 OK | `IN_TRANSIT` / `PICK_TO_PIPELINE` | `CREATE_MATERIAL_UNIT`、`UPDATE_CONTEXT`、`COMMAND:PICK_AND_PUT` | `PICK_AND_PUT_PERSISTED` |
-| 条码业务 NG | `NG` / `NG_MOVING` | `CREATE_MATERIAL_UNIT`、`UPDATE_CONTEXT`、`MARK_NG`、`COMMAND:MOVE_TO_NG` | `BARCODE_*` |
+| 条码业务 NG | `NG` / `NG_MOVING` | `CREATE_MATERIAL_UNIT`、`UPDATE_CONTEXT`、`MARK_NG`、`COMMAND:MOVE_TO_NG` | `SCAN_NG_BY_RULE` |
 | 缺 PkgID | 不创建物料/命令，Material Hold | `BLOCK:MATERIAL` | `ROUGH_SORTER_CONTEXT_MISSING` |
 | 入料成功、有效测量、WMS 准入 | `IN_TRANSIT` / `MOVING_FORWARD` | `UPDATE_CONTEXT`、`COMMAND:MOVE_FORWARD` | `MOVE_FORWARD_PERSISTED` |
 | 测量业务 NG | `NG` / `NG_MOVING` | `UPDATE_CONTEXT`、`MARK_NG`、`COMMAND:MOVE_TO_NG` | `MEASUREMENT_NG` |
@@ -79,6 +79,7 @@ Replay 只读取首次 attempt 已持久化的输入、测量、WMS 响应摘要
 
 ## 原因码决策记录
 
+- `SCAN_NG_BY_RULE`：复用条码领域服务对 `PkgID` 命中 `SIZENG` / `THICKNESSNG` 的现有稳定码；规格不再使用 `BARCODE_RULE_NG`，禁止双码。
 - `ROUGH_SORTER_MEASUREMENT_INVALID`：粗分机测量合同无效，当前没有发现全局稳定同义码，保留为目标码。
 - `ROUGH_SORTER_PICK_RESULT_TIMEOUT`：表示已下发入料命令后等待终态结果超时；现有 `COMMAND_ACK_TIMEOUT` 仅表示 ACK 阶段，不是同义码，禁止互换。
 - `ROUGH_SORTER_WMS_ADMISSION_UNAVAILABLE` 是业务概念名。仓库已有全局稳定 `WMS_TIMEOUT`，因此实际 outcome 统一使用 `WMS_TIMEOUT`，不再发出前者，避免双码。
@@ -91,7 +92,7 @@ Replay 只读取首次 attempt 已持久化的输入、测量、WMS 响应摘要
 | --- | --- | --- |
 | 扫码 OK 创建 MaterialUnit、Context、`PICK_AND_PUT` | covered | `orchestrator_bridge.py` 已生成三个 Intent，并有 runtime 测试覆盖 |
 | 条码业务 NG 生成 `MOVE_TO_NG` | covered | 已生成 Material/Context/NG/Command Intent |
-| 缺 PkgID Hold | covered | 已用 `ROUGH_SORTER_CONTEXT_MISSING` 阻断创建 |
+| 缺 PkgID Hold | gap | 目标是 `BLOCK:MATERIAL / ROUGH_SORTER_CONTEXT_MISSING`，但当前条码服务先判定 `BARCODE_INCOMPLETE`，随后生成 `UPDATE_CONTEXT`、`MARK_NG` 与 `MOVE_TO_NG`，并未 Hold |
 | 入料设备失败 Command Hold | covered | 失败 command result 已转 `BLOCK:COMMAND` |
 | 入料结果超时 | partial | Runtime 已有 command result deadline/对账骨架，尚未形成本切片目标码与完整决策 |
 | late/unknown callback | partial | 已有 correlation/reconciliation evidence 能力，尚未锁定本切片“不推进当前 Session”的完整 outcome |
