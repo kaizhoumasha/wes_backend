@@ -87,6 +87,22 @@ def test_unknown_fifth_outcome_maps_to_contract_violation() -> None:
     assert outcome.retryable is False
 
 
+def test_unhashable_outcome_kind_maps_to_contract_violation_without_exception() -> None:
+    outcome = parse_outcome({"kind": []}, payload_type=Payload)
+
+    assert isinstance(outcome, ContractViolation)
+    assert outcome.error_code == "INVALID_OUTCOME_CONTRACT"
+    assert outcome.retryable is False
+
+
+def test_invalid_utf8_outcome_maps_to_contract_violation_without_exception() -> None:
+    outcome = parse_outcome(b"\x80", payload_type=Payload)
+
+    assert isinstance(outcome, ContractViolation)
+    assert outcome.error_code == "INVALID_OUTCOME_JSON"
+    assert outcome.retryable is False
+
+
 def test_plugin_context_and_decision_validate_state_without_executing_intents() -> None:
     context = PluginContext[PluginState](state=PluginState(scans=1))
     intent = RuntimeIntent.complete()

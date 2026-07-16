@@ -63,15 +63,18 @@ def parse_outcome[T](
 
     try:
         data = json.loads(raw) if isinstance(raw, str | bytes) else raw
-    except (TypeError, json.JSONDecodeError) as exc:
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return ContractViolation(error_code="INVALID_OUTCOME_JSON", message=str(exc))
     if not isinstance(data, dict):
         return ContractViolation(error_code="INVALID_OUTCOME_CONTRACT", message="outcome must be an object")
-    if data.get("kind") not in {"success", "business_reject", "retryable_failure", "contract_violation"}:
+    kind = data.get("kind")
+    if not isinstance(kind, str):
+        return ContractViolation(error_code="INVALID_OUTCOME_CONTRACT", message="outcome kind must be a string")
+    if kind not in {"success", "business_reject", "retryable_failure", "contract_violation"}:
         return ContractViolation(
             error_code="UNKNOWN_OUTCOME_KIND",
             message="outcome kind is not part of the closed contract",
-            details={"received_kind": data.get("kind")},
+            details={"received_kind": kind},
         )
 
     outcome_type = Annotated[
