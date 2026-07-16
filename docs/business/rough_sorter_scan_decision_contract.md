@@ -2,11 +2,11 @@
 
 contract_version: rough-sorter-scan-decision.v1
 status: Approved
-owner: 业务 Owner（待明确）
+owner: kaizhou
 approved_by: kaizhou
 approved_at: 2026-07-16T19:39:04+08:00
 
-> 本文是该切片的单一权威业务规格。已由 kaizhou 于 2026-07-16T19:39:04+08:00 明确批准，当前状态 `Approved`。配套 fixture 仅用于测试与评审取证，不是 Runtime 配置，也不是通用 DSL。
+> 本文是该切片的单一权威业务规格。kaizhou 是本合同的业务批准责任人，并已于 2026-07-16T19:39:04+08:00 明确批准，当前状态 `Approved`。配套 fixture 仅用于测试与评审取证，不是 Runtime 配置，也不是通用 DSL。
 
 ## 切片边界
 
@@ -106,4 +106,4 @@ Replay 只读取首次 attempt 已持久化的输入、测量、WMS 响应摘要
 3. covered/partial/gap 与当前实现对照一致；不得把成功 callback 的 `CONTINUE_NEXT` 描述为测量/WMS 已完成。
 4. replay 同 digest 不重新 QUERY、不重复 EFFECT；不同 digest 使用 `IDEMPOTENCY_CONFLICT` Hold。
 5. WMS timeout 只记录失败 evidence，reason code 统一为 `WMS_TIMEOUT`；不得同时发出业务概念别名。
-6. 文档批准状态在业务 Owner 明确确认前保持 `Review`，`approved_by` 与 `approved_at` 为空。
+6. 业务合同批准门禁已由业务批准责任人 kaizhou 通过；`status` 保持 `Approved`，`owner` 与 `approved_by` 均为 kaizhou，`approved_at` 保留批准时间。后续业务语义变更必须重新批准并更新批准证据。

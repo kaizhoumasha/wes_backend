@@ -542,7 +542,9 @@ Synthesized from this review's findings. Each task derives from a specific findi
 9. cutover point 前可回滚；产生新写入后只允许 roll-forward。
 10. 文档、索引、测试拓扑和质量门禁与最终代码一致。
 
-## GSTACK REVIEW REPORT
+## GSTACK REVIEW REPORT（2026-07-15 历史评审快照）
+
+以下内容记录 2026-07-15 评审时点的判断与约束，不代表当前实施状态。
 
 ### Review outcome
 
@@ -558,10 +560,16 @@ Synthesized from this review's findings. Each task derives from a specific findi
 - Parallelization：3 个中期并行工作流，Runtime 共享模型顺序集成，cutover 串行收口。
 - Engineering principles：所有选择均以 DRY、KISS、SOLID、YAGNI 和无兼容目标为约束。
 
-### Architecture verdict
+### Architecture verdict（历史）
 
 方案可以进入分阶段实施，但必须先完成 active inventory 与 rough sorter 真实窄闭环规格。平台不得先于真实需求
 形成通用框架；任何旧入口、双轨运行、隐式版本升级、跨层访问或自由格式状态都属于阻断项。
+
+### 当前结论（截至 2026-07-16）
+
+- T2 rough sorter 业务合同已由 kaizhou 批准，业务合同门禁已通过。
+- T1 Remaining 仍未完成，不得把 inventory foundation 解释为完整 T1。
+- T3 尚未开始；最小 Runtime contract 与生产 vertical slice 均未交付。
 
 ### Review artifacts
 
