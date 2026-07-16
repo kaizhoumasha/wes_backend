@@ -51,6 +51,13 @@ class UnknownPort:
     pass
 
 
+SpoofedRepositoryPort = type(
+    "UnregisteredPort",
+    (),
+    {"__module__": "src.app.evil"},
+)
+
+
 class QueryHandler:
     def __init__(self, inventory_port: InventoryPort) -> None:
         self.inventory_port = inventory_port
@@ -64,9 +71,34 @@ class InvalidHandlerFactory:
         pass
 
 
+class WrongAnnotatedHandlerFactory:
+    def __init__(self, inventory_port: UnknownPort) -> None:
+        self.inventory_port = inventory_port
+
+
+class MissingAnnotationHandlerFactory:
+    def __init__(self, inventory_port) -> None:  # type: ignore[no-untyped-def]
+        self.inventory_port = inventory_port
+
+
+class VariadicHandlerFactory:
+    def __init__(self, *ports: InventoryPort) -> None:
+        self.ports = ports
+
+
+class ExtraOptionalHandlerFactory:
+    def __init__(self, inventory_port: InventoryPort, debug: bool = False) -> None:
+        self.inventory_port = inventory_port
+        self.debug = debug
+
+
 class NoPortHandler:
     def __call__(self, capability_input: QueryInput) -> QueryOutput:
         return QueryOutput(accepted=bool(capability_input.barcode))
+
+
+def query_handler_factory(inventory_port: InventoryPort) -> QueryHandler:
+    return QueryHandler(inventory_port)
 
 
 def parse_scan(payload: dict[str, object]) -> str:
@@ -251,6 +283,31 @@ def test_system_builder_rejects_handler_factory_signature_mismatch() -> None:
 
 
 @pytest.mark.parametrize(
+    "handler_factory",
+    [
+        WrongAnnotatedHandlerFactory,
+        MissingAnnotationHandlerFactory,
+        VariadicHandlerFactory,
+        ExtraOptionalHandlerFactory,
+    ],
+)
+def test_system_builder_rejects_non_exact_handler_factory_signatures(handler_factory: object) -> None:
+    source = system_source(capability_definition(handler_factory=handler_factory))
+
+    with pytest.raises(TypeError, match="handler_factory signature"):
+        system_builder().build((source,))
+
+
+@pytest.mark.parametrize("handler_factory", [QueryHandler, query_handler_factory])
+def test_system_builder_accepts_exact_class_and_function_factory_signatures(handler_factory: object) -> None:
+    source = system_source(capability_definition(handler_factory=handler_factory))
+
+    generated = system_builder().build((source,))
+
+    assert generated.identities == (("inventory.lookup", "v1"),)
+
+
+@pytest.mark.parametrize(
     ("definition", "message"),
     [
         (capability_definition(required_ports=(UnknownPort,)), "unknown Port"),
@@ -277,6 +334,24 @@ def test_default_system_builder_fails_closed_for_unknown_repository_contracts(
 ) -> None:
     with pytest.raises(ValueError, match="unknown"):
         SystemCapabilityIndexBuilder().build((system_source(definition),))
+
+
+def test_default_port_catalog_rejects_module_spoofed_unregistered_port() -> None:
+    definition = capability_definition(required_ports=(SpoofedRepositoryPort,))
+
+    with pytest.raises(ValueError, match="unknown Port"):
+        SystemCapabilityIndexBuilder().build((system_source(definition),))
+
+
+def test_explicit_port_catalog_accepts_only_registered_port() -> None:
+    definition = capability_definition(required_ports=(InventoryPort,))
+
+    generated = SystemCapabilityIndexBuilder(
+        known_ports=(InventoryPort,),
+        known_admissions=("provider-contract",),
+    ).build((system_source(definition),))
+
+    assert generated.identities == (("inventory.lookup", "v1"),)
 
 
 def test_generated_indexes_are_empty_read_only_and_cold_start_safe() -> None:

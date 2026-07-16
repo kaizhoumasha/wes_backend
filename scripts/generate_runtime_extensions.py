@@ -19,6 +19,8 @@ PLUGIN_ROOT = REPO_ROOT / "src/app/runtime/workline_plugins"
 SYSTEM_ROOT = REPO_ROOT / "src/app/runtime/system_capabilities"
 DEFAULT_PLUGIN_OUTPUT = PLUGIN_ROOT / "generated_index.py"
 DEFAULT_SYSTEM_OUTPUT = SYSTEM_ROOT / "generated_index.py"
+# Port catalog 是构建期显式 allowlist；后续新增真实 Port 时必须在同一提交登记。
+SYSTEM_CAPABILITY_PORT_CATALOG: tuple[type[object], ...] = ()
 
 
 def _stage_generated_file(path: Path, source: str) -> Path:
@@ -79,7 +81,7 @@ def _is_current(path: Path, expected: str) -> bool:
 
 
 def generate(*, plugin_output: Path, system_output: Path, check: bool) -> int:
-    system_builder = SystemCapabilityIndexBuilder()
+    system_builder = SystemCapabilityIndexBuilder(known_ports=SYSTEM_CAPABILITY_PORT_CATALOG)
     system_sources = system_builder.discover(
         root=SYSTEM_ROOT,
         package="src.app.runtime.system_capabilities",

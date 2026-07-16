@@ -6,7 +6,7 @@ import importlib
 import inspect
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, get_type_hints
 
 from src.app.runtime.extension_identity import sha256_digest, stable_sort
 from src.app.runtime.system_capabilities.definition import (
@@ -50,7 +50,8 @@ class SystemCapabilityIndexBuilder:
         known_ports: Iterable[type[object]] | None = None,
         known_admissions: Iterable[str] | None = None,
     ) -> None:
-        self._known_ports = None if known_ports is None else frozenset(known_ports)
+        # 未注入 catalog 时拒绝所有 Port；不能靠模块名或类名推断“已注册”。
+        self._known_ports = frozenset(known_ports or ())
         self._known_admissions = _BUILTIN_ADMISSIONS if known_admissions is None else frozenset(known_admissions)
 
     def discover(self, *, root: Path, package: str) -> tuple[SystemCapabilitySource, ...]:
@@ -107,29 +108,44 @@ class SystemCapabilityIndexBuilder:
             and definition.completion_mode is not EffectCompletionMode.LOCAL_TRANSACTIONAL
         ):
             raise ValueError("QUERY capabilities must use LOCAL_TRANSACTIONAL completion mode")
-        unknown_ports = tuple(
-            port
-            for port in definition.required_ports
-            if (port not in self._known_ports if self._known_ports is not None else not self._is_repository_port(port))
-        )
+        unknown_ports = tuple(port for port in definition.required_ports if port not in self._known_ports)
         if unknown_ports:
             names = ", ".join(f"{port.__module__}.{port.__qualname__}" for port in unknown_ports)
             raise ValueError(f"unknown Port: {names}")
         if definition.admission not in self._known_admissions:
             raise ValueError(f"unknown admission/profile: {definition.admission}")
 
-        try:
-            inspect.signature(definition.handler_factory).bind(*(object() for _port in definition.required_ports))
-        except TypeError as exc:
-            raise TypeError("handler_factory signature must accept exactly the declared required Ports") from exc
+        self._validate_handler_factory_signature(definition)
 
     @staticmethod
     def _identity_key(definition: SystemCapabilityDefinition) -> tuple[str, str]:
         return definition.capability_key, definition.contract_version
 
     @staticmethod
-    def _is_repository_port(port: type[object]) -> bool:
-        return port.__name__.endswith("Port") and port.__module__.startswith("src.app.")
+    def _validate_handler_factory_signature(definition: SystemCapabilityDefinition) -> None:
+        factory = definition.handler_factory
+        parameters = tuple(inspect.signature(factory).parameters.values())
+        if len(parameters) != len(definition.required_ports):
+            raise TypeError("handler_factory signature must exactly match required_ports")
+
+        annotation_target = factory.__init__ if inspect.isclass(factory) else factory
+        try:
+            resolved_annotations = get_type_hints(annotation_target)
+        except (NameError, TypeError) as exc:
+            raise TypeError("handler_factory signature annotations must be resolvable") from exc
+
+        for parameter, expected_port in zip(parameters, definition.required_ports, strict=True):
+            annotation = resolved_annotations.get(parameter.name, parameter.annotation)
+            if (
+                parameter.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+                or parameter.default is not inspect.Parameter.empty
+                or annotation is inspect.Parameter.empty
+                or annotation is not expected_port
+            ):
+                raise TypeError(
+                    "handler_factory signature parameters must match required_ports "
+                    "in count, order, annotation, and requiredness"
+                )
 
     @staticmethod
     def _render(
