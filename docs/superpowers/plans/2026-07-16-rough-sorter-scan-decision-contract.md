@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 批准并机器化验证粗分机首个真实窄闭环业务合同：从 `SCAN_COMPLETED` 到入料机械臂结果、测量与 WMS 准入决策，最终稳定地产生 `MOVE_FORWARD`、`MOVE_TO_NG` 或业务 Hold。
+**Goal:** 批准并机器化验证粗分机首个真实窄闭环业务合同：从 `SCAN_COMPLETED` 到入料机械臂结果、测量与 WMS 准入决策，最终稳定地产生 `MOVE_FORWARD`、`MOVE_TO_NG` 或 Session Hold。
 
 **Architecture:** 本阶段只交付单一权威业务规格、一个窄闭环 trace fixture 和对应合同测试，不修改生产 Runtime。规格明确入口、状态、能力需求、证据、Intent、幂等、超时和 replay；fixture 记录目标行为及当前覆盖状态，为后续最小 Runtime contract/Plugin runtime 计划提供真实需求输入。现有广域架构文档只引用该规格，不复制合同正文。
 
@@ -13,11 +13,11 @@
 ## 实施边界与锁定决策
 
 - 本计划只完成平台设计 T2，不实现 T3-T9，不修改 `src/`、数据库、API、Celery、provider wiring 或设备协议入口。
-- 窄闭环起点固定为已归一化且被 RuntimeInbox 接受的 `SCAN_COMPLETED`；终点固定为下一个设备命令已持久化，或 Session 进入带稳定原因码的业务 Hold。`MOVE_FORWARD` / `MOVE_TO_NG` 的执行结果属于后续粗分机切片。
+- 窄闭环起点固定为已归一化且被 RuntimeInbox 接受的 `SCAN_COMPLETED`；合法终点固定为四类：下一个设备命令已持久化、Session 进入带稳定原因码的业务 Hold、同 digest replay no-op，或 late/unknown callback 只归档 mismatch evidence。`MOVE_FORWARD` / `MOVE_TO_NG` 的执行结果属于后续粗分机切片。
 - 正常主线固定为：六合一码通过 → `PICK_AND_PUT` → 成功结果携带有效测量值 → WMS 准入通过 → `MOVE_FORWARD`。
 - NG 分支固定为：条码业务拒绝、测量业务 NG、WMS 明确拒绝或无匹配 → `MOVE_TO_NG`。设备失败、命令超时、WMS 查询超时和合同冲突不是业务 NG，必须 Hold，禁止伪造 NG 或自动推进。
-- 缺失、不可解析或非正数的 `reel_diameter` / `reel_thickness` 属输入合同无效，进入 material-scoped Hold；只有设备明确返回业务测量 NG 时才进入 `MOVE_TO_NG`。
-- 同一 `event_id` / `command_code` 与相同规范化 payload digest 重放时复用已录制决策和 evidence，不重复创建 MaterialUnit、查询 WMS 或下发命令；相同幂等键但 digest 不同进入 `IDEMPOTENCY_CONFLICT` Hold。
+- 缺失、不可解析或非正数的 `reel_diameter` / `reel_thickness` 属输入合同无效，生成 `BLOCK:MATERIAL`；`MATERIAL` 仅是 scope，Hold 状态由 Session 持有。只有设备明确返回业务测量 NG 时才进入 `MOVE_TO_NG`。
+- 同一 `event_id` / `command_code` 与相同规范化 payload digest 重放时复用已录制决策和 evidence，不重复创建 MaterialUnit、查询 WMS 或下发命令；相同幂等键但 digest 不同时，首次检测冲突生成一次 `BLOCK:MATERIAL` 并将 Session 写为 `MANUAL_HOLD`，后续对同一冲突结果的 replay 不产生新 EFFECT。
 - replay 只能读取首次 attempt 持久化的条码、测量和 WMS evidence；禁止在 replay 中重新调用实时 WMS。首次 attempt 的 QUERY 超时没有成功 evidence，不得伪装成可 replay 的成功决策。
 - 本系统未发布，不增加旧字段、旧插件 API、兼容 alias 或双轨 dispatcher。`docs/archive/` 只作为语义发现证据，不能成为目标合同真源。
 - fixture 是测试/评审证据，不是运行配置，不引入通用 DSL、schema generator 或 production loader（KISS/YAGNI）。
@@ -44,8 +44,10 @@ SCAN_COMPLETED
   -> barcode decision
   -> PICK_AND_PUT result + measurement
   -> WMS admission evidence
-  -> MOVE_FORWARD | MOVE_TO_NG | HOLD
+  -> COMMAND_PERSISTED | SESSION_MANUAL_HOLD | REPLAY_ACCEPTED_NOOP | ARCHIVED_EVIDENCE
 ```
+
+`COMMAND_PERSISTED` 包含 `MOVE_FORWARD` 与 `MOVE_TO_NG` 两种下一命令；`ARCHIVED_EVIDENCE` 仅用于 late/unknown callback，不推进当前 Session。
 
 它不拥有：输送线执行、格位预约、货架补给、出料机械臂、料格事实、WMS 入库记账、满箱交换和 SMT 分拣。`docs/architecture/sorter-inbound-capability-spec.md` 继续拥有完整 material-flow 架构，`docs/business/rough_sorter_runtime_flow.md` 继续拥有端到端设备协议示例，`docs/business/inbound_acceptance_steps.md` 继续拥有整线验收步骤，`docs/business/workline_business_data_event_flow_spec.md` 继续拥有跨系统数据与事件流。四者不得重复定义本切片的 reason code、replay 或分支判定。
 
@@ -56,11 +58,11 @@ SCAN_COMPLETED
 | 条码通过，等待入料结果 | `PICK_TO_PIPELINE` | `PICK_AND_PUT` | 无 |
 | 入料成功、测量有效、WMS 准入 | `MOVING_FORWARD` | `MOVE_FORWARD` | 无 |
 | 条码/测量/WMS 明确业务拒绝 | `NG_MOVING` | `MOVE_TO_NG` | 保留业务来源 reason code |
-| 缺失或非法测量合同 | Hold(material) | 无 | `ROUGH_SORTER_MEASUREMENT_INVALID` |
-| 入料设备失败 | Hold(command) | 无 | 优先设备 `error_code`，否则稳定分类码 |
-| 入料结果超时 | Hold(command) | 无 | `ROUGH_SORTER_PICK_RESULT_TIMEOUT` |
-| WMS 查询超时/不可用 | Hold(material) | 无 | `ROUGH_SORTER_WMS_ADMISSION_UNAVAILABLE` |
-| 幂等键内容冲突 | Hold(material) | 无 | `IDEMPOTENCY_CONFLICT` |
+| 缺失或非法测量合同 | Session `MANUAL_HOLD` | `BLOCK:MATERIAL` | `ROUGH_SORTER_MEASUREMENT_INVALID` |
+| 入料设备失败 | Session `MANUAL_HOLD` | `BLOCK:COMMAND` | 优先设备 `error_code`，否则稳定分类码 |
+| 入料结果超时 | Session `MANUAL_HOLD`、RuntimeHold `OPEN` | 平台 `TIMER_TIMEOUT` reconciliation；无 RuntimeIntent | `ROUGH_SORTER_PICK_RESULT_TIMEOUT` |
+| WMS 查询超时/不可用 | Session `MANUAL_HOLD` | `BLOCK:MATERIAL` | `WMS_TIMEOUT` |
+| 幂等键内容冲突 | Session `MANUAL_HOLD` | 首次一次 `BLOCK:MATERIAL`，后续 replay 无新 EFFECT | `IDEMPOTENCY_CONFLICT` |
 | callback 关联不到当前等待命令 | 归档为 late/unknown evidence，不推进当前 Session | 无 | `COMMAND_RESULT_CORRELATION_MISMATCH` |
 
 上述原因码属于本业务规格的目标语义。合同评审发现现有全局错误码已有等价名称时，必须统一到现有稳定成员并在规格决策记录中写明映射；禁止保留同义双码。
@@ -73,7 +75,9 @@ SCAN_COMPLETED
 - `slice_id = rough_sorter.scan_to_admission_decision`
 - `cases`：只允许该切片的场景数组
 
-每个 case 必须包含：`case_id`、`trigger`、`preconditions`、`recorded_evidence`、`expected_state`、`expected_intents`、`expected_outcome`、`replay_expectation`、`source_refs`、`implementation_status`。`implementation_status` 只允许 `covered`、`partial`、`gap`，表达当前事实而非测试豁免；任何 `gap` 都是 T3-T6 的输入，不能被描述为已完成。
+每个 case 必须包含：`case_id`、`trigger`、`preconditions`、`recorded_evidence`、`expected_state`、`expected_intents`、`expected_outcome`、`replay_expectation`、`replay_policy`、`source_refs`、`implementation_status`。`implementation_status` 只允许 `covered`、`partial`、`gap`，表达当前事实而非测试豁免；任何 `gap` 都是 T3-T6 的输入，不能被描述为已完成。
+
+普通 case 的 `recorded_evidence` 固定为 `first_attempt` / `replay` 两阶段；`RS-SD-012` 额外使用 `subsequent_replay`，分别锁定原始 attempt、首次 conflict detection 和后续 conflict replay。BLOCK evidence 必须区分稳定 Intent 身份与 EFFECT 身份，并证明后续 replay 复用原写入结果且没有新 Hold 写入。
 
 固定场景集：
 
@@ -85,12 +89,12 @@ SCAN_COMPLETED
 | `RS-SD-004` | 入料成功 + 有效测量 + WMS 准入，生成 `MOVE_FORWARD` | gap |
 | `RS-SD-005` | 入料成功但测量业务 NG，生成 `MOVE_TO_NG` | gap |
 | `RS-SD-006` | WMS 明确拒绝/无匹配，生成 `MOVE_TO_NG` | gap |
-| `RS-SD-007` | 测量合同无效，material-scoped Hold | gap |
-| `RS-SD-008` | 入料设备失败，command-scoped Hold | covered |
-| `RS-SD-009` | 入料命令结果超时，command-scoped Hold | partial |
+| `RS-SD-007` | 测量合同无效，`BLOCK:MATERIAL`，Session Hold | gap |
+| `RS-SD-008` | 入料设备失败，`BLOCK:COMMAND`，Session Hold | covered |
+| `RS-SD-009` | 入料命令结果超时，平台 reconciliation 写 Session Hold 与 RuntimeHold，不创建 RuntimeIntent | partial |
 | `RS-SD-010` | WMS timeout/unavailable，保留 evidence 并 Hold | gap |
 | `RS-SD-011` | 同键同 digest 重放，不重复 QUERY/EFFECT | gap |
-| `RS-SD-012` | 同键不同 digest，`IDEMPOTENCY_CONFLICT` Hold | gap |
+| `RS-SD-012` | 同键不同 digest，首次一次 `IDEMPOTENCY_CONFLICT` Session Hold，后续 replay 无新 EFFECT | gap |
 | `RS-SD-013` | late/unknown callback 不推进当前 Session | partial |
 
 ## NOT in scope

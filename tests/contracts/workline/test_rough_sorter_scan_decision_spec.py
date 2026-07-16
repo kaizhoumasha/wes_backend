@@ -11,16 +11,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.app.device.models.command import CommandStatus
+from src.app.device.models.command import CommandCallbackResult, CommandResult, CommandStatus
+from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import normalize_six_in_one_payload
 from src.app.runtime.orchestration.effect_result import WriteBackDisposition
+from src.app.runtime.orchestration.models.material_unit import MaterialUnitStatus
+from src.app.runtime.orchestration.models.runtime_hold import RuntimeHoldStatus
 from src.app.runtime.orchestration.models.session import (
     RuntimeReconciliationReason,
     RuntimeReconciliationState,
     SessionStatus,
 )
 from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult, OrchestratorService
-from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
+from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent, RuntimeIntentKind
+from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
 from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
     WorklineRuntimeReconciliationService,
 )
@@ -63,7 +67,7 @@ EXPECTED_CASE_OVERVIEW = {
     "RS-SD-001": (
         ("SCAN_COMPLETED", (("barcode_decision", "OK"), ("pkg_id_condition", "PRESENT"))),
         "PICK_AND_PUT_PERSISTED",
-        ("IN_TRANSIT", None, "WAITING_COMMAND_RESULT", "PICK_TO_PIPELINE"),
+        ("IN_TRANSIT", None, "WAITING_DEVICE_RESULT", "PICK_TO_PIPELINE"),
         (
             ("CREATE_MATERIAL_UNIT", None, None),
             ("UPDATE_CONTEXT", None, None),
@@ -75,7 +79,7 @@ EXPECTED_CASE_OVERVIEW = {
     "RS-SD-002": (
         ("SCAN_COMPLETED", (("barcode_decision", "RULE_NG"), ("pkg_ng_rule", "SIZENG"))),
         "MOVE_TO_NG_PERSISTED",
-        ("NG", None, "WAITING_COMMAND_RESULT", "NG_MOVING"),
+        ("NG", None, "WAITING_DEVICE_RESULT", "NG_MOVING"),
         (
             ("CREATE_MATERIAL_UNIT", None, None),
             ("UPDATE_CONTEXT", None, None),
@@ -99,7 +103,7 @@ EXPECTED_CASE_OVERVIEW = {
             (("command_result", "SUCCESS"), ("measurement", "OK"), ("wms_admission", "ADMIT")),
         ),
         "MOVE_FORWARD_PERSISTED",
-        ("IN_TRANSIT", None, "WAITING_COMMAND_RESULT", "MOVING_FORWARD"),
+        ("IN_TRANSIT", None, "WAITING_DEVICE_RESULT", "MOVING_FORWARD"),
         (("UPDATE_CONTEXT", None, None), ("COMMAND", "MOVE_FORWARD", None)),
         "gap",
         None,
@@ -110,7 +114,7 @@ EXPECTED_CASE_OVERVIEW = {
             (("command_result", "SUCCESS"), ("measurement", "NG"), ("wms_admission", "NOT_QUERIED")),
         ),
         "MOVE_TO_NG_PERSISTED",
-        ("NG", None, "WAITING_COMMAND_RESULT", "NG_MOVING"),
+        ("NG", None, "WAITING_DEVICE_RESULT", "NG_MOVING"),
         (("UPDATE_CONTEXT", None, None), ("MARK_NG", None, None), ("COMMAND", "MOVE_TO_NG", None)),
         "gap",
         "MEASUREMENT_NG",
@@ -121,7 +125,7 @@ EXPECTED_CASE_OVERVIEW = {
             (("command_result", "SUCCESS"), ("measurement", "OK"), ("wms_admission", "REJECT")),
         ),
         "MOVE_TO_NG_PERSISTED",
-        ("NG", None, "WAITING_COMMAND_RESULT", "NG_MOVING"),
+        ("NG", None, "WAITING_DEVICE_RESULT", "NG_MOVING"),
         (("UPDATE_CONTEXT", None, None), ("MARK_NG", None, None), ("COMMAND", "MOVE_TO_NG", None)),
         "gap",
         "WMS_REJECTED",
@@ -136,7 +140,7 @@ EXPECTED_CASE_OVERVIEW = {
             ),
         ),
         "HOLD",
-        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
+        ("IN_TRANSIT", "COMPLETED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (("BLOCK", None, "MATERIAL"),),
         "gap",
         "ROUGH_SORTER_MEASUREMENT_INVALID",
@@ -144,7 +148,7 @@ EXPECTED_CASE_OVERVIEW = {
     "RS-SD-008": (
         ("COMMAND_RESULT", (("command_result", "FAILURE"),)),
         "HOLD",
-        ("IN_TRANSIT", "MANUAL_HOLD", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
+        ("IN_TRANSIT", "FAILED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (("BLOCK", None, "COMMAND"),),
         "covered",
         "DEVICE_BUSY",
@@ -152,8 +156,8 @@ EXPECTED_CASE_OVERVIEW = {
     "RS-SD-009": (
         ("TIMER_TIMEOUT", (("command_result", "TIMEOUT"),)),
         "HOLD",
-        ("IN_TRANSIT", "MANUAL_HOLD", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
-        (("BLOCK", None, "COMMAND"),),
+        ("IN_TRANSIT", "ACK_RECEIVED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
+        (),
         "partial",
         "ROUGH_SORTER_PICK_RESULT_TIMEOUT",
     ),
@@ -163,7 +167,7 @@ EXPECTED_CASE_OVERVIEW = {
             (("command_result", "SUCCESS"), ("measurement", "OK"), ("wms_admission", "TIMEOUT")),
         ),
         "HOLD",
-        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
+        ("IN_TRANSIT", "COMPLETED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (("BLOCK", None, "MATERIAL"),),
         "gap",
         "WMS_TIMEOUT",
@@ -179,7 +183,7 @@ EXPECTED_CASE_OVERVIEW = {
     "RS-SD-012": (
         ("REPLAY_REQUEST", (("duplicate_digest", "DIFFERENT"),)),
         "HOLD",
-        ("MANUAL_HOLD", "UNCHANGED", "MANUAL_HOLD", "UNCHANGED"),
+        ("UNCHANGED", "UNCHANGED", "MANUAL_HOLD", "UNCHANGED"),
         (("BLOCK", None, "MATERIAL"),),
         "gap",
         "IDEMPOTENCY_CONFLICT",
@@ -208,10 +212,11 @@ REQUIRED_CASE_FIELDS = {
 }
 ALLOWED_TRIGGER_TYPES = {"SCAN_COMPLETED", "COMMAND_RESULT", "TIMER_TIMEOUT", "REPLAY_REQUEST"}
 ALLOWED_STATE_VALUES = {
-    "material": {"IN_TRANSIT", "NG", "NOT_CREATED", "MANUAL_HOLD", "UNCHANGED"},
+    "material": {status.value for status in MaterialUnitStatus} | {"NOT_CREATED", "UNCHANGED"},
     "context_phase": {"PICK_TO_PIPELINE", "NG_MOVING", "MOVING_FORWARD", "UNCHANGED"},
-    "command": {"NOT_CREATED", "UNCHANGED", "MANUAL_HOLD"},
-    "session": {"WAITING_COMMAND_RESULT", "MANUAL_HOLD", "UNCHANGED"},
+    "command": {status.value for status in CommandStatus} | {"NOT_CREATED", "UNCHANGED"},
+    "session": {status.value for status in SessionStatus} | {"UNCHANGED"},
+    "runtime_hold": {status.value for status in RuntimeHoldStatus} | {"NOT_CREATED", "UNCHANGED"},
 }
 ALLOWED_INTENT_KINDS = {"CREATE_MATERIAL_UNIT", "UPDATE_CONTEXT", "MARK_NG", "COMMAND", "BLOCK"}
 ALLOWED_COMMAND_ACTIONS = {"PICK_AND_PUT", "MOVE_FORWARD", "MOVE_TO_NG"}
@@ -403,6 +408,131 @@ async def test_failed_command_result_matches_covered_command_hold_contract() -> 
     assert block.payload_json["error_detail"]["error_code"] == "DEVICE_BUSY"
 
 
+@pytest.mark.parametrize(
+    ("result", "expected_status"),
+    [
+        (CommandResult.SUCCESS, CommandStatus.COMPLETED),
+        (CommandResult.FAILED, CommandStatus.FAILED),
+    ],
+)
+@pytest.mark.asyncio
+async def test_command_callback_persists_real_terminal_status_before_runtime_block(
+    monkeypatch: pytest.MonkeyPatch,
+    result: CommandResult,
+    expected_status: CommandStatus,
+) -> None:
+    command = SimpleNamespace(
+        id=808,
+        command_code="CMD-PICK-008",
+        status=CommandStatus.ACK_RECEIVED,
+        get_duration_ms=lambda: 0,
+    )
+
+    class _CommandRepository:
+        async def get_by_command_code(self, _db: Any, command_code: str) -> Any:
+            assert command_code == command.command_code
+            return command
+
+        async def update(self, _db: Any, command_id: int, update_data: dict[str, Any]) -> Any:
+            assert command_id == command.id
+            for key, value in update_data.items():
+                setattr(command, key, value)
+            return command
+
+    service = DeviceCommandService()
+    service.repo = _CommandRepository()  # type: ignore[assignment]
+    service._invalidate_command_cache = AsyncMock()  # type: ignore[method-assign]
+    from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
+        workline_runtime_reconciliation_service,
+    )
+
+    monkeypatch.setattr(
+        workline_runtime_reconciliation_service,
+        "record_late_callback_if_pending",
+        AsyncMock(return_value=False),
+    )
+    callback = CommandCallbackResult(
+        command_code=command.command_code,
+        device_code="ROUGH-SORTER-01",
+        source_event_id=f"evt-{result.value.lower()}-008",
+        result=result,
+        finish_time=1_700_000_000_000,
+        data={"measurement_result": "OK"},
+    )
+
+    outcome = await service.handle_callback_result(SimpleNamespace(), callback)
+
+    assert outcome.command is command
+    assert command.status == expected_status
+
+
+@pytest.mark.asyncio
+async def test_block_effect_holds_only_session_and_preserves_entity_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
+    from src.app.workline.services import write_back_service as workline_effects
+
+    persist_manual_hold = AsyncMock()
+    emit_timeline = AsyncMock()
+    monkeypatch.setattr(WorklineSessionRepository, "persist_manual_hold", persist_manual_hold)
+    monkeypatch.setattr(workline_effects, "_effect_trace_payload", lambda _ctx: {})
+    monkeypatch.setattr(workline_effects, "_emit_timeline", emit_timeline)
+    now = timezone.now_for_db()
+    session = SimpleNamespace(
+        id=808,
+        status=SessionStatus.WAITING_DEVICE_RESULT,
+        current_wait_type="COMMAND_RESULT",
+        waiting_since=now,
+        deadline_at=now,
+        current_wait_timeout_seconds=300,
+        awaiting_device_command_code="CMD-PICK-008",
+        ended_at=None,
+        failure_domain=None,
+        failure_code=None,
+        failure_message=None,
+        trace_id=None,
+    )
+    material = SimpleNamespace(status=MaterialUnitStatus.IN_TRANSIT)
+    command = SimpleNamespace(status=CommandStatus.FAILED)
+    db = SimpleNamespace()
+
+    effect_result = await RuntimeIntentEffectApplier().apply(
+        {
+            "db": db,
+            "session": session,
+            "inbox": SimpleNamespace(id=8808, payload_json={}),
+            "trace_id": "trace-rs-sd-008",
+            "current_status": SessionStatus.WAITING_DEVICE_RESULT.value,
+            "now": now,
+            "material_unit": material,
+            "command": command,
+        },
+        [
+            RuntimeIntent.block(
+                scope=BlockScope.COMMAND,
+                reason_code="DEVICE_BUSY",
+                message="设备忙",
+            )
+        ],
+    )
+
+    assert effect_result.disposition == WriteBackDisposition.PROCESSED
+    assert session.status == SessionStatus.MANUAL_HOLD
+    assert session.failure_domain == BlockScope.COMMAND.value
+    assert material.status == MaterialUnitStatus.IN_TRANSIT
+    assert command.status == CommandStatus.FAILED
+    persist_manual_hold.assert_awaited_once_with(
+        db,
+        session_id=session.id,
+        occurred_at=now,
+        failure_domain=BlockScope.COMMAND.value,
+        failure_code="DEVICE_BUSY",
+        failure_message="设备忙",
+    )
+    emit_timeline.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_success_command_result_only_continues_and_does_not_cover_measurement_wms_target() -> None:
     case = _case("RS-SD-004")
@@ -491,6 +621,8 @@ async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
     )
 
     assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-009"] == "partial"
+    assert case["expected_intents"] == []
+    assert case["expected_state"]["runtime_hold"] == RuntimeHoldStatus.OPEN.value
     assert result.disposition == "RECONCILED"
     assert result.session is session
     assert session.status == SessionStatus.MANUAL_HOLD
@@ -707,7 +839,10 @@ def test_case_fields_use_closed_non_empty_structures() -> None:
             for key, value in case["trigger"]["decision_discriminator"].items()
         ), case_id
         assert isinstance(case["preconditions"], list) and all(case["preconditions"]), case_id
-        assert set(case["recorded_evidence"]) == {"first_attempt", "replay"}, case_id
+        expected_evidence_phases = (
+            {"first_attempt", "replay", "subsequent_replay"} if case_id == "RS-SD-012" else {"first_attempt", "replay"}
+        )
+        assert set(case["recorded_evidence"]) == expected_evidence_phases, case_id
         assert all(
             isinstance(items, list) and items and all(isinstance(item, str) and item for item in items)
             for items in case["recorded_evidence"].values()
@@ -718,18 +853,33 @@ def test_case_fields_use_closed_non_empty_structures() -> None:
             for key, value in case["expected_state"].items()
         ), case_id
         assert isinstance(case["expected_intents"], list), case_id
-        assert case["expected_outcome"].keys() >= {"result", "reason_code"}, case_id
+        assert set(case["expected_outcome"]) == {"result", "reason_code"}, case_id
         assert case["expected_outcome"]["result"] in ALLOWED_OUTCOMES, case_id
         assert isinstance(case["replay_expectation"], str) and case["replay_expectation"].strip(), case_id
         assert set(case["replay_policy"]) == {"query", "effect", "session_progress"}, case_id
         assert case["replay_policy"]["query"] in {"NOT_APPLICABLE", "REUSE_RECORDED"}, case_id
-        assert case["replay_policy"]["effect"] == "NO_NEW_EFFECT", case_id
+        expected_effect_policy = "PERSIST_HOLD_ONCE_THEN_NO_NEW_EFFECT" if case_id == "RS-SD-012" else "NO_NEW_EFFECT"
+        assert case["replay_policy"]["effect"] == expected_effect_policy, case_id
         assert case["replay_policy"]["session_progress"] == "NO_PROGRESS", case_id
 
     cases = {case["case_id"]: case for case in _load_fixture()["cases"]}
     ng_pkg_id = cases["RS-SD-002"]["trigger"]["payload"]["data"]["PkgID"].upper()
     assert cases["RS-SD-002"]["trigger"]["decision_discriminator"]["pkg_ng_rule"] in ng_pkg_id
     assert "PkgID" not in cases["RS-SD-003"]["trigger"]["payload"]["data"]
+
+
+def test_block_cases_preserve_persisted_entity_states() -> None:
+    cases = {case["case_id"]: case for case in _load_fixture()["cases"]}
+
+    for case in cases.values():
+        if any(intent["kind"] == "BLOCK" for intent in case["expected_intents"]):
+            assert case["expected_state"]["material"] != "MANUAL_HOLD", case["case_id"]
+            assert case["expected_state"]["command"] != "MANUAL_HOLD", case["case_id"]
+            assert case["expected_state"]["session"] == "MANUAL_HOLD", case["case_id"]
+
+    for case_id in ("RS-SD-007", "RS-SD-010"):
+        assert cases[case_id]["trigger"]["payload"]["result"] == "SUCCESS"
+        assert cases[case_id]["expected_state"]["command"] == CommandStatus.COMPLETED.value
 
 
 def test_measurement_cases_follow_authoritative_payload_contract() -> None:
@@ -767,12 +917,19 @@ def test_intents_outcomes_and_replay_policies_are_consistent() -> None:
         if outcome.endswith("_PERSISTED"):
             assert intent_kinds.count("COMMAND") == 1 and "BLOCK" not in intent_kinds, case_id
         elif outcome == "HOLD":
-            assert intent_kinds == ["BLOCK"], case_id
+            if case["trigger"]["event_type"] == "TIMER_TIMEOUT":
+                assert not intents, case_id
+            else:
+                assert intent_kinds == ["BLOCK"], case_id
         else:
             assert outcome in {"REPLAY_ACCEPTED_NOOP", "ARCHIVED_EVIDENCE"} and not intents, case_id
 
         expected_query_policy = "REUSE_RECORDED" if case_id in QUERY_REPLAY_CASES else "NOT_APPLICABLE"
         assert case["replay_policy"]["query"] == expected_query_policy, case_id
+
+        if case_id == "RS-SD-012":
+            assert intent_kinds == ["BLOCK"]
+            assert case["replay_policy"]["effect"] == "PERSIST_HOLD_ONCE_THEN_NO_NEW_EFFECT"
 
     late_callback = _load_fixture()["cases"][-1]
     assert late_callback["case_id"] == "RS-SD-013"
@@ -792,19 +949,61 @@ def test_intents_outcomes_and_replay_policies_are_consistent() -> None:
 def test_case_categories_retain_required_evidence_ownership() -> None:
     cases = {case["case_id"]: case for case in _load_fixture()["cases"]}
 
+    required_block_evidence = {
+        "block_intent_identity",
+        "block_effect_identity",
+        "block_scope",
+        "block_reason_code",
+        "session_hold_write_result",
+    }
+    for case in cases.values():
+        if any(intent["kind"] == "BLOCK" for intent in case["expected_intents"]):
+            processing_phase = "replay" if case["case_id"] == "RS-SD-012" else "first_attempt"
+            subsequent_replay_phase = "subsequent_replay" if case["case_id"] == "RS-SD-012" else "replay"
+            assert required_block_evidence <= set(case["recorded_evidence"][processing_phase]), case["case_id"]
+            assert {
+                "reused_block_intent_identity",
+                "reused_block_effect_identity",
+                "original_session_hold_write_result",
+                "zero_new_hold_write",
+            } <= set(case["recorded_evidence"][subsequent_replay_phase]), case["case_id"]
+
     for case_id in ("RS-SD-001", "RS-SD-002", "RS-SD-003"):
         evidence = cases[case_id]["recorded_evidence"]
-        assert {"normalized_input_snapshot", "payload_digest"} <= set(evidence["first_attempt"]), case_id
+        assert {
+            "normalized_input_snapshot",
+            "payload_digest",
+            "business_key",
+            "barcode_rule_version",
+            "barcode_decision",
+            "barcode_reason",
+        } <= set(evidence["first_attempt"]), case_id
         assert "payload_digest" in evidence["replay"], case_id
 
     for case_id in ("RS-SD-004", "RS-SD-005", "RS-SD-006", "RS-SD-007", "RS-SD-010"):
         assert "command_result_snapshot" in cases[case_id]["recorded_evidence"]["first_attempt"], case_id
     assert "measurement_snapshot" in cases["RS-SD-005"]["recorded_evidence"]["first_attempt"]
     assert "measurement_validation_errors" in cases["RS-SD-007"]["recorded_evidence"]["first_attempt"]
+    for case_id in ("RS-SD-004", "RS-SD-006", "RS-SD-010", "RS-SD-011"):
+        evidence = cases[case_id]["recorded_evidence"]
+        assert {"wms_query_identity", "wms_request_summary"} <= set(evidence["first_attempt"]), case_id
     for case_id in ("RS-SD-004", "RS-SD-006"):
         evidence = cases[case_id]["recorded_evidence"]
         assert "wms_response_summary" in evidence["first_attempt"], case_id
         assert "original_wms_response_summary" in evidence["replay"], case_id
+
+    for case_id in ("RS-SD-001", "RS-SD-002", "RS-SD-004", "RS-SD-005", "RS-SD-006"):
+        assert {
+            "material_context_effect_identity",
+            "material_context_target_state",
+            "material_context_write_result",
+        } <= set(cases[case_id]["recorded_evidence"]["first_attempt"]), case_id
+        assert {
+            "command_intent_identity",
+            "command_action",
+            "command_correlation_key",
+            "command_wait_deadline",
+        } <= set(cases[case_id]["recorded_evidence"]["first_attempt"]), case_id
 
     assert {"wms_timeout_summary", "payload_digest"} <= set(cases["RS-SD-010"]["recorded_evidence"]["first_attempt"])
     assert {"original_timeout_summary", "no_successful_wms_evidence"} <= set(
@@ -816,9 +1015,23 @@ def test_case_categories_retain_required_evidence_ownership() -> None:
     assert {"command_result_snapshot", "device_error_summary", "hold_reason", "payload_digest"} <= set(
         cases["RS-SD-008"]["recorded_evidence"]["first_attempt"]
     )
-    assert {"command_identity", "deadline_snapshot", "timeout_event", "hold_reason", "payload_digest"} <= set(
-        cases["RS-SD-009"]["recorded_evidence"]["first_attempt"]
-    )
+    assert {
+        "command_identity",
+        "deadline_snapshot",
+        "timeout_event",
+        "payload_digest",
+        "reconciliation_identity",
+        "reconciliation_reason",
+        "runtime_hold_identity",
+        "runtime_hold_write_result",
+        "session_hold_write_result",
+    } <= set(cases["RS-SD-009"]["recorded_evidence"]["first_attempt"])
+    assert {
+        "reused_reconciliation_identity",
+        "reused_runtime_hold_identity",
+        "original_session_hold_write_result",
+        "zero_new_runtime_hold_write",
+    } <= set(cases["RS-SD-009"]["recorded_evidence"]["replay"])
     assert {"normalized_input_snapshot", "query_response_summary", "decision", "intent_identity"} <= set(
         cases["RS-SD-011"]["recorded_evidence"]["first_attempt"]
     )
