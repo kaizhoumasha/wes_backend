@@ -5,6 +5,11 @@
 
 ---
 
+<!-- ownership: material-flow-architecture -->
+
+本文只拥有完整 material-flow 架构。粗分机扫码到入料决策切片的分支判定、reason code 与 replay
+以[粗分机扫码到准入决策窄闭环合同](../business/rough_sorter_scan_decision_contract.md)为唯一真源，本文不重复定义。
+
 ## 1. 边界声明
 
 本 SPEC 定义粗分机、满箱交换和分拣机入库的目标态能力边界。实现时必须按 runtime/orchestration、wms_integration port、device command、MaterialLocationQuery 和 ReconciliationManager 重建，不复用旧 plugin 入口，不保留旧 plugin 兼容入口。

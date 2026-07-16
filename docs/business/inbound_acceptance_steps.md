@@ -4,6 +4,11 @@
 > 状态：Draft
 > 适用范围：粗分机入库、满箱交换前置分流、分拣机入库。
 
+<!-- ownership: end-to-end-line-acceptance-steps -->
+
+本文只拥有整线验收步骤。粗分机扫码到入料决策切片的分支判定、reason code 与 replay
+以[粗分机扫码到准入决策窄闭环合同](./rough_sorter_scan_decision_contract.md)为唯一真源，本文不重复定义。
+
 本文用于验收粗分机到分拣机之间的目标态业务闭环。它只描述验收步骤、观测点和通过标准，不替代
 `docs/architecture/workline-and-plugin-restructuring.md` 的架构设计，也不定义 WMS、AGV、CTU 或 ECS 的内部调度策略。
 

@@ -38,6 +38,24 @@ SPEC_PATH = REPOSITORY_ROOT / "docs/business/rough_sorter_scan_decision_contract
 CHARACTERIZATION_PATH = (
     REPOSITORY_ROOT / "tests/characterization/workline_legacy/test_business_semantics_characterization.py"
 )
+UPSTREAM_DOCUMENT_CONTRACTS = {
+    "docs/architecture/sorter-inbound-capability-spec.md": (
+        "../business/rough_sorter_scan_decision_contract.md",
+        "<!-- ownership: material-flow-architecture -->",
+    ),
+    "docs/business/rough_sorter_runtime_flow.md": (
+        "./rough_sorter_scan_decision_contract.md",
+        "<!-- ownership: end-to-end-device-protocol-examples -->",
+    ),
+    "docs/business/inbound_acceptance_steps.md": (
+        "./rough_sorter_scan_decision_contract.md",
+        "<!-- ownership: end-to-end-line-acceptance-steps -->",
+    ),
+    "docs/business/workline_business_data_event_flow_spec.md": (
+        "./rough_sorter_scan_decision_contract.md",
+        "<!-- ownership: cross-system-data-event-flow -->",
+    ),
+}
 
 EXPECTED_CASE_OVERVIEW = {
     # trigger(event, discriminator), outcome, state(material, command, session, context_phase),
@@ -805,6 +823,14 @@ def test_source_refs_resolve_to_repository_files() -> None:
             isinstance(source_ref, str) and source_ref.strip() and (REPOSITORY_ROOT / source_ref).is_file()
             for source_ref in case["source_refs"]
         ), case["case_id"]
+
+
+def test_upstream_documents_reference_scan_decision_ssot_with_stable_ownership() -> None:
+    for document_path, (relative_spec_path, ownership_marker) in UPSTREAM_DOCUMENT_CONTRACTS.items():
+        content = (REPOSITORY_ROOT / document_path).read_text(encoding="utf-8")
+
+        assert f"]({relative_spec_path})" in content, document_path
+        assert ownership_marker in content, document_path
 
 
 def test_business_spec_has_strict_metadata_and_stable_sections() -> None:

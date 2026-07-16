@@ -3,6 +3,11 @@
 > 日期：2026-05-31
 > 适用范围：`rough_sorter` WorkLine 插件、设备事件上报、设备命令下发、Result Callback、WMS/RCS 外部回调。
 
+<!-- ownership: end-to-end-device-protocol-examples -->
+
+本文只拥有端到端设备协议示例。粗分机扫码到入料决策切片的分支判定、reason code 与 replay
+以[粗分机扫码到准入决策窄闭环合同](./rough_sorter_scan_decision_contract.md)为唯一真源，本文不重复定义；下文涉及缺测量值、业务 NG 或 WMS 拒绝的内容仅作为端到端目标协议示例。
+
 本文只描述当前未发布合同。设备协议不保留旧兼容字段：WES 下发命令只使用 `task_type`，不再下发 `command_type`；`command_code` 由 WES 统一生成，插件不得传入或覆盖。
 
 ## 1. 链路标识约定
