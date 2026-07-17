@@ -66,15 +66,23 @@ def _workline() -> WorkLine:
     return workline
 
 
-def _binding(*, enabled: bool = True, revoked: bool = False) -> SimpleNamespace:
+def _binding(
+    *,
+    binding_id: int = 8,
+    binding_version: int = 2,
+    config_hash: str = "a" * 64,
+    index_digest: str = "b" * 64,
+    enabled: bool = True,
+    revoked: bool = False,
+) -> SimpleNamespace:
     return SimpleNamespace(
-        id=8,
+        id=binding_id,
         workline_id=7,
         plugin_key="platform-test",
         contract_version="v1",
-        binding_version=2,
-        typed_config_hash="a" * 64,
-        generated_index_digest="b" * 64,
+        binding_version=binding_version,
+        typed_config_hash=config_hash,
+        generated_index_digest=index_digest,
         environment="sandbox",
         valid_from=datetime(2026, 7, 17, 8),
         valid_until=None,
@@ -90,7 +98,7 @@ class BindingRepository:
 
     async def get_pinned(self, _db: object, binding_id: int) -> SimpleNamespace | None:
         self.get_calls.append(binding_id)
-        return self.binding if binding_id == 8 else None
+        return self.binding if binding_id == self.binding.id else None
 
 
 class RuntimeRepository:
@@ -125,8 +133,18 @@ class SessionRepository:
         return session
 
 
+class WorklineRepository:
+    def __init__(self, workline: WorkLine) -> None:
+        self.workline = workline
+
+    async def get_for_update(self, _db: object, _workline_id: int, *, populate_existing: bool = False) -> WorkLine:
+        _ = populate_existing
+        return self.workline
+
+
 @pytest.mark.asyncio
 async def test_session_resolver_pins_real_models_and_creates_runtime_aggregate_in_same_entry() -> None:
+    workline = _workline()
     runtime_repository = RuntimeRepository()
     binding_service = WorklinePluginBindingService(
         repository=BindingRepository(),
@@ -138,6 +156,7 @@ async def test_session_resolver_pins_real_models_and_creates_runtime_aggregate_i
     )
     resolver = SessionResolver(
         session_repo=SessionRepository(),
+        workline_repo=WorklineRepository(workline),
         command_repo=object(),
         outbox_repo=object(),
         rack_task_repo=object(),
@@ -153,7 +172,7 @@ async def test_session_resolver_pins_real_models_and_creates_runtime_aggregate_i
         source_message_id="message-1",
     )
 
-    session = await resolver._resolve_device_event(object(), inbox, _workline())
+    session = await resolver._resolve_device_event(object(), inbox, workline)
 
     assert isinstance(session, WorklineSession)
     assert session.plugin_binding_id == 8
@@ -201,8 +220,12 @@ async def test_unapproved_active_draft_identity_never_changes_new_session_bindin
         plugin_index_digest="b" * 64,
         clock=lambda: datetime(2026, 7, 17, 9),
     )
+    workline = _workline()
+    for field, value in draft.items():
+        setattr(workline, field, value)
     resolver = SessionResolver(
         session_repo=SessionRepository(),
+        workline_repo=WorklineRepository(workline),
         command_repo=object(),
         outbox_repo=object(),
         rack_task_repo=object(),
@@ -210,9 +233,6 @@ async def test_unapproved_active_draft_identity_never_changes_new_session_bindin
         handling_operation_repo=object(),
         plugin_binding_service=binding_service,
     )
-    workline = _workline()
-    for field, value in draft.items():
-        setattr(workline, field, value)
     inbox = SimpleNamespace(
         payload_json={"business_key": "PKG-DRAFT"},
         device_id=1,
@@ -234,6 +254,68 @@ async def test_unapproved_active_draft_identity_never_changes_new_session_bindin
     execution_session, _, work_item = runtime_repository.created
     assert (execution_session.plugin_key, execution_session.manifest_version) == ("platform-test", "v1")
     assert work_item.plugin_key == "platform-test"
+
+
+@pytest.mark.asyncio
+async def test_stale_workline_snapshot_reloads_locked_active_binding_before_session_creation() -> None:
+    stale_workline = _workline()
+    current_workline = _workline()
+    current_workline.active_plugin_binding_id = 9
+    current_workline.active_plugin_binding_version = 3
+    current_workline.active_plugin_config_hash = "c" * 64
+    current_workline.active_plugin_index_digest = "d" * 64
+    current_binding = _binding(
+        binding_id=9,
+        binding_version=3,
+        config_hash="c" * 64,
+        index_digest="d" * 64,
+    )
+
+    class WorklineRepository:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, bool]] = []
+
+        async def get_for_update(self, _db: object, workline_id: int, *, populate_existing: bool = False) -> WorkLine:
+            self.calls.append((workline_id, populate_existing))
+            return current_workline
+
+    workline_repository = WorklineRepository()
+    binding_repository = BindingRepository(current_binding)
+    runtime_repository = RuntimeRepository()
+    binding_service = WorklinePluginBindingService(
+        repository=binding_repository,
+        runtime_repository=runtime_repository,
+        plugin_index={("platform-test", "v1"): DEFINITION},
+        capability_index={},
+        plugin_index_digest="d" * 64,
+        clock=lambda: datetime(2026, 7, 17, 9),
+    )
+    resolver = SessionResolver(
+        session_repo=SessionRepository(),
+        workline_repo=workline_repository,
+        command_repo=object(),
+        outbox_repo=object(),
+        rack_task_repo=object(),
+        handling_step_repo=object(),
+        handling_operation_repo=object(),
+        plugin_binding_service=binding_service,
+    )
+    inbox = SimpleNamespace(
+        payload_json={"business_key": "PKG-RACE"},
+        device_id=1,
+        trace_id="trace-race",
+        request_id="request-race",
+        source_message_id="message-race",
+    )
+
+    session = await resolver._resolve_device_event(object(), inbox, stale_workline)
+
+    assert workline_repository.calls == [(7, True)]
+    assert binding_repository.get_calls == [9]
+    assert session.plugin_binding_id == 9
+    assert session.plugin_binding_version == 3
+    assert session.plugin_config_hash == "c" * 64
+    assert session.plugin_index_digest == "d" * 64
 
 
 @pytest.mark.asyncio
@@ -372,6 +454,7 @@ async def test_intent_inventory_reads_plugin_key_from_pinned_execution_session()
                     Result(
                         [
                             SimpleNamespace(
+                                workline_id=7,
                                 id=31,
                                 plugin_key="platform-test",
                                 plugin_binding_id=8,

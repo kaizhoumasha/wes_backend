@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.app.workline.models import WorkLineRunMode
+from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
 from src.app.workline.services.workline_service import WorkLineService
+from src.core.exceptions import BusinessException, OptimisticLockException
 
 
 class _Db:
@@ -24,6 +26,8 @@ class _WorkLineRepositoryStub:
         self.create_calls: list[dict[str, object]] = []
         self.restore_calls: list[int] = []
         self.update_calls: list[tuple[int, dict[str, object]]] = []
+        self.workload_calls: list[int] = []
+        self.workload_count = 0
         self.current = SimpleNamespace(
             id=workline_id,
             is_active=False,
@@ -48,7 +52,8 @@ class _WorkLineRepositoryStub:
         self.current.id = workline_id
         return self.current
 
-    async def get_for_update(self, _db, workline_id):
+    async def get_for_update(self, _db, workline_id, *, populate_existing=False):
+        _ = populate_existing
         self.current.id = workline_id
         return self.current
 
@@ -58,9 +63,22 @@ class _WorkLineRepositoryStub:
 
     async def update(self, _db, workline_id, data):
         self.update_calls.append((workline_id, dict(data)))
+        if "version" in data and data["version"] != self.current.version:
+            raise OptimisticLockException(
+                resource_type="WorkLine",
+                resource_id=workline_id,
+                current_version=self.current.version,
+                provided_version=data["version"],
+            )
         for key, value in data.items():
             setattr(self.current, key, value)
+        if "version" in data:
+            self.current.version += 1
         return self.current
+
+    async def get_unfinished_workload_summary(self, _db, workline_id):
+        self.workload_calls.append(workline_id)
+        return {"count": self.workload_count, "sample": None, "by_type": {}}
 
 
 class _RuntimeStatusProjectionSpy:
@@ -263,12 +281,14 @@ async def test_active_platform_plugin_reapproval_appends_binding_and_switches_pi
 
         async def activate(self, _db: object, **kwargs: object) -> SimpleNamespace:
             self.calls += 1
-            workline = kwargs["workline"]
-            workline.active_plugin_binding_id = 9
-            workline.active_plugin_binding_version = 2
-            workline.active_plugin_config_hash = "c" * 64
-            workline.active_plugin_index_digest = "d" * 64
-            return SimpleNamespace(id=9)
+            return SimpleNamespace(
+                id=9,
+                binding_version=2,
+                typed_config_hash="c" * 64,
+                generated_index_digest="d" * 64,
+                provider_profile_snapshot_json=[],
+                port_requirements_json=[],
+            )
 
     binding_service = BindingService()
     service = WorkLineService(
@@ -289,8 +309,126 @@ async def test_active_platform_plugin_reapproval_appends_binding_and_switches_pi
 
     assert result.active_plugin_binding_id == 9
     assert result.active_plugin_binding_version == 2
+    assert result.version == 8
     assert binding_service.calls == 1
+    assert repository.workload_calls == []
+    assert repository.update_calls == [
+        (
+            repository.current.id,
+            {
+                "active_plugin_binding_id": 9,
+                "active_plugin_binding_version": 2,
+                "active_plugin_config_hash": "c" * 64,
+                "active_plugin_index_digest": "d" * 64,
+                "active_plugin_provider_requirements_json": [],
+                "active_plugin_port_requirements_json": [],
+                "version": 7,
+            },
+        )
+    ]
     assert db.commit_count == 1
+
+    with pytest.raises(OptimisticLockException):
+        await service.activate(db, repository.current.id, version=7, actor="stale", reason="stale-v2")
+    assert binding_service.calls == 1
+
+
+class _PlatformBindingServiceStub:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls = 0
+
+    def manages(self, _workline: object) -> bool:
+        return True
+
+    async def activate(self, _db: object, **_kwargs: object) -> SimpleNamespace:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return SimpleNamespace(
+            id=9,
+            binding_version=1,
+            typed_config_hash="c" * 64,
+            generated_index_digest="d" * 64,
+            provider_profile_snapshot_json=[],
+            port_requirements_json=[],
+        )
+
+
+def _prepare_platform_activation(monkeypatch, repository, binding_service):
+    projection = _RuntimeStatusProjectionSpy(missing=False)
+    service = WorkLineService(
+        repository=repository,
+        runtime_status_projection_service=projection,
+        plugin_binding_service=binding_service,
+    )
+    workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
+    monkeypatch.setattr(
+        workline_service_module,
+        "device_repository",
+        SimpleNamespace(get_by_work_line_id=AsyncMock(return_value=[])),
+    )
+    monkeypatch.setattr(service, "_list_rack_positions", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "_build_configuration_checks", lambda *_args, **_kwargs: [])
+    return service
+
+
+@pytest.mark.asyncio
+async def test_first_platform_binding_rejects_unfinished_legacy_workload(monkeypatch):
+    repository = _WorkLineRepositoryStub()
+    repository.current.plugin_key = "platform-plugin"
+    repository.current.contract_version = "v1"
+    repository.workload_count = 1
+    binding_service = _PlatformBindingServiceStub()
+    service = _prepare_platform_activation(monkeypatch, repository, binding_service)
+
+    with pytest.raises(BusinessException) as exc_info:
+        await service.activate(_Db(), repository.current.id, version=7)
+
+    assert exc_info.value.code == "4001"
+    assert exc_info.value.detail == {"reason_code": "LEGACY_RUNTIME_WORKLOAD_PRESENT"}
+    assert binding_service.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_first_platform_binding_allows_cutover_without_unfinished_workload(monkeypatch):
+    repository = _WorkLineRepositoryStub()
+    repository.current.plugin_key = "platform-plugin"
+    repository.current.contract_version = "v1"
+    binding_service = _PlatformBindingServiceStub()
+    service = _prepare_platform_activation(monkeypatch, repository, binding_service)
+
+    result = await service.activate(_Db(), repository.current.id, version=7)
+
+    assert repository.workload_calls == [repository.current.id]
+    assert result.active_plugin_binding_id == 9
+    assert result.is_active is True
+    assert result.version == 8
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "internal_message",
+    [
+        "config validation failed: secret",
+        "device requirement 缺失: ['PLC']",
+        "provider/Port admission failed: internal",
+    ],
+)
+async def test_platform_binding_admission_error_becomes_stable_business_error(monkeypatch, internal_message):
+    repository = _WorkLineRepositoryStub()
+    repository.current.plugin_key = "platform-plugin"
+    repository.current.contract_version = "v1"
+    binding_service = _PlatformBindingServiceStub(error=PluginBindingAdmissionError(internal_message))
+    service = _prepare_platform_activation(monkeypatch, repository, binding_service)
+
+    with pytest.raises(BusinessException) as exc_info:
+        await service.activate(_Db(), repository.current.id, version=7)
+
+    assert exc_info.value.code == "4001"
+    assert exc_info.value.message == "插件绑定准入失败，请检查配置、设备和外部合同"
+    assert exc_info.value.detail == {"reason_code": "PLUGIN_BINDING_ADMISSION_FAILED"}
+    assert internal_message not in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio

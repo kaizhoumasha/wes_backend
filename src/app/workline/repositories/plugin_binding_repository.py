@@ -65,14 +65,21 @@ class WorklinePluginBindingRepository(BaseRepository[WorklinePluginBinding]):
         return execution_session, work_item
 
     @staticmethod
-    async def list_runtime_extension_references(db: AsyncSession, workline_id: int) -> list[dict[str, Any]]:
-        """列出 WorkItem/Intent 通过 ExecutionSession 固定的插件与索引引用。"""
+    async def list_runtime_extension_references_by_workline_ids(
+        db: AsyncSession,
+        workline_ids: tuple[int, ...],
+    ) -> dict[int, list[dict[str, Any]]]:
+        """批量列出 WorkItem/Intent 通过 ExecutionSession 固定的插件与索引引用。"""
+
+        if not workline_ids:
+            return {}
 
         session_columns = cast("Any", ExecutionSession).__table__.c
         work_item_columns = cast("Any", ExecutionWorkItem).__table__.c
         intent_columns = cast("Any", RuntimeIntentLog).__table__.c
         work_items = await db.execute(
             select(
+                session_columns.workline_id,
                 work_item_columns.id,
                 work_item_columns.plugin_key,
                 work_item_columns.plugin_binding_id,
@@ -82,11 +89,13 @@ class WorklinePluginBindingRepository(BaseRepository[WorklinePluginBinding]):
             )
             .select_from(ExecutionWorkItem)
             .join(ExecutionSession, session_columns.id == work_item_columns.execution_session_id)
-            .where(session_columns.workline_id == workline_id)
+            .where(session_columns.workline_id.in_(workline_ids))
+            .order_by(session_columns.workline_id)
             .order_by(work_item_columns.id)
         )
         intents = await db.execute(
             select(
+                session_columns.workline_id,
                 intent_columns.id,
                 session_columns.plugin_key,
                 session_columns.plugin_binding_id,
@@ -96,34 +105,42 @@ class WorklinePluginBindingRepository(BaseRepository[WorklinePluginBinding]):
             )
             .select_from(RuntimeIntentLog)
             .join(ExecutionSession, session_columns.id == intent_columns.execution_session_id)
-            .where(session_columns.workline_id == workline_id)
+            .where(session_columns.workline_id.in_(workline_ids))
+            .order_by(session_columns.workline_id)
             .order_by(intent_columns.id)
         )
-        references = [
-            {
-                "type": "WORK_ITEM",
-                "reference": f"work-item:{row.id}",
-                "plugin_key": row.plugin_key,
-                "plugin_binding_id": row.plugin_binding_id,
-                "plugin_binding_version": row.plugin_binding_version,
-                "plugin_config_hash": row.plugin_config_hash,
-                "plugin_index_digest": row.plugin_index_digest,
-            }
-            for row in work_items
-        ]
-        references.extend(
-            {
-                "type": "INTENT",
-                "reference": f"intent:{row.id}",
-                "plugin_key": row.plugin_key,
-                "plugin_binding_id": row.plugin_binding_id,
-                "plugin_binding_version": row.plugin_binding_version,
-                "plugin_config_hash": row.plugin_config_hash,
-                "plugin_index_digest": row.plugin_index_digest,
-            }
-            for row in intents
-        )
-        return references
+        references_by_workline: dict[int, list[dict[str, Any]]] = {workline_id: [] for workline_id in workline_ids}
+        for row in work_items:
+            references_by_workline[int(row.workline_id)].append(
+                {
+                    "type": "WORK_ITEM",
+                    "reference": f"work-item:{row.id}",
+                    "plugin_key": row.plugin_key,
+                    "plugin_binding_id": row.plugin_binding_id,
+                    "plugin_binding_version": row.plugin_binding_version,
+                    "plugin_config_hash": row.plugin_config_hash,
+                    "plugin_index_digest": row.plugin_index_digest,
+                }
+            )
+        for row in intents:
+            references_by_workline[int(row.workline_id)].append(
+                {
+                    "type": "INTENT",
+                    "reference": f"intent:{row.id}",
+                    "plugin_key": row.plugin_key,
+                    "plugin_binding_id": row.plugin_binding_id,
+                    "plugin_binding_version": row.plugin_binding_version,
+                    "plugin_config_hash": row.plugin_config_hash,
+                    "plugin_index_digest": row.plugin_index_digest,
+                }
+            )
+        return references_by_workline
+
+    @classmethod
+    async def list_runtime_extension_references(cls, db: AsyncSession, workline_id: int) -> list[dict[str, Any]]:
+        """兼容单 WorkLine 调用；内部仍复用批量查询。"""
+
+        return (await cls.list_runtime_extension_references_by_workline_ids(db, (workline_id,)))[workline_id]
 
 
 workline_plugin_binding_repository = WorklinePluginBindingRepository()

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 
 from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.contracts.external_contract_profile_catalog import ExternalContractProfileCatalog
+from src.app.runtime.runtime_capability_catalog import RUNTIME_CAPABILITY_PROVIDER_PROFILES
 from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
     SystemCapabilityDefinition,
@@ -20,6 +21,7 @@ from src.app.runtime.workline_plugins.definition import WorklinePluginDefinition
 from src.app.workline.services.plugin_binding_service import (
     PluginBindingAdmissionError,
     WorklinePluginBindingService,
+    workline_plugin_binding_service,
 )
 
 
@@ -120,6 +122,18 @@ def service(repo: FakeRepository) -> WorklinePluginBindingService:
     )
 
 
+def test_default_binding_service_wires_runtime_provider_profiles_by_full_identity() -> None:
+    profile = next(iter(RUNTIME_CAPABILITY_PROVIDER_PROFILES.values()))
+
+    resolved = workline_plugin_binding_service.profile_catalog.resolve(
+        provider_code=profile.provider_code,
+        contract_version=profile.contract_version,
+        environment=profile.environment,
+    )
+
+    assert resolved is profile
+
+
 @pytest.mark.asyncio
 async def test_activation_creates_new_immutable_version_with_canonical_config_and_snapshots() -> None:
     repo = FakeRepository()
@@ -161,7 +175,8 @@ async def test_activation_creates_new_immutable_version_with_canonical_config_an
     assert first.device_snapshot_json == [{"device_code": "PLC-01", "provider_code": "ECS"}]
     assert first.activated_by == "operator-1"
     assert first.activated_reason == "go-live"
-    assert workline.active_plugin_provider_requirements_json == ["WMS@v1#production"]
+    assert not hasattr(workline, "active_plugin_binding_id")
+    assert first.provider_profile_snapshot_json[0]["environment"] == "production"
     assert repo.rows[1].binding_version == 1
 
 

@@ -12,6 +12,7 @@ from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+from src.app.runtime.runtime_capability_catalog import RUNTIME_CAPABILITY_PROVIDER_PROFILES
 from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX, WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.workline.repositories.plugin_binding_repository import workline_plugin_binding_repository
@@ -180,7 +181,8 @@ class WorklinePluginBindingService:
             db, workline_id, definition.plugin_key, definition.contract_version
         )
         activated_at = self.clock()
-        row = await self.repository.create_immutable(
+        # WorkLine active pin 由 WorkLineService 通过乐观更新原子切换；此处只追加 immutable row。
+        return await self.repository.create_immutable(
             db,
             {
                 "workline_id": workline_id,
@@ -201,16 +203,6 @@ class WorklinePluginBindingService:
                 "is_enabled": True,
             },
         )
-        # WorkLine.config 仍是草稿；运行入口只跟随这些 immutable binding pin。
-        workline.active_plugin_binding_id = row.id
-        workline.active_plugin_binding_version = row.binding_version
-        workline.active_plugin_config_hash = row.typed_config_hash
-        workline.active_plugin_index_digest = row.generated_index_digest
-        workline.active_plugin_provider_requirements_json = (
-            [] if profile is None else [f"{profile.provider_code}@{profile.contract_version}#{profile.environment}"]
-        )
-        workline.active_plugin_port_requirements_json = list(port_requirements)
-        return row
 
     async def get_pinned(self, db: Any, *, binding_id: int) -> Any:
         """读取历史 pin 不过滤 is_enabled，保证 retry 能解析原始版本。"""
@@ -371,7 +363,9 @@ class WorklinePluginBindingService:
             raise PluginBindingAdmissionError("binding 已过期")
 
 
-workline_plugin_binding_service = WorklinePluginBindingService()
+workline_plugin_binding_service = WorklinePluginBindingService(
+    profile_catalog=ExternalContractProfileCatalog(RUNTIME_CAPABILITY_PROVIDER_PROFILES.values())
+)
 
 __all__ = [
     "PluginBindingAdmissionError",

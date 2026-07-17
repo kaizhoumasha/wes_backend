@@ -56,6 +56,7 @@ from src.app.workline.models.workline import (
 )
 from src.app.workline.repositories import WorkLineRepository
 from src.app.workline.services.plugin_binding_service import (
+    PluginBindingAdmissionError,
     WorklinePluginBindingService,
     workline_plugin_binding_service,
 )
@@ -462,7 +463,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     ) -> WorkLine | None:
         """通过配置预检后启用 WorkLine。"""
 
-        current = await self.repo.get_for_update(db, workline_id)
+        current = await self.repo.get_for_update(db, workline_id, populate_existing=True)
         if current is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")
         self._assert_version(current, workline_id, version)
@@ -483,24 +484,58 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 await self._commit_mutation(db)
             return current
         if binding_managed:
+            if getattr(current, "active_plugin_binding_id", None) is None:
+                workload = await self.repo.get_unfinished_workload_summary(db, workline_id)
+                if workload["count"] > 0:
+                    raise BusinessException(
+                        message="存在未完成 legacy 运行负载，不能首次启用平台插件绑定",
+                        code="4001",
+                        detail={"reason_code": "LEGACY_RUNTIME_WORKLOAD_PRESENT"},
+                    )
             binding_environment = environment or WorklinePluginBindingService.resolve_runtime_environment(
                 settings.APP_ENV
             )
-            await self.plugin_binding_service.activate(
-                db,
-                workline=current,
-                expected_workline_version=version,
-                actor=actor,
-                reason=reason,
-                environment=binding_environment,
-                devices=devices,
-            )
-            if current.is_active:
-                await self._commit_mutation(db)
-                if cache:
-                    await self.invalidate_cache(cache, workline_id, invalidate_list=True)
-                return current
+            try:
+                binding = await self.plugin_binding_service.activate(
+                    db,
+                    workline=current,
+                    expected_workline_version=version,
+                    actor=actor,
+                    reason=reason,
+                    environment=binding_environment,
+                    devices=devices,
+                )
+            except PluginBindingAdmissionError as exc:
+                raise BusinessException(
+                    message="插件绑定准入失败，请检查配置、设备和外部合同",
+                    code="4001",
+                    detail={"reason_code": "PLUGIN_BINDING_ADMISSION_FAILED"},
+                ) from exc
+            update_data = self._binding_pin_update(binding, version=version)
+            if not current.is_active:
+                update_data["is_active"] = True
+            updated = await self.repo.update(db, workline_id, update_data)
+            await self._commit_mutation(db)
+            if cache:
+                await self.invalidate_cache(cache, workline_id, invalidate_list=True)
+            return updated
         return await self._set_active_state(db, workline_id, is_active=True, version=version, cache=cache)
+
+    @staticmethod
+    def _binding_pin_update(binding: Any, *, version: int) -> dict[str, Any]:
+        provider_requirements = [
+            f"{profile['provider_code']}@{profile['contract_version']}#{profile['environment']}"
+            for profile in getattr(binding, "provider_profile_snapshot_json", ())
+        ]
+        return {
+            "active_plugin_binding_id": binding.id,
+            "active_plugin_binding_version": binding.binding_version,
+            "active_plugin_config_hash": binding.typed_config_hash,
+            "active_plugin_index_digest": binding.generated_index_digest,
+            "active_plugin_provider_requirements_json": provider_requirements,
+            "active_plugin_port_requirements_json": list(binding.port_requirements_json),
+            "version": version,
+        }
 
     async def deactivate(
         self,

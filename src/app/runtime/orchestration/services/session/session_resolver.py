@@ -268,6 +268,7 @@ class SessionResolver:
     def __init__(
         self,
         session_repo: WorklineSessionRepository | None = None,
+        workline_repo: Any | None = None,
         command_repo: DeviceCommandRepository | None = None,
         outbox_repo: SystemOutboxRepository | None = None,
         rack_task_repo: RackTaskRepository | None = None,
@@ -281,6 +282,11 @@ class SessionResolver:
             session_repo: Session 仓库实例（可选，默认使用全局单例）
         """
         self.session_repo = session_repo or workline_session_repository
+        if workline_repo is None:
+            from src.app.runtime.orchestration.repository_wiring import workline_repository
+
+            workline_repo = workline_repository
+        self.workline_repo = workline_repo
         self.command_repo = command_repo or DeviceCommandRepository()
         self.outbox_repo = outbox_repo or system_outbox_repository
         self.rack_task_repo = rack_task_repo or rack_task_repository
@@ -354,6 +360,14 @@ class SessionResolver:
         Returns:
             解析或创建的 Session
         """
+        workline_id = getattr(workline, "id", None)
+        if not isinstance(workline_id, int):
+            raise TypeError("workline.id is required for DEVICE_EVENT")
+        locked_workline = await self.workline_repo.get_for_update(db, workline_id, populate_existing=True)
+        if locked_workline is None:
+            raise ValueError(f"WorkLine not found: {workline_id}")
+        workline = locked_workline
+
         payload_json = ensure_dict(inbox.payload_json)
         active_binding = await self.plugin_binding_service.resolve_new_session_binding(db, workline=workline)
         runtime_plugin_key = (
@@ -364,10 +378,6 @@ class SessionResolver:
         business_key = _resolve_business_key(payload_json, plugin_key=runtime_plugin_key)
         now = timezone.now_for_db()
         trace = TraceContext.from_runtime(inbox=inbox, workline=workline)
-
-        workline_id = getattr(workline, "id", None)
-        if not isinstance(workline_id, int):
-            raise TypeError("workline.id is required for DEVICE_EVENT")
 
         await _lock_device_event_business_key(db, workline_id=workline_id, business_key=business_key)
 

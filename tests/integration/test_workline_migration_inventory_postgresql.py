@@ -142,6 +142,16 @@ def test_plugin_binding_revision_roundtrip_and_database_constraints() -> None:
                     assert (
                         await connection.scalar(
                             text(
+                                "SELECT COUNT(*) FROM pg_constraint "
+                                "WHERE conname LIKE 'ck_%_plugin_binding_version_positive' "
+                                "OR conname LIKE 'ck_%_plugin_state_version_non_negative'"
+                            )
+                        )
+                        == 6
+                    )
+                    assert (
+                        await connection.scalar(
+                            text(
                                 "SELECT column_default FROM information_schema.columns "
                                 "WHERE table_schema = 'wes_biz' AND table_name = 'workline_plugin_bindings' "
                                 "AND column_name = 'is_revoked'"

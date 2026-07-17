@@ -134,6 +134,18 @@ def upgrade() -> None:
             sa.Column("plugin_state_version", sa.Integer(), server_default=sa.text("0"), nullable=False),
             schema=schema,
         )
+        op.create_check_constraint(
+            op.f(f"ck_{table}_plugin_binding_version_positive"),
+            table,
+            "plugin_binding_version IS NULL OR plugin_binding_version >= 1",
+            schema=schema,
+        )
+        op.create_check_constraint(
+            op.f(f"ck_{table}_plugin_state_version_non_negative"),
+            table,
+            "plugin_state_version >= 0",
+            schema=schema,
+        )
         op.create_foreign_key(
             f"fk_{table}_plugin_binding",
             table,
@@ -194,6 +206,18 @@ def downgrade() -> None:
     for schema, table in reversed(_PIN_COLUMNS):
         op.drop_index(f"ix_{schema}_{table}_plugin_binding_id", table_name=table, schema=schema)
         op.drop_constraint(f"fk_{table}_plugin_binding", table, schema=schema, type_="foreignkey")
+        op.drop_constraint(
+            op.f(f"ck_{table}_plugin_state_version_non_negative"),
+            table,
+            schema=schema,
+            type_="check",
+        )
+        op.drop_constraint(
+            op.f(f"ck_{table}_plugin_binding_version_positive"),
+            table,
+            schema=schema,
+            type_="check",
+        )
         for column in (
             "plugin_state_version",
             "plugin_state_json",

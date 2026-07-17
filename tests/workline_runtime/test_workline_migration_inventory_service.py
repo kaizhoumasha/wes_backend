@@ -223,8 +223,10 @@ async def test_inventory_digest_includes_binding_index_and_per_workline_requirem
 @pytest.mark.asyncio
 async def test_inventory_includes_sorted_workitem_and_intent_binding_index_references() -> None:
     class ExtensionRepository:
-        async def list_runtime_extension_references(self, _db: object, _workline_id: int) -> list[dict[str, object]]:
-            return [
+        async def list_runtime_extension_references_by_workline_ids(
+            self, _db: object, workline_ids: tuple[int, ...]
+        ) -> dict[int, list[dict[str, object]]]:
+            references = [
                 {
                     "type": "WORK_ITEM",
                     "reference": "work-item:2",
@@ -244,6 +246,7 @@ async def test_inventory_includes_sorted_workitem_and_intent_binding_index_refer
                     "plugin_index_digest": "b" * 64,
                 },
             ]
+            return {workline_id: list(references) for workline_id in workline_ids}
 
     service = WorklineMigrationInventoryService(
         repository=FakeRepository([_workline(1, "LINE-01", plugin="known", version="current")]),
@@ -259,6 +262,39 @@ async def test_inventory_includes_sorted_workitem_and_intent_binding_index_refer
         "INTENT",
         "WORK_ITEM",
     )
+
+
+@pytest.mark.asyncio
+async def test_inventory_loads_extension_references_in_one_batch_for_all_worklines() -> None:
+    class ExtensionRepository:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, ...]] = []
+
+        async def list_runtime_extension_references_by_workline_ids(
+            self,
+            _db: object,
+            workline_ids: tuple[int, ...],
+        ) -> dict[int, list[dict[str, object]]]:
+            self.calls.append(workline_ids)
+            return {workline_id: [] for workline_id in workline_ids}
+
+    extension_repository = ExtensionRepository()
+    service = WorklineMigrationInventoryService(
+        repository=FakeRepository(
+            [
+                _workline(2, "LINE-02", plugin="known", version="current"),
+                _workline(1, "LINE-01", plugin="known", version="current"),
+            ]
+        ),
+        capability_definitions_loader=lambda: [_definition()],
+        provider_profile_loader=list,
+        extension_reference_repository=extension_repository,
+        clock=lambda: NOW,
+    )
+
+    await service.build_report(object(), environment="production")
+
+    assert extension_repository.calls == [(1, 2)]
 
 
 @pytest.mark.asyncio

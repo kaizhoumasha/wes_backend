@@ -54,7 +54,11 @@ class _InventoryRepository(Protocol):
 
 
 class _ExtensionReferenceRepository(Protocol):
-    async def list_runtime_extension_references(self, db: AsyncSession, workline_id: int) -> list[dict[str, Any]]: ...
+    async def list_runtime_extension_references_by_workline_ids(
+        self,
+        db: AsyncSession,
+        workline_ids: tuple[int, ...],
+    ) -> dict[int, list[dict[str, Any]]]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,15 +113,19 @@ class WorklineMigrationInventoryService:
 
         capability_catalog = self._build_capability_catalog(self._capability_definitions_loader())
         provider_catalog = self._build_provider_catalog(self._provider_profile_loader())
+        workline_ids = tuple(sorted(self._strict_source_int(source, "id") for source in source_worklines))
+        extension_references_by_workline = (
+            {}
+            if self._extension_reference_repository is None
+            else await self._extension_reference_repository.list_runtime_extension_references_by_workline_ids(
+                db, workline_ids
+            )
+        )
         items: list[WorklineMigrationInventoryItem] = []
         for source in source_worklines:
             workline_id = self._strict_source_int(source, "id")
             summary = await self.repository.get_unfinished_workload_summary(db, workline_id)
-            extension_references = (
-                []
-                if self._extension_reference_repository is None
-                else await self._extension_reference_repository.list_runtime_extension_references(db, workline_id)
-            )
+            extension_references = extension_references_by_workline.get(workline_id, [])
             items.append(self._build_item(source, summary, capability_catalog, extension_references))
 
         ordered_items = tuple(sorted(items, key=lambda item: (item.line_code, item.workline_id)))
