@@ -57,11 +57,8 @@ class PluginAttemptRepository:
         inbox_id: int,
         session_id: int,
     ) -> AuthoritativePluginAttempt | None:
-        """按 timeline advisory → Inbox row → Session row 固定顺序锁定。"""
+        """按 Inbox row → Session row 固定顺序锁定。"""
 
-        # 所有 Timeline writer 先取得同一 session advisory；
-        # 随后才允许获取 attempt 行锁，避免锁序反转死锁。
-        await self._timeline_sequence_repository.acquire_lock(db, session_id=session_id)
         # RuntimeInbox 锁定由其专属 Repository 持有，避免插件仓库越过 inbound ownership 边界。
         inbox = await self._inbox_repository.get_by_id_for_update(db, inbox_id, populate_existing=True)
         if inbox is None:
@@ -81,7 +78,10 @@ class PluginAttemptRepository:
         snapshot: AttemptSnapshot,
         write_set: AttemptWriteSet,
     ) -> None:
-        """在已锁事务写 evidence、decision/intents 与 plugin state。"""
+        """在已锁事务写 evidence、decision/intents 与 plugin state。
+
+        全局锁序与 reconciliation 保持兼容：Inbox row → Session row → timeline advisory。
+        """
 
         session = locked.session
         seq_nos = iter(
@@ -89,7 +89,7 @@ class PluginAttemptRepository:
                 db,
                 session_id=int(session.id),
                 count=len(write_set.evidence) + 1,
-                lock_already_held=True,
+                lock_already_held=False,
             )
         )
         for evidence in write_set.evidence:

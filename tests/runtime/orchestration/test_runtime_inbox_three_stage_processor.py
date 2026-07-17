@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from src.app.runtime.orchestration.effect_result import (
@@ -73,6 +74,33 @@ from src.utils.timezone import timezone
 # ============================================================
 # Helpers
 # ============================================================
+
+
+class _DeadlineQueryInput(BaseModel):
+    value: int
+
+
+class _DeadlineQueryOutput(BaseModel):
+    value: int
+
+
+class _ProcessorUncooperativeHandler:
+    release: asyncio.Event | None = None
+
+    def __init__(self, _context: object) -> None:
+        pass
+
+    async def __call__(self, _request: _DeadlineQueryInput) -> _DeadlineQueryOutput:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            assert self.release is not None
+            while not self.release.is_set():
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:  # noqa: S112 - 模拟不协作 handler 持续吞取消信号。
+                    continue
+            return _DeadlineQueryOutput(value=1)
 
 
 def test_orchestrator_lock_renews_beyond_processing_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,6 +193,57 @@ def test_recorded_replay_invalid_or_excess_intents_fail_closed_without_payload(
     assert write_set.intents == ()
     assert write_set.outcome_code == "HOLD"
     assert write_set.hold_reason == "RECORDED_REPLAY_RECORD_INVALID"
+
+
+def test_recorded_replay_restores_a_complete_legal_hold_decision() -> None:
+    from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
+
+    write_set = _write_set_from_recorded_replay(
+        RecordedReplayResolution(
+            decision={
+                "outcome_code": "HOLD",
+                "hold_reason": "BUSINESS_RULE_HOLD",
+                "next_state": {"step": 2},
+                "intents": [],
+            }
+        ),
+        fallback_state={"step": 1},
+    )
+
+    assert write_set.outcome_code == "HOLD"
+    assert write_set.hold_reason == "BUSINESS_RULE_HOLD"
+    assert write_set.next_state == {"step": 2}
+    assert write_set.intents == ()
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        {"outcome_code": "ROUTE_A", "intents": []},
+        {"outcome_code": "ROUTE_A", "next_state": [], "intents": []},
+        {"next_state": {}, "intents": []},
+        {"outcome_code": "", "next_state": {}, "intents": []},
+        {"outcome_code": "HOLD", "next_state": {}, "intents": []},
+        {"outcome_code": "ROUTE_A", "hold_reason": "BAD_COMBINATION", "next_state": {}, "intents": []},
+        {
+            "outcome_code": "HOLD",
+            "hold_reason": "BUSINESS_RULE_HOLD",
+            "next_state": {},
+            "intents": [{"kind": "CONTINUE_NEXT"}],
+        },
+    ],
+)
+def test_recorded_replay_invalid_decision_fields_fail_closed(decision: dict[str, Any]) -> None:
+    from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
+
+    write_set = _write_set_from_recorded_replay(
+        RecordedReplayResolution(decision=decision),
+        fallback_state={"step": 1},
+    )
+
+    assert write_set.outcome_code == "HOLD"
+    assert write_set.hold_reason == "RECORDED_REPLAY_RECORD_INVALID"
+    assert write_set.intents == ()
 
 
 @pytest.mark.asyncio
@@ -305,6 +384,100 @@ async def test_process_cancellation_closes_attempt_and_leaves_no_background_hand
 
     assert handler_cancelled.is_set()
     assert runtime.handler_task is not None and runtime.handler_task.done()
+
+
+@pytest.mark.asyncio
+async def test_platform_processor_returns_within_gateway_hard_deadline() -> None:
+    from src.app.runtime.capability_port_registry import CapabilityPortRegistry, RuntimeCapabilityContext
+    from src.app.runtime.system_capabilities.definition import (
+        EffectCompletionMode,
+        SystemCapabilityDefinition,
+        SystemCapabilityMode,
+    )
+    from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
+    from src.app.runtime.system_capabilities.outcomes import RetryableFailure
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+
+    release = asyncio.Event()
+    _ProcessorUncooperativeHandler.release = release
+    definition = SystemCapabilityDefinition(
+        capability_key="wms.lookup",
+        contract_version="v1",
+        mode=SystemCapabilityMode.QUERY,
+        input_model=_DeadlineQueryInput,
+        output_model=_DeadlineQueryOutput,
+        handler_factory=_ProcessorUncooperativeHandler,
+        required_ports=(),
+        admission="runtime",
+        timeout_seconds=0.005,
+        completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
+        audit_policy="metadata",
+    )
+    registry = CapabilityPortRegistry()
+    context = RuntimeCapabilityContext(registry)
+    gateway = SystemCapabilityGateway(
+        attempt_id="lease-hard-deadline",
+        definitions={("wms.lookup", "v1"): definition},
+        allowed_capabilities=frozenset({("wms.lookup", "v1")}),
+        context=context,
+        admission_profile="runtime",
+    )
+    runtime = RuntimeInboxAttemptRuntime(
+        attempt_id="lease-hard-deadline",
+        port_registry=registry,
+        context=context,
+        gateway=gateway,
+    )
+
+    class Runner:
+        async def run(self, plugin_context: object) -> AttemptWriteSet:
+            result = await plugin_context.runtime.gateway.execute("wms.lookup", "v1", {"value": 1})  # type: ignore[attr-defined]
+            assert isinstance(result.outcome, RetryableFailure)
+            assert result.outcome.error_code == "TIMEOUT"
+            return AttemptWriteSet(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
+
+    class Db:
+        async def commit(self) -> None:
+            pass
+
+    class WriteBack:
+        async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
+            return WriteDisposition.COMMITTED
+
+    session = SimpleNamespace(
+        id=10,
+        version=7,
+        plugin_state_version=3,
+        plugin_state_json={},
+        plugin_identity="plugin@v1:" + "a" * 64,
+        plugin_binding_id=17,
+        plugin_binding_version=4,
+        plugin_index_digest="b" * 64,
+    )
+    bridge = RuntimeInboxProcessorBridge(
+        plugin_attempt_runner=Runner(),
+        writeback_service=WriteBack(),  # type: ignore[arg-type]
+    )
+    try:
+        result = await asyncio.wait_for(
+            bridge._process_platform_plugin_attempt(
+                Db(),
+                inbox=_make_inbox(inbox_id=91, payload_json={"event_type": "SCAN_COMPLETED"}),
+                session=session,
+                workline=SimpleNamespace(id=20),
+                resolved_event_type="SCAN_COMPLETED",
+                processor_token="lease-hard-deadline",
+                attempt_runtime=runtime,
+            ),
+            timeout=0.1,
+        )
+        assert result["success"] == 1
+        close_report = await gateway.aclose(grace_seconds=0.005)
+        assert close_report.unterminated == 1
+    finally:
+        release.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
 
 
 def test_plugin_write_set_bounds_use_canonical_utf8_bytes_at_exact_and_over_one_boundaries() -> None:
@@ -917,7 +1090,10 @@ def _replay_envelope(*, original_kind: str, original_payload: dict[str, Any]) ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("replay_case", ["valid", "missing_pin", "invalid_intent", "oversize_state"])
+@pytest.mark.parametrize(
+    "replay_case",
+    ["valid", "legal_hold", "missing_pin", "invalid_intent", "invalid_next_state", "oversize_state"],
+)
 async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_pin_missing(
     monkeypatch: pytest.MonkeyPatch,
     replay_case: str,
@@ -971,14 +1147,21 @@ async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_p
     class ReplayService:
         async def load(self, _db: object, **kwargs: object) -> RecordedReplayResolution:
             assert kwargs["source_inbox_id"] == 7
-            intents = (
-                [{"kind": "COMMAND", "payload_json": {"secret": "must-not-leak"}}]
-                if replay_case == "invalid_intent"
-                else []
-            )
+            if replay_case == "invalid_intent":
+                intents = [{"kind": "COMMAND", "payload_json": {"secret": "must-not-leak"}}]
+            elif replay_case == "invalid_next_state":
+                intents = [{"kind": "CONTINUE_NEXT"}]
+            else:
+                intents = []
+            outcome_code = "HOLD" if replay_case == "legal_hold" else "ROUTE_A"
             return RecordedReplayResolution(
                 evidence=(),
-                decision={"outcome_code": "ROUTE_A", "intents": intents, "next_state": {"step": 2}},
+                decision={
+                    "outcome_code": outcome_code,
+                    "hold_reason": "BUSINESS_RULE_HOLD" if replay_case == "legal_hold" else None,
+                    "intents": intents,
+                    "next_state": [] if replay_case == "invalid_next_state" else {"step": 2},
+                },
             )
 
     class WriteBack:
@@ -1017,8 +1200,12 @@ async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_p
     if replay_case == "missing_pin":
         assert captured_write_set.hold_reason == "RECORDED_REPLAY_PIN_MISSING"  # type: ignore[union-attr]
         assert result["failed"] == 1
-    elif replay_case == "invalid_intent":
+    elif replay_case in {"invalid_intent", "invalid_next_state"}:
         assert captured_write_set.hold_reason == "RECORDED_REPLAY_RECORD_INVALID"  # type: ignore[union-attr]
+        assert captured_write_set.intents == ()  # type: ignore[union-attr]
+        assert result["failed"] == 1
+    elif replay_case == "legal_hold":
+        assert captured_write_set.hold_reason == "BUSINESS_RULE_HOLD"  # type: ignore[union-attr]
         assert captured_write_set.intents == ()  # type: ignore[union-attr]
         assert result["failed"] == 1
     elif replay_case == "oversize_state":

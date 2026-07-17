@@ -23,10 +23,10 @@ import uuid
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Annotated, Any, Self, TypedDict
 
 from loguru import logger
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, model_validator
 
 from src.app.runtime.capability_catalog import parse_workline_six_in_one
 from src.app.runtime.capability_port_registry import CapabilityPortRegistry, RuntimeCapabilityContext
@@ -41,7 +41,7 @@ from src.app.runtime.orchestration.repositories.runtime_inbox_repository import 
     RuntimeInboxRepository,
     runtime_inbox_repository,
 )
-from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+from src.app.runtime.orchestration.runtime_intent import RuntimeIntent  # noqa: TC001 - Pydantic 运行时解析字段类型。
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
     _canonical_workline_session_id,
 )
@@ -71,7 +71,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
     _session_write_snapshot,
 )
 from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
-from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
+from src.app.runtime.system_capabilities.gateway import AttemptCloseReport, SystemCapabilityGateway
 from src.app.runtime.system_capabilities.replay import (
     RecordedReplayResolution,
     TimelineRecordedReplayService,
@@ -144,14 +144,17 @@ class RuntimeInboxAttemptRuntime:
     context: RuntimeCapabilityContext
     gateway: SystemCapabilityGateway
     _closed: bool = field(default=False, init=False, compare=False, repr=False)
+    _close_report: AttemptCloseReport | None = field(default=None, init=False, compare=False, repr=False)
 
-    async def aclose(self) -> None:
+    async def aclose(self) -> AttemptCloseReport | None:
         """幂等释放 attempt-scoped gateway；waiter 取消不等于 owner 关闭。"""
 
         if self._closed:
-            return
+            return self._close_report
         object.__setattr__(self, "_closed", True)
-        await self.gateway.aclose()
+        report = await self.gateway.aclose()
+        object.__setattr__(self, "_close_report", report)
+        return report
 
 
 class _ReplayProjectedInbox:
@@ -906,8 +909,16 @@ class RuntimeInboxProcessorBridge:
 
         finally:
             # Attempt owner 始终负责排空共享 QUERY；关闭失败不得覆盖原处理结果或异常。
-            with suppress(Exception):
-                await attempt_runtime.aclose()
+            try:
+                close_report = await attempt_runtime.aclose()
+            except Exception:
+                logger.warning("Plugin attempt cleanup failed: code=ATTEMPT_CLOSE_FAILED")
+            else:
+                if close_report is not None and close_report.unterminated:
+                    logger.warning(
+                        "Plugin attempt cleanup incomplete: "
+                        f"code={close_report.error_code}, unterminated={close_report.unterminated}"
+                    )
 
         from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 
@@ -1027,30 +1038,46 @@ def _write_set_from_recorded_replay(
             outcome_code="HOLD",
             hold_reason=resolution.hold_reason or "RECORDED_REPLAY_RECORD_MISSING",
         )
-    decision = resolution.decision
-    next_state = decision.get("next_state")
-    if not isinstance(next_state, dict):
-        next_state = fallback_state
-    raw_intents = decision.get("intents")
     try:
-        if not isinstance(raw_intents, list) or len(raw_intents) > MAX_PLUGIN_DECISION_INTENTS:
-            raise ValueError("invalid recorded intent collection")
-        adapter = TypeAdapter(RuntimeIntent)
-        intents = tuple(adapter.validate_python(item) for item in raw_intents)
+        decision = TypeAdapter(_RecordedPluginDecision).validate_python(resolution.decision)
     except (TypeError, ValidationError, ValueError):
-        return AttemptWriteSet(
-            evidence=(),
-            next_state=fallback_state,
-            intents=(),
-            outcome_code="HOLD",
-            hold_reason="RECORDED_REPLAY_RECORD_INVALID",
-        )
-    outcome_code = decision.get("outcome_code")
+        return _invalid_recorded_write_set(fallback_state)
     return AttemptWriteSet(
         evidence=resolution.evidence,
-        next_state=next_state,
-        intents=intents,
-        outcome_code=outcome_code if isinstance(outcome_code, str) and outcome_code else "RECORDED",
+        next_state=decision.next_state,
+        intents=decision.intents,
+        outcome_code=decision.outcome_code,
+        hold_reason=decision.hold_reason,
+    )
+
+
+class _RecordedPluginDecision(BaseModel):
+    """Timeline recorded decision 的完整、封闭解码合同。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    outcome_code: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    hold_reason: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)] | None = None
+    next_state: dict[str, Any]
+    intents: tuple[RuntimeIntent, ...] = Field(max_length=MAX_PLUGIN_DECISION_INTENTS)
+
+    @model_validator(mode="after")
+    def validate_hold_combination(self) -> Self:
+        if self.outcome_code == "HOLD":
+            if self.hold_reason is None or self.intents:
+                raise ValueError("recorded HOLD requires a reason and zero intents")
+        elif self.hold_reason is not None:
+            raise ValueError("recorded non-HOLD decision cannot carry hold_reason")
+        return self
+
+
+def _invalid_recorded_write_set(fallback_state: dict[str, Any]) -> AttemptWriteSet:
+    return AttemptWriteSet(
+        evidence=(),
+        next_state=fallback_state,
+        intents=(),
+        outcome_code="HOLD",
+        hold_reason="RECORDED_REPLAY_RECORD_INVALID",
     )
 
 

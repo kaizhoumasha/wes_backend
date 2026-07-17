@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ValidationError
@@ -59,6 +60,16 @@ class GatewayQueryResult:
     evidence: QueryEvidence | None
 
 
+@dataclass(frozen=True, slots=True)
+class AttemptCloseReport:
+    """Attempt owner 有界关闭结果。"""
+
+    requested: int
+    completed: int
+    unterminated: int
+    error_code: str | None = None
+
+
 class SystemCapabilityGateway:
     """每个 Inbox attempt 新建；cache 与 in-flight 不跨 attempt。"""
 
@@ -91,6 +102,7 @@ class SystemCapabilityGateway:
         self._source_version = source_version
         self._admission_snapshot = dict(admission_snapshot or {"profile": admission_profile})
         self._inflight: dict[str, asyncio.Task[GatewayQueryResult]] = {}
+        self._tracked_children: set[asyncio.Task[Any]] = set()
         self._cache: dict[str, GatewayQueryResult] = {}
         self._total_evidence_bytes = 0
         self._closed = False
@@ -143,18 +155,33 @@ class SystemCapabilityGateway:
         task.add_done_callback(lambda completed: self._complete_query(query_key, completed))
         return await asyncio.shield(task)
 
-    async def aclose(self) -> None:
-        """由 attempt owner 幂等关闭，并等待所有共享 handler task 完成取消。"""
+    async def aclose(self, *, grace_seconds: float = 0.05) -> AttemptCloseReport:
+        """取消 attempt tasks，并且只在有限 grace 内等待协作回收。"""
 
-        if self._closed:
-            return
+        if not isfinite(grace_seconds) or grace_seconds < 0:
+            raise ValueError("attempt close grace_seconds must be finite and non-negative")
         self._closed = True
-        tasks = tuple(self._inflight.values())
+        tasks = set(self._inflight.values()) | set(self._tracked_children)
         for task in tasks:
-            task.cancel()
+            if not task.done():
+                task.cancel()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        self._inflight.clear()
+            done, pending = await asyncio.wait(tasks, timeout=grace_seconds)
+        else:
+            done, pending = set(), set()
+        for task in done:
+            if task in self._tracked_children:
+                self._consume_child(task)
+        for query_key, task in tuple(self._inflight.items()):
+            if task in done:
+                self._inflight.pop(query_key, None)
+        unterminated = len(pending)
+        return AttemptCloseReport(
+            requested=len(tasks),
+            completed=len(done),
+            unterminated=unterminated,
+            error_code="ATTEMPT_CLOSE_UNTERMINATED" if unterminated else None,
+        )
 
     def _complete_query(self, query_key: str, task: asyncio.Task[GatewayQueryResult]) -> None:
         """由底层 task 唯一负责 cache/cleanup，waiter 取消不能破坏共享查询。"""
@@ -177,15 +204,36 @@ class SystemCapabilityGateway:
     ) -> GatewayQueryResult:
         try:
             handler = definition.handler_factory(self._context)
-            raw_outcome = await asyncio.wait_for(handler(request), timeout=definition.timeout_seconds)
-            outcome = _normalize_outcome(raw_outcome, output_model=definition.output_model)
-        except TimeoutError:
-            outcome = RetryableFailure(error_code="TIMEOUT", message="system capability query timed out")
         except Exception:
             outcome = RetryableFailure(error_code="UNKNOWN", message="system capability query failed")
+        else:
+            child = asyncio.create_task(handler(request))
+            self._tracked_children.add(child)
+            child.add_done_callback(self._consume_child)
+            done, _ = await asyncio.wait({child}, timeout=definition.timeout_seconds)
+            if child not in done:
+                child.cancel()
+                outcome = RetryableFailure(error_code="TIMEOUT", message="system capability query timed out")
+            else:
+                try:
+                    raw_outcome = child.result()
+                    outcome = _normalize_outcome(raw_outcome, output_model=definition.output_model)
+                except Exception:
+                    outcome = RetryableFailure(error_code="UNKNOWN", message="system capability query failed")
         if _canonical_bytes(_bounded_output_value(outcome)) > self._limits.max_output_bytes:
             return self._violation("QUERY_OUTPUT_LIMIT_EXCEEDED", "canonical query output size limit exceeded")
         return self._attach_evidence(definition, request, outcome)
+
+    def _consume_child(self, task: asyncio.Task[Any]) -> None:
+        """消费 child 最终异常并清理跟踪，避免 orphan warning。"""
+
+        self._tracked_children.discard(task)
+        if task.cancelled():
+            return
+        try:
+            _ = task.exception()
+        except BaseException:
+            return
 
     def _attach_evidence(
         self,
@@ -288,4 +336,4 @@ def _canonical_bytes(value: Any) -> int:
     return len(canonical_json(value).encode("utf-8"))
 
 
-__all__ = ["GatewayLimits", "GatewayQueryResult", "SystemCapabilityGateway"]
+__all__ = ["AttemptCloseReport", "GatewayLimits", "GatewayQueryResult", "SystemCapabilityGateway"]

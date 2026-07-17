@@ -18,6 +18,7 @@ from src.app.runtime.orchestration.models.timeline import (
     TimelineStatus,
     WorklineTimeline,
 )
+from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
 from src.app.runtime.orchestration.repositories.timeline_sequence_repository import TimelineSequenceRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
@@ -300,5 +301,99 @@ def test_timeline_advisory_owner_serializes_concurrent_sequence_ranges() -> None
             ).all()
             assert len(stored) == len(set(stored))
             assert sorted(stored) == list(range(min(stored), max(stored) + 1))
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_plugin_writeback_and_reconciliation_session_first_writer_do_not_deadlock() -> None:
+    """Plugin 的 Inbox→Session→advisory 顺序必须兼容 reconciliation 的 Session→advisory。"""
+
+    async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
+        async with session_factory() as seed_db:
+            seeded = await seed_scan_flow(seed_db)
+            await seed_db.commit()
+
+        session_locked = asyncio.Event()
+        inbox_locked = asyncio.Event()
+        owner = TimelineSequenceRepository()
+
+        class SignalingInboxRepository:
+            async def get_by_id_for_update(
+                self,
+                db,
+                inbox_id: int,
+                *,
+                populate_existing: bool,
+            ):  # type: ignore[no-untyped-def]
+                statement = select(RuntimeInbox).where(RuntimeInbox.id == inbox_id).with_for_update()
+                if populate_existing:
+                    statement = statement.execution_options(populate_existing=True)
+                inbox = await db.scalar(statement)
+                inbox_locked.set()
+                return inbox
+
+        async def reconciliation_writer() -> None:
+            async with session_factory() as db:
+                session = await db.scalar(
+                    select(WorklineSession).where(WorklineSession.id == seeded.session_id).with_for_update()
+                )
+                assert session is not None
+                session_locked.set()
+                await inbox_locked.wait()
+                seq_no = (await owner.allocate_many(db, session_id=seeded.session_id, count=1))[0]
+                db.add(
+                    WorklineTimeline(
+                        session_id=seeded.session_id,
+                        workline_id=seeded.workline_id,
+                        trace_id=seeded.trace_id,
+                        seq_no=seq_no,
+                        occurred_at=timezone.now_for_db(),
+                        stage=TimelineStage.DECISION,
+                        action_type=TimelineActionType.DECISION_MADE,
+                        actor_type=TimelineActorType.ORCHESTRATOR,
+                        actor_code="reconciliation-writer",
+                        status=TimelineStatus.SUCCESS,
+                        message="session-first reconciliation writer",
+                        payload_json={"record_type": "RECONCILIATION_TEST"},
+                    )
+                )
+                await db.commit()
+
+        async def plugin_writer() -> None:
+            await session_locked.wait()
+            async with session_factory() as db:
+                repository = PluginAttemptRepository(
+                    inbox_repository=SignalingInboxRepository(),
+                    timeline_sequence_repository=owner,
+                )
+                locked = await repository.lock_authoritative(
+                    db,
+                    inbox_id=seeded.inbox_id,
+                    session_id=seeded.session_id,
+                )
+                assert locked is not None
+                await repository.persist_locked_attempt(
+                    db,
+                    locked=locked,
+                    workline_id=seeded.workline_id,
+                    trace_id=seeded.trace_id,
+                    snapshot=AttemptSnapshot(
+                        processor_token="deadlock-contract",
+                        session_version=locked.session.version,
+                        plugin_state_version=locked.session.plugin_state_version,
+                    ),
+                    write_set=AttemptWriteSet(
+                        evidence=(),
+                        next_state={"step": 2},
+                        intents=(),
+                        outcome_code="ROUTE_A",
+                    ),
+                )
+                await db.commit()
+
+        await asyncio.wait_for(
+            asyncio.gather(reconciliation_writer(), plugin_writer()),
+            timeout=2,
+        )
 
     asyncio.run(with_temporary_runtime_database(scenario))

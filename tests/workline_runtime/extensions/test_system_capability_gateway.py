@@ -59,6 +59,27 @@ class Handler:
         return QueryOutput(doubled=await self._port.read(request.value))
 
 
+class UncooperativeHandler:
+    """收到取消后仍等待外部释放，用于验证 hard deadline。"""
+
+    release: asyncio.Event | None = None
+
+    def __init__(self, _context: RuntimeCapabilityContext) -> None:
+        pass
+
+    async def __call__(self, _request: QueryInput) -> QueryOutput:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            assert self.release is not None
+            while not self.release.is_set():
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:  # noqa: S112 - 模拟不协作 handler 持续吞取消信号。
+                    continue
+            raise RuntimeError("late uncooperative failure") from None
+
+
 def definition(*, timeout_seconds: float = 0.1, audit_policy: str = "metadata") -> SystemCapabilityDefinition:
     return SystemCapabilityDefinition(
         capability_key="wms.lookup",
@@ -72,6 +93,22 @@ def definition(*, timeout_seconds: float = 0.1, audit_policy: str = "metadata") 
         timeout_seconds=timeout_seconds,
         completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
         audit_policy=audit_policy,
+    )
+
+
+def uncooperative_definition() -> SystemCapabilityDefinition:
+    return SystemCapabilityDefinition(
+        capability_key="wms.lookup",
+        contract_version="v1",
+        mode=SystemCapabilityMode.QUERY,
+        input_model=QueryInput,
+        output_model=QueryOutput,
+        handler_factory=UncooperativeHandler,
+        required_ports=(),
+        admission="provider-contract",
+        timeout_seconds=0.005,
+        completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
+        audit_policy="metadata",
     )
 
 
@@ -96,6 +133,7 @@ def reset_handler() -> None:
     Handler.delay = 0.0
     Handler.result = None
     Handler.error = None
+    UncooperativeHandler.release = None
 
 
 @pytest.mark.asyncio
@@ -195,6 +233,55 @@ async def test_gateway_rejects_canonical_input_and_output_over_byte_limits_befor
     assert isinstance(rejected_output.outcome, ContractViolation)
     assert rejected_output.outcome.error_code == "QUERY_OUTPUT_LIMIT_EXCEEDED"
     assert rejected_output.evidence is None
+
+
+@pytest.mark.asyncio
+async def test_uncooperative_handler_cannot_extend_hard_deadline_or_close_grace() -> None:
+    from src.app.runtime.system_capabilities import gateway as gateway_module
+
+    assert hasattr(gateway_module, "AttemptCloseReport")
+    AttemptCloseReport = gateway_module.AttemptCloseReport
+    SystemCapabilityGateway = gateway_module.SystemCapabilityGateway
+
+    release = asyncio.Event()
+    UncooperativeHandler.release = release
+    definition_value = uncooperative_definition()
+    scoped = SystemCapabilityGateway(
+        attempt_id="attempt-uncooperative",
+        definitions={("wms.lookup", "v1"): definition_value},
+        allowed_capabilities=frozenset({("wms.lookup", "v1")}),
+        context=RuntimeCapabilityContext(CapabilityPortRegistry()),
+        admission_profile="provider-contract",
+    )
+    loop = asyncio.get_running_loop()
+    unhandled: list[dict[str, object]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+    execute_task = asyncio.create_task(scoped.execute("wms.lookup", "v1", {"value": 1}))
+    try:
+        done, _ = await asyncio.wait({execute_task}, timeout=0.1)
+        completed_within_deadline = execute_task in done
+        if not completed_within_deadline:
+            release.set()
+            await execute_task
+        assert completed_within_deadline
+        result = execute_task.result()
+        assert isinstance(result.outcome, RetryableFailure)
+        assert result.outcome.error_code == "TIMEOUT"
+
+        report = await asyncio.wait_for(scoped.aclose(grace_seconds=0.005), timeout=0.1)
+        assert isinstance(report, AttemptCloseReport)
+        assert report.unterminated == 1
+        assert report.error_code == "ATTEMPT_CLOSE_UNTERMINATED"
+
+        release.set()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert scoped._tracked_children == set()
+        assert unhandled == []
+    finally:
+        release.set()
+        loop.set_exception_handler(previous_handler)
 
 
 @pytest.mark.asyncio

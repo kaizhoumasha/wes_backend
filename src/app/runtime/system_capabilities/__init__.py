@@ -2,7 +2,7 @@
 
 from .definition import EffectCompletionMode, SystemCapabilityDefinition, SystemCapabilityMode
 from .evidence import QueryEvidence
-from .gateway import GatewayLimits, GatewayQueryResult, SystemCapabilityGateway
+from .gateway import AttemptCloseReport, GatewayLimits, GatewayQueryResult, SystemCapabilityGateway
 from .outcomes import BusinessReject, ContractViolation, RetryableFailure, Success, parse_outcome
 from .replay import (
     RecordedReplayEnvelope,
@@ -12,6 +12,7 @@ from .replay import (
 )
 
 __all__ = [
+    "AttemptCloseReport",
     "BusinessReject",
     "ContractViolation",
     "EffectCompletionMode",

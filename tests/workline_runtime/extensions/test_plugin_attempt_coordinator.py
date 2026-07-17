@@ -43,8 +43,8 @@ async def test_three_stage_attempt_queries_without_db_then_commits_atomically() 
 
 
 @pytest.mark.asyncio
-async def test_plugin_attempt_lock_order_acquires_timeline_owner_before_inbox_and_session_rows() -> None:
-    """全局锁序固定为 timeline advisory → Inbox row → Session row。"""
+async def test_plugin_attempt_lock_order_matches_session_then_timeline_writers() -> None:
+    """Stage3 先锁 Inbox、Session；timeline advisory 只能在两者之后取得。"""
 
     from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
 
@@ -52,8 +52,7 @@ async def test_plugin_attempt_lock_order_acquires_timeline_owner_before_inbox_an
 
     class TimelineOwner:
         async def acquire_lock(self, _db: object, *, session_id: int) -> None:
-            assert session_id == 41
-            events.append("timeline-advisory")
+            raise AssertionError(f"advisory must not be acquired before row locks: {session_id}")
 
     class InboxRepository:
         async def get_by_id_for_update(self, *_args: object, **_kwargs: object) -> object:
@@ -71,7 +70,7 @@ async def test_plugin_attempt_lock_order_acquires_timeline_owner_before_inbox_an
     ).lock_authoritative(Db(), inbox_id=91, session_id=41)
 
     assert locked is not None
-    assert events == ["timeline-advisory", "inbox-row", "session-row"]
+    assert events == ["inbox-row", "session-row"]
 
 
 @pytest.mark.asyncio
@@ -94,7 +93,7 @@ async def test_plugin_attempt_persistence_uses_reserved_timeline_sequence_instea
             count: int,
             lock_already_held: bool,
         ) -> tuple[int, ...]:
-            assert (session_id, count, lock_already_held) == (41, 1, True)
+            assert (session_id, count, lock_already_held) == (41, 1, False)
             events.append("timeline-reserve")
             return (73,)
 
@@ -386,6 +385,60 @@ async def test_writeback_bounds_oversized_plugin_payload_before_timeline_and_led
     assert bounded.next_state == {}
     assert bounded.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
     assert "must-not-persist" not in repr(bounded)
+
+
+@pytest.mark.asyncio
+async def test_recorded_legal_hold_uses_failed_terminal() -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+        RuntimeInboxWriteBackService,
+    )
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, AttemptWriteSet
+
+    snapshot = AttemptSnapshot(processor_token="lease-1", session_version=7, plugin_state_version=3)
+    terminals: list[str] = []
+
+    class Db:
+        async def commit(self) -> None:
+            pass
+
+        async def rollback(self) -> None:
+            pass
+
+    class Repository:
+        async def lock_authoritative(self, *_args: object, **_kwargs: object) -> object:
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-1"),
+                session=SimpleNamespace(version=7, plugin_state_version=3),
+            )
+
+        async def persist_locked_attempt(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    class InboxService:
+        async def mark_failed(self, *_args: object, **kwargs: object) -> bool:
+            terminals.append(str(kwargs["error_code"]))
+            return True
+
+    await RuntimeInboxWriteBackService(
+        plugin_attempt_repository=Repository(),
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+    ).commit_plugin_attempt(
+        Db(),
+        expected_snapshot=snapshot,
+        inbox_id=91,
+        session_id=41,
+        workline_id=8,
+        trace_id="trace-1",
+        write_set=AttemptWriteSet(
+            evidence=(),
+            next_state={"step": 2},
+            intents=(),
+            outcome_code="HOLD",
+            hold_reason="BUSINESS_RULE_HOLD",
+        ),
+    )
+
+    assert terminals == ["BUSINESS_RULE_HOLD"]
 
 
 @pytest.mark.asyncio
