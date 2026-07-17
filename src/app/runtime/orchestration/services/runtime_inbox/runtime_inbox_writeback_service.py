@@ -30,6 +30,9 @@ from src.app.runtime.orchestration.effect_result import (
 from src.app.runtime.orchestration.repositories.plugin_attempt_repository import (
     plugin_attempt_repository as default_plugin_attempt_repository,
 )
+from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import (
+    runtime_intent_log_repository as default_runtime_intent_log_repository,
+)
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxService,
@@ -318,10 +321,12 @@ class RuntimeInboxWriteBackService:
         write_back_service: Any = None,
         inbox_service: RuntimeInboxService | None = None,
         plugin_attempt_repository: PluginAttemptRepository | Any | None = None,
+        intent_log_repository: Any | None = None,
     ) -> None:
         self._write_back_service = write_back_service
         self._inbox_service = inbox_service
         self._plugin_attempt_repository = plugin_attempt_repository or default_plugin_attempt_repository
+        self._intent_log_repository = intent_log_repository or default_runtime_intent_log_repository
 
     @property
     def write_back_service(self) -> Any:
@@ -370,6 +375,13 @@ class RuntimeInboxWriteBackService:
                 snapshot=expected_snapshot,
                 write_set=write_set,
             )
+            if write_set.intents:
+                await self._intent_log_repository.persist_attempt_intents(
+                    db,
+                    locked=locked,
+                    snapshot=expected_snapshot,
+                    intents=write_set.intents,
+                )
             if write_set.hold_reason is None:
                 terminal_updated = await self.inbox_service.mark_processed(
                     db,

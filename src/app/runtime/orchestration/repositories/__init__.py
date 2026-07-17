@@ -55,6 +55,7 @@ from .runtime_inbox_repository import (
     RuntimeInboxSliSnapshot,
     runtime_inbox_repository,
 )
+from .runtime_intent_log_repository import RuntimeIntentLogRepository, runtime_intent_log_repository
 from .runtime_location_event_repository import (
     RuntimeLocationEventRepository,
     runtime_location_event_repository,
@@ -86,6 +87,7 @@ __all__ = [
     "RuntimeInboxRepository",
     "RuntimeInboxRetryMetadata",
     "RuntimeInboxSliSnapshot",
+    "RuntimeIntentLogRepository",
     "RuntimeLocationEventRepository",
     "SmtInboundHandoffRepository",
     "TimelineRecordedReplayRepository",
@@ -103,6 +105,7 @@ __all__ = [
     "plugin_attempt_repository",
     "runtime_hold_repository",
     "runtime_inbox_repository",
+    "runtime_intent_log_repository",
     "runtime_location_event_repository",
     "timeline_recorded_replay_repository",
     "workline_bin_cell_reservation_repository",

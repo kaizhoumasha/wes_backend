@@ -381,6 +381,98 @@ def test_processor_creates_fresh_attempt_runtime_for_every_claim() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("use_recorded_replay", [False, True])
+async def test_binding_keeps_legacy_orchestrator_when_platform_runner_is_not_injected(
+    monkeypatch: pytest.MonkeyPatch,
+    use_recorded_replay: bool,
+) -> None:
+    """Task 6 runner 未接线前，binding 不能提前接管生产流量。"""
+
+    events: list[str] = []
+    original_payload = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "BOX-1"}}
+    replay_envelope = _replay_envelope(original_kind="DEVICE_EVENT", original_payload=original_payload)
+    inbox = _make_inbox(
+        inbox_id=91,
+        kind="REPLAY_REQUEST" if use_recorded_replay else "DEVICE_EVENT",
+        payload_json=replay_envelope if use_recorded_replay else original_payload,
+    )
+    inbox.event_type = "REPLAY_REQUEST" if use_recorded_replay else "SCAN_COMPLETED"
+    session = SimpleNamespace(
+        id=10,
+        plugin_binding_id=17,
+        status="RUNNING",
+        awaiting_device_command_code=None,
+    )
+    workline = SimpleNamespace(id=20)
+
+    class Db:
+        async def commit(self) -> None:
+            events.append("commit")
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+    class Repository:
+        async def get_by_id(self, *_args: object) -> object:
+            return inbox
+
+    class Validator:
+        async def validate_for_consumption(self, *_args: object, **_kwargs: object) -> object:
+            return RuntimeInboxReplaySourceValidation(envelope=replay_envelope, root_source=SimpleNamespace(id=7))
+
+    class ReplayService:
+        async def load(self, *_args: object, **_kwargs: object) -> object:
+            events.append("MUST_NOT_RECORDED_REPLAY")
+            raise AssertionError("recorded replay seam also requires explicit platform runner admission")
+
+    class Processor:
+        async def process(self, *_args: object, **kwargs: object) -> OrchestratorResult:
+            events.append("legacy-orchestrator")
+            await kwargs["write_callback"](OrchestratorResult(success=True, intents=[]))
+            return OrchestratorResult(success=True, intents=[])
+
+    class WriteBack:
+        def build_write_callback(self, db: object, **kwargs: object) -> object:
+            async def callback(_result: object) -> None:
+                state = kwargs["state"]
+                state.write_effects_applied = True
+                state.disposition = WriteBackDisposition.PROCESSED
+                await db.commit()  # type: ignore[attr-defined]
+
+            return callback
+
+        async def commit_plugin_attempt(self, *_args: object, **_kwargs: object) -> object:
+            events.append("MUST_NOT_PLATFORM")
+            raise AssertionError("default bridge must keep legacy semantics")
+
+    async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+        return session, workline, None, None, {}, object(), True
+
+    async def not_duplicate(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
+        load_related,
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._is_duplicate_entry_event",
+        not_duplicate,
+    )
+
+    result = await RuntimeInboxProcessorBridge(
+        inbox_repository=Repository(),  # type: ignore[arg-type]
+        processor_service=Processor(),  # type: ignore[arg-type]
+        writeback_service=WriteBack(),  # type: ignore[arg-type]
+        replay_source_validator=Validator(),  # type: ignore[arg-type]
+        recorded_replay_service=ReplayService(),  # type: ignore[arg-type]
+    ).process_claimed(Db(), claim={"id": 91, "processor_token": "lease-1"})
+
+    assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+    assert events == ["legacy-orchestrator", "commit"]
+
+
+@pytest.mark.asyncio
 async def test_platform_plugin_claim_runs_three_stages_without_db_in_query_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -79,7 +79,6 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
     AttemptWriteSet,
     PluginAttemptContext,
     PluginAttemptRunner,
-    UnavailablePluginAttemptRunner,
     WriteDisposition,
 )
 from src.app.workline.constants import (
@@ -280,7 +279,8 @@ class RuntimeInboxProcessorBridge:
         self._replay_source_validator = replay_source_validator or RuntimeInboxReplaySourceValidator(
             self._inbox_repository
         )
-        self._plugin_attempt_runner = plugin_attempt_runner or UnavailablePluginAttemptRunner()
+        # Task 6 dispatcher/index 未显式注入前保持 legacy 语义，binding 本身不构成切流授权。
+        self._plugin_attempt_runner = plugin_attempt_runner
         self._recorded_replay_service = recorded_replay_service or TimelineRecordedReplayService()
 
     @property
@@ -652,7 +652,7 @@ class RuntimeInboxProcessorBridge:
                 result["processed"] += 1
                 return result
 
-            if isinstance(getattr(session, "plugin_binding_id", None), int):
+            if isinstance(getattr(session, "plugin_binding_id", None), int) and self._plugin_attempt_runner is not None:
                 return await self._process_platform_plugin_attempt(
                     db,
                     inbox=inbox,
