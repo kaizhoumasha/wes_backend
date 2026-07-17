@@ -4,7 +4,10 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
-NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
+RoleName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+LocationCode = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
+AdmissionCode = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+ProviderProfile = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=240)]
 
 
 class RoughSorterDeviceRoles(BaseModel):
@@ -12,9 +15,9 @@ class RoughSorterDeviceRoles(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    input_arm: NonEmptyString
-    conveyor: NonEmptyString
-    output_arm: NonEmptyString
+    input_arm: RoleName
+    conveyor: RoleName
+    output_arm: RoleName
 
 
 class RoughSorterConfig(BaseModel):
@@ -23,12 +26,12 @@ class RoughSorterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     device_roles: RoughSorterDeviceRoles
-    pipeline_input_location: NonEmptyString
-    pipeline_output_location: NonEmptyString
-    ng_location: NonEmptyString
-    warehouse_code: NonEmptyString
-    owner_code: NonEmptyString
-    provider_profile: NonEmptyString
+    pipeline_input_location: LocationCode
+    pipeline_output_location: LocationCode
+    ng_location: LocationCode
+    warehouse_code: AdmissionCode
+    owner_code: AdmissionCode
+    provider_profile: ProviderProfile
 
 
 __all__ = ["RoughSorterConfig", "RoughSorterDeviceRoles"]

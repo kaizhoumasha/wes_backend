@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
 
 from src.app.runtime.capabilities.material_flow.contracts.rough_sorter import (
     ACTION_MOVE_FORWARD,
@@ -40,12 +40,19 @@ from .inputs import (
 from .state import RoughSorterState
 
 if TYPE_CHECKING:
+    from src.app.runtime.workline_plugins.dispatcher import AttemptSystemCapabilityGateway
+
     from .config import RoughSorterConfig
 
 WMS_QUERY_IDENTITY = ("wms.rough_sorter_inventory_admission", "v1")
 MATERIAL_EFFECT = "material_flow.material_unit_write@v1"
 DEVICE_EFFECT = "device.device_command_write@v1"
 HOLD_EFFECT = "runtime.session_hold@v1"
+REASON_PHASE_MISMATCH = "ROUGH_SORTER_PHASE_MISMATCH"
+REASON_QUERY_CONTRACT_INVALID = "ROUGH_SORTER_QUERY_CONTRACT_INVALID"
+BusinessKey = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
+QueryCode = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+SourceLocation = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
 
 
 class RoughSorterFacts(BaseModel):
@@ -53,10 +60,10 @@ class RoughSorterFacts(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    business_key: str | None = None
-    hhpn: str | None = None
-    lot_code: str | None = None
-    source_location: str = "SCAN_POINT"
+    business_key: BusinessKey | None = None
+    hhpn: QueryCode | None = None
+    lot_code: QueryCode | None = None
+    source_location: SourceLocation = "SCAN_POINT"
     correlation_matches: bool = True
     replay_digest_matches: bool | None = None
     binding_snapshot: RoughSorterBindingSnapshot
@@ -79,13 +86,13 @@ class RoughSorterDecision(PluginDecision[RoughSorterState]):
     zero_new_effect: bool = False
 
 
-async def decide(
+async def decide(  # noqa: PLR0911 - route/state/correlation fail-closed 分支逐项对应稳定合同。
     logical_input: RoughSorterInput,
     *,
     state: RoughSorterState,
     config: RoughSorterConfig,
     facts: RoughSorterFacts,
-    gateway: Any,
+    gateway: AttemptSystemCapabilityGateway,
     context: PluginContext[RoughSorterState] | None = None,
     replay: bool = False,
 ) -> RoughSorterDecision:
@@ -94,9 +101,19 @@ async def decide(
     _ = context
     if replay:
         return _decision("REPLAY_ACCEPTED_NOOP", state, zero_new_effect=True, evidence_only=True)
+    if isinstance(logical_input, ReplayRequestInput):
+        if facts.replay_digest_matches is not False:
+            return _decision("REPLAY_ACCEPTED_NOOP", state, zero_new_effect=True, evidence_only=True)
+        return _hold(state, scope=BlockScope.MATERIAL, reason_code=REASON_IDEMPOTENCY_CONFLICT)
     if isinstance(logical_input, ScanCompletedInput):
+        if state.phase != "READY":
+            return _evidence_only(state, reason_code=REASON_PHASE_MISMATCH)
         return _scan_decision(logical_input, state=state, config=config, facts=facts)
     if isinstance(logical_input, BusinessTimeoutInput):
+        if state.phase != "PICK_TO_PIPELINE":
+            return _evidence_only(state, reason_code=REASON_PHASE_MISMATCH)
+        if state.current_correlation != logical_input.command_code or not facts.correlation_matches:
+            return _evidence_only(state, reason_code=REASON_COMMAND_RESULT_CORRELATION_MISMATCH)
         return _decision(
             "HOLD",
             state,
@@ -106,10 +123,10 @@ async def decide(
                 reason_code=REASON_ROUGH_SORTER_PICK_RESULT_TIMEOUT,
             ),
         )
-    if isinstance(logical_input, ReplayRequestInput):
-        if facts.replay_digest_matches is not False:
-            return _decision("REPLAY_ACCEPTED_NOOP", state, zero_new_effect=True, evidence_only=True)
-        return _hold(state, scope=BlockScope.MATERIAL, reason_code=REASON_IDEMPOTENCY_CONFLICT)
+    if state.phase != "PICK_TO_PIPELINE":
+        return _evidence_only(state, reason_code=REASON_PHASE_MISMATCH)
+    if state.current_correlation != logical_input.command_code or not facts.correlation_matches:
+        return _evidence_only(state, reason_code=REASON_COMMAND_RESULT_CORRELATION_MISMATCH)
     return await _pick_result_decision(logical_input, state=state, config=config, facts=facts, gateway=gateway)
 
 
@@ -173,17 +190,9 @@ async def _pick_result_decision(  # noqa: PLR0911 - 封闭 outcome 分支逐项�
     state: RoughSorterState,
     config: RoughSorterConfig,
     facts: RoughSorterFacts,
-    gateway: Any,
+    gateway: AttemptSystemCapabilityGateway,
 ) -> RoughSorterDecision:
-    if not facts.correlation_matches:
-        return _decision(
-            "ARCHIVED_EVIDENCE",
-            state,
-            reason_code=REASON_COMMAND_RESULT_CORRELATION_MISMATCH,
-            evidence_only=True,
-            zero_new_effect=True,
-        )
-    if logical_input.result.upper() in {"FAILED", "ERROR"}:
+    if logical_input.result.value in {"FAILED", "ERROR"}:
         reason = str(logical_input.error_detail.get("error_code") or "DEVICE_COMMAND_FAILED")
         return _hold(
             state, scope=BlockScope.COMMAND, reason_code=reason, payload={"error_detail": logical_input.error_detail}
@@ -197,16 +206,19 @@ async def _pick_result_decision(  # noqa: PLR0911 - 封闭 outcome 分支逐项�
         return _move_to_ng(state, config=config, facts=facts, reason_code="MEASUREMENT_NG")
     if not facts.business_key or not facts.hhpn or not facts.lot_code:
         return _hold(state, scope=BlockScope.MATERIAL, reason_code=REASON_ROUGH_SORTER_CONTEXT_MISSING)
-    query = RoughSorterInventoryAdmissionInput(
-        business_key=facts.business_key,
-        hhpn=facts.hhpn,
-        lot_code=facts.lot_code,
-        warehouse_code=config.warehouse_code,
-        owner_code=config.owner_code,
-        diameter_mm=diameter,
-        thickness_mm=thickness,
-        binding_snapshot=facts.binding_snapshot,
-    )
+    try:
+        query = RoughSorterInventoryAdmissionInput(
+            business_key=facts.business_key,
+            hhpn=facts.hhpn,
+            lot_code=facts.lot_code,
+            warehouse_code=config.warehouse_code,
+            owner_code=config.owner_code,
+            diameter_mm=diameter,
+            thickness_mm=thickness,
+            binding_snapshot=facts.binding_snapshot,
+        )
+    except ValidationError:
+        return _hold(state, scope=BlockScope.MATERIAL, reason_code=REASON_QUERY_CONTRACT_INVALID)
     query_result = await gateway.execute(*WMS_QUERY_IDENTITY, query)
     evidence_ref = _evidence_reference(query_result.evidence)
     outcome = query_result.outcome
@@ -293,6 +305,16 @@ def _hold(
             ),
         ),
         reason_code=reason_code,
+    )
+
+
+def _evidence_only(state: RoughSorterState, *, reason_code: str) -> RoughSorterDecision:
+    return _decision(
+        "ARCHIVED_EVIDENCE",
+        state,
+        reason_code=reason_code,
+        evidence_only=True,
+        zero_new_effect=True,
     )
 
 

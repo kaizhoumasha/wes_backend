@@ -47,7 +47,7 @@ HOLD_EFFECT = "runtime.session_hold@v1"
 EXPECTED_PHASE = {
     "RS-SD-001": "PICK_TO_PIPELINE",
     "RS-SD-002": "NG_MOVING",
-    "RS-SD-003": "PICK_TO_PIPELINE",
+    "RS-SD-003": "READY",
     "RS-SD-004": "MOVING_FORWARD",
     "RS-SD-005": "NG_MOVING",
     "RS-SD-006": "NG_MOVING",
@@ -138,6 +138,17 @@ def _facts(case: dict[str, Any]) -> RoughSorterFacts:
     )
 
 
+def _source_state(case: dict[str, Any]) -> RoughSorterState:
+    event_type = case["trigger"]["event_type"]
+    command_code = case["trigger"]["payload"].get("command_code")
+    if event_type == "SCAN_COMPLETED":
+        return RoughSorterState(phase="READY")
+    if event_type in {"COMMAND_RESULT", "TIMER_TIMEOUT"}:
+        correlation = "CMD-PICK-CURRENT" if case["case_id"] == "RS-SD-013" else command_code
+        return RoughSorterState(phase="PICK_TO_PIPELINE", current_correlation=correlation)
+    return RoughSorterState(phase="PICK_TO_PIPELINE", current_correlation="CMD-PICK-RECORDED")
+
+
 def _snapshot(**overrides: object) -> PinnedPluginSnapshot:
     values: dict[str, object] = {
         "plugin_key": DEFINITION.plugin_key,
@@ -220,7 +231,7 @@ async def test_approved_case_maps_to_typed_plugin_decision(case: dict[str, Any])
     logical_input = _logical_input(case)
     discriminator = case["trigger"]["decision_discriminator"]
     gateway = _Gateway(discriminator)
-    state = RoughSorterState(phase="PICK_TO_PIPELINE", current_correlation="CMD-PICK-CURRENT")
+    state = _source_state(case)
     facts = _facts(case)
 
     decision = await decide(logical_input, state=state, config=_config(), facts=facts, gateway=gateway)
@@ -273,7 +284,7 @@ async def test_replay_never_calls_provider_or_creates_new_effect(case: dict[str,
 
     decision = await decide(
         logical_input,
-        state=RoughSorterState(phase="PICK_TO_PIPELINE"),
+        state=_source_state(case),
         config=_config(),
         facts=_facts(case),
         gateway=gateway,
@@ -309,6 +320,7 @@ async def test_dispatcher_uses_exact_generated_identity_and_route_without_databa
         ("context_state", "STATE_CONTEXT_MISMATCH"),
         ("config", "PLUGIN_CONTRACT_INVALID"),
         ("input", "PLUGIN_CONTRACT_INVALID"),
+        ("result", "PLUGIN_CONTRACT_INVALID"),
         ("facts", "PLUGIN_CONTRACT_INVALID"),
         ("config_hash", "PLUGIN_CONFIG_HASH_MISMATCH"),
         ("index", "PLUGIN_INDEX_DIGEST_MISMATCH"),
@@ -332,6 +344,17 @@ async def test_dispatcher_fails_closed_for_invalid_contract(mutation: str, expec
         request_overrides["raw_config"] = {"provider_profile": _config().provider_profile}
     elif mutation == "input":
         request_overrides.update({"logical_route": "PICK_AND_PUT_RESULT", "raw_input": {}})
+    elif mutation == "result":
+        request_overrides.update(
+            {
+                "logical_route": "PICK_AND_PUT_RESULT",
+                "raw_input": {
+                    "command_code": "CMD-001",
+                    "command_type": "PICK_AND_PUT",
+                    "result": "PENDING",
+                },
+            }
+        )
     elif mutation == "facts":
         request_overrides["raw_facts"] = {"business_key": "PKG-001"}
     elif mutation == "config_hash":
@@ -348,6 +371,70 @@ async def test_dispatcher_fails_closed_for_invalid_contract(mutation: str, expec
 
     assert result.kind == "contract_violation"
     assert result.error_code == expected_code
+    assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case_id", "phase"),
+    [
+        *(("RS-SD-001", phase) for phase in ("PICK_TO_PIPELINE", "MOVING_FORWARD", "NG_MOVING", "COMPLETED")),
+        *(("RS-SD-004", phase) for phase in ("READY", "MOVING_FORWARD", "NG_MOVING", "COMPLETED")),
+        *(("RS-SD-009", phase) for phase in ("READY", "MOVING_FORWARD", "NG_MOVING", "COMPLETED")),
+    ],
+)
+async def test_route_phase_mismatch_is_evidence_only_without_query_or_reconciliation(case_id: str, phase: str) -> None:
+    case = next(item for item in _cases() if item["case_id"] == case_id)
+    command_code = case["trigger"]["payload"].get("command_code")
+    state = RoughSorterState(phase=phase, current_correlation=command_code)
+    gateway = _Gateway(case["trigger"]["decision_discriminator"])
+
+    decision = await decide(_logical_input(case), state=state, config=_config(), facts=_facts(case), gateway=gateway)
+
+    assert decision.reason_code == "ROUGH_SORTER_PHASE_MISMATCH"
+    assert decision.evidence_only is decision.zero_new_effect is True
+    assert decision.intents == ()
+    assert decision.reconciliation_request is None
+    assert decision.next_state == state
+    assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case_id", "facts_match"), [("RS-SD-004", True), ("RS-SD-004", False), ("RS-SD-009", True), ("RS-SD-009", False)]
+)
+async def test_result_and_timeout_correlation_mismatch_is_evidence_only(case_id: str, facts_match: bool) -> None:
+    case = next(item for item in _cases() if item["case_id"] == case_id)
+    command_code = case["trigger"]["payload"]["command_code"]
+    state = RoughSorterState(
+        phase="PICK_TO_PIPELINE",
+        current_correlation=command_code if not facts_match else "DIFFERENT-COMMAND",
+    )
+    facts = _facts(case).model_copy(update={"correlation_matches": facts_match})
+    gateway = _Gateway(case["trigger"]["decision_discriminator"])
+
+    decision = await decide(_logical_input(case), state=state, config=_config(), facts=facts, gateway=gateway)
+
+    assert decision.reason_code == "COMMAND_RESULT_CORRELATION_MISMATCH"
+    assert decision.evidence_only is decision.zero_new_effect is True
+    assert decision.intents == ()
+    assert decision.reconciliation_request is None
+    assert decision.next_state == state
+    assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_handler_normalizes_defensive_query_validation_failure_to_stable_hold() -> None:
+    case = next(item for item in _cases() if item["case_id"] == "RS-SD-004")
+    state = _source_state(case)
+    # 模拟上游绕过 facts schema 的历史快照；正常 dispatcher 会更早拒绝。
+    invalid_facts = _facts(case).model_copy(update={"hhpn": "H" * 121})
+    gateway = _Gateway(case["trigger"]["decision_discriminator"])
+
+    decision = await decide(_logical_input(case), state=state, config=_config(), facts=invalid_facts, gateway=gateway)
+
+    assert decision.outcome_code == "HOLD"
+    assert decision.reason_code == "ROUGH_SORTER_QUERY_CONTRACT_INVALID"
     assert gateway.calls == 0
 
 

@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
+    RoughSorterBindingSnapshot,
+)
 from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig
+from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts
 from src.app.runtime.workline_plugins.rough_sorter.inputs import (
     BusinessTimeoutInput,
     PickAndPutResultInput,
@@ -91,3 +95,64 @@ def test_logical_input_parsers_are_typed_and_forbid_unknown_fields() -> None:
     assert isinstance(replay, ReplayRequestInput)
     with pytest.raises(ValidationError):
         ScanCompletedInput.model_validate({"payload": {"data": {}}, "unexpected": True})
+
+
+@pytest.mark.parametrize("result", ["PENDING", "ACK_RECEIVED", "SUCESS", " success "])
+def test_pick_result_rejects_non_terminal_or_noncanonical_result(result: str) -> None:
+    with pytest.raises(ValidationError):
+        parse_pick_and_put_result({"command_code": "CMD-001", "command_type": "PICK_AND_PUT", "result": result})
+
+
+@pytest.mark.parametrize("command_code", ["", "   "])
+def test_result_and_timeout_reject_blank_command_code(command_code: str) -> None:
+    with pytest.raises(ValidationError):
+        parse_pick_and_put_result({"command_code": command_code, "command_type": "PICK_AND_PUT", "result": "SUCCESS"})
+    with pytest.raises(ValidationError):
+        parse_business_timeout({"command_code": command_code, "wait_type": "COMMAND_RESULT"})
+
+
+@pytest.mark.parametrize(("field", "limit"), [("warehouse_code", 120), ("owner_code", 120)])
+def test_config_admission_fields_enforce_task5_character_limits(field: str, limit: int) -> None:
+    payload = _config_payload()
+    payload[field] = "界" * limit
+    assert getattr(RoughSorterConfig.model_validate(payload), field) == "界" * limit
+
+    payload[field] = "界" * (limit + 1)
+    with pytest.raises(ValidationError):
+        RoughSorterConfig.model_validate(payload)
+    payload[field] = "   "
+    with pytest.raises(ValidationError):
+        RoughSorterConfig.model_validate(payload)
+
+
+def _facts_payload() -> dict[str, object]:
+    return {
+        "business_key": "BIZ-001",
+        "hhpn": "HH-001",
+        "lot_code": "LOT-001",
+        "source_location": "SCAN-POINT",
+        "binding_snapshot": RoughSorterBindingSnapshot(
+            binding_id=1,
+            binding_version=1,
+            profile_identity="wms.2026-07-06.material-flow.sandbox",
+            plugin_config_hash="a" * 64,
+            generated_index_digest="b" * 64,
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "limit"),
+    [("business_key", 160), ("hhpn", 120), ("lot_code", 120), ("source_location", 160)],
+)
+def test_facts_strings_enforce_query_contract_character_limits(field: str, limit: int) -> None:
+    payload = _facts_payload()
+    payload[field] = "料" * limit
+    assert getattr(RoughSorterFacts.model_validate(payload), field) == "料" * limit
+
+    payload[field] = "料" * (limit + 1)
+    with pytest.raises(ValidationError):
+        RoughSorterFacts.model_validate(payload)
+    payload[field] = "   "
+    with pytest.raises(ValidationError):
+        RoughSorterFacts.model_validate(payload)
