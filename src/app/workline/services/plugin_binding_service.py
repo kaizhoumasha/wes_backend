@@ -9,9 +9,12 @@ from pydantic import BaseModel, ValidationError
 
 from src.app.contracts.external_contract_profile_catalog import ExternalContractProfileCatalog
 from src.app.runtime.extension_identity import sha256_digest
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX, WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.workline.repositories.plugin_binding_repository import workline_plugin_binding_repository
+from src.core.conf import settings
 from src.core.exceptions import OptimisticLockException
 from src.utils.timezone import timezone
 
@@ -34,6 +37,15 @@ class _BindingRepository(Protocol):
 
     async def get_pinned(self, db: Any, binding_id: int) -> Any | None: ...
 
+    async def create_pinned_runtime_aggregate(
+        self,
+        db: Any,
+        *,
+        workline_session: Any,
+        execution_session: ExecutionSession,
+        work_item: ExecutionWorkItem,
+    ) -> tuple[ExecutionSession, ExecutionWorkItem]: ...
+
 
 class WorklinePluginBindingService:
     """组合 Definition、设备事实和外部合同目录，生成不可变运行 binding。"""
@@ -42,6 +54,7 @@ class WorklinePluginBindingService:
         self,
         *,
         repository: _BindingRepository = workline_plugin_binding_repository,
+        runtime_repository: Any | None = None,
         plugin_index: Mapping[tuple[str, str], WorklinePluginDefinition] = WORKLINE_PLUGIN_INDEX,
         capability_index: Mapping[tuple[str, str], SystemCapabilityDefinition] = SYSTEM_CAPABILITY_INDEX,
         plugin_index_digest: str = WORKLINE_PLUGIN_INDEX_DIGEST,
@@ -49,11 +62,24 @@ class WorklinePluginBindingService:
         clock: Any = timezone.now_for_db,
     ) -> None:
         self.repository = repository
+        self.runtime_repository = runtime_repository or repository
         self.plugin_index = plugin_index
         self.capability_index = capability_index
         self.plugin_index_digest = plugin_index_digest
         self.profile_catalog = profile_catalog or ExternalContractProfileCatalog(())
         self.clock = clock
+
+    def manages(self, workline: Any) -> bool:
+        """仅接管已进入生成索引的平台插件，兼容迁移期 legacy WorkLine。"""
+
+        identity = (getattr(workline, "plugin_key", None), getattr(workline, "contract_version", None))
+        return identity in self.plugin_index
+
+    @staticmethod
+    def resolve_runtime_environment(app_env: object) -> str:
+        return {"production": "production", "prod": "production", "staging": "staging"}.get(
+            str(app_env).lower(), "sandbox"
+        )
 
     async def activate(
         self,
@@ -178,7 +204,7 @@ class WorklinePluginBindingService:
         workline.active_plugin_config_hash = row.typed_config_hash
         workline.active_plugin_index_digest = row.generated_index_digest
         workline.active_plugin_provider_requirements_json = (
-            [] if profile is None else [f"{profile.provider_code}@{profile.contract_version}"]
+            [] if profile is None else [f"{profile.provider_code}@{profile.contract_version}#{profile.environment}"]
         )
         workline.active_plugin_port_requirements_json = list(port_requirements)
         return row
@@ -190,6 +216,78 @@ class WorklinePluginBindingService:
         if binding is None:
             raise PluginBindingAdmissionError(f"pinned binding 不存在: {binding_id}")
         return binding
+
+    def assert_pinned_identity(self, *, binding: Any, workline: Any, session: Any) -> None:
+        """历史 retry 只校验 session pin 与 binding 本身，不追随 WorkLine 当前 active pin。"""
+
+        expected = {
+            "plugin_key": getattr(binding, "plugin_key", None),
+            "plugin_binding_id": getattr(binding, "id", None),
+            "plugin_binding_version": getattr(binding, "binding_version", None),
+            "plugin_config_hash": getattr(binding, "typed_config_hash", None),
+            "plugin_index_digest": getattr(binding, "generated_index_digest", None),
+        }
+        actual = {field: getattr(session, field, None) for field in expected}
+        if (
+            getattr(binding, "workline_id", None) != getattr(workline, "id", None)
+            or getattr(binding, "contract_version", None) != getattr(session, "contract_version", None)
+            or actual != expected
+        ):
+            raise PluginBindingAdmissionError("pinned binding identity 不匹配")
+
+    async def pin_new_runtime_session(self, db: Any, *, workline: Any, session: Any) -> None:
+        """新平台 Session 在 caller 事务内固定 binding，并创建同 pin 的 Execution 聚合。"""
+
+        if not self.manages(workline):
+            return
+        binding_id = getattr(workline, "active_plugin_binding_id", None)
+        if not isinstance(binding_id, int):
+            raise PluginBindingAdmissionError("平台插件尚未激活 immutable binding")
+        binding = await self.get_pinned(db, binding_id=binding_id)
+        active_identity = (
+            getattr(workline, "active_plugin_binding_version", None),
+            getattr(workline, "active_plugin_config_hash", None),
+            getattr(workline, "active_plugin_index_digest", None),
+        )
+        binding_identity = (
+            getattr(binding, "binding_version", None),
+            getattr(binding, "typed_config_hash", None),
+            getattr(binding, "generated_index_digest", None),
+        )
+        if active_identity != binding_identity:
+            raise PluginBindingAdmissionError("WorkLine active binding pin 不一致")
+        self.assert_execution_admitted(
+            binding,
+            environment=self.resolve_runtime_environment(settings.APP_ENV),
+            now=self.clock(),
+        )
+        definition = self.plugin_index[(binding.plugin_key, binding.contract_version)]
+        plugin_state = definition.state_model.model_validate({})
+        self.pin_runtime_records(binding=binding, records=(session,), plugin_state=plugin_state)
+        correlation_id = f"workline-session:{session.session_code}"
+        execution_session = ExecutionSession(
+            workline_id=session.workline_id,
+            plugin_key=binding.plugin_key,
+            manifest_version=binding.contract_version,
+        )
+        work_item = ExecutionWorkItem(
+            execution_session_id=0,
+            correlation_id=correlation_id,
+            object_type="session",
+            object_key=session.business_key or session.session_code,
+            current_step="INGRESS",
+        )
+        self.pin_runtime_records(
+            binding=binding,
+            records=(execution_session, work_item),
+            plugin_state=plugin_state,
+        )
+        await self.runtime_repository.create_pinned_runtime_aggregate(
+            db,
+            workline_session=session,
+            execution_session=execution_session,
+            work_item=work_item,
+        )
 
     @staticmethod
     def pin_runtime_records(*, binding: Any, records: Sequence[Any], plugin_state: BaseModel) -> None:
@@ -211,6 +309,8 @@ class WorklinePluginBindingService:
 
         if not bool(getattr(binding, "is_enabled", False)):
             raise PluginBindingAdmissionError("binding kill switch 已关闭")
+        if bool(getattr(binding, "is_revoked", False)):
+            raise PluginBindingAdmissionError("binding 已撤权")
         if getattr(binding, "environment", None) != environment:
             raise PluginBindingAdmissionError("binding environment 不匹配")
         valid_from = getattr(binding, "valid_from", None)

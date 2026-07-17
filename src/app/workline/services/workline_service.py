@@ -81,6 +81,7 @@ _ACTIVE_CONFIGURATION_FIELDS = frozenset(
         "line_type",
     }
 )
+_ACTIVE_IDENTITY_FIELDS = frozenset({"line_code", "line_type"})
 
 
 def _string_list_from_iterable(value: object) -> list[str]:
@@ -476,16 +477,15 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 detail={"checks": [check.model_dump() for check in checks]},
             )
         projection_created = await self._ensure_default_runtime_status_projection(db, current)
-        if current.is_active:
+        binding_managed = self.plugin_binding_service.manages(current)
+        if current.is_active and not binding_managed:
             if projection_created:
                 await self._commit_mutation(db)
             return current
-        if current.plugin_key is not None:
-            binding_environment = environment or {
-                "production": "production",
-                "prod": "production",
-                "staging": "staging",
-            }.get(str(settings.APP_ENV).lower(), "sandbox")
+        if binding_managed:
+            binding_environment = environment or WorklinePluginBindingService.resolve_runtime_environment(
+                settings.APP_ENV
+            )
             await self.plugin_binding_service.activate(
                 db,
                 workline=current,
@@ -495,6 +495,11 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 environment=binding_environment,
                 devices=devices,
             )
+            if current.is_active:
+                await self._commit_mutation(db)
+                if cache:
+                    await self.invalidate_cache(cache, workline_id, invalidate_list=True)
+                return current
         return await self._set_active_state(db, workline_id, is_active=True, version=version, cache=cache)
 
     async def deactivate(
@@ -571,10 +576,10 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def _reject_active_configuration_update(workline: WorkLine, data: dict[str, Any]) -> None:
         if not bool(getattr(workline, "is_active", False)):
             return
-        submitted_fields = sorted(_ACTIVE_CONFIGURATION_FIELDS.intersection(data))
+        submitted_fields = sorted(_ACTIVE_IDENTITY_FIELDS.intersection(data))
         if submitted_fields:
             raise BusinessException(
-                message="已启用作业线下不能修改插件、合同或运行配置，请先停用作业线",
+                message="已启用作业线下不能修改作业线身份字段，请先停用作业线",
                 detail={
                     "workline_id": getattr(workline, "id", None),
                     "fields": submitted_fields,

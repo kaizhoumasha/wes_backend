@@ -49,6 +49,10 @@ class WorklinePluginBinding(BaseMixin, table=True):
     disabled_at: datetime | None = None
     disabled_by: str | None = Field(default=None, max_length=100)
     disabled_reason: str | None = Field(default=None, max_length=500)
+    is_revoked: bool = Field(default=False, sa_column_kwargs={"server_default": text("false")})
+    revoked_at: datetime | None = None
+    revoked_by: str | None = Field(default=None, max_length=100)
+    revoked_reason: str | None = Field(default=None, max_length=500)
 
 
 __all__ = ["WorklinePluginBinding"]

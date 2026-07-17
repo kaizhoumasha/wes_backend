@@ -175,7 +175,7 @@ class WorklineMigrationInventoryService:
     @staticmethod
     def _build_provider_catalog(profiles: Iterable[Any]) -> tuple[WorklineProviderProfileInventoryItem, ...]:
         items: list[WorklineProviderProfileInventoryItem] = []
-        provider_codes: set[str] = set()
+        provider_identities: set[tuple[str, str, str]] = set()
         for profile in profiles:
             source = {
                 "provider_code": getattr(profile, "provider_code", _MISSING),
@@ -192,13 +192,12 @@ class WorklineMigrationInventoryService:
                 item = WorklineProviderProfileInventoryItem(**source)
             except ValidationError as exc:
                 raise WorklineMigrationInventoryInvariantError(f"provider profile 不满足迁移清单合同: {exc}") from exc
-            if item.provider_code in provider_codes:
-                raise WorklineMigrationInventoryInvariantError(
-                    f"provider profile 重复 provider_code: {item.provider_code}"
-                )
-            provider_codes.add(item.provider_code)
+            identity = (item.provider_code, item.contract_version, item.environment)
+            if identity in provider_identities:
+                raise WorklineMigrationInventoryInvariantError(f"provider profile 重复 identity: {identity}")
+            provider_identities.add(identity)
             items.append(item)
-        return tuple(sorted(items, key=lambda item: item.provider_code))
+        return tuple(sorted(items, key=lambda item: (item.provider_code, item.contract_version, item.environment)))
 
     @staticmethod
     def _normalize_provider_capabilities(profile: Any, field: str) -> tuple[str, ...]:

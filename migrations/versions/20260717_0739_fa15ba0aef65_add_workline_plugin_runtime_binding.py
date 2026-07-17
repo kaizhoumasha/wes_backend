@@ -54,6 +54,10 @@ def upgrade() -> None:
         sa.Column("disabled_at", sa.DateTime(), nullable=True),
         sa.Column("disabled_by", sa.String(length=100), nullable=True),
         sa.Column("disabled_reason", sa.String(length=500), nullable=True),
+        sa.Column("is_revoked", sa.Boolean(), server_default=sa.text("false"), nullable=False),
+        sa.Column("revoked_at", sa.DateTime(), nullable=True),
+        sa.Column("revoked_by", sa.String(length=100), nullable=True),
+        sa.Column("revoked_reason", sa.String(length=500), nullable=True),
         sa.CheckConstraint("binding_version >= 1", name="ck_workline_plugin_binding_version_positive"),
         sa.ForeignKeyConstraint(["workline_id"], [f"{BIZ_SCHEMA}.work_lines.id"]),
         sa.PrimaryKeyConstraint("id"),
@@ -147,6 +151,18 @@ def upgrade() -> None:
         )
 
     op.add_column(
+        "execution_sessions",
+        sa.Column("plugin_key", sa.String(length=100), nullable=True),
+        schema=RUNTIME_SCHEMA,
+    )
+    op.create_index(
+        "ix_wes_runtime_execution_sessions_plugin_key",
+        "execution_sessions",
+        ["plugin_key"],
+        schema=RUNTIME_SCHEMA,
+    )
+
+    op.add_column(
         "execution_work_items",
         sa.Column("plugin_key", sa.String(length=100), nullable=True),
         schema=RUNTIME_SCHEMA,
@@ -168,6 +184,12 @@ def downgrade() -> None:
         schema=RUNTIME_SCHEMA,
     )
     op.drop_column("execution_work_items", "plugin_key", schema=RUNTIME_SCHEMA)
+    op.drop_index(
+        "ix_wes_runtime_execution_sessions_plugin_key",
+        table_name="execution_sessions",
+        schema=RUNTIME_SCHEMA,
+    )
+    op.drop_column("execution_sessions", "plugin_key", schema=RUNTIME_SCHEMA)
 
     for schema, table in reversed(_PIN_COLUMNS):
         op.drop_index(f"ix_{schema}_{table}_plugin_binding_id", table_name=table, schema=schema)

@@ -32,6 +32,11 @@ class _WorkLineRepositoryStub:
             contract_version=None,
             runtime_config_json=None,
             run_mode=WorkLineRunMode.AUTO,
+            config={"draft": 1},
+            active_plugin_binding_id=8,
+            active_plugin_binding_version=1,
+            active_plugin_config_hash="a" * 64,
+            active_plugin_index_digest="b" * 64,
         )
 
     async def create(self, _db, data):
@@ -44,6 +49,10 @@ class _WorkLineRepositoryStub:
         return self.current
 
     async def get_for_update(self, _db, workline_id):
+        self.current.id = workline_id
+        return self.current
+
+    async def get_by_id(self, _db, workline_id):
         self.current.id = workline_id
         return self.current
 
@@ -206,3 +215,99 @@ async def test_activate_already_active_conflict_existing_projection_does_not_com
     assert projection.ensure_calls == [9007199254740993]
     assert repository.update_calls == []
     assert db.commit_count == 0
+
+
+@pytest.mark.asyncio
+async def test_legacy_plugin_activation_skips_empty_generated_index_transition_gate(monkeypatch):
+    db = _Db()
+    repository = _WorkLineRepositoryStub()
+    repository.current.plugin_key = "legacy-plugin"
+    repository.current.contract_version = "legacy-v1"
+    projection = _RuntimeStatusProjectionSpy()
+    service = WorkLineService(repository=repository, runtime_status_projection_service=projection)
+    workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
+    monkeypatch.setattr(
+        workline_service_module,
+        "device_repository",
+        SimpleNamespace(get_by_work_line_id=AsyncMock(return_value=[])),
+    )
+    monkeypatch.setattr(service, "_list_rack_positions", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "_build_configuration_checks", lambda *_args, **_kwargs: [])
+
+    result = await service.activate(db, repository.current.id, version=7)
+
+    assert result.is_active is True
+    assert repository.update_calls == [(repository.current.id, {"is_active": True, "version": 7})]
+    assert repository.current.active_plugin_binding_id == 8
+
+
+@pytest.mark.asyncio
+async def test_active_platform_plugin_reapproval_appends_binding_and_switches_pin_atomically(monkeypatch):
+    db = _Db()
+    repository = _WorkLineRepositoryStub()
+    repository.current.is_active = True
+    repository.current.plugin_key = "platform-plugin"
+    repository.current.contract_version = "v1"
+    projection = _RuntimeStatusProjectionSpy(missing=False)
+
+    class BindingService:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def manages(self, workline: object) -> bool:
+            return workline.plugin_key == "platform-plugin"
+
+        async def activate(self, _db: object, **kwargs: object) -> SimpleNamespace:
+            self.calls += 1
+            workline = kwargs["workline"]
+            workline.active_plugin_binding_id = 9
+            workline.active_plugin_binding_version = 2
+            workline.active_plugin_config_hash = "c" * 64
+            workline.active_plugin_index_digest = "d" * 64
+            return SimpleNamespace(id=9)
+
+    binding_service = BindingService()
+    service = WorkLineService(
+        repository=repository,
+        runtime_status_projection_service=projection,
+        plugin_binding_service=binding_service,
+    )
+    workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
+    monkeypatch.setattr(
+        workline_service_module,
+        "device_repository",
+        SimpleNamespace(get_by_work_line_id=AsyncMock(return_value=[])),
+    )
+    monkeypatch.setattr(service, "_list_rack_positions", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "_build_configuration_checks", lambda *_args, **_kwargs: [])
+
+    result = await service.activate(db, repository.current.id, version=7, actor="approver", reason="v2")
+
+    assert result.active_plugin_binding_id == 9
+    assert result.active_plugin_binding_version == 2
+    assert binding_service.calls == 1
+    assert db.commit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_active_workline_allows_draft_config_edit_without_changing_active_pin() -> None:
+    db = _Db()
+    repository = _WorkLineRepositoryStub()
+    repository.current.is_active = True
+    service = WorkLineService(repository=repository, runtime_status_projection_service=_RuntimeStatusProjectionSpy())
+    original_pin = (
+        repository.current.active_plugin_binding_id,
+        repository.current.active_plugin_binding_version,
+        repository.current.active_plugin_config_hash,
+        repository.current.active_plugin_index_digest,
+    )
+
+    result = await service.update(db, repository.current.id, {"config": {"draft": 2}, "version": 7})
+
+    assert result.config == {"draft": 2}
+    assert (
+        result.active_plugin_binding_id,
+        result.active_plugin_binding_version,
+        result.active_plugin_config_hash,
+        result.active_plugin_index_digest,
+    ) == original_pin

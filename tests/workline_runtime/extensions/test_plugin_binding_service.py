@@ -161,6 +161,7 @@ async def test_activation_creates_new_immutable_version_with_canonical_config_an
     assert first.device_snapshot_json == [{"device_code": "PLC-01", "provider_code": "ECS"}]
     assert first.activated_by == "operator-1"
     assert first.activated_reason == "go-live"
+    assert workline.active_plugin_provider_requirements_json == ["WMS@v1#production"]
     assert repo.rows[1].binding_version == 1
 
 
@@ -217,6 +218,23 @@ async def test_pinned_retry_reads_disabled_row_but_rechecks_runtime_admission() 
     with pytest.raises(PluginBindingAdmissionError, match="kill switch"):
         await binding_service.assert_execution_admitted(
             row, environment="production", now=datetime(2026, 7, 17, 9, tzinfo=UTC)
+        )
+
+
+def test_revoked_binding_is_rejected_even_when_kill_switch_remains_enabled() -> None:
+    binding = SimpleNamespace(
+        is_enabled=True,
+        is_revoked=True,
+        environment="production",
+        valid_from=None,
+        valid_until=None,
+    )
+
+    with pytest.raises(PluginBindingAdmissionError, match="撤权"):
+        WorklinePluginBindingService.assert_execution_admitted(
+            binding,
+            environment="production",
+            now=datetime(2026, 7, 17, 9, tzinfo=UTC),
         )
 
 

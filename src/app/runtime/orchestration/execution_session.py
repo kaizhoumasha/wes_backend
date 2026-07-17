@@ -41,6 +41,7 @@ class ExecutionSession(BaseMixin, table=True):
         index=True,
         description="关联 WorkLine 配置 (保留 workline_id 引用)",
     )
+    plugin_key: str | None = Field(default=None, max_length=100, index=True)
 
     # manifest version pin (RUNNING session 固定版本)
     manifest_version: str = Field(

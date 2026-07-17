@@ -273,6 +273,7 @@ class SessionResolver:
         rack_task_repo: RackTaskRepository | None = None,
         handling_step_repo: Any | None = None,
         handling_operation_repo: Any | None = None,
+        plugin_binding_service: Any | None = None,
     ) -> None:
         """初始化 SessionResolver
 
@@ -283,6 +284,11 @@ class SessionResolver:
         self.command_repo = command_repo or DeviceCommandRepository()
         self.outbox_repo = outbox_repo or system_outbox_repository
         self.rack_task_repo = rack_task_repo or rack_task_repository
+        if plugin_binding_service is None:
+            from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
+
+            plugin_binding_service = workline_plugin_binding_service
+        self.plugin_binding_service = plugin_binding_service
         if handling_step_repo is None or handling_operation_repo is None:
             from src.app.handling.repositories import handling_operation_repository, handling_step_repository
 
@@ -422,6 +428,8 @@ class SessionResolver:
         new_session = await self.session_repo.create(db, session_data)
         if new_session is None:
             raise RuntimeError("Failed to create session for DEVICE_EVENT")
+
+        await self.plugin_binding_service.pin_new_runtime_session(db, workline=workline, session=new_session)
 
         return new_session
 

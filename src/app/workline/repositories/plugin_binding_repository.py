@@ -6,11 +6,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
 
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.workline.models.plugin_binding import WorklinePluginBinding
 from src.database.base_repository import BaseRepository
+from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +45,40 @@ class WorklinePluginBindingRepository(BaseRepository[WorklinePluginBinding]):
         return await self.get_by_id(db, binding_id)
 
     @staticmethod
+    async def create_pinned_runtime_aggregate(
+        db: AsyncSession,
+        *,
+        workline_session: Any,
+        execution_session: ExecutionSession,
+        work_item: ExecutionWorkItem,
+    ) -> tuple[ExecutionSession, ExecutionWorkItem]:
+        """在 caller 事务中创建同 pin 的 target-state Execution 聚合。"""
+
+        now = timezone.now_for_db()
+        execution_session.created_at = now
+        execution_session.updated_at = now
+        db.add(execution_session)
+        await db.flush()
+        if execution_session.id is None:
+            raise RuntimeError("ExecutionSession 创建后缺少 ID")
+        correlation_id = f"workline-session:{workline_session.session_code}"
+        correlation = ExecutionCorrelation(
+            correlation_id=correlation_id,
+            execution_session_id=execution_session.id,
+            trace_id=workline_session.trace_id or correlation_id,
+            source_event_id=workline_session.last_request_id,
+            business_owner_key=workline_session.business_key,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(correlation)
+        await db.flush()
+        work_item.execution_session_id = execution_session.id
+        db.add(work_item)
+        await db.flush()
+        return execution_session, work_item
+
+    @staticmethod
     async def list_runtime_extension_references(db: AsyncSession, workline_id: int) -> list[dict[str, Any]]:
         """列出 WorkItem/Intent 通过 ExecutionSession 固定的插件与索引引用。"""
 
@@ -58,19 +94,22 @@ class WorklinePluginBindingRepository(BaseRepository[WorklinePluginBinding]):
                 work_item_columns.plugin_config_hash,
                 work_item_columns.plugin_index_digest,
             )
-            .join(session_columns, session_columns.id == work_item_columns.execution_session_id)
+            .select_from(ExecutionWorkItem)
+            .join(ExecutionSession, session_columns.id == work_item_columns.execution_session_id)
             .where(session_columns.workline_id == workline_id)
             .order_by(work_item_columns.id)
         )
         intents = await db.execute(
             select(
                 intent_columns.id,
+                session_columns.plugin_key,
                 session_columns.plugin_binding_id,
                 session_columns.plugin_binding_version,
                 session_columns.plugin_config_hash,
                 session_columns.plugin_index_digest,
             )
-            .join(session_columns, session_columns.id == intent_columns.execution_session_id)
+            .select_from(RuntimeIntentLog)
+            .join(ExecutionSession, session_columns.id == intent_columns.execution_session_id)
             .where(session_columns.workline_id == workline_id)
             .order_by(intent_columns.id)
         )
@@ -90,7 +129,7 @@ class WorklinePluginBindingRepository(BaseRepository[WorklinePluginBinding]):
             {
                 "type": "INTENT",
                 "reference": f"intent:{row.id}",
-                "plugin_key": None,
+                "plugin_key": row.plugin_key,
                 "plugin_binding_id": row.plugin_binding_id,
                 "plugin_binding_version": row.plugin_binding_version,
                 "plugin_config_hash": row.plugin_config_hash,

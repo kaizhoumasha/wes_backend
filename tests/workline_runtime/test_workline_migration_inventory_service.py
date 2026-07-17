@@ -90,11 +90,17 @@ def _definition(key: str = "known", version: str = "current") -> SimpleNamespace
     return SimpleNamespace(capability_key=key, contract_version=version)
 
 
-def _profile(provider_code: str = "WMS", *, query: list[str] | None = None) -> ExternalContractProfile:
+def _profile(
+    provider_code: str = "WMS",
+    *,
+    query: list[str] | None = None,
+    version: str = "v1",
+    environment: str = "sandbox",
+) -> ExternalContractProfile:
     return ExternalContractProfile(
         provider_code=provider_code,
-        contract_version="v1",
-        environment="sandbox",
+        contract_version=version,
+        environment=environment,
         runtime_capabilities_query=query or ["WmsMasterDataPort.get_material"],
         runtime_capabilities_effect=["WmsFulfillmentPort.confirm_inbound"],
         inbound_normalizers_event=["SECRET_EVENT"],
@@ -601,6 +607,27 @@ async def test_provider_profile_is_filtered_and_capabilities_are_sorted() -> Non
         "runtime_capabilities_query",
         "runtime_capabilities_effect",
     }
+
+
+@pytest.mark.asyncio
+async def test_provider_catalog_allows_same_code_across_version_and_environment_and_sorts_by_triple() -> None:
+    profiles = [
+        _profile("WMS", version="v2", environment="production"),
+        _profile("WMS", version="v1", environment="production"),
+        _profile("WMS", version="v1", environment="sandbox"),
+    ]
+
+    report = await _service(FakeRepository(), profiles=list(reversed(profiles))).build_report(
+        object(), environment="production"
+    )
+
+    assert [
+        (item.provider_code, item.contract_version, item.environment) for item in report.provider_profile_catalog
+    ] == [
+        ("WMS", "v1", "production"),
+        ("WMS", "v1", "sandbox"),
+        ("WMS", "v2", "production"),
+    ]
 
 
 @pytest.mark.asyncio

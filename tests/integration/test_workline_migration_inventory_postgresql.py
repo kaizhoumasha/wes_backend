@@ -20,10 +20,14 @@ from scripts import workline_migration_inventory as inventory_cli
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
 from src.app.runtime.capability_catalog import list_workline_capability_definitions
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold, RuntimeHoldStatus, RuntimeHoldType
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
 from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.sys.models.outbox import (
     SystemOutbox,
     SystemOutboxDispatchType,
@@ -97,6 +101,71 @@ async def _with_database(scenario: Callable[[str, async_sessionmaker[AsyncSessio
             await engine.dispose()
 
 
+@pytest.mark.integration
+def test_plugin_binding_revision_roundtrip_and_database_constraints() -> None:
+    """真实 PostgreSQL 锁定 upgrade/downgrade/upgrade 与关键数据库合同。"""
+
+    async def scenario() -> None:
+        async with temporary_database(environ=_integration_environment()) as (_database, database_url):
+            run_alembic("upgrade", "e0d58415afc9", database_url=database_url)
+            run_alembic("upgrade", "fa15ba0aef65", database_url=database_url)
+            engine = create_async_engine(database_url)
+            try:
+                async with engine.connect() as connection:
+                    columns = set(
+                        (
+                            await connection.execute(
+                                text(
+                                    "SELECT column_name FROM information_schema.columns "
+                                    "WHERE table_schema = 'wes_biz' AND table_name = 'workline_plugin_bindings'"
+                                )
+                            )
+                        ).scalars()
+                    )
+                    assert {
+                        "typed_config_json",
+                        "generated_index_digest",
+                        "is_enabled",
+                        "is_revoked",
+                        "revoked_reason",
+                    } <= columns
+                    assert (
+                        await connection.scalar(
+                            text(
+                                "SELECT COUNT(*) FROM pg_constraint "
+                                "WHERE conname IN ('uq_workline_plugin_binding_identity', "
+                                "'fk_execution_sessions_plugin_binding', 'fk_execution_work_items_plugin_binding')"
+                            )
+                        )
+                        == 3
+                    )
+                    assert (
+                        await connection.scalar(
+                            text(
+                                "SELECT column_default FROM information_schema.columns "
+                                "WHERE table_schema = 'wes_biz' AND table_name = 'workline_plugin_bindings' "
+                                "AND column_name = 'is_revoked'"
+                            )
+                        )
+                        == "false"
+                    )
+            finally:
+                await engine.dispose()
+
+            run_alembic("downgrade", "e0d58415afc9", database_url=database_url)
+            engine = create_async_engine(database_url)
+            try:
+                async with engine.connect() as connection:
+                    assert (
+                        await connection.scalar(text("SELECT to_regclass('wes_biz.workline_plugin_bindings')")) is None
+                    )
+            finally:
+                await engine.dispose()
+            run_alembic("upgrade", "fa15ba0aef65", database_url=database_url)
+
+    asyncio.run(scenario())
+
+
 async def _seed_worklines(db: AsyncSession) -> SeededInventory:
     definition = list_workline_capability_definitions()[0]
     foundation = WorkLine(
@@ -141,6 +210,49 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
     foundation.active_plugin_index_digest = binding.generated_index_digest
     foundation.active_plugin_provider_requirements_json = ["WMS@v1"]
     foundation.active_plugin_port_requirements_json = list(binding.port_requirements_json)
+    execution_session = ExecutionSession(
+        workline_id=foundation.id,
+        plugin_key=binding.plugin_key,
+        manifest_version=binding.contract_version,
+        plugin_binding_id=binding.id,
+        plugin_binding_version=binding.binding_version,
+        plugin_config_hash=binding.typed_config_hash,
+        plugin_index_digest=binding.generated_index_digest,
+    )
+    db.add(execution_session)
+    await db.flush()
+    correlation = ExecutionCorrelation(
+        correlation_id="IT-INVENTORY-FOUNDATION-CORRELATION",
+        execution_session_id=execution_session.id,
+        trace_id="IT-INVENTORY-FOUNDATION-TRACE",
+    )
+    db.add(correlation)
+    await db.flush()
+    db.add_all(
+        [
+            ExecutionWorkItem(
+                execution_session_id=execution_session.id,
+                correlation_id=correlation.correlation_id,
+                plugin_key=binding.plugin_key,
+                plugin_binding_id=binding.id,
+                plugin_binding_version=binding.binding_version,
+                plugin_config_hash=binding.typed_config_hash,
+                plugin_index_digest=binding.generated_index_digest,
+                object_type="material",
+                object_key="IT-MATERIAL-1",
+                current_step="INGRESS",
+            ),
+            RuntimeIntentLog(
+                execution_session_id=execution_session.id,
+                correlation_id=correlation.correlation_id,
+                provider_code="WMS",
+                target_domain="wms_integration",
+                target_action="query",
+                idempotency_key="IT-INVENTORY-INTENT-1",
+                request_hash="c" * 64,
+            ),
+        ]
+    )
     device = Device(
         device_code="IT-INVENTORY-DEVICE",
         device_name="Inventory Device",
@@ -355,6 +467,13 @@ def test_postgresql_status_matrix_samples_transaction_and_no_write_contract() ->
         assert foundation.active_plugin_index_digest == "b" * 64
         assert foundation.provider_requirements == ("WMS@v1",)
         assert foundation.port_requirements == ("InventoryPort.query",)
+        assert tuple(reference.type.value for reference in foundation.runtime_extension_references) == (
+            "INTENT",
+            "WORK_ITEM",
+        )
+        assert {reference.plugin_key for reference in foundation.runtime_extension_references} == {
+            foundation.plugin_key
+        }
         assert linked.runtime_references.model_dump(exclude={"sample"}) == {
             "sessions": len(SESSION_ACTIVE),
             "commands": len(COMMAND_ACTIVE),
