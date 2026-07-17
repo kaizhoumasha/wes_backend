@@ -6,16 +6,16 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import func, select
 
-from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.workline.models.plugin_binding import WorklinePluginBinding
 from src.database.base_repository import BaseRepository
-from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 
 
 class WorklinePluginBindingRepository(BaseRepository[WorklinePluginBinding]):
@@ -45,36 +45,22 @@ class WorklinePluginBindingRepository(BaseRepository[WorklinePluginBinding]):
         return await self.get_by_id(db, binding_id)
 
     @staticmethod
-    async def create_pinned_runtime_aggregate(
+    async def save_pinned_runtime_aggregate(
         db: AsyncSession,
         *,
-        workline_session: Any,
         execution_session: ExecutionSession,
+        correlation: ExecutionCorrelation,
         work_item: ExecutionWorkItem,
     ) -> tuple[ExecutionSession, ExecutionWorkItem]:
-        """在 caller 事务中创建同 pin 的 target-state Execution 聚合。"""
+        """只持久化 Service 已构造的运行聚合，不生成领域值。"""
 
-        now = timezone.now_for_db()
-        execution_session.created_at = now
-        execution_session.updated_at = now
-        db.add(execution_session)
+        db.add_all([execution_session])
         await db.flush()
         if execution_session.id is None:
             raise RuntimeError("ExecutionSession 创建后缺少 ID")
-        correlation_id = f"workline-session:{workline_session.session_code}"
-        correlation = ExecutionCorrelation(
-            correlation_id=correlation_id,
-            execution_session_id=execution_session.id,
-            trace_id=workline_session.trace_id or correlation_id,
-            source_event_id=workline_session.last_request_id,
-            business_owner_key=workline_session.business_key,
-            created_at=now,
-            updated_at=now,
-        )
-        db.add(correlation)
-        await db.flush()
+        correlation.execution_session_id = execution_session.id
         work_item.execution_session_id = execution_session.id
-        db.add(work_item)
+        db.add_all([correlation, work_item])
         await db.flush()
         return execution_session, work_item
 

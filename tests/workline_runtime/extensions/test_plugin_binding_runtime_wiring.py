@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import WorklineSession
@@ -64,7 +66,7 @@ def _workline() -> WorkLine:
     return workline
 
 
-def _binding(*, enabled: bool = True) -> SimpleNamespace:
+def _binding(*, enabled: bool = True, revoked: bool = False) -> SimpleNamespace:
     return SimpleNamespace(
         id=8,
         workline_id=7,
@@ -77,28 +79,34 @@ def _binding(*, enabled: bool = True) -> SimpleNamespace:
         valid_from=datetime(2026, 7, 17, 8),
         valid_until=None,
         is_enabled=enabled,
+        is_revoked=revoked,
     )
 
 
 class BindingRepository:
+    def __init__(self, binding: SimpleNamespace | None = None) -> None:
+        self.binding = binding or _binding()
+        self.get_calls: list[int] = []
+
     async def get_pinned(self, _db: object, binding_id: int) -> SimpleNamespace | None:
-        return _binding() if binding_id == 8 else None
+        self.get_calls.append(binding_id)
+        return self.binding if binding_id == 8 else None
 
 
 class RuntimeRepository:
     def __init__(self) -> None:
-        self.created: tuple[ExecutionSession, ExecutionWorkItem] | None = None
+        self.created: tuple[ExecutionSession, ExecutionCorrelation, ExecutionWorkItem] | None = None
 
-    async def create_pinned_runtime_aggregate(
+    async def save_pinned_runtime_aggregate(
         self,
         _db: object,
         *,
-        workline_session: WorklineSession,
         execution_session: ExecutionSession,
+        correlation: ExecutionCorrelation,
         work_item: ExecutionWorkItem,
     ) -> tuple[ExecutionSession, ExecutionWorkItem]:
-        self.created = (execution_session, work_item)
-        return self.created
+        self.created = (execution_session, correlation, work_item)
+        return execution_session, work_item
 
 
 class SessionRepository:
@@ -151,9 +159,11 @@ async def test_session_resolver_pins_real_models_and_creates_runtime_aggregate_i
     assert session.plugin_binding_id == 8
     assert session.plugin_state_json == {"phase": "READY"}
     assert runtime_repository.created is not None
-    execution_session, work_item = runtime_repository.created
+    execution_session, correlation, work_item = runtime_repository.created
     assert isinstance(execution_session, ExecutionSession)
+    assert isinstance(correlation, ExecutionCorrelation)
     assert isinstance(work_item, ExecutionWorkItem)
+    assert correlation.correlation_id == work_item.correlation_id
     for record in (execution_session, work_item):
         assert record.plugin_key == "platform-test"
         assert record.plugin_binding_id == session.plugin_binding_id
@@ -162,8 +172,82 @@ async def test_session_resolver_pins_real_models_and_creates_runtime_aggregate_i
 
 
 @pytest.mark.asyncio
-async def test_runtime_inbox_context_loader_rechecks_disabled_pinned_binding_on_retry(
+@pytest.mark.parametrize(
+    "draft",
+    [
+        {"plugin_key": "draft-plugin"},
+        {"contract_version": "draft-v2"},
+        {"plugin_key": "draft-plugin", "contract_version": "draft-v2"},
+    ],
+)
+async def test_unapproved_active_draft_identity_never_changes_new_session_binding_pin(
+    draft: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_resolver_module = importlib.import_module("src.app.runtime.orchestration.services.session.session_resolver")
+
+    monkeypatch.setattr(
+        session_resolver_module,
+        "resolve_workline_business_key",
+        lambda plugin_key, _payload: f"BUSINESS-{plugin_key}",
+    )
+    runtime_repository = RuntimeRepository()
+    binding_repository = BindingRepository()
+    binding_service = WorklinePluginBindingService(
+        repository=binding_repository,
+        runtime_repository=runtime_repository,
+        plugin_index={("platform-test", "v1"): DEFINITION},
+        capability_index={},
+        plugin_index_digest="b" * 64,
+        clock=lambda: datetime(2026, 7, 17, 9),
+    )
+    resolver = SessionResolver(
+        session_repo=SessionRepository(),
+        command_repo=object(),
+        outbox_repo=object(),
+        rack_task_repo=object(),
+        handling_step_repo=object(),
+        handling_operation_repo=object(),
+        plugin_binding_service=binding_service,
+    )
+    workline = _workline()
+    for field, value in draft.items():
+        setattr(workline, field, value)
+    inbox = SimpleNamespace(
+        payload_json={"business_key": "PKG-DRAFT"},
+        device_id=1,
+        trace_id="trace-draft",
+        request_id="request-draft",
+        source_message_id="message-draft",
+    )
+
+    session = await resolver._resolve_device_event(object(), inbox, workline)
+
+    assert binding_repository.get_calls == [8]
+    assert (session.plugin_key, session.contract_version, session.business_key) == (
+        "platform-test",
+        "v1",
+        "BUSINESS-platform-test",
+    )
+    assert session.plugin_binding_id == 8
+    assert runtime_repository.created is not None
+    execution_session, _, work_item = runtime_repository.created
+    assert (execution_session.plugin_key, execution_session.manifest_version) == ("platform-test", "v1")
+    assert work_item.plugin_key == "platform-test"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("binding", "error_match"),
+    [
+        (_binding(), None),
+        (_binding(revoked=True), "撤权"),
+    ],
+)
+async def test_runtime_inbox_retry_uses_historical_pin_despite_unapproved_draft_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    binding: SimpleNamespace,
+    error_match: str | None,
 ) -> None:
     session = WorklineSession(
         id=21,
@@ -177,6 +261,8 @@ async def test_runtime_inbox_context_loader_rechecks_disabled_pinned_binding_on_
         plugin_index_digest="b" * 64,
     )
     workline = _workline()
+    workline.plugin_key = "unapproved-draft"
+    workline.contract_version = "draft-v2"
 
     class SessionRepo:
         async def get_by_id(self, _db: object, _id: int) -> WorklineSession:
@@ -196,22 +282,6 @@ async def test_runtime_inbox_context_loader_rechecks_disabled_pinned_binding_on_
     class CommandRepo:
         pass
 
-    class AdmissionService:
-        def manages(self, _workline: object) -> bool:
-            return True
-
-        async def get_pinned(self, _db: object, *, binding_id: int) -> SimpleNamespace:
-            assert binding_id == 8
-            return _binding(enabled=False)
-
-        def assert_pinned_identity(self, *, binding: object, workline: object, session: object) -> None:
-            _ = binding, workline, session
-
-        def assert_execution_admitted(self, binding: object, *, environment: str, now: datetime) -> None:
-            _ = environment, now
-            if not binding.is_enabled:
-                raise PluginBindingAdmissionError("binding kill switch 已关闭")
-
     import src.app.device.repositories as device_repositories
     from src.app.device.repositories import command_repository
     from src.app.runtime.orchestration import repository_wiring
@@ -221,7 +291,14 @@ async def test_runtime_inbox_context_loader_rechecks_disabled_pinned_binding_on_
     monkeypatch.setattr(repository_wiring, "workline_repository", WorklineRepo())
     monkeypatch.setattr(device_repositories, "DeviceRepository", lambda: DeviceRepo())
     monkeypatch.setattr(command_repository, "DeviceCommandRepository", lambda: CommandRepo())
-    monkeypatch.setattr(context_loader, "workline_plugin_binding_service", AdmissionService(), raising=False)
+    binding_repository = BindingRepository(binding)
+    admission_service = WorklinePluginBindingService(
+        repository=binding_repository,
+        plugin_index={("platform-test", "v1"): DEFINITION},
+        capability_index={},
+        plugin_index_digest="b" * 64,
+    )
+    monkeypatch.setattr(context_loader, "workline_plugin_binding_service", admission_service, raising=False)
     monkeypatch.setattr(context_loader, "build_workline_runtime_services", lambda **_kwargs: SimpleNamespace())
     inbox = SimpleNamespace(
         kind="REPLAY_REQUEST",
@@ -232,8 +309,50 @@ async def test_runtime_inbox_context_loader_rechecks_disabled_pinned_binding_on_
         device_id=None,
     )
 
-    with pytest.raises(PluginBindingAdmissionError, match="kill switch"):
+    if error_match is None:
         await context_loader.load_related_entities(object(), inbox)
+    else:
+        with pytest.raises(PluginBindingAdmissionError, match=error_match):
+            await context_loader.load_related_entities(object(), inbox)
+    assert binding_repository.get_calls == [8]
+
+
+@pytest.mark.asyncio
+async def test_repository_only_persists_service_constructed_runtime_aggregate() -> None:
+    execution_session = ExecutionSession(workline_id=7, plugin_key="platform-test", manifest_version="v1")
+    correlation = ExecutionCorrelation(correlation_id="correlation-1", trace_id="trace-1")
+    work_item = ExecutionWorkItem(
+        execution_session_id=0,
+        correlation_id="correlation-1",
+        object_type="session",
+        object_key="PKG-1",
+        current_step="INGRESS",
+    )
+
+    class Db:
+        def __init__(self) -> None:
+            self.saved: list[object] = []
+            self.flush_calls = 0
+
+        def add_all(self, records: list[object]) -> None:
+            self.saved.extend(records)
+
+        async def flush(self) -> None:
+            self.flush_calls += 1
+            execution_session.id = 101
+
+    db = Db()
+    await WorklinePluginBindingRepository.save_pinned_runtime_aggregate(
+        db,
+        execution_session=execution_session,
+        correlation=correlation,
+        work_item=work_item,
+    )
+
+    assert db.saved == [execution_session, correlation, work_item]
+    assert db.flush_calls == 2
+    assert correlation.execution_session_id == execution_session.id
+    assert work_item.execution_session_id == execution_session.id
 
 
 @pytest.mark.asyncio

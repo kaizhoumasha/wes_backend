@@ -33,10 +33,10 @@ class _WorkLineRepositoryStub:
             runtime_config_json=None,
             run_mode=WorkLineRunMode.AUTO,
             config={"draft": 1},
-            active_plugin_binding_id=8,
-            active_plugin_binding_version=1,
-            active_plugin_config_hash="a" * 64,
-            active_plugin_index_digest="b" * 64,
+            active_plugin_binding_id=None,
+            active_plugin_binding_version=None,
+            active_plugin_config_hash=None,
+            active_plugin_index_digest=None,
         )
 
     async def create(self, _db, data):
@@ -238,7 +238,7 @@ async def test_legacy_plugin_activation_skips_empty_generated_index_transition_g
 
     assert result.is_active is True
     assert repository.update_calls == [(repository.current.id, {"is_active": True, "version": 7})]
-    assert repository.current.active_plugin_binding_id == 8
+    assert repository.current.active_plugin_binding_id is None
 
 
 @pytest.mark.asyncio
@@ -248,6 +248,10 @@ async def test_active_platform_plugin_reapproval_appends_binding_and_switches_pi
     repository.current.is_active = True
     repository.current.plugin_key = "platform-plugin"
     repository.current.contract_version = "v1"
+    repository.current.active_plugin_binding_id = 8
+    repository.current.active_plugin_binding_version = 1
+    repository.current.active_plugin_config_hash = "a" * 64
+    repository.current.active_plugin_index_digest = "b" * 64
     projection = _RuntimeStatusProjectionSpy(missing=False)
 
     class BindingService:
@@ -294,6 +298,10 @@ async def test_active_workline_allows_draft_config_edit_without_changing_active_
     db = _Db()
     repository = _WorkLineRepositoryStub()
     repository.current.is_active = True
+    repository.current.active_plugin_binding_id = 8
+    repository.current.active_plugin_binding_version = 1
+    repository.current.active_plugin_config_hash = "a" * 64
+    repository.current.active_plugin_index_digest = "b" * 64
     service = WorkLineService(repository=repository, runtime_status_projection_service=_RuntimeStatusProjectionSpy())
     original_pin = (
         repository.current.active_plugin_binding_id,

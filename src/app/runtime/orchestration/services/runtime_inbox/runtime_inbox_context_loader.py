@@ -187,9 +187,13 @@ async def _assert_workline_accepting_runtime_event(
 async def _assert_platform_plugin_binding_admitted(db: Any, *, workline: Any | None, session: Any | None) -> None:
     """每次 inbox/retry 都重查历史 pin 的撤权、有效期、环境与 kill switch。"""
 
-    if workline is None or session is None or not workline_plugin_binding_service.manages(workline):
+    if workline is None or session is None:
         return
     binding_id = getattr(session, "plugin_binding_id", None)
+    active_binding_id = getattr(workline, "active_plugin_binding_id", None)
+    if not isinstance(binding_id, int) and not isinstance(active_binding_id, int):
+        # 迁移期 legacy WorkLine 从未生成 binding，继续沿用原执行路径。
+        return
     if not isinstance(binding_id, int):
         from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
 

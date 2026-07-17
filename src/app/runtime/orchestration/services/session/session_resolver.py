@@ -355,7 +355,13 @@ class SessionResolver:
             解析或创建的 Session
         """
         payload_json = ensure_dict(inbox.payload_json)
-        business_key = _resolve_business_key(payload_json, plugin_key=getattr(workline, "plugin_key", None))
+        active_binding = await self.plugin_binding_service.resolve_new_session_binding(db, workline=workline)
+        runtime_plugin_key = (
+            getattr(active_binding, "plugin_key", None)
+            if active_binding is not None
+            else getattr(workline, "plugin_key", None)
+        )
+        business_key = _resolve_business_key(payload_json, plugin_key=runtime_plugin_key)
         now = timezone.now_for_db()
         trace = TraceContext.from_runtime(inbox=inbox, workline=workline)
 
@@ -404,7 +410,7 @@ class SessionResolver:
         session_data: dict[str, Any] = {
             "session_code": session_code,
             "workline_id": workline_id,
-            "plugin_key": getattr(workline, "plugin_key", None),
+            "plugin_key": runtime_plugin_key,
             "run_mode": RunMode(normalize_run_mode(getattr(workline, "run_mode", None))),
             "business_key": business_key,
             "barcode": resolve_payload_display_identity(payload_json),
@@ -421,7 +427,11 @@ class SessionResolver:
             "started_at": now,
         }
 
-        contract_version = _resolve_workline_contract_version(workline)
+        contract_version = (
+            getattr(active_binding, "contract_version", None)
+            if active_binding is not None
+            else _resolve_workline_contract_version(workline)
+        )
         if contract_version:
             session_data["contract_version"] = contract_version
 
@@ -429,7 +439,12 @@ class SessionResolver:
         if new_session is None:
             raise RuntimeError("Failed to create session for DEVICE_EVENT")
 
-        await self.plugin_binding_service.pin_new_runtime_session(db, workline=workline, session=new_session)
+        await self.plugin_binding_service.pin_new_runtime_session(
+            db,
+            workline=workline,
+            session=new_session,
+            binding=active_binding,
+        )
 
         return new_session
 
