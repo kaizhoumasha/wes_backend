@@ -8,12 +8,13 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.app.runtime.extension_identity import sha256_digest
-from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
+from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     GeneratedPluginAttemptRunner,
     RuntimeInboxProcessorBridge,
     _build_plugin_dispatch_request,
     _canonical_plugin_input,
+    _material_unit_fact_version,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     _authoritative_snapshot_matches,
@@ -248,8 +249,104 @@ async def test_generated_runner_converts_plugin_effects_to_system_capability_int
     assert intent.binding_snapshot == {"binding_id": 17, "binding_version": 4}
 
 
+@pytest.mark.asyncio
+async def test_generated_block_uses_pinned_waiting_status_and_session_version() -> None:
+    decision = PluginDecision[RoughSorterState](
+        intents=(
+            RuntimeIntent.block(
+                scope=BlockScope.WORKLINE,
+                reason_code="WMS_REJECTED",
+                message="WMS rejected inventory admission",
+            ),
+        ),
+        next_state=RoughSorterState(phase="NG_MOVING"),
+        outcome_code="HOLD",
+    )
+    context = PluginAttemptContext(
+        attempt_id="attempt-1",
+        inbox_id=1,
+        session_id=2,
+        workline_id=3,
+        event_type="PICK_AND_PUT_RESULT",
+        payload={},
+        plugin_state={"phase": "WAITING_PICK_RESULT"},
+        snapshot=AttemptSnapshot(
+            processor_token="lease-1",
+            session_version=7,
+            plugin_state_version=2,
+            session_status="WAITING_DEVICE_RESULT",
+            binding_id=17,
+            binding_version=4,
+        ),
+        runtime=SimpleNamespace(gateway=SimpleNamespace()),
+        dispatch_request=SimpleNamespace(),
+    )
+
+    write_set = await GeneratedPluginAttemptRunner(
+        dispatcher=SimpleNamespace(dispatch=AsyncMock(return_value=decision))
+    ).run(context)
+
+    [intent] = write_set.intents
+    assert intent.capability_key == "runtime.session_hold"
+    assert intent.precondition_json == {"expected_status": "WAITING_DEVICE_RESULT"}
+    assert intent.fact_version == "session:7"
+
+
+@pytest.mark.asyncio
+async def test_non_create_mark_ng_pins_material_identity_before_device_effect() -> None:
+    decision = PluginDecision[RoughSorterState](
+        intents=(
+            RuntimeIntent.mark_ng(reason_code="MEASUREMENT_NG", message="measurement rejected"),
+            RuntimeIntent.command(device_role="output_arm", action="MOVE_TO_NG", payload={}),
+        ),
+        next_state=RoughSorterState(phase="NG_MOVING"),
+        outcome_code="MEASUREMENT_NG",
+    )
+    context = PluginAttemptContext(
+        attempt_id="attempt-1",
+        inbox_id=1,
+        session_id=2,
+        workline_id=3,
+        event_type="PICK_AND_PUT_RESULT",
+        payload={},
+        plugin_state={"phase": "WAITING_PICK_RESULT"},
+        snapshot=AttemptSnapshot(
+            processor_token="lease-1",
+            session_version=7,
+            plugin_state_version=2,
+            session_status="WAITING_DEVICE_RESULT",
+            material_unit_id=31,
+            material_unit_version=11,
+            binding_id=17,
+            binding_version=4,
+        ),
+        runtime=SimpleNamespace(gateway=SimpleNamespace()),
+        dispatch_request=SimpleNamespace(),
+    )
+
+    write_set = await GeneratedPluginAttemptRunner(
+        dispatcher=SimpleNamespace(dispatch=AsyncMock(return_value=decision))
+    ).run(context)
+
+    assert [intent.capability_key for intent in write_set.intents] == [
+        "material_flow.material_unit_write",
+        "device.device_command_write",
+    ]
+    material_intent = write_set.intents[0]
+    assert material_intent.payload_json == {"operation": "MARK_NG", "material_unit_id": 31, "status": "NG"}
+    assert material_intent.fact_version == 11
+
+
 def test_plugin_dispatch_request_type_is_not_a_raw_system_capability_result() -> None:
     assert "SYSTEM_CAPABILITY_RESULT" not in str(PluginDispatchRequest.model_fields["logical_route"].annotation)
+
+
+def test_material_unit_fact_version_uses_persisted_updated_at_when_model_has_no_version() -> None:
+    from datetime import UTC, datetime
+
+    material_unit = SimpleNamespace(version=None, updated_at=datetime(2026, 7, 18, tzinfo=UTC))
+
+    assert _material_unit_fact_version(material_unit) == 1784332800000
 
 
 @pytest.mark.asyncio

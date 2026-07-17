@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from sqlalchemy.orm import noload
 from sqlmodel import select
 
+from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
@@ -22,6 +24,7 @@ from src.app.runtime.orchestration.repositories.timeline_sequence_repository imp
     timeline_sequence_repository,
 )
 from src.app.runtime.system_capabilities.evidence import QueryEvidence
+from src.app.workline.models.plugin_binding import WorklinePluginBinding
 from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
@@ -36,6 +39,8 @@ class AuthoritativePluginAttempt:
 
     inbox: Any
     session: WorklineSession
+    work_item: ExecutionWorkItem | Any | None = None
+    plugin_binding: WorklinePluginBinding | Any | None = None
 
 
 class PluginAttemptRepository:
@@ -63,10 +68,43 @@ class PluginAttemptRepository:
         inbox = await self._inbox_repository.get_by_id_for_update(db, inbox_id, populate_existing=True)
         if inbox is None:
             return None
-        session = await db.scalar(select(WorklineSession).where(WorklineSession.id == session_id).with_for_update())
+        session = await db.scalar(
+            select(WorklineSession)
+            .where(WorklineSession.id == session_id)
+            .options(noload(WorklineSession.workline))
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
         if session is None:
             return None
-        return AuthoritativePluginAttempt(inbox=inbox, session=session)
+        work_item_id = getattr(inbox, "execution_work_item_id", None)
+        work_item = None
+        if isinstance(work_item_id, int):
+            work_item = await db.scalar(
+                select(ExecutionWorkItem)
+                .where(ExecutionWorkItem.id == work_item_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+            if work_item is None:
+                return None
+        binding_id = getattr(session, "plugin_binding_id", None)
+        plugin_binding = None
+        if isinstance(binding_id, int):
+            plugin_binding = await db.scalar(
+                select(WorklinePluginBinding)
+                .where(WorklinePluginBinding.id == binding_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+            if plugin_binding is None:
+                return None
+        return AuthoritativePluginAttempt(
+            inbox=inbox,
+            session=session,
+            work_item=work_item,
+            plugin_binding=plugin_binding,
+        )
 
     async def persist_locked_attempt(
         self,

@@ -19,7 +19,7 @@ from sqlmodel import Field, Relationship
 # WorklineSession.workline 的 primaryjoin 用字符串引用 WorkLine;
 # 运行时导入确保独立导入 session 时 SQLAlchemy class registry 已注册目标模型。
 from src.app.workline.models.workline import WorkLine  # noqa: TC001
-from src.core.mixins import BaseMixin, DataTableMixin
+from src.core.mixins import BaseMixin, DataTableMixin, OptimisticLockMixin
 from src.core.mixins.primary_key import SQL_COMPAT_BIGINT
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
@@ -352,6 +352,7 @@ class WorklineSessionBase(BaseMixin):
 class WorklineSession(
     WorklineSessionBase,
     DataTableMixin,
+    OptimisticLockMixin,
     table=True,
 ):
     """

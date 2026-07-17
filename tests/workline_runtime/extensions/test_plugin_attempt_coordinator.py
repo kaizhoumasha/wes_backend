@@ -74,6 +74,79 @@ async def test_plugin_attempt_lock_order_matches_session_then_timeline_writers()
 
 
 @pytest.mark.asyncio
+async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -> None:
+    from sqlalchemy import event, update
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.app.runtime.orchestration.models.session import WorklineSession
+    from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def attach_schema(dbapi_connection: object, _connection_record: object) -> None:
+        dbapi_connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")  # type: ignore[attr-defined]
+
+    async with engine.begin() as connection:
+        await connection.run_sync(WorklineSession.__table__.create)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as first, sessions() as second:
+        session = WorklineSession(session_code="SESSION-STALE", workline_id=8, plugin_key="plugin.rough-sorter")
+        first.add(session)
+        await first.commit()
+        assert session.id is not None
+        await second.execute(update(WorklineSession).where(WorklineSession.id == session.id).values(version=9))
+        await second.commit()
+        assert session.version == 0
+
+        class InboxRepository:
+            async def get_by_id_for_update(self, *_args: object, **_kwargs: object) -> object:
+                return SimpleNamespace(id=91)
+
+        locked = await PluginAttemptRepository(inbox_repository=InboxRepository()).lock_authoritative(
+            first,
+            inbox_id=91,
+            session_id=session.id,
+        )
+
+        assert locked is not None
+        assert locked.session is session
+        assert locked.session.version == 9
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_plugin_attempt_lock_loads_effect_execution_identity() -> None:
+    from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
+
+    rows = iter(
+        (
+            SimpleNamespace(id=41, plugin_binding_id=17),
+            SimpleNamespace(id=51),
+            SimpleNamespace(id=17),
+        )
+    )
+
+    class InboxRepository:
+        async def get_by_id_for_update(self, *_args: object, **_kwargs: object) -> object:
+            return SimpleNamespace(id=91, execution_work_item_id=51)
+
+    class Db:
+        async def scalar(self, _statement: object) -> object:
+            return next(rows)
+
+    locked = await PluginAttemptRepository(inbox_repository=InboxRepository()).lock_authoritative(
+        Db(),
+        inbox_id=91,
+        session_id=41,
+    )
+
+    assert locked is not None
+    assert locked.work_item.id == 51
+    assert locked.plugin_binding.id == 17
+
+
+@pytest.mark.asyncio
 async def test_plugin_attempt_persistence_uses_reserved_timeline_sequence_instead_of_local_max() -> None:
     from src.app.runtime.orchestration.repositories.plugin_attempt_repository import (
         AuthoritativePluginAttempt,
@@ -226,6 +299,14 @@ async def test_writeback_persists_evidence_state_intents_and_terminal_in_one_com
             events.append("intent-claim")
             return ClaimResult.NEW
 
+    class EffectApplier:
+        async def apply(self, ctx: dict[str, object], intents: list[object]) -> object:
+            assert ctx["session"].version == 7  # type: ignore[union-attr]
+            assert ctx["workline"].id == 8  # type: ignore[union-attr]
+            assert intents == ["i1"]
+            events.append("effect")
+            return SimpleNamespace()
+
     class InboxService:
         async def mark_processed(self, _db: object, *, inbox_id: int, lease_token: str) -> bool:
             assert (inbox_id, lease_token) == (91, "lease-1")
@@ -236,6 +317,7 @@ async def test_writeback_persists_evidence_state_intents_and_terminal_in_one_com
         plugin_attempt_repository=Repository(),
         intent_log_repository=IntentRepository(),
         idempotency_guard=Guard(),
+        effect_applier=EffectApplier(),
         inbox_service=InboxService(),  # type: ignore[arg-type]
     ).commit_plugin_attempt(
         Db(),
@@ -248,7 +330,15 @@ async def test_writeback_persists_evidence_state_intents_and_terminal_in_one_com
     )
 
     assert disposition is WriteDisposition.COMMITTED
-    assert events == ["select-for-update", "evidence-state", "intent-claim", "intent-ledger", "terminal", "commit"]
+    assert events == [
+        "select-for-update",
+        "intent-claim",
+        "intent-ledger",
+        "effect",
+        "evidence-state",
+        "terminal",
+        "commit",
+    ]
 
 
 @pytest.mark.asyncio
@@ -300,10 +390,16 @@ async def test_matching_intent_claim_skips_duplicate_ledger_but_commits_terminal
             events.append("terminal")
             return True
 
+    class MatchingEffectApplier:
+        async def apply(self, *_args: object, **_kwargs: object) -> object:
+            events.append("effect")
+            return SimpleNamespace()
+
     disposition = await RuntimeInboxWriteBackService(
         plugin_attempt_repository=PluginRepository(),
         intent_log_repository=IntentRepository(),
         idempotency_guard=Guard(),
+        effect_applier=MatchingEffectApplier(),
         inbox_service=InboxService(),  # type: ignore[arg-type]
     ).commit_plugin_attempt(
         Db(),
@@ -316,7 +412,76 @@ async def test_matching_intent_claim_skips_duplicate_ledger_but_commits_terminal
     )
 
     assert disposition is WriteDisposition.COMMITTED
-    assert events == ["evidence-state", "intent-match", "terminal", "commit"]
+    assert events == ["intent-match", "effect", "evidence-state", "terminal", "commit"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_effect_failure_rolls_back_before_state_and_terminal() -> None:
+    from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+        RuntimeInboxWriteBackService,
+    )
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, AttemptWriteSet
+
+    events: list[str] = []
+    snapshot = AttemptSnapshot(processor_token="lease-1", session_version=7, plugin_state_version=3)
+
+    class Db:
+        async def commit(self) -> None:
+            events.append("MUST_NOT_COMMIT")
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+    class PluginRepository:
+        async def lock_authoritative(self, *_args: object, **_kwargs: object) -> object:
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-1"),
+                session=SimpleNamespace(version=7, plugin_state_version=3),
+            )
+
+        async def persist_locked_attempt(self, *_args: object, **_kwargs: object) -> None:
+            events.append("MUST_NOT_PERSIST")
+
+    class IntentRepository:
+        def prepare_attempt_intents(self, **_kwargs: object) -> tuple[object, ...]:
+            return (SimpleNamespace(model=object(), claim={}),)
+
+        def add_prepared(self, *_args: object) -> None:
+            events.append("provisional-ledger")
+
+    class Guard:
+        async def claim_or_match(self, *_args: object, **_kwargs: object) -> ClaimResult:
+            return ClaimResult.NEW
+
+    class EffectApplier:
+        async def apply(self, *_args: object, **_kwargs: object) -> object:
+            events.append("effect")
+            raise RuntimeError("effect failed")
+
+    class InboxService:
+        async def mark_processed(self, *_args: object, **_kwargs: object) -> bool:
+            events.append("MUST_NOT_TERMINAL")
+            return True
+
+    with pytest.raises(RuntimeError, match="effect failed"):
+        await RuntimeInboxWriteBackService(
+            plugin_attempt_repository=PluginRepository(),
+            intent_log_repository=IntentRepository(),
+            idempotency_guard=Guard(),
+            effect_applier=EffectApplier(),
+            inbox_service=InboxService(),  # type: ignore[arg-type]
+        ).commit_plugin_attempt(
+            Db(),
+            expected_snapshot=snapshot,
+            inbox_id=91,
+            session_id=41,
+            workline_id=8,
+            trace_id="trace-1",
+            write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("intent",)),
+        )
+
+    assert events == ["provisional-ledger", "effect", "rollback"]
 
 
 @pytest.mark.asyncio
@@ -506,7 +671,7 @@ async def test_intent_ledger_failure_rolls_back_before_terminal() -> None:
             write_set=AttemptWriteSet(evidence=(), next_state={}, intents=("i1",)),
         )
 
-    assert events == ["evidence-state", "intent-conflict", "rollback"]
+    assert events == ["intent-conflict", "rollback"]
 
 
 def test_runtime_intent_owner_builds_stable_ledger_rows_bound_to_attempt_pins() -> None:

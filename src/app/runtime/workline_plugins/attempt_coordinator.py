@@ -20,6 +20,9 @@ class AttemptSnapshot:
     processor_token: str
     session_version: int
     plugin_state_version: int
+    session_status: str | None = None
+    material_unit_id: int | None = None
+    material_unit_version: int | None = None
     definition_identity: str | None = None
     binding_id: int | None = None
     binding_version: int | None = None

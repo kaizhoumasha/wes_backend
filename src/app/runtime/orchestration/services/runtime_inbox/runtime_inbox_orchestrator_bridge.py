@@ -38,6 +38,9 @@ from src.app.runtime.orchestration.diagnostics import (
     map_failure_to_diagnostic,
 )
 from src.app.runtime.orchestration.effect_result import WriteBackDisposition
+from src.app.runtime.orchestration.material_fact_version import (
+    material_unit_fact_version as _material_unit_fact_version,
+)
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import (
     RuntimeInboxRepository,
     runtime_inbox_repository,
@@ -185,19 +188,33 @@ def _system_capability_intents(
             raise ValueError("effect conversion requires binding snapshot")
         return ()
     mark_ng = any(intent.kind is RuntimeIntentKind.MARK_NG for intent in intents)
+    creates_material = any(intent.kind is RuntimeIntentKind.CREATE_MATERIAL_UNIT for intent in intents)
     converted: list[RuntimeIntent] = []
     for index, intent in enumerate(intents):
         if intent.kind is RuntimeIntentKind.SYSTEM_CAPABILITY:
             converted.append(intent)
             continue
-        if intent.kind in {RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.MARK_NG}:
+        if intent.kind is RuntimeIntentKind.UPDATE_CONTEXT:
             # PluginState 由 next_state 原子写入；同决策 MARK_NG 合并进 MaterialUnit CREATE。
             continue
         capability_key: str
         payload: dict[str, Any]
         precondition: dict[str, Any]
         fact_version: str | int
-        if intent.kind is RuntimeIntentKind.COMMAND:
+        if intent.kind is RuntimeIntentKind.MARK_NG:
+            if creates_material:
+                continue
+            if context.snapshot.material_unit_id is None or context.snapshot.material_unit_version is None:
+                raise ValueError("MARK_NG requires pinned material unit facts")
+            capability_key = "material_flow.material_unit_write"
+            payload = {
+                "operation": "MARK_NG",
+                "material_unit_id": context.snapshot.material_unit_id,
+                "status": "NG",
+            }
+            precondition = {"expected_absent": None}
+            fact_version = context.snapshot.material_unit_version
+        elif intent.kind is RuntimeIntentKind.COMMAND:
             capability_key = "device.device_command_write"
             payload = {
                 "device_role": intent.device_role,
@@ -221,13 +238,15 @@ def _system_capability_intents(
             precondition = {"expected_absent": None}
             fact_version = context.snapshot.session_version
         elif intent.kind is RuntimeIntentKind.BLOCK:
+            if context.snapshot.session_status is None:
+                raise ValueError("BLOCK requires pinned session status")
             capability_key = "runtime.session_hold"
             payload = {
                 "failure_domain": intent.block_scope.value if intent.block_scope is not None else "PLUGIN",
                 "reason_code": intent.reason_code or "PLUGIN_HOLD",
                 "message": intent.message or "Workline Plugin requested Hold",
             }
-            precondition = {"expected_status": "RUNNING"}
+            precondition = {"expected_status": context.snapshot.session_status}
             fact_version = f"session:{context.snapshot.session_version}"
         else:
             raise ValueError(f"unsupported plugin effect intent: {intent.kind.value}")
@@ -697,6 +716,26 @@ class RuntimeInboxProcessorBridge:
                 result["processed"] += 1
                 return result
 
+            if (
+                bool(getattr(inbox, "is_manual_replay", False))
+                and session is not None
+                and workline is not None
+                and isinstance(getattr(session, "plugin_binding_id", None), int)
+            ):
+                # Recorded replay 复用已持久化 decision/evidence；必须先于源事件的
+                # TIMER/late callback 路由，避免重放再次触发 provider 或新 EFFECT。
+                _configure_attempt_runtime_ports(attempt_runtime, services=services)
+                return await self._process_platform_plugin_attempt(
+                    db,
+                    inbox=inbox,
+                    session=session,
+                    workline=workline,
+                    resolved_event_type=resolved_event_type,
+                    processor_token=processor_token,
+                    attempt_runtime=attempt_runtime,
+                    devices_by_role=devices_by_role,
+                )
+
             # ========== Stage 1b: ESTOP / TIMER 专用路由 ==========
             inbox_kind_value = _kind_value(inbox)
             routing_outcome = self._validation_service.classify_estop_or_timer(
@@ -883,6 +922,7 @@ class RuntimeInboxProcessorBridge:
                     resolved_event_type=resolved_event_type,
                     processor_token=processor_token,
                     attempt_runtime=attempt_runtime,
+                    devices_by_role=devices_by_role,
                 )
 
             # ========== Stage 2: Orchestration (delegated) ==========
@@ -1138,13 +1178,24 @@ class RuntimeInboxProcessorBridge:
         resolved_event_type: str,
         processor_token: str,
         attempt_runtime: RuntimeInboxAttemptRuntime,
+        devices_by_role: dict[str, list[Any]] | None = None,
     ) -> ProcessResult:
         """平台插件三阶段：固定快照 → 无 DB 决策 → 锁后原子写回。"""
 
         inbox_id = resolve_required_pk(inbox, "inbox", "id", "inbox_id")
         session_id = resolve_required_pk(session, "session", "id", "session_id")
         workline_id = resolve_required_pk(workline, "workline", "id", "workline_id")
-        snapshot = _plugin_attempt_snapshot(session, processor_token=processor_token)
+        material_unit = None
+        material_unit_id = optional_int(getattr(session, "current_material_unit_id", None))
+        if material_unit_id is not None:
+            from src.app.runtime.orchestration.models.material_unit import MaterialUnit
+
+            material_unit = await db.get(MaterialUnit, material_unit_id)
+        snapshot = _plugin_attempt_snapshot(
+            session,
+            processor_token=processor_token,
+            material_unit_version=_material_unit_fact_version(material_unit),
+        )
         dispatch_request = None
         if isinstance(self._plugin_attempt_runner, GeneratedPluginAttemptRunner):
             dispatch_request = await _build_plugin_dispatch_request(
@@ -1191,10 +1242,26 @@ class RuntimeInboxProcessorBridge:
             workline_id=workline_id,
             trace_id=getattr(inbox, "trace_id", None) or "",
             write_set=write_set,
+            workline=workline,
+            devices_by_role=devices_by_role,
         )
         result = _empty_result()
         result["processed"] = 1
         if disposition is WriteDisposition.SAFE_RETRY:
+            _require_fenced_update(
+                await self.inbox_service.mark_failed(
+                    db,
+                    inbox_id=inbox_id,
+                    lease_token=processor_token,
+                    error_code="PLUGIN_SNAPSHOT_STALE",
+                    error_message="PLUGIN_SNAPSHOT_STALE",
+                    retryable=True,
+                    consume_attempt=False,
+                ),
+                action="mark_failed",
+                inbox_id=inbox_id,
+            )
+            await db.commit()
             result["resource_wait"] = 1
         elif write_set.hold_reason is not None:
             result["failed"] = 1
@@ -1330,7 +1397,12 @@ def _configure_attempt_runtime_ports(attempt_runtime: RuntimeInboxAttemptRuntime
     )
 
 
-def _plugin_attempt_snapshot(session: Any, *, processor_token: str) -> AttemptSnapshot:
+def _plugin_attempt_snapshot(
+    session: Any,
+    *,
+    processor_token: str,
+    material_unit_version: int | None = None,
+) -> AttemptSnapshot:
     definition_identity = getattr(session, "plugin_identity", None)
     if definition_identity is None:
         plugin_key = getattr(session, "plugin_key", None)
@@ -1344,6 +1416,9 @@ def _plugin_attempt_snapshot(session: Any, *, processor_token: str) -> AttemptSn
         processor_token=processor_token,
         session_version=int(getattr(session, "version", 0)),
         plugin_state_version=int(getattr(session, "plugin_state_version", 0)),
+        session_status=string_value(getattr(session, "status", None)),
+        material_unit_id=optional_int(getattr(session, "current_material_unit_id", None)),
+        material_unit_version=material_unit_version,
         definition_identity=definition_identity,
         binding_id=optional_int(getattr(session, "plugin_binding_id", None)),
         binding_version=optional_int(getattr(session, "plugin_binding_version", None)),
@@ -1372,7 +1447,9 @@ def _write_set_from_recorded_replay(
     return AttemptWriteSet(
         evidence=resolution.evidence,
         next_state=decision.next_state,
-        intents=decision.intents,
+        # Recorded replay 只恢复已审计 decision/state/evidence；原 intent 的
+        # EFFECT 已在源 attempt 执行，不得再次产生物理副作用。
+        intents=(),
         outcome_code=decision.outcome_code,
         hold_reason=decision.hold_reason,
     )

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy.exc import IntegrityError
 
+from src.app.runtime.orchestration.material_fact_version import material_unit_fact_version
 from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus
 from src.app.runtime.orchestration.repositories.material_unit_repository import (
     MaterialUnitRepository,
@@ -156,7 +157,7 @@ class MaterialUnitMutationService:
             expected = int(version_text) if version_text.isdigit() else None
         else:
             expected = None
-        actual = optional_int(getattr(material_unit, "version", None))
+        actual = material_unit_fact_version(material_unit)
         if expected is not None and actual != expected:
             raise StaleMaterialUnitPrecondition("material unit fact version changed")
 

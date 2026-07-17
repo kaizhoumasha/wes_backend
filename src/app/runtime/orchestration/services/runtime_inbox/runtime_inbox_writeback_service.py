@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -117,6 +118,11 @@ def _authoritative_snapshot_matches(locked: Any, expected: AttemptSnapshot) -> b
         getattr(inbox, "processor_token", None) == expected.processor_token
         and getattr(session, "version", None) == expected.session_version
         and getattr(session, "plugin_state_version", None) == expected.plugin_state_version
+        and (expected.session_status is None or _session_status_value(session) == expected.session_status)
+        and (
+            expected.material_unit_id is None
+            or getattr(session, "current_material_unit_id", None) == expected.material_unit_id
+        )
         and (expected.definition_identity is None or session_definition_identity == expected.definition_identity)
         and (expected.binding_id is None or getattr(session, "plugin_binding_id", None) == expected.binding_id)
         and (
@@ -354,6 +360,7 @@ class RuntimeInboxWriteBackService:
         plugin_attempt_repository: PluginAttemptRepository | Any | None = None,
         intent_log_repository: Any | None = None,
         idempotency_guard: Any | None = None,
+        effect_applier: Any | None = None,
         plugin_write_set_limits: PluginWriteSetLimits | None = None,
     ) -> None:
         self._write_back_service = write_back_service
@@ -361,6 +368,7 @@ class RuntimeInboxWriteBackService:
         self._plugin_attempt_repository = plugin_attempt_repository or default_plugin_attempt_repository
         self._intent_log_repository = intent_log_repository or default_runtime_intent_log_repository
         self._idempotency_guard = idempotency_guard or default_idempotency_guard
+        self._effect_applier = effect_applier
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
 
     @property
@@ -380,6 +388,14 @@ class RuntimeInboxWriteBackService:
             return runtime_inbox_service
         return self._inbox_service
 
+    @property
+    def effect_applier(self) -> Any:
+        if self._effect_applier is None:
+            from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
+
+            self._effect_applier = RuntimeIntentEffectApplier()
+        return self._effect_applier
+
     async def commit_plugin_attempt(
         self,
         db: Any,
@@ -390,6 +406,8 @@ class RuntimeInboxWriteBackService:
         workline_id: int,
         trace_id: str,
         write_set: AttemptWriteSet,
+        workline: Any | None = None,
+        devices_by_role: dict[str, list[Any]] | None = None,
     ) -> WriteDisposition:
         """锁定权威行后重校验，并在同一事务落完整 attempt 结果。"""
 
@@ -403,14 +421,6 @@ class RuntimeInboxWriteBackService:
             await db.rollback()
             return WriteDisposition.SAFE_RETRY
         try:
-            await self._plugin_attempt_repository.persist_locked_attempt(
-                db,
-                locked=locked,
-                workline_id=workline_id,
-                trace_id=trace_id,
-                snapshot=expected_snapshot,
-                write_set=write_set,
-            )
             if write_set.intents:
                 prepared_intents = self._intent_log_repository.prepare_attempt_intents(
                     locked=locked,
@@ -425,6 +435,29 @@ class RuntimeInboxWriteBackService:
                     )
                     if claim_result is ClaimResult.NEW:
                         self._intent_log_repository.add_prepared(db, prepared)
+                await self.effect_applier.apply(
+                    {
+                        "db": db,
+                        "session": locked.session,
+                        "workline": workline or SimpleNamespace(id=workline_id),
+                        "inbox": locked.inbox,
+                        "work_item": getattr(locked, "work_item", None),
+                        "plugin_binding": getattr(locked, "plugin_binding", None),
+                        "devices_by_role": devices_by_role or {},
+                        "trace_id": trace_id,
+                        "correlation_id": getattr(locked.inbox, "correlation_id", None) or trace_id,
+                        "orch_result": SimpleNamespace(),
+                    },
+                    list(write_set.intents),
+                )
+            await self._plugin_attempt_repository.persist_locked_attempt(
+                db,
+                locked=locked,
+                workline_id=workline_id,
+                trace_id=trace_id,
+                snapshot=expected_snapshot,
+                write_set=write_set,
+            )
             if write_set.hold_reason is None:
                 terminal_updated = await self.inbox_service.mark_processed(
                     db,
