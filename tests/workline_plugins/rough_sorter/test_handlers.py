@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,16 +10,23 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.system_capabilities.gateway import GatewayQueryResult
-from src.app.runtime.system_capabilities.outcomes import BusinessReject, RetryableFailure, Success
+from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
     RoughSorterBindingSnapshot,
     RoughSorterInventoryAdmissionOutput,
 )
-from src.app.runtime.workline_plugins.contracts import PluginContext, PluginDecision
-from src.app.runtime.workline_plugins.dispatcher import WorklinePluginDispatcher
+from src.app.runtime.workline_plugins.contracts import PluginDecision
+from src.app.runtime.workline_plugins.dispatcher import (
+    HandlerRegistration,
+    PinnedPluginSnapshot,
+    PluginDispatchRequest,
+    WorklinePluginDispatcher,
+)
+from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig
-from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION, ROUTE_HANDLERS
+from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
 from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts, decide
 from src.app.runtime.workline_plugins.rough_sorter.inputs import (
     parse_business_timeout,
@@ -33,6 +41,49 @@ if TYPE_CHECKING:
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURE_PATH = REPO_ROOT / "tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json"
+MATERIAL_EFFECT = "material_flow.material_unit_write@v1"
+DEVICE_EFFECT = "device.device_command_write@v1"
+HOLD_EFFECT = "runtime.session_hold@v1"
+EXPECTED_PHASE = {
+    "RS-SD-001": "PICK_TO_PIPELINE",
+    "RS-SD-002": "NG_MOVING",
+    "RS-SD-003": "PICK_TO_PIPELINE",
+    "RS-SD-004": "MOVING_FORWARD",
+    "RS-SD-005": "NG_MOVING",
+    "RS-SD-006": "NG_MOVING",
+    "RS-SD-007": "PICK_TO_PIPELINE",
+    "RS-SD-008": "PICK_TO_PIPELINE",
+    "RS-SD-009": "PICK_TO_PIPELINE",
+    "RS-SD-010": "PICK_TO_PIPELINE",
+    "RS-SD-011": "PICK_TO_PIPELINE",
+    "RS-SD-012": "PICK_TO_PIPELINE",
+    "RS-SD-013": "PICK_TO_PIPELINE",
+}
+EXPECTED_CAPABILITY_IDENTITIES = {
+    "RS-SD-001": (MATERIAL_EFFECT, DEVICE_EFFECT),
+    "RS-SD-002": (MATERIAL_EFFECT, DEVICE_EFFECT),
+    "RS-SD-003": (HOLD_EFFECT,),
+    "RS-SD-004": (MATERIAL_EFFECT, DEVICE_EFFECT),
+    "RS-SD-005": (MATERIAL_EFFECT, DEVICE_EFFECT),
+    "RS-SD-006": (MATERIAL_EFFECT, DEVICE_EFFECT),
+    "RS-SD-007": (HOLD_EFFECT,),
+    "RS-SD-008": (HOLD_EFFECT,),
+    "RS-SD-009": (),
+    "RS-SD-010": (HOLD_EFFECT,),
+    "RS-SD-011": (),
+    "RS-SD-012": (HOLD_EFFECT,),
+    "RS-SD-013": (),
+}
+UNCHANGED_STATE_CASES = {
+    "RS-SD-003",
+    "RS-SD-007",
+    "RS-SD-008",
+    "RS-SD-009",
+    "RS-SD-010",
+    "RS-SD-011",
+    "RS-SD-012",
+    "RS-SD-013",
+}
 
 
 def _cases() -> list[dict[str, Any]]:
@@ -81,10 +132,42 @@ def _facts(case: dict[str, Any]) -> RoughSorterFacts:
             binding_id=1,
             binding_version=1,
             profile_identity=_config().provider_profile,
-            plugin_config_hash="a" * 64,
-            generated_index_digest="b" * 64,
+            plugin_config_hash=sha256_digest(_config().model_dump(mode="json")),
+            generated_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
         ),
     )
+
+
+def _snapshot(**overrides: object) -> PinnedPluginSnapshot:
+    values: dict[str, object] = {
+        "plugin_key": DEFINITION.plugin_key,
+        "contract_version": DEFINITION.contract_version,
+        "binding_identity": "binding:1:1",
+        "binding_id": 1,
+        "binding_version": 1,
+        "config_hash": sha256_digest(_config().model_dump(mode="json")),
+        "index_digest": WORKLINE_PLUGIN_INDEX_DIGEST,
+        "profile_identity": _config().provider_profile,
+    }
+    values.update(overrides)
+    return PinnedPluginSnapshot.model_validate(values)
+
+
+def _dispatch_request(case: dict[str, Any], **overrides: object) -> PluginDispatchRequest:
+    state = RoughSorterState()
+    values: dict[str, object] = {
+        "plugin_key": DEFINITION.plugin_key,
+        "contract_version": DEFINITION.contract_version,
+        "logical_route": "SCAN_COMPLETED",
+        "raw_config": _config().model_dump(mode="json"),
+        "raw_state": state.model_dump(mode="json"),
+        "context_state": state.model_dump(mode="json"),
+        "raw_input": case["trigger"]["payload"],
+        "raw_facts": _facts(case).model_dump(mode="json"),
+        "snapshot": _snapshot(),
+    }
+    values.update(overrides)
+    return PluginDispatchRequest.model_validate(values)
 
 
 def _intent_signature(intents: tuple[RuntimeIntent, ...]) -> tuple[tuple[str, str | None, str | None], ...]:
@@ -145,11 +228,29 @@ async def test_approved_case_maps_to_typed_plugin_decision(case: dict[str, Any])
     assert isinstance(decision, PluginDecision)
     assert decision.outcome_code == case["expected_outcome"]["result"]
     assert _intent_signature(decision.intents) == _expected_signature(case)
-    assert decision.capability_identities == tuple(
-        dict.fromkeys(intent.source_system for intent in decision.intents if intent.source_system)
-    )
+    assert decision.capability_identities == EXPECTED_CAPABILITY_IDENTITIES[case["case_id"]]
     # Task 6 先保存 capability identity；Task 7 才统一转换为 SYSTEM_CAPABILITY kind。
-    assert all(intent.source_system is not None for intent in decision.intents)
+    assert (
+        tuple(dict.fromkeys(intent.source_system for intent in decision.intents if intent.source_system))
+        == (EXPECTED_CAPABILITY_IDENTITIES[case["case_id"]])
+    )
+    assert decision.next_state.phase == EXPECTED_PHASE[case["case_id"]]
+    assert decision.next_state.current_correlation == state.current_correlation
+    fixture_phase = case["expected_state"]["context_phase"]
+    if fixture_phase == "UNCHANGED":
+        assert case["case_id"] in UNCHANGED_STATE_CASES
+    else:
+        assert EXPECTED_PHASE[case["case_id"]] == fixture_phase
+    if case["case_id"] in UNCHANGED_STATE_CASES:
+        assert decision.next_state == state
+    elif case["case_id"] == "RS-SD-004":
+        assert decision.next_state.measurement_evidence_ref == "measurement:CMD-PICK-004"
+        assert decision.next_state.wms_evidence_ref == "timeline:wms"
+    elif case["case_id"] == "RS-SD-006":
+        assert decision.next_state.wms_evidence_ref == "timeline:wms"
+    else:
+        assert decision.next_state.measurement_evidence_ref == state.measurement_evidence_ref
+        assert decision.next_state.wms_evidence_ref == state.wms_evidence_ref
     assert gateway.calls == (1 if case["case_id"] in {"RS-SD-004", "RS-SD-006", "RS-SD-010"} else 0)
     if case["expected_outcome"]["reason_code"]:
         assert decision.reason_code == case["expected_outcome"]["reason_code"]
@@ -187,19 +288,10 @@ async def test_replay_never_calls_provider_or_creates_new_effect(case: dict[str,
 @pytest.mark.asyncio
 async def test_dispatcher_uses_exact_generated_identity_and_route_without_database() -> None:
     case = next(item for item in _cases() if item["case_id"] == "RS-SD-001")
-    dispatcher = WorklinePluginDispatcher(
-        plugin_index={(DEFINITION.plugin_key, DEFINITION.contract_version): DEFINITION},
-        route_handlers=ROUTE_HANDLERS,
-    )
+    dispatcher = WorklinePluginDispatcher()
 
     result = await dispatcher.dispatch(
-        plugin_key=DEFINITION.plugin_key,
-        contract_version=DEFINITION.contract_version,
-        logical_route="SCAN_COMPLETED",
-        raw_input=case["trigger"]["payload"],
-        state=RoughSorterState(),
-        context=PluginContext(state=RoughSorterState()),
-        handler_kwargs={"config": _config(), "facts": _facts(case)},
+        request=_dispatch_request(case),
         gateway=_Gateway(case["trigger"]["decision_discriminator"]),
     )
 
@@ -208,33 +300,141 @@ async def test_dispatcher_uses_exact_generated_identity_and_route_without_databa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mutation", ["identity", "route", "state", "capability"])
-async def test_dispatcher_fails_closed_for_invalid_contract(mutation: str) -> None:
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    [
+        ("identity", "PLUGIN_IDENTITY_UNKNOWN"),
+        ("route", "PLUGIN_ROUTE_UNKNOWN"),
+        ("state", "PLUGIN_CONTRACT_INVALID"),
+        ("context_state", "STATE_CONTEXT_MISMATCH"),
+        ("config", "PLUGIN_CONTRACT_INVALID"),
+        ("input", "PLUGIN_CONTRACT_INVALID"),
+        ("facts", "PLUGIN_CONTRACT_INVALID"),
+        ("config_hash", "PLUGIN_CONFIG_HASH_MISMATCH"),
+        ("index", "PLUGIN_INDEX_DIGEST_MISMATCH"),
+        ("profile", "PLUGIN_PROFILE_MISMATCH"),
+        ("binding", "PLUGIN_BINDING_IDENTITY_MISMATCH"),
+    ],
+)
+async def test_dispatcher_fails_closed_for_invalid_contract(mutation: str, expected_code: str) -> None:
     case = next(item for item in _cases() if item["case_id"] == "RS-SD-001")
-    dispatcher = WorklinePluginDispatcher(
-        plugin_index={(DEFINITION.plugin_key, DEFINITION.contract_version): DEFINITION},
-        route_handlers=ROUTE_HANDLERS,
-    )
-    kwargs: dict[str, Any] = {
-        "plugin_key": DEFINITION.plugin_key,
-        "contract_version": DEFINITION.contract_version,
-        "logical_route": "SCAN_COMPLETED",
-        "raw_input": case["trigger"]["payload"],
-        "state": RoughSorterState(),
-        "context": PluginContext(state=RoughSorterState()),
-        "handler_kwargs": {"config": _config(), "facts": _facts(case)},
-        "gateway": _Gateway(case["trigger"]["decision_discriminator"]),
-        "requested_capabilities": (),
-    }
+    dispatcher = WorklinePluginDispatcher()
+    request_overrides: dict[str, object] = {}
     if mutation == "identity":
-        kwargs["contract_version"] = "unknown"
+        request_overrides["contract_version"] = "unknown"
     elif mutation == "route":
-        kwargs["logical_route"] = "UNKNOWN"
+        request_overrides["logical_route"] = "UNKNOWN"
     elif mutation == "state":
-        kwargs["state"] = {"phase": 123}
+        request_overrides["raw_state"] = {"phase": 123}
+    elif mutation == "context_state":
+        request_overrides["context_state"] = {"phase": "COMPLETED"}
+    elif mutation == "config":
+        request_overrides["raw_config"] = {"provider_profile": _config().provider_profile}
+    elif mutation == "input":
+        request_overrides.update({"logical_route": "PICK_AND_PUT_RESULT", "raw_input": {}})
+    elif mutation == "facts":
+        request_overrides["raw_facts"] = {"business_key": "PKG-001"}
+    elif mutation == "config_hash":
+        request_overrides["snapshot"] = _snapshot(config_hash="c" * 64)
+    elif mutation == "index":
+        request_overrides["snapshot"] = _snapshot(index_digest="d" * 64)
+    elif mutation == "profile":
+        request_overrides["snapshot"] = _snapshot(profile_identity="different-profile")
     else:
-        kwargs["requested_capabilities"] = (("undeclared", "v1"),)
+        request_overrides["snapshot"] = _snapshot(binding_identity="binding:1:2", binding_version=2)
+    gateway = _Gateway(case["trigger"]["decision_discriminator"])
 
-    result = await dispatcher.dispatch(**kwargs)
+    result = await dispatcher.dispatch(request=_dispatch_request(case, **request_overrides), gateway=gateway)
 
     assert result.kind == "contract_violation"
+    assert result.error_code == expected_code
+    assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_blocks_handler_undeclared_capability_without_calling_gateway() -> None:
+    case = next(item for item in _cases() if item["case_id"] == "RS-SD-001")
+
+    async def hidden_capability_handler(logical_input, *, state, config, facts, context, gateway):
+        _ = (logical_input, config, facts, context)
+        await gateway.execute("undeclared.capability", "v1", {})
+        return PluginDecision(intents=(), next_state=state, outcome_code="MUST_NOT_ESCAPE")
+
+    key = (DEFINITION.plugin_key, DEFINITION.contract_version, "SCAN_COMPLETED")
+    dispatcher = WorklinePluginDispatcher(
+        handler_registry={key: (HandlerRegistration(hidden_capability_handler, RoughSorterFacts),)}
+    )
+    gateway = _Gateway(case["trigger"]["decision_discriminator"])
+
+    result = await dispatcher.dispatch(request=_dispatch_request(case), gateway=gateway)
+
+    assert isinstance(result, ContractViolation)
+    assert result.error_code == "CAPABILITY_NOT_DECLARED"
+    assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("candidates", "expected_code"),
+    [
+        ((), "PLUGIN_HANDLER_MISSING"),
+        (
+            (
+                HandlerRegistration(decide, RoughSorterFacts),
+                HandlerRegistration(decide, RoughSorterFacts),
+            ),
+            "PLUGIN_HANDLER_AMBIGUOUS",
+        ),
+    ],
+)
+async def test_dispatcher_distinguishes_missing_and_ambiguous_handler_candidates(
+    candidates: tuple[HandlerRegistration, ...], expected_code: str
+) -> None:
+    case = next(item for item in _cases() if item["case_id"] == "RS-SD-001")
+    key = (DEFINITION.plugin_key, DEFINITION.contract_version, "SCAN_COMPLETED")
+    dispatcher = WorklinePluginDispatcher(handler_registry={key: candidates})
+
+    result = await dispatcher.dispatch(
+        request=_dispatch_request(case), gateway=_Gateway(case["trigger"]["decision_discriminator"])
+    )
+
+    assert isinstance(result, ContractViolation)
+    assert result.error_code == expected_code
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_propagates_cancellation_without_mapping_business_outcome() -> None:
+    case = next(item for item in _cases() if item["case_id"] == "RS-SD-001")
+
+    async def cancelled_handler(logical_input, *, state, config, facts, context, gateway):
+        _ = (logical_input, state, config, facts, context, gateway)
+        raise asyncio.CancelledError
+
+    key = (DEFINITION.plugin_key, DEFINITION.contract_version, "SCAN_COMPLETED")
+    dispatcher = WorklinePluginDispatcher(
+        handler_registry={key: (HandlerRegistration(cancelled_handler, RoughSorterFacts),)}
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await dispatcher.dispatch(
+            request=_dispatch_request(case), gateway=_Gateway(case["trigger"]["decision_discriminator"])
+        )
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_does_not_swallow_handler_programming_error() -> None:
+    case = next(item for item in _cases() if item["case_id"] == "RS-SD-001")
+
+    async def broken_handler(logical_input, *, state, config, facts, context, gateway):
+        _ = (logical_input, state, config, facts, context, gateway)
+        raise RuntimeError("programming defect")
+
+    key = (DEFINITION.plugin_key, DEFINITION.contract_version, "SCAN_COMPLETED")
+    dispatcher = WorklinePluginDispatcher(
+        handler_registry={key: (HandlerRegistration(broken_handler, RoughSorterFacts),)}
+    )
+
+    with pytest.raises(RuntimeError, match="programming defect"):
+        await dispatcher.dispatch(
+            request=_dispatch_request(case), gateway=_Gateway(case["trigger"]["decision_discriminator"])
+        )

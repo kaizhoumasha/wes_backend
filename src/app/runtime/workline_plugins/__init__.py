@@ -13,17 +13,25 @@ from .attempt_coordinator import (
 )
 from .contracts import MAX_PLUGIN_DECISION_INTENTS, PluginContext, PluginDecision
 from .definition import WorklinePluginDefinition
-from .dispatcher import WorklinePluginDispatcher
+from .dispatcher import (
+    HandlerRegistration,
+    PinnedPluginSnapshot,
+    PluginDispatchRequest,
+    WorklinePluginDispatcher,
+)
 
 __all__ = [
     "MAX_PLUGIN_DECISION_INTENTS",
     "AttemptCoordinator",
     "AttemptSnapshot",
     "AttemptWriteSet",
+    "HandlerRegistration",
+    "PinnedPluginSnapshot",
     "PluginAttemptContext",
     "PluginAttemptRunner",
     "PluginContext",
     "PluginDecision",
+    "PluginDispatchRequest",
     "PluginWriteSetLimits",
     "UnavailablePluginAttemptRunner",
     "WorklinePluginDefinition",

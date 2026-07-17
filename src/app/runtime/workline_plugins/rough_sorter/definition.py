@@ -3,7 +3,7 @@
 from src.app.runtime.workline_plugins.definition import WorklinePluginDefinition
 
 from .config import RoughSorterConfig
-from .handlers import decide
+from .handlers import RoughSorterFacts, decide
 from .inputs import parse_business_timeout, parse_pick_and_put_result, parse_replay_request, parse_scan_completed
 from .state import RoughSorterState
 
@@ -22,6 +22,9 @@ DEFINITION = WorklinePluginDefinition(
     },
 )
 
-ROUTE_HANDLERS = {(DEFINITION.plugin_key, DEFINITION.contract_version, route): decide for route in DEFINITION.routes}
+ROUTE_HANDLERS = {
+    (DEFINITION.plugin_key, DEFINITION.contract_version, route): ((decide, RoughSorterFacts),)
+    for route in DEFINITION.routes
+}
 
 __all__ = ["DEFINITION", "ROUTE_HANDLERS"]
