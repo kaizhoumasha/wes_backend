@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from sqlalchemy import JSON, Column
+from sqlalchemy import JSON, BigInteger, Column, UniqueConstraint
 from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
@@ -35,13 +35,26 @@ class RuntimeIntentLog(BaseMixin, table=True):
 
     __tablename__ = "runtime_intent_logs"  # pyright: ignore[reportAssignmentType]
     __schema__ = RUNTIME_SCHEMA
-    __table_args__: ClassVar[dict[str, str]] = {"schema": RUNTIME_SCHEMA}
+    __table_args__: ClassVar[tuple[object, ...]] = (
+        UniqueConstraint(
+            "provider_code",
+            "operation_kind",
+            "idempotency_key",
+            name="uq_runtime_intent_log_effect_identity",
+        ),
+        {"schema": RUNTIME_SCHEMA},
+    )
 
     id: int | None = Field(default=None, primary_key=True)
 
     # runtime 域内强 FK
     execution_session_id: int = Field(
         foreign_key=f"{RUNTIME_SCHEMA}.execution_sessions.id",
+        index=True,
+    )
+    execution_work_item_id: int | None = Field(
+        default=None,
+        foreign_key=f"{RUNTIME_SCHEMA}.execution_work_items.id",
         index=True,
     )
     correlation_id: str = Field(
@@ -52,6 +65,7 @@ class RuntimeIntentLog(BaseMixin, table=True):
 
     # effect 元数据
     provider_code: str = Field(max_length=60, index=True)
+    operation_kind: str = Field(default="plugin_intent", max_length=80)
     target_domain: str = Field(max_length=60, description="handling / device / wms_integration")
     target_action: str = Field(max_length=120)
 
@@ -86,3 +100,11 @@ class RuntimeIntentLog(BaseMixin, table=True):
     attempt_count: int = Field(default=0)
     last_error_code: str | None = Field(default=None, max_length=120)
     last_error_message: str | None = Field(default=None, max_length=500)
+
+    # SYSTEM_CAPABILITY effect 生命周期与 typed evidence；本表是唯一 effect ledger。
+    effect_status: str | None = Field(default=None, max_length=40, index=True)
+    outcome_kind: str | None = Field(default=None, max_length=40)
+    outcome_code: str | None = Field(default=None, max_length=120)
+    outcome_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    outcome_history_json: list[dict[str, object]] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    effect_updated_at_ms: int | None = Field(default=None, sa_type=BigInteger)

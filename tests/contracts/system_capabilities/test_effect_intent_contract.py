@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -10,7 +11,7 @@ from pydantic import ValidationError
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import RuntimeIntentLogRepository
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
-from src.app.runtime.orchestration.system_capability_effect_record import SystemCapabilityEffectRecord
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode, SystemCapabilityMode
 from src.app.runtime.system_capabilities.device.device_command_write.definition import DEFINITION as DEVICE_DEFINITION
 from src.app.runtime.system_capabilities.device.device_command_write.handler import DeviceCommandWriteHandler
@@ -177,19 +178,28 @@ def test_rough_sorter_declares_all_effect_capabilities_in_generated_author_allow
     } <= declared
 
 
-def test_effect_record_separates_provisional_success_and_redecision_evidence() -> None:
-    columns = SystemCapabilityEffectRecord.__table__.c
+def test_runtime_intent_log_is_the_only_effect_ledger() -> None:
+    columns = RuntimeIntentLog.__table__.c
     assert columns.provider_code.nullable is False
     assert columns.request_hash.nullable is False
-    assert columns.status.nullable is False
+    assert columns.effect_status.nullable is True
     assert columns.outcome_json.nullable is False
     assert columns.outcome_history_json.nullable is False
     unique_columns = {
         tuple(column.name for column in constraint.columns)
-        for constraint in SystemCapabilityEffectRecord.__table__.constraints
+        for constraint in RuntimeIntentLog.__table__.constraints
         if constraint.__class__.__name__ == "UniqueConstraint"
     }
     assert ("provider_code", "operation_kind", "idempotency_key") in unique_columns
+
+
+def test_plugin_binding_migration_extends_runtime_intent_log_without_second_effect_ledger() -> None:
+    migration = Path(
+        "migrations/versions/20260717_0739_fa15ba0aef65_add_workline_plugin_runtime_binding.py"
+    ).read_text()
+    assert "system_capability_effect_records" not in migration
+    for column in ("effect_status", "outcome_json", "outcome_history_json", "execution_work_item_id"):
+        assert f'"{column}"' in migration
 
 
 @pytest.mark.parametrize("handler", [MaterialUnitWriteHandler, DeviceCommandWriteHandler, SessionHoldHandler])

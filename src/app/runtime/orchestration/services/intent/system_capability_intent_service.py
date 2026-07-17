@@ -54,11 +54,11 @@ class SystemCapabilityIntentService:
             plugin_definitions = WORKLINE_PLUGIN_INDEX if plugin_definitions is None else plugin_definitions
             plugin_index_digest = WORKLINE_PLUGIN_INDEX_DIGEST if plugin_index_digest is None else plugin_index_digest
         if effect_repository is None:
-            from src.app.runtime.orchestration.repositories.system_capability_effect_repository import (
-                system_capability_effect_repository,
+            from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import (
+                runtime_intent_log_repository,
             )
 
-            effect_repository = system_capability_effect_repository
+            effect_repository = runtime_intent_log_repository
         self._effect_repository = effect_repository
         self._plugin_definitions = dict(plugin_definitions)
         self._plugin_index_digest = plugin_index_digest
@@ -97,6 +97,14 @@ class SystemCapabilityIntentService:
             "capability_key": str(intent.capability_key),
             "capability_contract_version": str(intent.contract_version),
             "operation_identity": str(intent.operation_key),
+            "creator_authority": intent.creator_authority,
+            "authorization_policy": intent.authorization_policy,
+            "binding_snapshot_json": dict(intent.binding_snapshot),
+            "provider_snapshot_json": dict(intent.provider_snapshot),
+            "precondition_json": dict(intent.precondition_json),
+            "fact_version": str(intent.fact_version),
+            "payload_hash": str(intent.payload_hash),
+            "completion_mode": definition.completion_mode.value,
             "updated_at_ms": int(timezone.now_utc().timestamp() * 1000),
         }
         claim_result = await self._effect_repository.claim_or_match(ctx["db"], **claim)
@@ -113,6 +121,11 @@ class SystemCapabilityIntentService:
         self, ctx: Mapping[str, Any], *, prepared: PreparedSystemCapabilityIntent, evidence: Any
     ) -> None:
         await self._effect_repository.record_outcome(ctx["db"], claim=prepared.claim, evidence=evidence)
+
+    async def get_success_evidence(
+        self, ctx: Mapping[str, Any], *, prepared: PreparedSystemCapabilityIntent
+    ) -> dict[str, object] | None:
+        return await self._effect_repository.get_success_evidence(ctx["db"], claim=prepared.claim)
 
     def _validate_execution_identity(
         self, ctx: Mapping[str, Any], intent: RuntimeIntent, *, definition: SystemCapabilityDefinition

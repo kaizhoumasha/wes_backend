@@ -21,7 +21,15 @@ from src.app.runtime.system_capabilities.definition import (
     SystemCapabilityDefinition,
     SystemCapabilityMode,
 )
+from src.app.runtime.system_capabilities.device.device_command_write.contracts import DeviceCommandWriteOutput
+from src.app.runtime.system_capabilities.device.device_command_write.definition import DEFINITION as DEVICE_DEFINITION
+from src.app.runtime.system_capabilities.material_flow.material_unit_write.contracts import MaterialUnitWriteOutput
+from src.app.runtime.system_capabilities.material_flow.material_unit_write.definition import (
+    DEFINITION as MATERIAL_DEFINITION,
+)
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
+from src.app.runtime.system_capabilities.runtime.session_hold.contracts import SessionHoldOutput
+from src.app.runtime.system_capabilities.runtime.session_hold.definition import DEFINITION as HOLD_DEFINITION
 
 
 class _Input(BaseModel):
@@ -81,8 +89,9 @@ def _definition(
 
 
 class _EffectRepository:
-    def __init__(self, result: ClaimResult | BaseException) -> None:
+    def __init__(self, result: ClaimResult | BaseException, *, success_evidence: object | None = None) -> None:
         self.result = result
+        self.success_evidence = success_evidence
         self.calls: list[dict[str, Any]] = []
         self.outcomes: list[object] = []
 
@@ -94,6 +103,9 @@ class _EffectRepository:
 
     async def record_outcome(self, _db: object, **kwargs: Any) -> None:
         self.outcomes.append(kwargs["evidence"])
+
+    async def get_success_evidence(self, _db: object, **_kwargs: Any) -> object | None:
+        return self.success_evidence
 
     async def list_redecision_evidence(self, _db: object, **_kwargs: Any) -> tuple[object, ...]:
         return tuple(
@@ -243,10 +255,24 @@ async def test_outbox_async_success_means_durably_accepted_not_remote_completed(
 @pytest.mark.asyncio
 async def test_same_final_key_and_hash_is_noop_success() -> None:
     _RecordingHandler.calls.clear()
-    repository = _EffectRepository(ClaimResult.MATCH)
+    repository = _EffectRepository(
+        ClaimResult.MATCH,
+        success_evidence={
+            "capability_key": "test.effect",
+            "contract_version": "v1",
+            "operation_key": "operation-1",
+            "idempotency_key": "system-capability:test.effect@v1:session:31:work-item:41:operation-1",
+            "payload_hash": _intent().payload_hash,
+            "outcome_kind": "success",
+            "outcome_code": "SUCCESS",
+            "outcome": {"kind": "success", "payload": {"accepted": True}},
+            "occurred_at_ms": 1000,
+        },
+    )
     result = await _service(_definition(), repository).apply(_ctx(), _intent())
 
     assert isinstance(result.outcome, Success)
+    assert result.outcome.payload == _Output(accepted=True)
     assert result.idempotent_replay is True
     assert _RecordingHandler.calls == []
     [claim] = repository.calls
@@ -254,6 +280,103 @@ async def test_same_final_key_and_hash_is_noop_success() -> None:
     assert "session:31" in claim["idempotency_key"]
     assert "work-item:41" in claim["idempotency_key"]
     assert claim["idempotency_key"].endswith(":operation-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("definition", "input_payload", "payload", "expected"),
+    [
+        (
+            MATERIAL_DEFINITION,
+            {
+                "operation": "CREATE",
+                "pkg_code": "PKG-1",
+                "material_identity_key": "material-1",
+                "six_in_one": {},
+                "status": "IN_STORAGE",
+            },
+            {"material_unit_id": 101, "status": "IN_STORAGE"},
+            MaterialUnitWriteOutput(material_unit_id=101, status="IN_STORAGE"),
+        ),
+        (
+            DEVICE_DEFINITION,
+            {"target_device_id": 7, "action": "MOVE"},
+            {"accepted": True, "command_code": "CMD-1", "dispatch_key": "dispatch-1"},
+            DeviceCommandWriteOutput(accepted=True, command_code="CMD-1", dispatch_key="dispatch-1"),
+        ),
+        (
+            HOLD_DEFINITION,
+            {"reason_code": "MANUAL_REVIEW", "message": "review required"},
+            {"held": True, "reason_code": "MANUAL_REVIEW"},
+            SessionHoldOutput(held=True, reason_code="MANUAL_REVIEW"),
+        ),
+    ],
+)
+async def test_match_replays_persisted_typed_success_for_real_effect_definitions(
+    definition: SystemCapabilityDefinition,
+    input_payload: dict[str, object],
+    payload: dict[str, object],
+    expected: BaseModel,
+) -> None:
+    intent = RuntimeIntent.system_capability(
+        capability_key=definition.capability_key,
+        contract_version=definition.contract_version,
+        operation_key="real-operation-1",
+        payload=input_payload,
+        precondition={"expected": 1},
+        fact_version="fact:1",
+        timeout_seconds=definition.timeout_seconds,
+        creator_authority="WORKLINE_PLUGIN",
+        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
+        binding_snapshot={"binding_id": 9, "binding_version": 1},
+        provider_snapshot={"provider_code": "RUNTIME", "profile": definition.admission},
+    )
+    repository = _EffectRepository(
+        ClaimResult.MATCH,
+        success_evidence={
+            "capability_key": definition.capability_key,
+            "contract_version": definition.contract_version,
+            "operation_key": "real-operation-1",
+            "idempotency_key": (
+                f"system-capability:{definition.capability_key}@{definition.contract_version}:"
+                "session:31:work-item:41:real-operation-1"
+            ),
+            "payload_hash": intent.payload_hash,
+            "outcome_kind": "success",
+            "outcome_code": "SUCCESS",
+            "outcome": {"kind": "success", "payload": payload},
+            "occurred_at_ms": 1000,
+        },
+    )
+    result = await _service(definition, repository).apply(_ctx(), intent)
+
+    assert result.outcome == Success(payload=expected)
+    assert result.idempotent_replay is True
+    assert result.evidence is not None
+    assert result.evidence.outcome == {"kind": "success", "payload": payload}
+
+
+@pytest.mark.asyncio
+async def test_match_with_invalid_persisted_success_fails_closed() -> None:
+    repository = _EffectRepository(
+        ClaimResult.MATCH,
+        success_evidence={
+            "capability_key": "test.effect",
+            "contract_version": "v1",
+            "operation_key": "operation-1",
+            "idempotency_key": "system-capability:test.effect@v1:session:31:work-item:41:operation-1",
+            "payload_hash": _intent().payload_hash,
+            "outcome_kind": "success",
+            "outcome_code": "SUCCESS",
+            "outcome": {"kind": "success", "payload": {"accepted": "not-a-bool"}},
+            "occurred_at_ms": 1000,
+        },
+    )
+
+    result = await _service(_definition(), repository).apply(_ctx(), _intent())
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert result.outcome.error_code == "PERSISTED_OUTCOME_INVALID"
 
 
 @pytest.mark.asyncio

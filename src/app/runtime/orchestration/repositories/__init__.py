@@ -72,10 +72,6 @@ from .session_repository import (
 from .smt_inbound_handoff_repository import (
     SmtInboundHandoffRepository,
 )
-from .system_capability_effect_repository import (
-    SystemCapabilityEffectRepository,
-    system_capability_effect_repository,
-)
 from .timeline_recorded_replay_repository import (
     TimelineRecordedReplayRepository,
     timeline_recorded_replay_repository,
@@ -105,7 +101,6 @@ __all__ = [
     "RuntimeLocationEventRepository",
     "SessionMutationRepository",
     "SmtInboundHandoffRepository",
-    "SystemCapabilityEffectRepository",
     "TimelineRecordedReplayRepository",
     "TimelineSequenceRepository",
     "WorklineBinCellReservationRepository",
@@ -125,7 +120,6 @@ __all__ = [
     "runtime_intent_log_repository",
     "runtime_location_event_repository",
     "session_mutation_repository",
-    "system_capability_effect_repository",
     "timeline_recorded_replay_repository",
     "timeline_sequence_repository",
     "workline_bin_cell_reservation_repository",

@@ -16,6 +16,7 @@ from src.app.runtime.system_capabilities.outcomes import (
     ContractViolation,
     RetryableFailure,
     Success,
+    parse_outcome,
 )
 from src.utils.timezone import timezone
 
@@ -95,11 +96,24 @@ class SystemCapabilityEffectService:
 
         definition = prepared.definition
         if prepared.claim_result is ClaimResult.MATCH or getattr(prepared.claim_result, "value", None) == "MATCH":
+            replay = await self._replay_success(ctx, intent=intent, prepared=prepared)
+            if replay is None:
+                return SystemCapabilityEffectResult(
+                    outcome=ContractViolation(
+                        error_code="PERSISTED_OUTCOME_INVALID",
+                        message="persisted success evidence failed closed",
+                    ),
+                    completion_mode=definition.completion_mode,
+                    idempotent_replay=True,
+                )
+            outcome, evidence = replay
             return SystemCapabilityEffectResult(
-                outcome=Success(payload={"idempotent": True}),
+                outcome=outcome,
                 completion_mode=definition.completion_mode,
                 durably_accepted=definition.completion_mode is EffectCompletionMode.OUTBOX_ASYNC,
+                remote_completed=definition.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL,
                 idempotent_replay=True,
+                evidence=evidence,
             )
 
         execution = SystemCapabilityExecution(ctx=ctx, intent=intent, idempotency_key=prepared.idempotency_key)
@@ -150,6 +164,28 @@ class SystemCapabilityEffectService:
             outcome=outcome.model_dump(mode="json"),
             occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
         )
+
+    async def _replay_success(
+        self, ctx: dict[str, Any], *, intent: RuntimeIntent, prepared: Any
+    ) -> tuple[Success[Any], SystemCapabilityEffectEvidence] | None:
+        raw = await self._intent_service.get_success_evidence(ctx, prepared=prepared)
+        try:
+            evidence = SystemCapabilityEffectEvidence.model_validate(raw)
+        except ValidationError:
+            return None
+        if (
+            evidence.capability_key != str(intent.capability_key)
+            or evidence.contract_version != str(intent.contract_version)
+            or evidence.operation_key != str(intent.operation_key)
+            or evidence.idempotency_key != prepared.idempotency_key
+            or evidence.payload_hash != prepared.payload_hash
+            or evidence.outcome_kind != "success"
+        ):
+            return None
+        outcome = parse_outcome(evidence.outcome, payload_type=prepared.definition.output_model)
+        if not isinstance(outcome, Success):
+            return None
+        return outcome, evidence
 
     @staticmethod
     def _normalize_outcome(raw: object, *, output_model: type[BaseModel]) -> EffectOutcome:
