@@ -154,10 +154,15 @@ class SystemCapabilityIndexBuilder:
         identities: tuple[tuple[str, str], ...],
         digest: str,
     ) -> str:
-        imports = sorted(
-            f"from {source.module_name} import {source.export_name} as _DEFINITION_{index}"
-            for index, source in enumerate(sources)
-        )
+        imports = [
+            line
+            for index, source in sorted(enumerate(sources), key=lambda item: item[1].module_name)
+            for line in (
+                f"from {source.module_name} import (",
+                f"    {source.export_name} as _DEFINITION_{index},",
+                ")",
+            )
+        ]
         identity_entries = [
             f"    ({json.dumps(key, ensure_ascii=False)}, {json.dumps(version, ensure_ascii=False)}),"
             for key, version in identities
@@ -167,11 +172,13 @@ class SystemCapabilityIndexBuilder:
             f"_DEFINITION_{index},"
             for index, (key, version) in enumerate(identities)
         ]
-        identity_block = (
-            ["SYSTEM_CAPABILITY_IDENTITIES = ()"]
-            if not identity_entries
-            else ["SYSTEM_CAPABILITY_IDENTITIES = (", *identity_entries, ")"]
-        )
+        if not identity_entries:
+            identity_block = ["SYSTEM_CAPABILITY_IDENTITIES = ()"]
+        elif len(identity_entries) == 1:
+            identity = identity_entries[0].strip().removesuffix(",")
+            identity_block = [f"SYSTEM_CAPABILITY_IDENTITIES = ({identity},)"]
+        else:
+            identity_block = ["SYSTEM_CAPABILITY_IDENTITIES = (", *identity_entries, ")"]
         mapping_block = (
             ["SYSTEM_CAPABILITY_INDEX = MappingProxyType({})"]
             if not mapping_entries

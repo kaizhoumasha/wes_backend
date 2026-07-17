@@ -1,0 +1,147 @@
+"""粗分机 WMS 准入 capability、adapter 与 profile 的跨域合同。"""
+
+from __future__ import annotations
+
+import inspect
+from dataclasses import fields
+from decimal import Decimal
+
+import pytest
+
+from src.app.contracts.external_contract_profile_catalog import ExternalContractProfileCatalog
+from src.app.runtime.capability_port_registry import CapabilityPortRegistry
+from src.app.runtime.runtime_capability_catalog import RUNTIME_CAPABILITY_PROVIDER_PROFILES
+from src.app.runtime.system_capabilities.definition import (
+    EffectCompletionMode,
+    SystemCapabilityMode,
+)
+from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.definition import DEFINITION
+from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.handler import (
+    RoughSorterInventoryAdmissionHandler,
+)
+from src.app.wms_integration.adapters.inventory_query_port_adapter import (
+    WmsInventoryQueryPortAdapter,
+    build_wms_inventory_query_port_factory,
+)
+from src.app.wms_integration.models import QueryInventoryResponse
+from src.app.wms_integration.ports.inventory_query import (
+    WmsInventoryQueryContractError,
+    WmsInventoryQueryPort,
+    WmsInventoryQueryUnavailable,
+)
+
+
+class FakeTypedClient:
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.requests: list[object] = []
+
+    async def query_inventory(self, request: object) -> object:
+        self.requests.append(request)
+        if isinstance(self.response, BaseException):
+            raise self.response
+        return self.response
+
+
+@pytest.mark.asyncio
+async def test_production_adapter_maps_public_port_arguments_to_current_wms_dto() -> None:
+    client = FakeTypedClient(
+        QueryInventoryResponse.model_validate(
+            {
+                "request_id": "attempt-7:query-1",
+                "items": [
+                    {
+                        "sku": "MAT-001",
+                        "warehouse_code": "WH-A",
+                        "lot_no": "LOT-1",
+                        "available_qty": "4.25",
+                    }
+                ],
+            }
+        )
+    )
+    adapter = WmsInventoryQueryPortAdapter(client, request_id_factory=lambda: "attempt-7:query-1")
+
+    items = await adapter.query_inventory("MAT-001", warehouse_code="WH-A")
+
+    request = client.requests[0]
+    assert request.model_dump(mode="json", exclude_none=True) == {
+        "request_id": "attempt-7:query-1",
+        "sku": "MAT-001",
+        "warehouse_code": "WH-A",
+    }
+    assert len(items) == 1
+    assert items[0].material_code == "MAT-001"
+    assert items[0].batch_no == "LOT-1"
+    assert items[0].quantity == Decimal("4.25")
+
+
+@pytest.mark.asyncio
+async def test_adapter_translates_timeout_unavailable_and_invalid_shape_at_port_boundary() -> None:
+    timeout_adapter = WmsInventoryQueryPortAdapter(
+        FakeTypedClient(TimeoutError()),
+        request_id_factory=lambda: "attempt-timeout",
+    )
+    with pytest.raises(WmsInventoryQueryUnavailable):
+        await timeout_adapter.query_inventory("MAT-001")
+
+    from src.app.wms_integration.services.exceptions import WmsUnavailableError
+
+    unavailable_adapter = WmsInventoryQueryPortAdapter(
+        FakeTypedClient(
+            WmsUnavailableError(
+                "provider unavailable",
+                operation_name="query_inventory",
+                evidence_key=None,
+            )
+        ),
+        request_id_factory=lambda: "attempt-unavailable",
+    )
+    with pytest.raises(WmsInventoryQueryUnavailable):
+        await unavailable_adapter.query_inventory("MAT-001")
+
+    invalid_adapter = WmsInventoryQueryPortAdapter(
+        FakeTypedClient({"items": [{"wrong": "shape"}]}),
+        request_id_factory=lambda: "attempt-invalid",
+    )
+    with pytest.raises(WmsInventoryQueryContractError):
+        await invalid_adapter.query_inventory("MAT-001")
+
+
+def test_adapter_factory_is_attempt_scoped_and_registry_does_not_cache_instances() -> None:
+    factory = build_wms_inventory_query_port_factory(
+        FakeTypedClient(QueryInventoryResponse(items=[])),
+        request_id_factory=lambda: "attempt-scoped",
+    )
+    registry = CapabilityPortRegistry()
+    registry.register(WmsInventoryQueryPort, factory)
+
+    assert registry.get(WmsInventoryQueryPort) is not registry.get(WmsInventoryQueryPort)
+
+
+def test_definition_profile_and_handler_keep_the_capability_boundary_closed() -> None:
+    profile = RUNTIME_CAPABILITY_PROVIDER_PROFILES["WMS"]
+    catalog = ExternalContractProfileCatalog([profile])
+    resolved = catalog.resolve(
+        provider_code="WMS",
+        contract_version="2026-07-06.material-flow",
+        environment="sandbox",
+    )
+
+    assert catalog.resolve_identity(resolved.identity) is resolved
+    assert resolved.identity == "wms.2026-07-06.material-flow.sandbox"
+    assert "WmsMasterDataPort.get_material" in resolved.runtime_capabilities_query
+    assert "WmsInventoryQueryPort.query_inventory" in resolved.runtime_capabilities_query
+    assert resolved.timeout_retry_query_timeout_seconds == 10
+    assert DEFINITION.capability_key == "wms.rough_sorter_inventory_admission"
+    assert DEFINITION.contract_version == "v1"
+    assert DEFINITION.mode is SystemCapabilityMode.QUERY
+    assert DEFINITION.required_ports == (WmsInventoryQueryPort,)
+    assert DEFINITION.admission == resolved.identity
+    assert DEFINITION.timeout_seconds == resolved.timeout_retry_query_timeout_seconds
+    assert DEFINITION.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL
+    assert "profile" not in {field.name for field in fields(DEFINITION)}
+
+    source = inspect.getsource(RoughSorterInventoryAdmissionHandler)
+    forbidden = ("wms_integration.services", "wms_integration.models", "http_client", "WmsTimeoutError")
+    assert all(token not in source for token in forbidden)

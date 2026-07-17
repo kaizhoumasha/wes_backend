@@ -129,6 +129,12 @@ class ExternalContractProfile(BaseModel):
     security_profile: SecurityProfile = Field(default_factory=SecurityProfile)
     notes: str | None = Field(default=None, max_length=2000)
 
+    @property
+    def identity(self) -> str:
+        """返回 Definition 可引用、且不携带 profile 实例的稳定身份。"""
+
+        return f"{self.provider_code.lower()}.{self.contract_version}.{self.environment}"
+
     @model_validator(mode="after")
     def _effect_timeout_required_after(self) -> ExternalContractProfile:
         """effect 非空时 effect_timeout_seconds 必填 (model_validator 访问完整实例)。"""

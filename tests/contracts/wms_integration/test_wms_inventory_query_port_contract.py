@@ -34,7 +34,7 @@ class _FakeWmsInventoryQueryPort:
             ),
         ]
 
-    def query_inventory(
+    async def query_inventory(
         self,
         material_code: str,
         *,
@@ -68,29 +68,32 @@ def test_wms_inventory_query_port_is_protocol():
     assert hasattr(WmsInventoryQueryPort, "query_empty_bins")
 
 
-def test_wms_inventory_query_returns_all_warehouses():
+@pytest.mark.asyncio
+async def test_wms_inventory_query_returns_all_warehouses():
     """query_inventory 不传 warehouse_code 返回所有仓库同物料库存。"""
     port: WmsInventoryQueryPort = _FakeWmsInventoryQueryPort()
-    items = port.query_inventory("M001")
+    items = await port.query_inventory("M001")
     assert len(items) == 2
     codes = {i.warehouse_code for i in items}
     assert codes == {"WH-A", "WH-B"}
 
 
-def test_wms_inventory_query_filters_by_warehouse():
+@pytest.mark.asyncio
+async def test_wms_inventory_query_filters_by_warehouse():
     """query_inventory(warehouse_code=...) 仅返回指定仓库。"""
     port: WmsInventoryQueryPort = _FakeWmsInventoryQueryPort()
-    items = port.query_inventory("M001", warehouse_code="WH-A")
+    items = await port.query_inventory("M001", warehouse_code="WH-A")
     assert len(items) == 1
     assert items[0].warehouse_code == "WH-A"
     assert items[0].storage_location_code == "BIN-01"
     assert items[0].batch_no == "B-2026-01"
 
 
-def test_wms_inventory_query_returns_empty_for_unknown_material():
+@pytest.mark.asyncio
+async def test_wms_inventory_query_returns_empty_for_unknown_material():
     """query_inventory 不存在物料返回空列表 (不是异常, 业务可判断空)."""
     port: WmsInventoryQueryPort = _FakeWmsInventoryQueryPort()
-    assert port.query_inventory("UNKNOWN-M") == []
+    assert await port.query_inventory("UNKNOWN-M") == []
 
 
 def test_wms_inventory_query_empty_bins_by_warehouse():

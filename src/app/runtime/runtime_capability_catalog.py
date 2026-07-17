@@ -35,7 +35,10 @@ def _build_wms_profile(provider_code: str) -> ExternalContractProfile:
         provider_code=provider_code,
         contract_version="2026-07-06.material-flow",
         environment="sandbox",
-        runtime_capabilities_query=["WmsMasterDataPort.get_material"],
+        runtime_capabilities_query=[
+            "WmsInventoryQueryPort.query_inventory",
+            "WmsMasterDataPort.get_material",
+        ],
         runtime_capabilities_effect=list(_WMS_EFFECT_CAPABILITIES),
         inbound_normalizers_event=["WMS_ROUGH_SORTER_INBOUND"],
         inbound_normalizers_result=[],

@@ -45,8 +45,8 @@ class Handler:
     result: object | None = None
     error: Exception | None = None
 
-    def __init__(self, context: RuntimeCapabilityContext) -> None:
-        self._port = context.get_query_port(QueryPort)
+    def __init__(self, query_port: QueryPort) -> None:
+        self._port = query_port
 
     async def __call__(self, request: QueryInput) -> object:
         type(self).calls += 1
@@ -64,7 +64,7 @@ class UncooperativeHandler:
 
     release: asyncio.Event | None = None
 
-    def __init__(self, _context: RuntimeCapabilityContext) -> None:
+    def __init__(self) -> None:
         pass
 
     async def __call__(self, _request: QueryInput) -> QueryOutput:

@@ -26,6 +26,14 @@ class WmsInventoryItem(BaseModel):
     expiry_date: str | None = Field(default=None, description="过期日期 ISO 8601")
 
 
+class WmsInventoryQueryUnavailable(Exception):
+    """WMS 库存查询暂时不可用，调用方可按 attempt 重试。"""
+
+
+class WmsInventoryQueryContractError(Exception):
+    """WMS provider 响应无法转换为稳定 Port 合同。"""
+
+
 class WmsInventoryQueryPort(Protocol):
     """WMS 库存只读查询 port。
 
@@ -34,7 +42,7 @@ class WmsInventoryQueryPort(Protocol):
     ExternalContractProfile 中声明。
     """
 
-    def query_inventory(
+    async def query_inventory(
         self,
         material_code: str,
         *,

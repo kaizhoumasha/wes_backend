@@ -16,13 +16,19 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.app.runtime.system_capabilities.index_builder import SystemCapabilityIndexBuilder  # noqa: E402
 from src.app.runtime.workline_plugins.index_builder import WorklinePluginIndexBuilder  # noqa: E402
+from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort  # noqa: E402
 
 PLUGIN_ROOT = REPO_ROOT / "src/app/runtime/workline_plugins"
 SYSTEM_ROOT = REPO_ROOT / "src/app/runtime/system_capabilities"
 DEFAULT_PLUGIN_OUTPUT = PLUGIN_ROOT / "generated_index.py"
 DEFAULT_SYSTEM_OUTPUT = SYSTEM_ROOT / "generated_index.py"
 # Port catalog 是构建期显式 allowlist；后续新增真实 Port 时必须在同一提交登记。
-SYSTEM_CAPABILITY_PORT_CATALOG: tuple[type[object], ...] = ()
+SYSTEM_CAPABILITY_PORT_CATALOG: tuple[type[object], ...] = (WmsInventoryQueryPort,)
+SYSTEM_CAPABILITY_ADMISSION_CATALOG = (
+    "provider-contract",
+    "runtime",
+    "wms.2026-07-06.material-flow.sandbox",
+)
 
 
 def _filesystem_names_collide(first: Path, second: Path) -> bool:
@@ -123,7 +129,10 @@ def _is_current(path: Path, expected: str) -> bool:
 
 def generate(*, plugin_output: Path, system_output: Path, check: bool) -> int:
     _ensure_distinct_destinations(plugin_output, system_output)
-    system_builder = SystemCapabilityIndexBuilder(known_ports=SYSTEM_CAPABILITY_PORT_CATALOG)
+    system_builder = SystemCapabilityIndexBuilder(
+        known_ports=SYSTEM_CAPABILITY_PORT_CATALOG,
+        known_admissions=SYSTEM_CAPABILITY_ADMISSION_CATALOG,
+    )
     system_sources = system_builder.discover(
         root=SYSTEM_ROOT,
         package="src.app.runtime.system_capabilities",

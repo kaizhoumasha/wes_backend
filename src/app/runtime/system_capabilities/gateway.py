@@ -203,7 +203,8 @@ class SystemCapabilityGateway:
         request: BaseModel,
     ) -> GatewayQueryResult:
         try:
-            handler = definition.handler_factory(self._context)
+            ports = tuple(self._context.get_query_port(port) for port in definition.required_ports)
+            handler = definition.handler_factory(*ports)
         except Exception:
             outcome = RetryableFailure(error_code="UNKNOWN", message="system capability query failed")
         else:

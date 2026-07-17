@@ -43,6 +43,14 @@ class ExternalContractProfileCatalog:
             )
         return matches[0]
 
+    def resolve_identity(self, identity: str) -> ExternalContractProfile:
+        """按不可变 profile identity 精确解析，供 Definition admission 校验。"""
+
+        matches = [profile for profile in self._profiles.values() if profile.identity == identity]
+        if len(matches) != 1:
+            raise LookupError(f"provider profile identity 必须唯一: {identity}")
+        return matches[0]
+
     @staticmethod
     def assert_ports_declared(
         profile: ExternalContractProfile, required_port_types: tuple[type[object], ...]

@@ -2,9 +2,17 @@
 
 from types import MappingProxyType
 
-SYSTEM_CAPABILITY_IDENTITIES = ()
-SYSTEM_CAPABILITY_INDEX_DIGEST = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
-SYSTEM_CAPABILITY_INDEX = MappingProxyType({})
+from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.definition import (
+    DEFINITION as _DEFINITION_0,
+)
+
+SYSTEM_CAPABILITY_IDENTITIES = (("wms.rough_sorter_inventory_admission", "v1"),)
+SYSTEM_CAPABILITY_INDEX_DIGEST = "50d15c853cb7d91d47a013772dde0361d5011e687a76e4c7dc2af9ee459e35bc"
+SYSTEM_CAPABILITY_INDEX = MappingProxyType(
+    {
+        ("wms.rough_sorter_inventory_admission", "v1"): _DEFINITION_0,
+    }
+)
 
 __all__ = [
     "SYSTEM_CAPABILITY_IDENTITIES",
