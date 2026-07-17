@@ -9,7 +9,7 @@ from math import isfinite
 from numbers import Real
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, StrictInt, StrictStr, field_validator
 
 from src.app.runtime.extension_identity import sha256_digest, stable_sort, validate_key_version
 
@@ -26,6 +26,22 @@ class EffectCompletionMode(str, Enum):
 
     LOCAL_TRANSACTIONAL = "LOCAL_TRANSACTIONAL"
     OUTBOX_ASYNC = "OUTBOX_ASYNC"
+
+
+class SystemCapabilityEffectAdmission(BaseModel):
+    """未专门收窄时的最小严格 admission；生产 EFFECT 应声明领域模型。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    precondition: dict[str, Any]
+    fact_version: StrictInt | StrictStr
+
+    @field_validator("fact_version")
+    @classmethod
+    def require_non_empty_fact_version(cls, value: int | str) -> int | str:
+        if isinstance(value, str) and not value.strip():
+            raise ValueError("fact_version must not be blank")
+        return value
 
 
 def _type_identity(value: type[Any]) -> str:
@@ -62,6 +78,7 @@ class SystemCapabilityDefinition:
     timeout_seconds: float
     completion_mode: EffectCompletionMode
     audit_policy: str
+    admission_model: type[BaseModel] = SystemCapabilityEffectAdmission
 
     def __post_init__(self) -> None:
         validate_key_version(self.capability_key, field_name="capability_key")
@@ -70,7 +87,7 @@ class SystemCapabilityDefinition:
         validate_key_version(self.audit_policy, field_name="audit_policy")
         object.__setattr__(self, "mode", SystemCapabilityMode(self.mode))
         object.__setattr__(self, "completion_mode", EffectCompletionMode(self.completion_mode))
-        for field_name in ("input_model", "output_model"):
+        for field_name in ("input_model", "output_model", "admission_model"):
             model = getattr(self, field_name)
             if not inspect.isclass(model) or not issubclass(model, BaseModel):
                 raise TypeError(f"{field_name} must be a Pydantic model class")
@@ -93,6 +110,7 @@ class SystemCapabilityDefinition:
 
         payload = {
             "admission": self.admission,
+            "admission_model": _type_identity(self.admission_model),
             "audit_policy": self.audit_policy,
             "completion_mode": self.completion_mode.value,
             "handler_factory": _stable_callable_identity(self.handler_factory, field_name="handler_factory"),
@@ -105,4 +123,9 @@ class SystemCapabilityDefinition:
         return f"{self.capability_key}@{self.contract_version}:{sha256_digest(payload)}"
 
 
-__all__ = ["EffectCompletionMode", "SystemCapabilityDefinition", "SystemCapabilityMode"]
+__all__ = [
+    "EffectCompletionMode",
+    "SystemCapabilityDefinition",
+    "SystemCapabilityEffectAdmission",
+    "SystemCapabilityMode",
+]

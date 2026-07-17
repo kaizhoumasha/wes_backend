@@ -1,6 +1,23 @@
 """普通 Session Hold typed input/output。"""
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+SessionFactVersion = Annotated[str, StringConstraints(pattern=r"^session:\d+$")]
+
+
+class SessionHoldPrecondition(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    expected_status: str = Field(min_length=1, max_length=40)
+
+
+class SessionHoldAdmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    precondition: SessionHoldPrecondition
+    fact_version: SessionFactVersion
 
 
 class SessionHoldInput(BaseModel):
@@ -18,4 +35,4 @@ class SessionHoldOutput(BaseModel):
     reason_code: str
 
 
-__all__ = ["SessionHoldInput", "SessionHoldOutput"]
+__all__ = ["SessionHoldAdmission", "SessionHoldInput", "SessionHoldOutput", "SessionHoldPrecondition"]

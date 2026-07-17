@@ -2,9 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints, model_validator
+
+MaterialUnitFactVersion = StrictInt | Annotated[str, StringConstraints(pattern=r"^material-unit:v\d+$")]
+
+
+class MaterialUnitWritePrecondition(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    expected_absent: StrictBool | None = None
+
+
+class MaterialUnitWriteAdmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    precondition: MaterialUnitWritePrecondition
+    fact_version: MaterialUnitFactVersion
 
 
 class MaterialUnitWriteInput(BaseModel):
@@ -42,4 +57,9 @@ class MaterialUnitWriteOutput(BaseModel):
     status: str
 
 
-__all__ = ["MaterialUnitWriteInput", "MaterialUnitWriteOutput"]
+__all__ = [
+    "MaterialUnitWriteAdmission",
+    "MaterialUnitWriteInput",
+    "MaterialUnitWriteOutput",
+    "MaterialUnitWritePrecondition",
+]

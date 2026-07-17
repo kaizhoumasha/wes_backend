@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ValidationError
 
 from src.app.runtime.extension_identity import sha256_digest
-from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
+from src.app.runtime.orchestration.runtime_intent import (
+    RuntimeIntent,
+    RuntimeIntentKind,
+    validate_system_capability_operation_key,
+)
 from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition, SystemCapabilityMode
 from src.utils.timezone import timezone
 
@@ -72,11 +76,18 @@ class SystemCapabilityIntentService:
             raise ValueError("system capability is not present in generated index")
         if definition.mode is not SystemCapabilityMode.EFFECT:
             raise ValueError("SYSTEM_CAPABILITY intent requires EFFECT definition")
+        validate_system_capability_operation_key(intent.operation_key)
         execution_identity = self._validate_execution_identity(ctx, intent, definition=definition)
         if intent.payload_hash != sha256_digest(intent.payload_json):
             raise ValueError("SYSTEM_CAPABILITY payload_hash mismatch")
         try:
             request = definition.input_model.model_validate(intent.payload_json)
+            definition.admission_model.model_validate(
+                {
+                    "precondition": intent.precondition_json,
+                    "fact_version": intent.fact_version,
+                }
+            )
         except ValidationError as exc:
             raise ValueError("system capability typed payload validation failed") from exc
 

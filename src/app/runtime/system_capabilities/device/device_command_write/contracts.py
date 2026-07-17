@@ -2,9 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StringConstraints, model_validator
+
+DeviceFactVersion = Annotated[str, StringConstraints(pattern=r"^device:v\d+$")]
+
+
+class DeviceCommandWritePrecondition(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    expected_available: StrictBool
+
+
+class DeviceCommandWriteAdmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    precondition: DeviceCommandWritePrecondition
+    fact_version: DeviceFactVersion
 
 
 class DeviceCommandWriteInput(BaseModel):
@@ -33,4 +48,9 @@ class DeviceCommandWriteOutput(BaseModel):
     dispatch_key: str
 
 
-__all__ = ["DeviceCommandWriteInput", "DeviceCommandWriteOutput"]
+__all__ = [
+    "DeviceCommandWriteAdmission",
+    "DeviceCommandWriteInput",
+    "DeviceCommandWriteOutput",
+    "DeviceCommandWritePrecondition",
+]

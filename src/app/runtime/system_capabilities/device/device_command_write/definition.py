@@ -6,7 +6,7 @@ from src.app.runtime.system_capabilities.definition import (
     SystemCapabilityMode,
 )
 
-from .contracts import DeviceCommandWriteInput, DeviceCommandWriteOutput
+from .contracts import DeviceCommandWriteAdmission, DeviceCommandWriteInput, DeviceCommandWriteOutput
 from .handler import DeviceCommandWriteHandler
 
 DEFINITION = SystemCapabilityDefinition(
@@ -21,6 +21,7 @@ DEFINITION = SystemCapabilityDefinition(
     timeout_seconds=5,
     completion_mode=EffectCompletionMode.OUTBOX_ASYNC,
     audit_policy="metadata",
+    admission_model=DeviceCommandWriteAdmission,
 )
 
 __all__ = ["DEFINITION"]

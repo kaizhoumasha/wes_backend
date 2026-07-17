@@ -150,8 +150,10 @@ class MaterialUnitMutationService:
         expected: int | None
         if isinstance(fact_version, int) and not isinstance(fact_version, bool):
             expected = fact_version
-        elif isinstance(fact_version, str) and fact_version.rsplit(":", 1)[-1].isdigit():
-            expected = int(fact_version.rsplit(":", 1)[-1])
+        elif isinstance(fact_version, str):
+            suffix = fact_version.rsplit(":", 1)[-1]
+            version_text = suffix[1:] if suffix.startswith("v") else suffix
+            expected = int(version_text) if version_text.isdigit() else None
         else:
             expected = None
         actual = optional_int(getattr(material_unit, "version", None))

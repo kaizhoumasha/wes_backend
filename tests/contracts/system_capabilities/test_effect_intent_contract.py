@@ -85,6 +85,17 @@ def test_system_capability_factory_rejects_incomplete_contract(field: str, value
         _intent(**{field: value})
 
 
+def test_system_capability_operation_key_accepts_auditable_160_character_boundary() -> None:
+    intent = _intent(operation_key="a" * 160)
+    assert intent.operation_key == "a" * 160
+
+
+@pytest.mark.parametrize("operation_key", ["a" * 161, "contains space", "bad$key", ":starts-with-colon"])
+def test_system_capability_operation_key_rejects_overflow_and_illegal_characters(operation_key: str) -> None:
+    with pytest.raises(ValidationError):
+        _intent(operation_key=operation_key)
+
+
 def test_system_capability_rejects_legacy_transport_or_mismatched_payload_hash() -> None:
     base = _intent().model_dump(mode="python")
 

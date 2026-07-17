@@ -6,7 +6,7 @@ from src.app.runtime.system_capabilities.definition import (
     SystemCapabilityMode,
 )
 
-from .contracts import MaterialUnitWriteInput, MaterialUnitWriteOutput
+from .contracts import MaterialUnitWriteAdmission, MaterialUnitWriteInput, MaterialUnitWriteOutput
 from .handler import MaterialUnitWriteHandler
 
 DEFINITION = SystemCapabilityDefinition(
@@ -21,6 +21,7 @@ DEFINITION = SystemCapabilityDefinition(
     timeout_seconds=5,
     completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
     audit_policy="metadata",
+    admission_model=MaterialUnitWriteAdmission,
 )
 
 __all__ = ["DEFINITION"]

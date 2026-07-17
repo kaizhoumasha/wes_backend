@@ -839,12 +839,18 @@ class RuntimeIntentEffectApplier:
                     service = system_capability_effect_service
                 result = await service.apply(ctx, intent)
                 ctx.setdefault("system_capability_outcomes", []).append(result)
-                from src.app.runtime.system_capabilities.outcomes import ContractViolation, RetryableFailure
+                from src.app.runtime.system_capabilities.outcomes import (
+                    BusinessReject,
+                    ContractViolation,
+                    RetryableFailure,
+                )
 
                 if isinstance(result.outcome, RetryableFailure):
                     raise RuntimeError(f"system capability retryable failure: {result.outcome.error_code}")
                 if isinstance(result.outcome, ContractViolation):
                     raise ValueError(f"system capability contract violation: {result.outcome.error_code}")
+                if isinstance(result.outcome, BusinessReject):
+                    return RuntimeIntentEffectResult.processed()
                 continue
 
             if intent.kind == RuntimeIntentKind.UPDATE_CONTEXT:

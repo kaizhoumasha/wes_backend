@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from enum import Enum
+from re import fullmatch
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
@@ -28,6 +29,15 @@ _HANDLING_TRANSPORT_FIELDS = {
     "auth",
     "retry",
 }
+_SYSTEM_CAPABILITY_OPERATION_KEY_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}"
+
+
+def validate_system_capability_operation_key(value: object) -> str:
+    """限制为可直接进入 ledger/audit 的稳定 ASCII operation identity。"""
+
+    if not isinstance(value, str) or fullmatch(_SYSTEM_CAPABILITY_OPERATION_KEY_PATTERN, value) is None:
+        raise ValueError("SYSTEM_CAPABILITY operation_key must use auditable characters and max length 160")
+    return value
 
 
 class RuntimeIntentKind(str, Enum):
@@ -125,7 +135,11 @@ class RuntimeIntent(BaseModel):
     # 后续执行不得重新选择 capability、binding、provider 或授权策略。
     capability_key: str | None = None
     contract_version: str | None = None
-    operation_key: str | None = None
+    operation_key: str | None = Field(
+        default=None,
+        max_length=160,
+        pattern=f"^{_SYSTEM_CAPABILITY_OPERATION_KEY_PATTERN}$",
+    )
     payload_hash: str | None = Field(default=None, min_length=64, max_length=64)
     precondition_json: dict[str, Any] = Field(default_factory=dict)
     fact_version: str | int | None = None
@@ -622,6 +636,7 @@ class RuntimeIntent(BaseModel):
                 raise ValueError(f"SYSTEM_CAPABILITY intent requires {field_name}")
         validate_key_version(str(self.capability_key), field_name="capability_key")
         validate_key_version(str(self.contract_version), field_name="contract_version")
+        validate_system_capability_operation_key(self.operation_key)
         if not self.payload_json:
             raise ValueError("SYSTEM_CAPABILITY intent requires typed payload")
         if self.payload_hash != sha256_digest(self.payload_json):
@@ -697,4 +712,5 @@ __all__ = [
     "DestinationKind",
     "RuntimeIntent",
     "RuntimeIntentKind",
+    "validate_system_capability_operation_key",
 ]

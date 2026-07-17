@@ -6,7 +6,7 @@ from src.app.runtime.system_capabilities.definition import (
     SystemCapabilityMode,
 )
 
-from .contracts import SessionHoldInput, SessionHoldOutput
+from .contracts import SessionHoldAdmission, SessionHoldInput, SessionHoldOutput
 from .handler import SessionHoldHandler
 
 DEFINITION = SystemCapabilityDefinition(
@@ -21,6 +21,7 @@ DEFINITION = SystemCapabilityDefinition(
     timeout_seconds=5,
     completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
     audit_policy="metadata",
+    admission_model=SessionHoldAdmission,
 )
 
 __all__ = ["DEFINITION"]

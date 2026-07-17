@@ -284,7 +284,7 @@ async def test_same_final_key_and_hash_is_noop_success() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("definition", "input_payload", "payload", "expected"),
+    ("definition", "input_payload", "precondition", "fact_version", "payload", "expected"),
     [
         (
             MATERIAL_DEFINITION,
@@ -295,18 +295,24 @@ async def test_same_final_key_and_hash_is_noop_success() -> None:
                 "six_in_one": {},
                 "status": "IN_STORAGE",
             },
+            {"expected_absent": True},
+            "material-unit:v0",
             {"material_unit_id": 101, "status": "IN_STORAGE"},
             MaterialUnitWriteOutput(material_unit_id=101, status="IN_STORAGE"),
         ),
         (
             DEVICE_DEFINITION,
             {"target_device_id": 7, "action": "MOVE"},
+            {"expected_available": True},
+            "device:v1",
             {"accepted": True, "command_code": "CMD-1", "dispatch_key": "dispatch-1"},
             DeviceCommandWriteOutput(accepted=True, command_code="CMD-1", dispatch_key="dispatch-1"),
         ),
         (
             HOLD_DEFINITION,
             {"reason_code": "MANUAL_REVIEW", "message": "review required"},
+            {"expected_status": "RUNNING"},
+            "session:1",
             {"held": True, "reason_code": "MANUAL_REVIEW"},
             SessionHoldOutput(held=True, reason_code="MANUAL_REVIEW"),
         ),
@@ -315,6 +321,8 @@ async def test_same_final_key_and_hash_is_noop_success() -> None:
 async def test_match_replays_persisted_typed_success_for_real_effect_definitions(
     definition: SystemCapabilityDefinition,
     input_payload: dict[str, object],
+    precondition: dict[str, object],
+    fact_version: str,
     payload: dict[str, object],
     expected: BaseModel,
 ) -> None:
@@ -323,8 +331,8 @@ async def test_match_replays_persisted_typed_success_for_real_effect_definitions
         contract_version=definition.contract_version,
         operation_key="real-operation-1",
         payload=input_payload,
-        precondition={"expected": 1},
-        fact_version="fact:1",
+        precondition=precondition,
+        fact_version=fact_version,
         timeout_seconds=definition.timeout_seconds,
         creator_authority="WORKLINE_PLUGIN",
         authorization_policy="PLUGIN_DECLARED_CAPABILITY",
@@ -377,6 +385,107 @@ async def test_match_with_invalid_persisted_success_fails_closed() -> None:
 
     assert isinstance(result.outcome, ContractViolation)
     assert result.outcome.error_code == "PERSISTED_OUTCOME_INVALID"
+
+
+def _material_intent(*, precondition: dict[str, object], fact_version: object) -> RuntimeIntent:
+    return RuntimeIntent.system_capability(
+        capability_key=MATERIAL_DEFINITION.capability_key,
+        contract_version=MATERIAL_DEFINITION.contract_version,
+        operation_key="scan:PKG-STRICT:create",
+        payload={
+            "operation": "CREATE",
+            "pkg_code": "PKG-STRICT",
+            "material_identity_key": "MAT-STRICT",
+            "six_in_one": {},
+            "status": "IN_TRANSIT",
+        },
+        precondition=precondition,
+        fact_version=fact_version,  # type: ignore[arg-type]
+        timeout_seconds=5,
+        creator_authority="WORKLINE_PLUGIN",
+        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
+        binding_snapshot={"binding_id": 9, "binding_version": 1},
+        provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("precondition", "fact_version"),
+    [
+        ({"expected_absent": "false"}, "material-unit:v0"),
+        ({"expected_absent": 1}, "material-unit:v0"),
+        ({"expected_absent": False}, "malformed-version"),
+    ],
+)
+async def test_material_admission_rejects_malformed_precondition_and_fact_version(
+    precondition: dict[str, object], fact_version: object
+) -> None:
+    repository = _EffectRepository(ClaimResult.NEW)
+
+    result = await _service(MATERIAL_DEFINITION, repository).apply(
+        _ctx(), _material_intent(precondition=precondition, fact_version=fact_version)
+    )
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert result.outcome.error_code == "CAPABILITY_CONTRACT_INVALID"
+    assert repository.calls == []
+
+
+@pytest.mark.asyncio
+async def test_material_string_false_never_coerces_to_expected_absent_true() -> None:
+    repository = _EffectRepository(ClaimResult.NEW)
+    result = await _service(MATERIAL_DEFINITION, repository).apply(
+        _ctx(), _material_intent(precondition={"expected_absent": "false"}, fact_version="material-unit:v0")
+    )
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert repository.calls == []
+
+
+@pytest.mark.asyncio
+async def test_material_legal_fact_version_mismatch_is_business_reject(monkeypatch: pytest.MonkeyPatch) -> None:
+    from importlib import import_module
+
+    from src.app.runtime.orchestration.models.material_unit import MaterialUnitStatus
+    from src.app.runtime.orchestration.services.material_unit_mutation_service import MaterialUnitMutationService
+
+    mutation_module = import_module("src.app.runtime.orchestration.services.material_unit_mutation_service")
+
+    class _Repository:
+        async def get_by_pkg_code_for_update(self, _db: object, _pkg_code: str) -> object:
+            return SimpleNamespace(
+                id=101,
+                version=2,
+                status=MaterialUnitStatus.IN_TRANSIT,
+                current_session_id=None,
+                six_in_one={},
+            )
+
+    monkeypatch.setattr(
+        mutation_module,
+        "material_unit_mutation_service",
+        MaterialUnitMutationService(repository=_Repository()),  # type: ignore[arg-type]
+    )
+    result = await _service(MATERIAL_DEFINITION, _EffectRepository(ClaimResult.NEW)).apply(
+        _ctx(), _material_intent(precondition={"expected_absent": False}, fact_version="material-unit:v1")
+    )
+
+    assert isinstance(result.outcome, BusinessReject)
+    assert result.outcome.reason_code == "STALE_PRECONDITION"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_key", ["bad key", "x" * 161])
+async def test_admission_rejects_bypassed_invalid_operation_key_as_contract_violation(operation_key: str) -> None:
+    repository = _EffectRepository(ClaimResult.NEW)
+    intent = _intent().model_copy(update={"operation_key": operation_key})
+
+    result = await _service(_definition(), repository).apply(_ctx(), intent)
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert result.outcome.error_code == "CAPABILITY_CONTRACT_INVALID"
+    assert repository.calls == []
 
 
 @pytest.mark.asyncio

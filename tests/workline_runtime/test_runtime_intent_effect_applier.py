@@ -10,7 +10,7 @@ import pytest
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
 from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode
-from src.app.runtime.system_capabilities.outcomes import Success
+from src.app.runtime.system_capabilities.outcomes import BusinessReject, Success
 
 
 class _RecordingReservationService:
@@ -63,6 +63,22 @@ class _RecordingSystemCapabilityEffectService:
         )
 
 
+class _StaleMaterialEffectService(_RecordingSystemCapabilityEffectService):
+    async def apply(self, ctx: object, intent: RuntimeIntent) -> SimpleNamespace:
+        self.calls.append((ctx, intent))
+        if intent.capability_key != "material_flow.material_unit_write":
+            raise AssertionError("BusinessReject 后不得执行后续 device effect")
+        return SimpleNamespace(
+            outcome=BusinessReject(reason_code="STALE_PRECONDITION", message="material fact changed"),
+            completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
+            durably_accepted=False,
+            remote_completed=False,
+            idempotent_replay=False,
+            retryable=False,
+            evidence=SimpleNamespace(outcome_kind="business_reject"),
+        )
+
+
 @pytest.mark.asyncio
 async def test_system_capability_intent_uses_one_generic_effect_service_branch() -> None:
     service = _RecordingSystemCapabilityEffectService()
@@ -85,6 +101,45 @@ async def test_system_capability_intent_uses_one_generic_effect_service_branch()
 
     assert service.calls == [(ctx, intent)]
     assert ctx["system_capability_outcomes"][0].outcome.kind == "success"
+
+
+@pytest.mark.asyncio
+async def test_stale_material_effect_short_circuits_following_device_effects() -> None:
+    service = _StaleMaterialEffectService()
+    common = {
+        "timeout_seconds": 5,
+        "creator_authority": "WORKLINE_PLUGIN",
+        "authorization_policy": "PLUGIN_DECLARED_CAPABILITY",
+        "binding_snapshot": {"binding_id": 7, "binding_version": 2},
+        "provider_snapshot": {"provider_code": "RUNTIME", "profile": "runtime"},
+    }
+    material = RuntimeIntent.system_capability(
+        capability_key="material_flow.material_unit_write",
+        contract_version="v1",
+        operation_key="scan:PKG-001:create",
+        payload={"operation": "CREATE", "pkg_code": "PKG-001"},
+        precondition={"expected_absent": True},
+        fact_version="material-unit:v0",
+        **common,
+    )
+    device = RuntimeIntent.system_capability(
+        capability_key="device.device_command_write",
+        contract_version="v1",
+        operation_key="scan:PKG-001:dispatch",
+        payload={"target_device_id": 71, "action": "PICK_AND_PUT"},
+        precondition={"expected_available": True},
+        fact_version="device:v1",
+        **common,
+    )
+    ctx = _effect_ctx()
+    ctx["db"] = SimpleNamespace(added=[])
+
+    await RuntimeIntentEffectApplier(system_capability_effect_service=service).apply(ctx, [material, device])
+
+    assert [intent.capability_key for _, intent in service.calls] == ["material_flow.material_unit_write"]
+    assert [result.outcome.kind for result in ctx["system_capability_outcomes"]] == ["business_reject"]
+    assert ctx["system_capability_outcomes"][0].evidence.outcome_kind == "business_reject"
+    assert ctx["db"].added == []
 
 
 @pytest.mark.asyncio
