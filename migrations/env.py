@@ -70,6 +70,9 @@ from src.app.runtime.orchestration.models import (  # noqa: F401
 from src.app.runtime.orchestration.runtime_hold import RuntimeHold as OrchestrationRuntimeHold  # noqa: F401
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox  # noqa: F401
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog  # noqa: F401
+from src.app.runtime.orchestration.system_capability_effect_record import (  # noqa: F401
+    SystemCapabilityEffectRecord,
+)
 from src.app.runtime.orchestration.runtime_timeline import RuntimeTimeline  # noqa: F401
 from src.app.sys.models.audit_log import AuditLog  # noqa: F401
 from src.app.wms_integration.models import WmsCallEvidence, WmsCircuitBreakerState  # noqa: F401

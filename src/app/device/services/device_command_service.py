@@ -96,10 +96,10 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
     业务逻辑（SDAF 流程）在 Celery 任务层实现。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, repository: DeviceCommandRepository = device_command_repository) -> None:
         """初始化服务"""
         super().__init__(
-            device_command_repository,
+            repository,
             enable_cache=True,
             cache_prefix="app:device:command",
         )
@@ -190,8 +190,6 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             contract_version=getattr(session, "contract_version", None),
             status=CommandStatus.PENDING,
         )
-        db.add(command)
-        await db.flush()
         outbox = SystemOutbox(
             session_id=getattr(session, "id", None),
             workline_id=getattr(workline, "id", None) or getattr(session, "workline_id", None),
@@ -213,8 +211,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             },
             trace_id=trace_id,
         )
-        db.add(outbox)
-        await db.flush()
+        await self.repo.add_runtime_effect(db, command, outbox)
         return command, outbox
 
     async def send_command(

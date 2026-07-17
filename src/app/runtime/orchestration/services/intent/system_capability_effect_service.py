@@ -6,9 +6,10 @@ import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult, IdempotencyConflict
+from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode
 from src.app.runtime.system_capabilities.outcomes import (
     BusinessReject,
@@ -16,6 +17,7 @@ from src.app.runtime.system_capabilities.outcomes import (
     RetryableFailure,
     Success,
 )
+from src.utils.timezone import timezone
 
 from .system_capability_intent_service import SystemCapabilityIntentService, system_capability_intent_service
 
@@ -46,6 +48,23 @@ class SystemCapabilityEffectResult:
     remote_completed: bool = False
     idempotent_replay: bool = False
     retryable: bool = False
+    evidence: SystemCapabilityEffectEvidence | None = None
+
+
+class SystemCapabilityEffectEvidence(BaseModel):
+    """可持久化并供 Plugin 下一 attempt 消费的 typed outcome。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    capability_key: str
+    contract_version: str
+    operation_key: str
+    idempotency_key: str
+    payload_hash: str
+    outcome_kind: str
+    outcome_code: str
+    outcome: dict[str, Any]
+    occurred_at_ms: int
 
 
 class SystemCapabilityEffectService:
@@ -57,7 +76,7 @@ class SystemCapabilityEffectService:
     async def apply(self, ctx: dict[str, Any], intent: RuntimeIntent) -> SystemCapabilityEffectResult:
         try:
             prepared = await self._intent_service.prepare_and_claim(ctx, intent)
-        except IdempotencyConflict:
+        except (IdempotencyConflict, SystemCapabilityIdempotencyConflict):
             return SystemCapabilityEffectResult(
                 outcome=ContractViolation(
                     error_code="IDEMPOTENCY_CONFLICT",
@@ -75,7 +94,7 @@ class SystemCapabilityEffectService:
             )
 
         definition = prepared.definition
-        if prepared.claim_result is ClaimResult.MATCH:
+        if prepared.claim_result is ClaimResult.MATCH or getattr(prepared.claim_result, "value", None) == "MATCH":
             return SystemCapabilityEffectResult(
                 outcome=Success(payload={"idempotent": True}),
                 completion_mode=definition.completion_mode,
@@ -100,6 +119,8 @@ class SystemCapabilityEffectService:
             flush = getattr(ctx["db"], "flush", None)
             if callable(flush):
                 await flush()
+        evidence = self._build_evidence(intent=intent, prepared=prepared, outcome=outcome)
+        await self._intent_service.record_outcome(ctx, prepared=prepared, evidence=evidence)
         return SystemCapabilityEffectResult(
             outcome=outcome,
             completion_mode=definition.completion_mode,
@@ -110,6 +131,24 @@ class SystemCapabilityEffectService:
                 isinstance(outcome, Success) and definition.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL
             ),
             retryable=isinstance(outcome, RetryableFailure),
+            evidence=evidence,
+        )
+
+    @staticmethod
+    def _build_evidence(
+        *, intent: RuntimeIntent, prepared: Any, outcome: EffectOutcome
+    ) -> SystemCapabilityEffectEvidence:
+        code = getattr(outcome, "reason_code", None) or getattr(outcome, "error_code", None) or "SUCCESS"
+        return SystemCapabilityEffectEvidence(
+            capability_key=str(intent.capability_key),
+            contract_version=str(intent.contract_version),
+            operation_key=str(intent.operation_key),
+            idempotency_key=prepared.idempotency_key,
+            payload_hash=prepared.payload_hash,
+            outcome_kind=outcome.kind,
+            outcome_code=str(code),
+            outcome=outcome.model_dump(mode="json"),
+            occurred_at_ms=int(timezone.now_utc().timestamp() * 1000),
         )
 
     @staticmethod
@@ -130,6 +169,7 @@ class SystemCapabilityEffectService:
 system_capability_effect_service = SystemCapabilityEffectService()
 
 __all__ = [
+    "SystemCapabilityEffectEvidence",
     "SystemCapabilityEffectResult",
     "SystemCapabilityEffectService",
     "SystemCapabilityExecution",

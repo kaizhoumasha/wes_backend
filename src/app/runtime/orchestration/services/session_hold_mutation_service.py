@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.app.runtime.orchestration.repositories.session_mutation_repository import (
+    SessionMutationRepository,
+    session_mutation_repository,
+)
 from src.utils.timezone import timezone
 from src.utils.value_normalization import optional_int
 
@@ -14,6 +18,9 @@ class StaleSessionPrecondition(ValueError):
 
 class SessionHoldMutationService:
     """只更新普通 Session；RuntimeHold 仍由 TIMER reconciliation owner 创建。"""
+
+    def __init__(self, repository: SessionMutationRepository = session_mutation_repository) -> None:
+        self._repository = repository
 
     async def hold(
         self,
@@ -35,8 +42,7 @@ class SessionHoldMutationService:
         session.failure_domain = failure_domain
         session.failure_code = reason_code
         session.failure_message = message
-        db.add(session)
-        await db.flush()
+        await self._repository.persist(db, session)
         return session
 
     @staticmethod

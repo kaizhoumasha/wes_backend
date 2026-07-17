@@ -33,6 +33,22 @@ class MaterialUnitRepository(BaseRepository[MaterialUnit]):
         result = await db.execute(select(MaterialUnit).where(columns.pkg_code == pkg_code).limit(1).with_for_update())
         return result.scalar_one_or_none()
 
+    async def get_by_id_for_update(self, db: AsyncSession, material_unit_id: int) -> MaterialUnit | None:
+        """锁定指定料盘，保证 fact version 校验与写入原子。"""
+
+        columns = cast("Any", MaterialUnit).__table__.c
+        result = await db.execute(select(MaterialUnit).where(columns.id == material_unit_id).limit(1).with_for_update())
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    async def add_and_flush(db: AsyncSession, material_unit: MaterialUnit) -> None:
+        db.add(material_unit)
+        await db.flush()
+
+    @staticmethod
+    async def flush(db: AsyncSession) -> None:
+        await db.flush()
+
     async def update_current_location_by_pkg_code(
         self,
         db: AsyncSession,

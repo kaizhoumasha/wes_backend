@@ -13,7 +13,12 @@ DEFINITION = WorklinePluginDefinition(
     config_model=RoughSorterConfig,
     state_model=RoughSorterState,
     routes=("SCAN_COMPLETED", "PICK_AND_PUT_RESULT", "BUSINESS_TIMEOUT", "REPLAY_REQUEST"),
-    allowed_capabilities=(("wms.rough_sorter_inventory_admission", "v1"),),
+    allowed_capabilities=(
+        ("device.device_command_write", "v1"),
+        ("material_flow.material_unit_write", "v1"),
+        ("runtime.session_hold", "v1"),
+        ("wms.rough_sorter_inventory_admission", "v1"),
+    ),
     parsers={
         "SCAN_COMPLETED": parse_scan_completed,
         "PICK_AND_PUT_RESULT": parse_pick_and_put_result,

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import RuntimeIntentLogRepository
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
+from src.app.runtime.orchestration.system_capability_effect_record import SystemCapabilityEffectRecord
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode, SystemCapabilityMode
 from src.app.runtime.system_capabilities.device.device_command_write.definition import DEFINITION as DEVICE_DEFINITION
 from src.app.runtime.system_capabilities.device.device_command_write.handler import DeviceCommandWriteHandler
@@ -19,6 +20,7 @@ from src.app.runtime.system_capabilities.material_flow.material_unit_write.defin
 from src.app.runtime.system_capabilities.material_flow.material_unit_write.handler import MaterialUnitWriteHandler
 from src.app.runtime.system_capabilities.runtime.session_hold.definition import DEFINITION as HOLD_DEFINITION
 from src.app.runtime.system_capabilities.runtime.session_hold.handler import SessionHoldHandler
+from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as ROUGH_SORTER_PLUGIN_DEFINITION
 
 
 def _intent(**overrides: object) -> RuntimeIntent:
@@ -37,7 +39,7 @@ def _intent(**overrides: object) -> RuntimeIntent:
         "fact_version": "material-unit:v0",
         "timeout_seconds": 5,
         "creator_authority": "WORKLINE_PLUGIN",
-        "authorization_policy": "rough-sorter-effect-v1",
+        "authorization_policy": "PLUGIN_DECLARED_CAPABILITY",
         "binding_snapshot": {"binding_id": 7, "binding_version": 2},
         "provider_snapshot": {"provider_code": "RUNTIME", "profile": "runtime"},
     }
@@ -56,7 +58,7 @@ def test_system_capability_factory_pins_typed_payload_hash_and_authority_snapsho
     assert intent.precondition_json == {"expected_absent": True}
     assert intent.fact_version == "material-unit:v0"
     assert intent.creator_authority == "WORKLINE_PLUGIN"
-    assert intent.authorization_policy == "rough-sorter-effect-v1"
+    assert intent.authorization_policy == "PLUGIN_DECLARED_CAPABILITY"
     assert intent.binding_snapshot == {"binding_id": 7, "binding_version": 2}
     assert intent.provider_snapshot == {"provider_code": "RUNTIME", "profile": "runtime"}
     assert intent.timeout_seconds == 5
@@ -89,6 +91,32 @@ def test_system_capability_rejects_legacy_transport_or_mismatched_payload_hash()
         RuntimeIntent.model_validate({**base, "action": "rough-sorter-special-case"})
     with pytest.raises(ValidationError, match="payload_hash"):
         RuntimeIntent.model_validate({**base, "payload_hash": "0" * 64})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("capability_key", "device.device_command_write"),
+        ("contract_version", "v1"),
+        ("operation_key", "forged-operation"),
+        ("payload_hash", "a" * 64),
+        ("precondition_json", {"expected": 1}),
+        ("fact_version", "fact:1"),
+        ("creator_authority", "WORKLINE_PLUGIN"),
+        ("authorization_policy", "PLUGIN_DECLARED_CAPABILITY"),
+        ("binding_snapshot", {"binding_id": 7, "binding_version": 2}),
+        ("provider_snapshot", {"provider_code": "RUNTIME", "profile": "runtime"}),
+    ],
+)
+def test_non_system_capability_intents_reject_every_capability_only_field(field: str, value: object) -> None:
+    with pytest.raises(ValidationError, match="SYSTEM_CAPABILITY-only"):
+        RuntimeIntent.model_validate(
+            {
+                "kind": RuntimeIntentKind.UPDATE_CONTEXT,
+                "context_patch": {"source": "legacy"},
+                field: value,
+            }
+        )
 
 
 def test_system_capability_intent_log_pins_plugin_capability_and_execution_snapshots() -> None:
@@ -126,7 +154,7 @@ def test_system_capability_intent_log_pins_plugin_capability_and_execution_snaps
     assert log.payload_hash == _intent().payload_hash
     assert log.completion_mode == "LOCAL_TRANSACTIONAL"
     assert log.creator_authority == "WORKLINE_PLUGIN"
-    assert log.authorization_policy == "rough-sorter-effect-v1"
+    assert log.authorization_policy == "PLUGIN_DECLARED_CAPABILITY"
     assert log.binding_snapshot_json == {"binding_id": 7, "binding_version": 2}
     assert log.provider_snapshot_json == {"provider_code": "RUNTIME", "profile": "runtime"}
 
@@ -140,8 +168,49 @@ def test_three_effect_definitions_have_closed_completion_modes() -> None:
     assert HOLD_DEFINITION.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL
 
 
+def test_rough_sorter_declares_all_effect_capabilities_in_generated_author_allowlist() -> None:
+    declared = set(ROUGH_SORTER_PLUGIN_DEFINITION.allowed_capabilities)
+    assert {
+        (MATERIAL_DEFINITION.capability_key, MATERIAL_DEFINITION.contract_version),
+        (DEVICE_DEFINITION.capability_key, DEVICE_DEFINITION.contract_version),
+        (HOLD_DEFINITION.capability_key, HOLD_DEFINITION.contract_version),
+    } <= declared
+
+
+def test_effect_record_separates_provisional_success_and_redecision_evidence() -> None:
+    columns = SystemCapabilityEffectRecord.__table__.c
+    assert columns.provider_code.nullable is False
+    assert columns.request_hash.nullable is False
+    assert columns.status.nullable is False
+    assert columns.outcome_json.nullable is False
+    assert columns.outcome_history_json.nullable is False
+    unique_columns = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in SystemCapabilityEffectRecord.__table__.constraints
+        if constraint.__class__.__name__ == "UniqueConstraint"
+    }
+    assert ("provider_code", "operation_kind", "idempotency_key") in unique_columns
+
+
 @pytest.mark.parametrize("handler", [MaterialUnitWriteHandler, DeviceCommandWriteHandler, SessionHoldHandler])
 def test_effect_handlers_have_no_repository_transaction_or_external_io_escape(handler: type[object]) -> None:
     source = inspect.getsource(handler)
     forbidden = ("Repository", ".commit(", ".rollback(", "httpx", "requests.", "send_task", "delay(")
     assert all(token not in source for token in forbidden)
+
+
+def test_effect_services_delegate_all_database_mutations_to_repositories() -> None:
+    from src.app.device.services.device_command_service import DeviceCommandService
+    from src.app.runtime.orchestration.services.material_unit_mutation_service import MaterialUnitMutationService
+    from src.app.runtime.orchestration.services.session_hold_mutation_service import SessionHoldMutationService
+
+    methods = (
+        MaterialUnitMutationService.create,
+        MaterialUnitMutationService.update_status,
+        DeviceCommandService.prepare_runtime_effect,
+        SessionHoldMutationService.hold,
+    )
+    forbidden = ("db.add(", 'ctx["db"].get(', "db.get(")
+    for method in methods:
+        source = inspect.getsource(method)
+        assert all(token not in source for token in forbidden), f"{method.__qualname__} bypasses Repository"

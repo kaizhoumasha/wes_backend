@@ -64,12 +64,17 @@ from .runtime_location_event_repository import (
     RuntimeLocationEventRepository,
     runtime_location_event_repository,
 )
+from .session_mutation_repository import SessionMutationRepository, session_mutation_repository
 from .session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
 )
 from .smt_inbound_handoff_repository import (
     SmtInboundHandoffRepository,
+)
+from .system_capability_effect_repository import (
+    SystemCapabilityEffectRepository,
+    system_capability_effect_repository,
 )
 from .timeline_recorded_replay_repository import (
     TimelineRecordedReplayRepository,
@@ -98,7 +103,9 @@ __all__ = [
     "RuntimeInboxSliSnapshot",
     "RuntimeIntentLogRepository",
     "RuntimeLocationEventRepository",
+    "SessionMutationRepository",
     "SmtInboundHandoffRepository",
+    "SystemCapabilityEffectRepository",
     "TimelineRecordedReplayRepository",
     "TimelineSequenceRepository",
     "WorklineBinCellReservationRepository",
@@ -117,6 +124,8 @@ __all__ = [
     "runtime_inbox_repository",
     "runtime_intent_log_repository",
     "runtime_location_event_repository",
+    "session_mutation_repository",
+    "system_capability_effect_repository",
     "timeline_recorded_replay_repository",
     "timeline_sequence_repository",
     "workline_bin_cell_reservation_repository",

@@ -227,9 +227,63 @@ def upgrade() -> None:
         schema=RUNTIME_SCHEMA,
     )
 
+    op.create_table(
+        "system_capability_effect_records",
+        sa.Column("id", sa.Integer(), nullable=False),
+        sa.Column("execution_session_id", sa.Integer(), nullable=False),
+        sa.Column("execution_work_item_id", sa.Integer(), nullable=False),
+        sa.Column("correlation_id", sa.String(length=120), nullable=False),
+        sa.Column("provider_code", sa.String(length=60), nullable=False),
+        sa.Column("operation_kind", sa.String(length=80), nullable=False),
+        sa.Column("idempotency_key", sa.String(length=160), nullable=False),
+        sa.Column("request_hash", sa.String(length=128), nullable=False),
+        sa.Column("plugin_key", sa.String(length=100), nullable=False),
+        sa.Column("plugin_contract_version", sa.String(length=60), nullable=False),
+        sa.Column("binding_id", sa.Integer(), nullable=False),
+        sa.Column("binding_version", sa.Integer(), nullable=False),
+        sa.Column("capability_key", sa.String(length=120), nullable=False),
+        sa.Column("capability_contract_version", sa.String(length=60), nullable=False),
+        sa.Column("operation_identity", sa.String(length=160), nullable=False),
+        sa.Column("status", sa.String(length=40), nullable=False),
+        sa.Column("attempt_count", sa.Integer(), nullable=False),
+        sa.Column("outcome_kind", sa.String(length=40), nullable=True),
+        sa.Column("outcome_code", sa.String(length=120), nullable=True),
+        sa.Column("outcome_json", sa.JSON(), nullable=False),
+        sa.Column("outcome_history_json", sa.JSON(), nullable=False),
+        sa.Column("updated_at_ms", sa.BigInteger(), nullable=False),
+        sa.ForeignKeyConstraint(["execution_session_id"], [f"{RUNTIME_SCHEMA}.execution_sessions.id"]),
+        sa.ForeignKeyConstraint(["execution_work_item_id"], [f"{RUNTIME_SCHEMA}.execution_work_items.id"]),
+        sa.ForeignKeyConstraint(["correlation_id"], [f"{RUNTIME_SCHEMA}.execution_correlations.correlation_id"]),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "provider_code",
+            "operation_kind",
+            "idempotency_key",
+            name="uq_system_capability_effect_identity",
+        ),
+        schema=RUNTIME_SCHEMA,
+    )
+    for name, column in (
+        ("ix_sc_effect_exec_session", "execution_session_id"),
+        ("ix_sc_effect_work_item", "execution_work_item_id"),
+        ("ix_sc_effect_correlation", "correlation_id"),
+        ("ix_sc_effect_idempotency", "idempotency_key"),
+        ("ix_sc_effect_plugin", "plugin_key"),
+        ("ix_sc_effect_capability", "capability_key"),
+        ("ix_sc_effect_status", "status"),
+    ):
+        op.create_index(
+            name,
+            "system_capability_effect_records",
+            [column],
+            schema=RUNTIME_SCHEMA,
+        )
+
 
 def downgrade() -> None:
     """只删除本 revision 新增的 binding、pin 和 JSON state。"""
+
+    op.drop_table("system_capability_effect_records", schema=RUNTIME_SCHEMA)
 
     op.drop_index(
         "ix_wes_runtime_runtime_intent_logs_capability_key",

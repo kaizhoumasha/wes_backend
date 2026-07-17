@@ -67,8 +67,7 @@ class MaterialUnitMutationService:
                             status=status,
                             current_session_id=current_session_id,
                         )
-                        db.add(material_unit)
-                        await db.flush()
+                        await self._repository.add_and_flush(db, material_unit)
                 except IntegrityError as exc:
                     material_unit = await self._repository.get_by_pkg_code_for_update(db, pkg_code)
                     if material_unit is None:
@@ -87,7 +86,7 @@ class MaterialUnitMutationService:
                     status=status,
                     current_session_id=current_session_id,
                 )
-                db.add(material_unit)
+                await self._repository.add_and_flush(db, material_unit)
 
         material_unit.material_identity_key = material_identity_key
         material_unit.six_in_one = {
@@ -98,7 +97,7 @@ class MaterialUnitMutationService:
             material_unit.current_location = payload.get("current_location")
         _apply_material_unit_status_write(ctx, material_unit, from_state=status_from_state, to_status=status)
         material_unit.current_session_id = current_session_id
-        await db.flush()
+        await self._repository.flush(db)
         session.current_material_unit_id = resolve_required_pk(material_unit, "material_unit")
         return material_unit
 
@@ -118,7 +117,7 @@ class MaterialUnitMutationService:
         material_unit_id = optional_int(payload.get("material_unit_id"))
         if material_unit_id is None:
             raise ValueError("material_unit_id must be a positive integer")
-        material_unit = await ctx["db"].get(MaterialUnit, material_unit_id)
+        material_unit = await self._repository.get_by_id_for_update(ctx["db"], material_unit_id)
         if material_unit is None:
             raise ValueError(f"material unit not found: {material_unit_id}")
         self._ensure_version(material_unit, fact_version)
@@ -141,7 +140,7 @@ class MaterialUnitMutationService:
             _persist_pending_cleanup_ids(session, set(cleanup_ids))
         else:
             session.current_material_unit_id = material_unit_id
-        await ctx["db"].flush()
+        await self._repository.flush(ctx["db"])
         return material_unit
 
     @staticmethod

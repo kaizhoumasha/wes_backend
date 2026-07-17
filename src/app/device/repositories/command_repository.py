@@ -37,6 +37,15 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         result = await db.execute(statement)
         return result.scalar_one_or_none()
 
+    @staticmethod
+    async def add_runtime_effect(db: AsyncSession, command: DeviceCommand, outbox: object) -> None:
+        """在调用方外层事务中持久化命令与 Outbox，只 flush。"""
+
+        db.add(command)
+        await db.flush()
+        db.add(outbox)
+        await db.flush()
+
     async def get_pending_commands(
         self,
         db: AsyncSession,

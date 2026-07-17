@@ -75,7 +75,7 @@ async def test_system_capability_intent_uses_one_generic_effect_service_branch()
         fact_version="material-unit:v0",
         timeout_seconds=5,
         creator_authority="WORKLINE_PLUGIN",
-        authorization_policy="rough-sorter-effect-v1",
+        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
         binding_snapshot={"binding_id": 7, "binding_version": 2},
         provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
     )

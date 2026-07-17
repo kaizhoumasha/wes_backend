@@ -497,6 +497,8 @@ class RuntimeIntent(BaseModel):
     def validate_intent(self) -> RuntimeIntent:  # noqa: PLR0912
         if self.kind == RuntimeIntentKind.SYSTEM_CAPABILITY:
             self._validate_system_capability()
+        else:
+            self._reject_system_capability_fields()
         if self.kind == RuntimeIntentKind.COMMAND and not self.action:
             raise ValueError("COMMAND intent requires action")
         if self.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
@@ -590,6 +592,22 @@ class RuntimeIntent(BaseModel):
             if not self.message:
                 raise ValueError("MARK_NG intent requires message")
         return self
+
+    def _reject_system_capability_fields(self) -> None:
+        exclusive_fields = {
+            "capability_key": self.capability_key,
+            "contract_version": self.contract_version,
+            "operation_key": self.operation_key,
+            "payload_hash": self.payload_hash,
+            "precondition_json": self.precondition_json,
+            "fact_version": self.fact_version,
+            "creator_authority": self.creator_authority,
+            "authorization_policy": self.authorization_policy,
+            "binding_snapshot": self.binding_snapshot,
+            "provider_snapshot": self.provider_snapshot,
+        }
+        if any(value not in (None, {}, "") for value in exclusive_fields.values()):
+            raise ValueError("non-SYSTEM_CAPABILITY intent contains SYSTEM_CAPABILITY-only fields")
 
     def _validate_system_capability(self) -> None:
         for field_name in (
