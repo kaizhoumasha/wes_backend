@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     GeneratedPluginAttemptRunner,
@@ -98,6 +99,33 @@ def test_canonical_plugin_input_rejects_uncorrelated_command_result() -> None:
                 payload_json={"command_type": "PICK_AND_PUT", "result": "SUCCESS"},
             )
         )
+
+
+@pytest.mark.parametrize("kind", ["INTERNAL_EVENT", "EXTERNAL_HTTP"])
+def test_callback_transports_share_pick_and_put_result_canonical_input(kind: str) -> None:
+    route, raw_input = _canonical_plugin_input(
+        SimpleNamespace(
+            kind=kind,
+            event_type="PICK_AND_PUT_RESULT" if kind == "INTERNAL_EVENT" else "EXTERNAL_HTTP",
+            payload_json={
+                "logical_route": "PICK_AND_PUT_RESULT",
+                "command_code": "CMD-1",
+                "command_type": "PICK_AND_PUT",
+                "result": "SUCCESS",
+                "data": {"measurement_result": "OK"},
+            },
+        )
+    )
+
+    assert route == "PICK_AND_PUT_RESULT"
+    assert raw_input == {
+        "route": "PICK_AND_PUT_RESULT",
+        "command_code": "CMD-1",
+        "command_type": "PICK_AND_PUT",
+        "result": "SUCCESS",
+        "data": {"measurement_result": "OK"},
+        "error_detail": {},
+    }
 
 
 @pytest.mark.asyncio
@@ -243,6 +271,7 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
         plugin_key="rough_sorter",
         contract_version="rough_sorter.v2",
         typed_config_json=config,
+        typed_config_hash=sha256_digest(config),
     )
     from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
@@ -267,6 +296,7 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
         plugin_state_version=0,
         binding_id=17,
         binding_version=4,
+        plugin_config_hash=sha256_digest(config),
         index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
     )
     inbox = SimpleNamespace(
@@ -336,6 +366,7 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
                 plugin_key="rough_sorter",
                 contract_version="rough_sorter.v2",
                 typed_config_json=config,
+                typed_config_hash=sha256_digest(config),
             )
         ),
     )
@@ -358,6 +389,7 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
         plugin_state_version=2,
         binding_id=17,
         binding_version=4,
+        plugin_config_hash=sha256_digest(config),
         index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
     )
     inbox = SimpleNamespace(
@@ -446,6 +478,7 @@ def test_locked_writeback_revalidates_generated_definition_identity_without_tran
         definition_identity=ROUGH_SORTER_DEFINITION.identity,
         binding_id=17,
         binding_version=4,
+        plugin_config_hash="c" * 64,
         index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
     )
     locked = SimpleNamespace(
@@ -457,6 +490,7 @@ def test_locked_writeback_revalidates_generated_definition_identity_without_tran
             contract_version="rough_sorter.v2",
             plugin_binding_id=17,
             plugin_binding_version=4,
+            plugin_config_hash="c" * 64,
             plugin_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
         ),
     )

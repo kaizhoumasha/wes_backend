@@ -23,6 +23,7 @@ class AttemptSnapshot:
     definition_identity: str | None = None
     binding_id: int | None = None
     binding_version: int | None = None
+    plugin_config_hash: str | None = None
     index_digest: str | None = None
 
     @property

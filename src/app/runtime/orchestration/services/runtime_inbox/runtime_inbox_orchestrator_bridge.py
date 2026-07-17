@@ -265,7 +265,11 @@ def _canonical_plugin_input(inbox: Any) -> tuple[str, dict[str, Any]]:
     payload = deepcopy(_payload_for_inbox(inbox))
     kind = string_value(getattr(inbox, "kind", None))
     event_type = string_value(getattr(inbox, "event_type", None))
-    if kind == "COMMAND_RESULT":
+    declared_route = optional_str(payload.get("logical_route")) or optional_str(payload.get("callback_type"))
+    callback_route = declared_route or event_type
+    if kind == "COMMAND_RESULT" or (
+        kind in {"INTERNAL_EVENT", "EXTERNAL_HTTP"} and callback_route == "PICK_AND_PUT_RESULT"
+    ):
         command_code = optional_str(payload.get("command_code"))
         if command_code is None:
             raise ValueError("command correlation is required")
@@ -295,7 +299,7 @@ def _canonical_plugin_input(inbox: Any) -> tuple[str, dict[str, Any]]:
             "idempotency_key": string_value(payload.get("idempotency_key")),
             "payload_digest": string_value(payload.get("payload_digest")),
         }
-    route = event_type or optional_str(payload.get("logical_route")) or optional_str(payload.get("callback_type"))
+    route = callback_route
     if route == "SYSTEM_CAPABILITY_RESULT":
         raise ValueError("raw SYSTEM_CAPABILITY_RESULT is not a plugin route")
     if route is None:
@@ -431,6 +435,9 @@ def _empty_result() -> ProcessResult:
 def _is_lifecycle_only_external_callback(inbox: Any, payload: dict[str, Any]) -> bool:
     """识别已在 ingress 完成副作用、无需运行时能力编排的外部回调。"""
     if _kind_value(inbox) != "EXTERNAL_HTTP":
+        return False
+    callback_route = optional_str(payload.get("logical_route")) or optional_str(payload.get("callback_type"))
+    if callback_route == "PICK_AND_PUT_RESULT":
         return False
     attributes = payload_dict(payload.get("attributes"))
     return (
@@ -1231,10 +1238,19 @@ async def _build_plugin_dispatch_request(
     from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
     binding_id = snapshot.binding_id
-    if binding_id is None or snapshot.binding_version is None or snapshot.index_digest is None:
+    if (
+        binding_id is None
+        or snapshot.binding_version is None
+        or snapshot.plugin_config_hash is None
+        or snapshot.index_digest is None
+    ):
         raise ValueError("plugin binding snapshot is incomplete")
     binding = await workline_plugin_binding_service.get_pinned(db, binding_id=binding_id)
     raw_config = deepcopy(dict(getattr(binding, "typed_config_json", {}) or {}))
+    config_hash = sha256_digest(raw_config)
+    binding_config_hash = optional_str(getattr(binding, "typed_config_hash", None))
+    if config_hash != snapshot.plugin_config_hash or binding_config_hash != snapshot.plugin_config_hash:
+        raise ValueError("plugin config snapshot mismatch")
     profile_identity = optional_str(raw_config.get("provider_profile"))
     if profile_identity is None:
         raise ValueError("plugin provider profile is required")
@@ -1252,7 +1268,6 @@ async def _build_plugin_dispatch_request(
     lot_code = _first_plugin_fact(data, six_in_one, session_context, names=("LotCode", "lot_code"))
     command_code = optional_str(raw_input.get("command_code"))
     awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
-    config_hash = sha256_digest(raw_config)
     facts = RoughSorterFacts(
         business_key=business_key,
         hhpn=hhpn,
@@ -1262,7 +1277,7 @@ async def _build_plugin_dispatch_request(
             binding_id=binding_id,
             binding_version=snapshot.binding_version,
             profile_identity=profile_identity,
-            plugin_config_hash=config_hash,
+            plugin_config_hash=snapshot.plugin_config_hash,
             generated_index_digest=snapshot.index_digest,
         ),
     )
@@ -1281,7 +1296,7 @@ async def _build_plugin_dispatch_request(
             binding_identity=f"binding:{binding_id}:{snapshot.binding_version}",
             binding_id=binding_id,
             binding_version=snapshot.binding_version,
-            config_hash=config_hash,
+            config_hash=snapshot.plugin_config_hash,
             index_digest=snapshot.index_digest,
             profile_identity=profile_identity,
         ),
@@ -1332,6 +1347,7 @@ def _plugin_attempt_snapshot(session: Any, *, processor_token: str) -> AttemptSn
         definition_identity=definition_identity,
         binding_id=optional_int(getattr(session, "plugin_binding_id", None)),
         binding_version=optional_int(getattr(session, "plugin_binding_version", None)),
+        plugin_config_hash=optional_str(getattr(session, "plugin_config_hash", None)),
         index_digest=optional_str(getattr(session, "plugin_index_digest", None)),
     )
 

@@ -620,6 +620,69 @@ async def test_writeback_version_race_writes_nothing_and_rolls_back() -> None:
 
 
 @pytest.mark.asyncio
+async def test_writeback_plugin_config_drift_writes_nothing_and_rolls_back() -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+        RuntimeInboxWriteBackService,
+    )
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptSnapshot,
+        AttemptWriteSet,
+        WriteDisposition,
+    )
+
+    events: list[str] = []
+    snapshot = AttemptSnapshot(
+        processor_token="lease-1",
+        session_version=7,
+        plugin_state_version=3,
+        plugin_config_hash="a" * 64,
+    )
+
+    class Db:
+        async def commit(self) -> None:
+            events.append("commit")
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+    class Repository:
+        async def lock_authoritative(self, *_args: object, **_kwargs: object) -> object:
+            events.append("select-for-update")
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-1"),
+                session=SimpleNamespace(
+                    version=7,
+                    plugin_state_version=3,
+                    plugin_config_hash="b" * 64,
+                ),
+            )
+
+        async def persist_locked_attempt(self, *_args: object, **_kwargs: object) -> None:
+            events.append("MUST_NOT_WRITE")
+
+    class InboxService:
+        async def mark_processed(self, *_args: object, **_kwargs: object) -> bool:
+            events.append("MUST_NOT_TERMINAL")
+            return True
+
+    disposition = await RuntimeInboxWriteBackService(
+        plugin_attempt_repository=Repository(),
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+    ).commit_plugin_attempt(
+        Db(),
+        expected_snapshot=snapshot,
+        inbox_id=91,
+        session_id=41,
+        workline_id=8,
+        trace_id="trace-1",
+        write_set=AttemptWriteSet(evidence=("e1",), next_state={}, intents=()),
+    )
+
+    assert disposition is WriteDisposition.SAFE_RETRY
+    assert events == ["select-for-update", "rollback"]
+
+
+@pytest.mark.asyncio
 async def test_writeback_persistence_error_rolls_back_before_terminal() -> None:
     from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
         RuntimeInboxWriteBackService,

@@ -1010,6 +1010,102 @@ async def test_platform_plugin_claim_runs_three_stages_without_db_in_query_conte
     assert events == ["claim-snapshot-commit-release", "query-decision", "lock-revalidate-write"]
 
 
+@pytest.mark.parametrize("kind", ["INTERNAL_EVENT", "EXTERNAL_HTTP"])
+@pytest.mark.parametrize("correlation", ["success", "missing", "mismatch"])
+@pytest.mark.asyncio
+async def test_pick_result_callback_guards_dispatcher_before_plugin_writes(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    correlation: str,
+) -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+
+    calls = {"archive": 0, "runner": 0, "writeback": 0, "terminal": 0}
+    callback_code = {"success": "CMD-1", "missing": None, "mismatch": "CMD-OTHER"}[correlation]
+    payload = {"logical_route": "PICK_AND_PUT_RESULT", "result": "SUCCESS"}
+    if callback_code is not None:
+        payload["command_code"] = callback_code
+    inbox = _make_inbox(inbox_id=91, kind=kind, payload_json=payload)
+    inbox.event_type = "PICK_AND_PUT_RESULT" if kind == "INTERNAL_EVENT" else "EXTERNAL_HTTP"
+    session = SimpleNamespace(
+        id=10,
+        version=7,
+        plugin_state_version=3,
+        plugin_state_json={"step": 1},
+        plugin_identity="plugin.rough-sorter@v1:" + "a" * 64,
+        plugin_binding_id=17,
+        plugin_binding_version=4,
+        plugin_config_hash="c" * 64,
+        plugin_index_digest="b" * 64,
+        status="WAITING_DEVICE_RESULT",
+        awaiting_device_command_code="CMD-1",
+    )
+    command = None if callback_code is None else SimpleNamespace(command_code=callback_code, status="PENDING")
+
+    class Db:
+        in_transaction = True
+
+        async def commit(self) -> None:
+            self.in_transaction = False
+
+        async def rollback(self) -> None:
+            self.in_transaction = False
+
+    class Repository:
+        async def get_by_id(self, *_args: object) -> object:
+            return inbox
+
+    class InboxService:
+        async def mark_processed(self, *_args: object, **_kwargs: object) -> bool:
+            calls["terminal"] += 1
+            return True
+
+    class Runner:
+        async def run(self, _context: object) -> AttemptWriteSet:
+            calls["runner"] += 1
+            return AttemptWriteSet(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
+
+    class WriteBack:
+        async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
+            calls["writeback"] += 1
+            return WriteDisposition.COMMITTED
+
+    async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+        return session, SimpleNamespace(id=20), None, command, {}, object(), True
+
+    async def not_duplicate(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    async def record_archive(*_args: object, **_kwargs: object) -> None:
+        calls["archive"] += 1
+
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
+        load_related,
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._is_duplicate_entry_event",
+        not_duplicate,
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._record_late_command_result_archive_timeline",
+        record_archive,
+    )
+
+    result = await RuntimeInboxProcessorBridge(
+        inbox_repository=Repository(),  # type: ignore[arg-type]
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+        writeback_service=WriteBack(),  # type: ignore[arg-type]
+        plugin_attempt_runner=Runner(),
+    ).process_claimed(Db(), claim={"id": 91, "processor_token": "lease-1"})
+
+    assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+    if correlation == "success":
+        assert calls == {"archive": 0, "runner": 1, "writeback": 1, "terminal": 0}
+    else:
+        assert calls == {"archive": 1, "runner": 0, "writeback": 0, "terminal": 1}
+
+
 @pytest.mark.asyncio
 async def test_platform_query_stage_releases_real_async_session_transaction() -> None:
     from sqlalchemy import text
@@ -1728,6 +1824,55 @@ class TestSessionWriteSnapshot:
 
 
 class TestIsLateOrDuplicateCommandResult:
+    @pytest.mark.parametrize("kind", ["INTERNAL_EVENT", "EXTERNAL_HTTP"])
+    def test_noncallback_transport_is_not_guarded_as_command_result(self, kind: str) -> None:
+        inbox = _make_inbox(kind=kind, payload_json={"logical_route": "SCAN_COMPLETED"})
+        session = _make_session(status="WAITING_DEVICE_RESULT", awaiting_device_command_code="CMD-1")
+        assert (
+            _is_late_or_duplicate_command_result_for_session(
+                inbox=inbox,
+                payload=inbox.payload_json,
+                session=session,
+                command=None,
+            )
+            is False
+        )
+
+    @pytest.mark.parametrize("kind", ["INTERNAL_EVENT", "EXTERNAL_HTTP"])
+    def test_pick_result_callback_missing_correlation_is_evidence_only(self, kind: str) -> None:
+        inbox = _make_inbox(
+            kind=kind,
+            payload_json={"logical_route": "PICK_AND_PUT_RESULT", "result": "SUCCESS"},
+        )
+        session = _make_session(status="WAITING_DEVICE_RESULT", awaiting_device_command_code="CMD-1")
+        assert (
+            _is_late_or_duplicate_command_result_for_session(
+                inbox=inbox,
+                payload=inbox.payload_json,
+                session=session,
+                command=None,
+            )
+            is True
+        )
+
+    @pytest.mark.parametrize("kind", ["INTERNAL_EVENT", "EXTERNAL_HTTP"])
+    def test_pick_result_callback_mismatch_is_evidence_only(self, kind: str) -> None:
+        inbox = _make_inbox(
+            kind=kind,
+            payload_json={"callback_type": "PICK_AND_PUT_RESULT", "command_code": "CMD-OTHER"},
+        )
+        session = _make_session(status="WAITING_DEVICE_RESULT", awaiting_device_command_code="CMD-1")
+        command = SimpleNamespace(command_code="CMD-OTHER", status="PENDING")
+        assert (
+            _is_late_or_duplicate_command_result_for_session(
+                inbox=inbox,
+                payload=inbox.payload_json,
+                session=session,
+                command=command,
+            )
+            is True
+        )
+
     def test_missing_callback_correlation_is_evidence_only(self) -> None:
         inbox = _make_inbox(kind="COMMAND_RESULT")
         session = _make_session(status="WAITING_DEVICE_RESULT", awaiting_device_command_code="CMD-1")

@@ -123,6 +123,10 @@ def _authoritative_snapshot_matches(locked: Any, expected: AttemptSnapshot) -> b
             expected.binding_version is None
             or getattr(session, "plugin_binding_version", None) == expected.binding_version
         )
+        and (
+            expected.plugin_config_hash is None
+            or getattr(session, "plugin_config_hash", None) == expected.plugin_config_hash
+        )
         and (expected.index_digest is None or getattr(session, "plugin_index_digest", None) == expected.index_digest)
     )
 
@@ -158,7 +162,12 @@ def _is_late_or_duplicate_command_result_for_session(
     command: Any | None,
 ) -> bool:
     """识别已消费过或迟到的 COMMAND_RESULT。"""
-    if _kind_value(inbox) != "COMMAND_RESULT":
+    kind = _kind_value(inbox)
+    declared_route = payload.get("logical_route") or payload.get("callback_type")
+    event_type = getattr(getattr(inbox, "event_type", None), "value", getattr(inbox, "event_type", None))
+    callback_route = declared_route or event_type
+    is_pick_result_callback = kind in {"INTERNAL_EVENT", "EXTERNAL_HTTP"} and callback_route == "PICK_AND_PUT_RESULT"
+    if kind != "COMMAND_RESULT" and not is_pick_result_callback:
         return False
     if session is None:
         return False
