@@ -186,9 +186,77 @@ def upgrade() -> None:
         schema=RUNTIME_SCHEMA,
     )
 
+    # RuntimeIntentLog 同 revision 固定 Plugin/Capability/授权/provider 快照；
+    # 当前 feature 尚未发布，避免为一个原子切片拆出依赖顺序更脆弱的第二个 migration。
+    for name, column in (
+        ("plugin_key", sa.String(length=100)),
+        ("plugin_contract_version", sa.String(length=60)),
+        ("capability_key", sa.String(length=120)),
+        ("capability_contract_version", sa.String(length=60)),
+        ("operation_identity", sa.String(length=160)),
+        ("creator_authority", sa.String(length=100)),
+        ("authorization_policy", sa.String(length=120)),
+        ("binding_snapshot_json", sa.JSON()),
+        ("provider_snapshot_json", sa.JSON()),
+        ("precondition_json", sa.JSON()),
+        ("fact_version", sa.String(length=120)),
+        ("payload_hash", sa.String(length=64)),
+        ("completion_mode", sa.String(length=40)),
+    ):
+        is_snapshot = name.endswith("_json")
+        op.add_column(
+            "runtime_intent_logs",
+            sa.Column(
+                name,
+                column,
+                nullable=not is_snapshot,
+                server_default=sa.text("'{}'::json") if is_snapshot else None,
+            ),
+            schema=RUNTIME_SCHEMA,
+        )
+    op.create_index(
+        "ix_wes_runtime_runtime_intent_logs_plugin_key",
+        "runtime_intent_logs",
+        ["plugin_key"],
+        schema=RUNTIME_SCHEMA,
+    )
+    op.create_index(
+        "ix_wes_runtime_runtime_intent_logs_capability_key",
+        "runtime_intent_logs",
+        ["capability_key"],
+        schema=RUNTIME_SCHEMA,
+    )
+
 
 def downgrade() -> None:
     """只删除本 revision 新增的 binding、pin 和 JSON state。"""
+
+    op.drop_index(
+        "ix_wes_runtime_runtime_intent_logs_capability_key",
+        table_name="runtime_intent_logs",
+        schema=RUNTIME_SCHEMA,
+    )
+    op.drop_index(
+        "ix_wes_runtime_runtime_intent_logs_plugin_key",
+        table_name="runtime_intent_logs",
+        schema=RUNTIME_SCHEMA,
+    )
+    for column in (
+        "completion_mode",
+        "payload_hash",
+        "fact_version",
+        "precondition_json",
+        "provider_snapshot_json",
+        "binding_snapshot_json",
+        "authorization_policy",
+        "creator_authority",
+        "operation_identity",
+        "capability_contract_version",
+        "capability_key",
+        "plugin_contract_version",
+        "plugin_key",
+    ):
+        op.drop_column("runtime_intent_logs", column, schema=RUNTIME_SCHEMA)
 
     op.drop_index(
         "ix_wes_runtime_execution_work_items_plugin_key",

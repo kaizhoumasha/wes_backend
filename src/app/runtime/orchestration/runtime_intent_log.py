@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import ClassVar
 
+from sqlalchemy import JSON, Column
 from sqlmodel import Field
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation  # noqa: F401
@@ -57,6 +58,21 @@ class RuntimeIntentLog(BaseMixin, table=True):
     # 幂等
     idempotency_key: str = Field(max_length=160, index=True)
     request_hash: str = Field(max_length=128, description="immutable payload hash")
+
+    # Plugin/Capability 执行快照；effect replay 必须按这些固定值执行，不能重新选版本或 provider。
+    plugin_key: str | None = Field(default=None, max_length=100, index=True)
+    plugin_contract_version: str | None = Field(default=None, max_length=60)
+    capability_key: str | None = Field(default=None, max_length=120, index=True)
+    capability_contract_version: str | None = Field(default=None, max_length=60)
+    operation_identity: str | None = Field(default=None, max_length=160)
+    creator_authority: str | None = Field(default=None, max_length=100)
+    authorization_policy: str | None = Field(default=None, max_length=120)
+    binding_snapshot_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    provider_snapshot_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    precondition_json: dict[str, object] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    fact_version: str | None = Field(default=None, max_length=120)
+    payload_hash: str | None = Field(default=None, max_length=64)
+    completion_mode: str | None = Field(default=None, max_length=40)
 
     # dispatch 状态机
     dispatch_status: str = Field(

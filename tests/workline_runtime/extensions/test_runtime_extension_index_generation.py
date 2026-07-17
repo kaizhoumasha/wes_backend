@@ -416,13 +416,18 @@ def test_explicit_port_catalog_accepts_only_registered_port() -> None:
     assert generated.identities == (("inventory.lookup", "v1"),)
 
 
-def test_generated_indexes_are_empty_read_only_and_cold_start_safe() -> None:
+def test_generated_indexes_are_complete_read_only_and_cold_start_safe() -> None:
     import src.app.runtime.system_capabilities.generated_index as system_index
     import src.app.runtime.workline_plugins.generated_index as plugin_index
 
     assert isinstance(system_index.SYSTEM_CAPABILITY_INDEX, MappingProxyType)
     assert isinstance(plugin_index.WORKLINE_PLUGIN_INDEX, MappingProxyType)
-    assert system_index.SYSTEM_CAPABILITY_IDENTITIES == (("wms.rough_sorter_inventory_admission", "v1"),)
+    assert system_index.SYSTEM_CAPABILITY_IDENTITIES == (
+        ("device.device_command_write", "v1"),
+        ("material_flow.material_unit_write", "v1"),
+        ("runtime.session_hold", "v1"),
+        ("wms.rough_sorter_inventory_admission", "v1"),
+    )
     assert plugin_index.WORKLINE_PLUGIN_IDENTITIES == (("rough_sorter", "rough_sorter.v2"),)
     assert tuple(plugin_index.WORKLINE_PLUGIN_INDEX) == (("rough_sorter", "rough_sorter.v2"),)
     with pytest.raises(TypeError):
@@ -457,7 +462,7 @@ def test_cli_write_is_idempotent_and_check_reports_both_indexes(tmp_path: Path) 
     check = subprocess.run([*command, "--check"], cwd=REPO_ROOT, check=False, capture_output=True, text=True)
     assert check.returncode == 0
     assert "workline_plugins: count=1 digest=" in check.stdout
-    assert "system_capabilities: count=1 digest=" in check.stdout
+    assert "system_capabilities: count=4 digest=" in check.stdout
 
 
 def test_cli_check_detects_drift_without_overwriting_file(tmp_path: Path) -> None:

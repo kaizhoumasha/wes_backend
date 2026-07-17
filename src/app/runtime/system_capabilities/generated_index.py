@@ -2,15 +2,32 @@
 
 from types import MappingProxyType
 
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.definition import (
+from src.app.runtime.system_capabilities.device.device_command_write.definition import (
     DEFINITION as _DEFINITION_0,
 )
+from src.app.runtime.system_capabilities.material_flow.material_unit_write.definition import (
+    DEFINITION as _DEFINITION_1,
+)
+from src.app.runtime.system_capabilities.runtime.session_hold.definition import (
+    DEFINITION as _DEFINITION_2,
+)
+from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.definition import (
+    DEFINITION as _DEFINITION_3,
+)
 
-SYSTEM_CAPABILITY_IDENTITIES = (("wms.rough_sorter_inventory_admission", "v1"),)
-SYSTEM_CAPABILITY_INDEX_DIGEST = "50d15c853cb7d91d47a013772dde0361d5011e687a76e4c7dc2af9ee459e35bc"
+SYSTEM_CAPABILITY_IDENTITIES = (
+    ("device.device_command_write", "v1"),
+    ("material_flow.material_unit_write", "v1"),
+    ("runtime.session_hold", "v1"),
+    ("wms.rough_sorter_inventory_admission", "v1"),
+)
+SYSTEM_CAPABILITY_INDEX_DIGEST = "ad8403fa40a7f6c4dece0bbe8eb5c807f9e857dafc9e93494596a3dd6f347add"
 SYSTEM_CAPABILITY_INDEX = MappingProxyType(
     {
-        ("wms.rough_sorter_inventory_admission", "v1"): _DEFINITION_0,
+        ("device.device_command_write", "v1"): _DEFINITION_0,
+        ("material_flow.material_unit_write", "v1"): _DEFINITION_1,
+        ("runtime.session_hold", "v1"): _DEFINITION_2,
+        ("wms.rough_sorter_inventory_admission", "v1"): _DEFINITION_3,
     }
 )
 

@@ -12,10 +12,28 @@ from src.app.runtime.orchestration.services.intent.smt_inbound_handoff_service i
     SmtInboundHandoffService,
     smt_inbound_handoff_service,
 )
+from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
+    SystemCapabilityEffectResult,
+    SystemCapabilityEffectService,
+    SystemCapabilityExecution,
+    system_capability_effect_service,
+)
+from src.app.runtime.orchestration.services.intent.system_capability_intent_service import (
+    PreparedSystemCapabilityIntent,
+    SystemCapabilityIntentService,
+    system_capability_intent_service,
+)
 
 __all__ = [
+    "PreparedSystemCapabilityIntent",
     "SmtInboundHandoffService",
+    "SystemCapabilityEffectResult",
+    "SystemCapabilityEffectService",
+    "SystemCapabilityExecution",
+    "SystemCapabilityIntentService",
     "WorklineOperationService",
     "smt_inbound_handoff_service",
+    "system_capability_effect_service",
+    "system_capability_intent_service",
     "workline_operation_service",
 ]

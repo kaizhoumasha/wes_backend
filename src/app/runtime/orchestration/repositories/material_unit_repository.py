@@ -26,6 +26,13 @@ class MaterialUnitRepository(BaseRepository[MaterialUnit]):
         result = await db.execute(select(MaterialUnit).where(columns.pkg_code == pkg_code).limit(1))
         return result.scalar_one_or_none()
 
+    async def get_by_pkg_code_for_update(self, db: AsyncSession, pkg_code: str) -> MaterialUnit | None:
+        """锁定已存在料盘直到外层事务结束，避免并发 Session 静默窃取所有权。"""
+
+        columns = cast("Any", MaterialUnit).__table__.c
+        result = await db.execute(select(MaterialUnit).where(columns.pkg_code == pkg_code).limit(1).with_for_update())
+        return result.scalar_one_or_none()
+
     async def update_current_location_by_pkg_code(
         self,
         db: AsyncSession,

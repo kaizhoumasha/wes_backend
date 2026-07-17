@@ -9,6 +9,8 @@ import pytest
 
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
 from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
+from src.app.runtime.system_capabilities.definition import EffectCompletionMode
+from src.app.runtime.system_capabilities.outcomes import Success
 
 
 class _RecordingReservationService:
@@ -43,6 +45,46 @@ def _effect_ctx() -> dict[str, Any]:
         "trace_id": "trace-runtime-effect-applier",
         "orch_result": SimpleNamespace(),
     }
+
+
+class _RecordingSystemCapabilityEffectService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, RuntimeIntent]] = []
+
+    async def apply(self, ctx: object, intent: RuntimeIntent) -> SimpleNamespace:
+        self.calls.append((ctx, intent))
+        return SimpleNamespace(
+            outcome=Success(payload={"accepted": True}),
+            completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
+            durably_accepted=False,
+            remote_completed=True,
+            idempotent_replay=False,
+            retryable=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_system_capability_intent_uses_one_generic_effect_service_branch() -> None:
+    service = _RecordingSystemCapabilityEffectService()
+    intent = RuntimeIntent.system_capability(
+        capability_key="material_flow.material_unit_write",
+        contract_version="v1",
+        operation_key="scan:PKG-001:create",
+        payload={"operation": "CREATE", "pkg_code": "PKG-001"},
+        precondition={"expected_absent": True},
+        fact_version="material-unit:v0",
+        timeout_seconds=5,
+        creator_authority="WORKLINE_PLUGIN",
+        authorization_policy="rough-sorter-effect-v1",
+        binding_snapshot={"binding_id": 7, "binding_version": 2},
+        provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
+    )
+    ctx = _effect_ctx()
+
+    await RuntimeIntentEffectApplier(system_capability_effect_service=service).apply(ctx, [intent])
+
+    assert service.calls == [(ctx, intent)]
+    assert ctx["system_capability_outcomes"][0].outcome.kind == "success"
 
 
 @pytest.mark.asyncio

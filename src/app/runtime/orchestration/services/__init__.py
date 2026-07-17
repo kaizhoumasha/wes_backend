@@ -19,10 +19,20 @@ from src.app.runtime.orchestration.services.idempotency_guard import (
     is_wes_internal_key,
     make_wes_internal_key,
 )
+from src.app.runtime.orchestration.services.material_unit_mutation_service import (
+    MaterialUnitMutationService,
+    StaleMaterialUnitPrecondition,
+    material_unit_mutation_service,
+)
 from src.app.runtime.orchestration.services.runtime_snapshot_assembler import (
     RuntimeSnapshotAssembler,
     RuntimeSnapshotInput,
     runtime_snapshot_assembler,
+)
+from src.app.runtime.orchestration.services.session_hold_mutation_service import (
+    SessionHoldMutationService,
+    StaleSessionPrecondition,
+    session_hold_mutation_service,
 )
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     WorkLineRuntimeStatusProjectionService,
@@ -43,8 +53,12 @@ __all__ = [
     "DeviceRuntimeProjectionWriterService",
     "IdempotencyConflict",
     "IdempotencyGuard",
+    "MaterialUnitMutationService",
     "RuntimeSnapshotAssembler",
     "RuntimeSnapshotInput",
+    "SessionHoldMutationService",
+    "StaleMaterialUnitPrecondition",
+    "StaleSessionPrecondition",
     "WorkLineRuntimeStatusProjectionService",
     "WorkLineRuntimeStatusSnapshot",
     "conveyor_queue_membership_writer_service",
@@ -52,6 +66,8 @@ __all__ = [
     "idempotency_guard",
     "is_wes_internal_key",
     "make_wes_internal_key",
+    "material_unit_mutation_service",
     "runtime_snapshot_assembler",
+    "session_hold_mutation_service",
     "workline_runtime_status_projection_service",
 ]

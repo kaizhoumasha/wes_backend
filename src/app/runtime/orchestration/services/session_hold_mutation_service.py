@@ -1,0 +1,53 @@
+"""普通 WorklineSession Hold 的外层事务参与型写服务。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from src.utils.timezone import timezone
+from src.utils.value_normalization import optional_int
+
+
+class StaleSessionPrecondition(ValueError):
+    """Session version 已变化，Plugin 必须读取新事实重新决策。"""
+
+
+class SessionHoldMutationService:
+    """只更新普通 Session；RuntimeHold 仍由 TIMER reconciliation owner 创建。"""
+
+    async def hold(
+        self,
+        db: Any,
+        *,
+        session: Any,
+        failure_domain: str,
+        reason_code: str,
+        message: str,
+        fact_version: str | int | None,
+    ) -> Any:
+        from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
+
+        expected = self._version_value(fact_version)
+        actual = optional_int(getattr(session, "version", None))
+        if expected is not None and actual != expected:
+            raise StaleSessionPrecondition("session fact version changed")
+        workline_session_lifecycle_service.manual_hold(session, occurred_at=timezone.now_for_db())
+        session.failure_domain = failure_domain
+        session.failure_code = reason_code
+        session.failure_message = message
+        db.add(session)
+        await db.flush()
+        return session
+
+    @staticmethod
+    def _version_value(value: str | int | None) -> int | None:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.rsplit(":", 1)[-1].isdigit():
+            return int(value.rsplit(":", 1)[-1])
+        return None
+
+
+session_hold_mutation_service = SessionHoldMutationService()
+
+__all__ = ["SessionHoldMutationService", "StaleSessionPrecondition", "session_hold_mutation_service"]

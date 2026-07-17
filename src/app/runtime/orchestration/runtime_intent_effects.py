@@ -15,7 +15,6 @@ from types import SimpleNamespace
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import select
 
 from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
@@ -40,6 +39,7 @@ from src.utils.value_normalization import coerce_optional_str, optional_int, res
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_INTENT_KINDS = {
+    RuntimeIntentKind.SYSTEM_CAPABILITY,
     RuntimeIntentKind.UPDATE_CONTEXT,
     RuntimeIntentKind.MARK_NG,
     RuntimeIntentKind.COMMAND,
@@ -796,11 +796,15 @@ class RuntimeIntentEffectApplier:
         handling_operation_service: Any | None = None,
         resource_projection_service: Any | None = None,
         bin_cell_reservation_service: Any | None = None,
+        system_capability_effect_service: Any | None = None,
+        material_unit_mutation_service: Any | None = None,
     ) -> None:
         self._rack_operation_service = rack_operation_service
         self._handling_operation_service = handling_operation_service
         self._resource_projection_service = resource_projection_service
         self._bin_cell_reservation_service = bin_cell_reservation_service
+        self._system_capability_effect_service = system_capability_effect_service
+        self._material_unit_mutation_service = material_unit_mutation_service
 
     async def apply(self, ctx: Any, intents: list[RuntimeIntent]) -> RuntimeIntentEffectResult:  # noqa: PLR0912
         _validate_runtime_intents(intents)
@@ -826,6 +830,22 @@ class RuntimeIntentEffectApplier:
             }
             if terminal_state.skip_next_material_unit_intent and not skip_material_unit_intent:
                 terminal_state.skip_next_material_unit_intent = False
+
+            if intent.kind == RuntimeIntentKind.SYSTEM_CAPABILITY:
+                service = self._system_capability_effect_service
+                if service is None:
+                    from src.app.runtime.orchestration.services.intent import system_capability_effect_service
+
+                    service = system_capability_effect_service
+                result = await service.apply(ctx, intent)
+                ctx.setdefault("system_capability_outcomes", []).append(result)
+                from src.app.runtime.system_capabilities.outcomes import ContractViolation, RetryableFailure
+
+                if isinstance(result.outcome, RetryableFailure):
+                    raise RuntimeError(f"system capability retryable failure: {result.outcome.error_code}")
+                if isinstance(result.outcome, ContractViolation):
+                    raise ValueError(f"system capability contract violation: {result.outcome.error_code}")
+                continue
 
             if intent.kind == RuntimeIntentKind.UPDATE_CONTEXT:
                 await self._apply_update_context(ctx, intent, workline_effects, terminal_state)
@@ -938,121 +958,20 @@ class RuntimeIntentEffectApplier:
         return RuntimeIntentEffectResult.processed()
 
     async def _apply_create_material_unit(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus
+        service = self._material_unit_mutation_service
+        if service is None:
+            from src.app.runtime.orchestration.services import material_unit_mutation_service
 
-        session = ctx["session"]
-        db = ctx["db"]
-        pkg_code = string_value(intent.payload_json.get("pkg_code"), "")
-        material_identity_key = string_value(intent.payload_json.get("material_identity_key"), "")
-        six_in_one = dict(cast("Mapping[str, Any]", intent.payload_json.get("six_in_one") or {}))
-        status = MaterialUnitStatus(string_value(intent.payload_json.get("status"), ""))
-        current_session_id = resolve_required_pk(session, "session")
-        flush = getattr(db, "flush", None)
-
-        async def get_material_unit_by_pkg_code() -> Any | None:
-            # with_for_update 锁住已存在料盘行直到事务结束，消除复用路径的 TOCTOU 窗口：
-            # 并发事务同时读到同一 material_unit 后盲目覆盖 current_session_id。
-            # SQLite 静默忽略 FOR UPDATE；Postgres 行锁串行化所有权转移。
-            result = await db.execute(
-                select(MaterialUnit).where(MaterialUnit.pkg_code == pkg_code).limit(1).with_for_update()
-            )
-            material_units = list(result.scalars().all())
-            if len(material_units) > 1:
-                raise ValueError(f"multiple material units found for pkg_code: {pkg_code}")
-            return material_units[0] if material_units else None
-
-        material_unit = await get_material_unit_by_pkg_code()
-        status_from_state = _state_value(getattr(material_unit, "status", None)) if material_unit is not None else None
-        if material_unit is not None:
-            # 复用已存在的料盘实体（跨 Session handoff 的正常路径）。
-            # 若该实体仍被另一个非终态 Session 持有，说明出现跨线并发或重复 claim，
-            # 拒绝静默窃取所有权，避免双 Session 指向同一料盘造成状态分裂。
-            await _reject_reuse_when_owned_by_active_session(db, material_unit, current_session_id=current_session_id)
-        if material_unit is None:
-            begin_nested = getattr(db, "begin_nested", None)
-            if callable(begin_nested):
-                try:
-                    # 唯一索引竞争回滚到 savepoint，避免污染外层事务。
-                    async with cast("Any", begin_nested)():
-                        material_unit = MaterialUnit(
-                            pkg_code=pkg_code,
-                            material_identity_key=material_identity_key,
-                            six_in_one=six_in_one,
-                            status=status,
-                            current_session_id=current_session_id,
-                        )
-                        db.add(material_unit)
-                        if flush is not None:
-                            await flush()
-                except IntegrityError:
-                    material_unit = await get_material_unit_by_pkg_code()
-                    if material_unit is None:
-                        raise
-                    await _reject_reuse_when_owned_by_active_session(
-                        db, material_unit, current_session_id=current_session_id
-                    )
-                    status_from_state = _state_value(getattr(material_unit, "status", None))
-            else:
-                material_unit = MaterialUnit(
-                    pkg_code=pkg_code,
-                    material_identity_key=material_identity_key,
-                    six_in_one=six_in_one,
-                    status=status,
-                    current_session_id=current_session_id,
-                )
-                db.add(material_unit)
-
-        material_unit.material_identity_key = material_identity_key
-        # six_in_one 合并而非覆盖：保留已有字段（如粗分机扫码的完整六合一码），
-        # 仅用本次 payload 的非空值更新，避免 SMT 接管时用瘦构造 dict 丢数据。
-        merged_six_in_one = {
-            **dict(material_unit.six_in_one or {}),
-            **{key: value for key, value in six_in_one.items() if value is not None},
-        }
-        material_unit.six_in_one = merged_six_in_one
-        if "current_location" in intent.payload_json:
-            material_unit.current_location = intent.payload_json.get("current_location")
-        _apply_material_unit_status_write(ctx, material_unit, from_state=status_from_state, to_status=status)
-        material_unit.current_session_id = current_session_id
-        if flush is not None:
-            await flush()
-        session.current_material_unit_id = resolve_required_pk(material_unit, "material_unit")
+            service = material_unit_mutation_service
+        await service.create(ctx, intent.payload_json)
 
     async def _apply_update_material_unit_status(self, ctx: Any, intent: RuntimeIntent) -> None:
-        from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus
+        service = self._material_unit_mutation_service
+        if service is None:
+            from src.app.runtime.orchestration.services import material_unit_mutation_service
 
-        material_unit_id = optional_int(intent.payload_json.get("material_unit_id"))
-        if material_unit_id is None:
-            raise ValueError(
-                f"UPDATE_MATERIAL_UNIT_STATUS intent requires valid integer material_unit_id, "
-                f"got: {intent.payload_json.get('material_unit_id')!r}"
-            )
-        material_unit = await ctx["db"].get(MaterialUnit, material_unit_id)
-        if material_unit is None:
-            raise ValueError(f"material unit not found: {material_unit_id}")
-
-        session = ctx["session"]
-        current_session_id = resolve_required_pk(session, "session")
-        if intent.payload_json.get("clear_session_reference") is True and (
-            getattr(material_unit, "current_session_id", None) != current_session_id
-            or getattr(session, "current_material_unit_id", None) != material_unit_id
-        ):
-            return
-
-        from_status = _state_value(getattr(material_unit, "status", None))
-        to_status = MaterialUnitStatus(string_value(intent.payload_json.get("status"), ""))
-        _apply_material_unit_status_write(ctx, material_unit, from_state=from_status, to_status=to_status)
-        if "current_location" in intent.payload_json:
-            material_unit.current_location = intent.payload_json.get("current_location")
-        material_unit.current_session_id = current_session_id
-        if intent.payload_json.get("clear_session_reference") is True:
-            # 同批次清理登记在 ctx；同时持久化到 session.context_json，
-            # 以便 NG 冲突进 MANUAL_HOLD 后跨 inbox 批次恢复到 COMPLETE 时仍能清理。
-            cleanup_ids = ctx.setdefault("_runtime_material_unit_cleanup_ids", set())
-            cleanup_ids.add(material_unit_id)
-            _persist_pending_cleanup_ids(session, set(cleanup_ids))
-            return
-        session.current_material_unit_id = material_unit_id
+            service = material_unit_mutation_service
+        await service.update_status(ctx, intent.payload_json)
 
     async def _apply_current_material_unit_reconciliation_status(self, ctx: Any) -> None:
         from src.app.runtime.orchestration.models.material_unit import MaterialUnit, MaterialUnitStatus

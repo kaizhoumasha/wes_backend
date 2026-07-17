@@ -153,6 +153,70 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
         return command
 
+    async def prepare_runtime_effect(
+        self,
+        db: AsyncSession,
+        *,
+        request: Any,
+        target_device: Any,
+        session: Any,
+        workline: Any,
+        idempotency_key: str,
+        trace_id: str | None,
+    ) -> tuple[DeviceCommand, Any]:
+        """在 Runtime 外层事务内原子准备 DeviceCommand + Outbox，只 flush。"""
+
+        from hashlib import sha256
+
+        from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
+
+        device_id = getattr(target_device, "id", None)
+        device_code = getattr(target_device, "device_code", None)
+        if not isinstance(device_id, int) or not isinstance(device_code, str) or not device_code:
+            raise ValueError("runtime device command requires a pinned target device")
+        requested_code = getattr(request, "command_code", None)
+        command_code = requested_code or f"SC-{sha256(idempotency_key.encode('utf-8')).hexdigest()[:32]}"
+        command = DeviceCommand(
+            command_code=command_code,
+            device_id=device_id,
+            task_type=str(request.action),
+            priority=int(request.priority),
+            timeout_ms=int(request.timeout_ms),
+            params=dict(request.payload),
+            trace_id=trace_id,
+            correlation_id=idempotency_key[:120],
+            workline_id=getattr(workline, "id", None) or getattr(session, "workline_id", None),
+            plugin_key=getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
+            contract_version=getattr(session, "contract_version", None),
+            status=CommandStatus.PENDING,
+        )
+        db.add(command)
+        await db.flush()
+        outbox = SystemOutbox(
+            session_id=getattr(session, "id", None),
+            workline_id=getattr(workline, "id", None) or getattr(session, "workline_id", None),
+            device_id=device_id,
+            operation_domain="DEVICE",
+            operation_key=idempotency_key,
+            dispatch_type=SystemOutboxDispatchType.DEVICE_COMMAND,
+            dispatch_key=f"device-command:{command_code}",
+            target_type=SystemOutboxTargetType.DEVICE,
+            target_code=device_code,
+            payload_json={
+                "command_code": command_code,
+                "device_code": device_code,
+                "task_type": str(request.action),
+                "priority": int(request.priority),
+                "timeout": int(request.timeout_ms),
+                "params": dict(request.payload),
+                "trace_id": trace_id,
+            },
+            trace_id=trace_id,
+        )
+        db.add(outbox)
+        await db.flush()
+        return command, outbox
+
     async def send_command(
         self,
         db: AsyncSession,

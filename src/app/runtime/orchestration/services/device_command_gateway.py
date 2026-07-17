@@ -1041,4 +1041,22 @@ class DeviceCommandGateway:
             return False
 
 
+async def prepare_runtime_device_command_effect(
+    ctx: dict[str, Any], request: object, *, target_device: object, execution: object
+) -> tuple[object, object]:
+    """通过既有 device/runtime 桥接边界准备命令与 Outbox，不执行外部 I/O。"""
+
+    from src.app.device.services.device_command_service import device_command_service
+
+    return await device_command_service.prepare_runtime_effect(
+        ctx["db"],
+        request=request,
+        target_device=target_device,
+        session=ctx["session"],
+        workline=ctx["workline"],
+        idempotency_key=execution.idempotency_key,  # type: ignore[attr-defined]
+        trace_id=ctx.get("trace_id"),
+    )
+
+
 device_command_gateway = DeviceCommandGateway()

@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from src.app.runtime.extension_identity import sha256_digest, validate_key_version
 from src.utils.timezone import timezone
 
 _HANDLING_TRANSPORT_FIELDS = {
@@ -30,6 +31,7 @@ _HANDLING_TRANSPORT_FIELDS = {
 
 
 class RuntimeIntentKind(str, Enum):
+    SYSTEM_CAPABILITY = "SYSTEM_CAPABILITY"
     COMMAND = "COMMAND"
     EXTERNAL_REQUEST = "EXTERNAL_REQUEST"
     RACK_OPERATION_REQUEST = "RACK_OPERATION_REQUEST"
@@ -119,6 +121,56 @@ class RuntimeIntent(BaseModel):
     message: str | None = None
     suggested_action: str | None = None
     context_patch: dict[str, Any] = Field(default_factory=dict)
+    # SYSTEM_CAPABILITY 是插件可创建的唯一通用副作用包络；这些字段在创建时固定，
+    # 后续执行不得重新选择 capability、binding、provider 或授权策略。
+    capability_key: str | None = None
+    contract_version: str | None = None
+    operation_key: str | None = None
+    payload_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    precondition_json: dict[str, Any] = Field(default_factory=dict)
+    fact_version: str | int | None = None
+    creator_authority: str | None = None
+    authorization_policy: str | None = None
+    binding_snapshot: dict[str, Any] = Field(default_factory=dict)
+    provider_snapshot: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def system_capability(
+        cls,
+        *,
+        capability_key: str,
+        contract_version: str,
+        operation_key: str,
+        payload: BaseModel | dict[str, Any],
+        precondition: BaseModel | dict[str, Any],
+        fact_version: str | int,
+        timeout_seconds: int,
+        creator_authority: str,
+        authorization_policy: str,
+        binding_snapshot: BaseModel | dict[str, Any],
+        provider_snapshot: BaseModel | dict[str, Any],
+    ) -> RuntimeIntent:
+        """创建不可变语义的 typed EFFECT intent。"""
+
+        def dump(value: BaseModel | dict[str, Any]) -> dict[str, Any]:
+            return value.model_dump(mode="json") if isinstance(value, BaseModel) else deepcopy(value)
+
+        payload_json = dump(payload)
+        return cls(
+            kind=RuntimeIntentKind.SYSTEM_CAPABILITY,
+            capability_key=capability_key,
+            contract_version=contract_version,
+            operation_key=operation_key,
+            payload_json=payload_json,
+            payload_hash=sha256_digest(payload_json),
+            precondition_json=dump(precondition),
+            fact_version=fact_version,
+            timeout_seconds=timeout_seconds,
+            creator_authority=creator_authority,
+            authorization_policy=authorization_policy,
+            binding_snapshot=dump(binding_snapshot),
+            provider_snapshot=dump(provider_snapshot),
+        )
 
     @classmethod
     def command(
@@ -443,6 +495,8 @@ class RuntimeIntent(BaseModel):
 
     @model_validator(mode="after")
     def validate_intent(self) -> RuntimeIntent:  # noqa: PLR0912
+        if self.kind == RuntimeIntentKind.SYSTEM_CAPABILITY:
+            self._validate_system_capability()
         if self.kind == RuntimeIntentKind.COMMAND and not self.action:
             raise ValueError("COMMAND intent requires action")
         if self.kind == RuntimeIntentKind.EXTERNAL_REQUEST:
@@ -536,6 +590,52 @@ class RuntimeIntent(BaseModel):
             if not self.message:
                 raise ValueError("MARK_NG intent requires message")
         return self
+
+    def _validate_system_capability(self) -> None:
+        for field_name in (
+            "capability_key",
+            "contract_version",
+            "operation_key",
+            "creator_authority",
+            "authorization_policy",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"SYSTEM_CAPABILITY intent requires {field_name}")
+        validate_key_version(str(self.capability_key), field_name="capability_key")
+        validate_key_version(str(self.contract_version), field_name="contract_version")
+        if not self.payload_json:
+            raise ValueError("SYSTEM_CAPABILITY intent requires typed payload")
+        if self.payload_hash != sha256_digest(self.payload_json):
+            raise ValueError("SYSTEM_CAPABILITY intent payload_hash does not match canonical payload")
+        if not self.precondition_json:
+            raise ValueError("SYSTEM_CAPABILITY intent requires precondition")
+        if isinstance(self.fact_version, str) and not self.fact_version.strip():
+            raise ValueError("SYSTEM_CAPABILITY intent requires fact_version")
+        if self.fact_version is None or isinstance(self.fact_version, bool):
+            raise ValueError("SYSTEM_CAPABILITY intent requires fact_version")
+        if self.timeout_seconds is None or self.timeout_seconds <= 0:
+            raise ValueError("SYSTEM_CAPABILITY intent requires timeout_seconds")
+        if not self.binding_snapshot or not self.provider_snapshot:
+            raise ValueError("SYSTEM_CAPABILITY intent requires binding/provider snapshot")
+        legacy_fields = {
+            "device_role": self.device_role,
+            "target_device_id": self.target_device_id,
+            "action": self.action,
+            "dispatch_key": self.dispatch_key,
+            "target_code": self.target_code,
+            "source_system": self.source_system,
+            "idempotency_key": self.idempotency_key,
+            "rack_code": self.rack_code,
+            "position_code": self.position_code,
+            "destination": self.destination,
+            "block_scope": self.block_scope,
+            "reason_code": self.reason_code,
+            "message": self.message,
+            "suggested_action": self.suggested_action,
+        }
+        if any(value is not None for value in legacy_fields.values()) or self.context_patch:
+            raise ValueError("SYSTEM_CAPABILITY intent must not use legacy intent fields")
 
     def _ensure_material_unit_status(self, field_name: str) -> None:
         """校验料盘状态为合法 MaterialUnitStatus 枚举值，fail-fast 对齐 manifest loader。"""

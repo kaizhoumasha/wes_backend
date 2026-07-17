@@ -98,10 +98,23 @@ class RuntimeIntentLogRepository:
             execution_session_id=execution_session_id,
             correlation_id=correlation_id,
             provider_code=_bounded_identity(intent.source_system or "workline-plugin", limit=60),
-            target_domain=_target_domain(intent.kind),
+            target_domain=_target_domain(intent.kind, capability_key=intent.capability_key),
             target_action=_bounded_identity(intent.action or intent.kind.value, limit=120),
             idempotency_key=idempotency_key,
             request_hash=request_hash,
+            plugin_key=_definition_part(snapshot.definition_identity, 0),
+            plugin_contract_version=_definition_part(snapshot.definition_identity, 1),
+            capability_key=intent.capability_key,
+            capability_contract_version=intent.contract_version,
+            operation_identity=intent.operation_key,
+            creator_authority=intent.creator_authority,
+            authorization_policy=intent.authorization_policy,
+            binding_snapshot_json=dict(intent.binding_snapshot),
+            provider_snapshot_json=dict(intent.provider_snapshot),
+            precondition_json=dict(intent.precondition_json),
+            fact_version=str(intent.fact_version) if intent.fact_version is not None else None,
+            payload_hash=intent.payload_hash,
+            completion_mode=_completion_mode(intent),
             dispatch_status="PENDING",
         )
         return PreparedRuntimeIntentLog(
@@ -120,7 +133,9 @@ class RuntimeIntentLogRepository:
         )
 
 
-def _target_domain(kind: RuntimeIntentKind) -> str:
+def _target_domain(kind: RuntimeIntentKind, *, capability_key: str | None = None) -> str:
+    if kind is RuntimeIntentKind.SYSTEM_CAPABILITY and isinstance(capability_key, str):
+        return capability_key.split(".", maxsplit=1)[0]
     if kind in _DEVICE_INTENTS:
         return "device"
     if kind in _HANDLING_INTENTS:
@@ -135,6 +150,22 @@ def _bounded_identity(value: str, *, limit: int) -> str:
         return value
     digest = sha256(value.encode("utf-8")).hexdigest()[:16]
     return f"{value[: limit - len(digest) - 1]}:{digest}"
+
+
+def _definition_part(identity: str | None, index: int) -> str | None:
+    if not isinstance(identity, str) or "@" not in identity:
+        return None
+    parts = identity.split("@", maxsplit=1)
+    return parts[index] or None
+
+
+def _completion_mode(intent: RuntimeIntent) -> str | None:
+    if intent.kind is not RuntimeIntentKind.SYSTEM_CAPABILITY:
+        return None
+    from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
+
+    definition = SYSTEM_CAPABILITY_INDEX.get((str(intent.capability_key), str(intent.contract_version)))
+    return definition.completion_mode.value if definition is not None else None
 
 
 runtime_intent_log_repository = RuntimeIntentLogRepository()
