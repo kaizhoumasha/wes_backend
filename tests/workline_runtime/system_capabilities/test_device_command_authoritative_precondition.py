@@ -44,10 +44,10 @@ class _RecordingDeviceRepository(DeviceRepository):
         *,
         target_device_id: int | None,
         target_device_code: str | None,
+        expected_workline_id: int,
     ) -> object | None:
         self.events.append("lock")
-        assert target_device_id == 71
-        assert target_device_code is None
+        assert expected_workline_id == 3
         return self.device
 
 
@@ -71,6 +71,7 @@ def _locked_device(**overrides: object) -> SimpleNamespace:
         "maintenance_mode": False,
         "current_command_id": None,
         "is_active": True,
+        "work_line_id": 3,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -85,7 +86,13 @@ def _service(device: object, events: list[str]) -> tuple[DeviceCommandService, _
     return service, command_repository
 
 
-async def _prepare(service: DeviceCommandService) -> tuple[object, object]:
+async def _prepare(
+    service: DeviceCommandService,
+    *,
+    target_device_id: int | None = 71,
+    target_device_code: str | None = None,
+    expected_workline_id: int = 3,
+) -> tuple[object, object]:
     return await service.prepare_runtime_effect(
         SimpleNamespace(),
         request=SimpleNamespace(
@@ -95,8 +102,9 @@ async def _prepare(service: DeviceCommandService) -> tuple[object, object]:
             timeout_ms=30000,
             payload={},
         ),
-        target_device_id=71,
-        target_device_code=None,
+        target_device_id=target_device_id,
+        target_device_code=target_device_code,
+        expected_workline_id=expected_workline_id,
         expected_fact_version="device:v2",
         expected_available=True,
         session=SimpleNamespace(id=10, workline_id=3, plugin_key="demo", contract_version="v1"),
@@ -115,10 +123,12 @@ async def test_device_repository_runtime_target_query_requests_row_lock() -> Non
         db,  # type: ignore[arg-type]
         target_device_id=71,
         target_device_code=None,
+        expected_workline_id=3,
     )
 
     assert result is target
     assert getattr(db.statement, "_for_update_arg", None) is not None
+    assert "work_line_id" in str(db.statement)
 
 
 @pytest.mark.asyncio
@@ -153,3 +163,26 @@ async def test_locked_authoritative_match_writes_command_and_outbox_once_after_l
     assert command_repository.effects == [(command, outbox)]
     assert command.device_id == 71
     assert outbox.target_code == "ROBOT-71"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target_device_id", "target_device_code"),
+    [(71, None), (None, "ROBOT-71")],
+)
+async def test_cross_workline_target_identity_fails_closed_before_write(
+    target_device_id: int | None,
+    target_device_code: str | None,
+) -> None:
+    events: list[str] = []
+    service, command_repository = _service(_locked_device(work_line_id=4), events)
+
+    with pytest.raises(StaleDeviceCommandPrecondition):
+        await _prepare(
+            service,
+            target_device_id=target_device_id,
+            target_device_code=target_device_code,
+        )
+
+    assert events == ["lock"]
+    assert command_repository.effects == []

@@ -170,6 +170,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         request: Any,
         target_device_id: int | None,
         target_device_code: str | None,
+        expected_workline_id: int,
         expected_fact_version: str,
         expected_available: bool,
         session: Any,
@@ -187,9 +188,12 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             db,
             target_device_id=target_device_id,
             target_device_code=target_device_code,
+            expected_workline_id=expected_workline_id,
         )
         if target_device is None:
             raise StaleDeviceCommandPrecondition("device target no longer exists")
+        if getattr(target_device, "work_line_id", None) != expected_workline_id:
+            raise StaleDeviceCommandPrecondition("device target is outside the runtime workline")
         actual_version = getattr(target_device, "version", None)
         actual_fact_version = (
             f"device:v{actual_version}"

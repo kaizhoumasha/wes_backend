@@ -1052,6 +1052,7 @@ async def prepare_runtime_device_command_effect(
     *,
     target_device_id: int | None,
     target_device_code: str | None,
+    expected_workline_id: int,
     admission: DeviceCommandWriteAdmission,
     execution: object,
 ) -> tuple[object, object]:
@@ -1068,6 +1069,7 @@ async def prepare_runtime_device_command_effect(
             request=request,
             target_device_id=target_device_id,
             target_device_code=target_device_code,
+            expected_workline_id=expected_workline_id,
             expected_fact_version=admission.fact_version,
             expected_available=admission.precondition.expected_available,
             session=ctx["session"],

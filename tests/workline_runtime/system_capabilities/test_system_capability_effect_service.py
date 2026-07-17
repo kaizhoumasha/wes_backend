@@ -195,7 +195,7 @@ def _ctx(db: _Db | None = None) -> dict[str, object]:
     }
     return {
         "db": db or _Db(),
-        "session": SimpleNamespace(id=31, contract_version="v1", **pin),
+        "session": SimpleNamespace(id=31, workline_id=3, contract_version="v1", **pin),
         "work_item": SimpleNamespace(id=41, **pin),
         "plugin_binding": SimpleNamespace(
             id=9,
@@ -628,6 +628,7 @@ async def test_device_authoritative_fact_mismatch_creates_no_command_or_outbox(
     assert len(calls) == 1
     assert calls[0]["target_device_id"] == 71
     assert calls[0]["admission"].fact_version == fact_version  # type: ignore[union-attr]
+    assert calls[0]["expected_workline_id"] == 3
 
 
 @pytest.mark.asyncio
@@ -661,6 +662,27 @@ async def test_device_matching_typed_admission_creates_one_command_and_outbox(mo
     assert len(calls) == 1
     assert calls[0]["target_device_id"] == 71
     assert calls[0]["admission"].fact_version == "device:v2"  # type: ignore[union-attr]
+    assert calls[0]["expected_workline_id"] == 3
+
+
+@pytest.mark.asyncio
+async def test_device_command_without_runtime_workline_identity_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from importlib import import_module
+
+    async def prepare(*_args: object, **_kwargs: object) -> tuple[object, object]:
+        raise AssertionError("missing workline identity must not reach gateway")
+
+    gateway_module = import_module("src.app.runtime.orchestration.services.device_command_gateway")
+    monkeypatch.setattr(gateway_module, "prepare_runtime_device_command_effect", prepare)
+    ctx = _ctx()
+    delattr(ctx["session"], "workline_id")
+
+    result = await _service(DEVICE_DEFINITION, _EffectRepository(ClaimResult.NEW)).apply(
+        ctx, _device_intent(expected_available=True, fact_version="device:v2")
+    )
+
+    assert isinstance(result.outcome, BusinessReject)
+    assert result.outcome.reason_code == "WORKLINE_SCOPE_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
@@ -879,12 +901,15 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
             *,
             target_device_id: int | None,
             target_device_code: str | None,
+            expected_workline_id: int,
         ) -> object:
             assert target_device_id == 71
             assert target_device_code is None
+            assert expected_workline_id == 41
             return SimpleNamespace(
                 id=71,
                 device_code="ARM-71",
+                work_line_id=41,
                 version=2,
                 device_status="IDLE",
                 maintenance_mode=False,
@@ -904,6 +929,7 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
         ),
         target_device_id=71,
         target_device_code=None,
+        expected_workline_id=41,
         expected_fact_version="device:v2",
         expected_available=True,
         session=SimpleNamespace(id=31, workline_id=41, plugin_key="rough_sorter", contract_version="rough_sorter.v2"),

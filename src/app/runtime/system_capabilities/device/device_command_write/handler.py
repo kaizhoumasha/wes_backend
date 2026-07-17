@@ -21,12 +21,19 @@ class DeviceCommandWriteHandler:
         target_device_id, target_device_code = self._resolve_target_identity(ctx, request)
         if target_device_id is None and target_device_code is None:
             return BusinessReject(reason_code="TARGET_DEVICE_UNAVAILABLE", message="target device is unavailable")
+        expected_workline_id = self._resolve_expected_workline_id(ctx)
+        if expected_workline_id is None:
+            return BusinessReject(
+                reason_code="WORKLINE_SCOPE_UNAVAILABLE",
+                message="runtime workline identity is unavailable",
+            )
         try:
             command, outbox = await prepare_runtime_device_command_effect(
                 ctx,
                 request,
                 target_device_id=target_device_id,
                 target_device_code=target_device_code,
+                expected_workline_id=expected_workline_id,
                 admission=admission,
                 execution=execution,
             )
@@ -58,6 +65,18 @@ class DeviceCommandWriteHandler:
                 if isinstance(candidate_code, str) and candidate_code:
                     return None, candidate_code
         return None, None
+
+    @staticmethod
+    def _resolve_expected_workline_id(ctx: dict[str, object]) -> int | None:
+        for owner, attribute in (
+            (ctx.get("session"), "workline_id"),
+            (ctx.get("work_item"), "workline_id"),
+            (ctx.get("workline"), "id"),
+        ):
+            workline_id = getattr(owner, attribute, None)
+            if isinstance(workline_id, int) and not isinstance(workline_id, bool) and workline_id > 0:
+                return workline_id
+        return None
 
 
 __all__ = ["DeviceCommandWriteHandler"]

@@ -55,6 +55,7 @@ class DeviceRepository(BaseRepository[Device]):
         *,
         target_device_id: int | None,
         target_device_code: str | None,
+        expected_workline_id: int,
     ) -> Device | None:
         """按固定身份锁定 Runtime 副作用目标；调用方事务负责提交或回滚。"""
 
@@ -70,6 +71,7 @@ class DeviceRepository(BaseRepository[Device]):
             select(Device)
             .where(
                 identity_clause,
+                columns.work_line_id == expected_workline_id,
                 columns.is_deleted.is_(False),
             )
             .with_for_update()
