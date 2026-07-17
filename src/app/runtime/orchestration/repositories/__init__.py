@@ -75,6 +75,10 @@ from .timeline_recorded_replay_repository import (
     TimelineRecordedReplayRepository,
     timeline_recorded_replay_repository,
 )
+from .timeline_sequence_repository import (
+    TimelineSequenceRepository,
+    timeline_sequence_repository,
+)
 from .workline_runtime_status_projection_repository import (
     WorklineRuntimeStatusProjectionRepository,
     workline_runtime_status_projection_repository,
@@ -96,6 +100,7 @@ __all__ = [
     "RuntimeLocationEventRepository",
     "SmtInboundHandoffRepository",
     "TimelineRecordedReplayRepository",
+    "TimelineSequenceRepository",
     "WorklineBinCellReservationRepository",
     "WorklineDiagnosticRepository",
     "WorklineDispatchAttemptRepository",
@@ -113,6 +118,7 @@ __all__ = [
     "runtime_intent_log_repository",
     "runtime_location_event_repository",
     "timeline_recorded_replay_repository",
+    "timeline_sequence_repository",
     "workline_bin_cell_reservation_repository",
     "workline_diagnostic_repository",
     "workline_dispatch_attempt_repository",

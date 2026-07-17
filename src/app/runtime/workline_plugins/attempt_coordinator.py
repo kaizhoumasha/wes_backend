@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
+from src.app.runtime.extension_identity import canonical_json
+from src.app.runtime.workline_plugins.contracts import MAX_PLUGIN_DECISION_INTENTS
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -40,6 +43,80 @@ class AttemptWriteSet:
     intents: tuple[Any, ...]
     outcome_code: str = "UNSPECIFIED"
     hold_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PluginWriteSetLimits:
+    """单 attempt 决策写集合的 canonical UTF-8 资源上限。"""
+
+    max_next_state_bytes: int = 64 * 1024
+    max_intent_bytes: int = 64 * 1024
+    max_intents_total_bytes: int = 256 * 1024
+    max_write_set_bytes: int = 384 * 1024
+    max_intents: int = MAX_PLUGIN_DECISION_INTENTS
+
+    def __post_init__(self) -> None:
+        if (
+            min(
+                self.max_next_state_bytes,
+                self.max_intent_bytes,
+                self.max_intents_total_bytes,
+                self.max_write_set_bytes,
+                self.max_intents,
+            )
+            <= 0
+        ):
+            raise ValueError("plugin write-set limits must be positive")
+        if self.max_intents > MAX_PLUGIN_DECISION_INTENTS:
+            raise ValueError("plugin intent count limit exceeds contract maximum")
+
+
+def bound_attempt_write_set(write_set: AttemptWriteSet, *, limits: Any) -> AttemptWriteSet:
+    """在 hash/timeline/ledger 之前执行统一 canonical UTF-8 边界校验。"""
+
+    try:
+        state_value = _json_value(write_set.next_state)
+        intent_values = tuple(_json_value(intent) for intent in write_set.intents)
+        intent_sizes = tuple(_canonical_bytes(value) for value in intent_values)
+        whole_value = {
+            "evidence": [_json_value(item) for item in write_set.evidence],
+            "next_state": state_value,
+            "intents": list(intent_values),
+            "outcome_code": write_set.outcome_code,
+            "hold_reason": write_set.hold_reason,
+        }
+        exceeded = (
+            len(intent_values) > limits.max_intents
+            or _canonical_bytes(state_value) > limits.max_next_state_bytes
+            or any(size > limits.max_intent_bytes for size in intent_sizes)
+            or sum(intent_sizes) > limits.max_intents_total_bytes
+            or _canonical_bytes(whole_value) > limits.max_write_set_bytes
+        )
+    except (TypeError, ValueError):
+        exceeded = True
+    if not exceeded:
+        return write_set
+    return AttemptWriteSet(
+        evidence=(),
+        next_state={},
+        intents=(),
+        outcome_code="HOLD",
+        hold_reason="PLUGIN_WRITE_SET_LIMIT_EXCEEDED",
+    )
+
+
+def _json_value(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, tuple | list):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    return value
+
+
+def _canonical_bytes(value: Any) -> int:
+    return len(canonical_json(value).encode("utf-8"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +187,8 @@ __all__ = [
     "AttemptWriteSet",
     "PluginAttemptContext",
     "PluginAttemptRunner",
+    "PluginWriteSetLimits",
     "UnavailablePluginAttemptRunner",
     "WriteDisposition",
+    "bound_attempt_write_set",
 ]

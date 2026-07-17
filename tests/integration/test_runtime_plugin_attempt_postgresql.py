@@ -11,14 +11,25 @@ from sqlmodel import select
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.models.session import WorklineSession
-from src.app.runtime.orchestration.models.timeline import WorklineTimeline
+from src.app.runtime.orchestration.models.timeline import (
+    TimelineActionType,
+    TimelineActorType,
+    TimelineStage,
+    TimelineStatus,
+    WorklineTimeline,
+)
+from src.app.runtime.orchestration.repositories.timeline_sequence_repository import TimelineSequenceRepository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
+    _write_set_from_recorded_replay,
+)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
 )
+from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
 from src.app.runtime.workline_plugins.attempt_coordinator import (
     AttemptSnapshot,
     AttemptWriteSet,
@@ -143,6 +154,17 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
             idempotency_key="operation-1",
             payload_json={"target": "A-01"},
         )
+        replay_write_set = _write_set_from_recorded_replay(
+            RecordedReplayResolution(
+                decision={
+                    "outcome_code": "ROUTE_A",
+                    "next_state": {"step": 2},
+                    "intents": [intent.model_dump(mode="json")],
+                }
+            ),
+            fallback_state={},
+        )
+        assert isinstance(replay_write_set.intents[0], RuntimeIntent)
         async with session_factory() as db:
             disposition = await RuntimeInboxWriteBackService(inbox_service=service).commit_plugin_attempt(
                 db,
@@ -151,12 +173,7 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
                 session_id=seeded.session_id,
                 workline_id=seeded.workline_id,
                 trace_id=seeded.trace_id,
-                write_set=AttemptWriteSet(
-                    evidence=(),
-                    next_state={"step": 2},
-                    intents=(intent,),
-                    outcome_code="ROUTE_A",
-                ),
+                write_set=replay_write_set,
             )
             assert disposition is WriteDisposition.COMMITTED
 
@@ -232,5 +249,56 @@ def test_intent_ledger_failure_rolls_back_decision_state_ledger_and_terminal() -
             assert session.plugin_state_version == snapshot.plugin_state_version
             assert timeline_count == 0
             assert ledger_count == 0
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_timeline_advisory_owner_serializes_concurrent_sequence_ranges() -> None:
+    """两个 PostgreSQL 事务并发写同一 session 时，seq_no 区间不得重叠。"""
+
+    async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
+        async with session_factory() as seed_db:
+            seeded = await seed_scan_flow(seed_db)
+            await seed_db.commit()
+
+        owner = TimelineSequenceRepository()
+
+        async def write_pair(actor_code: str) -> tuple[int, ...]:
+            async with session_factory() as db:
+                seq_nos = await owner.allocate_many(db, session_id=seeded.session_id, count=2)
+                for seq_no in seq_nos:
+                    db.add(
+                        WorklineTimeline(
+                            session_id=seeded.session_id,
+                            workline_id=seeded.workline_id,
+                            trace_id=seeded.trace_id,
+                            seq_no=seq_no,
+                            occurred_at=timezone.now_for_db(),
+                            stage=TimelineStage.DECISION,
+                            action_type=TimelineActionType.DECISION_MADE,
+                            actor_type=TimelineActorType.PLUGIN,
+                            actor_code=actor_code,
+                            status=TimelineStatus.SUCCESS,
+                            message="concurrent sequence contract",
+                            payload_json={"record_type": "TEST_SEQUENCE"},
+                        )
+                    )
+                await asyncio.sleep(0.05)
+                await db.commit()
+                return seq_nos
+
+        first, second = await asyncio.gather(write_pair("owner-a"), write_pair("owner-b"))
+        assert set(first).isdisjoint(second)
+        async with session_factory() as verify_db:
+            stored = (
+                await verify_db.scalars(
+                    select(WorklineTimeline.seq_no).where(
+                        WorklineTimeline.session_id == seeded.session_id,
+                        WorklineTimeline.actor_code.in_(("owner-a", "owner-b")),
+                    )
+                )
+            ).all()
+            assert len(stored) == len(set(stored))
+            assert sorted(stored) == list(range(min(stored), max(stored) + 1))
 
     asyncio.run(with_temporary_runtime_database(scenario))

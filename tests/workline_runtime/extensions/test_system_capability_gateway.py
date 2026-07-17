@@ -135,6 +135,69 @@ async def test_query_requires_declared_capability_typed_input_port_and_profile()
 
 
 @pytest.mark.asyncio
+async def test_waiter_cancel_does_not_cancel_shared_query_but_owner_close_does() -> None:
+    """waiter 取消仅脱离等待；attempt owner close 必须收拢底层 handler task。"""
+
+    Handler.delay = 10
+    scoped = gateway(attempt_id="attempt-close")
+    first = asyncio.create_task(scoped.execute("wms.lookup", "v1", {"value": 3}))
+    await asyncio.sleep(0)
+    second = asyncio.create_task(scoped.execute("wms.lookup", "v1", {"value": 3}))
+    await asyncio.sleep(0)
+
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert Handler.calls == 1
+    assert len(scoped._inflight) == 1
+
+    await scoped.aclose()
+    with pytest.raises(asyncio.CancelledError):
+        await second
+    assert scoped._inflight == {}
+    await scoped.aclose()  # 幂等关闭
+    rejected = await scoped.execute("wms.lookup", "v1", {"value": 3})
+    assert isinstance(rejected.outcome, ContractViolation)
+    assert rejected.outcome.error_code == "ATTEMPT_CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_gateway_rejects_canonical_input_and_output_over_byte_limits_before_hash_or_evidence() -> None:
+    """边界按 canonical UTF-8 bytes 计算，超 1 byte 时返回 metadata-only violation。"""
+
+    from src.app.runtime.system_capabilities.gateway import GatewayLimits
+
+    exact_input = len(b'{"value":3}')
+    accepted = await gateway(
+        attempt_id="input-exact",
+        limits=GatewayLimits(max_input_bytes=exact_input),
+    ).execute("wms.lookup", "v1", {"value": 3})
+    assert isinstance(accepted.outcome, Success)
+
+    rejected_input = await gateway(
+        attempt_id="input-over",
+        limits=GatewayLimits(max_input_bytes=exact_input - 1),
+    ).execute("wms.lookup", "v1", {"value": 3})
+    assert isinstance(rejected_input.outcome, ContractViolation)
+    assert rejected_input.outcome.error_code == "QUERY_INPUT_LIMIT_EXCEEDED"
+    assert rejected_input.evidence is None
+
+    exact_output = len(b'{"doubled":6}')
+    accepted_output = await gateway(
+        attempt_id="output-exact",
+        limits=GatewayLimits(max_output_bytes=exact_output),
+    ).execute("wms.lookup", "v1", {"value": 3})
+    assert isinstance(accepted_output.outcome, Success)
+    rejected_output = await gateway(
+        attempt_id="output-over",
+        limits=GatewayLimits(max_output_bytes=exact_output - 1),
+    ).execute("wms.lookup", "v1", {"value": 3})
+    assert isinstance(rejected_output.outcome, ContractViolation)
+    assert rejected_output.outcome.error_code == "QUERY_OUTPUT_LIMIT_EXCEEDED"
+    assert rejected_output.evidence is None
+
+
+@pytest.mark.asyncio
 async def test_query_closes_outcome_contract_timeout_and_unknown_exception() -> None:
     Handler.result = BusinessReject(reason_code="NOT_FOUND", message="missing")
     assert isinstance((await gateway().execute("wms.lookup", "v1", {"value": 1})).outcome, BusinessReject)

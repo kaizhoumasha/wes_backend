@@ -22,10 +22,11 @@ from __future__ import annotations
 import uuid
 from contextlib import suppress
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, TypedDict
 
 from loguru import logger
+from pydantic import TypeAdapter, ValidationError
 
 from src.app.runtime.capability_catalog import parse_workline_six_in_one
 from src.app.runtime.capability_port_registry import CapabilityPortRegistry, RuntimeCapabilityContext
@@ -40,6 +41,7 @@ from src.app.runtime.orchestration.repositories.runtime_inbox_repository import 
     RuntimeInboxRepository,
     runtime_inbox_repository,
 )
+from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
     _canonical_workline_session_id,
 )
@@ -79,8 +81,11 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
     AttemptWriteSet,
     PluginAttemptContext,
     PluginAttemptRunner,
+    PluginWriteSetLimits,
     WriteDisposition,
+    bound_attempt_write_set,
 )
+from src.app.runtime.workline_plugins.contracts import MAX_PLUGIN_DECISION_INTENTS
 from src.app.workline.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
     WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
@@ -138,6 +143,15 @@ class RuntimeInboxAttemptRuntime:
     port_registry: CapabilityPortRegistry
     context: RuntimeCapabilityContext
     gateway: SystemCapabilityGateway
+    _closed: bool = field(default=False, init=False, compare=False, repr=False)
+
+    async def aclose(self) -> None:
+        """幂等释放 attempt-scoped gateway；waiter 取消不等于 owner 关闭。"""
+
+        if self._closed:
+            return
+        object.__setattr__(self, "_closed", True)
+        await self.gateway.aclose()
 
 
 class _ReplayProjectedInbox:
@@ -270,6 +284,7 @@ class RuntimeInboxProcessorBridge:
         replay_source_validator: RuntimeInboxReplaySourceValidator | None = None,
         plugin_attempt_runner: PluginAttemptRunner | None = None,
         recorded_replay_service: TimelineRecordedReplayService | None = None,
+        plugin_write_set_limits: PluginWriteSetLimits | None = None,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._processor_service = processor_service or RuntimeInboxOrchestratorDelegate()
@@ -282,6 +297,7 @@ class RuntimeInboxProcessorBridge:
         # Task 6 dispatcher/index 未显式注入前保持 legacy 语义，binding 本身不构成切流授权。
         self._plugin_attempt_runner = plugin_attempt_runner
         self._recorded_replay_service = recorded_replay_service or TimelineRecordedReplayService()
+        self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
 
     @property
     def inbox_service(self) -> RuntimeInboxService:
@@ -888,6 +904,11 @@ class RuntimeInboxProcessorBridge:
             result["failed"] += 1
             result["processed"] += 1
 
+        finally:
+            # Attempt owner 始终负责排空共享 QUERY；关闭失败不得覆盖原处理结果或异常。
+            with suppress(Exception):
+                await attempt_runtime.aclose()
+
         from src.app.sys.services.event_stream_service import publish_deferred_sse_events
 
         await publish_deferred_sse_events(db)
@@ -935,6 +956,7 @@ class RuntimeInboxProcessorBridge:
             write_set = await self._plugin_attempt_runner.run(context)
         else:
             write_set = _write_set_from_recorded_replay(replay_resolution, fallback_state=context.plugin_state)
+        write_set = _bounded_plugin_write_set(write_set, limits=self._plugin_write_set_limits)
 
         # Stage 3 在新短事务内锁权威行、重校验并原子写回。
         disposition = await self._writeback_service.commit_plugin_attempt(
@@ -1010,7 +1032,19 @@ def _write_set_from_recorded_replay(
     if not isinstance(next_state, dict):
         next_state = fallback_state
     raw_intents = decision.get("intents")
-    intents = tuple(raw_intents) if isinstance(raw_intents, list) else ()
+    try:
+        if not isinstance(raw_intents, list) or len(raw_intents) > MAX_PLUGIN_DECISION_INTENTS:
+            raise ValueError("invalid recorded intent collection")
+        adapter = TypeAdapter(RuntimeIntent)
+        intents = tuple(adapter.validate_python(item) for item in raw_intents)
+    except (TypeError, ValidationError, ValueError):
+        return AttemptWriteSet(
+            evidence=(),
+            next_state=fallback_state,
+            intents=(),
+            outcome_code="HOLD",
+            hold_reason="RECORDED_REPLAY_RECORD_INVALID",
+        )
     outcome_code = decision.get("outcome_code")
     return AttemptWriteSet(
         evidence=resolution.evidence,
@@ -1018,6 +1052,12 @@ def _write_set_from_recorded_replay(
         intents=intents,
         outcome_code=outcome_code if isinstance(outcome_code, str) and outcome_code else "RECORDED",
     )
+
+
+def _bounded_plugin_write_set(write_set: AttemptWriteSet, *, limits: Any) -> AttemptWriteSet:
+    """保留 processor 内部 seam，并委托 write-set 合同 owner。"""
+
+    return bound_attempt_write_set(write_set, limits=limits)
 
 
 def _kind_value(entity: Any) -> str | None:

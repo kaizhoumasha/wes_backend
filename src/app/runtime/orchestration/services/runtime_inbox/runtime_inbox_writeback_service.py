@@ -50,7 +50,9 @@ from src.app.runtime.orchestration.services.session.session_resolver import (
 from src.app.runtime.workline_plugins.attempt_coordinator import (
     AttemptSnapshot,
     AttemptWriteSet,
+    PluginWriteSetLimits,
     WriteDisposition,
+    bound_attempt_write_set,
 )
 from src.app.workline.services.write_back_service import orchestrator_write_back_service
 from src.app.workline.utils import payload_dict
@@ -330,12 +332,14 @@ class RuntimeInboxWriteBackService:
         plugin_attempt_repository: PluginAttemptRepository | Any | None = None,
         intent_log_repository: Any | None = None,
         idempotency_guard: Any | None = None,
+        plugin_write_set_limits: PluginWriteSetLimits | None = None,
     ) -> None:
         self._write_back_service = write_back_service
         self._inbox_service = inbox_service
         self._plugin_attempt_repository = plugin_attempt_repository or default_plugin_attempt_repository
         self._intent_log_repository = intent_log_repository or default_runtime_intent_log_repository
         self._idempotency_guard = idempotency_guard or default_idempotency_guard
+        self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
 
     @property
     def write_back_service(self) -> Any:
@@ -367,6 +371,7 @@ class RuntimeInboxWriteBackService:
     ) -> WriteDisposition:
         """锁定权威行后重校验，并在同一事务落完整 attempt 结果。"""
 
+        write_set = bound_attempt_write_set(write_set, limits=self._plugin_write_set_limits)
         locked = await self._plugin_attempt_repository.lock_authoritative(
             db,
             inbox_id=inbox_id,

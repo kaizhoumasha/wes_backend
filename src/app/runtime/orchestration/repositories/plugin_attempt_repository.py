@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func
 from sqlmodel import select
 
 from src.app.runtime.orchestration.models.session import WorklineSession
@@ -18,6 +17,9 @@ from src.app.runtime.orchestration.models.timeline import (
 )
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import (
     runtime_inbox_repository,
+)
+from src.app.runtime.orchestration.repositories.timeline_sequence_repository import (
+    timeline_sequence_repository,
 )
 from src.app.runtime.system_capabilities.evidence import QueryEvidence
 from src.utils.timezone import timezone
@@ -39,8 +41,14 @@ class AuthoritativePluginAttempt:
 class PluginAttemptRepository:
     """Stage 3 唯一数据库入口。"""
 
-    def __init__(self, *, inbox_repository: Any = runtime_inbox_repository) -> None:
+    def __init__(
+        self,
+        *,
+        inbox_repository: Any = runtime_inbox_repository,
+        timeline_sequence_repository: Any = timeline_sequence_repository,
+    ) -> None:
         self._inbox_repository = inbox_repository
+        self._timeline_sequence_repository = timeline_sequence_repository
 
     async def lock_authoritative(
         self,
@@ -49,8 +57,11 @@ class PluginAttemptRepository:
         inbox_id: int,
         session_id: int,
     ) -> AuthoritativePluginAttempt | None:
-        """按固定顺序锁 Inbox、Session，避免 check/write 竞态。"""
+        """按 timeline advisory → Inbox row → Session row 固定顺序锁定。"""
 
+        # 所有 Timeline writer 先取得同一 session advisory；
+        # 随后才允许获取 attempt 行锁，避免锁序反转死锁。
+        await self._timeline_sequence_repository.acquire_lock(db, session_id=session_id)
         # RuntimeInbox 锁定由其专属 Repository 持有，避免插件仓库越过 inbound ownership 边界。
         inbox = await self._inbox_repository.get_by_id_for_update(db, inbox_id, populate_existing=True)
         if inbox is None:
@@ -73,20 +84,23 @@ class PluginAttemptRepository:
         """在已锁事务写 evidence、decision/intents 与 plugin state。"""
 
         session = locked.session
-        current_seq = await db.scalar(
-            select(func.coalesce(func.max(WorklineTimeline.seq_no), 0)).where(WorklineTimeline.session_id == session.id)
+        seq_nos = iter(
+            await self._timeline_sequence_repository.allocate_many(
+                db,
+                session_id=int(session.id),
+                count=len(write_set.evidence) + 1,
+                lock_already_held=True,
+            )
         )
-        next_seq = int(current_seq or 0)
         for evidence in write_set.evidence:
             if not isinstance(evidence, QueryEvidence):
                 raise TypeError("plugin attempt evidence must be QueryEvidence")
-            next_seq += 1
             db.add(
                 WorklineTimeline(
                     session_id=int(session.id),
                     workline_id=workline_id,
                     trace_id=trace_id,
-                    seq_no=next_seq,
+                    seq_no=next(seq_nos),
                     occurred_at=timezone.now_for_db(),
                     stage=TimelineStage.DECISION,
                     action_type=TimelineActionType.DECISION_MADE,
@@ -112,7 +126,6 @@ class PluginAttemptRepository:
             for evidence in write_set.evidence
             if isinstance(evidence, QueryEvidence)
         ]
-        next_seq += 1
         decision_payload = {
             "record_type": "PLUGIN_DECISION",
             "definition_identity": snapshot.definition_identity,
@@ -131,7 +144,7 @@ class PluginAttemptRepository:
                 session_id=int(session.id),
                 workline_id=workline_id,
                 trace_id=trace_id,
-                seq_no=next_seq,
+                seq_no=next(seq_nos),
                 occurred_at=timezone.now_for_db(),
                 stage=TimelineStage.DECISION,
                 action_type=TimelineActionType.DECISION_MADE,

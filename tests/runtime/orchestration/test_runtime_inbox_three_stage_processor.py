@@ -38,10 +38,12 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
 )
 from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_context_loader as context_loader
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
+    RuntimeInboxAttemptRuntime,
     RuntimeInboxProcessorBridge,
     _load_related_entities,
     _project_replay_request,
     _snapshot_inbox_for_diagnostic,
+    _write_set_from_recorded_replay,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
     RuntimeInboxOrchestratorDelegate,
@@ -112,6 +114,272 @@ def _project_shape_validated_replay(inbox: Any) -> Any:
             root_source=SimpleNamespace(),  # 投影本身不读取 root；DB 真实性由独立 validator 测试覆盖。
         ),
     )
+
+
+def test_recorded_replay_decodes_nonempty_intents_to_typed_runtime_intents() -> None:
+    """Timeline JSON 边界必须逐项恢复 RuntimeIntent，不能把 dict 直接交给 Stage3。"""
+
+    from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
+    from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
+
+    write_set = _write_set_from_recorded_replay(
+        RecordedReplayResolution(
+            decision={
+                "outcome_code": "ROUTE_A",
+                "next_state": {"step": 2},
+                "intents": [
+                    {
+                        "kind": "COMMAND",
+                        "action": "MOVE",
+                        "idempotency_key": "operation-1",
+                        "payload_json": {"target": "A-01"},
+                    }
+                ],
+            }
+        ),
+        fallback_state={},
+    )
+
+    assert len(write_set.intents) == 1
+    assert isinstance(write_set.intents[0], RuntimeIntent)
+    assert write_set.intents[0].kind is RuntimeIntentKind.COMMAND
+
+
+@pytest.mark.parametrize(
+    "raw_intents",
+    [
+        [{"kind": "COMMAND", "payload_json": {"secret": "must-not-leak"}}],
+        [{"kind": "CONTINUE_NEXT"}] * 33,
+    ],
+)
+def test_recorded_replay_invalid_or_excess_intents_fail_closed_without_payload(
+    raw_intents: list[dict[str, Any]],
+) -> None:
+    from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
+
+    write_set = _write_set_from_recorded_replay(
+        RecordedReplayResolution(decision={"outcome_code": "ROUTE_A", "next_state": {}, "intents": raw_intents}),
+        fallback_state={},
+    )
+
+    assert write_set.intents == ()
+    assert write_set.outcome_code == "HOLD"
+    assert write_set.hold_reason == "RECORDED_REPLAY_RECORD_INVALID"
+
+
+@pytest.mark.asyncio
+async def test_attempt_runtime_close_delegates_to_gateway_and_is_idempotent() -> None:
+    closes = 0
+
+    class Gateway:
+        async def aclose(self) -> None:
+            nonlocal closes
+            closes += 1
+
+    runtime = RuntimeInboxAttemptRuntime(
+        attempt_id="lease-1",
+        port_registry=object(),  # type: ignore[arg-type]
+        context=object(),  # type: ignore[arg-type]
+        gateway=Gateway(),  # type: ignore[arg-type]
+    )
+    await runtime.aclose()
+    await runtime.aclose()
+    assert closes == 1
+
+
+@pytest.mark.asyncio
+async def test_bridge_close_failure_does_not_override_successful_attempt_result() -> None:
+    inbox = _make_inbox(kind="EXTERNAL_HTTP", payload_json={"event_type": "CALLBACK_COMPLETED"})
+    inbox.event_type = "CALLBACK_COMPLETED"
+
+    class Db:
+        async def commit(self) -> None:
+            pass
+
+    class Repository:
+        async def get_by_id(self, *_args: object) -> object:
+            return inbox
+
+    class InboxService:
+        async def mark_processed(self, *_args: object, **_kwargs: object) -> bool:
+            return True
+
+    class Runtime:
+        async def aclose(self) -> None:
+            raise RuntimeError("close failed")
+
+    bridge = RuntimeInboxProcessorBridge(
+        inbox_repository=Repository(),  # type: ignore[arg-type]
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+    )
+    bridge.create_attempt_runtime = lambda *_args, **_kwargs: Runtime()  # type: ignore[method-assign]
+
+    result = await bridge.process_claimed(Db(), claim={"id": inbox.id, "processor_token": "lease-1"})
+
+    assert result["success"] == 1
+    assert result["processed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_process_cancellation_closes_attempt_and_leaves_no_background_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inbox = _make_inbox(
+        inbox_id=91,
+        payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "BOX-1"}},
+    )
+    inbox.event_type = "SCAN_COMPLETED"
+    session = SimpleNamespace(
+        id=10,
+        version=7,
+        plugin_state_version=3,
+        plugin_state_json={},
+        plugin_identity="plugin@v1:" + "a" * 64,
+        plugin_binding_id=17,
+        plugin_binding_version=4,
+        plugin_index_digest="b" * 64,
+        status="RUNNING",
+        awaiting_device_command_code=None,
+    )
+    started = asyncio.Event()
+    handler_cancelled = asyncio.Event()
+
+    class Db:
+        async def commit(self) -> None:
+            pass
+
+        async def rollback(self) -> None:
+            pass
+
+    class Repository:
+        async def get_by_id(self, *_args: object) -> object:
+            return inbox
+
+    class Runtime:
+        handler_task: asyncio.Task[None] | None = None
+
+        async def aclose(self) -> None:
+            assert self.handler_task is not None
+            self.handler_task.cancel()
+            await asyncio.gather(self.handler_task, return_exceptions=True)
+
+    runtime = Runtime()
+
+    class Runner:
+        async def run(self, _context: object) -> object:
+            async def handler() -> None:
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    handler_cancelled.set()
+
+            runtime.handler_task = asyncio.create_task(handler())
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+        return session, SimpleNamespace(id=20), None, None, {}, object(), True
+
+    async def not_duplicate(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
+        load_related,
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._is_duplicate_entry_event",
+        not_duplicate,
+    )
+    bridge = RuntimeInboxProcessorBridge(
+        inbox_repository=Repository(),  # type: ignore[arg-type]
+        plugin_attempt_runner=Runner(),
+    )
+    bridge.create_attempt_runtime = lambda *_args, **_kwargs: runtime  # type: ignore[method-assign]
+    process_task = asyncio.create_task(bridge.process_claimed(Db(), claim={"id": 91, "processor_token": "lease-1"}))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    process_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await process_task
+
+    assert handler_cancelled.is_set()
+    assert runtime.handler_task is not None and runtime.handler_task.done()
+
+
+def test_plugin_write_set_bounds_use_canonical_utf8_bytes_at_exact_and_over_one_boundaries() -> None:
+    """live/replay 共用同一 write-set 边界，且不会把超限业务值带入 Hold 原因。"""
+
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as module
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
+
+    bounded = getattr(module, "_bounded_plugin_write_set", None)
+    assert bounded is not None
+
+    unicode_state = {"nested": {"value": "货"}}
+    state_bytes = len(json.dumps(unicode_state, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode())
+    limits = SimpleNamespace(
+        max_next_state_bytes=state_bytes,
+        max_intent_bytes=128,
+        max_intents_total_bytes=256,
+        max_write_set_bytes=512,
+        max_intents=32,
+    )
+    exact = bounded(
+        AttemptWriteSet(evidence=(), next_state=unicode_state, intents=(), outcome_code="ROUTE_A"),
+        limits=limits,
+    )
+    assert exact.hold_reason is None
+
+    limits.max_next_state_bytes = state_bytes - 1
+    rejected = bounded(
+        AttemptWriteSet(evidence=(), next_state=unicode_state, intents=(), outcome_code="ROUTE_A"),
+        limits=limits,
+    )
+    assert rejected.intents == ()
+    assert rejected.outcome_code == "HOLD"
+    assert rejected.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
+    assert "货" not in rejected.hold_reason
+
+
+def test_plugin_write_set_bounds_reject_single_total_count_and_whole_write_set() -> None:
+    from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as module
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
+
+    bounded = getattr(module, "_bounded_plugin_write_set", None)
+    assert bounded is not None
+    intent = RuntimeIntent.continue_next(payload={"nested": {"value": "货"}})
+    intent_bytes = len(
+        json.dumps(intent.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    )
+    base = {
+        "max_next_state_bytes": 128,
+        "max_intent_bytes": intent_bytes,
+        "max_intents_total_bytes": intent_bytes,
+        "max_write_set_bytes": 2048,
+        "max_intents": 32,
+    }
+    accepted = bounded(
+        AttemptWriteSet(evidence=(), next_state={}, intents=(intent,), outcome_code="ROUTE_A"),
+        limits=SimpleNamespace(**base),
+    )
+    assert accepted.hold_reason is None
+
+    for override in (
+        {"max_intent_bytes": intent_bytes - 1},
+        {"max_intents_total_bytes": intent_bytes * 2 - 1},
+        {"max_intents": 1},
+        {"max_write_set_bytes": 1},
+    ):
+        limits_dict = base | override
+        intents = (intent, intent) if "max_intents_total_bytes" in override or "max_intents" in override else (intent,)
+        rejected = bounded(
+            AttemptWriteSet(evidence=(), next_state={}, intents=intents, outcome_code="ROUTE_A"),
+            limits=SimpleNamespace(**limits_dict),
+        )
+        assert rejected.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
+        assert rejected.intents == ()
 
 
 def _make_inbox(
@@ -649,13 +917,13 @@ def _replay_envelope(*, original_kind: str, original_payload: dict[str, Any]) ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("missing_pin", [False, True])
+@pytest.mark.parametrize("replay_case", ["valid", "missing_pin", "invalid_intent", "oversize_state"])
 async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_pin_missing(
     monkeypatch: pytest.MonkeyPatch,
-    missing_pin: bool,
+    replay_case: str,
 ) -> None:
     from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
-    from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
+    from src.app.runtime.workline_plugins.attempt_coordinator import PluginWriteSetLimits, WriteDisposition
 
     envelope = _replay_envelope(
         original_kind="DEVICE_EVENT",
@@ -668,7 +936,7 @@ async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_p
         version=7,
         plugin_state_version=3,
         plugin_state_json={"step": 1},
-        plugin_identity=None if missing_pin else "plugin.rough-sorter@v1:" + "a" * 64,
+        plugin_identity=None if replay_case == "missing_pin" else "plugin.rough-sorter@v1:" + "a" * 64,
         plugin_binding_id=17,
         plugin_binding_version=4,
         plugin_index_digest="b" * 64,
@@ -703,9 +971,14 @@ async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_p
     class ReplayService:
         async def load(self, _db: object, **kwargs: object) -> RecordedReplayResolution:
             assert kwargs["source_inbox_id"] == 7
+            intents = (
+                [{"kind": "COMMAND", "payload_json": {"secret": "must-not-leak"}}]
+                if replay_case == "invalid_intent"
+                else []
+            )
             return RecordedReplayResolution(
                 evidence=(),
-                decision={"outcome_code": "ROUTE_A", "intents": [], "next_state": {"step": 2}},
+                decision={"outcome_code": "ROUTE_A", "intents": intents, "next_state": {"step": 2}},
             )
 
     class WriteBack:
@@ -734,12 +1007,23 @@ async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_p
         replay_source_validator=Validator(),  # type: ignore[arg-type]
         plugin_attempt_runner=Runner(),  # type: ignore[arg-type]
         recorded_replay_service=ReplayService(),  # type: ignore[arg-type]
+        plugin_write_set_limits=(
+            PluginWriteSetLimits(max_next_state_bytes=1) if replay_case == "oversize_state" else None
+        ),
     ).process_claimed(Db(), claim={"id": 91, "processor_token": "lease-1"})
 
     assert runner_calls == 0
     assert captured_write_set is not None
-    if missing_pin:
+    if replay_case == "missing_pin":
         assert captured_write_set.hold_reason == "RECORDED_REPLAY_PIN_MISSING"  # type: ignore[union-attr]
+        assert result["failed"] == 1
+    elif replay_case == "invalid_intent":
+        assert captured_write_set.hold_reason == "RECORDED_REPLAY_RECORD_INVALID"  # type: ignore[union-attr]
+        assert captured_write_set.intents == ()  # type: ignore[union-attr]
+        assert result["failed"] == 1
+    elif replay_case == "oversize_state":
+        assert captured_write_set.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"  # type: ignore[union-attr]
+        assert captured_write_set.next_state == {}  # type: ignore[union-attr]
         assert result["failed"] == 1
     else:
         assert captured_write_set.outcome_code == "ROUTE_A"  # type: ignore[union-attr]

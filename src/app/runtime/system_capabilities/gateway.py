@@ -32,11 +32,22 @@ class GatewayLimits:
     """单 attempt 的资源边界。"""
 
     max_unique_queries: int = 32
+    max_input_bytes: int = 64 * 1024
+    max_output_bytes: int = 64 * 1024
     max_evidence_bytes: int = 16 * 1024
     max_total_evidence_bytes: int = 128 * 1024
 
     def __post_init__(self) -> None:
-        if min(self.max_unique_queries, self.max_evidence_bytes, self.max_total_evidence_bytes) <= 0:
+        if (
+            min(
+                self.max_unique_queries,
+                self.max_input_bytes,
+                self.max_output_bytes,
+                self.max_evidence_bytes,
+                self.max_total_evidence_bytes,
+            )
+            <= 0
+        ):
             raise ValueError("gateway limits must be positive")
 
 
@@ -82,14 +93,18 @@ class SystemCapabilityGateway:
         self._inflight: dict[str, asyncio.Task[GatewayQueryResult]] = {}
         self._cache: dict[str, GatewayQueryResult] = {}
         self._total_evidence_bytes = 0
+        self._closed = False
 
-    async def execute(
+    async def execute(  # noqa: PLR0911
         self,
         capability_key: str,
         contract_version: str,
         input_data: BaseModel | dict[str, Any],
     ) -> GatewayQueryResult:
         """校验声明、输入、Port/profile 与边界后执行一次 canonical QUERY。"""
+
+        if self._closed:
+            return self._violation("ATTEMPT_CLOSED", "attempt gateway is closed")
 
         identity = (capability_key, contract_version)
         definition = self._definitions.get(identity)
@@ -105,11 +120,15 @@ class SystemCapabilityGateway:
         except (KeyError, PermissionError, TypeError, ValidationError, ValueError) as exc:
             return self._violation("CAPABILITY_CONTRACT_INVALID", _safe_contract_message(exc))
 
+        request_payload = request.model_dump(mode="json")
+        if _canonical_bytes(request_payload) > self._limits.max_input_bytes:
+            return self._violation("QUERY_INPUT_LIMIT_EXCEEDED", "canonical query input size limit exceeded")
+
         query_key = sha256_digest(
             {
                 "attempt_id": self.attempt_id,
                 "definition": definition.identity,
-                "input": request.model_dump(mode="json"),
+                "input": request_payload,
             }
         )
         if query_key in self._cache:
@@ -123,6 +142,19 @@ class SystemCapabilityGateway:
         self._inflight[query_key] = task
         task.add_done_callback(lambda completed: self._complete_query(query_key, completed))
         return await asyncio.shield(task)
+
+    async def aclose(self) -> None:
+        """由 attempt owner 幂等关闭，并等待所有共享 handler task 完成取消。"""
+
+        if self._closed:
+            return
+        self._closed = True
+        tasks = tuple(self._inflight.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._inflight.clear()
 
     def _complete_query(self, query_key: str, task: asyncio.Task[GatewayQueryResult]) -> None:
         """由底层 task 唯一负责 cache/cleanup，waiter 取消不能破坏共享查询。"""
@@ -151,6 +183,8 @@ class SystemCapabilityGateway:
             outcome = RetryableFailure(error_code="TIMEOUT", message="system capability query timed out")
         except Exception:
             outcome = RetryableFailure(error_code="UNKNOWN", message="system capability query failed")
+        if _canonical_bytes(_bounded_output_value(outcome)) > self._limits.max_output_bytes:
+            return self._violation("QUERY_OUTPUT_LIMIT_EXCEEDED", "canonical query output size limit exceeded")
         return self._attach_evidence(definition, request, outcome)
 
     def _attach_evidence(
@@ -241,6 +275,17 @@ def _safe_contract_message(exc: Exception) -> str:
     if isinstance(exc, ValidationError):
         return "capability input validation failed"
     return type(exc).__name__
+
+
+def _bounded_output_value(outcome: CapabilityOutcome) -> Any:
+    if isinstance(outcome, Success):
+        payload = outcome.payload
+        return payload.model_dump(mode="json") if isinstance(payload, BaseModel) else payload
+    return outcome.model_dump(mode="json")
+
+
+def _canonical_bytes(value: Any) -> int:
+    return len(canonical_json(value).encode("utf-8"))
 
 
 __all__ = ["GatewayLimits", "GatewayQueryResult", "SystemCapabilityGateway"]
