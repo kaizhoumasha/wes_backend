@@ -126,11 +126,16 @@ class WorklinePluginIndexBuilder:
             f"_DEFINITION_{index},"
             for index, (key, version) in enumerate(identities)
         ]
-        identity_block = (
-            ["WORKLINE_PLUGIN_IDENTITIES = ()"]
-            if not identity_entries
-            else ["WORKLINE_PLUGIN_IDENTITIES = (", *identity_entries, ")"]
-        )
+        if not identity_entries:
+            identity_block = ["WORKLINE_PLUGIN_IDENTITIES = ()"]
+        elif len(identities) == 1:
+            key, version = identities[0]
+            identity_block = [
+                "WORKLINE_PLUGIN_IDENTITIES = "
+                f"(({json.dumps(key, ensure_ascii=False)}, {json.dumps(version, ensure_ascii=False)}),)"
+            ]
+        else:
+            identity_block = ["WORKLINE_PLUGIN_IDENTITIES = (", *identity_entries, ")"]
         mapping_block = (
             ["WORKLINE_PLUGIN_INDEX = MappingProxyType({})"]
             if not mapping_entries

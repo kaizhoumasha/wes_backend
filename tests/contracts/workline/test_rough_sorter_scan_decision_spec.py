@@ -34,6 +34,7 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxWriteBackService,
     WriteBackState,
 )
+from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as ROUGH_SORTER_DEFINITION
 from src.utils.timezone import timezone
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -243,6 +244,21 @@ CURRENT_IMPLEMENTATION_STATUS = {
 
 def _load_fixture() -> dict:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+def test_typed_plugin_definition_covers_all_approved_logical_trigger_routes() -> None:
+    """Task 6 锁定 typed route；Task 8 再把 RuntimeInbox 生产路径切到该 dispatcher。"""
+
+    assert (ROUGH_SORTER_DEFINITION.plugin_key, ROUGH_SORTER_DEFINITION.contract_version) == (
+        "rough_sorter",
+        "rough_sorter.v2",
+    )
+    assert set(ROUGH_SORTER_DEFINITION.routes) == {
+        "SCAN_COMPLETED",
+        "PICK_AND_PUT_RESULT",
+        "BUSINESS_TIMEOUT",
+        "REPLAY_REQUEST",
+    }
 
 
 def _case(case_id: str) -> dict[str, Any]:

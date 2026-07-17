@@ -423,7 +423,8 @@ def test_generated_indexes_are_empty_read_only_and_cold_start_safe() -> None:
     assert isinstance(system_index.SYSTEM_CAPABILITY_INDEX, MappingProxyType)
     assert isinstance(plugin_index.WORKLINE_PLUGIN_INDEX, MappingProxyType)
     assert system_index.SYSTEM_CAPABILITY_IDENTITIES == (("wms.rough_sorter_inventory_admission", "v1"),)
-    assert plugin_index.WORKLINE_PLUGIN_IDENTITIES == ()
+    assert plugin_index.WORKLINE_PLUGIN_IDENTITIES == (("rough_sorter", "rough_sorter.v2"),)
+    assert tuple(plugin_index.WORKLINE_PLUGIN_INDEX) == (("rough_sorter", "rough_sorter.v2"),)
     with pytest.raises(TypeError):
         system_index.SYSTEM_CAPABILITY_INDEX[("x", "v1")] = object()  # type: ignore[index]
 
@@ -455,7 +456,7 @@ def test_cli_write_is_idempotent_and_check_reports_both_indexes(tmp_path: Path) 
     assert first_bytes == (plugin_output.read_bytes(), system_output.read_bytes())
     check = subprocess.run([*command, "--check"], cwd=REPO_ROOT, check=False, capture_output=True, text=True)
     assert check.returncode == 0
-    assert "workline_plugins: count=0 digest=" in check.stdout
+    assert "workline_plugins: count=1 digest=" in check.stdout
     assert "system_capabilities: count=1 digest=" in check.stdout
 
 
