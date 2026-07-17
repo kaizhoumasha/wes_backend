@@ -9,6 +9,7 @@ from src.app.wms_integration.ports.inventory_query import (
     WmsInventoryItem,
     WmsInventoryQueryContractError,
     WmsInventoryQueryPort,
+    WmsInventoryQueryRejected,
     WmsInventoryQueryUnavailable,
 )
 
@@ -33,6 +34,8 @@ class RoughSorterInventoryAdmissionHandler:
             )
         except (TimeoutError, WmsInventoryQueryUnavailable):
             return RetryableFailure(error_code="WMS_TIMEOUT", message="WMS inventory query unavailable")
+        except WmsInventoryQueryRejected:
+            return BusinessReject(reason_code="WMS_REJECTED", message="WMS inventory query rejected")
         except WmsInventoryQueryContractError:
             return ContractViolation(error_code="WMS_CONTRACT_INVALID", message="WMS inventory contract invalid")
 

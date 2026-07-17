@@ -34,6 +34,10 @@ class WmsInventoryQueryContractError(Exception):
     """WMS provider 响应无法转换为稳定 Port 合同。"""
 
 
+class WmsInventoryQueryRejected(Exception):
+    """WMS 明确拒绝库存查询，且不暴露 provider 原始细节。"""
+
+
 class WmsInventoryQueryPort(Protocol):
     """WMS 库存只读查询 port。
 

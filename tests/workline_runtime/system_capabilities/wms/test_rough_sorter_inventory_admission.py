@@ -121,6 +121,19 @@ async def test_timeout_or_unavailable_is_closed_retryable_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stable_port_rejection_is_closed_business_reject() -> None:
+    from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryRejected
+
+    outcome = await RoughSorterInventoryAdmissionHandler(
+        FakeInventoryPort(WmsInventoryQueryRejected("WMS inventory query rejected"))
+    )(admission_input())
+
+    assert isinstance(outcome, BusinessReject)
+    assert outcome.reason_code == "WMS_REJECTED"
+    assert outcome.message == "WMS inventory query rejected"
+
+
+@pytest.mark.asyncio
 async def test_invalid_provider_shape_is_contract_violation() -> None:
     outcome = await RoughSorterInventoryAdmissionHandler(FakeInventoryPort([{"unexpected": True}]))(admission_input())
 

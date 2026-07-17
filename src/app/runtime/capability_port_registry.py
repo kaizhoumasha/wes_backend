@@ -12,6 +12,7 @@ Inbound normalizer 不挂到通用 RuntimeCapabilityContext 上。
 
 from __future__ import annotations
 
+import inspect
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -70,9 +71,12 @@ class CapabilityPortRegistry:
         if port_name not in self._factories:
             raise KeyError(f"port {port_name} 未注册; 可用: {list(self._factories)}")
         if not self._cache_instance.get(port_name, False):
-            return self._factories[port_name]()
+            return _validate_async_protocol_contract(port_protocol, self._factories[port_name]())
         if port_name not in self._instances:
-            self._instances[port_name] = self._factories[port_name]()
+            self._instances[port_name] = _validate_async_protocol_contract(
+                port_protocol,
+                self._factories[port_name](),
+            )
         return self._instances[port_name]
 
     def fork_attempt(self) -> CapabilityPortRegistry:
@@ -91,6 +95,18 @@ class CapabilityPortRegistry:
     def is_registered(self, port_protocol: type[Any]) -> bool:
         """检查 port 是否已注册。"""
         return port_protocol.__name__ in self._factories
+
+
+def _validate_async_protocol_contract(port_protocol: type[Any], instance: Any) -> Any:
+    """异步 Protocol 方法必须由 async implementation 实现，阻断旧同步 fake。"""
+
+    for method_name, protocol_method in vars(port_protocol).items():
+        if method_name.startswith("_") or not inspect.iscoroutinefunction(protocol_method):
+            continue
+        implementation = getattr(instance, method_name, None)
+        if not inspect.iscoroutinefunction(implementation):
+            raise TypeError(f"{port_protocol.__name__}.{method_name} requires async Port contract implementation")
+    return instance
 
 
 class RuntimeCapabilityContext:

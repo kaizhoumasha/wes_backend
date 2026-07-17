@@ -27,7 +27,16 @@ from src.app.wms_integration.models import QueryInventoryResponse
 from src.app.wms_integration.ports.inventory_query import (
     WmsInventoryQueryContractError,
     WmsInventoryQueryPort,
+    WmsInventoryQueryRejected,
     WmsInventoryQueryUnavailable,
+)
+from src.app.wms_integration.services.exceptions import (
+    WmsBusinessRejectedError,
+    WmsCircuitOpenError,
+    WmsEvidencePersistenceError,
+    WmsIntegrationError,
+    WmsTimeoutError,
+    WmsUnavailableError,
 )
 
 
@@ -41,6 +50,20 @@ class FakeTypedClient:
         if isinstance(self.response, BaseException):
             raise self.response
         return self.response
+
+
+def typed_error(
+    error_type: type[WmsIntegrationError],
+    *,
+    reason_code: str = "PROVIDER_SECRET_REASON",
+) -> WmsIntegrationError:
+    return error_type(
+        "provider secret message: pallet=SECRET-42",
+        operation_name="query_inventory",
+        evidence_key="provider-secret-evidence",
+        reason_code=reason_code,
+        target_code="provider-secret-target",
+    )
 
 
 @pytest.mark.asyncio
@@ -77,29 +100,68 @@ async def test_production_adapter_maps_public_port_arguments_to_current_wms_dto(
 
 
 @pytest.mark.asyncio
-async def test_adapter_translates_timeout_unavailable_and_invalid_shape_at_port_boundary() -> None:
-    timeout_adapter = WmsInventoryQueryPortAdapter(
-        FakeTypedClient(TimeoutError()),
-        request_id_factory=lambda: "attempt-timeout",
-    )
-    with pytest.raises(WmsInventoryQueryUnavailable):
-        await timeout_adapter.query_inventory("MAT-001")
-
-    from src.app.wms_integration.services.exceptions import WmsUnavailableError
-
-    unavailable_adapter = WmsInventoryQueryPortAdapter(
-        FakeTypedClient(
-            WmsUnavailableError(
-                "provider unavailable",
-                operation_name="query_inventory",
-                evidence_key=None,
-            )
-        ),
+@pytest.mark.parametrize(
+    "provider_error",
+    [
+        TimeoutError("provider secret timeout"),
+        typed_error(WmsTimeoutError),
+        typed_error(WmsUnavailableError),
+        typed_error(WmsCircuitOpenError),
+        typed_error(WmsEvidencePersistenceError),
+        typed_error(WmsIntegrationError),
+    ],
+)
+@pytest.mark.asyncio
+async def test_adapter_translates_all_typed_technical_exception_families_without_leaking_details(
+    provider_error: BaseException,
+) -> None:
+    adapter = WmsInventoryQueryPortAdapter(
+        FakeTypedClient(provider_error),
         request_id_factory=lambda: "attempt-unavailable",
     )
-    with pytest.raises(WmsInventoryQueryUnavailable):
-        await unavailable_adapter.query_inventory("MAT-001")
+    with pytest.raises(WmsInventoryQueryUnavailable) as exc_info:
+        await adapter.query_inventory("MAT-001")
 
+    assert str(exc_info.value) == "WMS inventory query unavailable"
+    assert exc_info.value.__cause__ is provider_error
+    assert "SECRET" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_adapter_translates_business_rejection_to_stable_redacted_port_error() -> None:
+    provider_error = typed_error(WmsBusinessRejectedError)
+    adapter = WmsInventoryQueryPortAdapter(
+        FakeTypedClient(provider_error),
+        request_id_factory=lambda: "attempt-rejected",
+    )
+
+    with pytest.raises(WmsInventoryQueryRejected) as exc_info:
+        await adapter.query_inventory("MAT-001")
+
+    assert str(exc_info.value) == "WMS inventory query rejected"
+    assert exc_info.value.__cause__ is provider_error
+    assert "SECRET" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("reason_code", ["WMS_RESPONSE_PARSE_ERROR", "WMS_UNSUPPORTED_HTTP_METHOD"])
+@pytest.mark.asyncio
+async def test_adapter_translates_provider_protocol_failures_to_contract_error(reason_code: str) -> None:
+    provider_error = typed_error(WmsUnavailableError, reason_code=reason_code)
+    adapter = WmsInventoryQueryPortAdapter(
+        FakeTypedClient(provider_error),
+        request_id_factory=lambda: "attempt-contract",
+    )
+
+    with pytest.raises(WmsInventoryQueryContractError) as exc_info:
+        await adapter.query_inventory("MAT-001")
+
+    assert str(exc_info.value) == "invalid WMS inventory response"
+    assert exc_info.value.__cause__ is provider_error
+    assert "SECRET" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_adapter_translates_invalid_shape_at_port_boundary() -> None:
     invalid_adapter = WmsInventoryQueryPortAdapter(
         FakeTypedClient({"items": [{"wrong": "shape"}]}),
         request_id_factory=lambda: "attempt-invalid",

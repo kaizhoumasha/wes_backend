@@ -10,9 +10,14 @@ from src.app.wms_integration.models import QueryInventoryRequest, QueryInventory
 from src.app.wms_integration.ports.inventory_query import (
     WmsInventoryItem,
     WmsInventoryQueryContractError,
+    WmsInventoryQueryRejected,
     WmsInventoryQueryUnavailable,
 )
-from src.app.wms_integration.services.exceptions import WmsTimeoutError, WmsUnavailableError
+from src.app.wms_integration.services.exceptions import (
+    WmsBusinessRejectedError,
+    WmsIntegrationError,
+    WmsUnavailableError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -20,6 +25,14 @@ if TYPE_CHECKING:
 
 class _TypedInventoryClient(Protocol):
     async def query_inventory(self, request: QueryInventoryRequest) -> Any: ...
+
+
+_PROVIDER_CONTRACT_REASON_CODES = frozenset(
+    {
+        "WMS_RESPONSE_PARSE_ERROR",
+        "WMS_UNSUPPORTED_HTTP_METHOD",
+    }
+)
 
 
 class WmsInventoryQueryPortAdapter:
@@ -42,7 +55,13 @@ class WmsInventoryQueryPortAdapter:
         )
         try:
             raw_response = await self._client.query_inventory(request)
-        except (TimeoutError, WmsTimeoutError, WmsUnavailableError) as exc:
+        except WmsBusinessRejectedError as exc:
+            raise WmsInventoryQueryRejected("WMS inventory query rejected") from exc
+        except WmsUnavailableError as exc:
+            if exc.reason_code in _PROVIDER_CONTRACT_REASON_CODES:
+                raise WmsInventoryQueryContractError("invalid WMS inventory response") from exc
+            raise WmsInventoryQueryUnavailable("WMS inventory query unavailable") from exc
+        except (TimeoutError, WmsIntegrationError) as exc:
             raise WmsInventoryQueryUnavailable("WMS inventory query unavailable") from exc
         try:
             response = QueryInventoryResponse.model_validate(raw_response)
