@@ -34,6 +34,7 @@ class SystemCapabilityExecution:
 
     ctx: dict[str, Any]
     intent: RuntimeIntent
+    admission: BaseModel
     idempotency_key: str
 
     @property
@@ -116,7 +117,12 @@ class SystemCapabilityEffectService:
                 evidence=evidence,
             )
 
-        execution = SystemCapabilityExecution(ctx=ctx, intent=intent, idempotency_key=prepared.idempotency_key)
+        execution = SystemCapabilityExecution(
+            ctx=ctx,
+            intent=intent,
+            admission=prepared.admission,
+            idempotency_key=prepared.idempotency_key,
+        )
         try:
             handler = definition.handler_factory()
             raw = await asyncio.wait_for(

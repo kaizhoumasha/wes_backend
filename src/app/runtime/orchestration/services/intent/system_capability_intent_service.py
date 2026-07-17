@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 class PreparedSystemCapabilityIntent:
     definition: SystemCapabilityDefinition
     request: BaseModel
+    admission: BaseModel
     idempotency_key: str
     payload_hash: str
     claim_result: SystemCapabilityClaimResult | Any
@@ -82,7 +83,7 @@ class SystemCapabilityIntentService:
             raise ValueError("SYSTEM_CAPABILITY payload_hash mismatch")
         try:
             request = definition.input_model.model_validate(intent.payload_json)
-            definition.admission_model.model_validate(
+            admission = definition.admission_model.model_validate(
                 {
                     "precondition": intent.precondition_json,
                     "fact_version": intent.fact_version,
@@ -122,6 +123,7 @@ class SystemCapabilityIntentService:
         return PreparedSystemCapabilityIntent(
             definition=definition,
             request=request,
+            admission=admission,
             idempotency_key=final_key,
             payload_hash=str(intent.payload_hash),
             claim_result=claim_result,

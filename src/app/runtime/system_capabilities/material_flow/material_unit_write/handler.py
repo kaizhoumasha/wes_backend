@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, Success
 
-from .contracts import MaterialUnitWriteInput, MaterialUnitWriteOutput
+from .contracts import MaterialUnitWriteAdmission, MaterialUnitWriteInput, MaterialUnitWriteOutput
 
 
 class MaterialUnitWriteHandler:
@@ -15,20 +15,22 @@ class MaterialUnitWriteHandler:
         )
 
         ctx = execution.ctx  # type: ignore[attr-defined]
-        intent = execution.intent  # type: ignore[attr-defined]
+        admission = execution.admission  # type: ignore[attr-defined]
+        if not isinstance(admission, MaterialUnitWriteAdmission):
+            raise TypeError("material unit effect requires typed admission")
         try:
             if request.operation == "CREATE":
                 material_unit = await material_unit_mutation_service.create(
                     ctx,
                     request.model_dump(mode="python", exclude_none=True, exclude={"operation"}),
-                    precondition=intent.precondition_json,
-                    fact_version=intent.fact_version,
+                    precondition=admission.precondition.model_dump(mode="python", exclude_none=True),
+                    fact_version=admission.fact_version,
                 )
             else:
                 material_unit = await material_unit_mutation_service.update_status(
                     ctx,
                     request.model_dump(mode="python", exclude_none=True, exclude={"operation"}),
-                    fact_version=intent.fact_version,
+                    fact_version=admission.fact_version,
                 )
         except StaleMaterialUnitPrecondition:
             return BusinessReject(reason_code="STALE_PRECONDITION", message="material unit fact changed")

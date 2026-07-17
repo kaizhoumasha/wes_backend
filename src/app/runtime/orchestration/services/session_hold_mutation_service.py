@@ -31,9 +31,13 @@ class SessionHoldMutationService:
         reason_code: str,
         message: str,
         fact_version: str | int | None,
+        expected_status: str | None = None,
     ) -> Any:
         from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 
+        actual_status = str(getattr(getattr(session, "status", None), "value", getattr(session, "status", "")))
+        if expected_status is not None and actual_status != expected_status:
+            raise StaleSessionPrecondition("session status changed")
         expected = self._version_value(fact_version)
         actual = optional_int(getattr(session, "version", None))
         if expected is not None and actual != expected:

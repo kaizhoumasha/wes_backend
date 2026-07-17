@@ -237,6 +237,8 @@ async def test_local_transactional_effect_flushes_without_owning_commit_or_rollb
     assert result.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL
     assert result.durably_accepted is False
     assert len(_RecordingHandler.calls) == 1
+    assert _RecordingHandler.calls[0][1].admission.fact_version == "fact:3"  # type: ignore[attr-defined]
+    assert _RecordingHandler.calls[0][1].admission.precondition == {"expected": 3}  # type: ignore[attr-defined]
     assert db.flush_count == 1
     assert db.commit_count == 0
     assert db.rollback_count == 0
@@ -482,6 +484,192 @@ async def test_admission_rejects_bypassed_invalid_operation_key_as_contract_viol
     intent = _intent().model_copy(update={"operation_key": operation_key})
 
     result = await _service(_definition(), repository).apply(_ctx(), intent)
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert result.outcome.error_code == "CAPABILITY_CONTRACT_INVALID"
+    assert repository.calls == []
+
+
+def _session_hold_intent(*, expected_status: object, fact_version: object) -> RuntimeIntent:
+    return RuntimeIntent.system_capability(
+        capability_key=HOLD_DEFINITION.capability_key,
+        contract_version=HOLD_DEFINITION.contract_version,
+        operation_key="session:hold:review",
+        payload={"reason_code": "REVIEW", "message": "manual review"},
+        precondition={"expected_status": expected_status},
+        fact_version=fact_version,  # type: ignore[arg-type]
+        timeout_seconds=5,
+        creator_authority="WORKLINE_PLUGIN",
+        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
+        binding_snapshot={"binding_id": 9, "binding_version": 1},
+        provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("expected_status", "fact_version"),
+    [("READY", "session:3"), ("RUNNING", "session:2")],
+)
+async def test_session_hold_authoritative_status_or_version_mismatch_has_zero_mutation(
+    monkeypatch: pytest.MonkeyPatch, expected_status: str, fact_version: str
+) -> None:
+    from importlib import import_module
+
+    from src.app.runtime.orchestration.services.session_hold_mutation_service import SessionHoldMutationService
+
+    class _Repository:
+        calls = 0
+
+        async def persist(self, _db: object, _session: object) -> None:
+            self.calls += 1
+
+    repository = _Repository()
+    mutation_module = import_module("src.app.runtime.orchestration.services.session_hold_mutation_service")
+    monkeypatch.setattr(mutation_module, "session_hold_mutation_service", SessionHoldMutationService(repository))
+    ctx = _ctx()
+    ctx["session"].status = "RUNNING"
+    ctx["session"].version = 3
+
+    result = await _service(HOLD_DEFINITION, _EffectRepository(ClaimResult.NEW)).apply(
+        ctx, _session_hold_intent(expected_status=expected_status, fact_version=fact_version)
+    )
+
+    assert isinstance(result.outcome, BusinessReject)
+    assert result.outcome.reason_code == "STALE_PRECONDITION"
+    assert repository.calls == 0
+    assert ctx["session"].status == "RUNNING"
+
+
+@pytest.mark.asyncio
+async def test_session_hold_matching_typed_admission_mutates_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    from importlib import import_module
+
+    from src.app.runtime.orchestration.services.session_hold_mutation_service import SessionHoldMutationService
+
+    class _Repository:
+        calls = 0
+
+        async def persist(self, _db: object, _session: object) -> None:
+            self.calls += 1
+
+    repository = _Repository()
+    mutation_module = import_module("src.app.runtime.orchestration.services.session_hold_mutation_service")
+    monkeypatch.setattr(mutation_module, "session_hold_mutation_service", SessionHoldMutationService(repository))
+    ctx = _ctx()
+    ctx["session"].status = "RUNNING"
+    ctx["session"].version = 3
+    ctx["session"].current_wait_type = None
+    ctx["session"].waiting_since = None
+    ctx["session"].deadline_at = None
+    ctx["session"].current_wait_timeout_seconds = None
+    ctx["session"].awaiting_device_command_code = None
+    ctx["session"].ended_at = None
+
+    result = await _service(HOLD_DEFINITION, _EffectRepository(ClaimResult.NEW)).apply(
+        ctx, _session_hold_intent(expected_status="RUNNING", fact_version="session:3")
+    )
+
+    assert isinstance(result.outcome, Success)
+    assert repository.calls == 1
+    assert getattr(ctx["session"].status, "value", ctx["session"].status) == "MANUAL_HOLD"
+
+
+def _device_intent(*, expected_available: object, fact_version: object) -> RuntimeIntent:
+    return RuntimeIntent.system_capability(
+        capability_key=DEVICE_DEFINITION.capability_key,
+        contract_version=DEVICE_DEFINITION.contract_version,
+        operation_key="device:71:dispatch",
+        payload={"target_device_id": 71, "action": "PICK_AND_PUT"},
+        precondition={"expected_available": expected_available},
+        fact_version=fact_version,  # type: ignore[arg-type]
+        timeout_seconds=5,
+        creator_authority="WORKLINE_PLUGIN",
+        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
+        binding_snapshot={"binding_id": 9, "binding_version": 1},
+        provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("device_values", "fact_version"),
+    [
+        ({"version": 2, "device_status": "IDLE", "maintenance_mode": False, "current_command_id": None}, "device:v1"),
+        ({"version": 2, "device_status": "RUNNING", "maintenance_mode": False, "current_command_id": 99}, "device:v2"),
+        ({"version": 2, "device_status": "IDLE", "maintenance_mode": True, "current_command_id": None}, "device:v2"),
+    ],
+)
+async def test_device_authoritative_fact_mismatch_creates_no_command_or_outbox(
+    monkeypatch: pytest.MonkeyPatch, device_values: dict[str, object], fact_version: str
+) -> None:
+    from importlib import import_module
+
+    calls: list[object] = []
+
+    async def prepare(*_args: object, **_kwargs: object) -> tuple[object, object]:
+        calls.append(object())
+        raise AssertionError("stale device admission must not create command/outbox")
+
+    gateway_module = import_module("src.app.runtime.orchestration.services.device_command_gateway")
+    monkeypatch.setattr(gateway_module, "prepare_runtime_device_command_effect", prepare)
+    device = SimpleNamespace(id=71, is_active=True, **device_values)
+    ctx = _ctx()
+    ctx["source_device"] = device
+
+    result = await _service(DEVICE_DEFINITION, _EffectRepository(ClaimResult.NEW)).apply(
+        ctx, _device_intent(expected_available=True, fact_version=fact_version)
+    )
+
+    assert isinstance(result.outcome, BusinessReject)
+    assert result.outcome.reason_code == "STALE_PRECONDITION"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_device_matching_typed_admission_creates_one_command_and_outbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    from importlib import import_module
+
+    calls: list[object] = []
+
+    async def prepare(*_args: object, **_kwargs: object) -> tuple[object, object]:
+        calls.append(object())
+        return SimpleNamespace(command_code="CMD-71"), SimpleNamespace(dispatch_key="dispatch-71")
+
+    gateway_module = import_module("src.app.runtime.orchestration.services.device_command_gateway")
+    monkeypatch.setattr(gateway_module, "prepare_runtime_device_command_effect", prepare)
+    ctx = _ctx()
+    ctx["source_device"] = SimpleNamespace(
+        id=71,
+        is_active=True,
+        version=2,
+        device_status="IDLE",
+        maintenance_mode=False,
+        current_command_id=None,
+    )
+
+    result = await _service(DEVICE_DEFINITION, _EffectRepository(ClaimResult.NEW)).apply(
+        ctx, _device_intent(expected_available=True, fact_version="device:v2")
+    )
+
+    assert isinstance(result.outcome, Success)
+    assert result.outcome.payload.command_code == "CMD-71"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "intent",
+    [
+        _session_hold_intent(expected_status="RUNNING", fact_version="session:v3"),
+        _device_intent(expected_available="true", fact_version="device:v2"),
+    ],
+)
+async def test_session_and_device_malformed_admission_remain_contract_violations(intent: RuntimeIntent) -> None:
+    repository = _EffectRepository(ClaimResult.NEW)
+    definition = HOLD_DEFINITION if intent.capability_key == HOLD_DEFINITION.capability_key else DEVICE_DEFINITION
+
+    result = await _service(definition, repository).apply(_ctx(), intent)
 
     assert isinstance(result.outcome, ContractViolation)
     assert result.outcome.error_code == "CAPABILITY_CONTRACT_INVALID"
