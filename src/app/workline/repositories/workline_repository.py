@@ -2,7 +2,7 @@
 
 from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.contracts.runtime_inbox_query import RuntimeInboxQueryPort
@@ -59,6 +59,60 @@ class WorkLineRepository(BaseRepository[WorkLine]):
             statement = statement.execution_options(populate_existing=True)
         result = await db.execute(statement)
         return result.scalar_one_or_none()
+
+    async def acquire_plugin_pin_shared(self, db: AsyncSession, workline_id: int) -> None:
+        """为新 Session 读取当前插件 pin 获取事务级共享锁。"""
+
+        if self._dialect_name(db) != "postgresql":
+            return
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:lock_key, 0))"),
+            {"lock_key": self._plugin_pin_lock_key(workline_id)},
+        )
+
+    async def acquire_plugin_pin_exclusive(self, db: AsyncSession, workline_id: int) -> None:
+        """为 activation/cutover 切换插件 pin 获取事务级排他锁。"""
+
+        if self._dialect_name(db) != "postgresql":
+            return
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
+            {"lock_key": self._plugin_pin_lock_key(workline_id)},
+        )
+
+    async def get_current_plugin_pin(
+        self,
+        db: AsyncSession,
+        workline_id: int,
+        *,
+        populate_existing: bool = False,
+    ) -> WorkLine | None:
+        """在 advisory shared lock 保护下读取当前 WorkLine pin，不持有行排他锁。"""
+
+        columns = cast("Any", WorkLine).__table__.c
+        statement = select(WorkLine).where(
+            columns.id == workline_id,
+            columns.is_deleted.is_(False),
+        )
+        if populate_existing:
+            statement = statement.execution_options(populate_existing=True)
+        result = await db.execute(statement)
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _plugin_pin_lock_key(workline_id: int) -> str:
+        """生成跨进程稳定且带版本 namespace 的插件 pin 锁键。"""
+
+        return f"workline-plugin-pin:v1:{workline_id}"
+
+    @staticmethod
+    def _dialect_name(db: AsyncSession) -> str | None:
+        """解析数据库方言；非 PostgreSQL 环境明确跳过 advisory lock。"""
+
+        bind = db.get_bind()
+        dialect = getattr(bind, "dialect", None)
+        name = getattr(dialect, "name", None)
+        return name if isinstance(name, str) else None
 
     async def get_unfinished_workload_summary(
         self,

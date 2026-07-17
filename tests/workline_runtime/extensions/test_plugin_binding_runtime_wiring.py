@@ -136,10 +136,110 @@ class SessionRepository:
 class WorklineRepository:
     def __init__(self, workline: WorkLine) -> None:
         self.workline = workline
+        self.pin_events: list[str] = []
 
     async def get_for_update(self, _db: object, _workline_id: int, *, populate_existing: bool = False) -> WorkLine:
+        self.pin_events.append("for_update")
         _ = populate_existing
         return self.workline
+
+    async def acquire_plugin_pin_shared(self, _db: object, _workline_id: int) -> None:
+        self.pin_events.append("shared")
+
+    async def get_current_plugin_pin(
+        self,
+        _db: object,
+        _workline_id: int,
+        *,
+        populate_existing: bool = False,
+    ) -> WorkLine:
+        assert populate_existing is True
+        self.pin_events.append("current")
+        return self.workline
+
+
+@pytest.mark.asyncio
+async def test_existing_session_reuse_does_not_acquire_workline_plugin_pin_lock() -> None:
+    workline = _workline()
+    existing = WorklineSession(
+        id=21,
+        session_code="SESSION-21",
+        workline_id=7,
+        plugin_key="platform-test",
+        contract_version="v1",
+        business_key="PKG-EXISTING",
+        trace_id="trace-existing",
+        ingress_count=1,
+    )
+
+    class ExistingSessionRepository(SessionRepository):
+        async def get_open_session_by_business_key(self, **_kwargs: object) -> WorklineSession:
+            return existing
+
+    workline_repository = WorklineRepository(workline)
+    binding_repository = BindingRepository()
+    resolver = SessionResolver(
+        session_repo=ExistingSessionRepository(),
+        workline_repo=workline_repository,
+        command_repo=object(),
+        outbox_repo=object(),
+        rack_task_repo=object(),
+        handling_step_repo=object(),
+        handling_operation_repo=object(),
+        plugin_binding_service=WorklinePluginBindingService(
+            repository=binding_repository,
+            plugin_index={("platform-test", "v1"): DEFINITION},
+            capability_index={},
+            plugin_index_digest="b" * 64,
+        ),
+    )
+    inbox = SimpleNamespace(
+        payload_json={"business_key": "PKG-EXISTING"},
+        device_id=1,
+        trace_id="trace-inbox",
+        request_id="request-existing",
+        source_message_id="message-existing",
+    )
+
+    resolved = await resolver._resolve_device_event(object(), inbox, workline)
+
+    assert resolved is existing
+    assert workline_repository.pin_events == []
+    assert binding_repository.get_calls == []
+
+
+@pytest.mark.asyncio
+async def test_new_session_acquires_shared_plugin_pin_lock_before_refreshing_current_pin() -> None:
+    workline = _workline()
+    workline_repository = WorklineRepository(workline)
+    resolver = SessionResolver(
+        session_repo=SessionRepository(),
+        workline_repo=workline_repository,
+        command_repo=object(),
+        outbox_repo=object(),
+        rack_task_repo=object(),
+        handling_step_repo=object(),
+        handling_operation_repo=object(),
+        plugin_binding_service=WorklinePluginBindingService(
+            repository=BindingRepository(),
+            runtime_repository=RuntimeRepository(),
+            plugin_index={("platform-test", "v1"): DEFINITION},
+            capability_index={},
+            plugin_index_digest="b" * 64,
+            clock=lambda: datetime(2026, 7, 17, 9),
+        ),
+    )
+    inbox = SimpleNamespace(
+        payload_json={"business_key": "PKG-NEW"},
+        device_id=1,
+        trace_id="trace-new",
+        request_id="request-new",
+        source_message_id="message-new",
+    )
+
+    await resolver._resolve_device_event(object(), inbox, workline)
+
+    assert workline_repository.pin_events == ["shared", "current"]
 
 
 @pytest.mark.asyncio
@@ -257,7 +357,7 @@ async def test_unapproved_active_draft_identity_never_changes_new_session_bindin
 
 
 @pytest.mark.asyncio
-async def test_stale_workline_snapshot_reloads_locked_active_binding_before_session_creation() -> None:
+async def test_stale_workline_snapshot_reloads_shared_current_binding_before_session_creation() -> None:
     stale_workline = _workline()
     current_workline = _workline()
     current_workline.active_plugin_binding_id = 9
@@ -273,14 +373,30 @@ async def test_stale_workline_snapshot_reloads_locked_active_binding_before_sess
 
     class WorklineRepository:
         def __init__(self) -> None:
-            self.calls: list[tuple[int, bool]] = []
+            self.calls: list[object] = []
 
-        async def get_for_update(self, _db: object, workline_id: int, *, populate_existing: bool = False) -> WorkLine:
-            self.calls.append((workline_id, populate_existing))
+        async def acquire_plugin_pin_shared(self, _db: object, workline_id: int) -> None:
+            self.calls.append(("shared", workline_id))
+
+        async def get_current_plugin_pin(
+            self,
+            _db: object,
+            workline_id: int,
+            *,
+            populate_existing: bool = False,
+        ) -> WorkLine:
+            self.calls.append(("current", workline_id, populate_existing))
             return current_workline
 
+    class HistoricalBindingRepository(BindingRepository):
+        async def get_pinned(self, _db: object, binding_id: int) -> SimpleNamespace | None:
+            self.get_calls.append(binding_id)
+            if binding_id == 8:
+                return _binding()
+            return current_binding if binding_id == 9 else None
+
     workline_repository = WorklineRepository()
-    binding_repository = BindingRepository(current_binding)
+    binding_repository = HistoricalBindingRepository(current_binding)
     runtime_repository = RuntimeRepository()
     binding_service = WorklinePluginBindingService(
         repository=binding_repository,
@@ -310,7 +426,7 @@ async def test_stale_workline_snapshot_reloads_locked_active_binding_before_sess
 
     session = await resolver._resolve_device_event(object(), inbox, stale_workline)
 
-    assert workline_repository.calls == [(7, True)]
+    assert workline_repository.calls == [("shared", 7), ("current", 7, True)]
     assert binding_repository.get_calls == [9]
     assert session.plugin_binding_id == 9
     assert session.plugin_binding_version == 3

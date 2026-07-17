@@ -363,54 +363,70 @@ class SessionResolver:
         workline_id = getattr(workline, "id", None)
         if not isinstance(workline_id, int):
             raise TypeError("workline.id is required for DEVICE_EVENT")
-        locked_workline = await self.workline_repo.get_for_update(db, workline_id, populate_existing=True)
-        if locked_workline is None:
-            raise ValueError(f"WorkLine not found: {workline_id}")
-        workline = locked_workline
 
         payload_json = ensure_dict(inbox.payload_json)
-        active_binding = await self.plugin_binding_service.resolve_new_session_binding(db, workline=workline)
+        candidate_binding = None
+        try:
+            # 显式 business_key/barcode/event identity 足以命中既有 Session 时，
+            # 不读取当前 binding；已有业务周期只沿自身已固定的 pin 执行。
+            business_key = _resolve_business_key(payload_json, plugin_key=None)
+        except SessionResolveError:
+            candidate_binding = await self.plugin_binding_service.resolve_new_session_binding(db, workline=workline)
+            candidate_plugin_key = (
+                getattr(candidate_binding, "plugin_key", None)
+                if candidate_binding is not None
+                else getattr(workline, "plugin_key", None)
+            )
+            business_key = _resolve_business_key(payload_json, plugin_key=candidate_plugin_key)
+        now = timezone.now_for_db()
+        trace = TraceContext.from_runtime(inbox=inbox, workline=workline)
+
+        await _lock_device_event_business_key(db, workline_id=workline_id, business_key=business_key)
+        existing_session = await self._find_existing_device_event_session(
+            db,
+            inbox,
+            workline_id=workline_id,
+            business_key=business_key,
+            trace=trace,
+            observed_at=now,
+        )
+        if existing_session is not None:
+            return existing_session
+
+        # 只有确认需要创建新 Session 后才获取 WorkLine pin 共享锁。
+        # 同一 WorkLine 的不同业务键可并行；activation/cutover 排他锁
+        # 保证新 Session 不跨 binding 版本。
+        await self.workline_repo.acquire_plugin_pin_shared(db, workline_id)
+        current_workline = await self.workline_repo.get_current_plugin_pin(db, workline_id, populate_existing=True)
+        if current_workline is None:
+            raise ValueError(f"WorkLine not found: {workline_id}")
+        workline = current_workline
+        active_binding = (
+            candidate_binding
+            if candidate_binding is not None
+            and getattr(candidate_binding, "id", None) == getattr(workline, "active_plugin_binding_id", None)
+            else await self.plugin_binding_service.resolve_new_session_binding(db, workline=workline)
+        )
         runtime_plugin_key = (
             getattr(active_binding, "plugin_key", None)
             if active_binding is not None
             else getattr(workline, "plugin_key", None)
         )
-        business_key = _resolve_business_key(payload_json, plugin_key=runtime_plugin_key)
-        now = timezone.now_for_db()
+        current_business_key = _resolve_business_key(payload_json, plugin_key=runtime_plugin_key)
         trace = TraceContext.from_runtime(inbox=inbox, workline=workline)
-
-        await _lock_device_event_business_key(db, workline_id=workline_id, business_key=business_key)
-
-        # 1. 优先查找未结束的 Session
-        existing_session = await self.session_repo.get_open_session_by_business_key(
-            db=db,
-            workline_id=workline_id,
-            business_key=business_key,
-        )
-
-        if existing_session:
-            return _reuse_existing_session(inbox, existing_session, trace=trace, observed_at=now)
-
-        # 2. 如果没有未结束的 Session，尝试通过 trace_id 查找
-        if trace.trace_id:
-            session_by_trace = await self.session_repo.get_by_trace_id(
-                db=db,
-                trace_id=trace.trace_id,
+        if current_business_key != business_key:
+            business_key = current_business_key
+            await _lock_device_event_business_key(db, workline_id=workline_id, business_key=business_key)
+            existing_session = await self._find_existing_device_event_session(
+                db,
+                inbox,
+                workline_id=workline_id,
+                business_key=business_key,
+                trace=trace,
+                observed_at=now,
             )
-            if session_by_trace and getattr(session_by_trace, "workline_id", None) == workline_id:
-                return _reuse_existing_session(inbox, session_by_trace, trace=trace, observed_at=now)
-
-        # 3. 如果还是没有，查找最新的 Session。
-        #    同一 business_key 的入口事件是否允许开启新周期，不能由“完成后几秒”决定；
-        #    在没有显式 rework/新物料授权前，终态 session 仍是该物料周期的归属锚点。
-        latest_session = await self.session_repo.get_latest_session_by_business_key(
-            db=db,
-            workline_id=workline_id,
-            business_key=business_key,
-        )
-
-        if latest_session and latest_session.ended_at:
-            return _reuse_existing_session(inbox, latest_session, trace=trace, observed_at=now)
+            if existing_session is not None:
+                return existing_session
 
         # 创建新 Session
         session_code = f"SES_{uuid.uuid4().hex[:16]}"
@@ -457,6 +473,50 @@ class SessionResolver:
         )
 
         return new_session
+
+    async def _find_existing_device_event_session(
+        self,
+        db: AsyncSession,
+        inbox: Any,
+        *,
+        workline_id: int,
+        business_key: str,
+        trace: TraceContext,
+        observed_at: Any,
+    ) -> WorklineSession | None:
+        """查找并复用既有业务周期；该快路径无需读取或锁定当前 WorkLine pin。"""
+
+        # 1. 优先查找未结束的 Session
+        existing_session = await self.session_repo.get_open_session_by_business_key(
+            db=db,
+            workline_id=workline_id,
+            business_key=business_key,
+        )
+
+        if existing_session:
+            return _reuse_existing_session(inbox, existing_session, trace=trace, observed_at=observed_at)
+
+        # 2. 如果没有未结束的 Session，尝试通过 trace_id 查找
+        if trace.trace_id:
+            session_by_trace = await self.session_repo.get_by_trace_id(
+                db=db,
+                trace_id=trace.trace_id,
+            )
+            if session_by_trace and getattr(session_by_trace, "workline_id", None) == workline_id:
+                return _reuse_existing_session(inbox, session_by_trace, trace=trace, observed_at=observed_at)
+
+        # 3. 如果还是没有，查找最新的 Session。
+        #    同一 business_key 的入口事件是否允许开启新周期，不能由“完成后几秒”决定；
+        #    在没有显式 rework/新物料授权前，终态 session 仍是该物料周期的归属锚点。
+        latest_session = await self.session_repo.get_latest_session_by_business_key(
+            db=db,
+            workline_id=workline_id,
+            business_key=business_key,
+        )
+
+        if latest_session and latest_session.ended_at:
+            return _reuse_existing_session(inbox, latest_session, trace=trace, observed_at=observed_at)
+        return None
 
     async def _resolve_command_result(
         self,

@@ -463,6 +463,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     ) -> WorkLine | None:
         """通过配置预检后启用 WorkLine。"""
 
+        await self.repo.acquire_plugin_pin_exclusive(db, workline_id)
         current = await self.repo.get_for_update(db, workline_id, populate_existing=True)
         if current is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")

@@ -23,6 +23,7 @@ class _WorkLineRepositoryStub:
     model = SimpleNamespace(__name__="WorkLine")
 
     def __init__(self, workline_id: int = 9007199254740993) -> None:
+        self.lock_events: list[str] = []
         self.create_calls: list[dict[str, object]] = []
         self.restore_calls: list[int] = []
         self.update_calls: list[tuple[int, dict[str, object]]] = []
@@ -53,9 +54,14 @@ class _WorkLineRepositoryStub:
         return self.current
 
     async def get_for_update(self, _db, workline_id, *, populate_existing=False):
+        self.lock_events.append("get_for_update")
         _ = populate_existing
         self.current.id = workline_id
         return self.current
+
+    async def acquire_plugin_pin_exclusive(self, _db, workline_id):
+        self.lock_events.append("exclusive")
+        self.current.id = workline_id
 
     async def get_by_id(self, _db, workline_id):
         self.current.id = workline_id
@@ -327,6 +333,7 @@ async def test_active_platform_plugin_reapproval_appends_binding_and_switches_pi
         )
     ]
     assert db.commit_count == 1
+    assert repository.lock_events == ["exclusive", "get_for_update"]
 
     with pytest.raises(OptimisticLockException):
         await service.activate(db, repository.current.id, version=7, actor="stale", reason="stale-v2")
