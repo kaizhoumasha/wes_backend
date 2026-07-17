@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -85,8 +87,21 @@ async def test_writeback_persists_evidence_state_intents_and_terminal_in_one_com
         WriteDisposition,
     )
 
-    snapshot = AttemptSnapshot(processor_token="lease-1", session_version=7, plugin_state_version=3)
-    write_set = AttemptWriteSet(evidence=("e1",), next_state={"step": 2}, intents=("i1",))
+    snapshot = AttemptSnapshot(
+        processor_token="lease-1",
+        session_version=7,
+        plugin_state_version=3,
+        definition_identity="plugin@v1:" + "a" * 64,
+        binding_id=17,
+        binding_version=4,
+        index_digest="b" * 64,
+    )
+    write_set = AttemptWriteSet(
+        evidence=("e1",),
+        next_state={"step": 2},
+        intents=("i1",),
+        outcome_code="ROUTE_A",
+    )
     events: list[str] = []
 
     class Db:
@@ -96,34 +111,148 @@ async def test_writeback_persists_evidence_state_intents_and_terminal_in_one_com
         async def rollback(self) -> None:
             events.append("rollback")
 
-    async def current_snapshot() -> AttemptSnapshot:
-        return snapshot
+    class Repository:
+        async def lock_authoritative(self, _db: object, *, inbox_id: int, session_id: int) -> object:
+            events.append("select-for-update")
+            assert (inbox_id, session_id) == (91, 41)
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-1"),
+                session=SimpleNamespace(
+                    version=7,
+                    plugin_state_version=3,
+                    plugin_identity=snapshot.definition_identity,
+                    plugin_binding_id=17,
+                    plugin_binding_version=4,
+                    plugin_index_digest="b" * 64,
+                ),
+            )
 
-    async def persist_evidence(value: tuple[object, ...]) -> None:
-        assert value == ("e1",)
-        events.append("evidence")
+        async def persist_locked_attempt(self, _db: object, **kwargs: object) -> None:
+            assert kwargs["write_set"] == write_set
+            events.append("evidence-state-intents")
 
-    async def persist_state(value: object) -> None:
-        assert value == {"step": 2}
-        events.append("state")
+    class InboxService:
+        async def mark_processed(self, _db: object, *, inbox_id: int, lease_token: str) -> bool:
+            assert (inbox_id, lease_token) == (91, "lease-1")
+            events.append("terminal")
+            return True
 
-    async def persist_intents(value: tuple[object, ...]) -> None:
-        assert value == ("i1",)
-        events.append("intents")
-
-    async def mark_terminal() -> None:
-        events.append("terminal")
-
-    disposition = await RuntimeInboxWriteBackService().commit_plugin_attempt(
+    disposition = await RuntimeInboxWriteBackService(
+        plugin_attempt_repository=Repository(),
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+    ).commit_plugin_attempt(
         Db(),
         expected_snapshot=snapshot,
-        current_snapshot=current_snapshot,
+        inbox_id=91,
+        session_id=41,
+        workline_id=8,
+        trace_id="trace-1",
         write_set=write_set,
-        persist_evidence=persist_evidence,
-        persist_state=persist_state,
-        persist_intents=persist_intents,
-        mark_terminal=mark_terminal,
     )
 
     assert disposition is WriteDisposition.COMMITTED
-    assert events == ["evidence", "state", "intents", "terminal", "commit"]
+    assert events == ["select-for-update", "evidence-state-intents", "terminal", "commit"]
+
+
+@pytest.mark.asyncio
+async def test_writeback_version_race_writes_nothing_and_rolls_back() -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+        RuntimeInboxWriteBackService,
+    )
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptSnapshot,
+        AttemptWriteSet,
+        WriteDisposition,
+    )
+
+    events: list[str] = []
+    snapshot = AttemptSnapshot(processor_token="lease-1", session_version=7, plugin_state_version=3)
+
+    class Db:
+        async def commit(self) -> None:
+            events.append("commit")
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+    class Repository:
+        async def lock_authoritative(self, *_args: object, **_kwargs: object) -> object:
+            events.append("select-for-update")
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-1"),
+                session=SimpleNamespace(version=8, plugin_state_version=3),
+            )
+
+        async def persist_locked_attempt(self, *_args: object, **_kwargs: object) -> None:
+            events.append("MUST_NOT_WRITE")
+
+    class InboxService:
+        async def mark_processed(self, *_args: object, **_kwargs: object) -> bool:
+            events.append("MUST_NOT_TERMINAL")
+            return True
+
+    disposition = await RuntimeInboxWriteBackService(
+        plugin_attempt_repository=Repository(),
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+    ).commit_plugin_attempt(
+        Db(),
+        expected_snapshot=snapshot,
+        inbox_id=91,
+        session_id=41,
+        workline_id=8,
+        trace_id="trace-1",
+        write_set=AttemptWriteSet(evidence=("e1",), next_state={}, intents=()),
+    )
+
+    assert disposition is WriteDisposition.SAFE_RETRY
+    assert events == ["select-for-update", "rollback"]
+
+
+@pytest.mark.asyncio
+async def test_writeback_persistence_error_rolls_back_before_terminal() -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+        RuntimeInboxWriteBackService,
+    )
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, AttemptWriteSet
+
+    events: list[str] = []
+    snapshot = AttemptSnapshot(processor_token="lease-1", session_version=7, plugin_state_version=3)
+
+    class Db:
+        async def commit(self) -> None:
+            events.append("commit")
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+    class Repository:
+        async def lock_authoritative(self, *_args: object, **_kwargs: object) -> object:
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-1"),
+                session=SimpleNamespace(version=7, plugin_state_version=3),
+            )
+
+        async def persist_locked_attempt(self, *_args: object, **_kwargs: object) -> None:
+            events.append("persist")
+            raise RuntimeError("write failed")
+
+    class InboxService:
+        async def mark_processed(self, *_args: object, **_kwargs: object) -> bool:
+            events.append("MUST_NOT_TERMINAL")
+            return True
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        await RuntimeInboxWriteBackService(
+            plugin_attempt_repository=Repository(),
+            inbox_service=InboxService(),  # type: ignore[arg-type]
+        ).commit_plugin_attempt(
+            Db(),
+            expected_snapshot=snapshot,
+            inbox_id=91,
+            session_id=41,
+            workline_id=8,
+            trace_id="trace-1",
+            write_set=AttemptWriteSet(evidence=(), next_state={}, intents=()),
+        )
+
+    assert events == ["persist", "rollback"]

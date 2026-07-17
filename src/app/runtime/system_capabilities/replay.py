@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from src.app.runtime.system_capabilities.evidence import QueryEvidence  # noqa: TC001  # Pydantic schema 运行时依赖
+from src.app.runtime.orchestration.repositories.timeline_recorded_replay_repository import (
+    TimelineRecordedReplayRepository,
+    timeline_recorded_replay_repository,
+)
+from src.app.runtime.system_capabilities.evidence import QueryEvidence
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class RecordedReplayEnvelope(BaseModel):
@@ -61,4 +68,71 @@ def resolve_recorded_replay(
     return RecordedReplayResolution(evidence=envelope.evidence, decision=envelope.decision)
 
 
-__all__ = ["RecordedReplayEnvelope", "RecordedReplayResolution", "resolve_recorded_replay"]
+class TimelineRecordedReplayService:
+    """从 Timeline repository 装载并校验 recorded evidence/decision。"""
+
+    def __init__(self, repository: TimelineRecordedReplayRepository | Any | None = None) -> None:
+        self._repository = repository or timeline_recorded_replay_repository
+
+    async def load(
+        self,
+        db: AsyncSession | Any,
+        *,
+        source_inbox_id: int,
+        expected_definition_identity: str,
+        expected_binding_identity: str,
+        expected_index_digest: str,
+    ) -> RecordedReplayResolution:
+        rows = await self._repository.list_recorded_decisions(db, source_inbox_id=source_inbox_id)
+        evidence_payloads: list[dict[str, Any]] = []
+        decision_payloads: list[dict[str, Any]] = []
+        for row in rows:
+            payload = getattr(row, "payload_json", None)
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("record_type") == "SYSTEM_CAPABILITY_EVIDENCE" and isinstance(payload.get("evidence"), dict):
+                evidence_payloads.append(payload["evidence"])
+            elif payload.get("record_type") == "PLUGIN_DECISION":
+                decision_payloads.append(payload)
+        if len(decision_payloads) != 1:
+            return RecordedReplayResolution(hold_reason="RECORDED_REPLAY_RECORD_MISSING")
+        decision_record = decision_payloads[0]
+        try:
+            evidence = tuple(QueryEvidence.model_validate(item) for item in evidence_payloads)
+            raw_keys = decision_record.get("evidence_keys")
+            if not isinstance(raw_keys, list):
+                raise TypeError("evidence_keys missing")
+            expected_keys = tuple(_parse_evidence_key(item) for item in raw_keys)
+            decision = decision_record.get("decision")
+            if not isinstance(decision, dict):
+                raise TypeError("decision missing")
+            envelope = RecordedReplayEnvelope(
+                definition_identity=decision_record.get("definition_identity"),
+                binding_identity=decision_record.get("binding_identity"),
+                index_digest=decision_record.get("index_digest"),
+                evidence=evidence,
+                decision=decision,
+            )
+        except (TypeError, ValidationError, ValueError):
+            return RecordedReplayResolution(hold_reason="RECORDED_REPLAY_RECORD_INVALID")
+        return resolve_recorded_replay(
+            envelope,
+            expected_definition_identity=expected_definition_identity,
+            expected_binding_identity=expected_binding_identity,
+            expected_index_digest=expected_index_digest,
+            expected_evidence_keys=expected_keys,
+        )
+
+
+def _parse_evidence_key(value: Any) -> tuple[str, str, str, str]:
+    if not isinstance(value, list | tuple) or len(value) != 4 or not all(isinstance(item, str) for item in value):
+        raise ValueError("invalid evidence key")
+    return value[0], value[1], value[2], value[3]
+
+
+__all__ = [
+    "RecordedReplayEnvelope",
+    "RecordedReplayResolution",
+    "TimelineRecordedReplayService",
+    "resolve_recorded_replay",
+]

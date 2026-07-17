@@ -27,6 +27,9 @@ from src.app.runtime.orchestration.effect_result import (
     RuntimeIntentEffectResult,
     WriteBackDisposition,
 )
+from src.app.runtime.orchestration.repositories.plugin_attempt_repository import (
+    plugin_attempt_repository as default_plugin_attempt_repository,
+)
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxService,
@@ -52,6 +55,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
+    from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
 
 
 @dataclass
@@ -78,6 +82,31 @@ def _session_write_snapshot(session: Any) -> tuple[Any, Any]:
     return (
         getattr(session, "status", None),
         getattr(session, "awaiting_device_command_code", None),
+    )
+
+
+def _authoritative_snapshot_matches(locked: Any, expected: AttemptSnapshot) -> bool:
+    """锁后比较 lease、乐观版本与全部 immutable pin。"""
+
+    inbox = locked.inbox
+    session = locked.session
+    session_definition_identity = getattr(session, "plugin_identity", None)
+    if session_definition_identity is None:
+        plugin_key = getattr(session, "plugin_key", None)
+        contract_version = getattr(session, "contract_version", None)
+        if isinstance(plugin_key, str) and plugin_key and isinstance(contract_version, str) and contract_version:
+            session_definition_identity = f"{plugin_key}@{contract_version}"
+    return (
+        getattr(inbox, "processor_token", None) == expected.processor_token
+        and getattr(session, "version", None) == expected.session_version
+        and getattr(session, "plugin_state_version", None) == expected.plugin_state_version
+        and (expected.definition_identity is None or session_definition_identity == expected.definition_identity)
+        and (expected.binding_id is None or getattr(session, "plugin_binding_id", None) == expected.binding_id)
+        and (
+            expected.binding_version is None
+            or getattr(session, "plugin_binding_version", None) == expected.binding_version
+        )
+        and (expected.index_digest is None or getattr(session, "plugin_index_digest", None) == expected.index_digest)
     )
 
 
@@ -288,9 +317,11 @@ class RuntimeInboxWriteBackService:
         *,
         write_back_service: Any = None,
         inbox_service: RuntimeInboxService | None = None,
+        plugin_attempt_repository: PluginAttemptRepository | Any | None = None,
     ) -> None:
         self._write_back_service = write_back_service
         self._inbox_service = inbox_service
+        self._plugin_attempt_repository = plugin_attempt_repository or default_plugin_attempt_repository
 
     @property
     def write_back_service(self) -> Any:
@@ -314,23 +345,47 @@ class RuntimeInboxWriteBackService:
         db: Any,
         *,
         expected_snapshot: AttemptSnapshot,
-        current_snapshot: Callable[[], Awaitable[AttemptSnapshot]],
+        inbox_id: int,
+        session_id: int,
+        workline_id: int,
+        trace_id: str,
         write_set: AttemptWriteSet,
-        persist_evidence: Callable[[tuple[Any, ...]], Awaitable[None]],
-        persist_state: Callable[[Any], Awaitable[None]],
-        persist_intents: Callable[[tuple[Any, ...]], Awaitable[None]],
-        mark_terminal: Callable[[], Awaitable[None]],
     ) -> WriteDisposition:
-        """重校验后在同一事务落 evidence、state、intents 与 Inbox 终态。"""
+        """锁定权威行后重校验，并在同一事务落完整 attempt 结果。"""
 
-        if await current_snapshot() != expected_snapshot:
+        locked = await self._plugin_attempt_repository.lock_authoritative(
+            db,
+            inbox_id=inbox_id,
+            session_id=session_id,
+        )
+        if locked is None or not _authoritative_snapshot_matches(locked, expected_snapshot):
             await db.rollback()
             return WriteDisposition.SAFE_RETRY
         try:
-            await persist_evidence(write_set.evidence)
-            await persist_state(write_set.next_state)
-            await persist_intents(write_set.intents)
-            await mark_terminal()
+            await self._plugin_attempt_repository.persist_locked_attempt(
+                db,
+                locked=locked,
+                workline_id=workline_id,
+                trace_id=trace_id,
+                snapshot=expected_snapshot,
+                write_set=write_set,
+            )
+            if write_set.hold_reason is None:
+                terminal_updated = await self.inbox_service.mark_processed(
+                    db,
+                    inbox_id=inbox_id,
+                    lease_token=expected_snapshot.processor_token,
+                )
+            else:
+                terminal_updated = await self.inbox_service.mark_failed(
+                    db,
+                    inbox_id=inbox_id,
+                    lease_token=expected_snapshot.processor_token,
+                    error_code=write_set.hold_reason,
+                    error_message="recorded replay failed closed to Hold",
+                    retryable=False,
+                )
+            _require_fenced_update(terminal_updated, action="plugin_attempt_terminal", inbox_id=inbox_id)
             await db.commit()
         except Exception:
             await db.rollback()

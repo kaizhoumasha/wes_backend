@@ -70,6 +70,18 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
 )
 from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
 from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
+from src.app.runtime.system_capabilities.replay import (
+    RecordedReplayResolution,
+    TimelineRecordedReplayService,
+)
+from src.app.runtime.workline_plugins.attempt_coordinator import (
+    AttemptSnapshot,
+    AttemptWriteSet,
+    PluginAttemptContext,
+    PluginAttemptRunner,
+    UnavailablePluginAttemptRunner,
+    WriteDisposition,
+)
 from src.app.workline.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
     WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
@@ -257,6 +269,8 @@ class RuntimeInboxProcessorBridge:
         inbox_service: RuntimeInboxService | None = None,
         inbox_repository: RuntimeInboxRepository | None = None,
         replay_source_validator: RuntimeInboxReplaySourceValidator | None = None,
+        plugin_attempt_runner: PluginAttemptRunner | None = None,
+        recorded_replay_service: TimelineRecordedReplayService | None = None,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._processor_service = processor_service or RuntimeInboxOrchestratorDelegate()
@@ -266,6 +280,8 @@ class RuntimeInboxProcessorBridge:
         self._replay_source_validator = replay_source_validator or RuntimeInboxReplaySourceValidator(
             self._inbox_repository
         )
+        self._plugin_attempt_runner = plugin_attempt_runner or UnavailablePluginAttemptRunner()
+        self._recorded_replay_service = recorded_replay_service or TimelineRecordedReplayService()
 
     @property
     def inbox_service(self) -> RuntimeInboxService:
@@ -387,7 +403,7 @@ class RuntimeInboxProcessorBridge:
 
         # 每次 claim 都建立全新的 Port/Context/Gateway；即使 replay 验真失败，
         # 也不允许复用上一个 attempt 的 handler 或 evidence cache。
-        _attempt_runtime = self.create_attempt_runtime(processor_token)
+        attempt_runtime = self.create_attempt_runtime(processor_token)
 
         diagnostic_inbox = _snapshot_inbox_for_diagnostic(inbox)
         inbox_pk_text = str(diagnostic_inbox.id or getattr(inbox, "id", "unknown"))
@@ -636,6 +652,17 @@ class RuntimeInboxProcessorBridge:
                 result["processed"] += 1
                 return result
 
+            if isinstance(getattr(session, "plugin_binding_id", None), int):
+                return await self._process_platform_plugin_attempt(
+                    db,
+                    inbox=inbox,
+                    session=session,
+                    workline=workline,
+                    resolved_event_type=resolved_event_type,
+                    processor_token=processor_token,
+                    attempt_runtime=attempt_runtime,
+                )
+
             # ========== Stage 2: Orchestration (delegated) ==========
             write_state = WriteBackState()
             session_snapshot = _session_write_snapshot(session)
@@ -865,6 +892,132 @@ class RuntimeInboxProcessorBridge:
 
         await publish_deferred_sse_events(db)
         return result
+
+    async def _process_platform_plugin_attempt(
+        self,
+        db: AsyncSession,
+        *,
+        inbox: Any,
+        session: Any,
+        workline: Any,
+        resolved_event_type: str,
+        processor_token: str,
+        attempt_runtime: RuntimeInboxAttemptRuntime,
+    ) -> ProcessResult:
+        """平台插件三阶段：固定快照 → 无 DB 决策 → 锁后原子写回。"""
+
+        inbox_id = resolve_required_pk(inbox, "inbox", "id", "inbox_id")
+        session_id = resolve_required_pk(session, "session", "id", "session_id")
+        workline_id = resolve_required_pk(workline, "workline", "id", "workline_id")
+        snapshot = _plugin_attempt_snapshot(session, processor_token=processor_token)
+        context = PluginAttemptContext(
+            attempt_id=processor_token,
+            inbox_id=inbox_id,
+            session_id=session_id,
+            workline_id=workline_id,
+            event_type=resolved_event_type,
+            payload=deepcopy(_payload_for_inbox(inbox)),
+            plugin_state=deepcopy(dict(getattr(session, "plugin_state_json", {}) or {})),
+            snapshot=snapshot,
+            runtime=attempt_runtime,
+        )
+
+        replay_resolution: RecordedReplayResolution | None = None
+        if bool(getattr(inbox, "is_manual_replay", False)):
+            replay_resolution = await self._load_recorded_replay(db, inbox=inbox, snapshot=snapshot)
+
+        # Stage 1 显式提交，释放事务、连接占用和可能持有的行锁。
+        await db.commit()
+
+        # Stage 2 不接收 db/session/repository。Recorded replay 直接解码，
+        # 因此不会调用 runner 或 Gateway handler。
+        if replay_resolution is None:
+            write_set = await self._plugin_attempt_runner.run(context)
+        else:
+            write_set = _write_set_from_recorded_replay(replay_resolution, fallback_state=context.plugin_state)
+
+        # Stage 3 在新短事务内锁权威行、重校验并原子写回。
+        disposition = await self._writeback_service.commit_plugin_attempt(
+            db,
+            expected_snapshot=snapshot,
+            inbox_id=inbox_id,
+            session_id=session_id,
+            workline_id=workline_id,
+            trace_id=getattr(inbox, "trace_id", None) or "",
+            write_set=write_set,
+        )
+        result = _empty_result()
+        result["processed"] = 1
+        if disposition is WriteDisposition.SAFE_RETRY:
+            result["resource_wait"] = 1
+        elif write_set.hold_reason is not None:
+            result["failed"] = 1
+        else:
+            result["success"] = 1
+        return result
+
+    async def _load_recorded_replay(
+        self,
+        db: AsyncSession,
+        *,
+        inbox: Any,
+        snapshot: AttemptSnapshot,
+    ) -> RecordedReplayResolution:
+        if snapshot.definition_identity is None or snapshot.binding_identity is None or snapshot.index_digest is None:
+            return RecordedReplayResolution(hold_reason="RECORDED_REPLAY_PIN_MISSING")
+        return await self._recorded_replay_service.load(
+            db,
+            source_inbox_id=int(inbox.replay_root_source_inbox_id),
+            expected_definition_identity=snapshot.definition_identity,
+            expected_binding_identity=snapshot.binding_identity,
+            expected_index_digest=snapshot.index_digest,
+        )
+
+
+def _plugin_attempt_snapshot(session: Any, *, processor_token: str) -> AttemptSnapshot:
+    definition_identity = getattr(session, "plugin_identity", None)
+    if definition_identity is None:
+        plugin_key = getattr(session, "plugin_key", None)
+        contract_version = getattr(session, "contract_version", None)
+        if isinstance(plugin_key, str) and plugin_key and isinstance(contract_version, str) and contract_version:
+            definition_identity = f"{plugin_key}@{contract_version}"
+    return AttemptSnapshot(
+        processor_token=processor_token,
+        session_version=int(getattr(session, "version", 0)),
+        plugin_state_version=int(getattr(session, "plugin_state_version", 0)),
+        definition_identity=definition_identity,
+        binding_id=optional_int(getattr(session, "plugin_binding_id", None)),
+        binding_version=optional_int(getattr(session, "plugin_binding_version", None)),
+        index_digest=optional_str(getattr(session, "plugin_index_digest", None)),
+    )
+
+
+def _write_set_from_recorded_replay(
+    resolution: RecordedReplayResolution,
+    *,
+    fallback_state: dict[str, Any],
+) -> AttemptWriteSet:
+    if resolution.hold_reason is not None or resolution.decision is None:
+        return AttemptWriteSet(
+            evidence=(),
+            next_state=fallback_state,
+            intents=(),
+            outcome_code="HOLD",
+            hold_reason=resolution.hold_reason or "RECORDED_REPLAY_RECORD_MISSING",
+        )
+    decision = resolution.decision
+    next_state = decision.get("next_state")
+    if not isinstance(next_state, dict):
+        next_state = fallback_state
+    raw_intents = decision.get("intents")
+    intents = tuple(raw_intents) if isinstance(raw_intents, list) else ()
+    outcome_code = decision.get("outcome_code")
+    return AttemptWriteSet(
+        evidence=resolution.evidence,
+        next_state=next_state,
+        intents=intents,
+        outcome_code=outcome_code if isinstance(outcome_code, str) and outcome_code else "RECORDED",
+    )
 
 
 def _kind_value(entity: Any) -> str | None:

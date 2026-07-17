@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
+
+import pytest
 
 
 def evidence_payload() -> dict[str, object]:
@@ -103,3 +106,65 @@ def test_recorded_replay_missing_or_mismatched_pin_fails_closed_to_hold() -> Non
     )
     assert resolution.decision is None
     assert resolution.hold_reason == "RECORDED_REPLAY_PIN_MISSING"
+
+
+@pytest.mark.asyncio
+async def test_recorded_replay_service_loads_only_timeline_decision_records() -> None:
+    from src.app.runtime.system_capabilities.replay import TimelineRecordedReplayService
+
+    evidence = evidence_payload()
+    rows = [
+        SimpleNamespace(
+            payload_json={
+                "record_type": "SYSTEM_CAPABILITY_EVIDENCE",
+                "evidence": evidence,
+            }
+        ),
+        SimpleNamespace(
+            payload_json={
+                "record_type": "PLUGIN_DECISION",
+                "definition_identity": "plugin.rough-sorter@v1:" + "c" * 64,
+                "binding_identity": "binding:17:3",
+                "index_digest": "d" * 64,
+                "evidence_keys": [["wms.lookup", "v1", "a" * 64, "b" * 64]],
+                "decision": {"outcome_code": "ROUTE_A", "intents": []},
+            }
+        ),
+    ]
+
+    class Repository:
+        async def list_recorded_decisions(self, _db: object, *, source_inbox_id: int) -> list[object]:
+            assert source_inbox_id == 71
+            return rows
+
+    resolution = await TimelineRecordedReplayService(Repository()).load(
+        object(),
+        source_inbox_id=71,
+        expected_definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        expected_binding_identity="binding:17:3",
+        expected_index_digest="d" * 64,
+    )
+
+    assert resolution.hold_reason is None
+    assert resolution.decision == {"outcome_code": "ROUTE_A", "intents": []}
+
+
+@pytest.mark.asyncio
+async def test_recorded_replay_service_missing_timeline_record_fails_closed() -> None:
+    from src.app.runtime.system_capabilities.replay import TimelineRecordedReplayService
+
+    class Repository:
+        async def list_recorded_decisions(self, _db: object, *, source_inbox_id: int) -> list[object]:
+            _ = source_inbox_id
+            return []
+
+    resolution = await TimelineRecordedReplayService(Repository()).load(
+        object(),
+        source_inbox_id=71,
+        expected_definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        expected_binding_identity="binding:17:3",
+        expected_index_digest="d" * 64,
+    )
+
+    assert resolution.decision is None
+    assert resolution.hold_reason == "RECORDED_REPLAY_RECORD_MISSING"

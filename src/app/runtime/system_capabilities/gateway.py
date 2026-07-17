@@ -74,7 +74,7 @@ class SystemCapabilityGateway:
         self._context = context
         self._admission_profile = admission_profile
         self._limits = limits or GatewayLimits()
-        self._redactor = redactor or (lambda value: value)
+        self._redactor = redactor
         self._authority = authority
         self._source = source
         self._source_version = source_version
@@ -121,12 +121,22 @@ class SystemCapabilityGateway:
 
         task = asyncio.create_task(self._execute_once(definition, request))
         self._inflight[query_key] = task
+        task.add_done_callback(lambda completed: self._complete_query(query_key, completed))
+        return await asyncio.shield(task)
+
+    def _complete_query(self, query_key: str, task: asyncio.Task[GatewayQueryResult]) -> None:
+        """由底层 task 唯一负责 cache/cleanup，waiter 取消不能破坏共享查询。"""
+
+        if self._inflight.get(query_key) is not task:
+            return
+        self._inflight.pop(query_key, None)
+        if task.cancelled():
+            return
         try:
-            result = await asyncio.shield(task)
-            self._cache[query_key] = result
-            return result
-        finally:
-            self._inflight.pop(query_key, None)
+            self._cache[query_key] = task.result()
+        except BaseException:
+            # task 自身异常/取消时不缓存；下一次调用可重新建立干净查询。
+            return
 
     async def _execute_once(
         self,
@@ -151,7 +161,7 @@ class SystemCapabilityGateway:
     ) -> GatewayQueryResult:
         raw_output = outcome.model_dump(mode="json")
         try:
-            redacted = self._redactor(raw_output)
+            redacted = self._redact_summary(definition, raw_output)
             if not isinstance(redacted, dict):
                 raise TypeError("redactor must return an object")
             evidence = QueryEvidence(
@@ -175,6 +185,35 @@ class SystemCapabilityGateway:
             return self._violation("EVIDENCE_TOTAL_LIMIT_EXCEEDED", "total evidence size limit exceeded")
         self._total_evidence_bytes += evidence_bytes
         return GatewayQueryResult(outcome=outcome, evidence=evidence)
+
+    def _redact_summary(
+        self,
+        definition: SystemCapabilityDefinition,
+        raw_output: dict[str, Any],
+    ) -> dict[str, Any]:
+        """metadata policy 只保留类型、稳定码与大小，绝不保留业务值。"""
+
+        if definition.audit_policy not in {"metadata", "redacted"}:
+            raise ValueError("unsupported audit policy")
+        if definition.audit_policy == "redacted":
+            if self._redactor is None:
+                raise ValueError("redacted audit policy requires an explicit redactor")
+            explicitly_redacted = self._redactor(raw_output)
+            if not isinstance(explicitly_redacted, dict):
+                raise TypeError("redactor must return an object")
+            return explicitly_redacted
+        # metadata policy 仍执行显式 redactor 作为可用性门禁，但不会持久化其业务字段。
+        if self._redactor is not None and not isinstance(self._redactor(raw_output), dict):
+            raise TypeError("redactor must return an object")
+        stable_code = raw_output.get("reason_code") or raw_output.get("error_code")
+        summary: dict[str, Any] = {
+            "kind": raw_output.get("kind", "unknown"),
+            "payload_type": type(raw_output.get("payload")).__name__,
+            "payload_bytes": len(canonical_json(raw_output).encode("utf-8")),
+        }
+        if isinstance(stable_code, str):
+            summary["code"] = stable_code
+        return summary
 
     @staticmethod
     def _violation(error_code: str, message: str) -> GatewayQueryResult:

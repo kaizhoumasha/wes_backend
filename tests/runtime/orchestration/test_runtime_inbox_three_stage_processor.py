@@ -380,6 +380,157 @@ def test_processor_creates_fresh_attempt_runtime_for_every_claim() -> None:
     assert first.port_registry is not second.port_registry
 
 
+@pytest.mark.asyncio
+async def test_platform_plugin_claim_runs_three_stages_without_db_in_query_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+
+    events: list[str] = []
+    inbox = _make_inbox(
+        inbox_id=91,
+        payload_json={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "BOX-1"}},
+    )
+    inbox.event_type = "SCAN_COMPLETED"
+    session = SimpleNamespace(
+        id=10,
+        version=7,
+        plugin_state_version=3,
+        plugin_state_json={"step": 1},
+        plugin_identity="plugin.rough-sorter@v1:" + "a" * 64,
+        plugin_binding_id=17,
+        plugin_binding_version=4,
+        plugin_index_digest="b" * 64,
+        status="RUNNING",
+        awaiting_device_command_code=None,
+    )
+    workline = SimpleNamespace(id=20)
+
+    class Db:
+        in_transaction = True
+
+        async def commit(self) -> None:
+            events.append("claim-snapshot-commit-release")
+            self.in_transaction = False
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+            self.in_transaction = False
+
+    db = Db()
+
+    class Repository:
+        async def get_by_id(self, *_args: object) -> object:
+            return inbox
+
+    class Runner:
+        async def run(self, context: object) -> AttemptWriteSet:
+            assert db.in_transaction is False
+            assert not hasattr(context, "db")
+            assert not hasattr(context, "session")
+            assert not hasattr(context, "repository")
+            events.append("query-decision")
+            return AttemptWriteSet(
+                evidence=("evidence",),
+                next_state={"step": 2},
+                intents=(),
+                outcome_code="ROUTE_A",
+            )
+
+    class WriteBack:
+        async def commit_plugin_attempt(self, _db: object, **kwargs: object) -> WriteDisposition:
+            assert kwargs["inbox_id"] == 91
+            assert kwargs["session_id"] == 10
+            events.append("lock-revalidate-write")
+            return WriteDisposition.COMMITTED
+
+    async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+        return session, workline, None, None, {}, object(), True
+
+    async def not_duplicate(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
+        load_related,
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._is_duplicate_entry_event",
+        not_duplicate,
+    )
+
+    result = await RuntimeInboxProcessorBridge(
+        inbox_repository=Repository(),  # type: ignore[arg-type]
+        writeback_service=WriteBack(),  # type: ignore[arg-type]
+        plugin_attempt_runner=Runner(),
+    ).process_claimed(db, claim={"id": 91, "processor_token": "lease-1"})
+
+    assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+    assert events == ["claim-snapshot-commit-release", "query-decision", "lock-revalidate-write"]
+
+
+@pytest.mark.asyncio
+async def test_platform_query_stage_releases_real_async_session_transaction() -> None:
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    class Runner:
+        def __init__(self) -> None:
+            self.db: object | None = None
+
+        async def run(self, context: object) -> AttemptWriteSet:
+            assert self.db is not None
+            assert self.db.in_transaction() is False  # type: ignore[union-attr]
+            assert not hasattr(context, "db")
+            return AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A")
+
+    class WriteBack:
+        async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
+            return WriteDisposition.COMMITTED
+
+    runner = Runner()
+    bridge = RuntimeInboxProcessorBridge(
+        plugin_attempt_runner=runner,
+        writeback_service=WriteBack(),  # type: ignore[arg-type]
+    )
+    inbox = _make_inbox(inbox_id=91, payload_json={"event_type": "SCAN_COMPLETED"})
+    inbox.event_type = "SCAN_COMPLETED"
+    session = SimpleNamespace(
+        id=10,
+        version=7,
+        plugin_state_version=3,
+        plugin_state_json={"step": 1},
+        plugin_identity="plugin@v1:" + "a" * 64,
+        plugin_binding_id=17,
+        plugin_binding_version=4,
+        plugin_index_digest="b" * 64,
+    )
+    try:
+        async with session_factory() as db:
+            runner.db = db
+            await db.begin()
+            await db.execute(text("SELECT 1"))
+            assert db.in_transaction() is True
+            result = await bridge._process_platform_plugin_attempt(
+                db,
+                inbox=inbox,
+                session=session,
+                workline=SimpleNamespace(id=20),
+                resolved_event_type="SCAN_COMPLETED",
+                processor_token="lease-1",
+                attempt_runtime=bridge.create_attempt_runtime("lease-1"),
+            )
+            assert result["success"] == 1
+            assert db.in_transaction() is False
+    finally:
+        await engine.dispose()
+
+
 def _replay_envelope(*, original_kind: str, original_payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "request_id": "req-1",
@@ -403,6 +554,104 @@ def _replay_envelope(*, original_kind: str, original_payload: dict[str, Any]) ->
         "original_event_id": "event-7",
         "original_causation_id": "cause-7",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_pin", [False, True])
+async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_pin_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    missing_pin: bool,
+) -> None:
+    from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
+    from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
+
+    envelope = _replay_envelope(
+        original_kind="DEVICE_EVENT",
+        original_payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "BOX-1"}},
+    )
+    inbox = _make_inbox(inbox_id=91, kind="REPLAY_REQUEST", payload_json=envelope)
+    inbox.event_type = "REPLAY_REQUEST"
+    session = SimpleNamespace(
+        id=10,
+        version=7,
+        plugin_state_version=3,
+        plugin_state_json={"step": 1},
+        plugin_identity=None if missing_pin else "plugin.rough-sorter@v1:" + "a" * 64,
+        plugin_binding_id=17,
+        plugin_binding_version=4,
+        plugin_index_digest="b" * 64,
+        status="RUNNING",
+        awaiting_device_command_code=None,
+    )
+    workline = SimpleNamespace(id=20)
+    runner_calls = 0
+    captured_write_set: object | None = None
+
+    class Db:
+        async def commit(self) -> None:
+            pass
+
+        async def rollback(self) -> None:
+            pass
+
+    class Repository:
+        async def get_by_id(self, *_args: object) -> object:
+            return inbox
+
+    class Validator:
+        async def validate_for_consumption(self, *_args: object, **_kwargs: object) -> object:
+            return RuntimeInboxReplaySourceValidation(envelope=envelope, root_source=SimpleNamespace(id=7))
+
+    class Runner:
+        async def run(self, _context: object) -> object:
+            nonlocal runner_calls
+            runner_calls += 1
+            raise AssertionError("recorded replay must not invoke live runner")
+
+    class ReplayService:
+        async def load(self, _db: object, **kwargs: object) -> RecordedReplayResolution:
+            assert kwargs["source_inbox_id"] == 7
+            return RecordedReplayResolution(
+                evidence=(),
+                decision={"outcome_code": "ROUTE_A", "intents": [], "next_state": {"step": 2}},
+            )
+
+    class WriteBack:
+        async def commit_plugin_attempt(self, _db: object, **kwargs: object) -> WriteDisposition:
+            nonlocal captured_write_set
+            captured_write_set = kwargs["write_set"]
+            return WriteDisposition.COMMITTED
+
+    async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+        return session, workline, None, None, {}, object(), True
+
+    async def not_duplicate(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
+        load_related,
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._is_duplicate_entry_event",
+        not_duplicate,
+    )
+    result = await RuntimeInboxProcessorBridge(
+        inbox_repository=Repository(),  # type: ignore[arg-type]
+        writeback_service=WriteBack(),  # type: ignore[arg-type]
+        replay_source_validator=Validator(),  # type: ignore[arg-type]
+        plugin_attempt_runner=Runner(),  # type: ignore[arg-type]
+        recorded_replay_service=ReplayService(),  # type: ignore[arg-type]
+    ).process_claimed(Db(), claim={"id": 91, "processor_token": "lease-1"})
+
+    assert runner_calls == 0
+    assert captured_write_set is not None
+    if missing_pin:
+        assert captured_write_set.hold_reason == "RECORDED_REPLAY_PIN_MISSING"  # type: ignore[union-attr]
+        assert result["failed"] == 1
+    else:
+        assert captured_write_set.outcome_code == "ROUTE_A"  # type: ignore[union-attr]
+        assert result["success"] == 1
 
 
 @pytest.mark.parametrize(

@@ -17,8 +17,8 @@ class QueryEvidence(BaseModel):
 
     capability_key: str = Field(min_length=1)
     contract_version: str = Field(min_length=1)
-    input_hash: str = Field(min_length=64, max_length=64)
-    output_hash: str = Field(min_length=64, max_length=64)
+    input_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     authority: str = Field(min_length=1)
     source: str = Field(min_length=1)
     evidence_at: datetime

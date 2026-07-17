@@ -59,7 +59,7 @@ class Handler:
         return QueryOutput(doubled=await self._port.read(request.value))
 
 
-def definition(*, timeout_seconds: float = 0.1) -> SystemCapabilityDefinition:
+def definition(*, timeout_seconds: float = 0.1, audit_policy: str = "metadata") -> SystemCapabilityDefinition:
     return SystemCapabilityDefinition(
         capability_key="wms.lookup",
         contract_version="v1",
@@ -71,7 +71,7 @@ def definition(*, timeout_seconds: float = 0.1) -> SystemCapabilityDefinition:
         admission="provider-contract",
         timeout_seconds=timeout_seconds,
         completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
-        audit_policy="metadata",
+        audit_policy=audit_policy,
     )
 
 
@@ -179,6 +179,22 @@ async def test_same_attempt_coalesces_canonical_query_but_new_attempt_does_not_c
 
 
 @pytest.mark.asyncio
+async def test_cancelled_first_waiter_keeps_shared_query_until_handler_finishes() -> None:
+    Handler.delay = 0.03
+    scoped = gateway()
+    first_waiter = asyncio.create_task(scoped.execute("wms.lookup", "v1", {"value": 5}))
+    await asyncio.sleep(0.005)
+    first_waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first_waiter
+
+    result = await scoped.execute("wms.lookup", "v1", {"value": 5})
+
+    assert isinstance(result.outcome, Success)
+    assert Handler.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_query_limits_and_redaction_failure_are_fail_closed() -> None:
     from src.app.runtime.extension_identity import canonical_json
     from src.app.runtime.system_capabilities.gateway import GatewayLimits
@@ -223,3 +239,41 @@ async def test_query_limits_and_redaction_failure_are_fail_closed() -> None:
     assert isinstance(redaction.outcome, ContractViolation)
     assert redaction.outcome.error_code == "EVIDENCE_REDACTION_FAILED"
     assert redaction.evidence is None
+
+
+@pytest.mark.asyncio
+async def test_default_metadata_audit_never_records_business_values_or_failure_messages() -> None:
+    from src.app.runtime.extension_identity import canonical_json
+
+    Handler.result = Success(payload={"doubled": 2, "password": "sensitive-success"})
+    success = await gateway(attempt_id="metadata-success").execute("wms.lookup", "v1", {"value": 1})
+    assert success.evidence is not None
+    success_summary = canonical_json(success.evidence.summary)
+    assert "sensitive-success" not in success_summary
+    assert "password" not in success_summary
+
+    Handler.result = BusinessReject(
+        reason_code="DENIED",
+        message="sensitive-failure-message",
+        details={"token": "sensitive-token"},
+    )
+    failure = await gateway(attempt_id="metadata-failure").execute("wms.lookup", "v1", {"value": 1})
+    assert failure.evidence is not None
+    failure_summary = canonical_json(failure.evidence.summary)
+    assert "sensitive-failure-message" not in failure_summary
+    assert "sensitive-token" not in failure_summary
+    assert "token" not in failure_summary
+
+    registry = CapabilityPortRegistry()
+    registry.register(QueryPort, FakeQueryPort)
+    from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
+
+    unsupported = await SystemCapabilityGateway(
+        attempt_id="unsupported-audit",
+        definitions={("wms.lookup", "v1"): definition(audit_policy="full-payload")},
+        allowed_capabilities=frozenset({("wms.lookup", "v1")}),
+        context=RuntimeCapabilityContext(registry),
+        admission_profile="provider-contract",
+    ).execute("wms.lookup", "v1", {"value": 1})
+    assert isinstance(unsupported.outcome, ContractViolation)
+    assert unsupported.evidence is None

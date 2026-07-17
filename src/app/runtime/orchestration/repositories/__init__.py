@@ -37,6 +37,10 @@ from .object_transition_event_repository import (
     ObjectTransitionEventRepository,
     object_transition_event_repository,
 )
+from .plugin_attempt_repository import (
+    PluginAttemptRepository,
+    plugin_attempt_repository,
+)
 from .rack_position_repository import (
     WorklineRackPositionRepository,
     workline_rack_position_repository,
@@ -62,6 +66,10 @@ from .session_repository import (
 from .smt_inbound_handoff_repository import (
     SmtInboundHandoffRepository,
 )
+from .timeline_recorded_replay_repository import (
+    TimelineRecordedReplayRepository,
+    timeline_recorded_replay_repository,
+)
 from .workline_runtime_status_projection_repository import (
     WorklineRuntimeStatusProjectionRepository,
     workline_runtime_status_projection_repository,
@@ -73,12 +81,14 @@ __all__ = [
     "IdempotencyKeyRepository",
     "MaterialUnitRepository",
     "ObjectTransitionEventRepository",
+    "PluginAttemptRepository",
     "RuntimeHoldRepository",
     "RuntimeInboxRepository",
     "RuntimeInboxRetryMetadata",
     "RuntimeInboxSliSnapshot",
     "RuntimeLocationEventRepository",
     "SmtInboundHandoffRepository",
+    "TimelineRecordedReplayRepository",
     "WorklineBinCellReservationRepository",
     "WorklineDiagnosticRepository",
     "WorklineDispatchAttemptRepository",
@@ -90,9 +100,11 @@ __all__ = [
     "idempotency_key_repository",
     "material_unit_repository",
     "object_transition_event_repository",
+    "plugin_attempt_repository",
     "runtime_hold_repository",
     "runtime_inbox_repository",
     "runtime_location_event_repository",
+    "timeline_recorded_replay_repository",
     "workline_bin_cell_reservation_repository",
     "workline_diagnostic_repository",
     "workline_dispatch_attempt_repository",
