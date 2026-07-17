@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any
 
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
-from src.utils.timezone import timezone
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -27,20 +27,24 @@ _HANDLING_INTENTS = frozenset(
 _WMS_INTENTS = frozenset({RuntimeIntentKind.EXTERNAL_REQUEST})
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedRuntimeIntentLog:
+    """Service 层执行幂等 claim 所需的稳定数据与待写 ledger model。"""
+
+    claim: dict[str, Any]
+    model: RuntimeIntentLog
+
+
 class RuntimeIntentLogRepository:
     """只持有 RuntimeIntentLog ledger，拒绝写插件 state、Timeline 或 Inbox 终态。"""
 
-    def __init__(self, *, idempotency_guard: Any = None) -> None:
-        self._idempotency_guard = idempotency_guard
-
-    async def persist_attempt_intents(
+    def prepare_attempt_intents(
         self,
-        db: Any,
         *,
         locked: Any,
         snapshot: AttemptSnapshot,
         intents: Sequence[Any],
-    ) -> None:
+    ) -> tuple[PreparedRuntimeIntentLog, ...]:
         inbox = locked.inbox
         execution_session_id = getattr(inbox, "execution_session_id", None)
         correlation_id = getattr(inbox, "correlation_id", None)
@@ -49,41 +53,26 @@ class RuntimeIntentLogRepository:
         if snapshot.binding_id is None or snapshot.binding_version is None:
             raise ValueError("plugin intent ledger requires pinned binding identity")
 
+        prepared: list[PreparedRuntimeIntentLog] = []
         for ordinal, value in enumerate(intents):
             if not isinstance(value, RuntimeIntent):
                 raise TypeError("plugin attempt intents must be RuntimeIntent")
-            row = self._build_row(
-                value,
-                ordinal=ordinal,
-                inbox_id=getattr(inbox, "id", None),
-                execution_session_id=execution_session_id,
-                correlation_id=correlation_id,
-                snapshot=snapshot,
+            prepared.append(
+                self._build_prepared(
+                    value,
+                    ordinal=ordinal,
+                    inbox_id=getattr(inbox, "id", None),
+                    execution_session_id=execution_session_id,
+                    correlation_id=correlation_id,
+                    snapshot=snapshot,
+                )
             )
-            guard = self._idempotency_guard
-            if guard is None:
-                # 延迟解析避免 repositories package 初始化时反向触发 services 聚合导入。
-                from src.app.runtime.orchestration.services.idempotency_guard import idempotency_guard
+        return tuple(prepared)
 
-                guard = idempotency_guard
-            claim_result = await guard.claim_or_match(
-                db,
-                provider_code=row.provider_code,
-                operation_kind="plugin_intent",
-                idempotency_key=row.idempotency_key,
-                request_hash=row.request_hash,
-                execution_correlation_id=correlation_id,
-                now_ms=int(timezone.now_utc().timestamp() * 1000),
-                business_owner_key=_bounded_identity(
-                    f"{snapshot.definition_identity}:{snapshot.binding_identity}:{snapshot.index_digest}",
-                    limit=160,
-                ),
-            )
-            if getattr(claim_result, "value", claim_result) == "MATCH":
-                continue
-            db.add(row)
+    def add_prepared(self, db: Any, prepared: PreparedRuntimeIntentLog) -> None:
+        db.add(prepared.model)
 
-    def _build_row(
+    def _build_prepared(
         self,
         intent: RuntimeIntent,
         *,
@@ -92,7 +81,7 @@ class RuntimeIntentLogRepository:
         execution_session_id: int,
         correlation_id: str,
         snapshot: AttemptSnapshot,
-    ) -> RuntimeIntentLog:
+    ) -> PreparedRuntimeIntentLog:
         operation_key = intent.idempotency_key or f"inbox:{inbox_id}:intent:{ordinal}"
         raw_idempotency_key = f"plugin-attempt:{snapshot.binding_identity}:{operation_key}"
         idempotency_key = _bounded_identity(raw_idempotency_key, limit=160)
@@ -105,7 +94,7 @@ class RuntimeIntentLogRepository:
         request_hash = sha256(
             json.dumps(request_material, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
-        return RuntimeIntentLog(
+        model = RuntimeIntentLog(
             execution_session_id=execution_session_id,
             correlation_id=correlation_id,
             provider_code=_bounded_identity(intent.source_system or "workline-plugin", limit=60),
@@ -114,6 +103,20 @@ class RuntimeIntentLogRepository:
             idempotency_key=idempotency_key,
             request_hash=request_hash,
             dispatch_status="PENDING",
+        )
+        return PreparedRuntimeIntentLog(
+            claim={
+                "provider_code": model.provider_code,
+                "operation_kind": "plugin_intent",
+                "idempotency_key": model.idempotency_key,
+                "request_hash": model.request_hash,
+                "execution_correlation_id": correlation_id,
+                "business_owner_key": _bounded_identity(
+                    f"{snapshot.definition_identity}:{snapshot.binding_identity}:{snapshot.index_digest}",
+                    limit=160,
+                ),
+            },
+            model=model,
         )
 
 
@@ -136,4 +139,4 @@ def _bounded_identity(value: str, *, limit: int) -> str:
 
 runtime_intent_log_repository = RuntimeIntentLogRepository()
 
-__all__ = ["RuntimeIntentLogRepository", "runtime_intent_log_repository"]
+__all__ = ["PreparedRuntimeIntentLog", "RuntimeIntentLogRepository", "runtime_intent_log_repository"]

@@ -34,6 +34,12 @@ from src.app.runtime.orchestration.repositories.runtime_intent_log_repository im
     runtime_intent_log_repository as default_runtime_intent_log_repository,
 )
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
+from src.app.runtime.orchestration.services.idempotency_guard import (
+    ClaimResult,
+)
+from src.app.runtime.orchestration.services.idempotency_guard import (
+    idempotency_guard as default_idempotency_guard,
+)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxService,
     runtime_inbox_service,
@@ -48,6 +54,7 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
 )
 from src.app.workline.services.write_back_service import orchestrator_write_back_service
 from src.app.workline.utils import payload_dict
+from src.utils.timezone import timezone
 from src.utils.value_normalization import (
     canonical_event_type,
     optional_int,
@@ -322,11 +329,13 @@ class RuntimeInboxWriteBackService:
         inbox_service: RuntimeInboxService | None = None,
         plugin_attempt_repository: PluginAttemptRepository | Any | None = None,
         intent_log_repository: Any | None = None,
+        idempotency_guard: Any | None = None,
     ) -> None:
         self._write_back_service = write_back_service
         self._inbox_service = inbox_service
         self._plugin_attempt_repository = plugin_attempt_repository or default_plugin_attempt_repository
         self._intent_log_repository = intent_log_repository or default_runtime_intent_log_repository
+        self._idempotency_guard = idempotency_guard or default_idempotency_guard
 
     @property
     def write_back_service(self) -> Any:
@@ -376,12 +385,19 @@ class RuntimeInboxWriteBackService:
                 write_set=write_set,
             )
             if write_set.intents:
-                await self._intent_log_repository.persist_attempt_intents(
-                    db,
+                prepared_intents = self._intent_log_repository.prepare_attempt_intents(
                     locked=locked,
                     snapshot=expected_snapshot,
                     intents=write_set.intents,
                 )
+                for prepared in prepared_intents:
+                    claim_result = await self._idempotency_guard.claim_or_match(
+                        db,
+                        **prepared.claim,
+                        now_ms=int(timezone.now_utc().timestamp() * 1000),
+                    )
+                    if claim_result is ClaimResult.NEW:
+                        self._intent_log_repository.add_prepared(db, prepared)
             if write_set.hold_reason is None:
                 terminal_updated = await self.inbox_service.mark_processed(
                     db,

@@ -55,7 +55,11 @@ from .runtime_inbox_repository import (
     RuntimeInboxSliSnapshot,
     runtime_inbox_repository,
 )
-from .runtime_intent_log_repository import RuntimeIntentLogRepository, runtime_intent_log_repository
+from .runtime_intent_log_repository import (
+    PreparedRuntimeIntentLog,
+    RuntimeIntentLogRepository,
+    runtime_intent_log_repository,
+)
 from .runtime_location_event_repository import (
     RuntimeLocationEventRepository,
     runtime_location_event_repository,
@@ -83,6 +87,7 @@ __all__ = [
     "MaterialUnitRepository",
     "ObjectTransitionEventRepository",
     "PluginAttemptRepository",
+    "PreparedRuntimeIntentLog",
     "RuntimeHoldRepository",
     "RuntimeInboxRepository",
     "RuntimeInboxRetryMetadata",

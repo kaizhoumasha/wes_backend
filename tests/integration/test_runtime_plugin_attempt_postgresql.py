@@ -186,8 +186,8 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
 def test_intent_ledger_failure_rolls_back_decision_state_ledger_and_terminal() -> None:
     """ledger owner 失败后，decision/state/ledger/terminal 四者均不得部分提交。"""
 
-    class FailingIntentRepository:
-        async def persist_attempt_intents(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
+    class FailingIdempotencyGuard:
+        async def claim_or_match(self, *_args, **_kwargs) -> None:  # type: ignore[no-untyped-def]
             raise RuntimeError("intent ledger failed")
 
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
@@ -202,7 +202,7 @@ def test_intent_ledger_failure_rolls_back_decision_state_ledger_and_terminal() -
             with pytest.raises(RuntimeError, match="intent ledger failed"):
                 await RuntimeInboxWriteBackService(
                     inbox_service=service,
-                    intent_log_repository=FailingIntentRepository(),
+                    idempotency_guard=FailingIdempotencyGuard(),
                 ).commit_plugin_attempt(
                     db,
                     expected_snapshot=snapshot,
