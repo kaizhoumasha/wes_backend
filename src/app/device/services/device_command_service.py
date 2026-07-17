@@ -26,6 +26,7 @@ from src.app.device.repositories.command_repository import (
     DeviceCommandRepository,
     device_command_repository,
 )
+from src.app.device.repositories.device_repository import DeviceRepository, device_repository
 from src.core.base_service import BaseService
 from src.core.exceptions import NotFoundException
 from src.core.logger import logger
@@ -40,6 +41,10 @@ class DeviceCallbackResultOutcome:
 
     command: DeviceCommand
     late_callback_recorded: bool = False
+
+
+class StaleDeviceCommandPrecondition(ValueError):
+    """锁定后的设备事实与已准入前置条件不一致。"""
 
 
 def _device_command_result_trace_id(command: object, callback: CommandCallbackResult) -> str | None:
@@ -90,19 +95,24 @@ def _emit_device_command_result_observability(command: object, callback: Command
 
 
 class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
-    """设备指令服务（纯 CRUD 层）
+    """设备指令服务。
 
-    只负责数据访问操作，不包含业务逻辑。
-    业务逻辑（SDAF 流程）在 Celery 任务层实现。
+    常规 CRUD 与发送流程保持原有职责；Runtime 副作用入口只在外层事务中
+    锁定并校验权威设备事实，然后准备 DeviceCommand 与 Outbox，不执行外部 I/O。
     """
 
-    def __init__(self, repository: DeviceCommandRepository = device_command_repository) -> None:
+    def __init__(
+        self,
+        repository: DeviceCommandRepository = device_command_repository,
+        device_repository: DeviceRepository = device_repository,
+    ) -> None:
         """初始化服务"""
         super().__init__(
             repository,
             enable_cache=True,
             cache_prefix="app:device:command",
         )
+        self.device_repository = device_repository
         # HTTP 客户端配置
         self.http_timeout = 10.0  # 10 秒超时
         self.max_retries = 3
@@ -158,7 +168,10 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         db: AsyncSession,
         *,
         request: Any,
-        target_device: Any,
+        target_device_id: int | None,
+        target_device_code: str | None,
+        expected_fact_version: str,
+        expected_available: bool,
         session: Any,
         workline: Any,
         idempotency_key: str,
@@ -169,6 +182,31 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         from hashlib import sha256
 
         from src.app.sys.models import SystemOutbox, SystemOutboxDispatchType, SystemOutboxTargetType
+
+        target_device = await self.device_repository.get_runtime_effect_target_for_update(
+            db,
+            target_device_id=target_device_id,
+            target_device_code=target_device_code,
+        )
+        if target_device is None:
+            raise StaleDeviceCommandPrecondition("device target no longer exists")
+        actual_version = getattr(target_device, "version", None)
+        actual_fact_version = (
+            f"device:v{actual_version}"
+            if isinstance(actual_version, int) and not isinstance(actual_version, bool) and actual_version >= 0
+            else "device:v-1"
+        )
+        status = getattr(target_device, "device_status", None)
+        actual_available = (
+            getattr(target_device, "is_active", None) is True
+            and str(getattr(status, "value", status)) == "IDLE"
+            and getattr(target_device, "maintenance_mode", None) is False
+            and getattr(target_device, "current_command_id", None) is None
+        )
+        if actual_fact_version != expected_fact_version or actual_available != expected_available:
+            raise StaleDeviceCommandPrecondition("device fact changed")
+        if not actual_available:
+            raise StaleDeviceCommandPrecondition("device is unavailable for command write")
 
         device_id = getattr(target_device, "id", None)
         device_code = getattr(target_device, "device_code", None)

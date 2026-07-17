@@ -49,6 +49,33 @@ class DeviceRepository(BaseRepository[Device]):
         )
         return result.scalar_one_or_none()
 
+    async def get_runtime_effect_target_for_update(
+        self,
+        db: AsyncSession,
+        *,
+        target_device_id: int | None,
+        target_device_code: str | None,
+    ) -> Device | None:
+        """按固定身份锁定 Runtime 副作用目标；调用方事务负责提交或回滚。"""
+
+        if (target_device_id is None) == (target_device_code is None):
+            raise ValueError("runtime device target requires exactly one identity")
+        columns = cast("Any", Device).__table__.c
+        identity_clause = (
+            columns.id == target_device_id
+            if target_device_id is not None
+            else columns.device_code == target_device_code
+        )
+        result = await db.execute(
+            select(Device)
+            .where(
+                identity_clause,
+                columns.is_deleted.is_(False),
+            )
+            .with_for_update()
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_work_line_id(
         self,
         db: AsyncSession,

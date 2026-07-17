@@ -30,8 +30,13 @@ from src.app.runtime.orchestration.services.device_dispatch_policy import (
     DeviceRuntimeStatus,
     device_dispatch_policy,
 )
+from src.app.runtime.system_capabilities.device.device_command_write.contracts import DeviceCommandWriteAdmission
 from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_int, coerce_string_value, enum_value, resolve_entity_id
+
+
+class StaleRuntimeDeviceCommandAdmission(ValueError):
+    """Gateway 对外暴露的设备命令权威前置事实失效。"""
 
 
 def _payload_dict(value: Any) -> dict[str, Any]:
@@ -1042,21 +1047,36 @@ class DeviceCommandGateway:
 
 
 async def prepare_runtime_device_command_effect(
-    ctx: dict[str, Any], request: object, *, target_device: object, execution: object
+    ctx: dict[str, Any],
+    request: object,
+    *,
+    target_device_id: int | None,
+    target_device_code: str | None,
+    admission: DeviceCommandWriteAdmission,
+    execution: object,
 ) -> tuple[object, object]:
     """通过既有 device/runtime 桥接边界准备命令与 Outbox，不执行外部 I/O。"""
 
-    from src.app.device.services.device_command_service import device_command_service
-
-    return await device_command_service.prepare_runtime_effect(
-        ctx["db"],
-        request=request,
-        target_device=target_device,
-        session=ctx["session"],
-        workline=ctx["workline"],
-        idempotency_key=execution.idempotency_key,  # type: ignore[attr-defined]
-        trace_id=ctx.get("trace_id"),
+    from src.app.device.services.device_command_service import (
+        StaleDeviceCommandPrecondition,
+        device_command_service,
     )
+
+    try:
+        return await device_command_service.prepare_runtime_effect(
+            ctx["db"],
+            request=request,
+            target_device_id=target_device_id,
+            target_device_code=target_device_code,
+            expected_fact_version=admission.fact_version,
+            expected_available=admission.precondition.expected_available,
+            session=ctx["session"],
+            workline=ctx["workline"],
+            idempotency_key=execution.idempotency_key,  # type: ignore[attr-defined]
+            trace_id=ctx.get("trace_id"),
+        )
+    except StaleDeviceCommandPrecondition as exc:
+        raise StaleRuntimeDeviceCommandAdmission("device fact changed") from exc
 
 
 device_command_gateway = DeviceCommandGateway()

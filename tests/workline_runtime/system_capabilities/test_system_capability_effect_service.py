@@ -605,11 +605,13 @@ async def test_device_authoritative_fact_mismatch_creates_no_command_or_outbox(
 ) -> None:
     from importlib import import_module
 
-    calls: list[object] = []
+    from src.app.runtime.orchestration.services.device_command_gateway import StaleRuntimeDeviceCommandAdmission
+
+    calls: list[dict[str, object]] = []
 
     async def prepare(*_args: object, **_kwargs: object) -> tuple[object, object]:
-        calls.append(object())
-        raise AssertionError("stale device admission must not create command/outbox")
+        calls.append(_kwargs)
+        raise StaleRuntimeDeviceCommandAdmission("device fact changed")
 
     gateway_module = import_module("src.app.runtime.orchestration.services.device_command_gateway")
     monkeypatch.setattr(gateway_module, "prepare_runtime_device_command_effect", prepare)
@@ -623,17 +625,19 @@ async def test_device_authoritative_fact_mismatch_creates_no_command_or_outbox(
 
     assert isinstance(result.outcome, BusinessReject)
     assert result.outcome.reason_code == "STALE_PRECONDITION"
-    assert calls == []
+    assert len(calls) == 1
+    assert calls[0]["target_device_id"] == 71
+    assert calls[0]["admission"].fact_version == fact_version  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio
 async def test_device_matching_typed_admission_creates_one_command_and_outbox(monkeypatch: pytest.MonkeyPatch) -> None:
     from importlib import import_module
 
-    calls: list[object] = []
+    calls: list[dict[str, object]] = []
 
     async def prepare(*_args: object, **_kwargs: object) -> tuple[object, object]:
-        calls.append(object())
+        calls.append(_kwargs)
         return SimpleNamespace(command_code="CMD-71"), SimpleNamespace(dispatch_key="dispatch-71")
 
     gateway_module = import_module("src.app.runtime.orchestration.services.device_command_gateway")
@@ -655,6 +659,8 @@ async def test_device_matching_typed_admission_creates_one_command_and_outbox(mo
     assert isinstance(result.outcome, Success)
     assert result.outcome.payload.command_code == "CMD-71"
     assert len(calls) == 1
+    assert calls[0]["target_device_id"] == 71
+    assert calls[0]["admission"].fact_version == "device:v2"  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio
@@ -862,11 +868,32 @@ async def test_material_unit_mutation_service_participates_in_outer_transaction_
 @pytest.mark.asyncio
 async def test_device_command_runtime_entry_writes_command_and_outbox_without_remote_io_or_commit() -> None:
     from src.app.device.models.command import DeviceCommand
+    from src.app.device.repositories.device_repository import DeviceRepository
     from src.app.device.services.device_command_service import DeviceCommandService
     from src.app.sys.models import SystemOutbox
 
+    class _DeviceRepository(DeviceRepository):
+        async def get_runtime_effect_target_for_update(
+            self,
+            _db: object,
+            *,
+            target_device_id: int | None,
+            target_device_code: str | None,
+        ) -> object:
+            assert target_device_id == 71
+            assert target_device_code is None
+            return SimpleNamespace(
+                id=71,
+                device_code="ARM-71",
+                version=2,
+                device_status="IDLE",
+                maintenance_mode=False,
+                current_command_id=None,
+                is_active=True,
+            )
+
     db = _MutationDb()
-    command, outbox = await DeviceCommandService().prepare_runtime_effect(
+    command, outbox = await DeviceCommandService(device_repository=_DeviceRepository()).prepare_runtime_effect(
         db,  # type: ignore[arg-type]
         request=SimpleNamespace(
             action="PICK_AND_PUT",
@@ -875,7 +902,10 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
             payload={"business_key": "PKG-1"},
             command_code=None,
         ),
-        target_device=SimpleNamespace(id=71, device_code="ARM-71"),
+        target_device_id=71,
+        target_device_code=None,
+        expected_fact_version="device:v2",
+        expected_available=True,
         session=SimpleNamespace(id=31, workline_id=41, plugin_key="rough_sorter", contract_version="rough_sorter.v2"),
         workline=SimpleNamespace(id=41, plugin_key="rough_sorter"),
         idempotency_key="system-capability:device.device_command_write@v1:session:31:work-item:41:pick-1",
