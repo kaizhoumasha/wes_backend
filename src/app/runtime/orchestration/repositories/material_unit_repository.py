@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 
+from src.app.runtime.orchestration.material_fact_version import material_unit_fact_version
 from src.app.runtime.orchestration.models.material_unit import MaterialUnit
 from src.database.base_repository import BaseRepository
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+@dataclass(frozen=True, slots=True)
+class MaterialUnitFactSnapshot:
+    """Stage1 可安全携出 Repository 的最小料盘事实快照。"""
+
+    material_unit_id: int
+    fact_version: int | None
 
 
 class MaterialUnitRepository(BaseRepository[MaterialUnit]):
@@ -39,6 +49,19 @@ class MaterialUnitRepository(BaseRepository[MaterialUnit]):
         columns = cast("Any", MaterialUnit).__table__.c
         result = await db.execute(select(MaterialUnit).where(columns.id == material_unit_id).limit(1).with_for_update())
         return result.scalar_one_or_none()
+
+    async def get_fact_snapshot(self, db: AsyncSession, material_unit_id: int) -> MaterialUnitFactSnapshot | None:
+        """只读加载料盘事实版本，禁止 Service 直接访问 MaterialUnit 表。"""
+
+        columns = cast("Any", MaterialUnit).__table__.c
+        result = await db.execute(select(MaterialUnit).where(columns.id == material_unit_id).limit(1))
+        material_unit = result.scalar_one_or_none()
+        if material_unit is None:
+            return None
+        return MaterialUnitFactSnapshot(
+            material_unit_id=int(material_unit.id),
+            fact_version=material_unit_fact_version(material_unit),
+        )
 
     @staticmethod
     async def add_and_flush(db: AsyncSession, material_unit: MaterialUnit) -> None:
@@ -69,4 +92,4 @@ class MaterialUnitRepository(BaseRepository[MaterialUnit]):
 material_unit_repository = MaterialUnitRepository()
 
 
-__all__ = ["MaterialUnitRepository", "material_unit_repository"]
+__all__ = ["MaterialUnitFactSnapshot", "MaterialUnitRepository", "material_unit_repository"]

@@ -207,7 +207,7 @@ class SystemCapabilityIntentService:
     def _final_idempotency_key(ctx: Mapping[str, Any], intent: RuntimeIntent) -> str:
         session_id = getattr(ctx.get("session"), "id", None)
         work_item = ctx.get("work_item")
-        work_item_id = getattr(work_item, "id", None) or getattr(ctx.get("inbox"), "execution_work_item_id", None)
+        work_item_id = getattr(work_item, "id", None)
         raw = (
             f"system-capability:{intent.capability_key}@{intent.contract_version}:"
             f"session:{session_id}:work-item:{work_item_id}:{intent.operation_key}"

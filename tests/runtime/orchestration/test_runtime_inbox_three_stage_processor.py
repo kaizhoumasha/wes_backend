@@ -1339,6 +1339,61 @@ async def test_platform_query_stage_releases_real_async_session_transaction() ->
 
 
 @pytest.mark.asyncio
+async def test_platform_stage_one_loads_material_fact_through_repository() -> None:
+    from src.app.runtime.orchestration.repositories.material_unit_repository import MaterialUnitFactSnapshot
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+
+    class Db:
+        async def get(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("Stage1 service must not access MaterialUnit through db.get")
+
+        async def commit(self) -> None:
+            return None
+
+    class MaterialRepository:
+        async def get_fact_snapshot(self, _db: object, material_unit_id: int) -> MaterialUnitFactSnapshot:
+            assert material_unit_id == 31
+            return MaterialUnitFactSnapshot(material_unit_id=31, fact_version=73)
+
+    class Runner:
+        async def run(self, context: object) -> AttemptWriteSet:
+            assert context.snapshot.material_unit_id == 31  # type: ignore[union-attr]
+            assert context.snapshot.material_unit_version == 73  # type: ignore[union-attr]
+            return AttemptWriteSet(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
+
+    class WriteBack:
+        async def commit_plugin_attempt(self, _db: object, **_kwargs: object) -> WriteDisposition:
+            return WriteDisposition.COMMITTED
+
+    bridge = RuntimeInboxProcessorBridge(
+        plugin_attempt_runner=Runner(),
+        writeback_service=WriteBack(),  # type: ignore[arg-type]
+        material_unit_repository=MaterialRepository(),  # type: ignore[arg-type]
+    )
+    inbox = _make_inbox(inbox_id=91, payload_json={"event_type": "SCAN_COMPLETED"})
+    inbox.event_type = "SCAN_COMPLETED"
+    result = await bridge._process_platform_plugin_attempt(
+        Db(),  # type: ignore[arg-type]
+        inbox=inbox,
+        session=SimpleNamespace(
+            id=10,
+            version=7,
+            plugin_state_version=3,
+            plugin_state_json={},
+            plugin_binding_id=17,
+            current_material_unit_id=31,
+            status="RUNNING",
+        ),
+        workline=SimpleNamespace(id=20),
+        resolved_event_type="SCAN_COMPLETED",
+        processor_token="lease-1",
+        attempt_runtime=bridge.create_attempt_runtime("lease-1"),
+    )
+
+    assert result["success"] == 1
+
+
+@pytest.mark.asyncio
 async def test_platform_safe_retry_requeues_inbox_with_same_lease() -> None:
     from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
 

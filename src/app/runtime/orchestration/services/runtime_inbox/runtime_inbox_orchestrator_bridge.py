@@ -38,8 +38,11 @@ from src.app.runtime.orchestration.diagnostics import (
     map_failure_to_diagnostic,
 )
 from src.app.runtime.orchestration.effect_result import WriteBackDisposition
-from src.app.runtime.orchestration.material_fact_version import (
-    material_unit_fact_version as _material_unit_fact_version,
+from src.app.runtime.orchestration.repositories.material_unit_repository import (
+    MaterialUnitRepository,
+)
+from src.app.runtime.orchestration.repositories.material_unit_repository import (
+    material_unit_repository as default_material_unit_repository,
 )
 from src.app.runtime.orchestration.repositories.runtime_inbox_repository import (
     RuntimeInboxRepository,
@@ -499,6 +502,7 @@ class RuntimeInboxProcessorBridge:
         plugin_attempt_runner: PluginAttemptRunner | None = None,
         recorded_replay_service: TimelineRecordedReplayService | None = None,
         plugin_write_set_limits: PluginWriteSetLimits | None = None,
+        material_unit_repository: MaterialUnitRepository | None = None,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._processor_service = processor_service or RuntimeInboxOrchestratorDelegate()
@@ -512,6 +516,7 @@ class RuntimeInboxProcessorBridge:
         self._plugin_attempt_runner = plugin_attempt_runner or GeneratedPluginAttemptRunner()
         self._recorded_replay_service = recorded_replay_service or TimelineRecordedReplayService()
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
+        self._material_unit_repository = material_unit_repository or default_material_unit_repository
 
     @property
     def inbox_service(self) -> RuntimeInboxService:
@@ -1185,16 +1190,16 @@ class RuntimeInboxProcessorBridge:
         inbox_id = resolve_required_pk(inbox, "inbox", "id", "inbox_id")
         session_id = resolve_required_pk(session, "session", "id", "session_id")
         workline_id = resolve_required_pk(workline, "workline", "id", "workline_id")
-        material_unit = None
+        material_fact_version = None
         material_unit_id = optional_int(getattr(session, "current_material_unit_id", None))
         if material_unit_id is not None:
-            from src.app.runtime.orchestration.models.material_unit import MaterialUnit
-
-            material_unit = await db.get(MaterialUnit, material_unit_id)
+            material_snapshot = await self._material_unit_repository.get_fact_snapshot(db, material_unit_id)
+            if material_snapshot is not None:
+                material_fact_version = material_snapshot.fact_version
         snapshot = _plugin_attempt_snapshot(
             session,
             processor_token=processor_token,
-            material_unit_version=_material_unit_fact_version(material_unit),
+            material_unit_version=material_fact_version,
         )
         dispatch_request = None
         if isinstance(self._plugin_attempt_runner, GeneratedPluginAttemptRunner):

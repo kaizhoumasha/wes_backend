@@ -8,13 +8,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.app.runtime.extension_identity import sha256_digest
+from src.app.runtime.orchestration.material_fact_version import (
+    material_unit_fact_version as _material_unit_fact_version,
+)
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     GeneratedPluginAttemptRunner,
     RuntimeInboxProcessorBridge,
     _build_plugin_dispatch_request,
     _canonical_plugin_input,
-    _material_unit_fact_version,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     _authoritative_snapshot_matches,

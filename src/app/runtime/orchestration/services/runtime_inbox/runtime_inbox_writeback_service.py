@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.effect_result import (
     RuntimeIntentEffectResult,
     WriteBackDisposition,
@@ -435,7 +436,7 @@ class RuntimeInboxWriteBackService:
                     )
                     if claim_result is ClaimResult.NEW:
                         self._intent_log_repository.add_prepared(db, prepared)
-                await self.effect_applier.apply(
+                effect_result = await self.effect_applier.apply(
                     {
                         "db": db,
                         "session": locked.session,
@@ -450,6 +451,68 @@ class RuntimeInboxWriteBackService:
                     },
                     list(write_set.intents),
                 )
+                business_reject_evidence = getattr(effect_result, "business_reject_evidence", None)
+                if isinstance(business_reject_evidence, dict):
+                    reject_source = {
+                        "kind": _kind_value(locked.inbox),
+                        "payload_json": dict(getattr(locked.inbox, "payload_json", {}) or {}),
+                        "event_id": getattr(locked.inbox, "event_id", None),
+                        "trace_id": getattr(locked.inbox, "trace_id", None) or trace_id,
+                        "execution_session_id": getattr(locked.inbox, "execution_session_id", None),
+                        "correlation_id": getattr(locked.inbox, "correlation_id", None),
+                    }
+                    await db.rollback()
+                    if reject_source["payload_json"].get("logical_route") == "CAPABILITY_EFFECT_RESULT":
+                        terminal_updated = await self.inbox_service.mark_failed(
+                            db,
+                            inbox_id=inbox_id,
+                            lease_token=expected_snapshot.processor_token,
+                            error_code="CAPABILITY_EFFECT_REDECISION_REJECTED",
+                            error_message="capability result redecision rejected without recursive feedback",
+                            retryable=False,
+                        )
+                    else:
+                        feedback_digest = sha256_digest(business_reject_evidence)
+                        await self.inbox_service.accept_internal_event(
+                            db,
+                            event_type="CAPABILITY_EFFECT_RESULT",
+                            payload_json={
+                                "logical_route": "CAPABILITY_EFFECT_RESULT",
+                                "data": {
+                                    "session_id": session_id,
+                                    "effect_evidence": business_reject_evidence,
+                                },
+                            },
+                            trace_id=str(reject_source["trace_id"]),
+                            event_id=f"capability-effect-reject:{inbox_id}:{feedback_digest[:32]}",
+                            causation_id=(
+                                str(reject_source["event_id"]) if reject_source["event_id"] is not None else None
+                            ),
+                            workline_id=workline_id,
+                            execution_session_id=(
+                                int(reject_source["execution_session_id"])
+                                if isinstance(reject_source["execution_session_id"], int)
+                                else None
+                            ),
+                            correlation_id=(
+                                str(reject_source["correlation_id"])
+                                if isinstance(reject_source["correlation_id"], str)
+                                else None
+                            ),
+                            auto_commit=False,
+                        )
+                        terminal_updated = await self.inbox_service.mark_processed(
+                            db,
+                            inbox_id=inbox_id,
+                            lease_token=expected_snapshot.processor_token,
+                        )
+                    _require_fenced_update(
+                        terminal_updated,
+                        action="plugin_effect_business_reject_terminal",
+                        inbox_id=inbox_id,
+                    )
+                    await db.commit()
+                    return WriteDisposition.COMMITTED
             await self._plugin_attempt_repository.persist_locked_attempt(
                 db,
                 locked=locked,

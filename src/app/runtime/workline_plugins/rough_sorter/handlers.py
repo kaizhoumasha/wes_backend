@@ -32,6 +32,7 @@ from src.app.runtime.workline_plugins.contracts import PluginContext, PluginDeci
 
 from .inputs import (
     BusinessTimeoutInput,
+    CapabilityEffectResultInput,
     PickAndPutResultInput,
     ReplayRequestInput,
     RoughSorterInput,
@@ -101,6 +102,14 @@ async def decide(  # noqa: PLR0911 - route/state/correlation fail-closed 分支�
     _ = context
     if replay:
         return _decision("REPLAY_ACCEPTED_NOOP", state, zero_new_effect=True, evidence_only=True)
+    if isinstance(logical_input, CapabilityEffectResultInput):
+        return _decision(
+            "CAPABILITY_EFFECT_REJECTED",
+            state,
+            reason_code=logical_input.effect_evidence.outcome.reason_code,
+            evidence_only=True,
+            zero_new_effect=True,
+        )
     if isinstance(logical_input, ReplayRequestInput):
         if facts.replay_digest_matches is not False:
             return _decision("REPLAY_ACCEPTED_NOOP", state, zero_new_effect=True, evidence_only=True)

@@ -4,7 +4,13 @@ from src.app.runtime.workline_plugins.definition import WorklinePluginDefinition
 
 from .config import RoughSorterConfig
 from .handlers import RoughSorterFacts, decide
-from .inputs import parse_business_timeout, parse_pick_and_put_result, parse_replay_request, parse_scan_completed
+from .inputs import (
+    parse_business_timeout,
+    parse_capability_effect_result,
+    parse_pick_and_put_result,
+    parse_replay_request,
+    parse_scan_completed,
+)
 from .state import RoughSorterState
 
 DEFINITION = WorklinePluginDefinition(
@@ -12,7 +18,13 @@ DEFINITION = WorklinePluginDefinition(
     contract_version="rough_sorter.v2",
     config_model=RoughSorterConfig,
     state_model=RoughSorterState,
-    routes=("SCAN_COMPLETED", "PICK_AND_PUT_RESULT", "BUSINESS_TIMEOUT", "REPLAY_REQUEST"),
+    routes=(
+        "SCAN_COMPLETED",
+        "PICK_AND_PUT_RESULT",
+        "BUSINESS_TIMEOUT",
+        "REPLAY_REQUEST",
+        "CAPABILITY_EFFECT_RESULT",
+    ),
     allowed_capabilities=(
         ("device.device_command_write", "v1"),
         ("material_flow.material_unit_write", "v1"),
@@ -24,6 +36,7 @@ DEFINITION = WorklinePluginDefinition(
         "PICK_AND_PUT_RESULT": parse_pick_and_put_result,
         "BUSINESS_TIMEOUT": parse_business_timeout,
         "REPLAY_REQUEST": parse_replay_request,
+        "CAPABILITY_EFFECT_RESULT": parse_capability_effect_result,
     },
 )
 

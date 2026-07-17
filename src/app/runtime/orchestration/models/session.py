@@ -12,8 +12,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, ClassVar, cast
 
-from sqlalchemy import JSON, Column, Index, String, Text, text
+from sqlalchemy import JSON, Column, Index, String, Text, event, text
 from sqlalchemy import Enum as SQLAEnum
+from sqlalchemy.orm import attributes, declared_attr
 from sqlmodel import Field, Relationship
 
 # WorklineSession.workline 的 primaryjoin 用字符串引用 WorkLine;
@@ -396,6 +397,16 @@ class WorklineSession(
         {"schema": SchemaType.BIZ.value},
     )
 
+    @declared_attr.directive
+    def __mapper_args__(cls) -> dict[str, object]:  # noqa: N805
+        """所有 ORM UPDATE 均自动 CAS 并递增版本，覆盖共享 Mixin 的手工增量策略。"""
+
+        table = cast("Any", cls).__table__
+        return {
+            "version_id_col": table.c.version,
+            "version_id_generator": lambda version: 0 if version is None else version + 1,
+        }
+
     # 关系定义
     workline: "WorkLine" = Relationship(
         back_populates=None,
@@ -405,6 +416,15 @@ class WorklineSession(
             "primaryjoin": "WorklineSession.workline_id == WorkLine.id",
         },
     )
+
+
+@event.listens_for(WorklineSession, "after_update")
+def _sync_generated_workline_session_version(_mapper: Any, _connection: Any, target: WorklineSession) -> None:
+    """把 mapper 生成的 DB 版本同步回 SQLModel 继承字段的内存值。"""
+
+    history = attributes.get_history(target, "version")
+    previous = history.deleted[0] if history.deleted else target.version
+    attributes.set_committed_value(target, "version", int(previous) + 1)
 
 
 # ==================== 自动生成的 Schema ====================

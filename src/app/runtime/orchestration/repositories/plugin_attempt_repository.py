@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy.orm import noload
 from sqlmodel import select
 
+from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.timeline import (
@@ -39,6 +40,7 @@ class AuthoritativePluginAttempt:
 
     inbox: Any
     session: WorklineSession
+    execution_session: ExecutionSession | Any | None = None
     work_item: ExecutionWorkItem | Any | None = None
     plugin_binding: WorklinePluginBinding | Any | None = None
 
@@ -55,7 +57,7 @@ class PluginAttemptRepository:
         self._inbox_repository = inbox_repository
         self._timeline_sequence_repository = timeline_sequence_repository
 
-    async def lock_authoritative(
+    async def lock_authoritative(  # noqa: PLR0911 - 每个不一致条件均 fail closed，禁止部分权威身份通过。
         self,
         db: AsyncSession,
         *,
@@ -77,17 +79,57 @@ class PluginAttemptRepository:
         )
         if session is None:
             return None
-        work_item_id = getattr(inbox, "execution_work_item_id", None)
-        work_item = None
-        if isinstance(work_item_id, int):
-            work_item = await db.scalar(
-                select(ExecutionWorkItem)
-                .where(ExecutionWorkItem.id == work_item_id)
-                .execution_options(populate_existing=True)
-                .with_for_update()
-            )
-            if work_item is None:
-                return None
+        if getattr(inbox, "workline_session_id", None) != session_id:
+            return None
+        execution_session_id = getattr(inbox, "execution_session_id", None)
+        correlation_id = getattr(inbox, "correlation_id", None)
+        if not isinstance(execution_session_id, int) or not isinstance(correlation_id, str) or not correlation_id:
+            return None
+        execution_session = await db.scalar(
+            select(ExecutionSession)
+            .where(ExecutionSession.id == execution_session_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        if execution_session is None:
+            return None
+        work_item = await db.scalar(
+            select(ExecutionWorkItem)
+            .where(ExecutionWorkItem.correlation_id == correlation_id)
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        if work_item is None:
+            return None
+        workline_id = getattr(session, "workline_id", None)
+        if (
+            getattr(inbox, "workline_id", None) != workline_id
+            or getattr(execution_session, "workline_id", None) != workline_id
+            or getattr(work_item, "execution_session_id", None) != execution_session_id
+            or getattr(work_item, "correlation_id", None) != correlation_id
+        ):
+            return None
+        session_pin = (
+            getattr(session, "plugin_key", None),
+            getattr(session, "plugin_binding_id", None),
+            getattr(session, "plugin_binding_version", None),
+            getattr(session, "plugin_config_hash", None),
+            getattr(session, "plugin_index_digest", None),
+        )
+        if session_pin != (
+            getattr(execution_session, "plugin_key", None),
+            getattr(execution_session, "plugin_binding_id", None),
+            getattr(execution_session, "plugin_binding_version", None),
+            getattr(execution_session, "plugin_config_hash", None),
+            getattr(execution_session, "plugin_index_digest", None),
+        ) or session_pin != (
+            getattr(work_item, "plugin_key", None),
+            getattr(work_item, "plugin_binding_id", None),
+            getattr(work_item, "plugin_binding_version", None),
+            getattr(work_item, "plugin_config_hash", None),
+            getattr(work_item, "plugin_index_digest", None),
+        ):
+            return None
         binding_id = getattr(session, "plugin_binding_id", None)
         plugin_binding = None
         if isinstance(binding_id, int):
@@ -99,9 +141,26 @@ class PluginAttemptRepository:
             )
             if plugin_binding is None:
                 return None
+            if (
+                getattr(plugin_binding, "id", None),
+                getattr(plugin_binding, "plugin_key", None),
+                getattr(plugin_binding, "contract_version", None),
+                getattr(plugin_binding, "binding_version", None),
+                getattr(plugin_binding, "typed_config_hash", None),
+                getattr(plugin_binding, "generated_index_digest", None),
+            ) != (
+                binding_id,
+                getattr(session, "plugin_key", None),
+                getattr(session, "contract_version", None),
+                getattr(session, "plugin_binding_version", None),
+                getattr(session, "plugin_config_hash", None),
+                getattr(session, "plugin_index_digest", None),
+            ):
+                return None
         return AuthoritativePluginAttempt(
             inbox=inbox,
             session=session,
+            execution_session=execution_session,
             work_item=work_item,
             plugin_binding=plugin_binding,
         )
@@ -197,7 +256,6 @@ class PluginAttemptRepository:
         )
         session.plugin_state_json = dict(_json_value(write_set.next_state))
         session.plugin_state_version += 1
-        session.version += 1
 
 
 def _json_value(value: Any) -> Any:

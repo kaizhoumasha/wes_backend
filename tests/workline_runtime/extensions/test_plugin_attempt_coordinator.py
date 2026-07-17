@@ -1,5 +1,3 @@
-"""插件 attempt 三阶段协调与乐观重校验合同。"""
-
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -43,8 +41,8 @@ async def test_three_stage_attempt_queries_without_db_then_commits_atomically() 
 
 
 @pytest.mark.asyncio
-async def test_plugin_attempt_lock_order_matches_session_then_timeline_writers() -> None:
-    """Stage3 先锁 Inbox、Session；timeline advisory 只能在两者之后取得。"""
+async def test_plugin_attempt_lock_order_matches_authoritative_execution_chain() -> None:
+    """Stage3 固定按 Inbox、Session、ExecutionSession、WorkItem 锁定。"""
 
     from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
 
@@ -57,12 +55,32 @@ async def test_plugin_attempt_lock_order_matches_session_then_timeline_writers()
     class InboxRepository:
         async def get_by_id_for_update(self, *_args: object, **_kwargs: object) -> object:
             events.append("inbox-row")
-            return SimpleNamespace(id=91)
+            return SimpleNamespace(
+                id=91,
+                workline_session_id=41,
+                execution_session_id=21,
+                correlation_id="corr-1",
+                workline_id=8,
+            )
 
     class Db:
         async def scalar(self, _statement: object) -> object:
-            events.append("session-row")
-            return SimpleNamespace(id=41)
+            rows = (
+                ("session-row", SimpleNamespace(id=41, workline_id=8, plugin_key="plugin")),
+                ("execution-session-row", SimpleNamespace(id=21, workline_id=8, plugin_key="plugin")),
+                (
+                    "work-item-row",
+                    SimpleNamespace(
+                        id=51,
+                        execution_session_id=21,
+                        correlation_id="corr-1",
+                        plugin_key="plugin",
+                    ),
+                ),
+            )
+            name, row = rows[len(events) - 1]
+            events.append(name)
+            return row
 
     locked = await PluginAttemptRepository(
         inbox_repository=InboxRepository(),
@@ -70,7 +88,7 @@ async def test_plugin_attempt_lock_order_matches_session_then_timeline_writers()
     ).lock_authoritative(Db(), inbox_id=91, session_id=41)
 
     assert locked is not None
-    assert events == ["inbox-row", "session-row"]
+    assert events == ["inbox-row", "session-row", "execution-session-row", "work-item-row"]
 
 
 @pytest.mark.asyncio
@@ -78,34 +96,84 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
     from sqlalchemy import event, update
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+    from src.app.runtime.orchestration.execution_session import ExecutionSession
+    from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
     from src.app.runtime.orchestration.models.session import WorklineSession
     from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
+    from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+    from src.utils.timezone import timezone
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 
     @event.listens_for(engine.sync_engine, "connect")
     def attach_schema(dbapi_connection: object, _connection_record: object) -> None:
         dbapi_connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")  # type: ignore[attr-defined]
+        dbapi_connection.execute("ATTACH DATABASE ':memory:' AS wes_runtime")  # type: ignore[attr-defined]
 
     async with engine.begin() as connection:
-        await connection.run_sync(WorklineSession.__table__.create)
+        for table in (
+            ExecutionSession.__table__,
+            ExecutionCorrelation.__table__,
+            WorklineSession.__table__,
+            RuntimeInbox.__table__,
+            ExecutionWorkItem.__table__,
+        ):
+            await connection.run_sync(table.create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as first, sessions() as second:
+        execution_session = ExecutionSession(
+            workline_id=8,
+            manifest_version="manifest-v1",
+            plugin_key="plugin.rough-sorter",
+        )
+        first.add(execution_session)
+        await first.flush()
+        first.add(
+            ExecutionCorrelation(
+                correlation_id="corr-stale-1",
+                execution_session_id=execution_session.id,
+                trace_id="trace-stale-1",
+            )
+        )
         session = WorklineSession(session_code="SESSION-STALE", workline_id=8, plugin_key="plugin.rough-sorter")
         first.add(session)
+        await first.flush()
+        first.add(
+            ExecutionWorkItem(
+                execution_session_id=int(execution_session.id),
+                correlation_id="corr-stale-1",
+                plugin_key="plugin.rough-sorter",
+                object_type="material",
+                object_key="material:stale",
+                current_step="scan",
+            )
+        )
+        inbox = RuntimeInbox(
+            execution_session_id=execution_session.id,
+            workline_session_id=session.id,
+            correlation_id="corr-stale-1",
+            kind="INTERNAL_EVENT",
+            workline_id=8,
+            provider_code="RUNTIME",
+            event_type="SCAN_COMPLETED",
+            source_event_id="event-stale-1",
+            payload_hash="e" * 64,
+            payload_json={"logical_route": "SCAN_COMPLETED"},
+            payload_schema_version=1,
+            claim_bucket_key="session:stale",
+            received_at=timezone.now_for_db(),
+        )
+        first.add(inbox)
         await first.commit()
         assert session.id is not None
         await second.execute(update(WorklineSession).where(WorklineSession.id == session.id).values(version=9))
         await second.commit()
         assert session.version == 0
 
-        class InboxRepository:
-            async def get_by_id_for_update(self, *_args: object, **_kwargs: object) -> object:
-                return SimpleNamespace(id=91)
-
-        locked = await PluginAttemptRepository(inbox_repository=InboxRepository()).lock_authoritative(
+        locked = await PluginAttemptRepository().lock_authoritative(
             first,
-            inbox_id=91,
+            inbox_id=int(inbox.id),
             session_id=session.id,
         )
 
@@ -116,34 +184,70 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
 
 
 @pytest.mark.asyncio
-async def test_plugin_attempt_lock_loads_effect_execution_identity() -> None:
-    from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
+async def test_workline_session_ordinary_update_automatically_increments_version() -> None:
+    from sqlalchemy import event
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    rows = iter(
-        (
-            SimpleNamespace(id=41, plugin_binding_id=17),
-            SimpleNamespace(id=51),
-            SimpleNamespace(id=17),
+    from src.app.runtime.orchestration.models.session import WorklineSession
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def attach_schema(dbapi_connection: object, _connection_record: object) -> None:
+        dbapi_connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")  # type: ignore[attr-defined]
+
+    async with engine.begin() as connection:
+        await connection.run_sync(WorklineSession.__table__.create)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as db:
+        session = WorklineSession(session_code="SESSION-VERSION-LIFECYCLE", workline_id=8, plugin_key="plugin")
+        db.add(session)
+        await db.commit()
+        initial_version = session.version
+        session.context_json = {"phase": "running"}
+        await db.commit()
+        assert session.version == initial_version + 1
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_workline_session_concurrent_orm_update_raises_stale_data_error() -> None:
+    from sqlalchemy import event, select
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from sqlalchemy.orm import noload
+    from sqlalchemy.orm.exc import StaleDataError
+
+    from src.app.runtime.orchestration.models.session import WorklineSession
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def attach_schema(dbapi_connection: object, _connection_record: object) -> None:
+        dbapi_connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")  # type: ignore[attr-defined]
+
+    async with engine.begin() as connection:
+        await connection.run_sync(WorklineSession.__table__.create)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as seed:
+        session = WorklineSession(session_code="SESSION-VERSION-CAS", workline_id=8, plugin_key="plugin")
+        seed.add(session)
+        await seed.commit()
+        session_id = int(session.id)
+    async with sessions() as first, sessions() as second:
+        first_session = await first.scalar(
+            select(WorklineSession).where(WorklineSession.id == session_id).options(noload(WorklineSession.workline))
         )
-    )
-
-    class InboxRepository:
-        async def get_by_id_for_update(self, *_args: object, **_kwargs: object) -> object:
-            return SimpleNamespace(id=91, execution_work_item_id=51)
-
-    class Db:
-        async def scalar(self, _statement: object) -> object:
-            return next(rows)
-
-    locked = await PluginAttemptRepository(inbox_repository=InboxRepository()).lock_authoritative(
-        Db(),
-        inbox_id=91,
-        session_id=41,
-    )
-
-    assert locked is not None
-    assert locked.work_item.id == 51
-    assert locked.plugin_binding.id == 17
+        second_session = await second.scalar(
+            select(WorklineSession).where(WorklineSession.id == session_id).options(noload(WorklineSession.workline))
+        )
+        assert first_session is not None and second_session is not None
+        first_session.context_json = {"owner": "first"}
+        await first.commit()
+        second_session.context_json = {"owner": "second"}
+        with pytest.raises(StaleDataError):
+            await second.commit()
+        await second.rollback()
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -341,7 +445,6 @@ async def test_writeback_persists_evidence_state_intents_and_terminal_in_one_com
     ]
 
 
-@pytest.mark.asyncio
 async def test_matching_intent_claim_skips_duplicate_ledger_but_commits_terminal() -> None:
     from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult
     from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (

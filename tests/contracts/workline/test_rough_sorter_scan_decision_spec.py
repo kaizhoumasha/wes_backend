@@ -247,7 +247,7 @@ def _load_fixture() -> dict:
 
 
 def test_typed_plugin_definition_covers_all_approved_logical_trigger_routes() -> None:
-    """Task 6 锁定 typed route；Task 8 再把 RuntimeInbox 生产路径切到该 dispatcher。"""
+    """锁定业务触发与本地 EFFECT BusinessReject 回流的全部 typed route。"""
 
     assert (ROUGH_SORTER_DEFINITION.plugin_key, ROUGH_SORTER_DEFINITION.contract_version) == (
         "rough_sorter",
@@ -258,6 +258,7 @@ def test_typed_plugin_definition_covers_all_approved_logical_trigger_routes() ->
         "PICK_AND_PUT_RESULT",
         "BUSINESS_TIMEOUT",
         "REPLAY_REQUEST",
+        "CAPABILITY_EFFECT_RESULT",
     }
 
 

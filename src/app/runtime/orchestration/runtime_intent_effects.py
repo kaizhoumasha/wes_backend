@@ -34,6 +34,7 @@ from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
 )
+from src.utils.timezone import timezone
 from src.utils.value_normalization import coerce_optional_str, optional_int, resolve_required_pk, string_value
 
 logger = logging.getLogger(__name__)
@@ -850,7 +851,22 @@ class RuntimeIntentEffectApplier:
                 if isinstance(result.outcome, ContractViolation):
                     raise ValueError(f"system capability contract violation: {result.outcome.error_code}")
                 if isinstance(result.outcome, BusinessReject):
-                    return RuntimeIntentEffectResult.processed()
+                    evidence = getattr(result, "evidence", None)
+                    if hasattr(evidence, "model_dump"):
+                        evidence_payload = evidence.model_dump(mode="json")
+                    else:
+                        evidence_payload = {
+                            "capability_key": str(intent.capability_key),
+                            "contract_version": str(intent.contract_version),
+                            "operation_key": str(intent.operation_key),
+                            "idempotency_key": str(intent.idempotency_key or intent.operation_key),
+                            "payload_hash": str(intent.payload_hash),
+                            "outcome_kind": result.outcome.kind,
+                            "outcome_code": result.outcome.reason_code,
+                            "outcome": result.outcome.model_dump(mode="json"),
+                            "occurred_at_ms": int(timezone.now_utc().timestamp() * 1000),
+                        }
+                    return RuntimeIntentEffectResult.business_rejected(evidence_payload)
                 continue
 
             if intent.kind == RuntimeIntentKind.UPDATE_CONTEXT:

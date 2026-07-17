@@ -30,6 +30,7 @@ from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
 from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts, decide
 from src.app.runtime.workline_plugins.rough_sorter.inputs import (
     parse_business_timeout,
+    parse_capability_effect_result,
     parse_pick_and_put_result,
     parse_replay_request,
     parse_scan_completed,
@@ -274,6 +275,48 @@ async def test_approved_case_maps_to_typed_plugin_decision(case: dict[str, Any])
     if case["case_id"] == "RS-SD-013":
         assert decision.evidence_only is True
         assert decision.intents == ()
+
+
+@pytest.mark.asyncio
+async def test_capability_business_reject_reaches_plugin_as_typed_evidence_without_new_effect() -> None:
+    evidence = {
+        "capability_key": "material_flow.material_unit_write",
+        "contract_version": "v1",
+        "operation_key": "mark-ng-1",
+        "idempotency_key": "effect-1",
+        "payload_hash": "a" * 64,
+        "outcome_kind": "business_reject",
+        "outcome_code": "STALE_PRECONDITION",
+        "outcome": {
+            "kind": "business_reject",
+            "reason_code": "STALE_PRECONDITION",
+            "message": "material fact changed",
+            "details": {},
+        },
+        "occurred_at_ms": 1,
+    }
+    logical_input = parse_capability_effect_result(
+        {
+            "logical_route": "CAPABILITY_EFFECT_RESULT",
+            "data": {"session_id": 41, "effect_evidence": evidence},
+        }
+    )
+    state = RoughSorterState(phase="NG_MOVING")
+
+    decision = await decide(
+        logical_input,
+        state=state,
+        config=_config(),
+        facts=_facts(_cases()[0]),
+        gateway=_Gateway({}),
+    )
+
+    assert logical_input.effect_evidence.outcome.reason_code == "STALE_PRECONDITION"
+    assert decision.next_state == state
+    assert decision.reason_code == "STALE_PRECONDITION"
+    assert decision.intents == ()
+    assert decision.evidence_only is True
+    assert decision.zero_new_effect is True
 
 
 @pytest.mark.asyncio
