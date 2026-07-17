@@ -107,7 +107,12 @@ def _authoritative_snapshot_matches(locked: Any, expected: AttemptSnapshot) -> b
         plugin_key = getattr(session, "plugin_key", None)
         contract_version = getattr(session, "contract_version", None)
         if isinstance(plugin_key, str) and plugin_key and isinstance(contract_version, str) and contract_version:
-            session_definition_identity = f"{plugin_key}@{contract_version}"
+            from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX
+
+            definition = WORKLINE_PLUGIN_INDEX.get((plugin_key, contract_version))
+            session_definition_identity = (
+                definition.identity if definition is not None else f"{plugin_key}@{contract_version}"
+            )
     return (
         getattr(inbox, "processor_token", None) == expected.processor_token
         and getattr(session, "version", None) == expected.session_version
@@ -153,10 +158,18 @@ def _is_late_or_duplicate_command_result_for_session(
     command: Any | None,
 ) -> bool:
     """识别已消费过或迟到的 COMMAND_RESULT。"""
-    if session is None or command is None:
-        return False
     if _kind_value(inbox) != "COMMAND_RESULT":
         return False
+    if session is None:
+        return False
+    awaiting_command_code = getattr(session, "awaiting_device_command_code", None)
+    callback_command_code = payload.get("command_code") or getattr(command, "command_code", None)
+    if not isinstance(callback_command_code, str) or not callback_command_code:
+        return True
+    if not isinstance(awaiting_command_code, str) or callback_command_code != awaiting_command_code:
+        return True
+    if command is None:
+        return True
     terminal_command_statuses = {"COMPLETED", "FAILED", "TIMEOUT", "CANCELLED"}
     command_status = _command_status_value(command)
     if command_status not in terminal_command_statuses:

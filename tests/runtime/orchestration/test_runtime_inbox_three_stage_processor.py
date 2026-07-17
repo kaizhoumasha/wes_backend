@@ -87,7 +87,7 @@ class _DeadlineQueryOutput(BaseModel):
 class _ProcessorUncooperativeHandler:
     release: asyncio.Event | None = None
 
-    def __init__(self, _context: object) -> None:
+    def __init__(self, _context: object | None = None) -> None:
         pass
 
     async def __call__(self, _request: _DeadlineQueryInput) -> _DeadlineQueryOutput:
@@ -823,11 +823,11 @@ def test_processor_creates_fresh_attempt_runtime_for_every_claim() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("use_recorded_replay", [False, True])
-async def test_binding_keeps_legacy_orchestrator_when_platform_runner_is_not_injected(
+async def test_binding_never_falls_back_to_legacy_when_generated_request_is_invalid(
     monkeypatch: pytest.MonkeyPatch,
     use_recorded_replay: bool,
 ) -> None:
-    """Task 6 runner 未接线前，binding 不能提前接管生产流量。"""
+    """平台 binding 请求不完整时 fail closed，禁止回落 legacy Orchestrator。"""
 
     events: list[str] = []
     original_payload = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "BOX-1"}}
@@ -856,6 +856,11 @@ async def test_binding_keeps_legacy_orchestrator_when_platform_runner_is_not_inj
     class Repository:
         async def get_by_id(self, *_args: object) -> object:
             return inbox
+
+    class InboxService:
+        async def mark_failed(self, *_args: object, **_kwargs: object) -> bool:
+            events.append("platform-fail-closed")
+            return True
 
     class Validator:
         async def validate_for_consumption(self, *_args: object, **_kwargs: object) -> object:
@@ -903,14 +908,17 @@ async def test_binding_keeps_legacy_orchestrator_when_platform_runner_is_not_inj
 
     result = await RuntimeInboxProcessorBridge(
         inbox_repository=Repository(),  # type: ignore[arg-type]
+        inbox_service=InboxService(),  # type: ignore[arg-type]
         processor_service=Processor(),  # type: ignore[arg-type]
         writeback_service=WriteBack(),  # type: ignore[arg-type]
         replay_source_validator=Validator(),  # type: ignore[arg-type]
         recorded_replay_service=ReplayService(),  # type: ignore[arg-type]
     ).process_claimed(Db(), claim={"id": 91, "processor_token": "lease-1"})
 
-    assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-    assert events == ["legacy-orchestrator", "commit"]
+    assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+    assert "legacy-orchestrator" not in events
+    assert "MUST_NOT_RECORDED_REPLAY" not in events
+    assert "platform-fail-closed" in events
 
 
 @pytest.mark.asyncio
@@ -1720,6 +1728,28 @@ class TestSessionWriteSnapshot:
 
 
 class TestIsLateOrDuplicateCommandResult:
+    def test_missing_callback_correlation_is_evidence_only(self) -> None:
+        inbox = _make_inbox(kind="COMMAND_RESULT")
+        session = _make_session(status="WAITING_DEVICE_RESULT", awaiting_device_command_code="CMD-1")
+        assert (
+            _is_late_or_duplicate_command_result_for_session(inbox=inbox, payload={}, session=session, command=None)
+            is True
+        )
+
+    def test_non_matching_callback_is_evidence_only_before_terminal_update(self) -> None:
+        inbox = _make_inbox(kind="COMMAND_RESULT")
+        session = _make_session(status="WAITING_DEVICE_RESULT", awaiting_device_command_code="CMD-1")
+        command = SimpleNamespace(command_code="CMD-OTHER", status="PENDING")
+        assert (
+            _is_late_or_duplicate_command_result_for_session(
+                inbox=inbox,
+                payload={"command_code": "CMD-OTHER"},
+                session=session,
+                command=command,
+            )
+            is True
+        )
+
     def test_terminal_session_is_late(self) -> None:
         inbox = _make_inbox(kind="COMMAND_RESULT")
         session = _make_session(status="COMPLETED")

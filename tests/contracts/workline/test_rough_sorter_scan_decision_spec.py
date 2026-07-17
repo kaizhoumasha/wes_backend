@@ -441,6 +441,7 @@ async def test_command_callback_persists_real_terminal_status_before_runtime_blo
         id=808,
         command_code="CMD-PICK-008",
         status=CommandStatus.ACK_RECEIVED,
+        task_type="PICK_AND_PUT",
         get_duration_ms=lambda: 0,
     )
 
@@ -580,6 +581,7 @@ async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
         device_id=3,
         correlation_id=None,
         status=CommandStatus.ACK_RECEIVED,
+        task_type="PICK_AND_PUT",
         ack_received_at=now - timedelta(seconds=30),
     )
     session = SimpleNamespace(
@@ -596,7 +598,8 @@ async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
         context_json={},
         ended_at=None,
     )
-    runtime_hold_creation = AsyncMock(return_value=SimpleNamespace(id=9009))
+    runtime_hold = SimpleNamespace(id=9009, source_reason="CALLBACK_DEADLINE_EXPIRED", evidence_snapshot_json={})
+    runtime_hold_creation = AsyncMock(return_value=runtime_hold)
     service = WorklineRuntimeReconciliationService(
         session_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=session)),
         workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=SimpleNamespace(id=7))),
@@ -656,11 +659,13 @@ async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
     assert len(db.added) == 1
     timeout_timeline = db.added[0]
     assert timeout_timeline.message == "Callback deadline expired; runtime reconciliation started."
-    assert timeout_timeline.payload_json["reason"] == "CALLBACK_DEADLINE_EXPIRED"
+    assert timeout_timeline.payload_json["reason"] == "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
     assert timeout_timeline.payload_json["wait_token"] == command_code
     assert timeout_timeline.payload_json["deadline_at"] == deadline_at.isoformat()
     assert timeout_timeline.payload_json["ack_received_at"] == command.ack_received_at.isoformat()
-    assert session.reconciliation_reason.value != case["expected_outcome"]["reason_code"]
+    assert runtime_hold.source_reason == "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
+    assert runtime_hold.evidence_snapshot_json["reason"] == "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
+    assert timeout_timeline.payload_json["reason"] == case["expected_outcome"]["reason_code"]
     assert case["expected_outcome"]["reason_code"] == "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
 
 

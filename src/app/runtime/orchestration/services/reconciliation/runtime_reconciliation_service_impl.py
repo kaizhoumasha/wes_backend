@@ -250,6 +250,17 @@ class WorklineRuntimeReconciliationService:
         if not self._timer_timeout_claim_matches(session=session, command=command, payload=payload_data):
             return TimerTimeoutReconciliationResult(disposition="EVIDENCE_STALE", session=session)
 
+        timeout_reason = RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value
+        command_type = (
+            _payload_str(payload_data, "command_type")
+            or _payload_str(payload_data, "task_type")
+            or enum_str(getattr(command, "task_type", None))
+        )
+        if command_type == "PICK_AND_PUT":
+            # 粗分机 PICK_AND_PUT 业务超时仍由 TIMER reconciliation 唯一持有，
+            # 但业务证据使用插件合同的稳定原因码，且不创建 RuntimeIntent。
+            timeout_reason = "ROUGH_SORTER_PICK_RESULT_TIMEOUT"
+
         now = timezone.now_for_db()
         claim_deadline_at = self._timer_timeout_deadline(session=session, payload=payload_data)
         claim_ack_received_at = getattr(command, "ack_received_at", None) or timezone.to_db_datetime(
@@ -310,6 +321,11 @@ class WorklineRuntimeReconciliationService:
             source_inbox_id=source_inbox_id,
             command=command,
         )
+        if timeout_reason != RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value:
+            runtime_hold.source_reason = timeout_reason
+            hold_evidence = dict(getattr(runtime_hold, "evidence_snapshot_json", {}) or {})
+            hold_evidence["reason"] = timeout_reason
+            runtime_hold.evidence_snapshot_json = hold_evidence
         runtime_hold_id = _resolve_id(runtime_hold)
 
         await self._append_reconciliation_timeline(
@@ -322,7 +338,7 @@ class WorklineRuntimeReconciliationService:
             to_status=SessionStatus.MANUAL_HOLD.value,
             message="Callback deadline expired; runtime reconciliation started.",
             payload={
-                "reason": RuntimeReconciliationReason.CALLBACK_DEADLINE_EXPIRED.value,
+                "reason": timeout_reason,
                 "deadline_at": _dt_key(session.reconciliation_deadline_at),
                 "ack_received_at": _dt_key(session.reconciliation_ack_received_at),
                 "wait_token": session.reconciliation_wait_token,
@@ -341,6 +357,7 @@ class WorklineRuntimeReconciliationService:
             inbox=inbox_evidence,
             command=command,
             evidence={
+                "reason": timeout_reason,
                 "deadline_at": _dt_key(session.reconciliation_deadline_at),
                 "ack_received_at": _dt_key(session.reconciliation_ack_received_at),
                 "wait_token": session.reconciliation_wait_token,

@@ -30,6 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapte
 
 from src.app.runtime.capability_catalog import parse_workline_six_in_one
 from src.app.runtime.capability_port_registry import CapabilityPortRegistry, RuntimeCapabilityContext
+from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     ErrorDomain,
@@ -41,7 +42,10 @@ from src.app.runtime.orchestration.repositories.runtime_inbox_repository import 
     RuntimeInboxRepository,
     runtime_inbox_repository,
 )
-from src.app.runtime.orchestration.runtime_intent import RuntimeIntent  # noqa: TC001 - Pydantic 运行时解析字段类型。
+from src.app.runtime.orchestration.runtime_intent import (
+    RuntimeIntent,
+    RuntimeIntentKind,
+)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
     _canonical_workline_session_id,
 )
@@ -72,6 +76,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
 )
 from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
 from src.app.runtime.system_capabilities.gateway import AttemptCloseReport, SystemCapabilityGateway
+from src.app.runtime.system_capabilities.outcomes import ContractViolation
 from src.app.runtime.system_capabilities.replay import (
     RecordedReplayResolution,
     TimelineRecordedReplayService,
@@ -85,7 +90,12 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
     WriteDisposition,
     bound_attempt_write_set,
 )
-from src.app.runtime.workline_plugins.contracts import MAX_PLUGIN_DECISION_INTENTS
+from src.app.runtime.workline_plugins.contracts import MAX_PLUGIN_DECISION_INTENTS, PluginDecision
+from src.app.runtime.workline_plugins.dispatcher import (
+    PinnedPluginSnapshot,
+    PluginDispatchRequest,
+    WorklinePluginDispatcher,
+)
 from src.app.workline.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
     WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
@@ -116,6 +126,181 @@ class ProcessResult(TypedDict):
     failed: int
     skipped: int
     resource_wait: int
+
+
+class GeneratedPluginAttemptRunner:
+    """把 Stage 1 固定请求交给 generated dispatcher，禁止回落 legacy。"""
+
+    def __init__(self, *, dispatcher: Any | None = None) -> None:
+        self._dispatcher = dispatcher or WorklinePluginDispatcher()
+
+    async def run(self, context: PluginAttemptContext) -> AttemptWriteSet:
+        if context.dispatch_request is None:
+            return _plugin_hold_write_set(context, "PLUGIN_DISPATCH_REQUEST_MISSING")
+        gateway = _EvidenceCollectingGateway(context.runtime.gateway)
+        result = await self._dispatcher.dispatch(
+            request=context.dispatch_request,
+            gateway=gateway,
+        )
+        if isinstance(result, ContractViolation):
+            return _plugin_hold_write_set(context, result.error_code)
+        if not isinstance(result, PluginDecision):
+            return _plugin_hold_write_set(context, "PLUGIN_DECISION_INVALID")
+        try:
+            intents = _system_capability_intents(context, tuple(result.intents))
+        except (TypeError, ValueError):
+            return _plugin_hold_write_set(context, "PLUGIN_EFFECT_CONVERSION_INVALID")
+        return AttemptWriteSet(
+            evidence=tuple(gateway.evidence),
+            next_state=result.next_state,
+            intents=intents,
+            outcome_code=result.outcome_code,
+        )
+
+
+class _EvidenceCollectingGateway:
+    """只收集本次 dispatcher 实际读取的 QUERY evidence。"""
+
+    def __init__(self, gateway: Any) -> None:
+        self._gateway = gateway
+        self.evidence: list[Any] = []
+
+    async def execute(self, capability_key: str, contract_version: str, input_data: Any) -> Any:
+        result = await self._gateway.execute(capability_key, contract_version, input_data)
+        if result.evidence is not None and result.evidence not in self.evidence:
+            self.evidence.append(result.evidence)
+        return result
+
+
+def _system_capability_intents(
+    context: PluginAttemptContext,
+    intents: tuple[RuntimeIntent, ...],
+) -> tuple[RuntimeIntent, ...]:
+    """把插件领域意图收敛为 generated EFFECT 的唯一通用包络。"""
+
+    binding_id = context.snapshot.binding_id
+    binding_version = context.snapshot.binding_version
+    if binding_id is None or binding_version is None:
+        if intents:
+            raise ValueError("effect conversion requires binding snapshot")
+        return ()
+    mark_ng = any(intent.kind is RuntimeIntentKind.MARK_NG for intent in intents)
+    converted: list[RuntimeIntent] = []
+    for index, intent in enumerate(intents):
+        if intent.kind is RuntimeIntentKind.SYSTEM_CAPABILITY:
+            converted.append(intent)
+            continue
+        if intent.kind in {RuntimeIntentKind.UPDATE_CONTEXT, RuntimeIntentKind.MARK_NG}:
+            # PluginState 由 next_state 原子写入；同决策 MARK_NG 合并进 MaterialUnit CREATE。
+            continue
+        capability_key: str
+        payload: dict[str, Any]
+        precondition: dict[str, Any]
+        fact_version: str | int
+        if intent.kind is RuntimeIntentKind.COMMAND:
+            capability_key = "device.device_command_write"
+            payload = {
+                "device_role": intent.device_role,
+                "target_device_id": intent.target_device_id,
+                "action": intent.action,
+                "payload": deepcopy(intent.payload_json),
+                "timeout_ms": (intent.timeout_seconds or 30) * 1000,
+            }
+            precondition = {"expected_available": True}
+            fact_version = "device:v1"
+        elif intent.kind is RuntimeIntentKind.CREATE_MATERIAL_UNIT:
+            capability_key = "material_flow.material_unit_write"
+            payload = {"operation": "CREATE", **deepcopy(intent.payload_json)}
+            if mark_ng:
+                payload["status"] = "NG"
+            precondition = {"expected_absent": True}
+            fact_version = 0
+        elif intent.kind is RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS:
+            capability_key = "material_flow.material_unit_write"
+            payload = {"operation": "UPDATE_STATUS", **deepcopy(intent.payload_json)}
+            precondition = {"expected_absent": None}
+            fact_version = context.snapshot.session_version
+        elif intent.kind is RuntimeIntentKind.BLOCK:
+            capability_key = "runtime.session_hold"
+            payload = {
+                "failure_domain": intent.block_scope.value if intent.block_scope is not None else "PLUGIN",
+                "reason_code": intent.reason_code or "PLUGIN_HOLD",
+                "message": intent.message or "Workline Plugin requested Hold",
+            }
+            precondition = {"expected_status": "RUNNING"}
+            fact_version = f"session:{context.snapshot.session_version}"
+        else:
+            raise ValueError(f"unsupported plugin effect intent: {intent.kind.value}")
+        converted.append(
+            RuntimeIntent.system_capability(
+                capability_key=capability_key,
+                contract_version="v1",
+                operation_key=f"inbox:{context.inbox_id}:{index}:{intent.kind.value.lower()}",
+                payload=payload,
+                precondition=precondition,
+                fact_version=fact_version,
+                timeout_seconds=5,
+                creator_authority="WORKLINE_PLUGIN",
+                authorization_policy="PLUGIN_DECLARED_CAPABILITY",
+                binding_snapshot={"binding_id": binding_id, "binding_version": binding_version},
+                provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
+            )
+        )
+    return tuple(converted)
+
+
+def _plugin_hold_write_set(context: PluginAttemptContext, reason: str) -> AttemptWriteSet:
+    return AttemptWriteSet(
+        evidence=(),
+        next_state=context.plugin_state,
+        intents=(),
+        outcome_code="HOLD",
+        hold_reason=reason,
+    )
+
+
+def _canonical_plugin_input(inbox: Any) -> tuple[str, dict[str, Any]]:
+    """把 transport kind 收敛为 Definition 声明的 logical route/input。"""
+
+    payload = deepcopy(_payload_for_inbox(inbox))
+    kind = string_value(getattr(inbox, "kind", None))
+    event_type = string_value(getattr(inbox, "event_type", None))
+    if kind == "COMMAND_RESULT":
+        command_code = optional_str(payload.get("command_code"))
+        if command_code is None:
+            raise ValueError("command correlation is required")
+        return "PICK_AND_PUT_RESULT", {
+            "route": "PICK_AND_PUT_RESULT",
+            "command_code": command_code,
+            "command_type": optional_str(payload.get("command_type"))
+            or optional_str(payload.get("task_type"))
+            or "PICK_AND_PUT",
+            "result": string_value(payload.get("result") or "ERROR").upper(),
+            "data": payload_dict(payload.get("data")),
+            "error_detail": payload_dict(payload.get("error_detail")),
+        }
+    if kind == "TIMER_TIMEOUT" or event_type == "TIMER_TIMEOUT":
+        data = payload_dict(payload.get("data")) or payload
+        command_code = optional_str(data.get("command_code"))
+        if command_code is None:
+            raise ValueError("command correlation is required")
+        return "BUSINESS_TIMEOUT", {
+            "route": "BUSINESS_TIMEOUT",
+            "command_code": command_code,
+            "wait_type": optional_str(data.get("wait_type")) or "COMMAND_RESULT",
+        }
+    if kind == "REPLAY_REQUEST":
+        return "REPLAY_REQUEST", {
+            "route": "REPLAY_REQUEST",
+            "idempotency_key": string_value(payload.get("idempotency_key")),
+            "payload_digest": string_value(payload.get("payload_digest")),
+        }
+    route = event_type or optional_str(payload.get("logical_route")) or optional_str(payload.get("callback_type"))
+    if route == "SYSTEM_CAPABILITY_RESULT":
+        raise ValueError("raw SYSTEM_CAPABILITY_RESULT is not a plugin route")
+    if route is None:
+        raise ValueError("plugin logical route is required")
+    return route, payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,8 +482,8 @@ class RuntimeInboxProcessorBridge:
         self._replay_source_validator = replay_source_validator or RuntimeInboxReplaySourceValidator(
             self._inbox_repository
         )
-        # Task 6 dispatcher/index 未显式注入前保持 legacy 语义，binding 本身不构成切流授权。
-        self._plugin_attempt_runner = plugin_attempt_runner
+        # 平台 binding 只进入 generated dispatcher；legacy 仅服务从未绑定的迁移路径。
+        self._plugin_attempt_runner = plugin_attempt_runner or GeneratedPluginAttemptRunner()
         self._recorded_replay_service = recorded_replay_service or TimelineRecordedReplayService()
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
 
@@ -328,13 +513,23 @@ class RuntimeInboxProcessorBridge:
         base_registry: CapabilityPortRegistry | None = None,
         definitions: dict[tuple[str, str], SystemCapabilityDefinition] | None = None,
         allowed_capabilities: frozenset[tuple[str, str]] | None = None,
-        admission_profile: str = "runtime",
+        admission_profile: str | None = None,
     ) -> RuntimeInboxAttemptRuntime:
         """新建 attempt-scoped runtime；绝不复用 Port 实例或 QUERY cache。"""
 
         registry = base_registry.fork_attempt() if base_registry is not None else CapabilityPortRegistry()
         context = RuntimeCapabilityContext(registry)
-        resolved_definitions = dict(definitions or {})
+        if definitions is None:
+            from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
+
+            definitions = SYSTEM_CAPABILITY_INDEX
+        resolved_definitions = dict(definitions)
+        if admission_profile is None:
+            from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
+                PROFILE_IDENTITY,
+            )
+
+            admission_profile = PROFILE_IDENTITY
         gateway = SystemCapabilityGateway(
             attempt_id=processor_token,
             definitions=resolved_definitions,
@@ -671,7 +866,8 @@ class RuntimeInboxProcessorBridge:
                 result["processed"] += 1
                 return result
 
-            if isinstance(getattr(session, "plugin_binding_id", None), int) and self._plugin_attempt_runner is not None:
+            if isinstance(getattr(session, "plugin_binding_id", None), int):
+                _configure_attempt_runtime_ports(attempt_runtime, services=services)
                 return await self._process_platform_plugin_attempt(
                     db,
                     inbox=inbox,
@@ -942,6 +1138,15 @@ class RuntimeInboxProcessorBridge:
         session_id = resolve_required_pk(session, "session", "id", "session_id")
         workline_id = resolve_required_pk(workline, "workline", "id", "workline_id")
         snapshot = _plugin_attempt_snapshot(session, processor_token=processor_token)
+        dispatch_request = None
+        if isinstance(self._plugin_attempt_runner, GeneratedPluginAttemptRunner):
+            dispatch_request = await _build_plugin_dispatch_request(
+                db,
+                inbox=inbox,
+                session=session,
+                workline=workline,
+                snapshot=snapshot,
+            )
         context = PluginAttemptContext(
             attempt_id=processor_token,
             inbox_id=inbox_id,
@@ -952,6 +1157,7 @@ class RuntimeInboxProcessorBridge:
             plugin_state=deepcopy(dict(getattr(session, "plugin_state_json", {}) or {})),
             snapshot=snapshot,
             runtime=attempt_runtime,
+            dispatch_request=dispatch_request,
         )
 
         replay_resolution: RecordedReplayResolution | None = None
@@ -1007,13 +1213,118 @@ class RuntimeInboxProcessorBridge:
         )
 
 
+async def _build_plugin_dispatch_request(
+    db: Any,
+    *,
+    inbox: Any,
+    session: Any,
+    workline: Any,
+    snapshot: AttemptSnapshot,
+) -> PluginDispatchRequest:
+    """在 Stage 1 固定 binding/config/facts，Stage 2 只消费 immutable request。"""
+
+    _ = workline
+    from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
+        RoughSorterBindingSnapshot,
+    )
+    from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts
+    from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
+
+    binding_id = snapshot.binding_id
+    if binding_id is None or snapshot.binding_version is None or snapshot.index_digest is None:
+        raise ValueError("plugin binding snapshot is incomplete")
+    binding = await workline_plugin_binding_service.get_pinned(db, binding_id=binding_id)
+    raw_config = deepcopy(dict(getattr(binding, "typed_config_json", {}) or {}))
+    profile_identity = optional_str(raw_config.get("provider_profile"))
+    if profile_identity is None:
+        raise ValueError("plugin provider profile is required")
+    plugin_key = optional_str(getattr(binding, "plugin_key", None))
+    contract_version = optional_str(getattr(binding, "contract_version", None))
+    if plugin_key is None or contract_version is None:
+        raise ValueError("plugin identity is required")
+    route, raw_input = _canonical_plugin_input(inbox)
+    state = deepcopy(dict(getattr(session, "plugin_state_json", {}) or {}))
+    data = payload_dict(raw_input.get("data"))
+    session_context = payload_dict(getattr(session, "context_json", None))
+    six_in_one = payload_dict(session_context.get("six_in_one"))
+    business_key = _first_plugin_fact(data, six_in_one, session_context, names=("PkgID", "pkg_code", "business_key"))
+    hhpn = _first_plugin_fact(data, six_in_one, session_context, names=("HHPN", "hhpn"))
+    lot_code = _first_plugin_fact(data, six_in_one, session_context, names=("LotCode", "lot_code"))
+    command_code = optional_str(raw_input.get("command_code"))
+    awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
+    config_hash = sha256_digest(raw_config)
+    facts = RoughSorterFacts(
+        business_key=business_key,
+        hhpn=hhpn,
+        lot_code=lot_code,
+        correlation_matches=command_code is None or (awaiting_code is not None and command_code == awaiting_code),
+        binding_snapshot=RoughSorterBindingSnapshot(
+            binding_id=binding_id,
+            binding_version=snapshot.binding_version,
+            profile_identity=profile_identity,
+            plugin_config_hash=config_hash,
+            generated_index_digest=snapshot.index_digest,
+        ),
+    )
+    return PluginDispatchRequest(
+        plugin_key=plugin_key,
+        contract_version=contract_version,
+        logical_route=route,
+        raw_config=raw_config,
+        raw_state=state,
+        context_state=state,
+        raw_input=raw_input,
+        raw_facts=facts.model_dump(mode="json"),
+        snapshot=PinnedPluginSnapshot(
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+            binding_identity=f"binding:{binding_id}:{snapshot.binding_version}",
+            binding_id=binding_id,
+            binding_version=snapshot.binding_version,
+            config_hash=config_hash,
+            index_digest=snapshot.index_digest,
+            profile_identity=profile_identity,
+        ),
+    )
+
+
+def _first_plugin_fact(*sources: dict[str, Any], names: tuple[str, ...]) -> str | None:
+    for source in sources:
+        for name in names:
+            value = optional_str(source.get(name))
+            if value is not None:
+                return value
+    return None
+
+
+def _configure_attempt_runtime_ports(attempt_runtime: RuntimeInboxAttemptRuntime, *, services: Any) -> None:
+    """把当前 Inbox 的 typed client 包装为 attempt-scoped QUERY Port。"""
+
+    client = getattr(services, "wms_inventory_client", None)
+    if client is None:
+        return
+    from src.app.wms_integration.adapters import build_wms_inventory_query_port_factory
+    from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort
+
+    attempt_runtime.port_registry.register(
+        WmsInventoryQueryPort,
+        build_wms_inventory_query_port_factory(
+            client,
+            request_id_factory=lambda: f"plugin-query-{attempt_runtime.attempt_id}",
+        ),
+    )
+
+
 def _plugin_attempt_snapshot(session: Any, *, processor_token: str) -> AttemptSnapshot:
     definition_identity = getattr(session, "plugin_identity", None)
     if definition_identity is None:
         plugin_key = getattr(session, "plugin_key", None)
         contract_version = getattr(session, "contract_version", None)
         if isinstance(plugin_key, str) and plugin_key and isinstance(contract_version, str) and contract_version:
-            definition_identity = f"{plugin_key}@{contract_version}"
+            from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX
+
+            definition = WORKLINE_PLUGIN_INDEX.get((plugin_key, contract_version))
+            definition_identity = definition.identity if definition is not None else f"{plugin_key}@{contract_version}"
     return AttemptSnapshot(
         processor_token=processor_token,
         session_version=int(getattr(session, "version", 0)),

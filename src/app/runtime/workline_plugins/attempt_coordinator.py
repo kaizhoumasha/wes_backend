@@ -132,6 +132,8 @@ class PluginAttemptContext:
     plugin_state: dict[str, Any]
     snapshot: AttemptSnapshot
     runtime: Any
+    # Stage 1 已构造并冻结的 typed dispatcher 请求；Stage 2 不得回读 DB。
+    dispatch_request: Any | None = None
 
 
 class PluginAttemptRunner(Protocol):
