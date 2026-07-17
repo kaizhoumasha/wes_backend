@@ -366,6 +366,20 @@ def test_processor_default_writeback_uses_injected_runtime_inbox_service() -> No
     assert processor._writeback_service.inbox_service is inbox_service
 
 
+def test_processor_creates_fresh_attempt_runtime_for_every_claim() -> None:
+    """Gateway、Port proxy 与 evidence cache 不得跨 attempt 复用。"""
+    processor = RuntimeInboxProcessorBridge()
+
+    first = processor.create_attempt_runtime("lease-1")
+    second = processor.create_attempt_runtime("lease-2")
+
+    assert first is not second
+    assert first.attempt_id == "lease-1"
+    assert second.attempt_id == "lease-2"
+    assert first.gateway is not second.gateway
+    assert first.port_registry is not second.port_registry
+
+
 def _replay_envelope(*, original_kind: str, original_payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "request_id": "req-1",
@@ -507,13 +521,23 @@ async def test_process_claimed_marks_invalid_replay_envelope_failed(monkeypatch:
         "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._record_diagnostic",
         _noop_diagnostic,
     )
-    result = await RuntimeInboxProcessorBridge(
+    processor = RuntimeInboxProcessorBridge(
         inbox_repository=_Repository(),  # type: ignore[arg-type]
         inbox_service=service,  # type: ignore[arg-type]
-    ).process_claimed(_Db(), claim={"id": 91, "processor_token": "token-91"})
+    )
+    created_attempts: list[str] = []
+    original_create_attempt_runtime = processor.create_attempt_runtime
+
+    def track_attempt(processor_token: str):  # type: ignore[no-untyped-def]
+        created_attempts.append(processor_token)
+        return original_create_attempt_runtime(processor_token)
+
+    monkeypatch.setattr(processor, "create_attempt_runtime", track_attempt)
+    result = await processor.process_claimed(_Db(), claim={"id": 91, "processor_token": "token-91"})
 
     assert result["failed"] == 1
     assert result["processed"] == 1
+    assert created_attempts == ["token-91"]
     assert service.error_message is not None
     assert "INVALID_REPLAY_ENVELOPE" in service.error_message
 

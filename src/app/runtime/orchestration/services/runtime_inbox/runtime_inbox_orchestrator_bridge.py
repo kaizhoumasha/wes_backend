@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, TypedDict
 from loguru import logger
 
 from src.app.runtime.capability_catalog import parse_workline_six_in_one
+from src.app.runtime.capability_port_registry import CapabilityPortRegistry, RuntimeCapabilityContext
 from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     ErrorDomain,
@@ -68,6 +69,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writebac
     _session_write_snapshot,
 )
 from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
+from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
 from src.app.workline.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
     WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
@@ -87,6 +89,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
+    from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition
 
 
 class ProcessResult(TypedDict):
@@ -114,6 +117,16 @@ class _InboxDiagnosticSnapshot:
     command_id: int | None
     attempt_count: int
     payload_json: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeInboxAttemptRuntime:
+    """仅在单次 claim 内有效的 Port、Context、Gateway 容器。"""
+
+    attempt_id: str
+    port_registry: CapabilityPortRegistry
+    context: RuntimeCapabilityContext
+    gateway: SystemCapabilityGateway
 
 
 class _ReplayProjectedInbox:
@@ -273,6 +286,36 @@ class RuntimeInboxProcessorBridge:
         """
         return self._inbox_repository
 
+    def create_attempt_runtime(
+        self,
+        processor_token: str,
+        *,
+        base_registry: CapabilityPortRegistry | None = None,
+        definitions: dict[tuple[str, str], SystemCapabilityDefinition] | None = None,
+        allowed_capabilities: frozenset[tuple[str, str]] | None = None,
+        admission_profile: str = "runtime",
+    ) -> RuntimeInboxAttemptRuntime:
+        """新建 attempt-scoped runtime；绝不复用 Port 实例或 QUERY cache。"""
+
+        registry = base_registry.fork_attempt() if base_registry is not None else CapabilityPortRegistry()
+        context = RuntimeCapabilityContext(registry)
+        resolved_definitions = dict(definitions or {})
+        gateway = SystemCapabilityGateway(
+            attempt_id=processor_token,
+            definitions=resolved_definitions,
+            allowed_capabilities=(
+                frozenset(resolved_definitions) if allowed_capabilities is None else allowed_capabilities
+            ),
+            context=context,
+            admission_profile=admission_profile,
+        )
+        return RuntimeInboxAttemptRuntime(
+            attempt_id=processor_token,
+            port_registry=registry,
+            context=context,
+            gateway=gateway,
+        )
+
     async def claim_and_process_batch(
         self,
         db: AsyncSession,
@@ -341,6 +384,10 @@ class RuntimeInboxProcessorBridge:
         )
         if not processor_token:
             processor_token = f"runtime-inbox-worker-{uuid.uuid4()}"
+
+        # 每次 claim 都建立全新的 Port/Context/Gateway；即使 replay 验真失败，
+        # 也不允许复用上一个 attempt 的 handler 或 evidence cache。
+        _attempt_runtime = self.create_attempt_runtime(processor_token)
 
         diagnostic_inbox = _snapshot_inbox_for_diagnostic(inbox)
         inbox_pk_text = str(diagnostic_inbox.id or getattr(inbox, "id", "unknown"))

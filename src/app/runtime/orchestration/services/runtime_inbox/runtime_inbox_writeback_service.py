@@ -35,6 +35,11 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service 
 from src.app.runtime.orchestration.services.session.session_resolver import (
     reapply_pending_session_ingress_metadata,
 )
+from src.app.runtime.workline_plugins.attempt_coordinator import (
+    AttemptSnapshot,
+    AttemptWriteSet,
+    WriteDisposition,
+)
 from src.app.workline.services.write_back_service import orchestrator_write_back_service
 from src.app.workline.utils import payload_dict
 from src.utils.value_normalization import (
@@ -303,6 +308,34 @@ class RuntimeInboxWriteBackService:
         if self._inbox_service is None:
             return runtime_inbox_service
         return self._inbox_service
+
+    async def commit_plugin_attempt(
+        self,
+        db: Any,
+        *,
+        expected_snapshot: AttemptSnapshot,
+        current_snapshot: Callable[[], Awaitable[AttemptSnapshot]],
+        write_set: AttemptWriteSet,
+        persist_evidence: Callable[[tuple[Any, ...]], Awaitable[None]],
+        persist_state: Callable[[Any], Awaitable[None]],
+        persist_intents: Callable[[tuple[Any, ...]], Awaitable[None]],
+        mark_terminal: Callable[[], Awaitable[None]],
+    ) -> WriteDisposition:
+        """重校验后在同一事务落 evidence、state、intents 与 Inbox 终态。"""
+
+        if await current_snapshot() != expected_snapshot:
+            await db.rollback()
+            return WriteDisposition.SAFE_RETRY
+        try:
+            await persist_evidence(write_set.evidence)
+            await persist_state(write_set.next_state)
+            await persist_intents(write_set.intents)
+            await mark_terminal()
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+        return WriteDisposition.COMMITTED
 
     def build_write_callback(
         self,

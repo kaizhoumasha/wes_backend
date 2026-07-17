@@ -1,0 +1,105 @@
+"""QUERY evidence 与 recorded replay 的跨模块合同。"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+
+def evidence_payload() -> dict[str, object]:
+    return {
+        "capability_key": "wms.lookup",
+        "contract_version": "v1",
+        "input_hash": "a" * 64,
+        "output_hash": "b" * 64,
+        "authority": "WMS",
+        "source": "master-data",
+        "evidence_at": datetime(2026, 7, 17, tzinfo=UTC).isoformat(),
+        "source_version": "42",
+        "admission_snapshot": {"profile": "provider-contract"},
+        "summary": {"found": True},
+    }
+
+
+def test_evidence_maps_to_existing_decision_made_timeline_payload() -> None:
+    from src.app.runtime.orchestration.models.timeline import TimelineActionType
+    from src.app.runtime.system_capabilities.evidence import QueryEvidence
+
+    evidence = QueryEvidence.model_validate(evidence_payload())
+    timeline = evidence.to_timeline_record()
+    assert timeline["action_type"] is TimelineActionType.DECISION_MADE
+    assert timeline["payload_json"]["capability_key"] == "wms.lookup"
+    assert timeline["payload_json"]["evidence_at"].endswith(("Z", "+00:00"))
+
+
+def test_recorded_replay_decodes_evidence_and_decision_without_handler() -> None:
+    from src.app.runtime.system_capabilities.evidence import QueryEvidence
+    from src.app.runtime.system_capabilities.replay import RecordedReplayEnvelope, resolve_recorded_replay
+
+    envelope = RecordedReplayEnvelope(
+        definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        binding_identity="binding:17:3",
+        index_digest="d" * 64,
+        evidence=(QueryEvidence.model_validate(evidence_payload()),),
+        decision={"outcome_code": "ROUTE_A", "intents": []},
+    )
+    resolution = resolve_recorded_replay(
+        envelope,
+        expected_definition_identity=envelope.definition_identity,
+        expected_binding_identity=envelope.binding_identity,
+        expected_index_digest=envelope.index_digest,
+        expected_evidence_keys=(("wms.lookup", "v1", "a" * 64, "b" * 64),),
+    )
+    assert resolution.hold_reason is None
+    assert resolution.decision == {"outcome_code": "ROUTE_A", "intents": []}
+    assert len(resolution.evidence) == 1
+
+
+def test_recorded_replay_rejects_query_key_or_hash_drift_without_calling_handler() -> None:
+    from src.app.runtime.system_capabilities.evidence import QueryEvidence
+    from src.app.runtime.system_capabilities.replay import RecordedReplayEnvelope, resolve_recorded_replay
+
+    handler_calls = 0
+
+    def forbidden_handler() -> None:
+        nonlocal handler_calls
+        handler_calls += 1
+
+    envelope = RecordedReplayEnvelope(
+        definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        binding_identity="binding:17:3",
+        index_digest="d" * 64,
+        evidence=(QueryEvidence.model_validate(evidence_payload()),),
+        decision={"outcome_code": "ROUTE_A", "intents": []},
+    )
+    resolution = resolve_recorded_replay(
+        envelope,
+        expected_definition_identity=envelope.definition_identity,
+        expected_binding_identity=envelope.binding_identity,
+        expected_index_digest=envelope.index_digest,
+        expected_evidence_keys=(("wms.lookup", "v1", "f" * 64, "b" * 64),),
+    )
+
+    assert resolution.hold_reason == "RECORDED_REPLAY_EVIDENCE_MISMATCH"
+    assert handler_calls == 0
+    assert forbidden_handler is not None
+
+
+def test_recorded_replay_missing_or_mismatched_pin_fails_closed_to_hold() -> None:
+    from src.app.runtime.system_capabilities.replay import RecordedReplayEnvelope, resolve_recorded_replay
+
+    envelope = RecordedReplayEnvelope(
+        definition_identity=None,
+        binding_identity=None,
+        index_digest=None,
+        evidence=(),
+        decision={"outcome_code": "ROUTE_A"},
+    )
+    resolution = resolve_recorded_replay(
+        envelope,
+        expected_definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        expected_binding_identity="binding:17:3",
+        expected_index_digest="d" * 64,
+        expected_evidence_keys=(),
+    )
+    assert resolution.decision is None
+    assert resolution.hold_reason == "RECORDED_REPLAY_PIN_MISSING"
