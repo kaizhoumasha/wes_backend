@@ -133,7 +133,7 @@ class ExternalContractProfile(BaseModel):
     def identity(self) -> str:
         """返回 Definition 可引用、且不携带 profile 实例的稳定身份。"""
 
-        return f"{self.provider_code.lower()}.{self.contract_version}.{self.environment}"
+        return f"{self.provider_code.strip().lower()}.{self.contract_version}.{self.environment}"
 
     @model_validator(mode="after")
     def _effect_timeout_required_after(self) -> ExternalContractProfile:

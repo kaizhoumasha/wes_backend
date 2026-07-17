@@ -110,6 +110,86 @@ def test_measurements_must_be_positive(field: str) -> None:
         admission_input(**{field: 0})
 
 
+@pytest.mark.parametrize("field", ["business_key", "hhpn", "lot_code", "warehouse_code", "owner_code"])
+def test_stable_input_strings_reject_whitespace_only(field: str) -> None:
+    with pytest.raises(ValueError):
+        admission_input(**{field: "   \t"})
+
+
+@pytest.mark.parametrize("field", ["profile_identity", "plugin_config_hash", "generated_index_digest"])
+def test_binding_snapshot_stable_strings_reject_whitespace_only(field: str) -> None:
+    snapshot = admission_input().binding_snapshot.model_dump()
+    snapshot[field] = "   \t"
+
+    with pytest.raises(ValueError):
+        admission_input(binding_snapshot=snapshot)
+
+
+@pytest.mark.asyncio
+async def test_stable_strings_strip_outer_whitespace_without_casefolding() -> None:
+    snapshot = admission_input().binding_snapshot.model_dump()
+    snapshot.update(
+        {
+            "profile_identity": "  wms.2026-07-06.material-flow.sandbox  ",
+            "plugin_config_hash": f"  {'a' * 64}  ",
+            "generated_index_digest": f"  {'b' * 64}  ",
+        }
+    )
+    port = FakeInventoryPort(
+        [
+            WmsInventoryItem(
+                material_code="Mat-Exact",
+                warehouse_code="WH-A",
+                storage_location_code="BIN-01",
+                quantity=1,
+                batch_no="Lot-Exact",
+            )
+        ]
+    )
+    request = admission_input(
+        business_key="  scan:RS-01:evt-001  ",
+        hhpn="  Mat-Exact  ",
+        lot_code="  Lot-Exact  ",
+        warehouse_code="  WH-A  ",
+        owner_code="  OWNER-A  ",
+        binding_snapshot=snapshot,
+    )
+
+    outcome = await RoughSorterInventoryAdmissionHandler(port)(request)
+
+    assert isinstance(outcome, Success)
+    assert request.business_key == "scan:RS-01:evt-001"
+    assert request.hhpn == "Mat-Exact"
+    assert request.lot_code == "Lot-Exact"
+    assert request.owner_code == "OWNER-A"
+    assert request.binding_snapshot.plugin_config_hash == "a" * 64
+    assert port.calls == [("Mat-Exact", "WH-A")]
+
+
+@pytest.mark.parametrize(
+    ("material_code", "batch_no"),
+    [("mat-exact", "Lot-Exact"), ("Mat-Exact", "lot-exact")],
+)
+@pytest.mark.asyncio
+async def test_material_and_batch_matching_remains_case_sensitive(material_code: str, batch_no: str) -> None:
+    port = FakeInventoryPort(
+        [
+            WmsInventoryItem(
+                material_code=material_code,
+                warehouse_code="WH-A",
+                storage_location_code="BIN-01",
+                quantity=1,
+                batch_no=batch_no,
+            )
+        ]
+    )
+
+    outcome = await RoughSorterInventoryAdmissionHandler(port)(admission_input(hhpn="Mat-Exact", lot_code="Lot-Exact"))
+
+    assert isinstance(outcome, BusinessReject)
+    assert outcome.reason_code == "WMS_REJECTED"
+
+
 @pytest.mark.asyncio
 async def test_timeout_or_unavailable_is_closed_retryable_failure() -> None:
     from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryUnavailable

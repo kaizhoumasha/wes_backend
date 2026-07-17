@@ -100,6 +100,30 @@ async def test_production_adapter_maps_public_port_arguments_to_current_wms_dto(
 
 
 @pytest.mark.asyncio
+async def test_adapter_float_quantity_boundary_is_explicit_and_deterministic() -> None:
+    precise_quantity = Decimal("0.12345678901234567890123456789")
+    client = FakeTypedClient(
+        QueryInventoryResponse.model_validate(
+            {
+                "items": [
+                    {
+                        "sku": "MAT-001",
+                        "warehouse_code": "WH-A",
+                        "lot_no": "LOT-1",
+                        "available_qty": precise_quantity,
+                    }
+                ]
+            }
+        )
+    )
+    adapter = WmsInventoryQueryPortAdapter(client, request_id_factory=lambda: "attempt-precision")
+
+    items = await adapter.query_inventory("MAT-001")
+
+    assert items[0].quantity == float(precise_quantity)
+    assert Decimal(str(items[0].quantity)) != precise_quantity
+
+
 @pytest.mark.parametrize(
     "provider_error",
     [
@@ -207,3 +231,52 @@ def test_definition_profile_and_handler_keep_the_capability_boundary_closed() ->
     source = inspect.getsource(RoughSorterInventoryAdmissionHandler)
     forbidden = ("wms_integration.services", "wms_integration.models", "http_client", "WmsTimeoutError")
     assert all(token not in source for token in forbidden)
+
+
+def test_profile_catalog_rejects_canonical_provider_identity_collision() -> None:
+    profile = RUNTIME_CAPABILITY_PROVIDER_PROFILES["WMS"]
+    lowercase_duplicate = type(profile).model_validate(
+        {
+            **profile.model_dump(mode="python"),
+            "provider_code": "  wms  ",
+        }
+    )
+
+    with pytest.raises(ValueError, match="重复 external contract profile identity"):
+        ExternalContractProfileCatalog([profile, lowercase_duplicate])
+
+
+def test_profile_catalog_rejects_same_canonical_identity_even_when_provider_and_version_boundaries_differ() -> None:
+    profile = RUNTIME_CAPABILITY_PROVIDER_PROFILES["WMS"]
+    first = type(profile).model_validate(
+        {**profile.model_dump(mode="python"), "provider_code": "WMS", "contract_version": "a.b"}
+    )
+    second = type(profile).model_validate(
+        {**profile.model_dump(mode="python"), "provider_code": "WMS.a", "contract_version": "b"}
+    )
+
+    with pytest.raises(ValueError, match="重复 external contract profile identity"):
+        ExternalContractProfileCatalog([first, second])
+
+
+def test_profile_catalog_resolves_provider_case_and_whitespace_canonically_but_keeps_version_environment_exact() -> (
+    None
+):
+    profile = RUNTIME_CAPABILITY_PROVIDER_PROFILES["WMS"]
+    catalog = ExternalContractProfileCatalog([profile])
+
+    assert (
+        catalog.resolve(
+            provider_code="  wMs  ",
+            contract_version=profile.contract_version,
+            environment=profile.environment,
+        )
+        is profile
+    )
+    assert catalog.resolve_identity("WMS.2026-07-06.material-flow.sandbox") is profile
+    with pytest.raises(LookupError):
+        catalog.resolve(
+            provider_code="WMS",
+            contract_version=profile.contract_version.upper(),
+            environment=profile.environment,
+        )

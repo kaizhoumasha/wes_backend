@@ -52,7 +52,7 @@ class WmsInventoryQueryPort(Protocol):
         *,
         warehouse_code: str | None = None,
     ) -> list[WmsInventoryItem]:
-        """查询物料库存 (按物料编码, 可选仓库过滤)。"""
+        """查询物料库存；quantity 当前为 float，Decimal→float 的精度边界由 adapter 显式承担。"""
         ...
 
     def query_empty_bins(

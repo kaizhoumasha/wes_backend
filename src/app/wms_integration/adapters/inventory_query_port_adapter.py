@@ -36,7 +36,10 @@ _PROVIDER_CONTRACT_REASON_CODES = frozenset(
 
 
 class WmsInventoryQueryPortAdapter:
-    """每个 attempt 新建；只负责 DTO/exception 边界转换，不缓存 client 结果。"""
+    """每 attempt 新建的 DTO/Port adapter。
+
+    Decimal quantity 显式转为 Port float；转换结果确定，但不承诺 Decimal 精度。
+    """
 
     def __init__(self, client: _TypedInventoryClient, *, request_id_factory: Callable[[], str]) -> None:
         self._client = client

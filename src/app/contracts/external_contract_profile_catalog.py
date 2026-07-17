@@ -15,12 +15,12 @@ class ExternalContractProfileCatalog:
     """按 provider/version/environment 精确解析并快照外部合同。"""
 
     def __init__(self, profiles: Iterable[ExternalContractProfile]) -> None:
-        catalog: dict[tuple[str, str, str], ExternalContractProfile] = {}
+        catalog: dict[str, ExternalContractProfile] = {}
         for profile in profiles:
-            key = (profile.provider_code, profile.contract_version, profile.environment)
-            if key in catalog:
-                raise ValueError(f"重复 external contract profile: {key}")
-            catalog[key] = profile
+            identity = _canonical_profile_identity(profile)
+            if identity in catalog:
+                raise ValueError(f"重复 external contract profile identity: {identity}")
+            catalog[identity] = profile
         self._profiles = MappingProxyType(catalog)
 
     def resolve(
@@ -30,12 +30,13 @@ class ExternalContractProfileCatalog:
         environment: str,
         contract_version: str | None = None,
     ) -> ExternalContractProfile:
+        canonical_provider = _canonical_provider_code(provider_code)
         matches = [
             profile
-            for (code, version, profile_environment), profile in self._profiles.items()
-            if code == provider_code
-            and profile_environment == environment
-            and (contract_version is None or version == contract_version)
+            for profile in self._profiles.values()
+            if _canonical_provider_code(profile.provider_code) == canonical_provider
+            and profile.environment == environment
+            and (contract_version is None or profile.contract_version == contract_version)
         ]
         if len(matches) != 1:
             raise LookupError(
@@ -46,7 +47,15 @@ class ExternalContractProfileCatalog:
     def resolve_identity(self, identity: str) -> ExternalContractProfile:
         """按不可变 profile identity 精确解析，供 Definition admission 校验。"""
 
-        matches = [profile for profile in self._profiles.values() if profile.identity == identity]
+        requested_identity = identity.strip()
+        matches = []
+        for profile in self._profiles.values():
+            exact_suffix = f".{profile.contract_version}.{profile.environment}"
+            if not requested_identity.endswith(exact_suffix):
+                continue
+            requested_provider = requested_identity[: -len(exact_suffix)]
+            if _canonical_provider_code(requested_provider) == _canonical_provider_code(profile.provider_code):
+                matches.append(profile)
         if len(matches) != 1:
             raise LookupError(f"provider profile identity 必须唯一: {identity}")
         return matches[0]
@@ -64,6 +73,16 @@ class ExternalContractProfileCatalog:
                 raise LookupError(f"provider profile 未声明 Port: {port_type.__name__}")
             required_methods.extend(matches)
         return sorted(set(required_methods))
+
+
+def _canonical_provider_code(provider_code: str) -> str:
+    """Provider identity 仅规范首尾空白与大小写；version/environment 保持精确。"""
+
+    return provider_code.strip().lower()
+
+
+def _canonical_profile_identity(profile: ExternalContractProfile) -> str:
+    return f"{_canonical_provider_code(profile.provider_code)}.{profile.contract_version}.{profile.environment}"
 
 
 __all__ = ["ExternalContractProfileCatalog"]
