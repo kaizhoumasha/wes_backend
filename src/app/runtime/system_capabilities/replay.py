@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from src.app.runtime.orchestration.repositories.timeline_recorded_replay_repository import (
     TimelineRecordedReplayRepository,
@@ -16,6 +16,16 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
+class RecordedAttemptAnchor(BaseModel):
+    """源 attempt 的权威数值锚点，禁止 replay 根据 intent 反推。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_inbox_id: int = Field(gt=0)
+    session_version: int = Field(ge=0)
+    session_status: str = Field(min_length=1)
+
+
 class RecordedReplayEnvelope(BaseModel):
     """timeline 中固定的 Definition、binding、index 与决策证据。"""
 
@@ -24,6 +34,7 @@ class RecordedReplayEnvelope(BaseModel):
     definition_identity: str | None
     binding_identity: str | None
     index_digest: str | None
+    attempt_anchor: RecordedAttemptAnchor | None = None
     evidence: tuple[QueryEvidence, ...]
     decision: dict[str, Any]
 
@@ -36,6 +47,7 @@ class RecordedReplayResolution(BaseModel):
     evidence: tuple[QueryEvidence, ...] = ()
     decision: dict[str, Any] | None = None
     binding_identity: str | None = None
+    attempt_anchor: RecordedAttemptAnchor | None = None
     hold_reason: str | None = None
 
 
@@ -45,6 +57,7 @@ def resolve_recorded_replay(
     expected_definition_identity: str,
     expected_binding_identity: str,
     expected_index_digest: str,
+    expected_source_inbox_id: int,
     expected_evidence_keys: tuple[tuple[str, str, str, str], ...],
 ) -> RecordedReplayResolution:
     """只解码 recorded 数据；pin 缺失或漂移一律 Hold，不静默升级。"""
@@ -55,6 +68,8 @@ def resolve_recorded_replay(
     expected = (expected_definition_identity, expected_binding_identity, expected_index_digest)
     if pinned != expected:
         return RecordedReplayResolution(hold_reason="RECORDED_REPLAY_PIN_MISMATCH")
+    if envelope.attempt_anchor is None or envelope.attempt_anchor.source_inbox_id != expected_source_inbox_id:
+        return RecordedReplayResolution(hold_reason="RECORDED_REPLAY_RECORD_INVALID")
     recorded_evidence_keys = tuple(
         (
             item.capability_key,
@@ -70,6 +85,7 @@ def resolve_recorded_replay(
         evidence=envelope.evidence,
         decision=envelope.decision,
         binding_identity=envelope.binding_identity,
+        attempt_anchor=envelope.attempt_anchor,
     )
 
 
@@ -115,6 +131,7 @@ class TimelineRecordedReplayService:
                 definition_identity=decision_record.get("definition_identity"),
                 binding_identity=decision_record.get("binding_identity"),
                 index_digest=decision_record.get("index_digest"),
+                attempt_anchor=decision_record.get("attempt_anchor"),
                 evidence=evidence,
                 decision=decision,
             )
@@ -125,6 +142,7 @@ class TimelineRecordedReplayService:
             expected_definition_identity=expected_definition_identity,
             expected_binding_identity=expected_binding_identity,
             expected_index_digest=expected_index_digest,
+            expected_source_inbox_id=source_inbox_id,
             expected_evidence_keys=expected_keys,
         )
 
@@ -136,6 +154,7 @@ def _parse_evidence_key(value: Any) -> tuple[str, str, str, str]:
 
 
 __all__ = [
+    "RecordedAttemptAnchor",
     "RecordedReplayEnvelope",
     "RecordedReplayResolution",
     "TimelineRecordedReplayService",

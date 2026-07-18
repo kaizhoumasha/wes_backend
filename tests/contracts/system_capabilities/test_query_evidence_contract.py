@@ -42,6 +42,7 @@ def test_recorded_replay_decodes_evidence_and_decision_without_handler() -> None
         definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
         binding_identity="binding:17:3",
         index_digest="d" * 64,
+        attempt_anchor={"source_inbox_id": 71, "session_version": 7, "session_status": "RUNNING"},
         evidence=(QueryEvidence.model_validate(evidence_payload()),),
         decision={"outcome_code": "ROUTE_A", "intents": []},
     )
@@ -50,6 +51,7 @@ def test_recorded_replay_decodes_evidence_and_decision_without_handler() -> None
         expected_definition_identity=envelope.definition_identity,
         expected_binding_identity=envelope.binding_identity,
         expected_index_digest=envelope.index_digest,
+        expected_source_inbox_id=71,
         expected_evidence_keys=(("wms.lookup", "v1", "a" * 64, "b" * 64),),
     )
     assert resolution.hold_reason is None
@@ -71,6 +73,7 @@ def test_recorded_replay_rejects_query_key_or_hash_drift_without_calling_handler
         definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
         binding_identity="binding:17:3",
         index_digest="d" * 64,
+        attempt_anchor={"source_inbox_id": 71, "session_version": 7, "session_status": "RUNNING"},
         evidence=(QueryEvidence.model_validate(evidence_payload()),),
         decision={"outcome_code": "ROUTE_A", "intents": []},
     )
@@ -79,6 +82,7 @@ def test_recorded_replay_rejects_query_key_or_hash_drift_without_calling_handler
         expected_definition_identity=envelope.definition_identity,
         expected_binding_identity=envelope.binding_identity,
         expected_index_digest=envelope.index_digest,
+        expected_source_inbox_id=71,
         expected_evidence_keys=(("wms.lookup", "v1", "f" * 64, "b" * 64),),
     )
 
@@ -102,6 +106,7 @@ def test_recorded_replay_missing_or_mismatched_pin_fails_closed_to_hold() -> Non
         expected_definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
         expected_binding_identity="binding:17:3",
         expected_index_digest="d" * 64,
+        expected_source_inbox_id=71,
         expected_evidence_keys=(),
     )
     assert resolution.decision is None
@@ -126,6 +131,7 @@ async def test_recorded_replay_service_loads_only_timeline_decision_records() ->
                 "definition_identity": "plugin.rough-sorter@v1:" + "c" * 64,
                 "binding_identity": "binding:17:3",
                 "index_digest": "d" * 64,
+                "attempt_anchor": {"source_inbox_id": 71, "session_version": 7, "session_status": "RUNNING"},
                 "evidence_keys": [["wms.lookup", "v1", "a" * 64, "b" * 64]],
                 "decision": {"outcome_code": "ROUTE_A", "intents": []},
             }
@@ -147,6 +153,42 @@ async def test_recorded_replay_service_loads_only_timeline_decision_records() ->
 
     assert resolution.hold_reason is None
     assert resolution.decision == {"outcome_code": "ROUTE_A", "intents": []}
+
+
+@pytest.mark.asyncio
+async def test_recorded_replay_service_fails_closed_when_legacy_record_has_no_attempt_anchor() -> None:
+    from src.app.runtime.system_capabilities.replay import TimelineRecordedReplayService
+
+    class Repository:
+        async def list_recorded_decisions(self, _db: object, *, source_inbox_id: int) -> list[object]:
+            return [
+                SimpleNamespace(
+                    payload_json={
+                        "record_type": "PLUGIN_DECISION",
+                        "definition_identity": "plugin.rough-sorter@v1:" + "c" * 64,
+                        "binding_identity": "binding:17:3",
+                        "index_digest": "d" * 64,
+                        "evidence_keys": [],
+                        "decision": {
+                            "outcome_code": "HOLD",
+                            "hold_reason": None,
+                            "intents": [],
+                            "next_state": {},
+                        },
+                    }
+                )
+            ]
+
+    resolution = await TimelineRecordedReplayService(Repository()).load(
+        object(),
+        source_inbox_id=71,
+        expected_definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
+        expected_binding_identity="binding:17:3",
+        expected_index_digest="d" * 64,
+    )
+
+    assert resolution.decision is None
+    assert resolution.hold_reason == "RECORDED_REPLAY_RECORD_INVALID"
 
 
 @pytest.mark.asyncio

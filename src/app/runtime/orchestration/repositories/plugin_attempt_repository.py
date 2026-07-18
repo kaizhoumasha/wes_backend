@@ -228,6 +228,11 @@ class PluginAttemptRepository:
             "definition_identity": snapshot.definition_identity,
             "binding_identity": snapshot.binding_identity,
             "index_digest": snapshot.index_digest,
+            "attempt_anchor": {
+                "source_inbox_id": int(locked.inbox.id),
+                "session_version": snapshot.session_version,
+                "session_status": snapshot.session_status,
+            },
             "evidence_keys": evidence_keys,
             "decision": {
                 "outcome_code": write_set.outcome_code,

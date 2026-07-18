@@ -442,9 +442,12 @@ async def test_live_block_timeline_recorded_replay_restores_decision_without_ree
         (("capability_key",), "runtime.other"),
         (("contract_version",), "v2"),
         (("operation_key",), "inbox:91:1:block"),
+        (("operation_key",), "inbox:92:0:block"),
         (("payload_hash",), "0" * 64),
         (("precondition_json", "expected_status"), ""),
+        (("precondition_json", "expected_status"), "RUNNING"),
         (("fact_version",), "session:stale"),
+        (("fact_version",), "session:8"),
         (("creator_authority",), "EXTERNAL"),
         (("authorization_policy",), "UNTRUSTED"),
         (("binding_snapshot", "binding_version"), 5),
@@ -485,6 +488,11 @@ def test_recorded_live_hold_rejects_tampered_system_capability_identity_or_shape
     replayed = _write_set_from_recorded_replay(
         RecordedReplayResolution(
             binding_identity="binding:17:4",
+            attempt_anchor={
+                "source_inbox_id": 91,
+                "session_version": 7,
+                "session_status": "WAITING_DEVICE_RESULT",
+            },
             decision={
                 "outcome_code": "HOLD",
                 "hold_reason": None,

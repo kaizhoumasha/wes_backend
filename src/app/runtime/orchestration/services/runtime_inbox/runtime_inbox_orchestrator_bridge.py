@@ -1455,6 +1455,7 @@ def _write_set_from_recorded_replay(
         and not _recorded_live_hold_intent_is_valid(
             resolution.decision.get("intents"),
             binding_identity=resolution.binding_identity,
+            attempt_anchor=resolution.attempt_anchor,
         )
     ):
         return _invalid_recorded_write_set(fallback_state)
@@ -1491,10 +1492,20 @@ class _RecordedPluginDecision(BaseModel):
         return self
 
 
-def _recorded_live_hold_intent_is_valid(raw_intents: Any, *, binding_identity: str | None) -> bool:
+def _recorded_live_hold_intent_is_valid(
+    raw_intents: Any,
+    *,
+    binding_identity: str | None,
+    attempt_anchor: Any,
+) -> bool:
     """只接受 live runner 生成并与 recorded binding 一致的 session_hold。"""
 
-    if not isinstance(raw_intents, list | tuple) or len(raw_intents) != 1 or not isinstance(raw_intents[0], dict):
+    if (
+        attempt_anchor is None
+        or not isinstance(raw_intents, list | tuple)
+        or len(raw_intents) != 1
+        or not isinstance(raw_intents[0], dict)
+    ):
         return False
     raw_intent = raw_intents[0]
     try:
@@ -1509,14 +1520,17 @@ def _recorded_live_hold_intent_is_valid(raw_intents: Any, *, binding_identity: s
             or len(operation_parts) != 4
             or not operation_parts[1].isdigit()
             or operation_parts[2:] != ["0", "block"]
+            or intent.operation_key != f"inbox:{attempt_anchor.source_inbox_id}:0:block"
             or set(payload) != {"failure_domain", "reason_code", "message"}
             or not all(isinstance(payload[key], str) and payload[key] for key in payload)
             or set(precondition) != {"expected_status"}
             or not isinstance(precondition["expected_status"], str)
             or not precondition["expected_status"]
+            or precondition != {"expected_status": attempt_anchor.session_status}
             or not isinstance(intent.fact_version, str)
             or not intent.fact_version.startswith("session:")
             or not intent.fact_version.removeprefix("session:").isdigit()
+            or intent.fact_version != f"session:{attempt_anchor.session_version}"
             or set(binding) != {"binding_id", "binding_version"}
             or not isinstance(binding["binding_id"], int)
             or not isinstance(binding["binding_version"], int)
