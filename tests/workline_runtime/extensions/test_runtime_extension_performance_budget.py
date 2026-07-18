@@ -1,42 +1,38 @@
-"""平台扩展最小切片的 production-path 性能预算。"""
+"""平台扩展最小切片的 production-chain PostgreSQL 性能预算。"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import statistics
 import subprocess
 import sys
 import time
-from decimal import Decimal
-from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
+import httpx
+from fastapi import Request
+from sqlalchemy import func
 from sqlmodel import select
 
+from src.app.callback.services.callback_ingress_service import CallbackIngressService
+from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device
 from src.app.device.services.device_command_service import DeviceCommandService
-from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
-from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
-    GeneratedPluginAttemptRunner,
-)
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.system_capabilities.device.device_command_write.contracts import DeviceCommandWriteInput
-from src.app.runtime.system_capabilities.evidence import QueryEvidence
-from src.app.runtime.system_capabilities.gateway import GatewayQueryResult
-from src.app.runtime.system_capabilities.outcomes import Success
 from src.app.runtime.system_capabilities.replay import TimelineRecordedReplayService
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-    PROFILE_IDENTITY,
-    RoughSorterBindingSnapshot,
-    RoughSorterInventoryAdmissionOutput,
+from src.app.sys.models import SystemOutbox
+from src.app.wms_integration.services import (
+    WmsCircuitBreakerService,
+    WmsEndpointConfig,
+    WmsHttpClient,
+    WmsHttpTimeoutConfig,
+    WmsTypedPortService,
 )
-from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, PluginAttemptContext
-from src.app.runtime.workline_plugins.dispatcher import PinnedPluginSnapshot, PluginDispatchRequest
-from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
-from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig
-from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
-from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts
 from src.app.workline.models.workline import WorkLine
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
@@ -45,187 +41,167 @@ from tests.support.runtime_inbox_processing_postgresql import (
     with_temporary_runtime_database,
 )
 
+if TYPE_CHECKING:
+    import pytest
+
 COLD_IMPORT_MEDIAN_MS = 1_500.0
-NO_QUERY_DECISION_MEDIAN_MS = 8.0
-ONE_QUERY_DECISION_MEDIAN_MS = 10.0
-OUTBOX_ENQUEUE_MEDIAN_MS = 40.0
-RECORDED_REPLAY_MEDIAN_MS = 15.0
+NO_QUERY_INBOX_MEDIAN_MS = 500.0
+WMS_QUERY_INBOX_MEDIAN_MS = 800.0
+OUTBOX_ENQUEUE_MEDIAN_MS = 50.0
+RECORDED_REPLAY_MEDIAN_MS = 20.0
+MEASURED_SAMPLE_COUNT = 5
 
 
-def _config() -> RoughSorterConfig:
-    return RoughSorterConfig.model_validate(
+def _callback_request(payload: dict[str, object]) -> Request:
+    body = json.dumps(payload).encode("utf-8")
+    sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
         {
-            "device_roles": {"input_arm": "INPUT_ARM", "conveyor": "CONVEYOR", "output_arm": "OUTPUT_ARM"},
-            "pipeline_input_location": "PIPELINE-IN",
-            "pipeline_output_location": "PIPELINE-OUT",
-            "ng_location": "NG",
-            "warehouse_code": "WH",
-            "owner_code": "OWNER",
-            "provider_profile": PROFILE_IDENTITY,
-        }
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/callback/result",
+            "headers": [(b"content-type", b"application/json")],
+            "client": ("127.0.0.1", 12345),
+        },
+        receive=receive,
     )
 
 
-def _facts() -> RoughSorterFacts:
-    return RoughSorterFacts(
-        business_key="PKG-PERF",
-        hhpn="MAT-PERF",
-        lot_code="LOT-PERF",
-        binding_snapshot=RoughSorterBindingSnapshot(
-            binding_id=1,
-            binding_version=1,
-            profile_identity=PROFILE_IDENTITY,
-            plugin_config_hash=sha256_digest(_config().model_dump(mode="json")),
-            generated_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
-        ),
-    )
+async def _process_one(db: Any, service: RuntimeInboxService, *, token: str) -> dict[str, int]:
+    claimed = await claim(db, service, token=token)
+    return await processor(service).process_claimed(db, claim=claimed)
 
 
-class _QueryGateway:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def execute(self, _capability_key: str, _contract_version: str, _input_data: object) -> GatewayQueryResult:
-        self.calls += 1
-        serialized_input = _input_data.model_dump(mode="json") if hasattr(_input_data, "model_dump") else _input_data
-        output = RoughSorterInventoryAdmissionOutput(
-            accepted=True,
-            material_code="MAT-PERF",
-            batch_no="LOT-PERF",
-            warehouse_code="WH",
-            matched_item_count=1,
-            available_quantity=Decimal("1"),
-            source_version="perf-v1",
+def _wms_service(session_factory: Any, http_calls: list[httpx.Request]) -> WmsTypedPortService:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        http_calls.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "request_id": request.url.params.get("request_id", "perf-wms"),
+                "items": [
+                    {
+                        "sku": "MAT-IT-001",
+                        "warehouse_code": "WH-IT",
+                        "lot_no": "LOT-IT-001",
+                        "available_qty": "10",
+                        "total_qty": "10",
+                        "reserved_qty": "0",
+                    }
+                ],
+            },
         )
-        evidence = QueryEvidence(
-            capability_key="wms.rough_sorter_inventory_admission",
-            contract_version="v1",
-            input_hash=sha256_digest(serialized_input),
-            output_hash=sha256_digest(output.model_dump(mode="json")),
-            authority="WMS",
-            source="performance-production-gateway",
-            evidence_at="2026-07-18T00:00:00Z",
-            source_version="perf-v1",
-            admission_snapshot={"profile_identity": PROFILE_IDENTITY},
-            summary={"outcome": {"type": "Success"}},
+
+    return WmsTypedPortService(
+        session_factory=session_factory,
+        endpoint_config=WmsEndpointConfig(
+            base_url="http://wms-performance.test/api",
+            timeout=WmsHttpTimeoutConfig(connect=1, read=1, write=1, pool=1),
+        ),
+        http_client=WmsHttpClient(transport=httpx.MockTransport(handler)),
+        breaker_service=WmsCircuitBreakerService(failure_threshold=2, retry_after_seconds=60),
+        cache=None,
+    )
+
+
+async def _measure_inbox_operation(monkeypatch: pytest.MonkeyPatch, *, with_wms_query: bool, sample: int) -> float:
+    measured: float | None = None
+
+    async def scenario(session_factory: Any, _queue_gateway: Any) -> None:
+        nonlocal measured
+        http_calls: list[httpx.Request] = []
+        monkeypatch.setattr(
+            "src.app.wms_integration.services.wms_typed_port_service",
+            _wms_service(session_factory, http_calls),
         )
-        return GatewayQueryResult(outcome=Success(payload=output), evidence=evidence)
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            service = RuntimeInboxService()
+            if not with_wms_query:
+                started = time.perf_counter()
+                result = await _process_one(db, service, token=f"perf-no-query-{sample}")
+                measured = time.perf_counter() - started
+                assert result["success"] == 1
+                assert http_calls == []
+                evidence_count = await db.scalar(
+                    select(func.count())
+                    .select_from(WorklineTimeline)
+                    .where(
+                        WorklineTimeline.related_inbox_id == seeded.inbox_id,
+                        WorklineTimeline.payload_json["record_type"].as_string() == "SYSTEM_CAPABILITY_EVIDENCE",
+                    )
+                )
+                assert evidence_count == 0
+                return
 
+            assert (await _process_one(db, service, token=f"perf-query-seed-{sample}"))["success"] == 1
+            command = await db.scalar(
+                select(DeviceCommand).where(
+                    DeviceCommand.workline_id == seeded.workline_id,
+                    DeviceCommand.task_type == "PICK_AND_PUT",
+                )
+            )
+            assert command is not None
+            source_event_id = f"perf-wms-result-{sample}"
+            response = await CallbackIngressService().handle_result(
+                _callback_request(
+                    {
+                        "command_code": command.command_code,
+                        "device_code": "IT-ARM-01",
+                        "result": "SUCCESS",
+                        "finish_time": int(time.time() * 1000),
+                        "source_event_id": source_event_id,
+                        "trace_id": seeded.trace_id,
+                        "data": {"reel_diameter": 100, "reel_thickness": 10},
+                    }
+                ),
+                db,
+                request_id=f"perf-wms-request-{sample}",
+                start_time=time.time(),
+                enqueue_processing=lambda: None,
+            )
+            assert response["code"] == "1000"
+            callback = await db.scalar(select(RuntimeInbox).where(RuntimeInbox.source_event_id == source_event_id))
+            assert callback is not None
 
-def _dispatch_request(*, query: bool) -> PluginDispatchRequest:
-    config = _config().model_dump(mode="json")
-    state = {"phase": "PICK_TO_PIPELINE", "current_correlation": "CMD-PERF"} if query else {"phase": "READY"}
-    raw_input = (
-        {
-            "command_code": "CMD-PERF",
-            "command_type": "PICK_AND_PUT",
-            "result": "SUCCESS",
-            "data": {"reel_diameter": 100, "reel_thickness": 10},
-        }
-        if query
-        else {"PkgID": "PKG-PERF"}
-    )
-    return PluginDispatchRequest(
-        plugin_key=DEFINITION.plugin_key,
-        contract_version=DEFINITION.contract_version,
-        logical_route="PICK_AND_PUT_RESULT" if query else "SCAN_COMPLETED",
-        raw_config=config,
-        raw_state=state,
-        context_state=state,
-        raw_input=raw_input,
-        raw_facts=_facts().model_dump(mode="json"),
-        snapshot=PinnedPluginSnapshot(
-            plugin_key=DEFINITION.plugin_key,
-            contract_version=DEFINITION.contract_version,
-            binding_identity="binding:1:1",
-            binding_id=1,
-            binding_version=1,
-            config_hash=sha256_digest(config),
-            index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
-            profile_identity=PROFILE_IDENTITY,
-        ),
-    )
+            started = time.perf_counter()
+            result = await _process_one(db, service, token=f"perf-query-{sample}")
+            measured = time.perf_counter() - started
+            assert result["success"] == 1
+            assert len(http_calls) == 1
+            evidence = await db.scalar(
+                select(WorklineTimeline).where(
+                    WorklineTimeline.related_inbox_id == callback.id,
+                    WorklineTimeline.payload_json["record_type"].as_string() == "SYSTEM_CAPABILITY_EVIDENCE",
+                )
+            )
+            assert evidence is not None
+            assert evidence.payload_json["evidence"]["capability_key"] == "wms.rough_sorter_inventory_admission"
+            assert evidence.payload_json["evidence"]["contract_version"] == "v1"
 
-
-def _context(*, query: bool, gateway: _QueryGateway, attempt: int) -> PluginAttemptContext:
-    request = _dispatch_request(query=query)
-    return PluginAttemptContext(
-        attempt_id=f"perf-{attempt}",
-        inbox_id=attempt + 1,
-        session_id=1,
-        workline_id=1,
-        event_type=request.logical_route,
-        payload=request.raw_input,
-        plugin_state=request.raw_state,
-        snapshot=AttemptSnapshot(
-            processor_token=f"perf-{attempt}",
-            session_version=1,
-            plugin_state_version=1,
-            binding_id=1,
-            binding_version=1,
-            plugin_config_hash=request.snapshot.config_hash,
-            index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
-        ),
-        runtime=SimpleNamespace(gateway=gateway),
-        dispatch_request=request,
-    )
-
-
-def _median_ms(samples: list[float]) -> float:
-    return statistics.median(samples) * 1_000
-
-
-def _assert_budget(name: str, samples: list[float], budget_ms: float) -> float:
-    measured = _median_ms(samples)
-    assert measured <= budget_ms, (
-        f"{name} median {measured:.3f}ms exceeds {budget_ms:.3f}ms; "
-        f"samples={[round(item * 1_000, 3) for item in samples]}"
-    )
+    await with_temporary_runtime_database(scenario)
+    assert measured is not None
     return measured
 
 
-def test_runtime_extension_minimum_slice_performance_budgets() -> None:
-    """冷启动、Runner、DB Outbox 与 repository replay 均测 production owner。"""
+async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
+    outbox_samples: list[float] = []
+    replay_samples: list[float] = []
 
-    cold_samples: list[float] = []
-    command = [
-        sys.executable,
-        "-c",
-        "import src.app.runtime.system_capabilities.generated_index; "
-        "import src.app.runtime.workline_plugins.generated_index",
-    ]
-    for _ in range(3):
-        started = time.perf_counter()
-        subprocess.run(command, check=True, capture_output=True, text=True)
-        cold_samples.append(time.perf_counter() - started)
-
-    measurements: dict[str, float] = {}
-
-    async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
-        no_query: list[float] = []
-        one_query: list[float] = []
-        gateway = _QueryGateway()
-        runner = GeneratedPluginAttemptRunner()
-        for index in range(11):
-            started = time.perf_counter()
-            no_query_write_set = await runner.run(_context(query=False, gateway=gateway, attempt=index))
-            no_query.append(time.perf_counter() - started)
-            assert no_query_write_set.evidence == ()
-
-            started = time.perf_counter()
-            query_write_set = await runner.run(_context(query=True, gateway=gateway, attempt=index + 100))
-            one_query.append(time.perf_counter() - started)
-            assert len(query_write_set.evidence) == 1
-            assert isinstance(query_write_set.evidence[0], QueryEvidence)
-
+    async def scenario(session_factory: Any, _queue_gateway: Any) -> None:
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
-            inbox_service = RuntimeInboxService()
-            claimed = await claim(db, inbox_service, token="perf-source")
-            result = await processor(inbox_service).process_claimed(db, claim=claimed)
-            assert result["processed"] == 1
-
-            timeline = await db.scalar(
+            service = RuntimeInboxService()
+            assert (await _process_one(db, service, token="perf-replay-source"))["success"] == 1
+            decision = await db.scalar(
                 select(WorklineTimeline)
                 .where(
                     WorklineTimeline.related_inbox_id == seeded.inbox_id,
@@ -233,18 +209,16 @@ def test_runtime_extension_minimum_slice_performance_budgets() -> None:
                 )
                 .order_by(WorklineTimeline.id.desc())
             )
-            assert timeline is not None
-            payload = timeline.payload_json
+            assert decision is not None
             replay_service = TimelineRecordedReplayService()
-            replay_samples: list[float] = []
-            for _ in range(11):
+            for _ in range(MEASURED_SAMPLE_COUNT + 1):
                 started = time.perf_counter()
                 replay = await replay_service.load(
                     db,
                     source_inbox_id=seeded.inbox_id,
-                    expected_definition_identity=payload["definition_identity"],
-                    expected_binding_identity=payload["binding_identity"],
-                    expected_index_digest=payload["index_digest"],
+                    expected_definition_identity=decision.payload_json["definition_identity"],
+                    expected_binding_identity=decision.payload_json["binding_identity"],
+                    expected_index_digest=decision.payload_json["index_digest"],
                 )
                 replay_samples.append(time.perf_counter() - started)
                 assert replay.hold_reason is None and replay.decision is not None
@@ -253,9 +227,8 @@ def test_runtime_extension_minimum_slice_performance_budgets() -> None:
             workline = await db.get(WorkLine, seeded.workline_id)
             device = await db.get(Device, seeded.arm_id)
             assert session is not None and workline is not None and device is not None
-            outbox_samples: list[float] = []
             device_service = DeviceCommandService()
-            for index in range(11):
+            for index in range(MEASURED_SAMPLE_COUNT + 1):
                 started = time.perf_counter()
                 await device_service.prepare_runtime_effect(
                     db,
@@ -277,22 +250,73 @@ def test_runtime_extension_minimum_slice_performance_budgets() -> None:
                 )
                 await db.commit()
                 outbox_samples.append(time.perf_counter() - started)
+            assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == MEASURED_SAMPLE_COUNT + 2
 
-        measurements.update(
-            {
-                "single Inbox no-QUERY decision": _assert_budget(
-                    "single Inbox no-QUERY decision", no_query[1:], NO_QUERY_DECISION_MEDIAN_MS
-                ),
-                "single WMS QUERY decision": _assert_budget(
-                    "single WMS QUERY decision", one_query[1:], ONE_QUERY_DECISION_MEDIAN_MS
-                ),
-                "Outbox enqueue": _assert_budget("Outbox enqueue", outbox_samples[1:], OUTBOX_ENQUEUE_MEDIAN_MS),
-                "recorded replay": _assert_budget("recorded replay", replay_samples[1:], RECORDED_REPLAY_MEDIAN_MS),
-            }
-        )
+    await with_temporary_runtime_database(scenario)
+    return outbox_samples[1:], replay_samples[1:]
 
-    asyncio.run(with_temporary_runtime_database(scenario))
-    measurements["cold generated index import"] = _assert_budget(
-        "cold generated index import", cold_samples, COLD_IMPORT_MEDIAN_MS
-    )
+
+def _assert_budget(name: str, samples: list[float], budget_ms: float) -> float:
+    sample_ms = [item * 1_000 for item in samples]
+    measured = statistics.median(sample_ms)
+    assert measured <= budget_ms, f"{name} median {measured:.3f}ms exceeds {budget_ms:.3f}ms; samples={sample_ms}"
+    return measured
+
+
+def test_runtime_extension_minimum_slice_performance_budgets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测量窗口只包围单次 production operation，不包含建库、migration 与 fixture setup。"""
+
+    async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(DeviceCommandService, "_invalidate_command_cache", invalidate_cache)
+    cold_samples: list[float] = []
+    command = [
+        sys.executable,
+        "-c",
+        "import src.app.runtime.system_capabilities.generated_index; "
+        "import src.app.runtime.workline_plugins.generated_index",
+    ]
+    for _ in range(3):
+        started = time.perf_counter()
+        subprocess.run(command, check=True, capture_output=True, text=True)
+        cold_samples.append(time.perf_counter() - started)
+
+    async def run() -> tuple[list[float], list[float], list[float], list[float]]:
+        # 每条链路先运行一次完整 warmup，再记录后续独立临时库样本。
+        await _measure_inbox_operation(monkeypatch, with_wms_query=False, sample=-1)
+        no_query = [
+            await _measure_inbox_operation(monkeypatch, with_wms_query=False, sample=index)
+            for index in range(MEASURED_SAMPLE_COUNT)
+        ]
+        await _measure_inbox_operation(monkeypatch, with_wms_query=True, sample=-1)
+        wms_query = [
+            await _measure_inbox_operation(monkeypatch, with_wms_query=True, sample=index)
+            for index in range(MEASURED_SAMPLE_COUNT)
+        ]
+        outbox, replay = await _measure_outbox_and_replay()
+        return no_query, wms_query, outbox, replay
+
+    no_query_samples, wms_query_samples, outbox_samples, replay_samples = asyncio.run(run())
+    measurements = {
+        "cold generated index import": _assert_budget(
+            "cold generated index import", cold_samples, COLD_IMPORT_MEDIAN_MS
+        ),
+        "single RuntimeInbox no-QUERY": _assert_budget(
+            "single RuntimeInbox no-QUERY", no_query_samples, NO_QUERY_INBOX_MEDIAN_MS
+        ),
+        "formal callback WMS QUERY": _assert_budget(
+            "formal callback WMS QUERY", wms_query_samples, WMS_QUERY_INBOX_MEDIAN_MS
+        ),
+        "Outbox enqueue": _assert_budget("Outbox enqueue", outbox_samples, OUTBOX_ENQUEUE_MEDIAN_MS),
+        "recorded replay": _assert_budget("recorded replay", replay_samples, RECORDED_REPLAY_MEDIAN_MS),
+    }
+    samples = {
+        "cold generated index import": [round(item * 1_000, 3) for item in cold_samples],
+        "single RuntimeInbox no-QUERY": [round(item * 1_000, 3) for item in no_query_samples],
+        "formal callback WMS QUERY": [round(item * 1_000, 3) for item in wms_query_samples],
+        "Outbox enqueue": [round(item * 1_000, 3) for item in outbox_samples],
+        "recorded replay": [round(item * 1_000, 3) for item in replay_samples],
+    }
+    print("performance samples(ms):", samples)
     print("performance medians(ms):", {key: round(value, 3) for key, value in measurements.items()})

@@ -520,6 +520,7 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Surfaced by: Architecture/Outside voice — 防止部分提交、TOCTOU 与过早完成。
   - Evidence: [DeviceCommand effect contract](../../../src/app/runtime/system_capabilities/device/device_command_write/contracts.py) 强制 `COMMAND_RESULT`；[PostgreSQL terminal matrix](../../../tests/integration/workline_capabilities/test_rough_sorter_outbox_result_flow.py) 覆盖成功/失败/超时、事务 Outbox、formal callback 与 wait/Hold owner。
   - Verify: PostgreSQL/Celery integration 覆盖冲突、rollback、callback 丢失和结果回流；设备命令不存在 fire-and-forget 绕过。
+  - Local Celery evidence: 本地验证时通过 `uv run celery -A src.celery_app.app worker --queues=default,celery --hostname=task12-verify@%h` 启动 fresh worker，并用 `uv run celery -A src.celery_app.app inspect ping --destination='task12-verify@<host>'` 收到 `pong` 后正常关闭；此证据不表示 worker 常驻。
 - [x] **T7 (P1, human: ~3d / CC: ~6h)** — Test platform — 建立共享 conformance suite 与架构门禁
   - Surfaced by: Test review — 公共合同必须复用且符合测试拓扑。
   - Evidence: [shared conformance](../../../tests/workline_plugins/test_conformance_contract.py)、[13-case real PostgreSQL E2E](../../../tests/e2e/workline_capabilities/test_rough_sorter_scan_decision_slice.py)、[test topology guardrail](../../../tests/architecture/test_test_suite_topology_guardrail.py)、[quality gate](../../../scripts/git-quality-gate.sh)。
