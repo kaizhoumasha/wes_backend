@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
-_BUILTIN_ADMISSIONS = frozenset({"provider-contract", "runtime"})
+_BUILTIN_ADMISSIONS = frozenset({"runtime"})
 
 
 @dataclass(frozen=True, slots=True)

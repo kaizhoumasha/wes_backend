@@ -31,7 +31,7 @@ class InventoryPort(Protocol):
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    provider_code: str
+    provider_profile: str
     required_device_codes: tuple[str, ...]
 
 
@@ -72,7 +72,7 @@ CAPABILITY = SystemCapabilityDefinition(
     output_model=CapabilityOutput,
     handler_factory=build_handler,
     required_ports=(InventoryPort,),
-    admission="provider-contract",
+    admission="wms.v1.production",
     timeout_seconds=3,
     completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
     audit_policy="standard",
@@ -131,6 +131,105 @@ def test_default_binding_service_wires_runtime_provider_profiles_by_full_identit
     assert resolved.identity == "wms.2026-07-06.material-flow.sandbox"
 
 
+def _rough_sorter_config(*, provider_profile: str = "wms.2026-07-06.material-flow.sandbox") -> dict[str, object]:
+    return {
+        "device_roles": {
+            "input_arm": "ROUGH_SORTER_INPUT_ARM",
+            "conveyor": "ROUGH_SORTER_CONVEYOR",
+            "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+        },
+        "pipeline_input_location": "PIPELINE-IN-01",
+        "pipeline_output_location": "PIPELINE-OUT-01",
+        "ng_location": "NG-01",
+        "warehouse_code": "WH-01",
+        "owner_code": "OWNER-01",
+        "provider_profile": provider_profile,
+    }
+
+
+def _real_rough_sorter_service(
+    repo: FakeRepository,
+    *,
+    profile_catalog: ExternalContractProfileCatalog | None = None,
+) -> WorklinePluginBindingService:
+    return WorklinePluginBindingService(
+        repository=repo,
+        profile_catalog=profile_catalog or workline_plugin_binding_service.profile_catalog,
+        clock=lambda: datetime(2026, 7, 17, 8, tzinfo=UTC),
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_rough_sorter_activation_snapshots_exact_profile_and_required_port() -> None:
+    repo = FakeRepository()
+    workline = SimpleNamespace(
+        id=17,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        config=_rough_sorter_config(),
+        version=4,
+    )
+
+    binding = await _real_rough_sorter_service(repo).activate(
+        object(),
+        workline=workline,
+        expected_workline_version=4,
+        actor="operator",
+        reason="dev-cutover",
+        environment="sandbox",
+        devices=[],
+    )
+
+    assert [profile["provider_code"] for profile in binding.provider_profile_snapshot_json] == ["WMS"]
+    assert binding.provider_profile_snapshot_json[0]["contract_version"] == "2026-07-06.material-flow"
+    assert binding.provider_profile_snapshot_json[0]["environment"] == "sandbox"
+    assert binding.port_requirements_json == ["WmsInventoryQueryPort.query_inventory"]
+
+
+@pytest.mark.asyncio
+async def test_real_rough_sorter_activation_rejects_profile_mismatch() -> None:
+    workline = SimpleNamespace(
+        id=17,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        config=_rough_sorter_config(provider_profile="wms.other.sandbox"),
+        version=4,
+    )
+
+    with pytest.raises(PluginBindingAdmissionError, match="provider"):
+        await _real_rough_sorter_service(FakeRepository()).activate(
+            object(),
+            workline=workline,
+            expected_workline_version=4,
+            actor="operator",
+            reason="dev-cutover",
+            environment="sandbox",
+            devices=[],
+        )
+
+
+@pytest.mark.asyncio
+async def test_real_rough_sorter_activation_rejects_undeclared_profile() -> None:
+    workline = SimpleNamespace(
+        id=17,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        config=_rough_sorter_config(),
+        version=4,
+    )
+
+    with pytest.raises(PluginBindingAdmissionError, match="provider"):
+        await _real_rough_sorter_service(FakeRepository(), profile_catalog=ExternalContractProfileCatalog(())).activate(
+            object(),
+            workline=workline,
+            expected_workline_version=4,
+            actor="operator",
+            reason="dev-cutover",
+            environment="sandbox",
+            devices=[],
+        )
+
+
 @pytest.mark.asyncio
 async def test_activation_creates_new_immutable_version_with_canonical_config_and_snapshots() -> None:
     repo = FakeRepository()
@@ -139,7 +238,7 @@ async def test_activation_creates_new_immutable_version_with_canonical_config_an
         id=7,
         plugin_key="rough_sorter",
         contract_version="v1",
-        config={"required_device_codes": ["PLC-01"], "provider_code": "WMS"},
+        config={"required_device_codes": ["PLC-01"], "provider_profile": "wms.v1.production"},
         version=4,
     )
     devices = [SimpleNamespace(device_code="PLC-01", provider_code="ECS")]
@@ -153,7 +252,7 @@ async def test_activation_creates_new_immutable_version_with_canonical_config_an
         environment="production",
         devices=devices,
     )
-    workline.config = {"provider_code": "WMS", "required_device_codes": ("PLC-01",)}
+    workline.config = {"provider_profile": "wms.v1.production", "required_device_codes": ("PLC-01",)}
     second = await binding_service.activate(
         object(),
         workline=workline,
@@ -181,9 +280,9 @@ async def test_activation_creates_new_immutable_version_with_canonical_config_an
 @pytest.mark.parametrize(
     ("config", "devices", "message"),
     [
-        ({"provider_code": "WMS", "required_device_codes": ["MISSING"]}, [], "device"),
-        ({"provider_code": "UNKNOWN", "required_device_codes": []}, [], "provider"),
-        ({"provider_code": "WMS", "required_device_codes": [], "extra": True}, [], "config"),
+        ({"provider_profile": "wms.v1.production", "required_device_codes": ["MISSING"]}, [], "device"),
+        ({"provider_profile": "wms.unknown.production", "required_device_codes": []}, [], "provider"),
+        ({"provider_profile": "wms.v1.production", "required_device_codes": [], "extra": True}, [], "config"),
     ],
 )
 async def test_activation_fails_closed_for_invalid_config_device_provider_or_port(
@@ -211,7 +310,7 @@ async def test_pinned_retry_reads_disabled_row_but_rechecks_runtime_admission() 
         id=7,
         plugin_key="rough_sorter",
         contract_version="v1",
-        config={"provider_code": "WMS", "required_device_codes": []},
+        config={"provider_profile": "wms.v1.production", "required_device_codes": []},
         version=4,
     )
     row = await binding_service.activate(

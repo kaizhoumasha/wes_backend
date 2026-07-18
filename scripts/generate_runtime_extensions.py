@@ -25,7 +25,6 @@ DEFAULT_SYSTEM_OUTPUT = SYSTEM_ROOT / "generated_index.py"
 # Port catalog 是构建期显式 allowlist；后续新增真实 Port 时必须在同一提交登记。
 SYSTEM_CAPABILITY_PORT_CATALOG: tuple[type[object], ...] = (WmsInventoryQueryPort,)
 SYSTEM_CAPABILITY_ADMISSION_CATALOG = (
-    "provider-contract",
     "runtime",
     "wms.2026-07-06.material-flow.sandbox",
 )

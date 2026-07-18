@@ -4,8 +4,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.workline.models import WorkLineRunMode
-from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
+from src.app.workline.services.plugin_binding_service import (
+    PluginBindingAdmissionError,
+    WorklinePluginBindingService,
+    workline_plugin_binding_service,
+)
 from src.app.workline.services.workline_service import WorkLineService
 from src.core.exceptions import BusinessException, OptimisticLockException
 
@@ -360,6 +365,61 @@ class _PlatformBindingServiceStub:
             provider_profile_snapshot_json=[],
             port_requirements_json=[],
         )
+
+
+class _ImmutableBindingRepository:
+    def __init__(self) -> None:
+        self.created: list[dict[str, object]] = []
+
+    async def next_binding_version(
+        self, _db: object, _workline_id: int, _plugin_key: str, _contract_version: str
+    ) -> int:
+        return 1
+
+    async def create_immutable(self, _db: object, data: dict[str, object]) -> SimpleNamespace:
+        self.created.append(dict(data))
+        return SimpleNamespace(id=21, **data)
+
+
+@pytest.mark.asyncio
+async def test_real_rough_sorter_activation_pins_profile_port_and_generated_index(monkeypatch):
+    repository = _WorkLineRepositoryStub()
+    repository.current.plugin_key = "rough_sorter"
+    repository.current.contract_version = "rough_sorter.v2"
+    repository.current.config = {
+        "device_roles": {
+            "input_arm": "ROUGH_SORTER_INPUT_ARM",
+            "conveyor": "ROUGH_SORTER_CONVEYOR",
+            "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+        },
+        "pipeline_input_location": "PIPELINE-IN-01",
+        "pipeline_output_location": "PIPELINE-OUT-01",
+        "ng_location": "NG-01",
+        "warehouse_code": "WH-01",
+        "owner_code": "OWNER-01",
+        "provider_profile": "wms.2026-07-06.material-flow.sandbox",
+    }
+    binding_repository = _ImmutableBindingRepository()
+    binding_service = WorklinePluginBindingService(
+        repository=binding_repository,
+        profile_catalog=workline_plugin_binding_service.profile_catalog,
+    )
+    service = _prepare_platform_activation(monkeypatch, repository, binding_service)
+
+    result = await service.activate(
+        _Db(),
+        repository.current.id,
+        version=7,
+        actor="dev-operator",
+        reason="task10-switch-gate",
+    )
+
+    assert len(binding_repository.created) == 1
+    assert result.active_plugin_binding_id == 21
+    assert result.active_plugin_binding_version == 1
+    assert result.active_plugin_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
+    assert result.active_plugin_provider_requirements_json == ["WMS@2026-07-06.material-flow#sandbox"]
+    assert result.active_plugin_port_requirements_json == ["WmsInventoryQueryPort.query_inventory"]
 
 
 def _prepare_platform_activation(monkeypatch, repository, binding_service):

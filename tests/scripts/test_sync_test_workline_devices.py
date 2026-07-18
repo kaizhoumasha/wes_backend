@@ -5,9 +5,11 @@ from scripts.data.sync_test_workline_devices import (
     TEST_ROUGH_SORTER_DEVICES,
     TEST_ROUGH_SORTER_LINE_CODE,
     TEST_ROUGH_SORTER_RACK_POSITIONS,
+    TEST_ROUGH_SORTER_SEED,
     TEST_SMT_SORTING_INBOUND_DEVICES,
     TEST_SMT_SORTING_INBOUND_LINE_CODE,
     TEST_SMT_SORTING_INBOUND_RACK_POSITIONS,
+    TEST_SMT_SORTING_INBOUND_SEED,
     sync_test_workline_devices,
 )
 from src.app.device.models import Device, DeviceProtocol, DeviceStatus
@@ -42,6 +44,7 @@ from src.app.runtime.orchestration.workline_runtime_status_projection import (
     WorkLineRuntimeStatus,
     WorklineRuntimeStatusProjection,
 )
+from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig
 from src.app.workline.models import LineType, WorkLine, WorkLineRunMode
 from src.app.workline.services.workline_service import WorkLineService
 
@@ -125,6 +128,7 @@ async def test_sync_test_workline_devices_creates_required_topology(db_session, 
     assert workline.plugin_key == ROUGH_SORTER_PLUGIN_KEY
     assert workline.contract_version == ROUGH_SORTER_CONTRACT_VERSION
     assert workline.run_mode == WorkLineRunMode.AUTO
+    assert RoughSorterConfig.model_validate(workline.config).model_dump(mode="json") == TEST_ROUGH_SORTER_SEED.config
     assert await _runtime_status_for(db_session, workline.id) == WorkLineRuntimeStatus.STOPPED.value
 
     devices = (
@@ -350,6 +354,7 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
     monkeypatch.delenv("MOCK_ECS_PORT", raising=False)
 
     result = await sync_test_workline_devices(db_session)
+    assert TEST_SMT_SORTING_INBOUND_SEED.is_active is False
 
     workline = (
         await db_session.execute(select(WorkLine).where(WorkLine.line_code == TEST_SMT_SORTING_INBOUND_LINE_CODE))
@@ -360,7 +365,7 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
     assert workline.contract_version == SMT_SORTING_INBOUND_CONTRACT_VERSION
     assert workline.run_mode == WorkLineRunMode.SIMULATION
     assert await _runtime_status_for(db_session, workline.id) == WorkLineRuntimeStatus.STOPPED.value
-    assert workline.is_active is True
+    assert workline.is_active is False
 
     devices = (
         (

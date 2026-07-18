@@ -125,7 +125,7 @@ def capability_definition(**overrides: object) -> SystemCapabilityDefinition:
         "output_model": QueryOutput,
         "handler_factory": QueryHandler,
         "required_ports": (InventoryPort,),
-        "admission": "provider-contract",
+        "admission": "wms.v1.production",
         "timeout_seconds": 3.0,
         "completion_mode": EffectCompletionMode.LOCAL_TRANSACTIONAL,
         "audit_policy": "metadata",
@@ -177,7 +177,7 @@ def plugin_source(
 def system_builder() -> SystemCapabilityIndexBuilder:
     return SystemCapabilityIndexBuilder(
         known_ports=(InventoryPort,),
-        known_admissions=("provider-contract",),
+        known_admissions=("wms.v1.production",),
     )
 
 
@@ -398,6 +398,17 @@ def test_default_system_builder_fails_closed_for_unknown_repository_contracts(
         SystemCapabilityIndexBuilder().build((system_source(definition),))
 
 
+def test_default_system_builder_rejects_generic_provider_contract_admission() -> None:
+    definition = capability_definition(
+        admission="provider-contract",
+        required_ports=(),
+        handler_factory=NoPortHandler,
+    )
+
+    with pytest.raises(ValueError, match="unknown admission"):
+        SystemCapabilityIndexBuilder().build((system_source(definition),))
+
+
 def test_default_port_catalog_rejects_module_spoofed_unregistered_port() -> None:
     definition = capability_definition(required_ports=(SpoofedRepositoryPort,))
 
@@ -410,7 +421,7 @@ def test_explicit_port_catalog_accepts_only_registered_port() -> None:
 
     generated = SystemCapabilityIndexBuilder(
         known_ports=(InventoryPort,),
-        known_admissions=("provider-contract",),
+        known_admissions=("wms.v1.production",),
     ).build((system_source(definition),))
 
     assert generated.identities == (("inventory.lookup", "v1"),)

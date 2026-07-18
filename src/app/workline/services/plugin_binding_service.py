@@ -150,32 +150,38 @@ class WorklinePluginBindingService:
                 raise PluginBindingAdmissionError(f"capability definition 缺失: {capability_identity}")
             capability_definitions.append(capability)
         provider_contract_definitions = tuple(
-            capability for capability in capability_definitions if capability.admission == "provider-contract"
+            capability for capability in capability_definitions if capability.admission != "runtime"
         )
-        required_port_types = tuple(
-            sorted(
-                {port for capability in provider_contract_definitions for port in capability.required_ports},
-                key=lambda port: (port.__module__, port.__qualname__),
-            )
-        )
-        profile = None
+        profiles: list[Any] = []
         port_requirements: list[str] = []
         if provider_contract_definitions:
-            provider_code = typed_config.get("provider_code")
-            provider_contract_version = typed_config.get("provider_contract_version")
-            if not isinstance(provider_code, str) or not provider_code:
-                raise PluginBindingAdmissionError("provider_code 缺失")
-            if provider_contract_version is not None and not isinstance(provider_contract_version, str):
-                raise PluginBindingAdmissionError("provider_contract_version 必须为字符串")
+            configured_profile = typed_config.get("provider_profile")
+            if not isinstance(configured_profile, str) or not configured_profile:
+                raise PluginBindingAdmissionError("provider_profile 缺失")
+            admission_identities = {capability.admission for capability in provider_contract_definitions}
+            if admission_identities != {configured_profile}:
+                raise PluginBindingAdmissionError("provider profile 与 capability admission 不一致")
             try:
-                profile = self.profile_catalog.resolve(
-                    provider_code=provider_code,
-                    environment=environment,
-                    contract_version=provider_contract_version,
-                )
-                port_requirements = self.profile_catalog.assert_ports_declared(profile, required_port_types)
+                for profile_identity in sorted(admission_identities):
+                    profile = self.profile_catalog.resolve_identity(profile_identity)
+                    if profile.environment != environment:
+                        raise LookupError("provider profile environment 与 binding environment 不一致")
+                    required_port_types = tuple(
+                        sorted(
+                            {
+                                port
+                                for capability in provider_contract_definitions
+                                if capability.admission == profile_identity
+                                for port in capability.required_ports
+                            },
+                            key=lambda port: (port.__module__, port.__qualname__),
+                        )
+                    )
+                    profiles.append(profile)
+                    port_requirements.extend(self.profile_catalog.assert_ports_declared(profile, required_port_types))
             except LookupError as exc:
                 raise PluginBindingAdmissionError(f"provider/Port admission failed: {exc}") from exc
+            port_requirements = sorted(set(port_requirements))
 
         binding_version = await self.repository.next_binding_version(
             db, workline_id, definition.plugin_key, definition.contract_version
@@ -191,7 +197,7 @@ class WorklinePluginBindingService:
                 "binding_version": binding_version,
                 "typed_config_json": typed_config,
                 "typed_config_hash": sha256_digest(typed_config),
-                "provider_profile_snapshot_json": [] if profile is None else [profile.model_dump(mode="json")],
+                "provider_profile_snapshot_json": [profile.model_dump(mode="json") for profile in profiles],
                 "port_requirements_json": port_requirements,
                 "device_snapshot_json": device_snapshot,
                 "generated_index_digest": self.plugin_index_digest,
