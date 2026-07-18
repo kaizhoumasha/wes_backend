@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -17,6 +18,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
     RuntimeInboxProcessorBridge,
     _build_plugin_dispatch_request,
     _canonical_plugin_input,
+    _write_set_from_recorded_replay,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     _authoritative_snapshot_matches,
@@ -292,6 +294,210 @@ async def test_generated_block_uses_pinned_waiting_status_and_session_version() 
     assert intent.capability_key == "runtime.session_hold"
     assert intent.precondition_json == {"expected_status": "WAITING_DEVICE_RESULT"}
     assert intent.fact_version == "session:7"
+
+
+@pytest.mark.asyncio
+async def test_live_block_timeline_recorded_replay_restores_decision_without_reexecuting_effect() -> None:
+    from src.app.runtime.orchestration.repositories.plugin_attempt_repository import (
+        AuthoritativePluginAttempt,
+        PluginAttemptRepository,
+    )
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+        RuntimeInboxWriteBackService,
+    )
+    from src.app.runtime.system_capabilities.replay import TimelineRecordedReplayService
+    from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
+
+    next_state = RoughSorterState(phase="NG_MOVING")
+    decision = PluginDecision[RoughSorterState](
+        intents=(
+            RuntimeIntent.block(
+                scope=BlockScope.WORKLINE,
+                reason_code="WMS_REJECTED",
+                message="WMS rejected inventory admission",
+            ),
+        ),
+        next_state=next_state,
+        outcome_code="HOLD",
+    )
+    snapshot = AttemptSnapshot(
+        processor_token="lease-live",
+        session_version=7,
+        plugin_state_version=2,
+        session_status="WAITING_DEVICE_RESULT",
+        definition_identity=ROUGH_SORTER_DEFINITION.identity,
+        binding_id=17,
+        binding_version=4,
+        index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
+    )
+    source_write_set = await GeneratedPluginAttemptRunner(
+        dispatcher=SimpleNamespace(dispatch=AsyncMock(return_value=decision))
+    ).run(
+        PluginAttemptContext(
+            attempt_id="lease-live",
+            inbox_id=91,
+            session_id=41,
+            workline_id=8,
+            event_type="PICK_AND_PUT_RESULT",
+            payload={},
+            plugin_state={"phase": "WAITING_PICK_RESULT"},
+            snapshot=snapshot,
+            runtime=SimpleNamespace(gateway=SimpleNamespace()),
+            dispatch_request=SimpleNamespace(),
+        )
+    )
+
+    timeline_rows: list[object] = []
+
+    class TimelineOwner:
+        async def allocate_many(self, *_args: object, **_kwargs: object) -> tuple[int, ...]:
+            return (73,)
+
+    class TimelineDb:
+        def add(self, row: object) -> None:
+            timeline_rows.append(row)
+
+    source_session = SimpleNamespace(id=41, plugin_state_json={}, plugin_state_version=2)
+    await PluginAttemptRepository(timeline_sequence_repository=TimelineOwner()).persist_locked_attempt(
+        TimelineDb(),  # type: ignore[arg-type]
+        locked=AuthoritativePluginAttempt(inbox=SimpleNamespace(id=91), session=source_session),
+        workline_id=8,
+        trace_id="trace-live",
+        snapshot=snapshot,
+        write_set=source_write_set,
+    )
+
+    class RecordedTimelineRepository:
+        async def list_recorded_decisions(self, *_args: object, **_kwargs: object) -> list[object]:
+            return timeline_rows
+
+    resolution = await TimelineRecordedReplayService(repository=RecordedTimelineRepository()).load(
+        object(),  # type: ignore[arg-type]
+        source_inbox_id=91,
+        expected_definition_identity=ROUGH_SORTER_DEFINITION.identity,
+        expected_binding_identity="binding:17:4",
+        expected_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
+    )
+    replayed = _write_set_from_recorded_replay(
+        resolution,
+        fallback_state={"phase": "WAITING_PICK_RESULT"},
+    )
+
+    effect_applier = SimpleNamespace(apply=AsyncMock(side_effect=AssertionError("recorded effect must not execute")))
+
+    class ReplayDb:
+        async def commit(self) -> None:
+            pass
+
+        async def rollback(self) -> None:
+            pass
+
+    class ReplayRepository:
+        async def lock_authoritative(self, *_args: object, **_kwargs: object) -> object:
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-replay"),
+                session=SimpleNamespace(version=7, plugin_state_version=3),
+            )
+
+        async def persist_locked_attempt(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+    class InboxService:
+        async def mark_processed(self, *_args: object, **_kwargs: object) -> bool:
+            return True
+
+        async def mark_failed(self, *_args: object, **_kwargs: object) -> bool:
+            return True
+
+    replay_snapshot = AttemptSnapshot(processor_token="lease-replay", session_version=7, plugin_state_version=3)
+    disposition = await RuntimeInboxWriteBackService(
+        plugin_attempt_repository=ReplayRepository(),
+        effect_applier=effect_applier,
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+    ).commit_plugin_attempt(
+        ReplayDb(),
+        expected_snapshot=replay_snapshot,
+        inbox_id=92,
+        session_id=41,
+        workline_id=8,
+        trace_id="trace-replay",
+        write_set=replayed,
+    )
+
+    assert source_write_set.outcome_code == "HOLD"
+    assert source_write_set.hold_reason is None
+    assert source_write_set.intents[0].capability_key == "runtime.session_hold"
+    assert replayed.outcome_code == "HOLD"
+    assert replayed.hold_reason is None
+    assert replayed.next_state == next_state.model_dump(mode="json")
+    assert replayed.evidence == source_write_set.evidence
+    assert replayed.intents == ()
+    assert disposition is WriteDisposition.COMMITTED
+    effect_applier.apply.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("path", "tampered_value"),
+    [
+        (("capability_key",), "runtime.other"),
+        (("contract_version",), "v2"),
+        (("operation_key",), "inbox:91:1:block"),
+        (("payload_hash",), "0" * 64),
+        (("precondition_json", "expected_status"), ""),
+        (("fact_version",), "session:stale"),
+        (("creator_authority",), "EXTERNAL"),
+        (("authorization_policy",), "UNTRUSTED"),
+        (("binding_snapshot", "binding_version"), 5),
+        (("provider_snapshot", "profile"), "other"),
+        (("timeout_seconds",), 30),
+        (("forged_extra",), True),
+    ],
+)
+def test_recorded_live_hold_rejects_tampered_system_capability_identity_or_shape(
+    path: tuple[str, ...],
+    tampered_value: object,
+) -> None:
+    from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
+
+    intent = RuntimeIntent.system_capability(
+        capability_key="runtime.session_hold",
+        contract_version="v1",
+        operation_key="inbox:91:0:block",
+        payload={
+            "failure_domain": "WORKLINE",
+            "reason_code": "WMS_REJECTED",
+            "message": "WMS rejected inventory admission",
+        },
+        precondition={"expected_status": "WAITING_DEVICE_RESULT"},
+        fact_version="session:7",
+        timeout_seconds=5,
+        creator_authority="WORKLINE_PLUGIN",
+        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
+        binding_snapshot={"binding_id": 17, "binding_version": 4},
+        provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
+    ).model_dump(mode="json")
+    tampered = deepcopy(intent)
+    target = tampered
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = tampered_value
+
+    replayed = _write_set_from_recorded_replay(
+        RecordedReplayResolution(
+            binding_identity="binding:17:4",
+            decision={
+                "outcome_code": "HOLD",
+                "hold_reason": None,
+                "next_state": {"phase": "NG_MOVING"},
+                "intents": [tampered],
+            },
+        ),
+        fallback_state={"phase": "WAITING_PICK_RESULT"},
+    )
+
+    assert replayed.outcome_code == "HOLD"
+    assert replayed.hold_reason == "RECORDED_REPLAY_RECORD_INVALID"
+    assert replayed.intents == ()
 
 
 @pytest.mark.asyncio

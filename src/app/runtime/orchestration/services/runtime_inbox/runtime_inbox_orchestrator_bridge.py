@@ -1449,6 +1449,15 @@ def _write_set_from_recorded_replay(
         decision = TypeAdapter(_RecordedPluginDecision).validate_python(resolution.decision)
     except (TypeError, ValidationError, ValueError):
         return _invalid_recorded_write_set(fallback_state)
+    if (
+        decision.outcome_code == "HOLD"
+        and decision.hold_reason is None
+        and not _recorded_live_hold_intent_is_valid(
+            resolution.decision.get("intents"),
+            binding_identity=resolution.binding_identity,
+        )
+    ):
+        return _invalid_recorded_write_set(fallback_state)
     return AttemptWriteSet(
         evidence=resolution.evidence,
         next_state=decision.next_state,
@@ -1473,11 +1482,64 @@ class _RecordedPluginDecision(BaseModel):
     @model_validator(mode="after")
     def validate_hold_combination(self) -> Self:
         if self.outcome_code == "HOLD":
-            if self.hold_reason is None or self.intents:
-                raise ValueError("recorded HOLD requires a reason and zero intents")
+            fail_closed_hold = self.hold_reason is not None and not self.intents
+            live_business_hold = self.hold_reason is None and len(self.intents) == 1
+            if not (fail_closed_hold or live_business_hold):
+                raise ValueError("recorded HOLD must be fail-closed or one live business hold intent")
         elif self.hold_reason is not None:
             raise ValueError("recorded non-HOLD decision cannot carry hold_reason")
         return self
+
+
+def _recorded_live_hold_intent_is_valid(raw_intents: Any, *, binding_identity: str | None) -> bool:
+    """只接受 live runner 生成并与 recorded binding 一致的 session_hold。"""
+
+    if not isinstance(raw_intents, list | tuple) or len(raw_intents) != 1 or not isinstance(raw_intents[0], dict):
+        return False
+    raw_intent = raw_intents[0]
+    try:
+        intent = RuntimeIntent.model_validate(raw_intent)
+        operation_parts = (intent.operation_key or "").split(":")
+        payload = intent.payload_json
+        precondition = intent.precondition_json
+        binding = intent.binding_snapshot
+        provider = intent.provider_snapshot
+        if (
+            operation_parts[:1] != ["inbox"]
+            or len(operation_parts) != 4
+            or not operation_parts[1].isdigit()
+            or operation_parts[2:] != ["0", "block"]
+            or set(payload) != {"failure_domain", "reason_code", "message"}
+            or not all(isinstance(payload[key], str) and payload[key] for key in payload)
+            or set(precondition) != {"expected_status"}
+            or not isinstance(precondition["expected_status"], str)
+            or not precondition["expected_status"]
+            or not isinstance(intent.fact_version, str)
+            or not intent.fact_version.startswith("session:")
+            or not intent.fact_version.removeprefix("session:").isdigit()
+            or set(binding) != {"binding_id", "binding_version"}
+            or not isinstance(binding["binding_id"], int)
+            or not isinstance(binding["binding_version"], int)
+            or binding_identity != f"binding:{binding['binding_id']}:{binding['binding_version']}"
+            or provider != {"provider_code": "RUNTIME", "profile": "runtime"}
+        ):
+            return False
+        expected = RuntimeIntent.system_capability(
+            capability_key="runtime.session_hold",
+            contract_version="v1",
+            operation_key=intent.operation_key or "",
+            payload=payload,
+            precondition=precondition,
+            fact_version=intent.fact_version,
+            timeout_seconds=5,
+            creator_authority="WORKLINE_PLUGIN",
+            authorization_policy="PLUGIN_DECLARED_CAPABILITY",
+            binding_snapshot=binding,
+            provider_snapshot=provider,
+        )
+    except (KeyError, TypeError, ValidationError, ValueError):
+        return False
+    return raw_intent == expected.model_dump(mode="json")
 
 
 def _invalid_recorded_write_set(fallback_state: dict[str, Any]) -> AttemptWriteSet:

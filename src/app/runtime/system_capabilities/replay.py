@@ -35,6 +35,7 @@ class RecordedReplayResolution(BaseModel):
 
     evidence: tuple[QueryEvidence, ...] = ()
     decision: dict[str, Any] | None = None
+    binding_identity: str | None = None
     hold_reason: str | None = None
 
 
@@ -65,7 +66,11 @@ def resolve_recorded_replay(
     )
     if recorded_evidence_keys != expected_evidence_keys:
         return RecordedReplayResolution(hold_reason="RECORDED_REPLAY_EVIDENCE_MISMATCH")
-    return RecordedReplayResolution(evidence=envelope.evidence, decision=envelope.decision)
+    return RecordedReplayResolution(
+        evidence=envelope.evidence,
+        decision=envelope.decision,
+        binding_identity=envelope.binding_identity,
+    )
 
 
 class TimelineRecordedReplayService:
