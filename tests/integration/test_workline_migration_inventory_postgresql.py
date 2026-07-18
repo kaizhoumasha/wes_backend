@@ -42,6 +42,7 @@ from src.app.workline.models import (
     WorklineRuntimeReferenceType,
 )
 from src.app.workline.models.workline import LineType
+from src.app.workline.repositories import workline_plugin_binding_repository
 from src.app.workline.services import WorklineMigrationInventoryService
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 
@@ -182,7 +183,7 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
         line_code="IT-INVENTORY-FOUNDATION",
         line_name="Inventory Foundation",
         line_type=LineType.AUTO,
-        plugin_key=definition.capability_key,
+        plugin_key=definition.plugin_key,
         contract_version=definition.contract_version,
         is_active=True,
     )
@@ -190,7 +191,7 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
         line_code="IT-INVENTORY-LINKED",
         line_name="Inventory Linked",
         line_type=LineType.AUTO,
-        plugin_key=definition.capability_key,
+        plugin_key=definition.plugin_key,
         contract_version=definition.contract_version,
         is_active=True,
     )
@@ -198,7 +199,7 @@ async def _seed_worklines(db: AsyncSession) -> SeededInventory:
     await db.flush()
     binding = WorklinePluginBinding(
         workline_id=foundation.id,
-        plugin_key=definition.capability_key,
+        plugin_key=definition.plugin_key,
         contract_version=definition.contract_version,
         binding_version=1,
         typed_config_json={},
@@ -425,7 +426,10 @@ class _ObservingRepository:
 
 
 async def _build_via_cli(database_url: str, repository: _ObservingRepository | None = None) -> Any:
-    service = WorklineMigrationInventoryService(repository=repository or _ObservingRepository())
+    service = WorklineMigrationInventoryService(
+        repository=repository or _ObservingRepository(),
+        extension_reference_repository=workline_plugin_binding_repository,
+    )
     with (
         patch.object(inventory_cli, "settings", SimpleNamespace(DATABASE_URL=database_url, APP_ENV="test")),
         patch.object(inventory_cli, "workline_migration_inventory_service", service),

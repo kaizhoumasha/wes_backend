@@ -51,6 +51,7 @@ DEVICE_EFFECT = "device.device_command_write@v1"
 HOLD_EFFECT = "runtime.session_hold@v1"
 REASON_PHASE_MISMATCH = "ROUGH_SORTER_PHASE_MISMATCH"
 REASON_QUERY_CONTRACT_INVALID = "ROUGH_SORTER_QUERY_CONTRACT_INVALID"
+REASON_COMMAND_RESULT_TIMEOUT = "ROUGH_SORTER_COMMAND_RESULT_TIMEOUT"
 BusinessKey = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
 QueryCode = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
 SourceLocation = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
@@ -119,24 +120,62 @@ async def decide(  # noqa: PLR0911 - route/state/correlation fail-closed 分支�
             return _evidence_only(state, reason_code=REASON_PHASE_MISMATCH)
         return _scan_decision(logical_input, state=state, config=config, facts=facts)
     if isinstance(logical_input, BusinessTimeoutInput):
-        if state.phase != "PICK_TO_PIPELINE":
+        if state.phase not in {"PICK_TO_PIPELINE", "MOVING_FORWARD", "NG_MOVING"}:
             return _evidence_only(state, reason_code=REASON_PHASE_MISMATCH)
         if state.current_correlation != logical_input.command_code or not facts.correlation_matches:
             return _evidence_only(state, reason_code=REASON_COMMAND_RESULT_CORRELATION_MISMATCH)
+        reason_code = (
+            REASON_ROUGH_SORTER_PICK_RESULT_TIMEOUT
+            if state.phase == "PICK_TO_PIPELINE"
+            else REASON_COMMAND_RESULT_TIMEOUT
+        )
         return _decision(
             "HOLD",
             state,
-            reason_code=REASON_ROUGH_SORTER_PICK_RESULT_TIMEOUT,
+            reason_code=reason_code,
             reconciliation_request=RuntimeReconciliationRequest(
                 command_code=logical_input.command_code,
-                reason_code=REASON_ROUGH_SORTER_PICK_RESULT_TIMEOUT,
+                reason_code=reason_code,
             ),
         )
+    if logical_input.command_type != ACTION_PICK_AND_PUT:
+        return _followup_command_result_decision(logical_input, state=state, facts=facts)
     if state.phase != "PICK_TO_PIPELINE":
         return _evidence_only(state, reason_code=REASON_PHASE_MISMATCH)
     if state.current_correlation != logical_input.command_code or not facts.correlation_matches:
         return _evidence_only(state, reason_code=REASON_COMMAND_RESULT_CORRELATION_MISMATCH)
     return await _pick_result_decision(logical_input, state=state, config=config, facts=facts, gateway=gateway)
+
+
+def _followup_command_result_decision(
+    logical_input: PickAndPutResultInput,
+    *,
+    state: RoughSorterState,
+    facts: RoughSorterFacts,
+) -> RoughSorterDecision:
+    expected_phase = {
+        ACTION_MOVE_FORWARD: "MOVING_FORWARD",
+        ACTION_MOVE_TO_NG: "NG_MOVING",
+    }[logical_input.command_type]
+    if state.phase != expected_phase:
+        return _evidence_only(state, reason_code=REASON_PHASE_MISMATCH)
+    if state.current_correlation != logical_input.command_code or not facts.correlation_matches:
+        return _evidence_only(state, reason_code=REASON_COMMAND_RESULT_CORRELATION_MISMATCH)
+    if logical_input.result.value in {"FAILED", "ERROR"}:
+        reason = str(logical_input.error_detail.get("error_code") or "DEVICE_COMMAND_FAILED")
+        return _hold(
+            state,
+            scope=BlockScope.COMMAND,
+            reason_code=reason,
+            payload={"error_detail": logical_input.error_detail},
+        )
+    next_state = state.model_copy(update={"current_correlation": None})
+    outcome_code = f"{logical_input.command_type}_COMPLETED"
+    return _decision(
+        outcome_code,
+        next_state,
+        (RuntimeIntent.continue_next(action=outcome_code),),
+    )
 
 
 def _scan_decision(
@@ -172,7 +211,7 @@ def _scan_decision(
                     ng_location=config.ng_location,
                     reason_code="SCAN_NG_BY_RULE",
                 ),
-                result_policy="FIRE_AND_FORGET",
+                result_policy="COMMAND_RESULT",
             ),
         )
         return _decision("MOVE_TO_NG_PERSISTED", next_state, intents, reason_code="SCAN_NG_BY_RULE")
@@ -239,6 +278,7 @@ async def _pick_result_decision(  # noqa: PLR0911 - 封闭 outcome 分支逐项�
                 "phase": "MOVING_FORWARD",
                 "measurement_evidence_ref": f"measurement:{logical_input.command_code}",
                 "wms_evidence_ref": evidence_ref,
+                "current_correlation": None,
             }
         )
         intents = (
@@ -251,7 +291,7 @@ async def _pick_result_decision(  # noqa: PLR0911 - 封闭 outcome 分支逐项�
                     source_location=config.pipeline_input_location,
                     target_location=config.pipeline_output_location,
                 ),
-                result_policy="FIRE_AND_FORGET",
+                result_policy="COMMAND_RESULT",
             ),
         )
         return _decision("MOVE_FORWARD_PERSISTED", next_state, intents)
@@ -283,7 +323,9 @@ def _move_to_ng(
     reason_code: str,
     wms_ref: str | None = None,
 ) -> RoughSorterDecision:
-    next_state = state.model_copy(update={"phase": "NG_MOVING", "wms_evidence_ref": wms_ref})
+    next_state = state.model_copy(
+        update={"phase": "NG_MOVING", "wms_evidence_ref": wms_ref, "current_correlation": None}
+    )
     intents = (
         RuntimeIntent.update_context({"phase": "NG_MOVING"}),
         RuntimeIntent.mark_ng(reason_code=reason_code, message="粗分机业务判定 NG"),
@@ -296,7 +338,7 @@ def _move_to_ng(
                 ng_location=config.ng_location,
                 reason_code=reason_code,
             ),
-            result_policy="FIRE_AND_FORGET",
+            result_policy="COMMAND_RESULT",
         ),
     )
     return _decision("MOVE_TO_NG_PERSISTED", next_state, intents, reason_code=reason_code)

@@ -103,7 +103,7 @@ EXPECTED_CASE_OVERVIEW = {
         "HOLD",
         ("NOT_CREATED", "NOT_CREATED", "MANUAL_HOLD", "UNCHANGED"),
         (("BLOCK", None, "MATERIAL"),),
-        "gap",
+        "covered",
         "ROUGH_SORTER_CONTEXT_MISSING",
     ),
     "RS-SD-004": (
@@ -114,7 +114,7 @@ EXPECTED_CASE_OVERVIEW = {
         "MOVE_FORWARD_PERSISTED",
         ("IN_TRANSIT", None, "WAITING_DEVICE_RESULT", "MOVING_FORWARD"),
         (("UPDATE_CONTEXT", None, None), ("COMMAND", "MOVE_FORWARD", None)),
-        "gap",
+        "covered",
         None,
     ),
     "RS-SD-005": (
@@ -125,7 +125,7 @@ EXPECTED_CASE_OVERVIEW = {
         "MOVE_TO_NG_PERSISTED",
         ("NG", None, "WAITING_DEVICE_RESULT", "NG_MOVING"),
         (("UPDATE_CONTEXT", None, None), ("MARK_NG", None, None), ("COMMAND", "MOVE_TO_NG", None)),
-        "gap",
+        "covered",
         "MEASUREMENT_NG",
     ),
     "RS-SD-006": (
@@ -136,7 +136,7 @@ EXPECTED_CASE_OVERVIEW = {
         "MOVE_TO_NG_PERSISTED",
         ("NG", None, "WAITING_DEVICE_RESULT", "NG_MOVING"),
         (("UPDATE_CONTEXT", None, None), ("MARK_NG", None, None), ("COMMAND", "MOVE_TO_NG", None)),
-        "gap",
+        "covered",
         "WMS_REJECTED",
     ),
     "RS-SD-007": (
@@ -151,7 +151,7 @@ EXPECTED_CASE_OVERVIEW = {
         "HOLD",
         ("IN_TRANSIT", "COMPLETED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (("BLOCK", None, "MATERIAL"),),
-        "gap",
+        "covered",
         "ROUGH_SORTER_MEASUREMENT_INVALID",
     ),
     "RS-SD-008": (
@@ -167,7 +167,7 @@ EXPECTED_CASE_OVERVIEW = {
         "HOLD",
         ("IN_TRANSIT", "ACK_RECEIVED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (),
-        "partial",
+        "covered",
         "ROUGH_SORTER_PICK_RESULT_TIMEOUT",
     ),
     "RS-SD-010": (
@@ -178,7 +178,7 @@ EXPECTED_CASE_OVERVIEW = {
         "HOLD",
         ("IN_TRANSIT", "COMPLETED", "MANUAL_HOLD", "PICK_TO_PIPELINE"),
         (("BLOCK", None, "MATERIAL"),),
-        "gap",
+        "covered",
         "WMS_TIMEOUT",
     ),
     "RS-SD-011": (
@@ -186,7 +186,7 @@ EXPECTED_CASE_OVERVIEW = {
         "REPLAY_ACCEPTED_NOOP",
         ("UNCHANGED", "UNCHANGED", "UNCHANGED", "UNCHANGED"),
         (),
-        "gap",
+        "covered",
         None,
     ),
     "RS-SD-012": (
@@ -194,7 +194,7 @@ EXPECTED_CASE_OVERVIEW = {
         "HOLD",
         ("UNCHANGED", "UNCHANGED", "MANUAL_HOLD", "UNCHANGED"),
         (("BLOCK", None, "MATERIAL"),),
-        "gap",
+        "covered",
         "IDEMPOTENCY_CONFLICT",
     ),
     "RS-SD-013": (
@@ -202,7 +202,7 @@ EXPECTED_CASE_OVERVIEW = {
         "ARCHIVED_EVIDENCE",
         ("UNCHANGED", "UNCHANGED", "UNCHANGED", "UNCHANGED"),
         (),
-        "partial",
+        "covered",
         "COMMAND_RESULT_CORRELATION_MISMATCH",
     ),
 }
@@ -242,11 +242,11 @@ QUERY_REPLAY_CASES = {"RS-SD-004", "RS-SD-006", "RS-SD-010", "RS-SD-011"}
 CURRENT_IMPLEMENTATION_STATUS = {
     "RS-SD-001": "covered",
     "RS-SD-002": "covered",
-    "RS-SD-003": "gap",
-    "RS-SD-004": "gap",
+    "RS-SD-003": "covered",
+    "RS-SD-004": "covered",
     "RS-SD-008": "covered",
-    "RS-SD-009": "partial",
-    "RS-SD-013": "partial",
+    "RS-SD-009": "covered",
+    "RS-SD-013": "covered",
 }
 
 
@@ -435,7 +435,7 @@ async def test_missing_pkg_id_uses_generated_plugin_hold_contract() -> None:
     case = _case("RS-SD-003")
     intents = await _process_case("RS-SD-003")
 
-    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-003"] == "gap"
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-003"] == "covered"
     assert _intent_signature(intents) == _expected_intent_signature(case)
     assert all(intent.kind != RuntimeIntentKind.CREATE_MATERIAL_UNIT for intent in intents)
     [hold] = intents
@@ -586,7 +586,7 @@ async def test_success_command_result_without_pinned_material_facts_holds() -> N
     case = _case("RS-SD-004")
     intents = await _process_case("RS-SD-004")
 
-    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-004"] == "gap"
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-004"] == "covered"
     assert _intent_signature(intents) == (("BLOCK", None, "MATERIAL"),)
     assert intents[0].reason_code == "ROUGH_SORTER_CONTEXT_MISSING"
     assert _expected_intent_signature(case) == (
@@ -596,7 +596,7 @@ async def test_success_command_result_without_pinned_material_facts_holds() -> N
 
 
 @pytest.mark.asyncio
-async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
+async def test_timer_timeout_facade_holds_session_with_approved_reason(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.app.device.repositories import command_repository as command_repository_module
@@ -670,7 +670,7 @@ async def test_timer_timeout_facade_holds_session_with_current_partial_reason(
         trace_id=session.trace_id,
     )
 
-    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-009"] == "partial"
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-009"] == "covered"
     assert case["expected_intents"] == []
     assert case["expected_state"]["runtime_hold"] == RuntimeHoldStatus.OPEN.value
     assert result.disposition == "RECONCILED"
@@ -819,7 +819,7 @@ async def test_current_wait_anchor_mismatch_archives_without_applying_followup_c
 
 
 @pytest.mark.asyncio
-async def test_unknown_command_correlation_is_rejected_before_target_archive_and_remains_partial() -> None:
+async def test_unknown_command_correlation_is_rejected_at_unpinned_accept_seam() -> None:
     case = _case("RS-SD-013")
     repository = SimpleNamespace(
         get_by_source_event_identity=AsyncMock(return_value=None),
@@ -840,10 +840,10 @@ async def test_unknown_command_correlation_is_rejected_before_target_archive_and
             correlation_id="corr-unknown-rs-sd-013",
         )
 
-    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-013"] == "partial"
+    assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-013"] == "covered"
     repository.add_received.assert_not_awaited()
-    current_outcome = "REJECTED_BEFORE_ARCHIVE"
-    assert case["expected_outcome"]["result"] != current_outcome
+    # 完整 CallbackIngress 会先固定当前 Session，再由 processor 归档 mismatch；
+    # 此处只验证缺少固定归属的低层 accept seam 必须 fail closed。
     assert case["expected_outcome"]["result"] == "ARCHIVED_EVIDENCE"
     assert case["expected_intents"] == []
     assert case["replay_policy"]["session_progress"] == "NO_PROGRESS"
@@ -1152,6 +1152,7 @@ def test_business_spec_has_strict_metadata_and_stable_sections() -> None:
     ):
         assert heading in content
     assert (
-        "本切片有四类合法终点：下一设备命令已持久化、稳定原因码 Hold、late/unknown callback 的 "
+        "本切片有四类合法终点：下一设备命令已持久化并等待终态结果、稳定原因码 Hold、late/unknown callback 的 "
         "evidence-only 归档、replay no-op；后两类均不得推进当前 Session。"
     ) in content
+    assert "`PICK_AND_PUT`、`MOVE_FORWARD`、`MOVE_TO_NG` 均使用 `COMMAND_RESULT`" in content

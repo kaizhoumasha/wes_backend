@@ -64,11 +64,11 @@ fallback 或 import shim。最终代码只保留目标合同，严格遵循 DRY�
 完整目标包含：开发脚手架、无副作用诊断、所有 active Workline 的独立规格与实现、原子切换、旧入口清零和
 开发文档更新。各子计划必须遵守本文合同，不得引入过渡 adapter 或双轨 dispatcher。
 
-### 3.3 实施进度（截至 2026-07-16）
+### 3.3 实施进度（截至 2026-07-18）
 
 总体状态为 **Implementation In Progress**。`v0.17.0.0` / PR #86 已交付 T1 的单环境 active inventory
 foundation；`v0.17.1.0` / PR #87 已将 rough sorter 窄闭环业务合同、权威 fixture 与机器化合同测试合并到
-`develop`。最小 Runtime contract、真实 vertical slice 与 cutover 尚未实施。
+`develop`。本分支已完成最小 Runtime contract 与 rough sorter 真实 vertical slice；cutover 尚未实施。
 
 | 工作项 | 状态 | 已完成证据 / 剩余边界 |
 | --- | --- | --- |
@@ -78,10 +78,12 @@ foundation；`v0.17.1.0` / PR #87 已将 rough sorter 窄闭环业务合同、�
 | 跨环境 migration matrix 与批准 | 未完成 | 当前命令每次只生成一个环境的 foundation report；仍需聚合、签名与批准证据 |
 | WorkItem/Intent version pin、binding requirement | 未完成 | 待 Runtime contract 与 binding 模型落地后纳入同一 inventory/preflight |
 | Rough sorter 窄闭环业务合同（T2） | 已完成 | `v0.17.1.0` / PR #87 已合并到 `develop`（merge `c89674f6`）；[业务合同](../../business/rough_sorter_scan_decision_contract.md)、[13-case fixture](../../../tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json)与机器化合同测试已固化 `WAITING_DEVICE_RESULT`、Session/RuntimeHold 所有权、replay evidence 和迟到结果语义，并由 kaizhou 于 `2026-07-16T19:39:04+08:00` 批准；这仍不是生产 Runtime 交付 |
-| 最小 Runtime contract 与 T3-T9 | 未开始 | 当前生产 Runtime 仍存在 fixture 中所有标记为 `partial` / `gap` 的实现缺口；必须按依赖顺序实施和验证，不得把 T2 批准解释为 vertical slice 已交付 |
+| 最小 Runtime contract、生成索引与 Binding（T3–T5） | 本切片已完成 | 最终两类 Definition、typed binding/state/input/decision、确定性 generated index 已落地；Plugin digest `34d4332b...541cc`，Capability digest `165471b4...c0b6`；相关 Alembic revisions 已由生成器创建并经 PostgreSQL inventory/integration 验证 |
+| QUERY/evidence/replay 与通用 EFFECT（T6–T7） | 本切片已完成 | attempt-scoped QUERY、recorded replay、`SYSTEM_CAPABILITY` EFFECT、Outbox/result 回流及 rollback/crash recovery 已覆盖；rough sorter fresh 13-case E2E 为 `13 passed`，后续两类命令成功/失败/超时为 6 个 PostgreSQL 场景，性能预算与 generator `--check` 通过 |
+| Cutover 与开发者体验（T8–T9） | 未完成 | inventory-backed 跨环境 preflight、freeze/drain、历史 trace replay、原子切换、脚手架、无副作用诊断及开发指南仍须独立计划 |
 
-T2 业务合同门禁已通过，当前完成度允许进入最小 Runtime contract 的后续实施，但 T3-T9 均未开始，且**不代表**
-完整 T1、Integration Gate 或 cutover readiness。inventory CLI 的 `foundation_ready=true` 只证明当前阶段事实合同通过，
+T2 与本切片 T3–T7 已闭合，但这只证明 rough sorter 最小 vertical slice readiness，**不代表**
+完整 T1、其他 active Workline、Integration Gate 或 production cutover readiness。inventory CLI 的 `foundation_ready=true` 只证明当前阶段事实合同通过，
 不能替代跨环境批准、版本引用清零和最终切换门禁。
 
 ## 4. What already exists

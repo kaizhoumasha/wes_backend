@@ -987,7 +987,7 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     assert len(write_set.intents) == 1
     assert write_set.intents[0].kind is RuntimeIntentKind.SYSTEM_CAPABILITY
     assert write_set.intents[0].capability_key == "device.device_command_write"
-    assert write_set.intents[0].payload_json["result_policy"] == "FIRE_AND_FORGET"
+    assert write_set.intents[0].payload_json["result_policy"] == "COMMAND_RESULT"
 
 
 def test_locked_writeback_revalidates_generated_definition_identity_without_transient_attribute() -> None:

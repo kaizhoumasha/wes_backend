@@ -7,6 +7,7 @@ import json
 import time
 from datetime import timedelta
 
+import pytest
 from fastapi import Request
 from sqlalchemy import func, update
 from sqlmodel import select
@@ -181,9 +182,8 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
             assert command.status == CommandStatus.COMPLETED
             assert session.plugin_state_json["phase"] == "MOVING_FORWARD"
             assert session.plugin_state_version == 2
-            assert session.status == "RUNNING"
-            assert session.current_wait_type is None
-            assert session.awaiting_device_command_code is None
+            assert session.status == "WAITING_DEVICE_RESULT"
+            assert session.current_wait_type == "COMMAND_RESULT"
             assert provider_calls == 1
             assert provider_material_codes == ["MAT-IT-001"]
             material_unit = await db.get(MaterialUnit, session.current_material_unit_id)
@@ -204,6 +204,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
                 )
             )
             assert conveyor_command is not None and conveyor_command.status == CommandStatus.PENDING
+            assert session.awaiting_device_command_code == conveyor_command.command_code
             assert conveyor_command.params["params"]["business_key"] == material_unit.material_identity_key
             fire_callback_payload = {
                 "command_code": conveyor_command.command_code,
@@ -227,15 +228,36 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
             )
             await db.refresh(conveyor_command)
             await db.refresh(session)
-            assert fire_callback is not None and fire_callback.status == "PROCESSED"
+            assert fire_callback is not None and fire_callback.status == "RECEIVED"
             assert conveyor_command.status == CommandStatus.COMPLETED
+            fire_claim = await claim(db, service, token="move-forward-callback-owner")
+            fire_result = await processor(service).process_claimed(db, claim=fire_claim)
+            await db.refresh(fire_callback)
+            assert fire_result == {
+                "processed": 1,
+                "success": 1,
+                "failed": 0,
+                "skipped": 0,
+                "resource_wait": 0,
+            }, (fire_callback.last_error_code, fire_callback.last_error_message)
+            await db.refresh(session)
+            assert fire_callback.status == "PROCESSED"
             assert session.plugin_state_json["phase"] == "MOVING_FORWARD"
-            assert session.status == "RUNNING"
+            fire_decision = await db.scalar(
+                select(WorklineTimeline)
+                .where(WorklineTimeline.related_inbox_id == fire_callback.id)
+                .order_by(WorklineTimeline.id.desc())
+            )
+            assert session.status == "RUNNING", (
+                fire_decision.payload_json.get("decision") if fire_decision is not None else None,
+                fire_callback.command_id,
+                fire_callback.payload_json,
+            )
             assert session.current_wait_type is None
+            assert session.awaiting_device_command_code is None
             assert await db.scalar(select(func.count()).select_from(RuntimeHold)) == 0
 
-            # 即使外部错误地产生 fire-and-forget timeout evidence，reconciliation
-            # 也只能归档，不得把非等待态 session 误判为 PICK phase mismatch/Hold。
+            # 已消费成功结果后的迟到 timeout 只能归档，不得重新进入 Hold。
             fire_timeout = await service.accept_timer_timeout(
                 db,
                 session_id=seeded.session_id,
@@ -252,7 +274,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
                 command_status=CommandStatus.COMPLETED.value,
             )
             await db.commit()
-            timeout_claim = await claim(db, service, token="fire-and-forget-timeout-owner")
+            timeout_claim = await claim(db, service, token="late-completed-command-timeout-owner")
             timeout_result = await processor(service).process_claimed(db, claim=timeout_claim)
             assert timeout_result == {
                 "processed": 1,
@@ -374,5 +396,149 @@ def test_missing_callback_becomes_visible_timeout_without_fake_success() -> None
             replay_row = await verify_db.get(RuntimeInbox, replay_id, populate_existing=True)
             assert replay_row is not None and replay_row.status == "DEAD_LETTER"
             assert replay_row.last_error_code == "RECORDED_REPLAY_RECORD_MISSING"
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+@pytest.mark.parametrize(
+    ("action", "terminal_result"),
+    [
+        ("MOVE_FORWARD", "SUCCESS"),
+        ("MOVE_FORWARD", "FAILED"),
+        ("MOVE_FORWARD", "TIMEOUT"),
+        ("MOVE_TO_NG", "SUCCESS"),
+        ("MOVE_TO_NG", "FAILED"),
+        ("MOVE_TO_NG", "TIMEOUT"),
+    ],
+)
+def test_followup_device_command_requires_terminal_result(action: str, terminal_result: str, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """后续设备命令的成功、失败、超时都经 RuntimeInbox 推进，不存在假完成。"""
+
+    async def query_inventory(_adapter, material_code: str, *, warehouse_code: str | None = None):  # type: ignore[no-untyped-def]
+        return [
+            WmsInventoryItem(
+                material_code=material_code,
+                warehouse_code=warehouse_code or "WH-IT",
+                storage_location_code="A-01",
+                quantity=10,
+                batch_no="LOT-IT-001",
+            )
+        ]
+
+    monkeypatch.setattr(WmsInventoryQueryPortAdapter, "query_inventory", query_inventory)
+
+    async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
+        service = RuntimeInboxService()
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            if action == "MOVE_TO_NG":
+                scan = await db.get(RuntimeInbox, seeded.inbox_id)
+                assert scan is not None
+                scan.payload_json = {
+                    **scan.payload_json,
+                    "data": {**scan.payload_json["data"], "PkgID": "PKG-SIZENG-FOLLOWUP"},
+                }
+                await db.commit()
+            await _process_seeded_scan(db, service, seeded)
+
+            if action == "MOVE_FORWARD":
+                pick = await db.scalar(
+                    select(DeviceCommand).where(
+                        DeviceCommand.workline_id == seeded.workline_id,
+                        DeviceCommand.task_type == "PICK_AND_PUT",
+                    )
+                )
+                assert pick is not None
+                prepared_result = await service.accept_command_result(
+                    db,
+                    command_code=pick.command_code,
+                    source_event_id=f"prepare-{action}-{terminal_result}",
+                    device_code="IT-ARM-01",
+                    workline_id=seeded.workline_id,
+                    device_id=seeded.arm_id,
+                    command_id=pick.id,
+                    trace_id=seeded.trace_id,
+                    payload_json={
+                        "command_code": pick.command_code,
+                        "result": "SUCCESS",
+                        "data": {"reel_diameter": "100", "reel_thickness": "10"},
+                    },
+                )
+                await db.commit()
+                assert prepared_result.created is True
+                prepared = await claim(db, service, token=f"prepare-{terminal_result}")
+                assert (await processor(service).process_claimed(db, claim=prepared))["success"] == 1
+
+            command = await db.scalar(
+                select(DeviceCommand).where(
+                    DeviceCommand.workline_id == seeded.workline_id,
+                    DeviceCommand.task_type == action,
+                )
+            )
+            session = await db.get(WorklineSession, seeded.session_id)
+            source = await db.get(RuntimeInbox, seeded.inbox_id)
+            assert command is not None and session is not None and source is not None
+            assert session.status == "WAITING_DEVICE_RESULT"
+            assert session.awaiting_device_command_code == command.command_code
+
+            if terminal_result == "TIMEOUT":
+                now = timezone.now_for_db()
+                command.status = CommandStatus.ACK_RECEIVED
+                command.ack_received_at = now - timedelta(seconds=60)
+                session.deadline_at = now - timedelta(seconds=1)
+                await db.commit()
+                await service.accept_timer_timeout(
+                    db,
+                    session_id=seeded.session_id,
+                    execution_session_id=source.execution_session_id,
+                    workline_id=seeded.workline_id,
+                    deadline_at=session.deadline_at,
+                    trace_id=seeded.trace_id,
+                    wait_token=command.command_code,
+                    wait_type="COMMAND_RESULT",
+                    awaiting_device_command_code=command.command_code,
+                    command_code=command.command_code,
+                    device_id=command.device_id,
+                    command_id=command.id,
+                    command_status=CommandStatus.ACK_RECEIVED.value,
+                    ack_received_at=command.ack_received_at,
+                )
+                await db.commit()
+            else:
+                accepted_result = await service.accept_command_result(
+                    db,
+                    command_code=command.command_code,
+                    source_event_id=f"terminal-{action}-{terminal_result}",
+                    device_code="IT-CONVEYOR-01" if action == "MOVE_FORWARD" else "IT-ARM-01",
+                    workline_id=seeded.workline_id,
+                    device_id=command.device_id,
+                    command_id=command.id,
+                    trace_id=seeded.trace_id,
+                    payload_json={
+                        "command_code": command.command_code,
+                        "result": terminal_result,
+                        "error_detail": {"error_code": "DEVICE_BUSY"} if terminal_result == "FAILED" else {},
+                        "data": {},
+                    },
+                )
+                await db.commit()
+                assert accepted_result.created is True
+
+            terminal_claim = await claim(db, service, token=f"terminal-{action}-{terminal_result}")
+            terminal_processed = await processor(service).process_claimed(db, claim=terminal_claim)
+            assert terminal_processed["processed"] == 1
+            await db.refresh(session)
+            hold_count = int(await db.scalar(select(func.count()).select_from(RuntimeHold)) or 0)
+            if terminal_result == "SUCCESS":
+                assert session.status == "RUNNING"
+                assert session.current_wait_type is None
+                assert session.awaiting_device_command_code is None
+                assert hold_count == 0
+            else:
+                assert session.status == "MANUAL_HOLD"
+                assert session.current_wait_type is None
+                # 普通设备失败由 runtime.session_hold 只更新 Session；
+                # 仅 TIMER reconciliation owner 创建 RuntimeHold。
+                assert hold_count == (1 if terminal_result == "TIMEOUT" else 0)
 
     asyncio.run(with_temporary_runtime_database(scenario))

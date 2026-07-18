@@ -247,7 +247,10 @@ async def test_approved_case_maps_to_typed_plugin_decision(case: dict[str, Any])
         == (EXPECTED_CAPABILITY_IDENTITIES[case["case_id"]])
     )
     assert decision.next_state.phase == EXPECTED_PHASE[case["case_id"]]
-    assert decision.next_state.current_correlation == state.current_correlation
+    if case["case_id"] in {"RS-SD-004", "RS-SD-005", "RS-SD-006"}:
+        assert decision.next_state.current_correlation is None
+    else:
+        assert decision.next_state.current_correlation == state.current_correlation
     fixture_phase = case["expected_state"]["context_phase"]
     if fixture_phase == "UNCHANGED":
         assert case["case_id"] in UNCHANGED_STATE_CASES
@@ -423,7 +426,7 @@ async def test_dispatcher_fails_closed_for_invalid_contract(mutation: str, expec
     [
         *(("RS-SD-001", phase) for phase in ("PICK_TO_PIPELINE", "MOVING_FORWARD", "NG_MOVING", "COMPLETED")),
         *(("RS-SD-004", phase) for phase in ("READY", "MOVING_FORWARD", "NG_MOVING", "COMPLETED")),
-        *(("RS-SD-009", phase) for phase in ("READY", "MOVING_FORWARD", "NG_MOVING", "COMPLETED")),
+        *(("RS-SD-009", phase) for phase in ("READY", "COMPLETED")),
     ],
 )
 async def test_route_phase_mismatch_is_evidence_only_without_query_or_reconciliation(case_id: str, phase: str) -> None:
@@ -479,6 +482,78 @@ async def test_handler_normalizes_defensive_query_validation_failure_to_stable_h
     assert decision.outcome_code == "HOLD"
     assert decision.reason_code == "ROUGH_SORTER_QUERY_CONTRACT_INVALID"
     assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_type", "phase", "result", "expected_outcome", "expected_reason"),
+    [
+        ("MOVE_FORWARD", "MOVING_FORWARD", "SUCCESS", "MOVE_FORWARD_COMPLETED", None),
+        ("MOVE_TO_NG", "NG_MOVING", "SUCCESS", "MOVE_TO_NG_COMPLETED", None),
+        ("MOVE_FORWARD", "MOVING_FORWARD", "FAILED", "HOLD", "DEVICE_BUSY"),
+        ("MOVE_TO_NG", "NG_MOVING", "FAILED", "HOLD", "DEVICE_BUSY"),
+    ],
+)
+async def test_followup_device_result_is_consumed_without_overlapping_wait(
+    command_type: str,
+    phase: str,
+    result: str,
+    expected_outcome: str,
+    expected_reason: str | None,
+) -> None:
+    command_code = f"CMD-{command_type}"
+    logical_input = parse_pick_and_put_result(
+        {
+            "command_code": command_code,
+            "command_type": command_type,
+            "result": result,
+            "error_detail": {"error_code": "DEVICE_BUSY"} if result == "FAILED" else {},
+        }
+    )
+    state = RoughSorterState(phase=phase, current_correlation=command_code)
+
+    decision = await decide(
+        logical_input,
+        state=state,
+        config=_config(),
+        facts=_facts(_cases()[0]),
+        gateway=_Gateway({}),
+    )
+
+    assert decision.outcome_code == expected_outcome
+    assert decision.reason_code == expected_reason
+    if result == "SUCCESS":
+        assert decision.next_state.current_correlation is None
+        assert _intent_signature(decision.intents) == (("CONTINUE_NEXT", f"{command_type}_COMPLETED", None),)
+    else:
+        assert _intent_signature(decision.intents) == (("BLOCK", None, "COMMAND"),)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_type", "phase"),
+    [("MOVE_FORWARD", "MOVING_FORWARD"), ("MOVE_TO_NG", "NG_MOVING")],
+)
+async def test_followup_device_timeout_enters_reconciliation_hold(command_type: str, phase: str) -> None:
+    command_code = f"CMD-{command_type}"
+    decision = await decide(
+        parse_business_timeout(
+            {
+                "command_code": command_code,
+                "wait_type": "COMMAND_RESULT",
+            }
+        ),
+        state=RoughSorterState(phase=phase, current_correlation=command_code),
+        config=_config(),
+        facts=_facts(_cases()[0]),
+        gateway=_Gateway({}),
+    )
+
+    assert decision.outcome_code == "HOLD"
+    assert decision.reason_code == "ROUGH_SORTER_COMMAND_RESULT_TIMEOUT"
+    assert decision.reconciliation_request is not None
+    assert decision.reconciliation_request.command_code == command_code
+    assert decision.reconciliation_request.reason_code == "ROUGH_SORTER_COMMAND_RESULT_TIMEOUT"
 
 
 @pytest.mark.asyncio

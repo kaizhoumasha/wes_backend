@@ -31,7 +31,7 @@ class PickAndPutResultInput(BaseModel):
 
     route: Literal["PICK_AND_PUT_RESULT"] = "PICK_AND_PUT_RESULT"
     command_code: CommandCode
-    command_type: Literal["PICK_AND_PUT"]
+    command_type: Literal["PICK_AND_PUT", "MOVE_FORWARD", "MOVE_TO_NG"]
     result: PickAndPutTerminalResult
     data: dict[str, Any] = Field(default_factory=dict)
     error_detail: dict[str, Any] = Field(default_factory=dict)

@@ -199,6 +199,10 @@ def _system_capability_intents(
         if intent.kind is RuntimeIntentKind.UPDATE_CONTEXT:
             # PluginState 由 next_state 原子写入；同决策 MARK_NG 合并进 MaterialUnit CREATE。
             continue
+        if intent.kind is RuntimeIntentKind.CONTINUE_NEXT:
+            # CONTINUE_NEXT 是平台内建 Session 生命周期动作，不需要转成外部 System Capability。
+            converted.append(intent)
+            continue
         capability_key: str
         payload: dict[str, Any]
         precondition: dict[str, Any]
@@ -337,7 +341,7 @@ def _canonical_plugin_input(inbox: Any) -> tuple[str, dict[str, Any]]:
             "command_code": command_code,
             "wait_type": optional_str(data.get("wait_type")) or "COMMAND_RESULT",
         }
-    if kind == "REPLAY_REQUEST":
+    if kind == "REPLAY_REQUEST" or (kind == "INTERNAL_EVENT" and callback_route == "REPLAY_REQUEST"):
         return "REPLAY_REQUEST", {
             "route": "REPLAY_REQUEST",
             "idempotency_key": string_value(payload.get("idempotency_key")),
@@ -1283,6 +1287,21 @@ async def _build_plugin_dispatch_request(
     if plugin_key is None or contract_version is None:
         raise ValueError("plugin identity is required")
     route, raw_input = _canonical_plugin_input(inbox)
+    command_id = optional_int(getattr(inbox, "command_id", None))
+    if route == "PICK_AND_PUT_RESULT" and command_id is not None:
+        from src.app.device.repositories import device_command_repository
+
+        command = await device_command_repository.get_by_id(db, command_id)
+        command_type = optional_str(getattr(command, "task_type", None))
+        if command_type in {"PICK_AND_PUT", "MOVE_FORWARD", "MOVE_TO_NG"}:
+            # 外部 callback 不负责声明动作类型；始终以 command_id 对应的权威命令为准。
+            raw_input = {**raw_input, "command_type": command_type}
+    replay_digest_matches = await _replay_digest_matches_source(
+        db,
+        inbox=inbox,
+        route=route,
+        raw_input=raw_input,
+    )
     state = deepcopy(dict(getattr(session, "plugin_state_json", {}) or {}))
     data = payload_dict(raw_input.get("data"))
     session_context = payload_dict(getattr(session, "context_json", None))
@@ -1315,6 +1334,7 @@ async def _build_plugin_dispatch_request(
         hhpn=hhpn,
         lot_code=lot_code,
         correlation_matches=command_code is None or (awaiting_code is not None and command_code == awaiting_code),
+        replay_digest_matches=replay_digest_matches,
         binding_snapshot=RoughSorterBindingSnapshot(
             binding_id=binding_id,
             binding_version=snapshot.binding_version,
@@ -1343,6 +1363,35 @@ async def _build_plugin_dispatch_request(
             profile_identity=profile_identity,
         ),
     )
+
+
+async def _replay_digest_matches_source(
+    db: Any,
+    *,
+    inbox: Any,
+    route: str,
+    raw_input: dict[str, Any],
+) -> bool | None:
+    """用 causal source Inbox 的 canonical hash 验证 logical replay digest。"""
+
+    if route != "REPLAY_REQUEST":
+        return None
+    causation_id = optional_str(getattr(inbox, "causation_id", None))
+    supplied_digest = optional_str(raw_input.get("payload_digest"))
+    if causation_id is None or supplied_digest is None or not causation_id.startswith("inbox:"):
+        return False
+    try:
+        source_inbox_id = int(causation_id.removeprefix("inbox:"))
+    except ValueError:
+        return False
+    if source_inbox_id <= 0 or source_inbox_id == optional_int(getattr(inbox, "id", None)):
+        return False
+    source = await runtime_inbox_repository.get_by_id(db, source_inbox_id)
+    recorded_digest = optional_str(getattr(source, "payload_hash", None)) if source is not None else None
+    if recorded_digest is None:
+        return False
+    normalized_supplied = supplied_digest.removeprefix("sha256:")
+    return normalized_supplied == recorded_digest.removeprefix("sha256:")
 
 
 def _first_plugin_fact(*sources: dict[str, Any], names: tuple[str, ...]) -> str | None:
