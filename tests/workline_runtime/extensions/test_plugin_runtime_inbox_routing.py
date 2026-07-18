@@ -218,6 +218,7 @@ async def test_generated_runner_converts_plugin_effects_to_system_capability_int
                 device_role="input_arm",
                 action="PICK_AND_PUT",
                 payload={"pkg_code": "PKG-1"},
+                result_policy="COMMAND_RESULT",
             ),
         ),
         next_state=state,
@@ -250,7 +251,52 @@ async def test_generated_runner_converts_plugin_effects_to_system_capability_int
     assert intent.kind is RuntimeIntentKind.SYSTEM_CAPABILITY
     assert (intent.capability_key, intent.contract_version) == ("device.device_command_write", "v1")
     assert intent.payload_json["action"] == "PICK_AND_PUT"
+    assert intent.payload_json["result_policy"] == "COMMAND_RESULT"
     assert intent.binding_snapshot == {"binding_id": 17, "binding_version": 4}
+
+
+@pytest.mark.asyncio
+async def test_generated_runner_rejects_model_copy_missing_pick_result_policy_without_fire_and_forget_fallback() -> (
+    None
+):
+    valid_pick = RuntimeIntent.command(
+        device_role="input_arm",
+        action="PICK_AND_PUT",
+        payload={"pkg_code": "PKG-1"},
+        result_policy="COMMAND_RESULT",
+    )
+    bypassed_pick = valid_pick.model_copy(update={"result_policy": None})
+    decision = PluginDecision[RoughSorterState](
+        intents=(valid_pick,),
+        next_state=RoughSorterState(phase="PICK_TO_PIPELINE"),
+        outcome_code="PICK_AND_PUT_PERSISTED",
+    ).model_copy(update={"intents": (bypassed_pick,)})
+    context = PluginAttemptContext(
+        attempt_id="attempt-model-copy-policy",
+        inbox_id=1,
+        session_id=2,
+        workline_id=3,
+        event_type="SCAN_COMPLETED",
+        payload={},
+        plugin_state={"phase": "READY"},
+        snapshot=AttemptSnapshot(
+            processor_token="lease-model-copy-policy",
+            session_version=7,
+            plugin_state_version=0,
+            binding_id=17,
+            binding_version=4,
+        ),
+        runtime=SimpleNamespace(gateway=SimpleNamespace()),
+        dispatch_request=SimpleNamespace(),
+    )
+
+    write_set = await GeneratedPluginAttemptRunner(
+        dispatcher=SimpleNamespace(dispatch=AsyncMock(return_value=decision))
+    ).run(context)
+
+    assert write_set.outcome_code == "HOLD"
+    assert write_set.hold_reason == "PLUGIN_EFFECT_CONVERSION_INVALID"
+    assert write_set.intents == ()
 
 
 @pytest.mark.asyncio

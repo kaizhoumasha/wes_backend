@@ -175,6 +175,14 @@ def _system_capability_intents(
 ) -> tuple[RuntimeIntent, ...]:
     """把插件领域意图收敛为 generated EFFECT 的唯一通用包络。"""
 
+    validated_intents: list[RuntimeIntent] = []
+    for intent in intents:
+        if not isinstance(intent, RuntimeIntent):
+            raise TypeError("plugin effect intent must be RuntimeIntent")
+        # PluginDecision / RuntimeIntent 的 model_copy(update=...) 均可绕过 validator；
+        # 必须在 binding 判断、skip 与 conversion 前重建 typed contract。
+        validated_intents.append(RuntimeIntent.model_validate(intent.model_dump(mode="python")))
+    intents = tuple(validated_intents)
     binding_id = context.snapshot.binding_id
     binding_version = context.snapshot.binding_version
     if binding_id is None or binding_version is None:
@@ -218,9 +226,7 @@ def _system_capability_intents(
                 "payload": deepcopy(intent.payload_json),
                 "timeout_ms": (intent.timeout_seconds or 30) * 1000,
                 "command_code": command_code,
-                # 未使用 command() factory 的 legacy intent 也默认不建立业务等待，
-                # 避免 durable outbox acceptance 被误判为远端完成窗口。
-                "result_policy": intent.result_policy or "FIRE_AND_FORGET",
+                "result_policy": intent.result_policy,
             }
             precondition = {"expected_available": True}
             fact_version = "device:v1"

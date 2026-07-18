@@ -126,3 +126,10 @@ def test_command_intent_requires_explicit_valid_result_policy() -> None:
 def test_non_command_intent_rejects_top_level_result_policy(kind: RuntimeIntentKind) -> None:
     with pytest.raises(ValidationError, match="result_policy is only valid for COMMAND"):
         RuntimeIntent(kind=kind, result_policy="FIRE_AND_FORGET")
+
+
+def test_effect_converter_revalidates_model_copy_before_update_context_skip() -> None:
+    bypassed = RuntimeIntent.update_context({"phase": "READY"}).model_copy(update={"result_policy": "FIRE_AND_FORGET"})
+
+    with pytest.raises(ValidationError, match="result_policy is only valid for COMMAND"):
+        _system_capability_intents(_context(), (bypassed,))
