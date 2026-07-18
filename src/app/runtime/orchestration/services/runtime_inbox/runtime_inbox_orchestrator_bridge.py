@@ -44,6 +44,9 @@ from src.app.runtime.orchestration.repositories.runtime_inbox_repository import 
     RuntimeInboxRepository,
     runtime_inbox_repository,
 )
+from src.app.runtime.orchestration.repositories.timeline_recorded_replay_repository import (
+    timeline_recorded_replay_repository,
+)
 from src.app.runtime.orchestration.runtime_intent import (
     RuntimeIntent,
     RuntimeIntentKind,
@@ -1374,7 +1377,7 @@ async def _build_plugin_dispatch_request(
     )
 
 
-async def _replay_digest_matches_source(
+async def _replay_digest_matches_source(  # noqa: PLR0911 - 每个 identity/anchor 缺失条件均独立 fail closed。
     db: Any,
     *,
     inbox: Any,
@@ -1397,9 +1400,25 @@ async def _replay_digest_matches_source(
     if source_inbox_id <= 0 or source_inbox_id == optional_int(getattr(inbox, "id", None)):
         return False
     source = await runtime_inbox_repository.get_by_id(db, source_inbox_id)
-    source_payload = getattr(source, "payload_json", None) if source is not None else None
-    source_key = optional_str(source_payload.get("idempotency_key")) if isinstance(source_payload, dict) else None
-    if source is None or supplied_key != source_key:
+    if source is None:
+        return False
+    recorded_rows = await timeline_recorded_replay_repository.list_recorded_decisions(
+        db,
+        source_inbox_id=source_inbox_id,
+    )
+    decision_rows = [
+        row
+        for row in recorded_rows
+        if isinstance(getattr(row, "payload_json", None), dict)
+        and row.payload_json.get("record_type") == "PLUGIN_DECISION"
+    ]
+    if len(decision_rows) != 1:
+        return False
+    attempt_anchor = decision_rows[0].payload_json.get("attempt_anchor")
+    source_key = (
+        optional_str(attempt_anchor.get("logical_idempotency_key")) if isinstance(attempt_anchor, dict) else None
+    )
+    if supplied_key != source_key:
         return False
     anchor_fields = ("workline_id", "workline_session_id", "execution_session_id", "correlation_id")
     for anchor_field in anchor_fields:
@@ -1506,6 +1525,8 @@ def _write_set_from_recorded_replay(
         intents=(),
         outcome_code=decision.outcome_code,
         hold_reason=decision.hold_reason,
+        recorded_attempt_anchor=resolution.attempt_anchor,
+        recorded_decision=resolution.decision,
     )
 
 

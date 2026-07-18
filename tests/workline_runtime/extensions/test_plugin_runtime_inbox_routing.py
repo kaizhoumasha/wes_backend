@@ -126,7 +126,7 @@ async def test_logical_replay_requires_same_identity_digest_and_runtime_anchors(
 ) -> None:
     source = SimpleNamespace(
         id=7,
-        payload_json={"idempotency_key": "source-key"},
+        payload_json={"command_code": "CMD-7", "result": "SUCCESS"},
         payload_hash="a" * 64,
         workline_id=20,
         workline_session_id=10,
@@ -151,6 +151,23 @@ async def test_logical_replay_requires_same_identity_digest_and_runtime_anchors(
     monkeypatch.setattr(
         "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge.runtime_inbox_repository",
         repository,
+    )
+    recorded_repository = SimpleNamespace(
+        list_recorded_decisions=AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    payload_json={
+                        "record_type": "PLUGIN_DECISION",
+                        "attempt_anchor": {"logical_idempotency_key": "source-key"},
+                    }
+                )
+            ]
+        )
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge.timeline_recorded_replay_repository",
+        recorded_repository,
+        raising=False,
     )
 
     assert (
@@ -591,6 +608,7 @@ def test_recorded_live_hold_rejects_tampered_system_capability_identity_or_shape
                 "source_inbox_id": 91,
                 "session_version": 7,
                 "session_status": "WAITING_DEVICE_RESULT",
+                "logical_idempotency_key": "workline-plugin:rough_sorter:material:PKG-91:decision",
             },
             decision={
                 "outcome_code": "HOLD",

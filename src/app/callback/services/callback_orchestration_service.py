@@ -331,9 +331,9 @@ class CallbackOrchestrationService:
             workline_id=getattr(existing_command, "workline_id", None),
             device_id=getattr(existing_command, "device_id", None),
             command_id=getattr(existing_command, "id", None),
-            # Workline 绑定不等于插件声明消费结果；只有当前 session 的
-            # awaiting command 才进入 processor，fire-and-forget callback 接收即终态证据。
-            processing_required=callback_session is not None,
+            # 已知 Workline 指令统一进入 processor：当前 awaiting command 正常推进，
+            # 已不再 awaiting 的旧指令由 SessionResolver 归属后写入迟到归档证据。
+            processing_required=is_workline_callback,
         )
         if not runtime_inbox_result.created:
             return ResultCallbackOutcome(trace_id=inherited_trace_id, is_duplicate=True)

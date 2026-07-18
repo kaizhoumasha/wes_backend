@@ -47,6 +47,8 @@ class AttemptWriteSet:
     intents: tuple[Any, ...]
     outcome_code: str = "UNSPECIFIED"
     hold_reason: str | None = None
+    recorded_attempt_anchor: Any | None = None
+    recorded_decision: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

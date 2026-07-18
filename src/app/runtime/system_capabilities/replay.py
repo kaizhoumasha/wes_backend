@@ -24,6 +24,7 @@ class RecordedAttemptAnchor(BaseModel):
     source_inbox_id: int = Field(gt=0)
     session_version: int = Field(ge=0)
     session_status: str = Field(min_length=1)
+    logical_idempotency_key: str = Field(min_length=1, max_length=300)
 
 
 class RecordedReplayEnvelope(BaseModel):

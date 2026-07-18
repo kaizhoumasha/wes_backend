@@ -134,7 +134,7 @@
     },
     {
       "case_id": "RS-SD-011",
-      "trigger": {"event_type": "REPLAY_REQUEST", "source_event_id": "evt-replay-011", "payload": {"idempotency_key": "rough-sorter:PKG-011:scan-decision", "payload_digest": "sha256:same-digest"}, "decision_discriminator": {"duplicate_digest": "SAME"}},
+      "trigger": {"event_type": "REPLAY_REQUEST", "source_event_id": "evt-replay-011", "payload": {"idempotency_key": "workline-plugin:rough_sorter:material:PKG-IT-001:decision", "payload_digest": "sha256:same-digest"}, "decision_discriminator": {"duplicate_digest": "SAME"}},
       "preconditions": ["同 idempotency key 的首次 attempt 已完成", "replay payload digest 与首次一致"],
       "recorded_evidence": {"first_attempt": ["normalized_input_snapshot", "wms_query_identity", "wms_request_summary", "query_response_summary", "decision", "intent_identity", "payload_digest"], "replay": ["replay_request", "matched_payload_digest", "reused_decision", "reused_intent_identity"]},
       "expected_state": {"material": "UNCHANGED", "command": "UNCHANGED", "session": "UNCHANGED", "context_phase": "UNCHANGED"},
@@ -147,7 +147,7 @@
     },
     {
       "case_id": "RS-SD-012",
-      "trigger": {"event_type": "REPLAY_REQUEST", "source_event_id": "evt-replay-012", "payload": {"idempotency_key": "rough-sorter:PKG-012:scan-decision", "payload_digest": "sha256:different-digest"}, "decision_discriminator": {"duplicate_digest": "DIFFERENT"}},
+      "trigger": {"event_type": "REPLAY_REQUEST", "source_event_id": "evt-replay-012", "payload": {"idempotency_key": "workline-plugin:rough_sorter:material:PKG-IT-001:decision", "payload_digest": "sha256:different-digest"}, "decision_discriminator": {"duplicate_digest": "DIFFERENT"}},
       "preconditions": ["同 idempotency key 的首次 attempt 已存在", "incoming digest 与首次不同"],
       "recorded_evidence": {"first_attempt": ["original_payload_digest", "original_decision", "original_intent_identity"], "replay": ["incoming_payload_digest", "digest_mismatch", "conflict_audit", "block_intent_identity", "block_effect_identity", "block_scope", "block_reason_code", "session_hold_write_result"], "subsequent_replay": ["reused_conflict_audit", "reused_block_intent_identity", "reused_block_effect_identity", "original_session_hold_write_result", "zero_new_hold_write"]},
       "expected_state": {"material": "UNCHANGED", "command": "UNCHANGED", "session": "MANUAL_HOLD", "context_phase": "UNCHANGED"},

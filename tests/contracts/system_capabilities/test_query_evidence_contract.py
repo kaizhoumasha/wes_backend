@@ -42,7 +42,12 @@ def test_recorded_replay_decodes_evidence_and_decision_without_handler() -> None
         definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
         binding_identity="binding:17:3",
         index_digest="d" * 64,
-        attempt_anchor={"source_inbox_id": 71, "session_version": 7, "session_status": "RUNNING"},
+        attempt_anchor={
+            "source_inbox_id": 71,
+            "session_version": 7,
+            "session_status": "RUNNING",
+            "logical_idempotency_key": "workline-plugin:test:material:PKG-71:decision",
+        },
         evidence=(QueryEvidence.model_validate(evidence_payload()),),
         decision={"outcome_code": "ROUTE_A", "intents": []},
     )
@@ -73,7 +78,12 @@ def test_recorded_replay_rejects_query_key_or_hash_drift_without_calling_handler
         definition_identity="plugin.rough-sorter@v1:" + "c" * 64,
         binding_identity="binding:17:3",
         index_digest="d" * 64,
-        attempt_anchor={"source_inbox_id": 71, "session_version": 7, "session_status": "RUNNING"},
+        attempt_anchor={
+            "source_inbox_id": 71,
+            "session_version": 7,
+            "session_status": "RUNNING",
+            "logical_idempotency_key": "workline-plugin:test:material:PKG-71:decision",
+        },
         evidence=(QueryEvidence.model_validate(evidence_payload()),),
         decision={"outcome_code": "ROUTE_A", "intents": []},
     )
@@ -131,7 +141,12 @@ async def test_recorded_replay_service_loads_only_timeline_decision_records() ->
                 "definition_identity": "plugin.rough-sorter@v1:" + "c" * 64,
                 "binding_identity": "binding:17:3",
                 "index_digest": "d" * 64,
-                "attempt_anchor": {"source_inbox_id": 71, "session_version": 7, "session_status": "RUNNING"},
+                "attempt_anchor": {
+                    "source_inbox_id": 71,
+                    "session_version": 7,
+                    "session_status": "RUNNING",
+                    "logical_idempotency_key": "workline-plugin:test:material:PKG-71:decision",
+                },
                 "evidence_keys": [["wms.lookup", "v1", "a" * 64, "b" * 64]],
                 "decision": {"outcome_code": "ROUTE_A", "intents": []},
             }

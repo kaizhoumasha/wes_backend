@@ -223,18 +223,25 @@ class PluginAttemptRepository:
             for evidence in write_set.evidence
             if isinstance(evidence, QueryEvidence)
         ]
+        attempt_anchor = (
+            _json_value(write_set.recorded_attempt_anchor)
+            if write_set.recorded_attempt_anchor is not None
+            else {
+                "source_inbox_id": int(locked.inbox.id),
+                "session_version": snapshot.session_version,
+                "session_status": snapshot.session_status,
+                "logical_idempotency_key": _logical_idempotency_key(locked),
+            }
+        )
         decision_payload = {
             "record_type": "PLUGIN_DECISION",
             "definition_identity": snapshot.definition_identity,
             "binding_identity": snapshot.binding_identity,
             "index_digest": snapshot.index_digest,
-            "attempt_anchor": {
-                "source_inbox_id": int(locked.inbox.id),
-                "session_version": snapshot.session_version,
-                "session_status": snapshot.session_status,
-            },
+            "attempt_anchor": attempt_anchor,
             "evidence_keys": evidence_keys,
-            "decision": {
+            "decision": write_set.recorded_decision
+            or {
                 "outcome_code": write_set.outcome_code,
                 "hold_reason": write_set.hold_reason,
                 "intents": [_json_value(intent) for intent in write_set.intents],
@@ -273,6 +280,17 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _json_value(item) for key, item in value.items()}
     return value
+
+
+def _logical_idempotency_key(locked: AuthoritativePluginAttempt) -> str:
+    """由 pinned plugin 与 execution work item 生成稳定的业务 attempt identity。"""
+
+    plugin_key = str(getattr(locked.session, "plugin_key", None) or "unknown-plugin")
+    object_type = str(getattr(locked.work_item, "object_type", None) or "session")
+    object_key = str(
+        getattr(locked.work_item, "object_key", None) or getattr(locked.session, "business_key", None) or "unknown"
+    )
+    return f"workline-plugin:{plugin_key}:{object_type}:{object_key}:decision"
 
 
 plugin_attempt_repository = PluginAttemptRepository()

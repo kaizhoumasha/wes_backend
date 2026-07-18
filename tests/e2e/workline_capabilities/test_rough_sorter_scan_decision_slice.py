@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 from dataclasses import dataclass
@@ -303,6 +302,25 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                     if case_id == "RS-SD-013":
                         session = await db.get(WorklineSession, seeded.session_id)
                         assert session is not None
+                        current = DeviceCommand(
+                            command_code="RS-SD-013-CURRENT-WAIT",
+                            device_id=seeded.arm_id,
+                            task_type="PICK_AND_PUT",
+                            priority=5,
+                            timeout_ms=30_000,
+                            params={},
+                            trace_id=seeded.trace_id,
+                            correlation_id="rs-sd-013-current",
+                            workline_id=seeded.workline_id,
+                            plugin_key="rough_sorter",
+                            contract_version="rough_sorter.v2",
+                            status=CommandStatus.PENDING,
+                        )
+                        db.add(current)
+                        await db.flush()
+                        session.awaiting_device_command_code = current.command_code
+                        current_command_code = current.command_code
+                        await db.commit()
                         callback_payload = {
                             "command_code": pick.command_code,
                             "device_code": "IT-ARM-01",
@@ -325,24 +343,12 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                         )
                         assert accepted is not None
                         assert accepted.command_id == pick.id
-                        current = DeviceCommand(
-                            command_code="RS-SD-013-CURRENT-WAIT",
-                            device_id=seeded.arm_id,
-                            task_type="PICK_AND_PUT",
-                            priority=5,
-                            timeout_ms=30_000,
-                            params={},
-                            trace_id=seeded.trace_id,
-                            correlation_id="rs-sd-013-current",
-                            workline_id=seeded.workline_id,
-                            plugin_key="rough_sorter",
-                            contract_version="rough_sorter.v2",
-                            status=CommandStatus.PENDING,
+                        assert accepted.status == "RECEIVED", (
+                            accepted.status,
+                            accepted.last_error_code,
+                            accepted.claim_bucket_key,
+                            accepted.next_retry_at,
                         )
-                        db.add(current)
-                        await db.flush()
-                        session.awaiting_device_command_code = current.command_code
-                        await db.commit()
                         related_inbox_id = int(accepted.id)
                     else:
                         trigger_payload = trigger["payload"]
@@ -385,6 +391,13 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                             )
                         )
                         assert archived is not None
+                        session = await db.get(WorklineSession, seeded.session_id, populate_existing=True)
+                        assert session is not None and session.awaiting_device_command_code == current_command_code
+                        assert archived.payload_json.get("reason") == "COMMAND_RESULT_CORRELATION_MISMATCH"
+                        assert (
+                            int(await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0)
+                            == baseline_effects
+                        )
                 elif event_type == "TIMER_TIMEOUT":
                     source = await db.get(RuntimeInbox, seeded.inbox_id)
                     session = await db.get(WorklineSession, seeded.session_id)
@@ -444,19 +457,6 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                         select(RuntimeInbox).where(RuntimeInbox.source_event_id == source_event_id)
                     )
                     assert source is not None
-                    source.payload_json = {
-                        **source.payload_json,
-                        "idempotency_key": trigger["payload"]["idempotency_key"],
-                    }
-                    source.payload_hash = hashlib.sha256(
-                        json.dumps(
-                            source.payload_json,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ).encode("utf-8")
-                    ).hexdigest()
-                    await db.commit()
                     assert (await _process_one(db, service, token=f"e2e-{case_id}-first-decision"))["success"] == 1
                     source = await db.get(RuntimeInbox, source.id, populate_existing=True)
                     assert source is not None
@@ -475,7 +475,16 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                     source_decision = next(
                         item for item in source_timelines if item.payload_json.get("record_type") == "PLUGIN_DECISION"
                     )
+                    source_recorded_payloads = tuple(
+                        item.payload_json
+                        for item in source_timelines
+                        if item.payload_json.get("record_type") in {"SYSTEM_CAPABILITY_EVIDENCE", "PLUGIN_DECISION"}
+                    )
                     assert source_decision.payload_json.get("evidence_keys")
+                    assert (
+                        source_decision.payload_json["attempt_anchor"]["logical_idempotency_key"]
+                        == trigger["payload"]["idempotency_key"]
+                    )
                     assert provider_calls == 1
                     source_effects = tuple(
                         (
@@ -549,6 +558,18 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                         assert (await _process_one(db, service, token="e2e-rs-sd-011-recorded"))["success"] == 1
                         replay_row = await db.get(RuntimeInbox, recorded.replay_record.id, populate_existing=True)
                         assert replay_row is not None and replay_row.status == "PROCESSED"
+                        replay_recorded_payloads = tuple(
+                            item.payload_json
+                            for item in (
+                                await db.execute(
+                                    select(WorklineTimeline)
+                                    .where(WorklineTimeline.related_inbox_id == recorded.replay_record.id)
+                                    .order_by(WorklineTimeline.seq_no)
+                                )
+                            ).scalars()
+                            if item.payload_json.get("record_type") in {"SYSTEM_CAPABILITY_EVIDENCE", "PLUGIN_DECISION"}
+                        )
+                        assert replay_recorded_payloads == source_recorded_payloads
                         assert provider_calls == 1
                         persisted_effect_ids = tuple(
                             (
@@ -567,6 +588,35 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                         return
                     conflict_effects = int(await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0)
                     conflict_outbox = int(await db.scalar(select(func.count()).select_from(SystemOutbox)) or 0)
+                    conflict_recorded_payloads = tuple(
+                        item.payload_json
+                        for item in (
+                            await db.execute(
+                                select(WorklineTimeline)
+                                .where(WorklineTimeline.related_inbox_id == related_inbox_id)
+                                .order_by(WorklineTimeline.seq_no)
+                            )
+                        ).scalars()
+                        if item.payload_json.get("record_type") in {"SYSTEM_CAPABILITY_EVIDENCE", "PLUGIN_DECISION"}
+                    )
+                    conflict_effect_identities = tuple(
+                        (
+                            await db.execute(
+                                select(
+                                    RuntimeIntentLog.idempotency_key,
+                                    RuntimeIntentLog.capability_key,
+                                    RuntimeIntentLog.request_hash,
+                                    RuntimeIntentLog.outcome_kind,
+                                ).where(RuntimeIntentLog.idempotency_key.contains(f":inbox:{related_inbox_id}:"))
+                            )
+                        ).all()
+                    )
+                    assert conflict_recorded_payloads
+                    conflict_hold_intent = conflict_recorded_payloads[-1]["decision"]["intents"][0]
+                    assert conflict_hold_intent["kind"] == "SYSTEM_CAPABILITY"
+                    assert conflict_hold_intent["capability_key"] == "runtime.session_hold"
+                    assert _decision_reason(conflict_recorded_payloads[-1]) == "IDEMPOTENCY_CONFLICT"
+                    assert conflict_effect_identities
                     await db.execute(
                         update(RuntimeInbox)
                         .where(RuntimeInbox.id == related_inbox_id)
@@ -585,6 +635,35 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                     assert replay_result["processed"] == 1
                     replay_row = await db.get(RuntimeInbox, recorded.replay_record.id, populate_existing=True)
                     assert replay_row is not None and replay_row.status == "PROCESSED"
+                    replay_recorded_payloads = tuple(
+                        item.payload_json
+                        for item in (
+                            await db.execute(
+                                select(WorklineTimeline)
+                                .where(WorklineTimeline.related_inbox_id == recorded.replay_record.id)
+                                .order_by(WorklineTimeline.seq_no)
+                            )
+                        ).scalars()
+                        if item.payload_json.get("record_type") in {"SYSTEM_CAPABILITY_EVIDENCE", "PLUGIN_DECISION"}
+                    )
+                    assert replay_recorded_payloads == conflict_recorded_payloads
+                    persisted_conflict_effects = tuple(
+                        (
+                            await db.execute(
+                                select(
+                                    RuntimeIntentLog.idempotency_key,
+                                    RuntimeIntentLog.capability_key,
+                                    RuntimeIntentLog.request_hash,
+                                    RuntimeIntentLog.outcome_kind,
+                                ).where(
+                                    RuntimeIntentLog.idempotency_key.in_(
+                                        tuple(identity[0] for identity in conflict_effect_identities)
+                                    )
+                                )
+                            )
+                        ).all()
+                    )
+                    assert persisted_conflict_effects == conflict_effect_identities
                     replay_effect_delta = int(
                         (await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0) - conflict_effects
                     )

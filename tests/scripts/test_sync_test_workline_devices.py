@@ -451,7 +451,9 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
 
 
 @pytest.mark.asyncio
-async def test_sync_test_workline_devices_smt_configuration_status_passes(db_session, monkeypatch) -> None:
+async def test_sync_test_workline_devices_smt_configuration_reports_unregistered_plugin(
+    db_session, monkeypatch
+) -> None:
     monkeypatch.setenv("APP_ENV", "test")
 
     await sync_test_workline_devices(db_session)
@@ -462,8 +464,13 @@ async def test_sync_test_workline_devices_smt_configuration_status_passes(db_ses
     status = await WorkLineService().configuration_status(db_session, workline.id)  # type: ignore[arg-type]
 
     failed_checks = [check for check in status.checks if check.status == "FAIL"]
-    assert status.can_activate is True
-    assert failed_checks == []
+    assert status.can_activate is False
+    assert [(check.code, check.context) for check in failed_checks] == [
+        (
+            "PLUGIN_CONFIGURED",
+            {"plugin_key": SMT_SORTING_INBOUND_PLUGIN_KEY, "message": "不支持的工作线插件"},
+        )
+    ]
 
 
 @pytest.mark.asyncio

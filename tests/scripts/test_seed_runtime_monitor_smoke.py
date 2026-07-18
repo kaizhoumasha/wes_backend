@@ -35,7 +35,9 @@ async def test_seed_runtime_monitor_smoke_creates_runtime_projection_scenarios(d
 
     assert single_layer_projection is not None
     assert single_layer_projection.boundary.workline_readiness == "READY"
-    assert single_layer_projection.boundary.station_lease == "ACTIVE_DISPATCH_LEASE"
+    # SMT legacy seed 尚未进入 generated plugin index；平台边界必须保持 UNKNOWN，
+    # 不再从 session context 伪造 Station Lease 权威状态。
+    assert single_layer_projection.boundary.station_lease == "UNKNOWN"
     assert single_layer_projection.boundary.rack_operation_wait == "WAITING_WMS"
     assert single_layer_projection.resource_evidence.kind == "WMS_CALLBACK_EVIDENCE"
     assert single_layer_projection.resource_evidence.total_count > 50
