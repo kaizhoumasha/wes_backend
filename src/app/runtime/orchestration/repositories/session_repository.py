@@ -5,9 +5,12 @@ from typing import Any, cast
 
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.orm.util import identity_key
 
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.runtime.orchestration.models.session import RuntimeReconciliationState, SessionStatus, WorklineSession
+from src.core.exceptions import OptimisticLockException
 from src.database.base_repository import BaseRepository
 from src.utils.timezone import timezone
 
@@ -20,6 +23,52 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
     def __init__(self) -> None:
         """初始化会话仓库"""
         super().__init__(WorklineSession)
+
+    async def _persist_fact_update(
+        self,
+        db: AsyncSession,
+        *,
+        session_id: int,
+        values: dict[str, Any],
+        expected_version: int | None,
+    ) -> None:
+        """原子写入 Session 事实，并统一推进乐观锁版本。"""
+
+        columns = cast("Any", WorklineSession).__table__.c
+        attached = db.sync_session.identity_map.get(identity_key(WorklineSession, (session_id,)))
+        if attached is not None and attached in db.sync_session.dirty:
+            current_version = int(attached.version)
+            if expected_version is not None and current_version != expected_version:
+                raise OptimisticLockException(
+                    resource_type="WorklineSession",
+                    resource_id=session_id,
+                    current_version=current_version,
+                    provided_version=expected_version,
+                )
+            for field_name, value in values.items():
+                setattr(attached, field_name, value)
+            try:
+                await db.flush([attached])
+            except StaleDataError as exc:
+                raise OptimisticLockException(
+                    resource_type="WorklineSession",
+                    resource_id=session_id,
+                    provided_version=expected_version if expected_version is not None else current_version,
+                ) from exc
+            return
+
+        statement = update(WorklineSession).where(columns.id == session_id)
+        if expected_version is not None:
+            statement = statement.where(columns.version == expected_version)
+        result = await db.execute(
+            statement.values(**values, version=columns.version + 1).execution_options(synchronize_session="fetch")
+        )
+        if expected_version is not None and result.rowcount == 0:
+            raise OptimisticLockException(
+                resource_type="WorklineSession",
+                resource_id=session_id,
+                provided_version=expected_version,
+            )
 
     async def get_by_session_code(
         self,
@@ -290,26 +339,26 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         occurred_at: Any,
         command_code: str | None,
         timeout_seconds: int,
+        expected_version: int | None = None,
     ) -> None:
         """显式持久化命令 Result 等待态，避免异步懒加载丢失会话状态写回。"""
 
-        columns = cast("Any", WorklineSession).__table__.c
-        _ = await db.execute(
-            update(WorklineSession)
-            .where(columns.id == session_id)
-            .values(
-                status=SessionStatus.WAITING_DEVICE_RESULT,
-                current_wait_type="COMMAND_RESULT",
-                waiting_since=occurred_at,
-                deadline_at=None,
-                current_wait_timeout_seconds=timeout_seconds,
-                awaiting_device_command_code=command_code,
-                ended_at=None,
-                failure_domain=None,
-                failure_code=None,
-                failure_message=None,
-            )
-            .execution_options(synchronize_session=False)
+        await self._persist_fact_update(
+            db,
+            session_id=session_id,
+            expected_version=expected_version,
+            values={
+                "status": SessionStatus.WAITING_DEVICE_RESULT,
+                "current_wait_type": "COMMAND_RESULT",
+                "waiting_since": occurred_at,
+                "deadline_at": None,
+                "current_wait_timeout_seconds": timeout_seconds,
+                "awaiting_device_command_code": command_code,
+                "ended_at": None,
+                "failure_domain": None,
+                "failure_code": None,
+                "failure_message": None,
+            },
         )
 
     async def persist_external_wait(
@@ -321,27 +370,27 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         occurred_at: Any,
         timeout_seconds: int | None,
         context_json: dict[str, Any] | None,
+        expected_version: int | None = None,
     ) -> None:
         """显式持久化外部等待态，避免 rack/handling 等待只停留在 ORM 对象内存中。"""
 
-        columns = cast("Any", WorklineSession).__table__.c
-        _ = await db.execute(
-            update(WorklineSession)
-            .where(columns.id == session_id)
-            .values(
-                status=SessionStatus.WAITING_EXTERNAL,
-                context_json=context_json or {},
-                current_wait_type=wait_type,
-                waiting_since=occurred_at,
-                deadline_at=None if timeout_seconds is None else occurred_at + timedelta(seconds=timeout_seconds),
-                current_wait_timeout_seconds=timeout_seconds,
-                awaiting_device_command_code=None,
-                ended_at=None,
-                failure_domain=None,
-                failure_code=None,
-                failure_message=None,
-            )
-            .execution_options(synchronize_session=False)
+        await self._persist_fact_update(
+            db,
+            session_id=session_id,
+            expected_version=expected_version,
+            values={
+                "status": SessionStatus.WAITING_EXTERNAL,
+                "context_json": context_json or {},
+                "current_wait_type": wait_type,
+                "waiting_since": occurred_at,
+                "deadline_at": None if timeout_seconds is None else occurred_at + timedelta(seconds=timeout_seconds),
+                "current_wait_timeout_seconds": timeout_seconds,
+                "awaiting_device_command_code": None,
+                "ended_at": None,
+                "failure_domain": None,
+                "failure_code": None,
+                "failure_message": None,
+            },
         )
 
     async def persist_completed(
@@ -351,27 +400,27 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         session_id: int,
         occurred_at: Any,
         context_json: dict[str, Any] | None,
+        expected_version: int | None = None,
     ) -> None:
         """显式持久化完成态，确保终态与 timeline 保持一致。"""
 
-        columns = cast("Any", WorklineSession).__table__.c
-        _ = await db.execute(
-            update(WorklineSession)
-            .where(columns.id == session_id)
-            .values(
-                status=SessionStatus.COMPLETED,
-                context_json=context_json or {},
-                current_wait_type=None,
-                waiting_since=None,
-                deadline_at=None,
-                current_wait_timeout_seconds=None,
-                awaiting_device_command_code=None,
-                ended_at=occurred_at,
-                failure_domain=None,
-                failure_code=None,
-                failure_message=None,
-            )
-            .execution_options(synchronize_session=False)
+        await self._persist_fact_update(
+            db,
+            session_id=session_id,
+            expected_version=expected_version,
+            values={
+                "status": SessionStatus.COMPLETED,
+                "context_json": context_json or {},
+                "current_wait_type": None,
+                "waiting_since": None,
+                "deadline_at": None,
+                "current_wait_timeout_seconds": None,
+                "awaiting_device_command_code": None,
+                "ended_at": occurred_at,
+                "failure_domain": None,
+                "failure_code": None,
+                "failure_message": None,
+            },
         )
 
     async def persist_manual_hold(
@@ -383,27 +432,27 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         failure_domain: str | None,
         failure_code: str | None,
         failure_message: str | None,
+        expected_version: int | None = None,
     ) -> None:
         """显式持久化人工挂起态，确保 BLOCK 终态不会因异步写回丢失。"""
 
         _ = occurred_at  # 保留状态发生时间参数，与 wait/complete 持久化接口语义一致。
-        columns = cast("Any", WorklineSession).__table__.c
-        _ = await db.execute(
-            update(WorklineSession)
-            .where(columns.id == session_id)
-            .values(
-                status=SessionStatus.MANUAL_HOLD,
-                current_wait_type=None,
-                waiting_since=None,
-                deadline_at=None,
-                current_wait_timeout_seconds=None,
-                awaiting_device_command_code=None,
-                ended_at=None,
-                failure_domain=failure_domain,
-                failure_code=failure_code,
-                failure_message=failure_message,
-            )
-            .execution_options(synchronize_session=False)
+        await self._persist_fact_update(
+            db,
+            session_id=session_id,
+            expected_version=expected_version,
+            values={
+                "status": SessionStatus.MANUAL_HOLD,
+                "current_wait_type": None,
+                "waiting_since": None,
+                "deadline_at": None,
+                "current_wait_timeout_seconds": None,
+                "awaiting_device_command_code": None,
+                "ended_at": None,
+                "failure_domain": failure_domain,
+                "failure_code": failure_code,
+                "failure_message": failure_message,
+            },
         )
 
     async def persist_cancelled(
@@ -412,23 +461,23 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         *,
         session_id: int,
         occurred_at: Any,
+        expected_version: int | None = None,
     ) -> None:
         """显式持久化取消态，保持人工取消与 legacy write-back 语义一致。"""
 
-        columns = cast("Any", WorklineSession).__table__.c
-        _ = await db.execute(
-            update(WorklineSession)
-            .where(columns.id == session_id)
-            .values(
-                status=SessionStatus.CANCELLED,
-                current_wait_type=None,
-                waiting_since=None,
-                deadline_at=None,
-                current_wait_timeout_seconds=None,
-                awaiting_device_command_code=None,
-                ended_at=occurred_at,
-            )
-            .execution_options(synchronize_session=False)
+        await self._persist_fact_update(
+            db,
+            session_id=session_id,
+            expected_version=expected_version,
+            values={
+                "status": SessionStatus.CANCELLED,
+                "current_wait_type": None,
+                "waiting_since": None,
+                "deadline_at": None,
+                "current_wait_timeout_seconds": None,
+                "awaiting_device_command_code": None,
+                "ended_at": occurred_at,
+            },
         )
 
     async def get_open_session_by_awaiting_device_command_code(
