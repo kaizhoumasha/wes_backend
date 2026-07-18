@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from unittest.mock import patch
@@ -12,38 +11,30 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from src.app.device.models.command import DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
+from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
+from src.app.runtime.orchestration.execution_session import ExecutionSession
+from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
-from src.app.runtime.orchestration.models.timeline import TimelineActionType, WorklineTimeline
-from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorService
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
 )
-from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
-    RuntimeInboxOrchestratorDelegate,
-)
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
+from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.sys.models import SystemOutbox
+from src.app.workline.models.plugin_binding import WorklinePluginBinding
 from src.app.workline.models.workline import LineType, WorkLine
+from src.app.workline.services.plugin_binding_service import WorklinePluginBindingService
+from src.core.conf import settings
+from src.utils.timezone import timezone
 from tests.support.runtime_inbox_postgresql import run_alembic, temporary_database
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-
-
-@asynccontextmanager
-async def _noop_session_lock(_lock_key: str):
-    """仅替换外部锁基础设施；持久化、编排和 write-back 均使用生产实现。"""
-
-    yield
-
-
-def _production_orchestrator_factory(**_kwargs: object) -> OrchestratorService:
-    return OrchestratorService(lock_provider=_noop_session_lock)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,27 +57,62 @@ class RecordingTaskQueueGateway:
 
 
 def processor(service: RuntimeInboxService) -> RuntimeInboxProcessorBridge:
-    return RuntimeInboxProcessorBridge(
-        processor_service=RuntimeInboxOrchestratorDelegate(
-            orchestrator_factory=_production_orchestrator_factory,
-        ),
-        inbox_service=service,
-    )
+    """构造 destructive switch 后的 generated-plugin 生产桥接。"""
+
+    return RuntimeInboxProcessorBridge(inbox_service=service)
 
 
 async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
     trace_id = "it-runtime-inbox-trace"
+    typed_config = {
+        "device_roles": {
+            "input_arm": "ROUGH_SORTER_INPUT_ARM",
+            "conveyor": "ROUGH_SORTER_CONVEYOR",
+            "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+        },
+        "pipeline_input_location": "PIPELINE-IN-IT",
+        "pipeline_output_location": "PIPELINE-OUT-IT",
+        "ng_location": "NG-IT",
+        "warehouse_code": "WH-IT",
+        "owner_code": "OWNER-IT",
+        "provider_profile": "wms.v1.sandbox",
+    }
+    config_hash = sha256_digest(typed_config)
     workline = WorkLine(
         line_code="IT-RUNTIME-INBOX-SCAN",
         line_name="RuntimeInbox Production Flow",
         line_type=LineType.AUTO,
         plugin_key="rough_sorter",
         contract_version="rough_sorter.v2",
-        config={"pipeline_input_location": "PIPELINE-IN-IT"},
+        config=typed_config,
         is_active=True,
     )
     db.add(workline)
     await db.flush()
+    binding = WorklinePluginBinding(
+        workline_id=workline.id,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        binding_version=1,
+        typed_config_json=typed_config,
+        typed_config_hash=config_hash,
+        provider_profile_snapshot_json=[{"profile_identity": "wms.v1.sandbox"}],
+        port_requirements_json=["InventoryPort.query"],
+        device_snapshot_json=[],
+        generated_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
+        environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
+        activated_at=timezone.now_for_db(),
+        activated_by="integration-test",
+        activated_reason="PostgreSQL runtime processing evidence",
+    )
+    db.add(binding)
+    await db.flush()
+    workline.active_plugin_binding_id = binding.id
+    workline.active_plugin_binding_version = binding.binding_version
+    workline.active_plugin_config_hash = config_hash
+    workline.active_plugin_index_digest = binding.generated_index_digest
+    workline.active_plugin_provider_requirements_json = ["wms.v1.sandbox"]
+    workline.active_plugin_port_requirements_json = list(binding.port_requirements_json)
     await workline_runtime_status_projection_service.project_ready_after_start(db, workline_id=workline.id)
     scanner = Device(
         device_code="IT-SCANNER-01",
@@ -94,6 +120,7 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         work_line_id=workline.id,
         device_role="ROUGH_SORTER_SCANNER",
         device_status=DeviceStatus.IDLE,
+        version=1,
     )
     arm = Device(
         device_code="IT-ARM-01",
@@ -101,6 +128,7 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         work_line_id=workline.id,
         device_role="ROUGH_SORTER_INPUT_ARM",
         device_status=DeviceStatus.IDLE,
+        version=1,
     )
     db.add_all([scanner, arm])
     await db.flush()
@@ -109,19 +137,47 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         workline_id=workline.id,
         plugin_key="rough_sorter",
         contract_version="rough_sorter.v2",
+        plugin_binding_id=binding.id,
+        plugin_binding_version=binding.binding_version,
+        plugin_config_hash=config_hash,
+        plugin_index_digest=binding.generated_index_digest,
         status=SessionStatus.RUNNING,
         trace_id=trace_id,
     )
-    db.add_all(
-        [
-            session,
-            ExecutionCorrelation(
-                correlation_id="it-runtime-inbox-correlation",
-                trace_id=trace_id,
-                source_event_id="it-runtime-inbox-event",
-                business_owner_key="it-runtime-inbox-scan",
-            ),
-        ]
+    correlation = ExecutionCorrelation(
+        correlation_id="it-runtime-inbox-correlation",
+        trace_id=trace_id,
+        source_event_id="it-runtime-inbox-event",
+        business_owner_key="it-runtime-inbox-scan",
+    )
+    db.add_all([session, correlation])
+    await db.flush()
+    execution_session = ExecutionSession(
+        workline_id=workline.id,
+        plugin_key=session.plugin_key,
+        manifest_version=session.contract_version,
+        plugin_binding_id=binding.id,
+        plugin_binding_version=binding.binding_version,
+        plugin_config_hash=config_hash,
+        plugin_index_digest=binding.generated_index_digest,
+        state="RUNNING",
+    )
+    db.add(execution_session)
+    await db.flush()
+    correlation.execution_session_id = execution_session.id
+    db.add(
+        ExecutionWorkItem(
+            execution_session_id=execution_session.id,
+            correlation_id=correlation.correlation_id,
+            plugin_key=session.plugin_key,
+            plugin_binding_id=binding.id,
+            plugin_binding_version=binding.binding_version,
+            plugin_config_hash=config_hash,
+            plugin_index_digest=binding.generated_index_digest,
+            object_type="material",
+            object_key="PKG-IT-001",
+            current_step="SCAN",
+        )
     )
     await db.flush()
     accepted = await RuntimeInboxService().accept_device_event(
@@ -147,6 +203,8 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         workline_id=workline.id,
         device_id=scanner.id,
     )
+    accepted.record.execution_session_id = execution_session.id
+    accepted.record.correlation_id = correlation.correlation_id
     await db.commit()
     assert all(value is not None for value in (accepted.record.id, session.id, workline.id, arm.id))
     return SeededScanFlow(
@@ -179,10 +237,11 @@ async def assert_effects(db: AsyncSession, seeded: SeededScanFlow, *, expected_c
     session = await db.get(WorklineSession, seeded.session_id)
     assert session is not None
     if expected_count:
-        assert session.status == SessionStatus.WAITING_DEVICE_RESULT
-        assert session.awaiting_device_command_code is not None
         command = await db.scalar(
-            select(DeviceCommand).where(DeviceCommand.command_code == session.awaiting_device_command_code)
+            select(DeviceCommand).where(
+                DeviceCommand.workline_id == seeded.workline_id,
+                DeviceCommand.trace_id == seeded.trace_id,
+            )
         )
         assert command is not None and command.device_id == seeded.arm_id
     else:
@@ -197,19 +256,8 @@ async def assert_effects(db: AsyncSession, seeded: SeededScanFlow, *, expected_c
     outbox_count = await db.scalar(
         select(func.count()).select_from(SystemOutbox).where(SystemOutbox.session_id == seeded.session_id)
     )
-    target_timeline_count = await db.scalar(
-        select(func.count())
-        .select_from(WorklineTimeline)
-        .where(
-            WorklineTimeline.session_id == seeded.session_id,
-            WorklineTimeline.trace_id == seeded.trace_id,
-            WorklineTimeline.related_inbox_id == seeded.inbox_id,
-            WorklineTimeline.action_type == TimelineActionType.COMMAND_SENT,
-        )
-    )
     assert command_count == expected_count
     assert outbox_count == expected_count
-    assert target_timeline_count == expected_count
 
 
 async def assert_processed_terminal(db: AsyncSession, *, inbox_id: int) -> None:

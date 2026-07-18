@@ -311,7 +311,12 @@ def _definition_part(identity: str | None, index: int) -> str | None:
     if not isinstance(identity, str) or "@" not in identity:
         return None
     parts = identity.split("@", maxsplit=1)
-    return parts[index] or None
+    value = parts[index]
+    # Definition identity 的合同版本后附 schema digest；ledger 的独立
+    # plugin_contract_version 列只保存合同版本，digest 已由 request_hash 固定。
+    if index == 1:
+        value = value.split(":", maxsplit=1)[0]
+    return value or None
 
 
 def _completion_mode(intent: RuntimeIntent) -> str | None:

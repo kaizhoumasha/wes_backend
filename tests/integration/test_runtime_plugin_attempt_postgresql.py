@@ -9,7 +9,6 @@ from sqlalchemy import func, update
 from sqlmodel import select
 
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
-from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
@@ -23,20 +22,16 @@ from src.app.runtime.orchestration.repositories.timeline_sequence_repository imp
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
-from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
-    _write_set_from_recorded_replay,
-)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
 )
-from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
 from src.app.runtime.workline_plugins.attempt_coordinator import (
     AttemptSnapshot,
     AttemptWriteSet,
     WriteDisposition,
 )
-from src.app.workline.models.plugin_binding import WorklinePluginBinding
+from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as ROUGH_SORTER_DEFINITION
 from src.utils.timezone import timezone
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
@@ -49,39 +44,13 @@ async def _seed_pinned_attempt(session_factory, *, token: str):  # type: ignore[
     service = RuntimeInboxService()
     async with session_factory() as db:
         seeded = await seed_scan_flow(db)
-        execution_session = ExecutionSession(
-            workline_id=seeded.workline_id,
-            plugin_key="rough_sorter",
-            manifest_version="it-manifest-v1",
-            state="RUNNING",
-        )
-        binding = WorklinePluginBinding(
-            workline_id=seeded.workline_id,
-            plugin_key="rough_sorter",
-            contract_version="rough_sorter.v2",
-            binding_version=1,
-            typed_config_hash="a" * 64,
-            generated_index_digest="b" * 64,
-            environment="test",
-            activated_at=timezone.now_for_db(),
-            activated_by="integration-test",
-            activated_reason="plugin attempt atomicity",
-        )
-        db.add_all([execution_session, binding])
-        await db.flush()
         session = await db.get(WorklineSession, seeded.session_id)
         inbox = await db.get(RuntimeInbox, seeded.inbox_id)
         correlation = await db.scalar(
             select(ExecutionCorrelation).where(ExecutionCorrelation.correlation_id == "it-runtime-inbox-correlation")
         )
         assert session is not None and inbox is not None and correlation is not None
-        assert execution_session.id is not None and binding.id is not None
-        session.plugin_binding_id = binding.id
-        session.plugin_binding_version = binding.binding_version
-        session.plugin_index_digest = binding.generated_index_digest
-        inbox.execution_session_id = execution_session.id
-        inbox.correlation_id = correlation.correlation_id
-        correlation.execution_session_id = execution_session.id
+        assert inbox.execution_session_id is not None
         await db.commit()
         claimed = await claim(db, service, token=token)
         await db.refresh(session)
@@ -89,9 +58,10 @@ async def _seed_pinned_attempt(session_factory, *, token: str):  # type: ignore[
             processor_token=str(claimed["processor_token"]),
             session_version=session.version,
             plugin_state_version=session.plugin_state_version,
-            definition_identity=f"{session.plugin_key}@{session.contract_version}",
+            definition_identity=ROUGH_SORTER_DEFINITION.identity,
             binding_id=session.plugin_binding_id,
             binding_version=session.plugin_binding_version,
+            plugin_config_hash=session.plugin_config_hash,
             index_digest=session.plugin_index_digest,
         )
     return seeded, snapshot, service
@@ -149,21 +119,29 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
 
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
         seeded, snapshot, service = await _seed_pinned_attempt(session_factory, token="plugin-ledger-owner")
-        intent = RuntimeIntent(
-            kind=RuntimeIntentKind.COMMAND,
-            action="MOVE",
-            idempotency_key="operation-1",
-            payload_json={"target": "A-01"},
+        intent = RuntimeIntent.system_capability(
+            capability_key="device.device_command_write",
+            contract_version="v1",
+            operation_key="operation-1",
+            payload={
+                "target_device_id": seeded.arm_id,
+                "action": "PICK_AND_PUT",
+                "payload": {"target": "A-01"},
+                "timeout_ms": 30_000,
+            },
+            precondition={"expected_available": True},
+            fact_version="device:v1",
+            timeout_seconds=5,
+            creator_authority="WORKLINE_PLUGIN",
+            authorization_policy="PLUGIN_DECLARED_CAPABILITY",
+            binding_snapshot={"binding_id": snapshot.binding_id, "binding_version": snapshot.binding_version},
+            provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
         )
-        replay_write_set = _write_set_from_recorded_replay(
-            RecordedReplayResolution(
-                decision={
-                    "outcome_code": "ROUTE_A",
-                    "next_state": {"step": 2},
-                    "intents": [intent.model_dump(mode="json")],
-                }
-            ),
-            fallback_state={},
+        replay_write_set = AttemptWriteSet(
+            evidence=(),
+            next_state={"step": 2},
+            intents=(intent,),
+            outcome_code="ROUTE_A",
         )
         assert isinstance(replay_write_set.intents[0], RuntimeIntent)
         async with session_factory() as db:
@@ -183,7 +161,10 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
             session = await verify_db.get(WorklineSession, seeded.session_id)
             assert inbox is not None
             ledger = await verify_db.scalar(
-                select(RuntimeIntentLog).where(RuntimeIntentLog.execution_session_id == inbox.execution_session_id)
+                select(RuntimeIntentLog).where(
+                    RuntimeIntentLog.execution_session_id == inbox.execution_session_id,
+                    RuntimeIntentLog.operation_kind == "plugin_intent",
+                )
             )
             timeline_count = await verify_db.scalar(
                 select(func.count())
@@ -194,7 +175,7 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
             assert session is not None and session.plugin_state_json == {"step": 2}
             assert timeline_count == 1
             assert ledger is not None
-            assert ledger.idempotency_key == f"plugin-attempt:binding:{snapshot.binding_id}:1:operation-1"
+            assert ledger.idempotency_key == f"plugin-attempt:binding:{snapshot.binding_id}:1:inbox:1:intent:0"
             assert ledger.dispatch_status == "PENDING"
             assert len(ledger.request_hash) == 64
 
