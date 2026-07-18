@@ -12,6 +12,7 @@ from src.app.runtime.capabilities.material_flow.contracts.ng_reason import (
     build_ng_reason_catalog,
 )
 from src.app.runtime.extension_identity import sha256_digest, stable_sort
+from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
 from src.app.runtime.system_capabilities.definition import SystemCapabilityMode
 from src.app.runtime.workline_plugins.definition import WorklinePluginDefinition
 
@@ -20,6 +21,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from src.app.runtime.workline_plugins.schema import WorklinePluginSchema
+
+_ALLOWED_EVENT_CATEGORIES = frozenset({"ENTRY_DEVICE", "INTERNAL", "COMMAND_RESULT", "OPERATOR", "SAFETY"})
+_ALLOWED_PIPELINE_QUEUE_ROLES = frozenset(
+    {"BUFFER", "GATE", "WAIT", "WORKSTATION", "EXCEPTION", "ENTRY", "SCAN", "WORK"}
+)
+_ALLOWED_PIPELINE_ORDER_POLICIES = frozenset({"FIFO", "LIFO", "PRIORITY"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +137,8 @@ class WorklinePluginIndexBuilder:
             device_roles=device_roles,
             rack_positions=rack_positions,
         )
+        cls._validate_session_and_state_machines(schema)
+        cls._validate_pipeline_queues(schema)
         cls._validate_ng_reason_contract(definition)
 
     @classmethod
@@ -147,22 +156,34 @@ class WorklinePluginIndexBuilder:
         return device_roles
 
     @classmethod
-    def _validate_rack_positions(cls, schema: WorklinePluginSchema) -> set[str]:
-        rack_positions: set[str] = set()
+    def _validate_rack_positions(cls, schema: WorklinePluginSchema) -> dict[str, frozenset[str]]:
+        rack_positions: dict[str, frozenset[str]] = {}
         for position in schema.rack_positions:
             code = cls._require_identity(position.code, field_name="rack position code")
             cls._require_identity(position.role, field_name="rack position role")
             cls._require_identity(position.station_code, field_name="rack position station_code")
             if code in rack_positions:
                 raise ValueError(f"duplicate rack position: {code}")
-            rack_positions.add(code)
             carrier = position.carrier_capability
             if carrier.min_capacity < 0:
                 raise ValueError("rack position min_capacity must not be negative")
             if carrier.max_capacity < carrier.min_capacity:
                 raise ValueError("rack position max_capacity must be greater than or equal to min_capacity")
-            for rack_kind in carrier.allowed_rack_kinds:
+            if not carrier.allowed_rack_kinds:
+                raise ValueError("rack position allowed_rack_kinds must not be empty")
+            allowed_rack_kinds = tuple(
                 cls._require_identity(rack_kind, field_name="allowed rack kind")
+                for rack_kind in carrier.allowed_rack_kinds
+            )
+            if len(set(allowed_rack_kinds)) != len(allowed_rack_kinds):
+                raise ValueError("rack position allowed_rack_kinds must be unique")
+            allowed_slot_kinds = tuple(
+                cls._require_identity(slot_kind, field_name="allowed slot kind")
+                for slot_kind in carrier.allowed_slot_kinds
+            )
+            if len(set(allowed_slot_kinds)) != len(allowed_slot_kinds):
+                raise ValueError("rack position allowed_slot_kinds must be unique")
+            rack_positions[code] = frozenset(allowed_rack_kinds)
         return rack_positions
 
     @classmethod
@@ -171,7 +192,7 @@ class WorklinePluginIndexBuilder:
         schema: WorklinePluginSchema,
         *,
         device_roles: set[str],
-        rack_positions: set[str],
+        rack_positions: dict[str, frozenset[str]],
     ) -> None:
         def validate_node(node: object) -> None:
             kind = cls._require_identity(getattr(node, "kind", None), field_name="topology node kind")
@@ -185,13 +206,36 @@ class WorklinePluginIndexBuilder:
             validate_node(edge.to_node)
             cls._require_identity(edge.type, field_name="topology edge type")
 
+        event_names: set[str] = set()
         for event in schema.events:
-            cls._require_identity(event.event, field_name="event")
+            event_name = cls._require_identity(event.event, field_name="event")
+            if event_name in event_names:
+                raise ValueError(f"duplicate event binding: {event_name}")
+            event_names.add(event_name)
+            category = cls._require_identity(event.category, field_name="event category")
+            if category not in _ALLOWED_EVENT_CATEGORIES:
+                raise ValueError(f"event category must be one of: {', '.join(sorted(_ALLOWED_EVENT_CATEGORIES))}")
+            try:
+                assert_not_reserved_runtime_event(
+                    event_name,
+                    owner="Workline Plugin Definition",
+                    declaration_surface="schema.events",
+                )
+            except ValueError as exc:
+                raise ValueError(f"reserved runtime event cannot be declared by plugin: {event_name}") from exc
+            if not event.source_device_roles:
+                raise ValueError(f"event source_device_roles must not be empty: {event_name}")
+            if len(set(event.source_device_roles)) != len(event.source_device_roles):
+                raise ValueError(f"event source_device_roles must be unique: {event_name}")
             for role in event.source_device_roles:
                 if role not in device_roles:
                     raise ValueError(f"unknown event device role: {role}")
+        command_names: set[str] = set()
         for command in schema.commands:
-            cls._require_identity(command.command, field_name="command")
+            command_name = cls._require_identity(command.command, field_name="command")
+            if command_name in command_names:
+                raise ValueError(f"duplicate command binding: {command_name}")
+            command_names.add(command_name)
             if command.target_device_role not in device_roles:
                 raise ValueError(f"unknown command device role: {command.target_device_role}")
 
@@ -208,9 +252,87 @@ class WorklinePluginIndexBuilder:
                 cls._require_identity(getattr(boundary, field_name), field_name=f"resource boundary {field_name}")
             if boundary.rack_position_code not in rack_positions:
                 raise ValueError(f"unknown resource boundary rack position: {boundary.rack_position_code}")
+            if boundary.rack_kind not in rack_positions[boundary.rack_position_code]:
+                raise ValueError(
+                    "resource boundary rack_kind is not allowed by rack position: "
+                    f"{boundary.rack_position_code}:{boundary.rack_kind}"
+                )
             if boundary in boundaries:
                 raise ValueError("duplicate resource boundary")
             boundaries.add(boundary)
+
+    @classmethod
+    def _validate_session_and_state_machines(cls, schema: WorklinePluginSchema) -> None:
+        session_subject = schema.session_subject
+        if session_subject is None:
+            if schema.state_machines:
+                raise ValueError("state machines require a session subject")
+            return
+        session_type = cls._require_identity(session_subject.type, field_name="session subject type")
+        session_form = cls._require_identity(session_subject.physical_form, field_name="session subject physical_form")
+        identity_sources = tuple(
+            cls._require_identity(source, field_name="session subject identity source")
+            for source in session_subject.identity_sources
+        )
+        if not identity_sources:
+            raise ValueError("session subject identity_sources must not be empty")
+        if len(set(identity_sources)) != len(identity_sources):
+            raise ValueError("session subject identity_sources must be unique")
+
+        machine_ids: set[str] = set()
+        for machine in schema.state_machines:
+            machine_id = cls._require_identity(machine.id, field_name="state machine id")
+            if machine_id in machine_ids:
+                raise ValueError(f"duplicate state machine id: {machine_id}")
+            machine_ids.add(machine_id)
+            subject = machine.subject
+            cls._require_identity(subject.category, field_name="state machine subject category")
+            subject_type = cls._require_identity(subject.type, field_name="state machine subject type")
+            subject_form = cls._require_identity(
+                subject.physical_form, field_name="state machine subject physical_form"
+            )
+            if (subject_type, subject_form) != (session_type, session_form):
+                raise ValueError(f"state machine subject must match session subject: {machine_id}")
+            cls._require_identity(machine.state_owner.model, field_name="state machine owner model")
+            cls._require_identity(machine.state_owner.field, field_name="state machine owner field")
+            cls._require_identity(machine.granularity, field_name="state machine granularity")
+            transitions = tuple(machine.transitions)
+            if not transitions:
+                raise ValueError(f"state machine transitions must declare an initial state: {machine_id}")
+            declared_states = tuple(
+                cls._require_identity(transition.from_state, field_name="state machine from_state")
+                for transition in transitions
+            )
+            if len(set(declared_states)) != len(declared_states):
+                raise ValueError(f"state machine states must be unique: {machine_id}")
+            declared_state_set = set(declared_states)
+            for transition in transitions:
+                to_states = tuple(
+                    cls._require_identity(state, field_name="state machine to_state") for state in transition.to_states
+                )
+                if len(set(to_states)) != len(to_states):
+                    raise ValueError(f"state machine transition targets must be unique: {machine_id}")
+                unknown_states = sorted(set(to_states) - declared_state_set)
+                if unknown_states:
+                    raise ValueError(f"unknown state reference in {machine_id}: {', '.join(unknown_states)}")
+
+    @classmethod
+    def _validate_pipeline_queues(cls, schema: WorklinePluginSchema) -> None:
+        queue_codes: set[str] = set()
+        for queue in schema.pipeline_queues:
+            code = cls._require_identity(queue.code, field_name="pipeline queue code")
+            if code in queue_codes:
+                raise ValueError(f"duplicate pipeline queue code: {code}")
+            queue_codes.add(code)
+            role = cls._require_identity(queue.role, field_name="pipeline queue role")
+            if role not in _ALLOWED_PIPELINE_QUEUE_ROLES:
+                raise ValueError(f"unsupported pipeline queue role: {role}")
+            capacity = queue.capacity
+            if isinstance(capacity, bool) or not ((isinstance(capacity, int) and capacity > 0) or capacity == "MANY"):
+                raise ValueError("pipeline queue capacity must be a positive integer or MANY")
+            policy = cls._require_identity(queue.order_policy, field_name="pipeline queue order_policy")
+            if policy not in _ALLOWED_PIPELINE_ORDER_POLICIES:
+                raise ValueError(f"unsupported pipeline queue order_policy: {policy}")
 
     @staticmethod
     def _validate_ng_reason_contract(definition: WorklinePluginDefinition) -> None:

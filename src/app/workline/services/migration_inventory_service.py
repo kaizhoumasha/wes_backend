@@ -163,8 +163,10 @@ class WorklineMigrationInventoryService:
             raise WorklineMigrationInventoryInvariantError(f"最终报告不满足迁移清单合同: {exc}") from exc
 
     @staticmethod
-    def _build_capability_catalog(definitions: Iterable[Any]) -> dict[str, _NormalizedCapabilityDefinition]:
-        catalog: dict[str, _NormalizedCapabilityDefinition] = {}
+    def _build_capability_catalog(
+        definitions: Iterable[Any],
+    ) -> dict[tuple[str, str], _NormalizedCapabilityDefinition]:
+        catalog: dict[tuple[str, str], _NormalizedCapabilityDefinition] = {}
         for definition in definitions:
             source_key = getattr(definition, "plugin_key", _MISSING)
             if source_key is _MISSING:
@@ -174,9 +176,12 @@ class WorklineMigrationInventoryService:
             contract_version = WorklineMigrationInventoryService._normalize_catalog_string(
                 getattr(definition, "contract_version", _MISSING), "contract_version"
             )
-            if capability_key in catalog:
-                raise WorklineMigrationInventoryInvariantError(f"capability catalog 重复 key: {capability_key}")
-            catalog[capability_key] = _NormalizedCapabilityDefinition(
+            identity = (capability_key, contract_version)
+            if identity in catalog:
+                raise WorklineMigrationInventoryInvariantError(
+                    f"capability catalog 重复 identity: {capability_key}@{contract_version}"
+                )
+            catalog[identity] = _NormalizedCapabilityDefinition(
                 capability_key=capability_key,
                 contract_version=contract_version,
             )
@@ -223,7 +228,7 @@ class WorklineMigrationInventoryService:
     def _build_item(
         source: Any,
         raw_summary: Any,
-        capability_catalog: Mapping[str, _NormalizedCapabilityDefinition],
+        capability_catalog: Mapping[tuple[str, str], _NormalizedCapabilityDefinition],
         raw_extension_references: Iterable[Mapping[str, Any]] = (),
     ) -> WorklineMigrationInventoryItem:
         workline_id = WorklineMigrationInventoryService._strict_source_int(source, "id")
@@ -291,7 +296,22 @@ class WorklineMigrationInventoryService:
             ) from exc
 
         runtime_references = WorklineMigrationInventoryService._normalize_summary(raw_summary, workline_id)
-        catalog_definition = capability_catalog.get(plugin_key) if isinstance(plugin_key, str) else None
+        definitions_for_plugin = (
+            tuple(
+                definition
+                for (catalog_plugin_key, _catalog_version), definition in capability_catalog.items()
+                if catalog_plugin_key == plugin_key
+            )
+            if isinstance(plugin_key, str)
+            else ()
+        )
+        catalog_definition = (
+            capability_catalog.get((plugin_key, configured_version))
+            if isinstance(plugin_key, str) and isinstance(configured_version, str)
+            else definitions_for_plugin[0]
+            if configured_version is None and len(definitions_for_plugin) == 1
+            else None
+        )
         catalog_version = None if catalog_definition is None else catalog_definition.contract_version
         issues = WorklineMigrationInventoryService._classify_issues(
             workline_id=workline_id,
@@ -299,7 +319,12 @@ class WorklineMigrationInventoryService:
             is_active=is_active,
             plugin_key=plugin_key,
             configured_version=configured_version,
-            catalog_version=catalog_version,
+            plugin_known=bool(definitions_for_plugin),
+            catalog_identity_matched=(
+                isinstance(plugin_key, str)
+                and isinstance(configured_version, str)
+                and (plugin_key, configured_version) in capability_catalog
+            ),
             reference_total=runtime_references.total,
         )
         try:
@@ -439,7 +464,8 @@ class WorklineMigrationInventoryService:
         is_active: Any,
         plugin_key: Any,
         configured_version: Any,
-        catalog_version: str | None,
+        plugin_known: bool,
+        catalog_identity_matched: bool,
         reference_total: int,
     ) -> tuple[WorklineMigrationInventoryIssue, ...]:
         issue_specs: list[tuple[WorklineMigrationInventoryIssueCode, WorklineMigrationInventorySeverity, str]] = []
@@ -459,7 +485,7 @@ class WorklineMigrationInventoryService:
                     "启用作业线未配置合同版本",
                 )
             )
-        if plugin_key is not None and catalog_version is None:
+        if plugin_key is not None and not plugin_known:
             issue_specs.append(
                 (
                     WorklineMigrationInventoryIssueCode.UNKNOWN_PLUGIN,
@@ -469,7 +495,7 @@ class WorklineMigrationInventoryService:
                     "配置插件未进入 generated Plugin index，禁止激活",
                 )
             )
-        if plugin_key is not None and catalog_version is not None and configured_version != catalog_version:
+        if plugin_key is not None and plugin_known and not catalog_identity_matched:
             issue_specs.append(
                 (
                     WorklineMigrationInventoryIssueCode.CONTRACT_VERSION_MISMATCH,

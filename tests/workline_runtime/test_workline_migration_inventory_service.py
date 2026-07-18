@@ -375,6 +375,42 @@ async def test_capability_catalog_fields_are_normalized_before_lookup() -> None:
 
 
 @pytest.mark.asyncio
+async def test_capability_catalog_resolves_coexisting_versions_by_exact_identity() -> None:
+    worklines = [
+        _workline(1, "LINE-V2", active=True, plugin="known", version="v2"),
+        _workline(2, "LINE-V3", active=True, plugin="known", version="v3"),
+    ]
+
+    report = await _service(
+        FakeRepository(worklines),
+        definitions=[_definition("known", "v3"), _definition("known", "v2")],
+    ).build_report(object(), environment="production")
+
+    assert [
+        (item.plugin_key, item.configured_contract_version, item.catalog_contract_version) for item in report.worklines
+    ] == [
+        ("known", "v2", "v2"),
+        ("known", "v3", "v3"),
+    ]
+    assert report.issues == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", ["unknown", None])
+async def test_capability_catalog_known_key_without_exact_version_fails_closed(version: str | None) -> None:
+    source = _workline(1, "LINE", plugin="known", version=version)
+
+    report = await _service(
+        FakeRepository([source]),
+        definitions=[_definition("known", "v2"), _definition("known", "v3")],
+    ).build_report(object(), environment="production")
+
+    item = report.worklines[0]
+    assert item.catalog_contract_version is None
+    assert [issue.code.value for issue in item.issues] == ["CONTRACT_VERSION_MISMATCH"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "definition",
     [

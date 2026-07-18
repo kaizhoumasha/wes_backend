@@ -28,11 +28,18 @@ from src.app.runtime.workline_plugins.index_builder import (
 )
 from src.app.runtime.workline_plugins.schema import (
     DeviceRequirement,
+    EventBinding,
     FlowEdge,
     NodeRef,
+    PipelineQueue,
     RackPosition,
     RackPositionCarrierCapability,
     ResourceBoundary,
+    SessionSubject,
+    StateMachine,
+    StateMachineOwner,
+    StateMachineSubject,
+    StateMachineTransition,
     TopologySpec,
     WorklinePluginSchema,
 )
@@ -396,6 +403,97 @@ def test_plugin_builder_rejects_duplicate_resource_boundary() -> None:
     )
 
     with pytest.raises(ValueError, match="duplicate resource boundary"):
+        WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}).build(
+            (plugin_source(plugin_definition(schema=schema)),)
+        )
+
+
+@pytest.mark.parametrize(
+    ("schema", "message"),
+    [
+        (
+            WorklinePluginSchema(
+                devices=(DeviceRequirement("ARM"),),
+                events=(EventBinding("SCAN_COMPLETED", ("ARM",), "ENTRY_DEVIC"),),
+            ),
+            "event category",
+        ),
+        (
+            WorklinePluginSchema(
+                devices=(DeviceRequirement("ARM"),),
+                events=(EventBinding("ESTOP_PRESSED", ("ARM",), "SAFETY"),),
+            ),
+            "reserved runtime event",
+        ),
+        (WorklinePluginSchema(pipeline_queues=(PipelineQueue("", "BUFFER", 1, "FIFO"),)), "pipeline queue code"),
+        (
+            WorklinePluginSchema(pipeline_queues=(PipelineQueue("BUFFER", "BUFFER", -1, "FIFO"),)),
+            "pipeline queue capacity",
+        ),
+        (
+            WorklinePluginSchema(session_subject=SessionSubject("MATERIAL", "REEL", ("PkgID", "PkgID"))),
+            "session subject identity_sources must be unique",
+        ),
+        (
+            WorklinePluginSchema(session_subject=SessionSubject("MATERIAL", "REEL", ())),
+            "session subject identity_sources must not be empty",
+        ),
+        (
+            WorklinePluginSchema(
+                session_subject=SessionSubject("MATERIAL", "REEL", ("PkgID",)),
+                state_machines=(
+                    StateMachine(
+                        "material",
+                        StateMachineSubject("MATERIAL", "MATERIAL", "REEL"),
+                        StateMachineOwner("MaterialUnit", "status"),
+                        "MATERIAL_LIFECYCLE",
+                        (),
+                    ),
+                ),
+            ),
+            "state machine transitions must declare an initial state",
+        ),
+        (
+            WorklinePluginSchema(
+                session_subject=SessionSubject("MATERIAL", "REEL", ("PkgID",)),
+                state_machines=(
+                    StateMachine(
+                        "material",
+                        StateMachineSubject("MATERIAL", "MATERIAL", "REEL"),
+                        StateMachineOwner("MaterialUnit", "status"),
+                        "MATERIAL_LIFECYCLE",
+                        (StateMachineTransition("IN_TRANSIT", ("STORED",)),),
+                    ),
+                ),
+            ),
+            "unknown state reference",
+        ),
+        (
+            WorklinePluginSchema(
+                session_subject=SessionSubject("MATERIAL", "REEL", ("PkgID",)),
+                state_machines=(
+                    StateMachine(
+                        "material",
+                        StateMachineSubject("MATERIAL", "OTHER", "REEL"),
+                        StateMachineOwner("MaterialUnit", "status"),
+                        "MATERIAL_LIFECYCLE",
+                        (StateMachineTransition("IN_TRANSIT", ()),),
+                    ),
+                ),
+            ),
+            "state machine subject must match session subject",
+        ),
+        (
+            WorklinePluginSchema(
+                rack_positions=(RackPosition("A", "WORK", "S1", RackPositionCarrierCapability(("SINGLE_LAYER",))),),
+                resource_boundaries=(ResourceBoundary("A", "FIVE_LAYER", "SUBJECT", "OP", "PROJECTION", "STATION"),),
+            ),
+            "rack_kind is not allowed",
+        ),
+    ],
+)
+def test_plugin_builder_rejects_invalid_nested_schema_contract(schema: WorklinePluginSchema, message: str) -> None:
+    with pytest.raises(ValueError, match=message):
         WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}).build(
             (plugin_source(plugin_definition(schema=schema)),)
         )
