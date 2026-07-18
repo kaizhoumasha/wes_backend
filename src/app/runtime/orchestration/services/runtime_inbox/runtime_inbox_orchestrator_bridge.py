@@ -149,7 +149,7 @@ class GeneratedPluginAttemptRunner:
             return _plugin_hold_write_set(context, "PLUGIN_EFFECT_CONVERSION_INVALID")
         return AttemptWriteSet(
             evidence=tuple(gateway.evidence),
-            next_state=result.next_state,
+            next_state=_bind_command_correlation(result.next_state, intents),
             intents=intents,
             outcome_code=result.outcome_code,
         )
@@ -210,12 +210,14 @@ def _system_capability_intents(
             fact_version = context.snapshot.material_unit_version
         elif intent.kind is RuntimeIntentKind.COMMAND:
             capability_key = "device.device_command_write"
+            command_code = f"SC-{sha256_digest({'binding': context.snapshot.binding_identity, 'operation': f'inbox:{context.inbox_id}:{index}:command'})[:32]}"
             payload = {
                 "device_role": intent.device_role,
                 "target_device_id": intent.target_device_id,
                 "action": intent.action,
                 "payload": deepcopy(intent.payload_json),
                 "timeout_ms": (intent.timeout_seconds or 30) * 1000,
+                "command_code": command_code,
             }
             precondition = {"expected_available": True}
             fact_version = "device:v1"
@@ -260,6 +262,26 @@ def _system_capability_intents(
             )
         )
     return tuple(converted)
+
+
+def _bind_command_correlation(next_state: Any, intents: tuple[RuntimeIntent, ...]) -> Any:
+    """把本 attempt 的稳定 command code 写入声明该字段的 PluginState。"""
+
+    command_codes = [
+        intent.payload_json.get("command_code")
+        for intent in intents
+        if intent.kind is RuntimeIntentKind.SYSTEM_CAPABILITY
+        and intent.capability_key == "device.device_command_write"
+        and isinstance(intent.payload_json.get("command_code"), str)
+    ]
+    if len(command_codes) != 1 or getattr(next_state, "current_correlation", None) is not None:
+        return next_state
+    model_copy = getattr(next_state, "model_copy", None)
+    if callable(model_copy):
+        return model_copy(update={"current_correlation": command_codes[0]})
+    if isinstance(next_state, dict) and "current_correlation" in next_state:
+        return {**next_state, "current_correlation": command_codes[0]}
+    return next_state
 
 
 def _plugin_hold_write_set(context: PluginAttemptContext, reason: str) -> AttemptWriteSet:
@@ -1108,6 +1130,9 @@ class RuntimeInboxProcessorBridge:
         inbox_id = resolve_required_pk(inbox, "inbox", "id", "inbox_id")
         session_id = resolve_required_pk(session, "session", "id", "session_id")
         workline_id = resolve_required_pk(workline, "workline", "id", "workline_id")
+        # SessionResolver 可能已应用本次 ingress metadata；先 flush 让乐观版本成为
+        # Stage 1 权威事实，再固定 snapshot，避免随后的 commit 令本 attempt 自我过期。
+        await db.flush()
         material_fact_version = None
         material_unit_id = optional_int(getattr(session, "current_material_unit_id", None))
         if material_unit_id is not None:
@@ -1253,9 +1278,27 @@ async def _build_plugin_dispatch_request(
     data = payload_dict(raw_input.get("data"))
     session_context = payload_dict(getattr(session, "context_json", None))
     six_in_one = payload_dict(session_context.get("six_in_one"))
-    business_key = _first_plugin_fact(data, six_in_one, session_context, names=("PkgID", "pkg_code", "business_key"))
-    hhpn = _first_plugin_fact(data, six_in_one, session_context, names=("HHPN", "hhpn"))
-    lot_code = _first_plugin_fact(data, six_in_one, session_context, names=("LotCode", "lot_code"))
+    material_fact: dict[str, Any] = {}
+    material_unit_id = optional_int(getattr(session, "current_material_unit_id", None))
+    if material_unit_id is not None:
+        material_fact = await default_material_unit_repository.get_plugin_fact_payload(db, material_unit_id) or {}
+    material_six_in_one = payload_dict(material_fact.get("six_in_one"))
+    business_key = _first_plugin_fact(
+        data,
+        six_in_one,
+        session_context,
+        material_six_in_one,
+        material_fact,
+        names=("PkgID", "pkg_code", "business_key", "material_identity_key"),
+    )
+    hhpn = _first_plugin_fact(data, six_in_one, session_context, material_six_in_one, names=("HHPN", "hhpn"))
+    lot_code = _first_plugin_fact(
+        data,
+        six_in_one,
+        session_context,
+        material_six_in_one,
+        names=("LotCode", "lot_code"),
+    )
     command_code = optional_str(raw_input.get("command_code"))
     awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
     facts = RoughSorterFacts(

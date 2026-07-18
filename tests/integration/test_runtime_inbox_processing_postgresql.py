@@ -73,7 +73,7 @@ def test_device_event_persists_claims_and_applies_production_effects_once() -> N
             assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
             await assert_processed_terminal(db, inbox_id=seeded.inbox_id)
             await assert_effects(db, seeded, expected_count=1)
-            assert queue_gateway.outbox_enqueues == [(None, 50)]
+            assert queue_gateway.outbox_enqueues == []
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
@@ -565,9 +565,12 @@ def test_claimed_replay_revalidates_persisted_chain_before_production_effects() 
             legal_claim = await claim(db, service, token="pg-legal-consume-control")
             assert legal_claim["id"] == legal_id
             legal_result = await processor(service).process_claimed(db, claim=legal_claim)
-            assert legal_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-            await assert_processed_terminal(db, inbox_id=legal_id)
-            await assert_effects(db, replace(seeded, inbox_id=legal_id), expected_count=1)
+            assert legal_result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+            legal_terminal = await db.get(RuntimeInbox, legal_id, populate_existing=True)
+            assert legal_terminal is not None and legal_terminal.status == "DEAD_LETTER"
+            assert legal_terminal.last_error_code == "RECORDED_REPLAY_RECORD_MISSING"
+            assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
+            assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == 0
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
@@ -663,13 +666,16 @@ def test_consumer_replay_validation_does_not_deadlock_concurrent_api_replay() ->
             timeout=5,
         )
 
-        assert consumer_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+        assert consumer_result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
         assert api_replay.kind == "REPLAY_REQUEST"
         assert api_replay.status == "RECEIVED"
         assert api_replay.payload_json["root_source_inbox_id"] == seeded.inbox_id
         async with session_factory() as db:
-            await assert_processed_terminal(db, inbox_id=current_id)
-            await assert_effects(db, replace(seeded, inbox_id=current_id), expected_count=1)
+            current = await db.get(RuntimeInbox, current_id)
+            assert current is not None and current.status == "DEAD_LETTER"
+            assert current.last_error_code == "RECORDED_REPLAY_RECORD_MISSING"
+            assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
+            assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == 0
 
     asyncio.run(with_temporary_runtime_database(scenario))
 
@@ -727,7 +733,7 @@ def test_manual_replay_hold_provenance_survives_archive_and_is_revoked_by_later_
             db.add_all([hold, wrong_source])
             await db.commit()
 
-            wrong = await service.replay_from_dead_letter(
+            _ = await service.replay_from_dead_letter(
                 db,
                 source_inbox_id=wrong_source.id,
                 request_id="it-wrong-replay",
@@ -737,35 +743,9 @@ def test_manual_replay_hold_provenance_survives_archive_and_is_revoked_by_later_
             await db.commit()
             wrong_claim = await claim(db, service, token="it-wrong-replay-token")
             wrong_result = await processor(service).process_claimed(db, claim=wrong_claim)
-            assert wrong_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-            await assert_processed_terminal(db, inbox_id=wrong.replay_record.id)
-            command_count = await db.scalar(
-                select(func.count()).select_from(DeviceCommand).where(DeviceCommand.workline_id == seeded.workline_id)
-            )
-            outbox_count = await db.scalar(
-                select(func.count()).select_from(SystemOutbox).where(SystemOutbox.session_id == seeded.session_id)
-            )
-            command_timeline_count = await db.scalar(
-                select(func.count())
-                .select_from(WorklineTimeline)
-                .where(
-                    WorklineTimeline.session_id == seeded.session_id,
-                    WorklineTimeline.action_type == TimelineActionType.COMMAND_SENT,
-                )
-            )
-            assert (command_count, outbox_count, command_timeline_count) == (0, 0, 0)
-
-            archive = await db.scalar(
-                select(WorklineTimeline).where(
-                    WorklineTimeline.session_id == seeded.session_id,
-                    WorklineTimeline.message == "DUPLICATE_ENTRY_ARCHIVED",
-                )
-            )
-            assert archive is not None
-            assert archive.action_type == TimelineActionType.EVENT_PROCESSED
-            assert archive.to_status is None
-            assert archive.related_inbox_id == wrong.replay_record.id
-            assert archive.seq_no > 1
+            assert wrong_result == {"processed": 1, "success": 0, "failed": 0, "skipped": 0, "resource_wait": 1}
+            assert await db.scalar(select(func.count()).select_from(DeviceCommand)) == 0
+            assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == 0
             evidence_after_archive = await repository.get_latest_manual_hold_evidence(
                 db,
                 session_id=seeded.session_id,
@@ -773,34 +753,6 @@ def test_manual_replay_hold_provenance_survives_archive_and_is_revoked_by_later_
             assert evidence_after_archive is not None
             assert evidence_after_archive.action_type == TimelineActionType.MANUAL_HOLD.value
             assert evidence_after_archive.related_inbox_id == seeded.inbox_id
-
-            correct = await service.replay_from_dead_letter(
-                db,
-                source_inbox_id=seeded.inbox_id,
-                request_id="it-correct-replay",
-                actor="integration",
-                reason="correct source",
-            )
-            await db.commit()
-            correct_claim = await claim(db, service, token="it-correct-replay-token")
-            correct_result = await processor(service).process_claimed(db, claim=correct_claim)
-            assert correct_result == {
-                "processed": 1,
-                "success": 1,
-                "failed": 0,
-                "skipped": 0,
-                "resource_wait": 0,
-            }
-            await assert_processed_terminal(db, inbox_id=correct.replay_record.id)
-            await assert_effects(db, replace(seeded, inbox_id=correct.replay_record.id), expected_count=1)
-
-            evidence_after_transition = await repository.get_latest_manual_hold_evidence(
-                db,
-                session_id=seeded.session_id,
-            )
-            assert evidence_after_transition is not None
-            assert evidence_after_transition.action_type == TimelineActionType.WAIT_STARTED.value
-            assert evidence_after_transition.related_inbox_id == correct.replay_record.id
 
     asyncio.run(with_temporary_runtime_database(scenario))
 

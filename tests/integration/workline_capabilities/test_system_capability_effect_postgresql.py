@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from importlib import import_module
 from typing import TYPE_CHECKING
 
+import pytest
 from sqlalchemy import event, func
 from sqlmodel import select
 
@@ -12,16 +14,23 @@ from src.app.runtime.orchestration.execution_correlation import ExecutionCorrela
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
+from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.intent.system_capability_effect_service import (
     SystemCapabilityEffectService,
 )
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import RuntimeInboxService
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+    RuntimeInboxWriteBackService,
+)
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, Success
+from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, AttemptWriteSet
+from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
 from src.app.workline.models.plugin_binding import WorklinePluginBinding
 from src.app.workline.models.workline import WorkLine
-from tests.support.runtime_inbox_processing_postgresql import seed_scan_flow, with_temporary_runtime_database
+from tests.support.runtime_inbox_processing_postgresql import claim, seed_scan_flow, with_temporary_runtime_database
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -127,8 +136,98 @@ def test_local_effect_and_ledger_commit_atomically_without_handler_transaction_o
     asyncio.run(with_temporary_runtime_database(scenario))
 
 
-def test_service_failure_is_rollback_safe_and_stale_precondition_is_business_reject() -> None:
-    """异常路径由外层回滚；stale fact 以业务拒绝证据收敛而非伪成功。"""
+def _snapshot(claimed: dict[str, object], session: WorklineSession) -> AttemptSnapshot:
+    return AttemptSnapshot(
+        processor_token=str(claimed["processor_token"]),
+        session_version=session.version,
+        plugin_state_version=session.plugin_state_version,
+        session_status=session.status.value,
+        definition_identity=DEFINITION.identity,
+        binding_id=session.plugin_binding_id,
+        binding_version=session.plugin_binding_version,
+        plugin_config_hash=session.plugin_config_hash,
+        index_digest=session.plugin_index_digest,
+    )
+
+
+def test_domain_write_then_exception_rolls_back_entire_plugin_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """真实 write-back 在领域写入后异常时，领域、ledger、state、timeline 必须整体回滚。"""
+
+    async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
+        service = RuntimeInboxService()
+        async with session_factory() as db:
+            seeded = await seed_scan_flow(db)
+            claimed = await claim(db, service, token="effect-exception-owner")
+            session = await db.get(WorklineSession, seeded.session_id)
+            assert session is not None
+            snapshot = _snapshot(claimed, session)
+            ctx = await _effect_context(db)
+            intent = _hold_intent(ctx, operation="exception-after-domain-write")
+
+            transaction_events: list[str] = []
+            event.listen(db.sync_session, "after_commit", lambda _session: transaction_events.append("commit"))
+            event.listen(db.sync_session, "after_rollback", lambda _session: transaction_events.append("rollback"))
+
+            mutation_module = import_module("src.app.runtime.orchestration.services.session_hold_mutation_service")
+            real_mutation_service = mutation_module.session_hold_mutation_service
+            domain_writes: list[str] = []
+
+            class FailingAfterDomainWrite:
+                async def hold(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                    await real_mutation_service.hold(*args, **kwargs)
+                    domain_writes.append("written")
+                    assert transaction_events == []
+                    raise RuntimeError("injected after domain write")
+
+            monkeypatch.setattr(mutation_module, "session_hold_mutation_service", FailingAfterDomainWrite())
+
+            try:
+                disposition = await RuntimeInboxWriteBackService(inbox_service=service).commit_plugin_attempt(
+                    db,
+                    expected_snapshot=snapshot,
+                    inbox_id=seeded.inbox_id,
+                    session_id=seeded.session_id,
+                    workline_id=seeded.workline_id,
+                    trace_id=seeded.trace_id,
+                    write_set=AttemptWriteSet(
+                        evidence=(),
+                        next_state={"phase": "READY"},
+                        intents=(intent,),
+                        outcome_code="HOLD",
+                    ),
+                    workline=ctx["workline"],
+                )
+            except RuntimeError as exc:
+                assert "system capability retryable failure" in str(exc)
+            else:
+                pytest.fail(
+                    f"effect pipeline did not raise: disposition={disposition}, domain_writes={domain_writes}, "
+                    f"session_version={session.version}, snapshot_version={snapshot.session_version}"
+                )
+            assert domain_writes == ["written"]
+            assert transaction_events == ["rollback"]
+
+        async with session_factory() as verify_db:
+            session = await verify_db.get(WorklineSession, seeded.session_id)
+            inbox = await verify_db.get(RuntimeInbox, seeded.inbox_id)
+            assert session is not None and session.status == SessionStatus.RUNNING
+            assert session.plugin_state_version == 0 and session.plugin_state_json == {}
+            assert inbox is not None and inbox.status == "PROCESSING"
+            assert await verify_db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 0
+            assert (
+                await verify_db.scalar(
+                    select(func.count())
+                    .select_from(WorklineTimeline)
+                    .where(WorklineTimeline.related_inbox_id == seeded.inbox_id)
+                )
+                == 0
+            )
+
+    asyncio.run(with_temporary_runtime_database(scenario))
+
+
+def test_stale_precondition_is_business_reject_without_partial_write() -> None:
+    """stale fact 以业务拒绝证据收敛而非伪成功。"""
 
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
         async with session_factory() as db:

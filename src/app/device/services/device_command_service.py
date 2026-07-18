@@ -254,6 +254,18 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             trace_id=trace_id,
         )
         await self.repo.add_runtime_effect(db, command, outbox)
+        # OUTBOX_ASYNC durable acceptance 同时固定 callback 的业务等待锚点；
+        # queued/dispatched 仍不是完成，只有匹配 command_code 的结果 Inbox 才能推进插件状态。
+        from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
+
+        timeout_seconds = max(1, (int(request.timeout_ms) + 999) // 1000)
+        workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="COMMAND_RESULT",
+            occurred_at=timezone.now_for_db(),
+            awaiting_device_command_code=command_code,
+            deadline_seconds=timeout_seconds,
+        )
         return command, outbox
 
     async def send_command(

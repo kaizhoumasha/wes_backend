@@ -43,6 +43,7 @@ from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import (
     runtime_hold_repository as default_runtime_hold_repository,
 )
+from src.app.runtime.orchestration.repositories.runtime_inbox_repository import runtime_inbox_repository
 from src.app.runtime.orchestration.repositories.session_repository import WorklineSessionRepository
 from src.app.runtime.orchestration.repository_wiring import workline_repository as default_workline_repository
 from src.app.runtime.orchestration.services.hold.runtime_hold_creation_service import (
@@ -891,7 +892,12 @@ class WorklineRuntimeReconciliationService:
         session_id = _resolve_id(session)
         if session_id is None:
             return None
-        correlation_id = self._runtime_reconciliation_correlation_id(inbox=inbox, outbox=outbox, command=command)
+        correlation_id = await self._runtime_reconciliation_correlation_id(
+            db,
+            inbox=inbox,
+            outbox=outbox,
+            command=command,
+        )
         audit_correlation_id = correlation_id or self._runtime_reconciliation_fallback_correlation_id(command=command)
 
         owner_id = str(session_id)
@@ -967,21 +973,36 @@ class WorklineRuntimeReconciliationService:
         session.context_json = context
         return audit_payload
 
-    def _runtime_reconciliation_correlation_id(
+    async def _runtime_reconciliation_correlation_id(
         self,
+        db: Any,
         *,
         inbox: RuntimeInboxProjection | None = None,
         outbox: SystemOutbox | None = None,
         command: DeviceCommand | None = None,
     ) -> str | None:
-        for source in (command, outbox, inbox):
+        # RuntimeInbox.correlation_id 已通过入站解析绑定到 ExecutionCorrelation，
+        # command/outbox 的 system-capability correlation 是下游业务幂等标识，
+        # 必须按 trace 反查唯一 runtime correlation 后才能用作 FK。
+        for source in (inbox, command, outbox):
             value = _payload_str({"correlation_id": getattr(source, "correlation_id", None)}, "correlation_id")
             if value is not None:
-                return value
+                if source is inbox or not value.startswith("system-capability:"):
+                    return value
+                trace_id = _payload_str({"trace_id": getattr(source, "trace_id", None)}, "trace_id")
+                if trace_id is not None:
+                    return await runtime_inbox_repository.resolve_unique_correlation_id_by_trace(db, trace_id=trace_id)
+                continue
             payload = as_dict(getattr(source, "payload_json", None))
             value = _payload_str(payload, "correlation_id") or _payload_str(payload, "execution_correlation_id")
             if value is not None:
-                return value
+                if source is inbox or not value.startswith("system-capability:"):
+                    return value
+                trace_id = _payload_str(payload, "trace_id") or _payload_str(
+                    {"trace_id": getattr(source, "trace_id", None)}, "trace_id"
+                )
+                if trace_id is not None:
+                    return await runtime_inbox_repository.resolve_unique_correlation_id_by_trace(db, trace_id=trace_id)
         return None
 
     def _runtime_reconciliation_fallback_correlation_id(

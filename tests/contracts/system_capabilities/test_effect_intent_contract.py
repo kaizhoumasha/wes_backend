@@ -148,7 +148,7 @@ def test_system_capability_intent_log_pins_plugin_capability_and_execution_snaps
             processor_token="lease-1",
             session_version=3,
             plugin_state_version=2,
-            definition_identity="rough_sorter@rough_sorter.v2",
+            definition_identity=f"rough_sorter@rough_sorter.v2:{'f' * 64}",
             binding_id=7,
             binding_version=2,
             index_digest="a" * 64,

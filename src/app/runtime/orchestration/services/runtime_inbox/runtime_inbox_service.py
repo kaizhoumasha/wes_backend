@@ -781,6 +781,16 @@ class RuntimeInboxService:
             return None
         return await self.repository.resolve_unique_correlation_id_by_trace(db, trace_id=trace_id)
 
+    async def _resolve_correlation_context_by_trace(
+        self,
+        db: AsyncSession,
+        *,
+        trace_id: str | None,
+    ) -> tuple[str, int | None] | None:
+        if not isinstance(trace_id, str) or not trace_id:
+            return None
+        return await self.repository.resolve_unique_correlation_context_by_trace(db, trace_id=trace_id)
+
     async def _require_existing_correlation_id(self, db: AsyncSession, *, correlation_id: str) -> str:
         """验证显式 correlation_id 已持久化，避免把 FK 错误推迟到 flush。"""
 
@@ -926,6 +936,9 @@ class RuntimeInboxService:
         provider_code = "DEVICE_RESULT" if device_code else "RUNTIME"
 
         canonical_payload = payload_json or {"command_code": command_code, "device_code": device_code}
+        correlation_context = await self._resolve_correlation_context_by_trace(db, trace_id=trace_id)
+        correlation_id = correlation_context[0] if correlation_context is not None else None
+        execution_session_id = correlation_context[1] if correlation_context is not None else None
         result = await self.accept_received(
             db,
             provider_code=provider_code,
@@ -941,6 +954,8 @@ class RuntimeInboxService:
             workline_id=workline_id,
             device_id=device_id,
             command_id=command_id,
+            execution_session_id=execution_session_id,
+            correlation_id=correlation_id,
         )
         if auto_commit:
             _ = await db.commit()
@@ -985,6 +1000,13 @@ class RuntimeInboxService:
         if existing is not None:
             return RuntimeInboxAcceptResult(record=existing, created=False)
 
+        correlation_id: str | None = None
+        correlation_context = await self._resolve_correlation_context_by_trace(db, trace_id=trace_id)
+        if correlation_context is not None:
+            correlation_id, resolved_execution_session_id = correlation_context
+            if execution_session_id is None:
+                execution_session_id = resolved_execution_session_id
+
         payload_data = {
             "session_id": session_id,
             "workline_id": workline_id,
@@ -1003,6 +1025,7 @@ class RuntimeInboxService:
             "kind": "TIMER_TIMEOUT",
             "workline_session_id": session_id,
             "execution_session_id": execution_session_id,
+            "correlation_id": correlation_id,
             "workline_id": workline_id,
             "device_id": device_id,
             "command_id": command_id,

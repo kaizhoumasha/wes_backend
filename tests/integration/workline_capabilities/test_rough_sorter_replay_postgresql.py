@@ -4,124 +4,106 @@ from __future__ import annotations
 
 import asyncio
 
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlmodel import select
 
+from src.app.device.models.command import DeviceCommand
+from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
-from src.app.runtime.orchestration.services.intent.system_capability_effect_service import SystemCapabilityEffectService
-from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-    RoughSorterBindingSnapshot,
+from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
+from src.app.sys.models import SystemOutbox
+from src.app.sys.services import AuditLogService
+from src.app.wms_integration.adapters.inventory_query_port_adapter import WmsInventoryQueryPortAdapter
+from src.app.wms_integration.ports.inventory_query import WmsInventoryItem
+from tests.integration.workline_capabilities.test_rough_sorter_outbox_result_flow import _process_seeded_scan
+from tests.support.runtime_inbox_processing_postgresql import (
+    claim,
+    processor,
+    seed_scan_flow,
+    with_temporary_runtime_database,
 )
-from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig
-from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts, decide
-from src.app.runtime.workline_plugins.rough_sorter.inputs import BusinessTimeoutInput, ReplayRequestInput
-from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
-from tests.integration.workline_capabilities.test_system_capability_effect_postgresql import (
-    _effect_context,
-    _hold_intent,
-)
-from tests.support.runtime_inbox_processing_postgresql import seed_scan_flow, with_temporary_runtime_database
 
 
-class _ProviderMustNotRun:
-    calls = 0
-
-    async def execute(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
-        type(self).calls += 1
-        raise AssertionError("replay/timeout must not call QUERY provider")
-
-
-def _config() -> RoughSorterConfig:
-    return RoughSorterConfig(
-        device_roles={
-            "input_arm": "ROUGH_SORTER_INPUT_ARM",
-            "conveyor": "ROUGH_SORTER_CONVEYOR",
-            "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
-        },
-        pipeline_input_location="PIPELINE-IN-IT",
-        pipeline_output_location="PIPELINE-OUT-IT",
-        ng_location="NG-IT",
-        warehouse_code="WH-IT",
-        owner_code="OWNER-IT",
-        provider_profile="wms.v1.sandbox",
-    )
-
-
-def _facts(*, digest_matches: bool | None) -> RoughSorterFacts:
-    return RoughSorterFacts(
-        business_key="PKG-IT-001",
-        hhpn="MAT-IT-001",
-        lot_code="LOT-IT-001",
-        replay_digest_matches=digest_matches,
-        binding_snapshot=RoughSorterBindingSnapshot(
-            binding_id=1,
-            binding_version=1,
-            profile_identity="wms.v1.sandbox",
-            plugin_config_hash="a" * 64,
-            generated_index_digest="b" * 64,
-        ),
-    )
-
-
-def test_same_digest_replay_and_timeout_never_call_query_or_create_success_evidence() -> None:
-    """同 digest replay 是纯 no-op；timeout replay 不得伪造 QUERY success evidence。"""
+def test_recorded_replay_of_successful_query_never_calls_provider_or_creates_effect(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """首次 callback 走真实 QUERY；manual recorded replay 复用决策且零 provider/新 effect。"""
 
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
-        _ProviderMustNotRun.calls = 0
-        gateway = _ProviderMustNotRun()
-        replay = await decide(
-            ReplayRequestInput(idempotency_key="replay-1", payload_digest="a" * 64),
-            state=RoughSorterState(phase="PICK_TO_PIPELINE", current_correlation="CMD-1"),
-            config=_config(),
-            facts=_facts(digest_matches=True),
-            gateway=gateway,
-            replay=True,
-        )
-        timeout = await decide(
-            BusinessTimeoutInput(command_code="CMD-1", wait_type="COMMAND_RESULT"),
-            state=RoughSorterState(phase="PICK_TO_PIPELINE", current_correlation="CMD-1"),
-            config=_config(),
-            facts=_facts(digest_matches=None),
-            gateway=gateway,
-        )
-        assert replay.zero_new_effect is True and replay.intents == ()
-        assert timeout.outcome_code == "HOLD" and timeout.intents == ()
-        assert _ProviderMustNotRun.calls == 0
+        provider_calls = 0
+
+        async def query_inventory(_adapter, material_code: str, *, warehouse_code: str | None = None):  # type: ignore[no-untyped-def]
+            nonlocal provider_calls
+            provider_calls += 1
+            return [
+                WmsInventoryItem(
+                    material_code=material_code,
+                    warehouse_code=warehouse_code or "WH-IT",
+                    storage_location_code="A-01",
+                    quantity=10,
+                    batch_no="LOT-IT-001",
+                )
+            ]
+
+        monkeypatch.setattr(WmsInventoryQueryPortAdapter, "query_inventory", query_inventory)
+        service = RuntimeInboxService(audit_service=AuditLogService())
 
         async with session_factory() as db:
-            await seed_scan_flow(db)
-            assert await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 0
-
-    asyncio.run(with_temporary_runtime_database(scenario))
-
-
-def test_different_digest_creates_one_hold_then_replay_creates_zero_new_hold() -> None:
-    """不同 digest 首次只落一个 Hold；相同 operation replay 复用成功 evidence。"""
-
-    async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
-        decision = await decide(
-            ReplayRequestInput(idempotency_key="replay-conflict", payload_digest="c" * 64),
-            state=RoughSorterState(),
-            config=_config(),
-            facts=_facts(digest_matches=False),
-            gateway=_ProviderMustNotRun(),
-        )
-        assert decision.outcome_code == "HOLD" and len(decision.intents) == 1
-
-        service = SystemCapabilityEffectService()
-        async with session_factory() as db:
-            await seed_scan_flow(db)
-            ctx = await _effect_context(db)
-            hold = _hold_intent(ctx, operation="replay-digest-conflict", reason="IDEMPOTENCY_CONFLICT")
-            first = await service.apply(ctx, hold)
-            assert first.idempotent_replay is False
+            seeded = await seed_scan_flow(db)
+            await _process_seeded_scan(db, service, seeded)
+            command = await db.scalar(select(DeviceCommand).where(DeviceCommand.workline_id == seeded.workline_id))
+            assert command is not None
+            accepted = await service.accept_command_result(
+                db,
+                command_code=command.command_code,
+                source_event_id="it-replay-success-callback",
+                device_code="IT-ARM-01",
+                workline_id=seeded.workline_id,
+                device_id=seeded.arm_id,
+                command_id=command.id,
+                trace_id=seeded.trace_id,
+                payload_json={
+                    "logical_route": "PICK_AND_PUT_RESULT",
+                    "command_code": command.command_code,
+                    "command_type": "PICK_AND_PUT",
+                    "result": "SUCCESS",
+                    "data": {"reel_diameter": "100", "reel_thickness": "10"},
+                },
+            )
+            await db.commit()
+            callback_id = int(accepted.record.id)
+            callback_claim = await claim(db, service, token="replay-live-callback-owner")
+            live_result = await processor(service).process_claimed(db, claim=callback_claim)
+            if live_result["resource_wait"]:
+                await db.execute(update(RuntimeInbox).where(RuntimeInbox.id == callback_id).values(next_retry_at=0))
+                await db.commit()
+                callback_claim = await claim(db, service, token="replay-live-callback-retry")
+                live_result = await processor(service).process_claimed(db, claim=callback_claim)
+            assert live_result["success"] == 1 and provider_calls == 1
+            baseline_intents = await db.scalar(select(func.count()).select_from(RuntimeIntentLog))
+            baseline_outbox = await db.scalar(select(func.count()).select_from(SystemOutbox))
+            await db.execute(
+                update(RuntimeInbox)
+                .where(RuntimeInbox.id == callback_id)
+                .values(status="DEAD_LETTER", last_error_code="IT_REPLAY", processor_token=None, lease_until=None)
+            )
             await db.commit()
 
-        async with session_factory() as db:
-            ctx = await _effect_context(db)
-            replayed = await service.apply(ctx, hold)
-            assert replayed.idempotent_replay is True
-            assert await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 1
-            await db.rollback()
+            replay = await service.replay_from_dead_letter(
+                db,
+                source_inbox_id=callback_id,
+                request_id="it-recorded-success-replay",
+                actor="integration",
+                reason="verify recorded decision replay",
+            )
+            replay_id = int(replay.replay_record.id)
+            await db.commit()
+            replay_claim = await claim(db, service, token="recorded-success-replay-owner")
+            replay_result = await processor(service).process_claimed(db, claim=replay_claim)
+            assert replay_result["success"] == 1
+            assert provider_calls == 1
+            assert await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == baseline_intents
+            assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == baseline_outbox
+            db.expire_all()
+            replay_row = await db.get(RuntimeInbox, replay_id)
+            assert replay_row is not None and replay_row.status == "PROCESSED"
 
     asyncio.run(with_temporary_runtime_database(scenario))

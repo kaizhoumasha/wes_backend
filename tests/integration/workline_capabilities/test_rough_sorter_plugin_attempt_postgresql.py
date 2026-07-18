@@ -10,6 +10,7 @@ from sqlmodel import select
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
@@ -19,8 +20,11 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
     AttemptWriteSet,
     WriteDisposition,
 )
+from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
 from tests.support.runtime_inbox_processing_postgresql import (
     claim,
+    processor,
+    seed_duplicate_scan_inbox,
     seed_scan_flow,
     with_temporary_runtime_database,
 )
@@ -32,7 +36,7 @@ def _snapshot(claimed: dict[str, object], session: WorklineSession) -> AttemptSn
         session_version=session.version,
         plugin_state_version=session.plugin_state_version,
         session_status=session.status.value,
-        definition_identity=f"{session.plugin_key}@{session.contract_version}",
+        definition_identity=DEFINITION.identity,
         binding_id=session.plugin_binding_id,
         binding_version=session.plugin_binding_version,
         plugin_config_hash=session.plugin_config_hash,
@@ -88,33 +92,94 @@ def test_query_snapshot_change_discards_decision_without_partial_write() -> None
     asyncio.run(with_temporary_runtime_database(scenario))
 
 
-def test_two_workers_claim_same_business_key_only_once() -> None:
-    """两个 PostgreSQL worker 同时 claim 同一 key，只允许一个 owner 获得 decision 权。"""
+def test_two_workers_process_distinct_inboxes_for_same_business_key_exactly_once() -> None:
+    """两个 worker 并发处理同业务键的不同 Inbox，第二条按 duplicate 合同归档。"""
 
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
         service = RuntimeInboxService()
         async with session_factory() as db:
             seeded = await seed_scan_flow(db)
+            duplicate_inbox_id = await seed_duplicate_scan_inbox(db, seeded)
 
-        ready = asyncio.Event()
+        ready = asyncio.Barrier(2)
 
-        async def worker(token: str) -> list[dict[str, object]]:
+        async def worker(token: str) -> dict[str, int]:
             async with session_factory() as db:
-                ready.set()
                 await ready.wait()
-                rows = await service.claim_for_processing(
+                return await processor(service).claim_and_process_batch(
                     db,
                     limit=1,
-                    processor_token=token,
-                    stale_after_seconds=60,
+                    processor_token_prefix=token,
                 )
-                await db.commit()
-                return rows
 
         first, second = await asyncio.gather(worker("worker-a"), worker("worker-b"))
-        claims = [row for batch in (first, second) for row in batch]
-        assert [row["id"] for row in claims] == [seeded.inbox_id]
-        assert len({row["processor_token"] for row in claims}) == 1
+        assert sum(result["processed"] for result in (first, second)) == 1, (first, second)
+
+        # 第一条若因资源快照重试，推进其 next_retry_at 后仍由真实 processor 收敛。
+        # 恢复与 claim 分离 Session，避免测试代码预加载 ORM 行污染 claim 返回快照。
+        for _ in range(3):
+            async with session_factory() as db:
+                processing = (
+                    (await db.execute(select(RuntimeInbox).where(RuntimeInbox.status == "PROCESSING"))).scalars().all()
+                )
+                if processing:
+                    for row in processing:
+                        row.lease_until = 0
+                    await db.commit()
+                    _ = await service.recover_stale_leases(db, stale_after_seconds=60, limit=2)
+                    await db.commit()
+                pending = (
+                    (await db.execute(select(RuntimeInbox).where(RuntimeInbox.status.in_(("RECEIVED", "FAILED")))))
+                    .scalars()
+                    .all()
+                )
+                if not pending:
+                    break
+                for row in pending:
+                    row.next_retry_at = 0
+                await db.commit()
+            async with session_factory() as db:
+                _ = await processor(service).claim_and_process_batch(
+                    db,
+                    limit=1,
+                    processor_token_prefix="worker-converge",
+                )
+
+        async with session_factory() as db:
+            inboxes = (
+                (
+                    await db.execute(
+                        select(RuntimeInbox).where(RuntimeInbox.id.in_((seeded.inbox_id, duplicate_inbox_id)))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            assert {row.status for row in inboxes} == {"PROCESSED"}, (
+                first,
+                second,
+                [(row.id, row.status) for row in inboxes],
+            )
+            session = await db.get(WorklineSession, seeded.session_id)
+            assert session is not None
+            assert session.plugin_state_version == 1
+            assert session.plugin_state_json["phase"] == "PICK_TO_PIPELINE"
+            plugin_decisions = await db.scalar(
+                select(func.count())
+                .select_from(WorklineTimeline)
+                .where(WorklineTimeline.payload_json["record_type"].as_string() == "PLUGIN_DECISION")
+            )
+            duplicate_archives = await db.scalar(
+                select(func.count())
+                .select_from(WorklineTimeline)
+                .where(
+                    WorklineTimeline.related_inbox_id == duplicate_inbox_id,
+                    WorklineTimeline.message == "DUPLICATE_ENTRY_ARCHIVED",
+                )
+            )
+            assert plugin_decisions == 1
+            assert duplicate_archives == 1
+            assert await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) == 4
 
     asyncio.run(with_temporary_runtime_database(scenario))
 

@@ -63,6 +63,25 @@ class MaterialUnitRepository(BaseRepository[MaterialUnit]):
             fact_version=material_unit_fact_version(material_unit),
         )
 
+    async def get_plugin_fact_payload(self, db: AsyncSession, material_unit_id: int) -> dict[str, Any] | None:
+        """为无 DB 插件决策返回 MaterialUnit 的只读业务事实，不暴露 ORM。"""
+
+        columns = cast("Any", MaterialUnit).__table__.c
+        row = (
+            await db.execute(
+                select(columns.pkg_code, columns.material_identity_key, columns.six_in_one)
+                .where(columns.id == material_unit_id)
+                .limit(1)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        return {
+            "pkg_code": str(row.pkg_code),
+            "material_identity_key": str(row.material_identity_key),
+            "six_in_one": dict(row.six_in_one or {}),
+        }
+
     @staticmethod
     async def add_and_flush(db: AsyncSession, material_unit: MaterialUnit) -> None:
         db.add(material_unit)

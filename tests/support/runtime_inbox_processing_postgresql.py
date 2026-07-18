@@ -16,7 +16,9 @@ from src.app.runtime.orchestration.execution_correlation import ExecutionCorrela
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import SessionStatus, WorklineSession
+from src.app.runtime.orchestration.models.timeline import WorklineTimeline
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
+from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
 from src.app.runtime.orchestration.services.runtime_inbox import RuntimeInboxService
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxProcessorBridge,
@@ -24,6 +26,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
 from src.app.runtime.orchestration.services.workline_runtime_status_projection_service import (
     workline_runtime_status_projection_service,
 )
+from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import PROFILE_IDENTITY
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.sys.models import SystemOutbox
 from src.app.workline.models.plugin_binding import WorklinePluginBinding
@@ -43,6 +46,7 @@ class SeededScanFlow:
     session_id: int
     workline_id: int
     arm_id: int
+    conveyor_id: int
     trace_id: str
 
 
@@ -75,7 +79,7 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         "ng_location": "NG-IT",
         "warehouse_code": "WH-IT",
         "owner_code": "OWNER-IT",
-        "provider_profile": "wms.v1.sandbox",
+        "provider_profile": PROFILE_IDENTITY,
     }
     config_hash = sha256_digest(typed_config)
     workline = WorkLine(
@@ -96,7 +100,7 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         binding_version=1,
         typed_config_json=typed_config,
         typed_config_hash=config_hash,
-        provider_profile_snapshot_json=[{"profile_identity": "wms.v1.sandbox"}],
+        provider_profile_snapshot_json=[{"profile_identity": PROFILE_IDENTITY}],
         port_requirements_json=["InventoryPort.query"],
         device_snapshot_json=[],
         generated_index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
@@ -111,7 +115,7 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
     workline.active_plugin_binding_version = binding.binding_version
     workline.active_plugin_config_hash = config_hash
     workline.active_plugin_index_digest = binding.generated_index_digest
-    workline.active_plugin_provider_requirements_json = ["wms.v1.sandbox"]
+    workline.active_plugin_provider_requirements_json = [PROFILE_IDENTITY]
     workline.active_plugin_port_requirements_json = list(binding.port_requirements_json)
     await workline_runtime_status_projection_service.project_ready_after_start(db, workline_id=workline.id)
     scanner = Device(
@@ -130,7 +134,15 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         device_status=DeviceStatus.IDLE,
         version=1,
     )
-    db.add_all([scanner, arm])
+    conveyor = Device(
+        device_code="IT-CONVEYOR-01",
+        device_name="Integration Conveyor",
+        work_line_id=workline.id,
+        device_role="ROUGH_SORTER_CONVEYOR",
+        device_status=DeviceStatus.IDLE,
+        version=1,
+    )
+    db.add_all([scanner, arm, conveyor])
     await db.flush()
     session = WorklineSession(
         session_code="IT-RUNTIME-INBOX-SESSION",
@@ -206,14 +218,38 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
     accepted.record.execution_session_id = execution_session.id
     accepted.record.correlation_id = correlation.correlation_id
     await db.commit()
-    assert all(value is not None for value in (accepted.record.id, session.id, workline.id, arm.id))
+    assert all(value is not None for value in (accepted.record.id, session.id, workline.id, arm.id, conveyor.id))
     return SeededScanFlow(
         inbox_id=int(accepted.record.id),
         session_id=int(session.id),
         workline_id=int(workline.id),
         arm_id=int(arm.id),
+        conveyor_id=int(conveyor.id),
         trace_id=trace_id,
     )
+
+
+async def seed_duplicate_scan_inbox(db: AsyncSession, seeded: SeededScanFlow) -> int:
+    """为同一 session/business key 新建第二条可处理 SCAN，而不是复用同一 Inbox 行。"""
+
+    scanner = await db.scalar(select(Device).where(Device.device_code == "IT-SCANNER-01"))
+    source = await db.get(RuntimeInbox, seeded.inbox_id)
+    assert scanner is not None and source is not None
+    accepted = await RuntimeInboxService().accept_device_event(
+        db,
+        device_code=scanner.device_code,
+        event_type="SCAN_COMPLETED",
+        payload_json=dict(source.payload_json),
+        trace_id=seeded.trace_id,
+        event_id="it-runtime-inbox-event-duplicate",
+        workline_id=seeded.workline_id,
+        device_id=scanner.id,
+    )
+    accepted.record.execution_session_id = source.execution_session_id
+    accepted.record.correlation_id = source.correlation_id
+    await db.commit()
+    assert accepted.record.id is not None and accepted.record.id != seeded.inbox_id
+    return int(accepted.record.id)
 
 
 async def claim(db: AsyncSession, service: RuntimeInboxService, *, token: str) -> dict[str, object]:
@@ -232,10 +268,19 @@ async def expire_and_recover(db: AsyncSession, service: RuntimeInboxService, *, 
 
 
 async def assert_effects(db: AsyncSession, seeded: SeededScanFlow, *, expected_count: int) -> None:
-    """按本场景稳定业务键精确核验 command/outbox/目标 timeline。"""
+    """精确核验 effect ledger、插件 state、Session 与 decision timeline 的事务边界。"""
 
     session = await db.get(WorklineSession, seeded.session_id)
-    assert session is not None
+    inbox = await db.get(RuntimeInbox, seeded.inbox_id)
+    assert session is not None and inbox is not None and inbox.execution_session_id is not None
+    total_decision_count = await db.scalar(
+        select(func.count())
+        .select_from(WorklineTimeline)
+        .where(
+            WorklineTimeline.session_id == seeded.session_id,
+            WorklineTimeline.payload_json["record_type"].as_string() == "PLUGIN_DECISION",
+        )
+    )
     if expected_count:
         command = await db.scalar(
             select(DeviceCommand).where(
@@ -244,9 +289,15 @@ async def assert_effects(db: AsyncSession, seeded: SeededScanFlow, *, expected_c
             )
         )
         assert command is not None and command.device_id == seeded.arm_id
+        assert session.status == SessionStatus.WAITING_DEVICE_RESULT
+        assert session.awaiting_device_command_code == command.command_code
+        assert session.plugin_state_version == total_decision_count
+        assert session.plugin_state_json["phase"] == "PICK_TO_PIPELINE"
     else:
         assert session.status == SessionStatus.RUNNING
         assert session.awaiting_device_command_code is None
+        assert total_decision_count == 0 and session.plugin_state_version == 0
+        assert session.plugin_state_json == {}
 
     command_count = await db.scalar(
         select(func.count())
@@ -258,6 +309,21 @@ async def assert_effects(db: AsyncSession, seeded: SeededScanFlow, *, expected_c
     )
     assert command_count == expected_count
     assert outbox_count == expected_count
+    intent_count = await db.scalar(
+        select(func.count())
+        .select_from(RuntimeIntentLog)
+        .where(RuntimeIntentLog.execution_session_id == inbox.execution_session_id)
+    )
+    decision_count = await db.scalar(
+        select(func.count())
+        .select_from(WorklineTimeline)
+        .where(
+            WorklineTimeline.related_inbox_id == seeded.inbox_id,
+            WorklineTimeline.payload_json["record_type"].as_string() == "PLUGIN_DECISION",
+        )
+    )
+    assert intent_count == expected_count * 4
+    assert decision_count == expected_count
 
 
 async def assert_processed_terminal(db: AsyncSession, *, inbox_id: int) -> None:
@@ -298,6 +364,7 @@ __all__ = [
     "claim",
     "expire_and_recover",
     "processor",
+    "seed_duplicate_scan_inbox",
     "seed_scan_flow",
     "with_temporary_runtime_database",
 ]
