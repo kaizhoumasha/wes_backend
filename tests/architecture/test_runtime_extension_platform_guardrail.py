@@ -168,6 +168,11 @@ def test_system_capability_does_not_treat_unrelated_commit_receiver_as_transacti
 @pytest.mark.parametrize(
     "source",
     [
+        "conn.commit()\n",
+        "ctx.conn.rollback()\n",
+        "tx.commit()\n",
+        "ctx.tx.rollback()\n",
+        "unit_of_work.commit()\n",
         "db_session.commit()\n",
         "ctx.db_session.commit()\n",
         "await get_session().rollback()\n",

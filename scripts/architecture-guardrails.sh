@@ -492,8 +492,23 @@ def scan_capability(path: Path) -> None:
                 )
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"commit", "rollback"}:
             receiver = receiver_terminal_identifier(node.func.value)
-            receiver_tokens = set(filter(None, re.split(r"_+", receiver.lower())))
-            if receiver_tokens.isdisjoint({"db", "session", "transaction", "connection", "uow"}):
+            normalized_receiver = receiver.lower()
+            exact_receivers = {
+                "db",
+                "conn",
+                "tx",
+                "uow",
+                "session",
+                "connection",
+                "transaction",
+                "database_session",
+                "db_session",
+                "unit_of_work",
+            }
+            receiver_tokens = set(filter(None, re.split(r"_+", normalized_receiver)))
+            if normalized_receiver not in exact_receivers and receiver_tokens.isdisjoint(
+                {"db", "session", "transaction", "connection", "uow"}
+            ):
                 continue
             emit(
                 "SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY",
