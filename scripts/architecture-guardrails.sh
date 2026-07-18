@@ -15,6 +15,11 @@
 #   CAPABILITY_FORBIDDEN_DEPENDENCY      capability 注入禁用关键词
 #   CAPABILITY_IMPLEMENTATION_IMPORT     capability 不得 import wms_integration/device services/models
 #   INBOUND_NORMALIZER_OWNERSHIP         capability 不得持有 inbound normalizer (WmsEventPort 等)
+#   WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY  Plugin 不得依赖持久化/transport/provider 实现
+#   SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY System Capability 不得依赖 Repository 或控制事务
+#   RUNTIME_GENERATED_INDEX_STATICITY    运行时生成索引不得扫描或动态 import
+#   RUNTIME_EXTENSION_GENERIC_ORCHESTRATION 编排/EffectApplier 不得包含 Workline 业务分支
+#   LEGACY_CAPABILITY_ROUTING_IMPORT     production 不得 import 旧三 catalog/dispatcher
 set -euo pipefail
 
 GUARDRAIL_MODE=""
@@ -30,6 +35,11 @@ RULE_CAPABILITY_IMPLEMENTATION_IMPORT="CAPABILITY_IMPLEMENTATION_IMPORT"
 RULE_INBOUND_NORMALIZER_OWNERSHIP="INBOUND_NORMALIZER_OWNERSHIP"
 RULE_LEGACY_RUNTIME_IMPORT="LEGACY_RUNTIME_IMPORT"
 RULE_WORKLINE_INBOX_RETIREMENT="WORKLINE_INBOX_RETIREMENT"
+RULE_WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY="WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY"
+RULE_SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY="SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY"
+RULE_RUNTIME_GENERATED_INDEX_STATICITY="RUNTIME_GENERATED_INDEX_STATICITY"
+RULE_RUNTIME_EXTENSION_GENERIC_ORCHESTRATION="RUNTIME_EXTENSION_GENERIC_ORCHESTRATION"
+RULE_LEGACY_CAPABILITY_ROUTING_IMPORT="LEGACY_CAPABILITY_ROUTING_IMPORT"
 
 usage() {
     cat <<'EOF'
@@ -38,7 +48,7 @@ Usage: scripts/architecture-guardrails.sh --mode warn|enforced|expiry-check [--a
   --mode       warn=warn-only, enforced=allowlist enforced, expiry-check=expired allowlist fails
   --allowlist  allowlist 文件路径 (默认 scripts/architecture-guardrails.allowlist)
 
-规则: WMS_INTEGRATION_BOUNDARY EXECUTION_CORRELATION_BOUNDARY AUTHORITY_METADATA_BOUNDARY DEVICE_COMMAND_BOUNDARY RUNTIME_INBOX_STATE_MACHINE CAPABILITY_FORBIDDEN_DEPENDENCY CAPABILITY_IMPLEMENTATION_IMPORT INBOUND_NORMALIZER_OWNERSHIP LEGACY_RUNTIME_IMPORT WORKLINE_INBOX_RETIREMENT
+规则: WMS_INTEGRATION_BOUNDARY EXECUTION_CORRELATION_BOUNDARY AUTHORITY_METADATA_BOUNDARY DEVICE_COMMAND_BOUNDARY RUNTIME_INBOX_STATE_MACHINE CAPABILITY_FORBIDDEN_DEPENDENCY CAPABILITY_IMPLEMENTATION_IMPORT INBOUND_NORMALIZER_OWNERSHIP LEGACY_RUNTIME_IMPORT WORKLINE_INBOX_RETIREMENT WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY RUNTIME_GENERATED_INDEX_STATICITY RUNTIME_EXTENSION_GENERIC_ORCHESTRATION LEGACY_CAPABILITY_ROUTING_IMPORT
 EOF
 }
 
@@ -82,8 +92,8 @@ is_allowlisted() {
     if printf '%s\n' "$ALLOWLIST_KEYS" | grep -qxF "$key"; then
         return 0
     fi
-    # capability implementation import / inbound normalizer ownership 只能逐文件枚举，不能靠目录前缀覆盖未来违规。
-    if [[ "$rule" == "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" || "$rule" == "$RULE_INBOUND_NORMALIZER_OWNERSHIP" ]]; then
+    # 实现边界与迁移规则只能逐文件枚举，不能靠目录前缀覆盖未来违规。
+    if [[ "$rule" == "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" || "$rule" == "$RULE_INBOUND_NORMALIZER_OWNERSHIP" || "$rule" == "$RULE_RUNTIME_EXTENSION_GENERIC_ORCHESTRATION" || "$rule" == "$RULE_LEGACY_CAPABILITY_ROUTING_IMPORT" ]]; then
         return 1
     fi
     # 前缀匹配 (allowlist path 可为目录前缀)
@@ -279,14 +289,246 @@ rule_capability_implementation_import() {
     done < <(grep -rnE "$pattern" src/app/runtime src/app/workline --include='*.py' 2>/dev/null || true)
 }
 
+# --- Workline Plugin / System Capability 最终扩展平台边界 ---
+rule_runtime_extension_platform() {
+    local scanner_output=""
+    scanner_output="$(run_python - <<'PY'
+import ast
+import os
+from pathlib import Path
+
+PLUGIN_ROOT = Path("src/app/runtime/workline_plugins")
+CAPABILITY_ROOT = Path("src/app/runtime/system_capabilities")
+FIXTURE_ROOT = os.environ.get("RUNTIME_EXTENSION_GUARDRAIL_FIXTURE_ROOT")
+FIXTURE_ONLY = os.environ.get("RUNTIME_EXTENSION_GUARDRAIL_FIXTURE_ONLY") == "1"
+LEGACY_MODULES = {
+    "src.app.runtime.capability_catalog",
+    "src.app.runtime.capability_dispatcher",
+    "src.app.runtime.runtime_capability_catalog",
+}
+
+
+def emit(rule: str, path: Path, line: int, reason: str, fix: str) -> None:
+    print(f"{rule}\t{path.as_posix()}\t{line}\t{reason}\t{fix}")
+
+
+def python_files(root: Path):
+    if root.exists():
+        yield from sorted(path for path in root.rglob("*.py") if "__pycache__" not in path.parts)
+
+
+def parse(path: Path):
+    try:
+        return ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
+    except SyntaxError as exc:
+        emit(
+            "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY",
+            path,
+            exc.lineno or 1,
+            "扩展平台文件无法解析，依赖边界无法确认",
+            "修复 Python 语法后重新运行门禁",
+        )
+        return None
+
+
+def imported_modules(node: ast.AST):
+    if isinstance(node, ast.ImportFrom):
+        yield node.module or ""
+    elif isinstance(node, ast.Import):
+        yield from (alias.name for alias in node.names)
+
+
+def scan_plugin(path: Path) -> None:
+    tree = parse(path)
+    if tree is None:
+        return
+    forbidden_module_tokens = (
+        "sqlalchemy",
+        "httpx",
+        "requests",
+        "celery",
+        ".repositories",
+        ".providers",
+        "wms_integration.models",
+        "wms_integration.services",
+        "device.models",
+        "device.services",
+    )
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            modules = tuple(imported_modules(node))
+            imported_names = tuple(alias.name for alias in node.names)
+            if any(token in module for token in forbidden_module_tokens for module in modules) or any(
+                name.endswith("Repository") for name in imported_names
+            ):
+                emit(
+                    "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY",
+                    path,
+                    node.lineno,
+                    "Plugin import Repository/SQLAlchemy/HTTP/Celery/provider DTO 实现",
+                    "Plugin 只依赖 typed contract 与 attempt-scoped capability gateway",
+                )
+        if isinstance(node, ast.Name) and node.id in {"service_locator", "http_client"}:
+            emit(
+                "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY",
+                path,
+                node.lineno,
+                "Plugin 持有 service locator 或 HTTP client",
+                "通过声明的 System Capability 访问外部能力",
+            )
+
+
+def scan_capability(path: Path) -> None:
+    tree = parse(path)
+    if tree is None:
+        return
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            modules = tuple(imported_modules(node))
+            imported_names = tuple(alias.name for alias in node.names)
+            if any(".repositories" in module or module.startswith("sqlalchemy") for module in modules) or any(
+                name.endswith("Repository") for name in imported_names
+            ):
+                emit(
+                    "SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY",
+                    path,
+                    node.lineno,
+                    "System Capability import Repository/SQLAlchemy",
+                    "通过 required Port 访问领域能力",
+                )
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"commit", "rollback"}:
+            emit(
+                "SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY",
+                path,
+                node.lineno,
+                "System Capability 直接控制 commit/rollback",
+                "事务由 Effect pipeline 与 Port adapter 统一管理",
+            )
+
+
+def scan_generated_index(path: Path) -> None:
+    tree = parse(path)
+    if tree is None:
+        return
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+            module == "importlib" or module == "pkgutil" for module in imported_modules(node)
+        ):
+            emit(
+                "RUNTIME_GENERATED_INDEX_STATICITY",
+                path,
+                node.lineno,
+                "generated index 使用动态 import",
+                "索引只保留生成期写入的显式静态 import",
+            )
+        if isinstance(node, ast.Call):
+            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            if name in {"import_module", "__import__", "rglob", "glob", "walk", "iter_modules"}:
+                emit(
+                    "RUNTIME_GENERATED_INDEX_STATICITY",
+                    path,
+                    node.lineno,
+                    "generated index 执行文件扫描或动态 import",
+                    "扫描只允许发生在离线生成器，不得进入 runtime index",
+                )
+
+
+def scan_generic_orchestration(path: Path) -> None:
+    tree = parse(path)
+    if tree is None:
+        return
+    business_tokens = ("plugin_key", "event_type", ".action", "BUSINESS_TIMEOUT", "ROUGH_SORTER", "SMT_")
+    source = path.read_text(encoding="utf-8")
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        segment = ast.get_source_segment(source, node.test) or ""
+        if any(token in segment for token in business_tokens):
+            emit(
+                "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+                path,
+                node.lineno,
+                "Orchestrator/EffectApplier 包含 Workline key/event/action/business-timeout 分支",
+                "业务分支迁入 Plugin 或 System Capability handler",
+            )
+
+
+def scan_legacy_imports(root: Path) -> None:
+    for path in python_files(root):
+        tree = parse(path)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and (node.module or "") in LEGACY_MODULES:
+                emit(
+                    "LEGACY_CAPABILITY_ROUTING_IMPORT",
+                    path,
+                    node.lineno,
+                    "production path import 旧 capability catalog/dispatcher",
+                    "改用 generated Workline Plugin/System Capability index 与 dispatcher",
+                )
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in LEGACY_MODULES:
+                        emit(
+                            "LEGACY_CAPABILITY_ROUTING_IMPORT",
+                            path,
+                            node.lineno,
+                            "production path import 旧 capability catalog/dispatcher",
+                            "改用 generated Workline Plugin/System Capability index 与 dispatcher",
+                        )
+
+
+if not FIXTURE_ONLY:
+    # 作者态插件目录：跳过平台框架根文件，只扫描具体 plugin package。
+    for path in python_files(PLUGIN_ROOT):
+        if len(path.relative_to(PLUGIN_ROOT).parts) > 1:
+            scan_plugin(path)
+    # 作者态系统能力目录：跳过平台框架根文件，只扫描 domain/capability package。
+    for path in python_files(CAPABILITY_ROOT):
+        if len(path.relative_to(CAPABILITY_ROOT).parts) > 1:
+            scan_capability(path)
+    for path in (PLUGIN_ROOT / "generated_index.py", CAPABILITY_ROOT / "generated_index.py"):
+        if path.exists():
+            scan_generated_index(path)
+    for path in (
+        Path("src/app/runtime/orchestration/orchestrator_bridge.py"),
+        Path("src/app/runtime/orchestration/runtime_intent_effects.py"),
+    ):
+        if path.exists():
+            scan_generic_orchestration(path)
+    scan_legacy_imports(Path("src"))
+
+if FIXTURE_ROOT:
+    fixture = Path(FIXTURE_ROOT)
+    for path in python_files(fixture / "workline_plugins"):
+        if path.name == "generated_index.py":
+            scan_generated_index(path)
+        else:
+            scan_plugin(path)
+    for path in python_files(fixture / "system_capabilities"):
+        if path.name == "generated_index.py":
+            scan_generated_index(path)
+        else:
+            scan_capability(path)
+    for name in ("orchestrator_bridge.py", "runtime_intent_effects.py"):
+        path = fixture / "orchestration" / name
+        if path.exists():
+            scan_generic_orchestration(path)
+    scan_legacy_imports(fixture)
+PY
+    )"
+    while IFS=$'\t' read -r rule file line reason fix; do
+        [[ -z "$rule" ]] && continue
+        emit_violation "$rule" "$file" "$line" "$reason" "$fix"
+    done <<<"$scanner_output"
+}
+
 # --- INBOUND_NORMALIZER_OWNERSHIP: capability 不得持有 inbound normalizer 类型 ---
+# scanner 单独执行，避免与扩展平台 scanner 共享可变状态。
 rule_inbound_normalizer_ownership() {
-    while IFS=$'\t' read -r file line reason; do
-        [[ -z "$file" ]] && continue
-        emit_violation "$RULE_INBOUND_NORMALIZER_OWNERSHIP" "$file" "$line" \
-            "$reason" \
-            "inbound normalizer 仅允许专用 normalization wiring 持有; capability 走 query/effect port contract"
-    done < <(run_python - <<'PY'
+    local scanner_output=""
+    scanner_output="$(run_python - <<'PY'
 import ast
 import re
 from pathlib import Path
@@ -298,14 +540,7 @@ SCAN_ROOTS = (
     Path("src/app/wms_integration/services"),
     Path("src/app/device"),
 )
-FORBIDDEN_NAMES = frozenset(
-    {
-        "WmsEventPort",
-        "DeviceEventPort",
-        "InboundEventPort",
-        "RuntimeInbox",
-    }
-)
+FORBIDDEN_NAMES = frozenset({"WmsEventPort", "DeviceEventPort", "InboundEventPort", "RuntimeInbox"})
 FORBIDDEN_IMPORT_MODULES = frozenset(
     {
         "src.app.wms_integration.ports.event",
@@ -439,7 +674,13 @@ for root in SCAN_ROOTS:
     for path in root.rglob("*.py"):
         visit_file(path)
 PY
-    )
+    )"
+    while IFS=$'\t' read -r file line reason; do
+        [[ -z "$file" ]] && continue
+        emit_violation "$RULE_INBOUND_NORMALIZER_OWNERSHIP" "$file" "$line" \
+            "$reason" \
+            "inbound normalizer 仅允许专用 normalization wiring 持有; capability 走 query/effect port contract"
+    done <<<"$scanner_output"
 }
 
 # --- allowlist 校验 ---
@@ -467,8 +708,12 @@ validate_allowlist() {
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 drop_phase" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
         fi
-        if [[ ( "$rule_id" == "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" || "$rule_id" == "$RULE_INBOUND_NORMALIZER_OWNERSHIP" ) && ( "$path" == */ || -d "$path" ) ]]; then
+        if [[ ( "$rule_id" == "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" || "$rule_id" == "$RULE_INBOUND_NORMALIZER_OWNERSHIP" || "$rule_id" == "$RULE_RUNTIME_EXTENSION_GENERIC_ORCHESTRATION" || "$rule_id" == "$RULE_LEGACY_CAPABILITY_ROUTING_IMPORT" ) && ( "$path" == */ || -d "$path" ) ]]; then
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): $rule_id 必须逐文件枚举, 禁止目录前缀" >&2
+            VIOLATIONS=$((VIOLATIONS + 1))
+        fi
+        if [[ "$path" == src/app/runtime/workline_plugins/* || "$path" == src/app/runtime/system_capabilities/* ]]; then
+            echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 新扩展平台目录禁止 allowlist" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
         fi
         if [[ -z "$expires_at" ]]; then
@@ -505,6 +750,7 @@ validate_allowlist() {
 echo "=== Architecture Guardrails (mode=$GUARDRAIL_MODE) ===" >&2
 
 load_allowlist
+run_established_guardrails() {
 rule_wms_integration_boundary
 rule_execution_correlation_boundary
 rule_authority_metadata_boundary
@@ -514,8 +760,15 @@ rule_legacy_runtime_import
 rule_workline_inbox_retirement
 rule_capability_implementation_import
 rule_inbound_normalizer_ownership
+}
+if [[ "${ARCHITECTURE_GUARDRAILS_VALIDATE_ONLY:-0}" != "1" && "${RUNTIME_EXTENSION_GUARDRAIL_FIXTURE_ONLY:-0}" != "1" ]]; then
+    run_established_guardrails
+fi
+if [[ "${ARCHITECTURE_GUARDRAILS_VALIDATE_ONLY:-0}" != "1" ]]; then
+    rule_runtime_extension_platform
+fi
 
-if [[ "$GUARDRAIL_MODE" != "warn" ]]; then
+if [[ "$GUARDRAIL_MODE" != "warn" && "${RUNTIME_EXTENSION_GUARDRAIL_FIXTURE_ONLY:-0}" != "1" ]]; then
     validate_allowlist
 fi
 

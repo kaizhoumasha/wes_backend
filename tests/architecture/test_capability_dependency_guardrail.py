@@ -8,6 +8,7 @@ CAPABILITY_IMPLEMENTATION_IMPORT: capability 不得 import wms_integration/devic
 from __future__ import annotations
 
 import csv
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -24,6 +25,13 @@ CAPABILITY_FORBIDDEN_DEPENDENCY_FORBIDDEN = {
 }
 CAPABILITY_IMPLEMENTATION_IMPORT_PATTERN = "from src.app.wms_integration.services"
 CAPABILITY_IMPLEMENTATION_IMPORT_PATTERN2 = "from src.app.device.models"
+EXTENSION_PLATFORM_RULE_IDS = {
+    "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY",
+    "SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY",
+    "RUNTIME_GENERATED_INDEX_STATICITY",
+    "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+    "LEGACY_CAPABILITY_ROUTING_IMPORT",
+}
 
 
 def test_capability_forbidden_dependency_forbidden_keywords_covered():
@@ -38,6 +46,13 @@ def test_capability_implementation_import_from_import_pattern_covered():
     assert "rule_capability_implementation_import" in content
     assert "wms_integration" in content
     assert "device" in content
+
+
+def test_extension_platform_rule_ids_are_stable_business_names():
+    content = GUARDRAIL.read_text(encoding="utf-8")
+
+    assert set(re.findall(r'RULE_[A-Z_]+="([A-Z_]+)"', content)) >= EXTENSION_PLATFORM_RULE_IDS
+    assert all("PHASE" not in rule_id and "WAVE" not in rule_id for rule_id in EXTENSION_PLATFORM_RULE_IDS)
 
 
 def test_capability_forbidden_dependency_violation_fixture():
@@ -82,6 +97,7 @@ def test_capability_implementation_import_directory_prefix_allowlist_is_rejected
     result = subprocess.run(
         ["/bin/bash", str(GUARDRAIL), "--mode", "enforced", "--allowlist", str(temp_allowlist)],
         cwd=REPO_ROOT,
+        env={**os.environ, "ARCHITECTURE_GUARDRAILS_VALIDATE_ONLY": "1"},
         capture_output=True,
         text=True,
         check=False,
@@ -89,6 +105,20 @@ def test_capability_implementation_import_directory_prefix_allowlist_is_rejected
 
     assert result.returncode == 1
     assert "CAPABILITY_IMPLEMENTATION_IMPORT 必须逐文件枚举" in result.stderr
+
+
+def test_new_extension_platform_path_allowlist_is_rejected(tmp_path):
+    """新平台作者态目录不允许用临时迁移豁免掩盖违规。"""
+    rows = _allowlist_rows_with_matrix_drop_phase()
+    rows.append(
+        "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY|src/app/runtime/workline_plugins/rough_sorter/handlers.py|"
+        "must fail|2026-08-15|legacy:test:must-fail|task10"
+    )
+
+    result = _run_guardrail_with_allowlist(tmp_path, rows)
+
+    assert result.returncode == 1
+    assert "新扩展平台目录禁止 allowlist" in result.stderr
 
 
 def _active_allowlist_rows() -> list[str]:
@@ -119,6 +149,7 @@ def _run_guardrail_with_allowlist(
     return subprocess.run(
         ["/bin/bash", str(GUARDRAIL), "--mode", mode, "--allowlist", str(temp_allowlist)],
         cwd=REPO_ROOT,
+        env={**os.environ, "ARCHITECTURE_GUARDRAILS_VALIDATE_ONLY": "1"},
         capture_output=True,
         text=True,
         check=False,
