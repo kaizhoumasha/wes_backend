@@ -218,6 +218,9 @@ def _system_capability_intents(
                 "payload": deepcopy(intent.payload_json),
                 "timeout_ms": (intent.timeout_seconds or 30) * 1000,
                 "command_code": command_code,
+                # 未使用 command() factory 的 legacy intent 也默认不建立业务等待，
+                # 避免 durable outbox acceptance 被误判为远端完成窗口。
+                "result_policy": intent.result_policy or "FIRE_AND_FORGET",
             }
             precondition = {"expected_available": True}
             fact_version = "device:v1"
@@ -1283,22 +1286,15 @@ async def _build_plugin_dispatch_request(
     if material_unit_id is not None:
         material_fact = await default_material_unit_repository.get_plugin_fact_payload(db, material_unit_id) or {}
     material_six_in_one = payload_dict(material_fact.get("six_in_one"))
+    # MaterialUnit 一旦持久化即成为业务身份权威；callback/session 仅用于
+    # 初始 SCAN 尚未创建 MaterialUnit 时的 ingress fallback。
+    identity_sources = (material_six_in_one, material_fact) if material_fact else (data, six_in_one, session_context)
     business_key = _first_plugin_fact(
-        data,
-        six_in_one,
-        session_context,
-        material_six_in_one,
-        material_fact,
-        names=("PkgID", "pkg_code", "business_key", "material_identity_key"),
+        *identity_sources,
+        names=("material_identity_key", "business_key", "pkg_code", "PkgID"),
     )
-    hhpn = _first_plugin_fact(data, six_in_one, session_context, material_six_in_one, names=("HHPN", "hhpn"))
-    lot_code = _first_plugin_fact(
-        data,
-        six_in_one,
-        session_context,
-        material_six_in_one,
-        names=("LotCode", "lot_code"),
-    )
+    hhpn = _first_plugin_fact(*identity_sources, names=("HHPN", "hhpn"))
+    lot_code = _first_plugin_fact(*identity_sources, names=("LotCode", "lot_code"))
     command_code = optional_str(raw_input.get("command_code"))
     awaiting_code = optional_str(getattr(session, "awaiting_device_command_code", None))
     facts = RoughSorterFacts(

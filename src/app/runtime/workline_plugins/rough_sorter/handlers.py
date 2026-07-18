@@ -172,6 +172,7 @@ def _scan_decision(
                     ng_location=config.ng_location,
                     reason_code="SCAN_NG_BY_RULE",
                 ),
+                result_policy="FIRE_AND_FORGET",
             ),
         )
         return _decision("MOVE_TO_NG_PERSISTED", next_state, intents, reason_code="SCAN_NG_BY_RULE")
@@ -188,6 +189,7 @@ def _scan_decision(
                 target_location=config.pipeline_input_location,
                 six_in_one=six_in_one,
             ),
+            result_policy="COMMAND_RESULT",
         ),
     )
     return _decision("PICK_AND_PUT_PERSISTED", next_state, intents)
@@ -249,6 +251,7 @@ async def _pick_result_decision(  # noqa: PLR0911 - 封闭 outcome 分支逐项�
                     source_location=config.pipeline_input_location,
                     target_location=config.pipeline_output_location,
                 ),
+                result_policy="FIRE_AND_FORGET",
             ),
         )
         return _decision("MOVE_FORWARD_PERSISTED", next_state, intents)
@@ -293,6 +296,7 @@ def _move_to_ng(
                 ng_location=config.ng_location,
                 reason_code=reason_code,
             ),
+            result_policy="FIRE_AND_FORGET",
         ),
     )
     return _decision("MOVE_TO_NG_PERSISTED", next_state, intents, reason_code=reason_code)

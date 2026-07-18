@@ -566,6 +566,91 @@ def test_material_unit_fact_version_uses_persisted_updated_at_when_model_has_no_
 
 
 @pytest.mark.asyncio
+async def test_plugin_dispatch_prefers_persisted_material_identity_over_conflicting_ingress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MaterialUnit 已存在时，callback/session 冲突值不得覆盖持久化业务事实。"""
+
+    from src.app.runtime.orchestration.repositories.material_unit_repository import material_unit_repository
+    from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
+
+    config = {
+        "device_roles": {"input_arm": "input_arm", "conveyor": "conveyor", "output_arm": "output_arm"},
+        "pipeline_input_location": "PIPELINE-IN",
+        "pipeline_output_location": "PIPELINE-OUT",
+        "ng_location": "NG-01",
+        "warehouse_code": "WH-01",
+        "owner_code": "OWNER-01",
+        "provider_profile": "runtime",
+    }
+    monkeypatch.setattr(
+        workline_plugin_binding_service,
+        "get_pinned",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id=17,
+                binding_version=4,
+                plugin_key="rough_sorter",
+                contract_version="rough_sorter.v2",
+                typed_config_json=config,
+                typed_config_hash=sha256_digest(config),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        material_unit_repository,
+        "get_plugin_fact_payload",
+        AsyncMock(
+            return_value={
+                "pkg_code": "PKG-PERSISTED",
+                "material_identity_key": "BUSINESS-PERSISTED",
+                "six_in_one": {"HHPN": "HH-PERSISTED", "LotCode": "LOT-PERSISTED"},
+            }
+        ),
+    )
+    session = SimpleNamespace(
+        plugin_state_json={"phase": "PICK_TO_PIPELINE", "current_correlation": "CMD-1"},
+        context_json={
+            "business_key": "BUSINESS-SESSION",
+            "six_in_one": {"HHPN": "HH-SESSION", "LotCode": "LOT-SESSION"},
+        },
+        current_material_unit_id=31,
+        awaiting_device_command_code="CMD-1",
+    )
+    snapshot = AttemptSnapshot(
+        processor_token="lease-1",
+        session_version=7,
+        plugin_state_version=2,
+        binding_id=17,
+        binding_version=4,
+        plugin_config_hash=sha256_digest(config),
+        index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
+    )
+    inbox = SimpleNamespace(
+        kind="COMMAND_RESULT",
+        event_type="COMMAND_RESULT",
+        payload_json={
+            "command_code": "CMD-1",
+            "command_type": "PICK_AND_PUT",
+            "result": "SUCCESS",
+            "data": {
+                "PkgID": "PKG-CALLBACK",
+                "HHPN": "HH-CALLBACK",
+                "LotCode": "LOT-CALLBACK",
+            },
+        },
+    )
+
+    request = await _build_plugin_dispatch_request(
+        object(), inbox=inbox, session=session, workline=SimpleNamespace(id=3), snapshot=snapshot
+    )
+
+    assert request.raw_facts["business_key"] == "BUSINESS-PERSISTED"
+    assert request.raw_facts["hhpn"] == "HH-PERSISTED"
+    assert request.raw_facts["lot_code"] == "LOT-PERSISTED"
+
+
+@pytest.mark.asyncio
 async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_effects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -647,6 +732,7 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
         "material_flow.material_unit_write",
         "device.device_command_write",
     ]
+    assert write_set.intents[1].payload_json["result_policy"] == "COMMAND_RESULT"
 
 
 @pytest.mark.asyncio
@@ -781,6 +867,7 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     assert len(write_set.intents) == 1
     assert write_set.intents[0].kind is RuntimeIntentKind.SYSTEM_CAPABILITY
     assert write_set.intents[0].capability_key == "device.device_command_write"
+    assert write_set.intents[0].payload_json["result_policy"] == "FIRE_AND_FORGET"
 
 
 def test_locked_writeback_revalidates_generated_definition_identity_without_transient_attribute() -> None:

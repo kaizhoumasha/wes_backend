@@ -317,6 +317,7 @@ class CallbackOrchestrationService:
             device_code=callback.device_code,
             device_service=device_service,
         )
+        callback_session = await self._load_command_session(db, existing_command) if is_workline_callback else None
 
         runtime_inbox_result = await self._runtime_inbox_writer.write_result_callback(
             db,
@@ -327,7 +328,12 @@ class CallbackOrchestrationService:
             trace_id=inherited_trace_id,
             event_id=trace.event_id,
             causation_id=trace.causation_id,
-            processing_required=is_workline_callback,
+            workline_id=getattr(existing_command, "workline_id", None),
+            device_id=getattr(existing_command, "device_id", None),
+            command_id=getattr(existing_command, "id", None),
+            # Workline 绑定不等于插件声明消费结果；只有当前 session 的
+            # awaiting command 才进入 processor，fire-and-forget callback 接收即终态证据。
+            processing_required=callback_session is not None,
         )
         if not runtime_inbox_result.created:
             return ResultCallbackOutcome(trace_id=inherited_trace_id, is_duplicate=True)
@@ -364,7 +370,7 @@ class CallbackOrchestrationService:
                 callback=callback,
                 device_service=device_service,
             )
-            session = await self._load_command_session(db, command)
+            session = callback_session
             runtime_inbox_record = getattr(runtime_inbox_result, "record", None)
             if session is not None and runtime_inbox_record is not None:
                 await self._append_command_acked_timeline(

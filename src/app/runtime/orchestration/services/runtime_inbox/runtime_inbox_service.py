@@ -915,10 +915,12 @@ class RuntimeInboxService:
         workline_id: int | None = None,
         device_id: int | None = None,
         command_id: int | None = None,
+        correlation_id: str | None = None,
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
         payload_json: dict[str, Any] | None = None,
+        processing_required: bool = True,
         auto_commit: bool = False,
     ) -> RuntimeInboxAcceptResult:
         """接收 command result 写入 RuntimeInbox (kind=COMMAND_RESULT).
@@ -937,8 +939,14 @@ class RuntimeInboxService:
 
         canonical_payload = payload_json or {"command_code": command_code, "device_code": device_code}
         correlation_context = await self._resolve_correlation_context_by_trace(db, trace_id=trace_id)
-        correlation_id = correlation_context[0] if correlation_context is not None else None
+        resolved_correlation_id = correlation_context[0] if correlation_context is not None else None
         execution_session_id = correlation_context[1] if correlation_context is not None else None
+        if correlation_id is None:
+            correlation_id = resolved_correlation_id
+        elif resolved_correlation_id != correlation_id:
+            # 显式 correlation 仍交由 accept_received 验证其持久化身份；trace 未命中或
+            # 指向其它 correlation 时，不得把该 trace 的 execution session 错绑进来。
+            execution_session_id = None
         result = await self.accept_received(
             db,
             provider_code=provider_code,
@@ -956,6 +964,7 @@ class RuntimeInboxService:
             command_id=command_id,
             execution_session_id=execution_session_id,
             correlation_id=correlation_id,
+            processing_required=processing_required,
         )
         if auto_commit:
             _ = await db.commit()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StringConstraints, model_validator
 
@@ -32,6 +32,7 @@ class DeviceCommandWriteInput(BaseModel):
     priority: int = Field(default=5, ge=1, le=10)
     timeout_ms: int = Field(default=30000, ge=1000, le=300000)
     command_code: str | None = Field(default=None, min_length=1, max_length=100)
+    result_policy: Literal["COMMAND_RESULT", "FIRE_AND_FORGET"]
 
     @model_validator(mode="after")
     def require_one_target(self) -> DeviceCommandWriteInput:

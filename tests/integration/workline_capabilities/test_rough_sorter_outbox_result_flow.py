@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from datetime import timedelta
 
+from fastapi import Request
 from sqlalchemy import func, update
 from sqlmodel import select
 
+from src.app.callback.models import CallbackLog
+from src.app.callback.services.callback_ingress_service import CallbackIngressService
 from src.app.device.models.command import CommandStatus, DeviceCommand
+from src.app.runtime.orchestration.models.material_unit import MaterialUnit
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.timeline import WorklineTimeline
@@ -29,6 +35,29 @@ from tests.support.runtime_inbox_processing_postgresql import (
 )
 
 
+def _callback_request(payload: dict[str, object]) -> Request:
+    body = json.dumps(payload).encode("utf-8")
+    sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/callback/result",
+            "headers": [(b"content-type", b"application/json"), (b"user-agent", b"workline-pg-test")],
+            "client": ("127.0.0.1", 12345),
+        },
+        receive=receive,
+    )
+
+
 async def _process_seeded_scan(db, service: RuntimeInboxService, seeded) -> None:  # type: ignore[no-untyped-def]
     claimed = await claim(db, service, token="outbox-scan-owner")
     result = await processor(service).process_claimed(db, claim=claimed)
@@ -45,10 +74,12 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
 
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
         provider_calls = 0
+        provider_material_codes: list[str] = []
 
         async def query_inventory(_adapter, material_code: str, *, warehouse_code: str | None = None):  # type: ignore[no-untyped-def]
             nonlocal provider_calls
             provider_calls += 1
+            provider_material_codes.append(material_code)
             return [
                 WmsInventoryItem(
                     material_code=material_code,
@@ -75,29 +106,46 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
             command = await db.scalar(select(DeviceCommand).where(DeviceCommand.command_code == command_code))
             assert command is not None and command.status == CommandStatus.PENDING
             assert await db.scalar(select(func.count()).select_from(SystemOutbox)) == 1
-            accepted = await RuntimeInboxService().accept_command_result(
-                db,
-                command_code=command_code,
-                source_event_id="it-device-result-1",
-                device_code="IT-ARM-01",
-                workline_id=seeded.workline_id,
-                device_id=seeded.arm_id,
-                command_id=command.id,
-                trace_id=seeded.trace_id,
-                payload_json={
-                    "logical_route": "PICK_AND_PUT_RESULT",
-                    "command_code": command_code,
-                    "command_type": "PICK_AND_PUT",
-                    "result": "SUCCESS",
-                    "data": {"reel_diameter": "100", "reel_thickness": "10"},
+            callback_payload = {
+                "command_code": command_code,
+                "device_code": "IT-ARM-01",
+                "result": "SUCCESS",
+                "finish_time": int(time.time() * 1000),
+                "source_event_id": "it-device-result-1",
+                "trace_id": seeded.trace_id,
+                "data": {
+                    "PkgID": "PKG-CALLBACK-CONFLICT",
+                    "HHPN": "MAT-CALLBACK-CONFLICT",
+                    "LotCode": "LOT-CALLBACK-CONFLICT",
+                    "reel_diameter": "100",
+                    "reel_thickness": "10",
                 },
+            }
+            response = await CallbackIngressService().handle_result(
+                _callback_request(callback_payload),
+                db,
+                request_id="it-device-result-request-1",
+                start_time=time.time(),
+                enqueue_processing=lambda: None,
             )
-            await db.commit()
-            callback = await db.get(RuntimeInbox, accepted.record.id)
+            assert response["code"] == "1000"
+            callback = await db.scalar(
+                select(RuntimeInbox).where(
+                    RuntimeInbox.provider_code == "DEVICE_RESULT",
+                    RuntimeInbox.source_event_id == "it-device-result-1",
+                )
+            )
             assert callback is not None and callback.kind == "COMMAND_RESULT"
             callback_id = int(callback.id)
             assert callback.status == "RECEIVED"
-            assert command.status == CommandStatus.PENDING
+            assert callback.execution_session_id is not None
+            assert callback.correlation_id == "it-runtime-inbox-correlation"
+            await db.refresh(command)
+            assert command.status == CommandStatus.COMPLETED
+            callback_log = await db.scalar(
+                select(CallbackLog).where(CallbackLog.request_id == "it-device-result-request-1")
+            )
+            assert callback_log is not None and callback_log.ingress_outcome == "ACCEPTED"
             callback_claim = await claim(db, service, token="outbox-callback-owner")
             callback_result = await processor(service).process_claimed(db, claim=callback_claim)
             if callback_result["resource_wait"]:
@@ -121,18 +169,96 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
             await db.refresh(command)
             await db.refresh(session := await db.get(WorklineSession, seeded.session_id))
             assert callback.status == "PROCESSED"
-            assert command.status == CommandStatus.PENDING
+            assert command.status == CommandStatus.COMPLETED
             assert session.plugin_state_json["phase"] == "MOVING_FORWARD"
             assert session.plugin_state_version == 2
+            assert session.status == "RUNNING"
+            assert session.current_wait_type is None
+            assert session.awaiting_device_command_code is None
             assert provider_calls == 1
+            assert provider_material_codes == ["MAT-IT-001"]
+            material_unit = await db.get(MaterialUnit, session.current_material_unit_id)
+            assert material_unit is not None
             assert (
                 await db.scalar(
                     select(func.count())
                     .select_from(WorklineTimeline)
                     .where(WorklineTimeline.related_inbox_id == callback.id)
                 )
-                == 2
+                == 3
             )
+
+            conveyor_command = await db.scalar(
+                select(DeviceCommand).where(
+                    DeviceCommand.workline_id == seeded.workline_id,
+                    DeviceCommand.task_type == "MOVE_FORWARD",
+                )
+            )
+            assert conveyor_command is not None and conveyor_command.status == CommandStatus.PENDING
+            assert conveyor_command.params["params"]["business_key"] == material_unit.material_identity_key
+            fire_callback_payload = {
+                "command_code": conveyor_command.command_code,
+                "device_code": "IT-CONVEYOR-01",
+                "result": "SUCCESS",
+                "finish_time": int(time.time() * 1000),
+                "source_event_id": "it-move-forward-result-1",
+                "trace_id": seeded.trace_id,
+                "data": {},
+            }
+            fire_response = await CallbackIngressService().handle_result(
+                _callback_request(fire_callback_payload),
+                db,
+                request_id="it-move-forward-request-1",
+                start_time=time.time(),
+                enqueue_processing=lambda: None,
+            )
+            assert fire_response["code"] == "1000"
+            fire_callback = await db.scalar(
+                select(RuntimeInbox).where(RuntimeInbox.source_event_id == "it-move-forward-result-1")
+            )
+            await db.refresh(conveyor_command)
+            await db.refresh(session)
+            assert fire_callback is not None and fire_callback.status == "PROCESSED"
+            assert conveyor_command.status == CommandStatus.COMPLETED
+            assert session.plugin_state_json["phase"] == "MOVING_FORWARD"
+            assert session.status == "RUNNING"
+            assert session.current_wait_type is None
+            assert await db.scalar(select(func.count()).select_from(RuntimeHold)) == 0
+
+            # 即使外部错误地产生 fire-and-forget timeout evidence，reconciliation
+            # 也只能归档，不得把非等待态 session 误判为 PICK phase mismatch/Hold。
+            fire_timeout = await service.accept_timer_timeout(
+                db,
+                session_id=seeded.session_id,
+                execution_session_id=fire_callback.execution_session_id,
+                workline_id=seeded.workline_id,
+                deadline_at=timezone.now_for_db(),
+                trace_id=seeded.trace_id,
+                wait_token=conveyor_command.command_code,
+                wait_type="COMMAND_RESULT",
+                awaiting_device_command_code=conveyor_command.command_code,
+                command_code=conveyor_command.command_code,
+                device_id=seeded.conveyor_id,
+                command_id=conveyor_command.id,
+                command_status=CommandStatus.COMPLETED.value,
+            )
+            await db.commit()
+            timeout_claim = await claim(db, service, token="fire-and-forget-timeout-owner")
+            timeout_result = await processor(service).process_claimed(db, claim=timeout_claim)
+            assert timeout_result == {
+                "processed": 1,
+                "success": 1,
+                "failed": 0,
+                "skipped": 0,
+                "resource_wait": 0,
+            }
+            await db.refresh(session)
+            timeout_row = await db.get(RuntimeInbox, fire_timeout.record.id, populate_existing=True)
+            assert timeout_row is not None and timeout_row.status == "PROCESSED"
+            assert session.plugin_state_json["phase"] == "MOVING_FORWARD"
+            assert session.status == "RUNNING"
+            assert session.current_wait_type is None
+            assert await db.scalar(select(func.count()).select_from(RuntimeHold)) == 0
 
     asyncio.run(with_temporary_runtime_database(scenario))
 

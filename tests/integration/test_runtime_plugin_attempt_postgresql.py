@@ -128,6 +128,7 @@ def test_non_empty_plugin_intent_persists_ledger_before_terminal_in_same_transac
                 "action": "PICK_AND_PUT",
                 "payload": {"target": "A-01"},
                 "timeout_ms": 30_000,
+                "result_policy": "COMMAND_RESULT",
             },
             precondition={"expected_available": True},
             fact_version="device:v1",

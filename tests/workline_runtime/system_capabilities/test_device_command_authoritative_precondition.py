@@ -101,6 +101,7 @@ async def _prepare(
             priority=5,
             timeout_ms=30000,
             payload={},
+            result_policy="FIRE_AND_FORGET",
         ),
         target_device_id=target_device_id,
         target_device_code=target_device_code,

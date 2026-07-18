@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult, IdempotencyConflict
@@ -21,7 +21,10 @@ from src.app.runtime.system_capabilities.definition import (
     SystemCapabilityDefinition,
     SystemCapabilityMode,
 )
-from src.app.runtime.system_capabilities.device.device_command_write.contracts import DeviceCommandWriteOutput
+from src.app.runtime.system_capabilities.device.device_command_write.contracts import (
+    DeviceCommandWriteInput,
+    DeviceCommandWriteOutput,
+)
 from src.app.runtime.system_capabilities.device.device_command_write.definition import DEFINITION as DEVICE_DEFINITION
 from src.app.runtime.system_capabilities.material_flow.material_unit_write.contracts import MaterialUnitWriteOutput
 from src.app.runtime.system_capabilities.material_flow.material_unit_write.definition import (
@@ -304,7 +307,7 @@ async def test_same_final_key_and_hash_is_noop_success() -> None:
         ),
         (
             DEVICE_DEFINITION,
-            {"target_device_id": 7, "action": "MOVE"},
+            {"target_device_id": 7, "action": "MOVE", "result_policy": "FIRE_AND_FORGET"},
             {"expected_available": True},
             "device:v1",
             {"accepted": True, "command_code": "CMD-1", "dispatch_key": "dispatch-1"},
@@ -580,7 +583,7 @@ def _device_intent(*, expected_available: object, fact_version: object) -> Runti
         capability_key=DEVICE_DEFINITION.capability_key,
         contract_version=DEVICE_DEFINITION.contract_version,
         operation_key="device:71:dispatch",
-        payload={"target_device_id": 71, "action": "PICK_AND_PUT"},
+        payload={"target_device_id": 71, "action": "PICK_AND_PUT", "result_policy": "COMMAND_RESULT"},
         precondition={"expected_available": expected_available},
         fact_version=fact_version,  # type: ignore[arg-type]
         timeout_seconds=5,
@@ -918,6 +921,18 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
             )
 
     db = _MutationDb()
+    session = SimpleNamespace(
+        id=31,
+        workline_id=41,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        status="RUNNING",
+        current_wait_type=None,
+        waiting_since=None,
+        deadline_at=None,
+        current_wait_timeout_seconds=None,
+        awaiting_device_command_code=None,
+    )
     command, outbox = await DeviceCommandService(device_repository=_DeviceRepository()).prepare_runtime_effect(
         db,  # type: ignore[arg-type]
         request=SimpleNamespace(
@@ -926,13 +941,14 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
             timeout_ms=30000,
             payload={"business_key": "PKG-1"},
             command_code=None,
+            result_policy="COMMAND_RESULT",
         ),
         target_device_id=71,
         target_device_code=None,
         expected_workline_id=41,
         expected_fact_version="device:v2",
         expected_available=True,
-        session=SimpleNamespace(id=31, workline_id=41, plugin_key="rough_sorter", contract_version="rough_sorter.v2"),
+        session=session,
         workline=SimpleNamespace(id=41, plugin_key="rough_sorter"),
         idempotency_key="system-capability:device.device_command_write@v1:session:31:work-item:41:pick-1",
         trace_id="trace-device-effect",
@@ -942,8 +958,78 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
     assert isinstance(outbox, SystemOutbox)
     assert outbox.dispatch_key == f"device-command:{command.command_code}"
     assert getattr(outbox.status, "value", outbox.status) == "NEW"
+    assert session.current_wait_type == "COMMAND_RESULT"
+    assert session.awaiting_device_command_code == command.command_code
     assert db.commit_count == 0
     assert db.rollback_count == 0
+
+
+def test_device_command_contract_requires_explicit_result_policy() -> None:
+    with pytest.raises(ValidationError, match="result_policy"):
+        DeviceCommandWriteInput.model_validate(
+            {
+                "target_device_id": 71,
+                "action": "MOVE_FORWARD",
+                "payload": {},
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_fire_and_forget_device_command_does_not_overwrite_existing_wait() -> None:
+    from src.app.device.repositories.device_repository import DeviceRepository
+    from src.app.device.services.device_command_service import DeviceCommandService
+
+    class _DeviceRepository(DeviceRepository):
+        async def get_runtime_effect_target_for_update(self, _db: object, **_kwargs: object) -> object:
+            return SimpleNamespace(
+                id=72,
+                device_code="CONVEYOR-72",
+                work_line_id=41,
+                version=2,
+                device_status="IDLE",
+                maintenance_mode=False,
+                current_command_id=None,
+                is_active=True,
+            )
+
+    session = SimpleNamespace(
+        id=31,
+        workline_id=41,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        status="RUNNING",
+        current_wait_type=None,
+        waiting_since=None,
+        deadline_at=None,
+        current_wait_timeout_seconds=None,
+        awaiting_device_command_code=None,
+    )
+    command, _ = await DeviceCommandService(device_repository=_DeviceRepository()).prepare_runtime_effect(
+        _MutationDb(),  # type: ignore[arg-type]
+        request=SimpleNamespace(
+            action="MOVE_FORWARD",
+            priority=5,
+            timeout_ms=30000,
+            payload={"business_key": "PKG-1"},
+            command_code=None,
+            result_policy="FIRE_AND_FORGET",
+        ),
+        target_device_id=72,
+        target_device_code=None,
+        expected_workline_id=41,
+        expected_fact_version="device:v2",
+        expected_available=True,
+        session=session,
+        workline=SimpleNamespace(id=41, plugin_key="rough_sorter"),
+        idempotency_key="system-capability:device.device_command_write@v1:session:31:move-1",
+        trace_id="trace-fire-and-forget",
+    )
+
+    assert command.task_type == "MOVE_FORWARD"
+    assert session.status == "RUNNING"
+    assert session.current_wait_type is None
+    assert session.awaiting_device_command_code is None
 
 
 @pytest.mark.asyncio

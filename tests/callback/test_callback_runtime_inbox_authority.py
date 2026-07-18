@@ -39,6 +39,59 @@ def _runtime_accept_result(*, created: bool, record_id: int = 1) -> SimpleNamesp
 
 
 @pytest.mark.asyncio
+async def test_callback_runtime_inbox_writer_delegates_result_to_typed_command_entry() -> None:
+    """Result writer 必须走 command-result 入口，禁止绕过权威 correlation/session 解析。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    accepted_kwargs: dict[str, object] = {}
+
+    class RuntimeInboxServiceStub:
+        async def accept_received(self, _db, **kwargs):
+            raise AssertionError(f"result callback 不得直调 accept_received: {kwargs}")
+
+        async def accept_command_result(self, _db, **kwargs):
+            accepted_kwargs.update(kwargs)
+            return _runtime_accept_result(created=True)
+
+    writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
+    payload = {
+        "source_event_id": "evt-result-typed-001",
+        "command_code": "CMD-TYPED-001",
+        "device_code": "ARM-01",
+        "result": "SUCCESS",
+    }
+
+    await writer.write_result_callback(
+        SimpleNamespace(),
+        payload=payload,
+        request_id="req-result-typed-001",
+        canonical_result_type="DEVICE_RESULT",
+        trace_id="trace-result-typed-001",
+        event_id="event-result-typed-001",
+        causation_id="cause-result-typed-001",
+        workline_id=11,
+        device_id=12,
+        command_id=13,
+    )
+
+    assert accepted_kwargs == {
+        "command_code": "CMD-TYPED-001",
+        "source_event_id": "evt-result-typed-001",
+        "device_code": "ARM-01",
+        "workline_id": 11,
+        "device_id": 12,
+        "command_id": 13,
+        "correlation_id": None,
+        "trace_id": "trace-result-typed-001",
+        "event_id": "event-result-typed-001",
+        "causation_id": "cause-result-typed-001",
+        "payload_json": payload,
+        "processing_required": True,
+    }
+
+
+@pytest.mark.asyncio
 async def test_callback_runtime_inbox_writer_uses_canonical_types_without_channel_collapse() -> None:
     """writer 必须把 canonical callback/event/result type 传给 RuntimeInbox。"""
 
@@ -47,6 +100,10 @@ async def test_callback_runtime_inbox_writer_uses_canonical_types_without_channe
     accepted_calls: list[dict[str, object]] = []
 
     class RuntimeInboxServiceStub:
+        async def accept_command_result(self, _db, **kwargs):
+            accepted_calls.append({**kwargs, "event_type": "COMMAND_RESULT", "correlation_id": None})
+            return _runtime_accept_result(created=True, record_id=len(accepted_calls))
+
         async def accept_received(self, _db, **kwargs):
             accepted_calls.append(kwargs)
             return _runtime_accept_result(created=True, record_id=len(accepted_calls))
@@ -72,7 +129,7 @@ async def test_callback_runtime_inbox_writer_uses_canonical_types_without_channe
     )
 
     assert [call["event_type"] for call in accepted_calls] == [
-        "DEVICE_RESULT",
+        "COMMAND_RESULT",
         "SCAN_COMPLETED",
         "AGV_TASK_RESULT",
     ]
@@ -87,6 +144,10 @@ async def test_callback_runtime_inbox_writer_does_not_synthesize_unverified_corr
     accepted_calls: list[dict[str, object]] = []
 
     class RuntimeInboxServiceStub:
+        async def accept_command_result(self, _db, **kwargs):
+            accepted_calls.append({**kwargs, "correlation_id": None})
+            return _runtime_accept_result(created=True, record_id=len(accepted_calls))
+
         async def accept_received(self, _db, **kwargs):
             accepted_calls.append(kwargs)
             return _runtime_accept_result(created=True, record_id=len(accepted_calls))
@@ -427,7 +488,8 @@ async def test_process_result_uses_runtime_inbox_as_authority() -> None:
     service._is_workline_command_callback = AsyncMock(return_value=True)  # type: ignore[method-assign]
     service._commit_and_enqueue_runtime_inbox_processing = AsyncMock()  # type: ignore[method-assign]
     service._mark_callback_device_finished = AsyncMock(return_value=0)  # type: ignore[method-assign]
-    service._load_command_session = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    service._load_command_session = AsyncMock(return_value=SimpleNamespace(id=31))  # type: ignore[method-assign]
+    service._append_command_acked_timeline = AsyncMock()  # type: ignore[method-assign]
 
     with patch(
         "src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl.workline_runtime_reconciliation_service.record_late_callback_if_pending",

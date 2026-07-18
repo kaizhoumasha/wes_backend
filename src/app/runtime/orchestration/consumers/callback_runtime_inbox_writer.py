@@ -85,22 +85,29 @@ class CallbackRuntimeInboxWriter:
         trace_id: str | None = None,
         event_id: str | None = None,
         causation_id: str | None = None,
+        workline_id: int | None = None,
+        device_id: int | None = None,
+        command_id: int | None = None,
         processing_required: bool = True,
     ) -> RuntimeInboxAcceptResult:
-        _ = request_id
-        return await self._service.accept_received(
+        _ = request_id, canonical_result_type
+        command_code = _resolve_first_str(payload, ("command_code",))
+        if command_code is None:
+            raise CallbackPayloadValidationError("command result command_code is required")
+        source_event_id = _require_result_source_event_id(payload)
+        return await self._service.accept_command_result(
             db,
-            provider_code="ECS",
-            event_type=canonical_result_type,
-            source_event_id=_require_result_source_event_id(payload),
-            payload_hash=_canonical_payload_hash(payload),
-            kind="COMMAND_RESULT",
-            payload_json=dict(payload),
-            payload_schema_version=1,
+            command_code=command_code,
+            source_event_id=source_event_id,
+            device_code=_resolve_first_str(payload, ("device_code",)),
+            workline_id=workline_id,
+            device_id=device_id,
+            command_id=command_id,
+            correlation_id=correlation_id,
             trace_id=trace_id,
             event_id=event_id,
             causation_id=causation_id,
-            correlation_id=correlation_id,
+            payload_json=dict(payload),
             processing_required=processing_required,
         )
 
