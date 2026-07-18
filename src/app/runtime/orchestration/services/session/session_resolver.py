@@ -28,15 +28,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.repositories.command_repository import DeviceCommandRepository
 from src.app.rack.repositories import RackTaskRepository, rack_task_repository
-from src.app.runtime.capability_catalog import (
-    get_workline_contract_version,
-    resolve_workline_business_key,
-)
 from src.app.runtime.orchestration.business_identity_bridge import resolve_payload_display_identity
 from src.app.runtime.orchestration.models.session import RunMode, SessionStatus, WorklineSession
 from src.app.runtime.orchestration.repositories.session_repository import (
     WorklineSessionRepository,
     workline_session_repository,
+)
+from src.app.runtime.workline_plugins.registry import (
+    get_workline_contract_version,
+    resolve_workline_business_key,
 )
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.domain.run_mode import normalize_run_mode

@@ -22,7 +22,7 @@ from src.app.runtime.orchestration.models.session import (
     RuntimeReconciliationState,
     SessionStatus,
 )
-from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult, OrchestratorService
+from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
 from src.app.runtime.orchestration.runtime_intent import BlockScope, RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
 from src.app.runtime.orchestration.services.reconciliation.runtime_reconciliation_service_impl import (
@@ -34,7 +34,15 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxWriteBackService,
     WriteBackState,
 )
+from src.app.runtime.system_capabilities.outcomes import ContractViolation
+from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
+    RoughSorterBindingSnapshot,
+)
+from src.app.runtime.workline_plugins.contracts import PluginContext
+from src.app.runtime.workline_plugins.rough_sorter.config import RoughSorterConfig
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as ROUGH_SORTER_DEFINITION
+from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts, decide
+from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
 from src.utils.timezone import timezone
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -323,28 +331,55 @@ class _RecordingDb:
 async def _process_case(case_id: str, *, payload: dict[str, Any] | None = None) -> list[RuntimeIntent]:
     case = _case(case_id)
     event_type = case["trigger"]["event_type"]
-    inbox_kind = "DEVICE_EVENT" if event_type == "SCAN_COMPLETED" else event_type
-    result = await OrchestratorService(lock_provider=lambda _lock_key: _noop_lock()).process_inbox(
-        session=SimpleNamespace(id=1, contract_version="rough_sorter.v2"),
-        workline=SimpleNamespace(
-            contract_version="rough_sorter.v2",
-            plugin_key="rough_sorter",
-            config={"pipeline_input_location": "PIPELINE-IN-01", "ng_location": "NG-01"},
-            runtime_config_json={},
-        ),
-        inbox=SimpleNamespace(
-            kind=inbox_kind,
-            event_type=event_type,
-            payload_json=deepcopy(payload if payload is not None else case["trigger"]["payload"]),
-            trace_id=f"trace-{case_id.lower()}",
-        ),
-        devices_by_role={},
-        services=SimpleNamespace(),
-        trace_id=f"trace-{case_id.lower()}",
+    raw_input = deepcopy(payload if payload is not None else case["trigger"]["payload"])
+    route = "SCAN_COMPLETED" if event_type == "SCAN_COMPLETED" else "PICK_AND_PUT_RESULT"
+    logical_input = ROUGH_SORTER_DEFINITION.parsers[route](raw_input)
+    command_code = raw_input.get("command_code") if isinstance(raw_input.get("command_code"), str) else None
+    state = RoughSorterState(
+        phase="READY" if route == "SCAN_COMPLETED" else "PICK_TO_PIPELINE",
+        current_correlation=command_code,
+    )
+    config = RoughSorterConfig.model_validate(
+        {
+            "device_roles": {
+                "input_arm": "ROUGH_SORTER_INPUT_ARM",
+                "conveyor": "ROUGH_SORTER_CONVEYOR",
+                "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+            },
+            "pipeline_input_location": "PIPELINE-IN-01",
+            "pipeline_output_location": "PIPELINE-OUT-01",
+            "ng_location": "NG-01",
+            "warehouse_code": "WH-01",
+            "owner_code": "OWNER-01",
+            "provider_profile": "wms.2026-07-06.material-flow.sandbox",
+        }
+    )
+    facts = RoughSorterFacts(
+        binding_snapshot=RoughSorterBindingSnapshot(
+            binding_id=1,
+            binding_version=1,
+            profile_identity="wms.2026-07-06.material-flow.sandbox",
+            plugin_config_hash="0" * 64,
+            generated_index_digest="1" * 64,
+        )
     )
 
-    assert result.success is True, result.error
-    return result.intents or []
+    class _NoQueryGateway:
+        async def execute(self, *_args: Any, **_kwargs: Any) -> Any:
+            return SimpleNamespace(
+                outcome=ContractViolation(error_code="QUERY_NOT_CONFIGURED", message="characterization"),
+                evidence=None,
+            )
+
+    decision = await decide(
+        logical_input,
+        state=state,
+        config=config,
+        facts=facts,
+        context=PluginContext(state=state),
+        gateway=_NoQueryGateway(),
+    )
+    return list(decision.intents)
 
 
 def test_bc05_characterization_hands_off_scan_decision_target_semantics() -> None:
@@ -396,20 +431,15 @@ async def test_rule_ng_pkg_id_variants_use_stable_scan_ng_reason(ng_keyword: str
 
 
 @pytest.mark.asyncio
-async def test_missing_pkg_id_current_behavior_remains_ng_flow_and_target_hold_is_gap() -> None:
+async def test_missing_pkg_id_uses_generated_plugin_hold_contract() -> None:
     case = _case("RS-SD-003")
     intents = await _process_case("RS-SD-003")
 
     assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-003"] == "gap"
-    assert _intent_signature(intents) == (
-        ("UPDATE_CONTEXT", None, None),
-        ("MARK_NG", None, None),
-        ("COMMAND", "MOVE_TO_NG", None),
-    )
+    assert _intent_signature(intents) == _expected_intent_signature(case)
     assert all(intent.kind != RuntimeIntentKind.CREATE_MATERIAL_UNIT for intent in intents)
-    mark_ng = next(intent for intent in intents if intent.kind == RuntimeIntentKind.MARK_NG)
-    assert mark_ng.reason_code == "BARCODE_INCOMPLETE"
-    assert _intent_signature(intents) != _expected_intent_signature(case)
+    [hold] = intents
+    assert hold.reason_code == "ROUGH_SORTER_CONTEXT_MISSING"
     assert case["expected_outcome"] == {"result": "HOLD", "reason_code": "ROUGH_SORTER_CONTEXT_MISSING"}
 
 
@@ -552,13 +582,13 @@ async def test_block_effect_holds_only_session_and_preserves_entity_statuses(
 
 
 @pytest.mark.asyncio
-async def test_success_command_result_only_continues_and_does_not_cover_measurement_wms_target() -> None:
+async def test_success_command_result_without_pinned_material_facts_holds() -> None:
     case = _case("RS-SD-004")
     intents = await _process_case("RS-SD-004")
 
     assert case["implementation_status"] == CURRENT_IMPLEMENTATION_STATUS["RS-SD-004"] == "gap"
-    assert _intent_signature(intents) == (("CONTINUE_NEXT", None, None),)
-    assert _intent_signature(intents) != _expected_intent_signature(case)
+    assert _intent_signature(intents) == (("BLOCK", None, "MATERIAL"),)
+    assert intents[0].reason_code == "ROUGH_SORTER_CONTEXT_MISSING"
     assert _expected_intent_signature(case) == (
         ("UPDATE_CONTEXT", None, None),
         ("COMMAND", "MOVE_FORWARD", None),

@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Any
 
 from src.app.runtime.capabilities.material_flow.contracts.six_in_one import SixInOne
-from src.app.runtime.capability_catalog import classify_workline_result, resolve_workline_business_key
 from src.app.runtime.normalization.classifiers.result_classifier import (
     classify_result,
     classify_result_category,
@@ -22,6 +21,7 @@ from src.app.runtime.normalization.contracts import (
     NormalizedDeviceEvent,
     NormalizedExternalCallback,
 )
+from src.app.runtime.workline_plugins.registry import classify_workline_result, resolve_workline_business_key
 from src.app.workline.utils import non_empty_str, payload_dict
 
 _ERROR_CODE_FIELDS = ("error_code", "code")

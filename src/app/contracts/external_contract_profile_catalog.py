@@ -5,10 +5,10 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from src.app.contracts.external_contract_profile import ExternalContractProfile
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-    from src.app.contracts.external_contract_profile import ExternalContractProfile
 
 
 class ExternalContractProfileCatalog:
@@ -85,4 +85,37 @@ def _canonical_profile_identity(profile: ExternalContractProfile) -> str:
     return f"{_canonical_provider_code(profile.provider_code)}.{profile.contract_version}.{profile.environment}"
 
 
-__all__ = ["ExternalContractProfileCatalog"]
+WMS_MATERIAL_FLOW_SANDBOX_PROFILE = ExternalContractProfile(
+    provider_code="WMS",
+    contract_version="2026-07-06.material-flow",
+    environment="sandbox",
+    runtime_capabilities_query=[
+        "WmsInventoryQueryPort.query_inventory",
+        "WmsMasterDataPort.get_material",
+    ],
+    runtime_capabilities_effect=[
+        "WmsFulfillmentPort.notify_pkg_binding",
+        "WmsInventoryTransactionPort.confirm_inbound",
+    ],
+    inbound_normalizers_event=["WMS_ROUGH_SORTER_INBOUND"],
+    inbound_normalizers_result=[],
+    timeout_retry_query_timeout_seconds=10,
+    timeout_retry_effect_timeout_seconds=30,
+    timeout_retry_retry_backoff_seconds=[1, 2, 4],
+    fixture_set_path="tests/fixtures/external_contracts/wms/default",
+    fixture_set_required_cases=["success"],
+)
+
+external_contract_profile_catalog = ExternalContractProfileCatalog((WMS_MATERIAL_FLOW_SANDBOX_PROFILE,))
+
+
+def list_external_contract_profiles() -> tuple[ExternalContractProfile, ...]:
+    return tuple(external_contract_profile_catalog._profiles.values())
+
+
+__all__ = [
+    "WMS_MATERIAL_FLOW_SANDBOX_PROFILE",
+    "ExternalContractProfileCatalog",
+    "external_contract_profile_catalog",
+    "list_external_contract_profiles",
+]

@@ -5,7 +5,7 @@ from types import MappingProxyType
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as _DEFINITION_0
 
 WORKLINE_PLUGIN_IDENTITIES = (("rough_sorter", "rough_sorter.v2"),)
-WORKLINE_PLUGIN_INDEX_DIGEST = "b39f78bf3a7821de989a6cb12c0d28e378c1842dfe171df75a89b510a2ffe765"
+WORKLINE_PLUGIN_INDEX_DIGEST = "34d4332b7066c2a294d8e783661b7a67d7cf890b0b0a576aeaaeeb040b3541cc"
 WORKLINE_PLUGIN_INDEX = MappingProxyType(
     {
         ("rough_sorter", "rough_sorter.v2"): _DEFINITION_0,

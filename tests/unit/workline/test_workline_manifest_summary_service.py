@@ -10,11 +10,10 @@ from src.app.workline.services.workline_service import WorkLineService
 workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
 
 
-def test_plugin_manifest_summary_accepts_raw_iterable_fields(monkeypatch) -> None:
+def test_plugin_definition_summary_accepts_raw_iterable_fields(monkeypatch) -> None:
     """manifest 摘要构建必须接受 tuple/list 等 raw iterable 字段。"""
 
-    manifest = SimpleNamespace(
-        contract_version="2026-07-10",
+    schema = SimpleNamespace(
         devices=(
             SimpleNamespace(
                 role="SCAN",
@@ -79,14 +78,14 @@ def test_plugin_manifest_summary_accepts_raw_iterable_fields(monkeypatch) -> Non
         ),
         pipeline_queues=(),
     )
-    definition = SimpleNamespace(capability_key="iterable_manifest", manifest=manifest)
+    definition = SimpleNamespace(plugin_key="iterable_definition", contract_version="2026-07-10", schema=schema)
     monkeypatch.setattr(
         workline_service_module,
         "get_workline_capability_definition",
-        lambda plugin_key: definition if plugin_key == "iterable_manifest" else None,
+        lambda plugin_key: definition if plugin_key == "iterable_definition" else None,
     )
 
-    summary = WorkLineService().get_plugin_manifest_summary("iterable_manifest")
+    summary = WorkLineService().get_plugin_definition_summary("iterable_definition")
 
     assert summary is not None
     assert summary.devices[0].hardware_capabilities == ["BARCODE", "RFID"]

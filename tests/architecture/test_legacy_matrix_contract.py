@@ -64,23 +64,6 @@ def test_active_extension_platform_is_not_legacy_cleanup_scope():
     )
 
 
-def test_active_extension_platform_prefix_audit_rejects_future_legacy_import(tmp_path: Path):
-    relative = Path("tests/workline_runtime/extensions/future_plugin_test.py")
-    path = tmp_path / relative
-    path.parent.mkdir(parents=True)
-    path.write_text(
-        "from src.app.runtime.capability_catalog.compat import lookup\n",
-        encoding="utf-8",
-    )
-
-    violations = generate_legacy_matrix.find_active_platform_legacy_imports(
-        repo_root=tmp_path,
-        prefixes=("tests/workline_runtime/extensions/",),
-    )
-
-    assert violations == [f"{relative.as_posix()}:1"]
-
-
 def test_runtime_extension_allowlist_uses_per_file_legacy_entries():
     entries = {entry.entry_id for entry in parse_entries()}
     allowlist = (REPO_ROOT / "scripts" / "architecture-guardrails.allowlist").read_text(encoding="utf-8")

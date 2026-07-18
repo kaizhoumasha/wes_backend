@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, ValidationError
 
-from src.app.contracts.external_contract_profile_catalog import ExternalContractProfileCatalog
+from src.app.contracts.external_contract_profile_catalog import (
+    ExternalContractProfileCatalog,
+    external_contract_profile_catalog,
+)
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
-from src.app.runtime.runtime_capability_catalog import RUNTIME_CAPABILITY_PROVIDER_PROFILES
 from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX, WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.workline.repositories.plugin_binding_repository import workline_plugin_binding_repository
@@ -68,7 +70,7 @@ class WorklinePluginBindingService:
         self.plugin_index = plugin_index
         self.capability_index = capability_index
         self.plugin_index_digest = plugin_index_digest
-        self.profile_catalog = profile_catalog or ExternalContractProfileCatalog(())
+        self.profile_catalog = profile_catalog or external_contract_profile_catalog
         self.clock = clock
 
     def manages(self, workline: Any) -> bool:
@@ -369,9 +371,7 @@ class WorklinePluginBindingService:
             raise PluginBindingAdmissionError("binding 已过期")
 
 
-workline_plugin_binding_service = WorklinePluginBindingService(
-    profile_catalog=ExternalContractProfileCatalog(RUNTIME_CAPABILITY_PROVIDER_PROFILES.values())
-)
+workline_plugin_binding_service = WorklinePluginBindingService(profile_catalog=external_contract_profile_catalog)
 
 __all__ = [
     "PluginBindingAdmissionError",

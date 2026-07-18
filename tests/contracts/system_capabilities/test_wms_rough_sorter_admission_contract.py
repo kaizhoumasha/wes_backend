@@ -8,9 +8,11 @@ from decimal import Decimal
 
 import pytest
 
-from src.app.contracts.external_contract_profile_catalog import ExternalContractProfileCatalog
+from src.app.contracts.external_contract_profile_catalog import (
+    WMS_MATERIAL_FLOW_SANDBOX_PROFILE,
+    ExternalContractProfileCatalog,
+)
 from src.app.runtime.capability_port_registry import CapabilityPortRegistry
-from src.app.runtime.runtime_capability_catalog import RUNTIME_CAPABILITY_PROVIDER_PROFILES
 from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
     SystemCapabilityMode,
@@ -38,6 +40,8 @@ from src.app.wms_integration.services.exceptions import (
     WmsTimeoutError,
     WmsUnavailableError,
 )
+
+RUNTIME_CAPABILITY_PROVIDER_PROFILES = {"WMS": WMS_MATERIAL_FLOW_SANDBOX_PROFILE}
 
 
 class FakeTypedClient:

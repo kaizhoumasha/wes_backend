@@ -28,16 +28,12 @@ from typing import TYPE_CHECKING, Annotated, Any, Self, TypedDict
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, ValidationError, model_validator
 
-from src.app.runtime.capability_catalog import parse_workline_six_in_one
 from src.app.runtime.capability_port_registry import CapabilityPortRegistry, RuntimeCapabilityContext
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     ErrorDomain,
-    ProblemClass,
-    map_failure_to_diagnostic,
 )
-from src.app.runtime.orchestration.effect_result import WriteBackDisposition
 from src.app.runtime.orchestration.repositories.material_unit_repository import (
     MaterialUnitRepository,
 )
@@ -55,9 +51,6 @@ from src.app.runtime.orchestration.runtime_intent import (
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
     _canonical_workline_session_id,
 )
-from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
-    RuntimeInboxOrchestratorDelegate,
-)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxReplayNotAllowed,
     RuntimeInboxReplaySourceValidation,
@@ -71,14 +64,12 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validati
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
-    WriteBackState,
     _is_late_or_duplicate_command_result_for_session,
     _payload_for_inbox,
     _record_duplicate_entry_archive_timeline,
     _record_late_command_result_archive_timeline,
     _require_fenced_update,
     _session_status_value,
-    _session_write_snapshot,
 )
 from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
 from src.app.runtime.system_capabilities.gateway import AttemptCloseReport, SystemCapabilityGateway
@@ -102,6 +93,7 @@ from src.app.runtime.workline_plugins.dispatcher import (
     PluginDispatchRequest,
     WorklinePluginDispatcher,
 )
+from src.app.runtime.workline_plugins.registry import parse_workline_six_in_one
 from src.app.workline.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
     WORKLINE_INBOX_PROCESSING_STALE_SECONDS,
@@ -120,7 +112,6 @@ from src.utils.value_normalization import (
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from src.app.runtime.orchestration.orchestrator_bridge import OrchestratorResult
     from src.app.runtime.system_capabilities.definition import SystemCapabilityDefinition
 
 
@@ -476,13 +467,6 @@ def _merge_result(target: ProcessResult, source: ProcessResult) -> None:
     target["resource_wait"] += source.get("resource_wait", 0)
 
 
-def _problem_class_for_error_domain(error_domain: ErrorDomain | None) -> ProblemClass | None:
-    """为 UNKNOWN 等兜底码补充更接近现场语义的问题大类."""
-    if error_domain in {ErrorDomain.DEVICE, ErrorDomain.NETWORK}:
-        return ProblemClass.HARDWARE
-    return None
-
-
 class RuntimeInboxProcessorBridge:
     """RuntimeInbox 三阶段 processor composition.
 
@@ -494,7 +478,6 @@ class RuntimeInboxProcessorBridge:
         self,
         *,
         validation_service: RuntimeInboxValidationService | None = None,
-        processor_service: RuntimeInboxOrchestratorDelegate | None = None,
         writeback_service: RuntimeInboxWriteBackService | None = None,
         inbox_service: RuntimeInboxService | None = None,
         inbox_repository: RuntimeInboxRepository | None = None,
@@ -505,14 +488,13 @@ class RuntimeInboxProcessorBridge:
         material_unit_repository: MaterialUnitRepository | None = None,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
-        self._processor_service = processor_service or RuntimeInboxOrchestratorDelegate()
         self._inbox_service = inbox_service or runtime_inbox_service
         self._writeback_service = writeback_service or RuntimeInboxWriteBackService(inbox_service=self._inbox_service)
         self._inbox_repository = inbox_repository or runtime_inbox_repository
         self._replay_source_validator = replay_source_validator or RuntimeInboxReplaySourceValidator(
             self._inbox_repository
         )
-        # 平台 binding 只进入 generated dispatcher；legacy 仅服务从未绑定的迁移路径。
+        # 平台 binding 只进入 generated dispatcher；destructive switch 后禁止 legacy fallback。
         self._plugin_attempt_runner = plugin_attempt_runner or GeneratedPluginAttemptRunner()
         self._recorded_replay_service = recorded_replay_service or TimelineRecordedReplayService()
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
@@ -930,86 +912,22 @@ class RuntimeInboxProcessorBridge:
                     devices_by_role=devices_by_role,
                 )
 
-            # ========== Stage 2: Orchestration (delegated) ==========
-            write_state = WriteBackState()
-            session_snapshot = _session_write_snapshot(session)
-            sse_workline_id = resolve_entity_id(workline)
-            sse_session_id = resolve_entity_id(session)
-            write_callback = self._writeback_service.build_write_callback(
-                db,
-                session=session,
-                workline=workline,
-                inbox=inbox,
-                devices_by_role=devices_by_role,
-                device=device,
-                command=command,
-                inbox_pk=inbox_pk,
-                session_snapshot=session_snapshot,
-                sse_workline_id=sse_workline_id,
-                sse_session_id=sse_session_id,
-                processor_token=processor_token,
-                state=write_state,
-            )
-
-            orch_result: "OrchestratorResult" = await self._processor_service.process(  # noqa: UP037
-                db,
-                session=session,
-                workline=workline,
-                inbox=inbox,
-                devices_by_role=devices_by_role,
-                services=services,
-                trace_id=getattr(inbox, "trace_id", None) or "",
-                write_callback=write_callback,
-            )
-
-            # ========== Stage 3: Result dispatch ==========
-            if orch_result.success:
-                if not write_state.write_effects_applied:
-                    raise RuntimeError("WRITE lock callback was not executed for successful orchestrator result")
-                if write_state.disposition == WriteBackDisposition.RESOURCE_RETRY:
-                    result["resource_wait"] += 1
-                    logger.info(f"Inbox {inbox_pk} resource wait, parked for retry")
-                else:
-                    result["success"] += 1
-                    logger.info(f"Inbox {inbox_pk} 处理成功")
-                if write_state.enqueue_outbox_dispatch:
-                    from src.core.task_queue_gateway import task_queue_gateway
-
-                    task_queue_gateway.enqueue_outbox(limit=50)
-            else:
-                error_msg = orch_result.error or "Unknown error"
-                mapped_error_code, mapped_error_domain = map_failure_to_diagnostic(
-                    failure=None,
-                    error_code=orch_result.error_code,
-                )
-                await _record_diagnostic(
+            # Switch gate 已证明无活动未绑定 Workline；任何遗漏必须 fail closed。
+            error_msg = "PLUGIN_BINDING_REQUIRED"
+            _require_fenced_update(
+                await self.inbox_service.mark_failed(
                     db,
-                    inbox=diagnostic_inbox,
-                    error_code=mapped_error_code,
-                    error_domain=mapped_error_domain,
-                    problem_class=_problem_class_for_error_domain(mapped_error_domain),
-                    message=error_msg,
-                    session=session,
-                    workline=workline,
-                    device=device,
-                    command=command,
-                )
-                _require_fenced_update(
-                    await self.inbox_service.mark_failed(
-                        db,
-                        inbox_id=inbox_pk,
-                        lease_token=processor_token,
-                        error_code=mapped_error_code.value,
-                        error_message=error_msg,
-                        retryable=False,
-                    ),
-                    action="mark_failed",
                     inbox_id=inbox_pk,
-                )
-                await db.commit()
-                result["failed"] += 1
-                logger.warning(f"Inbox {inbox_pk} 处理失败: {error_msg}")
-
+                    lease_token=processor_token,
+                    error_code=error_msg,
+                    error_message=error_msg,
+                    retryable=False,
+                ),
+                action="mark_failed",
+                inbox_id=inbox_pk,
+            )
+            await db.commit()
+            result["failed"] += 1
             result["processed"] += 1
 
         except SessionResolveError as e:

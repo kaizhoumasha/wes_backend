@@ -10,12 +10,9 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel
 
-from src.app.runtime.capability_catalog import WORKLINE_CAPABILITY_CATALOG, WorklineCapabilityDefinition
-
 # 注册 WorklineSession 元数据：runtime_inbox 在 SQLite 中通过外键引用它。
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.database.sqlite_schema import configure_sqlite_schemas
-from tests.helpers.workline_test_plugin import CONTRACT_VERSION, PLUGIN_KEY, TestWorklinePlugin
 
 # 使用内存数据库进行测试
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
@@ -70,25 +67,3 @@ async def db_session(db_engine):
     async with async_session() as session:
         yield session
         await session.rollback()
-
-
-@pytest.fixture
-def registered_test_workline_plugin():
-    """临时注册测试专用能力，避免生产 catalog 保留测试合同。"""
-
-    old_catalog = dict(WORKLINE_CAPABILITY_CATALOG)
-    capability = TestWorklinePlugin()
-    WORKLINE_CAPABILITY_CATALOG[PLUGIN_KEY] = WorklineCapabilityDefinition(
-        capability_key=PLUGIN_KEY,
-        contract_version=CONTRACT_VERSION,
-        manifest=TestWorklinePlugin.manifest,
-        business_key_resolver=capability.resolve_business_key,
-        result_classifier=capability.classify_result,
-        material_identity_resolver=capability.resolve_material_identity,
-        ng_reason_resolver=capability.list_ng_reasons,
-    )
-    try:
-        yield
-    finally:
-        WORKLINE_CAPABILITY_CATALOG.clear()
-        WORKLINE_CAPABILITY_CATALOG.update(old_catalog)

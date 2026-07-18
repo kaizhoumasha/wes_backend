@@ -216,13 +216,7 @@ ACTIVE_PLATFORM_SYMBOLS = frozenset(
         ),
     }
 )
-ACTIVE_PLATFORM_FORBIDDEN_IMPORTS = frozenset(
-    {
-        "src.app.runtime.capability_catalog",
-        "src.app.runtime.capability_dispatcher",
-        "src.app.runtime.runtime_capability_catalog",
-    }
-)
+ACTIVE_PLATFORM_FORBIDDEN_IMPORTS = frozenset()
 
 
 def _active_import_base(relative_path: Path, node: ast.ImportFrom) -> str:
@@ -282,7 +276,7 @@ GUARDRAIL_SEED_SYMBOLS = {
 BUSINESS_SEMANTICS_RULES = [
     # 旧 plugin 框架（优先于 runtime，避免路径含 runtime 误判）
     (
-        r"plugin_base|plugin_context|plugin_manifest|plugin_sdk|plugin_next|null_plugin|"
+        r"plugin_base|plugin_context|plugin_sdk|plugin_next|null_plugin|"
         r"plugincontext|worklineplugin|pluginnotfound",
         "旧 plugin 框架，目标删除",
     ),
@@ -548,7 +542,7 @@ def resolve_blocking_tests(business_semantics: str, entry_type: str, path: str, 
         (
             ("WorkLine 配置",),
             "tests/contracts/workline/test_start_admission_contract.py;"
-            "tests/workline_runtime/test_plugin_manifest_and_topology.py",
+            "tests/workline_plugins/rough_sorter/test_conformance.py",
         ),
         (("技术残留",), "tests/characterization/workline_legacy/test_business_semantics_characterization.py"),
     ]

@@ -13,10 +13,6 @@ from src.app.runtime.capabilities.material_flow.contracts.material_identity impo
     MaterialIdentityResolutionStatus,
 )
 from src.app.runtime.capabilities.material_flow.contracts.ng_reason import NgReasonDefinition, build_ng_reason_catalog
-from src.app.runtime.capability_catalog import (
-    list_workline_ng_reasons,
-    resolve_workline_material_identity,
-)
 from src.app.runtime.orchestration.models.runtime_hold import (
     MaterialDisposition,
     NgReturnItem,
@@ -26,6 +22,10 @@ from src.app.runtime.orchestration.models.runtime_hold import (
     NgReasonSource as RuntimeNgReasonSource,
 )
 from src.app.runtime.orchestration.repositories.runtime_hold_repository import runtime_hold_repository
+from src.app.runtime.workline_plugins.registry import (
+    list_workline_ng_reasons,
+    resolve_workline_material_identity,
+)
 from src.utils.value_normalization import as_dict
 
 if TYPE_CHECKING:

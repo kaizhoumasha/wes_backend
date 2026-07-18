@@ -110,7 +110,7 @@ def _workline_openapi_component(component_name: str) -> dict[str, object]:
     return app.openapi()["components"]["schemas"][component_name]
 
 
-def test_plugin_manifest_route_requires_workline_list_permission() -> None:
+def test_plugin_definition_route_requires_workline_list_permission() -> None:
     route = next(
         route
         for route in workline_api.router.routes
@@ -203,7 +203,7 @@ async def test_plane_snapshot_route_records_read_audit(monkeypatch: pytest.Monke
     service.record_read_audit.assert_awaited_once_with(db, view="snapshot", workline_id=7, workline_code="WL-7")
 
 
-def test_plugin_manifest_route_accepts_encoded_slash_plugin_keys() -> None:
+def test_plugin_definition_route_accepts_encoded_slash_plugin_keys() -> None:
     route = next(
         route
         for route in workline_api.router.routes
@@ -223,7 +223,7 @@ def test_plugin_manifest_route_accepts_encoded_slash_plugin_keys() -> None:
     assert child_scope["path_params"]["plugin_key"] == "rough%20sorter%2F1"
 
 
-def test_plugin_manifest_openapi_exposes_contract_version_query() -> None:
+def test_plugin_definition_openapi_exposes_contract_version_query() -> None:
     app = FastAPI()
     app.include_router(workline_api.router)
 
@@ -268,21 +268,21 @@ async def test_list_plugin_options_returns_selector_only_fields(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_get_plugin_manifest_returns_registered_plugin_summary(monkeypatch) -> None:
+async def test_get_plugin_definition_returns_registered_plugin_summary(monkeypatch) -> None:
     summary = _manifest_summary()
     seen_requests: list[tuple[str, str | None]] = []
 
-    def get_plugin_manifest_summary(
+    def get_plugin_definition_summary(
         plugin_key: str,
         contract_version: str | None = None,
     ) -> WorkLinePluginManifestSummary:
         seen_requests.append((plugin_key, contract_version))
         return summary
 
-    service = SimpleNamespace(get_plugin_manifest_summary=get_plugin_manifest_summary)
+    service = SimpleNamespace(get_plugin_definition_summary=get_plugin_definition_summary)
     monkeypatch.setattr(workline_api, "workline_service", service)
 
-    response = await workline_api.get_workline_plugin_manifest(
+    response = await workline_api.get_workline_plugin_definition(
         "demo_plugin",
         contract_version="demo.v1",
     )
@@ -308,21 +308,21 @@ async def test_get_plugin_manifest_returns_registered_plugin_summary(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_get_plugin_manifest_decodes_encoded_plugin_key(monkeypatch) -> None:
+async def test_get_plugin_definition_decodes_encoded_plugin_key(monkeypatch) -> None:
     seen_plugin_keys: list[str] = []
     summary = _manifest_summary(plugin_key="rough sorter/1")
 
-    def get_plugin_manifest_summary(
+    def get_plugin_definition_summary(
         plugin_key: str,
         contract_version: str | None = None,
     ) -> WorkLinePluginManifestSummary:
         seen_plugin_keys.append(plugin_key)
         return summary
 
-    service = SimpleNamespace(get_plugin_manifest_summary=get_plugin_manifest_summary)
+    service = SimpleNamespace(get_plugin_definition_summary=get_plugin_definition_summary)
     monkeypatch.setattr(workline_api, "workline_service", service)
 
-    response = await workline_api.get_workline_plugin_manifest("rough%20sorter%2F1")
+    response = await workline_api.get_workline_plugin_definition("rough%20sorter%2F1")
 
     assert response["code"] == "1000"
     assert response["data"] == summary
@@ -330,28 +330,28 @@ async def test_get_plugin_manifest_decodes_encoded_plugin_key(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_get_plugin_manifest_returns_not_found_for_unknown_plugin(monkeypatch) -> None:
-    service = SimpleNamespace(get_plugin_manifest_summary=lambda plugin_key, contract_version=None: None)
+async def test_get_plugin_definition_returns_not_found_for_unknown_plugin(monkeypatch) -> None:
+    service = SimpleNamespace(get_plugin_definition_summary=lambda plugin_key, contract_version=None: None)
     monkeypatch.setattr(workline_api, "workline_service", service)
 
-    response = await workline_api.get_workline_plugin_manifest("unknown_plugin")
+    response = await workline_api.get_workline_plugin_definition("unknown_plugin")
 
     assert response["code"] == ResourceErrorCode.NOT_FOUND.code
     assert response["message"] == "工作线插件不存在: unknown_plugin"
 
 
 @pytest.mark.asyncio
-async def test_get_plugin_manifest_returns_validation_error_for_invalid_manifest(monkeypatch) -> None:
-    def get_plugin_manifest_summary(
+async def test_get_plugin_definition_returns_validation_error_for_invalid_schema(monkeypatch) -> None:
+    def get_plugin_definition_summary(
         plugin_key: str,
         contract_version: str | None = None,
     ) -> None:
         raise TypeError(f"工作线插件 {plugin_key} 缺少有效 manifest")
 
-    service = SimpleNamespace(get_plugin_manifest_summary=get_plugin_manifest_summary)
+    service = SimpleNamespace(get_plugin_definition_summary=get_plugin_definition_summary)
     monkeypatch.setattr(workline_api, "workline_service", service)
 
-    response = await workline_api.get_workline_plugin_manifest("broken_plugin")
+    response = await workline_api.get_workline_plugin_definition("broken_plugin")
 
     assert response["code"] == ClientErrorCode.VALIDATION_ERROR.code
     assert response["message"] == "工作线插件 manifest 无效: broken_plugin: 工作线插件 broken_plugin 缺少有效 manifest"
@@ -368,7 +368,7 @@ def test_openapi_workline_plugin_option_excludes_old_ability_fields() -> None:
     }
 
 
-def test_openapi_workline_plugin_manifest_summary_includes_new_manifest_fields() -> None:
+def test_openapi_workline_plugin_definition_summary_includes_schema_fields() -> None:
     schema = _workline_openapi_component("WorkLinePluginManifestSummary")
 
     assert set(schema["properties"]) == {

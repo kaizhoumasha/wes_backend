@@ -297,3 +297,77 @@ def test_new_extension_platform_directories_cannot_be_allowlisted() -> None:
 
     assert all("|src/app/runtime/workline_plugins/" not in row for row in rows)
     assert all("|src/app/runtime/system_capabilities/" not in row for row in rows)
+
+
+def test_destructive_switch_removes_legacy_runtime_catalog_sources() -> None:
+    legacy_sources = (
+        "src/app/runtime/capability_dispatcher.py",
+        "src/app/runtime/runtime_capability_catalog.py",
+        "src/app/runtime/capability_catalog.py",
+        "src/app/workline/domain/plugin_manifest.py",
+        "src/app/workline/domain/contracts/manifests/rough_sorter.yaml",
+        "src/app/workline/domain/contracts/manifests/smt_sorting_inbound.yaml",
+    )
+
+    assert all(not (REPO_ROOT / relative_path).exists() for relative_path in legacy_sources)
+
+
+def test_active_sources_have_zero_legacy_runtime_catalog_references() -> None:
+    legacy_tokens = (
+        "src.app.runtime.capability_catalog",
+        "src.app.runtime.runtime_capability_catalog",
+        "src.app.runtime.capability_dispatcher",
+        "WorklinePluginManifest",
+        "plugin_manifest",
+        "contracts/manifests",
+    )
+    active_roots = (REPO_ROOT / "src", REPO_ROOT / "scripts")
+    detector_sources = {
+        REPO_ROOT / "scripts/architecture-guardrails.sh",
+        REPO_ROOT / "scripts/generate_legacy_matrix.py",
+    }
+    violations: list[str] = []
+    for active_root in active_roots:
+        for path in active_root.rglob("*"):
+            if not path.is_file() or path.suffix not in {".py", ".sh"}:
+                continue
+            if path in detector_sources:
+                continue
+            source = path.read_text(encoding="utf-8")
+            if any(token in source for token in legacy_tokens):
+                violations.append(str(path.relative_to(REPO_ROOT)))
+
+    assert violations == []
+
+
+def test_orchestrator_and_effect_applier_have_no_workline_specific_routing() -> None:
+    routing_sources = (
+        REPO_ROOT / "src/app/runtime/orchestration/orchestrator_bridge.py",
+        REPO_ROOT / "src/app/runtime/orchestration/runtime_intent_effects.py",
+    )
+    forbidden_tokens = (
+        "ROUGH_SORTER_PLUGIN_KEY",
+        "SMT_SORTING_INBOUND_PLUGIN_KEY",
+        "EVENT_SCAN_COMPLETED",
+        "EVENT_SOURCE_PICK_REQUESTED",
+        "ACTION_PICK_AND_PUT",
+        "ACTION_MOVE_TO_NG",
+        "BUSINESS_TIMEOUT",
+    )
+
+    violations = {
+        str(path.relative_to(REPO_ROOT)): [
+            token for token in forbidden_tokens if token in path.read_text(encoding="utf-8")
+        ]
+        for path in routing_sources
+    }
+    assert {path: tokens for path, tokens in violations.items() if tokens} == {}
+
+
+def test_runtime_routing_has_one_generated_workline_plugin_dispatcher() -> None:
+    dispatcher_source = (REPO_ROOT / "src/app/runtime/workline_plugins/dispatcher.py").read_text(encoding="utf-8")
+    runtime_sources = tuple((REPO_ROOT / "src/app/runtime").rglob("*.py"))
+
+    assert "from src.app.runtime.workline_plugins.generated_index import" in dispatcher_source
+    assert sum("class WorklinePluginDispatcher" in path.read_text(encoding="utf-8") for path in runtime_sources) == 1
+    assert sum("class RuntimeCapabilityDispatcher" in path.read_text(encoding="utf-8") for path in runtime_sources) == 0

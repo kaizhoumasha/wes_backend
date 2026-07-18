@@ -18,7 +18,6 @@ from src.app.device.repositories import (
     device_command_repository,
     device_repository,
 )
-from src.app.runtime.capability_catalog import get_workline_capability_definition
 from src.app.runtime.orchestration.models.operation import (
     ResolveRuntimeReconciliationRequest,
     SandboxEventTemplate,
@@ -45,6 +44,7 @@ from src.app.runtime.orchestration.services.runtime_inbox import (
     RuntimeInboxReplayNotAllowed,
     RuntimeInboxService,
 )
+from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 from src.app.sys.models import SystemOutboxDispatchType, SystemOutboxStatus
 from src.app.sys.repositories import SystemOutboxRepository, system_outbox_repository
 from src.app.workline.models.workline import WorkLineRunMode
@@ -1291,12 +1291,12 @@ class WorklineOperationService(BaseService[Any, Any]):
         if plugin_def is None:
             return SandboxTemplatesResponse()
 
-        manifest = getattr(plugin_def, "manifest", None)
-        if manifest is None:
+        schema = getattr(plugin_def, "schema", None)
+        if schema is None:
             return SandboxTemplatesResponse()
 
         # 自动从 manifest.events 生成 Event 模板（可按设备角色过滤）
-        event_templates = self._generate_event_templates_from_manifest_events(manifest, device_role, device_code)
+        event_templates = self._generate_event_templates_from_manifest_events(schema, device_role, device_code)
         result_templates: list[SandboxResultTemplate] = []
 
         return SandboxTemplatesResponse(

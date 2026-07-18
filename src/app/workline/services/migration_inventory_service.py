@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import ValidationError
 
-from src.app.runtime.capability_catalog import list_workline_capability_definitions
+from src.app.contracts.external_contract_profile_catalog import list_external_contract_profiles
 from src.app.runtime.orchestration.repository_wiring import workline_repository
-from src.app.runtime.runtime_capability_catalog import RUNTIME_CAPABILITY_PROVIDER_PROFILES
+from src.app.runtime.workline_plugins.registry import list_workline_capability_definitions
 from src.app.workline.models import (
     WorkLine,
     WorklineMigrationInventoryIssue,
@@ -68,7 +68,7 @@ class _NormalizedCapabilityDefinition:
 
 
 def _load_provider_profiles() -> Iterable[Any]:
-    return RUNTIME_CAPABILITY_PROVIDER_PROFILES.values()
+    return list_external_contract_profiles()
 
 
 class WorklineMigrationInventoryService:
@@ -166,9 +166,11 @@ class WorklineMigrationInventoryService:
     def _build_capability_catalog(definitions: Iterable[Any]) -> dict[str, _NormalizedCapabilityDefinition]:
         catalog: dict[str, _NormalizedCapabilityDefinition] = {}
         for definition in definitions:
-            capability_key = WorklineMigrationInventoryService._normalize_catalog_string(
-                getattr(definition, "capability_key", _MISSING), "capability_key"
-            )
+            source_key = getattr(definition, "plugin_key", _MISSING)
+            if source_key is _MISSING:
+                # 测试注入只验证 inventory 的通用边界；生产 Definition 固定使用 plugin_key。
+                source_key = getattr(definition, "capability_key", _MISSING)
+            capability_key = WorklineMigrationInventoryService._normalize_catalog_string(source_key, "plugin_key")
             contract_version = WorklineMigrationInventoryService._normalize_catalog_string(
                 getattr(definition, "contract_version", _MISSING), "contract_version"
             )
@@ -440,33 +442,59 @@ class WorklineMigrationInventoryService:
         catalog_version: str | None,
         reference_total: int,
     ) -> tuple[WorklineMigrationInventoryIssue, ...]:
-        issue_specs: list[tuple[WorklineMigrationInventoryIssueCode, str]] = []
+        issue_specs: list[tuple[WorklineMigrationInventoryIssueCode, WorklineMigrationInventorySeverity, str]] = []
         if is_active is True and plugin_key is None:
-            issue_specs.append((WorklineMigrationInventoryIssueCode.ACTIVE_WITHOUT_PLUGIN, "启用作业线未配置插件"))
+            issue_specs.append(
+                (
+                    WorklineMigrationInventoryIssueCode.ACTIVE_WITHOUT_PLUGIN,
+                    WorklineMigrationInventorySeverity.BLOCKER,
+                    "启用作业线未配置插件",
+                )
+            )
         if is_active is True and configured_version is None:
             issue_specs.append(
-                (WorklineMigrationInventoryIssueCode.ACTIVE_WITHOUT_CONTRACT_VERSION, "启用作业线未配置合同版本")
+                (
+                    WorklineMigrationInventoryIssueCode.ACTIVE_WITHOUT_CONTRACT_VERSION,
+                    WorklineMigrationInventorySeverity.BLOCKER,
+                    "启用作业线未配置合同版本",
+                )
             )
         if plugin_key is not None and catalog_version is None:
-            issue_specs.append((WorklineMigrationInventoryIssueCode.UNKNOWN_PLUGIN, "配置插件不在 capability catalog"))
+            issue_specs.append(
+                (
+                    WorklineMigrationInventoryIssueCode.UNKNOWN_PLUGIN,
+                    WorklineMigrationInventorySeverity.BLOCKER
+                    if is_active is True
+                    else WorklineMigrationInventorySeverity.WARNING,
+                    "配置插件未进入 generated Plugin index，禁止激活",
+                )
+            )
         if plugin_key is not None and catalog_version is not None and configured_version != catalog_version:
             issue_specs.append(
-                (WorklineMigrationInventoryIssueCode.CONTRACT_VERSION_MISMATCH, "配置合同版本与 catalog 不一致")
+                (
+                    WorklineMigrationInventoryIssueCode.CONTRACT_VERSION_MISMATCH,
+                    WorklineMigrationInventorySeverity.BLOCKER,
+                    "配置合同版本与 catalog 不一致",
+                )
             )
         if reference_total > 0:
             issue_specs.append(
-                (WorklineMigrationInventoryIssueCode.RUNTIME_REFERENCES_PRESENT, "仍存在未完成运行态引用")
+                (
+                    WorklineMigrationInventoryIssueCode.RUNTIME_REFERENCES_PRESENT,
+                    WorklineMigrationInventorySeverity.BLOCKER,
+                    "仍存在未完成运行态引用",
+                )
             )
         try:
             issues = tuple(
                 WorklineMigrationInventoryIssue(
                     code=code,
-                    severity=WorklineMigrationInventorySeverity.BLOCKER,
+                    severity=severity,
                     message=message,
                     workline_id=workline_id,
                     line_code=line_code,
                 )
-                for code, message in issue_specs
+                for code, severity, message in issue_specs
             )
         except ValidationError as exc:
             raise WorklineMigrationInventoryInvariantError(

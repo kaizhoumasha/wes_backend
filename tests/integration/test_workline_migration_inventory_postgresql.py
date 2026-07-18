@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from scripts import workline_migration_inventory as inventory_cli
 from src.app.device.models.command import CommandStatus, DeviceCommand
 from src.app.device.models.device import Device, DeviceStatus
-from src.app.runtime.capability_catalog import list_workline_capability_definitions
 from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
@@ -28,6 +27,7 @@ from src.app.runtime.orchestration.models.session import SessionStatus, Workline
 from src.app.runtime.orchestration.repository_wiring import workline_repository
 from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
 from src.app.runtime.orchestration.runtime_intent_log import RuntimeIntentLog
+from src.app.runtime.workline_plugins.registry import list_workline_capability_definitions
 from src.app.sys.models.outbox import (
     SystemOutbox,
     SystemOutboxDispatchType,

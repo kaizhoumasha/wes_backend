@@ -34,7 +34,7 @@ def test_rough_sorter_inbound_characterization_inputs_extracted():
         "tests/fixtures/workline_contract/rough_sorter/scan_decision_cases.json",
         "tests/contracts/workline/test_rough_sorter_inbound_contract.py",
         "tests/contracts/workline/test_rough_sorter_scan_decision_spec.py",
-        "tests/workline_runtime/test_runtime_capability_dispatcher.py",
+        "tests/workline_plugins/rough_sorter/test_handlers.py",
         "tests/workline_runtime/test_sorter_inbound_runtime_service.py",
     ]
     _assert_characterization_sources_exist(sources)
@@ -65,7 +65,7 @@ def test_sorter_inbound_characterization_fixture_draft():
     draft_sources = [
         "docs/archive/legacy-workline-plugins/src-workline_plugins/smt_sorting_inbound/plugin.py",
         "docs/archive/legacy-workline-plugins/src-workline_plugins/smt_sorting_inbound/flow_service.py",
-        "src/app/runtime/capability_catalog.py",
+        "src/app/runtime/workline_plugins/rough_sorter/domain_contract.py",
         "src/app/runtime/capabilities/material_flow/sorter_inbound_runtime_service.py",
         "src/app/runtime/orchestration/runtime_intent_log.py",
         "tests/contracts/workline/test_rough_sorter_inbound_contract.py",

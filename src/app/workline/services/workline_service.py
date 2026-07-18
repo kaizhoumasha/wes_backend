@@ -9,12 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.app.device.models import parse_device_capabilities
 from src.app.device.repositories import device_repository
-from src.app.runtime.capability_catalog import (
-    get_workline_capability_definition,
-    get_workline_contract_version,
-    list_workline_capability_definitions,
-    validate_workline_capability_assignment,
-)
 from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
 from src.app.runtime.orchestration.models.rack_position import WorklineRackPosition
 from src.app.runtime.orchestration.repositories.rack_position_repository import workline_rack_position_repository
@@ -24,6 +18,12 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     workline_runtime_status_projection_service,
 )
 from src.app.runtime.orchestration.topology_bridge import WorklineTopologyView
+from src.app.runtime.workline_plugins.registry import (
+    get_workline_capability_definition,
+    get_workline_contract_version,
+    list_workline_capability_definitions,
+    validate_workline_capability_assignment,
+)
 from src.app.workline.domain.run_mode import (
     is_sandbox_allowed_environment,
     is_simulation_run_mode,
@@ -278,68 +278,64 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
         options: list[WorkLinePluginOption] = []
         for definition in list_workline_capability_definitions():
-            manifest = definition.manifest
-            plugin_key = definition.capability_key
+            plugin_key = definition.plugin_key
             options.append(
                 WorkLinePluginOption(
                     plugin_key=plugin_key,
                     label=plugin_key,
-                    contract_versions=[manifest.contract_version],
-                    default_contract_version=manifest.contract_version,
+                    contract_versions=[definition.contract_version],
+                    default_contract_version=definition.contract_version,
                 )
             )
         return options
 
-    def get_plugin_manifest_summary(
+    def get_plugin_definition_summary(
         self,
         plugin_key: str,
         contract_version: str | None = None,
     ) -> WorkLinePluginManifestSummary | None:
-        """返回单个工作线能力 manifest 摘要。"""
+        """返回 Definition schema 与 binding 可组合的工作线插件摘要。"""
 
         definition = get_workline_capability_definition(plugin_key)
         if definition is None:
             return None
 
-        manifest = definition.manifest
-        if contract_version and manifest.contract_version != contract_version:
+        schema = definition.schema
+        if contract_version and definition.contract_version != contract_version:
             return None
 
-        plugin_key = definition.capability_key
+        plugin_key = definition.plugin_key
         return WorkLinePluginManifestSummary(
             plugin_key=plugin_key,
-            contract_version=manifest.contract_version,
+            contract_version=definition.contract_version,
             devices=[
                 self._build_device_requirement_summary(device)
-                for device in self._manifest_sequence(manifest, plugin_key, "devices")
+                for device in self._manifest_sequence(schema, plugin_key, "devices")
             ],
             rack_positions=[
                 self._build_rack_position_summary(rack_position)
-                for rack_position in self._manifest_sequence(manifest, plugin_key, "rack_positions")
+                for rack_position in self._manifest_sequence(schema, plugin_key, "rack_positions")
             ],
-            topology=self._build_topology_summary(self._manifest_attr(manifest, plugin_key, "topology")),
+            topology=self._build_topology_summary(self._manifest_attr(schema, plugin_key, "topology")),
             events=[
                 self._build_event_binding_summary(event)
-                for event in self._manifest_sequence(manifest, plugin_key, "events")
+                for event in self._manifest_sequence(schema, plugin_key, "events")
             ],
             commands=[
                 self._build_command_binding_summary(command)
-                for command in self._manifest_sequence(manifest, plugin_key, "commands")
+                for command in self._manifest_sequence(schema, plugin_key, "commands")
             ],
             resource_boundaries=[
                 self._build_resource_boundary_summary(boundary)
-                for boundary in self._manifest_sequence(manifest, plugin_key, "resource_boundaries")
+                for boundary in self._manifest_sequence(schema, plugin_key, "resource_boundaries")
             ],
             session_subject=self._build_session_subject_summary(
-                getattr(manifest, "session_subject", None),
+                schema.session_subject,
             ),
             state_machines=[
-                self._build_state_machine_summary(state_machine)
-                for state_machine in getattr(manifest, "state_machines", ())
+                self._build_state_machine_summary(state_machine) for state_machine in schema.state_machines
             ],
-            pipeline_queues=[
-                self._build_pipeline_queue_summary(queue) for queue in getattr(manifest, "pipeline_queues", ())
-            ],
+            pipeline_queues=[self._build_pipeline_queue_summary(queue) for queue in schema.pipeline_queues],
         )
 
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> WorkLine | None:
@@ -668,9 +664,9 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 )
             ]
 
-        manifest = definition.manifest
+        manifest = definition.schema
         checks.append(self._check("PLUGIN_CONFIGURED", _OK, "INFO", {"plugin_key": plugin_key}))
-        expected_contract_version = manifest.contract_version
+        expected_contract_version = definition.contract_version
         checks.append(
             self._check(
                 "CONTRACT_VERSION_CURRENT",
@@ -1008,7 +1004,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
 
             raise BadRequestException(message=f"不支持的工作线插件: {plugin_key}")
         try:
-            _ = definition.manifest
+            _ = definition.schema
         except (TypeError, ValueError) as exc:
             from src.core.exceptions import BadRequestException
 

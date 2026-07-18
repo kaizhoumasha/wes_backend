@@ -2,8 +2,7 @@
 # 旧 runtime 入口删除后,本桥接承载对应正式边界。
 # 自引用 src.workline_runtime.device_ordering 已重定向到本目录 device_ordering
 # (stable ordering bridge)。
-# 自引用 src.workline_runtime.plugin_manifest (TYPE_CHECKING) 已重定向到
-# src.app.workline.domain.plugin_manifest (stable plugin manifest mirror)。
+# 拓扑校验只消费 generated Definition 的 typed schema。
 
 """WORKLINE 运行时拓扑视图。"""
 
@@ -16,7 +15,7 @@ from src.app.runtime.orchestration.device_ordering import device_sort_key
 from src.utils.value_normalization import as_dict, optional_int_attr, optional_str_attr
 
 if TYPE_CHECKING:
-    from src.app.workline.domain.plugin_manifest import WorklinePluginManifest
+    from src.app.runtime.workline_plugins.schema import WorklinePluginSchema
 
 
 def _string_set(value: Any) -> frozenset[str]:
@@ -121,19 +120,19 @@ class WorklineTopologyView:
         return self.devices_by_role.get(role, ())
 
 
-def validate_topology_manifest(manifest: WorklinePluginManifest, topology: WorklineTopologyView) -> None:
-    """校验工作线拓扑是否满足插件 manifest。"""
+def validate_topology_schema(plugin_key: str, schema: WorklinePluginSchema, topology: WorklineTopologyView) -> None:
+    """校验工作线拓扑是否满足 generated Definition schema。"""
 
-    for requirement in manifest.devices or ():
+    for requirement in schema.devices:
         devices = topology.devices_for_role(requirement.role)
         count = len(devices)
         if count < requirement.min_count:
             raise ValueError(
-                f"插件 {manifest.plugin_key} 要求角色 {requirement.role} 至少 {requirement.min_count} 个设备，当前 {count} 个"
+                f"插件 {plugin_key} 要求角色 {requirement.role} 至少 {requirement.min_count} 个设备，当前 {count} 个"
             )
         if requirement.max_count is not None and count > requirement.max_count:
             raise ValueError(
-                f"插件 {manifest.plugin_key} 要求角色 {requirement.role} 最多 {requirement.max_count} 个设备，当前 {count} 个"
+                f"插件 {plugin_key} 要求角色 {requirement.role} 最多 {requirement.max_count} 个设备，当前 {count} 个"
             )
 
         required_capabilities = frozenset(requirement.hardware_capabilities or ())
@@ -145,7 +144,7 @@ def validate_topology_manifest(manifest: WorklinePluginManifest, topology: Workl
                         f"设备 {device.device_code or device.device_id} 缺少能力: {', '.join(sorted(missing_capabilities))}"
                     )
 
-    for event in manifest.events:
+    for event in schema.events:
         category = getattr(getattr(event, "category", None), "value", getattr(event, "category", None))
         if category != "ENTRY_DEVICE":
             continue
@@ -156,20 +155,20 @@ def validate_topology_manifest(manifest: WorklinePluginManifest, topology: Workl
             for device in topology.devices_for_role(role)
         ):
             raise ValueError(
-                f"插件 {manifest.plugin_key} 事件 {event.event} 没有可用来源设备角色: {', '.join(source_device_roles)}"
+                f"插件 {plugin_key} 事件 {event.event} 没有可用来源设备角色: {', '.join(source_device_roles)}"
             )
 
-    for command in manifest.commands:
+    for command in schema.commands:
         if not any(
             device.supports_command(command.command) for device in topology.devices_for_role(command.target_device_role)
         ):
             raise ValueError(
-                f"插件 {manifest.plugin_key} 命令 {command.command} 没有可用目标设备角色: {command.target_device_role}"
+                f"插件 {plugin_key} 命令 {command.command} 没有可用目标设备角色: {command.target_device_role}"
             )
 
 
 __all__ = [
     "TopologyDeviceSnapshot",
     "WorklineTopologyView",
-    "validate_topology_manifest",
+    "validate_topology_schema",
 ]

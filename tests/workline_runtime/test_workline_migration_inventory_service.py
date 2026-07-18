@@ -142,7 +142,7 @@ def _service(
             ("ACTIVE_WITHOUT_CONTRACT_VERSION", "ACTIVE_WITHOUT_PLUGIN"),
             False,
         ),
-        (False, "unknown", "v1", 0, ("UNKNOWN_PLUGIN",), False),
+        (False, "unknown", "v1", 0, ("UNKNOWN_PLUGIN",), True),
         (True, "unknown", "current", 0, ("UNKNOWN_PLUGIN",), False),
         (True, "known", "old", 0, ("CONTRACT_VERSION_MISMATCH",), False),
         (
@@ -175,7 +175,8 @@ async def test_inventory_classification_case_table(
     assert tuple(issue.code.value for issue in item.issues) == expected_codes
     assert item.foundation_ready is foundation_ready
     assert report.foundation_ready is foundation_ready
-    assert all(issue.severity.value == "BLOCKER" for issue in item.issues)
+    expected_severity = "WARNING" if not active and expected_codes == ("UNKNOWN_PLUGIN",) else "BLOCKER"
+    assert all(issue.severity.value == expected_severity for issue in item.issues)
     assert repo.get_list_calls == [{"limit": 101, "offset": 0, "order_by_raw": [WorkLine.line_code, WorkLine.id]}]
 
 

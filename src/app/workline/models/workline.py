@@ -6,17 +6,19 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from pydantic import BaseModel, field_validator
 from sqlalchemy import JSON, Column, ForeignKey, Integer, Text, text
 from sqlalchemy import Enum as SQLAEnum
 from sqlmodel import Field
 
-from src.app.runtime.capability_catalog import WorklineCapabilityDefinition, get_workline_capability_definition
 from src.core.mixins import BaseMixin, DataTableMixin, EnterpriseMixin, SoftDeleteMixin
 from src.database.model_factory import ModelFactory
 from src.database.schema_conf import SchemaType
+
+if TYPE_CHECKING:
+    from src.app.runtime.workline_plugins.definition import WorklinePluginDefinition
 
 
 class LineType(str, Enum):
@@ -187,8 +189,10 @@ class WorkLine(
     )
 
     @property
-    def plugin_definition(self) -> WorklineCapabilityDefinition | None:
+    def plugin_definition(self) -> "WorklinePluginDefinition | None":
         """按 plugin_key 解析运行能力定义。"""
+
+        from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 
         return get_workline_capability_definition(self.plugin_key)
 

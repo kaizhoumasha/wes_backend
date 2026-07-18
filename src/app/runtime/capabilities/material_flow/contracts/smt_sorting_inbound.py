@@ -1,5 +1,7 @@
 """SMT 分拣入库插件 P0 合同常量。"""
 
+from src.app.runtime.capabilities.material_flow.contracts.ng_reason import NgReasonDefinition, NgReasonSource
+
 SMT_SORTING_INBOUND_PLUGIN_KEY = "SMT_SORTING_INBOUND"
 SMT_SORTING_INBOUND_CONTRACT_VERSION = "2026-06-21.p1"
 
@@ -26,6 +28,22 @@ EVENT_WORKING_BIN_SCAN = "WORKING_BIN_SCAN"
 NG_REASON_LOCAL_SORTING_NG = "LOCAL_SORTING_NG"
 NG_REASON_MATERIAL_CONFLICT = "NG_MATERIAL_CONFLICT"
 
+
+def list_smt_sorting_inbound_ng_reasons() -> tuple[NgReasonDefinition, ...]:
+    """仅为历史 SMT Hold 提供稳定解释；不构成 Plugin 激活声明。"""
+
+    return (
+        NgReasonDefinition(
+            canonical_code=NG_REASON_LOCAL_SORTING_NG,
+            label="本地分拣 NG",
+            source=NgReasonSource.PLUGIN,
+            plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+            contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+            maps_from=(NG_REASON_LOCAL_SORTING_NG,),
+        ),
+    )
+
+
 __all__ = [
     "COMMAND_NG_PLACE",
     "COMMAND_SOURCE_PICK",
@@ -46,4 +64,5 @@ __all__ = [
     "SMT_SORTING_INBOUND_PLUGIN_KEY",
     "SMT_SOURCE_PICK_WAIT_CONTEXT_STATE",
     "SORTING_CONTEXT_SCHEMA_VERSION",
+    "list_smt_sorting_inbound_ng_reasons",
 ]
