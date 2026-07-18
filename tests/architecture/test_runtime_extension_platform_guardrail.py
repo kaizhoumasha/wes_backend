@@ -165,12 +165,79 @@ def test_system_capability_does_not_treat_unrelated_commit_receiver_as_transacti
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "db_session.commit()\n",
+        "ctx.db_session.commit()\n",
+        "await get_session().rollback()\n",
+        "session_factory().commit()\n",
+        "uow.commit()\n",
+    ],
+)
+def test_system_capability_transaction_receiver_uses_terminal_snake_case_tokens(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    result = _run_fixture(tmp_path, "system_capabilities/example/handler.py", source)
+
+    assert result.returncode == 1
+    assert "[SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY]" in result.stderr
+
+
+def test_system_capability_transaction_receiver_ignores_non_token_substrings(tmp_path: Path) -> None:
+    result = _run_fixture(
+        tmp_path,
+        "system_capabilities/example/handler.py",
+        "release_sessionless.commit()\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_generated_index_does_not_treat_unrelated_walk_method_as_filesystem_scan(tmp_path: Path) -> None:
     result = _run_fixture(
         tmp_path,
         "system_capabilities/generated_index.py",
         "release.walk()\n",
     )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import os\ntraverse = os.walk\ntraverse('.')\n",
+        "import os\ntraverse = os.walk\nscan = traverse\nscan('.')\n",
+        "from pathlib import Path as ImportedPath\nscan = ImportedPath('.').glob\nscan('*.py')\n",
+    ],
+)
+def test_generated_index_tracks_import_provenance_through_simple_alias_assignments(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    result = _run_fixture(tmp_path, "workline_plugins/generated_index.py", source)
+
+    assert result.returncode == 1
+    assert "[RUNTIME_GENERATED_INDEX_STATICITY]" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "class Path:\n    def glob(self, pattern): return ()\nPath().glob('*.py')\n",
+        "Path('.').glob('*.py')\n",
+        "import os\nos = release\nos.walk('.')\n",
+        "from os import walk as traverse\ntraverse = release.walk\ntraverse('.')\n",
+        "from os import walk as traverse\ndef traverse(path): return ()\ntraverse('.')\n",
+    ],
+)
+def test_generated_index_invalidates_provenance_after_rebinding_and_ignores_local_path(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    result = _run_fixture(tmp_path, "workline_plugins/generated_index.py", source)
 
     assert result.returncode == 0, result.stderr
 

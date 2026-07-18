@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from src.app.runtime.extension_identity import canonical_json
+from src.app.runtime.extension_identity import canonical_json, sha256_digest
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     _system_capability_intents,
@@ -27,7 +27,11 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
     bound_attempt_write_set,
 )
 from src.app.runtime.workline_plugins.contracts import MAX_PLUGIN_DECISION_INTENTS, PluginDecision
-from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX
+from src.app.runtime.workline_plugins.generated_index import (
+    WORKLINE_PLUGIN_IDENTITIES,
+    WORKLINE_PLUGIN_INDEX,
+    WORKLINE_PLUGIN_INDEX_DIGEST,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -96,9 +100,16 @@ class PluginConformanceSuite:
         fixture = plugin_conformance
         definition = fixture.definition
 
-        generated_definition = WORKLINE_PLUGIN_INDEX[(definition.plugin_key, definition.contract_version)]
-        assert generated_definition is definition
-        assert generated_definition.identity == definition.identity
+        definition_key = (definition.plugin_key, definition.contract_version)
+        assert tuple(WORKLINE_PLUGIN_INDEX) == WORKLINE_PLUGIN_IDENTITIES
+        assert definition_key in WORKLINE_PLUGIN_IDENTITIES
+        fixture_index_digest = sha256_digest(
+            tuple(
+                definition.identity if identity == definition_key else WORKLINE_PLUGIN_INDEX[identity].identity
+                for identity in WORKLINE_PLUGIN_IDENTITIES
+            )
+        )
+        assert fixture_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
         assert definition.identity.startswith(f"{definition.plugin_key}@{definition.contract_version}:")
         assert definition.routes
         assert tuple(definition.parsers) == definition.routes

@@ -295,6 +295,7 @@ rule_runtime_extension_platform() {
     scanner_output="$(run_python - <<'PY'
 import ast
 import os
+import re
 from pathlib import Path
 
 PLUGIN_ROOT = Path("src/app/runtime/workline_plugins")
@@ -417,6 +418,18 @@ def has_module_segment(module: str, segment: str) -> bool:
     return segment in module.split(".")
 
 
+def receiver_terminal_identifier(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Call):
+        return receiver_terminal_identifier(node.func)
+    if isinstance(node, ast.Subscript):
+        return receiver_terminal_identifier(node.value)
+    return ""
+
+
 def scan_plugin(path: Path) -> None:
     tree = parse(path, "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY")
     if tree is None:
@@ -478,11 +491,9 @@ def scan_capability(path: Path) -> None:
                     "通过 required Port 访问领域能力",
                 )
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"commit", "rollback"}:
-            receiver = dotted_name(node.func.value, {})
-            receiver_segments = set(receiver.lower().split("."))
-            if receiver_segments.isdisjoint(
-                {"db", "database", "session", "database_session", "transaction", "tx", "connection", "conn", "uow", "unit_of_work"}
-            ):
+            receiver = receiver_terminal_identifier(node.func.value)
+            receiver_tokens = set(filter(None, re.split(r"_+", receiver.lower())))
+            if receiver_tokens.isdisjoint({"db", "session", "transaction", "connection", "uow"}):
                 continue
             emit(
                 "SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY",
@@ -497,34 +508,106 @@ def scan_generated_index(path: Path) -> None:
     tree = parse(path, "RUNTIME_GENERATED_INDEX_STATICITY")
     if tree is None:
         return
-    aliases = import_aliases(path, tree)
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-            exact_or_descendant(module, target)
-            for module in imported_modules(path, node)
-            for target in ("importlib", "pkgutil")
-        ):
-            emit(
-                "RUNTIME_GENERATED_INDEX_STATICITY",
-                path,
-                node.lineno,
-                "generated index 使用动态 import",
-                "索引只保留生成期写入的显式静态 import",
-            )
-        if isinstance(node, ast.Call):
-            target = dotted_name(node.func, aliases)
-            dynamic_targets = {
-                "importlib.import_module",
-                "pkgutil.iter_modules",
-                "os.walk",
-                "__import__",
-            }
-            path_scan = any(
-                target == f"{path_type}.{method}"
-                for path_type in ("pathlib.Path", "Path")
-                for method in ("rglob", "glob")
-            )
-            if target in dynamic_targets or path_scan:
+
+    class ProvenanceScanner(ast.NodeVisitor):
+        dynamic_targets = {
+            "builtins.__import__",
+            "importlib.import_module",
+            "os.walk",
+            "pathlib.Path.glob",
+            "pathlib.Path.rglob",
+            "pkgutil.iter_modules",
+        }
+
+        def __init__(self) -> None:
+            self.provenance: dict[str, str | None] = {"__import__": "builtins.__import__"}
+
+        def resolve(self, node: ast.AST) -> str | None:
+            if isinstance(node, ast.Name):
+                return self.provenance.get(node.id)
+            if isinstance(node, ast.Attribute):
+                parent = self.resolve(node.value)
+                return f"{parent}.{node.attr}" if parent else None
+            if isinstance(node, ast.Call):
+                return self.resolve(node.func)
+            return None
+
+        def bind(self, target: ast.AST, provenance: str | None) -> None:
+            if isinstance(target, ast.Name):
+                self.provenance[target.id] = provenance
+            elif isinstance(target, ast.Starred):
+                self.bind(target.value, None)
+            elif isinstance(target, ast.Tuple | ast.List):
+                for item in target.elts:
+                    self.bind(item, None)
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".", maxsplit=1)[0]
+                imported = alias.name if alias.asname else bound
+                self.provenance[bound] = imported
+                if any(exact_or_descendant(alias.name, target) for target in ("importlib", "pkgutil")):
+                    self.dynamic_import(node)
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            base = import_base(path, node)
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                imported = ".".join(part for part in (base, alias.name) if part)
+                self.provenance[alias.asname or alias.name] = imported
+            if any(exact_or_descendant(base, target) for target in ("importlib", "pkgutil")):
+                self.dynamic_import(node)
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            self.visit(node.value)
+            provenance = self.resolve(node.value)
+            for target in node.targets:
+                self.bind(target, provenance)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if node.value is not None:
+                self.visit(node.value)
+            self.bind(node.target, self.resolve(node.value) if node.value is not None else None)
+
+        def visit_AugAssign(self, node: ast.AugAssign) -> None:
+            self.visit(node.value)
+            self.bind(node.target, None)
+
+        def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+            self.visit(node.value)
+            self.bind(node.target, self.resolve(node.value))
+
+        def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            for decorator in node.decorator_list:
+                self.visit(decorator)
+            self.provenance[node.name] = None
+            parent = self.provenance
+            self.provenance = dict(parent)
+            for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+                self.provenance[argument.arg] = None
+            if node.args.vararg:
+                self.provenance[node.args.vararg.arg] = None
+            if node.args.kwarg:
+                self.provenance[node.args.kwarg.arg] = None
+            for statement in node.body:
+                self.visit(statement)
+            self.provenance = parent
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            for decorator in node.decorator_list:
+                self.visit(decorator)
+            self.provenance[node.name] = None
+            parent = self.provenance
+            self.provenance = dict(parent)
+            for statement in node.body:
+                self.visit(statement)
+            self.provenance = parent
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if self.resolve(node.func) in self.dynamic_targets:
                 emit(
                     "RUNTIME_GENERATED_INDEX_STATICITY",
                     path,
@@ -532,6 +615,19 @@ def scan_generated_index(path: Path) -> None:
                     "generated index 执行文件扫描或动态 import",
                     "扫描只允许发生在离线生成器，不得进入 runtime index",
                 )
+            self.generic_visit(node)
+
+        @staticmethod
+        def dynamic_import(node: ast.AST) -> None:
+            emit(
+                "RUNTIME_GENERATED_INDEX_STATICITY",
+                path,
+                node.lineno,
+                "generated index 使用动态 import",
+                "索引只保留生成期写入的显式静态 import",
+            )
+
+    ProvenanceScanner().visit(tree)
 
 
 def scan_generic_orchestration(path: Path) -> None:
