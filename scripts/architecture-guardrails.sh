@@ -459,7 +459,16 @@ def scan_legacy_imports(root: Path) -> None:
         if tree is None:
             continue
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and (node.module or "") in LEGACY_MODULES:
+            if isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                parent_member = module in {"src.app.runtime", ""} and any(
+                    f"src.app.runtime.{alias.name}" in LEGACY_MODULES for alias in node.names
+                )
+                relative_module = node.level > 0 and any(
+                    module == legacy.rsplit(".", maxsplit=1)[-1] for legacy in LEGACY_MODULES
+                )
+                if not (module in LEGACY_MODULES or parent_member or relative_module):
+                    continue
                 emit(
                     "LEGACY_CAPABILITY_ROUTING_IMPORT",
                     path,

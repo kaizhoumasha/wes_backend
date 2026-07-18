@@ -56,6 +56,26 @@ class PluginConformanceFixture:
     query_request: PluginDispatchRequest
     gateway_factory: Callable[[], RecordingGateway]
     replay: Callable[[RecordingGateway], Awaitable[PluginDecision[Any]]]
+    system_capability_intents: tuple[RuntimeIntent, ...]
+
+
+def assert_system_capability_effect_contract(
+    *,
+    definition: WorklinePluginDefinition,
+    intents: tuple[RuntimeIntent, ...],
+    capability_index: dict[tuple[str, str], Any] = SYSTEM_CAPABILITY_INDEX,
+) -> None:
+    """SYSTEM_CAPABILITY 的最终 identity 只取 typed intent 字段。"""
+
+    declared = set(definition.allowed_capabilities)
+    for intent in intents:
+        if intent.kind is not RuntimeIntentKind.SYSTEM_CAPABILITY:
+            continue
+        identity = (intent.capability_key, intent.contract_version)
+        assert identity in declared, f"SYSTEM_CAPABILITY 未在插件 Definition 声明: {identity}"
+        capability = capability_index.get(identity)
+        assert capability is not None, f"SYSTEM_CAPABILITY 不存在于 generated index: {identity}"
+        assert capability.mode is SystemCapabilityMode.EFFECT, f"SYSTEM_CAPABILITY 必须绑定 EFFECT: {identity}"
 
 
 class PluginConformanceSuite:
@@ -108,14 +128,9 @@ class PluginConformanceSuite:
         assert result.outcome_code.strip()
         assert len(result.intents) <= MAX_PLUGIN_DECISION_INTENTS
         assert all(isinstance(intent, RuntimeIntent) for intent in result.intents)
-        effect_identities = {
-            tuple(intent.source_system.rsplit("@", maxsplit=1))
-            for intent in result.intents
-            if intent.source_system is not None
-        }
-        assert effect_identities <= set(fixture.definition.allowed_capabilities)
-        assert all(
-            SYSTEM_CAPABILITY_INDEX[identity].mode is SystemCapabilityMode.EFFECT for identity in effect_identities
+        assert_system_capability_effect_contract(
+            definition=fixture.definition,
+            intents=fixture.system_capability_intents,
         )
 
     @pytest.mark.asyncio
@@ -189,4 +204,9 @@ class PluginConformanceSuite:
         assert len(canonical_json(oversized_evidence).encode("utf-8")) > gateway_limits.max_evidence_bytes
 
 
-__all__ = ["PluginConformanceFixture", "PluginConformanceSuite", "RecordingGateway"]
+__all__ = [
+    "PluginConformanceFixture",
+    "PluginConformanceSuite",
+    "RecordingGateway",
+    "assert_system_capability_effect_contract",
+]

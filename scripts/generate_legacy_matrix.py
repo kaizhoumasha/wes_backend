@@ -187,6 +187,35 @@ ACTIVE_FOUNDATION_PATHS = frozenset(
     }
 )
 
+# Task 9 起由最终扩展平台直接承载的实现与测试，不是待删除的 legacy 入口。
+ACTIVE_PLATFORM_PREFIXES = (
+    "tests/workline_plugins/rough_sorter/",
+    "tests/workline_runtime/extensions/",
+    "tests/workline_runtime/system_capabilities/",
+)
+ACTIVE_PLATFORM_PATHS = frozenset(
+    {
+        "src/app/workline/models/plugin_binding.py",
+        "src/app/workline/repositories/plugin_binding_repository.py",
+        "src/app/workline/services/plugin_binding_service.py",
+        "tests/workline_runtime/test_workline_session_repository_versioning.py",
+    }
+)
+ACTIVE_PLATFORM_SYMBOLS = frozenset(
+    {
+        ("src/app/workline/services/device_command_gateway.py", "StaleRuntimeDeviceCommandAdmission"),
+        ("src/app/workline/services/device_command_gateway.py", "prepare_runtime_device_command_effect"),
+        (
+            "tests/workline_runtime/test_runtime_intent_effect_applier.py",
+            "test_system_capability_intent_uses_one_generic_effect_service_branch",
+        ),
+        (
+            "tests/workline_runtime/test_runtime_intent_effect_applier.py",
+            "test_stale_material_effect_short_circuits_following_device_effects",
+        ),
+    }
+)
+
 GUARDRAIL_SEED_SYMBOLS = {
     "src/workline_runtime/services.py": "build_workline_runtime_services",
 }
@@ -509,6 +538,28 @@ def _append_capability_implementation_import_seed_paths(seed_paths: list[SeedPat
         )
 
 
+def _append_runtime_extension_guardrail_seed_paths(seed_paths: list[SeedPath]) -> None:
+    """逐文件登记 Task 10 前仍需清理的旧路由与编排分支。"""
+
+    allowlist = REPO_ROOT / "scripts" / "architecture-guardrails.allowlist"
+    for row in allowlist.read_text(encoding="utf-8").splitlines():
+        if not row.startswith(("LEGACY_CAPABILITY_ROUTING_IMPORT|", "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION|")):
+            continue
+        rule, path, _reason, _expires_at, _entry_id, phase = row.split("|")
+        owner = path.split("/")[2] if path.startswith("src/app/") else "runtime"
+        etype = "service" if "/services/" in path else "runtime_helper"
+        seed_paths.append(
+            (
+                path,
+                owner,
+                etype,
+                f"Task 10 待清理扩展平台残留 ({rule} seed)",
+                phase,
+                "HIGH" if rule == "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION" else "MEDIUM",
+            )
+        )
+
+
 def _exported_symbols_from_all(path: Path) -> list[str]:
     try:
         module = ast.parse(path.read_text(encoding="utf-8"))
@@ -578,9 +629,19 @@ def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths
     for path, owner, etype, bs, phase, risk in seed_paths:
         sym = GUARDRAIL_SEED_SYMBOLS.get(path)
         if sym is None:
-            sym = (
-                "<file>#CAPABILITY_IMPLEMENTATION_IMPORT" if "CAPABILITY_IMPLEMENTATION_IMPORT seed" in bs else "<file>"
+            guardrail_rule = next(
+                (
+                    rule
+                    for rule in (
+                        "CAPABILITY_IMPLEMENTATION_IMPORT",
+                        "LEGACY_CAPABILITY_ROUTING_IMPORT",
+                        "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION",
+                    )
+                    if f"{rule} seed" in bs
+                ),
+                None,
             )
+            sym = f"<file>#{guardrail_rule}" if guardrail_rule else "<file>"
         eid = f"legacy:{path}:{sym}"
         if eid in seen:
             continue
@@ -616,7 +677,14 @@ def parse_entries() -> list[Entry]:
         rel = str(Path(path).relative_to(REPO_ROOT)) if Path(path).is_absolute() else path
         sym = symbol or "<file>"
         eid = f"legacy:{rel}:{sym}"
-        if rel in ACTIVE_FOUNDATION_PATHS or eid in seen or (rel, sym) in SHIM_INTERNAL_SYMBOLS:
+        if (
+            rel in ACTIVE_FOUNDATION_PATHS
+            or rel in ACTIVE_PLATFORM_PATHS
+            or rel.startswith(ACTIVE_PLATFORM_PREFIXES)
+            or (rel, sym) in ACTIVE_PLATFORM_SYMBOLS
+            or eid in seen
+            or (rel, sym) in SHIM_INTERNAL_SYMBOLS
+        ):
             return
         seen.add(eid)
         bs, p4 = classify_business_semantics(sym, rel)
@@ -920,6 +988,7 @@ def parse_entries() -> list[Entry]:
     ]
 
     _append_capability_implementation_import_seed_paths(seed_paths)
+    _append_runtime_extension_guardrail_seed_paths(seed_paths)
     seed_paths.extend(
         [
             (

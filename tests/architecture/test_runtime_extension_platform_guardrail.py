@@ -73,6 +73,35 @@ def test_runtime_extension_guardrail_reports_rule_file_and_line(
     assert f"file: {tmp_path / relative_path}:1" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from src.app.runtime import capability_catalog as catalog\n",
+        "from src.app.runtime import runtime_capability_catalog as catalog\n",
+        "from src.app.runtime import capability_dispatcher as dispatcher\n",
+        "from . import capability_catalog as catalog\n",
+        "from .runtime_capability_catalog import get_definition as get_def\n",
+        "import src.app.runtime.capability_dispatcher as dispatcher\n",
+    ],
+)
+def test_legacy_capability_import_variants_report_rule_file_and_line(tmp_path: Path, source: str) -> None:
+    result = _run_fixture(tmp_path, "consumer.py", source)
+
+    assert result.returncode == 1
+    assert "[LEGACY_CAPABILITY_ROUTING_IMPORT]" in result.stderr
+    assert f"file: {tmp_path / 'consumer.py'}:1" in result.stderr
+
+
+def test_legacy_capability_import_names_in_comments_and_strings_are_ignored(tmp_path: Path) -> None:
+    result = _run_fixture(
+        tmp_path,
+        "consumer.py",
+        '"from src.app.runtime import capability_catalog"\n# import src.app.runtime.capability_dispatcher\n',
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_runtime_extension_platform_has_no_unallowlisted_violation() -> None:
     result = subprocess.run(
         ["/bin/bash", str(GUARDRAIL), "--mode", "enforced", "--allowlist", str(ALLOWLIST)],
