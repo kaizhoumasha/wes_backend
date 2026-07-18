@@ -106,6 +106,30 @@ class StateMachine:
 
 
 @dataclass(frozen=True, slots=True)
+class StateMachineContractProfile:
+    """构建期允许的状态机 owner、粒度与状态值合同。"""
+
+    subject_type: str
+    owner_model: str
+    owner_field: str
+    granularity: str
+    status_contract: str
+    allowed_states: frozenset[str]
+
+
+STATE_MACHINE_CONTRACT_PROFILES = (
+    StateMachineContractProfile(
+        subject_type="MATERIAL_UNIT",
+        owner_model="MaterialUnit",
+        owner_field="status",
+        granularity="MATERIAL_LIFECYCLE",
+        status_contract="MaterialUnitStatus",
+        allowed_states=frozenset({"IN_TRANSIT", "STORED", "COMPLETED", "NG", "RECONCILING"}),
+    ),
+)
+
+
+@dataclass(frozen=True, slots=True)
 class PipelineQueue:
     code: str
     role: str
@@ -136,6 +160,7 @@ class WorklinePluginSchema:
 
 
 __all__ = [
+    "STATE_MACHINE_CONTRACT_PROFILES",
     "CommandBinding",
     "DeviceRequirement",
     "EventBinding",
@@ -147,6 +172,7 @@ __all__ = [
     "ResourceBoundary",
     "SessionSubject",
     "StateMachine",
+    "StateMachineContractProfile",
     "StateMachineOwner",
     "StateMachineSubject",
     "StateMachineTransition",

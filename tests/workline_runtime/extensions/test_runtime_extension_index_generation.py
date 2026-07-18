@@ -12,6 +12,7 @@ import pytest
 from pydantic import BaseModel
 
 from src.app.runtime.capabilities.material_flow.contracts.ng_reason import NgReasonDefinition, NgReasonSource
+from src.app.runtime.orchestration.models.material_unit import MaterialUnitStatus
 from src.app.runtime.system_capabilities import (
     EffectCompletionMode,
     SystemCapabilityDefinition,
@@ -27,6 +28,7 @@ from src.app.runtime.workline_plugins.index_builder import (
     WorklinePluginSource,
 )
 from src.app.runtime.workline_plugins.schema import (
+    STATE_MACHINE_CONTRACT_PROFILES,
     DeviceRequirement,
     EventBinding,
     FlowEdge,
@@ -200,6 +202,34 @@ def plugin_source(
         module_name=module_name,
         directory_key=directory_key,
         definition=definition or plugin_definition(),
+    )
+
+
+def material_state_schema(
+    *,
+    category: str = "MATERIAL_UNIT",
+    owner_model: str = "MaterialUnit",
+    owner_field: str = "status",
+    granularity: str = "MATERIAL_LIFECYCLE",
+    transitions: tuple[StateMachineTransition, ...] = (
+        StateMachineTransition("IN_TRANSIT", ("STORED",)),
+        StateMachineTransition("STORED", ("IN_TRANSIT",)),
+        StateMachineTransition("COMPLETED", ()),
+        StateMachineTransition("NG", ()),
+        StateMachineTransition("RECONCILING", ("IN_TRANSIT",)),
+    ),
+) -> WorklinePluginSchema:
+    return WorklinePluginSchema(
+        session_subject=SessionSubject("MATERIAL_UNIT", "REEL", ("PkgID",)),
+        state_machines=(
+            StateMachine(
+                "material",
+                StateMachineSubject(category, "MATERIAL_UNIT", "REEL"),
+                StateMachineOwner(owner_model, owner_field),
+                granularity,
+                transitions,
+            ),
+        ),
     )
 
 
@@ -440,11 +470,11 @@ def test_plugin_builder_rejects_duplicate_resource_boundary() -> None:
         ),
         (
             WorklinePluginSchema(
-                session_subject=SessionSubject("MATERIAL", "REEL", ("PkgID",)),
+                session_subject=SessionSubject("MATERIAL_UNIT", "REEL", ("PkgID",)),
                 state_machines=(
                     StateMachine(
                         "material",
-                        StateMachineSubject("MATERIAL", "MATERIAL", "REEL"),
+                        StateMachineSubject("MATERIAL_UNIT", "MATERIAL_UNIT", "REEL"),
                         StateMachineOwner("MaterialUnit", "status"),
                         "MATERIAL_LIFECYCLE",
                         (),
@@ -455,11 +485,11 @@ def test_plugin_builder_rejects_duplicate_resource_boundary() -> None:
         ),
         (
             WorklinePluginSchema(
-                session_subject=SessionSubject("MATERIAL", "REEL", ("PkgID",)),
+                session_subject=SessionSubject("MATERIAL_UNIT", "REEL", ("PkgID",)),
                 state_machines=(
                     StateMachine(
                         "material",
-                        StateMachineSubject("MATERIAL", "MATERIAL", "REEL"),
+                        StateMachineSubject("MATERIAL_UNIT", "MATERIAL_UNIT", "REEL"),
                         StateMachineOwner("MaterialUnit", "status"),
                         "MATERIAL_LIFECYCLE",
                         (StateMachineTransition("IN_TRANSIT", ("STORED",)),),
@@ -497,6 +527,57 @@ def test_plugin_builder_rejects_invalid_nested_schema_contract(schema: WorklineP
         WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}).build(
             (plugin_source(plugin_definition(schema=schema)),)
         )
+
+
+@pytest.mark.parametrize(
+    ("schema", "message"),
+    [
+        (material_state_schema(category="OTHER"), "category must equal session subject type"),
+        (material_state_schema(owner_model="Anything"), "unsupported state machine contract"),
+        (material_state_schema(owner_field="whatever"), "unsupported state machine contract"),
+        (material_state_schema(granularity="TYPO_GRANULARITY"), "unsupported state machine contract"),
+        (
+            material_state_schema(transitions=(StateMachineTransition("MADE_UP", ()),)),
+            "valid MaterialUnitStatus",
+        ),
+        (
+            material_state_schema(
+                transitions=(
+                    StateMachineTransition("IN_TRANSIT", ("MADE_UP",)),
+                    StateMachineTransition("STORED", ()),
+                    StateMachineTransition("COMPLETED", ()),
+                    StateMachineTransition("NG", ()),
+                    StateMachineTransition("RECONCILING", ()),
+                )
+            ),
+            "valid MaterialUnitStatus",
+        ),
+    ],
+)
+def test_plugin_builder_rejects_uncontrolled_state_machine_contract(
+    schema: WorklinePluginSchema,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}).build(
+            (plugin_source(plugin_definition(schema=schema)),)
+        )
+
+
+def test_plugin_builder_accepts_controlled_material_unit_state_machine_contract() -> None:
+    generated = WorklinePluginIndexBuilder(
+        capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}
+    ).build((plugin_source(plugin_definition(schema=material_state_schema())),))
+
+    assert generated.identities == (("rough_sorter", "v1"),)
+
+
+def test_material_unit_state_machine_contract_matches_runtime_status_enum() -> None:
+    profile = next(
+        profile for profile in STATE_MACHINE_CONTRACT_PROFILES if profile.status_contract == "MaterialUnitStatus"
+    )
+
+    assert profile.allowed_states == frozenset(status.value for status in MaterialUnitStatus)
 
 
 @pytest.mark.parametrize(

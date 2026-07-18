@@ -15,6 +15,7 @@ from src.app.runtime.extension_identity import sha256_digest, stable_sort
 from src.app.runtime.orchestration.events_bridge import assert_not_reserved_runtime_event
 from src.app.runtime.system_capabilities.definition import SystemCapabilityMode
 from src.app.runtime.workline_plugins.definition import WorklinePluginDefinition
+from src.app.runtime.workline_plugins.schema import STATE_MACHINE_CONTRACT_PROFILES
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -286,16 +287,34 @@ class WorklinePluginIndexBuilder:
                 raise ValueError(f"duplicate state machine id: {machine_id}")
             machine_ids.add(machine_id)
             subject = machine.subject
-            cls._require_identity(subject.category, field_name="state machine subject category")
+            subject_category = cls._require_identity(subject.category, field_name="state machine subject category")
             subject_type = cls._require_identity(subject.type, field_name="state machine subject type")
             subject_form = cls._require_identity(
                 subject.physical_form, field_name="state machine subject physical_form"
             )
             if (subject_type, subject_form) != (session_type, session_form):
                 raise ValueError(f"state machine subject must match session subject: {machine_id}")
-            cls._require_identity(machine.state_owner.model, field_name="state machine owner model")
-            cls._require_identity(machine.state_owner.field, field_name="state machine owner field")
-            cls._require_identity(machine.granularity, field_name="state machine granularity")
+            if subject_category != session_type:
+                raise ValueError(f"state machine subject category must equal session subject type: {machine_id}")
+            owner_model = cls._require_identity(machine.state_owner.model, field_name="state machine owner model")
+            owner_field = cls._require_identity(machine.state_owner.field, field_name="state machine owner field")
+            granularity = cls._require_identity(machine.granularity, field_name="state machine granularity")
+            profiles = tuple(
+                profile
+                for profile in STATE_MACHINE_CONTRACT_PROFILES
+                if (
+                    profile.subject_type,
+                    profile.owner_model,
+                    profile.owner_field,
+                    profile.granularity,
+                )
+                == (session_type, owner_model, owner_field, granularity)
+            )
+            if len(profiles) != 1:
+                raise ValueError(
+                    f"unsupported state machine contract: {session_type}/{owner_model}.{owner_field}/{granularity}"
+                )
+            profile = profiles[0]
             transitions = tuple(machine.transitions)
             if not transitions:
                 raise ValueError(f"state machine transitions must declare an initial state: {machine_id}")
@@ -305,6 +324,17 @@ class WorklinePluginIndexBuilder:
             )
             if len(set(declared_states)) != len(declared_states):
                 raise ValueError(f"state machine states must be unique: {machine_id}")
+            initial_state = declared_states[0]
+            if initial_state not in profile.allowed_states:
+                raise ValueError(
+                    f"state machine initial state must be a valid {profile.status_contract}: {initial_state}"
+                )
+            invalid_declared_states = sorted(set(declared_states) - profile.allowed_states)
+            if invalid_declared_states:
+                raise ValueError(
+                    f"state machine states must be valid {profile.status_contract}: "
+                    f"{', '.join(invalid_declared_states)}"
+                )
             declared_state_set = set(declared_states)
             for transition in transitions:
                 to_states = tuple(
@@ -312,6 +342,12 @@ class WorklinePluginIndexBuilder:
                 )
                 if len(set(to_states)) != len(to_states):
                     raise ValueError(f"state machine transition targets must be unique: {machine_id}")
+                invalid_targets = sorted(set(to_states) - profile.allowed_states)
+                if invalid_targets:
+                    raise ValueError(
+                        f"state machine transition targets must be valid {profile.status_contract}: "
+                        f"{', '.join(invalid_targets)}"
+                    )
                 unknown_states = sorted(set(to_states) - declared_state_set)
                 if unknown_states:
                     raise ValueError(f"unknown state reference in {machine_id}: {', '.join(unknown_states)}")
