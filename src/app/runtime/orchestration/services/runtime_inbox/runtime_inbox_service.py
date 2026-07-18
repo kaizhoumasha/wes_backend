@@ -943,10 +943,13 @@ class RuntimeInboxService:
         execution_session_id = correlation_context[1] if correlation_context is not None else None
         if correlation_id is None:
             correlation_id = resolved_correlation_id
-        elif resolved_correlation_id != correlation_id:
-            # 显式 correlation 仍交由 accept_received 验证其持久化身份；trace 未命中或
-            # 指向其它 correlation 时，不得把该 trace 的 execution session 错绑进来。
-            execution_session_id = None
+        elif resolved_correlation_id is not None and resolved_correlation_id != correlation_id:
+            if correlation_id.startswith("system-capability:"):
+                # DeviceCommand.correlation_id 是下游 capability 幂等业务标识；正式 callback
+                # 仍须以 trace 唯一解析出的 ExecutionCorrelation 作为 Inbox 权威外键。
+                correlation_id = resolved_correlation_id
+            else:
+                raise RuntimeInboxCorrelationUnavailable(correlation_id=correlation_id)
         result = await self.accept_received(
             db,
             provider_code=provider_code,

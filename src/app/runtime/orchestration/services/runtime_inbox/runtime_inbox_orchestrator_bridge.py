@@ -1286,13 +1286,20 @@ async def _build_plugin_dispatch_request(
     if material_unit_id is not None:
         material_fact = await default_material_unit_repository.get_plugin_fact_payload(db, material_unit_id) or {}
     material_six_in_one = payload_dict(material_fact.get("six_in_one"))
-    # MaterialUnit 一旦持久化即成为业务身份权威；callback/session 仅用于
-    # 初始 SCAN 尚未创建 MaterialUnit 时的 ingress fallback。
+    # MaterialUnit 一旦持久化即成为业务身份权威；业务键严格按 root identity、
+    # root pkg_code、six_in_one.PkgID 取值，避免嵌套历史快照遮蔽根身份。
     identity_sources = (material_six_in_one, material_fact) if material_fact else (data, six_in_one, session_context)
-    business_key = _first_plugin_fact(
-        *identity_sources,
-        names=("material_identity_key", "business_key", "pkg_code", "PkgID"),
-    )
+    if material_fact:
+        business_key = (
+            optional_str(material_fact.get("material_identity_key"))
+            or optional_str(material_fact.get("pkg_code"))
+            or optional_str(material_six_in_one.get("PkgID"))
+        )
+    else:
+        business_key = _first_plugin_fact(
+            *identity_sources,
+            names=("material_identity_key", "business_key", "pkg_code", "PkgID"),
+        )
     hhpn = _first_plugin_fact(*identity_sources, names=("HHPN", "hhpn"))
     lot_code = _first_plugin_fact(*identity_sources, names=("LotCode", "lot_code"))
     command_code = optional_str(raw_input.get("command_code"))

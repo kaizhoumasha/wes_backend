@@ -512,6 +512,11 @@ class RuntimeIntent(BaseModel):
 
     @model_validator(mode="after")
     def validate_intent(self) -> RuntimeIntent:  # noqa: PLR0912
+        if self.kind == RuntimeIntentKind.COMMAND:
+            if self.result_policy is None:
+                raise ValueError("COMMAND intent requires result_policy")
+        elif self.result_policy is not None:
+            raise ValueError("result_policy is only valid for COMMAND intents")
         if self.kind == RuntimeIntentKind.SYSTEM_CAPABILITY:
             self._validate_system_capability()
         else:

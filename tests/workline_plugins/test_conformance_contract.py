@@ -6,6 +6,7 @@ from dataclasses import fields, replace
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
@@ -107,9 +108,21 @@ def test_conformance_uses_converter_identity_instead_of_source_system() -> None:
         source_system="runtime.not-declared@v999",
         payload_json={"pkg_code": "PKG-1"},
         timeout_seconds=30,
+        result_policy="COMMAND_RESULT",
     )
 
     converted = _convert(legacy_command)
 
     assert converted[0].source_system is None
     assert_system_capability_effect_contract(definition=DEFINITION, intents=converted)
+
+
+def test_command_intent_requires_explicit_valid_result_policy() -> None:
+    with pytest.raises(ValidationError, match="COMMAND intent requires result_policy"):
+        RuntimeIntent(kind=RuntimeIntentKind.COMMAND, action="PICK")
+
+
+@pytest.mark.parametrize("kind", [kind for kind in RuntimeIntentKind if kind is not RuntimeIntentKind.COMMAND])
+def test_non_command_intent_rejects_top_level_result_policy(kind: RuntimeIntentKind) -> None:
+    with pytest.raises(ValidationError, match="result_policy is only valid for COMMAND"):
+        RuntimeIntent(kind=kind, result_policy="FIRE_AND_FORGET")

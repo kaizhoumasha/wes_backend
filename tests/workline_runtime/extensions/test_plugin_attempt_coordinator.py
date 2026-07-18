@@ -809,6 +809,7 @@ def test_runtime_intent_owner_builds_stable_ledger_rows_bound_to_attempt_pins() 
         action="MOVE",
         idempotency_key="operation-1",
         payload_json={"target": "A-01"},
+        result_policy="FIRE_AND_FORGET",
     )
     repository = RuntimeIntentLogRepository()
     first_prepared = repository.prepare_attempt_intents(locked=locked, snapshot=snapshot, intents=(intent,))[0]
@@ -831,6 +832,35 @@ def test_runtime_intent_owner_builds_stable_ledger_rows_bound_to_attempt_pins() 
     assert first_prepared.claim["idempotency_key"] == first.idempotency_key
     assert first_prepared.claim["request_hash"] == first.request_hash
     assert first_prepared.claim["execution_correlation_id"] == "corr-1"
+
+
+def test_runtime_intent_ledger_admission_revalidates_model_copy_result_policy_bypass() -> None:
+    from pydantic import ValidationError
+
+    from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import RuntimeIntentLogRepository
+    from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot
+
+    bypassed = RuntimeIntent.command(action="MOVE", result_policy="FIRE_AND_FORGET").model_copy(
+        update={"result_policy": None}
+    )
+    locked = SimpleNamespace(inbox=SimpleNamespace(id=91, execution_session_id=71, correlation_id="corr-1"))
+    snapshot = AttemptSnapshot(
+        processor_token="lease-1",
+        session_version=7,
+        plugin_state_version=3,
+        definition_identity="plugin@v1:" + "a" * 64,
+        binding_id=17,
+        binding_version=4,
+        index_digest="b" * 64,
+    )
+
+    with pytest.raises(ValidationError, match="COMMAND intent requires result_policy"):
+        RuntimeIntentLogRepository().prepare_attempt_intents(
+            locked=locked,
+            snapshot=snapshot,
+            intents=(bypassed,),
+        )
 
 
 @pytest.mark.asyncio

@@ -493,6 +493,18 @@ async def test_admission_rejects_bypassed_invalid_operation_key_as_contract_viol
     assert repository.calls == []
 
 
+@pytest.mark.asyncio
+async def test_admission_revalidates_model_copy_bypassed_top_level_result_policy() -> None:
+    repository = _EffectRepository(ClaimResult.NEW)
+    intent = _intent().model_copy(update={"result_policy": "COMMAND_RESULT"})
+
+    result = await _service(_definition(), repository).apply(_ctx(), intent)
+
+    assert isinstance(result.outcome, ContractViolation)
+    assert result.outcome.error_code == "CAPABILITY_CONTRACT_INVALID"
+    assert repository.calls == []
+
+
 def _session_hold_intent(*, expected_status: object, fact_version: object) -> RuntimeIntent:
     return RuntimeIntent.system_capability(
         capability_key=HOLD_DEFINITION.capability_key,

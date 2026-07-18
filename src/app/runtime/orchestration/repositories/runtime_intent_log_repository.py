@@ -65,9 +65,10 @@ class RuntimeIntentLogRepository:
         for ordinal, value in enumerate(intents):
             if not isinstance(value, RuntimeIntent):
                 raise TypeError("plugin attempt intents must be RuntimeIntent")
+            validated_intent = RuntimeIntent.model_validate(value.model_dump(mode="python"))
             prepared.append(
                 self._build_prepared(
-                    value,
+                    validated_intent,
                     ordinal=ordinal,
                     inbox_id=getattr(inbox, "id", None),
                     execution_session_id=execution_session_id,

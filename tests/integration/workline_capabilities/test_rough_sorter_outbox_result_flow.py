@@ -100,6 +100,15 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
             assert session is not None and command is not None
             assert session.status == "WAITING_DEVICE_RESULT"
             assert session.awaiting_device_command_code == command.command_code
+            assert command.correlation_id is not None and command.correlation_id.startswith("system-capability:")
+            material_unit = await db.get(MaterialUnit, session.current_material_unit_id)
+            assert material_unit is not None
+            material_unit.six_in_one = {
+                **material_unit.six_in_one,
+                "PkgID": "PKG-PERSISTED-SIX-IN-ONE-CONFLICT",
+            }
+            db.add(material_unit)
+            await db.commit()
             command_code = command.command_code
 
         async with session_factory() as db:

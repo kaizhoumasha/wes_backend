@@ -161,6 +161,7 @@ def test_recorded_replay_validates_but_does_not_reexecute_recorded_intents() -> 
                         "action": "MOVE",
                         "idempotency_key": "operation-1",
                         "payload_json": {"target": "A-01"},
+                        "result_policy": "FIRE_AND_FORGET",
                     }
                 ],
             }
@@ -2445,7 +2446,12 @@ class TestResultRequiresOutboxDispatch:
     def test_command_intent(self) -> None:
         from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 
-        intent = RuntimeIntent(kind=RuntimeIntentKind.COMMAND, action="PICK", payload={"x": 1})
+        intent = RuntimeIntent(
+            kind=RuntimeIntentKind.COMMAND,
+            action="PICK",
+            payload={"x": 1},
+            result_policy="COMMAND_RESULT",
+        )
         assert _result_requires_outbox_dispatch(OrchestratorResult(success=True, intents=[intent])) is True
 
     def test_continue_next_with_action(self) -> None:

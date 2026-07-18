@@ -604,7 +604,11 @@ async def test_plugin_dispatch_prefers_persisted_material_identity_over_conflict
             return_value={
                 "pkg_code": "PKG-PERSISTED",
                 "material_identity_key": "BUSINESS-PERSISTED",
-                "six_in_one": {"HHPN": "HH-PERSISTED", "LotCode": "LOT-PERSISTED"},
+                "six_in_one": {
+                    "PkgID": "PKG-PERSISTED-SIX-IN-ONE-CONFLICT",
+                    "HHPN": "HH-PERSISTED",
+                    "LotCode": "LOT-PERSISTED",
+                },
             }
         ),
     )
@@ -648,6 +652,76 @@ async def test_plugin_dispatch_prefers_persisted_material_identity_over_conflict
     assert request.raw_facts["business_key"] == "BUSINESS-PERSISTED"
     assert request.raw_facts["hhpn"] == "HH-PERSISTED"
     assert request.raw_facts["lot_code"] == "LOT-PERSISTED"
+
+
+@pytest.mark.asyncio
+async def test_plugin_dispatch_uses_root_pkg_code_before_persisted_six_in_one_pkg_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """缺少 material_identity_key 时，root pkg_code 仍优先于 six_in_one.PkgID。"""
+
+    from src.app.runtime.orchestration.repositories.material_unit_repository import material_unit_repository
+    from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
+
+    config = {
+        "device_roles": {"input_arm": "input_arm", "conveyor": "conveyor", "output_arm": "output_arm"},
+        "pipeline_input_location": "PIPELINE-IN",
+        "pipeline_output_location": "PIPELINE-OUT",
+        "ng_location": "NG-01",
+        "warehouse_code": "WH-01",
+        "owner_code": "OWNER-01",
+        "provider_profile": "runtime",
+    }
+    monkeypatch.setattr(
+        workline_plugin_binding_service,
+        "get_pinned",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id=17,
+                binding_version=4,
+                plugin_key="rough_sorter",
+                contract_version="rough_sorter.v2",
+                typed_config_json=config,
+                typed_config_hash=sha256_digest(config),
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        material_unit_repository,
+        "get_plugin_fact_payload",
+        AsyncMock(
+            return_value={
+                "pkg_code": "PKG-ROOT",
+                "six_in_one": {"PkgID": "PKG-NESTED-CONFLICT", "HHPN": "HH-ROOT", "LotCode": "LOT-ROOT"},
+            }
+        ),
+    )
+    request = await _build_plugin_dispatch_request(
+        object(),
+        inbox=SimpleNamespace(
+            kind="COMMAND_RESULT",
+            event_type="COMMAND_RESULT",
+            payload_json={"command_code": "CMD-1", "result": "SUCCESS", "data": {"PkgID": "PKG-CALLBACK"}},
+        ),
+        session=SimpleNamespace(
+            plugin_state_json={},
+            context_json={},
+            current_material_unit_id=31,
+            awaiting_device_command_code="CMD-1",
+        ),
+        workline=SimpleNamespace(id=3),
+        snapshot=AttemptSnapshot(
+            processor_token="lease-1",
+            session_version=7,
+            plugin_state_version=2,
+            binding_id=17,
+            binding_version=4,
+            plugin_config_hash=sha256_digest(config),
+            index_digest=WORKLINE_PLUGIN_INDEX_DIGEST,
+        ),
+    )
+
+    assert request.raw_facts["business_key"] == "PKG-ROOT"
 
 
 @pytest.mark.asyncio
