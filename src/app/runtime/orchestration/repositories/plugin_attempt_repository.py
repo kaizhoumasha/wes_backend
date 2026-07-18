@@ -10,6 +10,7 @@ from sqlmodel import select
 
 from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+from src.app.runtime.orchestration.models.material_unit import MaterialUnit
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.models.timeline import (
     TimelineActionType,
@@ -43,6 +44,7 @@ class AuthoritativePluginAttempt:
     execution_session: ExecutionSession | Any | None = None
     work_item: ExecutionWorkItem | Any | None = None
     plugin_binding: WorklinePluginBinding | Any | None = None
+    material_unit: MaterialUnit | Any | None = None
 
 
 class PluginAttemptRepository:
@@ -64,7 +66,10 @@ class PluginAttemptRepository:
         inbox_id: int,
         session_id: int,
     ) -> AuthoritativePluginAttempt | None:
-        """按 Inbox row → Session row 固定顺序锁定。"""
+        """按固定顺序锁定权威行。
+
+        顺序为 Inbox → Session → MaterialUnit → ExecutionSession → WorkItem → Binding。
+        """
 
         # RuntimeInbox 锁定由其专属 Repository 持有，避免插件仓库越过 inbound ownership 边界。
         inbox = await self._inbox_repository.get_by_id_for_update(db, inbox_id, populate_existing=True)
@@ -81,6 +86,17 @@ class PluginAttemptRepository:
             return None
         if getattr(inbox, "workline_session_id", None) != session_id:
             return None
+        material_unit_id = getattr(session, "current_material_unit_id", None)
+        material_unit = None
+        if isinstance(material_unit_id, int):
+            material_unit = await db.scalar(
+                select(MaterialUnit)
+                .where(MaterialUnit.id == material_unit_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+            if material_unit is None:
+                return None
         execution_session_id = getattr(inbox, "execution_session_id", None)
         correlation_id = getattr(inbox, "correlation_id", None)
         if not isinstance(execution_session_id, int) or not isinstance(correlation_id, str) or not correlation_id:
@@ -163,6 +179,7 @@ class PluginAttemptRepository:
             execution_session=execution_session,
             work_item=work_item,
             plugin_binding=plugin_binding,
+            material_unit=material_unit,
         )
 
     async def persist_locked_attempt(
@@ -177,7 +194,8 @@ class PluginAttemptRepository:
     ) -> None:
         """在已锁事务写 evidence、decision/intents 与 plugin state。
 
-        全局锁序与 reconciliation 保持兼容：Inbox row → Session row → timeline advisory。
+        全局锁序与 reconciliation 保持兼容：权威行锁已按
+        lock_authoritative 顺序持有，最后获取 timeline advisory。
         """
 
         session = locked.session

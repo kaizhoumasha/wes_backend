@@ -357,6 +357,28 @@ async def test_dispatcher_uses_exact_generated_identity_and_route_without_databa
 
 
 @pytest.mark.asyncio
+async def test_dispatcher_revalidates_handler_state_model_copy_result() -> None:
+    case = next(item for item in _cases() if item["case_id"] == "RS-SD-001")
+
+    async def invalid_handler(*_args: object, **_kwargs: object) -> PluginDecision[RoughSorterState]:
+        bypassed = RoughSorterState().model_copy(update={"phase": "NOT_A_REAL_PHASE"})
+        return PluginDecision(intents=(), next_state=bypassed, outcome_code="INVALID_STATE")
+
+    key = (DEFINITION.plugin_key, DEFINITION.contract_version, "SCAN_COMPLETED")
+    dispatcher = WorklinePluginDispatcher(
+        handler_registry={key: (HandlerRegistration(handler=invalid_handler, facts_model=RoughSorterFacts),)}
+    )
+
+    result = await dispatcher.dispatch(
+        request=_dispatch_request(case),
+        gateway=_Gateway(case["trigger"]["decision_discriminator"]),
+    )
+
+    assert isinstance(result, ContractViolation)
+    assert result.error_code == "PLUGIN_CONTRACT_INVALID"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mutation", "expected_code"),
     [

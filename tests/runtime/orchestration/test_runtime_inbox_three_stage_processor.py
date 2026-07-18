@@ -1257,6 +1257,11 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
             events.append("terminal")
             return True
 
+    class QueueGateway:
+        def enqueue_outbox(self, _outbox_id: int | None = None, *, limit: int = 50) -> None:
+            assert limit == 50
+            events.append("enqueue-outbox")
+
     async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
         return session, SimpleNamespace(id=20), None, None, {}, object(), True
 
@@ -1284,10 +1289,14 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
         inbox_service=InboxService(),  # type: ignore[arg-type]
         writeback_service=writeback,
         plugin_attempt_runner=Runner(),
+        queue_gateway=QueueGateway(),  # type: ignore[arg-type]
     ).process_claimed(Db(), claim={"id": 91, "processor_token": "lease-1"})
 
     assert result["success"] == 1
-    assert events == ["commit", "lock", "intent-ledger", expected_artifact, "state+timeline", "terminal", "commit"]
+    expected_events = ["commit", "lock", "intent-ledger", expected_artifact, "state+timeline", "terminal", "commit"]
+    if capability_key == "device.device_command_write":
+        expected_events.append("enqueue-outbox")
+    assert events == expected_events
 
 
 @pytest.mark.asyncio
@@ -1408,6 +1417,83 @@ async def test_platform_stage_one_loads_material_fact_through_repository() -> No
     )
 
     assert result["success"] == 1
+
+
+@pytest.mark.asyncio
+async def test_platform_outbox_enqueue_failure_keeps_committed_success() -> None:
+    from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
+
+    events: list[str] = []
+
+    class Db:
+        async def flush(self) -> None:
+            pass
+
+        async def commit(self) -> None:
+            events.append("commit")
+
+        async def rollback(self) -> None:
+            events.append("MUST_NOT_ROLLBACK")
+
+    intent = RuntimeIntent.system_capability(
+        capability_key="device.device_command_write",
+        contract_version="v1",
+        operation_key="inbox:91:device-command",
+        payload={"target_device_id": 31, "action": "MOVE", "payload": {}, "timeout_ms": 1000},
+        precondition={"expected_available": True},
+        fact_version="device:v1",
+        timeout_seconds=1,
+        creator_authority="WORKLINE_PLUGIN",
+        authorization_policy="PLUGIN_DECLARED_CAPABILITY",
+        binding_snapshot={"binding_id": 17, "binding_version": 4},
+        provider_snapshot={"provider_code": "RUNTIME", "profile": "runtime"},
+    )
+
+    class Runner:
+        async def run(self, _context: object) -> AttemptWriteSet:
+            return AttemptWriteSet(evidence=(), next_state={}, intents=(intent,), outcome_code="COMMAND_READY")
+
+    class WriteBack:
+        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> WriteDisposition:
+            await db.commit()
+            events.append("writeback-committed")
+            return WriteDisposition.COMMITTED
+
+    class FailingQueueGateway:
+        def enqueue_outbox(self, _outbox_id: int | None = None, *, limit: int = 50) -> None:
+            assert limit == 50
+            events.append("enqueue-failed")
+            raise RuntimeError("broker unavailable")
+
+    bridge = RuntimeInboxProcessorBridge(
+        plugin_attempt_runner=Runner(),
+        writeback_service=WriteBack(),  # type: ignore[arg-type]
+        queue_gateway=FailingQueueGateway(),  # type: ignore[arg-type]
+    )
+    inbox = _make_inbox(inbox_id=91, payload_json={"event_type": "SCAN_COMPLETED"})
+    inbox.event_type = "SCAN_COMPLETED"
+
+    result = await bridge._process_platform_plugin_attempt(
+        Db(),  # type: ignore[arg-type]
+        inbox=inbox,
+        session=SimpleNamespace(
+            id=10,
+            version=7,
+            plugin_state_version=3,
+            plugin_state_json={},
+            plugin_binding_id=17,
+            current_material_unit_id=None,
+            status="RUNNING",
+        ),
+        workline=SimpleNamespace(id=20),
+        resolved_event_type="SCAN_COMPLETED",
+        processor_token="lease-1",
+        attempt_runtime=bridge.create_attempt_runtime("lease-1"),
+    )
+
+    assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+    assert events == ["commit", "commit", "writeback-committed", "enqueue-failed"]
 
 
 @pytest.mark.asyncio

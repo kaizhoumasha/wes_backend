@@ -104,6 +104,7 @@ from src.app.workline.constants import (
 from src.app.workline.diagnostic_support import _record_diagnostic
 from src.app.workline.services.safety_service import WorkLineSafetyBlocked
 from src.app.workline.utils import payload_dict
+from src.core.task_queue_gateway import TaskQueueGateway, task_queue_gateway
 from src.utils.value_normalization import (
     optional_int,
     optional_str,
@@ -505,6 +506,15 @@ def _merge_result(target: ProcessResult, source: ProcessResult) -> None:
     target["resource_wait"] += source.get("resource_wait", 0)
 
 
+def _plugin_write_set_requires_outbox_dispatch(write_set: AttemptWriteSet) -> bool:
+    """插件设备命令写入会创建 SystemOutbox，提交后必须即时触发派发。"""
+
+    return any(
+        intent.kind == RuntimeIntentKind.SYSTEM_CAPABILITY and intent.capability_key == "device.device_command_write"
+        for intent in write_set.intents
+    )
+
+
 class RuntimeInboxProcessorBridge:
     """RuntimeInbox 三阶段 processor composition.
 
@@ -524,6 +534,7 @@ class RuntimeInboxProcessorBridge:
         recorded_replay_service: TimelineRecordedReplayService | None = None,
         plugin_write_set_limits: PluginWriteSetLimits | None = None,
         material_unit_repository: MaterialUnitRepository | None = None,
+        queue_gateway: TaskQueueGateway = task_queue_gateway,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._inbox_service = inbox_service or runtime_inbox_service
@@ -537,6 +548,15 @@ class RuntimeInboxProcessorBridge:
         self._recorded_replay_service = recorded_replay_service or TimelineRecordedReplayService()
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
         self._material_unit_repository = material_unit_repository or default_material_unit_repository
+        self._queue_gateway = queue_gateway
+
+    def _enqueue_outbox_dispatch(self) -> None:
+        """提交后的即时触发失败不撤销业务事务，Beat 继续承担兜底。"""
+
+        try:
+            self._queue_gateway.enqueue_outbox(limit=50)
+        except Exception as exc:
+            logger.warning(f"插件 attempt 已提交，但 Outbox 即时派发触发失败，将依赖 Beat/重试兜底: {exc}")
 
     @property
     def inbox_service(self) -> RuntimeInboxService:
@@ -1240,6 +1260,8 @@ class RuntimeInboxProcessorBridge:
             result["failed"] = 1
         else:
             result["success"] = 1
+            if _plugin_write_set_requires_outbox_dispatch(write_set):
+                self._enqueue_outbox_dispatch()
         return result
 
     async def _load_recorded_replay(

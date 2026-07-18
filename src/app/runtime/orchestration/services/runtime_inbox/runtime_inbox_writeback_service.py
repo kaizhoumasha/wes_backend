@@ -29,6 +29,7 @@ from src.app.runtime.orchestration.effect_result import (
     RuntimeIntentEffectResult,
     WriteBackDisposition,
 )
+from src.app.runtime.orchestration.material_fact_version import material_unit_fact_version
 from src.app.runtime.orchestration.repositories.plugin_attempt_repository import (
     plugin_attempt_repository as default_plugin_attempt_repository,
 )
@@ -104,6 +105,7 @@ def _authoritative_snapshot_matches(locked: Any, expected: AttemptSnapshot) -> b
 
     inbox = locked.inbox
     session = locked.session
+    material_unit = getattr(locked, "material_unit", None)
     session_definition_identity = getattr(session, "plugin_identity", None)
     if session_definition_identity is None:
         plugin_key = getattr(session, "plugin_key", None)
@@ -122,7 +124,11 @@ def _authoritative_snapshot_matches(locked: Any, expected: AttemptSnapshot) -> b
         and (expected.session_status is None or _session_status_value(session) == expected.session_status)
         and (
             expected.material_unit_id is None
-            or getattr(session, "current_material_unit_id", None) == expected.material_unit_id
+            or (
+                getattr(session, "current_material_unit_id", None) == expected.material_unit_id
+                and getattr(material_unit, "id", None) == expected.material_unit_id
+                and material_unit_fact_version(material_unit) == expected.material_unit_version
+            )
         )
         and (expected.definition_identity is None or session_definition_identity == expected.definition_identity)
         and (expected.binding_id is None or getattr(session, "plugin_binding_id", None) == expected.binding_id)

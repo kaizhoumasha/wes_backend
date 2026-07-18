@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -18,7 +19,7 @@ from src.app.runtime.workline_plugins.definition import WorklinePluginDefinition
 from src.app.runtime.workline_plugins.schema import STATE_MACHINE_CONTRACT_PROFILES
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable
     from pathlib import Path
 
     from src.app.runtime.workline_plugins.schema import WorklinePluginSchema
@@ -30,6 +31,21 @@ _ALLOWED_PIPELINE_QUEUE_ROLES = frozenset(
 _ALLOWED_PIPELINE_ORDER_POLICIES = frozenset({"FIFO", "LIFO", "PRIORITY"})
 
 
+def _stable_import_identity(value: object) -> str:
+    module = getattr(value, "__module__", None)
+    qualname = getattr(value, "__qualname__", None)
+    if (
+        not isinstance(module, str)
+        or not module
+        or not isinstance(qualname, str)
+        or not qualname
+        or qualname == "<lambda>"
+        or "<locals>" in qualname
+    ):
+        raise TypeError("handler registration must have a stable import identity")
+    return f"{module}.{qualname}"
+
+
 @dataclass(frozen=True, slots=True)
 class WorklinePluginSource:
     """构建期发现的单个 Definition 及其稳定 import 来源。"""
@@ -38,6 +54,7 @@ class WorklinePluginSource:
     directory_key: str
     definition: WorklinePluginDefinition
     export_name: str = "DEFINITION"
+    handler_identities: tuple[tuple[str, str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,11 +89,27 @@ class WorklinePluginIndexBuilder:
             definition = getattr(module, "DEFINITION", None)
             if not isinstance(definition, WorklinePluginDefinition):
                 raise TypeError(f"{module_name}.DEFINITION must be WorklinePluginDefinition")
+            route_handlers = getattr(module, "ROUTE_HANDLERS", None)
+            if not isinstance(route_handlers, Mapping):
+                raise TypeError(f"{module_name}.ROUTE_HANDLERS must be a static mapping")
+            handler_identities = stable_sort(
+                (
+                    route,
+                    _stable_import_identity(handler),
+                    _stable_import_identity(facts_model),
+                )
+                for route in definition.routes
+                for handler, facts_model in route_handlers.get(
+                    (definition.plugin_key, definition.contract_version, route),
+                    (),
+                )
+            )
             sources.append(
                 WorklinePluginSource(
                     module_name=module_name,
                     directory_key=".".join(relative_parent.parts),
                     definition=definition,
+                    handler_identities=handler_identities,
                 )
             )
         return tuple(sources)
@@ -108,9 +141,22 @@ class WorklinePluginIndexBuilder:
                     raise ValueError(f"unknown capability reference: {capability[0]}@{capability[1]}")
                 if mode not in (SystemCapabilityMode.QUERY, SystemCapabilityMode.EFFECT):
                     raise ValueError(f"unsupported capability mode: {mode}")
+            for route, handler_identity, facts_model_identity in source.handler_identities:
+                if route not in definition.routes:
+                    raise ValueError(f"handler registration route is not declared: {route}")
+                self._require_identity(handler_identity, field_name="handler identity")
+                self._require_identity(facts_model_identity, field_name="facts model identity")
 
         identities = tuple(self._identity_key(item.definition) for item in ordered)
-        digest = sha256_digest(tuple(item.definition.identity for item in ordered))
+        digest = sha256_digest(
+            tuple(
+                {
+                    "definition_identity": item.definition.identity,
+                    "handler_registrations": item.handler_identities,
+                }
+                for item in ordered
+            )
+        )
         return GeneratedWorklinePluginIndex(
             identities=identities,
             digest=digest,
@@ -394,8 +440,12 @@ class WorklinePluginIndexBuilder:
         digest: str,
     ) -> str:
         imports = sorted(
-            f"from {source.module_name} import {source.export_name} as _DEFINITION_{index}"
+            import_line
             for index, source in enumerate(sources)
+            for import_line in (
+                f"from {source.module_name} import {source.export_name} as _DEFINITION_{index}",
+                f"from {source.module_name} import ROUTE_HANDLERS as _ROUTE_HANDLERS_{index}",
+            )
         )
         identity_entries = [
             f"    ({json.dumps(key, ensure_ascii=False)}, {json.dumps(version, ensure_ascii=False)}),"
@@ -405,6 +455,18 @@ class WorklinePluginIndexBuilder:
             f"        ({json.dumps(key, ensure_ascii=False)}, {json.dumps(version, ensure_ascii=False)}): "
             f"_DEFINITION_{index},"
             for index, (key, version) in enumerate(identities)
+        ]
+        handler_mapping_entries = [
+            line
+            for index, ((key, version), source) in enumerate(zip(identities, sources, strict=True))
+            for route in source.definition.routes
+            for line in (
+                f"        ({json.dumps(key, ensure_ascii=False)}, {json.dumps(version, ensure_ascii=False)}, "
+                f"{json.dumps(route, ensure_ascii=False)}): _ROUTE_HANDLERS_{index}.get(",
+                f"            ({json.dumps(key, ensure_ascii=False)}, {json.dumps(version, ensure_ascii=False)}, "
+                f"{json.dumps(route, ensure_ascii=False)}), ()",
+                "        ),",
+            )
         ]
         if not identity_entries:
             identity_block = ["WORKLINE_PLUGIN_IDENTITIES = ()"]
@@ -421,6 +483,17 @@ class WorklinePluginIndexBuilder:
             if not mapping_entries
             else ["WORKLINE_PLUGIN_INDEX = MappingProxyType(", "    {", *mapping_entries, "    }", ")"]
         )
+        handler_mapping_block = (
+            ["WORKLINE_PLUGIN_HANDLER_REGISTRATIONS = MappingProxyType({})"]
+            if not handler_mapping_entries
+            else [
+                "WORKLINE_PLUGIN_HANDLER_REGISTRATIONS = MappingProxyType(",
+                "    {",
+                *handler_mapping_entries,
+                "    }",
+                ")",
+            ]
+        )
         lines = [
             '"""由 scripts/generate_runtime_extensions.py 生成；禁止手工编辑。"""',
             "",
@@ -431,8 +504,10 @@ class WorklinePluginIndexBuilder:
             *identity_block,
             f"WORKLINE_PLUGIN_INDEX_DIGEST = {json.dumps(digest)}",
             *mapping_block,
+            *handler_mapping_block,
             "",
             "__all__ = [",
+            '    "WORKLINE_PLUGIN_HANDLER_REGISTRATIONS",',
             '    "WORKLINE_PLUGIN_IDENTITIES",',
             '    "WORKLINE_PLUGIN_INDEX",',
             '    "WORKLINE_PLUGIN_INDEX_DIGEST",',

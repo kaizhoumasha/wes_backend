@@ -42,7 +42,7 @@ async def test_three_stage_attempt_queries_without_db_then_commits_atomically() 
 
 @pytest.mark.asyncio
 async def test_plugin_attempt_lock_order_matches_authoritative_execution_chain() -> None:
-    """Stage3 固定按 Inbox、Session、ExecutionSession、WorkItem 锁定。"""
+    """Stage3 固定按 Inbox、Session、MaterialUnit、ExecutionSession、WorkItem 锁定。"""
 
     from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
 
@@ -66,7 +66,16 @@ async def test_plugin_attempt_lock_order_matches_authoritative_execution_chain()
     class Db:
         async def scalar(self, _statement: object) -> object:
             rows = (
-                ("session-row", SimpleNamespace(id=41, workline_id=8, plugin_key="plugin")),
+                (
+                    "session-row",
+                    SimpleNamespace(
+                        id=41,
+                        workline_id=8,
+                        plugin_key="plugin",
+                        current_material_unit_id=31,
+                    ),
+                ),
+                ("material-unit-row", SimpleNamespace(id=31, version=7)),
                 ("execution-session-row", SimpleNamespace(id=21, workline_id=8, plugin_key="plugin")),
                 (
                     "work-item-row",
@@ -88,17 +97,21 @@ async def test_plugin_attempt_lock_order_matches_authoritative_execution_chain()
     ).lock_authoritative(Db(), inbox_id=91, session_id=41)
 
     assert locked is not None
-    assert events == ["inbox-row", "session-row", "execution-session-row", "work-item-row"]
+    assert locked.material_unit.id == 31
+    assert events == ["inbox-row", "session-row", "material-unit-row", "execution-session-row", "work-item-row"]
 
 
 @pytest.mark.asyncio
 async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -> None:
+    from datetime import timedelta
+
     from sqlalchemy import event, update
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from src.app.runtime.orchestration.execution_correlation import ExecutionCorrelation
     from src.app.runtime.orchestration.execution_session import ExecutionSession
     from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
+    from src.app.runtime.orchestration.models.material_unit import MaterialUnit
     from src.app.runtime.orchestration.models.session import WorklineSession
     from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
     from src.app.runtime.orchestration.runtime_inbox import RuntimeInbox
@@ -115,6 +128,7 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
         for table in (
             ExecutionSession.__table__,
             ExecutionCorrelation.__table__,
+            MaterialUnit.__table__,
             WorklineSession.__table__,
             RuntimeInbox.__table__,
             ExecutionWorkItem.__table__,
@@ -136,7 +150,20 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
                 trace_id="trace-stale-1",
             )
         )
-        session = WorklineSession(session_code="SESSION-STALE", workline_id=8, plugin_key="plugin.rough-sorter")
+        material_unit = MaterialUnit(
+            pkg_code="PKG-STALE",
+            material_identity_key="MAT:STALE",
+            six_in_one={},
+            updated_at=timezone.now_for_db(),
+        )
+        first.add(material_unit)
+        await first.flush()
+        session = WorklineSession(
+            session_code="SESSION-STALE",
+            workline_id=8,
+            plugin_key="plugin.rough-sorter",
+            current_material_unit_id=material_unit.id,
+        )
         first.add(session)
         await first.flush()
         first.add(
@@ -167,9 +194,17 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
         first.add(inbox)
         await first.commit()
         assert session.id is not None
+        stale_material_updated_at = material_unit.updated_at
+        current_material_updated_at = stale_material_updated_at + timedelta(seconds=1)
         await second.execute(update(WorklineSession).where(WorklineSession.id == session.id).values(version=9))
+        await second.execute(
+            update(MaterialUnit)
+            .where(MaterialUnit.id == material_unit.id)
+            .values(updated_at=current_material_updated_at)
+        )
         await second.commit()
         assert session.version == 0
+        assert material_unit.updated_at == stale_material_updated_at
 
         locked = await PluginAttemptRepository().lock_authoritative(
             first,
@@ -180,6 +215,8 @@ async def test_plugin_attempt_session_lock_reloads_stale_shared_identity_map() -
         assert locked is not None
         assert locked.session is session
         assert locked.session.version == 9
+        assert locked.material_unit is material_unit
+        assert locked.material_unit.updated_at == current_material_updated_at
     await engine.dispose()
 
 
@@ -911,6 +948,71 @@ async def test_writeback_version_race_writes_nothing_and_rolls_back() -> None:
         workline_id=8,
         trace_id="trace-1",
         write_set=AttemptWriteSet(evidence=("e1",), next_state={}, intents=()),
+    )
+
+    assert disposition is WriteDisposition.SAFE_RETRY
+    assert events == ["select-for-update", "rollback"]
+
+
+@pytest.mark.asyncio
+async def test_writeback_material_fact_version_race_writes_nothing_and_rolls_back() -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+        RuntimeInboxWriteBackService,
+    )
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptSnapshot,
+        AttemptWriteSet,
+        WriteDisposition,
+    )
+
+    events: list[str] = []
+    snapshot = AttemptSnapshot(
+        processor_token="lease-1",
+        session_version=7,
+        plugin_state_version=3,
+        material_unit_id=51,
+        material_unit_version=11,
+    )
+
+    class Db:
+        async def commit(self) -> None:
+            events.append("commit")
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+    class Repository:
+        async def lock_authoritative(self, *_args: object, **_kwargs: object) -> object:
+            events.append("select-for-update")
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-1"),
+                session=SimpleNamespace(
+                    version=7,
+                    plugin_state_version=3,
+                    current_material_unit_id=51,
+                ),
+                material_unit=SimpleNamespace(id=51, version=12),
+            )
+
+        async def persist_locked_attempt(self, *_args: object, **_kwargs: object) -> None:
+            events.append("MUST_NOT_WRITE")
+
+    class InboxService:
+        async def mark_processed(self, *_args: object, **_kwargs: object) -> bool:
+            events.append("MUST_NOT_TERMINAL")
+            return True
+
+    disposition = await RuntimeInboxWriteBackService(
+        plugin_attempt_repository=Repository(),
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+    ).commit_plugin_attempt(
+        Db(),
+        expected_snapshot=snapshot,
+        inbox_id=91,
+        session_id=41,
+        workline_id=21,
+        trace_id="trace-1",
+        write_set=AttemptWriteSet(evidence=(), next_state={"phase": "READY"}, intents=()),
     )
 
     assert disposition is WriteDisposition.SAFE_RETRY

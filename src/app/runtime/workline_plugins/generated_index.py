@@ -3,16 +3,37 @@
 from types import MappingProxyType
 
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION as _DEFINITION_0
+from src.app.runtime.workline_plugins.rough_sorter.definition import ROUTE_HANDLERS as _ROUTE_HANDLERS_0
 
 WORKLINE_PLUGIN_IDENTITIES = (("rough_sorter", "rough_sorter.v2"),)
-WORKLINE_PLUGIN_INDEX_DIGEST = "34d4332b7066c2a294d8e783661b7a67d7cf890b0b0a576aeaaeeb040b3541cc"
+WORKLINE_PLUGIN_INDEX_DIGEST = "a04bc0ddf34adbb46c7d682d92787e16c729531c244fbf09bbf62e8978416f98"
 WORKLINE_PLUGIN_INDEX = MappingProxyType(
     {
         ("rough_sorter", "rough_sorter.v2"): _DEFINITION_0,
     }
 )
+WORKLINE_PLUGIN_HANDLER_REGISTRATIONS = MappingProxyType(
+    {
+        ("rough_sorter", "rough_sorter.v2", "BUSINESS_TIMEOUT"): _ROUTE_HANDLERS_0.get(
+            ("rough_sorter", "rough_sorter.v2", "BUSINESS_TIMEOUT"), ()
+        ),
+        ("rough_sorter", "rough_sorter.v2", "CAPABILITY_EFFECT_RESULT"): _ROUTE_HANDLERS_0.get(
+            ("rough_sorter", "rough_sorter.v2", "CAPABILITY_EFFECT_RESULT"), ()
+        ),
+        ("rough_sorter", "rough_sorter.v2", "PICK_AND_PUT_RESULT"): _ROUTE_HANDLERS_0.get(
+            ("rough_sorter", "rough_sorter.v2", "PICK_AND_PUT_RESULT"), ()
+        ),
+        ("rough_sorter", "rough_sorter.v2", "REPLAY_REQUEST"): _ROUTE_HANDLERS_0.get(
+            ("rough_sorter", "rough_sorter.v2", "REPLAY_REQUEST"), ()
+        ),
+        ("rough_sorter", "rough_sorter.v2", "SCAN_COMPLETED"): _ROUTE_HANDLERS_0.get(
+            ("rough_sorter", "rough_sorter.v2", "SCAN_COMPLETED"), ()
+        ),
+    }
+)
 
 __all__ = [
+    "WORKLINE_PLUGIN_HANDLER_REGISTRATIONS",
     "WORKLINE_PLUGIN_IDENTITIES",
     "WORKLINE_PLUGIN_INDEX",
     "WORKLINE_PLUGIN_INDEX_DIGEST",

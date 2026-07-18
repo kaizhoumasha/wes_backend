@@ -287,18 +287,42 @@ def test_builders_sort_identities_and_render_stable_digest(monkeypatch: pytest.M
 
 
 def test_plugin_renderer_executes_with_definition_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
-    source = plugin_source(module_name="pluginpkg.rough_sorter.definition")
+    first = WorklinePluginSource(
+        module_name="pluginpkg.rough_sorter.definition",
+        directory_key="rough_sorter",
+        definition=plugin_definition(),
+        handler_identities=(("scan.completed", f"{__name__}.parse_scan", f"{__name__}.PluginState"),),
+    )
+    second = WorklinePluginSource(
+        module_name="pluginpkg.secondary.definition",
+        directory_key="secondary",
+        definition=plugin_definition(
+            plugin_key="secondary",
+            routes=("sort.completed",),
+            parsers={"sort.completed": parse_scan},
+        ),
+        handler_identities=(("sort.completed", f"{__name__}.parse_scan", f"{__name__}.PluginState"),),
+    )
     generated = WorklinePluginIndexBuilder(
         capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}
-    ).build((source,))
+    ).build((first, second))
 
-    for module_name in ("pluginpkg", "pluginpkg.rough_sorter"):
+    for module_name in ("pluginpkg", "pluginpkg.rough_sorter", "pluginpkg.secondary"):
         module = ModuleType(module_name)
         module.__path__ = []  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, module_name, module)
-    definition_module = ModuleType(source.module_name)
-    definition_module.DEFINITION = source.definition  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, source.module_name, definition_module)
+    first_module = ModuleType(first.module_name)
+    first_module.DEFINITION = first.definition  # type: ignore[attr-defined]
+    first_module.ROUTE_HANDLERS = {  # type: ignore[attr-defined]
+        ("rough_sorter", "v1", "scan.completed"): ((parse_scan, PluginState),)
+    }
+    monkeypatch.setitem(sys.modules, first.module_name, first_module)
+    second_module = ModuleType(second.module_name)
+    second_module.DEFINITION = second.definition  # type: ignore[attr-defined]
+    second_module.ROUTE_HANDLERS = {  # type: ignore[attr-defined]
+        ("secondary", "v1", "sort.completed"): ((parse_scan, PluginState),)
+    }
+    monkeypatch.setitem(sys.modules, second.module_name, second_module)
 
     namespace: dict[str, object] = {}
     exec(compile(generated.source, "generated_plugin_index.py", "exec"), namespace)
@@ -307,9 +331,47 @@ def test_plugin_renderer_executes_with_definition_mapping(monkeypatch: pytest.Mo
     assert isinstance(generated_mapping, MappingProxyType)
     assert namespace["WORKLINE_PLUGIN_IDENTITIES"] == generated.identities
     assert namespace["WORKLINE_PLUGIN_INDEX_DIGEST"] == generated.digest
-    assert generated_mapping[("rough_sorter", "v1")] is source.definition
+    assert generated_mapping[("rough_sorter", "v1")] is first.definition
+    assert generated_mapping[("secondary", "v1")] is second.definition
+    generated_registrations = namespace["WORKLINE_PLUGIN_HANDLER_REGISTRATIONS"]
+    assert generated_registrations == MappingProxyType(
+        {
+            ("rough_sorter", "v1", "scan.completed"): ((parse_scan, PluginState),),
+            ("secondary", "v1", "sort.completed"): ((parse_scan, PluginState),),
+        }
+    )
+
+    import src.app.runtime.workline_plugins.handler_registry as handler_registry_module
+
+    monkeypatch.setattr(
+        handler_registry_module,
+        "WORKLINE_PLUGIN_HANDLER_REGISTRATIONS",
+        generated_registrations,
+    )
+    runtime_registry = handler_registry_module.build_generated_handler_registry(generated_mapping)
+    assert set(runtime_registry) == set(generated_registrations)
+    assert all(len(candidates) == 1 for candidates in runtime_registry.values())
     with pytest.raises(TypeError):
-        generated_mapping[("new", "v1")] = source.definition  # type: ignore[index]
+        generated_mapping[("new", "v1")] = first.definition  # type: ignore[index]
+
+
+def test_plugin_digest_changes_when_static_handler_registration_changes() -> None:
+    source = plugin_source()
+    first = WorklinePluginSource(
+        module_name=source.module_name,
+        directory_key=source.directory_key,
+        definition=source.definition,
+        handler_identities=(("scan.completed", "pkg.handlers.decide_v1", "pkg.facts.ScanFacts"),),
+    )
+    second = WorklinePluginSource(
+        module_name=source.module_name,
+        directory_key=source.directory_key,
+        definition=source.definition,
+        handler_identities=(("scan.completed", "pkg.handlers.decide_v2", "pkg.facts.ScanFacts"),),
+    )
+    builder = WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY})
+
+    assert builder.build((first,)).digest != builder.build((second,)).digest
 
 
 @pytest.mark.parametrize("kind", ["identity", "route"])
@@ -360,6 +422,15 @@ def test_builder_discovers_author_definition_files_only_at_build_time(
 
     def fake_import(module_name: str) -> object:
         imported.append(module_name)
+        if kind == "plugin":
+            return SimpleNamespace(
+                DEFINITION=definition,
+                ROUTE_HANDLERS={
+                    (definition.plugin_key, definition.contract_version, "scan.completed"): (  # type: ignore[union-attr]
+                        (parse_scan, PluginState),
+                    )
+                },
+            )
         return SimpleNamespace(DEFINITION=definition)
 
     if kind == "system":

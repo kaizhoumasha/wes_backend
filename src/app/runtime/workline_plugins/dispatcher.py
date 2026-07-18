@@ -217,10 +217,15 @@ class WorklinePluginDispatcher:
         try:
             if not isinstance(decision, PluginDecision):
                 raise TypeError("handler must return PluginDecision")
-            definition.state_model.model_validate(decision.next_state)
+            state_payload = (
+                decision.next_state.model_dump(mode="python")
+                if isinstance(decision.next_state, BaseModel)
+                else decision.next_state
+            )
+            validated_next_state = definition.state_model.model_validate(state_payload)
         except (AttributeError, TypeError, ValidationError, ValueError) as exc:
             return _violation("PLUGIN_CONTRACT_INVALID", str(exc))
-        return decision
+        return decision.model_copy(update={"next_state": validated_next_state})
 
     def _validate_snapshot(
         self,

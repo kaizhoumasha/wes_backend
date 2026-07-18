@@ -6,7 +6,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from src.app.runtime.workline_plugins.dispatcher import HandlerRegistration
-from src.app.runtime.workline_plugins.rough_sorter.definition import ROUTE_HANDLERS
+from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_HANDLER_REGISTRATIONS
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -24,7 +24,7 @@ def build_generated_handler_registry(
     registrations: dict[HandlerKey, tuple[HandlerRegistration, ...]] = {}
     for identity, definition in plugin_index.items():
         for route in definition.routes:
-            authored = ROUTE_HANDLERS.get((*identity, route), ())
+            authored = WORKLINE_PLUGIN_HANDLER_REGISTRATIONS.get((*identity, route), ())
             registrations[(*identity, route)] = tuple(
                 HandlerRegistration(handler=handler, facts_model=facts_model) for handler, facts_model in authored
             )
