@@ -105,7 +105,7 @@ def _evidence_snapshot(session: WorklineSession, reason: str) -> dict[str, Any]:
 
 
 def _material_identity_missing(session: WorklineSession, evidence: dict[str, Any]) -> bool:
-    definition = get_workline_capability_definition(session.plugin_key)
+    definition = get_workline_capability_definition(session.plugin_key, session.contract_version)
     if definition is None:
         return True
     if definition.material_identity_resolver is None:

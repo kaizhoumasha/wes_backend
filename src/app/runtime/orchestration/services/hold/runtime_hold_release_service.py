@@ -481,7 +481,7 @@ class RuntimeHoldReleaseService:
     def _resolve_ng_reason(self, hold: RuntimeHold, ng_reason: Any) -> NgReasonDefinition:
         from src.app.runtime.capabilities.material_flow.contracts.ng_reason import build_ng_reason_catalog
 
-        plugin_reasons = list_workline_ng_reasons(hold.plugin_key)
+        plugin_reasons = list_workline_ng_reasons(hold.plugin_key, contract_version=hold.contract_version)
         catalog = build_ng_reason_catalog(plugin_reasons)
         reason = catalog.by_code.get(ng_reason.code)
         if reason is None or reason.source.value != ng_reason.source:
@@ -602,7 +602,11 @@ class RuntimeHoldReleaseService:
                 "hold_id": hold.id,
             },
         )
-        return resolve_workline_material_identity(hold.plugin_key, input_value)
+        return resolve_workline_material_identity(
+            hold.plugin_key,
+            input_value,
+            contract_version=hold.contract_version,
+        )
 
     def _write_release_facts(
         self,

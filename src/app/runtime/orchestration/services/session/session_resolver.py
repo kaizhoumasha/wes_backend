@@ -107,11 +107,16 @@ def _resolve_payload_barcode(data: dict[str, Any]) -> str | None:
     return non_empty_str(data.get("barcode"))
 
 
-def _resolve_plugin_business_key(payload_json: dict[str, Any], *, plugin_key: str | None) -> str | None:
+def _resolve_plugin_business_key(
+    payload_json: dict[str, Any],
+    *,
+    plugin_key: str | None,
+    contract_version: str | None = None,
+) -> str | None:
     """通过 registry 插件运行时恢复稳定 business_key。"""
 
     try:
-        return resolve_workline_business_key(plugin_key, payload_json)
+        return resolve_workline_business_key(plugin_key, payload_json, contract_version=contract_version)
     except (TypeError, ValueError) as exc:
         raise SessionResolveError(f"Plugin business_key resolver failed: {exc}") from exc
 
@@ -141,7 +146,12 @@ async def _lock_device_event_business_key(db: Any, *, workline_id: int, business
     )
 
 
-def _resolve_business_key(payload_json: dict[str, Any], *, plugin_key: str | None = None) -> str:
+def _resolve_business_key(
+    payload_json: dict[str, Any],
+    *,
+    plugin_key: str | None = None,
+    contract_version: str | None = None,
+) -> str:
     """从事件 payload 提取业务主键，无法稳定求值时显式失败。
 
     约束：
@@ -153,7 +163,11 @@ def _resolve_business_key(payload_json: dict[str, Any], *, plugin_key: str | Non
     data = ensure_dict(payload_json.get("data"))
     # registry 插件运行时解析器优先级最高。SMT 等插件可在这里按自身 data 模型派生业务键，
     # 不再把供应商字段名固化到通用 SessionResolver。
-    business_key_from_plugin = _resolve_plugin_business_key(payload_json, plugin_key=plugin_key)
+    business_key_from_plugin = _resolve_plugin_business_key(
+        payload_json,
+        plugin_key=plugin_key,
+        contract_version=contract_version,
+    )
     if business_key_from_plugin:
         return business_key_from_plugin
 
@@ -377,7 +391,16 @@ class SessionResolver:
                 if candidate_binding is not None
                 else getattr(workline, "plugin_key", None)
             )
-            business_key = _resolve_business_key(payload_json, plugin_key=candidate_plugin_key)
+            candidate_contract_version = (
+                getattr(candidate_binding, "contract_version", None)
+                if candidate_binding is not None
+                else getattr(workline, "contract_version", None)
+            )
+            business_key = _resolve_business_key(
+                payload_json,
+                plugin_key=candidate_plugin_key,
+                contract_version=candidate_contract_version,
+            )
         now = timezone.now_for_db()
         trace = TraceContext.from_runtime(inbox=inbox, workline=workline)
 
@@ -412,7 +435,16 @@ class SessionResolver:
             if active_binding is not None
             else getattr(workline, "plugin_key", None)
         )
-        current_business_key = _resolve_business_key(payload_json, plugin_key=runtime_plugin_key)
+        runtime_contract_version = (
+            getattr(active_binding, "contract_version", None)
+            if active_binding is not None
+            else getattr(workline, "contract_version", None)
+        )
+        current_business_key = _resolve_business_key(
+            payload_json,
+            plugin_key=runtime_plugin_key,
+            contract_version=runtime_contract_version,
+        )
         trace = TraceContext.from_runtime(inbox=inbox, workline=workline)
         if current_business_key != business_key:
             business_key = current_business_key

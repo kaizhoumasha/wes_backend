@@ -114,13 +114,18 @@ class RuntimeHoldQueryService:
         )
         return [self._summary(hold) for hold in holds]
 
-    def list_ng_reasons(self, *, plugin_key: str | None = None) -> list[NgReasonOption]:
+    def list_ng_reasons(
+        self,
+        *,
+        plugin_key: str | None = None,
+        contract_version: str | None = None,
+    ) -> list[NgReasonOption]:
         """返回插件 NG reasons + 系统 fallback。"""
 
         from src.app.runtime.capabilities.material_flow.contracts.ng_reason import BUILTIN_NG_REASONS
 
         reasons: list[NgReasonDefinition] = []
-        reasons.extend(list_workline_ng_reasons(plugin_key))
+        reasons.extend(list_workline_ng_reasons(plugin_key, contract_version=contract_version))
         reasons.extend(BUILTIN_NG_REASONS)
         return [self._reason_option(item) for item in reasons]
 

@@ -308,7 +308,7 @@ async def test_unapproved_active_draft_identity_never_changes_new_session_bindin
     monkeypatch.setattr(
         session_resolver_module,
         "resolve_workline_business_key",
-        lambda plugin_key, _payload: f"BUSINESS-{plugin_key}",
+        lambda plugin_key, _payload, *, contract_version=None: f"BUSINESS-{plugin_key}",
     )
     runtime_repository = RuntimeRepository()
     binding_repository = BindingRepository()
@@ -354,6 +354,59 @@ async def test_unapproved_active_draft_identity_never_changes_new_session_bindin
     execution_session, _, work_item = runtime_repository.created
     assert (execution_session.plugin_key, execution_session.manifest_version) == ("platform-test", "v1")
     assert work_item.plugin_key == "platform-test"
+
+
+@pytest.mark.asyncio
+async def test_session_resolver_uses_binding_contract_version_for_plugin_business_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_resolver_module = importlib.import_module("src.app.runtime.orchestration.services.session.session_resolver")
+    seen: list[tuple[str | None, str | None]] = []
+
+    def resolve_business_key(
+        plugin_key: str | None,
+        _payload: dict[str, object],
+        *,
+        contract_version: str | None = None,
+    ) -> str | None:
+        seen.append((plugin_key, contract_version))
+        if plugin_key == "platform-test" and contract_version == "v1":
+            return "BUSINESS-v1"
+        return None
+
+    monkeypatch.setattr(session_resolver_module, "resolve_workline_business_key", resolve_business_key)
+    runtime_repository = RuntimeRepository()
+    binding_service = WorklinePluginBindingService(
+        repository=BindingRepository(),
+        runtime_repository=runtime_repository,
+        plugin_index={("platform-test", "v1"): DEFINITION},
+        capability_index={},
+        plugin_index_digest="b" * 64,
+        clock=lambda: datetime(2026, 7, 17, 9),
+    )
+    workline = _workline()
+    resolver = SessionResolver(
+        session_repo=SessionRepository(),
+        workline_repo=WorklineRepository(workline),
+        command_repo=object(),
+        outbox_repo=object(),
+        rack_task_repo=object(),
+        handling_step_repo=object(),
+        handling_operation_repo=object(),
+        plugin_binding_service=binding_service,
+    )
+    inbox = SimpleNamespace(
+        payload_json={"data": {"vendor_material": "M-1"}},
+        device_id=1,
+        trace_id="trace-version",
+        request_id="request-version",
+        source_message_id="message-version",
+    )
+
+    session = await resolver._resolve_device_event(object(), inbox, workline)
+
+    assert session.business_key == "BUSINESS-v1"
+    assert seen == [(None, None), ("platform-test", "v1"), ("platform-test", "v1")]
 
 
 @pytest.mark.asyncio

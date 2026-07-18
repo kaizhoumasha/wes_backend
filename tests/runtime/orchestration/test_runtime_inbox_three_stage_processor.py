@@ -41,7 +41,9 @@ from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_c
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     RuntimeInboxAttemptRuntime,
     RuntimeInboxProcessorBridge,
+    _duplicate_entry_material_conflict,
     _load_related_entities,
+    _normalized_entry_material_evidence,
     _project_replay_request,
     _snapshot_inbox_for_diagnostic,
     _write_set_from_recorded_replay,
@@ -2088,6 +2090,74 @@ class TestEntryEventTypes:
     def test_default_with_unknown_plugin(self) -> None:
         workline = SimpleNamespace(plugin_key="non-existent")
         assert "SCAN_COMPLETED" in _entry_event_types_for_workline(workline)
+
+    def test_definition_lookup_uses_configured_contract_version(self, monkeypatch) -> None:
+        from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_validation_service as module
+
+        seen: list[tuple[str | None, str | None]] = []
+
+        def get_definition(plugin_key: str | None, contract_version: str | None = None) -> None:
+            seen.append((plugin_key, contract_version))
+
+        monkeypatch.setattr(module, "get_workline_capability_definition", get_definition)
+        workline = SimpleNamespace(plugin_key="demo", contract_version="v2")
+
+        assert "SCAN_COMPLETED" in _entry_event_types_for_workline(workline)
+        assert seen == [("demo", "v2")]
+
+
+def test_normalized_entry_material_evidence_uses_pinned_contract_version(monkeypatch) -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as module
+
+    seen: list[tuple[str | None, str | None]] = []
+
+    def parse(plugin_key: str | None, payload: dict[str, Any], *, contract_version: str | None = None) -> None:
+        seen.append((plugin_key, contract_version))
+
+    monkeypatch.setattr(module, "parse_workline_six_in_one", parse)
+
+    assert (
+        _normalized_entry_material_evidence(
+            plugin_key="demo",
+            contract_version="v2",
+            payload={"data": {}},
+        )
+        == {}
+    )
+    assert seen == [("demo", "v2")]
+
+
+def test_duplicate_entry_material_conflict_uses_session_pinned_contract_version(monkeypatch) -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_orchestrator_bridge as module
+
+    seen: list[tuple[str | None, str | None]] = []
+
+    def normalize(
+        *,
+        plugin_key: str | None,
+        contract_version: str | None = None,
+        payload: dict[str, Any],
+    ) -> dict[str, str]:
+        seen.append((plugin_key, contract_version))
+        return {"material_code": str(payload["material_code"])}
+
+    monkeypatch.setattr(module, "_normalized_entry_material_evidence", normalize)
+    session = SimpleNamespace(
+        plugin_key="demo",
+        contract_version="v2",
+        context_json={"initial_payload": {"material_code": "OLD"}},
+    )
+    workline = SimpleNamespace(plugin_key="demo", contract_version="v3")
+
+    assert (
+        _duplicate_entry_material_conflict(
+            session=session,
+            workline=workline,
+            payload={"material_code": "NEW"},
+        )
+        is not None
+    )
+    assert seen == [("demo", "v2"), ("demo", "v2")]
 
 
 # ============================================================

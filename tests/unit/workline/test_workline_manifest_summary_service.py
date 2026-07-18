@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 from types import SimpleNamespace
 
+from src.app.workline.models.workline import WorkLinePluginOption
 from src.app.workline.services.workline_service import WorkLineService
 
 workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
@@ -82,7 +83,7 @@ def test_plugin_definition_summary_accepts_raw_iterable_fields(monkeypatch) -> N
     monkeypatch.setattr(
         workline_service_module,
         "get_workline_capability_definition",
-        lambda plugin_key: definition if plugin_key == "iterable_definition" else None,
+        lambda plugin_key, contract_version=None: definition if plugin_key == "iterable_definition" else None,
     )
 
     summary = WorkLineService().get_plugin_definition_summary("iterable_definition")
@@ -95,3 +96,71 @@ def test_plugin_definition_summary_accepts_raw_iterable_fields(monkeypatch) -> N
     assert summary.session_subject is not None
     assert summary.session_subject.identity_sources == ["pkg_code", "pallet_id"]
     assert summary.state_machines[0].transitions[0].to_states == ["RUNNING", "BLOCKED"]
+
+
+def test_plugin_definition_summary_queries_exact_contract_version(monkeypatch) -> None:
+    seen: list[tuple[str, str | None]] = []
+
+    def get_definition(plugin_key: str, contract_version: str | None = None) -> None:
+        seen.append((plugin_key, contract_version))
+
+    monkeypatch.setattr(workline_service_module, "get_workline_capability_definition", get_definition)
+
+    assert WorkLineService().get_plugin_definition_summary("demo", "v2") is None
+    assert seen == [("demo", "v2")]
+
+
+def test_plugin_options_aggregate_contract_versions_by_plugin_key(monkeypatch) -> None:
+    definitions = [
+        SimpleNamespace(plugin_key="demo", contract_version="v3"),
+        SimpleNamespace(plugin_key="demo", contract_version="v2"),
+        SimpleNamespace(plugin_key="other", contract_version="v1"),
+    ]
+    monkeypatch.setattr(workline_service_module, "list_workline_capability_definitions", lambda: definitions)
+
+    options = WorkLineService().list_plugin_options()
+
+    assert options == [
+        WorkLinePluginOption(
+            plugin_key="demo",
+            label="demo",
+            contract_versions=["v2", "v3"],
+            default_contract_version="v3",
+        ),
+        WorkLinePluginOption(
+            plugin_key="other",
+            label="other",
+            contract_versions=["v1"],
+            default_contract_version="v1",
+        ),
+    ]
+
+
+def test_configuration_checks_query_configured_contract_version(monkeypatch) -> None:
+    seen: list[tuple[str | None, str | None]] = []
+
+    def get_definition(plugin_key: str | None, contract_version: str | None = None) -> None:
+        seen.append((plugin_key, contract_version))
+
+    monkeypatch.setattr(workline_service_module, "get_workline_capability_definition", get_definition)
+    workline = SimpleNamespace(plugin_key="demo", contract_version="v2")
+
+    checks = WorkLineService()._build_configuration_checks(workline, [])
+
+    assert checks[0].code == "PLUGIN_CONFIGURED"
+    assert seen == [("demo", "v2")]
+
+
+def test_plugin_key_validation_queries_explicit_contract_version(monkeypatch) -> None:
+    seen: list[tuple[str | None, str | None]] = []
+    definition = SimpleNamespace(schema=SimpleNamespace())
+
+    def get_definition(plugin_key: str | None, contract_version: str | None = None) -> object:
+        seen.append((plugin_key, contract_version))
+        return definition
+
+    monkeypatch.setattr(workline_service_module, "get_workline_capability_definition", get_definition)
+
+    WorkLineService._validate_plugin_key("demo", "v2")
+
+    assert seen == [("demo", "v2")]

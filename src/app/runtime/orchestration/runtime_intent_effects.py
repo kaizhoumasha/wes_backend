@@ -1426,7 +1426,12 @@ class RuntimeIntentEffectApplier:
             or coerce_optional_str(getattr(session, "plugin_key", None))
             or coerce_optional_str(payload_json.get("plugin_key"))
         )
-        plugin_definition = get_workline_capability_definition(plugin_key)
+        contract_version = (
+            coerce_optional_str(getattr(session, "contract_version", None))
+            or coerce_optional_str(getattr(workline, "contract_version", None))
+            or coerce_optional_str(payload_json.get("contract_version"))
+        )
+        plugin_definition = get_workline_capability_definition(plugin_key, contract_version)
         if plugin_definition is None:
             return await self._reject_resource_wait_subject_contract(
                 ctx,
@@ -1435,7 +1440,7 @@ class RuntimeIntentEffectApplier:
                 subject_key=subject_key,
                 projection_type=projection_type,
                 plugin_key=plugin_key,
-                contract_error="RESOURCE_WAIT manifest is missing or unknown",
+                contract_error="RESOURCE_WAIT schema is missing or unknown",
             )
         try:
             plugin_definition.schema.validate_resource_wait_subject(
@@ -1600,7 +1605,7 @@ class RuntimeIntentEffectApplier:
             error_code=ErrorCode.RESOURCE_WAIT,
             context=context,
             message=evidence.message,
-            operator_action="检查 RESOURCE_WAIT subject 是否已声明在插件 manifest 中",
+            operator_action="检查 RESOURCE_WAIT subject/projection 是否成对声明在插件 schema 中",
         )
         _ = await workline_diagnostic_service.record_event(
             ctx["db"],

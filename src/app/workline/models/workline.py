@@ -194,7 +194,7 @@ class WorkLine(
 
         from src.app.runtime.workline_plugins.registry import get_workline_capability_definition
 
-        return get_workline_capability_definition(self.plugin_key)
+        return get_workline_capability_definition(self.plugin_key, self.contract_version)
 
     @property
     def plugin_class(self) -> type[Any] | None:

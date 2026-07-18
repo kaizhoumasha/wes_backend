@@ -1701,7 +1701,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     @staticmethod
     def _single_layer_boundary_positions(workline: WorkLine) -> list[str]:
-        definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
+        definition = get_workline_capability_definition(
+            getattr(workline, "plugin_key", None),
+            getattr(workline, "contract_version", None),
+        )
         if definition is None:
             return []
         position_codes: list[str] = []
@@ -1714,7 +1717,10 @@ class RuntimeQueryService(BaseService[Any, Any]):
 
     @staticmethod
     def _manifest_position_metadata_by_code(workline: WorkLine) -> dict[str, dict[str, str]]:
-        definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
+        definition = get_workline_capability_definition(
+            getattr(workline, "plugin_key", None),
+            getattr(workline, "contract_version", None),
+        )
         if definition is None:
             return {}
 

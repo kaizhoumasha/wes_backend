@@ -84,6 +84,9 @@ class NgReturnItemService:
             or _as_non_empty_str(getattr(workline, "plugin_key", None))
             or ""
         )
+        contract_version = _as_non_empty_str(getattr(session, "contract_version", None)) or _as_non_empty_str(
+            getattr(workline, "contract_version", None)
+        )
         material_identity = resolve_workline_material_identity(
             plugin_key,
             MaterialIdentityInput(
@@ -92,11 +95,11 @@ class NgReturnItemService:
                 command_payload=as_dict(getattr(inbox, "payload_json", None)),
                 plugin_context={
                     "plugin_key": plugin_key,
-                    "contract_version": _as_non_empty_str(getattr(session, "contract_version", None))
-                    or _as_non_empty_str(getattr(workline, "contract_version", None)),
+                    "contract_version": contract_version,
                     "session_code": getattr(session, "session_code", None),
                 },
             ),
+            contract_version=contract_version,
         )
         material_identity_key = self._material_identity_key(
             material_identity=material_identity,
@@ -124,7 +127,10 @@ class NgReturnItemService:
                 material_identity_json=material_identity_json,
             )
 
-        reason = self._resolve_ng_reason(list_workline_ng_reasons(plugin_key), session_context)
+        reason = self._resolve_ng_reason(
+            list_workline_ng_reasons(plugin_key, contract_version=contract_version),
+            session_context,
+        )
         evidence = self._build_evidence(
             session=session,
             inbox=inbox,

@@ -1536,10 +1536,15 @@ def _session_context(session: Any) -> dict[str, Any]:
     return dict(raw_context) if isinstance(raw_context, dict) else {}
 
 
-def _normalized_entry_material_evidence(*, plugin_key: str | None, payload: dict[str, Any]) -> dict[str, str]:
+def _normalized_entry_material_evidence(
+    *,
+    plugin_key: str | None,
+    contract_version: str | None = None,
+    payload: dict[str, Any],
+) -> dict[str, str]:
     """提取 capability 拥有的入口物料证据。"""
     try:
-        six_in_one = parse_workline_six_in_one(plugin_key, payload)
+        six_in_one = parse_workline_six_in_one(plugin_key, payload, contract_version=contract_version)
     except (TypeError, ValueError):
         return {}
     if six_in_one is None:
@@ -1567,12 +1572,23 @@ def _duplicate_entry_material_conflict(
     )
     if not plugin_key:
         return None
+    contract_version = string_value(getattr(session, "contract_version", None)) or string_value(
+        getattr(workline, "contract_version", None)
+    )
     session_context = _session_context(session)
     initial_payload = payload_dict(session_context.get("initial_payload") or session_context.get("source_payload"))
     if not initial_payload:
         return None
-    expected = _normalized_entry_material_evidence(plugin_key=plugin_key, payload=initial_payload)
-    actual = _normalized_entry_material_evidence(plugin_key=plugin_key, payload=payload)
+    expected = _normalized_entry_material_evidence(
+        plugin_key=plugin_key,
+        contract_version=contract_version,
+        payload=initial_payload,
+    )
+    actual = _normalized_entry_material_evidence(
+        plugin_key=plugin_key,
+        contract_version=contract_version,
+        payload=payload,
+    )
     if not expected or not actual:
         return None
     conflicts = {

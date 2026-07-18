@@ -276,15 +276,19 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     def list_plugin_options(self) -> list[WorkLinePluginOption]:
         """从运行能力目录导出作业线能力/契约版本选项。"""
 
-        options: list[WorkLinePluginOption] = []
+        versions_by_plugin: dict[str, set[str]] = {}
         for definition in list_workline_capability_definitions():
-            plugin_key = definition.plugin_key
+            versions_by_plugin.setdefault(definition.plugin_key, set()).add(definition.contract_version)
+
+        options: list[WorkLinePluginOption] = []
+        for plugin_key in sorted(versions_by_plugin):
+            contract_versions = sorted(versions_by_plugin[plugin_key])
             options.append(
                 WorkLinePluginOption(
                     plugin_key=plugin_key,
                     label=plugin_key,
-                    contract_versions=[definition.contract_version],
-                    default_contract_version=definition.contract_version,
+                    contract_versions=contract_versions,
+                    default_contract_version=contract_versions[-1],
                 )
             )
         return options
@@ -296,13 +300,11 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     ) -> WorkLinePluginManifestSummary | None:
         """返回 Definition schema 与 binding 可组合的工作线插件摘要。"""
 
-        definition = get_workline_capability_definition(plugin_key)
+        definition = get_workline_capability_definition(plugin_key, contract_version)
         if definition is None:
             return None
 
         schema = definition.schema
-        if contract_version and definition.contract_version != contract_version:
-            return None
 
         plugin_key = definition.plugin_key
         return WorkLinePluginManifestSummary(
@@ -341,7 +343,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     async def create(self, db: AsyncSession, data: dict[str, Any], cache: object | None = None) -> WorkLine | None:
         """创建工作线时仅校验插件标识，拓扑校验留到设备已关联后。"""
         self._reject_active_state_write(data)
-        self._validate_plugin_key(data.get("plugin_key"))
+        self._validate_plugin_key(data.get("plugin_key"), data.get("contract_version"))
         self._validate_plugin_contract_version(data)
         self._validate_run_mode(data)
         self._validate_runtime_config(data)
@@ -370,7 +372,9 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             raise ValueError(f"WorkLine 不存在: {id}")
 
         self._reject_active_configuration_update(current, data)
-        self._validate_plugin_key(data.get("plugin_key"))
+        plugin_key = self._resolve_plugin_key(data, current)
+        contract_version = data.get("contract_version", getattr(current, "contract_version", None))
+        self._validate_plugin_key(plugin_key, contract_version)
         self._validate_plugin_contract_version(data, current=current)
         self._validate_run_mode(data, current=current)
         self._validate_runtime_config(data, current=current)
@@ -644,7 +648,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     ) -> list[WorkLineConfigurationCheck]:
         checks: list[WorkLineConfigurationCheck] = []
         plugin_key = self._resolve_plugin_key({}, workline)
-        definition = get_workline_capability_definition(plugin_key)
+        definition = get_workline_capability_definition(plugin_key, getattr(workline, "contract_version", None))
         if plugin_key is None:
             return [
                 self._check(
@@ -995,10 +999,11 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         return path if path.startswith("/") else f"/{path}"
 
     @staticmethod
-    def _validate_plugin_key(plugin_key: object) -> None:
+    def _validate_plugin_key(plugin_key: object, contract_version: object = None) -> None:
         if not isinstance(plugin_key, str) or not plugin_key:
             return
-        definition = get_workline_capability_definition(plugin_key)
+        resolved_version = contract_version if isinstance(contract_version, str) and contract_version else None
+        definition = get_workline_capability_definition(plugin_key, resolved_version)
         if definition is None:
             from src.core.exceptions import BadRequestException
 
@@ -1019,11 +1024,11 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             return
 
         plugin_key = WorkLineService._resolve_plugin_key(data, current)
-        resolved = get_workline_contract_version(plugin_key)
-        if isinstance(resolved, str) and resolved and contract_version != resolved:
+        resolved = get_workline_contract_version(plugin_key, contract_version)
+        if resolved is None:
             from src.core.exceptions import BadRequestException
 
-            raise BadRequestException(message=f"插件 {plugin_key} 的契约版本必须为 {resolved}")
+            raise BadRequestException(message=f"插件 {plugin_key} 不支持契约版本 {contract_version}")
 
     @staticmethod
     def _validate_run_mode(data: dict[str, Any], current: WorkLine | None = None) -> None:

@@ -330,7 +330,10 @@ def _source_boundary_by_position(boundaries: list[object]) -> dict[str, object]:
 
 
 def _resolve_boundary_selection(workline: object, route_config: dict[str, Any]) -> _BoundaryResolutionResult:
-    definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
+    definition = get_workline_capability_definition(
+        getattr(workline, "plugin_key", None),
+        getattr(workline, "contract_version", None),
+    )
     schema = getattr(definition, "schema", None)
     if schema is None:
         return _BoundaryResolutionResult(
@@ -427,7 +430,10 @@ async def _real_ecs_status_probe(db: AsyncSession, *, workline: object, route: o
 
 
 def _source_pick_device_role(workline: object) -> str | None:
-    definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
+    definition = get_workline_capability_definition(
+        getattr(workline, "plugin_key", None),
+        getattr(workline, "contract_version", None),
+    )
     schema = getattr(definition, "schema", None)
     for command in getattr(schema, "commands", ()) or ():
         if getattr(command, "command", None) == COMMAND_SOURCE_PICK:

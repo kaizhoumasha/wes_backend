@@ -128,10 +128,11 @@ class WorklinePluginSchema:
     pipeline_queues: tuple[PipelineQueue, ...] = ()
 
     def validate_resource_wait_subject(self, *, subject_type: str, projection_type: str) -> None:
-        allowed_subjects = {boundary.business_demand_type for boundary in self.resource_boundaries}
-        allowed_projections = {boundary.snapshot_kind for boundary in self.resource_boundaries}
-        if subject_type not in allowed_subjects or projection_type not in allowed_projections:
-            raise ValueError("RESOURCE_WAIT subject/projection is not declared by plugin Definition")
+        allowed_pairs = {
+            (boundary.business_demand_type, boundary.snapshot_kind) for boundary in self.resource_boundaries
+        }
+        if (subject_type, projection_type) not in allowed_pairs:
+            raise ValueError("RESOURCE_WAIT subject/projection must belong to the same resource boundary")
 
 
 __all__ = [

@@ -317,7 +317,10 @@ class WorkLineStartAdmissionService:
         return None
 
     def _resolve_command_target_devices(self, workline: Any, devices: list[Any]) -> list[Any]:
-        definition = get_workline_capability_definition(getattr(workline, "plugin_key", None))
+        definition = get_workline_capability_definition(
+            getattr(workline, "plugin_key", None),
+            getattr(workline, "contract_version", None),
+        )
         if definition is None:
             return []
         target_map = WorkLineService._command_target_device_map(definition.schema, devices)

@@ -7,10 +7,12 @@ from typing import Any
 
 import pytest
 
+from src.app.runtime.orchestration.effect_result import RuntimeIntentEffectResult
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
 from src.app.runtime.orchestration.runtime_intent_effects import RuntimeIntentEffectApplier
 from src.app.runtime.system_capabilities.definition import EffectCompletionMode
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, Success
+from src.app.runtime.workline_plugins.schema import ResourceBoundary, WorklinePluginSchema
 
 
 class _RecordingReservationService:
@@ -77,6 +79,64 @@ class _StaleMaterialEffectService(_RecordingSystemCapabilityEffectService):
             retryable=False,
             evidence=SimpleNamespace(outcome_kind="business_reject"),
         )
+
+
+def test_resource_wait_schema_requires_subject_projection_from_same_boundary() -> None:
+    schema = WorklinePluginSchema(
+        resource_boundaries=(
+            ResourceBoundary("A", "SINGLE_LAYER", "SUBJECT_A", "OP_A", "PROJECTION_A", "STATION"),
+            ResourceBoundary("B", "FIVE_LAYER", "SUBJECT_B", "OP_B", "PROJECTION_B", "STATION"),
+        )
+    )
+
+    schema.validate_resource_wait_subject(subject_type="SUBJECT_A", projection_type="PROJECTION_A")
+    with pytest.raises(ValueError, match="same resource boundary"):
+        schema.validate_resource_wait_subject(subject_type="SUBJECT_A", projection_type="PROJECTION_B")
+
+
+@pytest.mark.asyncio
+async def test_effect_applier_rejects_cross_boundary_resource_wait(monkeypatch) -> None:
+    import src.app.runtime.orchestration.runtime_intent_effects as effect_module
+
+    schema = WorklinePluginSchema(
+        resource_boundaries=(
+            ResourceBoundary("A", "SINGLE_LAYER", "SUBJECT_A", "OP_A", "PROJECTION_A", "STATION"),
+            ResourceBoundary("B", "FIVE_LAYER", "SUBJECT_B", "OP_B", "PROJECTION_B", "STATION"),
+        )
+    )
+    requested_identities: list[tuple[str | None, str | None]] = []
+
+    def get_definition(plugin_key: str | None, contract_version: str | None = None) -> SimpleNamespace:
+        requested_identities.append((plugin_key, contract_version))
+        return SimpleNamespace(schema=schema)
+
+    monkeypatch.setattr(effect_module, "get_workline_capability_definition", get_definition)
+    rejected: list[str] = []
+    applier = RuntimeIntentEffectApplier()
+
+    async def reject(*_args: Any, contract_error: str, **_kwargs: Any) -> RuntimeIntentEffectResult:
+        rejected.append(contract_error)
+        return RuntimeIntentEffectResult.processed()
+
+    monkeypatch.setattr(applier, "_reject_resource_wait_subject_contract", reject)
+    ctx = _effect_ctx()
+    ctx["session"].plugin_key = "demo"
+    ctx["session"].contract_version = "v2"
+    ctx["workline"].plugin_key = "demo"
+    ctx["workline"].contract_version = "v3"
+    intent = RuntimeIntent.resource_wait(
+        subject_type="SUBJECT_A",
+        subject_key="A-1",
+        projection_type="PROJECTION_B",
+        reason_code="WAIT",
+        message="wait",
+    )
+
+    result = await applier._apply_resource_wait(ctx, intent)
+
+    assert result.disposition.value == "PROCESSED"
+    assert requested_identities == [("demo", "v2")]
+    assert rejected == ["RESOURCE_WAIT subject/projection must belong to the same resource boundary"]
 
 
 @pytest.mark.asyncio

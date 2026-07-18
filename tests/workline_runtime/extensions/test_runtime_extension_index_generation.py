@@ -11,6 +11,7 @@ from types import MappingProxyType, ModuleType, SimpleNamespace
 import pytest
 from pydantic import BaseModel
 
+from src.app.runtime.capabilities.material_flow.contracts.ng_reason import NgReasonDefinition, NgReasonSource
 from src.app.runtime.system_capabilities import (
     EffectCompletionMode,
     SystemCapabilityDefinition,
@@ -24,6 +25,16 @@ from src.app.runtime.workline_plugins import WorklinePluginDefinition
 from src.app.runtime.workline_plugins.index_builder import (
     WorklinePluginIndexBuilder,
     WorklinePluginSource,
+)
+from src.app.runtime.workline_plugins.schema import (
+    DeviceRequirement,
+    FlowEdge,
+    NodeRef,
+    RackPosition,
+    RackPositionCarrierCapability,
+    ResourceBoundary,
+    TopologySpec,
+    WorklinePluginSchema,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -114,6 +125,17 @@ def keyword_only_query_handler_factory(*, inventory_port: InventoryPort) -> Quer
 
 def parse_scan(payload: dict[str, object]) -> str:
     return str(payload["barcode"])
+
+
+def duplicate_ng_reasons() -> tuple[NgReasonDefinition, ...]:
+    reason = NgReasonDefinition(
+        canonical_code="DUPLICATE_NG",
+        label="duplicate",
+        source=NgReasonSource.PLUGIN,
+        plugin_key="rough_sorter",
+        contract_version="v1",
+    )
+    return reason, reason
 
 
 def capability_definition(**overrides: object) -> SystemCapabilityDefinition:
@@ -326,6 +348,91 @@ def test_plugin_builder_rejects_unknown_capability_reference() -> None:
 
     with pytest.raises(ValueError, match="unknown capability"):
         builder.build((plugin_source(),))
+
+
+@pytest.mark.parametrize(
+    ("schema", "message"),
+    [
+        (WorklinePluginSchema(devices=(DeviceRequirement(""),)), "non-empty identity"),
+        (WorklinePluginSchema(devices=(DeviceRequirement("ARM", min_count=-1),)), "min_count"),
+        (
+            WorklinePluginSchema(
+                rack_positions=(
+                    RackPosition(
+                        "A",
+                        "WORK",
+                        "S1",
+                        RackPositionCarrierCapability(("SINGLE_LAYER",), min_capacity=-1),
+                    ),
+                )
+            ),
+            "min_capacity",
+        ),
+        (
+            WorklinePluginSchema(
+                devices=(DeviceRequirement("ARM"),),
+                topology=TopologySpec(
+                    (FlowEdge(NodeRef("DEVICE_ROLE", "UNKNOWN"), NodeRef("DEVICE_ROLE", "ARM"), "OPERATION"),)
+                ),
+            ),
+            "unknown topology reference",
+        ),
+    ],
+)
+def test_plugin_builder_rejects_invalid_typed_schema(schema: WorklinePluginSchema, message: str) -> None:
+    definition = plugin_definition(schema=schema)
+
+    with pytest.raises(ValueError, match=message):
+        WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}).build(
+            (plugin_source(definition),)
+        )
+
+
+def test_plugin_builder_rejects_duplicate_resource_boundary() -> None:
+    boundary = ResourceBoundary("A", "SINGLE_LAYER", "SUBJECT", "OP", "PROJECTION", "STATION")
+    schema = WorklinePluginSchema(
+        rack_positions=(RackPosition("A", "WORK", "S1", RackPositionCarrierCapability(("SINGLE_LAYER",))),),
+        resource_boundaries=(boundary, boundary),
+    )
+
+    with pytest.raises(ValueError, match="duplicate resource boundary"):
+        WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}).build(
+            (plugin_source(plugin_definition(schema=schema)),)
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "message"),
+    [
+        ("routes", ("scan.completed", "scan.completed"), "duplicate route"),
+        (
+            "allowed_capabilities",
+            (("inventory.lookup", "v1"), ("inventory.lookup", "v1")),
+            "duplicate capability",
+        ),
+    ],
+)
+def test_plugin_builder_fails_closed_for_malformed_duplicate_definition_fields(
+    field_name: str,
+    value: object,
+    message: str,
+) -> None:
+    definition = plugin_definition()
+    object.__setattr__(definition, field_name, value)
+
+    with pytest.raises(ValueError, match=message):
+        WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}).build(
+            (plugin_source(definition),)
+        )
+
+
+def test_plugin_builder_rejects_duplicate_ng_reason() -> None:
+    definition = plugin_definition(ng_reason_resolver=duplicate_ng_reasons)
+
+    with pytest.raises(ValueError, match="duplicate NG reason"):
+        WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}).build(
+            (plugin_source(definition),)
+        )
 
 
 def test_system_builder_rejects_query_outbox_completion_mismatch() -> None:

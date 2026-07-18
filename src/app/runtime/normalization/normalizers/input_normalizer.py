@@ -90,9 +90,14 @@ def _resolve_device_event_business_key(
     data: dict[str, Any],
     *,
     plugin_key: str | None = None,
+    contract_version: str | None = None,
 ) -> str | None:
     try:
-        plugin_business_key = resolve_workline_business_key(plugin_key, payload)
+        plugin_business_key = resolve_workline_business_key(
+            plugin_key,
+            payload,
+            contract_version=contract_version,
+        )
     except (TypeError, ValueError):
         plugin_business_key = None
     if plugin_business_key:
@@ -122,7 +127,14 @@ def _require_canonical_event_type(inbox: Any) -> str:
     return event_type
 
 
-def _normalize_internal_event(inbox: Any, payload: dict[str, Any], *, trace_id: str, plugin_key: str | None) -> Any:
+def _normalize_internal_event(
+    inbox: Any,
+    payload: dict[str, Any],
+    *,
+    trace_id: str,
+    plugin_key: str | None,
+    contract_version: str | None,
+) -> Any:
     source_event_type = non_empty_str(payload.get("event_type"))
     canonical_event_type = _require_canonical_event_type(inbox)
     if source_event_type is None:
@@ -150,7 +162,12 @@ def _normalize_internal_event(inbox: Any, payload: dict[str, Any], *, trace_id: 
         source_event_type=source_event_type,
         canonical_event_type=canonical_event_type,
         device_code=non_empty_str(payload.get("device_code")),
-        business_key=_resolve_device_event_business_key(payload, data, plugin_key=plugin_key),
+        business_key=_resolve_device_event_business_key(
+            payload,
+            data,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+        ),
         trace_id=resolved_trace_id,
         event_time=payload.get("timestamp"),
         payload=payload,
@@ -159,18 +176,34 @@ def _normalize_internal_event(inbox: Any, payload: dict[str, Any], *, trace_id: 
     )
 
 
-def normalize_inbox_input(inbox: Any, *, trace_id: str = "", plugin_key: str | None = None) -> Any:
+def normalize_inbox_input(
+    inbox: Any,
+    *,
+    trace_id: str = "",
+    plugin_key: str | None = None,
+    contract_version: str | None = None,
+) -> Any:
     """按 inbox 类型构建标准化输入模型。"""
 
     payload = payload_dict(getattr(inbox, "payload_json", None))
     kind = _infer_kind(getattr(inbox, "kind", None), payload)
     if _is_internal_event(kind, payload):
-        return _normalize_internal_event(inbox, payload, trace_id=trace_id, plugin_key=plugin_key)
+        return _normalize_internal_event(
+            inbox,
+            payload,
+            trace_id=trace_id,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+        )
 
     if kind == "COMMAND_RESULT":
         source_result = str(payload.get("result") or "UNKNOWN")
         error_detail = _normalized_error_detail(payload)
-        plugin_classification = classify_workline_result(plugin_key, payload)
+        plugin_classification = classify_workline_result(
+            plugin_key,
+            payload,
+            contract_version=contract_version,
+        )
         result_classification = normalize_result_classification(plugin_classification) or classify_result_category(
             source_result,
             error_detail=error_detail,
@@ -208,7 +241,12 @@ def normalize_inbox_input(inbox: Any, *, trace_id: str = "", plugin_key: str | N
         source_event_type=source_event_type,
         canonical_event_type=canonical_event_type,
         device_code=non_empty_str(payload.get("device_code")),
-        business_key=_resolve_device_event_business_key(payload, data, plugin_key=plugin_key),
+        business_key=_resolve_device_event_business_key(
+            payload,
+            data,
+            plugin_key=plugin_key,
+            contract_version=contract_version,
+        ),
         trace_id=_resolve_trace_id(inbox, payload, trace_id=trace_id),
         event_time=payload.get("timestamp"),
         payload=payload,

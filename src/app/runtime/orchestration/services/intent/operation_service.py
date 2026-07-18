@@ -1287,7 +1287,7 @@ class WorklineOperationService(BaseService[Any, Any]):
         if not plugin_key:
             return SandboxTemplatesResponse()
 
-        plugin_def = get_workline_capability_definition(plugin_key)
+        plugin_def = get_workline_capability_definition(plugin_key, getattr(workline, "contract_version", None))
         if plugin_def is None:
             return SandboxTemplatesResponse()
 

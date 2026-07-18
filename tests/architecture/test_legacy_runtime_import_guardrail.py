@@ -51,7 +51,7 @@ STABLE_RUNTIME_PUBLIC_SURFACES = (
     ("src.app.runtime.orchestration.resource_wait_evidence_bridge", ("ResourceWaitEvidence",)),
     ("src.app.runtime.orchestration.sandbox_catalog_bridge", ("rough_sorter_scan_completed_payload",)),
     ("src.app.runtime.orchestration.events_bridge", ("assert_not_reserved_runtime_event", "RESERVED_RUNTIME_EVENTS")),
-    ("src.app.runtime.orchestration.topology_bridge", ("WorklineTopologyView", "validate_topology_manifest")),
+    ("src.app.runtime.orchestration.topology_bridge", ("WorklineTopologyView", "validate_topology_schema")),
     ("src.app.runtime.orchestration.runtime_intent_effects", ("RuntimeIntentEffectApplier",)),
     ("src.app.workline.trace_context", ("TraceContext",)),
     ("src.app.workline.runtime_services", ("WorklineRuntimeServices", "build_workline_runtime_services")),
@@ -68,6 +68,13 @@ def test_stable_runtime_public_surfaces_import_without_legacy_runtime(
     assert module.__name__ == module_name
     missing = [symbol for symbol in required_symbols if not hasattr(module, symbol)]
     assert not missing, f"{module_name} missing stable public symbols: {missing}"
+
+
+def test_topology_bridge_does_not_reexport_manifest_compatibility_surface() -> None:
+    topology_bridge = importlib.import_module("src.app.runtime.orchestration.topology_bridge")
+
+    assert "validate_topology_schema" in topology_bridge.__all__
+    assert not hasattr(topology_bridge, "validate_topology_manifest")
 
 
 def test_stable_runtime_diagnostics_facade_reexports_public_symbols() -> None:

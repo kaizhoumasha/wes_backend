@@ -60,7 +60,8 @@ def _scan_completed_has_any_barcode_payload(payload: dict[str, Any]) -> bool:
 def _entry_event_types_for_workline(workline: Any | None) -> frozenset[str]:
     """从插件 manifest.events 提取 ENTRY_DEVICE 入口事件类型, 缺省时保留 SMT 入口."""
     plugin_key = string_value(getattr(workline, "plugin_key", None)) if workline is not None else ""
-    definition = get_workline_capability_definition(plugin_key)
+    contract_version = string_value(getattr(workline, "contract_version", None)) if workline is not None else ""
+    definition = get_workline_capability_definition(plugin_key, contract_version)
     if definition is None:
         return frozenset({"SCAN_COMPLETED"})
     events = definition.schema.events
