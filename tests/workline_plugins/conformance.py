@@ -56,7 +56,7 @@ class PluginConformanceFixture:
     query_request: PluginDispatchRequest
     gateway_factory: Callable[[], RecordingGateway]
     replay: Callable[[RecordingGateway], Awaitable[PluginDecision[Any]]]
-    system_capability_intents: tuple[RuntimeIntent, ...]
+    effect_converter: Callable[[PluginDecision[Any]], tuple[RuntimeIntent, ...]]
 
 
 def assert_system_capability_effect_contract(
@@ -128,9 +128,12 @@ class PluginConformanceSuite:
         assert result.outcome_code.strip()
         assert len(result.intents) <= MAX_PLUGIN_DECISION_INTENTS
         assert all(isinstance(intent, RuntimeIntent) for intent in result.intents)
+        converted_intents = fixture.effect_converter(result)
+        assert converted_intents
+        assert all(intent.kind is RuntimeIntentKind.SYSTEM_CAPABILITY for intent in converted_intents)
         assert_system_capability_effect_contract(
             definition=fixture.definition,
-            intents=fixture.system_capability_intents,
+            intents=converted_intents,
         )
 
     @pytest.mark.asyncio

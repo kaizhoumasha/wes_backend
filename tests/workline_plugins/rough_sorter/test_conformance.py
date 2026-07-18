@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from src.app.runtime.extension_identity import sha256_digest
-from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
+    _system_capability_intents,
+)
 from src.app.runtime.system_capabilities.gateway import GatewayQueryResult
 from src.app.runtime.system_capabilities.outcomes import Success
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
     RoughSorterBindingSnapshot,
     RoughSorterInventoryAdmissionOutput,
 )
+from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, PluginAttemptContext
 from src.app.runtime.workline_plugins.dispatcher import (
     PinnedPluginSnapshot,
     PluginDispatchRequest,
@@ -26,27 +28,7 @@ from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
 from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts, decide
 from src.app.runtime.workline_plugins.rough_sorter.inputs import parse_scan_completed
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
-from tests.workline_plugins.conformance import (
-    PluginConformanceFixture,
-    PluginConformanceSuite,
-    assert_system_capability_effect_contract,
-)
-
-
-def _system_capability_intent(capability_key: str, contract_version: str):
-    return RuntimeIntent.system_capability(
-        capability_key=capability_key,
-        contract_version=contract_version,
-        operation_key="conformance:rough-sorter:1",
-        payload={"fixture": True},
-        precondition={"expected": "fixture-v1"},
-        fact_version="fixture-v1",
-        timeout_seconds=30,
-        creator_authority="workline-plugin",
-        authorization_policy="plugin-definition",
-        binding_snapshot={"binding_id": 1},
-        provider_snapshot={"profile": "fixture"},
-    )
+from tests.workline_plugins.conformance import PluginConformanceFixture, PluginConformanceSuite
 
 
 def _config() -> RoughSorterConfig:
@@ -152,6 +134,27 @@ class TestRoughSorterConformance(PluginConformanceSuite):
                 replay=True,
             )
 
+        conversion_context = PluginAttemptContext(
+            attempt_id="conformance-attempt",
+            inbox_id=1,
+            session_id=1,
+            workline_id=1,
+            event_type="SCAN_COMPLETED",
+            payload={},
+            plugin_state=ready.model_dump(mode="json"),
+            snapshot=AttemptSnapshot(
+                processor_token="conformance-lease",
+                session_version=1,
+                plugin_state_version=0,
+                binding_id=1,
+                binding_version=1,
+            ),
+            runtime=SimpleNamespace(),
+        )
+
+        def convert_effects(decision):
+            return _system_capability_intents(conversion_context, tuple(decision.intents))
+
         return PluginConformanceFixture(
             definition=DEFINITION,
             dispatcher=WorklinePluginDispatcher(),
@@ -178,11 +181,7 @@ class TestRoughSorterConformance(PluginConformanceSuite):
             ),
             gateway_factory=_Gateway,
             replay=replay,
-            system_capability_intents=(
-                _system_capability_intent("device.device_command_write", "v1"),
-                _system_capability_intent("material_flow.material_unit_write", "v1"),
-                _system_capability_intent("runtime.session_hold", "v1"),
-            ),
+            effect_converter=convert_effects,
         )
 
     @pytest.mark.asyncio
@@ -197,47 +196,3 @@ class TestRoughSorterConformance(PluginConformanceSuite):
 
         assert result.outcome_code == "MOVE_FORWARD_PERSISTED"
         assert result.next_state.phase == "MOVING_FORWARD"
-
-
-def test_conformance_rejects_undeclared_system_capability() -> None:
-    with pytest.raises(AssertionError, match="未在插件 Definition 声明"):
-        assert_system_capability_effect_contract(
-            definition=DEFINITION,
-            intents=(_system_capability_intent("runtime.not_declared", "v1"),),
-        )
-
-
-def test_conformance_rejects_unknown_generated_definition() -> None:
-    identity = ("runtime.unknown_generated", "v1")
-    definition = replace(DEFINITION, allowed_capabilities=(*DEFINITION.allowed_capabilities, identity))
-
-    with pytest.raises(AssertionError, match="不存在于 generated index"):
-        assert_system_capability_effect_contract(
-            definition=definition,
-            intents=(_system_capability_intent(*identity),),
-        )
-
-
-def test_conformance_rejects_query_capability_used_as_effect() -> None:
-    identity = ("wms.rough_sorter_inventory_admission", "v1")
-
-    with pytest.raises(AssertionError, match="必须绑定 EFFECT"):
-        assert_system_capability_effect_contract(
-            definition=DEFINITION,
-            intents=(_system_capability_intent(*identity),),
-        )
-
-
-def test_conformance_does_not_use_source_system_as_final_identity() -> None:
-    legacy_intent = RuntimeIntent.external_request(
-        dispatch_key="fixture",
-        target_code="fixture",
-        payload={"fixture": True},
-        source_system="runtime.not-declared@v999",
-        timeout_seconds=30,
-    )
-
-    assert_system_capability_effect_contract(
-        definition=DEFINITION,
-        intents=(_system_capability_intent("runtime.session_hold", "v1"), legacy_intent),
-    )

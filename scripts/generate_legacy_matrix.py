@@ -198,6 +198,7 @@ ACTIVE_PLATFORM_PATHS = frozenset(
         "src/app/workline/models/plugin_binding.py",
         "src/app/workline/repositories/plugin_binding_repository.py",
         "src/app/workline/services/plugin_binding_service.py",
+        "tests/workline_plugins/test_conformance_contract.py",
         "tests/workline_runtime/test_workline_session_repository_versioning.py",
     }
 )
