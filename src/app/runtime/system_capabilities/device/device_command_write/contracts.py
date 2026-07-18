@@ -32,7 +32,7 @@ class DeviceCommandWriteInput(BaseModel):
     priority: int = Field(default=5, ge=1, le=10)
     timeout_ms: int = Field(default=30000, ge=1000, le=300000)
     command_code: str | None = Field(default=None, min_length=1, max_length=100)
-    result_policy: Literal["COMMAND_RESULT", "FIRE_AND_FORGET"]
+    result_policy: Literal["COMMAND_RESULT"]
 
     @model_validator(mode="after")
     def require_one_target(self) -> DeviceCommandWriteInput:

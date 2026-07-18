@@ -177,9 +177,11 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         workline: Any,
         idempotency_key: str,
         trace_id: str | None,
-        completed_command_code: str | None = None,
     ) -> tuple[DeviceCommand, Any]:
         """在 Runtime 外层事务内原子准备 DeviceCommand + Outbox，只 flush。"""
+
+        if getattr(request, "result_policy", None) != "COMMAND_RESULT":
+            raise ValueError("runtime device command result_policy must be COMMAND_RESULT")
 
         from hashlib import sha256
 
@@ -257,26 +259,15 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         await self.repo.add_runtime_effect(db, command, outbox)
         from src.app.workline.domain.services.session_lifecycle_service import workline_session_lifecycle_service
 
-        if request.result_policy == "COMMAND_RESULT":
-            # 只有插件显式声明消费结果的命令才固定业务等待锚点；
-            # queued/dispatched 仍不是完成，匹配 command_code 的结果 Inbox 才能推进状态。
-            timeout_seconds = max(1, (int(request.timeout_ms) + 999) // 1000)
-            workline_session_lifecycle_service.start_wait(
-                session,
-                wait_type="COMMAND_RESULT",
-                occurred_at=timezone.now_for_db(),
-                awaiting_device_command_code=command_code,
-                deadline_seconds=timeout_seconds,
-            )
-        elif request.result_policy == "FIRE_AND_FORGET":
-            # 当前 result 已消费旧等待时，fire-and-forget 后继命令只结束旧窗口，
-            # 不为自身创建或覆盖新的等待锚点；不匹配的既有等待保持不变。
-            awaiting_code = getattr(session, "awaiting_device_command_code", None)
-            if completed_command_code is not None and completed_command_code == awaiting_code:
-                workline_session_lifecycle_service.running(session)
-                workline_session_lifecycle_service.clear_wait(session)
-        else:
-            raise ValueError("runtime device command requires an explicit result policy")
+        # queued/dispatched/ACK 均不是完成；匹配 command_code 的终态 Callback 才能推进状态。
+        timeout_seconds = max(1, (int(request.timeout_ms) + 999) // 1000)
+        workline_session_lifecycle_service.start_wait(
+            session,
+            wait_type="COMMAND_RESULT",
+            occurred_at=timezone.now_for_db(),
+            awaiting_device_command_code=command_code,
+            deadline_seconds=timeout_seconds,
+        )
         return command, outbox
 
     async def send_command(

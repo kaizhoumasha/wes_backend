@@ -503,27 +503,27 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Landed: `v0.17.1.0` / PR #87，merge `c89674f6`；权威合同只使用真实领域状态，并将人工 Hold 归属固定为 Session/RuntimeHold。
   - Approval: kaizhou 于 `2026-07-16T19:39:04+08:00` 批准；此项只完成业务合同批准，不表示生产 Runtime 或 vertical slice 已交付。
   - Verify: 输入、状态、能力、成功/NG/timeout/replay 验收完整。
-- [ ] **T3 (P1, human: ~4d / CC: ~1d)** — Runtime contracts — 收敛两类 Definition、typed outcome 与静态索引
+- [x] **T3 (P1, human: ~4d / CC: ~1d)** — Runtime contracts — 收敛两类 Definition、typed outcome 与静态索引
   - Surfaced by: Architecture/Code quality — 删除重复 catalog、身份与 generator 抽象。
-  - Input: 首先只支持本切片真实需要的 typed outcome、QUERY evidence、Intent identity 与 recorded replay；不得加入第二条 WorkLine、通用 DSL、Plugin marketplace 或其他预建抽象。本项只定义需求边界，不表示 T3 已开始。
+  - Evidence: [Plugin generated index](../../../src/app/runtime/workline_plugins/generated_index.py) digest `34d4332b...541cc`、[Capability generated index](../../../src/app/runtime/system_capabilities/generated_index.py) digest `165471b4...c0b6`、[generator drift tests](../../../tests/workline_runtime/extensions/test_generated_index.py)。只实现本切片需要的 typed outcome、QUERY evidence、Intent identity 与 recorded replay。
   - Files: runtime capability/contracts/index generator、architecture tests。
   - Verify: 生成确定、`--check`、cold-start、旧 catalog 清零。
-- [ ] **T4 (P1, human: ~5d / CC: ~1d)** — Plugin runtime — 实现 binding、Context、PluginState、PluginDecision 与业务 timeout route
+- [x] **T4 (P1, human: ~5d / CC: ~1d)** — Plugin runtime — 实现 binding、Context、PluginState、PluginDecision 与业务 timeout route
   - Surfaced by: Outside voice — 插件状态和 timer 业务所有权必须闭环。
-  - Files: workline_plugins、Session、Normalizer/dispatcher。
+  - Evidence: [immutable binding migration](../../../migrations/versions/20260717_0739_fa15ba0aef65_add_workline_plugin_runtime_binding.py)、[rough sorter Definition](../../../src/app/runtime/workline_plugins/rough_sorter/definition.py)、[runtime routing tests](../../../tests/workline_runtime/extensions/test_plugin_runtime_inbox_routing.py)。
   - Verify: optimistic conflict、typed state、timeout route 和无核心业务分支测试。
-- [ ] **T5 (P1, human: ~5d / CC: ~1d)** — Capability Gateway — 实现 attempt-scoped QUERY、evidence 与 replay
+- [x] **T5 (P1, human: ~5d / CC: ~1d)** — Capability Gateway — 实现 attempt-scoped QUERY、evidence 与 replay
   - Surfaced by: Architecture/Performance — QUERY 需确定证据、短事务与有界合并。
-  - Files: capability gateway、runtime attempt coordinator、timeline/intent evidence。
+  - Evidence: [Gateway](../../../src/app/runtime/system_capabilities/gateway.py)、[recorded replay owner](../../../src/app/runtime/system_capabilities/replay.py)、[performance production-path budget](../../../tests/workline_runtime/extensions/test_runtime_extension_performance_budget.py)。
   - Verify: outcome、deadline、limit、stale token、recorded replay 全覆盖。
-- [ ] **T6 (P1, human: ~5d / CC: ~1d)** — Effect pipeline — 实现事务 owner、precondition、幂等和两种完成语义
+- [x] **T6 (P1, human: ~5d / CC: ~1d)** — Effect pipeline — 实现事务 owner、precondition、幂等和设备结果完成语义
   - Surfaced by: Architecture/Outside voice — 防止部分提交、TOCTOU 与过早完成。
-  - Files: RuntimeIntent Effect、领域 Service、Outbox/result normalization。
-  - Verify: PostgreSQL/Celery integration 覆盖冲突、rollback、callback 丢失和结果回流。
-- [ ] **T7 (P1, human: ~3d / CC: ~6h)** — Test platform — 建立共享 conformance suite 与架构门禁
+  - Evidence: [DeviceCommand effect contract](../../../src/app/runtime/system_capabilities/device/device_command_write/contracts.py) 强制 `COMMAND_RESULT`；[PostgreSQL terminal matrix](../../../tests/integration/workline_capabilities/test_rough_sorter_outbox_result_flow.py) 覆盖成功/失败/超时、事务 Outbox、formal callback 与 wait/Hold owner。
+  - Verify: PostgreSQL/Celery integration 覆盖冲突、rollback、callback 丢失和结果回流；设备命令不存在 fire-and-forget 绕过。
+- [x] **T7 (P1, human: ~3d / CC: ~6h)** — Test platform — 建立共享 conformance suite 与架构门禁
   - Surfaced by: Test review — 公共合同必须复用且符合测试拓扑。
-  - Files: tests/workline_plugins、workline_runtime、contracts、architecture。
-  - Verify: topology guardrail、受影响域、collect-only 和质量门禁。
+  - Evidence: [shared conformance](../../../tests/workline_plugins/test_conformance_contract.py)、[13-case real PostgreSQL E2E](../../../tests/e2e/workline_capabilities/test_rough_sorter_scan_decision_slice.py)、[test topology guardrail](../../../tests/architecture/test_test_suite_topology_guardrail.py)、[quality gate](../../../scripts/git-quality-gate.sh)。
+  - Verify: 13 个批准 case 和 6 个终态场景使用实际 Timeline/decision/effect/Session/Hold 证据；generator `--check`、topology、collect-only、Ruff/Bandit/quality gate 为最终提交门禁。
 - [ ] **T8 (P1, human: ~4d / CC: ~1d)** — Cutover — 实现 inventory-backed preflight、排空和 roll-forward 演练
   - Surfaced by: Test/Outside voice — 原子切换需要可终止、可自动判定。
   - Files: deployment、integration、migration、runbook。
@@ -569,12 +569,13 @@ Synthesized from this review's findings. Each task derives from a specific findi
 方案可以进入分阶段实施，但必须先完成 active inventory 与 rough sorter 真实窄闭环规格。平台不得先于真实需求
 形成通用框架；任何旧入口、双轨运行、隐式版本升级、跨层访问或自由格式状态都属于阻断项。
 
-### 当前结论（截至 2026-07-16）
+### 当前结论（截至 2026-07-18）
 
 - T2 rough sorter 业务合同已由 kaizhou 批准，业务合同门禁已通过。
 - T2 合同与机器化证据已随 `v0.17.1.0` / PR #87 合并到 `develop`；完整回归为 `2691 passed, 5 skipped`。
 - T1 Remaining 仍未完成，不得把 inventory foundation 解释为完整 T1。
-- T3 尚未开始；最小 Runtime contract 与生产 vertical slice 均未交付。
+- T3–T7 的 rough sorter 最小 production vertical slice 已交付并由上述 generated digest、migration、PostgreSQL E2E/terminal matrix、performance 与质量门禁证据约束。
+- T1 Remaining、其他 active Workline 的批准规格/迁移、T8 cutover 和 T9 developer experience 仍未完成；不得将本切片 readiness 表述为 production cutover readiness。
 
 ### Review artifacts
 

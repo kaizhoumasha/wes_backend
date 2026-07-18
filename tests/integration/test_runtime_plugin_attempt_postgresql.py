@@ -194,7 +194,7 @@ def test_intent_ledger_failure_rolls_back_decision_state_ledger_and_terminal() -
         seeded, snapshot, service = await _seed_pinned_attempt(session_factory, token="plugin-ledger-failure")
         intent = RuntimeIntent(
             kind=RuntimeIntentKind.COMMAND,
-            result_policy="FIRE_AND_FORGET",
+            result_policy="COMMAND_RESULT",
             action="MOVE",
             idempotency_key="operation-1",
             payload_json={"target": "A-01"},

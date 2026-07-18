@@ -15,6 +15,7 @@ from sqlmodel import select
 from src.app.callback.models import CallbackLog
 from src.app.callback.services.callback_ingress_service import CallbackIngressService
 from src.app.device.models.command import CommandStatus, DeviceCommand
+from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.runtime.orchestration.models.material_unit import MaterialUnit
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import WorklineSession
@@ -427,6 +428,11 @@ def test_followup_device_command_requires_terminal_result(action: str, terminal_
 
     monkeypatch.setattr(WmsInventoryQueryPortAdapter, "query_inventory", query_inventory)
 
+    async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(DeviceCommandService, "_invalidate_command_cache", invalidate_cache)
+
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
         service = RuntimeInboxService()
         async with session_factory() as db:
@@ -449,23 +455,29 @@ def test_followup_device_command_requires_terminal_result(action: str, terminal_
                     )
                 )
                 assert pick is not None
-                prepared_result = await service.accept_command_result(
+                prepare_event_id = f"prepare-{action}-{terminal_result}"
+                prepared_response = await CallbackIngressService().handle_result(
+                    _callback_request(
+                        {
+                            "command_code": pick.command_code,
+                            "device_code": "IT-ARM-01",
+                            "result": "SUCCESS",
+                            "data": {"reel_diameter": "100", "reel_thickness": "10"},
+                            "finish_time": int(time.time() * 1000),
+                            "source_event_id": prepare_event_id,
+                            "trace_id": seeded.trace_id,
+                        }
+                    ),
                     db,
-                    command_code=pick.command_code,
-                    source_event_id=f"prepare-{action}-{terminal_result}",
-                    device_code="IT-ARM-01",
-                    workline_id=seeded.workline_id,
-                    device_id=seeded.arm_id,
-                    command_id=pick.id,
-                    trace_id=seeded.trace_id,
-                    payload_json={
-                        "command_code": pick.command_code,
-                        "result": "SUCCESS",
-                        "data": {"reel_diameter": "100", "reel_thickness": "10"},
-                    },
+                    request_id=f"prepare-{action}-{terminal_result}-request",
+                    start_time=time.time(),
+                    enqueue_processing=lambda: None,
                 )
-                await db.commit()
-                assert prepared_result.created is True
+                assert prepared_response["code"] == "1000"
+                prepared_inbox = await db.scalar(
+                    select(RuntimeInbox).where(RuntimeInbox.source_event_id == prepare_event_id)
+                )
+                assert prepared_inbox is not None
                 prepared = await claim(db, service, token=f"prepare-{terminal_result}")
                 assert (await processor(service).process_claimed(db, claim=prepared))["success"] == 1
 
@@ -481,13 +493,14 @@ def test_followup_device_command_requires_terminal_result(action: str, terminal_
             assert session.status == "WAITING_DEVICE_RESULT"
             assert session.awaiting_device_command_code == command.command_code
 
+            terminal_event_id = f"terminal-{action}-{terminal_result}"
             if terminal_result == "TIMEOUT":
                 now = timezone.now_for_db()
                 command.status = CommandStatus.ACK_RECEIVED
                 command.ack_received_at = now - timedelta(seconds=60)
                 session.deadline_at = now - timedelta(seconds=1)
                 await db.commit()
-                await service.accept_timer_timeout(
+                accepted_timeout = await service.accept_timer_timeout(
                     db,
                     session_id=seeded.session_id,
                     execution_session_id=source.execution_session_id,
@@ -504,41 +517,87 @@ def test_followup_device_command_requires_terminal_result(action: str, terminal_
                     ack_received_at=command.ack_received_at,
                 )
                 await db.commit()
+                terminal_inbox_id = int(accepted_timeout.record.id)
             else:
-                accepted_result = await service.accept_command_result(
+                callback_response = await CallbackIngressService().handle_result(
+                    _callback_request(
+                        {
+                            "command_code": command.command_code,
+                            "device_code": "IT-CONVEYOR-01" if action == "MOVE_FORWARD" else "IT-ARM-01",
+                            "result": terminal_result,
+                            "error_detail": {"error_code": "DEVICE_BUSY"} if terminal_result == "FAILED" else {},
+                            "data": {},
+                            "finish_time": int(time.time() * 1000),
+                            "source_event_id": terminal_event_id,
+                            "trace_id": seeded.trace_id,
+                        }
+                    ),
                     db,
-                    command_code=command.command_code,
-                    source_event_id=f"terminal-{action}-{terminal_result}",
-                    device_code="IT-CONVEYOR-01" if action == "MOVE_FORWARD" else "IT-ARM-01",
-                    workline_id=seeded.workline_id,
-                    device_id=command.device_id,
-                    command_id=command.id,
-                    trace_id=seeded.trace_id,
-                    payload_json={
-                        "command_code": command.command_code,
-                        "result": terminal_result,
-                        "error_detail": {"error_code": "DEVICE_BUSY"} if terminal_result == "FAILED" else {},
-                        "data": {},
-                    },
+                    request_id=f"{terminal_event_id}-request",
+                    start_time=time.time(),
+                    enqueue_processing=lambda: None,
                 )
-                await db.commit()
-                assert accepted_result.created is True
+                assert callback_response["code"] == "1000"
+                accepted_inbox = await db.scalar(
+                    select(RuntimeInbox).where(RuntimeInbox.source_event_id == terminal_event_id)
+                )
+                callback_log = await db.scalar(
+                    select(CallbackLog).where(CallbackLog.request_id == f"{terminal_event_id}-request")
+                )
+                assert accepted_inbox is not None and callback_log is not None
+                assert callback_log.ingress_outcome == "ACCEPTED"
+                terminal_inbox_id = int(accepted_inbox.id)
+                await db.refresh(command)
+                expected_terminal_status = (
+                    CommandStatus.COMPLETED if terminal_result == "SUCCESS" else CommandStatus.FAILED
+                )
+                assert command.status == expected_terminal_status
 
             terminal_claim = await claim(db, service, token=f"terminal-{action}-{terminal_result}")
             terminal_processed = await processor(service).process_claimed(db, claim=terminal_claim)
             assert terminal_processed["processed"] == 1
             await db.refresh(session)
+            await db.refresh(command)
             hold_count = int(await db.scalar(select(func.count()).select_from(RuntimeHold)) or 0)
+            timelines = list(
+                (
+                    await db.execute(
+                        select(WorklineTimeline)
+                        .where(WorklineTimeline.related_inbox_id == terminal_inbox_id)
+                        .order_by(WorklineTimeline.id)
+                    )
+                ).scalars()
+            )
+            assert timelines
             if terminal_result == "SUCCESS":
+                decision = next(row for row in timelines if row.payload_json.get("record_type") == "PLUGIN_DECISION")
+                assert decision.payload_json["decision"]["outcome_code"] == f"{action}_COMPLETED"
+                assert command.status == CommandStatus.COMPLETED
                 assert session.status == "RUNNING"
                 assert session.current_wait_type is None
                 assert session.awaiting_device_command_code is None
                 assert hold_count == 0
-            else:
+            elif terminal_result == "FAILED":
+                decision = next(row for row in timelines if row.payload_json.get("record_type") == "PLUGIN_DECISION")
+                assert decision.payload_json["decision"]["outcome_code"] == "HOLD"
+                assert "DEVICE_BUSY" in json.dumps(decision.payload_json, ensure_ascii=False)
+                assert command.status == CommandStatus.FAILED
                 assert session.status == "MANUAL_HOLD"
                 assert session.current_wait_type is None
-                # 普通设备失败由 runtime.session_hold 只更新 Session；
-                # 仅 TIMER reconciliation owner 创建 RuntimeHold。
-                assert hold_count == (1 if terminal_result == "TIMEOUT" else 0)
+                assert session.awaiting_device_command_code is None
+                # 普通设备失败由 runtime.session_hold 只更新 Session，不创建 RuntimeHold。
+                assert hold_count == 0
+            else:
+                timeout_timeline = next(
+                    row for row in timelines if getattr(row.action_type, "value", row.action_type) == "WAIT_TIMEOUT"
+                )
+                assert timeout_timeline.payload_json["reason"] == "CALLBACK_DEADLINE_EXPIRED"
+                assert command.status == CommandStatus.ACK_RECEIVED
+                assert session.status == "MANUAL_HOLD"
+                assert session.current_wait_type is None
+                assert session.awaiting_device_command_code is None
+                hold = await db.scalar(select(RuntimeHold).where(RuntimeHold.session_id == seeded.session_id))
+                assert hold is not None and hold.source_reason == "CALLBACK_DEADLINE_EXPIRED"
+                assert hold_count == 1
 
     asyncio.run(with_temporary_runtime_database(scenario))

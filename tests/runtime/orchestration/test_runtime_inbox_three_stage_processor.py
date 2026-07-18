@@ -161,7 +161,7 @@ def test_recorded_replay_validates_but_does_not_reexecute_recorded_intents() -> 
                         "action": "MOVE",
                         "idempotency_key": "operation-1",
                         "payload_json": {"target": "A-01"},
-                        "result_policy": "FIRE_AND_FORGET",
+                        "result_policy": "COMMAND_RESULT",
                     }
                 ],
             }
@@ -272,6 +272,9 @@ async def test_bridge_close_failure_does_not_override_successful_attempt_result(
     inbox.event_type = "CALLBACK_COMPLETED"
 
     class Db:
+        async def flush(self) -> None:
+            pass
+
         async def commit(self) -> None:
             pass
 
@@ -324,6 +327,9 @@ async def test_process_cancellation_closes_attempt_and_leaves_no_background_hand
     handler_cancelled = asyncio.Event()
 
     class Db:
+        async def flush(self) -> None:
+            pass
+
         async def commit(self) -> None:
             pass
 
@@ -437,6 +443,9 @@ async def test_platform_processor_returns_within_gateway_hard_deadline() -> None
             return AttemptWriteSet(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
 
     class Db:
+        async def flush(self) -> None:
+            pass
+
         async def commit(self) -> None:
             pass
 
@@ -871,12 +880,6 @@ async def test_binding_never_falls_back_to_legacy_when_generated_request_is_inva
             events.append("MUST_NOT_RECORDED_REPLAY")
             raise AssertionError("recorded replay seam also requires explicit platform runner admission")
 
-    class Processor:
-        async def process(self, *_args: object, **kwargs: object) -> OrchestratorResult:
-            events.append("legacy-orchestrator")
-            await kwargs["write_callback"](OrchestratorResult(success=True, intents=[]))
-            return OrchestratorResult(success=True, intents=[])
-
     class WriteBack:
         def build_write_callback(self, db: object, **kwargs: object) -> object:
             async def callback(_result: object) -> None:
@@ -909,7 +912,6 @@ async def test_binding_never_falls_back_to_legacy_when_generated_request_is_inva
     result = await RuntimeInboxProcessorBridge(
         inbox_repository=Repository(),  # type: ignore[arg-type]
         inbox_service=InboxService(),  # type: ignore[arg-type]
-        processor_service=Processor(),  # type: ignore[arg-type]
         writeback_service=WriteBack(),  # type: ignore[arg-type]
         replay_source_validator=Validator(),  # type: ignore[arg-type]
         recorded_replay_service=ReplayService(),  # type: ignore[arg-type]
@@ -949,6 +951,9 @@ async def test_platform_plugin_claim_runs_three_stages_without_db_in_query_conte
 
     class Db:
         in_transaction = True
+
+        async def flush(self) -> None:
+            pass
 
         async def commit(self) -> None:
             events.append("claim-snapshot-commit-release")
@@ -1044,6 +1049,9 @@ async def test_pick_result_callback_guards_dispatcher_before_plugin_writes(
 
     class Db:
         in_transaction = True
+
+        async def flush(self) -> None:
+            pass
 
         async def commit(self) -> None:
             self.in_transaction = False
@@ -1191,6 +1199,9 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
         )
 
     class Db:
+        async def flush(self) -> None:
+            pass
+
         async def commit(self) -> None:
             events.append("commit")
 
@@ -1347,6 +1358,9 @@ async def test_platform_stage_one_loads_material_fact_through_repository() -> No
     from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
 
     class Db:
+        async def flush(self) -> None:
+            pass
+
         async def get(self, *_args: object, **_kwargs: object) -> object:
             raise AssertionError("Stage1 service must not access MaterialUnit through db.get")
 
@@ -1403,6 +1417,9 @@ async def test_platform_safe_retry_requeues_inbox_with_same_lease() -> None:
     calls: list[tuple[str, object]] = []
 
     class Db:
+        async def flush(self) -> None:
+            pass
+
         async def commit(self) -> None:
             calls.append(("commit", None))
 
@@ -1521,6 +1538,9 @@ async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_p
     captured_write_set: object | None = None
 
     class Db:
+        async def flush(self) -> None:
+            pass
+
         async def commit(self) -> None:
             pass
 
@@ -1636,6 +1656,9 @@ async def test_platform_recorded_replay_precedes_late_callback_and_timer_routes(
     calls = {"replay": 0, "runner": 0, "writeback": 0}
 
     class Db:
+        async def flush(self) -> None:
+            pass
+
         async def commit(self) -> None:
             pass
 
@@ -1914,44 +1937,64 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
 
     session = _make_session(status="MANUAL_HOLD")
     session.failure_code = "PAYLOAD_INVALID"
+    session.version = 7
+    session.plugin_state_json = {"phase": "READY"}
+    session.plugin_state_version = 2
+    session.plugin_identity = "rough_sorter@rough_sorter.v2:" + "a" * 64
+    session.plugin_binding_id = 17
+    session.plugin_binding_version = 4
+    session.plugin_config_hash = "c" * 64
+    session.plugin_index_digest = "b" * 64
     workline = _make_workline()
-    orchestrated: list[dict[str, Any]] = []
-    effects: list[dict[str, Any]] = []
+    runner_calls = 0
+    recorded_loads: list[int] = []
+    replayed_write_sets: list[object] = []
 
     async def load_related(*_args: Any, **_kwargs: Any) -> tuple[object, ...]:
         return session, workline, None, None, {}, SimpleNamespace(), True
 
-    class _Processor:
-        async def process(self, *_args: Any, **kwargs: Any) -> OrchestratorResult:
-            inbox = kwargs["inbox"]
-            orchestrated.append(dict(inbox.payload_json))
-            result = OrchestratorResult(success=True, intents=[])
-            await kwargs["write_callback"](result)
-            return result
+    class _Runner:
+        async def run(self, _context: object) -> object:
+            nonlocal runner_calls
+            runner_calls += 1
+            raise AssertionError("recorded replay must not call plugin runner")
+
+    class _RecordedReplay:
+        async def load(self, _db: object, *, source_inbox_id: int, **_kwargs: object) -> object:
+            from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
+
+            recorded_loads.append(source_inbox_id)
+            return RecordedReplayResolution(
+                decision={
+                    "outcome_code": "REPLAY_ACCEPTED_NOOP",
+                    "hold_reason": None,
+                    "intents": [],
+                    "next_state": {"phase": "READY"},
+                }
+            )
 
     class _WriteBack:
-        def build_write_callback(self, db: Any, **kwargs: Any) -> Any:
-            async def write_effect(_result: OrchestratorResult) -> None:
-                effects.append(dict(kwargs["inbox"].payload_json))
-                kwargs["state"].write_effects_applied = True
-                kwargs["state"].disposition = WriteBackDisposition.PROCESSED
-                assert await runtime_service.mark_processed(
-                    db,
-                    inbox_id=kwargs["inbox_pk"],
-                    lease_token=kwargs["processor_token"],
-                )
-                await db.commit()
+        async def commit_plugin_attempt(self, db: Any, **kwargs: Any) -> object:
+            from src.app.runtime.workline_plugins.attempt_coordinator import WriteDisposition
 
-            return write_effect
+            replayed_write_sets.append(kwargs["write_set"])
+            assert await runtime_service.mark_processed(
+                db,
+                inbox_id=kwargs["inbox_id"],
+                lease_token=kwargs["expected_snapshot"].processor_token,
+            )
+            await db.commit()
+            return WriteDisposition.COMMITTED
 
     monkeypatch.setattr(
         "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
         load_related,
     )
     processor = RuntimeInboxProcessorBridge(
-        processor_service=_Processor(),  # type: ignore[arg-type]
+        plugin_attempt_runner=_Runner(),  # type: ignore[arg-type]
         writeback_service=_WriteBack(),  # type: ignore[arg-type]
         inbox_service=runtime_service,
+        recorded_replay_service=_RecordedReplay(),  # type: ignore[arg-type]
     )
 
     wrong_replay = await runtime_service.replay_from_dead_letter(
@@ -1972,13 +2015,9 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
     wrong_result = await processor.process_claimed(db_session, claim=wrong_claims[0])
 
     assert wrong_result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-    assert orchestrated == []
-    assert effects == []
-    archived = (
-        await db_session.execute(select(WorklineTimeline).where(WorklineTimeline.message == "DUPLICATE_ENTRY_ARCHIVED"))
-    ).scalar_one()
-    assert archived.action_type == TimelineActionType.EVENT_PROCESSED
-    assert archived.related_inbox_id == wrong_replay.replay_record.id
+    assert runner_calls == 0
+    assert recorded_loads == [wrong_source.id]
+    assert len(replayed_write_sets) == 1
 
     replay = await runtime_service.replay_from_dead_letter(
         db_session,
@@ -1998,10 +2037,14 @@ async def test_canonical_entry_replay_claim_process_bypasses_duplicate_gate_with
     assert "replay_of_event_id" not in replay.replay_record.payload_json["original_payload"]
     result = await processor.process_claimed(db_session, claim=claims[0])
 
-    expected_payload = {"event_type": "SCAN_COMPLETED", "data": {"HHPN": "MAT-REPLAY-1"}}
     assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
-    assert orchestrated == [expected_payload]
-    assert effects == [expected_payload]
+    assert runner_calls == 0
+    assert recorded_loads == [wrong_source.id, source.id]
+    assert len(replayed_write_sets) == 2
+    replayed = replayed_write_sets[-1]
+    assert replayed.outcome_code == "REPLAY_ACCEPTED_NOOP"
+    assert replayed.intents == ()
+    assert replayed.evidence == ()
 
 
 class TestEstopTimerRouting:

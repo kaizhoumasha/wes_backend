@@ -1064,8 +1064,6 @@ async def prepare_runtime_device_command_effect(
     )
 
     try:
-        inbox_payload = getattr(ctx.get("inbox"), "payload_json", None)
-        completed_command_code = inbox_payload.get("command_code") if isinstance(inbox_payload, dict) else None
         return await device_command_service.prepare_runtime_effect(
             ctx["db"],
             request=request,
@@ -1078,7 +1076,6 @@ async def prepare_runtime_device_command_effect(
             workline=ctx["workline"],
             idempotency_key=execution.idempotency_key,  # type: ignore[attr-defined]
             trace_id=ctx.get("trace_id"),
-            completed_command_code=completed_command_code if isinstance(completed_command_code, str) else None,
         )
     except StaleDeviceCommandPrecondition as exc:
         raise StaleRuntimeDeviceCommandAdmission("device fact changed") from exc

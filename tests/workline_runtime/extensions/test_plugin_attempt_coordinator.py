@@ -809,7 +809,7 @@ def test_runtime_intent_owner_builds_stable_ledger_rows_bound_to_attempt_pins() 
         action="MOVE",
         idempotency_key="operation-1",
         payload_json={"target": "A-01"},
-        result_policy="FIRE_AND_FORGET",
+        result_policy="COMMAND_RESULT",
     )
     repository = RuntimeIntentLogRepository()
     first_prepared = repository.prepare_attempt_intents(locked=locked, snapshot=snapshot, intents=(intent,))[0]
@@ -841,7 +841,7 @@ def test_runtime_intent_ledger_admission_revalidates_model_copy_result_policy_by
     from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
     from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot
 
-    bypassed = RuntimeIntent.command(action="MOVE", result_policy="FIRE_AND_FORGET").model_copy(
+    bypassed = RuntimeIntent.command(action="MOVE", result_policy="COMMAND_RESULT").model_copy(
         update={"result_policy": None}
     )
     locked = SimpleNamespace(inbox=SimpleNamespace(id=91, execution_session_id=71, correlation_id="corr-1"))

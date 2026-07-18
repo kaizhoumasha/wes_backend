@@ -559,7 +559,9 @@ async def test_non_create_mark_ng_pins_material_identity_before_device_effect() 
     decision = PluginDecision[RoughSorterState](
         intents=(
             RuntimeIntent.mark_ng(reason_code="MEASUREMENT_NG", message="measurement rejected"),
-            RuntimeIntent.command(device_role="output_arm", action="MOVE_TO_NG", payload={}),
+            RuntimeIntent.command(
+                device_role="output_arm", action="MOVE_TO_NG", payload={}, result_policy="COMMAND_RESULT"
+            ),
         ),
         next_state=RoughSorterState(phase="NG_MOVING"),
         outcome_code="MEASUREMENT_NG",

@@ -307,7 +307,7 @@ async def test_same_final_key_and_hash_is_noop_success() -> None:
         ),
         (
             DEVICE_DEFINITION,
-            {"target_device_id": 7, "action": "MOVE", "result_policy": "FIRE_AND_FORGET"},
+            {"target_device_id": 7, "action": "MOVE", "result_policy": "COMMAND_RESULT"},
             {"expected_available": True},
             "device:v1",
             {"accepted": True, "command_code": "CMD-1", "dispatch_key": "dispatch-1"},
@@ -985,10 +985,19 @@ def test_device_command_contract_requires_explicit_result_policy() -> None:
                 "payload": {},
             }
         )
+    with pytest.raises(ValidationError, match="COMMAND_RESULT"):
+        DeviceCommandWriteInput.model_validate(
+            {
+                "target_device_id": 71,
+                "action": "MOVE_FORWARD",
+                "payload": {},
+                "result_policy": "FIRE_AND_FORGET",
+            }
+        )
 
 
 @pytest.mark.asyncio
-async def test_fire_and_forget_device_command_does_not_overwrite_existing_wait() -> None:
+async def test_runtime_device_command_service_rejects_fire_and_forget_model_bypass() -> None:
     from src.app.device.repositories.device_repository import DeviceRepository
     from src.app.device.services.device_command_service import DeviceCommandService
 
@@ -1017,31 +1026,27 @@ async def test_fire_and_forget_device_command_does_not_overwrite_existing_wait()
         current_wait_timeout_seconds=None,
         awaiting_device_command_code=None,
     )
-    command, _ = await DeviceCommandService(device_repository=_DeviceRepository()).prepare_runtime_effect(
-        _MutationDb(),  # type: ignore[arg-type]
-        request=SimpleNamespace(
-            action="MOVE_FORWARD",
-            priority=5,
-            timeout_ms=30000,
-            payload={"business_key": "PKG-1"},
-            command_code=None,
-            result_policy="FIRE_AND_FORGET",
-        ),
-        target_device_id=72,
-        target_device_code=None,
-        expected_workline_id=41,
-        expected_fact_version="device:v2",
-        expected_available=True,
-        session=session,
-        workline=SimpleNamespace(id=41, plugin_key="rough_sorter"),
-        idempotency_key="system-capability:device.device_command_write@v1:session:31:move-1",
-        trace_id="trace-fire-and-forget",
-    )
-
-    assert command.task_type == "MOVE_FORWARD"
-    assert session.status == "RUNNING"
-    assert session.current_wait_type is None
-    assert session.awaiting_device_command_code is None
+    with pytest.raises(ValueError, match="COMMAND_RESULT"):
+        await DeviceCommandService(device_repository=_DeviceRepository()).prepare_runtime_effect(
+            _MutationDb(),  # type: ignore[arg-type]
+            request=SimpleNamespace(
+                action="MOVE_FORWARD",
+                priority=5,
+                timeout_ms=30000,
+                payload={"business_key": "PKG-1"},
+                command_code=None,
+                result_policy="FIRE_AND_FORGET",
+            ),
+            target_device_id=72,
+            target_device_code=None,
+            expected_workline_id=41,
+            expected_fact_version="device:v2",
+            expected_available=True,
+            session=session,
+            workline=SimpleNamespace(id=41, plugin_key="rough_sorter"),
+            idempotency_key="system-capability:device.device_command_write@v1:session:31:move-1",
+            trace_id="trace-fire-and-forget",
+        )
 
 
 @pytest.mark.asyncio

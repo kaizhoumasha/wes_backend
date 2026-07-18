@@ -22,6 +22,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validati
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
 )
+from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet, WriteDisposition
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,16 +208,15 @@ PARITY_CASES = (
         payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "WAIT"}},
         writeback="resource_wait",
         expected=(1, 0, 0, 0, 1),
-        expected_terminal="resource_wait",
-        expected_error="RESOURCE_WAIT",
+        expected_terminal="failed",
+        expected_error="PLUGIN_SNAPSHOT_STALE",
     ),
     ParityCase(
         name="orchestrator_failure",
         payload={"event_type": "SCAN_COMPLETED", "data": {"HHPN": "FAIL"}},
         orchestration="failure",
         expected=(1, 0, 1, 0, 0),
-        expected_terminal="failed",
-        expected_error="simulated failure",
+        expected_terminal="processed",
     ),
 )
 
@@ -231,6 +231,9 @@ class _FakeDb:
     async def refresh(self, value: object) -> None:
         if self.stale_session_on_write:
             value.status = "WAITING_DEVICE_RESULT"
+
+    async def flush(self) -> None:
+        pass
 
     async def commit(self) -> None:
         self.committed += 1
@@ -348,6 +351,14 @@ def _build_entities(
             current_wait_type=case.current_wait_type,
             failure_code=case.failure_code,
             plugin_key=case.plugin_key,
+            plugin_binding_id=17,
+            plugin_binding_version=4,
+            plugin_identity="rough_sorter@rough_sorter.v2:" + "a" * 64,
+            plugin_config_hash="c" * 64,
+            plugin_index_digest="b" * 64,
+            plugin_state_json={"phase": "READY"},
+            plugin_state_version=1,
+            version=7,
             context_json=case.session_context or {},
         )
     workline = SimpleNamespace(id=20, plugin_key=case.plugin_key) if case.workline_present else None
@@ -472,23 +483,49 @@ async def _run_case(
             )
             return effect
 
-    class _Orchestrator:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            _ = args, kwargs
-
-        async def process_inbox(self, *args: object, write_callback: object, **kwargs: object) -> OrchestratorResult:
-            _ = args, kwargs
+    class _Runner:
+        async def run(self, _context: object) -> AttemptWriteSet:
             if case.orchestration == "exception":
                 raise RuntimeError("simulated orchestrator failure")
             if case.orchestration == "failure":
-                return OrchestratorResult(success=False, error="simulated failure", error_code="BIZ_001")
-            result = OrchestratorResult(success=True, intents=[])
-            await write_callback(result)  # type: ignore[operator]
-            return result
+                return AttemptWriteSet(
+                    evidence=(),
+                    next_state={"phase": "READY"},
+                    intents=(),
+                    outcome_code="HOLD",
+                    hold_reason="simulated failure",
+                )
+            return AttemptWriteSet(evidence=(), next_state={"phase": "READY"}, intents=(), outcome_code="ROUTE_A")
 
-    class _Delegate:
-        async def process(self, *args: object, write_callback: object, **kwargs: object) -> OrchestratorResult:
-            return await _Orchestrator().process_inbox(*args, write_callback=write_callback, **kwargs)
+    class _PlatformWriteBack:
+        async def commit_plugin_attempt(self, db: object, **kwargs: object) -> WriteDisposition:
+            if case.stale_session_on_write:
+                raise RuntimeError("Session state changed before WRITE apply")
+            interactions.append({"kind": "writeback", "source_device_id": case.device_id})
+            if case.writeback == "resource_wait":
+                return WriteDisposition.SAFE_RETRY
+            accepted = await terminal.mark_processed(
+                db,
+                inbox_id=1,
+                lease_token=kwargs["expected_snapshot"].processor_token,  # type: ignore[index]
+            )
+            if not accepted:
+                raise RuntimeError("RuntimeInbox lost fencing during plugin writeback")
+            await db.commit()  # type: ignore[attr-defined]
+            return WriteDisposition.COMMITTED
+
+    class _RecordedReplay:
+        async def load(self, *_args: object, **_kwargs: object) -> object:
+            from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
+
+            return RecordedReplayResolution(
+                decision={
+                    "outcome_code": "REPLAY_ACCEPTED_NOOP",
+                    "hold_reason": None,
+                    "intents": [],
+                    "next_state": {"phase": "READY"},
+                }
+            )
 
     class _LoggerRecorder:
         def __getattr__(self, level: str) -> object:
@@ -536,11 +573,12 @@ async def _run_case(
                 )
             )  # type: ignore[arg-type]
         ),
-        processor_service=_Delegate(),  # type: ignore[arg-type]
-        writeback_service=RuntimeInboxWriteBackService(write_back_service=_WriteBack(), inbox_service=terminal),
+        plugin_attempt_runner=_Runner(),
+        writeback_service=_PlatformWriteBack(),  # type: ignore[arg-type]
         inbox_service=terminal,  # type: ignore[arg-type]
         inbox_repository=_Repository(inbox),  # type: ignore[arg-type]
         replay_source_validator=_ReplaySourceValidator(),  # type: ignore[arg-type]
+        recorded_replay_service=_RecordedReplay(),  # type: ignore[arg-type]
     )
     result = await processor.process_claimed(db, claim={"id": 1, "processor_token": "token-parity"})
     return result, archives, terminal.actions, diagnostics, interactions, db
@@ -592,7 +630,7 @@ async def test_runtime_processor_characterization(
         ("scan_invalid", "failed"),
         ("duplicate_material_conflict", "dead_letter"),
         ("scan_valid", "processed"),
-        ("resource_wait", "resource_wait"),
+        ("resource_wait", "failed"),
         ("missing_context", "processed"),
     ),
 )
@@ -614,7 +652,8 @@ async def test_three_stage_lost_fencing_rolls_back_without_success(
     assert result["resource_wait"] == 0
     assert result["failed"] == 1
     assert terminal_actions[0]["action"] == first_action
-    assert db.committed == 0
+    # 平台 attempt 在无 DB 决策前会提交 Stage 1 snapshot；fencing 丢失只禁止 Stage 3 提交。
+    assert db.committed == (1 if case_name in {"scan_valid", "resource_wait"} else 0)
     assert db.rolled_back >= 1
 
 

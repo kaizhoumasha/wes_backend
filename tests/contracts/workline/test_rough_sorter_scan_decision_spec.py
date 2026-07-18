@@ -800,7 +800,9 @@ async def test_current_wait_anchor_mismatch_archives_without_applying_followup_c
         processor_token="lease-rs-sd-013",
         state=state,
     )
-    followup = RuntimeIntent.command(device_role="ROUGH_SORTER_CONVEYOR", action="MOVE_FORWARD")
+    followup = RuntimeIntent.command(
+        device_role="ROUGH_SORTER_CONVEYOR", action="MOVE_FORWARD", result_policy="COMMAND_RESULT"
+    )
 
     await callback(OrchestratorResult(success=True, intents=[followup]))
 

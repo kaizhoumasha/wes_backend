@@ -911,6 +911,15 @@ class RuntimeInboxProcessorBridge:
                 session=session,
                 command=command,
             ):
+                callback_command_code = payload.get("command_code")
+                awaiting_command_code = getattr(session, "awaiting_device_command_code", None)
+                archive_reason = (
+                    "COMMAND_RESULT_CORRELATION_MISMATCH"
+                    if isinstance(callback_command_code, str)
+                    and isinstance(awaiting_command_code, str)
+                    and callback_command_code != awaiting_command_code
+                    else "COMMAND_RESULT_NO_LONGER_MATCHES_SESSION_WAIT"
+                )
                 await _record_late_command_result_archive_timeline(
                     db,
                     session=session,
@@ -918,7 +927,7 @@ class RuntimeInboxProcessorBridge:
                     inbox=inbox,
                     command=command,
                     payload=payload,
-                    reason="COMMAND_RESULT_NO_LONGER_MATCHES_SESSION_WAIT",
+                    reason=archive_reason,
                 )
                 _require_fenced_update(
                     await self.inbox_service.mark_processed(

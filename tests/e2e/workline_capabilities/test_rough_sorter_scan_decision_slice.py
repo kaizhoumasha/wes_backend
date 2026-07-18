@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import Request
 from sqlalchemy import func, update
 from sqlmodel import select
 
+from src.app.callback.services.callback_ingress_service import CallbackIngressService
 from src.app.device.models.command import CommandStatus, DeviceCommand
+from src.app.device.services.device_command_service import DeviceCommandService
 from src.app.runtime.orchestration.models.material_unit import MaterialUnit
 from src.app.runtime.orchestration.models.runtime_hold import RuntimeHold
 from src.app.runtime.orchestration.models.session import WorklineSession
@@ -40,17 +44,52 @@ CASES = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))["cases"]
 
 @dataclass(slots=True)
 class CaseEvidence:
+    initial_session_status: str
+    initial_phase: str
+    initial_material_status: str
+    initial_command_action: str
+    initial_command_status: str
     session_status: str
     phase: str
     material_status: str
     command_action: str
+    command_status: str
     outcome_code: str
     reason_code: str | None
+    effect_identities: tuple[str, ...]
+    effect_count_for_attempt: int
+    effect_ledger_identities: tuple[str | None, ...]
+    timeline_count: int
+    session_failure_code: str | None
+    runtime_hold_reason: str | None
     provider_calls: int
     effect_count: int
     runtime_hold_count: int
     replay_effect_delta: int = 0
     replay_outbox_delta: int = 0
+
+
+def _callback_request(payload: dict[str, object]) -> Request:
+    body = json.dumps(payload).encode("utf-8")
+    sent = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/callback/result",
+            "headers": [(b"content-type", b"application/json")],
+            "client": ("127.0.0.1", 12345),
+        },
+        receive=receive,
+    )
 
 
 async def _process_one(db, service: RuntimeInboxService, *, token: str) -> dict[str, int]:  # type: ignore[no-untyped-def]
@@ -65,12 +104,27 @@ async def _process_one(db, service: RuntimeInboxService, *, token: str) -> dict[
 
 
 def _decision_reason(payload: dict[str, Any]) -> str | None:
+    def find_reason(value: object) -> str | None:
+        if isinstance(value, dict):
+            if isinstance(value.get("reason_code"), str):
+                return value["reason_code"]
+            for nested in value.values():
+                found = find_reason(nested)
+                if found is not None:
+                    return found
+        elif isinstance(value, list):
+            for nested in value:
+                found = find_reason(nested)
+                if found is not None:
+                    return found
+        return None
+
     for intent in payload.get("decision", {}).get("intents", []):
         if not isinstance(intent, dict):
             continue
-        effect_payload = intent.get("payload_json")
-        if isinstance(effect_payload, dict) and isinstance(effect_payload.get("reason_code"), str):
-            return effect_payload["reason_code"]
+        found = find_reason(intent)
+        if found is not None:
+            return found
     return None
 
 
@@ -80,14 +134,29 @@ async def _latest_command(db, *, workline_id: int) -> DeviceCommand | None:  # t
     )
 
 
+async def _state_tuple(db, *, seeded) -> tuple[str, str, str, str, str]:  # type: ignore[no-untyped-def]
+    db.expire_all()
+    session = await db.get(WorklineSession, seeded.session_id)
+    material = await db.scalar(select(MaterialUnit).where(MaterialUnit.current_session_id == seeded.session_id))
+    command = await _latest_command(db, workline_id=seeded.workline_id)
+    assert session is not None
+    return (
+        session.status.value,
+        # 粗分机插件未持久化 phase 时的权威初态即 READY；首次 Runner 装载会显式保存同一状态。
+        session.plugin_state_json.get("phase", "READY"),
+        material.status.value if material is not None else "NOT_CREATED",
+        command.task_type if command is not None else "NOT_CREATED",
+        getattr(getattr(command, "status", None), "value", getattr(command, "status", "NOT_CREATED")),
+    )
+
+
 async def _collect(
     db,  # type: ignore[no-untyped-def]
     *,
     seeded,
-    related_inbox_id: int | None,
+    related_inbox_id: int,
     provider_calls: int,
-    fallback_outcome: str,
-    fallback_reason: str | None,
+    initial_state: tuple[str, str, str, str, str],
     replay_effect_delta: int = 0,
     replay_outbox_delta: int = 0,
 ) -> CaseEvidence:
@@ -95,24 +164,68 @@ async def _collect(
     session = await db.get(WorklineSession, seeded.session_id)
     material = await db.scalar(select(MaterialUnit).where(MaterialUnit.current_session_id == seeded.session_id))
     command = await _latest_command(db, workline_id=seeded.workline_id)
-    decision = None
-    if related_inbox_id is not None:
-        decision = await db.scalar(
-            select(WorklineTimeline)
-            .where(
-                WorklineTimeline.related_inbox_id == related_inbox_id,
-                WorklineTimeline.payload_json["record_type"].as_string() == "PLUGIN_DECISION",
+    timelines = list(
+        (
+            await db.execute(
+                select(WorklineTimeline)
+                .where(WorklineTimeline.related_inbox_id == related_inbox_id)
+                .order_by(WorklineTimeline.id)
             )
-            .order_by(WorklineTimeline.id.desc())
-        )
+        ).scalars()
+    )
+    decision = next(
+        (item for item in reversed(timelines) if item.payload_json.get("record_type") == "PLUGIN_DECISION"), None
+    )
     decision_payload = decision.payload_json if decision is not None else {}
+    decision_data = decision_payload.get("decision", {})
+    archive = next((item for item in timelines if item.message == "LATE_COMMAND_RESULT_ARCHIVED"), None)
+    timeout = next(
+        (item for item in timelines if getattr(item.action_type, "value", item.action_type) == "WAIT_TIMEOUT"), None
+    )
+    if decision is not None:
+        outcome_code = decision_data.get("outcome_code")
+        reason_code = _decision_reason(decision_payload)
+    elif archive is not None:
+        outcome_code = "ARCHIVED_EVIDENCE"
+        reason_code = archive.payload_json.get("reason")
+    elif timeout is not None:
+        outcome_code = "HOLD"
+        reason_code = timeout.payload_json.get("reason")
+    else:
+        raise AssertionError(f"inbox {related_inbox_id} has no authoritative outcome evidence")
+    assert isinstance(outcome_code, str)
+    intent_effect_identities = tuple(
+        str(intent["capability_key"])
+        for intent in decision_data.get("intents", [])
+        if isinstance(intent, dict) and isinstance(intent.get("capability_key"), str)
+    )
+    attempt_effects = list(
+        (
+            await db.execute(
+                select(RuntimeIntentLog).where(RuntimeIntentLog.idempotency_key.contains(f":inbox:{related_inbox_id}:"))
+            )
+        ).scalars()
+    )
+    hold = await db.scalar(select(RuntimeHold).where(RuntimeHold.session_id == seeded.session_id))
     return CaseEvidence(
+        initial_session_status=initial_state[0],
+        initial_phase=initial_state[1],
+        initial_material_status=initial_state[2],
+        initial_command_action=initial_state[3],
+        initial_command_status=initial_state[4],
         session_status=session.status.value if session is not None else "NOT_CREATED",
-        phase=(session.plugin_state_json.get("phase", "UNCHANGED") if session is not None else "UNCHANGED"),
+        phase=(session.plugin_state_json.get("phase", "READY") if session is not None else "NOT_CREATED"),
         material_status=material.status.value if material is not None else "NOT_CREATED",
         command_action=command.task_type if command is not None else "NOT_CREATED",
-        outcome_code=decision_payload.get("decision", {}).get("outcome_code", fallback_outcome),
-        reason_code=_decision_reason(decision_payload) or fallback_reason,
+        command_status=getattr(getattr(command, "status", None), "value", getattr(command, "status", "NOT_CREATED")),
+        outcome_code=outcome_code,
+        reason_code=reason_code,
+        effect_identities=intent_effect_identities,
+        effect_count_for_attempt=len(attempt_effects),
+        effect_ledger_identities=tuple(item.capability_key for item in attempt_effects),
+        timeline_count=len(timelines),
+        session_failure_code=getattr(session, "failure_code", None),
+        runtime_hold_reason=getattr(hold, "source_reason", None),
         provider_calls=provider_calls,
         effect_count=int(await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0),
         runtime_hold_count=int(await db.scalar(select(func.count()).select_from(RuntimeHold)) or 0),
@@ -144,6 +257,11 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
         ]
 
     monkeypatch.setattr(WmsInventoryQueryPortAdapter, "query_inventory", query_inventory)
+
+    async def invalidate_cache(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(DeviceCommandService, "_invalidate_command_cache", invalidate_cache)
     captured: CaseEvidence | None = None
 
     async def scenario(session_factory, _queue_gateway) -> None:  # type: ignore[no-untyped-def]
@@ -153,11 +271,10 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
             service = RuntimeInboxService()
             trigger = case["trigger"]
             event_type = trigger["event_type"]
-            related_inbox_id: int | None = None
-            fallback_outcome = case["expected_outcome"]["result"]
-            fallback_reason = case["expected_outcome"]["reason_code"]
+            related_inbox_id: int
             replay_effect_delta = 0
             replay_outbox_delta = 0
+            initial_state = await _state_tuple(db, seeded=seeded)
 
             if event_type == "SCAN_COMPLETED":
                 inbox = await db.get(RuntimeInbox, seeded.inbox_id)
@@ -177,28 +294,58 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                 assert (await _process_one(db, service, token=f"e2e-{case_id}-seed"))["success"] == 1
                 pick = await _latest_command(db, workline_id=seeded.workline_id)
                 assert pick is not None
+                initial_state = await _state_tuple(db, seeded=seeded)
                 baseline_effects = int(await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0)
                 baseline_outbox = int(await db.scalar(select(func.count()).select_from(SystemOutbox)) or 0)
 
                 if event_type == "COMMAND_RESULT":
-                    callback_code = trigger["payload"]["command_code"] if case_id == "RS-SD-013" else pick.command_code
-                    accepted = await service.accept_command_result(
-                        db,
-                        command_code=callback_code,
-                        source_event_id=trigger["source_event_id"],
-                        device_code="IT-ARM-01",
-                        workline_id=seeded.workline_id,
-                        device_id=seeded.arm_id,
-                        command_id=pick.id,
-                        trace_id=seeded.trace_id,
-                        payload_json={**trigger["payload"], "command_code": callback_code},
-                    )
                     if case_id == "RS-SD-013":
+                        callback_code = trigger["payload"]["command_code"]
+                        accepted = await service.accept_command_result(
+                            db,
+                            command_code=callback_code,
+                            source_event_id=trigger["source_event_id"],
+                            device_code="IT-ARM-01",
+                            workline_id=seeded.workline_id,
+                            device_id=seeded.arm_id,
+                            command_id=pick.id,
+                            trace_id=seeded.trace_id,
+                            payload_json={**trigger["payload"], "command_code": callback_code},
+                        )
                         # 正式 CallbackIngress 会用当前等待锚点固定 Session；这里直接调用
                         # RuntimeInbox accept seam，因此显式保留同一权威归属以只测试 mismatch 路由。
                         accepted.record.workline_session_id = seeded.session_id
-                    await db.commit()
-                    related_inbox_id = int(accepted.record.id)
+                        await db.commit()
+                        related_inbox_id = int(accepted.record.id)
+                    else:
+                        trigger_payload = trigger["payload"]
+                        callback_payload = {
+                            "command_code": pick.command_code,
+                            "device_code": "IT-ARM-01",
+                            "result": trigger_payload["result"],
+                            "data": {
+                                **trigger_payload.get("data", {}),
+                                "command_type": trigger_payload.get("command_type"),
+                            },
+                            "finish_time": int(time.time() * 1000),
+                            "source_event_id": trigger["source_event_id"],
+                            "trace_id": seeded.trace_id,
+                        }
+                        if "error_detail" in trigger_payload:
+                            callback_payload["error_detail"] = trigger_payload["error_detail"]
+                        response = await CallbackIngressService().handle_result(
+                            _callback_request(callback_payload),
+                            db,
+                            request_id=f"e2e-{case_id}-callback",
+                            start_time=time.time(),
+                            enqueue_processing=lambda: None,
+                        )
+                        assert response["code"] == "1000"
+                        accepted_row = await db.scalar(
+                            select(RuntimeInbox).where(RuntimeInbox.source_event_id == trigger["source_event_id"])
+                        )
+                        assert accepted_row is not None
+                        related_inbox_id = int(accepted_row.id)
                     result = await _process_one(db, service, token=f"e2e-{case_id}-result")
                     assert result["processed"] == 1
                     if case_id == "RS-SD-013":
@@ -237,40 +384,16 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                     await db.commit()
                     related_inbox_id = int(timeout.record.id)
                     assert (await _process_one(db, service, token=f"e2e-{case_id}-timeout"))["success"] == 1
-                elif event_type == "REPLAY_REQUEST" and case_id == "RS-SD-011":
-                    await db.execute(
-                        update(RuntimeInbox)
-                        .where(RuntimeInbox.id == seeded.inbox_id)
-                        .values(
-                            status="DEAD_LETTER", last_error_code="E2E_REPLAY", processor_token=None, lease_until=None
-                        )
-                    )
-                    await db.commit()
-                    replay = await service.replay_from_dead_letter(
-                        db,
-                        source_inbox_id=seeded.inbox_id,
-                        request_id="e2e-rs-sd-011",
-                        actor="e2e",
-                        reason="fixture recorded replay",
-                    )
-                    related_inbox_id = int(replay.replay_record.id)
-                    await db.commit()
-                    assert (await _process_one(db, service, token="e2e-rs-sd-011-replay"))["success"] == 1
-                    replay_effect_delta = int(
-                        (await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0) - baseline_effects
-                    )
-                    replay_outbox_delta = int(
-                        (await db.scalar(select(func.count()).select_from(SystemOutbox)) or 0) - baseline_outbox
-                    )
-                    fallback_outcome = "REPLAY_ACCEPTED_NOOP"
-                    related_inbox_id = None
                 elif event_type == "REPLAY_REQUEST":
                     source = await db.get(RuntimeInbox, seeded.inbox_id)
                     assert source is not None
+                    replay_payload = dict(trigger["payload"])
+                    if case_id == "RS-SD-011":
+                        replay_payload["payload_digest"] = source.payload_hash
                     accepted = await service.accept_internal_event(
                         db,
                         event_type="REPLAY_REQUEST",
-                        payload_json={"logical_route": "REPLAY_REQUEST", **trigger["payload"]},
+                        payload_json={"logical_route": "REPLAY_REQUEST", **replay_payload},
                         trace_id=seeded.trace_id,
                         event_id=trigger["source_event_id"],
                         causation_id=f"inbox:{seeded.inbox_id}",
@@ -281,7 +404,7 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                     accepted.record.workline_session_id = seeded.session_id
                     await db.commit()
                     related_inbox_id = int(accepted.record.id)
-                    result = await _process_one(db, service, token="e2e-rs-sd-012-conflict")
+                    result = await _process_one(db, service, token=f"e2e-{case_id}-logical-replay")
                     persisted = await db.get(RuntimeInbox, related_inbox_id, populate_existing=True)
                     assert result["success"] == 1, (
                         result,
@@ -289,6 +412,23 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                         persisted.last_error_code if persisted is not None else None,
                         persisted.last_error_message if persisted is not None else None,
                     )
+                    replay_effect_delta = int(
+                        (await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0) - baseline_effects
+                    )
+                    replay_outbox_delta = int(
+                        (await db.scalar(select(func.count()).select_from(SystemOutbox)) or 0) - baseline_outbox
+                    )
+                    if case_id == "RS-SD-011":
+                        captured = await _collect(
+                            db,
+                            seeded=seeded,
+                            related_inbox_id=related_inbox_id,
+                            provider_calls=provider_calls,
+                            initial_state=initial_state,
+                            replay_effect_delta=replay_effect_delta,
+                            replay_outbox_delta=replay_outbox_delta,
+                        )
+                        return
                     conflict_effects = int(await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0)
                     conflict_outbox = int(await db.scalar(select(func.count()).select_from(SystemOutbox)) or 0)
                     await db.execute(
@@ -297,7 +437,7 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                         .values(status="DEAD_LETTER", last_error_code="E2E_CONFLICT_REPLAY", processor_token=None)
                     )
                     await db.commit()
-                    replay = await service.replay_from_dead_letter(
+                    await service.replay_from_dead_letter(
                         db,
                         source_inbox_id=related_inbox_id,
                         request_id="e2e-rs-sd-012-replay",
@@ -319,8 +459,7 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                 seeded=seeded,
                 related_inbox_id=related_inbox_id,
                 provider_calls=provider_calls,
-                fallback_outcome=fallback_outcome,
-                fallback_reason=fallback_reason,
+                initial_state=initial_state,
                 replay_effect_delta=replay_effect_delta,
                 replay_outbox_delta=replay_outbox_delta,
             )
@@ -339,22 +478,51 @@ def test_approved_rough_sorter_scan_decision_case(case: dict[str, Any], monkeypa
     expected_outcome = case["expected_outcome"]
     case_id = case["case_id"]
 
-    assert evidence.session_status == expected_state["session"] or expected_state["session"] == "UNCHANGED", evidence
-    assert (
-        evidence.phase == expected_state.get("context_phase", evidence.phase)
-        or expected_state.get("context_phase") == "UNCHANGED"
+    expected_session = expected_state["session"]
+    expected_phase = expected_state.get("context_phase")
+    expected_material = expected_state.get("material")
+    assert evidence.session_status == (
+        evidence.initial_session_status if expected_session == "UNCHANGED" else expected_session
+    ), evidence
+    assert evidence.phase == (evidence.initial_phase if expected_phase == "UNCHANGED" else expected_phase), evidence
+    assert evidence.material_status == (
+        evidence.initial_material_status if expected_material == "UNCHANGED" else expected_material
+    ), evidence
+    expected_effect_identities: list[str] = []
+    expected_intents = case["expected_intents"]
+    if any(item["kind"] in {"CREATE_MATERIAL_UNIT", "MARK_NG"} for item in expected_intents):
+        expected_effect_identities.append("material_flow.material_unit_write")
+    expected_effect_identities.extend(
+        "device.device_command_write" for item in expected_intents if item["kind"] == "COMMAND"
     )
-    assert (
-        evidence.material_status == expected_state.get("material", evidence.material_status)
-        or expected_state.get("material") == "UNCHANGED"
-    )
+    expected_effect_identities.extend("runtime.session_hold" for item in expected_intents if item["kind"] == "BLOCK")
+    assert evidence.effect_identities == tuple(expected_effect_identities), evidence
+    # RuntimeIntent ledger 与 System Capability effect ledger 各保存一份同身份记录。
+    expected_ledger_identities = tuple(expected_effect_identities) * 2
+    assert evidence.effect_ledger_identities == expected_ledger_identities, evidence.effect_ledger_identities
+    assert evidence.effect_count_for_attempt == len(expected_ledger_identities), evidence
+    assert evidence.timeline_count >= 1
+    command_intents = [item for item in expected_intents if item["kind"] == "COMMAND"]
+    if command_intents:
+        assert evidence.command_action == command_intents[-1]["action"]
+        assert evidence.command_status == CommandStatus.PENDING.value
     if expected_state.get("command") == "NOT_CREATED":
         assert evidence.command_action == "NOT_CREATED"
+    elif expected_state.get("command") == "UNCHANGED":
+        assert (evidence.command_action, evidence.command_status) == (
+            evidence.initial_command_action,
+            evidence.initial_command_status,
+        )
+    elif expected_state.get("command") is not None:
+        assert evidence.command_status == expected_state["command"]
     assert evidence.outcome_code == expected_outcome["result"]
     assert evidence.reason_code == expected_outcome["reason_code"]
     assert evidence.provider_calls == (1 if case_id in {"RS-SD-004", "RS-SD-006", "RS-SD-010"} else 0)
     if case_id == "RS-SD-009":
         assert evidence.runtime_hold_count == 1
+        assert evidence.runtime_hold_reason == expected_outcome["reason_code"]
+    elif expected_outcome["result"] == "HOLD":
+        assert evidence.session_failure_code == expected_outcome["reason_code"]
     if case_id in {"RS-SD-011", "RS-SD-012", "RS-SD-013"}:
         assert evidence.replay_effect_delta == 0
         assert evidence.replay_outbox_delta == 0

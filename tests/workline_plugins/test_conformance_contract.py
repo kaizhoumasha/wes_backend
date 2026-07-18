@@ -121,15 +121,18 @@ def test_command_intent_requires_explicit_valid_result_policy() -> None:
     with pytest.raises(ValidationError, match="COMMAND intent requires result_policy"):
         RuntimeIntent(kind=RuntimeIntentKind.COMMAND, action="PICK")
 
+    with pytest.raises(ValidationError, match="COMMAND_RESULT"):
+        RuntimeIntent(kind=RuntimeIntentKind.COMMAND, action="PICK", result_policy="FIRE_AND_FORGET")
+
 
 @pytest.mark.parametrize("kind", [kind for kind in RuntimeIntentKind if kind is not RuntimeIntentKind.COMMAND])
 def test_non_command_intent_rejects_top_level_result_policy(kind: RuntimeIntentKind) -> None:
     with pytest.raises(ValidationError, match="result_policy is only valid for COMMAND"):
-        RuntimeIntent(kind=kind, result_policy="FIRE_AND_FORGET")
+        RuntimeIntent(kind=kind, result_policy="COMMAND_RESULT")
 
 
 def test_effect_converter_revalidates_model_copy_before_update_context_skip() -> None:
-    bypassed = RuntimeIntent.update_context({"phase": "READY"}).model_copy(update={"result_policy": "FIRE_AND_FORGET"})
+    bypassed = RuntimeIntent.update_context({"phase": "READY"}).model_copy(update={"result_policy": "COMMAND_RESULT"})
 
     with pytest.raises(ValidationError, match="result_policy is only valid for COMMAND"):
         _system_capability_intents(_context(), (bypassed,))

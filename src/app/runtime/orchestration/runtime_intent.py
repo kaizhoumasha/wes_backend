@@ -126,7 +126,7 @@ class RuntimeIntent(BaseModel):
     payload_json: dict[str, Any] = Field(default_factory=dict)
     destination: Destination | None = None
     timeout_seconds: int | None = None
-    result_policy: Literal["COMMAND_RESULT", "FIRE_AND_FORGET"] | None = None
+    result_policy: Literal["COMMAND_RESULT"] | None = None
     block_scope: BlockScope | None = None
     reason_code: str | None = None
     message: str | None = None
@@ -197,7 +197,7 @@ class RuntimeIntent(BaseModel):
         payload: dict[str, Any] | None = None,
         destination: Destination | None = None,
         timeout_seconds: int | None = None,
-        result_policy: Literal["COMMAND_RESULT", "FIRE_AND_FORGET"] = "FIRE_AND_FORGET",
+        result_policy: Literal["COMMAND_RESULT"],
     ) -> RuntimeIntent:
         return cls(
             kind=RuntimeIntentKind.COMMAND,
