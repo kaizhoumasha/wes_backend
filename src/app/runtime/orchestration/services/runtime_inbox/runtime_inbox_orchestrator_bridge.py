@@ -1386,8 +1386,9 @@ async def _replay_digest_matches_source(
     if route != "REPLAY_REQUEST":
         return None
     causation_id = optional_str(getattr(inbox, "causation_id", None))
+    supplied_key = optional_str(raw_input.get("idempotency_key"))
     supplied_digest = optional_str(raw_input.get("payload_digest"))
-    if causation_id is None or supplied_digest is None or not causation_id.startswith("inbox:"):
+    if causation_id is None or supplied_key is None or supplied_digest is None or not causation_id.startswith("inbox:"):
         return False
     try:
         source_inbox_id = int(causation_id.removeprefix("inbox:"))
@@ -1396,6 +1397,16 @@ async def _replay_digest_matches_source(
     if source_inbox_id <= 0 or source_inbox_id == optional_int(getattr(inbox, "id", None)):
         return False
     source = await runtime_inbox_repository.get_by_id(db, source_inbox_id)
+    source_payload = getattr(source, "payload_json", None) if source is not None else None
+    source_key = optional_str(source_payload.get("idempotency_key")) if isinstance(source_payload, dict) else None
+    if source is None or supplied_key != source_key:
+        return False
+    anchor_fields = ("workline_id", "workline_session_id", "execution_session_id", "correlation_id")
+    for anchor_field in anchor_fields:
+        source_anchor = getattr(source, anchor_field, None)
+        replay_anchor = getattr(inbox, anchor_field, None)
+        if source_anchor is None or replay_anchor is None or source_anchor != replay_anchor:
+            return False
     recorded_digest = optional_str(getattr(source, "payload_hash", None)) if source is not None else None
     if recorded_digest is None:
         return False

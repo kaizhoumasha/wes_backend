@@ -18,6 +18,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
     RuntimeInboxProcessorBridge,
     _build_plugin_dispatch_request,
     _canonical_plugin_input,
+    _replay_digest_matches_source,
     _write_set_from_recorded_replay,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
@@ -104,6 +105,58 @@ def test_canonical_plugin_input_rejects_uncorrelated_command_result() -> None:
                 payload_json={"command_type": "PICK_AND_PUT", "result": "SUCCESS"},
             )
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, True),
+        ({"idempotency_key": "other-key"}, False),
+        ({"workline_id": 99}, False),
+        ({"workline_session_id": None}, False),
+        ({"execution_session_id": 88}, False),
+        ({"correlation_id": "other-correlation"}, False),
+    ],
+)
+async def test_logical_replay_requires_same_identity_digest_and_runtime_anchors(
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict[str, object],
+    expected: bool,
+) -> None:
+    source = SimpleNamespace(
+        id=7,
+        payload_json={"idempotency_key": "source-key"},
+        payload_hash="a" * 64,
+        workline_id=20,
+        workline_session_id=10,
+        execution_session_id=30,
+        correlation_id="correlation-1",
+    )
+    replay = SimpleNamespace(
+        id=8,
+        causation_id="inbox:7",
+        workline_id=20,
+        workline_session_id=10,
+        execution_session_id=30,
+        correlation_id="correlation-1",
+    )
+    raw_input: dict[str, object] = {"idempotency_key": "source-key", "payload_digest": "sha256:" + "a" * 64}
+    for name, value in overrides.items():
+        if name in raw_input:
+            raw_input[name] = value
+        else:
+            setattr(replay, name, value)
+    repository = SimpleNamespace(get_by_id=AsyncMock(return_value=source))
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge.runtime_inbox_repository",
+        repository,
+    )
+
+    assert (
+        await _replay_digest_matches_source(object(), inbox=replay, route="REPLAY_REQUEST", raw_input=raw_input)
+        is expected
+    )
 
 
 @pytest.mark.parametrize("kind", ["INTERNAL_EVENT", "EXTERNAL_HTTP"])

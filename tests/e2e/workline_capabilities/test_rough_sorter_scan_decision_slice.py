@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from dataclasses import dataclass
@@ -300,23 +301,49 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
 
                 if event_type == "COMMAND_RESULT":
                     if case_id == "RS-SD-013":
-                        callback_code = trigger["payload"]["command_code"]
-                        accepted = await service.accept_command_result(
+                        session = await db.get(WorklineSession, seeded.session_id)
+                        assert session is not None
+                        callback_payload = {
+                            "command_code": pick.command_code,
+                            "device_code": "IT-ARM-01",
+                            "result": trigger["payload"]["result"],
+                            "finish_time": int(time.time() * 1000),
+                            "source_event_id": trigger["source_event_id"],
+                            "trace_id": seeded.trace_id,
+                            "data": {},
+                        }
+                        response = await CallbackIngressService().handle_result(
+                            _callback_request(callback_payload),
                             db,
-                            command_code=callback_code,
-                            source_event_id=trigger["source_event_id"],
-                            device_code="IT-ARM-01",
-                            workline_id=seeded.workline_id,
-                            device_id=seeded.arm_id,
-                            command_id=pick.id,
-                            trace_id=seeded.trace_id,
-                            payload_json={**trigger["payload"], "command_code": callback_code},
+                            request_id="e2e-RS-SD-013-callback",
+                            start_time=time.time(),
+                            enqueue_processing=lambda: None,
                         )
-                        # 正式 CallbackIngress 会用当前等待锚点固定 Session；这里直接调用
-                        # RuntimeInbox accept seam，因此显式保留同一权威归属以只测试 mismatch 路由。
-                        accepted.record.workline_session_id = seeded.session_id
+                        assert response["code"] == "1000"
+                        accepted = await db.scalar(
+                            select(RuntimeInbox).where(RuntimeInbox.source_event_id == trigger["source_event_id"])
+                        )
+                        assert accepted is not None
+                        assert accepted.command_id == pick.id
+                        current = DeviceCommand(
+                            command_code="RS-SD-013-CURRENT-WAIT",
+                            device_id=seeded.arm_id,
+                            task_type="PICK_AND_PUT",
+                            priority=5,
+                            timeout_ms=30_000,
+                            params={},
+                            trace_id=seeded.trace_id,
+                            correlation_id="rs-sd-013-current",
+                            workline_id=seeded.workline_id,
+                            plugin_key="rough_sorter",
+                            contract_version="rough_sorter.v2",
+                            status=CommandStatus.PENDING,
+                        )
+                        db.add(current)
+                        await db.flush()
+                        session.awaiting_device_command_code = current.command_code
                         await db.commit()
-                        related_inbox_id = int(accepted.record.id)
+                        related_inbox_id = int(accepted.id)
                     else:
                         trigger_payload = trigger["payload"]
                         callback_payload = {
@@ -349,6 +376,8 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                     result = await _process_one(db, service, token=f"e2e-{case_id}-result")
                     assert result["processed"] == 1
                     if case_id == "RS-SD-013":
+                        accepted = await db.get(RuntimeInbox, related_inbox_id, populate_existing=True)
+                        assert accepted is not None and accepted.workline_session_id == seeded.session_id
                         archived = await db.scalar(
                             select(WorklineTimeline).where(
                                 WorklineTimeline.related_inbox_id == related_inbox_id,
@@ -385,25 +414,100 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                     related_inbox_id = int(timeout.record.id)
                     assert (await _process_one(db, service, token=f"e2e-{case_id}-timeout"))["success"] == 1
                 elif event_type == "REPLAY_REQUEST":
-                    source = await db.get(RuntimeInbox, seeded.inbox_id)
+                    # replay source 必须先走真实 Callback -> Plugin -> QUERY -> EFFECT 生产链，
+                    # 不能把 seed scan 或手工 timeline 当作“首次 attempt”。
+                    source_event_id = f"e2e-{case_id}-first-result"
+                    first_response = await CallbackIngressService().handle_result(
+                        _callback_request(
+                            {
+                                "command_code": pick.command_code,
+                                "device_code": "IT-ARM-01",
+                                "result": "SUCCESS",
+                                "finish_time": 1_700_000_000_000,
+                                "source_event_id": source_event_id,
+                                "trace_id": seeded.trace_id,
+                                "data": {
+                                    "command_type": "PICK_AND_PUT",
+                                    "measurement_result": "OK",
+                                    "reel_diameter": 180,
+                                    "reel_thickness": 16,
+                                },
+                            }
+                        ),
+                        db,
+                        request_id=f"e2e-{case_id}-first-callback",
+                        start_time=time.time(),
+                        enqueue_processing=lambda: None,
+                    )
+                    assert first_response["code"] == "1000"
+                    source = await db.scalar(
+                        select(RuntimeInbox).where(RuntimeInbox.source_event_id == source_event_id)
+                    )
                     assert source is not None
+                    source.payload_json = {
+                        **source.payload_json,
+                        "idempotency_key": trigger["payload"]["idempotency_key"],
+                    }
+                    source.payload_hash = hashlib.sha256(
+                        json.dumps(
+                            source.payload_json,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    await db.commit()
+                    assert (await _process_one(db, service, token=f"e2e-{case_id}-first-decision"))["success"] == 1
+                    source = await db.get(RuntimeInbox, source.id, populate_existing=True)
+                    assert source is not None
+                    source_id = int(source.id)
+                    source_hash = str(source.payload_hash)
+                    source_execution_session_id = source.execution_session_id
+                    source_correlation_id = source.correlation_id
+                    source_timelines = list(
+                        (
+                            await db.execute(
+                                select(WorklineTimeline).where(WorklineTimeline.related_inbox_id == source.id)
+                            )
+                        ).scalars()
+                    )
+                    assert any(item.payload_json.get("record_type") == "PLUGIN_DECISION" for item in source_timelines)
+                    source_decision = next(
+                        item for item in source_timelines if item.payload_json.get("record_type") == "PLUGIN_DECISION"
+                    )
+                    assert source_decision.payload_json.get("evidence_keys")
+                    assert provider_calls == 1
+                    source_effects = tuple(
+                        (
+                            await db.execute(
+                                select(RuntimeIntentLog).where(
+                                    RuntimeIntentLog.idempotency_key.contains(f":inbox:{source.id}:")
+                                )
+                            )
+                        ).scalars()
+                    )
+                    assert source_effects
+                    source_effect_ids = tuple(item.idempotency_key for item in source_effects)
+                    initial_state = await _state_tuple(db, seeded=seeded)
                     replay_payload = dict(trigger["payload"])
                     if case_id == "RS-SD-011":
-                        replay_payload["payload_digest"] = source.payload_hash
+                        replay_payload["payload_digest"] = source_hash
                     accepted = await service.accept_internal_event(
                         db,
                         event_type="REPLAY_REQUEST",
                         payload_json={"logical_route": "REPLAY_REQUEST", **replay_payload},
                         trace_id=seeded.trace_id,
                         event_id=trigger["source_event_id"],
-                        causation_id=f"inbox:{seeded.inbox_id}",
+                        causation_id=f"inbox:{source_id}",
                         workline_id=seeded.workline_id,
-                        execution_session_id=source.execution_session_id,
-                        correlation_id=source.correlation_id,
+                        execution_session_id=source_execution_session_id,
+                        correlation_id=source_correlation_id,
                     )
                     accepted.record.workline_session_id = seeded.session_id
                     await db.commit()
                     related_inbox_id = int(accepted.record.id)
+                    baseline_effects = int(await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0)
+                    baseline_outbox = int(await db.scalar(select(func.count()).select_from(SystemOutbox)) or 0)
                     result = await _process_one(db, service, token=f"e2e-{case_id}-logical-replay")
                     persisted = await db.get(RuntimeInbox, related_inbox_id, populate_existing=True)
                     assert result["success"] == 1, (
@@ -428,6 +532,38 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                             replay_effect_delta=replay_effect_delta,
                             replay_outbox_delta=replay_outbox_delta,
                         )
+                        await db.execute(
+                            update(RuntimeInbox)
+                            .where(RuntimeInbox.id == source_id)
+                            .values(status="DEAD_LETTER", last_error_code="E2E_RECORDED_REPLAY", processor_token=None)
+                        )
+                        await db.commit()
+                        recorded = await service.replay_from_dead_letter(
+                            db,
+                            source_inbox_id=source_id,
+                            request_id="e2e-rs-sd-011-recorded-replay",
+                            actor="e2e",
+                            reason="verify recorded decision replay",
+                        )
+                        await db.commit()
+                        assert (await _process_one(db, service, token="e2e-rs-sd-011-recorded"))["success"] == 1
+                        replay_row = await db.get(RuntimeInbox, recorded.replay_record.id, populate_existing=True)
+                        assert replay_row is not None and replay_row.status == "PROCESSED"
+                        assert provider_calls == 1
+                        persisted_effect_ids = tuple(
+                            (
+                                await db.execute(
+                                    select(RuntimeIntentLog.idempotency_key).where(
+                                        RuntimeIntentLog.idempotency_key.in_(source_effect_ids)
+                                    )
+                                )
+                            ).scalars()
+                        )
+                        assert set(persisted_effect_ids) == set(source_effect_ids)
+                        assert (
+                            int(await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0)
+                            == baseline_effects
+                        )
                         return
                     conflict_effects = int(await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0)
                     conflict_outbox = int(await db.scalar(select(func.count()).select_from(SystemOutbox)) or 0)
@@ -437,7 +573,7 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                         .values(status="DEAD_LETTER", last_error_code="E2E_CONFLICT_REPLAY", processor_token=None)
                     )
                     await db.commit()
-                    await service.replay_from_dead_letter(
+                    recorded = await service.replay_from_dead_letter(
                         db,
                         source_inbox_id=related_inbox_id,
                         request_id="e2e-rs-sd-012-replay",
@@ -447,6 +583,8 @@ async def _run_case(case: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> Ca
                     await db.commit()
                     replay_result = await _process_one(db, service, token="e2e-rs-sd-012-recorded-replay")
                     assert replay_result["processed"] == 1
+                    replay_row = await db.get(RuntimeInbox, recorded.replay_record.id, populate_existing=True)
+                    assert replay_row is not None and replay_row.status == "PROCESSED"
                     replay_effect_delta = int(
                         (await db.scalar(select(func.count()).select_from(RuntimeIntentLog)) or 0) - conflict_effects
                     )
@@ -517,7 +655,9 @@ def test_approved_rough_sorter_scan_decision_case(case: dict[str, Any], monkeypa
         assert evidence.command_status == expected_state["command"]
     assert evidence.outcome_code == expected_outcome["result"]
     assert evidence.reason_code == expected_outcome["reason_code"]
-    assert evidence.provider_calls == (1 if case_id in {"RS-SD-004", "RS-SD-006", "RS-SD-010"} else 0)
+    assert evidence.provider_calls == (
+        1 if case_id in {"RS-SD-004", "RS-SD-006", "RS-SD-010", "RS-SD-011", "RS-SD-012"} else 0
+    )
     if case_id == "RS-SD-009":
         assert evidence.runtime_hold_count == 1
         assert evidence.runtime_hold_reason == expected_outcome["reason_code"]

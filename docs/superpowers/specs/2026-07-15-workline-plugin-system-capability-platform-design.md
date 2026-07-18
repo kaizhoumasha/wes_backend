@@ -514,7 +514,7 @@ Synthesized from this review's findings. Each task derives from a specific findi
   - Verify: optimistic conflict、typed state、timeout route 和无核心业务分支测试。
 - [x] **T5 (P1, human: ~5d / CC: ~1d)** — Capability Gateway — 实现 attempt-scoped QUERY、evidence 与 replay
   - Surfaced by: Architecture/Performance — QUERY 需确定证据、短事务与有界合并。
-  - Evidence: [Gateway](../../../src/app/runtime/system_capabilities/gateway.py)、[recorded replay owner](../../../src/app/runtime/system_capabilities/replay.py)、[performance production-path budget](../../../tests/workline_runtime/extensions/test_runtime_extension_performance_budget.py)。
+  - Evidence: [Gateway](../../../src/app/runtime/system_capabilities/gateway.py)、[recorded replay owner](../../../src/app/runtime/system_capabilities/replay.py)、[lightweight performance contract](../../../tests/workline_runtime/extensions/test_runtime_extension_performance_budget.py) 与 [explicit PostgreSQL production-chain budget](../../../tests/integration/workline_capabilities/test_runtime_extension_performance_budget_postgresql.py)。
   - Verify: outcome、deadline、limit、stale token、recorded replay 全覆盖。
 - [x] **T6 (P1, human: ~5d / CC: ~1d)** — Effect pipeline — 实现事务 owner、precondition、幂等和设备结果完成语义
   - Surfaced by: Architecture/Outside voice — 防止部分提交、TOCTOU 与过早完成。

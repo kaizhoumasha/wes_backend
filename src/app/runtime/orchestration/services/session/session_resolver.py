@@ -579,6 +579,17 @@ class SessionResolver:
         if session:
             return session
 
+        # 已知旧指令的迟到回调仍须归属到当前唯一开放会话，后续处理器会依据
+        # awaiting_device_command_code/correlation 锚点将其归档，而不是误执行。
+        if command.workline_id is not None:
+            open_sessions = await self.session_repo.list_open_by_workline_id(
+                db,
+                workline_id=command.workline_id,
+                limit=2,
+            )
+            if len(open_sessions) == 1:
+                return open_sessions[0]
+
         raise ValueError(f"Session not found for command_code: {command_code}")
 
     async def _resolve_external_http(
