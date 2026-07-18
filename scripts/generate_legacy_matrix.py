@@ -216,6 +216,62 @@ ACTIVE_PLATFORM_SYMBOLS = frozenset(
         ),
     }
 )
+ACTIVE_PLATFORM_FORBIDDEN_IMPORTS = frozenset(
+    {
+        "src.app.runtime.capability_catalog",
+        "src.app.runtime.capability_dispatcher",
+        "src.app.runtime.runtime_capability_catalog",
+    }
+)
+
+
+def _active_import_base(relative_path: Path, node: ast.ImportFrom) -> str:
+    if node.level == 0:
+        return node.module or ""
+    module_parts = list(relative_path.with_suffix("").parts)
+    if module_parts:
+        module_parts.pop()
+    ascend = node.level - 1
+    prefix = module_parts[: len(module_parts) - ascend] if ascend <= len(module_parts) else []
+    if node.module:
+        prefix.extend(node.module.split("."))
+    return ".".join(prefix)
+
+
+def find_active_platform_legacy_imports(
+    *,
+    repo_root: Path = REPO_ROOT,
+    prefixes: tuple[str, ...] = ACTIVE_PLATFORM_PREFIXES,
+) -> list[str]:
+    """ACTIVE_PLATFORM_PREFIXES 只排除目标态入口，不得隐藏旧路由 import。"""
+
+    violations: list[str] = []
+    for prefix in prefixes:
+        root = repo_root / prefix
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*.py")):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
+            except SyntaxError:  # noqa: S112 - 语法错误由 architecture scanner 按所属 rule 报告
+                continue
+            relative = path.relative_to(repo_root)
+            for node in ast.walk(tree):
+                modules: list[str] = []
+                if isinstance(node, ast.Import):
+                    modules.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    base = _active_import_base(relative, node)
+                    modules.append(base)
+                    modules.extend(f"{base}.{alias.name}" for alias in node.names if alias.name != "*")
+                if any(
+                    module == forbidden or module.startswith(f"{forbidden}.")
+                    for module in modules
+                    for forbidden in ACTIVE_PLATFORM_FORBIDDEN_IMPORTS
+                ):
+                    violations.append(f"{relative.as_posix()}:{node.lineno}")
+    return violations
+
 
 GUARDRAIL_SEED_SYMBOLS = {
     "src/workline_runtime/services.py": "build_workline_runtime_services",
@@ -671,6 +727,11 @@ def _add_guardrail_seed_entries(entries: list[Entry], seen: set[str], seed_paths
 
 
 def parse_entries() -> list[Entry]:
+    active_legacy_imports = find_active_platform_legacy_imports()
+    if active_legacy_imports:
+        joined = ", ".join(active_legacy_imports)
+        raise RuntimeError(f"active extension platform imports legacy capability routing: {joined}")
+
     entries: list[Entry] = []
     seen: set[str] = set()
 

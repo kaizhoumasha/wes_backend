@@ -102,6 +102,112 @@ def test_legacy_capability_import_names_in_comments_and_strings_are_ignored(tmp_
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize(
+    ("relative_path", "source", "rule_id"),
+    [
+        (
+            "workline_plugins/example/handler.py",
+            "from .repositories.deep import ExampleRepository\n",
+            "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY",
+        ),
+        (
+            "system_capabilities/example/handler.py",
+            "from src.app.inventory.repositories.deep import InventoryRepository\n",
+            "SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY",
+        ),
+        (
+            "workline_plugins/generated_index.py",
+            "from os import walk as traverse; traverse('.')\n",
+            "RUNTIME_GENERATED_INDEX_STATICITY",
+        ),
+        (
+            "system_capabilities/generated_index.py",
+            "import importlib as loader\nloader.import_module('example')\n",
+            "RUNTIME_GENERATED_INDEX_STATICITY",
+        ),
+        (
+            "system_capabilities/generated_index.py",
+            "from pathlib import Path as Tree; Tree('.').rglob('*.py')\n",
+            "RUNTIME_GENERATED_INDEX_STATICITY",
+        ),
+        (
+            "workline_plugins/example/handler.py",
+            "from ... import capability_catalog as catalog\n",
+            "LEGACY_CAPABILITY_ROUTING_IMPORT",
+        ),
+        (
+            "consumer.py",
+            "from src.app.runtime.capability_catalog.compat import lookup\n",
+            "LEGACY_CAPABILITY_ROUTING_IMPORT",
+        ),
+    ],
+)
+def test_runtime_extension_guardrail_closes_normalized_import_bypasses(
+    tmp_path: Path,
+    relative_path: str,
+    source: str,
+    rule_id: str,
+) -> None:
+    result = _run_fixture(tmp_path, relative_path, source)
+
+    assert result.returncode == 1
+    assert f"[{rule_id}]" in result.stderr
+    assert f"file: {tmp_path / relative_path}:1" in result.stderr
+
+
+def test_system_capability_does_not_treat_unrelated_commit_receiver_as_transaction(tmp_path: Path) -> None:
+    result = _run_fixture(
+        tmp_path,
+        "system_capabilities/example/handler.py",
+        "release.commit()\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_generated_index_does_not_treat_unrelated_walk_method_as_filesystem_scan(tmp_path: Path) -> None:
+    result = _run_fixture(
+        tmp_path,
+        "system_capabilities/generated_index.py",
+        "release.walk()\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "rule_id"),
+    [
+        ("workline_plugins/example/handler.py", "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY"),
+        ("system_capabilities/example/handler.py", "SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY"),
+        ("workline_plugins/generated_index.py", "RUNTIME_GENERATED_INDEX_STATICITY"),
+    ],
+)
+def test_syntax_error_uses_current_scanner_rule(tmp_path: Path, relative_path: str, rule_id: str) -> None:
+    result = _run_fixture(tmp_path, relative_path, "def broken(:\n")
+
+    assert result.returncode == 1
+    assert f"[{rule_id}]" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "workline_plugins/future_plugin/handler.py",
+        "system_capabilities/future_capability/handler.py",
+    ],
+)
+def test_future_active_extension_path_legacy_import_is_always_caught(tmp_path: Path, relative_path: str) -> None:
+    result = _run_fixture(
+        tmp_path,
+        relative_path,
+        "from src.app.runtime.capability_dispatcher import dispatch\n",
+    )
+
+    assert result.returncode == 1
+    assert "[LEGACY_CAPABILITY_ROUTING_IMPORT]" in result.stderr
+
+
 def test_runtime_extension_platform_has_no_unallowlisted_violation() -> None:
     result = subprocess.run(
         ["/bin/bash", str(GUARDRAIL), "--mode", "enforced", "--allowlist", str(ALLOWLIST)],

@@ -11,7 +11,6 @@ from pydantic import BaseModel, ConfigDict
 
 from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.contracts.external_contract_profile_catalog import ExternalContractProfileCatalog
-from src.app.runtime.runtime_capability_catalog import RUNTIME_CAPABILITY_PROVIDER_PROFILES
 from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
     SystemCapabilityDefinition,
@@ -123,15 +122,13 @@ def service(repo: FakeRepository) -> WorklinePluginBindingService:
 
 
 def test_default_binding_service_wires_runtime_provider_profiles_by_full_identity() -> None:
-    profile = next(iter(RUNTIME_CAPABILITY_PROVIDER_PROFILES.values()))
-
     resolved = workline_plugin_binding_service.profile_catalog.resolve(
-        provider_code=profile.provider_code,
-        contract_version=profile.contract_version,
-        environment=profile.environment,
+        provider_code="WMS",
+        contract_version="2026-07-06.material-flow",
+        environment="sandbox",
     )
 
-    assert resolved is profile
+    assert resolved.identity == "wms.2026-07-06.material-flow.sandbox"
 
 
 @pytest.mark.asyncio

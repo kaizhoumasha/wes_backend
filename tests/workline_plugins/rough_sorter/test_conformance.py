@@ -7,9 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from src.app.runtime.extension_identity import sha256_digest
-from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
-    _system_capability_intents,
-)
 from src.app.runtime.system_capabilities.gateway import GatewayQueryResult
 from src.app.runtime.system_capabilities.outcomes import Success
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
@@ -152,9 +149,6 @@ class TestRoughSorterConformance(PluginConformanceSuite):
             runtime=SimpleNamespace(),
         )
 
-        def convert_effects(decision):
-            return _system_capability_intents(conversion_context, tuple(decision.intents))
-
         return PluginConformanceFixture(
             definition=DEFINITION,
             dispatcher=WorklinePluginDispatcher(),
@@ -181,7 +175,7 @@ class TestRoughSorterConformance(PluginConformanceSuite):
             ),
             gateway_factory=_Gateway,
             replay=replay,
-            effect_converter=convert_effects,
+            effect_context=conversion_context,
         )
 
     @pytest.mark.asyncio

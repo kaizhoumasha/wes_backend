@@ -239,10 +239,10 @@ async def test_binding_profile_identity_must_match_capability_definition() -> No
 @pytest.mark.asyncio
 async def test_gateway_evidence_hash_includes_measurements_and_binding_snapshot() -> None:
     from src.app.runtime.capability_port_registry import CapabilityPortRegistry, RuntimeCapabilityContext
-    from src.app.runtime.runtime_capability_catalog import RUNTIME_CAPABILITY_PROVIDER_PROFILES
     from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
     from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.definition import DEFINITION
     from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort
+    from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
     result = [
         WmsInventoryItem(
@@ -255,7 +255,11 @@ async def test_gateway_evidence_hash_includes_measurements_and_binding_snapshot(
     ]
     registry = CapabilityPortRegistry()
     registry.register(WmsInventoryQueryPort, lambda: FakeInventoryPort(result))
-    profile = RUNTIME_CAPABILITY_PROVIDER_PROFILES["WMS"]
+    profile = workline_plugin_binding_service.profile_catalog.resolve(
+        provider_code="WMS",
+        contract_version="2026-07-06.material-flow",
+        environment="sandbox",
+    )
     gateway = SystemCapabilityGateway(
         attempt_id="attempt-measurement-hash",
         definitions={(DEFINITION.capability_key, DEFINITION.contract_version): DEFINITION},

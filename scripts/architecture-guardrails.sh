@@ -93,7 +93,7 @@ is_allowlisted() {
         return 0
     fi
     # 实现边界与迁移规则只能逐文件枚举，不能靠目录前缀覆盖未来违规。
-    if [[ "$rule" == "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" || "$rule" == "$RULE_INBOUND_NORMALIZER_OWNERSHIP" || "$rule" == "$RULE_RUNTIME_EXTENSION_GENERIC_ORCHESTRATION" || "$rule" == "$RULE_LEGACY_CAPABILITY_ROUTING_IMPORT" ]]; then
+    if [[ "$rule" == "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" || "$rule" == "$RULE_INBOUND_NORMALIZER_OWNERSHIP" || "$rule" == "$RULE_WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY" || "$rule" == "$RULE_SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY" || "$rule" == "$RULE_RUNTIME_GENERATED_INDEX_STATICITY" || "$rule" == "$RULE_RUNTIME_EXTENSION_GENERIC_ORCHESTRATION" || "$rule" == "$RULE_LEGACY_CAPABILITY_ROUTING_IMPORT" ]]; then
         return 1
     fi
     # 前缀匹配 (allowlist path 可为目录前缀)
@@ -317,48 +317,129 @@ def python_files(root: Path):
         yield from sorted(path for path in root.rglob("*.py") if "__pycache__" not in path.parts)
 
 
-def parse(path: Path):
+def parse(path: Path, rule_id: str, *, report_syntax: bool = True):
     try:
         return ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
     except SyntaxError as exc:
-        emit(
-            "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY",
-            path,
-            exc.lineno or 1,
-            "扩展平台文件无法解析，依赖边界无法确认",
-            "修复 Python 语法后重新运行门禁",
-        )
+        if report_syntax:
+            emit(
+                rule_id,
+                path,
+                exc.lineno or 1,
+                "扩展平台文件无法解析，依赖边界无法确认",
+                "修复 Python 语法后重新运行门禁",
+            )
         return None
 
 
-def imported_modules(node: ast.AST):
+def module_name_for_path(path: Path) -> str:
+    if FIXTURE_ROOT:
+        try:
+            relative = path.relative_to(Path(FIXTURE_ROOT))
+        except ValueError:
+            pass
+        else:
+            parts = list(relative.with_suffix("").parts)
+            if parts and parts[0] in {"workline_plugins", "system_capabilities", "orchestration"}:
+                parts = ["src", "app", "runtime", *parts]
+            else:
+                parts = ["src", "app", "runtime", *parts]
+            if parts[-1:] == ["__init__"]:
+                parts.pop()
+            return ".".join(parts)
+    parts = list(path.with_suffix("").parts)
+    if "src" in parts:
+        parts = parts[parts.index("src") :]
+    if parts[-1:] == ["__init__"]:
+        parts.pop()
+    return ".".join(parts)
+
+
+def import_base(path: Path, node: ast.ImportFrom) -> str:
+    if node.level == 0:
+        return node.module or ""
+    module_name = module_name_for_path(path)
+    package = module_name if path.name == "__init__.py" else module_name.rpartition(".")[0]
+    parts = package.split(".") if package else []
+    ascend = node.level - 1
+    if ascend > len(parts):
+        return node.module or ""
+    prefix = parts[: len(parts) - ascend]
+    if node.module:
+        prefix.extend(node.module.split("."))
+    return ".".join(prefix)
+
+
+def imported_modules(path: Path, node: ast.AST):
     if isinstance(node, ast.ImportFrom):
-        yield node.module or ""
+        base = import_base(path, node)
+        if base:
+            yield base
+        for alias in node.names:
+            if alias.name != "*":
+                yield ".".join(part for part in (base, alias.name) if part)
     elif isinstance(node, ast.Import):
         yield from (alias.name for alias in node.names)
 
 
+def import_aliases(path: Path, tree: ast.AST) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name.split(".", maxsplit=1)[0]
+                aliases[bound] = alias.name if alias.asname else bound
+        elif isinstance(node, ast.ImportFrom):
+            base = import_base(path, node)
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                aliases[alias.asname or alias.name] = ".".join(part for part in (base, alias.name) if part)
+    return aliases
+
+
+def dotted_name(node: ast.AST, aliases: dict[str, str]) -> str:
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        parent = dotted_name(node.value, aliases)
+        return ".".join(part for part in (parent, node.attr) if part)
+    if isinstance(node, ast.Call):
+        return dotted_name(node.func, aliases)
+    return ""
+
+
+def exact_or_descendant(module: str, target: str) -> bool:
+    return module == target or module.startswith(f"{target}.")
+
+
+def has_module_segment(module: str, segment: str) -> bool:
+    return segment in module.split(".")
+
+
 def scan_plugin(path: Path) -> None:
-    tree = parse(path)
+    tree = parse(path, "WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY")
     if tree is None:
         return
-    forbidden_module_tokens = (
+    forbidden_modules = (
         "sqlalchemy",
         "httpx",
         "requests",
         "celery",
-        ".repositories",
-        ".providers",
-        "wms_integration.models",
-        "wms_integration.services",
-        "device.models",
-        "device.services",
+        "src.app.wms_integration.models",
+        "src.app.wms_integration.services",
+        "src.app.device.models",
+        "src.app.device.services",
     )
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            modules = tuple(imported_modules(node))
+            modules = tuple(imported_modules(path, node))
             imported_names = tuple(alias.name for alias in node.names)
-            if any(token in module for token in forbidden_module_tokens for module in modules) or any(
+            if any(
+                exact_or_descendant(module, forbidden)
+                for module in modules
+                for forbidden in forbidden_modules
+            ) or any(has_module_segment(module, segment) for module in modules for segment in ("repositories", "providers")) or any(
                 name.endswith("Repository") for name in imported_names
             ):
                 emit(
@@ -379,14 +460,14 @@ def scan_plugin(path: Path) -> None:
 
 
 def scan_capability(path: Path) -> None:
-    tree = parse(path)
+    tree = parse(path, "SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY")
     if tree is None:
         return
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            modules = tuple(imported_modules(node))
+            modules = tuple(imported_modules(path, node))
             imported_names = tuple(alias.name for alias in node.names)
-            if any(".repositories" in module or module.startswith("sqlalchemy") for module in modules) or any(
+            if any(has_module_segment(module, "repositories") or exact_or_descendant(module, "sqlalchemy") for module in modules) or any(
                 name.endswith("Repository") for name in imported_names
             ):
                 emit(
@@ -397,6 +478,12 @@ def scan_capability(path: Path) -> None:
                     "通过 required Port 访问领域能力",
                 )
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in {"commit", "rollback"}:
+            receiver = dotted_name(node.func.value, {})
+            receiver_segments = set(receiver.lower().split("."))
+            if receiver_segments.isdisjoint(
+                {"db", "database", "session", "database_session", "transaction", "tx", "connection", "conn", "uow", "unit_of_work"}
+            ):
+                continue
             emit(
                 "SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY",
                 path,
@@ -407,12 +494,15 @@ def scan_capability(path: Path) -> None:
 
 
 def scan_generated_index(path: Path) -> None:
-    tree = parse(path)
+    tree = parse(path, "RUNTIME_GENERATED_INDEX_STATICITY")
     if tree is None:
         return
+    aliases = import_aliases(path, tree)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-            module == "importlib" or module == "pkgutil" for module in imported_modules(node)
+            exact_or_descendant(module, target)
+            for module in imported_modules(path, node)
+            for target in ("importlib", "pkgutil")
         ):
             emit(
                 "RUNTIME_GENERATED_INDEX_STATICITY",
@@ -422,8 +512,19 @@ def scan_generated_index(path: Path) -> None:
                 "索引只保留生成期写入的显式静态 import",
             )
         if isinstance(node, ast.Call):
-            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
-            if name in {"import_module", "__import__", "rglob", "glob", "walk", "iter_modules"}:
+            target = dotted_name(node.func, aliases)
+            dynamic_targets = {
+                "importlib.import_module",
+                "pkgutil.iter_modules",
+                "os.walk",
+                "__import__",
+            }
+            path_scan = any(
+                target == f"{path_type}.{method}"
+                for path_type in ("pathlib.Path", "Path")
+                for method in ("rglob", "glob")
+            )
+            if target in dynamic_targets or path_scan:
                 emit(
                     "RUNTIME_GENERATED_INDEX_STATICITY",
                     path,
@@ -434,7 +535,7 @@ def scan_generated_index(path: Path) -> None:
 
 
 def scan_generic_orchestration(path: Path) -> None:
-    tree = parse(path)
+    tree = parse(path, "RUNTIME_EXTENSION_GENERIC_ORCHESTRATION")
     if tree is None:
         return
     business_tokens = ("plugin_key", "event_type", ".action", "BUSINESS_TIMEOUT", "ROUGH_SORTER", "SMT_")
@@ -455,19 +556,25 @@ def scan_generic_orchestration(path: Path) -> None:
 
 def scan_legacy_imports(root: Path) -> None:
     for path in python_files(root):
-        tree = parse(path)
+        extension_owned = PLUGIN_ROOT in path.parents or CAPABILITY_ROOT in path.parents
+        if FIXTURE_ROOT:
+            try:
+                first_part = path.relative_to(Path(FIXTURE_ROOT)).parts[0]
+            except (ValueError, IndexError):
+                pass
+            else:
+                extension_owned = first_part in {"workline_plugins", "system_capabilities"}
+        tree = parse(
+            path,
+            "LEGACY_CAPABILITY_ROUTING_IMPORT",
+            report_syntax=not extension_owned,
+        )
         if tree is None:
             continue
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                module = node.module or ""
-                parent_member = module in {"src.app.runtime", ""} and any(
-                    f"src.app.runtime.{alias.name}" in LEGACY_MODULES for alias in node.names
-                )
-                relative_module = node.level > 0 and any(
-                    module == legacy.rsplit(".", maxsplit=1)[-1] for legacy in LEGACY_MODULES
-                )
-                if not (module in LEGACY_MODULES or parent_member or relative_module):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                modules = tuple(imported_modules(path, node))
+                if not any(exact_or_descendant(module, legacy) for module in modules for legacy in LEGACY_MODULES):
                     continue
                 emit(
                     "LEGACY_CAPABILITY_ROUTING_IMPORT",
@@ -476,16 +583,6 @@ def scan_legacy_imports(root: Path) -> None:
                     "production path import 旧 capability catalog/dispatcher",
                     "改用 generated Workline Plugin/System Capability index 与 dispatcher",
                 )
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    if alias.name in LEGACY_MODULES:
-                        emit(
-                            "LEGACY_CAPABILITY_ROUTING_IMPORT",
-                            path,
-                            node.lineno,
-                            "production path import 旧 capability catalog/dispatcher",
-                            "改用 generated Workline Plugin/System Capability index 与 dispatcher",
-                        )
 
 
 if not FIXTURE_ONLY:
@@ -703,11 +800,21 @@ validate_allowlist() {
         lineno=$((lineno + 1))
         [[ "$row" =~ ^# ]] && continue
         [[ -z "$row" ]] && continue
+        field_count="$(awk -F'|' '{print NF}' <<<"$row")"
+        if [[ "$field_count" -ne 6 ]]; then
+            echo "[ALLOWLIST] 行 $lineno: 必须严格为 6 列, 实际 $field_count 列" >&2
+            VIOLATIONS=$((VIOLATIONS + 1))
+            continue
+        fi
         IFS='|' read -r rule_id path reason expires_at legacy_entry_id drop_phase <<<"$row"
         if [[ -z "$rule_id" || -z "$path" ]]; then
             echo "[ALLOWLIST] 行 $lineno: 缺 rule_id 或 path" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
             continue
+        fi
+        if [[ -z "${reason//[[:space:]]/}" ]]; then
+            echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 reason" >&2
+            VIOLATIONS=$((VIOLATIONS + 1))
         fi
         if [[ -z "$legacy_entry_id" ]]; then
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 legacy_entry_id" >&2
@@ -717,11 +824,11 @@ validate_allowlist() {
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 缺 drop_phase" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
         fi
-        if [[ ( "$rule_id" == "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" || "$rule_id" == "$RULE_INBOUND_NORMALIZER_OWNERSHIP" || "$rule_id" == "$RULE_RUNTIME_EXTENSION_GENERIC_ORCHESTRATION" || "$rule_id" == "$RULE_LEGACY_CAPABILITY_ROUTING_IMPORT" ) && ( "$path" == */ || -d "$path" ) ]]; then
+        if [[ ( "$rule_id" == "$RULE_CAPABILITY_IMPLEMENTATION_IMPORT" || "$rule_id" == "$RULE_INBOUND_NORMALIZER_OWNERSHIP" || "$rule_id" == "$RULE_WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY" || "$rule_id" == "$RULE_SYSTEM_CAPABILITY_DEPENDENCY_BOUNDARY" || "$rule_id" == "$RULE_RUNTIME_GENERATED_INDEX_STATICITY" || "$rule_id" == "$RULE_RUNTIME_EXTENSION_GENERIC_ORCHESTRATION" || "$rule_id" == "$RULE_LEGACY_CAPABILITY_ROUTING_IMPORT" ) && "$path" != *.py ]]; then
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): $rule_id 必须逐文件枚举, 禁止目录前缀" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
         fi
-        if [[ "$path" == src/app/runtime/workline_plugins/* || "$path" == src/app/runtime/system_capabilities/* ]]; then
+        if [[ "$path" == "src/app/runtime/workline_plugins" || "$path" == src/app/runtime/workline_plugins/* || "$path" == "src/app/runtime/system_capabilities" || "$path" == src/app/runtime/system_capabilities/* ]]; then
             echo "[ALLOWLIST] 行 $lineno ($rule_id $path): 新扩展平台目录禁止 allowlist" >&2
             VIOLATIONS=$((VIOLATIONS + 1))
         fi

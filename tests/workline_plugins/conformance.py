@@ -15,6 +15,9 @@ from pydantic import BaseModel, ValidationError
 
 from src.app.runtime.extension_identity import canonical_json
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
+    _system_capability_intents,
+)
 from src.app.runtime.system_capabilities.definition import SystemCapabilityMode
 from src.app.runtime.system_capabilities.gateway import GatewayLimits, GatewayQueryResult
 from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
@@ -29,6 +32,7 @@ from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_IND
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from src.app.runtime.workline_plugins.attempt_coordinator import PluginAttemptContext
     from src.app.runtime.workline_plugins.definition import WorklinePluginDefinition
     from src.app.runtime.workline_plugins.dispatcher import PluginDispatchRequest, WorklinePluginDispatcher
 
@@ -56,7 +60,7 @@ class PluginConformanceFixture:
     query_request: PluginDispatchRequest
     gateway_factory: Callable[[], RecordingGateway]
     replay: Callable[[RecordingGateway], Awaitable[PluginDecision[Any]]]
-    effect_converter: Callable[[PluginDecision[Any]], tuple[RuntimeIntent, ...]]
+    effect_context: PluginAttemptContext
 
 
 def assert_system_capability_effect_contract(
@@ -92,8 +96,9 @@ class PluginConformanceSuite:
         fixture = plugin_conformance
         definition = fixture.definition
 
-        assert WORKLINE_PLUGIN_INDEX[(definition.plugin_key, definition.contract_version)] is definition
-        assert definition.identity == definition.identity
+        generated_definition = WORKLINE_PLUGIN_INDEX[(definition.plugin_key, definition.contract_version)]
+        assert generated_definition is definition
+        assert generated_definition.identity == definition.identity
         assert definition.identity.startswith(f"{definition.plugin_key}@{definition.contract_version}:")
         assert definition.routes
         assert tuple(definition.parsers) == definition.routes
@@ -128,7 +133,7 @@ class PluginConformanceSuite:
         assert result.outcome_code.strip()
         assert len(result.intents) <= MAX_PLUGIN_DECISION_INTENTS
         assert all(isinstance(intent, RuntimeIntent) for intent in result.intents)
-        converted_intents = fixture.effect_converter(result)
+        converted_intents = _system_capability_intents(fixture.effect_context, tuple(result.intents))
         assert converted_intents
         assert all(intent.kind is RuntimeIntentKind.SYSTEM_CAPABILITY for intent in converted_intents)
         assert_system_capability_effect_contract(

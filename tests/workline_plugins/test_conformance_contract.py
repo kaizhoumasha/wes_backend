@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +15,14 @@ from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot
 from src.app.runtime.workline_plugins.contracts import PluginDecision
 from src.app.runtime.workline_plugins.rough_sorter.definition import DEFINITION
 from src.app.runtime.workline_plugins.rough_sorter.state import RoughSorterState
-from tests.workline_plugins.conformance import assert_system_capability_effect_contract
+from tests.workline_plugins.conformance import PluginConformanceFixture, assert_system_capability_effect_contract
+
+
+def test_conformance_fixture_cannot_replace_production_effect_adapter() -> None:
+    fixture_fields = {field.name for field in fields(PluginConformanceFixture)}
+
+    assert "effect_converter" not in fixture_fields
+    assert "effect_context" in fixture_fields
 
 
 def _context() -> PluginAttemptContext:

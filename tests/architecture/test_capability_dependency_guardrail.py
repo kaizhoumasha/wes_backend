@@ -121,6 +121,39 @@ def test_new_extension_platform_path_allowlist_is_rejected(tmp_path):
     assert "新扩展平台目录禁止 allowlist" in result.stderr
 
 
+def test_new_extension_platform_root_without_trailing_slash_is_rejected(tmp_path):
+    for root in ("src/app/runtime/workline_plugins", "src/app/runtime/system_capabilities"):
+        rows = _allowlist_rows_with_matrix_drop_phase()
+        rows.append(f"WORKLINE_PLUGIN_DEPENDENCY_BOUNDARY|{root}|must fail|2026-08-15|legacy:test:must-fail|task10")
+
+        result = _run_guardrail_with_allowlist(tmp_path, rows)
+
+        assert result.returncode == 1
+        assert "新扩展平台目录禁止 allowlist" in result.stderr
+
+
+def test_allowlist_rejects_empty_reason(tmp_path):
+    rows = _allowlist_rows_with_matrix_drop_phase()
+    parts = rows[0].split("|")
+    parts[2] = ""
+    rows[0] = "|".join(parts)
+
+    result = _run_guardrail_with_allowlist(tmp_path, rows)
+
+    assert result.returncode == 1
+    assert "缺 reason" in result.stderr
+
+
+def test_allowlist_rejects_non_six_column_row(tmp_path):
+    rows = _allowlist_rows_with_matrix_drop_phase()
+    rows[0] = f"{rows[0]}|unexpected"
+
+    result = _run_guardrail_with_allowlist(tmp_path, rows)
+
+    assert result.returncode == 1
+    assert "必须严格为 6 列" in result.stderr
+
+
 def _active_allowlist_rows() -> list[str]:
     return [row for row in ALLOWLIST.read_text(encoding="utf-8").splitlines() if row and not row.startswith("#")]
 
