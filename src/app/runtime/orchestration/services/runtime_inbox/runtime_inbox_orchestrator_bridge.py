@@ -34,6 +34,7 @@ from src.app.runtime.orchestration.diagnostics import (
     ErrorCode,
     ErrorDomain,
 )
+from src.app.runtime.orchestration.effect_result import WriteBackDisposition
 from src.app.runtime.orchestration.repositories.material_unit_repository import (
     MaterialUnitRepository,
 )
@@ -54,6 +55,9 @@ from src.app.runtime.orchestration.runtime_intent import (
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_context_loader import (
     _canonical_workline_session_id,
 )
+from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_processor_service import (
+    LegacyUnboundSessionProcessor,
+)
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_service import (
     RuntimeInboxReplayNotAllowed,
     RuntimeInboxReplaySourceValidation,
@@ -67,12 +71,14 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validati
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
+    WriteBackState,
     _is_late_or_duplicate_command_result_for_session,
     _payload_for_inbox,
     _record_duplicate_entry_archive_timeline,
     _record_late_command_result_archive_timeline,
     _require_fenced_update,
     _session_status_value,
+    _session_write_snapshot,
 )
 from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError
 from src.app.runtime.system_capabilities.gateway import AttemptCloseReport, SystemCapabilityGateway
@@ -96,6 +102,7 @@ from src.app.runtime.workline_plugins.dispatcher import (
     PluginDispatchRequest,
     WorklinePluginDispatcher,
 )
+from src.app.runtime.workline_plugins.legacy_compatibility import is_supported_legacy_unbound_session
 from src.app.runtime.workline_plugins.registry import parse_workline_six_in_one
 from src.app.workline.constants import (
     INBOX_PROCESS_TIMEOUT_SECONDS,
@@ -557,6 +564,7 @@ class RuntimeInboxProcessorBridge:
         plugin_write_set_limits: PluginWriteSetLimits | None = None,
         material_unit_repository: MaterialUnitRepository | None = None,
         queue_gateway: TaskQueueGateway = task_queue_gateway,
+        processor_service: LegacyUnboundSessionProcessor | Any | None = None,
     ) -> None:
         self._validation_service = validation_service or RuntimeInboxValidationService()
         self._inbox_service = inbox_service or runtime_inbox_service
@@ -571,6 +579,9 @@ class RuntimeInboxProcessorBridge:
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
         self._material_unit_repository = material_unit_repository or default_material_unit_repository
         self._queue_gateway = queue_gateway
+        # 仅未绑定迁移会话进入兼容 processor；任何已绑定会话始终由
+        # GeneratedPluginAttemptRunner fail closed，禁止跨路径回落。
+        self._processor_service = processor_service or LegacyUnboundSessionProcessor()
 
     def _enqueue_outbox_dispatch(self) -> None:
         """提交后的即时触发失败不撤销业务事务，Beat 继续承担兜底。"""
@@ -1001,22 +1012,79 @@ class RuntimeInboxProcessorBridge:
                     devices_by_role=devices_by_role,
                 )
 
-            # Switch gate 已证明无活动未绑定 Workline；任何遗漏必须 fail closed。
-            error_msg = "PLUGIN_BINDING_REQUIRED"
-            _require_fenced_update(
-                await self.inbox_service.mark_failed(
-                    db,
+            # ========== Stage 2/3: migration-period unbound compatibility ==========
+            # 迁移前 Session 没有 immutable binding；在 drain/backfill 完成前继续走
+            # 隔离兼容 processor，避免把已接收业务事件终止为不可重试失败。
+            if not is_supported_legacy_unbound_session(session, workline):
+                _require_fenced_update(
+                    await self.inbox_service.mark_failed(
+                        db,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                        error_code="LEGACY_PLUGIN_IDENTITY_UNSUPPORTED",
+                        error_message="未绑定 Session 的插件 identity 不在迁移期兼容白名单",
+                        retryable=False,
+                    ),
+                    action="mark_failed",
                     inbox_id=inbox_pk,
-                    lease_token=processor_token,
-                    error_code=error_msg,
-                    error_message=error_msg,
-                    retryable=False,
-                ),
-                action="mark_failed",
-                inbox_id=inbox_pk,
+                )
+                await db.commit()
+                result["failed"] += 1
+                result["processed"] += 1
+                return result
+
+            write_state = WriteBackState()
+            session_snapshot = _session_write_snapshot(session)
+            write_callback = self._writeback_service.build_write_callback(
+                db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role=devices_by_role,
+                device=device,
+                command=command,
+                inbox_pk=inbox_pk,
+                session_snapshot=session_snapshot,
+                sse_workline_id=resolve_entity_id(workline),
+                sse_session_id=resolve_entity_id(session),
+                processor_token=processor_token,
+                state=write_state,
             )
-            await db.commit()
-            result["failed"] += 1
+            orch_result = await self._processor_service.process(
+                db,
+                session=session,
+                workline=workline,
+                inbox=inbox,
+                devices_by_role=devices_by_role,
+                services=services,
+                trace_id=getattr(inbox, "trace_id", None) or "",
+                write_callback=write_callback,
+            )
+            if orch_result.success:
+                if not write_state.write_effects_applied:
+                    raise RuntimeError("WRITE lock callback was not executed for successful legacy orchestrator result")
+                if write_state.disposition == WriteBackDisposition.RESOURCE_RETRY:
+                    result["resource_wait"] += 1
+                else:
+                    result["success"] += 1
+                if write_state.enqueue_outbox_dispatch:
+                    self._enqueue_outbox_dispatch()
+            else:
+                error_msg = orch_result.error or "Unknown legacy orchestrator error"
+                _require_fenced_update(
+                    await self.inbox_service.mark_failed(
+                        db,
+                        inbox_id=inbox_pk,
+                        lease_token=processor_token,
+                        error_code=orch_result.error_code or ErrorCode.PLUGIN_EXECUTION_FAILED.value,
+                        error_message=error_msg,
+                        retryable=True,
+                    ),
+                    action="mark_failed",
+                    inbox_id=inbox_pk,
+                )
+                await db.commit()
+                result["failed"] += 1
             result["processed"] += 1
 
         except SessionResolveError as e:

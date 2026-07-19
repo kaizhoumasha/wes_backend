@@ -362,6 +362,7 @@ def test_orchestrator_and_effect_applier_have_no_workline_specific_routing() -> 
         for path in routing_sources
     }
     assert {path: tokens for path, tokens in violations.items() if tokens} == {}
+    assert "runtime.workline_plugins" not in routing_sources[0].read_text(encoding="utf-8")
 
 
 def test_runtime_routing_has_one_generated_workline_plugin_dispatcher() -> None:

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from src.app.runtime.extension_identity import sha256_digest
+from src.app.runtime.orchestration.runtime_intent import BlockScope
 from src.app.runtime.system_capabilities.gateway import GatewayQueryResult
 from src.app.runtime.system_capabilities.outcomes import BusinessReject, ContractViolation, RetryableFailure, Success
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
@@ -281,7 +282,7 @@ async def test_approved_case_maps_to_typed_plugin_decision(case: dict[str, Any])
 
 
 @pytest.mark.asyncio
-async def test_capability_business_reject_reaches_plugin_as_typed_evidence_without_new_effect() -> None:
+async def test_capability_business_reject_enters_recoverable_material_hold() -> None:
     evidence = {
         "capability_key": "material_flow.material_unit_write",
         "contract_version": "v1",
@@ -317,9 +318,13 @@ async def test_capability_business_reject_reaches_plugin_as_typed_evidence_witho
     assert logical_input.effect_evidence.outcome.reason_code == "STALE_PRECONDITION"
     assert decision.next_state == state
     assert decision.reason_code == "STALE_PRECONDITION"
-    assert decision.intents == ()
-    assert decision.evidence_only is True
-    assert decision.zero_new_effect is True
+    assert decision.outcome_code == "HOLD"
+    assert len(decision.intents) == 1
+    assert decision.intents[0].kind.value == "BLOCK"
+    assert decision.intents[0].block_scope == BlockScope.MATERIAL
+    assert decision.intents[0].reason_code == "STALE_PRECONDITION"
+    assert decision.evidence_only is False
+    assert decision.zero_new_effect is False
 
 
 @pytest.mark.asyncio

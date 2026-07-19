@@ -144,14 +144,26 @@ def _normalize_internal_event(
     if not isinstance(data_value, dict):
         raise TypeError("INTERNAL_EVENT payload data must be an object")
 
-    if not non_empty_str(payload.get("event_id")):
+    event_id = non_empty_str(getattr(inbox, "event_id", None)) or non_empty_str(payload.get("event_id"))
+    causation_id = non_empty_str(getattr(inbox, "causation_id", None)) or non_empty_str(payload.get("causation_id"))
+    if event_id is None:
         raise ValueError("INTERNAL_EVENT payload missing event_id")
-    if not non_empty_str(payload.get("causation_id")):
+    if causation_id is None:
         raise ValueError("INTERNAL_EVENT payload missing causation_id")
     resolved_trace_id = _resolve_trace_id(inbox, payload, trace_id=trace_id)
     if not resolved_trace_id:
         raise ValueError("INTERNAL_EVENT payload missing trace_id")
 
+    # INTERNAL_EVENT 的规范元数据属于 RuntimeInbox 列；标准化输出补成完整
+    # envelope，避免业务 handler 误依赖生产者重复写入 payload。
+    normalized_payload = dict(payload)
+    normalized_payload.update(
+        {
+            "event_id": event_id,
+            "causation_id": causation_id,
+            "trace_id": resolved_trace_id,
+        }
+    )
     data = payload_dict(data_value)
     for field_name in ("handoff_demand_id", "handoff_source_item_id", "claim_attempt_no"):
         value = data.get(field_name)
@@ -170,7 +182,7 @@ def _normalize_internal_event(
         ),
         trace_id=resolved_trace_id,
         event_time=payload.get("timestamp"),
-        payload=payload,
+        payload=normalized_payload,
         data=data,
         attributes=payload_dict(payload.get("attributes")),
     )

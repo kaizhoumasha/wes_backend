@@ -45,7 +45,7 @@ def _describe_candidates(devices: Sequence[DeviceLike]) -> str:
 def _resolve_single_candidate(
     *,
     destination: Destination,
-    source_device: DeviceLike,
+    source_device: DeviceLike | None,
     candidates: Sequence[DeviceT],
 ) -> DeviceT:
     ordered_candidates = sorted(candidates, key=device_sort_key)
@@ -66,11 +66,14 @@ def _resolve_single_candidate(
 def resolve_destination_device(
     *,
     destination: Destination,
-    source_device: DeviceT,
+    source_device: DeviceT | None,
     devices: Sequence[DeviceT],
     route_roles: Mapping[str, str] | None = None,
 ) -> DeviceT:
     """Resolve a concrete material destination device from runtime topology."""
+    if source_device is None and destination.kind in {DestinationKind.CURRENT, DestinationKind.NEXT}:
+        raise ValueError("Cannot resolve command target without source device")
+
     if destination.kind in {DestinationKind.NG_ROUTE, DestinationKind.PASS_ROUTE}:
         route_key = destination.kind.value
         configured_role = None
@@ -86,9 +89,13 @@ def resolve_destination_device(
         )
 
     if destination.kind == DestinationKind.CURRENT:
+        if source_device is None:  # 防御性收窄；入口已对 CURRENT/NEXT fail closed。
+            raise ValueError("Cannot resolve command target without source device")
         return source_device
 
     if destination.kind == DestinationKind.NEXT:
+        if source_device is None:  # 防御性收窄；避免优化模式移除运行时保护。
+            raise ValueError("Cannot resolve command target without source device")
         source_id = optional_int_attr(source_device, "id")
         downstream_candidates = [
             device for device in devices if optional_int_attr(device, "upstream_device_id") == source_id
@@ -100,22 +107,23 @@ def resolve_destination_device(
         )
 
     if destination.kind == DestinationKind.ROLE:
-        if optional_str_attr(source_device, "device_role") == destination.value:
+        if source_device is not None and optional_str_attr(source_device, "device_role") == destination.value:
             return source_device
 
-        source_id = optional_int_attr(source_device, "id")
-        downstream_role_candidates = [
-            device
-            for device in devices
-            if optional_int_attr(device, "upstream_device_id") == source_id
-            and optional_str_attr(device, "device_role") == destination.value
-        ]
-        if downstream_role_candidates:
-            return _resolve_single_candidate(
-                destination=destination,
-                source_device=source_device,
-                candidates=downstream_role_candidates,
-            )
+        if source_device is not None:
+            source_id = optional_int_attr(source_device, "id")
+            downstream_role_candidates = [
+                device
+                for device in devices
+                if optional_int_attr(device, "upstream_device_id") == source_id
+                and optional_str_attr(device, "device_role") == destination.value
+            ]
+            if downstream_role_candidates:
+                return _resolve_single_candidate(
+                    destination=destination,
+                    source_device=source_device,
+                    candidates=downstream_role_candidates,
+                )
 
         role_candidates = [
             device for device in devices if optional_str_attr(device, "device_role") == destination.value

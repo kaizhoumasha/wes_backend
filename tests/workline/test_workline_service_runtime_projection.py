@@ -4,6 +4,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
+    SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+)
 from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.workline.models import WorkLineRunMode
 from src.app.workline.services.plugin_binding_service import (
@@ -262,24 +266,65 @@ async def test_activate_already_active_conflict_existing_projection_does_not_com
 async def test_legacy_plugin_activation_skips_empty_generated_index_transition_gate(monkeypatch):
     db = _Db()
     repository = _WorkLineRepositoryStub()
-    repository.current.plugin_key = "legacy-plugin"
-    repository.current.contract_version = "legacy-v1"
+    repository.current.plugin_key = SMT_SORTING_INBOUND_PLUGIN_KEY
+    repository.current.contract_version = SMT_SORTING_INBOUND_CONTRACT_VERSION
     projection = _RuntimeStatusProjectionSpy()
     service = WorkLineService(repository=repository, runtime_status_projection_service=projection)
     workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
     monkeypatch.setattr(
         workline_service_module,
         "device_repository",
-        SimpleNamespace(get_by_work_line_id=AsyncMock(return_value=[])),
+        SimpleNamespace(
+            get_by_work_line_id=AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        id=101,
+                        device_code="SMT-SOURCE-ARM-01",
+                        device_role="SORTING_SOURCE_ARM",
+                        role_index=1,
+                        upstream_device_id=None,
+                        capabilities_json={"supports_command_types": ["SORTING_SOURCE_PICK"]},
+                        host="127.0.0.1",
+                        port=8001,
+                        protocol="HTTP",
+                    )
+                ]
+            )
+        ),
     )
     monkeypatch.setattr(service, "_list_rack_positions", AsyncMock(return_value=[]))
-    monkeypatch.setattr(service, "_build_configuration_checks", lambda *_args, **_kwargs: [])
 
     result = await service.activate(db, repository.current.id, version=7)
 
     assert result.is_active is True
     assert repository.update_calls == [(repository.current.id, {"is_active": True, "version": 7})]
     assert repository.current.active_plugin_binding_id is None
+
+
+def test_legacy_plugin_activation_requires_source_pick_target_device() -> None:
+    repository = _WorkLineRepositoryStub()
+    repository.current.plugin_key = SMT_SORTING_INBOUND_PLUGIN_KEY
+    repository.current.contract_version = SMT_SORTING_INBOUND_CONTRACT_VERSION
+    service = WorkLineService(repository=repository)
+
+    checks = service._build_configuration_checks(repository.current, [], [])
+
+    assert any(
+        check.code == "ROLE_REQUIREMENT" and check.status == "FAIL" and check.severity == "BLOCKER" for check in checks
+    )
+
+
+def test_unknown_plugin_identity_remains_activation_blocker() -> None:
+    repository = _WorkLineRepositoryStub()
+    repository.current.plugin_key = "unknown-plugin"
+    repository.current.contract_version = "unknown-v1"
+    service = WorkLineService(repository=repository)
+
+    checks = service._build_configuration_checks(repository.current, [], [])
+
+    assert [(check.code, check.status, check.severity) for check in checks] == [
+        ("PLUGIN_CONFIGURED", "FAIL", "BLOCKER")
+    ]
 
 
 @pytest.mark.asyncio

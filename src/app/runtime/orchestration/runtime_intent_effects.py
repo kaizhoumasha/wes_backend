@@ -513,8 +513,6 @@ def _resolve_target_device(ctx: Any, intent: RuntimeIntent) -> Any:
         destination = Destination.role(intent.device_role)
 
     source_device = ctx["source_device"]
-    if source_device is None:
-        raise ValueError("Cannot resolve command target without source device")
     return resolve_destination_device(
         destination=destination,
         source_device=source_device,

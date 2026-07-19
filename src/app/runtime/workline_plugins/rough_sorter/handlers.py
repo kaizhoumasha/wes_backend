@@ -104,12 +104,15 @@ async def decide(  # noqa: PLR0911 - route/state/correlation fail-closed 分支�
     if replay:
         return _decision("REPLAY_ACCEPTED_NOOP", state, zero_new_effect=True, evidence_only=True)
     if isinstance(logical_input, CapabilityEffectResultInput):
-        return _decision(
-            "CAPABILITY_EFFECT_REJECTED",
+        return _hold(
             state,
+            scope=BlockScope.MATERIAL,
             reason_code=logical_input.effect_evidence.outcome.reason_code,
-            evidence_only=True,
-            zero_new_effect=True,
+            payload={
+                "capability_key": logical_input.effect_evidence.capability_key,
+                "operation_key": logical_input.effect_evidence.operation_key,
+                "outcome_code": logical_input.effect_evidence.outcome_code,
+            },
         )
     if isinstance(logical_input, ReplayRequestInput):
         if facts.replay_digest_matches is not False:

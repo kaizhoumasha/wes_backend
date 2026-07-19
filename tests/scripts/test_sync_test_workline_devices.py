@@ -451,7 +451,7 @@ async def test_sync_test_workline_devices_creates_smt_sorting_inbound_topology(d
 
 
 @pytest.mark.asyncio
-async def test_sync_test_workline_devices_smt_configuration_reports_unregistered_plugin(
+async def test_sync_test_workline_devices_smt_configuration_passes_legacy_compatibility_checks(
     db_session, monkeypatch
 ) -> None:
     monkeypatch.setenv("APP_ENV", "test")
@@ -463,14 +463,20 @@ async def test_sync_test_workline_devices_smt_configuration_reports_unregistered
     ).scalar_one()
     status = await WorkLineService().configuration_status(db_session, workline.id)  # type: ignore[arg-type]
 
-    failed_checks = [check for check in status.checks if check.status == "FAIL"]
-    assert status.can_activate is False
-    assert [(check.code, check.context) for check in failed_checks] == [
-        (
-            "PLUGIN_CONFIGURED",
-            {"plugin_key": SMT_SORTING_INBOUND_PLUGIN_KEY, "message": "不支持的工作线插件"},
-        )
-    ]
+    assert status.can_activate is True
+    assert all(check.status != "FAIL" for check in status.checks)
+    assert any(
+        check.code == "PLUGIN_CONFIGURED"
+        and check.status == "PASS"
+        and check.context
+        == {
+            "plugin_key": SMT_SORTING_INBOUND_PLUGIN_KEY,
+            "message": "迁移期 legacy 插件兼容模式",
+        }
+        for check in status.checks
+    )
+    assert any(check.code == "ROLE_REQUIREMENT" and check.status == "PASS" for check in status.checks)
+    assert any(check.code == "COMMAND_TARGET_CAPABILITY" and check.status == "PASS" for check in status.checks)
 
 
 @pytest.mark.asyncio

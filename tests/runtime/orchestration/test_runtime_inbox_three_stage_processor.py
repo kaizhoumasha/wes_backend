@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from hashlib import sha256
 from types import SimpleNamespace
 from typing import Any
@@ -19,6 +20,10 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import select
 
+from src.app.runtime.capabilities.material_flow.contracts.smt_sorting_inbound import (
+    SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    SMT_SORTING_INBOUND_PLUGIN_KEY,
+)
 from src.app.runtime.orchestration.effect_result import (
     RuntimeIntentEffectResult,
     WriteBackDisposition,
@@ -922,6 +927,152 @@ async def test_binding_never_falls_back_to_legacy_when_generated_request_is_inva
     assert "legacy-orchestrator" not in events
     assert "MUST_NOT_RECORDED_REPLAY" not in events
     assert "platform-fail-closed" in events
+
+
+@pytest.mark.asyncio
+async def test_unbound_migration_session_uses_legacy_processor_without_terminal_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    inbox = _make_inbox(inbox_id=92, payload_json={"event_type": "LEGACY_EVENT"})
+    inbox.event_type = "LEGACY_EVENT"
+    session = SimpleNamespace(
+        id=10,
+        plugin_binding_id=None,
+        plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+        contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+        status="RUNNING",
+        awaiting_device_command_code=None,
+    )
+    workline = SimpleNamespace(
+        id=20,
+        plugin_key=SMT_SORTING_INBOUND_PLUGIN_KEY,
+        contract_version=SMT_SORTING_INBOUND_CONTRACT_VERSION,
+    )
+
+    class Db:
+        async def commit(self) -> None:
+            events.append("commit")
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+    class Repository:
+        async def get_by_id(self, *_args: object) -> object:
+            return inbox
+
+    class InboxService:
+        async def mark_failed(self, *_args: object, **_kwargs: object) -> bool:
+            events.append("MUST_NOT_FAIL")
+            return True
+
+    class LegacyProcessor:
+        async def process(self, _db: object, **kwargs: object) -> OrchestratorResult:
+            events.append("legacy-processor")
+            result = OrchestratorResult(success=True, intents=[])
+            await kwargs["write_callback"](result)  # type: ignore[index,operator]
+            return result
+
+    class WriteBack:
+        def build_write_callback(self, db: object, **kwargs: object) -> object:
+            async def callback(_result: object) -> None:
+                state = kwargs["state"]
+                state.write_effects_applied = True
+                state.disposition = WriteBackDisposition.PROCESSED
+                await db.commit()  # type: ignore[attr-defined]
+
+            return callback
+
+    async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+        return session, workline, None, None, {}, object(), True
+
+    async def not_duplicate(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
+        load_related,
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._is_duplicate_entry_event",
+        not_duplicate,
+    )
+
+    result = await RuntimeInboxProcessorBridge(
+        inbox_repository=Repository(),  # type: ignore[arg-type]
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+        writeback_service=WriteBack(),  # type: ignore[arg-type]
+        processor_service=LegacyProcessor(),  # type: ignore[arg-type]
+    ).process_claimed(Db(), claim={"id": 92, "processor_token": "lease-legacy"})
+
+    assert result == {"processed": 1, "success": 1, "failed": 0, "skipped": 0, "resource_wait": 0}
+    assert "legacy-processor" in events
+    assert "MUST_NOT_FAIL" not in events
+
+
+@pytest.mark.asyncio
+async def test_unknown_unbound_plugin_identity_fails_closed_without_legacy_processing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    inbox = _make_inbox(inbox_id=93, payload_json={"event_type": "LEGACY_EVENT"})
+    inbox.kind = "DEVICE_EVENT"
+    inbox.event_type = "LEGACY_EVENT"
+    session = SimpleNamespace(
+        id=10,
+        plugin_binding_id=None,
+        plugin_key="UNKNOWN_PLUGIN",
+        contract_version="unknown.v1",
+        status="RUNNING",
+        awaiting_device_command_code=None,
+    )
+    workline = SimpleNamespace(id=20, plugin_key="UNKNOWN_PLUGIN", contract_version="unknown.v1")
+
+    class Db:
+        async def commit(self) -> None:
+            events.append("commit")
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+    class Repository:
+        async def get_by_id(self, *_args: object) -> object:
+            return inbox
+
+    class InboxService:
+        async def mark_failed(self, *_args: object, **kwargs: object) -> bool:
+            events.append(f"failed:{kwargs['error_code']}:{kwargs['retryable']}")
+            return True
+
+    class LegacyProcessor:
+        async def process(self, *_args: object, **_kwargs: object) -> OrchestratorResult:
+            events.append("MUST_NOT_PROCESS")
+            return OrchestratorResult(success=True, intents=[])
+
+    async def load_related(*_args: object, **_kwargs: object) -> tuple[object, ...]:
+        return session, workline, None, None, {}, object(), True
+
+    async def not_duplicate(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
+        load_related,
+    )
+    monkeypatch.setattr(
+        "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._is_duplicate_entry_event",
+        not_duplicate,
+    )
+
+    result = await RuntimeInboxProcessorBridge(
+        inbox_repository=Repository(),  # type: ignore[arg-type]
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+        processor_service=LegacyProcessor(),  # type: ignore[arg-type]
+    ).process_claimed(Db(), claim={"id": 93, "processor_token": "lease-unknown"})
+
+    assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+    assert "MUST_NOT_PROCESS" not in events
+    assert "failed:LEGACY_PLUGIN_IDENTITY_UNSUPPORTED:False" in events
 
 
 @pytest.mark.asyncio
