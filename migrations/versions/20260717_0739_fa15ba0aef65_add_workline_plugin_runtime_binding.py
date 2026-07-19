@@ -243,6 +243,84 @@ def upgrade() -> None:
             sa.Column(name, column, nullable=nullable, server_default=default),
             schema=RUNTIME_SCHEMA,
         )
+
+    # 旧表没有 effect identity 唯一约束。先输出有限、可定位的重复清单，避免建约束时只返回
+    # 匿名 UniqueViolation；历史 ledger 不能由迁移擅自删除或改写其幂等身份。
+    op.execute(
+        sa.text(
+            """
+            DO $$
+            DECLARE
+                duplicate_details text;
+                duplicate_group_count bigint;
+            BEGIN
+                SELECT COUNT(*)
+                INTO duplicate_group_count
+                FROM (
+                    SELECT 1
+                    FROM wes_runtime.runtime_intent_logs
+                    GROUP BY provider_code, idempotency_key
+                    HAVING COUNT(*) > 1
+                ) AS all_duplicate_identities;
+
+                SELECT string_agg(
+                    format(
+                        'provider=%s key=%s count=%s ids_sample=%s truncated=%s',
+                        duplicate_identity.provider_code,
+                        duplicate_identity.idempotency_key,
+                        duplicate_identity.duplicate_count,
+                        sampled_identity.intent_ids,
+                        CASE
+                            WHEN duplicate_identity.duplicate_count > cardinality(sampled_identity.intent_ids)
+                            THEN 'true'
+                            ELSE 'false'
+                        END
+                    ),
+                    E'\\n' ORDER BY duplicate_identity.provider_code, duplicate_identity.idempotency_key
+                )
+                INTO duplicate_details
+                FROM (
+                    SELECT
+                        provider_code,
+                        idempotency_key,
+                        COUNT(*) AS duplicate_count
+                    FROM wes_runtime.runtime_intent_logs
+                    GROUP BY provider_code, idempotency_key
+                    HAVING COUNT(*) > 1
+                    ORDER BY provider_code, idempotency_key
+                    LIMIT 20
+                ) AS duplicate_identity
+                CROSS JOIN LATERAL (
+                    SELECT array_agg(sampled_intent.id ORDER BY sampled_intent.id) AS intent_ids
+                    FROM (
+                        SELECT id
+                        FROM wes_runtime.runtime_intent_logs
+                        WHERE provider_code = duplicate_identity.provider_code
+                          AND idempotency_key = duplicate_identity.idempotency_key
+                        ORDER BY id
+                        LIMIT 10
+                    ) AS sampled_intent
+                ) AS sampled_identity;
+
+                IF duplicate_details IS NOT NULL THEN
+                    duplicate_details := format(
+                        'duplicate_group_count=%s groups_truncated=%s%s%s',
+                        duplicate_group_count,
+                        CASE WHEN duplicate_group_count > 20 THEN 'true' ELSE 'false' END,
+                        E'\\n',
+                        duplicate_details
+                    );
+                    RAISE EXCEPTION USING
+                        ERRCODE = '23505',
+                        MESSAGE = 'LEGACY_INTENT_DUPLICATE_IDENTITY: resolve duplicate runtime intent identities before retrying migration',
+                        DETAIL = duplicate_details,
+                        HINT = 'Preserve the authoritative ledger row and archive or repair duplicate rows according to the operations runbook.';
+                END IF;
+            END
+            $$;
+            """
+        )
+    )
     op.create_foreign_key(
         "fk_runtime_intent_logs_execution_work_item",
         "runtime_intent_logs",

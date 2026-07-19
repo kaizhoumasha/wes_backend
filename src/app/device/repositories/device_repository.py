@@ -49,6 +49,20 @@ class DeviceRepository(BaseRepository[Device]):
         )
         return result.scalar_one_or_none()
 
+    async def get_topology_identity(
+        self,
+        db: AsyncSession,
+        device_id: int,
+    ) -> tuple[int | None, bool] | None:
+        """绕过 ORM identity map 读取最新归属与删除态，供 advisory 锁后并发复核。"""
+
+        columns = cast("Any", Device).__table__.c
+        result = await db.execute(select(columns.work_line_id, columns.is_deleted).where(columns.id == device_id))
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return row.work_line_id, bool(row.is_deleted)
+
     async def get_runtime_effect_target_for_update(
         self,
         db: AsyncSession,

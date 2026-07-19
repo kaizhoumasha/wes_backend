@@ -28,10 +28,12 @@ class DeviceService(BaseService[Device, DeviceRepository]):
 
     TOPOLOGY_FIELDS = frozenset(
         {
+            "device_code",
             "work_line_id",
             "device_role",
             "role_index",
             "upstream_device_id",
+            "vendor_type",
             "capabilities_json",
             "sort_order",
         }
@@ -531,6 +533,62 @@ class DeviceService(BaseService[Device, DeviceRepository]):
 
         return updated_device
 
+    async def delete(
+        self,
+        db: "AsyncSession",
+        id: int,
+        cache: object | None = None,
+    ) -> bool | None:
+        """删除设备前参与 WorkLine 拓扑排他锁协议。"""
+
+        current = await self.repo.get_by_id(db, id)
+        if current is not None:
+            await self._reject_active_workline_topology_update(db, current, {"work_line_id": None})
+        return await super().delete(db, id, cache)
+
+    async def soft_delete(
+        self,
+        db: "AsyncSession",
+        id: int,
+        cache: object | None = None,
+    ) -> Device | None:
+        """显式软删除入口同样不得绕过活动 WorkLine 拓扑锁。"""
+
+        current = await self.repo.get_by_id(db, id)
+        if current is not None:
+            await self._reject_active_workline_topology_update(db, current, {"work_line_id": None})
+        return await super().soft_delete(db, id, cache)
+
+    async def permanent_delete(
+        self,
+        db: "AsyncSession",
+        id: int,
+        cache: object | None = None,
+    ) -> bool:
+        """永久删除前锁定设备所属 WorkLine，避免运行期拓扑幻读。"""
+
+        current = await self.repo.get_by_id(db, id, include_deleted=True)
+        if current is not None:
+            await self._reject_active_workline_topology_update(db, current, {"work_line_id": None})
+        return await super().permanent_delete(db, id, cache)
+
+    async def restore(
+        self,
+        db: "AsyncSession",
+        id: int,
+        cache: object | None = None,
+    ) -> Device | None:
+        """恢复设备会重新加入拓扑，必须在同一排他锁协议内校验。"""
+
+        current = await self.repo.get_by_id(db, id, include_deleted=True)
+        if current is not None:
+            await self._reject_active_workline_topology_update(
+                db,
+                current,
+                {"work_line_id": current.work_line_id},
+            )
+        return await super().restore(db, id, cache)
+
     def _reject_runtime_update(self, data: dict[str, Any]) -> None:
         """普通 CRUD 不允许修改运行态字段。"""
 
@@ -561,7 +619,27 @@ class DeviceService(BaseService[Device, DeviceRepository]):
         if isinstance(new_workline_id, int):
             affected_workline_ids.add(new_workline_id)
 
-        for workline_id in affected_workline_ids:
+        # 与 RuntimeInbox Stage 3 使用同一 workline advisory lock；先取 advisory、
+        # 再取 WorkLine 行锁，既覆盖并发插入，也保持 activation/deactivation 锁顺序一致。
+        for workline_id in sorted(affected_workline_ids):
+            await self.workline_repo.acquire_plugin_pin_exclusive(db, workline_id)
+
+        # 初读只用于确定 advisory lock；所有设备拓扑写都会先取得旧/新 WorkLine 锁，
+        # 因而锁后重新读取若已漂移，说明本次锁集不完整，必须安全重试而不能继续变更。
+        current_id = getattr(current, "id", None)
+        if isinstance(current_id, int):
+            expected_identity = (old_workline_id, bool(getattr(current, "is_deleted", False)))
+            authoritative_identity = await self.repo.get_topology_identity(db, current_id)
+            if authoritative_identity != expected_identity:
+                raise BusinessException(
+                    message="设备拓扑已并发变更，请重试",
+                    detail={
+                        "device_id": current_id,
+                        "expected_identity": expected_identity,
+                        "actual_identity": authoritative_identity,
+                    },
+                )
+        for workline_id in sorted(affected_workline_ids):
             workline = await self.workline_repo.get_for_update(db, workline_id)
             if bool(getattr(workline, "is_active", False)):
                 raise BusinessException(

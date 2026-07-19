@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from src.app.contracts.external_contract_profile import ExternalContractProfile
+from src.app.contracts.external_contract_profile import ExternalContractProfile, SecurityProfile
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -106,7 +106,43 @@ WMS_MATERIAL_FLOW_SANDBOX_PROFILE = ExternalContractProfile(
     fixture_set_required_cases=["success"],
 )
 
-external_contract_profile_catalog = ExternalContractProfileCatalog((WMS_MATERIAL_FLOW_SANDBOX_PROFILE,))
+WMS_MATERIAL_FLOW_STAGING_PROFILE = ExternalContractProfile.model_validate(
+    {**WMS_MATERIAL_FLOW_SANDBOX_PROFILE.model_dump(mode="python"), "environment": "staging"}
+)
+WMS_MATERIAL_FLOW_PRODUCTION_KID = "wms-material-flow-production"
+WMS_MATERIAL_FLOW_PRODUCTION_PROFILE = ExternalContractProfile(
+    provider_code="WMS",
+    contract_version="2026-07-06.material-flow",
+    environment="production",
+    runtime_capabilities_query=[
+        "WmsInventoryQueryPort.query_inventory",
+        "WmsMasterDataPort.get_material",
+    ],
+    runtime_capabilities_effect=[
+        "WmsFulfillmentPort.notify_pkg_binding",
+        "WmsInventoryTransactionPort.confirm_inbound",
+    ],
+    inbound_normalizers_event=["WMS_ROUGH_SORTER_INBOUND"],
+    inbound_normalizers_result=[],
+    timeout_retry_query_timeout_seconds=10,
+    timeout_retry_effect_timeout_seconds=30,
+    timeout_retry_retry_backoff_seconds=[1, 2, 4],
+    fixture_set_path="tests/fixtures/external_contracts/wms/default",
+    fixture_set_required_cases=["success"],
+    security_profile=SecurityProfile(
+        secret_kid=WMS_MATERIAL_FLOW_PRODUCTION_KID,
+        signature_algo="HS256",
+        placeholder_notes="生产 profile 仅持久化密钥标识；密钥材料由部署环境的 secret provider 解析",
+    ),
+)
+
+external_contract_profile_catalog = ExternalContractProfileCatalog(
+    (
+        WMS_MATERIAL_FLOW_SANDBOX_PROFILE,
+        WMS_MATERIAL_FLOW_STAGING_PROFILE,
+        WMS_MATERIAL_FLOW_PRODUCTION_PROFILE,
+    )
+)
 
 
 def list_external_contract_profiles() -> tuple[ExternalContractProfile, ...]:
@@ -114,7 +150,10 @@ def list_external_contract_profiles() -> tuple[ExternalContractProfile, ...]:
 
 
 __all__ = [
+    "WMS_MATERIAL_FLOW_PRODUCTION_KID",
+    "WMS_MATERIAL_FLOW_PRODUCTION_PROFILE",
     "WMS_MATERIAL_FLOW_SANDBOX_PROFILE",
+    "WMS_MATERIAL_FLOW_STAGING_PROFILE",
     "ExternalContractProfileCatalog",
     "external_contract_profile_catalog",
     "list_external_contract_profiles",

@@ -7,7 +7,12 @@ from src.app.runtime.system_capabilities.definition import (
 )
 from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort
 
-from .contracts import PROFILE_IDENTITY, RoughSorterInventoryAdmissionInput, RoughSorterInventoryAdmissionOutput
+from .contracts import (
+    PROFILE_FAMILY,
+    PROFILE_IDENTITY,
+    RoughSorterInventoryAdmissionInput,
+    RoughSorterInventoryAdmissionOutput,
+)
 from .handler import RoughSorterInventoryAdmissionHandler
 
 DEFINITION = SystemCapabilityDefinition(
@@ -18,7 +23,8 @@ DEFINITION = SystemCapabilityDefinition(
     output_model=RoughSorterInventoryAdmissionOutput,
     handler_factory=RoughSorterInventoryAdmissionHandler,
     required_ports=(WmsInventoryQueryPort,),
-    admission=PROFILE_IDENTITY,
+    # Definition 固定合同族，binding 再按部署环境固定具体 profile identity。
+    admission=PROFILE_FAMILY,
     timeout_seconds=10,
     completion_mode=EffectCompletionMode.LOCAL_TRANSACTIONAL,
     audit_policy="metadata",

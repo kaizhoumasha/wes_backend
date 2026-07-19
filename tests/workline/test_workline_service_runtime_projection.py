@@ -462,6 +462,29 @@ async def test_real_rough_sorter_activation_pins_profile_port_and_generated_inde
         profile_catalog=workline_plugin_binding_service.profile_catalog,
     )
     service = _prepare_platform_activation(monkeypatch, repository, binding_service)
+    devices = [
+        SimpleNamespace(
+            id=index,
+            device_code=device_code,
+            device_role=device_role,
+            work_line_id=repository.current.id,
+            vendor_type="ECS",
+        )
+        for index, (device_code, device_role) in enumerate(
+            (
+                ("RS-IN-01", "ROUGH_SORTER_INPUT_ARM"),
+                ("RS-CONVEYOR-01", "ROUGH_SORTER_CONVEYOR"),
+                ("RS-OUT-01", "ROUGH_SORTER_OUTPUT_ARM"),
+            ),
+            start=1,
+        )
+    ]
+    workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
+    monkeypatch.setattr(
+        workline_service_module,
+        "device_repository",
+        SimpleNamespace(get_by_work_line_id=AsyncMock(return_value=devices)),
+    )
 
     result = await service.activate(
         _Db(),
@@ -477,6 +500,11 @@ async def test_real_rough_sorter_activation_pins_profile_port_and_generated_inde
     assert result.active_plugin_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
     assert result.active_plugin_provider_requirements_json == ["WMS@2026-07-06.material-flow#sandbox"]
     assert result.active_plugin_port_requirements_json == ["WmsInventoryQueryPort.query_inventory"]
+    assert {entry["device_code"] for entry in binding_repository.created[0]["device_snapshot_json"]} == {
+        "RS-IN-01",
+        "RS-CONVEYOR-01",
+        "RS-OUT-01",
+    }
 
 
 def _prepare_platform_activation(monkeypatch, repository, binding_service):

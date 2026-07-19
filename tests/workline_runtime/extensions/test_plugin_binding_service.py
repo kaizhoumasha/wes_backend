@@ -89,6 +89,7 @@ def profile() -> ExternalContractProfile:
         timeout_retry_retry_backoff_seconds=[1],
         fixture_set_path="tests/fixtures/external_contracts/wms/v1",
         fixture_set_required_cases=["success"],
+        security_profile={"secret_kid": "test-production-kid", "signature_algo": "HS256"},
     )
 
 
@@ -131,6 +132,17 @@ def test_default_binding_service_wires_runtime_provider_profiles_by_full_identit
     assert resolved.identity == "wms.2026-07-06.material-flow.sandbox"
 
 
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_default_binding_service_exposes_rough_sorter_profile_for_deploy_environment(environment: str) -> None:
+    resolved = workline_plugin_binding_service.profile_catalog.resolve(
+        provider_code="WMS",
+        contract_version="2026-07-06.material-flow",
+        environment=environment,
+    )
+
+    assert resolved.identity == f"wms.2026-07-06.material-flow.{environment}"
+
+
 def _rough_sorter_config(*, provider_profile: str = "wms.2026-07-06.material-flow.sandbox") -> dict[str, object]:
     return {
         "device_roles": {
@@ -145,6 +157,32 @@ def _rough_sorter_config(*, provider_profile: str = "wms.2026-07-06.material-flo
         "owner_code": "OWNER-01",
         "provider_profile": provider_profile,
     }
+
+
+def _rough_sorter_devices() -> list[SimpleNamespace]:
+    return [
+        SimpleNamespace(
+            id=1,
+            device_code="RS-IN-01",
+            device_role="ROUGH_SORTER_INPUT_ARM",
+            work_line_id=17,
+            vendor_type="ECS",
+        ),
+        SimpleNamespace(
+            id=2,
+            device_code="RS-CONVEYOR-01",
+            device_role="ROUGH_SORTER_CONVEYOR",
+            work_line_id=17,
+            vendor_type="ECS",
+        ),
+        SimpleNamespace(
+            id=3,
+            device_code="RS-OUT-01",
+            device_role="ROUGH_SORTER_OUTPUT_ARM",
+            work_line_id=17,
+            vendor_type="ECS",
+        ),
+    ]
 
 
 def _real_rough_sorter_service(
@@ -177,13 +215,162 @@ async def test_real_rough_sorter_activation_snapshots_exact_profile_and_required
         actor="operator",
         reason="dev-cutover",
         environment="sandbox",
-        devices=[],
+        devices=_rough_sorter_devices(),
     )
 
     assert [profile["provider_code"] for profile in binding.provider_profile_snapshot_json] == ["WMS"]
     assert binding.provider_profile_snapshot_json[0]["contract_version"] == "2026-07-06.material-flow"
     assert binding.provider_profile_snapshot_json[0]["environment"] == "sandbox"
     assert binding.port_requirements_json == ["WmsInventoryQueryPort.query_inventory"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("environment", ["staging", "production"])
+async def test_real_rough_sorter_deploy_activation_pins_configured_role_devices(environment: str) -> None:
+    repo = FakeRepository()
+    workline = SimpleNamespace(
+        id=17,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        config=_rough_sorter_config(provider_profile=f"wms.2026-07-06.material-flow.{environment}"),
+        version=4,
+    )
+
+    binding = await _real_rough_sorter_service(repo).activate(
+        object(),
+        workline=workline,
+        expected_workline_version=4,
+        actor="operator",
+        reason=f"{environment}-cutover",
+        environment=environment,
+        devices=_rough_sorter_devices(),
+    )
+
+    assert binding.provider_profile_snapshot_json[0]["environment"] == environment
+    assert binding.device_snapshot_json == [
+        {
+            "device_id": 2,
+            "device_code": "RS-CONVEYOR-01",
+            "device_role": "ROUGH_SORTER_CONVEYOR",
+            "workline_id": 17,
+            "provider_code": "ECS",
+        },
+        {
+            "device_id": 1,
+            "device_code": "RS-IN-01",
+            "device_role": "ROUGH_SORTER_INPUT_ARM",
+            "workline_id": 17,
+            "provider_code": "ECS",
+        },
+        {
+            "device_id": 3,
+            "device_code": "RS-OUT-01",
+            "device_role": "ROUGH_SORTER_OUTPUT_ARM",
+            "workline_id": 17,
+            "provider_code": "ECS",
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "current_devices",
+    [
+        [
+            SimpleNamespace(
+                id=9,
+                device_code="RS-IN-REPLACEMENT",
+                device_role="ROUGH_SORTER_INPUT_ARM",
+                work_line_id=17,
+                vendor_type="ECS",
+            )
+        ],
+        [
+            SimpleNamespace(
+                id=1,
+                device_code="RS-IN-01",
+                device_role="ROUGH_SORTER_CONVEYOR",
+                work_line_id=17,
+                vendor_type="ECS",
+            )
+        ],
+        [
+            SimpleNamespace(
+                id=1,
+                device_code="RS-IN-RENAMED",
+                device_role="ROUGH_SORTER_INPUT_ARM",
+                work_line_id=17,
+                vendor_type="ECS",
+            )
+        ],
+        [
+            SimpleNamespace(
+                id=1,
+                device_code="RS-IN-01",
+                device_role="ROUGH_SORTER_INPUT_ARM",
+                work_line_id=17,
+                vendor_type="ECS",
+            ),
+            SimpleNamespace(
+                id=9,
+                device_code="RS-IN-02",
+                device_role="ROUGH_SORTER_INPUT_ARM",
+                work_line_id=17,
+                vendor_type="ECS",
+            ),
+        ],
+        [
+            SimpleNamespace(
+                id=1,
+                device_code="RS-IN-01",
+                device_role="ROUGH_SORTER_INPUT_ARM",
+                work_line_id=17,
+                vendor_type="OTHER",
+            )
+        ],
+    ],
+)
+def test_execution_rejects_device_topology_drift_from_immutable_binding(
+    current_devices: list[SimpleNamespace],
+) -> None:
+    binding = SimpleNamespace(
+        workline_id=17,
+        typed_config_json={"device_roles": {"input_arm": "ROUGH_SORTER_INPUT_ARM"}},
+        device_snapshot_json=[
+            {
+                "device_id": 1,
+                "device_code": "RS-IN-01",
+                "device_role": "ROUGH_SORTER_INPUT_ARM",
+                "workline_id": 17,
+                "provider_code": "ECS",
+            }
+        ],
+    )
+    validator = getattr(WorklinePluginBindingService, "assert_device_snapshot", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(PluginBindingAdmissionError, match=r"device (snapshot|role requirement)"):
+        validator(binding, devices_by_role={"ROUGH_SORTER_INPUT_ARM": current_devices})
+
+
+@pytest.mark.asyncio
+async def test_real_rough_sorter_activation_rejects_profile_from_other_environment() -> None:
+    workline = SimpleNamespace(
+        id=17,
+        plugin_key="rough_sorter",
+        contract_version="rough_sorter.v2",
+        config=_rough_sorter_config(provider_profile="wms.2026-07-06.material-flow.sandbox"),
+        version=4,
+    )
+
+    with pytest.raises(PluginBindingAdmissionError, match="environment"):
+        await _real_rough_sorter_service(FakeRepository()).activate(
+            object(),
+            workline=workline,
+            expected_workline_version=4,
+            actor="operator",
+            reason="production-cutover",
+            environment="production",
+            devices=_rough_sorter_devices(),
+        )
 
 
 @pytest.mark.asyncio

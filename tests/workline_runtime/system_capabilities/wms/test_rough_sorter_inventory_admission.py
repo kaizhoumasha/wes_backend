@@ -93,6 +93,29 @@ async def test_matching_material_and_batch_returns_typed_success() -> None:
 
 
 @pytest.mark.asyncio
+async def test_production_profile_from_binding_is_admitted() -> None:
+    port = FakeInventoryPort(
+        [
+            WmsInventoryItem(
+                material_code="MAT-001",
+                warehouse_code="WH-A",
+                storage_location_code="BIN-01",
+                quantity=Decimal("1"),
+                batch_no="LOT-2026-07",
+            )
+        ]
+    )
+    snapshot = admission_input().binding_snapshot.model_copy(
+        update={"profile_identity": "wms.2026-07-06.material-flow.production"}
+    )
+
+    outcome = await RoughSorterInventoryAdmissionHandler(port)(admission_input(binding_snapshot=snapshot))
+
+    assert isinstance(outcome, Success)
+    assert port.calls == [("MAT-001", "WH-A")]
+
+
+@pytest.mark.asyncio
 async def test_measurements_and_owner_are_validated_but_not_added_to_port_call() -> None:
     port = FakeInventoryPort([])
     request = admission_input(owner_code="OWNER-PRIVATE", diameter_mm="14.2", thickness_mm="0.8")
@@ -280,3 +303,47 @@ async def test_gateway_evidence_hash_includes_measurements_and_binding_snapshot(
     assert first.evidence is not None
     assert second.evidence is not None
     assert first.evidence.input_hash != second.evidence.input_hash
+
+
+@pytest.mark.asyncio
+async def test_gateway_admits_environment_specific_profile_from_definition_family() -> None:
+    from src.app.runtime.capability_port_registry import CapabilityPortRegistry, RuntimeCapabilityContext
+    from src.app.runtime.system_capabilities.gateway import SystemCapabilityGateway
+    from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.definition import DEFINITION
+    from src.app.wms_integration.ports.inventory_query import WmsInventoryQueryPort
+    from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
+
+    profile = workline_plugin_binding_service.profile_catalog.resolve(
+        provider_code="WMS",
+        contract_version="2026-07-06.material-flow",
+        environment="production",
+    )
+    registry = CapabilityPortRegistry()
+    registry.register(
+        WmsInventoryQueryPort,
+        lambda: FakeInventoryPort(
+            [
+                WmsInventoryItem(
+                    material_code="MAT-001",
+                    warehouse_code="WH-A",
+                    storage_location_code="BIN-01",
+                    quantity=1,
+                    batch_no="LOT-2026-07",
+                )
+            ]
+        ),
+    )
+    gateway = SystemCapabilityGateway(
+        attempt_id="attempt-production-profile",
+        definitions={(DEFINITION.capability_key, DEFINITION.contract_version): DEFINITION},
+        allowed_capabilities=frozenset({(DEFINITION.capability_key, DEFINITION.contract_version)}),
+        context=RuntimeCapabilityContext.from_provider_profile(registry, profile),
+        admission_profile=profile.identity,
+    )
+    request = admission_input(
+        binding_snapshot=admission_input().binding_snapshot.model_copy(update={"profile_identity": profile.identity})
+    )
+
+    result = await gateway.execute(DEFINITION.capability_key, DEFINITION.contract_version, request)
+
+    assert isinstance(result.outcome, Success)

@@ -630,10 +630,13 @@ class RuntimeInboxProcessorBridge:
         resolved_definitions = dict(definitions)
         if admission_profile is None:
             from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
-                PROFILE_IDENTITY,
+                PROFILE_FAMILY,
             )
+            from src.app.workline.services.plugin_binding_service import WorklinePluginBindingService
+            from src.core.conf import settings
 
-            admission_profile = PROFILE_IDENTITY
+            environment = WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV)
+            admission_profile = f"{PROFILE_FAMILY}.{environment}"
         gateway = SystemCapabilityGateway(
             attempt_id=processor_token,
             definitions=resolved_definitions,

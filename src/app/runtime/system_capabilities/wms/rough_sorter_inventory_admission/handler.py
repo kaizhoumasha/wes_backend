@@ -13,7 +13,11 @@ from src.app.wms_integration.ports.inventory_query import (
     WmsInventoryQueryUnavailable,
 )
 
-from .contracts import PROFILE_IDENTITY, RoughSorterInventoryAdmissionInput, RoughSorterInventoryAdmissionOutput
+from .contracts import (
+    SUPPORTED_PROFILE_IDENTITIES,
+    RoughSorterInventoryAdmissionInput,
+    RoughSorterInventoryAdmissionOutput,
+)
 
 SOURCE_VERSION = "2026-07-06.material-flow"
 
@@ -25,7 +29,7 @@ class RoughSorterInventoryAdmissionHandler:
         self._inventory_port = inventory_port
 
     async def __call__(self, request: RoughSorterInventoryAdmissionInput) -> object:
-        if request.binding_snapshot.profile_identity != PROFILE_IDENTITY:
+        if request.binding_snapshot.profile_identity not in SUPPORTED_PROFILE_IDENTITIES:
             return ContractViolation(error_code="WMS_PROFILE_MISMATCH", message="binding profile identity mismatch")
         try:
             inventory = await self._inventory_port.query_inventory(

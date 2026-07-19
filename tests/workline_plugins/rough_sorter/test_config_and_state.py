@@ -48,6 +48,29 @@ def test_config_locks_roles_locations_and_provider_profile() -> None:
     assert config.provider_profile == "wms.2026-07-06.material-flow.sandbox"
 
 
+@pytest.mark.parametrize(
+    "device_roles",
+    [
+        {
+            "input_arm": "ROUGH_SORTER_INPUT_ARM",
+            "conveyor": "ROUGH_SORTER_INPUT_ARM",
+            "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+        },
+        {
+            "input_arm": "ROUGH_SORTER_CONVEYOR",
+            "conveyor": "ROUGH_SORTER_INPUT_ARM",
+            "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+        },
+    ],
+)
+def test_config_rejects_duplicate_or_cross_wired_device_roles(device_roles: dict[str, str]) -> None:
+    payload = _config_payload()
+    payload["device_roles"] = device_roles
+
+    with pytest.raises(ValidationError, match="canonical"):
+        RoughSorterConfig.model_validate(payload)
+
+
 @pytest.mark.parametrize("field", ["warehouse_code", "owner_code", "provider_profile"])
 def test_config_rejects_missing_admission_fields(field: str) -> None:
     payload = _config_payload()

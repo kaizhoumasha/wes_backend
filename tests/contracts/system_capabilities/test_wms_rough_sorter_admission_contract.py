@@ -9,6 +9,7 @@ from decimal import Decimal
 import pytest
 
 from src.app.contracts.external_contract_profile_catalog import (
+    WMS_MATERIAL_FLOW_PRODUCTION_PROFILE,
     WMS_MATERIAL_FLOW_SANDBOX_PROFILE,
     ExternalContractProfileCatalog,
 )
@@ -17,6 +18,7 @@ from src.app.runtime.system_capabilities.definition import (
     EffectCompletionMode,
     SystemCapabilityMode,
 )
+from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import PROFILE_FAMILY
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.definition import DEFINITION
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.handler import (
     RoughSorterInventoryAdmissionHandler,
@@ -227,7 +229,8 @@ def test_definition_profile_and_handler_keep_the_capability_boundary_closed() ->
     assert DEFINITION.contract_version == "v1"
     assert DEFINITION.mode is SystemCapabilityMode.QUERY
     assert DEFINITION.required_ports == (WmsInventoryQueryPort,)
-    assert DEFINITION.admission == resolved.identity
+    assert DEFINITION.admission == PROFILE_FAMILY
+    assert resolved.identity == f"{DEFINITION.admission}.sandbox"
     assert DEFINITION.timeout_seconds == resolved.timeout_retry_query_timeout_seconds
     assert DEFINITION.completion_mode is EffectCompletionMode.LOCAL_TRANSACTIONAL
     assert "profile" not in {field.name for field in fields(DEFINITION)}
@@ -235,6 +238,27 @@ def test_definition_profile_and_handler_keep_the_capability_boundary_closed() ->
     source = inspect.getsource(RoughSorterInventoryAdmissionHandler)
     forbidden = ("wms_integration.services", "wms_integration.models", "http_client", "WmsTimeoutError")
     assert all(token not in source for token in forbidden)
+
+
+def test_production_profile_requires_explicit_authentication_material() -> None:
+    sandbox_data = WMS_MATERIAL_FLOW_SANDBOX_PROFILE.model_dump(mode="python")
+
+    with pytest.raises(ValueError, match=r"production.*security_profile"):
+        type(WMS_MATERIAL_FLOW_SANDBOX_PROFILE).model_validate({**sandbox_data, "environment": "production"})
+
+    assert WMS_MATERIAL_FLOW_PRODUCTION_PROFILE.security_profile.secret_kid == "wms-material-flow-production"
+    assert WMS_MATERIAL_FLOW_PRODUCTION_PROFILE.security_profile.signature_algo == "HS256"
+
+    outbound_only = type(WMS_MATERIAL_FLOW_SANDBOX_PROFILE).model_validate(
+        {
+            **sandbox_data,
+            "environment": "production",
+            "inbound_normalizers_event": [],
+            "inbound_normalizers_result": [],
+        }
+    )
+    assert outbound_only.environment == "production"
+    assert outbound_only.security_profile.secret_kid is None
 
 
 def test_profile_catalog_rejects_canonical_provider_identity_collision() -> None:

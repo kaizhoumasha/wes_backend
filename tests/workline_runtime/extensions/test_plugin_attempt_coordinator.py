@@ -82,6 +82,96 @@ async def test_writeback_rechecks_locked_binding_admission_before_persisting() -
     assert events == ["lock", "rollback"]
 
 
+@pytest.mark.asyncio
+async def test_writeback_reloads_device_snapshot_under_shared_workline_lock() -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+        RuntimeInboxWriteBackService,
+    )
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, AttemptWriteSet
+    from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
+
+    events: list[str] = []
+    snapshot = AttemptSnapshot(
+        processor_token="lease-1",
+        session_version=7,
+        plugin_state_version=3,
+        binding_id=17,
+    )
+    binding = SimpleNamespace(
+        id=17,
+        workline_id=8,
+        typed_config_json={"device_roles": {"input_arm": "ROUGH_SORTER_INPUT_ARM"}},
+        device_snapshot_json=[
+            {
+                "device_id": 1,
+                "device_code": "RS-IN-01",
+                "device_role": "ROUGH_SORTER_INPUT_ARM",
+                "workline_id": 8,
+                "provider_code": "ECS",
+            }
+        ],
+        is_enabled=True,
+        is_revoked=False,
+        environment="sandbox",
+        valid_from=None,
+        valid_until=None,
+    )
+
+    class Db:
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+    class Repository:
+        async def lock_authoritative(self, *_args: object, **_kwargs: object) -> object:
+            events.append("authoritative-lock")
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-1"),
+                session=SimpleNamespace(
+                    version=7,
+                    plugin_state_version=3,
+                    plugin_state_json={"phase": "READY"},
+                    plugin_binding_id=17,
+                ),
+                plugin_binding=binding,
+            )
+
+    class WorklineRepository:
+        async def acquire_plugin_pin_shared(self, _db: object, workline_id: int) -> None:
+            assert workline_id == 8
+            events.append("topology-shared-lock")
+
+    class DeviceRepository:
+        async def get_by_work_line_id(self, _db: object, workline_id: int) -> list[SimpleNamespace]:
+            assert workline_id == 8
+            events.append("topology-reload")
+            return [
+                SimpleNamespace(
+                    id=9,
+                    device_code="RS-IN-REPLACEMENT",
+                    device_role="ROUGH_SORTER_INPUT_ARM",
+                    work_line_id=8,
+                    vendor_type="ECS",
+                )
+            ]
+
+    with pytest.raises(PluginBindingAdmissionError, match="device snapshot"):
+        await RuntimeInboxWriteBackService(
+            plugin_attempt_repository=Repository(),
+            workline_repository=WorklineRepository(),
+            device_repository=DeviceRepository(),
+        ).commit_plugin_attempt(
+            Db(),
+            expected_snapshot=snapshot,
+            inbox_id=91,
+            session_id=41,
+            workline_id=8,
+            trace_id="trace-1",
+            write_set=AttemptWriteSet(evidence=(), next_state={"phase": "NEXT"}, intents=()),
+        )
+
+    assert events == ["authoritative-lock", "topology-shared-lock", "topology-reload", "rollback"]
+
+
 @pytest.mark.parametrize("invalid_number", [float("nan"), float("inf"), float("-inf")])
 def test_write_set_rejects_non_finite_numbers_and_preserves_fallback_state(invalid_number: float) -> None:
     from src.app.runtime.workline_plugins.attempt_coordinator import (

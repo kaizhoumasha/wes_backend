@@ -7,7 +7,11 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-PROFILE_IDENTITY = "wms.2026-07-06.material-flow.sandbox"
+PROFILE_FAMILY = "wms.2026-07-06.material-flow"
+PROFILE_IDENTITY = f"{PROFILE_FAMILY}.sandbox"
+SUPPORTED_PROFILE_IDENTITIES = frozenset(
+    f"{PROFILE_FAMILY}.{environment}" for environment in ("sandbox", "staging", "production")
+)
 StableString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 StableHash = Annotated[
     str,
@@ -57,7 +61,9 @@ class RoughSorterInventoryAdmissionOutput(BaseModel):
 
 
 __all__ = [
+    "PROFILE_FAMILY",
     "PROFILE_IDENTITY",
+    "SUPPORTED_PROFILE_IDENTITIES",
     "RoughSorterBindingSnapshot",
     "RoughSorterInventoryAdmissionInput",
     "RoughSorterInventoryAdmissionOutput",

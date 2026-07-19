@@ -26,6 +26,16 @@ if TYPE_CHECKING:
     from src.app.runtime.capability_port_registry import RuntimeCapabilityContext
 
 type CapabilityOutcome = Success[Any] | BusinessReject | RetryableFailure | ContractViolation
+_PROFILE_ENVIRONMENTS = frozenset({"sandbox", "staging", "production"})
+
+
+def _admission_matches_profile(admission: str, profile_identity: str) -> bool:
+    """允许 Definition 固定合同族，同时由 binding 固定环境 profile。"""
+
+    if admission == profile_identity:
+        return True
+    family, separator, environment = profile_identity.rpartition(".")
+    return bool(separator) and family == admission and environment in _PROFILE_ENVIRONMENTS
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +134,7 @@ class SystemCapabilityGateway:
             return self._violation("CAPABILITY_NOT_DECLARED", "capability is not declared for this plugin")
         if definition.mode is not SystemCapabilityMode.QUERY:
             return self._violation("CAPABILITY_MODE_INVALID", "gateway only executes QUERY capabilities")
-        if definition.admission != self._admission_profile:
+        if not _admission_matches_profile(definition.admission, self._admission_profile):
             return self._violation("CAPABILITY_ADMISSION_DENIED", "capability admission profile does not match")
         try:
             request = definition.input_model.model_validate(input_data)

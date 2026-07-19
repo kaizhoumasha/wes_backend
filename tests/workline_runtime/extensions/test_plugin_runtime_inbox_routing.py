@@ -787,7 +787,11 @@ async def test_plugin_dispatch_prefers_persisted_material_identity_over_conflict
     from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
     config = {
-        "device_roles": {"input_arm": "input_arm", "conveyor": "conveyor", "output_arm": "output_arm"},
+        "device_roles": {
+            "input_arm": "ROUGH_SORTER_INPUT_ARM",
+            "conveyor": "ROUGH_SORTER_CONVEYOR",
+            "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+        },
         "pipeline_input_location": "PIPELINE-IN",
         "pipeline_output_location": "PIPELINE-OUT",
         "ng_location": "NG-01",
@@ -876,7 +880,11 @@ async def test_plugin_dispatch_uses_root_pkg_code_before_persisted_six_in_one_pk
     from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
     config = {
-        "device_roles": {"input_arm": "input_arm", "conveyor": "conveyor", "output_arm": "output_arm"},
+        "device_roles": {
+            "input_arm": "ROUGH_SORTER_INPUT_ARM",
+            "conveyor": "ROUGH_SORTER_CONVEYOR",
+            "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+        },
         "pipeline_input_location": "PIPELINE-IN",
         "pipeline_output_location": "PIPELINE-OUT",
         "ng_location": "NG-01",
@@ -941,7 +949,11 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = {
-        "device_roles": {"input_arm": "input_arm", "conveyor": "conveyor", "output_arm": "output_arm"},
+        "device_roles": {
+            "input_arm": "ROUGH_SORTER_INPUT_ARM",
+            "conveyor": "ROUGH_SORTER_CONVEYOR",
+            "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+        },
         "pipeline_input_location": "PIPELINE-IN",
         "pipeline_output_location": "PIPELINE-OUT",
         "ng_location": "NG-01",
@@ -978,7 +990,7 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
         processor_token="lease-1",
         session_version=7,
         plugin_state_version=0,
-        device_fact_versions=(("input_arm", 31, 0),),
+        device_fact_versions=(("ROUGH_SORTER_INPUT_ARM", 31, 0),),
         binding_id=17,
         binding_version=4,
         plugin_config_hash=sha256_digest(config),
@@ -1034,7 +1046,11 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
     from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
     config = {
-        "device_roles": {"input_arm": "input_arm", "conveyor": "conveyor", "output_arm": "output_arm"},
+        "device_roles": {
+            "input_arm": "ROUGH_SORTER_INPUT_ARM",
+            "conveyor": "ROUGH_SORTER_CONVEYOR",
+            "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+        },
         "pipeline_input_location": "PIPELINE-IN",
         "pipeline_output_location": "PIPELINE-OUT",
         "ng_location": "NG-01",
@@ -1073,7 +1089,7 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
         processor_token="lease-1",
         session_version=7,
         plugin_state_version=2,
-        device_fact_versions=(("conveyor", 33, 6),),
+        device_fact_versions=(("ROUGH_SORTER_CONVEYOR", 33, 6),),
         binding_id=17,
         binding_version=4,
         plugin_config_hash=sha256_digest(config),

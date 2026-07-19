@@ -21,7 +21,7 @@ SYSTEM_CAPABILITY_IDENTITIES = (
     ("runtime.session_hold", "v1"),
     ("wms.rough_sorter_inventory_admission", "v1"),
 )
-SYSTEM_CAPABILITY_INDEX_DIGEST = "165471b480afa7161fbf7b392922adf10fbecd070a4c98bd26c4578b00bbc0b6"
+SYSTEM_CAPABILITY_INDEX_DIGEST = "ae43ff2a9aa70d28a57f1dc3a5d48a748fe6f11cf8018090dd633e20114e05f7"
 SYSTEM_CAPABILITY_INDEX = MappingProxyType(
     {
         ("device.device_command_write", "v1"): _DEFINITION_0,

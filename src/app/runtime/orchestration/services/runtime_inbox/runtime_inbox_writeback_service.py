@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from src.app.device.repositories import device_repository as default_device_repository
 from src.app.runtime.extension_identity import sha256_digest
 from src.app.runtime.orchestration.effect_result import (
     RuntimeIntentEffectResult,
@@ -36,6 +37,7 @@ from src.app.runtime.orchestration.repositories.plugin_attempt_repository import
 from src.app.runtime.orchestration.repositories.runtime_intent_log_repository import (
     runtime_intent_log_repository as default_runtime_intent_log_repository,
 )
+from src.app.runtime.orchestration.repository_wiring import workline_repository as default_workline_repository
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntentKind
 from src.app.runtime.orchestration.services.idempotency_guard import (
     ClaimResult,
@@ -374,6 +376,8 @@ class RuntimeInboxWriteBackService:
         idempotency_guard: Any | None = None,
         effect_applier: Any | None = None,
         plugin_write_set_limits: PluginWriteSetLimits | None = None,
+        workline_repository: Any | None = None,
+        device_repository: Any | None = None,
     ) -> None:
         self._write_back_service = write_back_service
         self._inbox_service = inbox_service
@@ -382,6 +386,8 @@ class RuntimeInboxWriteBackService:
         self._idempotency_guard = idempotency_guard or default_idempotency_guard
         self._effect_applier = effect_applier
         self._plugin_write_set_limits = plugin_write_set_limits or PluginWriteSetLimits()
+        self._workline_repository = workline_repository or default_workline_repository
+        self._device_repository = device_repository or default_device_repository
 
     @property
     def write_back_service(self) -> Any:
@@ -442,6 +448,21 @@ class RuntimeInboxWriteBackService:
                     environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
                     now=timezone.now_utc(),
                 )
+                typed_config = getattr(locked_binding, "typed_config_json", {}) or {}
+                if isinstance(typed_config, dict) and isinstance(typed_config.get("device_roles"), dict):
+                    # Stage 1 已释放事务；Stage 3 必须与设备拓扑 CRUD 共享锁，
+                    # 并在锁内重载完整集合，防止 QUERY 期间新增/换绑设备形成幻读。
+                    await self._workline_repository.acquire_plugin_pin_shared(db, workline_id)
+                    current_devices = await self._device_repository.get_by_work_line_id(db, workline_id)
+                    current_devices_by_role: dict[str, list[Any]] = {}
+                    for current_device in current_devices:
+                        role = getattr(current_device, "device_role", None)
+                        if isinstance(role, str) and role:
+                            current_devices_by_role.setdefault(role, []).append(current_device)
+                    workline_plugin_binding_service.assert_device_snapshot(
+                        locked_binding,
+                        devices_by_role=current_devices_by_role,
+                    )
         except Exception:
             await db.rollback()
             raise

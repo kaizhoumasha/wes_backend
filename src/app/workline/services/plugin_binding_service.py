@@ -126,25 +126,6 @@ class WorklinePluginBindingService:
         except ValidationError as exc:
             raise PluginBindingAdmissionError(f"config validation failed: {exc}") from exc
 
-        required_device_codes = typed_config.get("required_device_codes", ())
-        if not isinstance(required_device_codes, (list, tuple)):
-            raise PluginBindingAdmissionError("config required_device_codes 必须为集合")
-        device_by_code = {
-            str(device.device_code): device
-            for device in devices
-            if isinstance(getattr(device, "device_code", None), str)
-        }
-        missing_devices = sorted(set(required_device_codes).difference(device_by_code))
-        if missing_devices:
-            raise PluginBindingAdmissionError(f"device requirement 缺失: {missing_devices}")
-        device_snapshot = [
-            {
-                "device_code": code,
-                "provider_code": getattr(device_by_code[code], "provider_code", None),
-            }
-            for code in sorted(set(required_device_codes))
-        ]
-
         capability_definitions: list[SystemCapabilityDefinition] = []
         for capability_identity in definition.allowed_capabilities:
             capability = self.capability_index.get(capability_identity)
@@ -160,30 +141,37 @@ class WorklinePluginBindingService:
             configured_profile = typed_config.get("provider_profile")
             if not isinstance(configured_profile, str) or not configured_profile:
                 raise PluginBindingAdmissionError("provider_profile 缺失")
-            admission_identities = {capability.admission for capability in provider_contract_definitions}
-            if admission_identities != {configured_profile}:
-                raise PluginBindingAdmissionError("provider profile 与 capability admission 不一致")
             try:
-                for profile_identity in sorted(admission_identities):
-                    profile = self.profile_catalog.resolve_identity(profile_identity)
-                    if profile.environment != environment:
-                        raise LookupError("provider profile environment 与 binding environment 不一致")
-                    required_port_types = tuple(
-                        sorted(
-                            {
-                                port
-                                for capability in provider_contract_definitions
-                                if capability.admission == profile_identity
-                                for port in capability.required_ports
-                            },
-                            key=lambda port: (port.__module__, port.__qualname__),
-                        )
+                profile = self.profile_catalog.resolve_identity(configured_profile)
+                if profile.environment != environment:
+                    raise LookupError("provider profile environment 与 binding environment 不一致")
+                admission_family = profile.identity.rpartition(".")[0]
+                unsupported_admissions = sorted(
+                    {
+                        capability.admission
+                        for capability in provider_contract_definitions
+                        if capability.admission not in {profile.identity, admission_family}
+                    }
+                )
+                if unsupported_admissions:
+                    raise LookupError("provider profile 与 capability admission 不一致")
+                required_port_types = tuple(
+                    sorted(
+                        {port for capability in provider_contract_definitions for port in capability.required_ports},
+                        key=lambda port: (port.__module__, port.__qualname__),
                     )
-                    profiles.append(profile)
-                    port_requirements.extend(self.profile_catalog.assert_ports_declared(profile, required_port_types))
+                )
+                profiles.append(profile)
+                port_requirements.extend(self.profile_catalog.assert_ports_declared(profile, required_port_types))
             except LookupError as exc:
                 raise PluginBindingAdmissionError(f"provider/Port admission failed: {exc}") from exc
             port_requirements = sorted(set(port_requirements))
+
+        device_snapshot = self._build_device_snapshot(
+            typed_config=typed_config,
+            workline_id=workline_id,
+            devices=devices,
+        )
 
         binding_version = await self.repository.next_binding_version(
             db, workline_id, definition.plugin_key, definition.contract_version
@@ -211,6 +199,90 @@ class WorklinePluginBindingService:
                 "is_enabled": True,
             },
         )
+
+    @staticmethod
+    def _build_device_snapshot(
+        *,
+        typed_config: Mapping[str, Any],
+        workline_id: int,
+        devices: Sequence[Any],
+    ) -> list[dict[str, Any]]:
+        """从 typed config 的角色引用固定激活时设备身份；兼容旧通用 code 配置。"""
+
+        configured_roles = typed_config.get("device_roles")
+        if isinstance(configured_roles, dict):
+            required_roles = {role for role in configured_roles.values() if isinstance(role, str) and role.strip()}
+            devices_by_role = {
+                role: [device for device in devices if getattr(device, "device_role", None) == role]
+                for role in required_roles
+            }
+            missing_roles = sorted(role for role, matched in devices_by_role.items() if not matched)
+            if missing_roles:
+                raise PluginBindingAdmissionError(f"device role requirement 缺失: {missing_roles}")
+            snapshot: list[dict[str, Any]] = []
+            for role in sorted(required_roles):
+                for device in sorted(devices_by_role[role], key=lambda item: str(getattr(item, "device_code", ""))):
+                    device_id = getattr(device, "id", None)
+                    device_code = getattr(device, "device_code", None)
+                    assigned_workline_id = getattr(device, "work_line_id", None)
+                    if (
+                        not isinstance(device_id, int)
+                        or isinstance(device_id, bool)
+                        or not isinstance(device_code, str)
+                        or not device_code
+                        or assigned_workline_id != workline_id
+                    ):
+                        raise PluginBindingAdmissionError(f"device role identity 非法: {role}")
+                    snapshot.append(
+                        {
+                            "device_id": device_id,
+                            "device_code": device_code,
+                            "device_role": role,
+                            "workline_id": assigned_workline_id,
+                            "provider_code": getattr(device, "provider_code", None)
+                            or getattr(device, "vendor_type", None),
+                        }
+                    )
+            return snapshot
+
+        required_device_codes = typed_config.get("required_device_codes", ())
+        if not isinstance(required_device_codes, (list, tuple)):
+            raise PluginBindingAdmissionError("config required_device_codes 必须为集合")
+        device_by_code = {
+            str(device.device_code): device
+            for device in devices
+            if isinstance(getattr(device, "device_code", None), str)
+        }
+        missing_devices = sorted(set(required_device_codes).difference(device_by_code))
+        if missing_devices:
+            raise PluginBindingAdmissionError(f"device requirement 缺失: {missing_devices}")
+        return [
+            {
+                "device_code": code,
+                "provider_code": getattr(device_by_code[code], "provider_code", None),
+            }
+            for code in sorted(set(required_device_codes))
+        ]
+
+    @staticmethod
+    def assert_device_snapshot(binding: Any, *, devices_by_role: Mapping[str, Sequence[Any]]) -> None:
+        """运行时只允许 binding 激活时固定的角色设备集合。"""
+
+        typed_config = getattr(binding, "typed_config_json", {}) or {}
+        configured_roles = typed_config.get("device_roles") if isinstance(typed_config, dict) else None
+        if not isinstance(configured_roles, dict):
+            return
+        required_roles = {role for role in configured_roles.values() if isinstance(role, str) and role.strip()}
+        expected = list(getattr(binding, "device_snapshot_json", ()) or ())
+        if not expected:
+            raise PluginBindingAdmissionError("binding device snapshot 缺失")
+        actual = WorklinePluginBindingService._build_device_snapshot(
+            typed_config=typed_config,
+            workline_id=int(getattr(binding, "workline_id", 0)),
+            devices=[device for role in required_roles for device in devices_by_role.get(role, ())],
+        )
+        if expected != actual:
+            raise PluginBindingAdmissionError("binding device snapshot 与当前设备拓扑不一致")
 
     async def get_pinned(self, db: Any, *, binding_id: int) -> Any:
         """读取历史 pin 不过滤 is_enabled，保证 retry 能解析原始版本。"""

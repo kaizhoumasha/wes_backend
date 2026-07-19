@@ -631,6 +631,53 @@ async def test_runtime_inbox_retry_uses_historical_pin_despite_unapproved_draft_
 
 
 @pytest.mark.asyncio
+async def test_runtime_inbox_binding_admission_rejects_reassigned_role_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding = _binding()
+    binding.typed_config_json = {"device_roles": {"input_arm": "ROUGH_SORTER_INPUT_ARM"}}
+    binding.device_snapshot_json = [
+        {
+            "device_id": 1,
+            "device_code": "RS-IN-01",
+            "device_role": "ROUGH_SORTER_INPUT_ARM",
+            "workline_id": 7,
+            "provider_code": "ECS",
+        }
+    ]
+    admission_service = WorklinePluginBindingService(
+        repository=BindingRepository(binding),
+        plugin_index={("platform-test", "v1"): DEFINITION},
+        capability_index={},
+        plugin_index_digest="b" * 64,
+    )
+    monkeypatch.setattr(context_loader, "workline_plugin_binding_service", admission_service, raising=False)
+    session = SimpleNamespace(
+        plugin_key="platform-test",
+        contract_version="v1",
+        plugin_binding_id=8,
+        plugin_binding_version=2,
+        plugin_config_hash="a" * 64,
+        plugin_index_digest="b" * 64,
+    )
+    replacement = SimpleNamespace(
+        id=9,
+        device_code="RS-IN-REPLACEMENT",
+        device_role="ROUGH_SORTER_INPUT_ARM",
+        work_line_id=7,
+        vendor_type="ECS",
+    )
+
+    with pytest.raises(PluginBindingAdmissionError, match="device snapshot"):
+        await context_loader._assert_platform_plugin_binding_admitted(
+            object(),
+            workline=_workline(),
+            session=session,
+            devices_by_role={"ROUGH_SORTER_INPUT_ARM": [replacement]},
+        )
+
+
+@pytest.mark.asyncio
 async def test_repository_only_persists_service_constructed_runtime_aggregate() -> None:
     execution_session = ExecutionSession(workline_id=7, plugin_key="platform-test", manifest_version="v1")
     correlation = ExecutionCorrelation(correlation_id="correlation-1", trace_id="trace-1")

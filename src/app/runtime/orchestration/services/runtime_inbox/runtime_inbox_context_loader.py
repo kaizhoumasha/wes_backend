@@ -184,7 +184,13 @@ async def _assert_workline_accepting_runtime_event(
     return True
 
 
-async def _assert_platform_plugin_binding_admitted(db: Any, *, workline: Any | None, session: Any | None) -> None:
+async def _assert_platform_plugin_binding_admitted(
+    db: Any,
+    *,
+    workline: Any | None,
+    session: Any | None,
+    devices_by_role: dict[str, list[Any]],
+) -> None:
     """每次 inbox/retry 都重查历史 pin 的撤权、有效期、环境与 kill switch。"""
 
     if workline is None or session is None:
@@ -205,6 +211,7 @@ async def _assert_platform_plugin_binding_admitted(db: Any, *, workline: Any | N
         environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
         now=timezone.now_utc(),
     )
+    workline_plugin_binding_service.assert_device_snapshot(binding, devices_by_role=devices_by_role)
 
 
 async def load_related_entities(
@@ -263,7 +270,12 @@ async def load_related_entities(
             inbox.workline_session_id = resolved_session_id
     if device is None and session is not None:
         device = _resolve_effect_source_device(inbox, session, devices_by_role)
-    await _assert_platform_plugin_binding_admitted(db, workline=workline, session=session)
+    await _assert_platform_plugin_binding_admitted(
+        db,
+        workline=workline,
+        session=session,
+        devices_by_role=devices_by_role,
+    )
     return {
         "session": session,
         "workline": workline,

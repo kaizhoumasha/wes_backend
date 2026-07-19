@@ -109,6 +109,9 @@ def _profile(
         timeout_retry_retry_backoff_seconds=[1, 2],
         fixture_set_path="tests/fixtures/secret",
         fixture_set_required_cases=["success"],
+        security_profile=(
+            {"secret_kid": "test-production-kid", "signature_algo": "HS256"} if environment == "production" else {}
+        ),
     )
 
 
