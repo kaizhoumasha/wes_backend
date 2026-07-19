@@ -9,6 +9,7 @@ from src.app.workline.models import (
     PlaneSceneView,
     PlaneSnapshot,
     WorkLine,
+    WorkLineActivationRequest,
     WorkLineConfigurationStatus,
     WorkLineCreate,
     WorkLinePluginManifestSummary,
@@ -144,13 +145,21 @@ async def get_workline_configuration_status(
 async def activate_workline(
     db: AsyncSessionDep,
     cache: CacheDep,
+    current_user_id: Annotated[int, Depends(require_auth)],
     id: int = Path(...),
-    payload: WorkLineStateTransitionRequest = Body(...),
+    payload: WorkLineActivationRequest = Body(...),
 ) -> ResponseSchemaModel[WorkLineResponse]:
     """通过配置预检后启用 WorkLine。"""
 
     try:
-        updated = await workline_service.activate(db, id, version=payload.version, cache=cache)
+        updated = await workline_service.activate(
+            db,
+            id,
+            version=payload.version,
+            cache=cache,
+            actor=str(current_user_id),
+            reason=payload.reason or f"人工启用作业线（用户 {current_user_id}）",
+        )
     except ValueError as exc:
         return cast("ResponseSchemaModel[WorkLineResponse]", _workline_value_error_response(exc))
 

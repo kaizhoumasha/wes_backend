@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import FastAPI
 
-from src.app.workline.models import WorkLinePluginManifestSummary, WorkLinePluginOption, WorkLineStateTransitionRequest
+from src.app.workline.models import (
+    WorkLineActivationRequest,
+    WorkLinePluginManifestSummary,
+    WorkLinePluginOption,
+    WorkLineStateTransitionRequest,
+)
 from src.app.workline.v1 import workline as workline_api
 from src.core.response import ClientErrorCode, ResourceErrorCode
 
@@ -102,6 +107,17 @@ def _manifest_summary(plugin_key: str = "demo_plugin") -> WorkLinePluginManifest
             }
         ],
     )
+
+
+def test_activation_reason_is_not_exposed_by_deactivation_request_contract() -> None:
+    activation_request_model = getattr(workline_api, "WorkLineActivationRequest", None)
+
+    assert activation_request_model is not None
+    activation = activation_request_model(version=7, reason="  change-window-42  ")
+    deactivation = WorkLineStateTransitionRequest(version=7)
+
+    assert activation.reason == "change-window-42"
+    assert not hasattr(deactivation, "reason")
 
 
 def _workline_openapi_component(component_name: str) -> dict[str, object]:
@@ -415,16 +431,52 @@ async def test_configuration_status_route_converts_missing_workline_to_not_found
 async def test_activate_route_converts_missing_workline_to_not_found(monkeypatch) -> None:
     service = SimpleNamespace(activate=AsyncMock(side_effect=ValueError("WorkLine 不存在: 404")))
     monkeypatch.setattr(workline_api, "workline_service", service)
+    db = object()
+    cache = object()
 
     response = await workline_api.activate_workline(
-        object(),
-        object(),
+        db,
+        cache,
+        current_user_id=7,
         id=404,
-        payload=WorkLineStateTransitionRequest(version=0),
+        payload=WorkLineActivationRequest(version=0),
     )
 
     assert response["code"] == ResourceErrorCode.NOT_FOUND.code
     assert "不存在" in response["message"]
+    service.activate.assert_awaited_once_with(
+        db,
+        404,
+        version=0,
+        cache=cache,
+        actor="7",
+        reason="人工启用作业线（用户 7）",
+    )
+
+
+@pytest.mark.asyncio
+async def test_activate_route_passes_authenticated_actor_and_requested_reason(monkeypatch) -> None:
+    service = SimpleNamespace(activate=AsyncMock(side_effect=ValueError("WorkLine 不存在: 404")))
+    monkeypatch.setattr(workline_api, "workline_service", service)
+    db = object()
+    cache = object()
+
+    await workline_api.activate_workline(
+        db,
+        cache,
+        current_user_id=99,
+        id=404,
+        payload=WorkLineActivationRequest(version=7, reason="  change-window-42  "),
+    )
+
+    service.activate.assert_awaited_once_with(
+        db,
+        404,
+        version=7,
+        cache=cache,
+        actor="99",
+        reason="change-window-42",
+    )
 
 
 @pytest.mark.asyncio

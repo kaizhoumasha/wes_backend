@@ -82,7 +82,7 @@ _ACTIVE_CONFIGURATION_FIELDS = frozenset(
         "line_type",
     }
 )
-_ACTIVE_IDENTITY_FIELDS = frozenset({"line_code", "line_type"})
+_ACTIVE_IMMEDIATE_RUNTIME_FIELDS = frozenset({"line_code", "line_type", "run_mode", "runtime_config_json"})
 
 
 def _string_list_from_iterable(value: object) -> list[str]:
@@ -371,7 +371,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         if current is None:
             raise ValueError(f"WorkLine 不存在: {id}")
 
-        self._reject_active_configuration_update(current, data)
+        await self._reject_active_configuration_update(db, current, data)
         plugin_key = self._resolve_plugin_key(data, current)
         contract_version = data.get("contract_version", getattr(current, "contract_version", None))
         self._validate_plugin_key(plugin_key, contract_version)
@@ -609,14 +609,49 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
                 detail={"fields": ["is_active"]},
             )
 
-    @staticmethod
-    def _reject_active_configuration_update(workline: WorkLine, data: dict[str, Any]) -> None:
+    async def _reject_active_configuration_update(
+        self,
+        db: AsyncSession,
+        workline: WorkLine,
+        data: dict[str, Any],
+    ) -> None:
         if not bool(getattr(workline, "is_active", False)):
             return
-        submitted_fields = sorted(_ACTIVE_IDENTITY_FIELDS.intersection(data))
+        submitted_fields = set(_ACTIVE_IMMEDIATE_RUNTIME_FIELDS.intersection(data))
+        active_binding_id = getattr(workline, "active_plugin_binding_id", None)
+        binding = None
+        if "config" in data and isinstance(active_binding_id, int):
+            try:
+                binding = await self.plugin_binding_service.get_pinned(db, binding_id=active_binding_id)
+            except PluginBindingAdmissionError:
+                binding = None
+        expected_binding_identity = (
+            getattr(workline, "id", None),
+            getattr(workline, "plugin_key", None),
+            getattr(workline, "contract_version", None),
+            active_binding_id,
+            getattr(workline, "active_plugin_binding_version", None),
+            getattr(workline, "active_plugin_config_hash", None),
+            getattr(workline, "active_plugin_index_digest", None),
+        )
+        actual_binding_identity = (
+            getattr(binding, "workline_id", None),
+            getattr(binding, "plugin_key", None),
+            getattr(binding, "contract_version", None),
+            getattr(binding, "id", None),
+            getattr(binding, "binding_version", None),
+            getattr(binding, "typed_config_hash", None),
+            getattr(binding, "generated_index_digest", None),
+        )
+        has_active_binding_snapshot = binding is not None and actual_binding_identity == expected_binding_identity
+        if "config" in data and not has_active_binding_snapshot:
+            # 平台插件从 immutable binding 读取已批准 config，活动态可编辑下一版草稿；
+            # legacy 工作线没有 binding 快照，必须阻止草稿直接成为实时配置。
+            submitted_fields.add("config")
+        submitted_fields = sorted(submitted_fields)
         if submitted_fields:
             raise BusinessException(
-                message="已启用作业线下不能修改作业线身份字段，请先停用作业线",
+                message="已启用作业线下不能修改实时运行字段，请先停用作业线",
                 detail={
                     "workline_id": getattr(workline, "id", None),
                     "fields": submitted_fields,

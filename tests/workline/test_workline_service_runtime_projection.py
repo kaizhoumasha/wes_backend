@@ -515,11 +515,32 @@ async def test_active_workline_allows_draft_config_edit_without_changing_active_
     db = _Db()
     repository = _WorkLineRepositoryStub()
     repository.current.is_active = True
+    repository.current.plugin_key = "rough_sorter"
+    repository.current.contract_version = "rough_sorter.v2"
     repository.current.active_plugin_binding_id = 8
     repository.current.active_plugin_binding_version = 1
     repository.current.active_plugin_config_hash = "a" * 64
     repository.current.active_plugin_index_digest = "b" * 64
-    service = WorkLineService(repository=repository, runtime_status_projection_service=_RuntimeStatusProjectionSpy())
+    binding = SimpleNamespace(
+        id=8,
+        workline_id=repository.current.id,
+        plugin_key=repository.current.plugin_key,
+        contract_version=repository.current.contract_version,
+        binding_version=1,
+        typed_config_hash="a" * 64,
+        generated_index_digest="b" * 64,
+    )
+
+    class BindingService:
+        async def get_pinned(self, _db: object, *, binding_id: int) -> object:
+            assert binding_id == 8
+            return binding
+
+    service = WorkLineService(
+        repository=repository,
+        runtime_status_projection_service=_RuntimeStatusProjectionSpy(),
+        plugin_binding_service=BindingService(),  # type: ignore[arg-type]
+    )
     original_pin = (
         repository.current.active_plugin_binding_id,
         repository.current.active_plugin_binding_version,
@@ -536,3 +557,90 @@ async def test_active_workline_allows_draft_config_edit_without_changing_active_
         result.active_plugin_config_hash,
         result.active_plugin_index_digest,
     ) == original_pin
+
+
+@pytest.mark.asyncio
+async def test_active_workline_rejects_config_draft_when_binding_belongs_to_another_workline() -> None:
+    repository = _WorkLineRepositoryStub()
+    repository.current.is_active = True
+    repository.current.plugin_key = "rough_sorter"
+    repository.current.contract_version = "rough_sorter.v2"
+    repository.current.active_plugin_binding_id = 8
+    repository.current.active_plugin_binding_version = 1
+    repository.current.active_plugin_config_hash = "a" * 64
+    repository.current.active_plugin_index_digest = "b" * 64
+
+    class BindingService:
+        async def get_pinned(self, _db: object, *, binding_id: int) -> object:
+            assert binding_id == 8
+            return SimpleNamespace(
+                id=8,
+                workline_id=repository.current.id + 1,
+                plugin_key="rough_sorter",
+                contract_version="rough_sorter.v2",
+                binding_version=1,
+                typed_config_hash="a" * 64,
+                generated_index_digest="b" * 64,
+            )
+
+    service = WorkLineService(
+        repository=repository,
+        runtime_status_projection_service=_RuntimeStatusProjectionSpy(),
+        plugin_binding_service=BindingService(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(BusinessException) as exc_info:
+        await service.update(_Db(), repository.current.id, {"config": {"draft": 2}, "version": 7})
+
+    assert exc_info.value.detail == {
+        "workline_id": repository.current.id,
+        "fields": ["config"],
+    }
+    assert repository.update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_active_legacy_workline_rejects_config_update_without_binding_snapshot() -> None:
+    repository = _WorkLineRepositoryStub()
+    repository.current.is_active = True
+    repository.current.plugin_key = "rough_sorter"
+    repository.current.contract_version = "rough_sorter.v2"
+    repository.current.active_plugin_binding_id = None
+    service = WorkLineService(repository=repository, runtime_status_projection_service=_RuntimeStatusProjectionSpy())
+
+    with pytest.raises(BusinessException) as exc_info:
+        await service.update(_Db(), repository.current.id, {"config": {"route_roles": {"PASS": "draft"}}})
+
+    assert exc_info.value.detail == {
+        "workline_id": repository.current.id,
+        "fields": ["config"],
+    }
+    assert repository.update_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("line_code", "LINE-B"),
+        ("line_type", "MANUAL"),
+        ("run_mode", WorkLineRunMode.MANUAL),
+        ("runtime_config_json", {"event_bindings": {"SCAN": "OVERRIDE"}}),
+    ],
+)
+async def test_active_workline_rejects_immediately_effective_runtime_field_update(
+    field_name: str,
+    field_value: object,
+) -> None:
+    repository = _WorkLineRepositoryStub()
+    repository.current.is_active = True
+    service = WorkLineService(repository=repository, runtime_status_projection_service=_RuntimeStatusProjectionSpy())
+
+    with pytest.raises(BusinessException) as exc_info:
+        await service.update(_Db(), repository.current.id, {field_name: field_value, "version": 7})
+
+    assert exc_info.value.detail == {
+        "workline_id": repository.current.id,
+        "fields": [field_name],
+    }
+    assert repository.update_calls == []

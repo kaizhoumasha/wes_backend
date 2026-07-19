@@ -158,6 +158,7 @@ class PluginAttemptRepository:
             if plugin_binding is None:
                 return None
             if (
+                getattr(plugin_binding, "workline_id", None),
                 getattr(plugin_binding, "id", None),
                 getattr(plugin_binding, "plugin_key", None),
                 getattr(plugin_binding, "contract_version", None),
@@ -165,6 +166,7 @@ class PluginAttemptRepository:
                 getattr(plugin_binding, "typed_config_hash", None),
                 getattr(plugin_binding, "generated_index_digest", None),
             ) != (
+                workline_id,
                 binding_id,
                 getattr(session, "plugin_key", None),
                 getattr(session, "contract_version", None),

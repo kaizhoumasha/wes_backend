@@ -1220,7 +1220,14 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
                 inbox=inbox,
                 session=session,
                 work_item=SimpleNamespace(id=51),
-                plugin_binding=SimpleNamespace(id=17),
+                plugin_binding=SimpleNamespace(
+                    id=17,
+                    is_enabled=True,
+                    is_revoked=False,
+                    environment="sandbox",
+                    valid_from=None,
+                    valid_until=None,
+                ),
             )
 
         async def persist_locked_attempt(self, *_args: object, **_kwargs: object) -> None:

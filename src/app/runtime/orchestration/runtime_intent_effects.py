@@ -152,8 +152,15 @@ def _validate_runtime_intents(intents: list[RuntimeIntent]) -> None:
 
 def _runtime_route_roles(ctx: Any) -> dict[str, str]:
     workline = ctx["workline"]
+    binding = ctx.get("plugin_binding")
+    approved_plugin_config = getattr(binding, "typed_config_json", None) if binding is not None else None
+    config_sources = (
+        (approved_plugin_config,)
+        if binding is not None
+        else (getattr(workline, "runtime_config_json", None), getattr(workline, "config", None))
+    )
     route_roles: dict[str, str] = {}
-    for source in (getattr(workline, "runtime_config_json", None), getattr(workline, "config", None)):
+    for source in config_sources:
         if not isinstance(source, Mapping):
             continue
         source_map = cast("Mapping[str, Any]", source)

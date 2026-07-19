@@ -472,3 +472,19 @@ class WorkLineStateTransitionRequest(BaseModel):
     """作业线启停请求。"""
 
     version: int = Field(description="WorkLine 乐观锁版本号")
+
+
+class WorkLineActivationRequest(WorkLineStateTransitionRequest):
+    """作业线激活请求，携带 immutable binding 审批原因。"""
+
+    reason: str | None = Field(default=None, min_length=1, max_length=500, description="人工状态切换原因")
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("状态切换原因不能为空")
+        return normalized

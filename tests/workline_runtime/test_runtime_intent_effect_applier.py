@@ -38,6 +38,27 @@ class _UnexpectedResourceProjectionService:
         raise AssertionError("material-flow runtime location facts must not be routed to ResourceProjectionService")
 
 
+def test_platform_route_roles_use_approved_binding_snapshot_instead_of_workline_draft() -> None:
+    from src.app.runtime.orchestration.runtime_intent_effects import _runtime_route_roles
+
+    ctx = {
+        "workline": SimpleNamespace(
+            runtime_config_json={
+                "route_roles": {
+                    "PASS": "runtime-conflict-role",
+                    "NG": "runtime-unapproved-role",
+                }
+            },
+            config={"route_roles": {"PASS": "draft-device-role"}},
+        ),
+        "plugin_binding": SimpleNamespace(
+            typed_config_json={"route_roles": {"PASS": "approved-device-role"}},
+        ),
+    }
+
+    assert _runtime_route_roles(ctx) == {"PASS": "approved-device-role"}
+
+
 def _effect_ctx() -> dict[str, Any]:
     return {
         "db": SimpleNamespace(),

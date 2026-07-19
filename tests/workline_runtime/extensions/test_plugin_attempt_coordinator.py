@@ -24,6 +24,64 @@ def test_write_set_limit_rejection_preserves_fallback_state() -> None:
     assert bounded.preserve_plugin_state is True
 
 
+@pytest.mark.asyncio
+async def test_writeback_rechecks_locked_binding_admission_before_persisting() -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+        RuntimeInboxWriteBackService,
+    )
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, AttemptWriteSet
+    from src.app.workline.services.plugin_binding_service import PluginBindingAdmissionError
+
+    events: list[str] = []
+    snapshot = AttemptSnapshot(processor_token="lease-1", session_version=7, plugin_state_version=3)
+
+    class Db:
+        async def commit(self) -> None:
+            events.append("MUST_NOT_COMMIT")
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+    class Repository:
+        async def lock_authoritative(self, *_args: object, **_kwargs: object) -> object:
+            events.append("lock")
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-1"),
+                session=SimpleNamespace(version=7, plugin_state_version=3, plugin_state_json={"phase": "READY"}),
+                plugin_binding=SimpleNamespace(
+                    is_enabled=False,
+                    is_revoked=False,
+                    environment="sandbox",
+                    valid_from=None,
+                    valid_until=None,
+                ),
+            )
+
+        async def persist_locked_attempt(self, *_args: object, **_kwargs: object) -> None:
+            events.append("MUST_NOT_PERSIST")
+
+    class InboxService:
+        async def mark_processed(self, *_args: object, **_kwargs: object) -> bool:
+            events.append("MUST_NOT_MARK_TERMINAL")
+            return True
+
+    with pytest.raises(PluginBindingAdmissionError, match="kill switch"):
+        await RuntimeInboxWriteBackService(
+            plugin_attempt_repository=Repository(),
+            inbox_service=InboxService(),  # type: ignore[arg-type]
+        ).commit_plugin_attempt(
+            Db(),
+            expected_snapshot=snapshot,
+            inbox_id=91,
+            session_id=41,
+            workline_id=8,
+            trace_id="trace-1",
+            write_set=AttemptWriteSet(evidence=(), next_state={"phase": "NEXT"}, intents=()),
+        )
+
+    assert events == ["lock", "rollback"]
+
+
 @pytest.mark.parametrize("invalid_number", [float("nan"), float("inf"), float("-inf")])
 def test_write_set_rejects_non_finite_numbers_and_preserves_fallback_state(invalid_number: float) -> None:
     from src.app.runtime.workline_plugins.attempt_coordinator import (
@@ -407,6 +465,65 @@ async def test_plugin_attempt_lock_order_matches_authoritative_execution_chain()
     assert locked is not None
     assert locked.material_unit.id == 31
     assert events == ["inbox-row", "session-row", "material-unit-row", "execution-session-row", "work-item-row"]
+
+
+@pytest.mark.asyncio
+async def test_plugin_attempt_lock_rejects_binding_owned_by_another_workline() -> None:
+    from src.app.runtime.orchestration.repositories.plugin_attempt_repository import PluginAttemptRepository
+
+    pin = {
+        "plugin_key": "rough_sorter",
+        "plugin_binding_id": 17,
+        "plugin_binding_version": 4,
+        "plugin_config_hash": "c" * 64,
+        "plugin_index_digest": "d" * 64,
+    }
+
+    class InboxRepository:
+        async def get_by_id_for_update(self, *_args: object, **_kwargs: object) -> object:
+            return SimpleNamespace(
+                id=91,
+                workline_session_id=41,
+                execution_session_id=21,
+                correlation_id="corr-1",
+                workline_id=8,
+            )
+
+    class Db:
+        def __init__(self) -> None:
+            self.rows = iter(
+                (
+                    SimpleNamespace(
+                        id=41,
+                        workline_id=8,
+                        contract_version="rough_sorter.v2",
+                        current_material_unit_id=None,
+                        **pin,
+                    ),
+                    SimpleNamespace(id=21, workline_id=8, **pin),
+                    SimpleNamespace(id=51, execution_session_id=21, correlation_id="corr-1", **pin),
+                    SimpleNamespace(
+                        id=17,
+                        workline_id=9,
+                        plugin_key="rough_sorter",
+                        contract_version="rough_sorter.v2",
+                        binding_version=4,
+                        typed_config_hash="c" * 64,
+                        generated_index_digest="d" * 64,
+                    ),
+                )
+            )
+
+        async def scalar(self, _statement: object) -> object:
+            return next(self.rows)
+
+    locked = await PluginAttemptRepository(inbox_repository=InboxRepository()).lock_authoritative(
+        Db(),
+        inbox_id=91,
+        session_id=41,
+    )
+
+    assert locked is None
 
 
 @pytest.mark.asyncio

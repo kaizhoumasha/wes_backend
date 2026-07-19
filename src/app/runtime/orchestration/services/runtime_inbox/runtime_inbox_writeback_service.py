@@ -57,8 +57,13 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
     WriteDisposition,
     bound_attempt_write_set,
 )
+from src.app.workline.services.plugin_binding_service import (
+    WorklinePluginBindingService,
+    workline_plugin_binding_service,
+)
 from src.app.workline.services.write_back_service import orchestrator_write_back_service
 from src.app.workline.utils import payload_dict
+from src.core.conf import settings
 from src.utils.timezone import timezone
 from src.utils.value_normalization import (
     canonical_event_type,
@@ -427,6 +432,19 @@ class RuntimeInboxWriteBackService:
         if locked is None or not _authoritative_snapshot_matches(locked, expected_snapshot):
             await db.rollback()
             return WriteDisposition.SAFE_RETRY
+        try:
+            locked_binding = getattr(locked, "plugin_binding", None)
+            if locked_binding is not None:
+                # Stage 1 与 Stage 3 之间允许执行外部 QUERY；必须基于锁内 binding
+                # 再检查可变准入事实，避免 kill switch、撤权或有效期变化后继续写 effect/state。
+                workline_plugin_binding_service.assert_execution_admitted(
+                    locked_binding,
+                    environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
+                    now=timezone.now_utc(),
+                )
+        except Exception:
+            await db.rollback()
+            raise
         # Stage 3 仍执行防御性边界校验；拒绝时必须保留锁内权威状态，
         # 不能把 fail-closed Hold 误写成空插件状态。
         write_set = bound_attempt_write_set(
