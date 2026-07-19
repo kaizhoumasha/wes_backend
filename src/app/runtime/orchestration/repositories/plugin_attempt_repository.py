@@ -284,8 +284,9 @@ class PluginAttemptRepository:
                 related_inbox_id=int(locked.inbox.id),
             )
         )
-        session.plugin_state_json = dict(_json_value(write_set.next_state))
-        session.plugin_state_version += 1
+        if not write_set.preserve_plugin_state:
+            session.plugin_state_json = dict(_json_value(write_set.next_state))
+            session.plugin_state_version += 1
 
 
 def _json_value(value: Any) -> Any:

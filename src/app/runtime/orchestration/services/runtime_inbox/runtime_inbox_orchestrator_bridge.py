@@ -1247,7 +1247,12 @@ class RuntimeInboxProcessorBridge:
             write_set = await self._plugin_attempt_runner.run(context)
         else:
             write_set = _write_set_from_recorded_replay(replay_resolution, fallback_state=context.plugin_state)
-        write_set = _bounded_plugin_write_set(write_set, limits=self._plugin_write_set_limits)
+        write_set = _bounded_plugin_write_set(
+            write_set,
+            limits=self._plugin_write_set_limits,
+            fallback_state=context.plugin_state,
+            allow_state_preservation=replay_resolution is not None,
+        )
 
         # Stage 3 在新短事务内锁权威行、重校验并原子写回。
         disposition = await self._writeback_service.commit_plugin_attempt(
@@ -1260,6 +1265,7 @@ class RuntimeInboxProcessorBridge:
             write_set=write_set,
             workline=workline,
             devices_by_role=devices_by_role,
+            trusted_state_preservation=True,
         )
         result = _empty_result()
         result["processed"] = 1
@@ -1564,10 +1570,11 @@ def _write_set_from_recorded_replay(
     if resolution.hold_reason is not None or resolution.decision is None:
         return AttemptWriteSet(
             evidence=(),
-            next_state=fallback_state,
+            next_state={},
             intents=(),
             outcome_code="HOLD",
             hold_reason=resolution.hold_reason or "RECORDED_REPLAY_RECORD_MISSING",
+            preserve_plugin_state=True,
         )
     try:
         decision = TypeAdapter(_RecordedPluginDecision).validate_python(resolution.decision)
@@ -1585,14 +1592,17 @@ def _write_set_from_recorded_replay(
         return _invalid_recorded_write_set(fallback_state)
     return AttemptWriteSet(
         evidence=resolution.evidence,
-        next_state=decision.next_state,
-        # Recorded replay 只恢复已审计 decision/state/evidence；原 intent 的
+        # Recorded replay 复用已审计的 decision/evidence，但不把历史状态
+        # 覆盖到可能已经继续推进的当前 Session。
+        next_state={},
+        # Recorded replay 只恢复已审计 decision/evidence；原 intent 的
         # EFFECT 已在源 attempt 执行，不得再次产生物理副作用。
         intents=(),
         outcome_code=decision.outcome_code,
         hold_reason=decision.hold_reason,
         recorded_attempt_anchor=resolution.attempt_anchor,
         recorded_decision=resolution.decision,
+        preserve_plugin_state=True,
     )
 
 
@@ -1683,19 +1693,32 @@ def _recorded_live_hold_intent_is_valid(
 
 
 def _invalid_recorded_write_set(fallback_state: dict[str, Any]) -> AttemptWriteSet:
+    _ = fallback_state
     return AttemptWriteSet(
         evidence=(),
-        next_state=fallback_state,
+        next_state={},
         intents=(),
         outcome_code="HOLD",
         hold_reason="RECORDED_REPLAY_RECORD_INVALID",
+        preserve_plugin_state=True,
     )
 
 
-def _bounded_plugin_write_set(write_set: AttemptWriteSet, *, limits: Any) -> AttemptWriteSet:
+def _bounded_plugin_write_set(
+    write_set: AttemptWriteSet,
+    *,
+    limits: Any,
+    fallback_state: dict[str, Any] | None = None,
+    allow_state_preservation: bool = False,
+) -> AttemptWriteSet:
     """保留 processor 内部 seam，并委托 write-set 合同 owner。"""
 
-    return bound_attempt_write_set(write_set, limits=limits)
+    return bound_attempt_write_set(
+        write_set,
+        limits=limits,
+        fallback_state=fallback_state or {},
+        allow_state_preservation=allow_state_preservation,
+    )
 
 
 def _kind_value(entity: Any) -> str | None:

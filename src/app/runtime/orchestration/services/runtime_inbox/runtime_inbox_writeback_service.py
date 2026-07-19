@@ -415,10 +415,10 @@ class RuntimeInboxWriteBackService:
         write_set: AttemptWriteSet,
         workline: Any | None = None,
         devices_by_role: dict[str, list[Any]] | None = None,
+        trusted_state_preservation: bool = False,
     ) -> WriteDisposition:
         """锁定权威行后重校验，并在同一事务落完整 attempt 结果。"""
 
-        write_set = bound_attempt_write_set(write_set, limits=self._plugin_write_set_limits)
         locked = await self._plugin_attempt_repository.lock_authoritative(
             db,
             inbox_id=inbox_id,
@@ -427,6 +427,14 @@ class RuntimeInboxWriteBackService:
         if locked is None or not _authoritative_snapshot_matches(locked, expected_snapshot):
             await db.rollback()
             return WriteDisposition.SAFE_RETRY
+        # Stage 3 仍执行防御性边界校验；拒绝时必须保留锁内权威状态，
+        # 不能把 fail-closed Hold 误写成空插件状态。
+        write_set = bound_attempt_write_set(
+            write_set,
+            limits=self._plugin_write_set_limits,
+            fallback_state=dict(getattr(locked.session, "plugin_state_json", {}) or {}),
+            allow_state_preservation=trusted_state_preservation,
+        )
         try:
             if write_set.intents:
                 prepared_intents = self._intent_log_repository.prepare_attempt_intents(

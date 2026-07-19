@@ -5,6 +5,314 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_write_set_limit_rejection_preserves_fallback_state() -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptWriteSet,
+        PluginWriteSetLimits,
+        bound_attempt_write_set,
+    )
+
+    current_state = {"phase": "WAITING_DEVICE_RESULT", "current_correlation": "CMD-1"}
+    bounded = bound_attempt_write_set(
+        AttemptWriteSet(evidence=(), next_state={"value": "too-large"}, intents=()),
+        limits=PluginWriteSetLimits(max_next_state_bytes=1),
+        fallback_state=current_state,
+    )
+
+    assert bounded.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
+    assert bounded.next_state == {}
+    assert bounded.preserve_plugin_state is True
+
+
+@pytest.mark.parametrize("invalid_number", [float("nan"), float("inf"), float("-inf")])
+def test_write_set_rejects_non_finite_numbers_and_preserves_fallback_state(invalid_number: float) -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptWriteSet,
+        PluginWriteSetLimits,
+        bound_attempt_write_set,
+    )
+
+    current_state = {"phase": "WAITING_DEVICE_RESULT", "current_correlation": "CMD-1"}
+    bounded = bound_attempt_write_set(
+        AttemptWriteSet(evidence=(), next_state={"invalid": invalid_number}, intents=()),
+        limits=PluginWriteSetLimits(),
+        fallback_state=current_state,
+    )
+
+    assert bounded.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
+    assert bounded.next_state == {}
+    assert bounded.preserve_plugin_state is True
+
+
+def test_write_set_rejects_recursive_container_and_preserves_fallback_state() -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptWriteSet,
+        PluginWriteSetLimits,
+        bound_attempt_write_set,
+    )
+
+    recursive_state: dict[str, object] = {}
+    recursive_state["self"] = recursive_state
+    current_state = {"phase": "WAITING_DEVICE_RESULT", "current_correlation": "CMD-1"}
+
+    bounded = bound_attempt_write_set(
+        AttemptWriteSet(evidence=(), next_state=recursive_state, intents=()),
+        limits=PluginWriteSetLimits(),
+        fallback_state=current_state,
+    )
+
+    assert bounded.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
+    assert bounded.next_state == {}
+    assert bounded.preserve_plugin_state is True
+
+
+@pytest.mark.parametrize(
+    ("recorded_decision", "limits"),
+    [
+        (
+            {
+                "outcome_code": "ROUTE_A",
+                "hold_reason": None,
+                "next_state": {"value": "x" * 100},
+                "intents": [],
+            },
+            {"max_next_state_bytes": 40},
+        ),
+        (
+            {
+                "outcome_code": "ROUTE_A",
+                "hold_reason": None,
+                "next_state": {},
+                "intents": [{"value": "oversized"}],
+            },
+            {"max_intent_bytes": 1},
+        ),
+        (
+            {
+                "outcome_code": "ROUTE_A",
+                "hold_reason": None,
+                "next_state": {},
+                "intents": [{}, {}],
+            },
+            {"max_intents": 1},
+        ),
+        (
+            {"outcome_code": "ROUTE_A", "hold_reason": None, "next_state": {"value": float("nan")}, "intents": []},
+            {},
+        ),
+    ],
+)
+def test_write_set_bounds_recorded_decision_payload_and_clears_it_on_rejection(
+    recorded_decision: dict[str, object],
+    limits: dict[str, int],
+) -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptWriteSet,
+        PluginWriteSetLimits,
+        bound_attempt_write_set,
+    )
+
+    current_state = {"phase": "WAITING_DEVICE_RESULT"}
+    bounded = bound_attempt_write_set(
+        AttemptWriteSet(
+            evidence=(),
+            next_state=current_state,
+            intents=(),
+            recorded_decision=recorded_decision,
+        ),
+        limits=PluginWriteSetLimits(**limits),
+        fallback_state=current_state,
+    )
+
+    assert bounded.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
+    assert bounded.next_state == {}
+    assert bounded.preserve_plugin_state is True
+    assert bounded.recorded_decision is None
+    assert bounded.recorded_attempt_anchor is None
+
+
+def test_write_set_rejects_recursive_recorded_anchor_and_preserves_fallback_state() -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptWriteSet,
+        PluginWriteSetLimits,
+        bound_attempt_write_set,
+    )
+
+    recursive_anchor: dict[str, object] = {}
+    recursive_anchor["self"] = recursive_anchor
+    current_state = {"phase": "WAITING_DEVICE_RESULT"}
+    bounded = bound_attempt_write_set(
+        AttemptWriteSet(
+            evidence=(),
+            next_state=current_state,
+            intents=(),
+            recorded_attempt_anchor=recursive_anchor,
+        ),
+        limits=PluginWriteSetLimits(),
+        fallback_state=current_state,
+    )
+
+    assert bounded.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
+    assert bounded.next_state == {}
+    assert bounded.preserve_plugin_state is True
+    assert bounded.recorded_attempt_anchor is None
+
+
+def test_accepted_write_set_isolated_from_mutation_after_validation() -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptWriteSet,
+        PluginWriteSetLimits,
+        bound_attempt_write_set,
+    )
+
+    next_state = {"phase": "READY"}
+    recorded_decision = {
+        "outcome_code": "ROUTE_A",
+        "hold_reason": None,
+        "next_state": {"phase": "RECORDED"},
+        "intents": [],
+    }
+    recorded_anchor = {"source_inbox_id": 91}
+    bounded = bound_attempt_write_set(
+        AttemptWriteSet(
+            evidence=(),
+            next_state=next_state,
+            intents=(),
+            recorded_decision=recorded_decision,
+            recorded_attempt_anchor=recorded_anchor,
+        ),
+        limits=PluginWriteSetLimits(),
+        fallback_state={"phase": "WAITING_DEVICE_RESULT"},
+    )
+
+    next_state["phase"] = "MUTATED"
+    recorded_decision["next_state"] = {"value": float("nan")}
+    recorded_anchor["source_inbox_id"] = -1
+
+    assert bounded.next_state == {"phase": "READY"}
+    assert bounded.recorded_decision == {
+        "outcome_code": "ROUTE_A",
+        "hold_reason": None,
+        "next_state": {"phase": "RECORDED"},
+        "intents": [],
+    }
+    assert bounded.recorded_attempt_anchor == {"source_inbox_id": 91}
+
+
+@pytest.mark.parametrize("invalid_state", [[], "invalid", 1])
+def test_write_set_rejects_non_object_next_state_without_rewriting_fallback(invalid_state: object) -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptWriteSet,
+        PluginWriteSetLimits,
+        bound_attempt_write_set,
+    )
+
+    bounded = bound_attempt_write_set(
+        AttemptWriteSet(evidence=(), next_state=invalid_state, intents=()),
+        limits=PluginWriteSetLimits(),
+        fallback_state={"phase": "WAITING_DEVICE_RESULT"},
+    )
+
+    assert bounded.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
+    assert bounded.preserve_plugin_state is True
+    assert bounded.next_state == {}
+
+
+def test_write_set_rejection_does_not_copy_invalid_fallback_into_persisted_payload() -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptWriteSet,
+        PluginWriteSetLimits,
+        bound_attempt_write_set,
+    )
+
+    recursive_fallback: dict[str, object] = {}
+    recursive_fallback["self"] = recursive_fallback
+    bounded = bound_attempt_write_set(
+        AttemptWriteSet(evidence=(), next_state={"value": "oversized"}, intents=()),
+        limits=PluginWriteSetLimits(max_next_state_bytes=1),
+        fallback_state=recursive_fallback,
+    )
+
+    assert bounded.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
+    assert bounded.preserve_plugin_state is True
+    assert bounded.next_state == {}
+
+
+@pytest.mark.asyncio
+async def test_persist_locked_attempt_skips_plugin_state_write_when_preservation_requested() -> None:
+    from src.app.runtime.orchestration.repositories.plugin_attempt_repository import (
+        AuthoritativePluginAttempt,
+        PluginAttemptRepository,
+    )
+    from src.app.runtime.workline_plugins.attempt_coordinator import AttemptSnapshot, AttemptWriteSet
+
+    timelines: list[object] = []
+
+    class TimelineOwner:
+        async def allocate_many(self, *_args: object, **_kwargs: object) -> tuple[int, ...]:
+            return (1,)
+
+    class Db:
+        def add(self, row: object) -> None:
+            timelines.append(row)
+
+    session = SimpleNamespace(
+        id=41,
+        plugin_key="rough_sorter",
+        business_key="PKG-1",
+        plugin_state_json={"phase": "WAITING_DEVICE_RESULT"},
+        plugin_state_version=7,
+    )
+    await PluginAttemptRepository(timeline_sequence_repository=TimelineOwner()).persist_locked_attempt(
+        Db(),  # type: ignore[arg-type]
+        locked=AuthoritativePluginAttempt(inbox=SimpleNamespace(id=91), session=session),
+        workline_id=8,
+        trace_id="trace-preserve",
+        snapshot=AttemptSnapshot(
+            processor_token="lease-1",
+            session_version=9,
+            plugin_state_version=7,
+            session_status="RUNNING",
+        ),
+        write_set=AttemptWriteSet(
+            evidence=(),
+            next_state={},
+            intents=(),
+            outcome_code="HOLD",
+            hold_reason="PLUGIN_WRITE_SET_LIMIT_EXCEEDED",
+            preserve_plugin_state=True,
+        ),
+    )
+
+    assert session.plugin_state_json == {"phase": "WAITING_DEVICE_RESULT"}
+    assert session.plugin_state_version == 7
+    assert timelines[0].payload_json["decision"]["next_state"] == {}  # type: ignore[attr-defined]
+
+
+def test_live_write_set_cannot_self_authorize_plugin_state_preservation() -> None:
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptWriteSet,
+        PluginWriteSetLimits,
+        bound_attempt_write_set,
+    )
+
+    bounded = bound_attempt_write_set(
+        AttemptWriteSet(
+            evidence=(),
+            next_state={"phase": "READY"},
+            intents=(),
+            outcome_code="ROUTE_A",
+            preserve_plugin_state=True,
+        ),
+        limits=PluginWriteSetLimits(),
+        fallback_state={"phase": "WAITING_DEVICE_RESULT"},
+    )
+
+    assert bounded.hold_reason is None
+    assert bounded.next_state == {"phase": "READY"}
+    assert bounded.preserve_plugin_state is False
+
+
 @pytest.mark.asyncio
 async def test_three_stage_attempt_queries_without_db_then_commits_atomically() -> None:
     from src.app.runtime.workline_plugins.attempt_coordinator import (
@@ -638,6 +946,7 @@ async def test_writeback_bounds_oversized_plugin_payload_before_timeline_and_led
 
     snapshot = AttemptSnapshot(processor_token="lease-1", session_version=7, plugin_state_version=3)
     persisted: list[object] = []
+    current_state = {"phase": "WAITING_DEVICE_RESULT", "current_correlation": "CMD-1"}
 
     class Db:
         async def commit(self) -> None:
@@ -650,7 +959,11 @@ async def test_writeback_bounds_oversized_plugin_payload_before_timeline_and_led
         async def lock_authoritative(self, *_args: object, **_kwargs: object) -> object:
             return SimpleNamespace(
                 inbox=SimpleNamespace(processor_token="lease-1"),
-                session=SimpleNamespace(version=7, plugin_state_version=3),
+                session=SimpleNamespace(
+                    version=7,
+                    plugin_state_version=3,
+                    plugin_state_json=current_state,
+                ),
             )
 
         async def persist_locked_attempt(self, _db: object, **kwargs: object) -> None:
@@ -688,6 +1001,7 @@ async def test_writeback_bounds_oversized_plugin_payload_before_timeline_and_led
     bounded = persisted[0]
     assert bounded.intents == ()
     assert bounded.next_state == {}
+    assert bounded.preserve_plugin_state is True
     assert bounded.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"
     assert "must-not-persist" not in repr(bounded)
 

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
-from src.app.runtime.extension_identity import canonical_json
 from src.app.runtime.workline_plugins.contracts import MAX_PLUGIN_DECISION_INTENTS
 
 if TYPE_CHECKING:
@@ -50,6 +51,7 @@ class AttemptWriteSet:
     hold_reason: str | None = None
     recorded_attempt_anchor: Any | None = None
     recorded_decision: dict[str, Any] | None = None
+    preserve_plugin_state: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,37 +80,88 @@ class PluginWriteSetLimits:
             raise ValueError("plugin intent count limit exceeds contract maximum")
 
 
-def bound_attempt_write_set(write_set: AttemptWriteSet, *, limits: Any) -> AttemptWriteSet:
+def bound_attempt_write_set(
+    write_set: AttemptWriteSet,
+    *,
+    limits: Any,
+    fallback_state: Any,
+    allow_state_preservation: bool = False,
+) -> AttemptWriteSet:
     """在 hash/timeline/ledger 之前执行统一 canonical UTF-8 边界校验。"""
 
     try:
         state_value = _json_value(write_set.next_state)
+        if not isinstance(state_value, dict):
+            raise TypeError("plugin next state must be an object")
         intent_values = tuple(_json_value(intent) for intent in write_set.intents)
         intent_sizes = tuple(_canonical_bytes(value) for value in intent_values)
+        recorded_decision_value = None
+        recorded_state_value = None
+        recorded_intent_values: tuple[Any, ...] = ()
+        if write_set.recorded_decision is not None:
+            recorded_decision_value = _json_value(write_set.recorded_decision)
+            if not isinstance(recorded_decision_value, dict):
+                raise TypeError("recorded decision must be an object")
+            recorded_state_value = recorded_decision_value.get("next_state")
+            if not isinstance(recorded_state_value, dict):
+                raise TypeError("recorded decision next state must be an object")
+            raw_recorded_intents = recorded_decision_value.get("intents")
+            if not isinstance(raw_recorded_intents, list):
+                raise TypeError("recorded decision intents must be an array")
+            recorded_intent_values = tuple(raw_recorded_intents)
+        recorded_anchor_value = (
+            _json_value(write_set.recorded_attempt_anchor) if write_set.recorded_attempt_anchor is not None else None
+        )
+        recorded_intent_sizes = tuple(_canonical_bytes(value) for value in recorded_intent_values)
+        preserve_plugin_state = allow_state_preservation and write_set.preserve_plugin_state
         whole_value = {
             "evidence": [_json_value(item) for item in write_set.evidence],
             "next_state": state_value,
             "intents": list(intent_values),
             "outcome_code": write_set.outcome_code,
             "hold_reason": write_set.hold_reason,
+            "preserve_plugin_state": preserve_plugin_state,
         }
+        if recorded_decision_value is not None:
+            whole_value["recorded_decision"] = recorded_decision_value
+        if recorded_anchor_value is not None:
+            whole_value["recorded_attempt_anchor"] = recorded_anchor_value
         exceeded = (
             len(intent_values) > limits.max_intents
             or _canonical_bytes(state_value) > limits.max_next_state_bytes
             or any(size > limits.max_intent_bytes for size in intent_sizes)
             or sum(intent_sizes) > limits.max_intents_total_bytes
+            or len(recorded_intent_values) > limits.max_intents
+            or (
+                recorded_state_value is not None
+                and _canonical_bytes(recorded_state_value) > limits.max_next_state_bytes
+            )
+            or any(size > limits.max_intent_bytes for size in recorded_intent_sizes)
+            or sum(recorded_intent_sizes) > limits.max_intents_total_bytes
             or _canonical_bytes(whole_value) > limits.max_write_set_bytes
         )
-    except (TypeError, ValueError):
+    except (RecursionError, TypeError, ValueError):
         exceeded = True
     if not exceeded:
-        return write_set
+        # 返回与 runner 所持引用隔离的校验快照，避免 Stage 3 后续 await
+        # 期间嵌套可变对象被改写并绕过严格 JSON/资源边界。
+        return AttemptWriteSet(
+            evidence=deepcopy(write_set.evidence),
+            next_state=deepcopy(state_value),
+            intents=deepcopy(write_set.intents),
+            outcome_code=write_set.outcome_code,
+            hold_reason=write_set.hold_reason,
+            recorded_attempt_anchor=deepcopy(recorded_anchor_value),
+            recorded_decision=deepcopy(recorded_decision_value),
+            preserve_plugin_state=preserve_plugin_state,
+        )
     return AttemptWriteSet(
         evidence=(),
         next_state={},
         intents=(),
         outcome_code="HOLD",
         hold_reason="PLUGIN_WRITE_SET_LIMIT_EXCEEDED",
+        preserve_plugin_state=True,
     )
 
 
@@ -123,7 +176,14 @@ def _json_value(value: Any) -> Any:
 
 
 def _canonical_bytes(value: Any) -> int:
-    return len(canonical_json(value).encode("utf-8"))
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    )
+    return len(encoded.encode("utf-8"))
 
 
 @dataclass(frozen=True, slots=True)

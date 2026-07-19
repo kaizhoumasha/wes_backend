@@ -615,7 +615,8 @@ async def test_live_block_timeline_recorded_replay_restores_decision_without_ree
     assert source_write_set.intents[0].capability_key == "runtime.session_hold"
     assert replayed.outcome_code == "HOLD"
     assert replayed.hold_reason is None
-    assert replayed.next_state == next_state.model_dump(mode="json")
+    assert replayed.next_state == {}
+    assert replayed.preserve_plugin_state is True
     assert replayed.evidence == source_write_set.evidence
     assert replayed.intents == ()
     assert disposition is WriteDisposition.COMMITTED
@@ -693,6 +694,27 @@ def test_recorded_live_hold_rejects_tampered_system_capability_identity_or_shape
     assert replayed.outcome_code == "HOLD"
     assert replayed.hold_reason == "RECORDED_REPLAY_RECORD_INVALID"
     assert replayed.intents == ()
+
+
+def test_recorded_replay_preserves_current_plugin_state_after_source_attempt_advanced() -> None:
+    from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
+
+    current_state = {"phase": "WAITING_COMMAND_RESULT", "current_correlation": "CMD-NEW"}
+    replayed = _write_set_from_recorded_replay(
+        RecordedReplayResolution(
+            decision={
+                "outcome_code": "ROUTE_A",
+                "hold_reason": None,
+                "next_state": {"phase": "READY", "current_correlation": "CMD-OLD"},
+                "intents": [],
+            }
+        ),
+        fallback_state=current_state,
+    )
+
+    assert replayed.hold_reason is None
+    assert replayed.next_state == {}
+    assert replayed.preserve_plugin_state is True
 
 
 @pytest.mark.asyncio

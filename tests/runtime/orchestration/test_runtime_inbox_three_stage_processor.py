@@ -147,7 +147,7 @@ def _project_shape_validated_replay(inbox: Any) -> Any:
 
 
 def test_recorded_replay_validates_but_does_not_reexecute_recorded_intents() -> None:
-    """Recorded decision 仅恢复 state/evidence，不得再次产生物理 EFFECT。"""
+    """Recorded decision 仅恢复 decision/evidence，不得改写状态或再次产生物理 EFFECT。"""
     from src.app.runtime.system_capabilities.replay import RecordedReplayResolution
 
     write_set = _write_set_from_recorded_replay(
@@ -170,7 +170,7 @@ def test_recorded_replay_validates_but_does_not_reexecute_recorded_intents() -> 
     )
 
     assert write_set.intents == ()
-    assert write_set.next_state == {"step": 2}
+    assert write_set.next_state == {}
 
 
 @pytest.mark.parametrize(
@@ -212,7 +212,8 @@ def test_recorded_replay_restores_a_complete_legal_hold_decision() -> None:
 
     assert write_set.outcome_code == "HOLD"
     assert write_set.hold_reason == "BUSINESS_RULE_HOLD"
-    assert write_set.next_state == {"step": 2}
+    assert write_set.next_state == {}
+    assert write_set.preserve_plugin_state is True
     assert write_set.intents == ()
 
 
@@ -1716,6 +1717,7 @@ async def test_platform_recorded_replay_bypasses_runner_and_persists_hold_when_p
     elif replay_case == "oversize_state":
         assert captured_write_set.hold_reason == "PLUGIN_WRITE_SET_LIMIT_EXCEEDED"  # type: ignore[union-attr]
         assert captured_write_set.next_state == {}  # type: ignore[union-attr]
+        assert captured_write_set.preserve_plugin_state is True  # type: ignore[union-attr]
         assert result["failed"] == 1
     else:
         assert captured_write_set.outcome_code == "ROUTE_A"  # type: ignore[union-attr]
