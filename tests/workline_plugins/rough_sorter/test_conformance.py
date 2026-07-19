@@ -143,6 +143,7 @@ class TestRoughSorterConformance(PluginConformanceSuite):
                 processor_token="conformance-lease",
                 session_version=1,
                 plugin_state_version=0,
+                device_fact_versions=(("ROUGH_SORTER_INPUT_ARM", 31, 0),),
                 binding_id=1,
                 binding_version=1,
             ),

@@ -548,6 +548,7 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
     ) -> WorkLine | None:
         """停用 WorkLine；存在未完成运行负载时拒绝。"""
 
+        await self.repo.acquire_plugin_pin_exclusive(db, workline_id)
         current = await self.repo.get_for_update(db, workline_id)
         if current is None:
             raise ValueError(f"WorkLine 不存在: {workline_id}")

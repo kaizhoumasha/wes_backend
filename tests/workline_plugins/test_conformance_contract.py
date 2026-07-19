@@ -39,6 +39,7 @@ def _context() -> PluginAttemptContext:
             processor_token="conformance-lease",
             session_version=1,
             plugin_state_version=0,
+            device_fact_versions=(("input_arm", 31, 0),),
             binding_id=1,
             binding_version=1,
         ),

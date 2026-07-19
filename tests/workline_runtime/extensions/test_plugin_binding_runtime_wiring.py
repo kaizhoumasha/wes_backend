@@ -63,6 +63,7 @@ def _workline() -> WorkLine:
     )
     workline.id = 7
     workline.version = 3
+    workline.is_active = True
     return workline
 
 
@@ -240,6 +241,67 @@ async def test_new_session_acquires_shared_plugin_pin_lock_before_refreshing_cur
     await resolver._resolve_device_event(object(), inbox, workline)
 
     assert workline_repository.pin_events == ["shared", "current"]
+
+
+@pytest.mark.asyncio
+async def test_new_session_rejects_workline_deactivated_before_shared_lock_reload() -> None:
+    stale_workline = _workline()
+    stale_workline.is_active = True
+    current_workline = _workline()
+    current_workline.is_active = False
+
+    class DeactivatedWorklineRepository(WorklineRepository):
+        async def get_current_plugin_pin(
+            self,
+            _db: object,
+            _workline_id: int,
+            *,
+            populate_existing: bool = False,
+        ) -> WorkLine:
+            assert populate_existing is True
+            self.pin_events.append("current")
+            return current_workline
+
+    class TrackingSessionRepository(SessionRepository):
+        def __init__(self) -> None:
+            self.create_calls = 0
+
+        async def create(self, _db: object, data: dict[str, Any]) -> WorklineSession:
+            self.create_calls += 1
+            return await super().create(_db, data)
+
+    session_repository = TrackingSessionRepository()
+    workline_repository = DeactivatedWorklineRepository(stale_workline)
+    resolver = SessionResolver(
+        session_repo=session_repository,
+        workline_repo=workline_repository,
+        command_repo=object(),
+        outbox_repo=object(),
+        rack_task_repo=object(),
+        handling_step_repo=object(),
+        handling_operation_repo=object(),
+        plugin_binding_service=WorklinePluginBindingService(
+            repository=BindingRepository(),
+            runtime_repository=RuntimeRepository(),
+            plugin_index={("platform-test", "v1"): DEFINITION},
+            capability_index={},
+            plugin_index_digest="b" * 64,
+            clock=lambda: datetime(2026, 7, 17, 9),
+        ),
+    )
+    inbox = SimpleNamespace(
+        payload_json={"business_key": "PKG-DEACTIVATED"},
+        device_id=1,
+        trace_id="trace-deactivated",
+        request_id="request-deactivated",
+        source_message_id="message-deactivated",
+    )
+
+    with pytest.raises(RuntimeError, match="不再接收新工作"):
+        await resolver._resolve_device_event(object(), inbox, stale_workline)
+
+    assert workline_repository.pin_events == ["shared", "current"]
+    assert session_repository.create_calls == 0
 
 
 @pytest.mark.asyncio

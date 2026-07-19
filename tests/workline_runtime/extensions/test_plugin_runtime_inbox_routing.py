@@ -19,6 +19,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestr
     _build_plugin_dispatch_request,
     _canonical_plugin_input,
     _replay_digest_matches_source,
+    _system_capability_intents,
     _write_set_from_recorded_replay,
 )
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
@@ -307,6 +308,7 @@ async def test_generated_runner_converts_plugin_effects_to_system_capability_int
             processor_token="lease-1",
             session_version=7,
             plugin_state_version=0,
+            device_fact_versions=(("input_arm", 31, 0),),
             binding_id=17,
             binding_version=4,
         ),
@@ -323,6 +325,74 @@ async def test_generated_runner_converts_plugin_effects_to_system_capability_int
     assert intent.payload_json["action"] == "PICK_AND_PUT"
     assert intent.payload_json["result_policy"] == "COMMAND_RESULT"
     assert intent.binding_snapshot == {"binding_id": 17, "binding_version": 4}
+
+
+def test_generated_command_uses_pinned_target_device_fact_version() -> None:
+    context = SimpleNamespace(
+        inbox_id=1,
+        snapshot=SimpleNamespace(
+            binding_id=17,
+            binding_version=4,
+            binding_identity="binding:17:4",
+            device_fact_versions=(("input_arm", 31, 0),),
+        ),
+    )
+
+    [intent] = _system_capability_intents(
+        context,
+        (
+            RuntimeIntent.command(
+                device_role="input_arm",
+                action="PICK_AND_PUT",
+                payload={"pkg_code": "PKG-1"},
+                result_policy="COMMAND_RESULT",
+            ),
+        ),
+    )
+
+    assert intent.payload_json["target_device_id"] == 31
+    assert intent.payload_json["device_role"] is None
+    assert intent.fact_version == "device:v0"
+
+
+def test_material_status_update_uses_pinned_material_fact_version() -> None:
+    context = SimpleNamespace(
+        inbox_id=1,
+        snapshot=SimpleNamespace(
+            binding_id=17,
+            binding_version=4,
+            binding_identity="binding:17:4",
+            session_version=7,
+            material_unit_id=31,
+            material_unit_version=11,
+        ),
+    )
+
+    [intent] = _system_capability_intents(
+        context,
+        (RuntimeIntent.update_material_unit_status(material_unit_id=31, status="COMPLETED"),),
+    )
+
+    assert intent.fact_version == 11
+
+
+def test_material_status_update_rejects_fact_version_from_different_material() -> None:
+    context = SimpleNamespace(
+        inbox_id=1,
+        snapshot=SimpleNamespace(
+            binding_id=17,
+            binding_version=4,
+            binding_identity="binding:17:4",
+            material_unit_id=31,
+            material_unit_version=11,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="pinned material unit"):
+        _system_capability_intents(
+            context,
+            (RuntimeIntent.update_material_unit_status(material_unit_id=99, status="COMPLETED"),),
+        )
 
 
 @pytest.mark.asyncio
@@ -652,6 +722,7 @@ async def test_non_create_mark_ng_pins_material_identity_before_device_effect() 
             session_status="WAITING_DEVICE_RESULT",
             material_unit_id=31,
             material_unit_version=11,
+            device_fact_versions=(("output_arm", 32, 5),),
             binding_id=17,
             binding_version=4,
         ),
@@ -885,6 +956,7 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
         processor_token="lease-1",
         session_version=7,
         plugin_state_version=0,
+        device_fact_versions=(("input_arm", 31, 0),),
         binding_id=17,
         binding_version=4,
         plugin_config_hash=sha256_digest(config),
@@ -979,6 +1051,7 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
         processor_token="lease-1",
         session_version=7,
         plugin_state_version=2,
+        device_fact_versions=(("conveyor", 33, 6),),
         binding_id=17,
         binding_version=4,
         plugin_config_hash=sha256_digest(config),

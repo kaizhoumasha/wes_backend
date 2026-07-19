@@ -226,10 +226,11 @@ def _system_capability_intents(
             fact_version = context.snapshot.material_unit_version
         elif intent.kind is RuntimeIntentKind.COMMAND:
             capability_key = "device.device_command_write"
+            target_device_id, target_device_version = _pinned_command_target(context.snapshot, intent)
             command_code = f"SC-{sha256_digest({'binding': context.snapshot.binding_identity, 'operation': f'inbox:{context.inbox_id}:{index}:command'})[:32]}"
             payload = {
-                "device_role": intent.device_role,
-                "target_device_id": intent.target_device_id,
+                "device_role": None,
+                "target_device_id": target_device_id,
                 "action": intent.action,
                 "payload": deepcopy(intent.payload_json),
                 "timeout_ms": (intent.timeout_seconds or 30) * 1000,
@@ -237,7 +238,7 @@ def _system_capability_intents(
                 "result_policy": intent.result_policy,
             }
             precondition = {"expected_available": True}
-            fact_version = "device:v1"
+            fact_version = f"device:v{target_device_version}"
         elif intent.kind is RuntimeIntentKind.CREATE_MATERIAL_UNIT:
             capability_key = "material_flow.material_unit_write"
             payload = {"operation": "CREATE", **deepcopy(intent.payload_json)}
@@ -246,10 +247,17 @@ def _system_capability_intents(
             precondition = {"expected_absent": True}
             fact_version = 0
         elif intent.kind is RuntimeIntentKind.UPDATE_MATERIAL_UNIT_STATUS:
+            target_material_unit_id = intent.payload_json.get("material_unit_id")
+            if (
+                context.snapshot.material_unit_id is None
+                or context.snapshot.material_unit_version is None
+                or target_material_unit_id != context.snapshot.material_unit_id
+            ):
+                raise ValueError("UPDATE_MATERIAL_UNIT_STATUS requires pinned material unit facts")
             capability_key = "material_flow.material_unit_write"
             payload = {"operation": "UPDATE_STATUS", **deepcopy(intent.payload_json)}
             precondition = {"expected_absent": None}
-            fact_version = context.snapshot.session_version
+            fact_version = context.snapshot.material_unit_version
         elif intent.kind is RuntimeIntentKind.BLOCK:
             if context.snapshot.session_status is None:
                 raise ValueError("BLOCK requires pinned session status")
@@ -279,6 +287,20 @@ def _system_capability_intents(
             )
         )
     return tuple(converted)
+
+
+def _pinned_command_target(snapshot: AttemptSnapshot, intent: RuntimeIntent) -> tuple[int, int]:
+    """从 Stage 1 固定的设备事实中解析本次命令的唯一目标。"""
+
+    facts = snapshot.device_fact_versions
+    if intent.target_device_id is not None:
+        match = next((fact for fact in facts if fact[1] == intent.target_device_id), None)
+    else:
+        match = next((fact for fact in facts if fact[0] == intent.device_role), None)
+    if match is None:
+        raise ValueError("COMMAND requires pinned target device facts")
+    _, device_id, device_version = match
+    return device_id, device_version
 
 
 def _bind_command_correlation(next_state: Any, intents: tuple[RuntimeIntent, ...]) -> Any:
@@ -1188,6 +1210,7 @@ class RuntimeInboxProcessorBridge:
             session,
             processor_token=processor_token,
             material_unit_version=material_fact_version,
+            devices_by_role=devices_by_role,
         )
         dispatch_request = None
         if isinstance(self._plugin_attempt_runner, GeneratedPluginAttemptRunner):
@@ -1487,6 +1510,7 @@ def _plugin_attempt_snapshot(
     *,
     processor_token: str,
     material_unit_version: int | None = None,
+    devices_by_role: dict[str, list[Any]] | None = None,
 ) -> AttemptSnapshot:
     definition_identity = getattr(session, "plugin_identity", None)
     if definition_identity is None:
@@ -1504,12 +1528,32 @@ def _plugin_attempt_snapshot(
         session_status=string_value(getattr(session, "status", None)),
         material_unit_id=optional_int(getattr(session, "current_material_unit_id", None)),
         material_unit_version=material_unit_version,
+        device_fact_versions=_device_fact_versions(devices_by_role),
         definition_identity=definition_identity,
         binding_id=optional_int(getattr(session, "plugin_binding_id", None)),
         binding_version=optional_int(getattr(session, "plugin_binding_version", None)),
         plugin_config_hash=optional_str(getattr(session, "plugin_config_hash", None)),
         index_digest=optional_str(getattr(session, "plugin_index_digest", None)),
     )
+
+
+def _device_fact_versions(devices_by_role: dict[str, list[Any]] | None) -> tuple[tuple[str, int, int], ...]:
+    """把 Stage 1 设备候选顺序及乐观版本冻结为 immutable primitives。"""
+
+    facts: list[tuple[str, int, int]] = []
+    for role in sorted(devices_by_role or {}):
+        for device in (devices_by_role or {})[role]:
+            device_id = getattr(device, "id", None)
+            version = getattr(device, "version", None)
+            if (
+                isinstance(device_id, int)
+                and not isinstance(device_id, bool)
+                and isinstance(version, int)
+                and not isinstance(version, bool)
+                and version >= 0
+            ):
+                facts.append((role, device_id, version))
+    return tuple(facts)
 
 
 def _write_set_from_recorded_replay(

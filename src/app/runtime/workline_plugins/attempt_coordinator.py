@@ -23,6 +23,7 @@ class AttemptSnapshot:
     session_status: str | None = None
     material_unit_id: int | None = None
     material_unit_version: int | None = None
+    device_fact_versions: tuple[tuple[str, int, int], ...] = ()
     definition_identity: str | None = None
     binding_id: int | None = None
     binding_version: int | None = None

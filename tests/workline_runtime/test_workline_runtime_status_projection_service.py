@@ -471,10 +471,31 @@ async def test_repeated_safety_estop_reuses_active_incident():
 async def test_safety_assert_accepting_work_delegates_runtime_projection_service():
     from src.app.workline.services.safety_service import WorkLineSafetyService
 
+    lock_order: list[str] = []
     workline = SimpleNamespace(id=45, runtime_status=WorkLineRuntimeStatus.READY)
-    projection = _RuntimeStatusProjectionSpy()
+
+    class Repository:
+        async def acquire_plugin_pin_shared(self, _db, workline_id: int):
+            assert workline_id == 45
+            lock_order.append("shared")
+
+        async def get_for_update(self, _db, workline_id: int):
+            assert workline_id == 45
+            lock_order.append("row")
+            return workline
+
+    class Projection(_RuntimeStatusProjectionSpy):
+        async def assert_accepting_runtime_work(self, _db, *, workline_id, blocked_error=RuntimeError):
+            lock_order.append("projection")
+            await super().assert_accepting_runtime_work(
+                _db,
+                workline_id=workline_id,
+                blocked_error=blocked_error,
+            )
+
+    projection = Projection()
     service = WorkLineSafetyService(
-        workline_repository=SimpleNamespace(get_for_update=AsyncMock(return_value=workline)),
+        workline_repository=Repository(),
         workline_status_projection_service=projection,
     )
 
@@ -483,6 +504,7 @@ async def test_safety_assert_accepting_work_delegates_runtime_projection_service
     assert len(projection.accepting_calls) == 1
     assert projection.accepting_calls[0][0] == 45
     assert projection.accepting_calls[0][1].__name__ == "WorkLineSafetyBlocked"
+    assert lock_order == ["shared", "row", "projection"]
 
 
 @pytest.mark.asyncio

@@ -115,6 +115,18 @@ class _RuntimeStatusProjectionSpy:
 
 
 @pytest.mark.asyncio
+async def test_deactivate_acquires_plugin_pin_exclusive_before_workline_row_lock():
+    db = _Db()
+    repository = _WorkLineRepositoryStub()
+    repository.current.is_active = True
+    service = WorkLineService(repository=repository, runtime_status_projection_service=_RuntimeStatusProjectionSpy())
+
+    await service.deactivate(db, repository.current.id, version=7)
+
+    assert repository.lock_events == ["exclusive", "get_for_update"]
+
+
+@pytest.mark.asyncio
 async def test_create_seeds_default_runtime_status_projection_before_commit():
     db = _Db()
     repository = _WorkLineRepositoryStub()

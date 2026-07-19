@@ -1385,6 +1385,7 @@ async def test_platform_stage_one_loads_material_fact_through_repository() -> No
         async def run(self, context: object) -> AttemptWriteSet:
             assert context.snapshot.material_unit_id == 31  # type: ignore[union-attr]
             assert context.snapshot.material_unit_version == 73  # type: ignore[union-attr]
+            assert context.snapshot.device_fact_versions == (("input_arm", 41, 6),)  # type: ignore[union-attr]
             return AttemptWriteSet(evidence=(), next_state={}, intents=(), outcome_code="ROUTE_A")
 
     class WriteBack:
@@ -1414,6 +1415,7 @@ async def test_platform_stage_one_loads_material_fact_through_repository() -> No
         resolved_event_type="SCAN_COMPLETED",
         processor_token="lease-1",
         attempt_runtime=bridge.create_attempt_runtime("lease-1"),
+        devices_by_role={"input_arm": [SimpleNamespace(id=41, version=6)]},
     )
 
     assert result["success"] == 1

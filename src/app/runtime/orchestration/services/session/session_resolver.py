@@ -424,6 +424,10 @@ class SessionResolver:
         if current_workline is None:
             raise ValueError(f"WorkLine not found: {workline_id}")
         workline = current_workline
+        if not bool(getattr(workline, "is_active", False)):
+            from src.app.workline.services.safety_service import WorkLineSafetyBlocked
+
+            raise WorkLineSafetyBlocked(f"WorkLine 已停用，不再接收新工作: workline_id={workline_id}")
         active_binding = (
             candidate_binding
             if candidate_binding is not None

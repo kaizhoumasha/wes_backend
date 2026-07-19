@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.app.runtime.orchestration.repository_wiring import workline_repository
+from src.app.workline.services.safety_service import WorkLineSafetyService
 from tests.support.runtime_inbox_postgresql import temporary_database
 
 
@@ -163,6 +165,80 @@ def test_plugin_pin_shared_reader_prevents_next_pin_from_committing_first() -> N
             finally:
                 allow_reader_commit.set()
                 await asyncio.gather(reader, activation, return_exceptions=True)
+                await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration
+def test_runtime_safety_precheck_and_deactivate_share_advisory_before_row_lock() -> None:
+    async def scenario() -> None:
+        async with temporary_database(environ=_integration_environment()) as (_database, database_url):
+            engine = create_async_engine(database_url, pool_size=2, max_overflow=0)
+            sessions = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            workline_id = 9007199254740993
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("CREATE TABLE workline_lock_probe (workline_id BIGINT PRIMARY KEY, is_active BOOLEAN)")
+                )
+                await connection.execute(
+                    text("INSERT INTO workline_lock_probe (workline_id, is_active) VALUES (:workline_id, TRUE)"),
+                    {"workline_id": workline_id},
+                )
+
+            shared_row_locked = asyncio.Event()
+            allow_runtime_commit = asyncio.Event()
+            deactivate_finished = asyncio.Event()
+
+            class Repository:
+                async def acquire_plugin_pin_shared(self, db: AsyncSession, target_id: int) -> None:
+                    await workline_repository.acquire_plugin_pin_shared(db, target_id)
+
+                async def get_for_update(self, db: AsyncSession, target_id: int) -> SimpleNamespace:
+                    active = await db.scalar(
+                        text("SELECT is_active FROM workline_lock_probe WHERE workline_id = :workline_id FOR UPDATE"),
+                        {"workline_id": target_id},
+                    )
+                    shared_row_locked.set()
+                    return SimpleNamespace(id=target_id, is_active=bool(active))
+
+            class Projection:
+                async def assert_accepting_runtime_work(self, *_args: object, **_kwargs: object) -> None:
+                    await allow_runtime_commit.wait()
+
+            safety_service = WorkLineSafetyService(
+                workline_repository=Repository(),  # type: ignore[arg-type]
+                workline_status_projection_service=Projection(),
+            )
+
+            async def runtime_precheck() -> None:
+                async with sessions() as db:
+                    await safety_service.assert_accepting_work(db, workline_id=workline_id)
+                    await db.commit()
+
+            async def deactivate() -> None:
+                await shared_row_locked.wait()
+                async with sessions() as db:
+                    await workline_repository.acquire_plugin_pin_exclusive(db, workline_id)
+                    await db.execute(
+                        text("SELECT is_active FROM workline_lock_probe WHERE workline_id = :workline_id FOR UPDATE"),
+                        {"workline_id": workline_id},
+                    )
+                    await db.commit()
+                    deactivate_finished.set()
+
+            runtime_task = asyncio.create_task(runtime_precheck())
+            deactivate_task = asyncio.create_task(deactivate())
+            try:
+                await shared_row_locked.wait()
+                await asyncio.sleep(0.1)
+                assert not deactivate_finished.is_set()
+                allow_runtime_commit.set()
+                await asyncio.wait_for(asyncio.gather(runtime_task, deactivate_task), timeout=1)
+                assert deactivate_finished.is_set()
+            finally:
+                allow_runtime_commit.set()
+                await asyncio.gather(runtime_task, deactivate_task, return_exceptions=True)
                 await engine.dispose()
 
     asyncio.run(scenario())
