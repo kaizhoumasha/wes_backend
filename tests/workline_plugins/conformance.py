@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from src.app.runtime.extension_identity import canonical_json, sha256_digest
+from src.app.runtime.extension_identity import canonical_json
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent, RuntimeIntentKind
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge import (
     _system_capability_intents,
@@ -28,9 +28,14 @@ from src.app.runtime.workline_plugins.attempt_coordinator import (
 )
 from src.app.runtime.workline_plugins.contracts import MAX_PLUGIN_DECISION_INTENTS, PluginDecision
 from src.app.runtime.workline_plugins.generated_index import (
+    WORKLINE_PLUGIN_HANDLER_REGISTRATIONS,
     WORKLINE_PLUGIN_IDENTITIES,
     WORKLINE_PLUGIN_INDEX,
     WORKLINE_PLUGIN_INDEX_DIGEST,
+)
+from src.app.runtime.workline_plugins.index_builder import (
+    workline_plugin_handler_identities,
+    workline_plugin_index_digest,
 )
 
 if TYPE_CHECKING:
@@ -103,11 +108,19 @@ class PluginConformanceSuite:
         definition_key = (definition.plugin_key, definition.contract_version)
         assert tuple(WORKLINE_PLUGIN_INDEX) == WORKLINE_PLUGIN_IDENTITIES
         assert definition_key in WORKLINE_PLUGIN_IDENTITIES
-        fixture_index_digest = sha256_digest(
-            tuple(
-                definition.identity if identity == definition_key else WORKLINE_PLUGIN_INDEX[identity].identity
-                for identity in WORKLINE_PLUGIN_IDENTITIES
+        definitions = tuple(
+            definition if identity == definition_key else WORKLINE_PLUGIN_INDEX[identity]
+            for identity in WORKLINE_PLUGIN_IDENTITIES
+        )
+        fixture_index_digest = workline_plugin_index_digest(
+            (
+                indexed_definition,
+                workline_plugin_handler_identities(
+                    indexed_definition,
+                    WORKLINE_PLUGIN_HANDLER_REGISTRATIONS,
+                ),
             )
+            for indexed_definition in definitions
         )
         assert fixture_index_digest == WORKLINE_PLUGIN_INDEX_DIGEST
         assert definition.identity.startswith(f"{definition.plugin_key}@{definition.contract_version}:")

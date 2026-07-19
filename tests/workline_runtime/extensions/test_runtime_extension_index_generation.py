@@ -374,19 +374,11 @@ def test_plugin_digest_changes_when_static_handler_registration_changes() -> Non
     assert builder.build((first,)).digest != builder.build((second,)).digest
 
 
-@pytest.mark.parametrize("kind", ["identity", "route"])
-def test_plugin_builder_rejects_duplicate_identity_or_route(kind: str) -> None:
+def test_plugin_builder_rejects_duplicate_identity() -> None:
     first = plugin_source()
-    if kind == "identity":
-        second = plugin_source(module_name="pkg.duplicate.definition")
-    else:
-        second = plugin_source(
-            plugin_definition(plugin_key="secondary"),
-            module_name="pkg.secondary.definition",
-            directory_key="secondary",
-        )
+    second = plugin_source(module_name="pkg.duplicate.definition")
 
-    with pytest.raises(ValueError, match=f"duplicate {kind}"):
+    with pytest.raises(ValueError, match="duplicate identity"):
         WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY}).build(
             (first, second)
         )
@@ -449,6 +441,48 @@ def test_builder_discovers_author_definition_files_only_at_build_time(
 
     assert len(sources) == 1
     assert imported == [f"{package}.{'inventory.lookup' if kind == 'system' else 'rough_sorter'}.definition"]
+
+
+def test_plugin_builder_keeps_multiple_contract_versions_from_one_plugin_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.app.runtime.workline_plugins.index_builder as builder_module
+
+    root = tmp_path / "plugins"
+    definition_path = root / "rough_sorter" / "definition.py"
+    definition_path.parent.mkdir(parents=True)
+    definition_path.write_text("# multi-version author definition placeholder\n", encoding="utf-8")
+    versions = (
+        plugin_definition(contract_version="v1"),
+        plugin_definition(contract_version="v2"),
+    )
+    route_handlers = {
+        (definition.plugin_key, definition.contract_version, "scan.completed"): ((parse_scan, PluginState),)
+        for definition in versions
+    }
+    module_name = "fixture.plugins.rough_sorter.definition"
+    definition_module = ModuleType(module_name)
+    definition_module.DEFINITIONS = versions  # type: ignore[attr-defined]
+    definition_module.ROUTE_HANDLERS = route_handlers  # type: ignore[attr-defined]
+    monkeypatch.setattr(builder_module.importlib, "import_module", lambda _module_name: definition_module)
+
+    for package_name in ("fixture", "fixture.plugins", "fixture.plugins.rough_sorter"):
+        package_module = ModuleType(package_name)
+        package_module.__path__ = []  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, package_name, package_module)
+    monkeypatch.setitem(sys.modules, module_name, definition_module)
+
+    builder = WorklinePluginIndexBuilder(capability_modes={("inventory.lookup", "v1"): SystemCapabilityMode.QUERY})
+    sources = builder.discover(root=root, package="fixture.plugins")
+    generated = builder.build(sources)
+
+    assert generated.identities == (("rough_sorter", "v1"), ("rough_sorter", "v2"))
+    namespace: dict[str, object] = {}
+    exec(compile(generated.source, "generated_multi_version_plugin_index.py", "exec"), namespace)
+    generated_mapping = namespace["WORKLINE_PLUGIN_INDEX"]
+    assert generated_mapping[("rough_sorter", "v1")] is versions[0]  # type: ignore[index]
+    assert generated_mapping[("rough_sorter", "v2")] is versions[1]  # type: ignore[index]
 
 
 def test_plugin_builder_rejects_unknown_capability_reference() -> None:

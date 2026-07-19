@@ -46,6 +46,43 @@ def _stable_import_identity(value: object) -> str:
     return f"{module}.{qualname}"
 
 
+def workline_plugin_handler_identities(
+    definition: WorklinePluginDefinition,
+    registrations: Mapping[tuple[str, str, str], tuple[tuple[object, object], ...]],
+) -> tuple[tuple[str, str, str], ...]:
+    """提取单个 Definition 实际静态 handler/facts 注册身份。"""
+
+    return stable_sort(
+        (
+            route,
+            _stable_import_identity(handler),
+            _stable_import_identity(facts_model),
+        )
+        for route in definition.routes
+        for handler, facts_model in registrations.get(
+            (definition.plugin_key, definition.contract_version, route),
+            (),
+        )
+    )
+
+
+def workline_plugin_index_digest(
+    entries: Iterable[tuple[WorklinePluginDefinition, tuple[tuple[str, str, str], ...]]],
+) -> str:
+    """按生成器唯一算法计算 Definition 与静态 registrations 的摘要。"""
+
+    ordered = stable_sort(entries, key=lambda item: (item[0].plugin_key, item[0].contract_version))
+    return sha256_digest(
+        tuple(
+            {
+                "definition_identity": definition.identity,
+                "handler_registrations": handler_identities,
+            }
+            for definition, handler_identities in ordered
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class WorklinePluginSource:
     """构建期发现的单个 Definition 及其稳定 import 来源。"""
@@ -54,6 +91,7 @@ class WorklinePluginSource:
     directory_key: str
     definition: WorklinePluginDefinition
     export_name: str = "DEFINITION"
+    export_index: int | None = None
     handler_identities: tuple[tuple[str, str, str], ...] = ()
 
 
@@ -86,32 +124,35 @@ class WorklinePluginIndexBuilder:
             relative_parent = path.parent.relative_to(root)
             module_name = ".".join((package, *relative_parent.parts, "definition"))
             module = importlib.import_module(module_name)
-            definition = getattr(module, "DEFINITION", None)
-            if not isinstance(definition, WorklinePluginDefinition):
-                raise TypeError(f"{module_name}.DEFINITION must be WorklinePluginDefinition")
+            authored_definitions = getattr(module, "DEFINITIONS", None)
+            if authored_definitions is None:
+                definition = getattr(module, "DEFINITION", None)
+                if not isinstance(definition, WorklinePluginDefinition):
+                    raise TypeError(f"{module_name}.DEFINITION must be WorklinePluginDefinition")
+                definition_exports = ((definition, "DEFINITION", None),)
+            else:
+                if not isinstance(authored_definitions, tuple) or not authored_definitions:
+                    raise TypeError(f"{module_name}.DEFINITIONS must be a non-empty tuple")
+                if not all(isinstance(item, WorklinePluginDefinition) for item in authored_definitions):
+                    raise TypeError(f"{module_name}.DEFINITIONS must contain only WorklinePluginDefinition")
+                definition_exports = tuple(
+                    (definition, "DEFINITIONS", index) for index, definition in enumerate(authored_definitions)
+                )
             route_handlers = getattr(module, "ROUTE_HANDLERS", None)
             if not isinstance(route_handlers, Mapping):
                 raise TypeError(f"{module_name}.ROUTE_HANDLERS must be a static mapping")
-            handler_identities = stable_sort(
-                (
-                    route,
-                    _stable_import_identity(handler),
-                    _stable_import_identity(facts_model),
+            for definition, export_name, export_index in definition_exports:
+                handler_identities = workline_plugin_handler_identities(definition, route_handlers)
+                sources.append(
+                    WorklinePluginSource(
+                        module_name=module_name,
+                        directory_key=".".join(relative_parent.parts),
+                        definition=definition,
+                        export_name=export_name,
+                        export_index=export_index,
+                        handler_identities=handler_identities,
+                    )
                 )
-                for route in definition.routes
-                for handler, facts_model in route_handlers.get(
-                    (definition.plugin_key, definition.contract_version, route),
-                    (),
-                )
-            )
-            sources.append(
-                WorklinePluginSource(
-                    module_name=module_name,
-                    directory_key=".".join(relative_parent.parts),
-                    definition=definition,
-                    handler_identities=handler_identities,
-                )
-            )
         return tuple(sources)
 
     def build(self, sources: Iterable[WorklinePluginSource]) -> GeneratedWorklinePluginIndex:
@@ -119,7 +160,7 @@ class WorklinePluginIndexBuilder:
 
         ordered = stable_sort(sources, key=lambda item: self._identity_key(item.definition))
         seen_identities: set[tuple[str, str]] = set()
-        seen_routes: set[str] = set()
+        seen_routes: set[tuple[str, str, str]] = set()
         for source in ordered:
             definition = source.definition
             identity = self._identity_key(definition)
@@ -132,9 +173,10 @@ class WorklinePluginIndexBuilder:
                 )
             self._validate_definition_contract(definition)
             for route in definition.routes:
-                if route in seen_routes:
-                    raise ValueError(f"duplicate route: {route}")
-                seen_routes.add(route)
+                route_identity = (*identity, route)
+                if route_identity in seen_routes:
+                    raise ValueError(f"duplicate route: {route_identity[0]}@{route_identity[1]}:{route}")
+                seen_routes.add(route_identity)
             for capability in definition.allowed_capabilities:
                 mode = self._capability_modes.get(capability)
                 if mode is None:
@@ -148,15 +190,7 @@ class WorklinePluginIndexBuilder:
                 self._require_identity(facts_model_identity, field_name="facts model identity")
 
         identities = tuple(self._identity_key(item.definition) for item in ordered)
-        digest = sha256_digest(
-            tuple(
-                {
-                    "definition_identity": item.definition.identity,
-                    "handler_registrations": item.handler_identities,
-                }
-                for item in ordered
-            )
-        )
+        digest = workline_plugin_index_digest((item.definition, item.handler_identities) for item in ordered)
         return GeneratedWorklinePluginIndex(
             identities=identities,
             digest=digest,
@@ -453,8 +487,8 @@ class WorklinePluginIndexBuilder:
         ]
         mapping_entries = [
             f"        ({json.dumps(key, ensure_ascii=False)}, {json.dumps(version, ensure_ascii=False)}): "
-            f"_DEFINITION_{index},"
-            for index, (key, version) in enumerate(identities)
+            f"_DEFINITION_{index}{'' if source.export_index is None else f'[{source.export_index}]'},"
+            for index, ((key, version), source) in enumerate(zip(identities, sources, strict=True))
         ]
         handler_mapping_entries = [
             line
@@ -521,4 +555,6 @@ __all__ = [
     "GeneratedWorklinePluginIndex",
     "WorklinePluginIndexBuilder",
     "WorklinePluginSource",
+    "workline_plugin_handler_identities",
+    "workline_plugin_index_digest",
 ]
