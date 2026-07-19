@@ -112,6 +112,29 @@ class DeviceRepository(BaseRepository[Device]):
         )
         return list(result.scalars().all())
 
+    async def get_by_work_line_id_for_update(
+        self,
+        db: AsyncSession,
+        work_line_id: int,
+    ) -> list[Device]:
+        """锁定作业线设备事实，防止运行态版本在决策校验后、事务提交前漂移。"""
+
+        result = await db.execute(
+            select(Device)
+            .where(
+                Device.work_line_id == work_line_id,  # type: ignore[arg-type]
+                Device.is_deleted.is_(False),  # type: ignore[arg-type]
+            )
+            .order_by(
+                Device.sort_order.asc(),  # type: ignore[arg-type]
+                Device.role_index.asc(),  # type: ignore[arg-type]
+                Device.id.asc(),  # type: ignore[arg-type]
+            )
+            .execution_options(populate_existing=True)
+            .with_for_update()
+        )
+        return list(result.scalars().all())
+
     async def get_heartbeat_stale_devices(
         self,
         db: AsyncSession,

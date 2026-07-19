@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+from sqlalchemy.exc import DBAPIError
 
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult, IdempotencyConflict
 from src.app.runtime.orchestration.system_capability_effect_claim import SystemCapabilityIdempotencyConflict
@@ -130,6 +131,10 @@ class SystemCapabilityEffectService:
                 timeout=min(float(intent.timeout_seconds or definition.timeout_seconds), definition.timeout_seconds),
             )
             outcome = self._normalize_outcome(raw, output_model=definition.output_model)
+        except DBAPIError:
+            # PostgreSQL 数据库异常会使当前事务失效；必须交由外层统一 rollback，
+            # 不能继续使用同一会话写 RetryableFailure evidence。
+            raise
         except TimeoutError:
             outcome = RetryableFailure(error_code="TIMEOUT", message="system capability effect timed out")
         except Exception:

@@ -141,7 +141,7 @@ async def test_writeback_reloads_device_snapshot_under_shared_workline_lock() ->
             events.append("topology-shared-lock")
 
     class DeviceRepository:
-        async def get_by_work_line_id(self, _db: object, workline_id: int) -> list[SimpleNamespace]:
+        async def get_by_work_line_id_for_update(self, _db: object, workline_id: int) -> list[SimpleNamespace]:
             assert workline_id == 8
             events.append("topology-reload")
             return [
@@ -170,6 +170,196 @@ async def test_writeback_reloads_device_snapshot_under_shared_workline_lock() ->
         )
 
     assert events == ["authoritative-lock", "topology-shared-lock", "topology-reload", "rollback"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "typed_config_json",
+    [
+        {"device_roles": {"input_arm": "ROUGH_SORTER_INPUT_ARM"}},
+        {"required_device_codes": ["RS-IN-01"]},
+    ],
+    ids=["device-roles", "legacy-required-device-codes"],
+)
+async def test_writeback_device_fact_version_race_returns_safe_retry_without_writes(
+    typed_config_json: dict[str, object],
+) -> None:
+    from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
+        RuntimeInboxWriteBackService,
+    )
+    from src.app.runtime.workline_plugins.attempt_coordinator import (
+        AttemptSnapshot,
+        AttemptWriteSet,
+        WriteDisposition,
+    )
+
+    events: list[str] = []
+    role = "ROUGH_SORTER_INPUT_ARM"
+    snapshot = AttemptSnapshot(
+        processor_token="lease-1",
+        session_version=7,
+        plugin_state_version=3,
+        binding_id=17,
+        device_fact_versions=((role, 1, 5),),
+    )
+    binding = SimpleNamespace(
+        id=17,
+        workline_id=8,
+        typed_config_json=typed_config_json,
+        device_snapshot_json=[
+            {
+                "device_id": 1,
+                "device_code": "RS-IN-01",
+                "device_role": role,
+                "workline_id": 8,
+                "provider_code": "ECS",
+            }
+        ],
+        is_enabled=True,
+        is_revoked=False,
+        environment="sandbox",
+        valid_from=None,
+        valid_until=None,
+    )
+
+    class Db:
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+        async def commit(self) -> None:
+            events.append("MUST_NOT_COMMIT")
+
+    class Repository:
+        async def lock_authoritative(self, *_args: object, **_kwargs: object) -> object:
+            events.append("authoritative-lock")
+            return SimpleNamespace(
+                inbox=SimpleNamespace(processor_token="lease-1"),
+                session=SimpleNamespace(
+                    version=7,
+                    plugin_state_version=3,
+                    plugin_state_json={"phase": "READY"},
+                    plugin_binding_id=17,
+                ),
+                plugin_binding=binding,
+            )
+
+        async def persist_locked_attempt(self, *_args: object, **_kwargs: object) -> None:
+            events.append("MUST_NOT_PERSIST")
+
+    class WorklineRepository:
+        async def acquire_plugin_pin_shared(self, _db: object, workline_id: int) -> None:
+            assert workline_id == 8
+            events.append("topology-shared-lock")
+
+    class DeviceRepository:
+        async def get_by_work_line_id_for_update(self, _db: object, workline_id: int) -> list[SimpleNamespace]:
+            assert workline_id == 8
+            events.append("device-fact-reload")
+            return [
+                SimpleNamespace(
+                    id=1,
+                    version=6,
+                    device_code="RS-IN-01",
+                    device_role=role,
+                    work_line_id=8,
+                    vendor_type="ECS",
+                )
+            ]
+
+    class InboxService:
+        async def mark_processed(self, *_args: object, **_kwargs: object) -> bool:
+            events.append("MUST_NOT_TERMINAL")
+            return True
+
+    disposition = await RuntimeInboxWriteBackService(
+        plugin_attempt_repository=Repository(),
+        inbox_service=InboxService(),  # type: ignore[arg-type]
+        workline_repository=WorklineRepository(),
+        device_repository=DeviceRepository(),
+    ).commit_plugin_attempt(
+        Db(),
+        expected_snapshot=snapshot,
+        inbox_id=91,
+        session_id=41,
+        workline_id=8,
+        trace_id="trace-1",
+        write_set=AttemptWriteSet(evidence=(), next_state={"phase": "NEXT"}, intents=()),
+    )
+
+    assert disposition is WriteDisposition.SAFE_RETRY
+    assert events == ["authoritative-lock", "topology-shared-lock", "device-fact-reload", "rollback"]
+
+
+@pytest.mark.asyncio
+async def test_device_repository_workline_snapshot_query_requests_row_lock() -> None:
+    from src.app.device.repositories.device_repository import DeviceRepository
+
+    devices = [SimpleNamespace(id=1)]
+
+    class Result:
+        def scalars(self) -> object:
+            return SimpleNamespace(all=lambda: devices)
+
+    class Db:
+        statement: object | None = None
+
+        async def execute(self, statement: object) -> Result:
+            self.statement = statement
+            return Result()
+
+    db = Db()
+    result = await DeviceRepository().get_by_work_line_id_for_update(db, 8)  # type: ignore[arg-type]
+
+    assert result == devices
+    assert getattr(db.statement, "_for_update_arg", None) is not None
+    assert "work_line_id" in str(db.statement)
+
+
+@pytest.mark.asyncio
+async def test_device_repository_locked_snapshot_refreshes_stale_identity_map() -> None:
+    from sqlalchemy import event, select, update
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from src.app.device.models import Device, DeviceStatus
+    from src.app.device.repositories.device_repository import DeviceRepository
+    from src.app.workline.models.workline import WorkLine
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def attach_schema(dbapi_connection: object, _connection_record: object) -> None:
+        dbapi_connection.execute("ATTACH DATABASE ':memory:' AS wes_biz")  # type: ignore[attr-defined]
+
+    async with engine.begin() as connection:
+        await connection.run_sync(WorkLine.__table__.create)
+        await connection.run_sync(Device.__table__.create)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    async with sessions() as first, sessions() as second:
+        device = Device(
+            device_code="RS-IN-STALE",
+            device_name="Rough sorter input",
+            device_role="ROUGH_SORTER_INPUT_ARM",
+            work_line_id=8,
+            version=5,
+        )
+        first.add(device)
+        await first.commit()
+        cached = await first.scalar(select(Device).where(Device.id == device.id))
+        assert cached is device
+        assert cached.version == 5
+
+        await second.execute(
+            update(Device).where(Device.id == device.id).values(version=6, device_status=DeviceStatus.RUNNING)
+        )
+        await second.commit()
+        assert cached.version == 5
+
+        locked = await DeviceRepository().get_by_work_line_id_for_update(first, 8)
+
+        assert locked == [cached]
+        assert locked[0].version == 6
+        assert locked[0].device_status is DeviceStatus.RUNNING
+    await engine.dispose()
 
 
 @pytest.mark.parametrize("invalid_number", [float("nan"), float("inf"), float("-inf")])

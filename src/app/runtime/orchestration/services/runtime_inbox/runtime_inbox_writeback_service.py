@@ -151,6 +151,27 @@ def _authoritative_snapshot_matches(locked: Any, expected: AttemptSnapshot) -> b
     )
 
 
+def _device_fact_versions(devices_by_role: dict[str, list[Any]]) -> tuple[tuple[str, int, int], ...]:
+    """把 Stage 3 重载设备归一为可与 Stage 1 immutable snapshot 比较的事实版本。"""
+
+    facts: list[tuple[str, int, int]] = []
+    for role, devices in devices_by_role.items():
+        for device in devices:
+            device_id = getattr(device, "id", None)
+            version = getattr(device, "version", None)
+            if (
+                isinstance(role, str)
+                and role
+                and isinstance(device_id, int)
+                and not isinstance(device_id, bool)
+                and isinstance(version, int)
+                and not isinstance(version, bool)
+                and version >= 0
+            ):
+                facts.append((role, device_id, version))
+    return tuple(sorted(facts))
+
+
 def _session_status_value(session: Any) -> str | None:
     value = getattr(getattr(session, "status", None), "value", getattr(session, "status", None))
     return value if isinstance(value, str) and value else None
@@ -449,20 +470,34 @@ class RuntimeInboxWriteBackService:
                     now=timezone.now_utc(),
                 )
                 typed_config = getattr(locked_binding, "typed_config_json", {}) or {}
-                if isinstance(typed_config, dict) and isinstance(typed_config.get("device_roles"), dict):
-                    # Stage 1 已释放事务；Stage 3 必须与设备拓扑 CRUD 共享锁，
-                    # 并在锁内重载完整集合，防止 QUERY 期间新增/换绑设备形成幻读。
+                device_roles = typed_config.get("device_roles") if isinstance(typed_config, dict) else None
+                required_device_codes = (
+                    typed_config.get("required_device_codes") if isinstance(typed_config, dict) else None
+                )
+                has_device_dependency = (
+                    isinstance(device_roles, dict)
+                    or isinstance(required_device_codes, (list, tuple))
+                    or bool(expected_snapshot.device_fact_versions)
+                )
+                if has_device_dependency:
+                    # Stage 1 对新旧设备 binding 都固定事实；Stage 3 必须与设备拓扑 CRUD 共享锁，
+                    # 并锁定重载行直至提交，防止 QUERY 期间新增、换绑或状态更新后提交陈旧决策。
                     await self._workline_repository.acquire_plugin_pin_shared(db, workline_id)
-                    current_devices = await self._device_repository.get_by_work_line_id(db, workline_id)
+                    current_devices = await self._device_repository.get_by_work_line_id_for_update(db, workline_id)
                     current_devices_by_role: dict[str, list[Any]] = {}
                     for current_device in current_devices:
                         role = getattr(current_device, "device_role", None)
                         if isinstance(role, str) and role:
                             current_devices_by_role.setdefault(role, []).append(current_device)
-                    workline_plugin_binding_service.assert_device_snapshot(
-                        locked_binding,
-                        devices_by_role=current_devices_by_role,
-                    )
+                    if isinstance(device_roles, dict):
+                        workline_plugin_binding_service.assert_device_snapshot(
+                            locked_binding,
+                            devices_by_role=current_devices_by_role,
+                        )
+                    current_device_fact_versions = _device_fact_versions(current_devices_by_role)
+                    if current_device_fact_versions != tuple(sorted(expected_snapshot.device_fact_versions)):
+                        await db.rollback()
+                        return WriteDisposition.SAFE_RETRY
         except Exception:
             await db.rollback()
             raise

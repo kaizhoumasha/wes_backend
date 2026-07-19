@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
+from sqlalchemy.exc import IntegrityError
 
 from src.app.runtime.orchestration.runtime_intent import RuntimeIntent
 from src.app.runtime.orchestration.services.idempotency_guard import ClaimResult, IdempotencyConflict
@@ -69,6 +70,12 @@ class _FailingHandler:
     async def __call__(self, request: _Input, *, execution: object) -> object:
         _ = request, execution
         raise RuntimeError("provider secret")
+
+
+class _DatabaseFailingHandler:
+    async def __call__(self, request: _Input, *, execution: object) -> object:
+        _ = request, execution
+        raise IntegrityError("INSERT device_commands", {}, RuntimeError("duplicate command identity"))
 
 
 def _definition(
@@ -762,6 +769,16 @@ async def test_unknown_handler_exception_is_redacted_retryable_unknown() -> None
     assert isinstance(result.outcome, RetryableFailure)
     assert result.outcome.error_code == "UNKNOWN"
     assert "secret" not in result.outcome.message
+
+
+@pytest.mark.asyncio
+async def test_handler_database_error_propagates_without_recording_outcome() -> None:
+    repository = _EffectRepository(ClaimResult.NEW)
+
+    with pytest.raises(IntegrityError, match="duplicate command identity"):
+        await _service(_definition(_DatabaseFailingHandler), repository).apply(_ctx(), _intent())
+
+    assert repository.outcomes == []
 
 
 @pytest.mark.asyncio
