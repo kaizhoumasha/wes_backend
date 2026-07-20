@@ -13,6 +13,7 @@ import pytest
 
 from src.app.contracts.external_contract_profile import ExternalContractProfile
 from src.app.runtime.orchestration import repository_wiring
+from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.workline.models import WorkLine
 from src.app.workline.services import (
     WorklineMigrationInventoryInvariantError,
@@ -77,6 +78,14 @@ def _workline(
     )
 
 
+def _pin_current(source: SimpleNamespace) -> SimpleNamespace:
+    source.active_plugin_binding_id = source.id + 100
+    source.active_plugin_binding_version = 1
+    source.active_plugin_config_hash = "a" * 64
+    source.active_plugin_index_digest = WORKLINE_PLUGIN_INDEX_DIGEST
+    return source
+
+
 def _summary(
     *,
     count: int = 0,
@@ -136,7 +145,7 @@ def _service(
 @pytest.mark.parametrize(
     ("active", "plugin", "version", "references", "expected_codes", "foundation_ready"),
     [
-        (True, "known", "current", 0, (), True),
+        (True, "known", "current", 0, ("ACTIVE_PLUGIN_BINDING_INCOMPLETE",), False),
         (
             True,
             None,
@@ -193,6 +202,7 @@ async def test_workline_fields_are_normalized_before_catalog_lookup_and_classifi
         version=" current ",
         run_mode=" AUTO ",
     )
+    _pin_current(source)
 
     report = await _service(FakeRepository([source])).build_report(object(), environment="production")
 
@@ -222,6 +232,38 @@ async def test_inventory_digest_includes_binding_index_and_per_workline_requirem
     assert first.worklines[0].active_plugin_binding_id == 11
     assert first.worklines[0].provider_requirements == ("WMS@v1",)
     assert first.inventory_digest != second.inventory_digest
+
+
+@pytest.mark.asyncio
+async def test_active_generated_plugin_with_complete_current_binding_is_foundation_ready() -> None:
+    source = _workline(1, "LINE-01", active=True, plugin="known", version="current")
+    source.active_plugin_binding_id = 11
+    source.active_plugin_binding_version = 2
+    source.active_plugin_config_hash = "a" * 64
+    source.active_plugin_index_digest = WORKLINE_PLUGIN_INDEX_DIGEST
+
+    report = await _service(FakeRepository([source])).build_report(object(), environment="production")
+
+    assert report.worklines[0].issues == ()
+    assert report.worklines[0].foundation_ready is True
+    assert report.foundation_ready is True
+
+
+@pytest.mark.asyncio
+async def test_active_generated_plugin_with_stale_index_digest_blocks_foundation() -> None:
+    source = _workline(1, "LINE-01", active=True, plugin="known", version="current")
+    source.active_plugin_binding_id = 11
+    source.active_plugin_binding_version = 2
+    source.active_plugin_config_hash = "a" * 64
+    source.active_plugin_index_digest = ("0" if WORKLINE_PLUGIN_INDEX_DIGEST[0] != "0" else "1") + (
+        WORKLINE_PLUGIN_INDEX_DIGEST[1:]
+    )
+
+    report = await _service(FakeRepository([source])).build_report(object(), environment="production")
+
+    assert tuple(issue.code.value for issue in report.worklines[0].issues) == ("ACTIVE_PLUGIN_INDEX_DIGEST_MISMATCH",)
+    assert report.worklines[0].foundation_ready is False
+    assert report.foundation_ready is False
 
 
 @pytest.mark.asyncio
@@ -365,7 +407,7 @@ async def test_known_plugin_without_version_is_contract_mismatch_even_when_inact
 
 @pytest.mark.asyncio
 async def test_capability_catalog_fields_are_normalized_before_lookup() -> None:
-    source = _workline(1, "LINE", active=True, plugin="known", version="current")
+    source = _pin_current(_workline(1, "LINE", active=True, plugin="known", version="current"))
 
     report = await _service(
         FakeRepository([source]),
@@ -380,8 +422,8 @@ async def test_capability_catalog_fields_are_normalized_before_lookup() -> None:
 @pytest.mark.asyncio
 async def test_capability_catalog_resolves_coexisting_versions_by_exact_identity() -> None:
     worklines = [
-        _workline(1, "LINE-V2", active=True, plugin="known", version="v2"),
-        _workline(2, "LINE-V3", active=True, plugin="known", version="v3"),
+        _pin_current(_workline(1, "LINE-V2", active=True, plugin="known", version="v2")),
+        _pin_current(_workline(2, "LINE-V3", active=True, plugin="known", version="v3")),
     ]
 
     report = await _service(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -32,6 +33,15 @@ if TYPE_CHECKING:
 
 class PluginBindingAdmissionError(RuntimeError):
     """binding 激活或执行准入失败；调用方必须 fail closed。"""
+
+
+@dataclass(frozen=True, slots=True)
+class _PluginBindingActivationPlan:
+    definition: Any
+    typed_config: dict[str, Any]
+    profiles: tuple[Any, ...]
+    port_requirements: tuple[str, ...]
+    device_snapshot: tuple[dict[str, Any], ...]
 
 
 class _BindingRepository(Protocol):
@@ -115,6 +125,51 @@ class WorklinePluginBindingService:
                 current_version=current_version,
                 provided_version=expected_workline_version,
             )
+        plan = self.validate_activation_configuration(
+            workline=workline,
+            environment=environment,
+            devices=devices,
+        )
+
+        binding_version = await self.repository.next_binding_version(
+            db, workline_id, plan.definition.plugin_key, plan.definition.contract_version
+        )
+        activated_at = self.clock()
+        # WorkLine active pin 由 WorkLineService 通过乐观更新原子切换；此处只追加 immutable row。
+        return await self.repository.create_immutable(
+            db,
+            {
+                "workline_id": workline_id,
+                "plugin_key": plan.definition.plugin_key,
+                "contract_version": plan.definition.contract_version,
+                "binding_version": binding_version,
+                "typed_config_json": plan.typed_config,
+                "typed_config_hash": sha256_digest(plan.typed_config),
+                "provider_profile_snapshot_json": [profile.model_dump(mode="json") for profile in plan.profiles],
+                "port_requirements_json": list(plan.port_requirements),
+                "device_snapshot_json": list(plan.device_snapshot),
+                "generated_index_digest": self.plugin_index_digest,
+                "environment": environment,
+                "activated_at": activated_at,
+                "activated_by": actor,
+                "activated_reason": reason,
+                "valid_from": activated_at,
+                "is_enabled": True,
+            },
+        )
+
+    def validate_activation_configuration(
+        self,
+        *,
+        workline: Any,
+        environment: str,
+        devices: Sequence[Any],
+    ) -> _PluginBindingActivationPlan:
+        """无副作用地校验并规范化 typed config、Provider/Port 与设备角色。"""
+
+        workline_id = getattr(workline, "id", None)
+        if not isinstance(workline_id, int):
+            raise PluginBindingAdmissionError("workline id 缺失")
         identity = (getattr(workline, "plugin_key", None), getattr(workline, "contract_version", None))
         definition = self.plugin_index.get(identity)
         if definition is None:
@@ -173,31 +228,12 @@ class WorklinePluginBindingService:
             devices=devices,
         )
 
-        binding_version = await self.repository.next_binding_version(
-            db, workline_id, definition.plugin_key, definition.contract_version
-        )
-        activated_at = self.clock()
-        # WorkLine active pin 由 WorkLineService 通过乐观更新原子切换；此处只追加 immutable row。
-        return await self.repository.create_immutable(
-            db,
-            {
-                "workline_id": workline_id,
-                "plugin_key": definition.plugin_key,
-                "contract_version": definition.contract_version,
-                "binding_version": binding_version,
-                "typed_config_json": typed_config,
-                "typed_config_hash": sha256_digest(typed_config),
-                "provider_profile_snapshot_json": [profile.model_dump(mode="json") for profile in profiles],
-                "port_requirements_json": port_requirements,
-                "device_snapshot_json": device_snapshot,
-                "generated_index_digest": self.plugin_index_digest,
-                "environment": environment,
-                "activated_at": activated_at,
-                "activated_by": actor,
-                "activated_reason": reason,
-                "valid_from": activated_at,
-                "is_enabled": True,
-            },
+        return _PluginBindingActivationPlan(
+            definition=definition,
+            typed_config=typed_config,
+            profiles=tuple(profiles),
+            port_requirements=tuple(port_requirements),
+            device_snapshot=tuple(device_snapshot),
         )
 
     @staticmethod

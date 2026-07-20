@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from src.app.contracts.external_contract_profile_catalog import list_external_contract_profiles
 from src.app.runtime.orchestration.repository_wiring import workline_repository
+from src.app.runtime.workline_plugins.generated_index import WORKLINE_PLUGIN_INDEX_DIGEST
 from src.app.runtime.workline_plugins.registry import list_workline_capability_definitions
 from src.app.workline.models import (
     WorkLine,
@@ -325,6 +326,10 @@ class WorklineMigrationInventoryService:
                 and isinstance(configured_version, str)
                 and (plugin_key, configured_version) in capability_catalog
             ),
+            active_binding_id=active_binding_id,
+            active_binding_version=active_binding_version,
+            active_config_hash=active_config_hash,
+            active_index_digest=active_index_digest,
             reference_total=runtime_references.total,
         )
         try:
@@ -466,6 +471,10 @@ class WorklineMigrationInventoryService:
         configured_version: Any,
         plugin_known: bool,
         catalog_identity_matched: bool,
+        active_binding_id: int | None,
+        active_binding_version: int | None,
+        active_config_hash: str | None,
+        active_index_digest: str | None,
         reference_total: int,
     ) -> tuple[WorklineMigrationInventoryIssue, ...]:
         issue_specs: list[tuple[WorklineMigrationInventoryIssueCode, WorklineMigrationInventorySeverity, str]] = []
@@ -503,6 +512,24 @@ class WorklineMigrationInventoryService:
                     "配置合同版本与 catalog 不一致",
                 )
             )
+        if is_active is True and catalog_identity_matched:
+            active_pin = (active_binding_id, active_binding_version, active_config_hash, active_index_digest)
+            if any(value is None for value in active_pin):
+                issue_specs.append(
+                    (
+                        WorklineMigrationInventoryIssueCode.ACTIVE_PLUGIN_BINDING_INCOMPLETE,
+                        WorklineMigrationInventorySeverity.BLOCKER,
+                        "启用的平台插件作业线缺少完整 active binding pin",
+                    )
+                )
+            elif active_index_digest != WORKLINE_PLUGIN_INDEX_DIGEST:
+                issue_specs.append(
+                    (
+                        WorklineMigrationInventoryIssueCode.ACTIVE_PLUGIN_INDEX_DIGEST_MISMATCH,
+                        WorklineMigrationInventorySeverity.BLOCKER,
+                        "启用的平台插件作业线 binding 索引摘要已过期",
+                    )
+                )
         if reference_total > 0:
             issue_specs.append(
                 (

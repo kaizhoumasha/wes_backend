@@ -459,6 +459,31 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
         devices = await device_repository.get_by_work_line_id(db, workline_id)
         rack_positions = await self._list_rack_positions(db, workline)
         checks = self._build_configuration_checks(workline, devices, rack_positions)
+        if self.plugin_binding_service.manages(workline):
+            try:
+                self.plugin_binding_service.validate_activation_configuration(
+                    workline=workline,
+                    environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
+                    devices=devices,
+                )
+            except PluginBindingAdmissionError:
+                checks.append(
+                    self._check(
+                        "PLUGIN_BINDING_ADMISSION",
+                        _FAIL,
+                        _BLOCKER,
+                        {"message": "插件 typed config、设备或外部合同准入失败"},
+                    )
+                )
+            else:
+                checks.append(
+                    self._check(
+                        "PLUGIN_BINDING_ADMISSION",
+                        _OK,
+                        "INFO",
+                        {"message": "插件 typed binding 准入通过"},
+                    )
+                )
         can_activate = self._can_activate(checks)
         return WorkLineConfigurationStatus(
             workline_id=workline_id,

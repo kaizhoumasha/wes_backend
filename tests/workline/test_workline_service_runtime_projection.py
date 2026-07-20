@@ -343,6 +343,49 @@ def test_unknown_plugin_identity_remains_activation_blocker() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"extra": True},
+        {
+            "device_roles": {
+                "input_arm": "ROUGH_SORTER_INPUT_ARM",
+                "conveyor": "ROUGH_SORTER_CONVEYOR",
+                "output_arm": "ROUGH_SORTER_OUTPUT_ARM",
+            },
+            "pipeline_input_location": "PIPELINE-IN-01",
+            "pipeline_output_location": "PIPELINE-OUT-01",
+            "ng_location": "NG-01",
+            "warehouse_code": "WH-01",
+            "owner_code": "OWNER-01",
+            "provider_profile": "wms.unknown.sandbox",
+        },
+    ],
+)
+async def test_configuration_status_blocks_typed_binding_admission_failure(monkeypatch, config) -> None:
+    repository = _WorkLineRepositoryStub()
+    repository.current.plugin_key = "rough_sorter"
+    repository.current.contract_version = "rough_sorter.v2"
+    repository.current.config = config
+    service = WorkLineService(repository=repository, plugin_binding_service=workline_plugin_binding_service)
+    workline_service_module = importlib.import_module("src.app.workline.services.workline_service")
+    monkeypatch.setattr(
+        workline_service_module,
+        "device_repository",
+        SimpleNamespace(get_by_work_line_id=AsyncMock(return_value=[])),
+    )
+    monkeypatch.setattr(service, "_list_rack_positions", AsyncMock(return_value=[]))
+    monkeypatch.setattr(service, "_build_configuration_checks", lambda *_args, **_kwargs: [])
+
+    status = await service.configuration_status(object(), repository.current.id)
+
+    assert status.can_activate is False
+    assert [(check.code, check.status, check.severity) for check in status.checks] == [
+        ("PLUGIN_BINDING_ADMISSION", "FAIL", "BLOCKER")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_active_platform_plugin_reapproval_appends_binding_and_switches_pin_atomically(monkeypatch):
     db = _Db()
     repository = _WorkLineRepositoryStub()
