@@ -385,10 +385,14 @@ class WorkLineService(BaseService[WorkLine, WorkLineRepository]):
             raise ValueError(f"WorkLine 不存在: {id}")
 
         await self._reject_active_configuration_update(db, current, data)
-        plugin_key = self._resolve_plugin_key(data, current)
-        contract_version = data.get("contract_version", getattr(current, "contract_version", None))
-        self._validate_plugin_key(plugin_key, contract_version)
-        self._validate_plugin_contract_version(data, current=current)
+        plugin_identity_changed = (
+            "plugin_key" in data and data.get("plugin_key") != getattr(current, "plugin_key", None)
+        ) or ("contract_version" in data and data.get("contract_version") != getattr(current, "contract_version", None))
+        if plugin_identity_changed:
+            plugin_key = self._resolve_plugin_key(data, current)
+            contract_version = data.get("contract_version", getattr(current, "contract_version", None))
+            self._validate_plugin_key(plugin_key, contract_version)
+            self._validate_plugin_contract_version(data, current=current)
         self._validate_run_mode(data, current=current)
         self._validate_runtime_config(data, current=current)
         self._apply_runtime_defaults(data, current=current)

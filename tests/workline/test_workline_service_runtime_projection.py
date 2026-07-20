@@ -163,6 +163,21 @@ async def test_restore_seeds_default_runtime_status_projection_before_commit():
 
 
 @pytest.mark.asyncio
+async def test_legacy_smt_workline_can_update_non_plugin_fields() -> None:
+    db = _Db()
+    repository = _WorkLineRepositoryStub()
+    repository.current.plugin_key = SMT_SORTING_INBOUND_PLUGIN_KEY
+    repository.current.contract_version = SMT_SORTING_INBOUND_CONTRACT_VERSION
+    service = WorkLineService(repository=repository, runtime_status_projection_service=_RuntimeStatusProjectionSpy())
+
+    updated = await service.update(db, repository.current.id, {"line_name": "SMT 入库线（更新）"})
+
+    assert updated is repository.current
+    assert repository.update_calls == [(repository.current.id, {"line_name": "SMT 入库线（更新）"})]
+    assert db.commit_count == 1
+
+
+@pytest.mark.asyncio
 async def test_activate_seeds_default_runtime_status_projection_before_state_update(monkeypatch):
     db = _Db()
     call_order: list[str] = []

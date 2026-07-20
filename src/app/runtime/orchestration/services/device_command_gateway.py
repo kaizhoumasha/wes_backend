@@ -853,6 +853,23 @@ class DeviceCommandGateway:
     def __init__(self) -> None:
         pass
 
+    async def resolve_runtime_correlation_id(
+        self,
+        db: object,
+        *,
+        command_code: str,
+        command_id: int | None,
+    ) -> str | None:
+        """经 device Service 边界读取命令创建时固定的 correlation。"""
+
+        from src.app.device.services.device_command_service import device_command_service
+
+        return await device_command_service.get_runtime_correlation_id(
+            db,  # type: ignore[arg-type]
+            command_code=command_code,
+            command_id=command_id,
+        )
+
     async def reserve_sandbox_command(self, db: Any, outbox: Any) -> bool:
         """沙箱设备命令进入待回传队列时，占用 WES 侧设备运行态。"""
 
@@ -1063,6 +1080,10 @@ async def prepare_runtime_device_command_effect(
         device_command_service,
     )
 
+    execution_correlation_id = ctx.get("correlation_id")
+    if not isinstance(execution_correlation_id, str) or not execution_correlation_id:
+        raise ValueError("runtime device command requires execution correlation")
+
     try:
         return await device_command_service.prepare_runtime_effect(
             ctx["db"],
@@ -1075,6 +1096,7 @@ async def prepare_runtime_device_command_effect(
             session=ctx["session"],
             workline=ctx["workline"],
             idempotency_key=execution.idempotency_key,  # type: ignore[attr-defined]
+            execution_correlation_id=execution_correlation_id,
             trace_id=ctx.get("trace_id"),
         )
     except StaleDeviceCommandPrecondition as exc:

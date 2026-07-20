@@ -129,6 +129,7 @@ async def _prepare(
         session=SimpleNamespace(id=10, workline_id=3, plugin_key="demo", contract_version="v1"),
         workline=SimpleNamespace(id=3, plugin_key="demo"),
         idempotency_key="device:71:dispatch",
+        execution_correlation_id="corr-device-71-dispatch",
         trace_id="trace-1",
     )
 

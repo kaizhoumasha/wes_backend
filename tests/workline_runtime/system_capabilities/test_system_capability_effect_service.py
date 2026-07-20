@@ -996,11 +996,13 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
         session=session,
         workline=SimpleNamespace(id=41, plugin_key="rough_sorter"),
         idempotency_key="system-capability:device.device_command_write@v1:session:31:work-item:41:pick-1",
+        execution_correlation_id="corr-device-effect",
         trace_id="trace-device-effect",
     )
 
     assert isinstance(command, DeviceCommand)
     assert isinstance(outbox, SystemOutbox)
+    assert command.correlation_id == "corr-device-effect"
     assert outbox.dispatch_key == f"device-command:{command.command_code}"
     assert getattr(outbox.status, "value", outbox.status) == "NEW"
     assert session.current_wait_type == "COMMAND_RESULT"
@@ -1078,6 +1080,7 @@ async def test_runtime_device_command_service_rejects_fire_and_forget_model_bypa
             session=session,
             workline=SimpleNamespace(id=41, plugin_key="rough_sorter"),
             idempotency_key="system-capability:device.device_command_write@v1:session:31:move-1",
+            execution_correlation_id="corr-fire-and-forget",
             trace_id="trace-fire-and-forget",
         )
 

@@ -123,6 +123,21 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
 
     # ==================== CRUD 操作 ====================
 
+    async def get_runtime_correlation_id(
+        self,
+        db: AsyncSession,
+        *,
+        command_code: str,
+        command_id: int | None,
+    ) -> str | None:
+        """返回命令创建时固定的 runtime correlation。"""
+
+        return await self.repo.get_runtime_correlation_id(
+            db,
+            command_code=command_code,
+            command_id=command_id,
+        )
+
     async def create_command(
         self,
         db: AsyncSession,
@@ -176,12 +191,15 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         session: Any,
         workline: Any,
         idempotency_key: str,
+        execution_correlation_id: str,
         trace_id: str | None,
     ) -> tuple[DeviceCommand, Any]:
         """在 Runtime 外层事务内原子准备 DeviceCommand + Outbox，只 flush。"""
 
         if getattr(request, "result_policy", None) != "COMMAND_RESULT":
             raise ValueError("runtime device command result_policy must be COMMAND_RESULT")
+        if not isinstance(execution_correlation_id, str) or not execution_correlation_id:
+            raise ValueError("runtime device command requires execution_correlation_id")
 
         from hashlib import sha256
 
@@ -234,7 +252,7 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
             timeout_ms=int(request.timeout_ms),
             params=dict(request.payload),
             trace_id=trace_id,
-            correlation_id=idempotency_key[:120],
+            correlation_id=execution_correlation_id,
             workline_id=getattr(workline, "id", None) or getattr(session, "workline_id", None),
             plugin_key=getattr(session, "plugin_key", None) or getattr(workline, "plugin_key", None),
             contract_version=getattr(session, "contract_version", None),

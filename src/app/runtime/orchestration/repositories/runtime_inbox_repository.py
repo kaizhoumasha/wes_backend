@@ -195,6 +195,27 @@ class RuntimeInboxRepository(BaseRepository[RuntimeInbox]):
         correlation_id, execution_session_id = rows[0]
         return str(correlation_id), int(execution_session_id) if execution_session_id is not None else None
 
+    async def resolve_correlation_context_by_id(
+        self,
+        db: AsyncSession,
+        *,
+        correlation_id: str,
+    ) -> tuple[str, int | None] | None:
+        """按权威 correlation 读取其 runtime ExecutionSession 归属。"""
+
+        columns = cast("Any", ExecutionCorrelation).__table__.c
+        row = (
+            await db.execute(
+                select(columns.correlation_id, columns.execution_session_id)
+                .where(columns.correlation_id == correlation_id)
+                .limit(1)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        correlation_id, execution_session_id = row
+        return str(correlation_id), int(execution_session_id) if execution_session_id is not None else None
+
     async def correlation_id_exists(self, db: AsyncSession, *, correlation_id: str) -> bool:
         """检查 RuntimeInbox 外键目标是否已持久化。"""
 

@@ -37,6 +37,22 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         result = await db.execute(statement)
         return result.scalar_one_or_none()
 
+    async def get_runtime_correlation_id(
+        self,
+        db: AsyncSession,
+        *,
+        command_code: str,
+        command_id: int | None,
+    ) -> str | None:
+        """读取命令创建时固定的 runtime correlation，不暴露设备 ORM。"""
+
+        columns = cast("Any", DeviceCommand).__table__.c
+        statement = select(columns.correlation_id).where(columns.command_code == command_code)
+        if command_id is not None:
+            statement = statement.where(columns.id == command_id)
+        value = await db.scalar(statement.limit(1))
+        return str(value) if value is not None else None
+
     @staticmethod
     async def add_runtime_effect(db: AsyncSession, command: DeviceCommand, outbox: object) -> None:
         """在调用方外层事务中持久化命令与 Outbox，只 flush。"""

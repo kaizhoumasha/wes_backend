@@ -246,6 +246,7 @@ async def _measure_outbox_and_replay() -> tuple[list[float], list[float]]:
                     expected_fact_version=f"device:v{device.version}",
                     expected_available=True,
                     idempotency_key=f"perf-outbox-{index}",
+                    execution_correlation_id="it-runtime-inbox-correlation",
                     trace_id=seeded.trace_id,
                 )
                 await db.commit()
