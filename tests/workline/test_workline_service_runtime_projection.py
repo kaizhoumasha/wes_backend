@@ -691,6 +691,36 @@ async def test_active_workline_allows_draft_config_edit_without_changing_active_
 
 
 @pytest.mark.asyncio
+async def test_active_workline_rejects_plugin_identity_switch_without_changing_active_pin(monkeypatch) -> None:
+    repository = _WorkLineRepositoryStub()
+    repository.current.is_active = True
+    repository.current.plugin_key = "rough_sorter"
+    repository.current.contract_version = "rough_sorter.v2"
+    service = WorkLineService(repository=repository, runtime_status_projection_service=_RuntimeStatusProjectionSpy())
+    # 当前 generated registry 只有一个插件；隔离下游 catalog 校验，直接证明活动态 guard
+    # 必须在未来新增第二个合法插件前就阻断身份与 immutable pin 漂移。
+    monkeypatch.setattr(service, "_validate_plugin_key", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(service, "_validate_plugin_contract_version", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(BusinessException) as exc_info:
+        await service.update(
+            _Db(),
+            repository.current.id,
+            {
+                "plugin_key": SMT_SORTING_INBOUND_PLUGIN_KEY,
+                "contract_version": SMT_SORTING_INBOUND_CONTRACT_VERSION,
+                "version": 7,
+            },
+        )
+
+    assert exc_info.value.detail == {
+        "workline_id": repository.current.id,
+        "fields": ["contract_version", "plugin_key"],
+    }
+    assert repository.update_calls == []
+
+
+@pytest.mark.asyncio
 async def test_active_workline_rejects_config_draft_when_binding_belongs_to_another_workline() -> None:
     repository = _WorkLineRepositoryStub()
     repository.current.is_active = True

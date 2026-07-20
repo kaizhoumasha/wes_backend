@@ -338,7 +338,8 @@ async def test_business_reject_rolls_back_attempt_and_emits_typed_internal_resul
         write_set=AttemptWriteSet(evidence=(), next_state={"phase": "MUST_NOT_ADVANCE"}, intents=("i1",)),
     )
 
-    assert disposition is WriteDisposition.COMMITTED
+    expected_disposition = "TERMINAL_FAILURE" if original_route == "CAPABILITY_EFFECT_RESULT" else "COMMITTED"
+    assert disposition.value == expected_disposition
     assert pending_side_effects == []
     if original_route == "CAPABILITY_EFFECT_RESULT":
         assert events == ["ledger", "effect-reject", "rollback", "terminal-failed", "commit"]

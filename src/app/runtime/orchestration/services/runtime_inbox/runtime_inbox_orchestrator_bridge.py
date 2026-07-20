@@ -1363,7 +1363,7 @@ class RuntimeInboxProcessorBridge:
             devices_by_role=devices_by_role,
             trusted_state_preservation=True,
         )
-        if disposition is WriteDisposition.COMMITTED:
+        if disposition in {WriteDisposition.COMMITTED, WriteDisposition.TERMINAL_FAILURE}:
             from src.app.sys.services.event_stream_service import (
                 WORKLINE_RUNTIME_CHANGED_EVENT,
                 defer_sse_event,
@@ -1396,7 +1396,7 @@ class RuntimeInboxProcessorBridge:
             )
             await db.commit()
             result["resource_wait"] = 1
-        elif write_set.hold_reason is not None:
+        elif disposition is WriteDisposition.TERMINAL_FAILURE or write_set.hold_reason is not None:
             result["failed"] = 1
         else:
             result["success"] = 1

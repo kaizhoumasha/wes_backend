@@ -224,6 +224,7 @@ class UnavailablePluginAttemptRunner:
 
 class WriteDisposition(str, Enum):
     COMMITTED = "COMMITTED"
+    TERMINAL_FAILURE = "TERMINAL_FAILURE"
     SAFE_RETRY = "SAFE_RETRY"
 
 

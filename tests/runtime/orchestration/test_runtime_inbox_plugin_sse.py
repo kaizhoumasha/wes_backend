@@ -92,6 +92,72 @@ async def test_platform_committed_writeback_defers_runtime_sse_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_platform_terminal_failure_reports_failure_and_defers_runtime_sse_event() -> None:
+    from src.celery_app.tasks.runtime_inbox import _processing_outcome
+
+    class Db:
+        def __init__(self) -> None:
+            self.info: dict[str, object] = {}
+
+        async def flush(self) -> None:
+            pass
+
+        async def commit(self) -> None:
+            pass
+
+    class Runner:
+        async def run(self, _context: object) -> AttemptWriteSet:
+            return AttemptWriteSet(evidence=(), next_state={"step": 2}, intents=(), outcome_code="ROUTE_A")
+
+    class WriteBack:
+        async def commit_plugin_attempt(self, db: Db, **_kwargs: object) -> WriteDisposition:
+            await db.commit()
+            return WriteDisposition.TERMINAL_FAILURE
+
+    db = Db()
+    bridge = RuntimeInboxProcessorBridge(
+        plugin_attempt_runner=Runner(),
+        writeback_service=WriteBack(),  # type: ignore[arg-type]
+    )
+    inbox = SimpleNamespace(
+        id=91,
+        kind="DEVICE_EVENT",
+        payload_json={"event_type": "CAPABILITY_EFFECT_RESULT"},
+        trace_id="trace-test",
+        event_id="evt-test",
+        causation_id=None,
+        workline_id=20,
+        execution_session_id=10,
+        device_id=None,
+        command_id=None,
+        attempt_count=0,
+        event_type="CAPABILITY_EFFECT_RESULT",
+    )
+
+    result = await bridge._process_platform_plugin_attempt(
+        db,  # type: ignore[arg-type]
+        inbox=inbox,
+        session=SimpleNamespace(
+            id=10,
+            version=7,
+            plugin_state_version=3,
+            plugin_state_json={},
+            plugin_binding_id=17,
+            current_material_unit_id=None,
+            status="RUNNING",
+        ),
+        workline=SimpleNamespace(id=20),
+        resolved_event_type="CAPABILITY_EFFECT_RESULT",
+        processor_token="lease-1",
+        attempt_runtime=bridge.create_attempt_runtime("lease-1"),
+    )
+
+    assert result == {"processed": 1, "success": 0, "failed": 1, "skipped": 0, "resource_wait": 0}
+    assert _processing_outcome(result) == "failed"
+    assert db.info[DEFERRED_SSE_EVENTS_KEY][0][0] == WORKLINE_RUNTIME_CHANGED_EVENT
+
+
+@pytest.mark.asyncio
 async def test_process_claimed_discards_deferred_sse_after_business_rollback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -86,7 +86,9 @@ _ACTIVE_CONFIGURATION_FIELDS = frozenset(
         "line_type",
     }
 )
-_ACTIVE_IMMEDIATE_RUNTIME_FIELDS = frozenset({"line_code", "line_type", "run_mode", "runtime_config_json"})
+_ACTIVE_IMMEDIATE_RUNTIME_FIELDS = frozenset(
+    {"line_code", "line_type", "plugin_key", "contract_version", "run_mode", "runtime_config_json"}
+)
 _LEGACY_COMPATIBLE_PLUGIN_IDENTITIES = frozenset(
     {(SMT_SORTING_INBOUND_PLUGIN_KEY, SMT_SORTING_INBOUND_CONTRACT_VERSION)}
 )

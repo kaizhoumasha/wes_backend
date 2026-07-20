@@ -550,7 +550,10 @@ class RuntimeInboxWriteBackService:
                         "correlation_id": getattr(locked.inbox, "correlation_id", None),
                     }
                     await db.rollback()
-                    if reject_source["payload_json"].get("logical_route") == "CAPABILITY_EFFECT_RESULT":
+                    is_recursive_effect_reject = (
+                        reject_source["payload_json"].get("logical_route") == "CAPABILITY_EFFECT_RESULT"
+                    )
+                    if is_recursive_effect_reject:
                         terminal_updated = await self.inbox_service.mark_failed(
                             db,
                             inbox_id=inbox_id,
@@ -600,6 +603,8 @@ class RuntimeInboxWriteBackService:
                         inbox_id=inbox_id,
                     )
                     await db.commit()
+                    if is_recursive_effect_reject:
+                        return WriteDisposition.TERMINAL_FAILURE
                     return WriteDisposition.COMMITTED
             await self._plugin_attempt_repository.persist_locked_attempt(
                 db,
