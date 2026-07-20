@@ -911,6 +911,8 @@ class RuntimeInboxService:
         *,
         command_code: str,
         source_event_id: str,
+        source_provider_code: str | None = None,
+        source_event_type: str | None = None,
         device_code: str | None = None,
         workline_id: int | None = None,
         device_id: int | None = None,
@@ -925,7 +927,8 @@ class RuntimeInboxService:
     ) -> RuntimeInboxAcceptResult:
         """接收 command result 写入 RuntimeInbox (kind=COMMAND_RESULT).
 
-        - provider_code: 有 device_code 走 "DEVICE_RESULT", 缺省走 "RUNTIME"。
+        - source identity: callback 可显式保留既有 provider/event type；其他调用按 device_code
+          推导 provider_code，并固定使用 "COMMAND_RESULT"。
         - source_event_id: 调用方必须提供唯一结果事件身份，不接受别名或合成回退。
         - 稳定 source identity 同 hash ACK、异 hash 冲突。
         """
@@ -935,7 +938,8 @@ class RuntimeInboxService:
         if not isinstance(source_event_id, str) or not source_event_id.strip():
             raise ValueError("command result requires source_event_id")
 
-        provider_code = "DEVICE_RESULT" if device_code else "RUNTIME"
+        provider_code = source_provider_code or ("DEVICE_RESULT" if device_code else "RUNTIME")
+        event_type = source_event_type or "COMMAND_RESULT"
 
         canonical_payload = payload_json or {"command_code": command_code, "device_code": device_code}
         from src.app.runtime.orchestration.services.device_command_gateway import device_command_gateway
@@ -968,7 +972,7 @@ class RuntimeInboxService:
         result = await self.accept_received(
             db,
             provider_code=provider_code,
-            event_type="COMMAND_RESULT",
+            event_type=event_type,
             source_event_id=source_event_id.strip(),
             payload_hash=_canonical_payload_hash(canonical_payload),
             kind="COMMAND_RESULT",

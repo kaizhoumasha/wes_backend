@@ -78,6 +78,8 @@ async def test_callback_runtime_inbox_writer_delegates_result_to_typed_command_e
     assert accepted_kwargs == {
         "command_code": "CMD-TYPED-001",
         "source_event_id": "evt-result-typed-001",
+        "source_provider_code": "ECS",
+        "source_event_type": "DEVICE_RESULT",
         "device_code": "ARM-01",
         "workline_id": 11,
         "device_id": 12,
@@ -92,6 +94,42 @@ async def test_callback_runtime_inbox_writer_delegates_result_to_typed_command_e
 
 
 @pytest.mark.asyncio
+async def test_callback_runtime_inbox_writer_preserves_pre_upgrade_result_identity() -> None:
+    """跨部署重试必须继续使用升级前的 ECS + canonical result identity。"""
+
+    from src.app.runtime.orchestration.consumers.callback_runtime_inbox_writer import CallbackRuntimeInboxWriter
+
+    legacy_identity = ("ECS", "DEVICE_RESULT", "evt-result-upgrade-001")
+    accepted_identity: tuple[object, object, object] | None = None
+
+    class RuntimeInboxServiceStub:
+        async def accept_command_result(self, _db, **kwargs):
+            nonlocal accepted_identity
+            accepted_identity = (
+                kwargs.get("source_provider_code", "DEVICE_RESULT"),
+                kwargs.get("source_event_type", "COMMAND_RESULT"),
+                kwargs["source_event_id"],
+            )
+            return _runtime_accept_result(created=accepted_identity != legacy_identity, record_id=41)
+
+    writer = CallbackRuntimeInboxWriter(service=RuntimeInboxServiceStub())  # type: ignore[arg-type]
+    result = await writer.write_result_callback(
+        SimpleNamespace(),
+        payload={
+            "source_event_id": "evt-result-upgrade-001",
+            "command_code": "CMD-UPGRADE-001",
+            "device_code": "ARM-01",
+            "result": "SUCCESS",
+        },
+        request_id="req-result-upgrade-001",
+        canonical_result_type="DEVICE_RESULT",
+    )
+
+    assert accepted_identity == legacy_identity
+    assert result.created is False
+
+
+@pytest.mark.asyncio
 async def test_callback_runtime_inbox_writer_uses_canonical_types_without_channel_collapse() -> None:
     """writer 必须把 canonical callback/event/result type 传给 RuntimeInbox。"""
 
@@ -101,7 +139,14 @@ async def test_callback_runtime_inbox_writer_uses_canonical_types_without_channe
 
     class RuntimeInboxServiceStub:
         async def accept_command_result(self, _db, **kwargs):
-            accepted_calls.append({**kwargs, "event_type": "COMMAND_RESULT", "correlation_id": None})
+            accepted_calls.append(
+                {
+                    **kwargs,
+                    "provider_code": kwargs["source_provider_code"],
+                    "event_type": kwargs["source_event_type"],
+                    "correlation_id": None,
+                }
+            )
             return _runtime_accept_result(created=True, record_id=len(accepted_calls))
 
         async def accept_received(self, _db, **kwargs):
@@ -129,7 +174,7 @@ async def test_callback_runtime_inbox_writer_uses_canonical_types_without_channe
     )
 
     assert [call["event_type"] for call in accepted_calls] == [
-        "COMMAND_RESULT",
+        "DEVICE_RESULT",
         "SCAN_COMPLETED",
         "AGV_TASK_RESULT",
     ]

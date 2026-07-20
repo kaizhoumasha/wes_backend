@@ -5,7 +5,7 @@
 约束:
 - device/internal 必须提供持久 event_id；command result 可从 command_code 派生稳定 identity。
 - source_event_id 同 hash ACK、异 hash 冲突。
-- provider_code 按调用方语义派生 (device_code 前缀 / 固定 RUNTIME / 固定 DEVICE_RESULT)。
+- provider_code 默认按调用方语义派生；callback 可显式保留升级前的 source provider/event identity。
 - kind 字段为字符串 (Revision A), 与 accept_received 的 source_event_id-based 路径并存。
 """
 
@@ -523,6 +523,43 @@ async def test_accept_command_result_with_device_code_uses_device_result_provide
     assert record.event_id == "evt-cmd-001"
     assert record.causation_id == "evt-cmd-cause-001"
     assert record.payload_json == {"result": "SUCCESS", "data": {"qty": 1}}
+
+
+@pytest.mark.asyncio
+async def test_accept_command_result_reuses_pre_upgrade_callback_identity(db_session) -> None:
+    """显式 callback source identity 必须命中升级前已持久化的 RuntimeInbox。"""
+
+    service = RuntimeInboxService()
+    payload = {
+        "source_event_id": "evt-result-upgrade-001",
+        "command_code": "CMD-UPGRADE-001",
+        "device_code": "ARM-01",
+        "result": "SUCCESS",
+    }
+    legacy = await service.accept_received(
+        db_session,
+        provider_code="ECS",
+        event_type="DEVICE_RESULT",
+        source_event_id="evt-result-upgrade-001",
+        payload_hash=runtime_inbox_service_module._canonical_payload_hash(payload),
+        kind="COMMAND_RESULT",
+        payload_json=payload,
+        payload_schema_version=1,
+    )
+
+    retried = await service.accept_command_result(
+        db_session,
+        command_code="CMD-UPGRADE-001",
+        source_event_id="evt-result-upgrade-001",
+        device_code="ARM-01",
+        payload_json=payload,
+        source_provider_code="ECS",
+        source_event_type="DEVICE_RESULT",
+    )
+
+    assert retried.created is False
+    assert retried.record.id == legacy.record.id
+    assert await db_session.scalar(select(func.count()).select_from(RuntimeInbox)) == 1
 
 
 @pytest.mark.asyncio

@@ -90,7 +90,7 @@ class CallbackRuntimeInboxWriter:
         command_id: int | None = None,
         processing_required: bool = True,
     ) -> RuntimeInboxAcceptResult:
-        _ = request_id, canonical_result_type
+        _ = request_id
         command_code = _resolve_first_str(payload, ("command_code",))
         if command_code is None:
             raise CallbackPayloadValidationError("command result command_code is required")
@@ -99,6 +99,8 @@ class CallbackRuntimeInboxWriter:
             db,
             command_code=command_code,
             source_event_id=source_event_id,
+            source_provider_code="ECS",
+            source_event_type=canonical_result_type,
             device_code=_resolve_first_str(payload, ("device_code",)),
             workline_id=workline_id,
             device_id=device_id,
