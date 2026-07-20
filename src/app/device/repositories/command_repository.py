@@ -142,6 +142,33 @@ class DeviceCommandRepository(BaseRepository[DeviceCommand]):
         result = await db.execute(statement)
         return list(result.scalars().all())
 
+    async def get_unfinished_commands_for_device(
+        self,
+        db: AsyncSession,
+        device_id: int,
+        *,
+        limit: int = 1,
+    ) -> list[DeviceCommand]:
+        """获取设备尚未闭环的指令，用于新指令的原子准入检查。
+
+        与 ``get_active_commands_for_device`` 不同，这里必须包含 PENDING：
+        PENDING 虽不代表硬件已进入 RUNNING，但已占用该设备的命令槽位。
+        """
+
+        unfinished_statuses = [CommandStatus.PENDING, CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
+        columns = cast("Any", DeviceCommand).__table__.c
+        statement = (
+            select(DeviceCommand)
+            .where(
+                columns.device_id == device_id,
+                columns.status.in_(unfinished_statuses),
+            )
+            .order_by(columns.created_at.desc(), columns.id.desc())
+            .limit(limit)
+        )
+        result = await db.execute(statement)
+        return list(result.scalars().all())
+
     async def get_commands_by_trace_id(self, db: AsyncSession, trace_id: str) -> list[DeviceCommand]:
         """
         根据 Trace ID 查询所有相关指令

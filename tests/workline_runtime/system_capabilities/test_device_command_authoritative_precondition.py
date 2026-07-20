@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.app.device.models.command import CommandStatus
 from src.app.device.repositories.command_repository import DeviceCommandRepository
 from src.app.device.repositories.device_repository import DeviceRepository
 from src.app.device.services.device_command_service import (
@@ -52,10 +53,22 @@ class _RecordingDeviceRepository(DeviceRepository):
 
 
 class _RecordingCommandRepository(DeviceCommandRepository):
-    def __init__(self, events: list[str]) -> None:
+    def __init__(self, events: list[str], *, unfinished_commands: list[object] | None = None) -> None:
         super().__init__()
         self.events = events
+        self.unfinished_commands = unfinished_commands or []
         self.effects: list[tuple[object, object]] = []
+
+    async def get_unfinished_commands_for_device(
+        self,
+        _db: object,
+        device_id: int,
+        *,
+        limit: int = 1,
+    ) -> list[object]:
+        self.events.append("check-unfinished")
+        assert device_id == 71
+        return self.unfinished_commands[:limit]
 
     async def add_runtime_effect(self, _db: object, command: object, outbox: object) -> None:
         self.events.append("write")
@@ -77,8 +90,13 @@ def _locked_device(**overrides: object) -> SimpleNamespace:
     return SimpleNamespace(**values)
 
 
-def _service(device: object, events: list[str]) -> tuple[DeviceCommandService, _RecordingCommandRepository]:
-    command_repository = _RecordingCommandRepository(events)
+def _service(
+    device: object,
+    events: list[str],
+    *,
+    unfinished_commands: list[object] | None = None,
+) -> tuple[DeviceCommandService, _RecordingCommandRepository]:
+    command_repository = _RecordingCommandRepository(events, unfinished_commands=unfinished_commands)
     service = DeviceCommandService(
         repository=command_repository,
         device_repository=_RecordingDeviceRepository(device, events),
@@ -133,6 +151,39 @@ async def test_device_repository_runtime_target_query_requests_row_lock() -> Non
 
 
 @pytest.mark.asyncio
+async def test_unfinished_command_query_includes_pending_and_hardware_active_statuses() -> None:
+    class _Scalars:
+        @staticmethod
+        def all() -> list[object]:
+            return []
+
+    class _Result:
+        @staticmethod
+        def scalars() -> _Scalars:
+            return _Scalars()
+
+    class _Db:
+        def __init__(self) -> None:
+            self.statement: object | None = None
+
+        async def execute(self, statement: object) -> _Result:
+            self.statement = statement
+            return _Result()
+
+    db = _Db()
+    result = await DeviceCommandRepository().get_unfinished_commands_for_device(
+        db,  # type: ignore[arg-type]
+        71,
+    )
+
+    assert result == []
+    assert db.statement is not None
+    params = db.statement.compile().params  # type: ignore[union-attr]
+    status_values = next(value for key, value in params.items() if key.startswith("status_"))
+    assert status_values == [CommandStatus.PENDING, CommandStatus.SENT, CommandStatus.ACK_RECEIVED]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "authoritative_device",
     [
@@ -160,10 +211,26 @@ async def test_locked_authoritative_match_writes_command_and_outbox_once_after_l
 
     command, outbox = await _prepare(service)
 
-    assert events == ["lock", "write"]
+    assert events == ["lock", "check-unfinished", "write"]
     assert command_repository.effects == [(command, outbox)]
     assert command.device_id == 71
     assert outbox.target_code == "ROBOT-71"
+
+
+@pytest.mark.asyncio
+async def test_locked_device_with_unfinished_command_rejects_before_write() -> None:
+    events: list[str] = []
+    service, command_repository = _service(
+        _locked_device(),
+        events,
+        unfinished_commands=[SimpleNamespace(id=99, status="PENDING")],
+    )
+
+    with pytest.raises(StaleDeviceCommandPrecondition, match="unfinished command"):
+        await _prepare(service)
+
+    assert events == ["lock", "check-unfinished"]
+    assert command_repository.effects == []
 
 
 @pytest.mark.asyncio

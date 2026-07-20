@@ -219,6 +219,11 @@ class DeviceCommandService(BaseService[DeviceCommand, DeviceCommandRepository]):
         device_code = getattr(target_device, "device_code", None)
         if not isinstance(device_id, int) or not isinstance(device_code, str) or not device_code:
             raise ValueError("runtime device command requires a pinned target device")
+        # 设备行锁把“检查未闭环命令 + 创建新命令”串行化；PENDING 尚未改变
+        # Device 运行态，但已经占用唯一命令槽，不能允许另一个 attempt 越过准入。
+        unfinished_commands = await self.repo.get_unfinished_commands_for_device(db, device_id, limit=1)
+        if unfinished_commands:
+            raise StaleDeviceCommandPrecondition("device already has an unfinished command")
         requested_code = getattr(request, "command_code", None)
         command_code = requested_code or f"SC-{sha256(idempotency_key.encode('utf-8')).hexdigest()[:32]}"
         command = DeviceCommand(

@@ -922,6 +922,7 @@ async def test_material_unit_mutation_service_participates_in_outer_transaction_
 @pytest.mark.asyncio
 async def test_device_command_runtime_entry_writes_command_and_outbox_without_remote_io_or_commit() -> None:
     from src.app.device.models.command import DeviceCommand
+    from src.app.device.repositories.command_repository import DeviceCommandRepository
     from src.app.device.repositories.device_repository import DeviceRepository
     from src.app.device.services.device_command_service import DeviceCommandService
     from src.app.sys.models import SystemOutbox
@@ -949,6 +950,18 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
                 is_active=True,
             )
 
+    class _CommandRepository(DeviceCommandRepository):
+        async def get_unfinished_commands_for_device(
+            self,
+            _db: object,
+            device_id: int,
+            *,
+            limit: int = 1,
+        ) -> list[DeviceCommand]:
+            assert device_id == 71
+            assert limit == 1
+            return []
+
     db = _MutationDb()
     session = SimpleNamespace(
         id=31,
@@ -962,7 +975,10 @@ async def test_device_command_runtime_entry_writes_command_and_outbox_without_re
         current_wait_timeout_seconds=None,
         awaiting_device_command_code=None,
     )
-    command, outbox = await DeviceCommandService(device_repository=_DeviceRepository()).prepare_runtime_effect(
+    command, outbox = await DeviceCommandService(
+        repository=_CommandRepository(),
+        device_repository=_DeviceRepository(),
+    ).prepare_runtime_effect(
         db,  # type: ignore[arg-type]
         request=SimpleNamespace(
             action="PICK_AND_PUT",

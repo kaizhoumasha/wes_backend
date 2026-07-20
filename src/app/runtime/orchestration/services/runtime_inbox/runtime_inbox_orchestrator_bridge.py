@@ -72,6 +72,7 @@ from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_validati
 from src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_writeback_service import (
     RuntimeInboxWriteBackService,
     WriteBackState,
+    _build_runtime_session_updated_event_payload,
     _is_late_or_duplicate_command_result_for_session,
     _payload_for_inbox,
     _record_duplicate_entry_archive_timeline,
@@ -511,6 +512,17 @@ def _empty_result() -> ProcessResult:
         "skipped": 0,
         "resource_wait": 0,
     }
+
+
+async def _rollback_and_discard_deferred_sse_events(db: AsyncSession) -> None:
+    """回滚数据库事务，并同步清理不受事务管理的延迟 SSE 队列。"""
+
+    from src.app.sys.services.event_stream_service import discard_deferred_sse_events
+
+    try:
+        await db.rollback()
+    finally:
+        discard_deferred_sse_events(db)
 
 
 def _is_lifecycle_only_external_callback(inbox: Any, payload: dict[str, Any]) -> bool:
@@ -1093,7 +1105,7 @@ class RuntimeInboxProcessorBridge:
         except SessionResolveError as e:
             logger.warning(f"Inbox {inbox_pk_text} session resolve failed: {e}")
             with suppress(Exception):
-                await db.rollback()
+                await _rollback_and_discard_deferred_sse_events(db)
             await _record_diagnostic(
                 db,
                 inbox=diagnostic_inbox,
@@ -1117,7 +1129,7 @@ class RuntimeInboxProcessorBridge:
                     await db.commit()
             except Exception as mark_error:
                 with suppress(Exception):
-                    await db.rollback()
+                    await _rollback_and_discard_deferred_sse_events(db)
                 logger.warning(f"Inbox {inbox_pk_text} session resolve 失败补记失败: {mark_error}")
             result["failed"] += 1
             result["processed"] += 1
@@ -1125,7 +1137,7 @@ class RuntimeInboxProcessorBridge:
         except WorkLineSafetyBlocked as e:
             logger.warning(f"Inbox {inbox_pk_text} blocked by WorkLine safety state: {e}")
             with suppress(Exception):
-                await db.rollback()
+                await _rollback_and_discard_deferred_sse_events(db)
             await _record_diagnostic(
                 db,
                 inbox=diagnostic_inbox,
@@ -1152,7 +1164,7 @@ class RuntimeInboxProcessorBridge:
                     await db.commit()
             except Exception as mark_error:
                 with suppress(Exception):
-                    await db.rollback()
+                    await _rollback_and_discard_deferred_sse_events(db)
                 logger.warning(f"Inbox {inbox_pk_text} safety blocked 补记失败: {mark_error}")
             result["failed"] += 1
             result["processed"] += 1
@@ -1160,7 +1172,7 @@ class RuntimeInboxProcessorBridge:
         except TimeoutError:
             logger.error(f"Inbox {inbox_pk} 处理超时 (> {INBOX_PROCESS_TIMEOUT_SECONDS}s)")
             with suppress(Exception):
-                await db.rollback()
+                await _rollback_and_discard_deferred_sse_events(db)
             await _record_diagnostic(
                 db,
                 inbox=diagnostic_inbox,
@@ -1185,7 +1197,7 @@ class RuntimeInboxProcessorBridge:
                     await db.commit()
             except Exception as mark_error:
                 with suppress(Exception):
-                    await db.rollback()
+                    await _rollback_and_discard_deferred_sse_events(db)
                 logger.warning(f"Inbox 超时标记失败: {mark_error}")
             result["failed"] += 1
             result["processed"] += 1
@@ -1203,7 +1215,7 @@ class RuntimeInboxProcessorBridge:
                 retryable = True
                 logger.exception(f"Inbox {inbox_pk_text} 处理异常")
             with suppress(Exception):
-                await db.rollback()
+                await _rollback_and_discard_deferred_sse_events(db)
             await _record_diagnostic(
                 db,
                 inbox=diagnostic_inbox,
@@ -1228,7 +1240,7 @@ class RuntimeInboxProcessorBridge:
                     await db.commit()
             except Exception as mark_error:
                 with suppress(Exception):
-                    await db.rollback()
+                    await _rollback_and_discard_deferred_sse_events(db)
                 logger.warning(f"Inbox {inbox_pk_text} 异常补记失败: {mark_error}")
             result["failed"] += 1
             result["processed"] += 1
@@ -1245,10 +1257,23 @@ class RuntimeInboxProcessorBridge:
                         "Plugin attempt cleanup incomplete: "
                         f"code={close_report.error_code}, unterminated={close_report.unterminated}"
                     )
+            # process_claimed 存在多个已提交后的早退分支；发布必须位于 finally 内，
+            # 否则 Python return 只执行 finally 而不会继续执行其后的统一发布点。
+            from src.app.sys.services.event_stream_service import (
+                discard_deferred_sse_events,
+                publish_deferred_sse_events,
+            )
 
-        from src.app.sys.services.event_stream_service import publish_deferred_sse_events
-
-        await publish_deferred_sse_events(db)
+            in_transaction = getattr(db, "in_transaction", None)
+            try:
+                transaction_is_open = bool(in_transaction()) if callable(in_transaction) else False
+            except Exception:
+                # 无法确认提交完成时 fail closed，不能把可能回滚的事实广播给订阅方。
+                transaction_is_open = True
+            if transaction_is_open:
+                discard_deferred_sse_events(db)
+            else:
+                await publish_deferred_sse_events(db)
         return result
 
     async def _process_platform_plugin_attempt(
@@ -1338,6 +1363,21 @@ class RuntimeInboxProcessorBridge:
             devices_by_role=devices_by_role,
             trusted_state_preservation=True,
         )
+        if disposition is WriteDisposition.COMMITTED:
+            from src.app.sys.services.event_stream_service import (
+                WORKLINE_RUNTIME_CHANGED_EVENT,
+                defer_sse_event,
+            )
+
+            # Stage 3 已提交，登记到外层统一发布队列，避免 SSE 早于数据库事实可见。
+            defer_sse_event(
+                db,
+                WORKLINE_RUNTIME_CHANGED_EVENT,
+                _build_runtime_session_updated_event_payload(
+                    workline_id=workline_id,
+                    session_id=session_id,
+                ),
+            )
         result = _empty_result()
         result["processed"] = 1
         if disposition is WriteDisposition.SAFE_RETRY:

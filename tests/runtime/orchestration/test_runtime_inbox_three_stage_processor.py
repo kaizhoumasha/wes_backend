@@ -1286,6 +1286,7 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
     from src.app.runtime.system_capabilities.definition import EffectCompletionMode
     from src.app.runtime.system_capabilities.outcomes import Success
     from src.app.runtime.workline_plugins.attempt_coordinator import AttemptWriteSet
+    from src.app.sys.services.event_stream_service import event_stream_service
 
     events: list[str] = []
     inbox = _make_inbox(
@@ -1427,6 +1428,10 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
     async def not_duplicate(*_args: object, **_kwargs: object) -> bool:
         return False
 
+    async def publish_sse(_event_type: str, _payload: dict[str, object]) -> bool:
+        events.append("sse")
+        return True
+
     monkeypatch.setattr(
         "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._load_related_entities",
         load_related,
@@ -1435,6 +1440,7 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
         "src.app.runtime.orchestration.services.runtime_inbox.runtime_inbox_orchestrator_bridge._is_duplicate_entry_event",
         not_duplicate,
     )
+    monkeypatch.setattr(event_stream_service, "publish", publish_sse)
     writeback = RuntimeInboxWriteBackService(
         plugin_attempt_repository=PluginRepository(),
         intent_log_repository=IntentRepository(),
@@ -1455,6 +1461,7 @@ async def test_platform_process_claimed_runs_effect_before_state_and_terminal(
     expected_events = ["commit", "lock", "intent-ledger", expected_artifact, "state+timeline", "terminal", "commit"]
     if capability_key == "device.device_command_write":
         expected_events.append("enqueue-outbox")
+    expected_events.append("sse")
     assert events == expected_events
 
 
