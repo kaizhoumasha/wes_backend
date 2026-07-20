@@ -417,6 +417,21 @@ class RuntimeInboxAttemptRuntime:
     _closed: bool = field(default=False, init=False, compare=False, repr=False)
     _close_report: AttemptCloseReport | None = field(default=None, init=False, compare=False, repr=False)
 
+    async def replace_with(self, replacement: RuntimeInboxAttemptRuntime) -> None:
+        """Stage 2 前换入 pinned profile runtime，同时保持 claim 级 owner 不变。"""
+
+        if self._closed or replacement._closed:
+            raise RuntimeError("closed attempt runtime cannot be replaced")
+        if replacement.attempt_id != self.attempt_id:
+            raise ValueError("replacement attempt id mismatch")
+        close_report = await self.gateway.aclose()
+        if close_report.unterminated:
+            await replacement.aclose()
+            raise RuntimeError("attempt runtime replacement left unterminated queries")
+        object.__setattr__(self, "port_registry", replacement.port_registry)
+        object.__setattr__(self, "context", replacement.context)
+        object.__setattr__(self, "gateway", replacement.gateway)
+
     async def aclose(self) -> AttemptCloseReport | None:
         """幂等释放 attempt-scoped gateway；waiter 取消不等于 owner 关闭。"""
 
@@ -556,6 +571,52 @@ def _plugin_write_set_requires_outbox_dispatch(write_set: AttemptWriteSet) -> bo
     )
 
 
+def _runtime_profile_from_pinned_binding(binding: Any, *, expected_identity: str) -> Any:
+    """从 immutable binding snapshot 重建本 attempt 的最小 provider profile。"""
+
+    from src.app.contracts.external_contract_profile import ExternalContractProfile
+
+    raw_config = getattr(binding, "typed_config_json", None)
+    configured_identity = optional_str(raw_config.get("provider_profile")) if isinstance(raw_config, dict) else None
+    if configured_identity != expected_identity:
+        raise ValueError("binding provider profile identity mismatch")
+
+    raw_snapshots = getattr(binding, "provider_profile_snapshot_json", None)
+    if not isinstance(raw_snapshots, list):
+        raise TypeError("binding provider profile snapshot is invalid")
+    try:
+        matched_profiles = [
+            profile
+            for raw_profile in raw_snapshots
+            if (profile := ExternalContractProfile.model_validate(raw_profile)).identity == expected_identity
+        ]
+    except ValidationError as exc:
+        raise ValueError("binding provider profile snapshot is invalid") from exc
+    if len(matched_profiles) != 1:
+        raise ValueError("binding provider profile snapshot must match exactly once")
+
+    profile = matched_profiles[0]
+    raw_requirements = getattr(binding, "port_requirements_json", None)
+    if not isinstance(raw_requirements, list) or any(
+        not isinstance(requirement, str) or not requirement for requirement in raw_requirements
+    ):
+        raise ValueError("binding port requirements snapshot is invalid")
+    approved_requirements = frozenset(raw_requirements)
+    declared_requirements = frozenset((*profile.runtime_capabilities_query, *profile.runtime_capabilities_effect))
+    if not approved_requirements.issubset(declared_requirements):
+        raise ValueError("binding port requirements exceed provider profile snapshot")
+    return profile.model_copy(
+        update={
+            "runtime_capabilities_query": [
+                capability for capability in profile.runtime_capabilities_query if capability in approved_requirements
+            ],
+            "runtime_capabilities_effect": [
+                capability for capability in profile.runtime_capabilities_effect if capability in approved_requirements
+            ],
+        }
+    )
+
+
 class RuntimeInboxProcessorBridge:
     """RuntimeInbox 三阶段 processor composition.
 
@@ -630,17 +691,31 @@ class RuntimeInboxProcessorBridge:
         definitions: dict[tuple[str, str], SystemCapabilityDefinition] | None = None,
         allowed_capabilities: frozenset[tuple[str, str]] | None = None,
         admission_profile: str | None = None,
+        provider_profile: Any | None = None,
     ) -> RuntimeInboxAttemptRuntime:
         """新建 attempt-scoped runtime；绝不复用 Port 实例或 QUERY cache。"""
 
         registry = base_registry.fork_attempt() if base_registry is not None else CapabilityPortRegistry()
-        context = RuntimeCapabilityContext(registry)
+        context = (
+            RuntimeCapabilityContext(registry)
+            if provider_profile is None
+            else RuntimeCapabilityContext.from_provider_profile(registry, provider_profile)
+        )
         if definitions is None:
             from src.app.runtime.system_capabilities.generated_index import SYSTEM_CAPABILITY_INDEX
 
             definitions = SYSTEM_CAPABILITY_INDEX
         resolved_definitions = dict(definitions)
-        if admission_profile is None:
+        pinned_profile_identity = optional_str(getattr(provider_profile, "identity", None))
+        if (
+            admission_profile is not None
+            and pinned_profile_identity is not None
+            and admission_profile != pinned_profile_identity
+        ):
+            raise ValueError("admission_profile 与 pinned provider profile identity 不一致")
+        if admission_profile is None and pinned_profile_identity is not None:
+            admission_profile = pinned_profile_identity
+        elif admission_profile is None:
             from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import (
                 PROFILE_FAMILY,
             )
@@ -664,6 +739,43 @@ class RuntimeInboxProcessorBridge:
             context=context,
             gateway=gateway,
         )
+
+    async def _pin_attempt_runtime_to_dispatch_snapshot(
+        self,
+        db: Any,
+        *,
+        runtime: RuntimeInboxAttemptRuntime,
+        snapshot: PinnedPluginSnapshot,
+    ) -> None:
+        """用 immutable binding 的 profile/Port snapshot 收窄本次 attempt。"""
+
+        from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
+
+        binding = await workline_plugin_binding_service.get_pinned(db, binding_id=snapshot.binding_id)
+        expected_binding_identity = (
+            snapshot.binding_id,
+            snapshot.binding_version,
+            snapshot.config_hash,
+            snapshot.index_digest,
+        )
+        actual_binding_identity = (
+            getattr(binding, "id", None),
+            getattr(binding, "binding_version", None),
+            getattr(binding, "typed_config_hash", None),
+            getattr(binding, "generated_index_digest", None),
+        )
+        if actual_binding_identity != expected_binding_identity:
+            raise ValueError("pinned binding identity changed before attempt runtime creation")
+        provider_profile = _runtime_profile_from_pinned_binding(
+            binding,
+            expected_identity=snapshot.profile_identity,
+        )
+        replacement = self.create_attempt_runtime(
+            runtime.attempt_id,
+            base_registry=runtime.port_registry,
+            provider_profile=provider_profile,
+        )
+        await runtime.replace_with(replacement)
 
     async def claim_and_process_batch(
         self,
@@ -1316,6 +1428,11 @@ class RuntimeInboxProcessorBridge:
                 session=session,
                 workline=workline,
                 snapshot=snapshot,
+            )
+            await self._pin_attempt_runtime_to_dispatch_snapshot(
+                db,
+                runtime=attempt_runtime,
+                snapshot=dispatch_request.snapshot,
             )
         context = PluginAttemptContext(
             attempt_id=processor_token,
