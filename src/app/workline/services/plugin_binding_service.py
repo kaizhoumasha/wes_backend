@@ -361,11 +361,11 @@ class WorklinePluginBindingService:
         workline: Any,
         session: Any,
         binding: Any | None = None,
-    ) -> None:
+    ) -> tuple[ExecutionSession, ExecutionWorkItem] | None:
         """新平台 Session 在 caller 事务内固定 binding，并创建同 pin 的 Execution 聚合。"""
 
         if not self.manages(workline):
-            return
+            return None
         binding_id = getattr(workline, "active_plugin_binding_id", None)
         if not isinstance(binding_id, int):
             raise PluginBindingAdmissionError("平台插件尚未激活 immutable binding")
@@ -425,7 +425,7 @@ class WorklinePluginBindingService:
             records=(execution_session, work_item),
             plugin_state=plugin_state,
         )
-        await self.runtime_repository.save_pinned_runtime_aggregate(
+        return await self.runtime_repository.save_pinned_runtime_aggregate(
             db,
             execution_session=execution_session,
             correlation=correlation,

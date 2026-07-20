@@ -102,7 +102,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
             assert session is not None and command is not None
             assert session.status == "WAITING_DEVICE_RESULT"
             assert session.awaiting_device_command_code == command.command_code
-            assert command.correlation_id == "it-runtime-inbox-correlation"
+            assert command.correlation_id == "workline-session:IT-RUNTIME-INBOX-SESSION"
             material_unit = await db.get(MaterialUnit, session.current_material_unit_id)
             assert material_unit is not None
             material_unit.six_in_one = {
@@ -150,7 +150,7 @@ def test_outbox_acceptance_is_not_remote_completion_and_callback_is_runtime_inbo
             callback_id = int(callback.id)
             assert callback.status == "RECEIVED"
             assert callback.execution_session_id is not None
-            assert callback.correlation_id == "it-runtime-inbox-correlation"
+            assert callback.correlation_id == "workline-session:IT-RUNTIME-INBOX-SESSION"
             await db.refresh(command)
             assert command.status == CommandStatus.COMPLETED
             callback_log = await db.scalar(

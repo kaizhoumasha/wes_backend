@@ -26,6 +26,7 @@ from src.app.runtime.orchestration.services.workline_runtime_status_projection_s
     workline_runtime_status_projection_service,
 )
 from src.app.runtime.system_capabilities.wms.rough_sorter_inventory_admission.contracts import PROFILE_IDENTITY
+from src.app.runtime.workline_plugins.rough_sorter.domain_contract import resolve_rough_sorter_business_key
 from src.app.sys.models import SystemOutbox
 from src.app.workline.models.workline import LineType, WorkLine
 from src.app.workline.services.plugin_binding_service import (
@@ -145,6 +146,21 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
     workline.active_plugin_port_requirements_json = list(binding.port_requirements_json)
     await workline_runtime_status_projection_service.project_ready_after_start(db, workline_id=workline.id)
     config_hash = binding.typed_config_hash
+    payload_json = {
+        "event_type": "SCAN_COMPLETED",
+        "canonical_event_type": "SCAN_COMPLETED",
+        "device_code": scanner.device_code,
+        "data": {
+            "HHPN": "MAT-IT-001",
+            "MfrPN": "VENDOR-IT-001",
+            "Qty": "10",
+            "DateCode": "20260711",
+            "LotCode": "LOT-IT-001",
+            "PkgID": "PKG-IT-001",
+        },
+    }
+    business_key = resolve_rough_sorter_business_key(payload_json)
+    assert business_key is not None
     session = WorklineSession(
         session_code="IT-RUNTIME-INBOX-SESSION",
         workline_id=workline.id,
@@ -154,17 +170,21 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         plugin_binding_version=binding.binding_version,
         plugin_config_hash=config_hash,
         plugin_index_digest=binding.generated_index_digest,
+        business_key=business_key,
         status=SessionStatus.RUNNING,
         trace_id=trace_id,
     )
+    correlation_id = f"workline-session:{session.session_code}"
     correlation = ExecutionCorrelation(
-        correlation_id="it-runtime-inbox-correlation",
+        correlation_id=correlation_id,
         trace_id=trace_id,
         source_event_id="it-runtime-inbox-event",
-        business_owner_key="it-runtime-inbox-scan",
+        business_owner_key=business_key,
     )
     db.add_all([session, correlation])
     await db.flush()
+    # 部分 Stage 3 heavy test 会刻意跳过 Stage 1；补入真实持久化 ID，保留其预解析 Inbox 契约。
+    payload_json["data"]["session_id"] = session.id
     execution_session = ExecutionSession(
         workline_id=workline.id,
         plugin_key=session.plugin_key,
@@ -197,20 +217,7 @@ async def seed_scan_flow(db: AsyncSession) -> SeededScanFlow:
         db,
         device_code=scanner.device_code,
         event_type="SCAN_COMPLETED",
-        payload_json={
-            "event_type": "SCAN_COMPLETED",
-            "canonical_event_type": "SCAN_COMPLETED",
-            "device_code": scanner.device_code,
-            "data": {
-                "session_id": session.id,
-                "HHPN": "MAT-IT-001",
-                "MfrPN": "VENDOR-IT-001",
-                "Qty": "10",
-                "DateCode": "20260711",
-                "LotCode": "LOT-IT-001",
-                "PkgID": "PKG-IT-001",
-            },
-        },
+        payload_json=payload_json,
         trace_id=trace_id,
         event_id="it-runtime-inbox-event",
         workline_id=workline.id,
@@ -252,8 +259,6 @@ async def seed_duplicate_scan_inbox(db: AsyncSession, seeded: SeededScanFlow) ->
         workline_id=seeded.workline_id,
         device_id=scanner.id,
     )
-    accepted.record.execution_session_id = source.execution_session_id
-    accepted.record.correlation_id = source.correlation_id
     await db.commit()
     assert accepted.record.id is not None and accepted.record.id != seeded.inbox_id
     return int(accepted.record.id)

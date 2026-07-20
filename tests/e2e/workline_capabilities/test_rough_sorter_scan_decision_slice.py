@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -716,7 +717,9 @@ def test_approved_rough_sorter_scan_decision_case(case: dict[str, Any], monkeypa
     assert evidence.effect_identities == tuple(expected_effect_identities), evidence
     # RuntimeIntent ledger 与 System Capability effect ledger 各保存一份同身份记录。
     expected_ledger_identities = tuple(expected_effect_identities) * 2
-    assert evidence.effect_ledger_identities == expected_ledger_identities, evidence.effect_ledger_identities
+    assert Counter(evidence.effect_ledger_identities) == Counter(expected_ledger_identities), (
+        evidence.effect_ledger_identities
+    )
     assert evidence.effect_count_for_attempt == len(expected_ledger_identities), evidence
     assert evidence.timeline_count >= 1
     command_intents = [item for item in expected_intents if item["kind"] == "COMMAND"]

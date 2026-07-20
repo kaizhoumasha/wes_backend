@@ -15,7 +15,7 @@ from src.app.runtime.orchestration.execution_session import ExecutionSession
 from src.app.runtime.orchestration.execution_work_item import ExecutionWorkItem
 from src.app.runtime.orchestration.models.session import WorklineSession
 from src.app.runtime.orchestration.services.runtime_inbox import runtime_inbox_context_loader as context_loader
-from src.app.runtime.orchestration.services.session.session_resolver import SessionResolver
+from src.app.runtime.orchestration.services.session.session_resolver import SessionResolveError, SessionResolver
 from src.app.runtime.workline_plugins.definition import WorklinePluginDefinition
 from src.app.workline.models import LineType, WorkLine
 from src.app.workline.repositories.plugin_binding_repository import WorklinePluginBindingRepository
@@ -114,8 +114,41 @@ class RuntimeRepository:
         correlation: ExecutionCorrelation,
         work_item: ExecutionWorkItem,
     ) -> tuple[ExecutionSession, ExecutionWorkItem]:
+        execution_session.id = 31
+        correlation.execution_session_id = 31
+        work_item.execution_session_id = 31
         self.created = (execution_session, correlation, work_item)
         return execution_session, work_item
+
+
+class ExecutionAnchorRepository:
+    async def resolve_owned_anchor(
+        self,
+        _db: object,
+        **identity: object,
+    ) -> tuple[str, int]:
+        assert identity == {
+            "correlation_id": "workline-session:SESSION-21",
+            "trace_id": "trace-existing",
+            "workline_id": 7,
+            "plugin_key": "platform-test",
+            "contract_version": "v1",
+            "plugin_binding_id": 8,
+            "plugin_binding_version": 2,
+            "plugin_config_hash": "a" * 64,
+            "plugin_index_digest": "b" * 64,
+            "business_key": "PKG-EXISTING",
+        }
+        return "workline-session:SESSION-21", 31
+
+
+class MisownedExecutionAnchorRepository(ExecutionAnchorRepository):
+    async def resolve_owned_anchor(
+        self,
+        _db: object,
+        **_identity: object,
+    ) -> None:
+        return None
 
 
 class SessionRepository:
@@ -168,6 +201,10 @@ async def test_existing_session_reuse_does_not_acquire_workline_plugin_pin_lock(
         workline_id=7,
         plugin_key="platform-test",
         contract_version="v1",
+        plugin_binding_id=8,
+        plugin_binding_version=2,
+        plugin_config_hash="a" * 64,
+        plugin_index_digest="b" * 64,
         business_key="PKG-EXISTING",
         trace_id="trace-existing",
         ingress_count=1,
@@ -193,6 +230,7 @@ async def test_existing_session_reuse_does_not_acquire_workline_plugin_pin_lock(
             capability_index={},
             plugin_index_digest="b" * 64,
         ),
+        execution_anchor_repo=ExecutionAnchorRepository(),
     )
     inbox = SimpleNamespace(
         payload_json={"business_key": "PKG-EXISTING"},
@@ -205,8 +243,43 @@ async def test_existing_session_reuse_does_not_acquire_workline_plugin_pin_lock(
     resolved = await resolver._resolve_device_event(object(), inbox, workline)
 
     assert resolved is existing
+    assert resolved.ingress_count == 2
+    assert inbox.execution_session_id == 31
+    assert inbox.correlation_id == "workline-session:SESSION-21"
     assert workline_repository.pin_events == []
     assert binding_repository.get_calls == []
+
+
+@pytest.mark.asyncio
+async def test_existing_platform_session_rejects_execution_anchor_owned_by_another_session() -> None:
+    session = WorklineSession(
+        id=21,
+        session_code="SESSION-21",
+        workline_id=7,
+        plugin_key="platform-test",
+        contract_version="v1",
+        plugin_binding_id=8,
+        plugin_binding_version=2,
+        plugin_config_hash="a" * 64,
+        plugin_index_digest="b" * 64,
+        business_key="PKG-EXISTING",
+        trace_id="trace-existing",
+    )
+    resolver = SessionResolver(
+        session_repo=SessionRepository(),
+        workline_repo=WorklineRepository(_workline()),
+        command_repo=object(),
+        outbox_repo=object(),
+        rack_task_repo=object(),
+        handling_step_repo=object(),
+        handling_operation_repo=object(),
+        plugin_binding_service=object(),
+        execution_anchor_repo=MisownedExecutionAnchorRepository(),
+    )
+    inbox = SimpleNamespace(execution_session_id=None, correlation_id=None)
+
+    with pytest.raises(SessionResolveError, match="execution/correlation"):
+        await resolver._backfill_platform_execution_anchor(object(), inbox=inbox, session=session)
 
 
 @pytest.mark.asyncio
@@ -345,11 +418,99 @@ async def test_session_resolver_pins_real_models_and_creates_runtime_aggregate_i
     assert isinstance(correlation, ExecutionCorrelation)
     assert isinstance(work_item, ExecutionWorkItem)
     assert correlation.correlation_id == work_item.correlation_id
+    assert inbox.execution_session_id == execution_session.id
+    assert inbox.correlation_id == work_item.correlation_id
     for record in (execution_session, work_item):
         assert record.plugin_key == "platform-test"
         assert record.plugin_binding_id == session.plugin_binding_id
         assert record.plugin_config_hash == session.plugin_config_hash
         assert record.plugin_index_digest == session.plugin_index_digest
+
+
+@pytest.mark.asyncio
+async def test_new_session_locks_candidate_and_plugin_business_keys_in_stable_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_resolver_module = importlib.import_module("src.app.runtime.orchestration.services.session.session_resolver")
+    locked_key_sets: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        session_resolver_module,
+        "resolve_workline_business_key",
+        lambda plugin_key, _payload, *, contract_version=None: "KEY-A" if plugin_key == "platform-test" else None,
+    )
+
+    async def record_locks(_db: object, *, workline_id: int, business_keys: set[str]) -> None:
+        assert workline_id == 7
+        locked_key_sets.append(tuple(sorted(business_keys)))
+
+    monkeypatch.setattr(session_resolver_module, "_lock_device_event_business_keys", record_locks, raising=False)
+    workline = _workline()
+    resolver = SessionResolver(
+        session_repo=SessionRepository(),
+        workline_repo=WorklineRepository(workline),
+        command_repo=object(),
+        outbox_repo=object(),
+        rack_task_repo=object(),
+        handling_step_repo=object(),
+        handling_operation_repo=object(),
+        plugin_binding_service=WorklinePluginBindingService(
+            repository=BindingRepository(),
+            runtime_repository=RuntimeRepository(),
+            plugin_index={("platform-test", "v1"): DEFINITION},
+            capability_index={},
+            plugin_index_digest="b" * 64,
+            clock=lambda: datetime(2026, 7, 17, 9),
+        ),
+    )
+    inbox = SimpleNamespace(
+        payload_json={"business_key": "KEY-B"},
+        device_id=1,
+        trace_id="trace-lock-order",
+        request_id="request-lock-order",
+        source_message_id="message-lock-order",
+    )
+
+    session = await resolver._resolve_device_event(object(), inbox, workline)
+
+    assert session.business_key == "KEY-A"
+    assert locked_key_sets == [("KEY-A", "KEY-B")]
+
+
+@pytest.mark.asyncio
+async def test_business_key_locks_sort_postgresql_advisory_resource_ids_in_one_statement() -> None:
+    session_resolver_module = importlib.import_module("src.app.runtime.orchestration.services.session.session_resolver")
+
+    class Dialect:
+        name = "postgresql"
+
+    class Bind:
+        dialect = Dialect()
+
+    class Db:
+        def __init__(self) -> None:
+            self.executions: list[tuple[str, dict[str, object]]] = []
+
+        def get_bind(self) -> Bind:
+            return Bind()
+
+        async def execute(self, statement: object, parameters: dict[str, object]) -> None:
+            self.executions.append((str(statement), parameters))
+
+    db = Db()
+    lock_business_keys = getattr(session_resolver_module, "_lock_device_event_business_keys", None)
+    assert callable(lock_business_keys)
+    await lock_business_keys(
+        db,
+        workline_id=7,
+        business_keys={"KEY-B", "KEY-A"},
+    )
+
+    assert len(db.executions) == 1
+    statement, parameters = db.executions[0]
+    assert "hashtextextended" in statement
+    assert "ORDER BY lock_id" in statement
+    assert parameters == {"lock_keys": ["workline-session:7:KEY-A", "workline-session:7:KEY-B"]}
 
 
 @pytest.mark.asyncio

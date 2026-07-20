@@ -47,7 +47,9 @@ async def _seed_pinned_attempt(session_factory, *, token: str):  # type: ignore[
         session = await db.get(WorklineSession, seeded.session_id)
         inbox = await db.get(RuntimeInbox, seeded.inbox_id)
         correlation = await db.scalar(
-            select(ExecutionCorrelation).where(ExecutionCorrelation.correlation_id == "it-runtime-inbox-correlation")
+            select(ExecutionCorrelation).where(
+                ExecutionCorrelation.correlation_id == "workline-session:IT-RUNTIME-INBOX-SESSION"
+            )
         )
         assert session is not None and inbox is not None and correlation is not None
         assert inbox.execution_session_id is not None

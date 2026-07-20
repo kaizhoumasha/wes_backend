@@ -235,6 +235,8 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         db: AsyncSession,
         workline_id: int,
         business_key: str,
+        *,
+        populate_existing: bool = False,
     ) -> WorklineSession | None:
         """根据业务键查询未结束的会话
 
@@ -255,13 +257,14 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             "WAITING_EXTERNAL",
             "MANUAL_HOLD",
         ]
-        result = await db.execute(
-            select(WorklineSession).where(
-                columns.workline_id == workline_id,
-                columns.business_key == business_key,
-                columns.status.in_(open_statuses),
-            )
+        statement = select(WorklineSession).where(
+            columns.workline_id == workline_id,
+            columns.business_key == business_key,
+            columns.status.in_(open_statuses),
         )
+        if populate_existing:
+            statement = statement.execution_options(populate_existing=True)
+        result = await db.execute(statement)
         return result.scalar_one_or_none()
 
     async def get_latest_session_by_business_key(
@@ -269,6 +272,8 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
         db: AsyncSession,
         workline_id: int,
         business_key: str,
+        *,
+        populate_existing: bool = False,
     ) -> WorklineSession | None:
         """根据业务键查询最新的会话（无论状态）
 
@@ -283,21 +288,23 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             最新的会话（如果有）
         """
         columns = cast("Any", WorklineSession).__table__.c
-        result = await db.execute(
+        statement = (
             select(WorklineSession)
-            .where(
-                columns.workline_id == workline_id,
-                columns.business_key == business_key,
-            )
+            .where(columns.workline_id == workline_id, columns.business_key == business_key)
             .order_by(columns.id.desc())
             .limit(1)
         )
+        if populate_existing:
+            statement = statement.execution_options(populate_existing=True)
+        result = await db.execute(statement)
         return result.scalar_one_or_none()
 
     async def get_by_trace_id(
         self,
         db: AsyncSession,
         trace_id: str,
+        *,
+        populate_existing: bool = False,
     ) -> WorklineSession | None:
         """根据 Trace ID 查询会话
 
@@ -309,11 +316,10 @@ class WorklineSessionRepository(BaseRepository[WorklineSession]):
             匹配的会话（如果有）
         """
         columns = cast("Any", WorklineSession).__table__.c
-        result = await db.execute(
-            select(WorklineSession).where(
-                columns.trace_id == trace_id,
-            )
-        )
+        statement = select(WorklineSession).where(columns.trace_id == trace_id)
+        if populate_existing:
+            statement = statement.execution_options(populate_existing=True)
+        result = await db.execute(statement)
         return result.scalar_one_or_none()
 
     async def get_for_update(
