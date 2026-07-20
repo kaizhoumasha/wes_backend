@@ -810,6 +810,11 @@ async def test_plugin_dispatch_prefers_persisted_material_identity_over_conflict
                 contract_version="rough_sorter.v2",
                 typed_config_json=config,
                 typed_config_hash=sha256_digest(config),
+                is_enabled=True,
+                is_revoked=False,
+                environment="sandbox",
+                valid_from=None,
+                valid_until=None,
             )
         ),
     )
@@ -903,6 +908,11 @@ async def test_plugin_dispatch_uses_root_pkg_code_before_persisted_six_in_one_pk
                 contract_version="rough_sorter.v2",
                 typed_config_json=config,
                 typed_config_hash=sha256_digest(config),
+                is_enabled=True,
+                is_revoked=False,
+                environment="sandbox",
+                valid_from=None,
+                valid_until=None,
             )
         ),
     )
@@ -968,6 +978,11 @@ async def test_generated_rough_sorter_scan_route_has_unique_handler_and_system_e
         contract_version="rough_sorter.v2",
         typed_config_json=config,
         typed_config_hash=sha256_digest(config),
+        is_enabled=True,
+        is_revoked=False,
+        environment="sandbox",
+        valid_from=None,
+        valid_until=None,
     )
     from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
 
@@ -1069,6 +1084,11 @@ async def test_command_result_returns_typed_wms_query_outcome_to_plugin_once(
                 contract_version="rough_sorter.v2",
                 typed_config_json=config,
                 typed_config_hash=sha256_digest(config),
+                is_enabled=True,
+                is_revoked=False,
+                environment="sandbox",
+                valid_from=None,
+                valid_until=None,
             )
         ),
     )

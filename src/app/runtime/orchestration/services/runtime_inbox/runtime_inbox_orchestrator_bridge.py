@@ -1437,7 +1437,12 @@ async def _build_plugin_dispatch_request(
         RoughSorterBindingSnapshot,
     )
     from src.app.runtime.workline_plugins.rough_sorter.handlers import RoughSorterFacts
-    from src.app.workline.services.plugin_binding_service import workline_plugin_binding_service
+    from src.app.workline.services.plugin_binding_service import (
+        WorklinePluginBindingService,
+        workline_plugin_binding_service,
+    )
+    from src.core.conf import settings
+    from src.utils.timezone import timezone
 
     binding_id = snapshot.binding_id
     if (
@@ -1448,6 +1453,13 @@ async def _build_plugin_dispatch_request(
     ):
         raise ValueError("plugin binding snapshot is incomplete")
     binding = await workline_plugin_binding_service.get_pinned(db, binding_id=binding_id)
+    # Context loader 的检查与这里的重读之间存在撤权窗口；构建任何 Stage 2
+    # dispatch request 前再次 fail closed，Stage 3 仍负责锁内并发重校验。
+    workline_plugin_binding_service.assert_execution_admitted(
+        binding,
+        environment=WorklinePluginBindingService.resolve_runtime_environment(settings.APP_ENV),
+        now=timezone.now_utc(),
+    )
     raw_config = deepcopy(dict(getattr(binding, "typed_config_json", {}) or {}))
     config_hash = sha256_digest(raw_config)
     binding_config_hash = optional_str(getattr(binding, "typed_config_hash", None))
